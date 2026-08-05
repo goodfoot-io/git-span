@@ -27,9 +27,10 @@
  *   so the flag changes nothing the default path already does — it is
  *   contract documentation the adapters map `interrupted` onto (a later
  *   phase changes the adapters; until then they collapse it into
- *   `truncated`, which fails closed safely). Neither flag applies to the
- *   command-text-derived `git blame -L N,M` matcher, whose evidence is the
- *   command, not the response.
+ *   `truncated`, which fails closed safely). Neither content gate applies
+ *   to the command-text-derived `git blame -L N,M` matcher, whose evidence
+ *   is the command, not the response — the blame branch runs above both
+ *   the ANSI rejection and the truncated gate.
  * - **Span cap**: `MAX_RESPONSE_SPANS` bounds how many distinct spans a
  *   response may emit. Measured through the deployed hook, each span costs
  *   ~46 ms of subprocess execs in the touch core (resolveTouchScope + `git
@@ -44,11 +45,30 @@
  *   the agent loop. One coalesced span covering a huge window counts once.
  * - **Pipelines**: the response is attributed to the FIRST gated stage
  *   (left-to-right walk; if no stage gates, nothing to parse). In a pipeline
- *   the final stage's stdout is the gated stage's output (head/wc/tail only
- *   truncate; the terminating-newline rule handles the cut), and in an
- *   &&/||/; chain the first gated stage is the most likely owner of
- *   response-shaped records. `cd` tracking applies only until the first
- *   gated stage is found — the evidence was produced in that directory.
+ *   the final stage's stdout is the gated stage's output when every later
+ *   stage only truncates, reorders, or dedupes (head/tail/wc/sort/uniq/cut —
+ *   each surviving line's content is verbatim, so decoded spans stay
+ *   genuine); the terminating-newline rule handles the cut. A later stage
+ *   that RENUMBERS or rewrites records (grep with `-n`/`--line-number`,
+ *   `nl`, `cat -n`, `awk`, `sed`) destroys the file-line mapping — the
+ *   response then carries stream positions, not file lines — so the pipeline
+ *   fails closed (attribute nothing). In an &&/||/; chain the first gated
+ *   stage is the most likely owner of response-shaped records. `cd` tracking
+ *   applies only until the first gated stage is found — the evidence was
+ *   produced in that directory.
+ * - **Stdin-fed search fails closed**: a non-git search bin (`rg`/`grep`/
+ *   `egrep`/`fgrep`) with no path args whose input is piped or redirected
+ *   (`printf '…' | rg -n needle`, `< file`, `<<<`, `<(…)`) reads STDIN, not
+ *   files — the response's records are stream positions, and decoding them
+ *   as paths fabricates touches (a stdin line number like "9" becomes a
+ *   path, and with a real file named `9` at the cwd the phantom surfaces).
+ *   Such an invocation yields no response-derived spans. Explicit path args
+ *   mean the bin searches files (the redirect/pipe is then irrelevant), and
+ *   `git grep` never reads stdin — both preserved.
+ * - **Decoded paths must be real files**: as a family-wide backstop, a
+ *   recursive-layout record whose decoded path is not an existing regular
+ *   file (the same `isFile` check the one-file eligibility uses, resolving
+ *   against the record base) drops instead of fabricating a touch.
  * - **`git show <rev>:<path>`** (raw blob content) is excluded from the diff
  *   gate; a diff-shaped blob must never decode into fabricated touches. The
  *   content idiom is detectable from the command: a `show` positional
@@ -56,8 +76,16 @@
  * - **Diff paths are repo-root-relative**: git emits `a/src/x.ts` in diff
  *   output regardless of cwd, so diff decode anchors to the worktree root
  *   (found by walking up from the effective dir for a `.git` entry — no
- *   subprocess, the common layer imports only node: builtins). Search-layout
- *   paths are cwd-relative and keep resolving against the effective dir.
+ *   subprocess, the common layer imports only node: builtins). Two
+ *   exceptions re-anchor the output: `--relative` (bare) emits paths
+ *   relative to the cwd and excludes changes outside it, and
+ *   `--relative=<path>` emits paths relative to `<path>` resolved against
+ *   the worktree root (verified against git 2.47.3) — both decode against
+ *   that base instead. `git diff <rev>:<path> <rev>:<path>` (two-arg
+ *   blob-blob) emits a normal unified diff naming the blob paths while git
+ *   reads only historical blobs, never the working-tree files — a diff
+ *   whose positionals carry `rev:path` specs (any `:`-containing positional
+ *   that is not an existing file) decodes nothing.
  * - **Unnumbered output never parses as numbered**: the one-file layout
  *   requires command-side numbered evidence (`-n`/`--line-number`), exactly
  *   one explicit file argument that is a real file, no `-H`
@@ -72,6 +100,16 @@
  *   fuses the rev into record paths (`HEAD:a.ts:3:…`); those records drop as
  *   path-ambiguous — fail-closed and defensible, since the rev is known but
  *   stripping it would guess at a path the response does not carry.
+ * - **Whole-tree `git grep` from a subdir anchors to the worktree root**:
+ *   pathspec magic (`:/`, `:!`, `:^`, `:(...)`) searches the whole tree and
+ *   emits cwd-relative records with `../` prefixes; `--full-name` (the real
+ *   git option — `--full-tree` does not exist on git 2.47.3 and errors with
+ *   a usage response that parses to nothing) re-anchors records to
+ *   repo-root-relative paths. Both anchor the permitted root — and, for
+ *   `--full-name`, the resolution base — to the worktree root, so every
+ *   in-repo record passes containment. Plain subdir `git grep` (no
+ *   pathspec) is scoped to the subdir by git itself and keeps the
+ *   effective-dir root.
  * - **Context records with dashes in the path** decode by anchoring to the
  *   exact paths the response's `path:line:text` match records establish,
  *   with the dash split as the dash-free fallback — a `-C` window on
@@ -218,11 +256,27 @@ interface SearchArgvInfo {
    * Whether the command requested line numbers (`-n`/`--line-number`). rg and
    * grep both default to NO line numbers when piped, so this is the
    * command-side evidence that `line:text`-only output is numbered output —
-   * the one-file and heading layouts refuse to apply without it.
+   * the one-file and heading layouts refuse to apply without it. A numbered
+   * command whose records all fail to decode must not fall back to a
+   * whole-file span — the records may have been renumbered or destroyed by a
+   * later pipeline stage.
    */
   numbered: boolean;
   /** Whether `-H`/`--with-filename` was requested — records carry path prefixes even for a single file. */
   withFilename: boolean;
+  /**
+   * Whether any positional was git pathspec magic (`:/`, `:!`, `:^`,
+   * `:(...)`) — a whole-tree or exclusion spec, never a filesystem root.
+   * When present, git grep searches beyond the cwd, so the permitted root
+   * anchors to the worktree root instead of the effective dir.
+   */
+  pathspecMagic: boolean;
+  /**
+   * Whether a stdin redirect (`<`, `<<<`, `<(…`) appears: the bin reads
+   * STDIN, and the tokens after the redirect are its targets, never search
+   * roots — the positional scan stops there.
+   */
+  stdinRedirect: boolean;
 }
 
 /**
@@ -245,11 +299,18 @@ function analyzeSearchArgv(argv: string[], start: number): SearchArgvInfo {
   let contextFlags = false;
   let numbered = false;
   let withFilename = false;
+  let stdinRedirect = false;
   let i = start;
   while (i < argv.length) {
     const a = argv[i];
     if (a === '--') {
       positionals.push(...argv.slice(i + 1));
+      break;
+    }
+    if (a.startsWith('<')) {
+      // A stdin redirect (`<`, `<<<`, `<(…`): the bin reads stdin, and the
+      // following tokens are redirect targets, not search roots.
+      stdinRedirect = true;
       break;
     }
     if (a.startsWith('--')) {
@@ -286,9 +347,12 @@ function analyzeSearchArgv(argv: string[], start: number): SearchArgvInfo {
     i += 1;
   }
   // The first positional is the pattern; the rest are explicit search roots.
-  // Git pathspec magic is not a filesystem path and never becomes a root.
+  // Git pathspec magic is not a filesystem path and never becomes a root —
+  // but its presence is tracked, because it makes git grep search the whole
+  // tree from a subdir.
   const pathArgs = positionals.length > 0 ? positionals.slice(1).filter((p) => !isPathspecMagic(p)) : [];
-  return { pathArgs, contextFlags, numbered, withFilename };
+  const pathspecMagic = positionals.length > 0 && positionals.slice(1).some((p) => isPathspecMagic(p));
+  return { pathArgs, contextFlags, numbered, withFilename, pathspecMagic, stdinRedirect };
 }
 
 interface GitSubcommandInfo {
@@ -375,6 +439,100 @@ function hasRevPathArg(argv: string[], start: number): boolean {
       continue;
     }
     if (a.includes(':')) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether the exact long flag `flag` appears in the command's argv (stopping
+ * at `--`, after which tokens are literal pathspecs, not options). Used for
+ * the diff `--relative` and git-grep `--full-name` carve-outs.
+ */
+function hasFlag(argv: string[], start: number, flag: string): boolean {
+  for (let i = start; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--') return false;
+    if (a === flag) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether a `git diff` invocation's positional arguments carry `rev:path`
+ * specs. `git diff <rev>:<path> <rev>:<path>` compares two historical blobs
+ * and emits a normal unified diff whose paths name the blob paths, not
+ * working-tree files — decoding it fabricates touches on a file git never
+ * read (unlike the single-arg form, which errors instead of emitting
+ * content). A positional containing `:` is a rev:path unless an existing
+ * file carries that literal name (`git diff ./weird:name.ts` — a literal
+ * colon path needs the `./` prefix to survive git's revision parsing);
+ * after `--` the tokens are literal pathspecs and the scan stops. Flags
+ * that consume a SEPARATE argument skip their value so an output path
+ * cannot false-positive.
+ */
+function hasDiffRevPathArg(argv: string[], start: number, cwd: string): boolean {
+  // `-L <range>:<file>` (git log/blame) consumes its range as a separate
+  // token; the range's `:` is a line-range separator, not a rev:path.
+  const valueFlags = new Set(['--output', '--src-prefix', '--dst-prefix', '-L']);
+  for (let i = start; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--') return false;
+    if (a.startsWith('-') && a !== '-') {
+      if (!a.includes('=') && valueFlags.has(a)) i += 1;
+      continue;
+    }
+    if (a.includes(':') && !existsSync(resolvePath(cwd, a))) return true;
+  }
+  return false;
+}
+
+/**
+ * The path base `git diff --relative[=<path>]` anchors its output to: null
+ * when the flag is absent (repo-root-relative paths — the default); the
+ * effective dir for the bare form, whose paths are cwd-relative and exclude
+ * changes outside the cwd; or `<path>` resolved against the worktree root
+ * for the value form (verified against git 2.47.3 — the value is
+ * root-relative, not cwd-relative). `'unresolvable'` when the value form's
+ * path cannot be statically resolved (shell expansion) or no worktree root
+ * exists — fail closed.
+ */
+function diffRelativeBase(
+  argv: string[],
+  start: number,
+  effectiveDir: string,
+  repoRoot: string | null
+): { base: string; root: string } | 'unresolvable' | null {
+  for (let i = start; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--') return null;
+    if (a === '--relative') return { base: effectiveDir, root: effectiveDir };
+    if (a.startsWith('--relative=')) {
+      const value = a.slice('--relative='.length);
+      if (repoRoot === null || hasShellExpansion(value) || value === '') return 'unresolvable';
+      const base = resolvePath(repoRoot, value);
+      return { base, root: base };
+    }
+  }
+  return null;
+}
+
+/**
+ * Whether a post-first-gated-stage pipeline stage renumbers or restructures
+ * the earlier stage's records so the response no longer carries the file
+ * lines the gated stage produced. Name-based: grep/egrep/fgrep/rg with
+ * numbered evidence (`-n`/`--line-number`), `nl`, `cat -n`, `awk`, and `sed`
+ * all renumber or rewrite records; head/tail/wc/sort/uniq/cut only
+ * truncate, reorder, or dedupe — each surviving line's content is verbatim,
+ * so the decoded spans stay genuine.
+ */
+function isRenumberingFilter(argv: string[]): boolean {
+  const bin = argv[0];
+  if (bin === 'nl' || bin === 'awk' || bin === 'sed') return true;
+  if (bin === 'cat') {
+    return argv.some((a) => a === '--number' || (a.startsWith('-') && !a.startsWith('--') && a.includes('n')));
+  }
+  if (SEARCH_BINS.has(bin)) {
+    return argv.some((a) => a === '--line-number' || (a.startsWith('-') && !a.startsWith('--') && a.includes('n')));
   }
   return false;
 }
@@ -935,22 +1093,26 @@ function matchBlameRange(
 export function parseResponse(input: ResponseParseInput): ResolvedSpan[] {
   const { command, cwd, stdout } = input;
 
-  // ANSI escape bytes reject the whole parse: neither rg/grep nor git emit
-  // color when piped, so an ESC byte means something deliberate is going on.
-  if (stdout.includes('\u001b')) return [];
-
   // Walk the simple commands tracking `cd`, exactly like parse-command.ts.
   // The response is attributed to the FIRST gated stage (left-to-right; a
   // later stage never overrides an earlier gated one): in a pipeline the
-  // final stage's stdout is the gated stage's output — head/wc/tail only
-  // truncate, and the terminating-newline rule handles the cut — and in an
-  // &&/||/; chain the first gated stage is the most likely owner of
-  // response-shaped records. `cd` tracking applies only until the first
-  // gated stage is found: the evidence was produced in that directory, and a
-  // `cd` in a later stage says nothing about where the response was made.
+  // final stage's stdout is the gated stage's output — head/tail/wc/sort/
+  // uniq/cut only truncate, reorder, or dedupe, and the terminating-newline
+  // rule handles the cut — while a renumbering stage (grep -n, nl, cat -n,
+  // awk, sed) turns the records into stream positions, so such pipelines
+  // fail closed below; and in an &&/||/; chain the first gated stage is the
+  // most likely owner of response-shaped records. `cd` tracking applies only
+  // until the first gated stage is found: the evidence was produced in that
+  // directory, and a `cd` in a later stage says nothing about where the
+  // response was made.
   let currentDir = cwd;
   let gated: GatedCommand | null = null;
-  for (const simple of splitTopLevel(command)) {
+  // Whether the gated stage's stdin came from a pipe — the signal that its
+  // records are stream positions when no search roots were given.
+  let gatedPrecededBy: '|' | 'other' | 'start' = 'start';
+  const parts = splitTopLevel(command);
+  for (let i = 0; i < parts.length; i++) {
+    const simple = parts[i];
     const argv = argvOf(simple.text);
     if (argv === null || argv.length === 0) continue;
     if (argv[0] === 'cd') {
@@ -974,12 +1136,25 @@ export function parseResponse(input: ResponseParseInput): ResolvedSpan[] {
         // diff — a diff-shaped blob must not decode into fabricated touches
         // on the files its content names, so the content idiom is excluded
         // from the diff gate. `git diff <rev>:<path>` errors instead of
-        // emitting content, so only `show` needs the check.
+        // emitting content, so only `show` needs the check; the two-arg
+        // blob-blob form `git diff <rev>:<path> <rev>:<path>` DOES emit a
+        // diff naming working-tree paths git never read and is rejected in
+        // the diff branch below.
         else if (sub.subcommand === 'show' && !hasRevPathArg(argv, sub.start)) gated = { kind: 'diff', ...base };
         else if (sub.subcommand === 'diff') gated = { kind: 'diff', ...base };
         else if (sub.subcommand === 'log' && hasDiffPatchFlag(argv, sub.start)) gated = { kind: 'diff', ...base };
         else if (sub.subcommand === 'blame') gated = { kind: 'blame', ...base };
       }
+    }
+    if (gated === null) continue;
+    gatedPrecededBy = simple.precededBy;
+    // A later stage of the SAME pipeline may only truncate, reorder, or
+    // dedupe the gated stage's records; a renumbering/rewriting stage
+    // (isRenumberingFilter) would destroy the file-line mapping the records
+    // carry, so the pipeline fails closed: attribute nothing.
+    for (let j = i + 1; j < parts.length && parts[j].precededBy === '|'; j++) {
+      const laterArgv = argvOf(parts[j].text);
+      if (laterArgv !== null && laterArgv.length > 0 && isRenumberingFilter(laterArgv)) return [];
     }
   }
   if (gated === null || gated.dirUnresolvable) return [];
@@ -989,13 +1164,18 @@ export function parseResponse(input: ResponseParseInput): ResolvedSpan[] {
   const effectiveDir = gated.dir !== null ? resolvePath(currentDir, gated.dir) : currentDir;
 
   // `git blame -L N,M file` resolves straight from the command text; the
-  // response's content is irrelevant to it, so the truncation gate below
-  // (which applies to response-derived decode) must not suppress it.
+  // response's content is irrelevant to it, so the ANSI rejection and the
+  // truncation gate below — both response-derived decode gates — must not
+  // suppress it.
   if (gated.kind === 'blame') {
     const m = matchBlameRange(gated.argv, gated.start);
     if (m === null || hasShellExpansion(m.fileArg) || /[*?]/.test(m.fileArg)) return [];
     return [{ lineStart: m.lineStart, lineEnd: m.lineEnd, absolutePath: resolvePath(effectiveDir, m.fileArg) }];
   }
+
+  // ANSI escape bytes reject the whole parse: neither rg/grep nor git emit
+  // color when piped, so an ESC byte means something deliberate is going on.
+  if (stdout.includes('\u001b')) return [];
 
   // The adapter-supplied truncated flag (Claude rawOutputPath set ⇒ inline
   // stdout is only a preview) declares the response-derived decode
@@ -1006,21 +1186,73 @@ export function parseResponse(input: ResponseParseInput): ResolvedSpan[] {
   if (input.truncated) return [];
 
   if (gated.kind === 'diff') {
+    // Two-arg blob-blob `git diff <rev>:<path> <rev>:<path>` emits a normal
+    // unified diff naming working-tree paths while git reads only historical
+    // blobs — decoding it would fabricate touches on files git never read,
+    // so a positional carrying `rev:path` (any `:`-containing positional
+    // that is not an existing file) rejects the decode outright.
+    if (hasDiffRevPathArg(gated.argv, gated.start, effectiveDir)) return [];
     // Diff-form paths are repo-root-relative regardless of cwd, so they
     // resolve against the worktree root discovered from the effective dir
     // (a `.git` entry marks it — no subprocess). The repo root is also the
     // permitted root: a traversal path normalizes outside it and is rejected
-    // by the same containment check.
+    // by the same containment check. `--relative` (bare) re-anchors to the
+    // cwd and `--relative=<path>` to a path resolved against the worktree
+    // root — both decode against that base instead (a shell-expanded or
+    // empty value is unresolvable and fails closed).
     const repoRoot = findGitRoot(effectiveDir);
     if (repoRoot === null) return [];
-    return capSpans(spansFor(decodeUnifiedDiff(stdout), repoRoot, [repoRoot]));
+    const relative = diffRelativeBase(gated.argv, gated.start, effectiveDir, repoRoot);
+    if (relative === 'unresolvable') return [];
+    const base = relative !== null ? relative.base : repoRoot;
+    const roots = relative !== null ? [relative.root] : [repoRoot];
+    return capSpans(spansFor(decodeUnifiedDiff(stdout), base, roots));
   }
 
   const info = analyzeSearchArgv(gated.argv, gated.start);
 
+  // A non-git search bin with no path args reads its records from whatever
+  // stdin carries when it is piped or redirected in (`|`, `< file`,
+  // `<<<`, `<(…)`) — line numbers are then stream positions, not file
+  // lines, and decoding them fabricates touches (a stdin line "9" becomes a
+  // path, and with a real file named `9` at the cwd the phantom surfaces).
+  // Fail closed: no response-derived spans. Explicit path args scope the
+  // search to files (the redirect/pipe is then irrelevant), and `git grep`
+  // never reads stdin — both stay open.
+  const stdinFed =
+    gated.kind === 'search' &&
+    gated.argv[0] !== 'git' &&
+    info.pathArgs.length === 0 &&
+    (gatedPrecededBy === '|' || info.stdinRedirect);
+  if (stdinFed) return [];
+
+  // git grep scoping: plain invocation from a subdir is scoped to the subdir
+  // by git itself (records are cwd-relative, root stays the effective dir);
+  // pathspec magic (`:/`, `:!`, `:^`, `:(...)`) searches the whole tree and
+  // emits cwd-relative records with `../` prefixes, so the permitted root
+  // widens to the worktree root; `--full-name` re-anchors records to
+  // repo-root-relative paths, which resolves against the worktree root too.
+  const isGitGrep = gated.kind === 'search' && gated.argv[0] === 'git';
+  const fullName = isGitGrep && hasFlag(gated.argv, gated.start, '--full-name');
+  const magic = isGitGrep && info.pathspecMagic;
+  const worktreeRoot = magic || fullName ? findGitRoot(effectiveDir) : null;
+  if ((magic || fullName) && worktreeRoot === null) return [];
+
+  // Where decoded record paths resolve from: the effective cwd for plain
+  // and magic git grep (records are cwd-relative), the worktree root for
+  // `--full-name` (records are repo-root-relative).
+  const base = fullName && worktreeRoot !== null ? worktreeRoot : effectiveDir;
+
   // Permitted roots: the command's explicit search roots, or the effective
-  // cwd when no path args are given (rg/grep search it by default).
-  const roots = info.pathArgs.length > 0 ? info.pathArgs.map((p) => resolvePath(effectiveDir, p)) : [effectiveDir];
+  // cwd when no path args are given (rg/grep search it by default) — except
+  // git grep with pathspec magic, which searches the whole tree and must be
+  // permitted against the worktree root.
+  const roots =
+    magic && worktreeRoot !== null
+      ? [worktreeRoot]
+      : info.pathArgs.length > 0
+        ? info.pathArgs.map((p) => resolvePath(effectiveDir, p))
+        : [effectiveDir];
 
   const singleFileArg = info.pathArgs.length === 1 ? info.pathArgs[0] : null;
   // One-file eligibility: numbered evidence, exactly one explicit file
@@ -1034,6 +1266,11 @@ export function parseResponse(input: ResponseParseInput): ResolvedSpan[] {
   const perFile = new Map<string, Set<number>>();
   if (layout !== null) {
     for (const rec of decodeSearchLayout(layout, stdout, singleFileArg)) {
+      // Decoded paths must be real files: a recursive-layout record whose
+      // path is not an existing regular file (resolved against the record
+      // base — the effective cwd, or the worktree root under `--full-name`)
+      // drops instead of fabricating a touch.
+      if (layout === 'recursive' && !isFile(resolvePath(base, rec.path))) continue;
       if (rec.line === null) {
         // Whole-file null-separated record: the text holds the entire file.
         const total = lineCount(rec.text);
@@ -1054,18 +1291,22 @@ export function parseResponse(input: ResponseParseInput): ResolvedSpan[] {
     }
   }
 
-  const spans = spansFor(perFile, effectiveDir, roots);
+  const spans = spansFor(perFile, base, roots);
 
   // Whole-file fallback: non-empty, fully observed output (its terminating
-  // newline is present) with no parseable numbered record and exactly one
-  // explicit file resolves to a whole-file read of it. The universal
-  // terminating-newline rule applies here too: a stream cut before any
-  // complete record is not fully observed, so a preview of a numbered
-  // output must not be mistaken for unnumbered output and must not invent
-  // a whole-file touch. The file must be a readable file (a directory arg
-  // leaves the fallback unresolved), and it must sit inside the declared
-  // roots — it is one of them by construction.
-  if (perFile.size === 0 && stdout !== '' && stdout.endsWith('\n') && singleFileArg !== null) {
+  // newline is present) with no parseable numbered record, an unnumbered
+  // command (a numbered command — grep -n, nl, cat -n — whose output
+  // carries no parseable record must not fall back either: its records are
+  // stream positions or garbage, and the whole-file span would fabricate a
+  // read the response never evidenced), and exactly one explicit file
+  // resolves to a whole-file read of it. The universal terminating-newline
+  // rule applies here too: a stream cut before any complete record is not
+  // fully observed, so a preview of a numbered output must not be mistaken
+  // for unnumbered output and must not invent a whole-file touch. The file
+  // must be a readable file (a directory arg leaves the fallback
+  // unresolved), and it must sit inside the declared roots — it is one of
+  // them by construction.
+  if (perFile.size === 0 && !info.numbered && stdout !== '' && stdout.endsWith('\n') && singleFileArg !== null) {
     const abs = resolvePath(effectiveDir, singleFileArg);
     const total = countFileLines(abs);
     if (total !== null && total > 0) {

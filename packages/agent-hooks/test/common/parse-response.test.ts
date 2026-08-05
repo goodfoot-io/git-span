@@ -12,7 +12,13 @@
  * files never parsing as numbered, the rev:path exclusion, subdir-run diff
  * decoding, dash-pathed context windows, git-grep rev/pathspec shapes, the
  * pipeline attribution, the distinct-span cap, and the two-regime
- * truncated/interrupted contract. Only the adapter-envelope checks remain
+ * truncated/interrupted contract. The round-2 evaluation-fix batch adds the
+ * stdin-fed fail-closed fixtures (piped/redirected non-git search bins read
+ * stream positions, never files), the whole-tree git grep anchoring
+ * (pathspec magic and `--full-name` from a subdir), the diff `--relative`
+ * and two-arg blob-blob exclusions, the blame-above-ANSI ordering, the
+ * renumbering-pipeline fail-closed fixtures, and the numbered-garbage
+ * whole-file-fallback exclusion. Only the adapter-envelope checks remain
  * `it.skip` for Phase 3e.
  *
  * The golden-matrix harness below builds the fixture store by executing the
@@ -28,7 +34,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { ResolvedSpan } from '../../src/common/parse-command.js';
@@ -195,6 +201,43 @@ function runGit(cwd: string, argv: string[]): RunResult {
   return runCapture('git', argv, cwd);
 }
 
+/**
+ * Execute a binary with stdin actually piped — the real shape of a
+ * stdin-fed search (a `printf | rg` pipeline or a `< file` redirect):
+ * rg/grep with no path args read the pipe, so the captured records are
+ * stream positions (`1:needle`), never file positions.
+ */
+function runCaptureStdin(input: string, bin: string, argv: string[], cwd: string): RunResult {
+  try {
+    return {
+      stdout: execFileSync(bin, argv, { cwd, encoding: 'utf8', input, stdio: ['pipe', 'pipe', 'pipe'] }),
+      exitStatus: 0
+    };
+  } catch (err) {
+    const e = err as { status?: number; stdout?: string | Buffer };
+    return {
+      stdout: typeof e.stdout === 'string' ? e.stdout : String(e.stdout ?? ''),
+      exitStatus: e.status ?? -1
+    };
+  }
+}
+
+/** Execute a shell pipeline (`sh -c`) — the pipeline fixtures run real stages end to end. */
+function runPipeline(command: string, cwd: string): RunResult {
+  try {
+    return {
+      stdout: execFileSync('sh', ['-c', command], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }),
+      exitStatus: 0
+    };
+  } catch (err) {
+    const e = err as { status?: number; stdout?: string | Buffer };
+    return {
+      stdout: typeof e.stdout === 'string' ? e.stdout : String(e.stdout ?? ''),
+      exitStatus: e.status ?? -1
+    };
+  }
+}
+
 function gitConfig(root: string): void {
   execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: root, stdio: 'ignore' });
   execFileSync('git', ['config', 'user.name', 'Test'], { cwd: root, stdio: 'ignore' });
@@ -238,9 +281,13 @@ function diffFixture(
   argv: string[],
   root: string,
   files: Record<string, string>,
-  expected: ExpectedSpan[]
+  expected: ExpectedSpan[],
+  captureCwd?: string
 ): GoldenFixture {
-  const { stdout, exitStatus } = runGit(root, argv);
+  // The capture cwd may differ from the fixture cwd: `--relative` output
+  // depends on the cwd it runs from (bare `--relative` is cwd-relative),
+  // while the parser derives the effective dir from the command text.
+  const { stdout, exitStatus } = runGit(captureCwd ?? root, argv);
   return { name, command, cwd: root, stdout, exitStatus, expected, files };
 }
 
@@ -401,17 +448,16 @@ function buildGoldenMatrix(root: string): GoldenMatrix {
 
   // Git pathspec magic (`:/`) is not a filesystem path — it must never
   // become a permitted root (a literal `cwd/:/` would reject every decoded
-  // record). Dropped, roots fall back to the effective cwd and the records
-  // (cwd-relative, as git grep emits them from a subdir) resolve normally.
+  // record). Magic makes git grep search the WHOLE tree from a subdir, so
+  // the permitted root anchors to the worktree root discovered from the
+  // effective dir; the cwd-relative `../2024-log.txt` record decodes against
+  // the cwd base and passes containment inside that root.
   {
     const ps = runGit(join(root, 'src'), ['grep', '-n', 'alpha', '--', ':/']);
-    // `:/` is the repo-top pathspec, so the search covers the whole tree; the
-    // parser must never treat the magic token as a permitted root (a literal
-    // `cwd/:/` would reject every record). From a subdir git grep emits
-    // cwd-relative paths; the out-of-tree `../2024-log.txt` record is dropped
-    // by scope restriction and the src/ records decode normally.
-    const psExpected = searchExpected(SEARCH_FILES, srcFiles, 'alpha', 0, 0).map((s) => ({
-      path: s.path.slice('src/'.length),
+    const psExpected = searchExpected(SEARCH_FILES, allFiles, 'alpha', 0, 0).map((s) => ({
+      // Records are cwd-relative from the subdir: src/* emits the bare
+      // name, the repo-top 2024-log.txt emits `../2024-log.txt`.
+      path: s.path === '2024-log.txt' ? '../2024-log.txt' : s.path.slice('src/'.length),
       lineStart: s.lineStart,
       lineEnd: s.lineEnd
     }));
@@ -425,6 +471,157 @@ function buildGoldenMatrix(root: string): GoldenMatrix {
       files: SEARCH_FILES
     });
   }
+
+  // `--full-name` re-anchors git grep's records to repo-root-relative paths
+  // regardless of cwd — from a subdir the bare `a.ts` becomes `src/a.ts` —
+  // so both the resolution base and the permitted root move to the worktree
+  // root. (The real git option is `--full-name`; `--full-tree` does not
+  // exist on git 2.47.3 and errors with a usage response.)
+  {
+    const fn = runGit(join(root, 'src'), ['grep', '-n', '--full-name', 'alpha', '--', ':/']);
+    fixtures.push({
+      name: 'git-grep-full-name-magic',
+      command: 'git grep -n --full-name alpha -- :/',
+      cwd: join(root, 'src'),
+      stdout: fn.stdout,
+      exitStatus: fn.exitStatus,
+      expected: searchExpected(SEARCH_FILES, allFiles, 'alpha', 0, 0),
+      files: SEARCH_FILES
+    });
+    // Subdir-scoped search with --full-name: git still limits the search to
+    // the subdir (its pathspec scope, not the display option's), but every
+    // record is repo-root-relative and must resolve inside the worktree
+    // root while containment stays anchored to the subdir scope.
+    const fnPlain = runGit(join(root, 'src'), ['grep', '-n', '--full-name', 'alpha']);
+    fixtures.push({
+      name: 'git-grep-full-name-plain',
+      command: 'git grep -n --full-name alpha',
+      cwd: join(root, 'src'),
+      stdout: fnPlain.stdout,
+      exitStatus: fnPlain.exitStatus,
+      expected: searchExpected(SEARCH_FILES, srcFiles, 'alpha', 0, 0),
+      files: SEARCH_FILES
+    });
+  }
+
+  // A non-git search bin with NO path args fed by a pipe or redirect reads
+  // its stdin — its records are stream positions, never file positions, so
+  // the response-derived decode must fail closed (no touches) even though
+  // the captured records look exactly like a normal search's. The fixture
+  // stdout is what the binary REALLY emits when stdin is piped
+  // (`1:needle` — rg numbers the stream lines). git grep never reads stdin
+  // and is exempt; explicit path args keep the file-search semantics.
+  fixtures.push({
+    name: 'rg-stdin-piped',
+    command: 'printf "needle\\n" | rg -n needle',
+    cwd: root,
+    stdout: runCaptureStdin('needle\n', '/usr/bin/rg', ['-n', 'needle'], root).stdout,
+    exitStatus: 0,
+    expected: [],
+    files: SEARCH_FILES
+  });
+  fixtures.push({
+    name: 'rg-stdin-redirect',
+    command: 'rg -n needle < needle.txt',
+    cwd: root,
+    stdout: runCaptureStdin('needle\n', '/usr/bin/rg', ['-n', 'needle'], root).stdout,
+    exitStatus: 0,
+    expected: [],
+    files: SEARCH_FILES
+  });
+  fixtures.push({
+    name: 'grep-stdin-piped',
+    command: 'printf "needle\\n" | grep -n needle',
+    cwd: root,
+    stdout: runCaptureStdin('needle\n', '/usr/bin/grep', ['-n', 'needle'], root).stdout,
+    exitStatus: 0,
+    expected: [],
+    files: SEARCH_FILES
+  });
+  // The exemptions: git grep ignores stdin entirely (whole-tree search
+  // still decodes), an explicit digit-named path arg keeps the one-file
+  // layout (the pipe is the search's INPUT, not its target), and a path
+  // arg in the gated stage keeps file-position semantics regardless of
+  // what upstream feeds it.
+  fixtures.push({
+    name: 'git-grep-stdin-exempt',
+    command: 'printf "needle\\n" | git grep -n alpha',
+    cwd: root,
+    stdout: runGit(root, ['grep', '-n', 'alpha']).stdout,
+    exitStatus: 0,
+    expected: searchExpected(SEARCH_FILES, allFiles, 'alpha', 0, 0),
+    files: SEARCH_FILES
+  });
+  fixtures.push({
+    name: 'rg-stdin-digit-path-arg',
+    command: 'cd coll && rg -n needle 9',
+    cwd: root,
+    stdout: runCapture('/usr/bin/rg', ['-n', 'needle', '9'], join(root, 'coll')).stdout,
+    exitStatus: 0,
+    expected: [{ path: 'coll/9', lineStart: 1, lineEnd: 1 }],
+    files: SEARCH_FILES
+  });
+  fixtures.push({
+    name: 'rg-stdin-with-path-args',
+    command: 'cat stream.txt | rg -n alpha src/a.ts',
+    cwd: root,
+    stdout: runCapture('/usr/bin/rg', ['-n', 'alpha', 'src/a.ts'], root).stdout,
+    exitStatus: 0,
+    expected: searchExpected(SEARCH_FILES, ['src/a.ts'], 'alpha', 0, 0),
+    files: SEARCH_FILES
+  });
+
+  // Post-gated pipeline stages that RENUMBER or reformat the search output
+  // destroy the record-to-line correspondence: `nl -ba` and `cat -n` prefix
+  // their own position column (a phantom "line 1" span appears at the
+  // bottom), `awk '{print NR ":" $0}'` and `grep -n` overwrite it (every
+  // record silently misses). All fail closed — no response-derived touches.
+  // Truncating stages (`head`) only cut records and stay open.
+  fixtures.push({
+    name: 'pipe-rg-nl-ba',
+    command: 'rg -n needle coll | nl -ba',
+    cwd: root,
+    stdout: runPipeline('rg -n needle coll | nl -ba', root).stdout,
+    exitStatus: 0,
+    expected: [],
+    files: SEARCH_FILES
+  });
+  fixtures.push({
+    name: 'pipe-rg-cat-n',
+    command: 'rg -n needle coll | cat -n',
+    cwd: root,
+    stdout: runPipeline('rg -n needle coll | cat -n', root).stdout,
+    exitStatus: 0,
+    expected: [],
+    files: SEARCH_FILES
+  });
+  fixtures.push({
+    name: 'pipe-rg-awk',
+    command: 'rg -n needle coll | awk \'{print NR ":" $0}\'',
+    cwd: root,
+    stdout: runPipeline('rg -n needle coll | awk \'{print NR ":" $0}\'', root).stdout,
+    exitStatus: 0,
+    expected: [],
+    files: SEARCH_FILES
+  });
+  fixtures.push({
+    name: 'pipe-rg-grep-n',
+    command: 'rg -n needle coll | grep -n needle',
+    cwd: root,
+    stdout: runPipeline('rg -n needle coll | grep -n needle', root).stdout,
+    exitStatus: 0,
+    expected: [],
+    files: SEARCH_FILES
+  });
+  fixtures.push({
+    name: 'pipe-rg-head-2',
+    command: 'rg -n needle coll | head -2',
+    cwd: root,
+    stdout: runPipeline('rg -n needle coll | head -2', root).stdout,
+    exitStatus: 0,
+    expected: [{ path: 'coll/9', lineStart: 1, lineEnd: 1 }],
+    files: SEARCH_FILES
+  });
 
   // Whole-file no-line-number fallback: bare matching lines, no numbers.
   fixtures.push(
@@ -683,6 +880,71 @@ function buildGoldenMatrix(root: string): GoldenMatrix {
     );
   }
 
+  // `git diff --relative` (bare) from a subdir emits cwd-relative paths
+  // (`diff --git a/a.txt` for sub/a.txt) and EXCLUDES changes outside the
+  // cwd — the diff must resolve against the effective dir, never the repo
+  // root. The same-named root file is the decoy: resolving the bare `a.txt`
+  // against the root would touch the wrong file. `--relative=<path>`
+  // resolves against the repo ROOT (git 2.47.3), so the `<path>` form from
+  // the root must decode to sub/a.txt too, not to a cwd-relative file.
+  {
+    const repo = makeGitRepo();
+    repos.push(repo);
+    const base = { 'a.txt': 'r1\nr2\nr3\n', 'sub/a.txt': 'l1\nl2\nl3\nl4\nl5\nl6\n' };
+    writeFiles(repo.root, base);
+    commitAll(repo.root, 'base');
+    const modified = { 'a.txt': 'r1\nr2\nCHANGED\n', 'sub/a.txt': 'l1\nl2\nCHANGED\nl4\nl5\nl6\n' };
+    writeFiles(repo.root, modified);
+    fixtures.push(
+      diffFixture(
+        'git-diff-relative-bare',
+        'cd sub && git diff --no-color -U1 --relative',
+        ['diff', '--no-color', '-U1', '--relative'],
+        repo.root,
+        modified,
+        [{ path: 'sub/a.txt', lineStart: 2, lineEnd: 4 }],
+        // Captured from the subdir: bare --relative is cwd-relative, so the
+        // record is `a.txt` — the parser must resolve it against the
+        // effective dir (sub), where the decoy root a.txt is out of scope.
+        join(repo.root, 'sub')
+      )
+    );
+    fixtures.push(
+      diffFixture(
+        'git-diff-relative-path',
+        'git diff --no-color -U1 --relative=sub',
+        ['diff', '--no-color', '-U1', '--relative=sub'],
+        repo.root,
+        modified,
+        [{ path: 'sub/a.txt', lineStart: 2, lineEnd: 4 }]
+      )
+    );
+  }
+
+  {
+    const repo = makeGitRepo();
+    repos.push(repo);
+    const base = { 'sub/a.txt': 'l1\nl2\nl3\nl4\nl5\nl6\n' };
+    writeFiles(repo.root, base);
+    commitAll(repo.root, 'base');
+    const modified = { 'sub/a.txt': 'l1\nl2\nCHANGED\nl4\nl5\nl6\n' };
+    writeFiles(repo.root, modified);
+    // No same-named root file: the cwd-relative `a.txt` record resolves to
+    // nothing at the repo root, so only the effective-dir resolution can
+    // produce the touch.
+    fixtures.push(
+      diffFixture(
+        'git-diff-relative-bare-nodedoy',
+        'cd sub && git diff --no-color -U1 --relative',
+        ['diff', '--no-color', '-U1', '--relative'],
+        repo.root,
+        modified,
+        [{ path: 'sub/a.txt', lineStart: 2, lineEnd: 4 }],
+        join(repo.root, 'sub')
+      )
+    );
+  }
+
   // `git show <rev>:<path>` streams the blob's RAW content. A diff-shaped
   // blob (a vendored .patch) must not decode into fabricated touches on the
   // files its content names — the content idiom is excluded from the diff
@@ -722,6 +984,33 @@ function buildGoldenMatrix(root: string): GoldenMatrix {
         []
       )
     );
+  }
+
+  // A two-arg blob-blob `git diff <rev>:<path> <rev>:<path>` emits a NORMAL
+  // unified diff naming working-tree paths (`diff --git a/a.txt b/a.txt`)
+  // while git reads only the two blobs — the worktree's a.txt is never
+  // touched. Any diff positional containing `:` that is not an existing
+  // file marks the content idiom (here the full shas make the exclusion
+  // unambiguous); the diff-shaped stdout must not decode into touches.
+  {
+    const repo = makeGitRepo();
+    repos.push(repo);
+    writeFiles(repo.root, { 'a.txt': 'l1\nl2\nl3\n' });
+    commitAll(repo.root, 'base');
+    writeFiles(repo.root, { 'a.txt': 'l1\nCHANGED\nl3\n' });
+    commitAll(repo.root, 'change');
+    const headSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo.root, encoding: 'utf8' }).trim();
+    const baseSha = execFileSync('git', ['rev-parse', 'HEAD~1'], { cwd: repo.root, encoding: 'utf8' }).trim();
+    const blobBlob = runGit(repo.root, ['diff', '--no-color', `${baseSha}:a.txt`, `${headSha}:a.txt`]);
+    fixtures.push({
+      name: 'git-diff-blob-blob',
+      command: `git diff --no-color ${baseSha}:a.txt ${headSha}:a.txt`,
+      cwd: repo.root,
+      stdout: blobBlob.stdout,
+      exitStatus: blobBlob.exitStatus,
+      expected: [],
+      files: { 'a.txt': 'l1\nCHANGED\nl3\n' }
+    });
   }
 
   return { fixtures, repos };
@@ -920,6 +1209,26 @@ describe('parse-response (Phase 3a–3c — search layouts, unified diffs, and b
       const multi = fixture('grep-fallback-multi');
       expect(parseFixture(multi)).toEqual([]);
     });
+
+    it('a numbered search with unparseable stdout fails closed — the fallback is unnumbered-only', () => {
+      // The response holds no parseable record, so the only way a touch can
+      // appear is the whole-file fallback. `rg -n` is a numbered search: its
+      // records were requested with positions, and a positionless response
+      // is broken (the positions were destroyed, e.g. by a reformatting
+      // stage), so the fallback must NOT fire and the parse fails closed.
+      // `grep` without -n is the fallback's own regime: the same unparseable
+      // stdout still restores the whole-file read.
+      const numbered = fixture('rg-one-file');
+      expect(numbered.command).toContain('-n');
+      expect(
+        parseResponse({ command: numbered.command, cwd: numbered.cwd, stdout: 'a line of unparseable output\n' })
+      ).toEqual([]);
+      const unnumbered = fixture('grep-fallback');
+      expect(unnumbered.command).not.toContain('-n');
+      expect(
+        parseResponse({ command: unnumbered.command, cwd: unnumbered.cwd, stdout: 'a line of unparseable output\n' })
+      ).toEqual(sortedSpans(resolveExpected(unnumbered)));
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -1036,6 +1345,17 @@ describe('parse-response (Phase 3a–3c — search layouts, unified diffs, and b
     it('recognizes an exact literal -L N,M range from the command text', () => {
       const f = fixture('git-blame-l-range');
       expect(sortedSpans(parseFixture(f))).toEqual(sortedSpans(resolveExpected(f)));
+    });
+
+    it('the command-text matcher fires before the ANSI rejection', () => {
+      // The blame span's evidence is the command text, not the response — an
+      // ANSI-laden blame stdout must not suppress it (the ANSI rejection is
+      // a response-derived decode gate and cannot apply to a command-derived
+      // span; the branch ordering pins that).
+      const f = fixture('git-blame-l-range');
+      expect(parseResponse({ command: f.command, cwd: f.cwd, stdout: `\x1b[31m${f.stdout}` })).toEqual(
+        sortedSpans(resolveExpected(f))
+      );
     });
   });
 
@@ -1234,10 +1554,13 @@ describe('parse-response (Phase 3a–3c — search layouts, unified diffs, and b
       expect(parseFixture(rev)).toEqual([]);
       // `:/` is not a filesystem path: as a path arg it made the permitted
       // root the literal `cwd/:/` and every decoded path was rejected.
-      // Dropped, roots fall back to the effective cwd and the cwd-relative
-      // records resolve normally.
+      // Magic searches the WHOLE tree from a subdir, so the permitted root
+      // anchors to the worktree root found from the effective dir; the
+      // cwd-relative records — including the out-of-tree `../2024-log.txt`
+      // — resolve against the cwd base and pass containment in that root.
       const ps = fixture('git-grep-pathspec-top');
       expect(ps.stdout).not.toBe('');
+      expect(ps.stdout).toContain('../2024-log.txt:1:alpha');
       expect(sortedSpans(parseFixture(ps))).toEqual(sortedSpans(resolveExpected(ps)));
     });
   });
@@ -1270,6 +1593,46 @@ describe('parse-response (Phase 3a–3c — search layouts, unified diffs, and b
     });
   });
 
+  describe('git diff --relative', () => {
+    it('bare --relative resolves cwd-relative paths against the effective dir, not the repo root', () => {
+      // From a subdir, bare `--relative` emits `a.txt` for sub/a.txt and
+      // excludes changes outside the cwd. The decoy root a.txt is also
+      // modified: resolving the bare record against the repo root would
+      // touch the wrong file, and the no-decoy repo proves the effective-dir
+      // resolution is required even when nothing else exists there.
+      for (const name of ['git-diff-relative-bare', 'git-diff-relative-bare-nodedoy']) {
+        const f = fixture(name);
+        expect(f.stdout).toContain('diff --git a/a.txt');
+        expect(f.stdout).not.toContain('diff --git a/sub/a.txt');
+        expect(sortedSpans(parseFixture(f))).toEqual(sortedSpans(resolveExpected(f)));
+      }
+    });
+
+    it('--relative=<path> resolves against the repo root', () => {
+      // `--relative=sub` from the root emits `a.txt` for root/sub/a.txt; the
+      // record must resolve to the repo-root-anchored path, never a
+      // cwd-relative one (the decoy root a.txt would be wrongly touched).
+      const f = fixture('git-diff-relative-path');
+      expect(f.stdout).toContain('diff --git a/a.txt');
+      expect(f.stdout).not.toContain('diff --git a/sub/a.txt');
+      expect(sortedSpans(parseFixture(f))).toEqual(sortedSpans(resolveExpected(f)));
+    });
+  });
+
+  describe('git diff two-arg blob-blob comparisons', () => {
+    it('names working-tree paths while reading only blobs — no decode', () => {
+      // `git diff <rev>:<path> <rev>:<path>` emits a normal unified diff
+      // (`diff --git a/a.txt b/a.txt`) but reads only the two blobs; the
+      // worktree a.txt is never touched. Any `:`-containing positional that
+      // is not an existing file marks the content idiom, so the diff-shaped
+      // stdout must not fabricate touches.
+      const f = fixture('git-diff-blob-blob');
+      expect(f.stdout).not.toBe('');
+      expect(f.stdout).toContain('diff --git a/a.txt b/a.txt');
+      expect(parseFixture(f)).toEqual([]);
+    });
+  });
+
   describe('pipelines', () => {
     it('the response attributes to the first gated stage', () => {
       // `rg -n alpha src | head -5` — the standard output-capping idiom. The
@@ -1284,14 +1647,72 @@ describe('parse-response (Phase 3a–3c — search layouts, unified diffs, and b
       expect(piped).toEqual(plain);
       expect(piped.length).toBeGreaterThan(0);
     });
+
+    it('stdin-fed non-git search bins fail closed: piped and redirected records are stream positions', () => {
+      // rg/grep with NO path args and stdin fed by a pipe or `<` redirect
+      // number the STREAM (`1:needle`), not files. The captured stdout is
+      // byte-for-byte what the real binary emits on piped stdin — a shape
+      // that would otherwise decode as one-file `line:text` records — and
+      // the parser must refuse it entirely. Each fixture asserts the
+      // command-level rule, not the record shape.
+      for (const name of ['rg-stdin-piped', 'rg-stdin-redirect', 'grep-stdin-piped']) {
+        const f = fixture(name);
+        expect(f.stdout).not.toBe('');
+        expect(parseFixture(f)).toEqual([]);
+      }
+    });
+
+    it('git grep is stdin-exempt, and explicit path args keep file semantics', () => {
+      // `printf | git grep` still searches the committed tree — git grep
+      // never reads stdin — so the whole-tree records decode normally.
+      const gg = fixture('git-grep-stdin-exempt');
+      expect(sortedSpans(parseFixture(gg))).toEqual(sortedSpans(resolveExpected(gg)));
+      // `rg -n needle 9` from coll: `9` is an explicit (digits-named) path
+      // arg — the pipe upstream is the search's INPUT, and the one-file
+      // layout must attribute the records to coll/9.
+      const digit = fixture('rg-stdin-digit-path-arg');
+      expect(sortedSpans(parseFixture(digit))).toEqual(sortedSpans(resolveExpected(digit)));
+      // Path args present: the records are file positions even when a pipe
+      // feeds the stage.
+      const withPaths = fixture('rg-stdin-with-path-args');
+      expect(sortedSpans(parseFixture(withPaths))).toEqual(sortedSpans(resolveExpected(withPaths)));
+    });
+
+    it('renumbering post-gated stages destroy the line correspondence and fail closed', () => {
+      // `nl -ba`/`cat -n` prefix their own position column (a phantom line-1
+      // span would land at the bottom); `awk {print NR ":" $0}` and
+      // `grep -n` overwrite rg's column (every record silently misses its
+      // line). None of these responses may produce touches.
+      for (const name of ['pipe-rg-nl-ba', 'pipe-rg-cat-n', 'pipe-rg-awk', 'pipe-rg-grep-n']) {
+        const f = fixture(name);
+        expect(f.stdout).not.toBe('');
+        expect(parseFixture(f)).toEqual([]);
+      }
+      // Control: a truncating stage (`head -2`) cuts records but preserves
+      // their positions — the response stays green.
+      const head = fixture('pipe-rg-head-2');
+      expect(head.stdout).toBe('coll/9:1:needle\n');
+      expect(sortedSpans(parseFixture(head))).toEqual(sortedSpans(resolveExpected(head)));
+    });
   });
 
   describe('distinct-span cap', () => {
+    // The recursive layout's existence backstop drops records whose decoded
+    // path is not a real file, so the synthetic cap fixtures need f01..f60
+    // to actually exist in the repo during the test.
+    const capFiles = Array.from({ length: 60 }, (_, i) => `f${String(i + 1).padStart(2, '0')}.ts`);
+    beforeAll(() => {
+      for (const name of capFiles) writeFileSync(join(root, name), 'x\n');
+    });
+    afterAll(() => {
+      for (const name of capFiles) rmSync(join(root, name), { force: true });
+    });
+
     it('caps at MAX_RESPONSE_SPANS, fail-closed beyond, never capping a coalesced window', () => {
-      // Synthetic recursive output over N distinct files (paths resolve
-      // inside the cwd root; existence is the touch core's concern, not the
-      // parser's). At the cap every span surfaces; beyond it exactly the cap
-      // is emitted in deterministic path order and the rest fail closed.
+      // Synthetic recursive output over N distinct files, all real on disk
+      // (the existence backstop passes them through). At the cap every span
+      // surfaces; beyond it exactly the cap is emitted in deterministic path
+      // order and the rest fail closed.
       const many = (n: number): string =>
         Array.from({ length: n }, (_, i) => `f${String(i + 1).padStart(2, '0')}.ts:1:x\n`).join('');
       const parse = (stdout: string): ResolvedSpan[] => parseResponse({ command: 'rg -n foo', cwd: root, stdout });
@@ -1318,6 +1739,10 @@ describe('parse-response (Phase 3a–3c — search layouts, unified diffs, and b
         lineEnd: 5000,
         absolutePath: join(root, 'f01.ts')
       });
+      // The backstop itself: a decoded path that does not exist on disk
+      // never touches, even when the record is well-formed.
+      const ghost = parseResponse({ command: 'rg -n foo', cwd: root, stdout: 'f99.ts:1:x\n' });
+      expect(ghost).toEqual([]);
     });
   });
 
