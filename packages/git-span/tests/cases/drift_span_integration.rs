@@ -444,13 +444,20 @@ fn add_under_eol_normalization_freshly_added_anchors_are_fresh() -> Result<()> {
         "src.txt",
         "line1\r\nline2\r\nline3\r\nline4\r\nline5\r\nline6\r\nline7\r\nline8\r\n",
     )?;
+    // A second CRLF file carries the whole-file anchor: `add` rejects a
+    // whole-file anchor beside a same-path range, so each extent gets its
+    // own path while both still exercise the CRLF→LF canonicalization.
+    repo.write_file(
+        "src2.txt",
+        "line1\r\nline2\r\nline3\r\nline4\r\nline5\r\nline6\r\nline7\r\nline8\r\n",
+    )?;
     repo.commit_all("seed crlf source under text=auto")?;
     repo.run_git(["commit-graph", "write", "--reachable", "--changed-paths"])?;
 
     // Add against the CRLF worktree, then commit the span so the
     // resolver sees a HEAD-layer span with the add-time stored hash.
     repo.run_span(["add", "m", "src.txt#L2-L5"])?;
-    repo.run_span(["add", "m", "src.txt"])?;
+    repo.run_span(["add", "m", "src2.txt"])?;
     repo.run_span(["why", "m", "eol normalization regression"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span m"])?;

@@ -36,9 +36,8 @@ pub fn format_follow_up_command(bash: &str) -> String {
 /// `git span remove <name> '<path>'` repair command must survive both. The
 /// output is valid in any POSIX shell: each `'...'` segment is literal, and
 /// `'\''` closes the quote, emits one literal `'`, and reopens it.
-#[allow(unused_variables)] // the parameter is unused while the body is the Phase-1 stub
 pub fn quote_shell(s: &str) -> String {
-    todo!("implement in Phase 3: single-quote with embedded-quote escaping")
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// " (idempotent)" tag.
@@ -121,17 +120,15 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
-    // quote_shell contract (Phase 2 — pinned, not yet implemented)
+    // quote_shell contract
     // ---------------------------------------------------------------------
 
     #[test]
-    #[ignore]
     fn quote_shell_wraps_plain_path_in_single_quotes() {
         assert_eq!(quote_shell("src/lib.rs"), "'src/lib.rs'");
     }
 
     #[test]
-    #[ignore]
     fn quote_shell_escapes_embedded_single_quote() {
         // `'it'\''s here.txt'` — the `'\''` sequence closes the quote,
         // emits one literal `'`, and reopens it.
@@ -139,7 +136,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn quote_shell_preserves_spaces() {
         assert_eq!(
             quote_shell("dir with space/file.rs"),

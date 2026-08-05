@@ -11,7 +11,7 @@
 use crate::cli::drift_label::format_drift_label;
 use crate::cli::drift_output::status_json;
 use crate::cli::error::from_lib_error;
-use crate::cli::format::{IDEMPOTENT_TAG, format_anchor_address};
+use crate::cli::format::{IDEMPOTENT_TAG, format_anchor_address, quote_shell};
 use crate::cli::{AddArgs, AddFormat, CliError, NextStep, RemoveArgs, ReplaceArgs, ReplaceFormat, WhyArgs, WhyFormat};
 use crate::git::IndexEntrySnapshot;
 use crate::resolver::{anchor_status_is_drift, resolve_named_spans_retaining_source_layers};
@@ -409,7 +409,6 @@ fn check_worktree_prefix_collision(
 
 /// Which side of a supersession conflict is the whole-file anchor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // constructed by `supersession_conflict`; wired into `run_add` in Phase 3
 pub(crate) enum WholeFileSide {
     /// The requested anchor is whole-file; the conflicting one is a range.
     Requested,
@@ -421,7 +420,6 @@ pub(crate) enum WholeFileSide {
 /// co-requested) anchor on the same path: exactly one side is whole-file
 /// and the pair is not an exact identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // returned by `supersession_conflict`; wired into `run_add` in Phase 3
 pub(crate) struct SupersessionConflict {
     /// Canonical address of the requested anchor
     /// (`<path>` or `<path>#L<s>-L<e>`).
@@ -447,12 +445,84 @@ pub(crate) struct SupersessionConflict {
 /// reported conflict is the deterministic first match in that order. The
 /// canonical addresses render via [`format_anchor_address`];
 /// [`WholeFileSide`] says which side of the pair is whole-file.
-#[allow(dead_code, unused_variables)] // pinned by the Phase-2 tests; wired into `run_add` in Phase 3
 pub(crate) fn supersession_conflict(
     requested: &[(String, AnchorExtent)],
     existing: &[AnchorRecord],
 ) -> Option<SupersessionConflict> {
-    todo!("implement in Phase 3: reject whole-file supersession of same-path anchors")
+    /// Whole-file records use the `(0, 0)` sentinel (`start_line == 0 &&
+    /// end_line == 0`).
+    fn record_is_whole_file(r: &AnchorRecord) -> bool {
+        r.start_line == 0 && r.end_line == 0
+    }
+    /// A line range degenerate to `(0, 0)` would key identically to a
+    /// whole-file anchor — an exact identity, never a conflict.
+    fn extent_is_sentinel(e: &AnchorExtent) -> bool {
+        matches!(e, AnchorExtent::LineRange { start: 0, end: 0 })
+    }
+
+    // Requested-outer: each requested anchor against every existing record,
+    // then against every co-requested anchor. The first match in this order
+    // is reported.
+    for (i, (path, extent)) in requested.iter().enumerate() {
+        let requested_whole = matches!(extent, AnchorExtent::WholeFile);
+
+        // Against the span's existing records.
+        for r in existing {
+            if r.path != *path {
+                continue;
+            }
+            let existing_whole = record_is_whole_file(r);
+            if requested_whole == existing_whole {
+                // Exact identity (or a pure range pair) — never provable.
+                continue;
+            }
+            if !requested_whole && extent_is_sentinel(extent) {
+                // The range keys identically to the whole-file record.
+                continue;
+            }
+            let (whole_file_side, existing_addr) = if requested_whole {
+                (
+                    WholeFileSide::Requested,
+                    format_anchor_address(&r.path, Some(r.start_line), Some(r.end_line)),
+                )
+            } else {
+                (
+                    WholeFileSide::Existing,
+                    format_anchor_address(&r.path, None, None),
+                )
+            };
+            return Some(SupersessionConflict {
+                requested_addr: addr_from_extent(path, extent),
+                existing_addr,
+                whole_file_side,
+            });
+        }
+
+        // Against the other co-requested anchors (post-coalesce).
+        for (j, (other_path, other_extent)) in requested.iter().enumerate() {
+            if j == i || *other_path != *path {
+                continue;
+            }
+            let other_whole = matches!(other_extent, AnchorExtent::WholeFile);
+            if requested_whole == other_whole {
+                continue;
+            }
+            if !requested_whole && extent_is_sentinel(extent) {
+                continue;
+            }
+            let whole_file_side = if requested_whole {
+                WholeFileSide::Requested
+            } else {
+                WholeFileSide::Existing
+            };
+            return Some(SupersessionConflict {
+                requested_addr: addr_from_extent(path, extent),
+                existing_addr: addr_from_extent(other_path, other_extent),
+                whole_file_side,
+            });
+        }
+    }
+    None
 }
 
 pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result<i32> {
@@ -652,6 +722,57 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result
             )
         })
         .collect();
+
+    // Supersession preflight: reject any requested anchor that provably
+    // supersedes an existing (or co-requested) anchor on the same path —
+    // whole-file vs range in either direction, barring exact identity —
+    // before any mutation or content hashing. Placement before the process
+    // loop checks every requested anchor against the original existing set,
+    // which makes multi-anchor invocations all-or-nothing by construction.
+    {
+        let _perf = crate::perf::span("add.preflight-supersession");
+        if let Some(conflict) = supersession_conflict(&parsed, &span_file.anchors) {
+            let (summary, direction) = match conflict.whole_file_side {
+                WholeFileSide::Requested => (
+                    format!(
+                        "the requested whole-file anchor `{}` supersedes the existing \
+                         anchor `{}` on span `{}`.",
+                        conflict.requested_addr, conflict.existing_addr, args.name
+                    ),
+                    "the requested anchor is the whole file, and the existing one is a range",
+                ),
+                WholeFileSide::Existing => (
+                    format!(
+                        "`{}` is superseded by the existing whole-file anchor `{}` on \
+                         span `{}`.",
+                        conflict.requested_addr, conflict.existing_addr, args.name
+                    ),
+                    "the existing anchor is the whole file, and the requested one is a range",
+                ),
+            };
+            return Err(CliError {
+                subcommand: "add",
+                summary,
+                what_happened: format!(
+                    "`{}` and `{}` anchor the same path, and {}; adding both would leave \
+                     the superseded anchor reported as permanent drift, so the add is \
+                     rejected before anything is written.",
+                    conflict.requested_addr, conflict.existing_addr, direction
+                ),
+                next_steps: vec![
+                    NextStep::Prose(
+                        "Remove the conflicting anchor, then retry the add.".into(),
+                    ),
+                    NextStep::Bash(format!(
+                        "git span remove {} {}",
+                        args.name,
+                        quote_shell(&conflict.existing_addr)
+                    )),
+                ],
+            }
+            .into());
+        }
+    }
 
     // Track per-anchor outcomes for the summary.
     struct AddOutcome {
@@ -2128,11 +2249,10 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
-    // Supersession predicate contract (Phase 2 — pinned, not yet implemented)
+    // Supersession predicate contract
     //
-    // These checks pin the Phase-1 `supersession_conflict` signature and the
-    // predicate matrix from the plan. All are `#[ignore]`d until Phase 3
-    // implements the predicate and unskips them.
+    // These checks pin the `supersession_conflict` signature and the
+    // predicate matrix from the plan.
     // ---------------------------------------------------------------------
 
     /// An `AnchorRecord` with the given (path, start, end); `(0, 0)` is the
@@ -2153,7 +2273,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn existing_whole_file_vs_new_range_is_a_conflict() {
         let existing = vec![record("src/lib.rs", 0, 0)];
         let requested = vec![requested(
@@ -2171,7 +2290,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn new_whole_file_vs_existing_range_is_a_conflict() {
         let existing = vec![record("src/lib.rs", 1, 5)];
         let requested = vec![requested("src/lib.rs", AnchorExtent::WholeFile)];
@@ -2186,7 +2304,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn exact_identity_whole_file_is_not_a_conflict() {
         let existing = vec![record("src/lib.rs", 0, 0)];
         let requested = vec![requested("src/lib.rs", AnchorExtent::WholeFile)];
@@ -2194,7 +2311,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn exact_identity_range_is_not_a_conflict() {
         let existing = vec![record("src/lib.rs", 1, 5)];
         let requested = vec![requested(
@@ -2205,7 +2321,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn disjoint_ranges_same_file_are_not_a_conflict() {
         let existing = vec![record("src/lib.rs", 1, 5)];
         let requested = vec![requested(
@@ -2216,7 +2331,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn partially_overlapping_ranges_are_not_a_conflict() {
         let existing = vec![record("src/lib.rs", 1, 5)];
         let requested = vec![requested(
@@ -2227,7 +2341,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn nested_ranges_are_not_a_conflict() {
         let existing = vec![record("src/lib.rs", 1, 10)];
         let requested = vec![requested(
@@ -2238,7 +2351,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn different_paths_are_not_a_conflict() {
         let existing = vec![record("src/a.rs", 0, 0)];
         let requested = vec![requested(
@@ -2249,7 +2361,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn intra_invocation_whole_file_and_range_is_a_conflict() {
         // `add name P P#L1-L2` in one invocation must fail identically: the
         // first requested anchor (whole-file) is checked against its
@@ -2273,7 +2384,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn conflict_reports_the_deterministic_first_match() {
         // Both requested anchors conflict with their same-path existing
         // whole-file anchor; the first match in requested-outer,

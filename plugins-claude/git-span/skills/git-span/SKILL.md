@@ -36,6 +36,10 @@ locate a changed anchor's new extent; `history` does not report that destination
 - `drift --fix` only clears `Moved` anchors and whitespace-only `Changed` anchors. Real
   content drift stays reported on purpose — re-anchor directly with `add`; re-running
   `--fix` again will not change the result.
+- `add` rejects a new anchor that provably supersedes an existing same-path anchor —
+  whole-file vs range, either direction — names the conflict, and prints the exact
+  `git span remove <name> '<old-anchor>'` command to run before retrying. Disjoint same-file
+  ranges remain valid.
 - `add` never retires what it supersedes. Changing an anchor's identity (new path or
   range) is one atomic swap — `replace <name> <old-anchor> <new-anchor>`; `replace`
   refuses a same-identity swap (hash refresh stays `add`'s job) and never falls back to
@@ -110,8 +114,9 @@ If the edit shifted the file's line count, treat it as Re-anchor above instead (
 with `wc -l` and write the new range).
 
 A satisfied evidence gate authorizes its transition. Change the behavior, revise or retire
-the why, and reconcile or retire superseded anchors. `add` refreshes only the exact anchor;
-preserve its shape unless the logical region changed. Require scoped drift to exit 0.
+the why, and reconcile or retire superseded anchors. `add` refreshes only the exact anchor
+and rejects provable supersession (whole-file vs same-path range); preserve its shape unless
+the logical region changed. Require scoped drift to exit 0.
 
 ## Where to go next
 Pick the first that fits:

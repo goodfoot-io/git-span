@@ -55,8 +55,8 @@ fn run_add_calls_index_entries_exactly_once() -> Result<()> {
         name: "test-span".into(),
         anchors: vec![
             "file1.txt".into(),
-            "file2.txt".into(),
-            "file1.txt#L1-L5".into(),
+            "file2.txt#L1-L5".into(),
+            "file2.txt#L8-L12".into(),
         ],
         at: None,
         format: AddFormat::Human,

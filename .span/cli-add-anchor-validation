@@ -1,4 +1,4 @@
 packages/git-span/src/cli/commit.rs#L477-L538 rk64:fa7a7995b6b5c6f7
-packages/git-span/src/cli/commit.rs#L477-L538 rk64:fa7a7995b6b5c6f7
+packages/git-span/src/cli/commit.rs#L541-L602 rk64:fa7a7995b6b5c6f7
 
 run_add rejects span-directory anchors at CLI argument time: reject_anchor_inside_span_root runs immediately after path validation and before any span-file I/O, so the error is immediate and a poisoned span is never written.

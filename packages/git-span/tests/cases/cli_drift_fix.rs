@@ -704,8 +704,20 @@ fn fix_does_not_coalesce_terminal_ranges() -> Result<()> {
 #[test]
 fn fix_leaves_whole_file_anchor_inert() -> Result<()> {
     let repo = TestRepo::seeded()?;
-    repo.span_stdout(["add", "m", "file1.txt", "file1.txt#L1-L5"])?;
-    repo.span_stdout(["why", "m", "mixed"])?;
+    // `add` now refuses to create a whole-file anchor beside a same-path
+    // range in one invocation, so author the legacy-shaped span directly —
+    // a span can still carry the combination, and drift --fix must leave
+    // both records alone.
+    let file1 = "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
+    let whole_hash = rk64_to_hex(cheap_fingerprint_with_extent(
+        file1.as_bytes(),
+        &git_span_core::AnchorExtent::WholeFile,
+    ));
+    let range_hash = line_slice_hash(file1, 1, 5);
+    let span_content = format!(
+        "file1.txt rk64:{whole_hash}\nfile1.txt#L1-L5 rk64:{range_hash}\n\nmixed\n"
+    );
+    repo.write_file(".span/m", &span_content)?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span commit"])?;
 

@@ -10,10 +10,6 @@
 //! identity is the supported refresh and keeps working; multi-anchor
 //! invocations are all-or-nothing.
 //!
-//! Every case is `#[ignore]`d: the predicate and the preflight land in a
-//! later phase, and these checks pin the contract against the stub
-//! signatures now.
-//!
 //! Modeled on `add_gitignored_anchor_reject.rs` and
 //! `anchor_inside_span_root_reject.rs` (the `TestRepo` harness).
 
@@ -76,7 +72,6 @@ fn span_bytes(repo: &TestRepo, name: &str) -> Result<Vec<u8>> {
 /// addresses and contains the exact shell-quoted `git span remove` command,
 /// and the span file stays byte-identical.
 #[test]
-#[ignore]
 fn add_superseding_overlap_reject_whole_file_then_range() -> Result<()> {
     let repo = TestRepo::new()?;
     repo.write_file("src/lib.rs", "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\n")?;
@@ -129,7 +124,6 @@ fn add_superseding_overlap_reject_whole_file_then_range() -> Result<()> {
 /// same-path range is equally provable supersession and must be rejected
 /// with the same shape.
 #[test]
-#[ignore]
 fn add_superseding_overlap_reject_range_then_whole_file() -> Result<()> {
     let repo = TestRepo::new()?;
     repo.write_file("src/lib.rs", "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\n")?;
@@ -182,7 +176,6 @@ fn add_superseding_overlap_reject_range_then_whole_file() -> Result<()> {
 /// unchanged content reports `unchanged`, and a mutated content resolves in
 /// place — both still exit 0.
 #[test]
-#[ignore]
 fn add_superseding_overlap_reject_exact_identity_refresh_still_succeeds() -> Result<()> {
     let repo = TestRepo::new()?;
     repo.write_file("src/lib.rs", "l1\nl2\nl3\nl4\nl5\n")?;
@@ -234,7 +227,6 @@ fn add_superseding_overlap_reject_exact_identity_refresh_still_succeeds() -> Res
 /// Disjoint same-file ranges address distinct regions — both accepted and
 /// both recorded.
 #[test]
-#[ignore]
 fn add_superseding_overlap_reject_disjoint_ranges_same_file_succeed() -> Result<()> {
     let repo = TestRepo::new()?;
     repo.write_file(
@@ -265,7 +257,6 @@ fn add_superseding_overlap_reject_disjoint_ranges_same_file_succeed() -> Result<
 /// Partially overlapping ranges are ambiguous, not provable — accepted, not
 /// guessed.
 #[test]
-#[ignore]
 fn add_superseding_overlap_reject_partially_overlapping_ranges_succeed() -> Result<()> {
     let repo = TestRepo::new()?;
     repo.write_file(
@@ -296,7 +287,6 @@ fn add_superseding_overlap_reject_partially_overlapping_ranges_succeed() -> Resu
 /// A range nested inside another range is never provable supersession —
 /// accepted.
 #[test]
-#[ignore]
 fn add_superseding_overlap_reject_nested_ranges_succeed() -> Result<()> {
     let repo = TestRepo::new()?;
     repo.write_file(
@@ -332,7 +322,6 @@ fn add_superseding_overlap_reject_nested_ranges_succeed() -> Result<()> {
 /// fail as a whole, before any record changes: the span file's bytes must be
 /// identical before and after (not merely present).
 #[test]
-#[ignore]
 fn add_superseding_overlap_reject_multi_anchor_is_all_or_nothing() -> Result<()> {
     let repo = TestRepo::new()?;
     repo.write_file("src/lib.rs", "l1\nl2\nl3\nl4\nl5\n")?;
@@ -380,7 +369,6 @@ fn add_superseding_overlap_reject_multi_anchor_is_all_or_nothing() -> Result<()>
 /// as `git-span`), must actually remove the anchor. The round-trip proves
 /// the single-quoted rendering is shell-safe.
 #[test]
-#[ignore]
 fn add_superseding_overlap_reject_printed_remove_command_round_trips() -> Result<()> {
     let repo = TestRepo::new()?;
     let path = "dir with'quote/file name.txt";
@@ -437,15 +425,18 @@ fn add_superseding_overlap_reject_printed_remove_command_round_trips() -> Result
 
     // Execute the printed command via `git`, with the freshly built binary
     // first on PATH so `git span` dispatches to it (portable: no reliance on
-    // a pre-installed git-span). `join_paths` inserts the platform PATH
-    // separator (`:` on Unix, `;` on Windows).
+    // a pre-installed git-span). Split the inherited PATH into segments and
+    // rejoin with the bin dir prepended — `join_paths` joins segments with
+    // the platform PATH separator (`:` on Unix, `;` on Windows) and rejects
+    // any segment containing it, so the whole inherited PATH cannot be
+    // passed as a single segment.
     let bin_dir = std::path::Path::new(env!("CARGO_BIN_EXE_git-span"))
         .parent()
         .expect("CARGO_BIN_EXE_git-span must live in a directory");
-    let sandbox_path = std::env::join_paths([
-        bin_dir,
-        std::path::Path::new(&std::env::var_os("PATH").unwrap_or_default()),
-    ])?;
+    let mut segments: Vec<std::path::PathBuf> =
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).collect();
+    segments.insert(0, bin_dir.to_path_buf());
+    let sandbox_path = std::env::join_paths(segments)?;
     let path_str = sandbox_path.to_string_lossy().into_owned();
     repo.run_git_with_env(&tokens[1..], &[("PATH", &path_str)])?;
 
