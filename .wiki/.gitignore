@@ -1,0 +1,4 @@
+# Regenerable index DB maintained by the wiki tool — the meshes in .wiki/wiki/
+# are the durable data; this derived cache is never committed (mirrors the
+# wiki/.gitignore convention for the content store's .index.db).
+wiki-index.sqlite
