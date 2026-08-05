@@ -712,21 +712,21 @@ describe('heredoc orderings and hosts (§5.2)', () => {
 });
 
 describe('cp and install destinations (§5.3)', () => {
-  it.skip('cp src dst: read on the source, create-overwrite on the dest', () => {
+  it('cp src dst: read on the source, create-overwrite on the dest', () => {
     expect(parseCommand(`cp ${join(dir, 'src.txt')} ${join(dir, 'dst.txt')}`)).toEqual([
       { operation: 'read', lineStart: 1, lineEnd: 4, absolutePath: join(dir, 'src.txt'), simpleCommandIndex: 0 },
       { operation: 'create-overwrite', absolutePath: join(dir, 'dst.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('cp src dir/: a directory dest appends the basename', () => {
+  it('cp src dir/: a directory dest appends the basename', () => {
     expect(parseCommand(`cp ${join(dir, 'src.txt')} ${join(dir, 'destdir')}/`)).toEqual([
       { operation: 'read', lineStart: 1, lineEnd: 4, absolutePath: join(dir, 'src.txt'), simpleCommandIndex: 0 },
       { operation: 'create-overwrite', absolutePath: join(dir, 'destdir/src.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('cp a b dir/: both sources resolve, in order', () => {
+  it('cp a b dir/: both sources resolve, in order', () => {
     expect(parseCommand(`cp ${join(dir, 'src.txt')} ${join(dir, 'plain.txt')} ${join(dir, 'destdir')}/`)).toEqual([
       { operation: 'read', lineStart: 1, lineEnd: 4, absolutePath: join(dir, 'src.txt'), simpleCommandIndex: 0 },
       { operation: 'read', lineStart: 1, lineEnd: 2, absolutePath: join(dir, 'plain.txt'), simpleCommandIndex: 0 },
@@ -735,12 +735,12 @@ describe('cp and install destinations (§5.3)', () => {
     ]);
   });
 
-  it.skip('cp a b dst (multi-source, non-directory dest) is unresolved', () => {
+  it('cp a b dst (multi-source, non-directory dest) is unresolved', () => {
     expect(parseCommand(`cp ${join(dir, 'src.txt')} ${join(dir, 'plain.txt')} ${join(dir, 'dst.txt')}`)).toEqual([]);
     expectUnresolved(`cp ${join(dir, 'src.txt')} ${join(dir, 'plain.txt')} ${join(dir, 'dst.txt')}`, 'cp-write');
   });
 
-  it.skip('cp -t dir a b: the -t value is a directory, dests append basenames', () => {
+  it('cp -t dir a b: the -t value is a directory, dests append basenames', () => {
     expect(parseCommand(`cp -t ${join(dir, 'destdir')} ${join(dir, 'src.txt')} ${join(dir, 'plain.txt')}`)).toEqual([
       { operation: 'read', lineStart: 1, lineEnd: 4, absolutePath: join(dir, 'src.txt'), simpleCommandIndex: 0 },
       { operation: 'read', lineStart: 1, lineEnd: 2, absolutePath: join(dir, 'plain.txt'), simpleCommandIndex: 0 },
@@ -749,75 +749,75 @@ describe('cp and install destinations (§5.3)', () => {
     ]);
   });
 
-  it.skip('cp -t file src is unresolved (the -t value is not a directory)', () => {
+  it('cp -t file src is unresolved (the -t value is not a directory)', () => {
     expectUnresolved(`cp -t ${join(dir, 'dst.txt')} ${join(dir, 'src.txt')}`, 'cp-write');
   });
 
-  it.skip('cp --target-directory=dir src', () => {
+  it('cp --target-directory=dir src', () => {
     expect(parseCommand(`cp --target-directory=${join(dir, 'destdir')} ${join(dir, 'src.txt')}`)).toEqual([
       { operation: 'read', lineStart: 1, lineEnd: 4, absolutePath: join(dir, 'src.txt'), simpleCommandIndex: 0 },
       { operation: 'create-overwrite', absolutePath: join(dir, 'destdir/src.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('cp -b fails closed (backup naming is version-dependent)', () => {
+  it('cp -b fails closed (backup naming is version-dependent)', () => {
     expect(parseCommand(`cp -b ${join(dir, 'src.txt')} ${join(dir, 'dst.txt')}`)).toEqual([]);
   });
 
-  it.skip('install -s src dst: existence-gated read + create-overwrite', () => {
+  it('install -s src dst: existence-gated read + create-overwrite', () => {
     expect(parseCommand(`install -s ${join(dir, 'src.txt')} ${join(dir, 'dst.txt')}`)).toEqual([
       { operation: 'read', lineStart: 1, lineEnd: 4, absolutePath: join(dir, 'src.txt'), simpleCommandIndex: 0 },
       { operation: 'create-overwrite', absolutePath: join(dir, 'dst.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('install -m 644 src dst: mode options do not break the pair', () => {
+  it('install -m 644 src dst: mode options do not break the pair', () => {
     expect(parseCommand(`install -m 644 ${join(dir, 'src.txt')} ${join(dir, 'dst.txt')}`)).toEqual([
       { operation: 'read', lineStart: 1, lineEnd: 4, absolutePath: join(dir, 'src.txt'), simpleCommandIndex: 0 },
       { operation: 'create-overwrite', absolutePath: join(dir, 'dst.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('install -d dir: the directory is not a file touch', () => {
+  it('install -d dir: the directory is not a file touch', () => {
     expect(parseCommand(`install -d ${join(dir, 'destdir')}`)).toEqual([]);
   });
 
-  it.skip('FOO=1 cp src dst: env assignments are stripped', () => {
+  it('FOO=1 cp src dst: env assignments are stripped', () => {
     expect(parseCommand(`FOO=1 cp ${join(dir, 'src.txt')} ${join(dir, 'dst.txt')}`)).toEqual([
       { operation: 'read', lineStart: 1, lineEnd: 4, absolutePath: join(dir, 'src.txt'), simpleCommandIndex: 0 },
       { operation: 'create-overwrite', absolutePath: join(dir, 'dst.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('command cp src dst: the command builtin is stripped', () => {
+  it('command cp src dst: the command builtin is stripped', () => {
     expect(parseCommand(`command cp ${join(dir, 'src.txt')} ${join(dir, 'dst.txt')}`)).toEqual([
       { operation: 'read', lineStart: 1, lineEnd: 4, absolutePath: join(dir, 'src.txt'), simpleCommandIndex: 0 },
       { operation: 'create-overwrite', absolutePath: join(dir, 'dst.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('sudo cp src dst: foreign executables fail closed (unresolved)', () => {
+  it('sudo cp src dst: foreign executables fail closed (unresolved)', () => {
     expect(parseCommand(`sudo cp ${join(dir, 'src.txt')} ${join(dir, 'dst.txt')}`)).toEqual([]);
     expectUnresolved(`sudo cp ${join(dir, 'src.txt')} ${join(dir, 'dst.txt')}`, 'cp-write');
   });
 });
 
 describe('mv and git mv — source delete + dest write (§5.4)', () => {
-  it.skip('mv src moved: delete on the source, rename-copy on the dest', () => {
+  it('mv src moved: delete on the source, rename-copy on the dest', () => {
     expect(parseCommand(`mv ${join(dir, 'src.txt')} ${join(dir, 'moved.txt')}`)).toEqual([
       { operation: 'delete', absolutePath: join(dir, 'src.txt'), simpleCommandIndex: 0 },
       { operation: 'rename-copy', absolutePath: join(dir, 'moved.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('mv src dir/: the directory dest appends the basename', () => {
+  it('mv src dir/: the directory dest appends the basename', () => {
     expect(parseCommand(`mv ${join(dir, 'src.txt')} ${join(dir, 'destdir')}/`)).toEqual([
       { operation: 'delete', absolutePath: join(dir, 'src.txt'), simpleCommandIndex: 0 },
       { operation: 'rename-copy', absolutePath: join(dir, 'destdir/src.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('mv -t dir a b: every source/dest pair resolves', () => {
+  it('mv -t dir a b: every source/dest pair resolves', () => {
     expect(parseCommand(`mv -t ${join(dir, 'destdir')} ${join(dir, 'src.txt')} ${join(dir, 'plain.txt')}`)).toEqual([
       { operation: 'delete', absolutePath: join(dir, 'src.txt'), simpleCommandIndex: 0 },
       { operation: 'delete', absolutePath: join(dir, 'plain.txt'), simpleCommandIndex: 0 },
@@ -826,14 +826,14 @@ describe('mv and git mv — source delete + dest write (§5.4)', () => {
     ]);
   });
 
-  it.skip('git mv src moved: the same pair', () => {
+  it('git mv src moved: the same pair', () => {
     expect(parseCommand(`git mv ${join(dir, 'src.txt')} ${join(dir, 'moved.txt')}`)).toEqual([
       { operation: 'delete', absolutePath: join(dir, 'src.txt'), simpleCommandIndex: 0 },
       { operation: 'rename-copy', absolutePath: join(dir, 'moved.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('git -C dir mv src moved resolves against dir', () => {
+  it('git -C dir mv src moved resolves against dir', () => {
     expect(parseCommand(`git -C ${dir} mv src.txt moved.txt`, '/')).toEqual([
       { operation: 'delete', absolutePath: join(dir, 'src.txt'), simpleCommandIndex: 0 },
       { operation: 'rename-copy', absolutePath: join(dir, 'moved.txt'), simpleCommandIndex: 0 }
@@ -842,60 +842,60 @@ describe('mv and git mv — source delete + dest write (§5.4)', () => {
 });
 
 describe('rm and git rm (§5.5)', () => {
-  it.skip('rm f: delete', () => {
+  it('rm f: delete', () => {
     expect(parseCommand(`rm ${join(dir, 'plain.txt')}`)).toEqual([
       { operation: 'delete', absolutePath: join(dir, 'plain.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('rm a b: every operand is a delete', () => {
+  it('rm a b: every operand is a delete', () => {
     expect(parseCommand(`rm ${join(dir, 'plain.txt')} ${join(dir, 'dst.txt')}`)).toEqual([
       { operation: 'delete', absolutePath: join(dir, 'plain.txt'), simpleCommandIndex: 0 },
       { operation: 'delete', absolutePath: join(dir, 'dst.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('rm -r dir: recursive removal touches nothing', () => {
+  it('rm -r dir: recursive removal touches nothing', () => {
     expect(parseCommand(`rm -r ${join(dir, 'destdir')}`)).toEqual([]);
   });
 
-  it.skip('rm -R / -d / --recursive all exclude', () => {
+  it('rm -R / -d / --recursive all exclude', () => {
     expect(parseCommand(`rm -R ${join(dir, 'plain.txt')}`)).toEqual([]);
     expect(parseCommand(`rm -d ${join(dir, 'destdir')}`)).toEqual([]);
     expect(parseCommand(`rm --recursive ${join(dir, 'plain.txt')}`)).toEqual([]);
   });
 
-  it.skip('rm -- f: the -- separator is stripped', () => {
+  it('rm -- f: the -- separator is stripped', () => {
     expect(parseCommand(`rm -- ${join(dir, 'plain.txt')}`)).toEqual([
       { operation: 'delete', absolutePath: join(dir, 'plain.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('git rm f: delete', () => {
+  it('git rm f: delete', () => {
     expect(parseCommand(`git rm ${join(dir, 'plain.txt')}`)).toEqual([
       { operation: 'delete', absolutePath: join(dir, 'plain.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('git rm --cached f: the index-only removal touches nothing', () => {
+  it('git rm --cached f: the index-only removal touches nothing', () => {
     expect(parseCommand(`git rm --cached ${join(dir, 'plain.txt')}`)).toEqual([]);
   });
 });
 
 describe('truncate (§5.5)', () => {
-  it.skip('truncate -s 0 f: size 0 truncates', () => {
+  it('truncate -s 0 f: size 0 truncates', () => {
     expect(parseCommand(`truncate -s 0 ${join(dir, 'plain.txt')}`)).toEqual([
       { operation: 'truncate', absolutePath: join(dir, 'plain.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('truncate -s 100 f: any absolute size truncates', () => {
+  it('truncate -s 100 f: any absolute size truncates', () => {
     expect(parseCommand(`truncate -s 100 ${join(dir, 'plain.txt')}`)).toEqual([
       { operation: 'truncate', absolutePath: join(dir, 'plain.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('truncate -s +10 / -s -10: relative sizes truncate', () => {
+  it('truncate -s +10 / -s -10: relative sizes truncate', () => {
     expect(parseCommand(`truncate -s +10 ${join(dir, 'plain.txt')}`)).toEqual([
       { operation: 'truncate', absolutePath: join(dir, 'plain.txt'), simpleCommandIndex: 0 }
     ]);
@@ -904,17 +904,17 @@ describe('truncate (§5.5)', () => {
     ]);
   });
 
-  it.skip('truncate -r ref f: reference-file sizing truncates', () => {
+  it('truncate -r ref f: reference-file sizing truncates', () => {
     expect(parseCommand(`truncate -r ${join(dir, 'src.txt')} ${join(dir, 'plain.txt')}`)).toEqual([
       { operation: 'truncate', absolutePath: join(dir, 'plain.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('truncate f without -s/-r truncates nothing', () => {
+  it('truncate f without -s/-r truncates nothing', () => {
     expect(parseCommand(`truncate ${join(dir, 'plain.txt')}`)).toEqual([]);
   });
 
-  it.skip('truncate -c -s 0 f: -c is compatible', () => {
+  it('truncate -c -s 0 f: -c is compatible', () => {
     expect(parseCommand(`truncate -c -s 0 ${join(dir, 'plain.txt')}`)).toEqual([
       { operation: 'truncate', absolutePath: join(dir, 'plain.txt'), simpleCommandIndex: 0 }
     ]);

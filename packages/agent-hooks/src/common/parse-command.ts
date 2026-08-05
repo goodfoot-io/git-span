@@ -13,7 +13,8 @@
  * substitutions with no static range), plain `echo`/`printf` redirects (rare
  * and semantically ambiguous in the corpus).
  */
-import { resolve as resolvePath } from 'node:path';
+import { statSync } from 'node:fs';
+import { basename, join as joinPath, resolve as resolvePath } from 'node:path';
 import { countFileLines, countGitBlobLines } from './command-resolve.js';
 import { type SimpleCommand, splitTopLevel, stripLeadingAssignments, type Token, tokenize } from './shell-split.js';
 
@@ -916,6 +917,463 @@ function matchRedirectFamily(
   if (host === 'tee') matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join, results);
 }
 
+// ---------------------------------------------------------------------------
+// The file-mutation family grammars (plan §5.3–§5.5): cp/install/mv/git mv and
+// rm/git rm/truncate. They share the §5 fail-closed rules: leading env
+// assignments (stripped by the walk) and one `command`/`env` wrapper are
+// skipped (mechanically certain); any other wrapper is unresolved; a
+// leading-`-` token that is not a known option is treated as an option; `--`
+// makes the rest operands; globbed or variable paths are unresolved;
+// directory-shaped source operands fail closed.
+// ---------------------------------------------------------------------------
+
+/** Wrapper words that obscure the wrapped command's argv (plan §5): a family command behind one is unresolved, never guessed. */
+const FOREIGN_WRAPPERS = new Set(['sudo', 'xargs', 'nohup', 'time', 'nice', 'doas']);
+
+/** Strip at most one `command`/`env` wrapper — mechanically transparent (plan §5). */
+function stripTransparentWrapper(argv: string[]): string[] {
+  return argv[0] === 'command' || argv[0] === 'env' ? argv.slice(1) : argv;
+}
+
+function pushUnresolved(results: SpanMatch[], idiom: Idiom, fileArg: string, reason: string): void {
+  results.push({ status: 'unresolved', idiom, fileArg, reason });
+}
+
+/** Whether the path is an existing directory (the dest-dir decision, plan §5.3/§5.4; fs stat like the read idioms' line counts). */
+function isExistingDirectory(absolutePath: string): boolean {
+  try {
+    return statSync(absolutePath).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The shared cp/install/mv operand grammar (plan §5.3/§5.4): per-family option
+ * sets and touch operations behind one parser.
+ */
+interface CopyMoveSpec {
+  idiom: 'cp-write' | 'install-write' | 'mv-write';
+  /** Known no-value flags (consumed, never operands). */
+  noValue: ReadonlySet<string>;
+  /** Known value-taking flags (the next word is the value — `-t DIR`, or an install mode/owner/group). */
+  valueTaking: ReadonlySet<string>;
+  /** Flags that fail the whole command closed (`cp -b`/`--backup`, `install -d`, git mv dry-run `-n`/`--dry-run`). */
+  excluded: ReadonlySet<string>;
+  /** The per-source touch: cp/install read their sources; mv deletes them. */
+  sourceOperation: 'read' | 'delete';
+  /** The per-dest touch: cp/install overwrite; mv rename-copies. */
+  destOperation: 'create-overwrite' | 'rename-copy';
+}
+
+const CP_SPEC: CopyMoveSpec = {
+  idiom: 'cp-write',
+  noValue: new Set(['-r', '-R', '-p', '-f', '-v', '-n', '-i', '-u', '-a', '-d', '-L', '-P']),
+  valueTaking: new Set(['-t', '--target-directory']),
+  excluded: new Set(['-b', '--backup']),
+  sourceOperation: 'read',
+  destOperation: 'create-overwrite'
+};
+
+const INSTALL_SPEC: CopyMoveSpec = {
+  idiom: 'install-write',
+  noValue: new Set(['-D', '-s', '-v']),
+  valueTaking: new Set(['-t', '--target-directory', '-m', '-o', '-g']),
+  excluded: new Set(['-d']),
+  sourceOperation: 'read',
+  destOperation: 'create-overwrite'
+};
+
+const MV_SPEC: CopyMoveSpec = {
+  idiom: 'mv-write',
+  noValue: new Set(['-f', '-i', '-n', '-v', '-u']),
+  valueTaking: new Set(['-t', '--target-directory']),
+  excluded: new Set(),
+  sourceOperation: 'delete',
+  destOperation: 'rename-copy'
+};
+
+const GIT_MV_SPEC: CopyMoveSpec = {
+  idiom: 'mv-write',
+  noValue: new Set(['-f', '-k', '-v']),
+  valueTaking: new Set(),
+  // `git mv -n`/`--dry-run` is a trial run that moves nothing (the same
+  // read-only class as `patch --dry-run`, plan §5.7) — fail closed.
+  excluded: new Set(['-n', '--dry-run']),
+  sourceOperation: 'delete',
+  destOperation: 'rename-copy'
+};
+
+interface CopyMoveParts {
+  /** Operands in order (sources; in the non-`-t` form the last is the dest). */
+  operands: string[];
+  /** The `-t`/`--target-directory` value, or null. */
+  targetDir: string | null;
+}
+
+/**
+ * Parse the operands of a cp/install/mv command: known options are consumed,
+ * `--` makes the rest operands, and `-t`/`--target-directory[=DIR]` is
+ * value-taking — the next word is the target directory, never a source. A
+ * leading-`-` token that is not a known option is treated as an option (no
+ * touch). Returns null when a fail-closed option is present or a value-taking
+ * flag is left valueless.
+ */
+function copyMoveParts(args: string[], spec: CopyMoveSpec): CopyMoveParts | null {
+  const operands: string[] = [];
+  let targetDir: string | null = null;
+  let i = 0;
+  let afterDashDash = false;
+  while (i < args.length) {
+    const a = args[i];
+    if (afterDashDash) {
+      operands.push(a);
+      i += 1;
+      continue;
+    }
+    if (a === '--') {
+      afterDashDash = true;
+      i += 1;
+      continue;
+    }
+    if (a === '-t' || a === '--target-directory') {
+      const v = args[i + 1];
+      if (v === undefined) return null;
+      targetDir = v;
+      i += 2;
+      continue;
+    }
+    if (a.startsWith('--target-directory=')) {
+      targetDir = a.slice('--target-directory='.length);
+      i += 1;
+      continue;
+    }
+    if (spec.excluded.has(a)) return null;
+    if (spec.valueTaking.has(a)) {
+      if (args[i + 1] === undefined) return null;
+      i += 2;
+      continue;
+    }
+    if (spec.noValue.has(a)) {
+      i += 1;
+      continue;
+    }
+    if (a.startsWith('-')) {
+      i += 1;
+      continue;
+    }
+    operands.push(a);
+    i += 1;
+  }
+  return { operands, targetDir };
+}
+
+/**
+ * The per-source touch of a cp/install/mv command. cp/install sources are
+ * whole-file reads resolved against fs like the read idioms — a source that
+ * cannot be read at parse time is unresolved (a failed copy read nothing). The
+ * mv source is a delete.
+ */
+function emitSourceSpan(
+  results: SpanMatch[],
+  spec: CopyMoveSpec,
+  absolutePath: string,
+  simpleCommandIndex: number,
+  join: ResolvedSpan['join']
+): void {
+  if (spec.sourceOperation === 'delete') {
+    results.push({
+      status: 'resolved',
+      idiom: spec.idiom,
+      span: { operation: 'delete', absolutePath, simpleCommandIndex, join }
+    });
+    return;
+  }
+  const range = resolveSpec({ kind: 'toEof', start: 1 }, () => countFileLines(absolutePath));
+  if (range === null) {
+    pushUnresolved(
+      results,
+      spec.idiom,
+      absolutePath,
+      'could not determine end-of-file line count (file unreadable, empty, or missing)'
+    );
+    return;
+  }
+  results.push({
+    status: 'resolved',
+    idiom: spec.idiom,
+    span: {
+      operation: 'read',
+      lineStart: range.lineStart,
+      lineEnd: range.lineEnd,
+      absolutePath,
+      simpleCommandIndex,
+      join
+    }
+  });
+}
+
+/**
+ * The cp/install/mv family (plan §5.3/§5.4): operands resolve to source/dest
+ * pairs — each source is a read (cp/install) or delete (mv), each dest a
+ * create-overwrite (cp/install) or rename-copy (mv), sources before dests in
+ * declaration order. A dest that ends in `/` or stats as an existing directory
+ * maps to `dir/basename(source)` per source; `-t DIR`/`--target-directory=DIR`
+ * maps the same way and is unresolved when its value is not directory-shaped.
+ * Multi-source commands need a directory dest; a directory-shaped or
+ * globbed/variable source, a globbed/variable dest, or a fail-closed option
+ * (`cp -b`, `install -d`, git mv `-n`) emits no touches.
+ */
+function matchCopyMoveFamily(
+  argv: string[],
+  dirForResolution: string,
+  simpleCommandIndex: number,
+  join: ResolvedSpan['join'],
+  results: SpanMatch[]
+): void {
+  const rest = stripTransparentWrapper(argv);
+  if (rest.length === 0) return;
+  const command = rest[0];
+  let spec: CopyMoveSpec | null = null;
+  let args: string[] = [];
+  let dir = dirForResolution;
+  if (command === 'cp' || command === 'install' || command === 'mv') {
+    spec = command === 'cp' ? CP_SPEC : command === 'install' ? INSTALL_SPEC : MV_SPEC;
+    args = rest.slice(1);
+  } else if (command === 'git') {
+    const sub = findGitSubcommand(rest.slice(1));
+    if (sub !== null && sub.subcommand === 'mv') {
+      if (sub.cDirUnresolvable) {
+        pushUnresolved(results, 'mv-write', 'mv', 'git -C target contains an unresolved shell variable');
+        return;
+      }
+      spec = GIT_MV_SPEC;
+      args = rest.slice(1).slice(sub.subIdx + 1);
+      dir = sub.cDir ?? dirForResolution;
+    }
+  } else if (FOREIGN_WRAPPERS.has(command)) {
+    // A wrapper obscures the wrapped argv — fail closed rather than mis-parse.
+    const wrapped = rest[1];
+    const wrappedSpec =
+      wrapped === 'cp' ? CP_SPEC : wrapped === 'install' ? INSTALL_SPEC : wrapped === 'mv' ? MV_SPEC : null;
+    if (wrappedSpec !== null) {
+      pushUnresolved(results, wrappedSpec.idiom, wrapped, `the ${command} wrapper obscures the ${wrapped} argv`);
+    }
+    return;
+  }
+  if (spec === null) return;
+
+  const parts = copyMoveParts(args, spec);
+  if (parts === null || parts.operands.length === 0) return;
+
+  // Resolve every source before emitting anything: a directory-shaped,
+  // globbed, or variable source fails the whole command closed (the dest
+  // mapping is per-source, so an unknowable source makes the dests unknowable).
+  const sourcePaths: string[] = [];
+  for (const source of parts.operands.slice(0, parts.targetDir === null ? -1 : undefined)) {
+    if (source.endsWith('/')) return;
+    const absolutePath = resolveTarget(results, spec.idiom, source, dir);
+    if (absolutePath === null) return;
+    if (isExistingDirectory(absolutePath)) return;
+    sourcePaths.push(absolutePath);
+  }
+  if (sourcePaths.length === 0) return;
+
+  let destPaths: string[];
+  if (parts.targetDir !== null) {
+    if (looksUnresolvable(parts.targetDir)) {
+      pushUnresolved(results, spec.idiom, parts.targetDir, 'path contains an unexpanded shell variable or glob');
+      return;
+    }
+    if (!parts.targetDir.endsWith('/') && !isExistingDirectory(resolvePath(dir, parts.targetDir))) {
+      pushUnresolved(results, spec.idiom, parts.targetDir, 'the -t target is not an existing directory');
+      return;
+    }
+    const targetAbs = resolvePath(dir, parts.targetDir);
+    destPaths = sourcePaths.map((p) => joinPath(targetAbs, basename(p)));
+  } else {
+    const dest = parts.operands[parts.operands.length - 1];
+    if (looksUnresolvable(dest)) {
+      pushUnresolved(results, spec.idiom, dest, 'path contains an unexpanded shell variable or glob');
+      return;
+    }
+    const destAbs = resolvePath(dir, dest);
+    const destIsDir = dest.endsWith('/') || isExistingDirectory(destAbs);
+    if (sourcePaths.length > 1 && !destIsDir) {
+      pushUnresolved(results, spec.idiom, dest, 'a multi-source copy/move needs a directory destination');
+      return;
+    }
+    destPaths = destIsDir ? sourcePaths.map((p) => joinPath(destAbs, basename(p))) : [destAbs];
+  }
+
+  for (let k = 0; k < sourcePaths.length; k++) {
+    emitSourceSpan(results, spec, sourcePaths[k], simpleCommandIndex, join);
+  }
+  for (let k = 0; k < sourcePaths.length; k++) {
+    results.push({
+      status: 'resolved',
+      idiom: spec.idiom,
+      span: { operation: spec.destOperation, absolutePath: destPaths[k], simpleCommandIndex, join }
+    });
+  }
+}
+
+const RM_NO_VALUE = new Set(['-f', '-i', '-v']);
+/** `rm`/`git rm` flags whose semantics are out of scope: recursive removal and rmdir. */
+const RM_EXCLUDED = new Set(['-r', '-R', '--recursive', '-d']);
+/** `git rm` adds the dry-run form to the exclusions. */
+const GIT_RM_EXCLUDED = new Set(['-r', '-R', '--recursive', '-d', '-n', '--dry-run']);
+
+/**
+ * The shared rm/git rm operand grammar (plan §5.5): a recursive/rmdir flag (or
+ * `--cached` for git rm — the worktree file survives) excludes the whole
+ * command; each remaining file-shaped operand is a delete, and a
+ * directory-shaped operand fails closed.
+ */
+function matchRmOperands(
+  args: string[],
+  excluded: ReadonlySet<string>,
+  excludeCached: boolean,
+  dir: string,
+  simpleCommandIndex: number,
+  join: ResolvedSpan['join'],
+  results: SpanMatch[]
+): void {
+  let afterDashDash = false;
+  const operands: string[] = [];
+  for (const a of args) {
+    if (afterDashDash) {
+      operands.push(a);
+      continue;
+    }
+    if (a === '--') {
+      afterDashDash = true;
+      continue;
+    }
+    if (excluded.has(a) || (excludeCached && a === '--cached')) return;
+    if (RM_NO_VALUE.has(a)) continue;
+    if (a.startsWith('-')) continue; // unknown option → treated as an option
+    operands.push(a);
+  }
+  for (const operand of operands) {
+    if (looksUnresolvable(operand)) {
+      pushUnresolved(results, 'rm-write', operand, 'path contains an unexpanded shell variable or glob');
+      continue;
+    }
+    if (operand.endsWith('/') || isExistingDirectory(resolvePath(dir, operand))) continue;
+    results.push({
+      status: 'resolved',
+      idiom: 'rm-write',
+      span: { operation: 'delete', absolutePath: resolvePath(dir, operand), simpleCommandIndex, join }
+    });
+  }
+}
+
+/**
+ * The truncate grammar (plan §5.5): `-s SIZE`/`-r ref` are value-taking — the
+ * size value may itself lead with `-` (`truncate -s -10 f`) — and `-c` is
+ * compatible. Without `-s`/`-r` the command changes nothing → no touch. Each
+ * file-shaped operand is a truncate.
+ */
+function matchTruncateOperands(
+  args: string[],
+  dir: string,
+  simpleCommandIndex: number,
+  join: ResolvedSpan['join'],
+  results: SpanMatch[]
+): void {
+  let sawSizeFlag = false;
+  let afterDashDash = false;
+  const operands: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (afterDashDash) {
+      operands.push(a);
+      continue;
+    }
+    if (a === '--') {
+      afterDashDash = true;
+      continue;
+    }
+    if (a === '-s' || a === '-r') {
+      sawSizeFlag = true;
+      i += 1; // consume the size/ref value, even when it leads with `-`
+      continue;
+    }
+    if (a === '-c') continue;
+    if (a.startsWith('-')) continue; // unknown option → treated as an option
+    operands.push(a);
+  }
+  if (!sawSizeFlag) return;
+  for (const operand of operands) {
+    if (looksUnresolvable(operand)) {
+      pushUnresolved(results, 'truncate-command', operand, 'path contains an unexpanded shell variable or glob');
+      continue;
+    }
+    if (operand.endsWith('/') || isExistingDirectory(resolvePath(dir, operand))) continue;
+    results.push({
+      status: 'resolved',
+      idiom: 'truncate-command',
+      span: { operation: 'truncate', absolutePath: resolvePath(dir, operand), simpleCommandIndex, join }
+    });
+  }
+}
+
+/**
+ * The rm/git rm/truncate family (plan §5.5): `rm`/`git rm` operands are
+ * deletes, `truncate` operands are truncations (only when `-s`/`-r` is
+ * present). `git rm --cached` touches nothing.
+ */
+function matchRmTruncate(
+  argv: string[],
+  dirForResolution: string,
+  simpleCommandIndex: number,
+  join: ResolvedSpan['join'],
+  results: SpanMatch[]
+): void {
+  const rest = stripTransparentWrapper(argv);
+  if (rest.length === 0) return;
+  const command = rest[0];
+  if (command === 'rm') {
+    matchRmOperands(rest.slice(1), RM_EXCLUDED, false, dirForResolution, simpleCommandIndex, join, results);
+    return;
+  }
+  if (command === 'truncate') {
+    matchTruncateOperands(rest.slice(1), dirForResolution, simpleCommandIndex, join, results);
+    return;
+  }
+  if (command === 'git') {
+    const sub = findGitSubcommand(rest.slice(1));
+    if (sub !== null && sub.subcommand === 'rm') {
+      if (sub.cDirUnresolvable) {
+        pushUnresolved(results, 'rm-write', 'rm', 'git -C target contains an unresolved shell variable');
+        return;
+      }
+      matchRmOperands(
+        rest.slice(1).slice(sub.subIdx + 1),
+        GIT_RM_EXCLUDED,
+        true,
+        sub.cDir ?? dirForResolution,
+        simpleCommandIndex,
+        join,
+        results
+      );
+    }
+    return;
+  }
+  if (FOREIGN_WRAPPERS.has(command)) {
+    const wrapped = rest[1];
+    if (wrapped === 'rm' || wrapped === 'truncate') {
+      pushUnresolved(
+        results,
+        wrapped === 'rm' ? 'rm-write' : 'truncate-command',
+        wrapped,
+        `the ${command} wrapper obscures the ${wrapped} argv`
+      );
+    }
+  }
+}
+
 /** The `git apply` shape: whether the command is `git ... apply`, plus its `-C` directory (null when none or unresolvable — the paths then resolve against the current directory). */
 function gitApplyShape(argv: string[]): { isApply: boolean; dir: string | null } {
   if (argv[0] !== 'git') return { isApply: false, dir: null };
@@ -1369,6 +1827,8 @@ export function parseCommandDetailed(command: string, cwd: string = process.cwd(
 
     matchReads(simple, argv, i);
     matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, i, joinOf(simple), results);
+    matchCopyMoveFamily(argv, currentDir, i, joinOf(simple), results);
+    matchRmTruncate(argv, currentDir, i, joinOf(simple), results);
     pipeEchoContent = literalContent(argv) ?? null;
   }
 
