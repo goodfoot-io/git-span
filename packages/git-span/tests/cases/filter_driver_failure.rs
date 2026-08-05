@@ -47,8 +47,30 @@ fn broken_filter_repo(form: DriverForm, required: bool, modified: bool) -> Resul
     repo.write_file(".gitattributes", "secret.txt filter=gc\n")?;
     repo.commit_all("seed")?;
 
-    repo.span_stdout(["add", "protected", "secret.txt#L1-L2"])?;
-    repo.span_stdout(["why", "protected", "the protected head"])?;
+    // The `protected` mutations run the post-write reconcile check, which
+    // cannot verify an anchor behind the declared-but-not-yet-configured
+    // `gc` filter: with `ignore_unavailable: false` (plan
+    // `reconciliation-output.md`), `ContentUnavailable` is actionable
+    // drift, so the add/why land locally but exit 1. `unrelated` carries
+    // no filter attribute and stays clean.
+    let add = repo.run_span(["add", "protected", "secret.txt#L1-L2"])?;
+    let add_stdout = String::from_utf8_lossy(&add.stdout);
+    assert_eq!(
+        add.status.code(),
+        Some(1),
+        "unverifiable filtered anchor must make the add exit 1; stdout=\n{add_stdout}"
+    );
+    assert!(
+        add_stdout.contains("Added 1 anchor to span `protected`."),
+        "the protected add still landed locally; stdout=\n{add_stdout}"
+    );
+    let why = repo.run_span(["why", "protected", "the protected head"])?;
+    let why_stdout = String::from_utf8_lossy(&why.stdout);
+    assert_eq!(
+        why.status.code(),
+        Some(1),
+        "unverifiable filtered anchor must make the why write exit 1; stdout=\n{why_stdout}"
+    );
     repo.span_stdout(["add", "unrelated", "other.txt#L1-L2"])?;
     repo.span_stdout(["why", "unrelated", "the unrelated head"])?;
     repo.run_git(["add", ".span"])?;

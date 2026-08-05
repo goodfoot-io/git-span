@@ -1,12 +1,11 @@
-//! Phase-2 acceptance checks for the explicit anchor reconciliation output
+//! Acceptance checks for the explicit anchor reconciliation output
 //! (card main-207, plan `reconciliation-output.md`).
 //!
-//! Every check in this file is `#[ignore]`d with a reason naming the plan's
-//! test-matrix row it pins. Each one compiles and shows as pending against
-//! the Phase-1 contract surface, and encodes the executable contract —
-//! exact exit codes, exact wording lines, exact JSON field names — that
-//! Phase 3 implements and unskips one at a time. Do not unskip any check
-//! before the Phase-3 behavior it pins exists.
+//! Written in Phase 2 as `#[ignore]`d checks pinning the plan's test-matrix
+//! rows against the Phase-1 contract surface, then unskipped in Phase 3 as
+//! the behavior landed. The checks encode the executable contract — exact
+//! exit codes, exact wording lines, exact JSON field names — that the
+//! implementation must satisfy.
 //!
 //! The wording and JSON pins are copied character-for-character from the
 //! plan's Output contract section (modulo fixture span names), so prose and
@@ -36,7 +35,6 @@ fn span_file_bytes(repo: &TestRepo, name: &str) -> Vec<u8> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "reconcile-output: successful refresh"]
 fn reconcile_output_successful_refresh_prints_span_wide_clean() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.span_stdout(["add", "add-refresh", "file1.txt#L1-L5"])?;
@@ -73,7 +71,6 @@ fn reconcile_output_successful_refresh_prints_span_wide_clean() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "reconcile-output: clean replacement"]
 fn reconcile_output_whole_file_add_supersedes_old_line_range() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.span_stdout(["add", "clean-replace", "file1.txt#L1-L5"])?;
@@ -118,7 +115,6 @@ fn reconcile_output_whole_file_add_supersedes_old_line_range() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "reconcile-output: fresh-new/stale-old mixed"]
 fn reconcile_output_fresh_range_with_stale_whole_file_remains() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.span_stdout(["add", "mixed", "file1.txt"])?;
@@ -168,7 +164,6 @@ fn reconcile_output_fresh_range_with_stale_whole_file_remains() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "reconcile-output: why-only mutation"]
 fn reconcile_output_why_write_with_stale_anchor_remains() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.span_stdout(["add", "why-stale", "file1.txt"])?;
@@ -215,7 +210,6 @@ fn reconcile_output_why_write_with_stale_anchor_remains() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "reconcile-output: clean JSON add"]
 fn reconcile_output_add_json_clean_document() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let out = repo.run_span(["add", "json-clean", "file1.txt#L1-L5", "--format", "json"])?;
@@ -246,7 +240,6 @@ fn reconcile_output_add_json_clean_document() -> Result<()> {
 }
 
 #[test]
-#[ignore = "reconcile-output: clean JSON why"]
 fn reconcile_output_why_json_clean_document() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.span_stdout(["add", "json-why", "file1.txt#L1-L5"])?;
@@ -276,7 +269,6 @@ fn reconcile_output_why_json_clean_document() -> Result<()> {
 }
 
 #[test]
-#[ignore = "reconcile-output: clean JSON drift scan"]
 fn reconcile_output_drift_json_clean_scan_always_emits() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.span_stdout(["add", "json-drift", "file1.txt#L1-L5"])?;
@@ -308,7 +300,6 @@ fn reconcile_output_drift_json_clean_scan_always_emits() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "reconcile-output: failure invalid address no write"]
 fn reconcile_output_invalid_address_fails_before_write() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.span_stdout(["add", "no-write", "file1.txt#L1-L5"])?;
@@ -326,7 +317,6 @@ fn reconcile_output_invalid_address_fails_before_write() -> Result<()> {
 }
 
 #[test]
-#[ignore = "reconcile-output: failure gitignored path no write"]
 fn reconcile_output_gitignored_path_fails_before_write() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.span_stdout(["add", "no-write", "file1.txt#L1-L5"])?;
@@ -354,7 +344,6 @@ fn reconcile_output_gitignored_path_fails_before_write() -> Result<()> {
 }
 
 #[test]
-#[ignore = "reconcile-output: failure missing file no write"]
 fn reconcile_output_missing_file_fails_before_write() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.span_stdout(["add", "no-write", "file1.txt#L1-L5"])?;
@@ -385,7 +374,6 @@ fn reconcile_output_missing_file_fails_before_write() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "reconcile-output: --at drifted new anchor"]
 fn reconcile_output_at_drifted_new_anchor_lists_in_span_wide() -> Result<()> {
     let repo = TestRepo::seeded()?;
     // Worktree diverges from HEAD, so the new anchor hashed against HEAD is
@@ -468,7 +456,6 @@ fn corrupted_tree_repo() -> Result<TestRepo> {
 }
 
 #[test]
-#[ignore = "reconcile-output: check error unverified"]
 fn reconcile_output_check_error_unverified_exit_1() -> Result<()> {
     let repo = corrupted_tree_repo()?;
 
@@ -502,7 +489,6 @@ fn reconcile_output_check_error_unverified_exit_1() -> Result<()> {
 }
 
 #[test]
-#[ignore = "reconcile-output: check error JSON unknown"]
 fn reconcile_output_check_error_json_unknown_no_indeterminate() -> Result<()> {
     let repo = corrupted_tree_repo()?;
 
@@ -539,7 +525,6 @@ fn reconcile_output_check_error_json_unknown_no_indeterminate() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "reconcile-output: why read-mode rejection"]
 fn reconcile_output_why_read_mode_rejects_json_format() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.span_stdout(["why", "read-reject", "some reason"])?;

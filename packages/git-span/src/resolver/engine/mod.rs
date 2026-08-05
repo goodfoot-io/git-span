@@ -2295,7 +2295,6 @@ mod tests {
     /// drive stops yielding `index_changed = true`, so the test cannot pass
     /// vacuously on a check derived from a verdict that never fired.
     #[test]
-    #[ignore = "reconcile-output: indeterminate seam"]
     fn reconcile_check_indeterminate_from_index_changed_maps_to_exit_2() {
         use crate::cli::commit::ReconcileCheck;
         use std::process::Command;
@@ -2359,12 +2358,13 @@ mod tests {
              nothing to map and the exit-2 contract is untested"
         );
 
-        // Derive the check the way the Phase-3 `run_reconcile_check`
-        // plumbing will (plan §Mechanism step 2): `indeterminate` is the
-        // resolver's `index_changed` verdict only.
+        // Derive the check the way the real `run_reconcile_check` plumbing
+        // does (plan §Mechanism step 2): `indeterminate` is the resolver's
+        // `index_changed` verdict only.
         let check = ReconcileCheck {
             superseded: Vec::new(),
             remaining: Vec::new(),
+            drifting: Vec::new(),
             clean: false,
             indeterminate: layers.index_changed,
             check_error: None,
@@ -2381,18 +2381,13 @@ mod tests {
              retryable verdict, never the fatal path"
         );
 
-        // Exit-code contract (plan §Exit codes): indeterminate → 2, the
+        // Exit-code contract (plan §Exit codes), driven through the real
+        // verdict → exit mapping that `run_add`/`run_why` use (extracted as
+        // `reconcile_exit_code` precisely so this seam test exercises real
+        // code, not a hand-rolled construction): indeterminate → 2, the
         // retryable condition exactly as drift defines it — distinct from 0
         // (clean) and 1 (drift / check error).
-        let exit = if check.indeterminate {
-            2
-        } else if check.check_error.is_some() {
-            1
-        } else if !check.clean {
-            1
-        } else {
-            0
-        };
+        let exit = crate::cli::commit::reconcile_exit_code(&check);
         assert_eq!(
             exit, 2,
             "indeterminate must map to exit 2, never 0 or 1"

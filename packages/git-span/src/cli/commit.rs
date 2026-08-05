@@ -8,15 +8,21 @@
 //! directly; spans are tracked files, so there is no separate staging
 //! area or commit step beyond the worktree write.
 
+use crate::cli::drift_label::format_drift_label;
+use crate::cli::drift_output::status_json;
 use crate::cli::error::from_lib_error;
 use crate::cli::format::{IDEMPOTENT_TAG, format_anchor_address};
-use crate::cli::{AddArgs, CliError, NextStep, RemoveArgs, ReplaceArgs, ReplaceFormat, WhyArgs};
+use crate::cli::{AddArgs, AddFormat, CliError, NextStep, RemoveArgs, ReplaceArgs, ReplaceFormat, WhyArgs, WhyFormat};
 use crate::git::IndexEntrySnapshot;
+use crate::resolver::{anchor_status_is_drift, resolve_named_spans_retaining_source_layers};
 use crate::span_file::AnchorRecord;
 use crate::span_file::SpanFile;
 use crate::span_file::parse_address;
 use crate::span_file_reader::SpanFileReader;
-use crate::types::{AnchorExtent, validate_add_target};
+use crate::types::{
+    AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, EngineOptions, LayerSet,
+    validate_add_target,
+};
 use anyhow::{Context, Result};
 use fs4::fs_std::FileExt;
 use git_span_core::{RK64_ALGORITHM, cheap_fingerprint_with_extent, rk64_to_hex};
@@ -582,6 +588,10 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result
         let _perf = crate::perf::span("add.read-current");
         read_worktree_span(repo, span_root, &args.name)?
     };
+    // Snapshot the pre-write anchor set: the supersession fact is computed
+    // from the requested addresses against what was on the span before this
+    // invocation's write.
+    let pre_write_anchors = span_file.anchors.clone();
 
     // Build a lookup of existing anchors: (path, start_line, end_line) -> content_hash.
     let existing: std::collections::HashMap<(String, u32, u32), String> = span_file
@@ -658,57 +668,100 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result
         write_worktree_span(repo, span_root, &args.name, &mut span_file)?;
     }
 
+    // --- Post-write reconcile check ---------------------------------------
+    // Runs while still holding the exclusive span-file lock (`_add_lock`
+    // lives until the end of `run_add`), so the check sees the just-written
+    // declaration and is serialized against concurrent mutations of the same
+    // span (plan §Mechanism).
+    let check = {
+        let _perf = crate::perf::span("add.reconcile-check");
+        let start = std::time::Instant::now();
+        let check = run_reconcile_check(repo, span_root, &args.name, &parsed, &pre_write_anchors)?;
+        crate::perf::counter("add.reconcile-us", start.elapsed().as_micros() as u64);
+        check
+    };
+
     // --- Output -----------------------------------------------------------
-    let added_count = outcomes
-        .iter()
-        .filter(|o| matches!(o.kind, AddOutcomeKind::Added))
-        .count();
-    let resolved_count = outcomes
-        .iter()
-        .filter(|o| matches!(o.kind, AddOutcomeKind::Resolved))
-        .count();
-    let unchanged_count = outcomes
-        .iter()
-        .filter(|o| matches!(o.kind, AddOutcomeKind::Unchanged))
-        .count();
-    // Summary line.
-    let mut summary = format!(
-        "Added {} anchor{}",
-        added_count,
-        if added_count == 1 { "" } else { "s" },
-    );
-    if resolved_count > 0 {
-        write!(&mut summary, " and resolved {resolved_count} in place").unwrap();
-    }
-    if unchanged_count > 0 {
-        write!(&mut summary, "; {unchanged_count} unchanged").unwrap();
-    }
-    write!(&mut summary, " to span `{}`.", args.name).unwrap();
-    println!("{summary}");
-    println!();
+    let exit = reconcile_exit_code(&check);
+    match args.format {
+        AddFormat::Human => {
+            let added_count = outcomes
+                .iter()
+                .filter(|o| matches!(o.kind, AddOutcomeKind::Added))
+                .count();
+            let resolved_count = outcomes
+                .iter()
+                .filter(|o| matches!(o.kind, AddOutcomeKind::Resolved))
+                .count();
+            let unchanged_count = outcomes
+                .iter()
+                .filter(|o| matches!(o.kind, AddOutcomeKind::Unchanged))
+                .count();
+            // Summary line.
+            let mut summary = format!(
+                "Added {} anchor{}",
+                added_count,
+                if added_count == 1 { "" } else { "s" },
+            );
+            if resolved_count > 0 {
+                write!(&mut summary, " and resolved {resolved_count} in place").unwrap();
+            }
+            if unchanged_count > 0 {
+                write!(&mut summary, "; {unchanged_count} unchanged").unwrap();
+            }
+            write!(&mut summary, " to span `{}`.", args.name).unwrap();
+            println!("{summary}");
+            println!();
 
-    for o in &outcomes {
-        let line = match o.kind {
-            AddOutcomeKind::Added => {
-                format!("- added: `{}` `{}`", args.name, o.addr)
+            for o in &outcomes {
+                let line = match o.kind {
+                    AddOutcomeKind::Added => {
+                        format!("- added: `{}` `{}`", args.name, o.addr)
+                    }
+                    AddOutcomeKind::Resolved => {
+                        format!(
+                            "- resolved in-place: `{}` `{}` (hash changed)",
+                            args.name, o.addr
+                        )
+                    }
+                    AddOutcomeKind::Unchanged => {
+                        format!(
+                            "- unchanged: `{}` `{}` (content matches stored hash)",
+                            args.name, o.addr
+                        )
+                    }
+                };
+                println!("{line}");
             }
-            AddOutcomeKind::Resolved => {
-                format!(
-                    "- resolved in-place: `{}` `{}` (hash changed)",
-                    args.name, o.addr
-                )
-            }
-            AddOutcomeKind::Unchanged => {
-                format!(
-                    "- unchanged: `{}` `{}` (content matches stored hash)",
-                    args.name, o.addr
-                )
-            }
-        };
-        println!("{line}");
-    }
 
-    Ok(0)
+            // The post-write facts: superseded, remains, and the single
+            // span-wide line. Local success (above) never names span-wide
+            // state.
+            render_reconcile_block(&args.name, &check, true);
+        }
+        AddFormat::Json => {
+            let doc = MutationDocument::new(
+                "add",
+                &args.name,
+                outcomes
+                    .iter()
+                    .map(|o| AnchorOutcome {
+                        address: o.addr.clone(),
+                        outcome: match o.kind {
+                            AddOutcomeKind::Added => AddressOutcome::Added,
+                            AddOutcomeKind::Resolved => AddressOutcome::Resolved,
+                            AddOutcomeKind::Unchanged => AddressOutcome::Unchanged,
+                        },
+                    })
+                    .collect(),
+                check.superseded.clone(),
+                check.remaining.clone(),
+                span_health_from_check(&check),
+            );
+            println!("{}", serde_json::to_string_pretty(&doc)?);
+        }
+    }
+    Ok(exit)
 }
 
 // ---------------------------------------------------------------------------
@@ -1101,43 +1154,115 @@ pub fn run_replace(repo: &gix::Repository, args: ReplaceArgs, span_root: &str) -
 // ---------------------------------------------------------------------------
 
 pub fn run_why(repo: &gix::Repository, args: WhyArgs, span_root: &str) -> Result<i32> {
+    let WhyArgs {
+        name,
+        why_text,
+        format,
+    } = args;
+
     // Positional text → write mode. Piped stdin → write mode (only when
     // data is actually present — an empty stdin falls through to read).
     // Terminal stdin with no positional → read mode (print current why).
-    if let Some(m) = args.why_text {
-        crate::validation::validate_span_name(&args.name)?;
-        let _perf = crate::perf::span("why.write");
-        run_why_writer(repo, &args.name, &m, span_root)?;
-        return print_why_written(&args.name);
-    }
-    if !std::io::stdin().is_terminal() {
+    let write_body: Option<String> = if let Some(m) = why_text {
+        Some(m)
+    } else if !std::io::stdin().is_terminal() {
         let mut body = String::new();
         std::io::stdin().read_to_string(&mut body)?;
-        if !body.is_empty() {
-            crate::validation::validate_span_name(&args.name)?;
-            let _perf = crate::perf::span("why.write");
-            run_why_writer(repo, &args.name, &body, span_root)?;
-            return print_why_written(&args.name);
+        if body.is_empty() {
+            None
+        } else {
+            Some(body)
+        }
+    } else {
+        None
+    };
+
+    let Some(body) = write_body else {
+        // Read mode. `--format json` is rejected fail-closed with a
+        // usage-style `CliError` before any output (exit 1, no stdout),
+        // mirroring drift's `--fix`-with-machine-format rejection — an
+        // ignored flag that silently prints prose would teach a migrating
+        // hook to parse prose as a document.
+        if matches!(format, WhyFormat::Json) {
+            return Err(CliError {
+                subcommand: "why",
+                summary: "`--format json` is only supported in write mode.".into(),
+                what_happened: "Read mode prints the current why as prose; a hook \
+                                migrating to `--format json` would parse prose as a \
+                                document."
+                    .into(),
+                next_steps: vec![NextStep::Bash(format!(
+                    "git span why {name} <why text> --format json"
+                ))],
+            }
+            .into());
+        }
+        let _perf = crate::perf::span("why.read");
+        return run_why_reader(repo, &name, span_root);
+    };
+
+    crate::validation::validate_span_name(&name)?;
+    let _perf = crate::perf::span("why.write");
+    run_why_write_mode(repo, &name, &body, span_root, format)
+}
+
+/// Write mode: write the why while holding the exclusive span-file lock,
+/// then run the post-write reconcile check under the same lock (plan
+/// §Mechanism) and render the remains/span-wide block. The supersession
+/// fact is empty by construction — `why` touches no addresses — so no
+/// superseded lines and an empty `superseded` array in JSON.
+fn run_why_write_mode(
+    repo: &gix::Repository,
+    name: &str,
+    body: &str,
+    span_root: &str,
+    format: WhyFormat,
+) -> Result<i32> {
+    // The lock is held through the check below: it serializes the write and
+    // the check against concurrent mutations of the same span, and the check
+    // sees the just-written declaration.
+    let _why_lock = {
+        let _perf = crate::perf::span("why.lock-span");
+        lock_span_file(repo, span_root, name)?
+    };
+    let pre_write_anchors = {
+        let _perf = crate::perf::span("why.read-current");
+        let mut span_file = read_worktree_span(repo, span_root, name)?;
+        let anchors = span_file.anchors.clone();
+        span_file.why = body.to_string();
+        {
+            let _perf = crate::perf::span("why.write-span-file");
+            write_worktree_span(repo, span_root, name, &mut span_file)?;
+        }
+        anchors
+    };
+    let check = {
+        let _perf = crate::perf::span("why.reconcile-check");
+        let start = std::time::Instant::now();
+        let check = run_reconcile_check(repo, span_root, name, &[], &pre_write_anchors)?;
+        crate::perf::counter("why.reconcile-us", start.elapsed().as_micros() as u64);
+        check
+    };
+    let exit = reconcile_exit_code(&check);
+    match format {
+        WhyFormat::Human => {
+            println!("Set why on span `{name}`.{IDEMPOTENT_TAG}");
+            render_reconcile_block(name, &check, false);
+        }
+        WhyFormat::Json => {
+            let doc = MutationDocument::new(
+                "why",
+                name,
+                Vec::new(),
+                Vec::new(),
+                check.remaining.clone(),
+                span_health_from_check(&check),
+            )
+            .with_why_written();
+            println!("{}", serde_json::to_string_pretty(&doc)?);
         }
     }
-    let _perf = crate::perf::span("why.read");
-    run_why_reader(repo, &args.name, span_root)
-}
-
-fn print_why_written(name: &str) -> Result<i32> {
-    println!("Set why on span `{name}`.{IDEMPOTENT_TAG}");
-    Ok(0)
-}
-
-fn run_why_writer(repo: &gix::Repository, name: &str, body: &str, span_root: &str) -> Result<()> {
-    // Acquire an exclusive advisory lock on the span file before reading
-    // to prevent concurrent read-modify-write races.
-    let _why_lock = lock_span_file(repo, span_root, name)?;
-
-    let mut span_file = read_worktree_span(repo, span_root, name)?;
-    span_file.why = body.to_string();
-    write_worktree_span(repo, span_root, name, &mut span_file)?;
-    Ok(())
+    Ok(exit)
 }
 
 fn run_why_reader(repo: &gix::Repository, name: &str, span_root: &str) -> Result<i32> {
@@ -1252,6 +1377,12 @@ pub struct RemainingAnchor {
     pub address: String,
     pub status: serde_json::Value,
     pub next_step: String,
+    /// Human drift-label vocabulary for the human remains line (plan
+    /// §Output contract: "reusing the drift-label vocabulary"). Rendering
+    /// detail, never serialized — the JSON document carries `address`,
+    /// `status`, and `next_step` only.
+    #[serde(skip_serializing)]
+    pub label: String,
 }
 
 /// One drifting anchor inside `span_health.drifting`.
@@ -1289,6 +1420,11 @@ pub struct MutationDocument {
     pub superseded: Vec<SupersededAnchor>,
     pub remaining: Vec<RemainingAnchor>,
     pub span_health: SpanHealth,
+    /// `Some(true)` only on `why` documents (plan §Output contract: the why
+    /// document carries `why_written: true`); absent on `add` documents,
+    /// which the plan's example shows without the key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub why_written: Option<bool>,
 }
 
 impl MutationDocument {
@@ -1309,7 +1445,14 @@ impl MutationDocument {
             superseded,
             remaining,
             span_health,
+            why_written: None,
         }
+    }
+
+    /// Mark the document as a written `why` (`why_written: true`).
+    pub fn with_why_written(mut self) -> Self {
+        self.why_written = Some(true);
+        self
     }
 }
 
@@ -1326,6 +1469,13 @@ pub struct ReconcileCheck {
     /// Actionable-drift anchors not touched by this invocation and not
     /// reported as superseded (the two arrays are disjoint by definition).
     pub remaining: Vec<RemainingAnchor>,
+    /// Every actionable-drift anchor on the span, touched or not — the
+    /// span-wide drifted line lists all of them (plan: "lists every
+    /// actionable-drift anchor, touched or not — covers the `--at` case
+    /// where the *new* anchor is itself drifted"), and JSON
+    /// `span_health.drifting` is rendered from this list. Empty on
+    /// indeterminate and check-error verdicts (nothing trustworthy to list).
+    pub drifting: Vec<DriftingAnchor>,
     /// Span-wide drift-free verdict.
     pub clean: bool,
     /// Resolver `index_changed` verdict — the retryable indeterminate.
@@ -1400,9 +1550,13 @@ pub fn is_superseded(old: &AnchorRecord, new_path: &str, new_extent: &AnchorExte
 /// - clean: no anchor of the resolved span has a status for which
 ///   `anchor_status_is_drift()` returns true.
 ///
-/// Phase 1 contract stub: the body is not implemented and returns a
-/// not-implemented sentinel so the surface compiles and tests can pin the
-/// shape. The resolver call and fact derivation land in Phase 3.
+/// A resolver hard error is captured as `check_error: Some(...)` (the fatal
+/// path, exit 1) rather than propagated: the write already succeeded and the
+/// local facts must still print, followed by the `state unverified` line. The
+/// `index_changed` verdict is captured as `indeterminate: true` (exit 2, the
+/// retryable condition) and makes the per-anchor verdicts untrustworthy, so
+/// `remaining`/`drifting` are emptied for that verdict — only the provable
+/// supersession facts survive it.
 pub fn run_reconcile_check(
     repo: &gix::Repository,
     span_root: &str,
@@ -1410,12 +1564,257 @@ pub fn run_reconcile_check(
     touched: &[(String, AnchorExtent)],
     pre_write_anchors: &[AnchorRecord],
 ) -> Result<ReconcileCheck> {
-    // Phase 1 stub — inputs are part of the contract signature but the body
-    // does not use them yet.
-    let _ = (repo, span_root, touched, pre_write_anchors);
-    anyhow::bail!(
-        "reconcile check for span `{name}` is not implemented (Phase 1 contract stub)"
-    )
+    let options = EngineOptions {
+        layers: LayerSet::full(),
+        ignore_unavailable: false,
+        since: None,
+        needs_all_layers: true,
+        fuzzy_threshold: 0.95,
+    };
+    let names = vec![name.to_string()];
+    let (resolved, source_layers) = match resolve_named_spans_retaining_source_layers(
+        repo, span_root, &names, options,
+    ) {
+        Ok(pair) => pair,
+        Err(e) => {
+            return Ok(check_error_result(name, touched, pre_write_anchors, e.to_string()));
+        }
+    };
+    let (_, resolution) = resolved.into_iter().next().unwrap_or_else(|| {
+        (
+            name.to_string(),
+            Err(crate::Error::SpanNotFound(name.to_string())),
+        )
+    });
+    let span = match resolution {
+        Ok(span) => span,
+        Err(e) => {
+            return Ok(check_error_result(name, touched, pre_write_anchors, e.to_string()));
+        }
+    };
+
+    let superseded = superseded_for(name, touched, pre_write_anchors);
+    // (path, extent) keys of the pre-write anchors reported as superseded —
+    // such an anchor's fate is the supersession fact, never the remains fact.
+    let superseded_keys: std::collections::HashSet<(String, AnchorExtent)> =
+        pre_write_anchors
+            .iter()
+            .filter(|old| touched.iter().any(|(p, e)| is_superseded(old, p, e)))
+            .map(|old| (old.path.clone(), anchor_record_extent(old)))
+            .collect();
+    let touched_keys: std::collections::HashSet<(String, AnchorExtent)> =
+        touched.iter().cloned().collect();
+
+    let mut remaining: Vec<RemainingAnchor> = Vec::new();
+    let mut drifting: Vec<DriftingAnchor> = Vec::new();
+    for a in &span.anchors {
+        if !anchor_status_is_drift(&a.status) {
+            continue;
+        }
+        let key = (
+            a.anchored.path.to_string_lossy().into_owned(),
+            a.anchored.extent,
+        );
+        let address = resolved_anchor_address(&a.anchored);
+        drifting.push(DriftingAnchor {
+            address: address.clone(),
+            status: status_json(&a.status),
+        });
+        if touched_keys.contains(&key) || superseded_keys.contains(&key) {
+            continue;
+        }
+        remaining.push(RemainingAnchor {
+            address,
+            status: status_json(&a.status),
+            next_step: format!("git span remove {name} {}", resolved_anchor_address(&a.anchored)),
+            label: drift_label_for(a),
+        });
+    }
+
+    let indeterminate = source_layers.index_changed;
+    let pending_commit_count = span
+        .anchors
+        .iter()
+        .filter(|a| matches!(a.status, AnchorStatus::ResolvedPendingCommit))
+        .count();
+    Ok(ReconcileCheck {
+        superseded,
+        remaining: if indeterminate { Vec::new() } else { remaining },
+        drifting: if indeterminate { Vec::new() } else { drifting },
+        clean: !indeterminate && !span.anchors.iter().any(|a| anchor_status_is_drift(&a.status)),
+        indeterminate,
+        check_error: None,
+        total_anchors: span.anchors.len(),
+        pending_commit_count,
+    })
+}
+
+/// A `ReconcileCheck` for the fatal path: the write happened but the check
+/// could not produce a verdict. The supersession facts are still derivable
+/// (they are provable from the pre-write declaration, no resolver needed);
+/// nothing else is.
+fn check_error_result(
+    name: &str,
+    touched: &[(String, AnchorExtent)],
+    pre_write_anchors: &[AnchorRecord],
+    detail: String,
+) -> ReconcileCheck {
+    ReconcileCheck {
+        superseded: superseded_for(name, touched, pre_write_anchors),
+        remaining: Vec::new(),
+        drifting: Vec::new(),
+        clean: false,
+        indeterminate: false,
+        check_error: Some(detail),
+        total_anchors: 0,
+        pending_commit_count: 0,
+    }
+}
+
+/// The plan's provable-supersession report for one invocation: for every
+/// pre-write anchor covered by a requested address of this invocation, the
+/// covering new address, `REMAINS` state (the anchor is still in the
+/// declaration on this branch), and the runnable retire command.
+fn superseded_for(
+    name: &str,
+    touched: &[(String, AnchorExtent)],
+    pre_write_anchors: &[AnchorRecord],
+) -> Vec<SupersededAnchor> {
+    let mut out = Vec::new();
+    for old in pre_write_anchors {
+        let Some((new_path, new_extent)) = touched
+            .iter()
+            .find(|(p, e)| is_superseded(old, p, e))
+        else {
+            continue;
+        };
+        let old_addr = addr_from_extent(&old.path, &anchor_record_extent(old));
+        out.push(SupersededAnchor {
+            address: old_addr.clone(),
+            superseded_by: addr_from_extent(new_path, new_extent),
+            state: SupersessionState::Remains,
+            next_step: format!("git span remove {name} {old_addr}"),
+        });
+    }
+    out
+}
+
+/// Canonical address of a resolved anchor's anchored location.
+fn resolved_anchor_address(loc: &AnchorLocation) -> String {
+    match loc.extent {
+        AnchorExtent::LineRange { start, end } => {
+            format_anchor_address(&loc.path.to_string_lossy(), Some(start), Some(end))
+        }
+        AnchorExtent::WholeFile => format_anchor_address(&loc.path.to_string_lossy(), None, None),
+    }
+}
+
+/// The resolver status label for the human remains line, from the shared
+/// drift-label vocabulary.
+fn drift_label_for(a: &AnchorResolved) -> String {
+    format_drift_label(&a.status, a.source, a.locus.as_ref(), a.current.is_some())
+}
+
+/// Map a `ReconcileCheck` verdict to the three-state exit contract (plan
+/// §Exit codes): 2 = indeterminate (the resolver's `index_changed` verdict
+/// only — the retryable condition, exactly as `git span drift` defines it,
+/// distinct from both 0 (clean) and 1 (drift / check error)); 1 = drift
+/// remains or the check errored; 0 = clean.
+///
+/// Extracted as a testable function because the Phase-2 seam test drives
+/// the verdict → exit mapping through real code, not a hand-rolled
+/// construction.
+pub(crate) fn reconcile_exit_code(check: &ReconcileCheck) -> i32 {
+    if check.indeterminate {
+        2
+    } else if check.check_error.is_some() || !check.clean {
+        1
+    } else {
+        0
+    }
+}
+
+/// Build the JSON `span_health` block from a check verdict.
+fn span_health_from_check(check: &ReconcileCheck) -> SpanHealth {
+    let (state, reason) = if check.indeterminate {
+        (SpanHealthState::Unknown, Some("index changed during scan".into()))
+    } else if let Some(detail) = &check.check_error {
+        (SpanHealthState::Unknown, Some(detail.clone()))
+    } else if check.clean {
+        (SpanHealthState::DriftFree, None)
+    } else {
+        (SpanHealthState::Drift, None)
+    };
+    SpanHealth {
+        state,
+        drift_count: check.drifting.len(),
+        drifting: check.drifting.clone(),
+        resolved_pending_commit_count: check.pending_commit_count,
+        reason,
+    }
+}
+
+/// Render the post-write facts block (human): blank line, superseded lines
+/// (when the invocation touches addresses), remains lines, blank line, and
+/// the single span-wide line. Wording is character-for-character per plan
+/// §Output contract. `include_superseded` is false for `why` — it touches no
+/// addresses, so the supersession fact is empty by construction.
+fn render_reconcile_block(name: &str, check: &ReconcileCheck, include_superseded: bool) {
+    println!();
+    if include_superseded {
+        for s in &check.superseded {
+            println!(
+                "Old anchor superseded by `{}`: `{}` — next: `{}`",
+                s.superseded_by, s.address, s.next_step
+            );
+        }
+    }
+    for r in &check.remaining {
+        println!(
+            "Old anchor remains: `{}` ({}) — next: `{}`",
+            r.address, r.label, r.next_step
+        );
+    }
+    if !check.superseded.is_empty() || !check.remaining.is_empty() {
+        println!();
+    }
+    if let Some(detail) = &check.check_error {
+        println!(
+            "Span `{name}`: state unverified ({detail}) — run `git span drift {name}`."
+        );
+    } else if check.indeterminate {
+        println!(
+            "Span `{name}`: state indeterminate (index changed during check) — re-run the command or `git span drift {name}`."
+        );
+    } else if check.clean {
+        let mut line = format!(
+            "Span `{name}`: 0 drift across 1 span ({} anchor{} checked).",
+            check.total_anchors,
+            if check.total_anchors == 1 { "" } else { "s" }
+        );
+        if check.pending_commit_count > 0 {
+            write!(
+                &mut line,
+                "; {} anchor{} resolved, pending commit",
+                check.pending_commit_count,
+                if check.pending_commit_count == 1 { "" } else { "s" }
+            )
+            .unwrap();
+        }
+        println!("{line}");
+    } else {
+        let addrs: Vec<String> = check
+            .drifting
+            .iter()
+            .map(|d| format!("`{}`", d.address))
+            .collect();
+        println!(
+            "Span `{name}`: {} anchor{} drifted — {}. Run `git span drift {name}` for details.",
+            check.drifting.len(),
+            if check.drifting.len() == 1 { "" } else { "s" },
+            addrs.join(", ")
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1700,6 +2099,7 @@ mod tests {
                 address: "src/read-user.ts".into(),
                 status: serde_json::json!({ "code": "CHANGED" }),
                 next_step: "git span remove user-id-lifecycle src/read-user.ts".into(),
+                label: "changed in the working tree".into(),
             }],
             SpanHealth {
                 state: SpanHealthState::Drift,
