@@ -1682,7 +1682,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(result.reason).toContain('preserve anchor shape');
     });
 
-    it('a same-range hash refresh renders the exact range and never suggests remove-then-add', async () => {
+    it('a same-range hash refresh renders the exact range and never suggests a two-step re-anchor', async () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
@@ -1697,11 +1697,11 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       if (result.kind !== 'semantic-drift') throw new Error('unreachable');
       // Scenario: same-range hash refresh. The logical region did not move, so
       // the message renders the exact `#L1-L10` boundaries, the closing's
-      // remove-then-add stays conditional on an address change (never a
+      // swap instruction stays conditional on an address change (never a
       // blanket prescription), and nothing in the message hints at movement.
       expect(result.reason).toContain('└─ src/app.ts #L1-L10 — changed');
       expect(result.reason).toContain(
-        'preserve anchor shape; if an address changed, remove its old anchor before adding the new one'
+        'preserve anchor shape; if an address changed, swap the old anchor for the new one with `git span replace`'
       );
       expect(result.reason).not.toContain('moved');
     });
@@ -1727,13 +1727,14 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(result.decision).toBe('hold');
       if (result.kind !== 'semantic-drift') throw new Error('unreachable');
       // Scenario: post-move CHANGED at the destination address. The message
-      // renders `#L3-L7` — the address the agent re-adds after retiring the old
-      // one — never a stale `#L1-L10`, and the closing gates the removal on
-      // the address change. The move event itself never renders through the
-      // advisor.
+      // renders `#L3-L7` — the address the agent swaps to — never a stale
+      // `#L1-L10`, and the closing gates the swap on the address change. The
+      // move event itself never renders through the advisor.
       expect(result.reason).toContain('└─ src/app.ts #L3-L7 — changed');
       expect(result.reason).not.toContain('app.ts#L1-L10');
-      expect(result.reason).toContain('if an address changed, remove its old anchor before adding the new one');
+      expect(result.reason).toContain(
+        'if an address changed, swap the old anchor for the new one with `git span replace`'
+      );
     });
 
     it('a span holding both a whole-file anchor and a range anchor on one file renders each distinctly', async () => {
