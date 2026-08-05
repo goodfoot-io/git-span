@@ -1713,7 +1713,9 @@ function renderEnvironmentalReason(conditions: DriftPorcelainRow[], blocksText: 
 function renderScanFailedReason(detail: string): string {
   return [
     'The implicit-dependency check could not run, so this change was NOT verified:',
+    '<git-span-error>',
     `  ${detail}`,
+    '</git-span-error>',
     '',
     'The command proceeds anyway. Fix the scan error if verification matters for this change.'
   ].join('\n');
@@ -1725,7 +1727,8 @@ function renderScanFailedReason(detail: string): string {
  * names whichever subcommand the binary's argument parser guessed at, which is
  * never the command the user ran and reliably sends readers looking for a
  * problem in their repository. Lead with the diagnosis and the remedy, and keep
- * the raw diagnostic at the bottom for whoever is debugging the hook itself.
+ * the raw diagnostic at the bottom, in a `<git-span-error>` block, for whoever
+ * is debugging the hook itself.
  */
 function renderIncompatibleCliReason(err: AdvisorIncompatibleCliError): string {
   const installed = err.installedVersion;
@@ -1751,7 +1754,9 @@ function renderIncompatibleCliReason(err: AdvisorIncompatibleCliError): string {
     'the two are aligned, span drift is not being checked and spans are not being',
     'auto-reanchored on edit.',
     '',
-    `git-span reported: ${err.detail}`
+    '<git-span-error>',
+    `  git-span reported: ${err.detail}`,
+    '</git-span-error>'
   ].join('\n');
 }
 
