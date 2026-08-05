@@ -201,6 +201,7 @@ For each assigned span:
 |---|---|
 | Whole-file anchor CHANGED; the file is still consumed as a unit | `git span add <name> '<path>'` — re-add the same bare path; a whole-file anchor stays whole-file |
 | Range anchor CHANGED at the same address; the logical region did not move | `git span add <name> '<path>#L<start>-L<end>'` — re-add the exact existing range, nothing else |
+| File shrunken below the anchored end; the region still exists | `git span remove <name> '<path>#L<old>'` then `git span add <name> '<path>#L<new>'` — an identity change, with the new extent equal to the file's current line count |
 | Logical region genuinely moved to a new range | `git span remove <name> '<path>#L<old>'` then `git span add <name> '<path>#L<new>'` |
 | One anchor lags a confirmed authority | Conform it, validate any code change, then re-anchor; include the content diff in your report |
 | Content no longer describes relationship | `git span remove <name> '<path>#L<N>'` |
@@ -209,7 +210,7 @@ For each assigned span:
 | Lifecycle gate is satisfied | Make the authorized behavior change, revise or retire the substantive why, and reconcile or retire every superseded anchor |
 | Authority remains unclear or no intentional change explains drift | Stop and report — the user decides |
 
-Never add a narrower range just because edited code now looks locally narrower: an unchanged whole-file anchor stays whole-file and an unchanged range keeps its exact boundaries. If a span accidentally holds both a whole-file anchor and a range anchor for the same file, retire the one that no longer reflects the logical region and keep exactly one.
+Never add a narrower range just because edited code now looks locally narrower: an unchanged whole-file anchor stays whole-file and an unchanged range keeps its exact boundaries. A file whose line count no longer reaches the anchored end is the exception — the extent genuinely contracted, so it is an identity change, not a narrowing, and the shrunken-file row above governs. If a span accidentally holds both a whole-file anchor and a range anchor for the same file, retire the one that no longer reflects the logical region and keep exactly one.
 
 For deletion syntax or why rules, invoke the corresponding `git-span:git-span`
 section.

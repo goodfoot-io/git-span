@@ -1706,14 +1706,14 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(result.reason).not.toContain('moved');
     });
 
-    it('a genuine range move renders the destination range, not the stale pre-move address', async () => {
+    it('a post-move CHANGED finding at the destination address renders, never the stale pre-move address', async () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
-        // The moved finding's row carries the destination coordinates
-        // (`#L3-L7`), and the CHANGED finding at that same address is what the
-        // report surfaces — MOVED itself is positional, never debt (isDebt),
-        // so it can never annotate a bullet on its own.
+        // The fixture's MOVED row is positional context only — MOVED is never
+        // debt (isDebt('MOVED') is false), so it never annotates a bullet;
+        // what renders is the CHANGED finding at the post-re-anchor address
+        // (`#L3-L7`).
         drift: async (): Promise<DriftPorcelainRow[]> => [
           driftRow({ status: 'MOVED', start: 3, end: 7 }),
           driftRow({ status: 'CHANGED', start: 3, end: 7 })
@@ -1726,10 +1726,11 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
 
       expect(result.decision).toBe('hold');
       if (result.kind !== 'semantic-drift') throw new Error('unreachable');
-      // Scenario: genuine range move. The message renders the destination
-      // range `#L3-L7` — the address the agent re-adds after retiring the old
+      // Scenario: post-move CHANGED at the destination address. The message
+      // renders `#L3-L7` — the address the agent re-adds after retiring the old
       // one — never a stale `#L1-L10`, and the closing gates the removal on
-      // the address change.
+      // the address change. The move event itself never renders through the
+      // advisor.
       expect(result.reason).toContain('└─ src/app.ts #L3-L7 — changed');
       expect(result.reason).not.toContain('app.ts#L1-L10');
       expect(result.reason).toContain('if an address changed, remove its old anchor before adding the new one');

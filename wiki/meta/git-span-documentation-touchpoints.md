@@ -121,6 +121,7 @@ Keep text marked verbatim exact in the website integration page and both
 `understanding-hook-output.md` files. Reconciliation text must say:
 
 - refresh the exact anchor when identity is unchanged — whole-file stays whole-file and a range keeps its exact boundaries;
+- treat a file shrunken below its anchored end as an identity change — retire the old range and re-add at the file's current line count;
 - remove the old anchor before adding a changed path or range;
 - update or retire a stale why; and
 - require scoped zero drift.
