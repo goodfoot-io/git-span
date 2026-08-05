@@ -1,5 +1,10 @@
 packages/agent-hooks/src/common/snapshot-core.ts#L84-L97 rk64:14bd5f4f3f3a233f
 packages/agent-hooks/src/common/snapshot-core.ts#L118-L177 rk64:ab33c55979bfbf93
 packages/agent-hooks/src/common/snapshot-store.ts#L28-L37 rk64:19367420390ba99a
+packages/agent-hooks/test/claude/snapshot-lifecycle-helpers.ts rk64:4ed313ae54c4aa50
+packages/agent-hooks/test/common/snapshot-core.test.ts#L463-L526 rk64:3ddf87704a516a4c
+packages/agent-hooks/test/common/snapshot-core.test.ts#L1509-L1564 rk64:205cd8cc058f65b3
+packages/agent-hooks/test/common/snapshot-store.test.ts#L199-L370 rk64:49166668d35a5536
+packages/agent-hooks/test/common/snapshot-store.test.ts#L425-L453 rk64:8aa0c618f5269bf0
 
-snapshot-core.ts is the canonical home of the snapshot record shape and budget defaults per the plan, and snapshot-store.ts re-exports SnapshotFile/SnapshotRecord, persists records under the version field failing closed on mismatch, and fixes the budgets at store creation — a shape, version, or budget-default change must cross both.
+snapshot-core.ts is the canonical home of the snapshot record shape and budget defaults per the plan, and snapshot-store.ts re-exports SnapshotFile/SnapshotRecord, persists records under the version field failing closed on mismatch, and fixes the budgets at store creation — a shape, version, or budget-default change must cross both. The Phase 2 acceptance checks (hashFile, round-trip, permissions, version fail-closed, storage-cap refusal, budget defaults) and the shared lifecycle fixtures pin that contract as the skipped evidence gate a Phase 3 implementation must satisfy.

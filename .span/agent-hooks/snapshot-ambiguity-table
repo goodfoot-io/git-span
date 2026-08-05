@@ -1,0 +1,7 @@
+packages/agent-hooks/src/common/snapshot-core.ts#L430-L492 rk64:219c40b773050199
+packages/agent-hooks/test/claude/snapshot-lifecycle.test.ts#L926-L1137 rk64:7ade7aaa52ae9de2
+packages/agent-hooks/test/codex/snapshot-lifecycle.test.ts#L637-L725 rk64:1a6eaa919b2aa9e8
+packages/agent-hooks/test/common/snapshot-core.test.ts#L1003-L1187 rk64:94ef4bb230b4c1d1
+packages/agent-hooks/test/common/snapshot-store.test.ts#L371-L424 rk64:db3240511c09900e
+
+applyAmbiguityRules is the deterministic eight-row ambiguity table that resolves interleaved-tool orderings from sibling consumption state and path coverage, and the store's index entries are the sibling set it reads (a coverage gap means 'all' paths) — the pure-function matrix, the index-entry checks, and both harness concurrency sections pin the same table, so a change to consumption stamping or coverage reporting silently flips rows.
