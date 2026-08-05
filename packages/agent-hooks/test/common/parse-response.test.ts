@@ -64,8 +64,18 @@
  * whole response fails closed — which also broke the truncation invariant,
  * letting a cut prefix decode records the complete output refused. The
  * fixtures pin rg -C1/-C2 and grep -A1/-B1 single-file windows (glued and
- * spaced) plus the merged-window stay-open twin. Only the adapter-envelope
- * checks remain `it.skip` for Phase 3e.
+ * spaced) plus the merged-window stay-open twin. The round-9 R9-1 batch
+ * closes the HERE-STRING hole in the same gates: bash's `<<<` is a
+ * two-token operator feeding a word to stdin, and the splitter's heredoc
+ * recognition misfired at the second `<` (registering the word as a
+ * delimiter), rejecting every valid bash here-string — the exact-3-`<`
+ * branch consumes the operator so the stdin-redirect scan (any unquoted
+ * `<`) gates `<<<` exactly like a redirect or heredoc: rootless and
+ * sibling shapes fail closed, explicit-roots, consumed-feeder, and git
+ * grep stay open, and the dangling `<<<` keeps its bash parse error.
+ * Fixtures run under bash (the harness gained a shell param) because dash
+ * rejects `<<<` outright. Only the adapter-envelope checks remain
+ * `it.skip` for Phase 3e.
  *
  * The golden-matrix harness below builds the fixture store by executing the
  * REAL binaries — /usr/bin/rg (ripgrep 14.1.1), /usr/bin/grep (GNU grep
@@ -300,11 +310,15 @@ function runCaptureStdin(input: string, bin: string, argv: string[], cwd: string
   }
 }
 
-/** Execute a shell pipeline (`sh -c`) — the pipeline fixtures run real stages end to end. */
-function runPipeline(command: string, cwd: string): RunResult {
+/**
+ * Execute a shell pipeline (`<shell> -c`) — the pipeline fixtures run real
+ * stages end to end. The default shell is `sh` (dash), which rejects
+ * here-strings; fixtures whose command uses `<<<` pass `bash`.
+ */
+function runPipeline(command: string, cwd: string, shell: string = 'sh'): RunResult {
   try {
     return {
-      stdout: execFileSync('sh', ['-c', command], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }),
+      stdout: execFileSync(shell, ['-c', command], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }),
       exitStatus: 0
     };
   } catch (err) {
@@ -369,9 +383,18 @@ function diffFixture(
   return { name, command, cwd: root, stdout, exitStatus, expected, files };
 }
 
-/** A real-pipeline fixture: the stage pipeline runs end to end via `sh -c`. */
-function pipelineFixture(name: string, command: string, root: string, expected: ExpectedSpan[]): GoldenFixture {
-  const { stdout, exitStatus } = runPipeline(command, root);
+/**
+ * A real-pipeline fixture: the stage pipeline runs end to end via `sh -c`
+ * (or the given shell — here-string fixtures need `bash`).
+ */
+function pipelineFixture(
+  name: string,
+  command: string,
+  root: string,
+  expected: ExpectedSpan[],
+  shell: string = 'sh'
+): GoldenFixture {
+  const { stdout, exitStatus } = runPipeline(command, root, shell);
   return { name, command, cwd: root, stdout, exitStatus, expected, files: SEARCH_FILES };
 }
 
@@ -1230,6 +1253,80 @@ function buildGoldenMatrix(root: string): GoldenMatrix {
         { path: 'digits/1', lineStart: 1, lineEnd: 1 },
         { path: 'digits/2', lineStart: 1, lineEnd: 1 }
       ]
+    )
+  );
+
+  // Round-9 R9-1: a `<<<` HERE-STRING is a two-token operator (`<<<` plus
+  // the word it feeds to stdin) — valid bash, but the splitter's heredoc
+  // recognition used to misfire at the second `<`, register the word as a
+  // delimiter, and reject the whole command as an unterminated heredoc, so
+  // every here-string shape failed closed (no fabrication, but the
+  // with-roots twin surfaced nothing). Now the operator stays in the stage
+  // text and the quote-aware unquoted-`<` scan applies the same stdin
+  // gate as a heredoc: gated no-roots is stdin-fed, a here-string sibling
+  // (either direction, including the pipe sibling whose redirect overrides
+  // the pipe) closes the chain, a dangling `<<<` stays a parse error — and
+  // the gated with-roots, the consumed pipe feeder, and `git grep` (which
+  // never reads stdin) stay open. dash (`sh`) rejects `<<<`, so these run
+  // under bash.
+  {
+    const hereStringStages: Array<[string, string]> = [
+      ['noroots', "rg -n needle <<< '2:2:needle at 2'"],
+      ['chain-sibling', 'cd digits && rg -n needle 1 2 ; cat <<<hello'],
+      ['pipe-later', 'cd digits && rg -n needle 1 2 | cat <<<x']
+    ];
+    for (const [suffix, stage] of hereStringStages) {
+      fixtures.push({
+        name: `herestring-${suffix}`,
+        command: stage,
+        cwd: root,
+        stdout: runPipeline(stage, root, 'bash').stdout,
+        exitStatus: 0,
+        expected: [],
+        files: SEARCH_FILES
+      });
+    }
+    fixtures.push({
+      name: 'herestring-dangling',
+      command: 'cd digits && rg -n needle 1 2 <<<',
+      cwd: root,
+      stdout: runPipeline('cd digits && rg -n needle 1 2 <<<', root, 'bash').stdout,
+      exitStatus: 2,
+      expected: [],
+      files: SEARCH_FILES
+    });
+  }
+  fixtures.push(
+    pipelineFixture(
+      'gated-herestring-roots',
+      'cd digits && rg -n needle 1 2 <<< x',
+      root,
+      [
+        { path: 'digits/1', lineStart: 1, lineEnd: 1 },
+        { path: 'digits/2', lineStart: 1, lineEnd: 1 }
+      ],
+      'bash'
+    )
+  );
+  fixtures.push(
+    pipelineFixture(
+      'feeder-herestring-roots',
+      'cd digits && cat <<<hello | rg -n needle 1 2',
+      root,
+      [
+        { path: 'digits/1', lineStart: 1, lineEnd: 1 },
+        { path: 'digits/2', lineStart: 1, lineEnd: 1 }
+      ],
+      'bash'
+    )
+  );
+  fixtures.push(
+    pipelineFixture(
+      'git-grep-herestring',
+      'git grep -n alpha <<< x',
+      root,
+      searchExpected(SEARCH_FILES, allFiles, 'alpha', 0, 0),
+      'bash'
     )
   );
 
@@ -2718,6 +2815,45 @@ describe('parse-response (Phase 3a–3c — search layouts, unified diffs, and b
       // roots make the search ignore stdin (mirroring the glued-redirect
       // twin), so the genuine records decode.
       for (const name of ['gated-heredoc-roots']) {
+        const f = fixture(name);
+        expect(f.stdout).not.toBe('');
+        expect(sortedSpans(parseFixture(f))).toEqual(sortedSpans(resolveExpected(f)));
+      }
+    });
+  });
+
+  describe('here-strings feed stdin like a redirect (round-9 R9-1)', () => {
+    it('every rootless and sibling `<<<` shape fails closed with non-empty stdout', () => {
+      // `<<<` is a two-token operator whose word feeds the stage's stdin —
+      // a crafted word (`rg -n needle <<< '2:2:needle at 2'` prints the
+      // crafted record) is the same fabricated-record source as a crafted
+      // file. The operator stays in the stage text, so the quote-aware
+      // unquoted-`<` scan applies the same stdin gate as a heredoc: the
+      // gated no-roots form is stdin-fed, and a here-string sibling (chain
+      // or pipe-later, whose redirect overrides the pipe) closes the chain.
+      for (const name of ['herestring-noroots', 'herestring-chain-sibling', 'herestring-pipe-later']) {
+        const f = fixture(name);
+        expect(f.stdout).not.toBe('');
+        expect(parseFixture(f)).toEqual([]);
+      }
+    });
+
+    it('a dangling `<<<` stays a bash parse error — nothing runs, nothing surfaces', () => {
+      // `rg -n needle 1 2 <<<` — the operator without its word is a syntax
+      // error in bash (exit 2, empty stdout), and the walk must keep
+      // rejecting it: the here-string recognition requires the word.
+      const f = fixture('herestring-dangling');
+      expect(f.stdout).toBe('');
+      expect(parseFixture(f)).toEqual([]);
+    });
+
+    it('a here-string under explicit roots, a consumed feeder, and git grep stay open', () => {
+      // `rg -n needle 1 2 <<< x` — explicit roots make the search ignore
+      // stdin (mirroring the heredoc twin); `cat <<<hello | rg …` — the
+      // feeder's here-string output is consumed by the gated stage, which
+      // ignores stdin; `git grep -n alpha <<< x` — git grep never reads
+      // stdin. All three decode the genuine records.
+      for (const name of ['gated-herestring-roots', 'feeder-herestring-roots', 'git-grep-herestring']) {
         const f = fixture(name);
         expect(f.stdout).not.toBe('');
         expect(sortedSpans(parseFixture(f))).toEqual(sortedSpans(resolveExpected(f)));

@@ -619,6 +619,26 @@ export function splitTopLevel(cmd: string): SplitResult {
         i += 1;
         continue;
       }
+      // Here-string recognition: `<<<` (exactly three `<`s, not fd-prefixed)
+      // is a two-token operator — `<<<` plus the word it feeds to stdin —
+      // NOT a heredoc. The heredoc branch below would otherwise fire at the
+      // SECOND `<` (its `cmd[i+2] !== '<'` test passes on the following
+      // word), register that word as a delimiter, and mark the whole
+      // command an unterminated heredoc — so valid bash here-strings
+      // (`cat <<<hello`, `rg -n needle 1 2 <<< 'x'`) were rejected and
+      // failed closed. The operator stays in the stage text (nothing
+      // strips it), so the quote-aware hasUnquotedRedirect scan still
+      // applies the stdin-redirect gate; consuming all three characters
+      // keeps the walk from re-recognizing a heredoc at the second `<`.
+      // Longer `<` runs (`<<<<`) and fd-prefixed forms (`2<<<`) are not
+      // here-strings to bash (syntax error / fd-heredoc misinterpretation)
+      // and fall through to the heredoc misfire, which keeps them
+      // malformed and fail-closed.
+      if (c === '<' && cmd[i + 1] === '<' && cmd[i + 2] === '<' && cmd[i + 3] !== '<' && cmd[i - 1] !== '<') {
+        buf += '<<<';
+        i += 3;
+        continue;
+      }
       // Heredoc recognition (plan §3): `<<`/`<<-` (not `<<<`) at depth 0 with
       // a delimiter word. The operator+delimiter are stripped from the stage
       // text — the stage keeps a plain argv (`cat f` stays `cat f`).
