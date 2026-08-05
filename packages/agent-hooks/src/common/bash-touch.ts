@@ -17,7 +17,8 @@ import {
   runTouchHook,
   type TouchExecutors,
   type TouchInput,
-  type WriteGateOutcome
+  type WriteGateOutcome,
+  workingTreeChanged
 } from './touch-core.js';
 
 /**
@@ -170,6 +171,15 @@ type GuardMatch = Extract<SpanMatch, { status: 'builtin-guard' }>;
 
 type Verdict = 'failed' | 'succeeded' | 'unknown';
 
+/**
+ * File-producing write operations — the only spans that can explain a
+ * delete's decisiveFail by re-creating its path later in the compound (plan
+ * §3 step 2, round-3). `modify` (sed -i and friends) deliberately cannot:
+ * it never creates a missing file, so an end-state-present path after a
+ * failed `rm` is never its doing.
+ */
+const FILE_PRODUCING_OPS: ReadonlySet<string> = new Set(['create-overwrite', 'rename-copy', 'truncate', 'append']);
+
 /** One pass-A evaluation: the span, its touch, and the (post-resolution) gate outcome. */
 interface SpanEval {
   match: ResolvedMatch;
@@ -247,15 +257,30 @@ export async function runBashTouches(
 
   // Seed the per-command probe cache (plan §3 step 1c) with every absent
   // target and cp/install source of the compound; the first gate that needs
-  // it runs one ls-files + one span-list batch for all of them.
+  // it runs one ls-files + one span-list batch for all of them. The
+  // later-recreate explanation's probe scope (round-3) rides alongside: the
+  // delete paths a later command can re-create with a file-producing write —
+  // their working-tree-vs-index status is the re-create's mark, read once in
+  // one `git status` batch.
   const probePaths: string[] = [];
+  const fileProducingByPath = new Map<string, number[]>();
   for (const m of resolved) {
     if (m.span.operation === 'delete') probePaths.push(m.span.absolutePath);
     else if ((m.idiom === 'cp-write' || m.idiom === 'install-write') && m.span.operation === 'read') {
       probePaths.push(m.span.absolutePath);
+    } else if (FILE_PRODUCING_OPS.has(m.span.operation)) {
+      const list = fileProducingByPath.get(m.span.absolutePath);
+      if (list !== undefined) list.push(m.span.simpleCommandIndex);
+      else fileProducingByPath.set(m.span.absolutePath, [m.span.simpleCommandIndex]);
     }
   }
-  const probeCache = createRealityProbeCache(probePaths);
+  const recreateProbePaths: string[] = [];
+  for (const m of resolved) {
+    if (m.span.operation !== 'delete') continue;
+    const later = (fileProducingByPath.get(m.span.absolutePath) ?? []).some((i) => i > m.span.simpleCommandIndex);
+    if (later) recreateProbePaths.push(m.span.absolutePath);
+  }
+  const probeCache = createRealityProbeCache(probePaths, recreateProbePaths);
 
   // Group by simple command in walker order. Span-less guard commands
   // (`false`/`true`/`:`) join the order with no group: their deterministic
@@ -360,6 +385,53 @@ export async function runBashTouches(
       } else if (e.outcome === 'decisiveFail') {
         const passIdx = passByPath.get(e.path);
         if (passIdx !== undefined && passIdx > e.commandIndex) e.explained = true;
+      }
+    }
+  }
+
+  // The later-recreate explanation (round-3): a delete's decisiveFail —
+  // "file present, so the delete didn't happen" — is also explained when a
+  // LATER command writes the same path with a file-producing operation whose
+  // own gate did not fail (a decisiveFail there proves the write didn't
+  // happen) AND the working tree actually differs from the index — the
+  // re-create's mark, read from the per-command probe. A file that still
+  // matches the index means the chain short-circuited before the write (the
+  // rm failed and `&&` dropped the rest), so the fail stands and the join
+  // filter still suppresses the joined command. This is the existence-gated
+  // sibling of the decisivePass explanation above: `rm f && patch -p0 <
+  // new.diff` ends with f present because the patch re-created it, not
+  // because the rm failed, and the patch's gate is inconclusive — only this
+  // rule can see the re-create. Content-verified re-creates (echo/cp/
+  // truncate with a body) never need it — their decisivePass explains via
+  // the map above. Residual: a pre-existing uncommitted change on the
+  // deleted path masks the discriminator (the file differed from the index
+  // before the compound ever ran), so an rm that failed on a dirty path lets
+  // the joined write fire advisory — same bounded harm as the plan's
+  // documented "coincidentally passes" join corner, and a harness-supplied
+  // non-zero exit code still suppresses the advisory class in pass B.
+  const recreateByPath = new Map<string, number>();
+  for (const idx of commandOrder) {
+    const list = evals.get(idx);
+    if (list === undefined) continue;
+    for (const e of list) {
+      if (e.outcome === 'decisiveFail') continue;
+      if (e.touch === null || e.touch.kind !== 'write' || e.touch.targetState !== 'exists') continue;
+      if (!FILE_PRODUCING_OPS.has(e.match.span.operation)) continue;
+      const prev = recreateByPath.get(e.path);
+      if (prev === undefined || idx > prev) recreateByPath.set(e.path, idx);
+    }
+  }
+  if (recreateByPath.size > 0) {
+    for (const idx of commandOrder) {
+      const list = evals.get(idx);
+      if (list === undefined) continue;
+      for (const e of list) {
+        if (e.outcome !== 'decisiveFail' || e.explained) continue;
+        if (e.touch === null || e.touch.kind !== 'write' || e.touch.targetState !== 'absent') continue;
+        const recreateIdx = recreateByPath.get(e.path);
+        if (recreateIdx !== undefined && recreateIdx > e.commandIndex && workingTreeChanged(probeCache, cwd, e.path)) {
+          e.explained = true;
+        }
       }
     }
   }

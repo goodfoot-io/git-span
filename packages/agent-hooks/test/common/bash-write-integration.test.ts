@@ -680,6 +680,105 @@ describe('bash-write-integration — in-place editors (sed -i, patch, git apply)
     expect(res.fixPaths).toEqual(['a.txt']);
     expect(readRel(r.root, 'a.txt')).toBe('n1\nn2\nn3\nn4\nn5\n');
   });
+
+  it('&&-joined rm a.txt && patch -p0 < new.diff re-creates a spanned path: the create-overwrite touch fires (round-3 miss case)', async () => {
+    const r = repo();
+    seedTrackedSpan(r.root, 'a.txt', 'l1\nl2\nl3\nl4\nl5\n', 'recreate-and-patch-span');
+    // The round-3 finding: the compound ends with a.txt present because the
+    // patch re-created it, so the rm's delete gate fails ("file present, so
+    // the delete didn't happen") — but the patch's existence gate is
+    // inconclusive, so only the later-recreate explanation (file-producing
+    // later write + working tree differing from the index) can un-fail the
+    // rm and let `&&` fail open. The delete stays explained-suppressed; the
+    // create-overwrite fires (fake executors capture the healed path).
+    writeRel(r.root, 'new.diff', '--- /dev/null\n+++ a.txt\n@@ -0,0 +1,5 @@\n+n1\n+n2\n+n3\n+n4\n+n5\n');
+    expect(bashRun('rm a.txt && patch -p0 < new.diff', r.root)).toBe(0);
+    const res = await runPipeline('rm a.txt && patch -p0 < new.diff', r.root);
+    expect(parsedOps(res.matches, r.root)).toEqual([
+      { op: 'delete', rel: 'a.txt' },
+      { op: 'create-overwrite', rel: 'a.txt' }
+    ]);
+    expect(res.fixPaths).toEqual(['a.txt']);
+    expect(readRel(r.root, 'a.txt')).toBe('n1\nn2\nn3\nn4\nn5\n');
+  });
+
+  it('&&-joined rm a.txt && git apply new.diff re-creates a spanned path: the create-overwrite touch fires', async () => {
+    const r = repo();
+    seedTrackedSpan(r.root, 'a.txt', 'l1\nl2\nl3\nl4\nl5\n', 'recreate-and-gitapply-span');
+    writeRel(r.root, 'new.diff', '--- /dev/null\n+++ a.txt\n@@ -0,0 +1,5 @@\n+n1\n+n2\n+n3\n+n4\n+n5\n');
+    expect(bashRun('rm a.txt && git apply new.diff', r.root)).toBe(0);
+    const res = await runPipeline('rm a.txt && git apply new.diff', r.root);
+    expect(res.fixPaths).toEqual(['a.txt']);
+    expect(readRel(r.root, 'a.txt')).toBe('n1\nn2\nn3\nn4\nn5\n');
+  });
+
+  it('&&-joined rm a.txt && : > a.txt re-creates a spanned path with an empty truncate: the truncate touch fires (round-3 empty-truncate dialect)', async () => {
+    const r = repo();
+    seedTrackedSpan(r.root, 'a.txt', 'l1\nl2\nl3\nl4\nl5\n', 'recreate-and-empty-truncate-span');
+    // The `: > a.txt` grammar is a truncate span without a size (verified
+    // against parse-command), so it gates existence-only and is body-less —
+    // the exact class the round-3 miss covered: the rm's delete gate fails
+    // ("file present, so the delete didn't happen") while the re-created
+    // empty file satisfies only the truncate's existence gate. The
+    // later-recreate explanation un-fails the rm, `&&` fails open, and the
+    // truncate advisory fires.
+    expect(bashRun('rm a.txt && : > a.txt', r.root)).toBe(0);
+    const res = await runPipeline('rm a.txt && : > a.txt', r.root);
+    expect(parsedOps(res.matches, r.root)).toEqual([
+      { op: 'delete', rel: 'a.txt' },
+      { op: 'truncate', rel: 'a.txt' }
+    ]);
+    expect(res.fixPaths).toEqual(['a.txt']);
+    expect(readRel(r.root, 'a.txt')).toBe('');
+  });
+
+  it('&&-joined rm a.txt && echo ONE > a.txt (body-carrying control): the create-overwrite touch still fires', async () => {
+    const r = repo();
+    seedTrackedSpan(r.root, 'a.txt', 'l1\nl2\nl3\nl4\nl5\n', 'recreate-and-body-control-span');
+    // Regression control: a body-carrying re-creator already fires today via
+    // exact-content verification (the literal body rides as the exact
+    // post-content expectation, the gate decisivePasses, the delete is
+    // explained on the decisive-pass axis). The empty-truncate fix must not
+    // change that.
+    expect(bashRun('rm a.txt && echo ONE > a.txt', r.root)).toBe(0);
+    const res = await runPipeline('rm a.txt && echo ONE > a.txt', r.root);
+    expect(parsedOps(res.matches, r.root)).toEqual([
+      { op: 'delete', rel: 'a.txt' },
+      { op: 'create-overwrite', rel: 'a.txt', written: 'ONE\n' }
+    ]);
+    expect(res.fixPaths).toEqual(['a.txt']);
+    expect(readRel(r.root, 'a.txt')).toBe('ONE\n');
+  });
+
+  it(';-joined rm a.txt; patch -p0 < new.diff still fires the create-overwrite touch (no join gate)', async () => {
+    const r = repo();
+    seedTrackedSpan(r.root, 'a.txt', 'l1\nl2\nl3\nl4\nl5\n', 'recreate-semi-patch-span');
+    writeRel(r.root, 'new.diff', '--- /dev/null\n+++ a.txt\n@@ -0,0 +1,5 @@\n+n1\n+n2\n+n3\n+n4\n+n5\n');
+    expect(bashRun('rm a.txt; patch -p0 < new.diff', r.root)).toBe(0);
+    const res = await runPipeline('rm a.txt; patch -p0 < new.diff', r.root);
+    expect(res.fixPaths).toEqual(['a.txt']);
+    expect(readRel(r.root, 'a.txt')).toBe('n1\nn2\nn3\nn4\nn5\n');
+  });
+
+  it('&&-joined rm a.txt && patch -p0 < new.diff with the rm failing: zero touches — a file that matches the index is no re-create', async () => {
+    const r = repo();
+    try {
+      seedTrackedSpan(r.root, 'a.txt', 'l1\nl2\nl3\nl4\nl5\n', 'recreate-and-failedrm-span');
+      writeRel(r.root, 'new.diff', '--- /dev/null\n+++ a.txt\n@@ -0,0 +1,5 @@\n+n1\n+n2\n+n3\n+n4\n+n5\n');
+      chmodSync(r.root, 0o500);
+      // The read-only dir makes the rm fail, so `&&` drops the patch: the
+      // compound ends with a.txt present but matching the index (committed
+      // content) — the later-recreate explanation's working-tree probe
+      // refuses it, the delete-gate fail stands, and the joined command
+      // stays suppressed. No phantom advisory fires.
+      expect(bashRun('rm a.txt && patch -p0 < new.diff', r.root)).not.toBe(0);
+      const res = await runPipeline('rm a.txt && patch -p0 < new.diff', r.root);
+      expect(res.fixPaths).toEqual([]);
+      expect(readRel(r.root, 'a.txt')).toBe('l1\nl2\nl3\nl4\nl5\n');
+    } finally {
+      chmodSync(r.root, 0o700);
+    }
+  });
 });
 
 describe('bash-write-integration — restore/checkout pathspecs', () => {

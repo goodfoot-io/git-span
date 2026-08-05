@@ -218,23 +218,42 @@ export type TouchPostContent = { exact: string } | { suffix: string } | { empty:
 export type WriteGateOutcome = 'decisivePass' | 'decisiveFail' | 'inconclusive' | 'pending';
 
 /**
- * Per-command delete-reality probe cache (plan §3 step 1c): one `git
- * ls-files --error-unmatch` and one `git span list --porcelain` batch per
- * command, never one per path, membership from printed rows. The
- * `runBashTouches` driver seeds it with every absent target and cp/install
- * source of the compound and shares it into pass B so surviving deletes
- * re-gate without re-probing.
+ * Per-command reality probe cache (plan §3 step 1c, round-3): two lazy,
+ * batched probes — one `git ls-files --error-unmatch` + `git span list
+ * --porcelain` pair for the delete-reality membership, and one `git status
+ * --porcelain` batch for the working-tree-vs-index mark — never one
+ * subprocess per path, membership from printed rows. The `runBashTouches`
+ * driver seeds the delete-reality half with every absent target and
+ * cp/install source of the compound and the status half with the
+ * later-recreate explanation's candidate paths, and shares the cache into
+ * pass B so surviving deletes re-gate without re-probing.
  */
 export interface RealityProbeCache {
   /** Distinct absolute paths to probe, in first-seen order. */
   paths: string[];
   /** Lazy: absolute paths confirmed index-tracked or spanned, computed once. */
   realPaths: Set<string> | null;
+  /**
+   * The later-recreate explanation's probe scope (plan §3 step 2): distinct
+   * delete paths a later command of the compound can re-create with a
+   * file-producing write, in first-seen order.
+   */
+  changedCandidates: string[];
+  /** Lazy: candidates whose tracked working-tree content differs from the index, computed once. */
+  changedPaths: Set<string> | null;
 }
 
 /** Create a per-command probe cache for the given absolute paths. */
-export function createRealityProbeCache(paths: Iterable<string>): RealityProbeCache {
-  return { paths: [...new Set(paths)], realPaths: null };
+export function createRealityProbeCache(
+  paths: Iterable<string>,
+  changedCandidates: Iterable<string> = []
+): RealityProbeCache {
+  return {
+    paths: [...new Set(paths)],
+    realPaths: null,
+    changedCandidates: [...new Set(changedCandidates)],
+    changedPaths: null
+  };
 }
 
 /** Whether the path exists on disk (any node kind); `false` on any stat failure. */
@@ -326,6 +345,62 @@ function realPaths(cache: RealityProbeCache, cwd: string): Set<string> {
   }
   cache.realPaths = real;
   return real;
+}
+
+/**
+ * The working-tree-vs-index probe (plan §3 step 2, round-3): lazily run one
+ * `git status --porcelain -z` batch over the seeded candidates and cache the
+ * set whose tracked working-tree content differs from the index — the
+ * re-create's mark. The driver consults it before explaining a delete's
+ * decisiveFail ("file present, so the delete didn't happen") by a later
+ * same-path write: an end-state-present file that still matches the index is
+ * a failed rm (the `&&` chain short-circuited before the write ran), not a
+ * re-create. The Y (worktree) status column decides — a row whose index
+ * column alone differs (`A ` for an added-but-uncommitted file whose
+ * working tree matches the index) is no re-create, only a non-space Y column
+ * (` M`, `MM`, `AM`) proves the working-tree content differs from the index.
+ * `--untracked-files=no` suppresses the `?? ` rows — an untracked path
+ * carries no index baseline, so it can never count as re-created (fail
+ * closed). `-z` prints raw, NUL-separated `XY <path>` entries so space- and
+ * quote-bearing paths parse unambiguously. Fail-safe: an unresolvable repo or
+ * a probe failure yields an empty set, never an error.
+ */
+function changedOnDisk(cache: RealityProbeCache, cwd: string): Set<string> {
+  if (cache.changedPaths !== null) return cache.changedPaths;
+  const changed = new Set<string>();
+  if (cache.changedCandidates.length > 0) {
+    const repoRoot = resolveRepoRoot(cwd);
+    if (repoRoot !== null) {
+      const rels = cache.changedCandidates.map((p) => relativeToRepo(repoRoot, p));
+      try {
+        const out = execFileSync('git', ['status', '--porcelain', '-z', '--untracked-files=no', '--', ...rels], {
+          cwd: repoRoot,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+          timeout: DEFAULT_TIMEOUT_MS
+        });
+        for (const entry of out.split('\0')) {
+          if (entry.length < 4) continue; // skip the trailing empty entry and rename-pair path rows
+          const worktreeStatus = entry.charAt(1);
+          if (worktreeStatus === ' ' || worktreeStatus === '?') continue; // index-only or untracked → no mark
+          changed.add(join(repoRoot, entry.slice(3)));
+        }
+      } catch (err) {
+        void err; // probe failure → empty set (fail-safe, never an error)
+      }
+    }
+  }
+  cache.changedPaths = changed;
+  return changed;
+}
+
+/**
+ * Whether the path's tracked working-tree content differs from the index —
+ * the later-recreate explanation's mark. `false` on any probe failure or for
+ * any path outside the seeded candidates (fail closed).
+ */
+export function workingTreeChanged(probeCache: RealityProbeCache, cwd: string, absPath: string): boolean {
+  return changedOnDisk(probeCache, cwd).has(absPath);
 }
 
 /**

@@ -304,6 +304,19 @@ describe('runBashTouches — per-command verdicts, explanations, and the join fi
     }
   }
 
+  /**
+   * Seed a tracked path whose working-tree content differs from the index —
+   * the post-command state a real `rm f && patch -p0 < new.diff` compound
+   * leaves behind (the index still holds the pre-command content). The
+   * later-recreate explanation's working-tree-vs-index probe reads exactly
+   * this mark.
+   */
+  function seedDirty(root: string, rel: string, indexContent: string, onDiskContent: string): void {
+    writeFileSync(join(root, rel), indexContent);
+    execFileSync('git', ['add', rel], { cwd: root });
+    writeFileSync(join(root, rel), onDiskContent);
+  }
+
   function resolved(idiom: 'rm-write' | 'redirect-write' | 'sed-inplace' | 'cp-write', s: ResolvedSpan): SpanMatch {
     return { status: 'resolved', idiom, span: s };
   }
@@ -520,6 +533,72 @@ describe('runBashTouches — per-command verdicts, explanations, and the join fi
     );
 
     expect(fixPaths).toEqual([f]);
+  });
+
+  it('rm f && <existence-gated create> re-creating f (working tree differs from the index): the create fires — its file-producing span plus the re-create mark explain the delete-gate fail, so && fails open', async () => {
+    // The round-3 miss shape, gate-level: `rm a.txt && patch -p0 < new.diff`
+    // ends with a.txt present because the patch re-created it, not because
+    // the rm failed — but the patch's existence gate is inconclusive (no
+    // body), so the decisivePass explanation above cannot see it. The
+    // later-recreate explanation can: a later same-path file-producing write
+    // whose own gate did not fail, on a file that demonstrably differs from
+    // the index. The delete touch itself stays explained-suppressed (as in
+    // the echo case above); the create fires.
+    const root = freshRepo();
+    seedDirty(root, 'f.txt', 'old\n', 'new\n');
+    const f = join(root, 'f.txt');
+    const { executors, fixPaths } = makeCountingExecutors();
+
+    await runBashTouches(
+      [resolved('rm-write', deleteOn(root, 'f.txt', 0)), resolved('sed-inplace', createOn(root, 'f.txt', 1, '&&'))],
+      SESSION_ID,
+      root,
+      {},
+      executors,
+      createMemoryMemoStore()
+    );
+
+    expect(fixPaths).toEqual([f]);
+  });
+
+  it('rm f && <existence-gated create> with the rm failing (f matches the index): zero executor calls — a clean file is no re-create, so the delete-gate fail stands and && still suppresses', async () => {
+    // The discriminator pin: the same compound shape with the file still
+    // matching the index means the chain short-circuited before the create
+    // ran (the rm failed). The end-state presence is the rm's failure, not
+    // the create's doing — the joined command stays suppressed.
+    const root = freshRepo();
+    seedState(root, [['f.txt', 'unchanged\n']], ['f.txt']);
+    const { executors, calls } = makeCountingExecutors();
+
+    await runBashTouches(
+      [resolved('rm-write', deleteOn(root, 'f.txt', 0)), resolved('sed-inplace', createOn(root, 'f.txt', 1, '&&'))],
+      SESSION_ID,
+      root,
+      {},
+      executors,
+      createMemoryMemoStore()
+    );
+
+    expect(calls).toEqual({ fix: 0, list: 0, drift: 0, why: 0 });
+  });
+
+  it('rm f && sed -i f with the rm failing (f dirty): zero executor calls — a modify never re-creates, so no later write can explain the delete-gate fail', async () => {
+    // The file-producing restriction: sed -i cannot create a missing file,
+    // so even on a dirty path the rm's fail stands and the join suppresses.
+    const root = freshRepo();
+    seedDirty(root, 'f.txt', 'old\n', 'unchanged\n');
+    const { executors, calls } = makeCountingExecutors();
+
+    await runBashTouches(
+      [resolved('rm-write', deleteOn(root, 'f.txt', 0)), resolved('sed-inplace', modifyOn(root, 'f.txt', 1, '&&'))],
+      SESSION_ID,
+      root,
+      {},
+      executors,
+      createMemoryMemoStore()
+    );
+
+    expect(calls).toEqual({ fix: 0, list: 0, drift: 0, why: 0 });
   });
 
   it("cp a b && rm a with the rm succeeding: the dest write on b fires (real source, absence explained by the rm's pass) and the rm delete fires", async () => {
