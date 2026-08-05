@@ -14,13 +14,19 @@
  * fallback only when the span has a single anchor on the path.
  */
 
-import { describe, expect, it } from 'vitest';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { type AdvisorExecutors, type AdvisorMemoState, evaluateAdvisor } from '../../src/common/advisor-core.js';
 import type { DriftPorcelainRow, PorcelainRow } from '../../src/common/agent-hooks-common.js';
 import type { MemoStore } from '../../src/common/span-surface.js';
 import { runTouchHook, type TouchExecutors, type TouchWriteInput } from '../../src/common/touch-core.js';
+import { makeTempRepo } from '../helpers.js';
 
-const REPO_ROOT = '/repo';
+// The touch hook's write gate (plan §3 step 1) verifies the target exists on
+// disk before any executor call, so the fixtures run against a real temp repo
+// with the drift target seeded (the executors stay fakes).
+let REPO_ROOT = '/repo';
 const SESSION_ID = 'session-hook-anchor-attribution';
 const SPAN = 'website/specimen-hardwrap-coupling';
 const WHY = 'Specimen copy is hard-wrapped in the component and mirrored in the specimen table.';
@@ -100,12 +106,16 @@ async function touchBlock(anchors: PorcelainRow[], drift: DriftPorcelainRow[]): 
     drift: async (): Promise<DriftPorcelainRow[]> => drift,
     why: async (): Promise<string | null> => WHY
   };
+  // `written: ''` scopes the touch whole-file: the fixture's anchors sit at
+  // lines 36-134 while the seeded file is a one-line stub, so a recovered
+  // range could never intersect them — the parity check is about attribution,
+  // not range scoping (which touch-core.test.ts covers).
   const input: TouchWriteInput = {
     kind: 'write',
     sessionId: SESSION_ID,
     cwd: REPO_ROOT,
     filePath: `${REPO_ROOT}/${SPECIMENS}`,
-    written: 'export const specimens = [];\n'
+    written: ''
   };
   const output = await runTouchHook(input, executors, createMemoryMemoStore());
   return output.additionalContext ?? '';
@@ -147,6 +157,19 @@ function markedAnchors(rendered: string): string[] {
 }
 
 describe('per-anchor drift attribution agrees across both hooks', () => {
+  let repo: { root: string; cleanup: () => void };
+
+  beforeAll(() => {
+    repo = makeTempRepo();
+    mkdirSync(join(repo.root, 'packages/website/app/components/marketing/story'), { recursive: true });
+    writeFileSync(join(repo.root, SPECIMENS), 'export const specimens = [];\n');
+    REPO_ROOT = repo.root;
+  });
+
+  afterAll(() => {
+    repo.cleanup();
+  });
+
   it('marks the range that drifted, not the first range on its path', async () => {
     const reason = await advisorReason(ANCHORS, DRIFT, LIST_BLOCKS);
 

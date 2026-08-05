@@ -17,13 +17,15 @@
  * `targetState`/`postState` gate contract (plan §3 step 1), the exact-range
  * bypass, delete-path surfacing, the delete-reality probe batching, and the
  * absent-source resolution for cp/install dests (plan §3 step 2 — driven
- * through `runBashTouches`). All checks are `it.skip` until Phase 3.
+ * through `runBashTouches`). Phase 3 unskipped them all; the gate fixtures run
+ * against a real temp repo (the write gate's statSync is the only real fs
+ * touch — the executors stay mocked).
  */
 
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { DriftPorcelainRow, PorcelainRow } from '../../src/common/agent-hooks-common.js';
 import { runBashTouches } from '../../src/common/bash-touch.js';
 import type { ResolvedSpan, SpanMatch } from '../../src/common/parse-command.js';
@@ -51,7 +53,10 @@ function createMemoryMemoStore(): MemoStore {
   };
 }
 
-const REPO_ROOT = '/repo';
+// The write gate (plan §3 step 1) verifies the target exists on disk, so the
+// write-path fixtures run against a real temp repo with `src/app.ts` seeded
+// (the executors stay mocked — the gate's statSync is the only real fs touch).
+let REPO_ROOT = '/repo';
 const SESSION_ID = 'session-touch-core-test';
 const WHY = 'Checkout request flow that carries a charge attempt from the browser to the Stripe-backed server.';
 
@@ -135,6 +140,19 @@ function countingExecutors(): {
 }
 
 describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
+  let repo: { root: string; cleanup: () => void };
+
+  beforeAll(() => {
+    repo = makeTempRepo();
+    mkdirSync(join(repo.root, 'src'));
+    writeFileSync(join(repo.root, 'src/app.ts'), 'export const app = 1;\n');
+    REPO_ROOT = repo.root;
+  });
+
+  afterAll(() => {
+    repo.cleanup();
+  });
+
   describe('runTouchHook — write path', () => {
     it('heals insertion-only (positional) drift in the tree but surfaces no alert', async () => {
       const memo = createMemoryMemoStore();
@@ -478,14 +496,17 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       repo?.cleanup();
     });
 
-    it.skip("the 'exists' gate passes when the target is a real file: fix runs", async () => {
+    it("the 'exists' gate passes when the target is a real file: fix runs", async () => {
       repo = makeTempRepo();
       const filePath = join(repo.root, 'app.ts');
       writeFileSync(filePath, 'export const app = 1;\n');
       const memo = createMemoryMemoStore();
       const executors: TouchExecutors = {
         fix: async (): Promise<TouchFixResult> => ({ modified: false }),
-        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+        // The row's path must match the touched file's repo-relative path
+        // (`app.ts`, not the helper default `src/app.ts`) or the onTouchedFile
+        // filter drops it.
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'app.ts' })],
         drift: async (): Promise<DriftPorcelainRow[]> => [],
         why: async (): Promise<string | null> => WHY
       };
@@ -500,7 +521,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       expect(output.additionalContext).toContain('## billing/checkout-request-flow');
     });
 
-    it.skip("the 'exists' gate fails closed when the target is missing: zero executor calls", async () => {
+    it("the 'exists' gate fails closed when the target is missing: zero executor calls", async () => {
       repo = makeTempRepo();
       const filePath = join(repo.root, 'never-created.txt');
       const memo = createMemoryMemoStore();
@@ -530,7 +551,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       expect(output.additionalContext).toBeNull();
     });
 
-    it.skip("the 'exists' gate fails closed when the target is a directory", async () => {
+    it("the 'exists' gate fails closed when the target is a directory", async () => {
       repo = makeTempRepo();
       const dirPath = join(repo.root, 'a-dir');
       mkdirSync(dirPath);
@@ -556,7 +577,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       expect(output.additionalContext).toBeNull();
     });
 
-    it.skip("the 'absent' gate passes for a real (index-tracked, deleted) target: fix runs", async () => {
+    it("the 'absent' gate passes for a real (index-tracked, deleted) target: fix runs", async () => {
       repo = makeTempRepo();
       const filePath = join(repo.root, 'gone.ts');
       writeFileSync(filePath, 'a\nb\n');
@@ -584,7 +605,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       expect(output.additionalContext).toContain('## billing/checkout-request-flow');
     });
 
-    it.skip("the 'absent' gate fails closed when the target was never real (phantom): zero executor calls", async () => {
+    it("the 'absent' gate fails closed when the target was never real (phantom): zero executor calls", async () => {
       repo = makeTempRepo();
       const filePath = join(repo.root, 'phantom.txt');
       const memo = createMemoryMemoStore();
@@ -617,7 +638,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       repo?.cleanup();
     });
 
-    it.skip('a statically known input.range bypasses recoverRangeFromDisk', async () => {
+    it('a statically known input.range bypasses recoverRangeFromDisk', async () => {
       // The written block is absent from the on-disk file (so disk recovery
       // would degrade to whole-file); the given range {1,1} excludes the only
       // covering anchor {5,5} — honoring the range surfaces nothing, while
@@ -642,7 +663,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       expect(output.additionalContext).toBeNull();
     });
 
-    it.skip('input.range scopes the surface to intersecting anchors', async () => {
+    it('input.range scopes the surface to intersecting anchors', async () => {
       repo = makeTempRepo();
       const filePath = join(repo.root, 'mod.rs');
       writeFileSync(filePath, Array.from({ length: 10 }, (_, i) => `line ${i + 1}`).join('\n'));
@@ -664,7 +685,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       expect(output.additionalContext).toContain('## billing/checkout-request-flow');
     });
 
-    it.skip('a delete touch surfaces the deleted file through the write path (porcelain on a deleted file)', async () => {
+    it('a delete touch surfaces the deleted file through the write path (porcelain on a deleted file)', async () => {
       repo = makeTempRepo();
       const filePath = join(repo.root, 'gone.ts');
       writeFileSync(filePath, 'a\nb\n');
@@ -697,7 +718,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
   // =========================================================================
 
   describe('delete-reality probe batching (plan §3 step 1c)', () => {
-    it.skip('a 10-path rm records exactly two probe invocations; repeated targets fold into the same batch', async () => {
+    it('a 10-path rm records exactly two probe invocations; repeated targets fold into the same batch', async () => {
       vi.resetModules();
       const gitCalls: string[][] = [];
       vi.doMock('node:child_process', async (importOriginal) => {
@@ -761,7 +782,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       return { status: 'resolved', idiom, span: s };
     }
 
-    it.skip('cp missing existing: a phantom source suppresses the dest — zero executor calls', async () => {
+    it('cp missing existing: a phantom source suppresses the dest — zero executor calls', async () => {
       repo = makeTempRepo();
       const root = repo.root;
       const missing = join(root, 'missing.txt');
@@ -790,7 +811,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       expect(calls).toEqual({ fix: 0, list: 0, drift: 0, why: 0 });
     });
 
-    it.skip('cp a b && rm a: a real source whose absence the later rm pass explains — the dest fires', async () => {
+    it('cp a b && rm a: a real source whose absence the later rm pass explains — the dest fires', async () => {
       repo = makeTempRepo();
       const root = repo.root;
       const a = join(root, 'a.txt');
@@ -817,7 +838,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       expect(fixPaths).toEqual([b, a]);
     });
 
-    it.skip('rm a; cp a b with b pre-existing: a real source whose absence nothing explains — the dest is suppressed (the rm delete still fires)', async () => {
+    it('rm a; cp a b with b pre-existing: a real source whose absence nothing explains — the dest is suppressed (the rm delete still fires)', async () => {
       repo = makeTempRepo();
       const root = repo.root;
       const a = join(root, 'a.txt');

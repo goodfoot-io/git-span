@@ -31,6 +31,18 @@ import * as fs from 'node:fs';
 import type { AnchorSpec, LineRange } from '../common/agent-hooks-common.js';
 
 /**
+ * An anchor parsed from an apply_patch envelope: an {@link AnchorSpec} plus
+ * the delete classification (plan §3). `*** Delete File:` hunks keep the
+ * `whole-write` kind (TouchKind is fixed) and add the `absent` marker so the
+ * apply_patch call site passes `targetState: 'absent'` — without it the
+ * deletion touch would be gated away by the `'exists'` default.
+ */
+export interface ApplyPatchAnchor extends AnchorSpec {
+  /** true for `*** Delete File:` hunks — the touch's targetState is `'absent'`. */
+  absent?: boolean;
+}
+
+/**
  * Reads the pre-edit (on-disk, before the patch applies) content of the file at
  * `path`, or returns `null` when it cannot be read. Injected so the parser stays
  * pure; call sites default to a real filesystem read.
@@ -307,7 +319,8 @@ function recoverRange(preLines: string[], chunks: UpdateChunk[]): LineRange | nu
  * Parse a Codex `apply_patch` command string into an anchor per touched file.
  *
  * - `*** Add File:` → `create` (whole-file)
- * - `*** Delete File:` → `whole-write` (whole-file; the file no longer exists)
+ * - `*** Delete File:` → `whole-write` with the `absent` marker (whole-file;
+ *   the file no longer exists — the touch targets absence, plan §3)
  * - `*** Update File:` → `write` with a recovered line range when the hunk's
  *   pre-edit block can be located via `readPreEditFile`, otherwise `whole-write`.
  *   A renamed update (`*** Move to:`) anchors the destination path as
@@ -318,8 +331,8 @@ function recoverRange(preLines: string[], chunks: UpdateChunk[]): LineRange | nu
 export function parseApplyPatch(
   command: string,
   readPreEditFile: ReadPreEditFile = defaultReadPreEditFile
-): AnchorSpec[] {
-  const anchors: AnchorSpec[] = [];
+): ApplyPatchAnchor[] {
+  const anchors: ApplyPatchAnchor[] = [];
 
   for (const hunk of scanHunks(command)) {
     if (hunk.kind === 'add') {
@@ -327,7 +340,7 @@ export function parseApplyPatch(
       continue;
     }
     if (hunk.kind === 'delete') {
-      anchors.push({ path: toPosix(hunk.path), kind: 'whole-write' });
+      anchors.push({ path: toPosix(hunk.path), kind: 'whole-write', absent: true });
       continue;
     }
 

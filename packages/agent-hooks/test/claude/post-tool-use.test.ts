@@ -129,6 +129,10 @@ describe('claude post-tool-use touch signal', () => {
   let repo: { root: string; cleanup: () => void };
   beforeAll(() => {
     repo = makeTempRepo();
+    // The Edit/Write fixtures target `app.ts` at the repo root, and the write
+    // gate (plan §3 step 1) fails closed when the target is not on disk — the
+    // hook runs post-tool, so the file exists by then.
+    writeFileSync(join(repo.root, 'app.ts'), 'export const app = 1;\n');
   });
   afterAll(() => repo.cleanup());
 
@@ -344,7 +348,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
     return postInput({ cwd: repo.root, tool_name: 'Bash', tool_input: { command } });
   }
 
-  it.skip('redirection: echo hello > f produces a whole-file write touch on f', async () => {
+  it('redirection: echo hello > f produces a whole-file write touch on f', async () => {
     seed([['f.txt', 'hello\n']]);
     const { executors, fixPaths } = makeExecutors();
     const handler = createHandler(executors, inMemoryMemoFactory());
@@ -354,7 +358,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
     expect(fixPaths).toEqual([p('f.txt')]);
   });
 
-  it.skip('redirection: echo x >> f threads the append body into the write touch', async () => {
+  it('redirection: echo x >> f threads the append body into the write touch', async () => {
     seed([['f.txt', 'a\nx\n']]);
     const { executors, fixPaths } = makeExecutors();
     const handler = createHandler(executors, inMemoryMemoFactory());
@@ -364,7 +368,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
     expect(fixPaths).toEqual([p('f.txt')]);
   });
 
-  it.skip('heredoc: cat > f <<EOF produces a whole-file write touch on f', async () => {
+  it('heredoc: cat > f <<EOF produces a whole-file write touch on f', async () => {
     seed([['h.txt', 'alpha\n']]);
     const command = `cat > ${p('h.txt')} <<'EOF'\nalpha\nEOF\n`;
     const { executors, fixPaths } = makeExecutors();
@@ -375,7 +379,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
     expect(fixPaths).toEqual([p('h.txt')]);
   });
 
-  it.skip('cp: read on the source, create-overwrite on the dest', async () => {
+  it('cp: read on the source, create-overwrite on the dest', async () => {
     seed([
       ['a.txt', 's1\ns2\n'],
       ['b.txt', 's1\ns2\n']
@@ -389,7 +393,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
     expect(listPaths).toContain(p('a.txt'));
   });
 
-  it.skip('mv: delete on the source, rename-copy on the dest', async () => {
+  it('mv: delete on the source, rename-copy on the dest', async () => {
     seed(
       [
         ['a.txt', null],
@@ -405,7 +409,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
     expect(fixPaths).toEqual([p('a.txt'), p('c.txt')]);
   });
 
-  it.skip('rm: delete touch on a real (index-tracked, deleted) target', async () => {
+  it('rm: delete touch on a real (index-tracked, deleted) target', async () => {
     seed([['d.txt', null]], ['d.txt']);
     const { executors, fixPaths } = makeExecutors();
     const handler = createHandler(executors, inMemoryMemoFactory());
@@ -415,7 +419,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
     expect(fixPaths).toEqual([p('d.txt')]);
   });
 
-  it.skip('truncate -s 0: truncate touch on an empty post-command file', async () => {
+  it('truncate -s 0: truncate touch on an empty post-command file', async () => {
     seed([['e.txt', '']]);
     const { executors, fixPaths } = makeExecutors();
     const handler = createHandler(executors, inMemoryMemoFactory());
@@ -425,7 +429,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
     expect(fixPaths).toEqual([p('e.txt')]);
   });
 
-  it.skip('sed -i: modify touch (script-first disambiguation)', async () => {
+  it('sed -i: modify touch (script-first disambiguation)', async () => {
     seed([['s.txt', 'a\n']]);
     const { executors, fixPaths } = makeExecutors();
     const handler = createHandler(executors, inMemoryMemoFactory());
@@ -435,7 +439,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
     expect(fixPaths).toEqual([p('s.txt')]);
   });
 
-  it.skip('git apply: modify touch on the hunk target', async () => {
+  it('git apply: modify touch on the hunk target', async () => {
     const diff = ['--- a/notes.txt', '+++ b/notes.txt', '@@ -1,3 +1,3 @@', ' one', '-two', "+two'", ' three'].join(
       '\n'
     );
@@ -451,7 +455,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
     expect(fixPaths).toEqual([p('notes.txt')]);
   });
 
-  it.skip('formatter: prettier --write produces a modify touch', async () => {
+  it('formatter: prettier --write produces a modify touch', async () => {
     seed([['fmt.ts', 'export const x = 1;\n']]);
     const { executors, fixPaths } = makeExecutors();
     const handler = createHandler(executors, inMemoryMemoFactory());
@@ -461,7 +465,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
     expect(fixPaths).toEqual([p('fmt.ts')]);
   });
 
-  it.skip('git restore f: create-overwrite touch', async () => {
+  it('git restore f: create-overwrite touch', async () => {
     seed([['r.txt', 'x\n']]);
     const { executors, fixPaths } = makeExecutors();
     const handler = createHandler(executors, inMemoryMemoFactory());
@@ -471,7 +475,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
     expect(fixPaths).toEqual([p('r.txt')]);
   });
 
-  it.skip('git checkout -- f: create-overwrite touch', async () => {
+  it('git checkout -- f: create-overwrite touch', async () => {
     seed([['k.txt', 'x\n']]);
     const { executors, fixPaths } = makeExecutors();
     const handler = createHandler(executors, inMemoryMemoFactory());
@@ -481,7 +485,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
     expect(fixPaths).toEqual([p('k.txt')]);
   });
 
-  it.skip('no touch for non-family hosts: ls > f and echo x 2> err', async () => {
+  it('no touch for non-family hosts: ls > f and echo x 2> err', async () => {
     seed([
       ['f.txt', 'x\n'],
       ['err.txt', '']

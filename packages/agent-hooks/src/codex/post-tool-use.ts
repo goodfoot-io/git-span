@@ -36,14 +36,10 @@
 
 import { type HookContext, type PostToolUseInput, postToolUseHook, postToolUseOutput } from '@goodfoot/codex-hooks';
 import { abspathAgainst } from '../common/agent-hooks-common.js';
+import { bashResponseInterrupted, runBashTouches } from '../common/bash-touch.js';
 import { parseCommandDetailed } from '../common/parse-command.js';
 import { createDiskMemoStore, type MemoFactory, resolveTouchScope } from '../common/span-surface.js';
-import {
-  createDefaultTouchExecutors,
-  runTouchHook,
-  type TouchExecutors,
-  type TouchInput
-} from '../common/touch-core.js';
+import { createDefaultTouchExecutors, runTouchHook, type TouchExecutors } from '../common/touch-core.js';
 import { parseApplyPatch } from './apply-patch.js';
 
 /**
@@ -274,43 +270,13 @@ export function createHandler(
       }
       if (!command) return undefined;
 
+      // An interrupted command produces no touches, whatever its spans; the
+      // driver re-checks defensively.
+      if (bashResponseInterrupted(input.tool_response)) return undefined;
       const matches = parseCommandDetailed(command, cwd);
-      const blocks: string[] = [];
-      for (const match of matches) {
-        if (match.status !== 'resolved') continue;
-        const span = match.span;
-        const absPath = abspathAgainst(cwd, span.absolutePath);
-        const scope = resolveTouchScope(cwd, absPath);
-        if (!scope) continue;
-        let touchInput: {
-          kind: 'read' | 'write';
-          sessionId: string;
-          cwd: string;
-          filePath: string;
-          offset?: number;
-          limit?: number;
-          written?: string;
-        };
-        if (match.idiom === 'heredoc-write') {
-          // `>` overwrites and truncations: whole-file scope so deleted spans
-          // beyond the new EOF are surfaced. `>>` appends: narrow to the
-          // appended lines (`span.written`).
-          const written = span.operation === 'append' ? (span.written ?? '') : '';
-          touchInput = { kind: 'write', sessionId, cwd, filePath: absPath, written };
-        } else {
-          touchInput = {
-            kind: 'read',
-            sessionId,
-            cwd,
-            filePath: absPath,
-            offset: span.lineStart,
-            limit:
-              span.lineStart !== undefined && span.lineEnd !== undefined ? span.lineEnd - span.lineStart + 1 : undefined
-          };
-        }
-        const output = await runTouchHook(touchInput as TouchInput, executors, memo);
-        if (output.additionalContext) blocks.push(output.additionalContext);
-      }
+      const blocks = await runBashTouches(matches, sessionId, cwd, input.tool_response, executors, memo, (message) =>
+        ctx.logger.warn(message)
+      );
       if (blocks.length === 0) return undefined;
       const combined = blocks.join('');
       return postToolUseOutput({ additionalContext: combined, systemMessage: combined });
@@ -342,8 +308,20 @@ export function createHandler(
       const absPath = abspathAgainst(cwd, anchor.path);
       const scope = resolveTouchScope(cwd, absPath);
       if (!scope) continue;
+      // A `*** Delete File:` anchor carries the absent marker (plan §3): its
+      // touch targets absence — the delete gate verifies the path is gone AND
+      // was real (index-tracked or spanned) before firing. Everything else
+      // targets existence.
       const output = await runTouchHook(
-        { kind: 'write', sessionId, cwd, filePath: absPath, written: '' },
+        {
+          kind: 'write',
+          sessionId,
+          cwd,
+          filePath: absPath,
+          written: '',
+          targetState: anchor.absent ? 'absent' : 'exists',
+          ...(anchor.absent ? { postState: { realDelete: true } } : {})
+        },
         executors,
         memo
       );

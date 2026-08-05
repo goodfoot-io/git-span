@@ -1,23 +1,23 @@
 /**
- * Skipped acceptance checks for bash-touch.ts (card main-212, TDD Phase 2).
+ * Acceptance checks for bash-touch.ts (card main-212, TDD Phases 2-3).
  *
  * Phase 1 shipped `bashSpanToTouch` (the plan §2 operation→touch table) and
  * `bashResponseInterrupted` functional, and stubbed `runBashTouches` (the
- * plan §3 step 2 per-command verdict driver — only the interrupted gate runs).
- * This file writes the contract's acceptance checks against those stubs so
- * Phase 3 has a fixed target. Every check here is `it.skip` — the suite must
- * stay green until Phase 3 unskips them one at a time.
+ * plan §3 step 2 per-command verdict driver — only the interrupted gate ran).
+ * Phase 2 wrote this contract's acceptance checks against those stubs; Phase
+ * 3 (card main-212 step 10) unskipped them one at a time against the real
+ * driver.
  *
  * Fixtures run against real temp repos (`makeTempRepo`) so `resolveTouchScope`
  * passes and the driver's gates can read real post-command file state. The
  * post-state checks the plan pins (exact content for literal echo `>` writes,
- * absent-source cp/install resolution) ride on `ResolvedSpan.written` for now
- * — Phase 3 maps it to the touch's `postState.content.exact` (the touch itself
+ * absent-source cp/install resolution) ride on `ResolvedSpan.written` — the
+ * driver maps it to the touch's `postState.content.exact` (the touch itself
  * stays whole-file per the F2 lesson: `written: ''`).
  */
 
 import { execFileSync } from 'node:child_process';
-import { rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { DriftPorcelainRow, PorcelainRow } from '../../src/common/agent-hooks-common.js';
@@ -99,6 +99,10 @@ describe('bashSpanToTouch — operation→touch translation (plan §2)', () => {
   beforeAll(() => {
     repo = makeTempRepo();
     writeFileSync(join(repo.root, '.gitignore'), 'ignored.ts\n');
+    // The `src/app.ts` translation fixture lives one directory below the repo
+    // root; `resolveTouchScope` resolves the repo root from the file's parent
+    // directory, which must exist (`git -C <dir> rev-parse` fails otherwise).
+    mkdirSync(join(repo.root, 'src'));
   });
 
   afterAll(() => {
@@ -111,7 +115,7 @@ describe('bashSpanToTouch — operation→touch translation (plan §2)', () => {
     return { operation: 'create-overwrite', absolutePath: appPath(), simpleCommandIndex: 0, ...overrides };
   }
 
-  it.skip('read → read touch carrying the span range as offset/limit', () => {
+  it('read → read touch carrying the span range as offset/limit', () => {
     expect(bashSpanToTouch(span({ operation: 'read', lineStart: 3, lineEnd: 7 }), SESSION_ID, repo.root)).toEqual({
       kind: 'read',
       sessionId: SESSION_ID,
@@ -122,7 +126,7 @@ describe('bashSpanToTouch — operation→touch translation (plan §2)', () => {
     });
   });
 
-  it.skip('create-overwrite → whole-file write touch (written: ""), targetState "exists"', () => {
+  it('create-overwrite → whole-file write touch (written: ""), targetState "exists"', () => {
     expect(bashSpanToTouch(span({ operation: 'create-overwrite' }), SESSION_ID, repo.root)).toEqual({
       kind: 'write',
       sessionId: SESSION_ID,
@@ -133,7 +137,7 @@ describe('bashSpanToTouch — operation→touch translation (plan §2)', () => {
     });
   });
 
-  it.skip('rename-copy → whole-file write touch, targetState "exists"', () => {
+  it('rename-copy → whole-file write touch, targetState "exists"', () => {
     expect(bashSpanToTouch(span({ operation: 'rename-copy' }), SESSION_ID, repo.root)).toEqual({
       kind: 'write',
       sessionId: SESSION_ID,
@@ -144,7 +148,7 @@ describe('bashSpanToTouch — operation→touch translation (plan §2)', () => {
     });
   });
 
-  it.skip('truncate → whole-file write touch, targetState "exists"', () => {
+  it('truncate → whole-file write touch, targetState "exists"', () => {
     expect(bashSpanToTouch(span({ operation: 'truncate' }), SESSION_ID, repo.root)).toEqual({
       kind: 'write',
       sessionId: SESSION_ID,
@@ -155,7 +159,7 @@ describe('bashSpanToTouch — operation→touch translation (plan §2)', () => {
     });
   });
 
-  it.skip('append with a written body → write touch threading the body with a suffix post-state', () => {
+  it('append with a written body → write touch threading the body with a suffix post-state', () => {
     expect(bashSpanToTouch(span({ operation: 'append', written: 'x\n' }), SESSION_ID, repo.root)).toEqual({
       kind: 'write',
       sessionId: SESSION_ID,
@@ -167,7 +171,7 @@ describe('bashSpanToTouch — operation→touch translation (plan §2)', () => {
     });
   });
 
-  it.skip('append without a written body → whole-file append touch without post-state', () => {
+  it('append without a written body → whole-file append touch without post-state', () => {
     expect(bashSpanToTouch(span({ operation: 'append' }), SESSION_ID, repo.root)).toEqual({
       kind: 'write',
       sessionId: SESSION_ID,
@@ -178,7 +182,7 @@ describe('bashSpanToTouch — operation→touch translation (plan §2)', () => {
     });
   });
 
-  it.skip('modify with a range → write touch carrying the exact range', () => {
+  it('modify with a range → write touch carrying the exact range', () => {
     expect(bashSpanToTouch(span({ operation: 'modify', lineStart: 2, lineEnd: 4 }), SESSION_ID, repo.root)).toEqual({
       kind: 'write',
       sessionId: SESSION_ID,
@@ -190,7 +194,7 @@ describe('bashSpanToTouch — operation→touch translation (plan §2)', () => {
     });
   });
 
-  it.skip('modify without a range → whole-file write touch', () => {
+  it('modify without a range → whole-file write touch', () => {
     expect(bashSpanToTouch(span({ operation: 'modify' }), SESSION_ID, repo.root)).toEqual({
       kind: 'write',
       sessionId: SESSION_ID,
@@ -201,7 +205,7 @@ describe('bashSpanToTouch — operation→touch translation (plan §2)', () => {
     });
   });
 
-  it.skip('delete → whole-file write touch, targetState "absent", realDelete post-state', () => {
+  it('delete → whole-file write touch, targetState "absent", realDelete post-state', () => {
     expect(bashSpanToTouch(span({ operation: 'delete' }), SESSION_ID, repo.root)).toEqual({
       kind: 'write',
       sessionId: SESSION_ID,
@@ -213,7 +217,7 @@ describe('bashSpanToTouch — operation→touch translation (plan §2)', () => {
     });
   });
 
-  it.skip('a span outside the CWD repo resolves to null (fail closed)', () => {
+  it('a span outside the CWD repo resolves to null (fail closed)', () => {
     expect(
       bashSpanToTouch(
         span({ operation: 'create-overwrite', absolutePath: join(repo.root, '..', 'outside.txt') }),
@@ -223,7 +227,7 @@ describe('bashSpanToTouch — operation→touch translation (plan §2)', () => {
     ).toBeNull();
   });
 
-  it.skip('a gitignored span resolves to null (fail closed)', () => {
+  it('a gitignored span resolves to null (fail closed)', () => {
     expect(
       bashSpanToTouch(
         span({ operation: 'create-overwrite', absolutePath: join(repo.root, 'ignored.ts') }),
@@ -308,7 +312,7 @@ describe('runBashTouches — per-command verdicts, explanations, and the join fi
     ...(joinOp ? { join: joinOp } : {})
   });
 
-  it.skip('rm f && sed -i f with the rm failing (f present): zero executor calls — the join is the only layer that can suppress the existence-gated sed', async () => {
+  it('rm f && sed -i f with the rm failing (f present): zero executor calls — the join is the only layer that can suppress the existence-gated sed', async () => {
     const root = freshRepo();
     seedState(root, [['f.txt', 'unchanged\n']], ['f.txt']);
     const { executors, calls } = makeCountingExecutors();
@@ -325,7 +329,7 @@ describe('runBashTouches — per-command verdicts, explanations, and the join fi
     expect(calls).toEqual({ fix: 0, list: 0, drift: 0, why: 0 });
   });
 
-  it.skip('rm a && sed -i b with the rm succeeding (a tracked+deleted): sed fires; the rm delete also fires', async () => {
+  it('rm a && sed -i b with the rm succeeding (a tracked+deleted): sed fires; the rm delete also fires', async () => {
     const root = freshRepo();
     seedState(
       root,
@@ -352,7 +356,7 @@ describe('runBashTouches — per-command verdicts, explanations, and the join fi
     expect(fixPaths).toContain(a);
   });
 
-  it.skip('rm x || sed -i y with the rm succeeding: the || join drops the sed entirely', async () => {
+  it('rm x || sed -i y with the rm succeeding: the || join drops the sed entirely', async () => {
     const root = freshRepo();
     seedState(
       root,
@@ -377,7 +381,7 @@ describe('runBashTouches — per-command verdicts, explanations, and the join fi
     expect(fixPaths).not.toContain(y);
   });
 
-  it.skip('rm x || sed -i y with the rm failing (x present): the || join fires the sed', async () => {
+  it('rm x || sed -i y with the rm failing (x present): the || join fires the sed', async () => {
     const root = freshRepo();
     seedState(
       root,
@@ -402,7 +406,7 @@ describe('runBashTouches — per-command verdicts, explanations, and the join fi
     expect(fixPaths).toEqual([y]);
   });
 
-  it.skip('rm f; sed -i f with the rm failing: `;` never gates — the sed fires', async () => {
+  it('rm f; sed -i f with the rm failing: `;` never gates — the sed fires', async () => {
     const root = freshRepo();
     seedState(root, [['f.txt', 'a\n']], ['f.txt']);
     const f = join(root, 'f.txt');
@@ -420,7 +424,7 @@ describe('runBashTouches — per-command verdicts, explanations, and the join fi
     expect(fixPaths).toEqual([f]);
   });
 
-  it.skip("rm f && echo x > f with the rm succeeding (echo recreated f): the echo fires exactly once — its later pass explains the rm's fail, so && fails open", async () => {
+  it("rm f && echo x > f with the rm succeeding (echo recreated f): the echo fires exactly once — its later pass explains the rm's fail, so && fails open", async () => {
     const root = freshRepo();
     seedState(root, [['f.txt', 'x\n']], ['f.txt']);
     const f = join(root, 'f.txt');
@@ -443,7 +447,7 @@ describe('runBashTouches — per-command verdicts, explanations, and the join fi
     expect(fixPaths).toEqual([f]);
   });
 
-  it.skip("echo a > f && rm f with the rm succeeding (f tracked+deleted): the rm delete fires — its later pass explains the echo's fail", async () => {
+  it("echo a > f && rm f with the rm succeeding (f tracked+deleted): the rm delete fires — its later pass explains the echo's fail", async () => {
     const root = freshRepo();
     seedState(root, [['f.txt', null]], ['f.txt']);
     const f = join(root, 'f.txt');
@@ -464,7 +468,7 @@ describe('runBashTouches — per-command verdicts, explanations, and the join fi
     expect(fixPaths).toEqual([f]);
   });
 
-  it.skip("echo a > f && echo b > f: only echo-b fires — its later exact pass explains echo-a's fail", async () => {
+  it("echo a > f && echo b > f: only echo-b fires — its later exact pass explains echo-a's fail", async () => {
     const root = freshRepo();
     seedState(root, [['f.txt', 'b\n']], []);
     const f = join(root, 'f.txt');
@@ -485,7 +489,7 @@ describe('runBashTouches — per-command verdicts, explanations, and the join fi
     expect(fixPaths).toEqual([f]);
   });
 
-  it.skip("cp a b && rm a with the rm succeeding: the dest write on b fires (real source, absence explained by the rm's pass) and the rm delete fires", async () => {
+  it("cp a b && rm a with the rm succeeding: the dest write on b fires (real source, absence explained by the rm's pass) and the rm delete fires", async () => {
     const root = freshRepo();
     seedState(
       root,
@@ -515,7 +519,7 @@ describe('runBashTouches — per-command verdicts, explanations, and the join fi
     expect(fixPaths).toEqual([b, a]);
   });
 
-  it.skip('rm a; cp a b with b pre-existing and a untracked: zero executor calls — the phantom source suppresses the dest and the rm delete', async () => {
+  it('rm a; cp a b with b pre-existing and a untracked: zero executor calls — the phantom source suppresses the dest and the rm delete', async () => {
     // `a` is real on disk but never git-added, so the delete-reality probe
     // reads it as phantom: the rm's delete gate is inconclusive (skipped as
     // harmless), the absent-source rule suppresses the dest, and the read's
@@ -547,7 +551,7 @@ describe('runBashTouches — per-command verdicts, explanations, and the join fi
     expect(calls).toEqual({ fix: 0, list: 0, drift: 0, why: 0 });
   });
 
-  it.skip('an interrupted tool response gates the whole command: zero executor calls even for a would-be-passing delete', async () => {
+  it('an interrupted tool response gates the whole command: zero executor calls even for a would-be-passing delete', async () => {
     const root = freshRepo();
     seedState(root, [['f.txt', null]], ['f.txt']);
     const { executors, calls } = makeCountingExecutors();

@@ -74,10 +74,10 @@ describe('parseApplyPatch', () => {
       expect(anchors).toEqual([{ path: 'src/app.ts', kind: 'whole-write' }]);
     });
 
-    it('maps *** Delete File: to a whole-write anchor', () => {
+    it('maps *** Delete File: to a whole-write anchor with the absent marker', () => {
       const patch = ['*** Begin Patch', '*** Delete File: src/gone.ts', '*** End Patch'].join('\n');
       const anchors = parseApplyPatch(patch, noFiles);
-      expect(anchors).toEqual([{ path: 'src/gone.ts', kind: 'whole-write' }]);
+      expect(anchors).toEqual([{ path: 'src/gone.ts', kind: 'whole-write', absent: true }]);
     });
   });
 
@@ -105,7 +105,11 @@ describe('parseApplyPatch', () => {
         kind: 'write',
         range: { start: 2, end: 3 }
       });
-      expect(anchorFor(anchors, 'src/deleted.ts')).toEqual({ path: 'src/deleted.ts', kind: 'whole-write' });
+      expect(anchorFor(anchors, 'src/deleted.ts')).toEqual({
+        path: 'src/deleted.ts',
+        kind: 'whole-write',
+        absent: true
+      });
     });
   });
 

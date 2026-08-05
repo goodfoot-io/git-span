@@ -17,7 +17,7 @@
 
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
-import { basename } from 'node:path';
+import { basename, join } from 'node:path';
 import {
   type DriftPorcelainRow,
   humanStatusLabel,
@@ -166,14 +166,232 @@ export interface TouchWriteInput extends TouchInputBase {
    */
   postState?: {
     /** `exact`: file bytes equal; `suffix`: file content ends with it; `empty`: zero bytes; `size`: byte count. */
-    content?: { exact: string } | { suffix: string } | { empty: true } | { size: number };
+    content?: TouchPostContent;
     /** delete-only: the path must also be index-tracked or spanned (probes cached per command). */
     realDelete?: boolean;
   };
+  /**
+   * cp/install destination-vs-source verification (plan §3 step 1b): a
+   * still-present source must byte-equal the destination; an absent source
+   * applies the absent-source rule (real + absence explained by a later
+   * same-path decisivePass — the driver's pass-A hold). Set by the
+   * `runBashTouches` driver on paired cp create-overwrite touches; never set
+   * by adapters. `install -s`/`--strip` is deliberately never paired —
+   * stripped output never equals the source, so install dests gate
+   * existence-only.
+   */
+  sourcePath?: string;
+  /**
+   * mv/git mv/patch rename source verification (plan §3 step 1c): the
+   * destination fires only when its source passed the delete-reality probe —
+   * a phantom source means the move failed and a pre-existing destination was
+   * never touched. No content comparison (patch renames may change content).
+   * Set by the `runBashTouches` driver on paired rename-copy touches.
+   */
+  renameSourcePath?: string;
 }
 
 /** The harness-agnostic touch the core consumes. */
 export type TouchInput = TouchReadInput | TouchWriteInput;
+
+/**
+ * A statically knowable expected post-content (plan §3 step 1b): `exact` —
+ * file bytes equal; `suffix` — file content ends with it; `empty` — zero
+ * bytes; `size` — byte count.
+ */
+export type TouchPostContent = { exact: string } | { suffix: string } | { empty: true } | { size: number };
+
+// ---------------------------------------------------------------------------
+// Post-state write gate (plan §3 step 1)
+// ---------------------------------------------------------------------------
+
+/**
+ * The outcome of {@link evaluateWriteGate}: a decisive pass/fail carries
+ * verdict weight (content verified, or absence + delete-reality verified);
+ * `'inconclusive'` is everything else — the existence-gated families (sed -i,
+ * patch/git apply, formatters, restore/checkout) whose existence pass proves
+ * nothing, and probe-inapplicable cases (phantom or untracked-unspanned
+ * deletes, directory targets). `'pending'` is the driver's absent-source hold
+ * (plan §3 step 2): an absent cp source that passed the reality probe cannot
+ * decide its destination until the pass-A explanation map is complete.
+ */
+export type WriteGateOutcome = 'decisivePass' | 'decisiveFail' | 'inconclusive' | 'pending';
+
+/**
+ * Per-command delete-reality probe cache (plan §3 step 1c): one `git
+ * ls-files --error-unmatch` and one `git span list --porcelain` batch per
+ * command, never one per path, membership from printed rows. The
+ * `runBashTouches` driver seeds it with every absent target and cp/install
+ * source of the compound and shares it into pass B so surviving deletes
+ * re-gate without re-probing.
+ */
+export interface RealityProbeCache {
+  /** Distinct absolute paths to probe, in first-seen order. */
+  paths: string[];
+  /** Lazy: absolute paths confirmed index-tracked or spanned, computed once. */
+  realPaths: Set<string> | null;
+}
+
+/** Create a per-command probe cache for the given absolute paths. */
+export function createRealityProbeCache(paths: Iterable<string>): RealityProbeCache {
+  return { paths: [...new Set(paths)], realPaths: null };
+}
+
+/** Whether the path exists on disk (any node kind); `false` on any stat failure. */
+export function fileExists(absPath: string): boolean {
+  try {
+    fs.statSync(absPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Whether the path is a regular file — a directory target fails the `'exists'` gate. */
+function isFileOnDisk(absPath: string): boolean {
+  try {
+    return fs.statSync(absPath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Verify a statically knowable post-content expectation against the on-disk
+ * file (plan §3 step 1b). Any read failure is a mismatch, never an error.
+ */
+function contentMatches(post: TouchPostContent, filePath: string): boolean {
+  try {
+    if ('exact' in post) return fs.readFileSync(filePath, 'utf8') === post.exact;
+    if ('suffix' in post) {
+      // The shell appends the body plus its terminating newline; the heredoc
+      // grammar strips exactly that one `\n` from `span.written`
+      // (parse-command.ts heredoc body extraction), so a file ending
+      // `written\n` is the same appended text as `written` — accept both.
+      const content = fs.readFileSync(filePath, 'utf8');
+      return content.endsWith(post.suffix) || content.endsWith(`${post.suffix}\n`);
+    }
+    if ('empty' in post) return fs.statSync(filePath).size === 0;
+    return fs.statSync(filePath).size === post.size;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The delete-reality probe (plan §3 step 1c): lazily run the two per-command
+ * batches and cache the confirmed-real path set. Membership comes from the
+ * printed rows, not the exit code — `git ls-files --error-unmatch` prints
+ * every tracked path even when it exits nonzero (any missing path), and
+ * `git span list --porcelain` prints nothing for phantom or known-but-
+ * unspanned paths (exit 0 with "No spans match the filters"). A plain-`rm`'d
+ * tracked file keeps its index entry (ls-files exit 0 — the probe fires);
+ * `git rm` removes it (ls-files 128) so only spanned files stay real. A
+ * phantom or untracked-unspanned path fails both probes — the delete degrades
+ * to `'inconclusive'` and never fires. Fail-safe: an unresolvable repo or a
+ * probe failure yields an empty set, never an error.
+ */
+function realPaths(cache: RealityProbeCache, cwd: string): Set<string> {
+  if (cache.realPaths !== null) return cache.realPaths;
+  const real = new Set<string>();
+  if (cache.paths.length > 0) {
+    const repoRoot = resolveRepoRoot(cwd);
+    if (repoRoot !== null) {
+      const rels = cache.paths.map((p) => relativeToRepo(repoRoot, p));
+      const capture = (args: string[]): string | null => {
+        try {
+          return execFileSync('git', args, {
+            cwd: repoRoot,
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'pipe'],
+            timeout: DEFAULT_TIMEOUT_MS
+          });
+        } catch (err) {
+          const stdout = (err as { stdout?: string }).stdout;
+          return typeof stdout === 'string' ? stdout : null;
+        }
+      };
+      const lsFiles = capture(['ls-files', '--error-unmatch', '--', ...rels]);
+      if (lsFiles !== null) {
+        for (const line of lsFiles.split('\n')) {
+          const rel = line.trim();
+          if (rel.length > 0) real.add(join(repoRoot, rel));
+        }
+      }
+      const spanList = capture(['span', 'list', '--porcelain', ...rels]);
+      if (spanList !== null) {
+        for (const row of parsePorcelain(spanList)) real.add(join(repoRoot, row.path));
+      }
+    }
+  }
+  cache.realPaths = real;
+  return real;
+}
+
+/**
+ * The layered post-state gate (plan §3 step 1), evaluated before any executor
+ * call, side-effect-free (no memo writes, no executor calls; the probe is
+ * read-only and per-command cached):
+ *
+ * 1. `targetState: 'absent'` → the path must be absent; when it is, the
+ *    delete-reality probe decides: index-tracked or spanned → `decisivePass`
+ *    (dangling anchors surface), phantom → `'inconclusive'` (nothing to
+ *    surface — the miss is harmless, and the delete never fires).
+ * 2. `targetState: 'exists'` → the target must be a regular file (a directory
+ *    or missing target fails).
+ * 3. Content verification where the expected post-content is statically
+ *    knowable (`exact`/`suffix`/`empty`/`size`): a mismatch means the write's
+ *    effect is absent — no touch.
+ * 4. cp destination-vs-source: a still-present source must byte-equal the
+ *    destination; an absent source applies the absent-source rule (passed the
+ *    reality probe AND its absence explained by a later same-path
+ *    `decisivePass` — the driver resolves the `'pending'` hold).
+ * 5. rename-copy: the destination fires only when its source passed the
+ *    delete-reality probe (a phantom source means the move failed).
+ *
+ * Everything else — the existence-gated families whose existence pass proves
+ * nothing — is `'inconclusive'`.
+ */
+export function evaluateWriteGate(input: TouchWriteInput, probeCache: RealityProbeCache): WriteGateOutcome {
+  if (input.targetState === 'absent') {
+    if (fileExists(input.filePath)) return 'decisiveFail';
+    return realPaths(probeCache, input.cwd).has(input.filePath) ? 'decisivePass' : 'inconclusive';
+  }
+
+  if (!isFileOnDisk(input.filePath)) return 'decisiveFail';
+
+  const content = input.postState?.content;
+  if (content !== undefined) {
+    return contentMatches(content, input.filePath) ? 'decisivePass' : 'decisiveFail';
+  }
+
+  if (input.sourcePath !== undefined) {
+    if (fileExists(input.sourcePath)) {
+      let src: string;
+      let dst: string;
+      try {
+        src = fs.readFileSync(input.sourcePath, 'utf8');
+        dst = fs.readFileSync(input.filePath, 'utf8');
+      } catch {
+        return 'decisiveFail';
+      }
+      return src === dst ? 'decisivePass' : 'decisiveFail';
+    }
+    // Absent source — the absent-source rule (plan §3 step 1b): the dest
+    // fires only when the source passed the reality probe (it was a real
+    // file) AND its absence is explained by a later same-path decisivePass.
+    return realPaths(probeCache, input.cwd).has(input.sourcePath) ? 'pending' : 'decisiveFail';
+  }
+
+  if (input.renameSourcePath !== undefined) {
+    // No content comparison — patch renames may change content; a phantom
+    // source means the move failed and a pre-existing destination was never
+    // touched (plan §3 step 1c).
+    return realPaths(probeCache, input.cwd).has(input.renameSourcePath) ? 'decisivePass' : 'decisiveFail';
+  }
+
+  return 'inconclusive';
+}
 
 // ---------------------------------------------------------------------------
 // Injected executors
@@ -527,16 +745,23 @@ async function computeSurface(
 /**
  * Run the touch hook for a single tool call, branching on {@link TouchInput.kind}.
  *
- * - **Write path**: run `executors.fix` (`git span drift <file> --fix`) scoped
- *   to the touched file to heal positional drift in the working tree, then
- *   compute the merged `<git-span>` block against the healed anchors, rendering
- *   each surfaced span as a full human-format section with any remaining
- *   semantic drift status-suffixed on its anchors. Cadence is deduped through
- *   `memo` per span name and per (span, status).
+ * - **Write path**: {@link evaluateWriteGate} (plan §3 step 1) runs first —
+ *   any decisive fail, or an inconclusive phantom delete, blocks the touch
+ *   with no executor call — then `executors.fix` (`git span drift <file>
+ *   --fix`) scoped to the touched file heals positional drift in the working
+ *   tree, and the merged `<git-span>` block is computed against the healed
+ *   anchors, rendering each surfaced span as a full human-format section with
+ *   any remaining semantic drift status-suffixed on its anchors. Cadence is
+ *   deduped through `memo` per span name and per (span, status).
  * - **Read path**: never invokes `fix` and never mutates the tree; surfaces the
  *   spans overlapping the read's `offset`/`limit` window (see
  *   {@link recoverReadRange}; a read with neither is whole-file, matching
  *   today's behavior) with positional statuses filtered out via `isDebt()`.
+ *
+ * The optional `probeCache` shares the driver's per-command delete-reality
+ * probe into pass B (plan §3 step 2) so surviving deletes re-gate without
+ * re-probing; direct callers get a per-call cache seeded with the touched
+ * path when the target is `'absent'`.
  *
  * Fails open: any executor rejection or internal error yields
  * `additionalContext: null` (no signal, editing never blocked) rather than
@@ -546,17 +771,18 @@ async function computeSurface(
 export async function runTouchHook(
   input: TouchInput,
   executors: TouchExecutors,
-  memo: MemoStore
+  memo: MemoStore,
+  probeCache?: RealityProbeCache
 ): Promise<TouchOutput> {
   let treeModified = false;
   try {
     let range: LineRange | 'whole-file' = 'whole-file';
     if (input.kind === 'write') {
-      // Phase 1 gate stub (plan §3 step 1): evaluateWriteGate is Phase 3
-      // work. Until the post-state gate exists, an 'absent' target cannot be
-      // verified and fails closed — no executor call for a deletion that may
-      // not have happened.
-      if (input.targetState === 'absent') return { additionalContext: null, treeModified: false };
+      const probe = probeCache ?? createRealityProbeCache(input.targetState === 'absent' ? [input.filePath] : []);
+      const outcome = evaluateWriteGate(input, probe);
+      if (outcome === 'decisiveFail' || (outcome === 'inconclusive' && input.targetState === 'absent')) {
+        return { additionalContext: null, treeModified: false };
+      }
       const fix = await executors.fix(input.filePath, input.cwd);
       treeModified = fix.modified;
       range = input.range ?? recoverRangeFromDisk(input.written, input.filePath);
@@ -623,9 +849,9 @@ export function createDefaultTouchExecutors(timeoutMs: number = DEFAULT_TIMEOUT_
           stdio: ['ignore', 'pipe', 'pipe'],
           timeout: timeoutMs
         });
-      } catch {
-        // `git span drift` exits 1 on drift even when `--fix` healed something,
-        // and non-zero on genuine failure; the snapshot diff is the source of
+      } catch (err) {
+        void err; // `git span drift` exits 1 on drift even when `--fix` healed something, and
+        // non-zero on genuine failure; the snapshot diff is the source of
         // truth for whether the tree changed, so the exit code is ignored here.
       }
       const after = spanStatusSnapshot(resolved.repoRoot);

@@ -225,8 +225,19 @@ describe('shell envelope narrowing', () => {
 });
 
 describe('codex post-tool-use touch signal', () => {
+  /**
+   * A temp repo with `foo.ts` seeded: the apply_patch update envelope targets
+   * it, and the write gate (plan §3 step 1) fails closed when the target is
+   * not on disk — the hook runs post-apply, so the file exists by then.
+   */
+  function repoWithFoo(): { root: string; cleanup: () => void } {
+    const r = makeTempRepo();
+    writeFileSync(join(r.root, 'foo.ts'), `${['alpha', 'beta', 'gamma', 'delta'].join('\n')}\n`);
+    return r;
+  }
+
   it('heals and surfaces a semantic directive on a confirmed apply', async () => {
-    const repo = makeTempRepo();
+    const repo = repoWithFoo();
     try {
       const { executors, calls } = makeExecutors({ list: [porcelainRow()], drift: [driftRow('CHANGED')] });
       const handler = createHandler(executors, inMemoryMemoFactory());
@@ -241,7 +252,7 @@ describe('codex post-tool-use touch signal', () => {
   });
 
   it('suppresses the touch entirely on a confirmed rejection (no executor calls, no warn)', async () => {
-    const repo = makeTempRepo();
+    const repo = repoWithFoo();
     try {
       const { executors, calls } = makeExecutors({ list: [porcelainRow()], drift: [driftRow('CHANGED')] });
       const { logger: capture, warnings } = warnCapturingLogger();
@@ -260,7 +271,7 @@ describe('codex post-tool-use touch signal', () => {
   });
 
   it('runs the touch (and warns) when the tool_response shape is unrecognized', async () => {
-    const repo = makeTempRepo();
+    const repo = repoWithFoo();
     try {
       const { executors, calls } = makeExecutors({ list: [porcelainRow()], drift: [driftRow('CHANGED')] });
       const { logger: capture, warnings } = warnCapturingLogger();
@@ -275,7 +286,7 @@ describe('codex post-tool-use touch signal', () => {
   });
 
   it('fails open (empty output, no throw) when every executor rejects', async () => {
-    const repo = makeTempRepo();
+    const repo = repoWithFoo();
     try {
       const { executors } = makeExecutors({ reject: true });
       const handler = createHandler(executors, inMemoryMemoFactory());
@@ -295,6 +306,28 @@ describe('codex post-tool-use touch signal', () => {
       const result = toResult(await handler(postInput(repo.root, undefined) as never, { logger } as never));
       // narrowApplyPatchCommand rejects a missing command → no touch.
       expect(calls.fix).toBe(0);
+      expect(result.stdout.hookSpecificOutput?.additionalContext).toBeUndefined();
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it('fires a delete touch for a real (index-tracked, deleted) file via a Delete File envelope', async () => {
+    const repo = makeTempRepo();
+    try {
+      const filePath = join(repo.root, 'gone.ts');
+      writeFileSync(filePath, 'export const gone = 1;\n');
+      execFileSync('git', ['add', 'gone.ts'], { cwd: repo.root });
+      // A plain `rm` keeps the index entry — the delete-reality probe sees the
+      // path as real, so the `targetState: 'absent'` touch fires (plan §3).
+      rmSync(filePath);
+      const { executors, fixPaths } = makeExecutors();
+      const handler = createHandler(executors, inMemoryMemoFactory());
+      const envelope = ['*** Begin Patch', '*** Delete File: gone.ts', '*** End Patch'].join('\n');
+      const result = toResult(await handler(postInput(repo.root, envelope) as never, { logger } as never));
+      expect(fixPaths).toEqual([filePath]);
+      // The delete fired the fix executor; with no covering spans the list
+      // returns nothing, so no block surfaces — but the executor ran.
       expect(result.stdout.hookSpecificOutput?.additionalContext).toBeUndefined();
     } finally {
       repo.cleanup();
@@ -476,10 +509,15 @@ describe('codex post-tool-use touch signal', () => {
 });
 
 describe('Bash write touches per family (Phase 2 — skipped acceptance checks)', () => {
-  /** Seed post-command file state: write, git-add the tracked ones, then delete the null-content ones. */
+  /**
+   * Seed post-command file state: write `files` (a `null` content is a
+   * placeholder written so it can be tracked), `git add` the tracked ones,
+   * then delete the `null`-content ones. Index entries survive `rm` — the
+   * delete-reality probe (`git ls-files --error-unmatch`) sees them.
+   */
   function seed(repo: { root: string }, files: Array<[string, string | null]>, tracked: string[] = []): void {
     for (const [rel, content] of files) {
-      if (content !== null) writeFileSync(join(repo.root, rel), content);
+      writeFileSync(join(repo.root, rel), content ?? 'placeholder\n');
     }
     if (tracked.length > 0) execFileSync('git', ['add', ...tracked], { cwd: repo.root });
     for (const [rel, content] of files) {
@@ -495,7 +533,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
     };
   }
 
-  it.skip('redirection: echo hello > f produces a whole-file write touch on f', async () => {
+  it('redirection: echo hello > f produces a whole-file write touch on f', async () => {
     const repo = makeTempRepo();
     try {
       seed(repo, [['f.txt', 'hello\n']]);
@@ -510,7 +548,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
     }
   });
 
-  it.skip('redirection: echo x >> f threads the append body into the write touch', async () => {
+  it('redirection: echo x >> f threads the append body into the write touch', async () => {
     const repo = makeTempRepo();
     try {
       seed(repo, [['f.txt', 'a\nx\n']]);
@@ -525,7 +563,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
     }
   });
 
-  it.skip('heredoc: cat > f <<EOF produces a whole-file write touch on f', async () => {
+  it('heredoc: cat > f <<EOF produces a whole-file write touch on f', async () => {
     const repo = makeTempRepo();
     try {
       seed(repo, [['h.txt', 'alpha\n']]);
@@ -541,7 +579,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
     }
   });
 
-  it.skip('cp: read on the source, create-overwrite on the dest', async () => {
+  it('cp: read on the source, create-overwrite on the dest', async () => {
     const repo = makeTempRepo();
     try {
       seed(repo, [
@@ -565,7 +603,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
     }
   });
 
-  it.skip('mv: delete on the source, rename-copy on the dest', async () => {
+  it('mv: delete on the source, rename-copy on the dest', async () => {
     const repo = makeTempRepo();
     try {
       seed(
@@ -592,7 +630,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
     }
   });
 
-  it.skip('rm: delete touch on a real (index-tracked, deleted) target', async () => {
+  it('rm: delete touch on a real (index-tracked, deleted) target', async () => {
     const repo = makeTempRepo();
     try {
       seed(repo, [['d.txt', null]], ['d.txt']);
@@ -607,7 +645,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
     }
   });
 
-  it.skip('truncate -s 0: truncate touch on an empty post-command file', async () => {
+  it('truncate -s 0: truncate touch on an empty post-command file', async () => {
     const repo = makeTempRepo();
     try {
       seed(repo, [['e.txt', '']]);
@@ -622,7 +660,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
     }
   });
 
-  it.skip('sed -i: modify touch (script-first disambiguation)', async () => {
+  it('sed -i: modify touch (script-first disambiguation)', async () => {
     const repo = makeTempRepo();
     try {
       seed(repo, [['s.txt', 'a\n']]);
@@ -637,7 +675,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
     }
   });
 
-  it.skip('git apply: modify touch on the hunk target', async () => {
+  it('git apply: modify touch on the hunk target', async () => {
     const repo = makeTempRepo();
     try {
       const diff = ['--- a/notes.txt', '+++ b/notes.txt', '@@ -1,3 +1,3 @@', ' one', '-two', "+two'", ' three'].join(
@@ -658,7 +696,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
     }
   });
 
-  it.skip('formatter: prettier --write produces a modify touch', async () => {
+  it('formatter: prettier --write produces a modify touch', async () => {
     const repo = makeTempRepo();
     try {
       seed(repo, [['fmt.ts', 'export const x = 1;\n']]);
@@ -673,7 +711,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
     }
   });
 
-  it.skip('git restore f: create-overwrite touch', async () => {
+  it('git restore f: create-overwrite touch', async () => {
     const repo = makeTempRepo();
     try {
       seed(repo, [['r.txt', 'x\n']]);
@@ -688,7 +726,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
     }
   });
 
-  it.skip('git checkout -- f: create-overwrite touch', async () => {
+  it('git checkout -- f: create-overwrite touch', async () => {
     const repo = makeTempRepo();
     try {
       seed(repo, [['k.txt', 'x\n']]);
@@ -703,7 +741,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
     }
   });
 
-  it.skip('no touch for non-family hosts: ls > f and echo x 2> err', async () => {
+  it('no touch for non-family hosts: ls > f and echo x 2> err', async () => {
     const repo = makeTempRepo();
     try {
       seed(repo, [

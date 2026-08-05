@@ -26,7 +26,8 @@ import {
   postToolUseOutput
 } from '@goodfoot/claude-code-hooks';
 import { derivePath } from '../common/agent-hooks-common.js';
-import { parseCommandDetailed, type ResolvedSpan } from '../common/parse-command.js';
+import { bashResponseInterrupted, runBashTouches } from '../common/bash-touch.js';
+import { parseCommandDetailed } from '../common/parse-command.js';
 import { createDiskMemoStore, type MemoFactory, resolveTouchScope } from '../common/span-surface.js';
 import {
   createDefaultTouchExecutors,
@@ -65,7 +66,10 @@ function toTouchInput(
   if (toolName === 'Edit' || toolName === 'Write') {
     const raw = toolName === 'Edit' ? toolInput.new_string : toolInput.content;
     const written = typeof raw === 'string' ? raw : '';
-    return { kind: 'write', sessionId, cwd, filePath, written };
+    // The Edit/Write path passes 'exists' — the tool ran, so the file is
+    // present; the write gate (plan §3 step 1) verifies it before any
+    // executor call.
+    return { kind: 'write', sessionId, cwd, filePath, written, targetState: 'exists' };
   }
   return null;
 }
@@ -82,45 +86,22 @@ export function createHandler(
     const toolInput = (input.tool_input ?? {}) as ToolInput;
 
     // Bash has no `file_path` field, so it gets its own branch: run the static
-    // command parser and translate every resolved span into a touch through the
-    // same shared core. Read idioms carry the parsed line window; a heredoc
-    // write carries its written body (`span.written`) so the touch core can
-    // narrow the write to the lines that changed — `>` overwrites locate the
-    // written block, `>>` appends locate the appended block, and a
-    // `written: ''` whole-file scope covers truncations. A command with no
-    // recognizable idiom yields no blocks and returns `null` — fail-open, same
-    // as the tool path below.
+    // command parser and hand the matches to the shared `runBashTouches`
+    // driver (plan §3 step 2), which owns the per-command verdict thread —
+    // post-state gates, join filtering, and the interrupted gate (plan §4) —
+    // and returns the merged blocks for the adapters' output builders. A
+    // command with no recognizable idiom yields no blocks and returns `null` —
+    // fail-open, same as the tool path below.
     if (toolName === 'Bash') {
       const command = typeof toolInput.command === 'string' ? toolInput.command : null;
       if (!command) return null;
+      // An interrupted command produces no touches, whatever its spans; the
+      // driver re-checks defensively.
+      if (bashResponseInterrupted(input.tool_response)) return null;
       const matches = parseCommandDetailed(command, cwd);
-      const blocks: string[] = [];
-      for (const match of matches) {
-        if (match.status !== 'resolved') continue;
-        const span: ResolvedSpan = match.span;
-        const scope = resolveTouchScope(cwd, span.absolutePath);
-        if (!scope) continue;
-        let touch: TouchInput;
-        if (match.idiom === 'heredoc-write') {
-          // `>` overwrites and truncations: whole-file scope so deleted spans
-          // beyond the new EOF are surfaced. `>>` appends: narrow to the
-          // appended lines (`span.written`).
-          const written = span.operation === 'append' ? (span.written ?? '') : '';
-          touch = { kind: 'write', sessionId, cwd, filePath: span.absolutePath, written };
-        } else {
-          touch = {
-            kind: 'read',
-            sessionId,
-            cwd,
-            filePath: span.absolutePath,
-            offset: span.lineStart,
-            limit:
-              span.lineStart !== undefined && span.lineEnd !== undefined ? span.lineEnd - span.lineStart + 1 : undefined
-          };
-        }
-        const output = await runTouchHook(touch, executors, memo);
-        if (output.additionalContext) blocks.push(output.additionalContext);
-      }
+      const blocks = await runBashTouches(matches, sessionId, cwd, input.tool_response, executors, memo, (message) =>
+        ctx.logger.warn(message)
+      );
       if (blocks.length === 0) return null;
       const combined = blocks.join('');
       return postToolUseOutput({
