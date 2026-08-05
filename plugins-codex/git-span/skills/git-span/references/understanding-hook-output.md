@@ -3,10 +3,10 @@
 Two hooks run in-session, on two different tool families, at two different
 moments. Neither waits for a commit:
 
-- **Touch hook** (`PostToolUse`, matcher `apply_patch`) — fires synchronously
-  right after each `apply_patch` call completes, not after commit. It heals
-  positional drift silently and, when it can't, injects a bounded
-  `additionalContext` signal.
+- **Touch hook** (`PostToolUse`, matcher `apply_patch|exec_command|exec|Bash`)
+  — fires synchronously right after each `apply_patch` or shell command
+  completes, not after commit. It heals positional drift silently and, when it
+  can't, injects a bounded `additionalContext` signal.
 - **Advisor** (`PreToolUse`, matcher `Bash|shell|exec|local_shell`) — fires
   before `git commit`/`git push`/`git status` runs. For `git commit`/`git
   push`, it holds the command once when the resolved changeset carries real

@@ -1,6 +1,6 @@
-packages/agent-hooks/src/claude/post-tool-use.ts#L105-L106 rk64:6131c861a7321434
+packages/agent-hooks/src/claude/post-tool-use.ts#L105-L106 rk64:ff24fbb1fe52dda5
 packages/agent-hooks/src/claude/post-tool-use.ts#L118-L119 rk64:2b230556faaace06
-packages/agent-hooks/src/codex/post-tool-use.ts#L283-L284 rk64:f8ea67e6e842812f
+packages/agent-hooks/src/codex/post-tool-use.ts#L283-L284 rk64:6024f48de671f7ed
 packages/agent-hooks/src/codex/post-tool-use.ts#L309-L310 rk64:07e58cca4ae20237
 packages/agent-hooks/src/common/span-surface.ts#L193-L196 rk64:c4c3d8f27377ba1c
 
