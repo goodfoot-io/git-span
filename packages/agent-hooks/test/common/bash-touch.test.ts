@@ -159,6 +159,39 @@ describe('bashSpanToTouch — operation→touch translation (plan §2)', () => {
     });
   });
 
+  it('truncate with a static size → the size post-state gate (`-s 0` → empty)', () => {
+    expect(bashSpanToTouch(span({ operation: 'truncate', size: 0 }), SESSION_ID, repo.root)).toEqual({
+      kind: 'write',
+      sessionId: SESSION_ID,
+      cwd: repo.root,
+      filePath: appPath(),
+      written: '',
+      targetState: 'exists',
+      postState: { content: { empty: true } }
+    });
+    expect(bashSpanToTouch(span({ operation: 'truncate', size: 3 }), SESSION_ID, repo.root)).toEqual({
+      kind: 'write',
+      sessionId: SESSION_ID,
+      cwd: repo.root,
+      filePath: appPath(),
+      written: '',
+      targetState: 'exists',
+      postState: { content: { size: 3 } }
+    });
+  });
+
+  it('create-overwrite with a literal body → the exact post-content gate', () => {
+    expect(bashSpanToTouch(span({ operation: 'create-overwrite', written: 'x\n' }), SESSION_ID, repo.root)).toEqual({
+      kind: 'write',
+      sessionId: SESSION_ID,
+      cwd: repo.root,
+      filePath: appPath(),
+      written: '',
+      targetState: 'exists',
+      postState: { content: { exact: 'x\n' } }
+    });
+  });
+
   it('append with a written body → write touch threading the body with a suffix post-state', () => {
     expect(bashSpanToTouch(span({ operation: 'append', written: 'x\n' }), SESSION_ID, repo.root)).toEqual({
       kind: 'write',

@@ -7,11 +7,19 @@
  *
  * Deliberately NOT covered (see the research report): awk NR-tricks (rare,
  * unconstrained syntax), grep -n/-A/-B/-C (the window is anchored to match
- * position, which is data-dependent, not in the command text), embedded
+ * position, which is data-dependent, not in the command text), and embedded
  * python3/node heredoc scripts (a different language's AST, not a shell
- * concern), plain `echo`/`printf` redirects (rare and semantically ambiguous
- * in the corpus). The write-touch families (sed -i, patch/git apply, and the
- * §5.3–§5.5 families) are separate grammars below.
+ * concern).
+ *
+ * The card's write-touch families — redirections and heredocs (§5.1–§5.2),
+ * cp and install (§5.3), mv and git mv (§5.4), rm and truncate (§5.5),
+ * sed -i (§5.6), patch and git apply (§5.7), formatter write flags (§5.8),
+ * and git restore/checkout pathspecs (§5.9) — are the grammars below. Each
+ * family fails closed on what it cannot statically attribute:
+ * shell-expanded or dynamic content, recursive removal (`rm -r`),
+ * here-strings (`<<<`), directory-shaped targets, wrapper-wrapped commands
+ * whose argv cannot be recovered, and unmatched pathspecs emit no span at
+ * all or an explicit unresolved entry — never a guessed write.
  */
 import { readFileSync, statSync } from 'node:fs';
 import { basename, join as joinPath, resolve as resolvePath } from 'node:path';
@@ -42,8 +50,21 @@ export interface ResolvedSpan {
    */
   lineStart?: number;
   lineEnd?: number;
-  /** Statically known written content — append bodies only (heredoc/echo/printf/tee literals). */
+  /**
+   * Statically known written content — append bodies and literal overwrite
+   * bodies (heredoc/echo/printf/tee literals, plan §3 step 1b). On appends it
+   * is the suffix gate's body; on `create-overwrite` it is the exact gate's
+   * post-content — the touch itself stays whole-file (`written: ''`) either
+   * way.
+   */
   written?: string;
+  /**
+   * The statically evaluated absolute `truncate -s N` size (plan §5.5): the
+   * §3 `size` gate's post-command byte count (`-s 0` → the empty gate).
+   * Absent for relative sizes (`-s +N`/`-s -N`), `-r ref`, and every other
+   * operation — those gate existence-only.
+   */
+  size?: number;
   /**
    * Ordinal of the span's simple command within the compound, in walker
    * order; groups the spans of one command for join gating (plan §3 step 2).
@@ -747,9 +768,12 @@ function analyzeTokens(tokens: Token[]): { argv: string[]; redirects: RedirectIn
 }
 
 /**
- * Literal `echo`/`printf` content (plan §5.1) for append-body threading: no
+ * Literal `echo`/`printf` content (plan §5.1) for body threading: no
  * flags, no shell expansion, no globs; `printf` only when the format has no
  * `%`/backslash directives (then the format itself is the literal content).
+ * Threaded on appends as the suffix gate's body and on single plain `>`
+ * overwrites (and tee operands with a one-hop literal pipe source) as the
+ * exact gate's post-content.
  */
 function literalContent(argv: string[]): string | undefined {
   const host = argv[0];
@@ -813,9 +837,10 @@ function teeOperandParts(argv: string[]): { append: boolean; operands: string[] 
 /**
  * The `tee` operand writes (plan §5.1): each operand is a whole-file
  * create-overwrite (truncating), or a whole-file append under `-a`/`--append`.
- * An append threads the one-hop literal echo/printf pipe source (`echo x |
- * tee -a f`, plan §5.2) as its written body; without a known source the
- * append carries no written content.
+ * A one-hop literal echo/printf pipe source (`echo x | tee f`, `printf y |
+ * tee -a f`, plan §5.2) threads as the written body — the exact gate's
+ * post-content on the truncating write, the suffix gate's body on the append;
+ * without a known source neither op carries written content.
  */
 function matchTeeOperands(
   argv: string[],
@@ -834,7 +859,13 @@ function matchTeeOperands(
       status: 'resolved',
       idiom: 'redirect-write',
       span: !parts.append
-        ? { operation: 'create-overwrite', absolutePath, simpleCommandIndex, join }
+        ? {
+            operation: 'create-overwrite',
+            absolutePath,
+            simpleCommandIndex,
+            join,
+            ...(pipeEchoContent !== null ? { written: pipeEchoContent } : {})
+          }
         : {
             operation: 'append',
             absolutePath,
@@ -856,8 +887,12 @@ function matchTeeOperands(
  * real, but its content is dynamic and out of scope.
  *
  * Body threading: exactly one plain `>>` (or `1>>`) content redirect on a
- * fully literal `echo`/`printf` threads the written body; `&>>`, multi-
- * redirect commands, and `tee` never thread.
+ * fully literal `echo`/`printf` threads the written body (the suffix gate),
+ * and exactly one plain `>` (or `1>`) content redirect on the same literals
+ * threads it as the exact gate's post-content (plan §3 step 1b — the
+ * content layer is what suppresses `echo hi > read-only-file`, where the
+ * file stays present but unchanged). `&>`/`&>>`, multi-redirect commands,
+ * and `tee`'s own redirects never thread.
  */
 function matchRedirectFamily(
   argv: string[],
@@ -890,7 +925,9 @@ function matchRedirectFamily(
   }
   if (host !== 'echo' && host !== 'printf' && host !== 'tee') return;
   const singlePlainAppend = contentRedirects.length === 1 && contentRedirects[0].op === '>>';
-  const threaded = singlePlainAppend && host !== 'tee' ? literalContent(argv) : undefined;
+  const singlePlainOverwrite = contentRedirects.length === 1 && contentRedirects[0].op === '>';
+  const threadedAppend = singlePlainAppend && host !== 'tee' ? literalContent(argv) : undefined;
+  const threadedOverwrite = singlePlainOverwrite && host !== 'tee' ? literalContent(argv) : undefined;
   for (const r of contentRedirects) {
     if (r.target === null) continue;
     const absolutePath = resolveTarget(results, 'redirect-write', r.target, currentDir);
@@ -904,14 +941,20 @@ function matchRedirectFamily(
           absolutePath,
           simpleCommandIndex,
           join,
-          ...(threaded !== undefined ? { written: threaded } : {})
+          ...(threadedAppend !== undefined ? { written: threadedAppend } : {})
         }
       });
     } else {
       results.push({
         status: 'resolved',
         idiom: 'redirect-write',
-        span: { operation: 'create-overwrite', absolutePath, simpleCommandIndex, join }
+        span: {
+          operation: 'create-overwrite',
+          absolutePath,
+          simpleCommandIndex,
+          join,
+          ...(threadedOverwrite !== undefined ? { written: threadedOverwrite } : {})
+        }
       });
     }
   }
@@ -1071,9 +1114,14 @@ function copyMoveParts(args: string[], spec: CopyMoveSpec): CopyMoveParts | null
 
 /**
  * The per-source touch of a cp/install/mv command. cp/install sources are
- * whole-file reads resolved against fs like the read idioms — a source that
- * cannot be read at parse time is unresolved (a failed copy read nothing). The
- * mv source is a delete.
+ * whole-file reads resolved against fs like the read idioms; a source whose
+ * line count cannot be read at parse time (missing or unreadable — the parse
+ * runs post-command, so a source the compound's own earlier `rm` deleted is
+ * exactly this) still resolves as a range-less whole-file read: the driver
+ * pairs the destination against it, so the absent-source rule (plan §3 step
+ * 1b) and the read's post-command existence gate apply — an unexplained
+ * absence fails the copy decisively and a phantom source never fires the
+ * dest. The mv source is a delete.
  */
 function emitSourceSpan(
   results: SpanMatch[],
@@ -1091,26 +1139,20 @@ function emitSourceSpan(
     return;
   }
   const range = resolveSpec({ kind: 'toEof', start: 1 }, () => countFileLines(absolutePath));
-  if (range === null) {
-    pushUnresolved(
-      results,
-      spec.idiom,
-      absolutePath,
-      'could not determine end-of-file line count (file unreadable, empty, or missing)'
-    );
-    return;
-  }
   results.push({
     status: 'resolved',
     idiom: spec.idiom,
-    span: {
-      operation: 'read',
-      lineStart: range.lineStart,
-      lineEnd: range.lineEnd,
-      absolutePath,
-      simpleCommandIndex,
-      join
-    }
+    span:
+      range === null
+        ? { operation: 'read', absolutePath, simpleCommandIndex, join }
+        : {
+            operation: 'read',
+            lineStart: range.lineStart,
+            lineEnd: range.lineEnd,
+            absolutePath,
+            simpleCommandIndex,
+            join
+          }
   });
 }
 
@@ -1271,10 +1313,27 @@ function matchRmOperands(
 }
 
 /**
+ * Statically evaluate an absolute `truncate -s` size (plan §5.5): a plain
+ * integer with an optional K/M/G suffix. Relative sizes (`-s +N`/`-s -N`),
+ * `-r ref` values, and shell-expanded values depend on runtime state →
+ * undefined (those spans gate existence-only).
+ */
+function evaluateStaticSize(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const m = value.match(/^(\d+)([KMG])?$/);
+  if (m === null) return undefined;
+  const base = Number.parseInt(m[1], 10);
+  const mult = m[2] === 'K' ? 1024 : m[2] === 'M' ? 1024 ** 2 : m[2] === 'G' ? 1024 ** 3 : 1;
+  return base * mult;
+}
+
+/**
  * The truncate grammar (plan §5.5): `-s SIZE`/`-r ref` are value-taking — the
  * size value may itself lead with `-` (`truncate -s -10 f`) — and `-c` is
  * compatible. Without `-s`/`-r` the command changes nothing → no touch. Each
- * file-shaped operand is a truncate.
+ * file-shaped operand is a truncate; an absolute `-s N` carries the statically
+ * evaluated size on the span (the §3 `size` gate's post-command byte count,
+ * `-s 0` → empty), relative sizes and `-r ref` stay existence-only.
  */
 function matchTruncateOperands(
   args: string[],
@@ -1285,37 +1344,51 @@ function matchTruncateOperands(
 ): void {
   let sawSizeFlag = false;
   let afterDashDash = false;
-  const operands: string[] = [];
+  let staticSize: number | undefined;
+  const operands: Array<{ path: string; size: number | undefined }> = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (afterDashDash) {
-      operands.push(a);
+      operands.push({ path: a, size: staticSize });
       continue;
     }
     if (a === '--') {
       afterDashDash = true;
       continue;
     }
-    if (a === '-s' || a === '-r') {
+    if (a === '-s') {
       sawSizeFlag = true;
-      i += 1; // consume the size/ref value, even when it leads with `-`
+      staticSize = evaluateStaticSize(args[i + 1]);
+      i += 1; // consume the size value, even when it leads with `-`
+      continue;
+    }
+    if (a === '-r') {
+      sawSizeFlag = true;
+      staticSize = undefined; // the last size option wins; a ref has no static value
+      i += 1;
       continue;
     }
     if (a === '-c') continue;
     if (a.startsWith('-')) continue; // unknown option → treated as an option
-    operands.push(a);
+    operands.push({ path: a, size: staticSize });
   }
   if (!sawSizeFlag) return;
   for (const operand of operands) {
-    if (looksUnresolvable(operand)) {
-      pushUnresolved(results, 'truncate-command', operand, 'path contains an unexpanded shell variable or glob');
+    if (looksUnresolvable(operand.path)) {
+      pushUnresolved(results, 'truncate-command', operand.path, 'path contains an unexpanded shell variable or glob');
       continue;
     }
-    if (operand.endsWith('/') || isExistingDirectory(resolvePath(dir, operand))) continue;
+    if (operand.path.endsWith('/') || isExistingDirectory(resolvePath(dir, operand.path))) continue;
     results.push({
       status: 'resolved',
       idiom: 'truncate-command',
-      span: { operation: 'truncate', absolutePath: resolvePath(dir, operand), simpleCommandIndex, join }
+      span: {
+        operation: 'truncate',
+        absolutePath: resolvePath(dir, operand.path),
+        simpleCommandIndex,
+        join,
+        ...(operand.size !== undefined ? { size: operand.size } : {})
+      }
     });
   }
 }
@@ -1384,6 +1457,12 @@ function matchRmTruncate(
  * read-family commands (`sed -n '1,2p' <<EOF`) fall through to the read
  * matchers. Empty `>>`-bodies append nothing and touch nothing; empty `>`-bodies
  * truncate (whole-file, the F2 rule).
+ *
+ * Body threading: `>>` appends and `>` overwrites thread the body when the
+ * content redirect is single and plain — the exact gate's post-content on the
+ * overwrite (the trailing `\n` the extraction strips is restored, since the
+ * gate compares full file bytes), the suffix gate's body on the append (plan
+ * §3 step 1b lists "tee/heredoc with a literal body" in the exact class).
  */
 function classifyHeredocOpener(
   opener: string,
@@ -1399,6 +1478,7 @@ function classifyHeredocOpener(
   const host = argv[0];
   const contentRedirects = redirects.filter(isContentRedirect);
   const singlePlainAppend = contentRedirects.length === 1 && contentRedirects[0].op === '>>';
+  const singlePlainOverwrite = contentRedirects.length === 1 && contentRedirects[0].op === '>';
 
   const emitContentRedirects = (): void => {
     for (const r of contentRedirects) {
@@ -1425,7 +1505,15 @@ function classifyHeredocOpener(
           span:
             body.length === 0
               ? { operation: 'truncate', absolutePath, simpleCommandIndex, join }
-              : { operation: 'create-overwrite', absolutePath, simpleCommandIndex, join }
+              : {
+                  operation: 'create-overwrite',
+                  absolutePath,
+                  simpleCommandIndex,
+                  join,
+                  // The exact gate compares full file bytes, so the trailing
+                  // `\n` the extraction stripped comes back on the overwrite.
+                  ...(singlePlainOverwrite ? { written: `${body}\n` } : {})
+                }
         });
       }
     }
@@ -1461,7 +1549,16 @@ function classifyHeredocOpener(
             span:
               body.length === 0
                 ? { operation: 'truncate', absolutePath, simpleCommandIndex, join }
-                : { operation: 'create-overwrite', absolutePath, simpleCommandIndex, join }
+                : {
+                    operation: 'create-overwrite',
+                    absolutePath,
+                    simpleCommandIndex,
+                    join,
+                    // Same restored-`\n` exact body as the redirect branch; a
+                    // tee operand with a content redirect present keeps the
+                    // redirect's threading only (mirror of the append branch).
+                    ...(contentRedirects.length === 0 ? { written: `${body}\n` } : {})
+                  }
           });
         }
       }

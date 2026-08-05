@@ -29,8 +29,11 @@ import {
  * `postState` for appends and deletes) are set here; a literal overwrite body
  * (`span.written` — the flag-less `echo`/`printf` `>` case) rides as the
  * `exact` post-content expectation so the gate verifies the write's effect
- * while the touch itself stays whole-file (plan §3 step 1b). The driver pairs
- * cp/install and mv sources onto the destination touches afterward.
+ * while the touch itself stays whole-file (plan §3 step 1b). Truncates map
+ * the span's statically evaluated absolute `-s N` to the `size` post-content
+ * (`-s 0` → `empty`); a truncate without a size gates existence-only. The
+ * driver pairs cp/install and mv sources onto the destination touches
+ * afterward.
  */
 export function bashSpanToTouch(span: ResolvedSpan, sessionId: string, cwd: string): TouchInput | null {
   if (!resolveTouchScope(cwd, span.absolutePath)) return null;
@@ -47,7 +50,6 @@ export function bashSpanToTouch(span: ResolvedSpan, sessionId: string, cwd: stri
       };
     case 'create-overwrite':
     case 'rename-copy':
-    case 'truncate':
       // Whole-file writes: `written: ''` scopes the touch to every covering
       // span — truncating writes destroy anchors beyond the new EOF (the
       // main-200 F2 lesson). A literal body rides as the exact post-content
@@ -60,6 +62,25 @@ export function bashSpanToTouch(span: ResolvedSpan, sessionId: string, cwd: stri
         written: '',
         targetState: 'exists',
         postState: span.written !== undefined ? { content: { exact: span.written } } : undefined
+      };
+    case 'truncate':
+      // Same whole-file scope; the size gate (plan §2, §3 step 1b) verifies
+      // the post-command byte count when the span carries a statically
+      // evaluated absolute `-s N` (`-s 0` → empty); without one the gate is
+      // existence-only.
+      return {
+        kind: 'write',
+        sessionId,
+        cwd,
+        filePath: span.absolutePath,
+        written: '',
+        targetState: 'exists',
+        postState:
+          span.size === 0
+            ? { content: { empty: true } }
+            : span.size !== undefined
+              ? { content: { size: span.size } }
+              : undefined
       };
     case 'append':
       return {

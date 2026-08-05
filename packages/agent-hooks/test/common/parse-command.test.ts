@@ -357,11 +357,16 @@ describe('git log -L', () => {
 });
 
 describe('heredoc writes', () => {
-  it('cat > file <<EOF overwrite: whole-file write span without a line range', () => {
+  it('cat > file <<EOF overwrite: whole-file write span threading the literal body', () => {
     const cmd = `cat > ${join(dir, 'out1.txt')} <<'EOF'\nalpha\nbeta\ngamma\nEOF\n`;
     const spans = parseCommand(cmd);
     expect(spans).toEqual([
-      { operation: 'create-overwrite', absolutePath: join(dir, 'out1.txt'), simpleCommandIndex: 0 }
+      {
+        operation: 'create-overwrite',
+        absolutePath: join(dir, 'out1.txt'),
+        written: 'alpha\nbeta\ngamma\n',
+        simpleCommandIndex: 0
+      }
     ]);
   });
 
@@ -378,7 +383,12 @@ describe('heredoc writes', () => {
     const cmd = `cat > ${join(dir, 'out2.sh')} <<'EOF'\necho a && echo b\necho c\nEOF\n`;
     const spans = parseCommand(cmd);
     expect(spans).toEqual([
-      { operation: 'create-overwrite', absolutePath: join(dir, 'out2.sh'), simpleCommandIndex: 0 }
+      {
+        operation: 'create-overwrite',
+        absolutePath: join(dir, 'out2.sh'),
+        written: 'echo a && echo b\necho c\n',
+        simpleCommandIndex: 0
+      }
     ]);
   });
 
@@ -386,8 +396,8 @@ describe('heredoc writes', () => {
     const cmd = `cat > ${join(dir, 'a.txt')} <<'EOF'\nx\nEOF\ncat > ${join(dir, 'b.txt')} <<'EOF'\ny\nz\nEOF\n`;
     const spans = parseCommand(cmd);
     expect(spans).toEqual([
-      { operation: 'create-overwrite', absolutePath: join(dir, 'a.txt'), simpleCommandIndex: 0 },
-      { operation: 'create-overwrite', absolutePath: join(dir, 'b.txt'), simpleCommandIndex: 1 }
+      { operation: 'create-overwrite', absolutePath: join(dir, 'a.txt'), written: 'x\n', simpleCommandIndex: 0 },
+      { operation: 'create-overwrite', absolutePath: join(dir, 'b.txt'), written: 'y\nz\n', simpleCommandIndex: 1 }
     ]);
   });
 
@@ -520,9 +530,9 @@ function expectUnresolved(cmd: string, idiom: Idiom, cwd?: string): void {
 }
 
 describe('redirections — truncating and appending writes (§5.1)', () => {
-  it('echo > f: create-overwrite whole-file write (no body threaded)', () => {
+  it('echo > f: create-overwrite whole-file write threading the literal body', () => {
     expect(parseCommand(`echo x > ${join(dir, 'f')}`)).toEqual([
-      { operation: 'create-overwrite', absolutePath: join(dir, 'f'), simpleCommandIndex: 0 }
+      { operation: 'create-overwrite', absolutePath: join(dir, 'f'), written: 'x\n', simpleCommandIndex: 0 }
     ]);
   });
 
@@ -559,7 +569,7 @@ describe('redirections — truncating and appending writes (§5.1)', () => {
 
   it('an fd-excluded stderr redirect does not suppress the stdout write', () => {
     expect(parseCommand(`echo x > ${join(dir, 'out')} 2> ${join(dir, 'err')}`)).toEqual([
-      { operation: 'create-overwrite', absolutePath: join(dir, 'out'), simpleCommandIndex: 0 }
+      { operation: 'create-overwrite', absolutePath: join(dir, 'out'), written: 'x\n', simpleCommandIndex: 0 }
     ]);
   });
 
@@ -582,7 +592,7 @@ describe('redirections — truncating and appending writes (§5.1)', () => {
 
   it('attached targets: >f and >>f', () => {
     expect(parseCommand(`echo x >${join(dir, 'f')}`)).toEqual([
-      { operation: 'create-overwrite', absolutePath: join(dir, 'f'), simpleCommandIndex: 0 }
+      { operation: 'create-overwrite', absolutePath: join(dir, 'f'), written: 'x\n', simpleCommandIndex: 0 }
     ]);
     expect(parseCommand(`echo x >>${join(dir, 'f')}`)).toEqual([
       { operation: 'append', absolutePath: join(dir, 'f'), written: 'x\n', simpleCommandIndex: 0 }
@@ -592,7 +602,7 @@ describe('redirections — truncating and appending writes (§5.1)', () => {
   it('a quoted redirect target may contain spaces', () => {
     const target = join(dir, 'my file');
     expect(parseCommand(`echo x > "${target}"`)).toEqual([
-      { operation: 'create-overwrite', absolutePath: target, simpleCommandIndex: 0 }
+      { operation: 'create-overwrite', absolutePath: target, written: 'x\n', simpleCommandIndex: 0 }
     ]);
   });
 
@@ -629,7 +639,7 @@ describe('heredoc orderings and hosts (§5.2)', () => {
   it('cat <<EOF > f: the target may precede the redirect', () => {
     const cmd = `cat <<'EOF' > ${join(dir, 'f')}\nbody\nEOF\n`;
     expect(parseCommand(cmd)).toEqual([
-      { operation: 'create-overwrite', absolutePath: join(dir, 'f'), simpleCommandIndex: 0 }
+      { operation: 'create-overwrite', absolutePath: join(dir, 'f'), written: 'body\n', simpleCommandIndex: 0 }
     ]);
   });
 
@@ -643,13 +653,15 @@ describe('heredoc orderings and hosts (§5.2)', () => {
   it('a quoted heredoc target may contain spaces', () => {
     const target = join(dir, 'my file');
     const cmd = `cat > "${target}" <<'EOF'\nbody\nEOF\n`;
-    expect(parseCommand(cmd)).toEqual([{ operation: 'create-overwrite', absolutePath: target, simpleCommandIndex: 0 }]);
+    expect(parseCommand(cmd)).toEqual([
+      { operation: 'create-overwrite', absolutePath: target, written: 'body\n', simpleCommandIndex: 0 }
+    ]);
   });
 
-  it('tee f <<EOF: create-overwrite', () => {
+  it('tee f <<EOF: create-overwrite threading the body', () => {
     const cmd = `tee ${join(dir, 'f')} <<'EOF'\nalpha\nbeta\nEOF\n`;
     expect(parseCommand(cmd)).toEqual([
-      { operation: 'create-overwrite', absolutePath: join(dir, 'f'), simpleCommandIndex: 0 }
+      { operation: 'create-overwrite', absolutePath: join(dir, 'f'), written: 'alpha\nbeta\n', simpleCommandIndex: 0 }
     ]);
   });
 
@@ -663,13 +675,13 @@ describe('heredoc orderings and hosts (§5.2)', () => {
   it('tee <<EOF f: option and file-operand positions are free', () => {
     const cmd = `tee <<'EOF' ${join(dir, 'f')}\nbody\nEOF\n`;
     expect(parseCommand(cmd)).toEqual([
-      { operation: 'create-overwrite', absolutePath: join(dir, 'f'), simpleCommandIndex: 0 }
+      { operation: 'create-overwrite', absolutePath: join(dir, 'f'), written: 'body\n', simpleCommandIndex: 0 }
     ]);
   });
 
-  it('echo x | tee f: create-overwrite from a literal pipe source', () => {
+  it('echo x | tee f: create-overwrite threading the literal pipe source', () => {
     expect(parseCommand(`echo x | tee ${join(dir, 'f')}`)).toEqual([
-      { operation: 'create-overwrite', absolutePath: join(dir, 'f'), simpleCommandIndex: 1 }
+      { operation: 'create-overwrite', absolutePath: join(dir, 'f'), written: 'x\n', simpleCommandIndex: 1 }
     ]);
   });
 
@@ -689,14 +701,14 @@ describe('heredoc orderings and hosts (§5.2)', () => {
   it('<<- strips leading tabs from the body', () => {
     const cmd = `cat > ${join(dir, 'f')} <<-EOF\n\tindented\nEOF\n`;
     expect(parseCommand(cmd)).toEqual([
-      { operation: 'create-overwrite', absolutePath: join(dir, 'f'), simpleCommandIndex: 0 }
+      { operation: 'create-overwrite', absolutePath: join(dir, 'f'), written: 'indented\n', simpleCommandIndex: 0 }
     ]);
   });
 
   it('a bare unquoted delimiter still resolves the heredoc', () => {
     const cmd = `cat > ${join(dir, 'f')} <<EOF\nbody\nEOF\n`;
     expect(parseCommand(cmd)).toEqual([
-      { operation: 'create-overwrite', absolutePath: join(dir, 'f'), simpleCommandIndex: 0 }
+      { operation: 'create-overwrite', absolutePath: join(dir, 'f'), written: 'body\n', simpleCommandIndex: 0 }
     ]);
   });
 
@@ -883,15 +895,21 @@ describe('rm and git rm (§5.5)', () => {
 });
 
 describe('truncate (§5.5)', () => {
-  it('truncate -s 0 f: size 0 truncates', () => {
+  it('truncate -s 0 f: size 0 truncates (empty gate)', () => {
     expect(parseCommand(`truncate -s 0 ${join(dir, 'plain.txt')}`)).toEqual([
-      { operation: 'truncate', absolutePath: join(dir, 'plain.txt'), simpleCommandIndex: 0 }
+      { operation: 'truncate', absolutePath: join(dir, 'plain.txt'), size: 0, simpleCommandIndex: 0 }
     ]);
   });
 
-  it('truncate -s 100 f: any absolute size truncates', () => {
+  it('truncate -s 100 f: the statically evaluated size rides the span', () => {
     expect(parseCommand(`truncate -s 100 ${join(dir, 'plain.txt')}`)).toEqual([
-      { operation: 'truncate', absolutePath: join(dir, 'plain.txt'), simpleCommandIndex: 0 }
+      { operation: 'truncate', absolutePath: join(dir, 'plain.txt'), size: 100, simpleCommandIndex: 0 }
+    ]);
+  });
+
+  it('truncate -s 2K f: the K suffix is statically evaluated', () => {
+    expect(parseCommand(`truncate -s 2K ${join(dir, 'plain.txt')}`)).toEqual([
+      { operation: 'truncate', absolutePath: join(dir, 'plain.txt'), size: 2048, simpleCommandIndex: 0 }
     ]);
   });
 
@@ -916,7 +934,7 @@ describe('truncate (§5.5)', () => {
 
   it('truncate -c -s 0 f: -c is compatible', () => {
     expect(parseCommand(`truncate -c -s 0 ${join(dir, 'plain.txt')}`)).toEqual([
-      { operation: 'truncate', absolutePath: join(dir, 'plain.txt'), simpleCommandIndex: 0 }
+      { operation: 'truncate', absolutePath: join(dir, 'plain.txt'), size: 0, simpleCommandIndex: 0 }
     ]);
   });
 });
