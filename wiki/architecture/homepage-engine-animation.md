@@ -577,7 +577,7 @@ so scrubbing/wrapping never pops. This is layered on top of whatever intensity `
 already computed; it never changes *whether* a part is glowing, only how hot it glows while it is.
 `pulseCycle`/`pulseWeight` are advanced every tick of the [shared motion
 driver](#the-shared-motion-driver) (`motionTick`,
-[`EngineScene.ts#L669-L723`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L945-L999)),
+[`EngineScene.ts#L998-L1080`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L998-L1080)),
 entirely independent of scroll position — the heartbeat keeps beating at a constant real-time rate
 regardless of scrub direction or speed. It's pinned to 0 (no accumulation) under
 `prefers-reduced-motion` (`setReducedMotion`,
@@ -653,11 +653,11 @@ decayed back to rest — was removed outright in an earlier pass; there is no re
 anywhere in the current source.)
 
 **Drag-to-orbit** (all phases). Pointer events on the canvas
-([`EngineScene.ts#L610-L658`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L610-L658)) —
+([`EngineScene.ts#L948-L995`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L948-L995)) —
 `setPointerCapture` on down, `touch-action: pan-y` and `grab`/`grabbing` cursor styling set on the
 canvas element in the constructor — accumulate clamped azimuth/elevation offsets
 (`DRAG_SENSITIVITY`, `DRAG_AZIMUTH_LIMIT`, `DRAG_ELEVATION_TOTAL_LIMIT`,
-[`EngineScene.ts#L77-L80`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L87-L90))
+[`EngineScene.ts#L87-L95`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L87-L95))
 from pointer movement. The signs are inverted from the raw pointer delta so the interaction reads as
 grabbing the object itself rather than panning a camera around it: azimuth offset *subtracts* `dx *
 DRAG_SENSITIVITY` (dragging left rotates the engine clockwise), and the elevation sign is likewise
@@ -672,7 +672,7 @@ Idle spin, drag snap-back, and the highlight heartbeat pulse are all genuinely t
 purely scroll-driven) motions, and used to risk competing `requestAnimationFrame` loops (a fourth,
 the scroll-impulse decay, existed before that motion was removed entirely — see above). They share
 one: `ensureMotionLoop()`/`motionTick()`
-([`EngineScene.ts#L660-L723`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L667-L730)).
+([`EngineScene.ts#L998-L1080`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L998-L1080)).
 Any of them starting (hero idle turning on, a drag ending, or `setReducedMotion(false)`) calls
 `ensureMotionLoop()`, which starts the loop if it isn't already running. Each tick advances all
 three (accumulating idle rotation if `heroIdle`, easing drag offsets toward zero if not dragging,
