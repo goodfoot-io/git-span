@@ -110,8 +110,16 @@ describe('sed -n range', () => {
     expect(parseCommand(`sed 's/a/b/' ${join(dir, 'five.txt')}`)).toEqual([]);
   });
 
-  it('embedded in a larger && chain', () => {
+  it('embedded in a larger && chain: an opaque first stage poisons the chain (plan §2 owned consequence)', () => {
+    // `echo` is not a known-status stage — its unknown status gates everything
+    // downstream in the `&&` chain, so sed never emits (plan §2: `echo start &&
+    // sed f` emits nothing).
     const spans = parseCommand(`echo start && sed -n '1,2p' ${join(dir, 'five.txt')} && echo done`);
+    expect(spans).toEqual([]);
+  });
+
+  it('a known-success gate opens: true && sed emits the range', () => {
+    const spans = parseCommand(`true && sed -n '1,2p' ${join(dir, 'five.txt')}`);
     expect(spans).toEqual([{ lineStart: 1, lineEnd: 2, absolutePath: join(dir, 'five.txt') }]);
   });
 });
@@ -308,13 +316,19 @@ describe('pipe-source propagation (one hop only)', () => {
 });
 
 describe('cd tracking within one command', () => {
-  it('cd /abs && relative sed resolves against the new dir', () => {
-    const spans = parseCommand(`cd ${dir} && sed -n '1,2p' five.txt`, { cwd: '/nonexistent' });
+  it('cd /abs; relative sed resolves against the new dir', () => {
+    const spans = parseCommand(`cd ${dir}; sed -n '1,2p' five.txt`, { cwd: '/nonexistent' });
     expect(spans).toEqual([{ lineStart: 1, lineEnd: 2, absolutePath: join(dir, 'five.txt') }]);
   });
 
+  it('cd /abs && sed emits nothing: cd is opaque and poisons the && chain (plan §2 owned consequence)', () => {
+    // `cd` is not a known-status stage — plan §2 owns `cd X && sed f` → nothing.
+    const spans = parseCommand(`cd ${dir} && sed -n '1,2p' five.txt`, { cwd: '/nonexistent' });
+    expect(spans).toEqual([]);
+  });
+
   it('cd "$VAR" (unresolvable) falls back to the seed cwd, not "/"', () => {
-    const spans = parseCommand('cd "$WORKSPACE_PATH" && sed -n \'1,2p\' five.txt', { cwd: dir });
+    const spans = parseCommand('cd "$WORKSPACE_PATH"; sed -n \'1,2p\' five.txt', { cwd: dir });
     expect(spans).toEqual([{ lineStart: 1, lineEnd: 2, absolutePath: join(dir, 'five.txt') }]);
   });
 });
@@ -357,9 +371,12 @@ describe('multiple statements in one command', () => {
 //
 // The Phase 2 splitter machinery (plan §3) is implemented: the kind-matched
 // construct stack, the case-region machine, and the heredoc machinery in
-// shell-split.ts decide sections 2, 3, 4, and 15, so their rows run. Still
-// skipped: the walk (`analyzeExecution`), the wrapper/variable surfaces, and
-// the workdir threading land in later dispatches.
+// shell-split.ts decide sections 2, 3, 4, and 15, so their rows run. The
+// execution walk (`analyzeExecution`, plan §2) decides the walk-owned rows in
+// sections 1, 2, 4, 5, 7, 8, 9, 10, and 15. Still skipped: the sections that
+// depend on stripRedirects (plan §4, the rows of section 1/6), the
+// wrapper/variable surfaces (§5/§7), and the workdir threading (§6/§8) land in
+// later dispatches.
 // ---------------------------------------------------------------------------
 
 type ExpectedTouch = { file: string; lo?: number; hi?: number } | { write: string } | { unresolved: string };
@@ -451,7 +468,12 @@ describe('execution-aware walk — Phase 2 contract', () => {
 
     const ROWS: FixtureRow[] = [
       ["false &&\nsed -n '1,2p' f", [], undefined, 'newline preserves the and gate — the sed is still gated off'],
-      ['true ||\ncat f', [whole('f')], undefined, 'newline preserves the or gate — cat runs'],
+      [
+        'false ||\ncat f',
+        [whole('f')],
+        undefined,
+        'newline preserves the or gate — the failed predicate opens it (the plan L163 "true ||" spelling contradicts §2 and group 8: true || X runs nothing in bash)'
+      ],
       ['cat f |\nhead -3', [range('f', 1, 3)], undefined, 'existing pipe continuation'],
       [
         'cat f | head -1\ncat g',
@@ -459,7 +481,12 @@ describe('execution-aware walk — Phase 2 contract', () => {
         undefined,
         'newline after a complete stage is a separator — the walk must not merge cat g into the pipeline'
       ],
-      ['cat f\nhead -3 g', [whole('f'), range('g', 1, 3)], undefined, 'unchanged'],
+      ['cat f\nhead -3 g', [whole('f'), range('g', 1, 3)], undefined, 'unchanged']
+    ];
+
+    // Still skipped: these rows' touches depend on stripRedirects (plan §4 —
+    // the read-side argv recovery, a later dispatch).
+    const SKIPPED_ROWS: FixtureRow[] = [
       ["cat f 2>&1 && sed -n '1,2p' g", [whole('f')], undefined, undefined],
       [
         "cat f 2>&1 | sed -n '2,4p'",
@@ -480,7 +507,11 @@ describe('execution-aware walk — Phase 2 contract', () => {
       ["sed -n '1,2p' f > /dev/null &", [range('f', 1, 2)], undefined, 'clean background boundary']
     ];
 
-    it.skip.each<FixtureRow>(ROWS)('%s', (cmd, expected, opts) => {
+    it.each<FixtureRow>(ROWS)('%s', (cmd, expected, opts) => {
+      expectTouches(cmd, expected, opts);
+    });
+
+    it.skip.each<FixtureRow>(SKIPPED_ROWS)('%s', (cmd, expected, opts) => {
       expectTouches(cmd, expected, opts);
     });
   });
@@ -509,8 +540,8 @@ describe('execution-aware walk — Phase 2 contract', () => {
       ["echo 'oops\ncat f", [], undefined, 'the open quote carries both lines into one list']
     ];
 
-    // Still skipped: this row's expectation is determined by analyzeExecution
-    // (the opaque-gate bar on the `&&` chain, not the splitter verdict).
+    // This row's expectation is determined by analyzeExecution (the
+    // opaque-gate bar on the `&&` chain, not the splitter verdict).
     const SKIPPED_ROWS: FixtureRow[] = [
       [
         "cat f <<EOF && sed -n '1,2p' g",
@@ -566,7 +597,7 @@ describe('execution-aware walk — Phase 2 contract', () => {
       expectTouches(cmd, expected, opts);
     });
 
-    it.skip.each<FixtureRow>(SKIPPED_ROWS)('%s', (cmd, expected, opts) => {
+    it.each<FixtureRow>(SKIPPED_ROWS)('%s', (cmd, expected, opts) => {
       expectTouches(cmd, expected, opts);
     });
   });
@@ -671,9 +702,8 @@ describe('execution-aware walk — Phase 2 contract', () => {
   });
 
   describe('4. malformed — case regions (every valid shape probe-pinned)', () => {
-    // Still skipped: these rows' expectations are determined by
-    // analyzeExecution — the executed-assignment table and the opaque-gate
-    // bar on the `&&` chain (later dispatches).
+    // These rows' expectations are determined by analyzeExecution — the
+    // executed-assignment table and the opaque-gate bar on the `&&` chain.
     const SKIPPED_ROWS: FixtureRow[] = [
       [
         "x=a; case $x in a) cat f;; esac; sed -n '1,2p' g",
@@ -738,12 +768,12 @@ describe('execution-aware walk — Phase 2 contract', () => {
       expectTouches(cmd, expected, opts);
     });
 
-    it.skip.each<FixtureRow>(SKIPPED_ROWS)('%s', (cmd, expected, opts) => {
+    it.each<FixtureRow>(SKIPPED_ROWS)('%s', (cmd, expected, opts) => {
       expectTouches(cmd, expected, opts);
     });
   });
 
-  describe.skip('5. malformed — decidable constructs (every expectation probe-pinned against GNU bash 5.2.37)', () => {
+  describe('5. malformed — decidable constructs (every expectation probe-pinned against GNU bash 5.2.37)', () => {
     const ROWS: FixtureRow[] = [
       ['if true; then cat f; fi', [whole('f')], undefined, undefined],
       ["if true; then cat f; else sed -n '1,2p' g; fi", [whole('f')], undefined, 'else dead'],
@@ -1022,9 +1052,8 @@ describe('execution-aware walk — Phase 2 contract', () => {
       ['cat f # note\nhead -3 g', [whole('f'), range('g', 1, 3)], undefined, undefined]
     ];
 
-    // Still skipped: the `[]` expectation needs analyzeExecution's and-gate
-    // (the splitter keeps the 'and' gate; gating off the sed is the walk's
-    // job, a later dispatch).
+    // The `[]` expectation needs analyzeExecution's and-gate (the splitter
+    // keeps the 'and' gate; gating off the sed is the walk's job).
     const SKIPPED_ROWS: FixtureRow[] = [
       ["false && # explain\nsed -n '1,2p' f", [], undefined, 'gate preserved across the comment']
     ];
@@ -1033,12 +1062,12 @@ describe('execution-aware walk — Phase 2 contract', () => {
       expectTouches(cmd, expected, opts);
     });
 
-    it.skip.each<FixtureRow>(SKIPPED_ROWS)('%s', (cmd, expected, opts) => {
+    it.each<FixtureRow>(SKIPPED_ROWS)('%s', (cmd, expected, opts) => {
       expectTouches(cmd, expected, opts);
     });
   });
 
-  describe.skip('8. control flow — chain gating, ! negation, opaque gates', () => {
+  describe('8. control flow — chain gating, ! negation, opaque gates', () => {
     const ROWS: FixtureRow[] = [
       ["false && sed -n '1,2p' f", [], undefined, undefined],
       ["true || sed -n '1,2p' f", [], undefined, undefined],
@@ -1089,7 +1118,7 @@ describe('execution-aware walk — Phase 2 contract', () => {
     });
   });
 
-  describe.skip('9. errexit and terminators (every expectation probe-pinned)', () => {
+  describe('9. errexit and terminators (every expectation probe-pinned)', () => {
     const ROWS: FixtureRow[] = [
       ["set -e; false; sed -n '1,2p' f", [], undefined, undefined],
       ["set -e; true; sed -n '1,2p' f", [range('f', 1, 2)], undefined, undefined],
@@ -1327,7 +1356,7 @@ describe('execution-aware walk — Phase 2 contract', () => {
     });
   });
 
-  describe.skip('10. pipefail (probe-pinned)', () => {
+  describe('10. pipefail (probe-pinned)', () => {
     const ROWS: FixtureRow[] = [
       [
         "set -eo pipefail; false | true; sed -n '1,2p' f",
@@ -1578,8 +1607,8 @@ describe('execution-aware walk — Phase 2 contract', () => {
   });
 
   describe('15. heredocs', () => {
-    // Still skipped: these rows' expectations are determined by
-    // analyzeExecution — the gated write/stage never runs (later dispatches).
+    // These rows' expectations are determined by analyzeExecution — the gated
+    // write/stage never runs.
     const SKIPPED_ROWS: FixtureRow[] = [
       ['false && cat > f <<EOF', [], undefined, 'the gated write never runs'],
       [
@@ -1619,7 +1648,7 @@ describe('execution-aware walk — Phase 2 contract', () => {
       expectTouches(cmd, expected, opts);
     });
 
-    it.skip.each<FixtureRow>(SKIPPED_ROWS)('%s', (cmd, expected, opts) => {
+    it.each<FixtureRow>(SKIPPED_ROWS)('%s', (cmd, expected, opts) => {
       expectTouches(cmd, expected, opts);
     });
   });
