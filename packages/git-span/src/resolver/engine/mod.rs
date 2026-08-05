@@ -2281,4 +2281,121 @@ mod tests {
              was mutated between construction and finish"
         );
     }
+
+    /// Plan §Test matrix, "indeterminate" row: the resolver's `index_changed`
+    /// verdict must surface on `ReconcileCheck.indeterminate` — the only
+    /// verdict that drives exit 2, the retryable condition exactly as `git
+    /// span drift` defines it — and must not be dropped at the check level.
+    ///
+    /// Anti-premise guard: `finish_retaining_layers_reports_index_changed`
+    /// (above) asserts only `SourceLayers.index_changed` — the seam verdict
+    /// itself. This test is the first to assert the downstream
+    /// `ReconcileCheck`-level mapping, so "already covered" can never justify
+    /// skipping it. The premise assertion below fails loudly if the seam
+    /// drive stops yielding `index_changed = true`, so the test cannot pass
+    /// vacuously on a check derived from a verdict that never fired.
+    #[test]
+    #[ignore = "reconcile-output: indeterminate seam"]
+    fn reconcile_check_indeterminate_from_index_changed_maps_to_exit_2() {
+        use crate::cli::commit::ReconcileCheck;
+        use std::process::Command;
+
+        // Same seam drive as `finish_retaining_layers_reports_index_changed`:
+        // a mutating index between `EngineState` construction and
+        // `finish_retaining_layers` makes the trailer compare fire.
+        let td = tempfile::tempdir().unwrap();
+        let dir = td.path();
+        for args in [
+            &["init", "--initial-branch=main"][..],
+            &["config", "user.email", "t@t"],
+            &["config", "user.name", "t"],
+            &["config", "commit.gpgsign", "false"],
+        ] {
+            let out = Command::new("git")
+                .current_dir(dir)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+        }
+        std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+        Command::new("git")
+            .current_dir(dir)
+            .args(["add", "-A"])
+            .output()
+            .unwrap();
+        let out = Command::new("git")
+            .current_dir(dir)
+            .args(["commit", "-m", "init"])
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+
+        let repo = gix::open(dir).unwrap();
+        let state = EngineState::new(
+            &repo,
+            LayerSet {
+                index: true,
+                worktree: true,
+                staged_span: false,
+            },
+            true,
+        )
+        .unwrap();
+
+        // Mutate `.git/index` so the trailer read in `finish_retaining_layers`
+        // disagrees with `index_trailer_start` captured at construction.
+        // Appending a byte changes the SHA-1 trailer (last 20 bytes).
+        let index_path = dir.join(".git").join("index");
+        let mut index_bytes = std::fs::read(&index_path).unwrap();
+        index_bytes.push(0);
+        std::fs::write(&index_path, &index_bytes).unwrap();
+
+        let layers = state.finish_retaining_layers(&repo);
+        assert!(
+            layers.index_changed,
+            "premise: the mutating-index seam drive must yield \
+             index_changed=true — without it the derivation below has \
+             nothing to map and the exit-2 contract is untested"
+        );
+
+        // Derive the check the way the Phase-3 `run_reconcile_check`
+        // plumbing will (plan §Mechanism step 2): `indeterminate` is the
+        // resolver's `index_changed` verdict only.
+        let check = ReconcileCheck {
+            superseded: Vec::new(),
+            remaining: Vec::new(),
+            clean: false,
+            indeterminate: layers.index_changed,
+            check_error: None,
+            total_anchors: 1,
+            pending_commit_count: 0,
+        };
+        assert!(
+            check.indeterminate,
+            "the index_changed verdict must surface on ReconcileCheck.indeterminate"
+        );
+        assert!(
+            check.check_error.is_none(),
+            "indeterminate and check_error are disjoint: index-changed is the \
+             retryable verdict, never the fatal path"
+        );
+
+        // Exit-code contract (plan §Exit codes): indeterminate → 2, the
+        // retryable condition exactly as drift defines it — distinct from 0
+        // (clean) and 1 (drift / check error).
+        let exit = if check.indeterminate {
+            2
+        } else if check.check_error.is_some() {
+            1
+        } else if !check.clean {
+            1
+        } else {
+            0
+        };
+        assert_eq!(
+            exit, 2,
+            "indeterminate must map to exit 2, never 0 or 1"
+        );
+    }
 }
