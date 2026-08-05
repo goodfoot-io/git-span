@@ -25,7 +25,8 @@
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, renameSync, rmSync, utimesSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, utimesSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Logger } from '@goodfoot/codex-hooks';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -677,6 +678,40 @@ describe('codex harness snapshot lifecycle', () => {
             files: { 'src/app.ts': makeFile() }
           })
         );
+        // The activity-log side of the same split (round-3 finding: a subagent
+        // stop used to delete the MAIN session's activity entries too — a
+        // subagent shares the parent's session_id, so the removeSession
+        // activity pass had to carry the agent filter). Entries go through the
+        // real appendActivityEntry path; the subagent's entry carries the
+        // agent_id the codex activity pre-hook records, the main session's
+        // entry records none.
+        const subEntryFile = join(
+          queueRoot(repo.root),
+          'activity-log',
+          `${sanitizeSessionId(sessionId)}__${sanitizeSessionId('tu-sub-activity-1')}.json`
+        );
+        const mainEntryFile = join(
+          queueRoot(repo.root),
+          'activity-log',
+          `${sanitizeSessionId(sessionId)}__${sanitizeSessionId('tu-main-activity-1')}.json`
+        );
+        appendActivityEntry(repo.root, {
+          sessionId,
+          toolUseId: 'tu-sub-activity-1',
+          kind: 'apply_patch',
+          startedAt: now,
+          finishedAt: null,
+          paths: [{ path: 'src/app.ts', preHash: sha256Hex(P10), postHash: null }],
+          agentId: 'sub-1'
+        });
+        appendActivityEntry(repo.root, {
+          sessionId,
+          toolUseId: 'tu-main-activity-1',
+          kind: 'apply_patch',
+          startedAt: now,
+          finishedAt: null,
+          paths: [{ path: 'src/app.ts', preHash: sha256Hex(P10), postHash: null }]
+        });
         const raw = await subagentStopHook(subagentStopInput(sessionId, 'sub-1') as never, { logger } as never);
         expect(raw).toBeUndefined();
         expect(store.find(sessionId, 'tu-sub-1')).toBeNull();
@@ -684,6 +719,10 @@ describe('codex harness snapshot lifecycle', () => {
         // The main session's records are left for the Stop hook.
         expect(store.find(sessionId, 'tu-main-1')).not.toBeNull();
         expect(store.listRepoRecords(repo.root).filter((e) => e.sessionId === sessionId)).toHaveLength(1);
+        // The subagent's activity entry is removed; the main session's entry —
+        // same session_id, no agent_id — survives for the Stop hook.
+        expect(existsSync(subEntryFile)).toBe(false);
+        expect(existsSync(mainEntryFile)).toBe(true);
       });
     });
   });
@@ -985,6 +1024,25 @@ describe('codex harness snapshot lifecycle', () => {
       });
     });
 
+    it('a malformed env override does not shadow a valid config key', async () => {
+      await withRepo(async (repo) => {
+        execFileSync('git', ['-C', repo.root, 'config', 'git-span.snapshot-max-total-bytes', '4096'], {
+          stdio: 'ignore'
+        });
+        const saved = process.env.GIT_SPAN_SNAPSHOT_MAX_TOTAL_BYTES;
+        try {
+          // The env value cannot parse, so it must fall through to the config
+          // layer — a bad override never silently reverts the budget to the
+          // default while a valid git-span.snapshot-* key sits in the repo.
+          process.env.GIT_SPAN_SNAPSHOT_MAX_TOTAL_BYTES = '500MB';
+          expect(resolveSnapshotBudgets(repo.root).maxTotalBytes).toBe(4096);
+        } finally {
+          if (saved === undefined) delete process.env.GIT_SPAN_SNAPSHOT_MAX_TOTAL_BYTES;
+          else process.env.GIT_SPAN_SNAPSHOT_MAX_TOTAL_BYTES = saved;
+        }
+      });
+    });
+
     it('a binary file excluded from the pre walk is named in the record gaps, never silent', async () => {
       await withRepo(async (repo) => {
         const sessionId = 'sess-codex-binary-excluded';
@@ -1139,6 +1197,35 @@ describe('codex harness snapshot lifecycle', () => {
       });
     });
 
+    it('a decided-but-recordless call in a repo-less cwd stays silent — the note cannot fire where no record could ever have been created', async () => {
+      // Round-3 finding: the no-record note fired whenever the classifier
+      // decided 'snapshot' and the find returned no record, with no
+      // repo-existence gate — in a repo-less cwd the pre-walk can never have
+      // created a record, so the note ("...the static spans below are the
+      // only attribution") was guaranteed spurious there. The note now fires
+      // only when the post-time repo root exists; a repo-less cwd falls
+      // through silently, per the "silence is the correct steady state"
+      // contract.
+      const repolessCwd = mkdtempSync(join(tmpdir(), 'agent-hooks-repoless-'));
+      try {
+        const sessionId = 'sess-codex-repoless';
+        const tuId = 'tu-codex-repoless-1';
+        const { logger, notes } = noteCapturingLogger();
+        const handler = createPostToolUseHandler(makeExecutors().executors, () => createMemoryMemoStore());
+        const input = postInput({
+          session_id: sessionId,
+          cwd: repolessCwd,
+          tool_use_id: tuId,
+          tool_input: { command: 'npx prettier --write src/app.ts' }
+        });
+        const raw = await handler(input as never, { logger } as never);
+        expect(toResult(raw)).toBeNull();
+        expect(notes.some((n) => n.includes('snapshot decided but no record exists'))).toBe(false);
+      } finally {
+        rmSync(repolessCwd, { recursive: true, force: true });
+      }
+    });
+
     it('a write-classified apply_patch that parses to zero anchors warns naming the call and creates no activity entry', async () => {
       // Degenerate apply_patch: the content is not a patch at all, so no path
       // could be bounded by an activity entry. The entry is not created — an
@@ -1168,6 +1255,69 @@ describe('codex harness snapshot lifecycle', () => {
           `${sanitizeSessionId(sessionId)}__${sanitizeSessionId(tuId)}.json`
         );
         expect(existsSync(activityFile)).toBe(false);
+      });
+    });
+  });
+
+  describe('H. the envelope workdir frame — cross-repo writes attribute in the workdir repo', () => {
+    it('a classic exec_command envelope with a workdir into a second repo records and attributes the write there', async () => {
+      // Round-3 finding: the snapshot surface used to be anchored at the hook
+      // cwd on BOTH sides while the static co-run threaded the envelope's
+      // workdir — a Bash call writing in another repo via the workdir
+      // compared empty, consumed clean, and returned null with NO note
+      // (silent attribution loss). The pre side must classify, resolve, and
+      // walk at the same effectiveCwd rule the post side already uses, so the
+      // record's repoRoot is the workdir repo and the post compare (which
+      // runs at the record's repoRoot) attributes the change there.
+      await withRepo(async (primary) => {
+        const secondary = createTestRepo();
+        try {
+          const sessionId = 'sess-codex-workdir';
+          const tuId = 'tu-codex-workdir-1';
+          // Both repos commit the same baseline; the hook cwd stays in the
+          // primary repo and the envelope's workdir points into the second.
+          writeFile(primary.root, 'src/app.ts', P10);
+          gitAddCommit(primary.root, 'add app.ts');
+          writeFile(secondary.root, 'src/app.ts', P10);
+          gitAddCommit(secondary.root, 'add app.ts');
+          const logger = new Logger();
+          const pre = createSnapshotPreHook();
+          const preInputArgs = {
+            session_id: sessionId,
+            cwd: primary.root,
+            tool_use_id: tuId,
+            tool_name: 'exec_command',
+            tool_input: {
+              arguments: JSON.stringify({ cmd: 'npx prettier --write src/app.ts', workdir: secondary.root })
+            }
+          };
+          await pre(preInput(preInputArgs) as never, { logger } as never);
+          // The record is anchored at the workdir repo, not the hook cwd.
+          const record = createSnapshotStore(logger).find(sessionId, tuId);
+          expect(record).not.toBeNull();
+          expect(record).not.toBe('tombstoned');
+          if (record === null || record === 'tombstoned') throw new Error('record missing');
+          expect(record.repoRoot).toBe(secondary.root);
+          expect(record.files['src/app.ts']).toBeDefined();
+          // The formatter's effect lands in the workdir repo; the primary
+          // repo is untouched.
+          writeFile(secondary.root, 'src/app.ts', P10_FORMATTED);
+          const { executors } = makeExecutors({
+            rows: (filePath) =>
+              filePath.endsWith('/src/app.ts')
+                ? [porcelainRow({ name: SPAN_A, path: 'src/app.ts', start: 3, end: 5 })]
+                : [],
+            drift: () => [driftRow({ name: SPAN_A, path: 'src/app.ts', start: 3, end: 5 })]
+          });
+          const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+          const raw = await handler(postInput(preInputArgs) as never, { logger } as never);
+          // The comparison found the change and attributed it — the touch ran
+          // with the workdir repo's file and produced the span block.
+          expect(toResult(raw)).toContain('## billing/checkout-request-flow');
+          expect(createSnapshotStore(logger).find(sessionId, tuId)).toBe('tombstoned');
+        } finally {
+          secondary.cleanup();
+        }
       });
     });
   });

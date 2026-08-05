@@ -36,7 +36,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve as resolvePath } from 'node:path';
 import { type HookContext, type PreToolUseInput, preToolUseHook } from '@goodfoot/codex-hooks';
 import {
   isGitIgnored,
@@ -257,8 +257,13 @@ export function resolveSnapshotBudgets(repoRoot: string | null): SnapshotBudgets
     const raw = process.env[envName];
     if (raw !== undefined && raw.trim() !== '') {
       const value = Number(raw.trim());
-      if (Number.isFinite(value) && value >= 0) budgets[key] = value;
-      continue;
+      if (Number.isFinite(value) && value >= 0) {
+        budgets[key] = value;
+        continue;
+      }
+      // A present-but-malformed env value must not shadow the config layer:
+      // fall through so a valid git-span.snapshot-* key still wins over the
+      // default instead of being silently dropped by the bad env value.
     }
     const configKey = `git-span.${envName.slice('GIT_SPAN_'.length).toLowerCase().replaceAll('_', '-')}`;
     const configValue = config?.get(configKey);
@@ -310,19 +315,41 @@ export function createHandler() {
       if (!input.session_id || !input.tool_use_id) return undefined;
       // The command rides in any of the shell envelopes: the harness-unwrapped
       // `command` (string or argv — extractShellCommand), the classic
-      // exec_command JSON `arguments`, or the code-mode exec JS `input`.
+      // exec_command JSON `arguments`, or the code-mode exec JS `input` —
+      // mirroring the Post side, the classic and code-mode envelopes carry a
+      // `workdir` beside the command that must be threaded the same way.
       let command: string | null = extractShellCommand(input.tool_input);
-      if (command === null) command = narrowExecCommand(input.tool_input)?.cmd ?? null;
-      if (command === null) command = narrowCodeModeExec(input.tool_input).cmd;
+      let workdir: string | null = null;
+      if (command === null) {
+        const classic = narrowExecCommand(input.tool_input);
+        command = classic?.cmd ?? null;
+        workdir = classic?.workdir ?? null;
+      }
+      if (command === null) {
+        const codeMode = narrowCodeModeExec(input.tool_input);
+        command = codeMode.cmd;
+        workdir = codeMode.workdir;
+      }
       if (command === null) return undefined;
-      const plan = classifyCommandForSnapshot(command, input.cwd ?? '');
+      // The same frame rule the Post side uses (Plan §8): a workdir present
+      // and free of `$`/backtick absolutizes against the envelope's own
+      // `input.cwd` — the shell tool resolves a relative workdir against that
+      // same base — and is the single frame for classify, repo resolution,
+      // and the walk. A template-literal workdir (containing `$`/backtick) is
+      // unresolvable and falls back to hook `cwd`. A workdir pointing into
+      // another repo records THAT repo — the Post side's compare runs at the
+      // record's repoRoot, so a workdir-pointed write is attributed in the
+      // workdir repo, never silently lost.
+      const effectiveCwd =
+        workdir !== null && !/[`$]/.test(workdir) ? resolvePath(input.cwd ?? '', workdir) : (input.cwd ?? '');
+      const plan = classifyCommandForSnapshot(command, effectiveCwd);
       if (plan.decision.kind !== 'snapshot') {
         // No snapshot: the command has no write-capable command, or every
         // write is statically covered and provably expansion-free — the Post
         // side's static-parse path stays authoritative.
         return undefined;
       }
-      const repoRoot = resolveRepoRoot(input.cwd ?? '');
+      const repoRoot = resolveRepoRoot(effectiveCwd);
       if (repoRoot === null) return undefined; // no repo, no record — fail open
       const budgets = resolveSnapshotBudgets(repoRoot);
       const store = createSnapshotStore(ctx.logger, budgets);
@@ -369,4 +396,15 @@ export function createHandler() {
  */
 export const SNAPSHOT_PRE_MATCHER = 'Bash|shell|exec|local_shell|exec_command';
 
-export default preToolUseHook({ matcher: SNAPSHOT_PRE_MATCHER, timeout: 10_000 }, createHandler());
+// The matcher must be a STRING LITERAL, not the identifier reference: the
+// codex-hooks build CLI extracts a hook's matcher only from a literal
+// initializer and silently leaves it undefined otherwise — an identifier
+// reference would emit an unconstrained hook that runs for every tool
+// occurrence. The literal must stay textually identical to
+// SNAPSHOT_PRE_MATCHER (the fixture that pins pre ⊆ post imports the
+// constant, and the hook-build portability test asserts the emitted matcher
+// equals the constant).
+export default preToolUseHook(
+  { matcher: 'Bash|shell|exec|local_shell|exec_command', timeout: 10_000 },
+  createHandler()
+);

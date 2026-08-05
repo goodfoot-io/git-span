@@ -2,6 +2,7 @@
   "hooks": {
     "PreToolUse": [
       {
+        "matcher": "Bash|shell|exec|local_shell|exec_command",
         "hooks": [
           {
             "type": "command",
@@ -33,6 +34,7 @@
     ],
     "PostToolUse": [
       {
+        "matcher": "apply_patch|exec_command|exec|shell|local_shell|Bash",
         "hooks": [
           {
             "type": "command",

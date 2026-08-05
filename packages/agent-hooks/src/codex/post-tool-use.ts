@@ -50,7 +50,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve as resolvePath } from 'node:path';
 import { type HookContext, type PostToolUseInput, postToolUseHook, postToolUseOutput } from '@goodfoot/codex-hooks';
 import {
@@ -78,7 +78,9 @@ import {
   activityEntriesCovering,
   createSnapshotStore,
   finishActivityEntry,
-  type SnapshotStore
+  type SnapshotIndexEntry,
+  type SnapshotStore,
+  writeJsonAtomic
 } from '../common/snapshot-store.js';
 import {
   type CoreLogger,
@@ -478,7 +480,9 @@ function readSiblingRecord(
  * the family. The record is parsed with plain JSON.parse (the store
  * serializes bigint mtimeNs as strings, so a plain round-trip preserves
  * them) and the consume's own read then revives it. One read+write serves
- * the whole batch — the touched-files cap can cut many paths. Fail open: if
+ * the whole batch — the touched-files cap can cut many paths. The rewrite
+ * goes through the store's atomic tmp+rename writer, so a concurrent
+ * sibling read can never observe a torn record. Fail open: if
  * the record cannot be re-read or rewritten, the consume below still closes
  * the window and the logger warn carries the diagnostic.
  */
@@ -494,7 +498,7 @@ function appendRecordGap(sessionId: string, toolUseId: string, gaps: string[], l
       rec.gaps.push(gap);
       changed = true;
     }
-    if (changed) writeFileSync(file, JSON.stringify(rec));
+    if (changed) writeJsonAtomic(file, rec);
   } catch (err) {
     logger.warn(`git-span record-gap append failed open: ${String(err)}`);
   }
@@ -504,17 +508,19 @@ function appendRecordGap(sessionId: string, toolUseId: string, gaps: string[], l
  * The ambiguity table's sibling set for one path: every repo record except
  * mine, read directly from disk, viewed per path exactly as the core's
  * {@link SiblingSnapshot} contract defines (pre/post null when the sibling's
- * coverage excluded the path).
+ * coverage excluded the path). The repo index is read once per
+ * snapshotBashBranch and passed in — a fresh index read per changed path
+ * would repeat the readdir+JSON pass for every attribution; the sibling
+ * record bodies still come through the shared readSiblingRecord cache.
  */
 function siblingsForPath(
   mine: SnapshotRecord,
-  repoRoot: string,
+  index: SnapshotIndexEntry[],
   path: string,
-  store: SnapshotStore,
   cache: Map<string, SnapshotRecord | null>
 ): SiblingSnapshot[] {
   const out: SiblingSnapshot[] = [];
-  for (const entry of store.listRepoRecords(repoRoot)) {
+  for (const entry of index) {
     if (entry.sessionId === mine.sessionId && entry.toolUseId === mine.toolUseId) continue;
     const record = readSiblingRecord(entry.sessionId, entry.toolUseId, cache);
     if (record === null) continue;
@@ -592,8 +598,24 @@ function unfinishedEntryCovering(repoRoot: string, path: string, now: number, bu
  *    static path (with a warning on the Post side).
  * 2. Re-walk the repo exactly like the pre side (same classifier, same walk,
  *    same budgets) and compare. The post walk is the same tier-1/tier-2 walk
- *    so the comparison sees the same scope the pre record claimed.
- * 3. Per attributed path, in order: the ambiguity table gates first (a
+ *    so the comparison sees the same scope the pre record claimed. The post
+ *    map — the fail-closed evidence: every verdict-bearing path's end state,
+ *    including ambiguous and skip-dropped ones, so a later sibling's
+ *    ambiguity read sees the window's end state whatever the verdict here —
+ *    and the compare-phase gaps are collected right after the compare.
+ * 3. Consume FIRST, before any per-path work. The tombstone is the
+ *    single-winner gate: the O_EXCL means the first consumer wins and a
+ *    racing duplicate no-ops — the touch runs only after a successful
+ *    consume. Consuming before the attribution also bounds what a platform
+ *    timeout kill can strand: the pre-consume segment (walk, compare, gap
+ *    persist) is the only work that can be killed with the record still
+ *    live, and the belt-and-braces catch wraps exactly that segment — an
+ *    unexpected throw there still consumes the record (failure recorded as a
+ *    gap, so later ambiguity reads treat it as coverage-unknowable), because
+ *    an unconsumed record poisons every later attribution on the repo. Once
+ *    the record is consumed, a kill loses only this call's block/touch,
+ *    never the session's attribution.
+ * 4. Per attributed path, in order: the ambiguity table gates first (a
  *    deterministic verdict per sibling — ambiguous paths drop whole with a
  *    warn naming the reason and the conflicting call); then the unfinished
  *    activity-entry scan (an in-flight edit may still write the path — drop
@@ -602,25 +624,19 @@ function unfinishedEntryCovering(repoRoot: string, path: string, now: number, bu
  *    note), skip (the edit's pre/post hashes equal my pre/current — it is
  *    already attributed by its own touch), bounded-double (else — attribute
  *    with an absorbed-double note).
- * 4. The consume is the single-winner gate: the O_EXCL tombstone means the
- *    first consumer wins and a racing duplicate no-ops — the touch runs only
- *    after a successful consume. The post map is fail-closed evidence: every
- *    attributed path's post state — including ambiguous and skip-dropped
- *    ones — is recorded so a later sibling's ambiguity read sees the window's
- *    end state whatever the verdict here.
  * 5. One multi-path touch across all attributed scopes: one heal pass on the
  *    first scope's file, one repo-wide drift, per-scope surface computation.
  *    Renames surface the OLD path (the span lives on the dead anchor); the
  *    new path is excluded from the static co-parser along with every
  *    attributed and dropped path.
  *
- * Failure posture: the whole compare/touch body is belt-and-braces — an
- * unexpected throw still consumes the record (with the failure gap appended
- * first, so the consumed sibling reads as coverage-gapped, never as "consumed
- * without changing P") and returns a visible abort note. Deferral, budget-
- * exhaustion, and abort notes are merged into the block's additionalContext,
- * because a Post hook whose transcript shows no git-span block must explain
- * itself to the model loop.
+ * Failure posture: the pre-consume segment is belt-and-braces — an
+ * unexpected throw there still consumes the record (with the failure gap
+ * appended first, so the consumed sibling reads as coverage-gapped, never as
+ * "consumed without changing P") and returns a visible abort note. Deferral,
+ * budget-exhaustion, and abort notes are merged into the block's
+ * additionalContext, because a Post hook whose transcript shows no git-span
+ * block must explain itself to the model loop.
  */
 async function snapshotBashBranch(
   store: SnapshotStore,
@@ -646,12 +662,21 @@ async function snapshotBashBranch(
   // and aborts are all surfaced to the model loop, never logger-only.
   const notes: string[] = [];
   const siblingCache = new Map<string, SnapshotRecord | null>();
+  // The repo index, read once per branch rather than once per changed path:
+  // the sibling set is the same for every path, and the per-path ambiguity
+  // pass must not pay a readdir+JSON index read per attribution.
+  // listRepoRecords fails open (missing/unreadable index dirs yield an empty
+  // list), so an index-level failure degrades to "no siblings" — the same
+  // fail-open shape the per-path read had.
+  const siblingIndex = store.listRepoRecords(repoRoot);
 
+  let post: Map<string, SnapshotFile>;
+  let compared: ReturnType<typeof compareSnapshot>;
   try {
     const plan = classifyCommandForSnapshot(command, cwd);
     const { files, gaps } = walkSnapshotFiles(repoRoot, plan.tier1Targets, budgets, now, logger);
-    const post = new Map<string, SnapshotFile>(Object.entries(files));
-    const compared = compareSnapshot({
+    post = new Map<string, SnapshotFile>(Object.entries(files));
+    compared = compareSnapshot({
       record: found,
       post,
       postGaps: gaps,
@@ -662,85 +687,13 @@ async function snapshotBashBranch(
     });
     for (const gap of compared.gaps) logger.info?.(`git-span snapshot compare: ${gap}`);
 
-    for (const [path, attribution] of compared.attributions) {
+    // Fail-closed evidence, collected BEFORE the consume: the post map is the
+    // verdict-bearing paths' end state — including ambiguous and skip-dropped
+    // ones — so a later sibling's ambiguity read sees the window's end state
+    // whatever the verdict here.
+    for (const [path] of compared.attributions) {
       const postFile = post.get(path);
-      // Fail-closed evidence first: whatever the verdict below, the window's end
-      // state for this path is recorded on the consumed record.
       if (postFile !== undefined) postMap[path] = postFile;
-
-      // 1. The ambiguity table gates first — an entangled path drops whole
-      // before any diff/range work.
-      const verdict = applyAmbiguityRules(found, siblingsForPath(found, repoRoot, path, store, siblingCache), path);
-      if (verdict.ambiguous) {
-        logger.warn(`git-span ambiguity: ${path} dropped (${verdict.reason})`);
-        excludedPaths.add(path);
-        // Transcript-visible deferral note — the model loop must see why this
-        // path produced no attribution (a logger-only warn is invisible to it).
-        notes.push(
-          `attribution deferred: ${path} — ${verdict.reason} (session ${verdict.siblingSessionId}); not attributed`
-        );
-        continue;
-      }
-
-      // 2. An unfinished activity entry may still write the path — fail closed.
-      const inFlight = unfinishedEntryCovering(repoRoot, path, now, budgets);
-      if (inFlight !== null) {
-        logger.info?.(`git-span interleaved-tool: ${path} dropped (unfinished entry ${inFlight} in flight)`);
-        excludedPaths.add(path);
-        continue;
-      }
-
-      // 3. The four-outcome consult against finished entries active in the
-      // window (windowStart = now, so walk-tail entries that finished between
-      // the pre-read and the compare are still evaluated).
-      const consulted = activityEntriesCovering(repoRoot, path, now, now, budgets);
-      const capturedAt = found.files[path]?.capturedAt ?? found.createdAt;
-      const currentHash = postFile?.hash ?? null;
-      if (consulted.some((e) => e.finishedAt !== null && e.finishedAt <= capturedAt)) {
-        // never-flag — the entry fully ended before the path's per-file
-        // baseline: its change is baked into my pre and can never contaminate
-        // my post-diff. Attribute without a note.
-      } else if (
-        consulted.some((e) =>
-          e.paths.some(
-            (p) => p.path === path && p.preHash === (found.files[path]?.hash ?? null) && p.postHash === currentHash
-          )
-        )
-      ) {
-        // skip — the edit read my pre and its touch read my current state: its
-        // change is already attributed by the edit's own touch, never silently
-        // to me.
-        logger.info?.(`git-span covered-by-edit: ${path} skipped (equal baselines)`);
-        excludedPaths.add(path);
-        continue;
-      } else if (consulted.length > 0) {
-        // bounded-double — the edit's segment is absorbed, my residual is
-        // attributed; nothing is dropped.
-        logger.info?.(`git-span absorbed-double: ${path} attributed (interleaved edit absorbed)`);
-      }
-
-      // Attribute. Renames surface the old path — the span lives on the dead
-      // anchor, and the new path carries nothing.
-      if (attribution.kind === 'rename') {
-        scopes.push({ filePath: join(repoRoot, attribution.from), observed: { changed: [], wholeFile: true } });
-        excludedPaths.add(attribution.from);
-        excludedPaths.add(path);
-      } else {
-        const observed = attribution.kind === 'changed' ? attribution.observed : { changed: [], wholeFile: true };
-        scopes.push({ filePath: join(repoRoot, path), observed });
-        excludedPaths.add(path);
-      }
-    }
-
-    // Wall-budget exhaustion is transcript-visible whether it struck before
-    // any attribution or partway through — the user must see why attribution
-    // is absent OR partial, never a silent tail of dropped paths.
-    if (compared.gaps.some((g) => g.includes('post-side wall budget exhausted'))) {
-      notes.push(
-        scopes.length === 0
-          ? 'git-span: the post-side wall budget was exhausted before any file could be attributed — no git-span block was produced'
-          : `git-span: the post-side wall budget was exhausted partway — ${scopes.length} path(s) attributed, the rest dropped`
-      );
     }
 
     // The compare-phase gaps land on the record before the consume (same funnel
@@ -752,13 +705,24 @@ async function snapshotBashBranch(
     // (coarse-scope, zero-hunk, diff cost floor) persist too but never match
     // the coverage-gap family the consult reads.
     if (compared.gaps.length > 0) appendRecordGap(sessionId, toolUseId, compared.gaps, logger);
+
+    // Consume first: the tombstone is the single-winner gate. The loser of a
+    // duplicate-delivery race no-ops and never runs the touch. Consuming
+    // before the per-path attribution also bounds what a platform timeout kill
+    // can strand: the pre-consume segment above (walk, compare, gap persist)
+    // is the only work that can be killed with the record still live, and the
+    // belt-and-braces catch below closes the record if it throws — a kill
+    // after the consume loses only this call's block/touch, never the
+    // session's attribution.
+    const consumed = store.consume(sessionId, toolUseId, postMap);
+    if (consumed === null) return { kind: 'done', additionalContext: null, excludedPaths };
   } catch (err) {
-    // Belt-and-braces: an unexpected throw in the compare path must still
-    // close the record window — an unconsumed record poisons every later
-    // attribution on the repo. The failure gap lands on the record before the
-    // consume so a later ambiguity read treats this consumed sibling as
-    // coverage-unknowable (fail closed), never as "consumed without changing
-    // P".
+    // Belt-and-braces: an unexpected throw in the pre-consume segment (walk,
+    // compare, gap persist) must still close the record window — an
+    // unconsumed record poisons every later attribution on the repo. The
+    // failure gap lands on the record before the consume so a later ambiguity
+    // read treats this consumed sibling as coverage-unknowable (fail closed),
+    // never as "consumed without changing P".
     const failureGap = `snapshot compare aborted: ${String(err)}`;
     logger.warn(`git-span ${failureGap}`);
     appendRecordGap(sessionId, toolUseId, [failureGap], logger);
@@ -770,10 +734,81 @@ async function snapshotBashBranch(
     };
   }
 
-  // Consume first: the tombstone is the single-winner gate. The loser of a
-  // duplicate-delivery race no-ops and never runs the touch.
-  const consumed = store.consume(sessionId, toolUseId, postMap);
-  if (consumed === null) return { kind: 'done', additionalContext: null, excludedPaths };
+  for (const [path, attribution] of compared.attributions) {
+    // 1. The ambiguity table gates first — an entangled path drops whole
+    // before any diff/range work.
+    const verdict = applyAmbiguityRules(found, siblingsForPath(found, siblingIndex, path, siblingCache), path);
+    if (verdict.ambiguous) {
+      logger.warn(`git-span ambiguity: ${path} dropped (${verdict.reason})`);
+      excludedPaths.add(path);
+      // Transcript-visible deferral note — the model loop must see why this
+      // path produced no attribution (a logger-only warn is invisible to it).
+      notes.push(
+        `attribution deferred: ${path} — ${verdict.reason} (session ${verdict.siblingSessionId}); not attributed`
+      );
+      continue;
+    }
+
+    // 2. An unfinished activity entry may still write the path — fail closed.
+    const inFlight = unfinishedEntryCovering(repoRoot, path, now, budgets);
+    if (inFlight !== null) {
+      logger.info?.(`git-span interleaved-tool: ${path} dropped (unfinished entry ${inFlight} in flight)`);
+      excludedPaths.add(path);
+      continue;
+    }
+
+    // 3. The four-outcome consult against finished entries active in the
+    // window (windowStart = now, so walk-tail entries that finished between
+    // the pre-read and the compare are still evaluated).
+    const consulted = activityEntriesCovering(repoRoot, path, now, now, budgets);
+    const capturedAt = found.files[path]?.capturedAt ?? found.createdAt;
+    const currentHash = post.get(path)?.hash ?? null;
+    if (consulted.some((e) => e.finishedAt !== null && e.finishedAt <= capturedAt)) {
+      // never-flag — the entry fully ended before the path's per-file
+      // baseline: its change is baked into my pre and can never contaminate
+      // my post-diff. Attribute without a note.
+    } else if (
+      consulted.some((e) =>
+        e.paths.some(
+          (p) => p.path === path && p.preHash === (found.files[path]?.hash ?? null) && p.postHash === currentHash
+        )
+      )
+    ) {
+      // skip — the edit read my pre and its touch read my current state: its
+      // change is already attributed by the edit's own touch, never silently
+      // to me.
+      logger.info?.(`git-span covered-by-edit: ${path} skipped (equal baselines)`);
+      excludedPaths.add(path);
+      continue;
+    } else if (consulted.length > 0) {
+      // bounded-double — the edit's segment is absorbed, my residual is
+      // attributed; nothing is dropped.
+      logger.info?.(`git-span absorbed-double: ${path} attributed (interleaved edit absorbed)`);
+    }
+
+    // Attribute. Renames surface the old path — the span lives on the dead
+    // anchor, and the new path carries nothing.
+    if (attribution.kind === 'rename') {
+      scopes.push({ filePath: join(repoRoot, attribution.from), observed: { changed: [], wholeFile: true } });
+      excludedPaths.add(attribution.from);
+      excludedPaths.add(path);
+    } else {
+      const observed = attribution.kind === 'changed' ? attribution.observed : { changed: [], wholeFile: true };
+      scopes.push({ filePath: join(repoRoot, path), observed });
+      excludedPaths.add(path);
+    }
+  }
+
+  // Wall-budget exhaustion is transcript-visible whether it struck before
+  // any attribution or partway through — the user must see why attribution
+  // is absent OR partial, never a silent tail of dropped paths.
+  if (compared.gaps.some((g) => g.includes('post-side wall budget exhausted'))) {
+    notes.push(
+      scopes.length === 0
+        ? 'git-span: the post-side wall budget was exhausted before any file could be attributed — no git-span block was produced'
+        : `git-span: the post-side wall budget was exhausted partway — ${scopes.length} path(s) attributed, the rest dropped`
+    );
+  }
 
   let additionalContext: string | null = null;
   if (scopes.length > 0) {
@@ -876,10 +911,12 @@ export function createHandler(
       // Snapshot-first when the classifier decides a snapshot should exist: the
       // comparison is authoritative, and the static parser co-runs only for
       // spans the snapshot did not cover (its attributed/dropped paths are
-      // skipped). The snapshot surface is anchored at the hook cwd — the pre
-      // hook classified and walked the repo there — so the comparison stays on
-      // `cwd`; only the static co-run threads the envelope's workdir frame.
-      // The snapshot surface is keyed by (session_id, tool_use_id) — a post
+      // skipped). The snapshot surface is anchored at `effectiveCwd` — the
+      // pre hook classifies, resolves, and walks at the SAME frame (the
+      // envelope's workdir when one is present, else the hook cwd), so a
+      // write through a workdir pointing into another repo is recorded,
+      // compared, and attributed in that repo — never silently lost. The
+      // snapshot surface is keyed by (session_id, tool_use_id) — a post
       // event without tool_use_id can never correlate a record, so the branch
       // fails open to the static path (contract tests call this shape).
       // Transcript-visible note for a decided-but-recordless snapshot: set when
@@ -887,16 +924,24 @@ export function createHandler(
       // blocks below (declared at Bash-block scope — the static tail runs for
       // both the snapshot and non-snapshot paths).
       let attributionNote: string | null = null;
-      if (input.tool_use_id && classifyCommandForSnapshot(command, cwd).decision.kind === 'snapshot') {
+      // The snapshot surface is anchored at effectiveCwd's repo — resolve it
+      // once: the budgets resolve against it, and the no-record note fires
+      // only when the repo exists at post time. In a repo-less cwd the pre
+      // walk could never have created a record, so the note would be
+      // guaranteed spurious ("...the static spans below..." with no spans) —
+      // the fallback is silent there, per the "silence is the correct steady
+      // state" contract.
+      const repoRoot = resolveRepoRoot(effectiveCwd);
+      if (input.tool_use_id && classifyCommandForSnapshot(command, effectiveCwd).decision.kind === 'snapshot') {
         // Same resolution as the pre side (env → repo config → defaults); a
         // repo-less cwd resolves null and skips the config layer only.
-        const budgets = resolveSnapshotBudgets(resolveRepoRoot(cwd));
+        const budgets = resolveSnapshotBudgets(repoRoot);
         const store = createSnapshotStore(ctx.logger, budgets);
         const outcome = await snapshotBashBranch(
           store,
           sessionId,
           input.tool_use_id,
-          cwd,
+          effectiveCwd,
           command,
           executors,
           memo,
@@ -905,13 +950,15 @@ export function createHandler(
         );
         if (outcome.kind === 'tombstoned') return undefined;
         if (outcome.kind === 'no-record') {
-          // The pre-walk failed open (or never ran) — the loss is visible,
-          // never silent, and the static path still runs. The note is
-          // transcript-visible so the model sees WHY no snapshot attribution
-          // happened — a logger-only warn is invisible to it.
-          ctx.logger.warn('git-span: snapshot decided but no record exists; falling back to the static path');
-          attributionNote =
-            "git-span: snapshot record unavailable — this command's file writes were not snapshot-attributed; the static spans below are the only attribution";
+          if (repoRoot !== null) {
+            // The pre-walk failed open (or never ran) — the loss is visible,
+            // never silent, and the static path still runs. The note is
+            // transcript-visible so the model sees WHY no snapshot attribution
+            // happened — a logger-only warn is invisible to it.
+            ctx.logger.warn('git-span: snapshot decided but no record exists; falling back to the static path');
+            attributionNote =
+              "git-span: snapshot record unavailable — this command's file writes were not snapshot-attributed; the static spans below are the only attribution";
+          }
         } else {
           const blocks: string[] = [];
           if (outcome.additionalContext) blocks.push(outcome.additionalContext);
@@ -1004,4 +1051,16 @@ export function createHandler(
  */
 export const SNAPSHOT_POST_MATCHER = 'apply_patch|exec_command|exec|shell|local_shell|Bash';
 
-export default postToolUseHook({ matcher: SNAPSHOT_POST_MATCHER, timeout: 10_000 }, createHandler());
+// The matcher must be a STRING LITERAL, not the identifier reference: the
+// codex-hooks build CLI extracts a hook's matcher only from a literal
+// initializer and silently leaves it undefined otherwise — an identifier
+// reference would emit an unconstrained hook that runs for every tool
+// occurrence. The literal must stay textually identical to
+// SNAPSHOT_POST_MATCHER (the fixture that pins pre ⊆ post imports the
+// constant, and the hook-build portability test asserts the emitted matcher
+// equals the constant). The post family deliberately includes `apply_patch`
+// — the post hook must run for the touch path.
+export default postToolUseHook(
+  { matcher: 'apply_patch|exec_command|exec|shell|local_shell|Bash', timeout: 10_000 },
+  createHandler()
+);

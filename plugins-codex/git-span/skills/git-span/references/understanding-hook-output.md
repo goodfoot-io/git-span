@@ -332,9 +332,10 @@ on its own, and spanning build output contradicts the guidance in `SKILL.md`.
 A `Bash`/shell call whose writes are invisible to static command parsing —
 formatters, generators, embedded scripts, project tools — is attributed by
 pre/post file snapshots instead. A `PreToolUse` hook (the same
-`Bash|shell|exec|local_shell` matcher as the advisor) classifies the command
-and, when the command is write-capable but its targets cannot be resolved
-statically, walks the repo's eligible files under strict budgets and persists
+`Bash|shell|exec|local_shell|exec_command` matcher family as the advisor)
+classifies the command and, when the command is write-capable but its targets
+cannot be resolved statically, walks the repo's eligible files under strict
+budgets and persists
 a per-call pre-walk record (hashes only — never file contents — under
 `~/.cache/git-span/session/`, 0600). The `PostToolUse` hook re-walks,
 compares, and emits exact changed/deleted line ranges the same way an
@@ -411,7 +412,10 @@ snapshot degrades that call to the static-parse path, visibly: the
 emits a transcript-visible note in the tool block — `git-span: snapshot
 record unavailable — this command's file writes were not snapshot-attributed;
 the static spans below are the only attribution` — beside the logger warn, so
-the model loop sees why no snapshot attribution happened.
+the model loop sees why no snapshot attribution happened. The note fires only
+when the call's effective cwd is inside a repo — where the pre-walk could
+have created a record; in a repo-less cwd the fallback is silent, since no
+record could ever have been created there.
 
 ## Failure behaviour
 
@@ -420,7 +424,15 @@ to say: a missing `git span` binary, a timeout, a failed scan, or a
 malformed/unexpected CLI result resolves to "allow silently, inject
 nothing." Silence from either hook is the correct steady state when
 `git span` isn't installed, the repo has no spans, or nothing needs to be
-said — never an error condition. The one noisy case is the advisor's own
+said — never an error condition. Writes landing outside the session repo
+are not snapshot-attributed and are silent by design: the snapshot surface
+is per-repo, anchored at the hook cwd, and a cross-repo write compares
+against a baseline that never captured it — the static path is equally
+silent for an out-of-repo write. The one exception is the shell envelope's
+`workdir` field (the classic `exec_command` and code-mode `exec` forms): it
+is threaded through both the pre-walk and the post comparison, so a write
+through a workdir pointing into another repo is recorded, compared, and
+attributed in that repo. The one noisy case is the advisor's own
 scoped scan failing to complete (see "The advisor: what a held command sees"
 above): that still fails open, but visibly — a warning names the failure and
 carries the failed command's stderr in a delimited `<git-span-error>` block

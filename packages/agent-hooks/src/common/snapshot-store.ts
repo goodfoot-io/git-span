@@ -160,6 +160,15 @@ export interface ActivityEntry {
   finishedAt: number | null;
   /** One stamp per edited path. */
   paths: ActivityPathStamp[];
+  /**
+   * The subagent that created the entry, when the harness supplied an
+   * `agent_id` (Codex subagents share the parent session's `session_id`, so
+   * {@link SnapshotStore.removeSession} must filter the activity pass by
+   * this to keep a subagent stop from deleting the main session's entries).
+   * Absent for main-session entries and for the Claude harness, whose inputs
+   * carry no agent_id.
+   */
+  agentId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -338,8 +347,17 @@ function readJsonFile(file: string): unknown {
  * Atomically write a JSON file: tmp file in the same directory + rename.
  * Directories are created 0700 (recursive mkdir applies the mode only to the
  * final directory, so the parent is chmodded explicitly); files are 0600.
+ *
+ * Exported for the harness adapters' record-gap append: the gap rewrite is a
+ * read-modify-write over a potentially multi-MB record, and a non-atomic
+ * in-place write could expose a torn file to a concurrent sibling read —
+ * the same rename discipline every other store write already uses.
  */
-function writeJsonAtomic(file: string, data: unknown, replacer?: (key: string, value: unknown) => unknown): void {
+export function writeJsonAtomic(
+  file: string,
+  data: unknown,
+  replacer?: (key: string, value: unknown) => unknown
+): void {
   const dir = dirname(file);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   chmodSync(dir, 0o700);
@@ -840,7 +858,16 @@ export function createSnapshotStore(
           for (const name of listDir(activityDir(repo))) {
             if (!name.endsWith('.json')) continue;
             const entry = readActivityEntry(join(activityDir(repo), name));
-            if (entry !== null && entry.sessionId === sessionId) {
+            // Subagents share the parent session's session_id, so a
+            // SubagentStop (agentId present) must remove only that agent's
+            // entries — the main session's activity entries survive. Without
+            // an agentId (SessionEnd/Stop) every session entry is removed,
+            // exactly as before.
+            if (
+              entry !== null &&
+              entry.sessionId === sessionId &&
+              (agentId === undefined || entry.agentId === agentId)
+            ) {
               trashFile(join(activityDir(repo), name));
               activityRemoved += 1;
             }

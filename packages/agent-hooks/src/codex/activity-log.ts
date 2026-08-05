@@ -78,14 +78,18 @@ export default preToolUseHook(
       if (stamps === null) return undefined;
       // Intent logged before the patch's write lands: startedAt plus every
       // target path's preHash together, so the PostToolUse stamp keys
-      // identically through the store's finish contract.
+      // identically through the store's finish contract. A subagent's entry
+      // carries its agent_id (subagents share the parent's session_id), so
+      // SubagentStop can remove only that agent's entries — the main
+      // session's activity entries must survive a subagent stop.
       appendActivityEntry(repoRoot, {
         sessionId: input.session_id,
         toolUseId: input.tool_use_id,
         kind: input.tool_name,
         startedAt: Date.now(),
         finishedAt: null,
-        paths: stamps
+        paths: stamps,
+        ...(input.agent_id !== undefined ? { agentId: input.agent_id } : {})
       });
       return undefined;
     } catch (err) {

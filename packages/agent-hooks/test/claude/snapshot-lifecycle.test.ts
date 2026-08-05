@@ -42,7 +42,8 @@
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync, renameSync, rmSync, utimesSync } from 'node:fs';
+import { mkdtempSync, readFileSync, renameSync, rmSync, utimesSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Logger } from '@goodfoot/claude-code-hooks';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -1778,6 +1779,36 @@ describe('claude harness snapshot lifecycle', () => {
       });
     });
 
+    it('a decided-but-recordless call in a repo-less cwd stays silent — the note cannot fire where no record could ever have been created', async () => {
+      // Round-3 finding: the no-record note fired whenever the classifier
+      // decided 'snapshot' and the find returned no record, with no
+      // repo-existence gate — in a repo-less cwd the pre-walk can never have
+      // created a record, so the note ("...the static spans below are the
+      // only attribution") was guaranteed spurious there. The note now fires
+      // only when the post-time repo root exists; a repo-less cwd falls
+      // through silently, per the "silence is the correct steady state"
+      // contract.
+      const repolessCwd = mkdtempSync(join(tmpdir(), 'agent-hooks-repoless-'));
+      try {
+        const sessionId = 'sess-lifecycle-repoless';
+        const tuId = 'tu-repoless-1';
+        const { logger, notes } = noteCapturingLogger();
+        const { executors } = makeExecutors();
+        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+        const input = postInput({
+          session_id: sessionId,
+          cwd: repolessCwd,
+          tool_use_id: tuId,
+          tool_input: { command: 'npx prettier --write src/app.ts' }
+        });
+        const raw = await handler(input as never, { logger });
+        expect(toResult(raw)).toBeNull();
+        expect(notes.some((n) => n.includes('snapshot decided but no record exists'))).toBe(false);
+      } finally {
+        rmSync(repolessCwd, { recursive: true, force: true });
+      }
+    });
+
     it('post-side wall-budget exhaustion is transcript-visible: the note appears, no git-span block is produced', async () => {
       // A zero-second wall budget with a post walk that cannot complete in a
       // single millisecond (40 files of ~800 KiB force real hashing time):
@@ -1948,6 +1979,25 @@ describe('claude harness snapshot lifecycle', () => {
         expect(block).toContain('## billing/checkout-request-flow');
         expect(block).not.toContain('attribution deferred');
         expect(calls.fix).toBe(2);
+      });
+    });
+
+    it('a malformed env override does not shadow a valid config key', async () => {
+      await withRepo(async (repo) => {
+        execFileSync('git', ['-C', repo.root, 'config', 'git-span.snapshot-max-total-bytes', '4096'], {
+          stdio: 'ignore'
+        });
+        const saved = process.env.GIT_SPAN_SNAPSHOT_MAX_TOTAL_BYTES;
+        try {
+          // The env value cannot parse, so it must fall through to the config
+          // layer — a bad override never silently reverts the budget to the
+          // default while a valid git-span.snapshot-* key sits in the repo.
+          process.env.GIT_SPAN_SNAPSHOT_MAX_TOTAL_BYTES = '500MB';
+          expect(resolveSnapshotBudgets(repo.root).maxTotalBytes).toBe(4096);
+        } finally {
+          if (saved === undefined) delete process.env.GIT_SPAN_SNAPSHOT_MAX_TOTAL_BYTES;
+          else process.env.GIT_SPAN_SNAPSHOT_MAX_TOTAL_BYTES = saved;
+        }
       });
     });
 

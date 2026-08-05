@@ -263,8 +263,13 @@ export function resolveSnapshotBudgets(repoRoot: string | null): SnapshotBudgets
     const raw = process.env[envName];
     if (raw !== undefined && raw.trim() !== '') {
       const value = Number(raw.trim());
-      if (Number.isFinite(value) && value >= 0) budgets[key] = value;
-      continue;
+      if (Number.isFinite(value) && value >= 0) {
+        budgets[key] = value;
+        continue;
+      }
+      // A present-but-malformed env value must not shadow the config layer:
+      // fall through so a valid git-span.snapshot-* key still wins over the
+      // default instead of being silently dropped by the bad env value.
     }
     const configKey = `git-span.${envName.slice('GIT_SPAN_'.length).toLowerCase().replaceAll('_', '-')}`;
     const configValue = config?.get(configKey);
