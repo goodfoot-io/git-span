@@ -26,6 +26,7 @@ import {
   postToolUseFailureHook,
   postToolUseFailureOutput
 } from '@goodfoot/claude-code-hooks';
+import { resolveRepoRoot } from '../common/agent-hooks-common.js';
 import { createSnapshotStore, type SnapshotStore } from '../common/snapshot-store.js';
 import { type CoreLogger, createDiskMemoStore, type MemoFactory } from '../common/span-surface.js';
 import { createDefaultTouchExecutors, type TouchExecutors } from '../common/touch-core.js';
@@ -44,15 +45,18 @@ function narrowCommand(toolInput: unknown): string | null {
 export function createHandler(
   executors: TouchExecutors = createDefaultTouchExecutors(),
   memoFactory: MemoFactory = createDiskMemoStore,
-  storeFactory: (logger: CoreLogger) => SnapshotStore = (logger) =>
-    createSnapshotStore(logger, resolveSnapshotBudgets())
+  storeFactory: (logger: CoreLogger, repoRoot: string | null) => SnapshotStore = (logger, repoRoot) =>
+    createSnapshotStore(logger, resolveSnapshotBudgets(repoRoot))
 ) {
   return async (input: PostToolUseFailureInput, ctx: HookContext) => {
     try {
       const command = narrowCommand(input.tool_input);
       if (command === null) return null;
+      // Same budget resolution as the pre side (env → repo config → defaults);
+      // a repo-less cwd resolves null and skips the config layer only.
+      const repoRoot = resolveRepoRoot(input.cwd ?? '');
       const outcome = await snapshotBashBranch(
-        storeFactory(ctx.logger),
+        storeFactory(ctx.logger, repoRoot),
         input.session_id,
         input.tool_use_id,
         input.cwd ?? '',
@@ -60,7 +64,7 @@ export function createHandler(
         executors,
         memoFactory(ctx.logger),
         ctx.logger,
-        resolveSnapshotBudgets()
+        resolveSnapshotBudgets(repoRoot)
       );
       if (outcome.kind === 'no-record') {
         // A failure with no record discards with a warn — the loss is never

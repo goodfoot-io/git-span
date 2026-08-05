@@ -211,8 +211,16 @@ export function walkSnapshotFiles(
   return { files, gaps };
 }
 
-/** Budgets: `GIT_SPAN_SNAPSHOT_*` env overrides, else the defaults (config layer deferred). */
-export function resolveSnapshotBudgets(): SnapshotBudgets {
+/**
+ * Budgets: `GIT_SPAN_SNAPSHOT_*` env overrides, else `git-span.snapshot-*`
+ * config in the repo, else the defaults — the `resolveSpanRoot` precedence.
+ * The config layer is one scoped `git config --get-regexp` read for the whole
+ * key family (the classifier's one-subprocess idiom), so a snapshot call pays
+ * one subprocess for the entire budget set; a repo-less or failed read falls
+ * through to env + defaults, and values are validated exactly like the env
+ * layer, so a malformed key keeps the default (fail-open, never a crash).
+ */
+export function resolveSnapshotBudgets(repoRoot: string | null): SnapshotBudgets {
   const budgets: SnapshotBudgets = { ...DEFAULT_SNAPSHOT_BUDGETS };
   const overrides: [keyof SnapshotBudgets, string][] = [
     ['maxFiles', 'GIT_SPAN_SNAPSHOT_MAX_FILES'],
@@ -227,13 +235,48 @@ export function resolveSnapshotBudgets(): SnapshotBudgets {
     ['recordTtlMs', 'GIT_SPAN_SNAPSHOT_RECORD_TTL_MS'],
     ['unfinishedEntryTtlMs', 'GIT_SPAN_SNAPSHOT_UNFINISHED_ENTRY_TTL_MS']
   ];
+  const config = repoRoot === null ? null : readSnapshotConfig(repoRoot);
   for (const [key, envName] of overrides) {
+    // Env wins, then repo config, then the default — mirroring resolveSpanRoot.
     const raw = process.env[envName];
-    if (raw === undefined || raw.trim() === '') continue;
-    const value = Number(raw.trim());
-    if (Number.isFinite(value) && value >= 0) budgets[key] = value;
+    if (raw !== undefined && raw.trim() !== '') {
+      const value = Number(raw.trim());
+      if (Number.isFinite(value) && value >= 0) budgets[key] = value;
+      continue;
+    }
+    const configKey = `git-span.${envName.slice('GIT_SPAN_'.length).toLowerCase().replaceAll('_', '-')}`;
+    const configValue = config?.get(configKey);
+    if (configValue !== undefined && configValue !== '') {
+      const value = Number(configValue);
+      if (Number.isFinite(value) && value >= 0) budgets[key] = value;
+    }
   }
   return budgets;
+}
+
+/**
+ * One scoped `git config --get-regexp` read for the whole `git-span.snapshot-*`
+ * key family. Output lines are `key value`; a key repeated across config
+ * scopes resolves to its last line, matching `git config --get`'s
+ * highest-precedence value. Exit 1 (no matching keys) or any git error
+ * yields an empty map — the config layer simply falls through to defaults.
+ */
+function readSnapshotConfig(repoRoot: string): Map<string, string> {
+  const values = new Map<string, string>();
+  try {
+    const out = execFileSync('git', ['-C', repoRoot, 'config', '--get-regexp', '^git-span\\.snapshot-'], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      encoding: 'utf8'
+    });
+    for (const line of out.split('\n')) {
+      const sep = line.indexOf(' ');
+      if (sep <= 0) continue;
+      values.set(line.slice(0, sep), line.slice(sep + 1).trim());
+    }
+  } catch (err) {
+    void err; // no matching keys (exit 1) or git error — config layer empty
+  }
+  return values;
 }
 
 export function createHandler() {
@@ -258,7 +301,7 @@ export function createHandler() {
       }
       const repoRoot = resolveRepoRoot(input.cwd ?? '');
       if (repoRoot === null) return undefined; // no repo, no record — fail open
-      const budgets = resolveSnapshotBudgets();
+      const budgets = resolveSnapshotBudgets(repoRoot);
       const store = createSnapshotStore(ctx.logger, budgets);
       const now = Date.now();
       const { files, gaps } = walkSnapshotFiles(repoRoot, plan.tier1Targets, budgets, now, ctx.logger);

@@ -34,6 +34,20 @@
  * and index entry with it (a tombstoned pair counts under whichever of the
  * two expired first — tombstone files are processed before record files so a
  * pair expired together counts as a tombstone removal).
+ *
+ * The sweep's passes read files that other sessions' processes are writing,
+ * and on the session filesystem (virtiofs) a read landing on a file being
+ * rename-overed or unlinked aborts the whole hook process (node-on-virtiofs
+ * `uv_fs_close` assertion — confirmed, not theoretical). Two guards bound
+ * that surface: every sweep read skips files whose mtime is within
+ * {@link SWEEP_READ_MARGIN_MS} of the sweep's clock (another process is still
+ * finishing them; the sweep only targets stale state, so deferring costs
+ * nothing), and removals rename the file to a trash name in the same
+ * directory instead of unlinking it in place — the unlink happens after
+ * {@link TRASH_TTL_MS} in the trash pass, long after any concurrent reader
+ * closed. Correctness reads of stable own-session files (find/consume, the
+ * consult, readIndexEntries) are intentionally not margined — they must see
+ * in-flight state.
  */
 
 import {
@@ -186,6 +200,88 @@ function activityDir(repoRoot: string): string {
 
 function activityFile(repoRoot: string, sessionId: string, toolUseId: string): string {
   return join(activityDir(repoRoot), `${sanitizeSessionId(sessionId)}__${sanitizeSessionId(toolUseId)}.json`);
+}
+
+// ---------------------------------------------------------------------------
+// Sweep-read margin and trash removal
+// ---------------------------------------------------------------------------
+
+/**
+ * The sweep's cross-session read margin. The sweep's cleanup passes read files
+ * that other sessions' processes write; on this session's filesystem (virtiofs)
+ * a `readFileSync` landing on a file being rename-overed or unlinked aborts the
+ * hook process (node-on-virtiofs `uv_fs_close` assertion). A file whose mtime
+ * is within this window of the sweep's clock is skipped — another process is
+ * still creating or finishing it — because the sweep only targets stale state
+ * (TTL-expired or orphaned), deferring a fresh file costs nothing: the sweep
+ * runs on every snapshot write and the file is reconsidered seconds later.
+ */
+export const SWEEP_READ_MARGIN_MS = 5_000;
+
+/**
+ * Trash retention. Removals rename the state file to a trash name in the same
+ * directory instead of unlinking it in place, and the trash pass unlinks
+ * trashed files once their mtime (the rename instant) is older than this. The
+ * rename keeps the inode alive for any fd another process already opened (the
+ * abort above is close-after-unlink; a rename-away leaves the inode present),
+ * and the retention is far longer than any hook-process read can hold an fd,
+ * so the trash-pass unlink never lands under a reader.
+ */
+export const TRASH_TTL_MS = 60_000;
+
+const TRASH_MARKER = '.trash-';
+
+/**
+ * Whether `name` is a trash name. Trash names never match the passes' filters
+ * (they do not end in `.json`), so trashed state is never parsed as data.
+ */
+function isTrashName(name: string): boolean {
+  return name.startsWith('.') && name.includes(TRASH_MARKER);
+}
+
+/**
+ * Remove a state file without unlinking it in place: rename it to a trash name
+ * in the same directory (same fs — rename cannot fail on EXDEV), where the
+ * trash pass unlinks it after TRASH_TTL_MS. `'absent'` (already removed by a
+ * concurrent sweep) and `'failed'` (the rename could not run) are
+ * distinguished so callers can keep their warn-on-failure diagnostics without
+ * warning on benign double-removal.
+ */
+function trashFile(file: string): 'trashed' | 'absent' | 'failed' {
+  try {
+    renameSync(file, join(dirname(file), `.${basename(file)}${TRASH_MARKER}${process.pid}-${Date.now().toString(36)}`));
+    return 'trashed';
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'ENOENT' ? 'absent' : 'failed';
+  }
+}
+
+/**
+ * Whether `file`'s mtime is within SWEEP_READ_MARGIN_MS of `now` — i.e. some
+ * process is likely still writing or finishing it, and reading it could land
+ * on a rename-over or unlink. Absent files are never recent (nothing to read).
+ */
+function isRecentlyWritten(file: string, now: number): boolean {
+  try {
+    return statSync(file).mtimeMs > now - SWEEP_READ_MARGIN_MS;
+  } catch {
+    return false;
+  }
+}
+
+/** Unlink trashed state files in `dir` whose mtime aged past TRASH_TTL_MS. */
+function emptyTrash(dir: string, now: number): void {
+  for (const name of listDir(dir)) {
+    if (!isTrashName(name)) continue;
+    const file = join(dir, name);
+    let mtimeMs: number;
+    try {
+      mtimeMs = statSync(file).mtimeMs;
+    } catch {
+      continue;
+    }
+    if (mtimeMs < now - TRASH_TTL_MS) rmSync(file, { force: true });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -434,11 +530,13 @@ export function createSnapshotStore(
     // The index lives under the repo's git common dir, resolved by a git
     // subprocess that can fail (repo dir gone, spawn pressure under load).
     // Index cleanup is opportunistic bookkeeping — a failure must warn and
-    // continue, never take down the sweep or removeSession.
-    try {
-      rmSync(indexFile(repoRoot, sessionId, toolUseId), { force: true });
-    } catch (e) {
-      logger.warn(`snapshot store: index entry cleanup failed for ${repoRoot}: ${String(e)}`);
+    // continue, never take down the sweep or removeSession. Removal goes
+    // through the trash rename (never an in-place unlink) for the same reason
+    // as the sweep's other removals: an in-place unlink can abort a concurrent
+    // reader of the index (the correctness reads readIndexEntries is exempt
+    // from the sweep-read margin).
+    if (trashFile(indexFile(repoRoot, sessionId, toolUseId)) === 'failed') {
+      logger.warn(`snapshot store: index entry cleanup failed for ${repoRoot}`);
     }
   }
 
@@ -446,14 +544,22 @@ export function createSnapshotStore(
     writeJsonAtomic(recordFile(record.sessionId, record.toolUseId), record, bigintReplacer);
   }
 
-  /** Repos with readable records anywhere — the activity-log discovery surface. */
+  /**
+   * Repos with readable records anywhere — the activity-log discovery surface.
+   * Reads other sessions' records, so the sweep-read margin applies (another
+   * process may be mid-consume on one of them); a deferred record's repo is
+   * discovered by a later cleanup, and its activity entries then age into the
+   * TTL prune — retention is never wrong attribution.
+   */
   function reposFromRecords(): Set<string> {
     const repos = new Set<string>();
     for (const sessionName of listDir(SESSION_BASE_DIR)) {
       const dir = snapshotsDir(sessionName);
       for (const name of listDir(dir)) {
         if (!name.endsWith('.json') || name.endsWith(TOMBSTONE_SUFFIX)) continue;
-        const rec = readRecordFile(join(dir, name), logger);
+        const file = join(dir, name);
+        if (isRecentlyWritten(file, Date.now())) continue;
+        const rec = readRecordFile(file, logger);
         if (rec !== null) repos.add(rec.repoRoot);
       }
     }
@@ -471,6 +577,10 @@ export function createSnapshotStore(
         for (const name of listDir(activityDir(repo))) {
           if (!name.endsWith('.json')) continue;
           const file = join(activityDir(repo), name);
+          // The activity log is shared across sessions — another process may
+          // be finishing an entry right now, so the sweep-read margin applies
+          // before the read (the entry's own mtime still decides the TTL).
+          if (isRecentlyWritten(file, now)) continue;
           const entry = readActivityEntry(file);
           if (entry === null || entry.finishedAt !== null) continue;
           let mtimeMs: number;
@@ -480,7 +590,7 @@ export function createSnapshotStore(
             continue;
           }
           if (mtimeMs < now - budgets.unfinishedEntryTtlMs) {
-            rmSync(file, { force: true });
+            trashFile(file);
             removed += 1;
           }
         }
@@ -500,13 +610,18 @@ export function createSnapshotStore(
       try {
         for (const name of listDir(indexDir(repo))) {
           if (!name.endsWith('.json')) continue;
-          const data = readJsonFile(join(indexDir(repo), name));
+          const file = join(indexDir(repo), name);
+          // The index is written by other sessions' writes/consumes — the
+          // sweep-read margin applies before either read here.
+          if (isRecentlyWritten(file, _now)) continue;
+          const data = readJsonFile(file);
           if (data === null || typeof data !== 'object' || data === null) continue;
           const version = (data as { version?: unknown }).version;
           if (version !== undefined && version !== 1) continue;
           const entry = data as SnapshotIndexEntry;
-          if (readRecordFile(recordFile(entry.sessionId, entry.toolUseId), logger) === null) {
-            rmSync(join(indexDir(repo), name), { force: true });
+          const recFile = recordFile(entry.sessionId, entry.toolUseId);
+          if (!isRecentlyWritten(recFile, _now) && readRecordFile(recFile, logger) === null) {
+            trashFile(file);
             removed += 1;
           }
         }
@@ -519,7 +634,19 @@ export function createSnapshotStore(
 
   return {
     write(record: SnapshotRecord): boolean {
-      this.sweep();
+      const swept = this.sweep();
+      const removed = swept.records + swept.tombstones + swept.activityEntries + swept.indexEntries;
+      if (removed > 0) {
+        // The TTL sweep is the crash-recovery backstop; report what it removed
+        // so cleanup is observable (the plan's sweep-counts report), never the
+        // contents of what it removed.
+        logger.info?.('git-span snapshot sweep removed expired state', {
+          records: swept.records,
+          tombstones: swept.tombstones,
+          activityEntries: swept.activityEntries,
+          indexEntries: swept.indexEntries
+        });
+      }
       const repo = record.repoRoot;
       const json = JSON.stringify(record, bigintReplacer);
       const total = repoRecordBytes(repo) + Buffer.byteLength(json, 'utf8');
@@ -602,47 +729,71 @@ export function createSnapshotStore(
         // record whose tombstone already claimed the pair.
         for (const name of names) {
           if (!name.endsWith(TOMBSTONE_SUFFIX)) continue;
-          const t = readTombstoneFile(join(dir, name), logger);
+          const file = join(dir, name);
+          // Another session's process may be finishing this tombstone (or the
+          // record the pass reads below) right now — the sweep-read margin
+          // skips in-flight files; the sweep only targets stale state.
+          if (isRecentlyWritten(file, now)) continue;
+          const t = readTombstoneFile(file, logger);
           if (t === null) continue;
           if (now - t.consumedAt > budgets.recordTtlMs) {
             const recordPath = recordPathFromTombstoneName(dir, name);
-            const rec = readRecordFile(recordPath, logger);
-            rmSync(recordPath, { force: true });
-            rmSync(join(dir, name), { force: true });
+            const rec = isRecentlyWritten(recordPath, now) ? null : readRecordFile(recordPath, logger);
+            trashFile(recordPath);
+            trashFile(file);
             if (rec !== null) removeIndexEntry(rec.repoRoot, rec.sessionId, rec.toolUseId);
             result.tombstones += 1;
           }
         }
         for (const name of names) {
           if (!name.endsWith('.json') || name.endsWith(TOMBSTONE_SUFFIX)) continue;
-          const rec = readRecordFile(join(dir, name), logger);
+          const file = join(dir, name);
+          if (isRecentlyWritten(file, now)) continue;
+          const rec = readRecordFile(file, logger);
           if (rec === null) continue;
           repos.add(rec.repoRoot);
           if (now - rec.createdAt > budgets.recordTtlMs) {
-            rmSync(join(dir, name), { force: true });
-            rmSync(tombstoneFile(rec.sessionId, rec.toolUseId), { force: true });
+            trashFile(file);
+            trashFile(tombstoneFile(rec.sessionId, rec.toolUseId));
             removeIndexEntry(rec.repoRoot, rec.sessionId, rec.toolUseId);
             result.records += 1;
           }
         }
+        emptyTrash(dir, now);
       }
       result.activityEntries = pruneStaleActivity(now, repos);
       result.indexEntries = sweepOrphanIndexes(now, repos);
+      for (const repo of repos) {
+        // Same git-common-dir subprocess caveat as the activity and index
+        // passes: a gone repo must skip, not abort the sweep.
+        try {
+          emptyTrash(activityDir(repo), now);
+          emptyTrash(indexDir(repo), now);
+        } catch (e) {
+          logger.warn(`snapshot store: trash pass skipped ${repo}: ${String(e)}`);
+        }
+      }
       return result;
     },
 
     removeSession(sessionId: string, agentId?: string): void {
       const dir = snapshotsDir(sessionId);
       const repos = new Set<string>();
+      let recordsRemoved = 0;
+      // The session's own records are stable during its end (no other process
+      // writes them), so these reads carry no sweep-read margin — but their
+      // removal goes through the trash rename, never an in-place unlink: the
+      // unlink is what can abort another session's concurrent read.
       for (const name of listDir(dir)) {
         if (!name.endsWith('.json') || name.endsWith(TOMBSTONE_SUFFIX)) continue;
         const rec = readRecordFile(join(dir, name), logger);
         if (rec === null) continue;
         if (agentId !== undefined && rec.agentId !== agentId) continue;
         repos.add(rec.repoRoot);
-        rmSync(join(dir, name), { force: true });
-        rmSync(tombstoneFile(rec.sessionId, rec.toolUseId), { force: true });
+        trashFile(join(dir, name));
+        trashFile(tombstoneFile(rec.sessionId, rec.toolUseId));
         removeIndexEntry(rec.repoRoot, rec.sessionId, rec.toolUseId);
+        recordsRemoved += 1;
       }
       // Activity entries live under repos, and the session's own records may
       // already have been TTL-swept (the sweep runs on every write), so the
@@ -650,6 +801,7 @@ export function createSnapshotStore(
       // ones this call removed. The session dir itself is shared with the
       // memo store and is never removed here.
       for (const repo of reposFromRecords()) repos.add(repo);
+      let activityRemoved = 0;
       for (const repo of repos) {
         // The activity log lives under the repo's git common dir, resolved by
         // a git subprocess; a gone repo must skip, never abort the removal.
@@ -658,12 +810,23 @@ export function createSnapshotStore(
             if (!name.endsWith('.json')) continue;
             const entry = readActivityEntry(join(activityDir(repo), name));
             if (entry !== null && entry.sessionId === sessionId) {
-              rmSync(join(activityDir(repo), name), { force: true });
+              trashFile(join(activityDir(repo), name));
+              activityRemoved += 1;
             }
           }
         } catch (e) {
           logger.warn(`snapshot store: activity cleanup skipped ${repo}: ${String(e)}`);
         }
+      }
+      // Session-end cleanup is the plan's primary removal trigger; report what
+      // it removed so a session's snapshot state never disappears silently.
+      if (recordsRemoved + activityRemoved > 0) {
+        logger.info?.('git-span session cleanup removed snapshot state', {
+          sessionId,
+          agentId: agentId ?? null,
+          records: recordsRemoved,
+          activityEntries: activityRemoved
+        });
       }
     }
   };

@@ -53,7 +53,13 @@ import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve as resolvePath } from 'node:path';
 import { type HookContext, type PostToolUseInput, postToolUseHook, postToolUseOutput } from '@goodfoot/codex-hooks';
-import { abspathAgainst, queueRoot, sanitizeSessionId, sessionDir } from '../common/agent-hooks-common.js';
+import {
+  abspathAgainst,
+  queueRoot,
+  resolveRepoRoot,
+  sanitizeSessionId,
+  sessionDir
+} from '../common/agent-hooks-common.js';
 import { parseCommandDetailed, type ResolvedSpan } from '../common/parse-command.js';
 import {
   applyAmbiguityRules,
@@ -760,7 +766,9 @@ export function createHandler(
       // event without tool_use_id can never correlate a record, so the branch
       // fails open to the static path (contract tests call this shape).
       if (input.tool_use_id && classifyCommandForSnapshot(command, cwd).decision.kind === 'snapshot') {
-        const budgets = resolveSnapshotBudgets();
+        // Same resolution as the pre side (env → repo config → defaults); a
+        // repo-less cwd resolves null and skips the config layer only.
+        const budgets = resolveSnapshotBudgets(resolveRepoRoot(cwd));
         const store = createSnapshotStore(ctx.logger, budgets);
         const outcome = await snapshotBashBranch(
           store,

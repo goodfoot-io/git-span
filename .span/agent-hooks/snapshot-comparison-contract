@@ -1,8 +1,9 @@
 packages/agent-hooks/src/claude/post-tool-use-failure.ts#L20-L52 rk64:65fb365557abcd0c
+packages/agent-hooks/src/claude/post-tool-use-failure.ts#L20-L53 rk64:55548ec165886b76
 packages/agent-hooks/src/common/snapshot-core.ts#L1277-L1345 rk64:7e6758747aee0e77
 packages/agent-hooks/src/common/touch-core.ts#L156-L189 rk64:7deffdb44694d2ec
-packages/agent-hooks/test/claude/snapshot-lifecycle.test.ts#L351-L728 rk64:cfec4e8197fcaae9
-packages/agent-hooks/test/codex/snapshot-lifecycle.test.ts#L314-L513 rk64:8e4cf48d97c3ec7a
+packages/agent-hooks/test/claude/snapshot-lifecycle.test.ts#L352-L729 rk64:cfec4e8197fcaae9
+packages/agent-hooks/test/codex/snapshot-lifecycle.test.ts#L315-L514 rk64:8e4cf48d97c3ec7a
 packages/agent-hooks/test/common/snapshot-core.test.ts#L299-L462 rk64:29559f56c9986842
 packages/agent-hooks/test/common/snapshot-core.test.ts#L527-L572 rk64:39aeefbf1fc90cce
 packages/agent-hooks/test/common/snapshot-core.test.ts#L1192-L1464 rk64:956cc88a37901d44

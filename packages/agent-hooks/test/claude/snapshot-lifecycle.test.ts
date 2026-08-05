@@ -55,7 +55,8 @@ import {
   parseDriftPorcelain,
   parsePorcelain,
   queueRoot,
-  sanitizeSessionId
+  sanitizeSessionId,
+  sessionDir
 } from '../../src/common/agent-hooks-common.js';
 import {
   applyAmbiguityRules,
@@ -979,6 +980,16 @@ describe('claude harness snapshot lifecycle (Phase 2)', () => {
             files: {}
           })
         );
+        // The sweep-read margin skips files written within the last 5s, and
+        // pruneStaleActivity only visits repos named by readable records — so
+        // age the anchor record's file past the margin (its createdAt stays
+        // in-TTL and live) or the repo is invisible to the activity prune.
+        const anchorFile = join(
+          sessionDir('sess-lifecycle-ttl-edit'),
+          'snapshots',
+          `${sanitizeSessionId('tu-edit-anchor')}.json`
+        );
+        utimesSync(anchorFile, (now - 60_000) / 1000, (now - 60_000) / 1000);
         appendActivityEntry(repo.root, {
           sessionId: 'sess-lifecycle-ttl-edit',
           toolUseId: 'tu-edit-stale',
@@ -1475,6 +1486,16 @@ describe('claude harness snapshot lifecycle (Phase 2)', () => {
           );
           const oldSeconds = (now - DEFAULT_SNAPSHOT_BUDGETS.unfinishedEntryTtlMs - 60_000) / 1000;
           utimesSync(stale, oldSeconds, oldSeconds);
+          // The sweep-read margin skips files written within the last 5s, and
+          // the activity prune only visits repos named by readable records —
+          // age the pre-walk record's file past the margin too, or the repo
+          // is invisible to the prune (its createdAt stays in-TTL and live).
+          const preFile = join(
+            sessionDir('sess-interleave-ttlprune'),
+            'snapshots',
+            `${sanitizeSessionId('tu-bash-ttlprune')}.json`
+          );
+          utimesSync(preFile, (now - 60_000) / 1000, (now - 60_000) / 1000);
           pruned.push(createSnapshotStore(new Logger()).sweep(now).activityEntries);
         }
       });

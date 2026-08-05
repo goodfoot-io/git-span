@@ -314,6 +314,69 @@ this check entirely. Generated bundles are the common case: the classifier only
 ever inspects manifest-shaped files, so it cannot recognize a regenerated bundle
 on its own, and spanning build output contradicts the guidance in `SKILL.md`.
 
+## Bash write attribution: the snapshot surface
+
+A `Bash`/shell call whose writes are invisible to static command parsing —
+formatters, generators, embedded scripts, project tools — is attributed by
+pre/post file snapshots instead. A `PreToolUse` hook (the same `Bash`
+matcher as the advisor; on Codex the same `Bash|shell|exec|local_shell`
+matcher) classifies the command and, when the command is write-capable but
+its targets cannot be resolved statically, walks the repo's eligible files
+under strict budgets and persists a per-call pre-walk record (hashes only —
+never file contents — under `~/.cache/git-span/session/`, 0600). The
+`PostToolUse` hook re-walks, compares, and emits exact changed/deleted line
+ranges the same way a `Write`/`Edit` touch would; reads, read-only commands,
+statically covered writes, and chmod/mtime-only changes never snapshot.
+A failed command is compared too when the platform reports the failure
+(Claude's `PostToolUseFailure`); partial mutations from a failed command are
+attributed, never silently lost, and a failure with no record discards with
+a warning. Concurrent calls are handled by an ambiguity table — a changed
+path whose change cannot be proven to be this call's is dropped with a
+warning naming the reason, never guessed. Session-end (Claude `SessionEnd`,
+Codex `Stop`/`SubagentStop`) removes the session's snapshot state, and the
+record TTL (24 h by default) is the crash-recovery backstop.
+
+The intentionally silent set is small: the pure-read fast path (no write
+possible), out-of-scope writes (gitignored, binary, span-root, submodule,
+outside-repo), and chmod/mtime-only changes. Everything else — snapshot
+decisions and coverage, budget caps hit, coverage gaps, ambiguous paths with
+their reasons, cleanup and sweep counts — is reported through the hook
+logger (see "Mechanical churn is suppressed" above for how to enable it;
+set `CLAUDE_CODE_HOOKS_LOG_FILE` to a path to capture the records).
+
+### Snapshot budgets
+
+The snapshot walk and comparison run under budgets; exceeding one cuts the
+walk short with a coverage-gap diagnostic (the comparison never describes
+partial coverage as complete), and the pre-side wall budget bounds the
+user-visible cost of the pre-walk. Each budget resolves with the same
+precedence as the span-root setting: the `GIT_SPAN_SNAPSHOT_*` environment
+variable wins, then the `git-span.snapshot-*` key in the repo's git config
+(`git config git-span.snapshot-max-files 1000`), then the default. A
+malformed value is ignored (the default stands); a repo-less hook call or a
+failed config read simply skips the config layer.
+
+| Budget | Env var | Git config key | Default |
+|---|---|---|---|
+| Files captured per record | `GIT_SPAN_SNAPSHOT_MAX_FILES` | `git-span.snapshot-max-files` | 5000 |
+| Per-file byte cap (larger files excluded) | `GIT_SPAN_SNAPSHOT_MAX_BYTES_PER_FILE` | `git-span.snapshot-max-bytes-per-file` | 1 MiB |
+| Total bytes across one record's pre-walk | `GIT_SPAN_SNAPSHOT_MAX_TOTAL_BYTES` | `git-span.snapshot-max-total-bytes` | 64 MiB |
+| Line hashes per file (over it: recorded coarse) | `GIT_SPAN_SNAPSHOT_MAX_LINE_HASHES_PER_FILE` | `git-span.snapshot-max-line-hashes-per-file` | 4000 |
+| Line hashes per record (later files coarse) | `GIT_SPAN_SNAPSHOT_MAX_LINE_HASHES_PER_RECORD` | `git-span.snapshot-max-line-hashes-per-record` | 200,000 |
+| Pre-side wall budget (seconds) | `GIT_SPAN_SNAPSHOT_PRE_SIDE_MAX_WALL_SECONDS` | `git-span.snapshot-pre-side-max-wall-seconds` | 1 s |
+| Storage cap across the repo's records | `GIT_SPAN_SNAPSHOT_MAX_STORAGE_BYTES` | `git-span.snapshot-max-storage-bytes` | 64 MiB |
+| Touched files per tool call | `GIT_SPAN_SNAPSHOT_MAX_TOUCHED_FILES` | `git-span.snapshot-max-touched-files` | 100 |
+| Post-side comparison wall budget (seconds) | `GIT_SPAN_SNAPSHOT_POST_SIDE_WALL_SECONDS` | `git-span.snapshot-post-side-wall-seconds` | 5 s |
+| Record/tombstone TTL | `GIT_SPAN_SNAPSHOT_RECORD_TTL_MS` | `git-span.snapshot-record-ttl-ms` | 24 h |
+| Unfinished activity-entry TTL | `GIT_SPAN_SNAPSHOT_UNFINISHED_ENTRY_TTL_MS` | `git-span.snapshot-unfinished-entry-ttl-ms` | 15 min |
+
+Storage exhaustion refuses new snapshots with a warning — records are never
+dropped early, because a dropped record is indistinguishable from an expired
+one and would reopen the fail-open the ambiguity rules guard. A refused
+snapshot degrades that call to the static-parse path, visibly: the
+`PostToolUse` side warns when a snapshot should exist but the record is
+missing.
+
 ## Failure behaviour
 
 Both hooks fail open on everything that decides *whether* there is something

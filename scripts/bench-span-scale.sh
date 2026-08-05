@@ -249,7 +249,8 @@ seed_spans() {
     (
       cd "$repo"
       "$GIT_SPAN_BIN" add "$name" "${anchors[@]}" >/dev/null
-      "$GIT_SPAN_BIN" why "$name" -m "Synthetic scale span $i" >/dev/null
+      # WHY_TEXT is positional in git-span >= 1.0.144 (`why -m` is rejected).
+      "$GIT_SPAN_BIN" why "$name" "Synthetic scale span $i" >/dev/null
       git add .span >/dev/null
       git commit --quiet -m "bench: seed span $name" >/dev/null
     )
@@ -393,7 +394,8 @@ for M in "${SPAN_COUNTS[@]}"; do
             ;;
           why)
             ( cd "$REPO" && "$GIT_SPAN_BIN" add "${new_name}-${it}" "$(anchor_for "$it" 0 "$A")" >/dev/null 2>&1 || true )
-            t=$(cd "$REPO" && timed 0 -- "$GIT_SPAN_BIN" why "${new_name}-${it}" -m "bench why") || continue
+            # WHY_TEXT is positional in git-span >= 1.0.144 (`why -m` is rejected).
+            t=$(cd "$REPO" && timed 0 -- "$GIT_SPAN_BIN" why "${new_name}-${it}" "bench why") || continue
             ;;
           show)
             t=$(cd "$REPO" && timed 0 -- "$GIT_SPAN_BIN" show "$show_name") || continue

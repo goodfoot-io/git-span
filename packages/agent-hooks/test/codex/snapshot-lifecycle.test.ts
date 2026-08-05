@@ -25,7 +25,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { renameSync, rmSync } from 'node:fs';
+import { renameSync, rmSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { Logger } from '@goodfoot/codex-hooks';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -33,6 +33,7 @@ import { createHandler as createPostToolUseHandler } from '../../src/codex/post-
 import { createHandler as createSnapshotPreHook } from '../../src/codex/snapshot.js';
 import stopHook from '../../src/codex/stop.js';
 import subagentStopHook from '../../src/codex/subagent-stop.js';
+import { sanitizeSessionId, sessionDir } from '../../src/common/agent-hooks-common.js';
 import { applyAmbiguityRules, DEFAULT_SNAPSHOT_BUDGETS, type SnapshotRecord } from '../../src/common/snapshot-core.js';
 import {
   type ActivityEntry,
@@ -613,6 +614,15 @@ describe('codex harness snapshot lifecycle (Phase 2)', () => {
             files: { 'src/app.ts': makeFile() }
           })
         );
+        // The record's createdAt is already TTL-expired, but the sweep-read
+        // margin skips files written within the last 5s — age the file itself
+        // past the margin so the TTL pass reads it (utimesSync takes seconds).
+        const recFile = join(
+          sessionDir('sess-codex-ttl'),
+          'snapshots',
+          `${sanitizeSessionId('tu-codex-failed-1')}.json`
+        );
+        utimesSync(recFile, (now - 60_000) / 1000, (now - 60_000) / 1000);
         expect(store.sweep(now).records).toBe(1);
         expect(store.find('sess-codex-ttl', 'tu-codex-failed-1')).toBeNull();
       });

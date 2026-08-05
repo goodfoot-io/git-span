@@ -23,15 +23,27 @@
  * windowing and unfinished-entry pruning (real `Date.now()` at write time,
  * backdated with `utimesSync` where a fixture needs an old mtime).
  *
+ * The sweep-read margin (`SWEEP_READ_MARGIN_MS`) compares the REAL file mtime
+ * against the injected sweep clock: a sweep whose injected `now` is within the
+ * margin of the file's write instant skips the file. Fixtures that need the
+ * sweep to ACT on a file therefore backdate the file's mtime past the margin
+ * (`utimesSync`) whenever the file's own write was seconds ago — including
+ * stale records whose `createdAt` is ancient: a stale record freshly written
+ * is exactly the in-flight shape the margin protects, and its own sweep must
+ * wait for the mtime to age. Removals rename to trash (never unlink in
+ * place), so a sweep fixture asserts the path is gone and the trash file is
+ * present, then emptied by a later sweep once the trash ages past
+ * `TRASH_TTL_MS`.
+ *
  * Session ids are unique per fixture and cleaned up in `afterEach` (the
  * memo-store.test.ts convention); every record carries a real temp-repo root
  * because `write` persists an index entry into the repo's git common dir.
  */
 
 import { createHash } from 'node:crypto';
-import { readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { queueRoot, SESSION_BASE_DIR, sessionDir } from '../../src/common/agent-hooks-common.js';
 import { DEFAULT_SNAPSHOT_BUDGETS, type SnapshotFile, type SnapshotRecord } from '../../src/common/snapshot-core.js';
 import {
@@ -40,7 +52,9 @@ import {
   activityEntriesCovering,
   appendActivityEntry,
   createSnapshotStore,
-  finishActivityEntry
+  finishActivityEntry,
+  SWEEP_READ_MARGIN_MS,
+  TRASH_TTL_MS
 } from '../../src/common/snapshot-store.js';
 import type { CoreLogger } from '../../src/common/span-surface.js';
 import { makeTempRepo } from '../helpers.js';
@@ -88,22 +102,6 @@ function newRepo(): { root: string; cleanup: () => void } {
   return r;
 }
 
-// A killed run (timeout, crash) never reaches afterEach, so its `session-store-*`
-// dirs — records pointing at temp repos the machine's /tmp sweeper later
-// deletes — would poison the next run: the store's write-time sweep visits
-// every record in the shared base and warns per gone repo, failing this file's
-// no-warns assertions. The prefix is this file's alone (memo-store and the
-// lifecycle fixtures use other id families), so purging it up front is scoped
-// and self-heals interrupted runs — the same beforeAll pattern the lifecycle
-// files use for their fixed ids.
-beforeAll(() => {
-  for (const name of readdirSync(SESSION_BASE_DIR, { withFileTypes: true })) {
-    if (name.isDirectory() && name.name.startsWith('session-store-')) {
-      rmSync(join(SESSION_BASE_DIR, name.name), { recursive: true, force: true });
-    }
-  }
-});
-
 afterEach(() => {
   for (const sid of createdSessions) {
     rmSync(sessionDir(sid), { recursive: true, force: true });
@@ -111,6 +109,41 @@ afterEach(() => {
   for (const r of createdRepos) {
     r.cleanup();
   }
+});
+
+// The write-time sweep walks every session dir in the shared base — including
+// leftovers from test runs killed before their afterEach cleanup. Those dirs
+// hold records whose temp repos no longer exist, and the sweep's gone-repo
+// guards warn — breaking this file's no-warns assertions. Age-thresholded
+// rename purge (never an in-place unlink: a close-after-unlink aborts Node on
+// this fs while another worker reads the file): only dirs untouched for longer
+// than any live run could plausibly be, so a parallel worker's live records
+// are never touched. The trash root sits outside the base, so no sweep ever
+// reads what lands there.
+const STALE_SESSION_AGE_MS = 30 * 60 * 1000;
+const STALE_SESSION_TRASH = join(dirname(SESSION_BASE_DIR), `stale-session-trash-${process.pid}`);
+beforeAll(() => {
+  mkdirSync(STALE_SESSION_TRASH, { recursive: true });
+  for (const name of readdirSync(SESSION_BASE_DIR)) {
+    const dir = join(SESSION_BASE_DIR, name);
+    let st: ReturnType<typeof statSync>;
+    try {
+      st = statSync(dir);
+    } catch {
+      continue; // vanished between readdir and stat — nothing to purge
+    }
+    if (!st.isDirectory() || Date.now() - st.mtimeMs < STALE_SESSION_AGE_MS) continue;
+    try {
+      renameSync(dir, join(STALE_SESSION_TRASH, `${name}-${Date.now()}`));
+    } catch (err) {
+      // Best-effort: another process may have removed the same stale dir
+      // (e.g. the production pruneStaleSessions) between stat and rename.
+      void err;
+    }
+  }
+});
+afterAll(() => {
+  rmSync(STALE_SESSION_TRASH, { recursive: true, force: true });
 });
 
 /** A logger capturing warn calls for diagnostics assertions. */
@@ -554,9 +587,17 @@ describe('TTL sweep', () => {
     const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
     const r = newRepo();
     const sid = newSession();
-    store.write(record({ sessionId: sid, repoRoot: r.root, createdAt: 1_000_000_000 }));
+    // TTL-minus-margin relative to real now: expired only relative to the
+    // injected sweep clock below (real now + CLOCK_MARGIN_MS + 1), so
+    // concurrent real-now sweeps leave it alone. The tombstone (consumedAt =
+    // real now) stays in-TTL at that clock, so the RECORD pass — not the
+    // tombstone pass — is the one that claims the pair. The files' mtimes
+    // (real write instants) are well past the sweep-read margin at the
+    // injected clock, so the margin does not defer the removal.
+    const createdAt = Date.now() - DEFAULT_SNAPSHOT_BUDGETS.recordTtlMs + CLOCK_MARGIN_MS;
+    store.write(record({ sessionId: sid, repoRoot: r.root, createdAt }));
     store.consume(sid, TOOL_USE_ID, {});
-    const now = 1_000_000_000 + DEFAULT_SNAPSHOT_BUDGETS.recordTtlMs + 1;
+    const now = Date.now() + CLOCK_MARGIN_MS + 1;
     store.sweep(now);
     expect(store.find(sid, TOOL_USE_ID)).toBeNull();
   });
@@ -604,7 +645,23 @@ describe('TTL sweep', () => {
     expect(orphanFile).not.toBeNull();
     if (orphanFile === null) return;
     rmSync(orphanFile, { force: true });
-    const now = 1_000_000_000 + DEFAULT_SNAPSHOT_BUDGETS.recordTtlMs + 1;
+    // Both remaining files were written just now; the sweep-read margin would
+    // skip them at any real-now-adjacent sweep clock, so backdate their
+    // mtimes past the margin — the anchor record must be READ (repo
+    // discovery) and the orphan index must be READ (the orphan check). The
+    // anchor stays in-TTL (createdAt is real now), so concurrent real-now
+    // sweeps leave it alone; a concurrent sweep trashing the orphan index
+    // first is the pre-existing partial-cleanup race this fixture models.
+    const anchorFile = findRecordFile(anchor, 'toolu_01anchor');
+    expect(anchorFile).not.toBeNull();
+    if (anchorFile === null) return;
+    const orphanIndex = findIndexFile(r.root, orphan, 'toolu_01orphan');
+    expect(orphanIndex).not.toBeNull();
+    if (orphanIndex === null) return;
+    const old = (Date.now() - 10_000) / 1000;
+    utimesSync(anchorFile, old, old);
+    utimesSync(orphanIndex, old, old);
+    const now = Date.now() + 1000;
     const result = store.sweep(now);
     expect(result.indexEntries).toBe(1);
     const toolUseIds = store.listRepoRecords(r.root).map((e) => e.toolUseId);
@@ -631,6 +688,16 @@ describe('TTL sweep', () => {
     store.write(
       record({ sessionId: stale, repoRoot: r.root, createdAt: Date.now() - 2 * DEFAULT_SNAPSHOT_BUDGETS.recordTtlMs })
     );
+    // Backdate the stale record's mtime past the sweep-read margin: it was
+    // written seconds ago, and the margin must not defer the very removal
+    // this fixture pins (a stale record freshly written is the in-flight
+    // shape the margin protects).
+    const staleFile = findRecordFile(stale, TOOL_USE_ID);
+    expect(staleFile).not.toBeNull();
+    if (staleFile !== null) {
+      const old = (Date.now() - 10_000) / 1000;
+      utimesSync(staleFile, old, old);
+    }
     const fresh = newSession();
     store.write(record({ sessionId: fresh, repoRoot: r.root, createdAt: Date.now() }));
     expect(store.find(stale, TOOL_USE_ID)).toBeNull();
@@ -652,11 +719,139 @@ describe('TTL sweep', () => {
     // that now fails; each git-dependent phase must warn and continue, and
     // write must keep returning true for the live repo S.
     expect(store.write(record({ sessionId: sidA, repoRoot: r.root, createdAt: Date.now() }))).toBe(true);
+    // Backdate record A's mtime past the sweep-read margin: the sweep must
+    // READ it to discover the gone repo R and hit the git-subprocess failure
+    // the fixture pins — a fresh record would be margin-skipped, deferring
+    // the discovery and the warn.
+    const aFile = findRecordFile(sidA, TOOL_USE_ID);
+    expect(aFile).not.toBeNull();
+    if (aFile !== null) {
+      const old = (Date.now() - 10_000) / 1000;
+      utimesSync(aFile, old, old);
+    }
     rmSync(r.root, { recursive: true, force: true });
     expect(store.write(record({ sessionId: sidB, repoRoot: s.root, createdAt: Date.now() }))).toBe(true);
     expect(store.write(record({ sessionId: sidC, repoRoot: s.root, createdAt: Date.now() }))).toBe(true);
     expect(findRecordFile(sidC, TOOL_USE_ID)).not.toBeNull();
     expect(warns.join('\n')).toContain(r.root);
+  });
+});
+
+describe('sweep-read margin and trash removal (fuse-abort hardening)', () => {
+  it('a record written within the sweep-read margin is skipped even when TTL-expired; it is swept once its mtime ages past the margin', () => {
+    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const r = newRepo();
+    const sid = newSession();
+    // TTL-expired relative to real now AND to both injected clocks, but the
+    // FILE was written just now: the margin, not the TTL clock, is the only
+    // thing keeping it until its mtime ages. (The consume rewrite is the
+    // real-world shape — a record rewritten shortly before its TTL passes.)
+    // Concurrent real-now sweeps cannot remove it either: their clocks sit
+    // within the margin of its mtime, so they skip it too.
+    store.write(
+      record({
+        sessionId: sid,
+        repoRoot: r.root,
+        createdAt: Date.now() - DEFAULT_SNAPSHOT_BUDGETS.recordTtlMs - SWEEP_READ_MARGIN_MS - 1000
+      })
+    );
+    const withinMargin = Date.now() + SWEEP_READ_MARGIN_MS - 1000;
+    expect(store.sweep(withinMargin).records).toBe(0);
+    expect(store.find(sid, TOOL_USE_ID)).not.toBeNull();
+    const pastMargin = Date.now() + SWEEP_READ_MARGIN_MS + 1000;
+    expect(store.sweep(pastMargin).records).toBe(1);
+    expect(store.find(sid, TOOL_USE_ID)).toBeNull();
+  });
+
+  it('a tombstone written within the sweep-read margin is skipped even when expired; it is swept once its mtime ages past the margin', () => {
+    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const r = newRepo();
+    const sid = newSession();
+    const ancient = Date.now() - DEFAULT_SNAPSHOT_BUDGETS.recordTtlMs - SWEEP_READ_MARGIN_MS - 1000;
+    store.write(record({ sessionId: sid, repoRoot: r.root, createdAt: ancient }));
+    expect(store.tombstone(sid, TOOL_USE_ID, ancient)).toBe(true);
+    const withinMargin = Date.now() + SWEEP_READ_MARGIN_MS - 1000;
+    expect(store.sweep(withinMargin).tombstones).toBe(0);
+    expect(store.find(sid, TOOL_USE_ID)).toBe('tombstoned');
+    const pastMargin = Date.now() + SWEEP_READ_MARGIN_MS + 1000;
+    expect(store.sweep(pastMargin).tombstones).toBe(1);
+    expect(store.find(sid, TOOL_USE_ID)).toBeNull();
+  });
+
+  it('an unfinished activity entry written within the sweep-read margin is skipped even when its TTL has passed; it is pruned once its mtime ages past the margin', () => {
+    // The margin and the prune condition are disjoint at production TTLs (a
+    // file cannot be simultaneously in-margin and TTL-expired), so the margin
+    // never changes a production prune decision — it only protects the read
+    // from landing mid-write. A tiny TTL makes the overlap reachable so the
+    // read-skip is observable: the entry's mtime is inside the margin while
+    // already past the TTL.
+    const budgets = { ...DEFAULT_SNAPSHOT_BUDGETS, unfinishedEntryTtlMs: 1000 };
+    const store = createSnapshotStore(captureLogger().logger, budgets);
+    const r = newRepo();
+    const anchor = newSession();
+    store.write(record({ sessionId: anchor, repoRoot: r.root, createdAt: Date.now(), toolUseId: 'toolu_01anchor' }));
+    // Backdate the anchor record past the margin so the sweep's record pass
+    // reads it and discovers the repo — the entry below is in-margin, so the
+    // margin on the activity file itself is what the assertions exercise.
+    const anchorFile = findRecordFile(anchor, 'toolu_01anchor');
+    expect(anchorFile).not.toBeNull();
+    if (anchorFile === null) return;
+    const old = (Date.now() - 10_000) / 1000;
+    utimesSync(anchorFile, old, old);
+    const sid = newSession();
+    appendActivityEntry(r.root, activityEntry(sid, TOOL_USE_ID));
+    const withinMargin = Date.now() + SWEEP_READ_MARGIN_MS - 1000;
+    expect(store.sweep(withinMargin).activityEntries).toBe(0);
+    expect(findActivityFile(r.root, sid, TOOL_USE_ID)).not.toBeNull();
+    const pastMargin = Date.now() + SWEEP_READ_MARGIN_MS + 1000;
+    expect(store.sweep(pastMargin).activityEntries).toBe(1);
+    expect(findActivityFile(r.root, sid, TOOL_USE_ID)).toBeNull();
+  });
+
+  it('sweep removals rename to a trash name instead of unlinking in place; the trash is emptied once it ages past the trash TTL', () => {
+    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const r = newRepo();
+    const sid = newSession();
+    store.write(
+      record({ sessionId: sid, repoRoot: r.root, createdAt: Date.now() - 2 * DEFAULT_SNAPSHOT_BUDGETS.recordTtlMs })
+    );
+    // Backdate past the margin so the sweep acts on it (see the margin
+    // fixtures); the removal must rename to trash, never unlink in place.
+    const file = findRecordFile(sid, TOOL_USE_ID);
+    expect(file).not.toBeNull();
+    if (file === null) return;
+    const old = (Date.now() - 10_000) / 1000;
+    utimesSync(file, old, old);
+    const now = Date.now() + SWEEP_READ_MARGIN_MS + 1000;
+    expect(store.sweep(now).records).toBe(1);
+    expect(store.find(sid, TOOL_USE_ID)).toBeNull();
+    // The record path is gone but a trash file remains — not unlinked under
+    // any concurrent reader.
+    const dir = join(sessionDir(sid), 'snapshots');
+    expect(readdirSync(dir).some((n) => n.startsWith('.') && n.includes('.trash-'))).toBe(true);
+    // The trash's mtime is the rename instant (real now); once it ages past
+    // the trash TTL a later sweep unlinks it.
+    const later = Date.now() + TRASH_TTL_MS + SWEEP_READ_MARGIN_MS + 1000;
+    store.sweep(later);
+    expect(readdirSync(dir).some((n) => n.startsWith('.') && n.includes('.trash-'))).toBe(false);
+  });
+
+  it('removeSession renames removals to trash (never unlinks in place); a later sweep empties it', () => {
+    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const r = newRepo();
+    const sid = newSession();
+    store.write(record({ sessionId: sid, repoRoot: r.root }));
+    appendActivityEntry(r.root, activityEntry(sid, TOOL_USE_ID));
+    store.removeSession(sid);
+    expect(store.find(sid, TOOL_USE_ID)).toBeNull();
+    const dir = join(sessionDir(sid), 'snapshots');
+    expect(readdirSync(dir).some((n) => n.startsWith('.') && n.includes('.trash-'))).toBe(true);
+    // The session-dir trash is emptied by a later sweep; the activity-dir
+    // trash waits for the sweep to re-discover the repo from a record (the
+    // reposFromRecords discovery deferral — benign, retention over removal).
+    const later = Date.now() + TRASH_TTL_MS + SWEEP_READ_MARGIN_MS + 1000;
+    store.sweep(later);
+    expect(readdirSync(dir).some((n) => n.startsWith('.') && n.includes('.trash-'))).toBe(false);
   });
 });
 
