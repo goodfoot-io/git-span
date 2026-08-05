@@ -327,6 +327,92 @@ this check entirely. Generated bundles are the common case: the classifier only
 ever inspects manifest-shaped files, so it cannot recognize a regenerated bundle
 on its own, and spanning build output contradicts the guidance in `SKILL.md`.
 
+## Bash write attribution: the snapshot surface
+
+A `Bash`/shell call whose writes are invisible to static command parsing —
+formatters, generators, embedded scripts, project tools — is attributed by
+pre/post file snapshots instead. A `PreToolUse` hook (the same
+`Bash|shell|exec|local_shell` matcher as the advisor) classifies the command
+and, when the command is write-capable but its targets cannot be resolved
+statically, walks the repo's eligible files under strict budgets and persists
+a per-call pre-walk record (hashes only — never file contents — under
+`~/.cache/git-span/session/`, 0600). The `PostToolUse` hook re-walks,
+compares, and emits exact changed/deleted line ranges the same way an
+`apply_patch` touch would; reads, read-only commands, statically covered
+writes, and chmod/mtime-only changes never snapshot. A failed call's record
+is never attributed and never silently discarded — Codex has no failure
+event, so it stays live as ambiguity evidence and is reclaimed by the
+Stop/TTL cleanup. Concurrent calls are handled by an ambiguity table — a
+changed path whose change cannot be proven to be this call's is dropped with
+a warning naming the reason, never guessed. Session-end (`Stop`, plus
+`SubagentStop` for a subagent's records) removes the session's snapshot
+state; a crashed session's end hook never runs, so the record TTL (24 h by
+default) is the crash-recovery backstop for the whole store surface — it
+ages records, tombstones, and finished activity entries alike (only the
+sweep's unfinished-entry TTL is the shorter 15 min). The sweep never unlinks
+under a reader on virtiofs: removals rename the file to a trash name in the
+same directory (keeping the inode alive for any peer reader's open fd) and
+the trash pass unlinks only after a 60 s TTL measured from the rename
+instant — the trash file's mtime is stamped at rename, because a bare rename
+preserves the write mtime, which would defeat the keepalive entirely for
+TTL-expired records.
+
+The intentionally silent set is small: the pure-read fast path (no write
+possible), out-of-scope writes (gitignored, binary, span-root, submodule,
+outside-repo), and chmod/mtime-only changes. Everything else is reported —
+snapshot decisions and coverage, budget caps hit, coverage gaps, ambiguous
+paths with their reasons, cleanup and sweep counts through the hook logger
+(see "Mechanical churn is suppressed" above for how to enable it; set
+`CODEX_HOOKS_LOG_FILE` to a path to capture the records) — and the
+attribution-shaping events the model loop must see, ambiguity deferrals,
+budget exhaustion with zero attributions, and compare aborts, as
+transcript-visible notes in the tool block (`additionalContext`), not
+logger-only.
+
+### Snapshot budgets
+
+The snapshot walk and comparison run under budgets; exceeding one cuts the
+walk short with a coverage-gap diagnostic (the comparison never describes
+partial coverage as complete), the pre-side wall budget bounds the
+user-visible cost of the pre-walk, and the post-side wall budget anchors at
+the post-side work's own start — the handler's `now` at entry, on an
+injectable clock — so it measures only the comparison's own cost, never the
+record's age: record age includes the whole command runtime, which would
+silently zero attribution for any opaque write command at or past the
+budget. Each budget resolves with the
+same precedence as the span-root setting: the `GIT_SPAN_SNAPSHOT_*`
+environment variable wins, then the `git-span.snapshot-*` key in the repo's
+git config, then the default. Both key spellings resolve — the dash form
+`git-span.snapshot-max-files` (`git config git-span.snapshot-max-files 1000`)
+and the git-native subsection form `git-span.snapshot.max-files` — with the
+subsection normalized onto the dash form's key space. A
+malformed value is ignored (the default stands); a repo-less hook call or a
+failed config read simply skips the config layer.
+
+| Budget | Env var | Git config key | Default |
+|---|---|---|---|
+| Files captured per record | `GIT_SPAN_SNAPSHOT_MAX_FILES` | `git-span.snapshot-max-files` | 5000 |
+| Per-file byte cap (larger files excluded) | `GIT_SPAN_SNAPSHOT_MAX_BYTES_PER_FILE` | `git-span.snapshot-max-bytes-per-file` | 1 MiB |
+| Total bytes across one record's pre-walk | `GIT_SPAN_SNAPSHOT_MAX_TOTAL_BYTES` | `git-span.snapshot-max-total-bytes` | 64 MiB |
+| Line hashes per file (over it: recorded coarse) | `GIT_SPAN_SNAPSHOT_MAX_LINE_HASHES_PER_FILE` | `git-span.snapshot-max-line-hashes-per-file` | 4000 |
+| Line hashes per record (later files coarse) | `GIT_SPAN_SNAPSHOT_MAX_LINE_HASHES_PER_RECORD` | `git-span.snapshot-max-line-hashes-per-record` | 200,000 |
+| Pre-side wall budget (seconds) | `GIT_SPAN_SNAPSHOT_PRE_SIDE_MAX_WALL_SECONDS` | `git-span.snapshot-pre-side-max-wall-seconds` | 1 s |
+| Storage cap across the repo's records | `GIT_SPAN_SNAPSHOT_MAX_STORAGE_BYTES` | `git-span.snapshot-max-storage-bytes` | 64 MiB |
+| Touched files per tool call | `GIT_SPAN_SNAPSHOT_MAX_TOUCHED_FILES` | `git-span.snapshot-max-touched-files` | 100 |
+| Post-side comparison wall budget (seconds, from the comparison's own start) | `GIT_SPAN_SNAPSHOT_POST_SIDE_WALL_SECONDS` | `git-span.snapshot-post-side-wall-seconds` | 5 s |
+| Record/tombstone TTL | `GIT_SPAN_SNAPSHOT_RECORD_TTL_MS` | `git-span.snapshot-record-ttl-ms` | 24 h |
+| Unfinished activity-entry TTL | `GIT_SPAN_SNAPSHOT_UNFINISHED_ENTRY_TTL_MS` | `git-span.snapshot-unfinished-entry-ttl-ms` | 15 min |
+
+Storage exhaustion refuses new snapshots with a warning — records are never
+dropped early, because a dropped record is indistinguishable from an expired
+one and would reopen the fail-open the ambiguity rules guard. A refused
+snapshot degrades that call to the static-parse path, visibly: the
+`PostToolUse` side, when a snapshot should exist but the record is missing,
+emits a transcript-visible note in the tool block — `git-span: snapshot
+record unavailable — this command's file writes were not snapshot-attributed;
+the static spans below are the only attribution` — beside the logger warn, so
+the model loop sees why no snapshot attribution happened.
+
 ## Failure behaviour
 
 Both hooks fail open on everything that decides *whether* there is something

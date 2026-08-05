@@ -11,6 +11,7 @@ packages/agent-hooks/src/codex/post-tool-use.ts#L373-L374 rk64:692ee3a51ecc25a9
 packages/agent-hooks/src/codex/post-tool-use.ts#L720-L721 rk64:6024f48de671f7ed
 packages/agent-hooks/src/codex/post-tool-use.ts#L931-L932 rk64:07e58cca4ae20237
 packages/agent-hooks/src/common/span-surface.ts#L193-L196 rk64:c4c3d8f27377ba1c
+plugins-claude/git-span/hooks/bin/post-tool-use-failure.mjs#L3166-L3167 rk64:ae9a3c73bb6a2434
 plugins-claude/git-span/hooks/bin/post-tool-use-failure.mjs#L5282-L5283 rk64:ae9a3c73bb6a2434
 
 resolveTouchScope drops any touched file inside the resolved span root before the PostToolUse touch hook surfaces overlapping spans, so span documents themselves never trigger a span-surfacing block.
