@@ -5,9 +5,10 @@
  * writes the contract's acceptance checks against those stubs so Phase 3's
  * implementation has a fixed target. Phase 3a implemented command gating,
  * scope restriction, and the search-layout decoders; Phase 3b the unified-diff
- * decoder; Phase 3c the `git blame -L` command-text matcher — their checks are
- * enabled. The hostile-output/truncated-flag/adapter-envelope checks remain
- * `it.skip` for their later phases (3d/3e).
+ * decoder; Phase 3c the `git blame -L` command-text matcher; Phase 3d the
+ * hostile-output, ANSI-rejection, truncated-flag, and cut-everything
+ * truncation checks — all enabled here. Only the adapter-envelope checks
+ * remain `it.skip` for Phase 3e.
  *
  * The golden-matrix harness below builds the fixture store by executing the
  * REAL binaries — /usr/bin/rg (ripgrep 14.1.1), /usr/bin/grep (GNU grep
@@ -544,6 +545,40 @@ function parseFixture(f: GoldenFixture, overrides: Partial<ResponseParseInput> =
 }
 
 /**
+ * The byte offsets to cut a fixture's stdout at: 0, the full length, every
+ * record boundary (the byte just past each newline — and each NUL, since
+ * null-separated records terminate on NUL), and the midpoint of every line
+ * (which lands inside headers, hunk headers, and record text alike).
+ */
+function cutOffsets(stdout: string): number[] {
+  const offsets = new Set<number>([0, stdout.length]);
+  for (let i = 0; i < stdout.length; i++) {
+    if (stdout[i] === '\n' || stdout[i] === '\0') offsets.add(i + 1);
+  }
+  let lineStart = 0;
+  for (let i = 0; i <= stdout.length; i++) {
+    if (i === stdout.length || stdout[i] === '\n') {
+      offsets.add(lineStart + Math.floor((i - lineStart) / 2));
+      lineStart = i + 1;
+    }
+  }
+  return [...offsets].sort((a, b) => a - b);
+}
+
+/**
+ * Whether every span of a cut parse is covered by a span of the full parse on
+ * the same path: a cut only ever removes records, so its coalesced spans can
+ * be narrower than the full parse's (the first record of a window whose full
+ * span also merges an adjacent line) — but it must never touch a line the
+ * full parse didn't touch.
+ */
+function isSpanSubset(parsed: ResolvedSpan[], full: ResolvedSpan[]): boolean {
+  return parsed.every((p) =>
+    full.some((s) => s.absolutePath === p.absolutePath && p.lineStart >= s.lineStart && p.lineEnd <= s.lineEnd)
+  );
+}
+
+/**
  * Stand-in for the adapters' Phase 3e envelope normalization
  * (notes/response-envelope-shapes.md): every documented tool_response shape —
  * bare string, current Claude object, legacy object, text-block array —
@@ -837,9 +872,35 @@ describe('parse-response (Phase 3a–3c — search layouts, unified diffs, and b
       );
     });
 
-    it.skip('the truncated flag (rawOutputPath preview / interrupted) fails closed to no touches', () => {
+    it('the truncated flag (rawOutputPath preview / interrupted) fails closed to no touches', () => {
+      // The adapter-supplied flag is strict mode: the response is declared
+      // untrustworthy (stdout may be only a preview), so nothing in it is
+      // parsed — not even the fully-terminated records below.
       const f = fixture('rg-recursive');
       expect(parseResponse({ command: f.command, cwd: f.cwd, stdout: f.stdout, truncated: true })).toEqual([]);
+    });
+
+    it('cutting every golden output at byte offsets never lets an incomplete record touch', () => {
+      // The universal truncation rule (plan step 6): a record is fully
+      // observed only when its terminating newline is present, so every cut
+      // of a stream either drops whole records or leaves a partial final
+      // record — it may only remove spans, never add one. Cuts land at
+      // record boundaries and mid-record (mid-header, mid-hunk, mid-line)
+      // alike, across every layout the matrix covers.
+      for (const f of fixtures.values()) {
+        const full = sortedSpans(parseFixture(f));
+        for (const offset of cutOffsets(f.stdout)) {
+          const cut = sortedSpans(
+            parseResponse({
+              command: f.command,
+              cwd: f.cwd,
+              stdout: f.stdout.slice(0, offset),
+              exitStatus: f.exitStatus
+            })
+          );
+          expect(isSpanSubset(cut, full), `${f.name}: cut at byte ${offset}`).toBe(true);
+        }
+      }
     });
   });
 
@@ -848,15 +909,18 @@ describe('parse-response (Phase 3a–3c — search layouts, unified diffs, and b
   // -------------------------------------------------------------------------
 
   describe('hostile outputs, fail-closed', () => {
-    it.skip('ANSI escape bytes anywhere in the response reject the whole parse', () => {
+    it('ANSI escape bytes anywhere in the response reject the whole parse', () => {
       const f = fixture('rg-recursive');
       // Neither rg nor git emit color when piped, so an ESC byte means
       // something deliberate is going on — fail closed, invent no touches.
       expect(parseResponse({ command: f.command, cwd: f.cwd, stdout: `[31m${f.stdout}` })).toEqual([]);
     });
 
-    it.skip('traversal records and colon-containing paths are dropped as path-ambiguous', () => {
+    it('traversal records and colon-containing paths are dropped as path-ambiguous', () => {
       const f = fixture('rg-recursive');
+      // A traversal path normalizes outside the declared root and is rejected
+      // by the containment check; a path containing a colon can't be split
+      // into path:line:text unambiguously and is dropped as path-ambiguous.
       const hostile = `${f.stdout}../../../../etc/passwd:1:root:x\nsrc/weird:name.ts:3:alpha\n`;
       expect(sortedSpans(parseResponse({ command: f.command, cwd: f.cwd, stdout: hostile }))).toEqual(
         sortedSpans(resolveExpected(f))

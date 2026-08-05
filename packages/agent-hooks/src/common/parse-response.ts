@@ -16,8 +16,12 @@
  * five search-layout decoders, whole-file fallback, and coalescing. Phase 3b
  * added the unified-diff decoder (`git diff`, diff-form `git show`, `git log
  * -p`) with binary/combined/submodule rejection, and Phase 3c the
- * `git blame -L N,M file` command-text matcher. The acceptance checks in
- * test/common/parse-response.test.ts were written in Phase 2.
+ * `git blame -L N,M file` command-text matcher. Phase 3d made `truncated`
+ * the flag's strict mode (parse nothing) and extended the terminating-
+ * newline rule to the whole-file fallback (a cut preview of numbered output
+ * is not fully observed and must not invent a whole-file touch). The
+ * acceptance checks in test/common/parse-response.test.ts were written in
+ * Phase 2.
  */
 import { resolve as resolvePath, sep } from 'node:path';
 import { countFileLines } from './command-resolve.js';
@@ -30,7 +34,10 @@ import { argvOf, splitTopLevel } from './shell-split.js';
  * are carried for diagnostics and are never parse gates — `git diff
  * --exit-code` exits 1 on differences, so exit status must not be treated as
  * failure. `truncated` (Claude `rawOutputPath` set ⇒ inline stdout is only a
- * preview, or `interrupted`) forces the fail-closed rules.
+ * preview, or `interrupted`) is the flag's strict mode: the adapter declares
+ * the response untrustworthy, so nothing in it is parsed — the strict gate
+ * sits in parseResponse rather than only the terminating-newline rule
+ * (which still drops partial records when the flag is absent).
  */
 export interface ResponseParseInput {
   command: string;
@@ -684,6 +691,11 @@ function matchBlameRange(
 export function parseResponse(input: ResponseParseInput): ResolvedSpan[] {
   const { command, cwd, stdout } = input;
 
+  // The adapter-supplied truncated flag (Claude rawOutputPath set ⇒ inline
+  // stdout is only a preview; interrupted) declares the response
+  // untrustworthy — fail closed, parse nothing, invent no touches.
+  if (input.truncated) return [];
+
   // ANSI escape bytes reject the whole parse: neither rg/grep nor git emit
   // color when piped, so an ESC byte means something deliberate is going on.
   if (stdout.includes('\u001b')) return [];
@@ -773,12 +785,16 @@ export function parseResponse(input: ResponseParseInput): ResolvedSpan[] {
 
   const spans = spansFor(perFile, effectiveDir, roots);
 
-  // Whole-file fallback: non-empty output with no parseable numbered record
-  // and exactly one explicit file resolves to a whole-file read of it. The
-  // file must be a readable file (a directory arg leaves the fallback
-  // unresolved), and it must sit inside the declared roots — it is one of
-  // them by construction.
-  if (perFile.size === 0 && stdout !== '' && singleFileArg !== null) {
+  // Whole-file fallback: non-empty, fully observed output (its terminating
+  // newline is present) with no parseable numbered record and exactly one
+  // explicit file resolves to a whole-file read of it. The universal
+  // terminating-newline rule applies here too: a stream cut before any
+  // complete record is not fully observed, so a preview of a numbered
+  // output must not be mistaken for unnumbered output and must not invent
+  // a whole-file touch. The file must be a readable file (a directory arg
+  // leaves the fallback unresolved), and it must sit inside the declared
+  // roots — it is one of them by construction.
+  if (perFile.size === 0 && stdout !== '' && stdout.endsWith('\n') && singleFileArg !== null) {
     const abs = resolvePath(effectiveDir, singleFileArg);
     const total = countFileLines(abs);
     if (total !== null && total > 0) {
