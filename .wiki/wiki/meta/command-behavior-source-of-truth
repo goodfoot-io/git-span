@@ -1,9 +1,9 @@
-packages/git-span/src/cli/mod.rs#L35-L110 rk64:8da86fcf3b692a9f
-packages/git-span/src/cli/mod.rs#L40-L195 rk64:eaf05b98a02c3f02
-packages/git-span/src/cli/mod.rs#L46-L174 rk64:5aee6d24cd6123ec
+packages/git-span/src/cli/mod.rs#L35-L110 rk64:bf9a5e52fd7d1560
+packages/git-span/src/cli/mod.rs#L40-L195 rk64:8be7eab167512b78
+packages/git-span/src/cli/mod.rs#L46-L174 rk64:11147c4c7e29f1ec
 packages/git-span/src/cli/mod.rs#L393-L445 rk64:137708cfa3b03e1f
 packages/git-span/src/cli/mod.rs#L410-L470 rk64:604c8cf35e01bf3d
-packages/git-span/src/cli/mod.rs#L416-L484 rk64:5b9207836bf44861
+packages/git-span/src/cli/mod.rs#L416-L484 rk64:b6063eb3a5c38c61
 packages/git-span/src/main.rs#L49-L143 rk64:ebfafe74c31817b1
 packages/git-span/src/main.rs#L50-L156 rk64:ea8627519bd42715
 packages/git-span/src/validation.rs#L7-L37 rk64:67a4e8c157035cee
