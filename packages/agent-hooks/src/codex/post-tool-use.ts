@@ -271,6 +271,9 @@ export function createHandler(
 
     // Shell touch: extract the command from whichever envelope shape the harness
     // delivers, parse, and run each resolved span through the shared touch core.
+    // The branch also normalizes `tool_response` via `normalizeShellResponse`
+    // and merges `parseResponse`'s spans in as read touches (the tool_response
+    // pass below).
     //
     // - `Bash`: the harness-unwrapped shape Codex ≥0.144 actually sends —
     //   `tool_input.command` is the raw shell command string (same shape the

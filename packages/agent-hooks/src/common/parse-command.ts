@@ -6,12 +6,17 @@
  * exactly the ones that turned out to be common AND reliable there.
  *
  * Deliberately NOT covered (see the research report): awk NR-tricks (rare,
- * unconstrained syntax), grep -n/-A/-B/-C (the window is anchored to match
- * position, which is data-dependent, not in the command text), embedded
- * python3/node heredoc scripts (a different language's AST, not a shell
- * concern), sed -i (no line-addressed usage observed — all pattern-only
- * substitutions with no static range), plain `echo`/`printf` redirects (rare
- * and semantically ambiguous in the corpus).
+ * unconstrained syntax), embedded python3/node heredoc scripts (a different
+ * language's AST, not a shell concern), sed -i (no line-addressed usage
+ * observed — all pattern-only substitutions with no static range), plain
+ * `echo`/`printf` redirects (rare and semantically ambiguous in the corpus).
+ *
+ * The grep family (grep -n/-A/-B/-C) is not in that list, but it is not
+ * classified here either: its window is anchored to match position, which is
+ * data-dependent and lives in the response, not the command text. Those spans
+ * are response-derived — `parseResponse` in ./parse-response.js reads them
+ * out of the command's `tool_response`. The `git log -L` / `git show
+ * rev:path` idioms below remain command-text-derived.
  */
 import { isAbsolute, resolve as resolvePath } from 'node:path';
 import { countFileLines, countGitBlobLines } from './command-resolve.js';

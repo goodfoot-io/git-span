@@ -132,13 +132,15 @@ export function createHandler(
 
     // Bash has no `file_path` field, so it gets its own branch: run the static
     // command parser and translate every resolved span into a touch through the
-    // same shared core. Read idioms carry the parsed line window; a heredoc
-    // write carries its written body (`span.body`) so the touch core can narrow
-    // the write to the lines that changed — `>` overwrites locate the written
-    // block, `>>` appends locate the appended block, and a `written: ''` whole-
-    // file scope covers truncations. A command with no recognizable idiom
-    // yields no blocks and returns `null` — fail-open, same as the tool path
-    // below.
+    // same shared core. The branch also normalizes `input.tool_response` via
+    // `normalizeToolResponse` and merges `parseResponse`'s spans in as read
+    // touches (the tool_response pass below). Read idioms carry the parsed
+    // line window; a heredoc write carries its written body (`span.body`) so
+    // the touch core can narrow the write to the lines that changed — `>`
+    // overwrites locate the written block, `>>` appends locate the appended
+    // block, and a `written: ''` whole-file scope covers truncations. A
+    // command with no recognizable idiom yields no blocks and returns `null` —
+    // fail-open, same as the tool path below.
     if (toolName === 'Bash') {
       const command = typeof toolInput.command === 'string' ? toolInput.command : null;
       if (!command) return null;
