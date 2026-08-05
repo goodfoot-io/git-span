@@ -16,14 +16,72 @@
  * five search-layout decoders, whole-file fallback, and coalescing. Phase 3b
  * added the unified-diff decoder (`git diff`, diff-form `git show`, `git log
  * -p`) with binary/combined/submodule rejection, and Phase 3c the
- * `git blame -L N,M file` command-text matcher. Phase 3d made `truncated`
- * the flag's strict mode (parse nothing) and extended the terminating-
- * newline rule to the whole-file fallback (a cut preview of numbered output
- * is not fully observed and must not invent a whole-file touch). The
- * acceptance checks in test/common/parse-response.test.ts were written in
- * Phase 2.
+ * `git blame -L N,M file` command-text matcher. The evaluation fixes add the
+ * decisions the plan's risk section deferred, all documented here:
+ *
+ * - **Truncation, two regimes** (plan step 6): `truncated: true` (the
+ *   adapter's `rawOutputPath` preview marker) means parse nothing —
+ *   response-derived decode fails closed. `interrupted: true` is the
+ *   plan's complete-records regime: fully-terminated records parse and the
+ *   incomplete tail drops via the unconditional terminating-newline rule,
+ *   so the flag changes nothing the default path already does — it is
+ *   contract documentation the adapters map `interrupted` onto (a later
+ *   phase changes the adapters; until then they collapse it into
+ *   `truncated`, which fails closed safely). Neither flag applies to the
+ *   command-text-derived `git blame -L N,M` matcher, whose evidence is the
+ *   command, not the response.
+ * - **Span cap**: `MAX_RESPONSE_SPANS` bounds how many distinct spans a
+ *   response may emit. Measured through the deployed hook, each span costs
+ *   ~46 ms of subprocess execs in the touch core (resolveTouchScope + `git
+ *   span list` per span; the session memo makes repeat runs cheap, but first
+ *   runs pay the full price), against a 10 s hooks.json timeout. 50 spans ≈
+ *   2.3 s worst case — well under the timeout with margin even with the
+ *   command-derived spans on top. Beyond the cap the bounded set is emitted
+ *   (the first 50 in deterministic path order) and the rest fail closed:
+ *   every emitted span is a genuine fully-observed record, so emitting the
+ *   bounded set invents nothing, and dropping the excess keeps hook latency
+ *   bounded on exactly the pathological searches that would otherwise stall
+ *   the agent loop. One coalesced span covering a huge window counts once.
+ * - **Pipelines**: the response is attributed to the FIRST gated stage
+ *   (left-to-right walk; if no stage gates, nothing to parse). In a pipeline
+ *   the final stage's stdout is the gated stage's output (head/wc/tail only
+ *   truncate; the terminating-newline rule handles the cut), and in an
+ *   &&/||/; chain the first gated stage is the most likely owner of
+ *   response-shaped records. `cd` tracking applies only until the first
+ *   gated stage is found — the evidence was produced in that directory.
+ * - **`git show <rev>:<path>`** (raw blob content) is excluded from the diff
+ *   gate; a diff-shaped blob must never decode into fabricated touches. The
+ *   content idiom is detectable from the command: a `show` positional
+ *   containing `:` is a rev:path, not a revision.
+ * - **Diff paths are repo-root-relative**: git emits `a/src/x.ts` in diff
+ *   output regardless of cwd, so diff decode anchors to the worktree root
+ *   (found by walking up from the effective dir for a `.git` entry — no
+ *   subprocess, the common layer imports only node: builtins). Search-layout
+ *   paths are cwd-relative and keep resolving against the effective dir.
+ * - **Unnumbered output never parses as numbered**: the one-file layout
+ *   requires command-side numbered evidence (`-n`/`--line-number`), exactly
+ *   one explicit file argument that is a real file, no `-H`
+ *   (--with-filename, which forces path prefixes), and cross-record
+ *   consistency (every record parses as `line:text`). The heading layout
+ *   requires the numbered evidence too. A digits-leading record that fails
+ *   these checks falls through to the recursive layout — a pure-digits
+ *   filename ("9", "123") emitted first must not collapse a whole search to
+ *   the one-file layout, and content that merely looks numbered must not
+ *   invent positions. Git pathspec magic (`:/`, `:!`, `:^`, `:(...)`) is not
+ *   a filesystem path and never becomes a permitted root. `git grep <rev>`
+ *   fuses the rev into record paths (`HEAD:a.ts:3:…`); those records drop as
+ *   path-ambiguous — fail-closed and defensible, since the rev is known but
+ *   stripping it would guess at a path the response does not carry.
+ * - **Context records with dashes in the path** decode by anchoring to the
+ *   exact paths the response's `path:line:text` match records establish,
+ *   with the dash split as the dash-free fallback — a `-C` window on
+ *   `src/my-file.ts` must not collapse to the bare match line.
+ *
+ * The acceptance checks in test/common/parse-response.test.ts were written
+ * in Phase 2.
  */
-import { resolve as resolvePath, sep } from 'node:path';
+import { existsSync, statSync } from 'node:fs';
+import { dirname, join, resolve as resolvePath, sep } from 'node:path';
 import { countFileLines } from './command-resolve.js';
 import type { ResolvedSpan } from './parse-command.js';
 import { argvOf, splitTopLevel } from './shell-split.js';
@@ -33,11 +91,17 @@ import { argvOf, splitTopLevel } from './shell-split.js';
  * `stdout` is the (possibly preview) output text; `stderr` and `exitStatus`
  * are carried for diagnostics and are never parse gates — `git diff
  * --exit-code` exits 1 on differences, so exit status must not be treated as
- * failure. `truncated` (Claude `rawOutputPath` set ⇒ inline stdout is only a
- * preview, or `interrupted`) is the flag's strict mode: the adapter declares
- * the response untrustworthy, so nothing in it is parsed — the strict gate
- * sits in parseResponse rather than only the terminating-newline rule
- * (which still drops partial records when the flag is absent).
+ * failure. Plan step 6's two truncation regimes are distinct fields:
+ *
+ * - `truncated` (Claude `rawOutputPath` set ⇒ inline stdout is only a
+ *   preview) is strict mode: response-derived decode parses nothing and
+ *   invents no touches. The command-text-derived `git blame -L` matcher is
+ *   exempt — its evidence is the command, not the response.
+ * - `interrupted` is the complete-records regime: fully-terminated records
+ *   parse and the incomplete tail drops. The unconditional terminating-
+ *   newline rule already does exactly that, so the flag is contract
+ *   documentation the adapters map `interrupted: true` onto; it never
+ *   suppresses a response the default path would parse.
  */
 export interface ResponseParseInput {
   command: string;
@@ -46,7 +110,21 @@ export interface ResponseParseInput {
   stderr?: string;
   exitStatus?: number; // metadata only — never gates (git diff exits 1 on differences)
   truncated?: boolean;
+  interrupted?: boolean;
 }
+
+/**
+ * The maximum number of distinct spans `parseResponse` may emit. Measured
+ * through the deployed hook, each span costs ~46 ms of subprocess execs in
+ * the touch core (resolveTouchScope + `git span list` per span; the session
+ * memo makes repeat runs cheap, but first runs pay the full price) against a
+ * 10 s hooks.json timeout — 50 spans ≈ 2.3 s worst case, well under the
+ * timeout with margin even with the command-derived spans on top. The plan's
+ * risk section deferred this cap ("fail closed beyond it") to a Phase 3a
+ * measurement; the golden matrix's largest realistic outputs stay far below
+ * it, so it binds only pathological searches.
+ */
+export const MAX_RESPONSE_SPANS = 50;
 
 /**
  * A single decoded search-output record. The path/line split is layout-
@@ -136,6 +214,25 @@ interface SearchArgvInfo {
   pathArgs: string[];
   /** Whether -A/-B/-C (any context window) was requested. */
   contextFlags: boolean;
+  /**
+   * Whether the command requested line numbers (`-n`/`--line-number`). rg and
+   * grep both default to NO line numbers when piped, so this is the
+   * command-side evidence that `line:text`-only output is numbered output —
+   * the one-file and heading layouts refuse to apply without it.
+   */
+  numbered: boolean;
+  /** Whether `-H`/`--with-filename` was requested — records carry path prefixes even for a single file. */
+  withFilename: boolean;
+}
+
+/**
+ * Whether `p` is a git pathspec magic prefix (`:/`, `:!`, `:^`, `:(...)`) —
+ * a non-filesystem path form that must never become a permitted root. A
+ * literal `cwd/:/` root would reject every decoded record; treating pathspec
+ * magic like no path args lets roots fall back to the effective cwd.
+ */
+function isPathspecMagic(p: string): boolean {
+  return /^:[/!^.(]/.test(p);
 }
 
 /**
@@ -146,6 +243,8 @@ interface SearchArgvInfo {
 function analyzeSearchArgv(argv: string[], start: number): SearchArgvInfo {
   const positionals: string[] = [];
   let contextFlags = false;
+  let numbered = false;
+  let withFilename = false;
   let i = start;
   while (i < argv.length) {
     const a = argv[i];
@@ -157,6 +256,8 @@ function analyzeSearchArgv(argv: string[], start: number): SearchArgvInfo {
       const eq = a.indexOf('=');
       const name = eq === -1 ? a.slice(2) : a.slice(2, eq);
       if (name === 'after-context' || name === 'before-context' || name === 'context') contextFlags = true;
+      if (name === 'line-number') numbered = true;
+      if (name === 'with-filename') withFilename = true;
       if (eq === -1 && VALUE_LONG_FLAGS.has(name)) {
         i += 2;
         continue;
@@ -169,6 +270,8 @@ function analyzeSearchArgv(argv: string[], start: number): SearchArgvInfo {
       for (let j = 1; j < a.length; j++) {
         const c = a[j];
         if (c === 'A' || c === 'B' || c === 'C') contextFlags = true;
+        if (c === 'n') numbered = true;
+        if (c === 'H') withFilename = true;
         if (VALUE_SHORT_FLAGS.has(c)) {
           // A value-taking flag consumes the rest of the cluster as its value
           // (-C1) or, when last, the next argument (-C 1).
@@ -183,8 +286,9 @@ function analyzeSearchArgv(argv: string[], start: number): SearchArgvInfo {
     i += 1;
   }
   // The first positional is the pattern; the rest are explicit search roots.
-  const pathArgs = positionals.length > 0 ? positionals.slice(1) : [];
-  return { pathArgs, contextFlags };
+  // Git pathspec magic is not a filesystem path and never becomes a root.
+  const pathArgs = positionals.length > 0 ? positionals.slice(1).filter((p) => !isPathspecMagic(p)) : [];
+  return { pathArgs, contextFlags, numbered, withFilename };
 }
 
 interface GitSubcommandInfo {
@@ -249,6 +353,32 @@ function hasDiffPatchFlag(argv: string[], start: number): boolean {
   return false;
 }
 
+/**
+ * Whether a `git show` invocation is the `<rev>:<path>` content idiom whose
+ * stdout is the blob's RAW content, never diff-form. `git show` positionals
+ * are revisions, and only a rev:path spec embeds a colon — a diff-shaped
+ * vendored blob (a .patch, a format-patch archive) must not decode into
+ * fabricated touches on the files its content names. Option values are
+ * skipped so `--format %H:%s` (which legitimately contains a colon) cannot
+ * false-positive; after `--` the tokens are literal pathspecs, not revs.
+ * Only flags that consume a SEPARATE argument skip their value: `--stat` and
+ * `--dirstat` take theirs via `=` (`--dirstat=files,10`) or not at all, so a
+ * `git show --stat <rev>:<path>` must not swallow the rev:path as a value.
+ */
+function hasRevPathArg(argv: string[], start: number): boolean {
+  const valueFlags = new Set(['--format', '--pretty', '--output', '--word-diff-regex']);
+  for (let i = start; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--') return false;
+    if (a.startsWith('-') && a !== '-') {
+      if (!a.includes('=') && valueFlags.has(a)) i += 1;
+      continue;
+    }
+    if (a.includes(':')) return true;
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // Layout detection
 // ---------------------------------------------------------------------------
@@ -266,19 +396,53 @@ function completeLines(stdout: string): string[] {
 }
 
 /**
+ * Whether every non-empty record of a `line:text` response parses as
+ * numbered — the cross-record consistency check that keeps one-file
+ * attribution from resting on a single record's shape.
+ */
+function recordsAreOneFile(stdout: string): boolean {
+  const lines = completeLines(stdout);
+  if (lines.length === 0) return false;
+  return lines.every((line) => line === '' || parseOneFileRecord(line) !== null);
+}
+
+/**
  * Decide which search layout a response uses from the shape of its first
  * record, consulting the command's context flags to break the recursive /
  * context ambiguity (both emit `path:line:text` match records). Fail closed:
  * an unrecognized first record means nothing in this response is trusted.
+ *
+ * The `line:text`-only layouts (one-file, heading) require command-side
+ * numbered evidence: rg and grep default to NO line numbers when piped, so a
+ * digits-leading record without `-n`/`--line-number` is content, not a
+ * position — `grep TODO notes.md` whose matching line is `123: TODO item`
+ * must not touch line 123, and `rg -l alpha 2024-log.txt` must not touch
+ * line 2024. The one-file layout additionally requires exactly one explicit
+ * file argument that is a real file (a directory or no args means records
+ * carry path prefixes — a pure-digits filename emitted first must fall
+ * through to recursive), no `-H`/`--with-filename` (which forces path
+ * prefixes), and cross-record consistency via `recordsAreOneFile`.
  */
-function detectLayout(stdout: string, contextFlags: boolean): SearchLayout | null {
+function detectLayout(stdout: string, info: SearchArgvInfo, oneFileEligible: boolean): SearchLayout | null {
   if (stdout.includes('\0')) return 'null-separated';
-  const first = completeLines(stdout).find((line) => line !== '');
+  const lines = completeLines(stdout);
+  const first = lines.find((line) => line !== '');
   if (first === undefined) return null;
-  if (/^\d+[-:]/.test(first)) return 'one-file';
-  if (/^[^:]+:\d+/.test(first)) return contextFlags ? 'context' : 'recursive';
-  if (/^[^-:]+-\d+-/.test(first)) return contextFlags ? 'context' : null;
-  if (/^[^:]+$/.test(first)) return 'heading';
+  if (/^\d+[-:]/.test(first)) {
+    if (oneFileEligible && recordsAreOneFile(stdout)) return 'one-file';
+    // Not the one-file layout: fall through — a digits-leading record is
+    // more plausibly the `path:line:text` record of a digits-named file,
+    // which the recursive checks below pick up.
+  }
+  if (/^[^:]+:\d+/.test(first)) return info.contextFlags ? 'context' : 'recursive';
+  // A context window can open with a context record (its -B side), whose
+  // `path-line-text` shape is ambiguous when the path itself contains a
+  // dash — `src/my-file.ts-2-one` splits inside the path. Every context
+  // group is anchored to a `path:line:text` match record whose colon split
+  // is unambiguous, so the response's own match records detect the layout.
+  if (info.contextFlags && lines.some((line) => line !== '' && /^[^:]+:\d+/.test(line))) return 'context';
+  if (/^[^-:]+-\d+-/.test(first)) return info.contextFlags ? 'context' : null;
+  if (info.numbered && /^[^:]+$/.test(first)) return 'heading';
   return null;
 }
 
@@ -316,6 +480,28 @@ function parseOneFileRecord(line: string): { line: number; text: string } | null
   return { line: lineNumber, text: line.slice(m[0].length) };
 }
 
+/**
+ * Decode a context record (`path-line-text`) by anchoring it to the exact
+ * paths the response's `path:line:text` match records established: the
+ * record must start with a known path followed by `-line-text`. Longest path
+ * first, so a path that is a prefix of another (`a-b.ts` vs `a-b-c.ts`)
+ * can't shadow it. A dash inside a path makes the plain dash split
+ * ambiguous (`src/my-file.ts-4-ctx` splits inside the path and its line
+ * token comes out non-numeric), which is why the known-path anchor exists.
+ */
+function parseContextRecord(line: string, knownPaths: string[]): { path: string; line: number; text: string } | null {
+  for (const path of knownPaths) {
+    if (!line.startsWith(`${path}-`)) continue;
+    const tail = line.slice(path.length + 1);
+    const m = /^(\d+)-/.exec(tail);
+    if (m === null) continue;
+    const lineNumber = Number.parseInt(m[1], 10);
+    if (lineNumber <= 0) continue;
+    return { path, line: lineNumber, text: tail.slice(m[0].length) };
+  }
+  return null;
+}
+
 /** 1-based line count of response text that holds an entire file's content. */
 function lineCount(text: string): number {
   if (text === '') return 0;
@@ -344,17 +530,31 @@ function decodeSearchLayout(layout: SearchLayout, stdout: string, singleFileArg:
         if (rec !== null) records.push(rec);
       }
       break;
-    case 'context':
+    case 'context': {
       // Match records are `path:line:text`; context records are
       // `path-line-text` (the separator is a dash wherever a match record
       // would use a colon). Both carry the real line number; `--` group
-      // separators are not records.
-      for (const line of completeLines(stdout)) {
+      // separators are not records. A dash inside a path breaks the dash
+      // split, so the response's match records first establish the files'
+      // exact paths and each context record is anchored to a known path
+      // prefix before its `-line-text` tail, with the dash-free default as
+      // the fallback. Context records can precede their match (-B windows),
+      // so the known set is built in a first pass over all lines.
+      const lines = completeLines(stdout);
+      const known = new Set<string>();
+      for (const line of lines) {
         if (line === '--') continue;
-        const rec = parseRecord(line, ':') ?? parseRecord(line, '-');
+        const rec = parseRecord(line, ':');
+        if (rec !== null) known.add(rec.path);
+      }
+      const knownSorted = [...known].sort((a, b) => b.length - a.length);
+      for (const line of lines) {
+        if (line === '--') continue;
+        const rec = parseRecord(line, ':') ?? parseContextRecord(line, knownSorted) ?? parseRecord(line, '-');
         if (rec !== null) records.push(rec);
       }
       break;
+    }
     case 'heading':
       // A file header line, then `line:text` records; blank lines separate
       // file sections; any non-record line starts the next file's section.
@@ -408,6 +608,50 @@ function insideRoot(abs: string, roots: string[]): boolean {
     if (abs === root || abs.startsWith(root + sep)) return true;
   }
   return false;
+}
+
+/** Whether `abs` is an existing regular file (following symlinks). */
+function isFile(abs: string): boolean {
+  try {
+    return statSync(abs).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The git worktree root containing `startDir`, found by walking up for the
+ * first directory holding a `.git` entry — a directory in a regular repo, a
+ * `gitdir:` file in a linked worktree or submodule. Diff-form output paths
+ * are repo-root-relative regardless of cwd, so diff decode resolves against
+ * this root rather than the effective dir; search-layout paths are
+ * cwd-relative and stay anchored to the effective dir. No subprocess — the
+ * common layer imports only node: builtins. Null when `startDir` is not
+ * inside any worktree; diff output is then suspect and the parse fails
+ * closed.
+ */
+function findGitRoot(startDir: string): string | null {
+  let dir = startDir;
+  for (;;) {
+    if (existsSync(join(dir, '.git'))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+/**
+ * Order spans deterministically and cap the count (fail-closed beyond
+ * `MAX_RESPONSE_SPANS`): the first 50 spans in path order are emitted, the
+ * rest are dropped. Normal parses keep their emission order — the sort only
+ * engages when the cap binds.
+ */
+function capSpans(spans: ResolvedSpan[]): ResolvedSpan[] {
+  if (spans.length <= MAX_RESPONSE_SPANS) return spans;
+  const ordered = [...spans].sort(
+    (a, b) => a.absolutePath.localeCompare(b.absolutePath) || a.lineStart - b.lineStart || a.lineEnd - b.lineEnd
+  );
+  return ordered.slice(0, MAX_RESPONSE_SPANS);
 }
 
 /**
@@ -691,32 +935,34 @@ function matchBlameRange(
 export function parseResponse(input: ResponseParseInput): ResolvedSpan[] {
   const { command, cwd, stdout } = input;
 
-  // The adapter-supplied truncated flag (Claude rawOutputPath set ⇒ inline
-  // stdout is only a preview; interrupted) declares the response
-  // untrustworthy — fail closed, parse nothing, invent no touches.
-  if (input.truncated) return [];
-
   // ANSI escape bytes reject the whole parse: neither rg/grep nor git emit
   // color when piped, so an ESC byte means something deliberate is going on.
   if (stdout.includes('\u001b')) return [];
 
-  // Walk the simple commands tracking `cd`, exactly like parse-command.ts:
-  // the response is attributed to the final command, which must be a gated
-  // search, diff, or blame command. A pipeline stage like `head` or `wc`
-  // resets the gate.
+  // Walk the simple commands tracking `cd`, exactly like parse-command.ts.
+  // The response is attributed to the FIRST gated stage (left-to-right; a
+  // later stage never overrides an earlier gated one): in a pipeline the
+  // final stage's stdout is the gated stage's output — head/wc/tail only
+  // truncate, and the terminating-newline rule handles the cut — and in an
+  // &&/||/; chain the first gated stage is the most likely owner of
+  // response-shaped records. `cd` tracking applies only until the first
+  // gated stage is found: the evidence was produced in that directory, and a
+  // `cd` in a later stage says nothing about where the response was made.
   let currentDir = cwd;
   let gated: GatedCommand | null = null;
   for (const simple of splitTopLevel(command)) {
     const argv = argvOf(simple.text);
     if (argv === null || argv.length === 0) continue;
     if (argv[0] === 'cd') {
-      const target = argv[1];
-      if (target !== undefined && target !== '-' && !hasShellExpansion(target)) {
-        currentDir = resolvePath(currentDir, target);
+      if (gated === null) {
+        const target = argv[1];
+        if (target !== undefined && target !== '-' && !hasShellExpansion(target)) {
+          currentDir = resolvePath(currentDir, target);
+        }
       }
       continue;
     }
-    gated = null;
+    if (gated !== null) continue;
     if (SEARCH_BINS.has(argv[0])) {
       gated = { kind: 'search', argv, start: 1, dir: null, dirUnresolvable: false };
     } else if (argv[0] === 'git') {
@@ -724,7 +970,13 @@ export function parseResponse(input: ResponseParseInput): ResolvedSpan[] {
       if (sub !== null) {
         const base = { argv, start: sub.start, dir: sub.dir, dirUnresolvable: sub.dirUnresolvable };
         if (sub.subcommand === 'grep') gated = { kind: 'search', ...base };
-        else if (sub.subcommand === 'diff' || sub.subcommand === 'show') gated = { kind: 'diff', ...base };
+        // `git show <rev>:<path>` streams the blob's RAW content, never a
+        // diff — a diff-shaped blob must not decode into fabricated touches
+        // on the files its content names, so the content idiom is excluded
+        // from the diff gate. `git diff <rev>:<path>` errors instead of
+        // emitting content, so only `show` needs the check.
+        else if (sub.subcommand === 'show' && !hasRevPathArg(argv, sub.start)) gated = { kind: 'diff', ...base };
+        else if (sub.subcommand === 'diff') gated = { kind: 'diff', ...base };
         else if (sub.subcommand === 'log' && hasDiffPatchFlag(argv, sub.start)) gated = { kind: 'diff', ...base };
         else if (sub.subcommand === 'blame') gated = { kind: 'blame', ...base };
       }
@@ -737,18 +989,31 @@ export function parseResponse(input: ResponseParseInput): ResolvedSpan[] {
   const effectiveDir = gated.dir !== null ? resolvePath(currentDir, gated.dir) : currentDir;
 
   // `git blame -L N,M file` resolves straight from the command text; the
-  // response's content is irrelevant to it.
+  // response's content is irrelevant to it, so the truncation gate below
+  // (which applies to response-derived decode) must not suppress it.
   if (gated.kind === 'blame') {
     const m = matchBlameRange(gated.argv, gated.start);
     if (m === null || hasShellExpansion(m.fileArg) || /[*?]/.test(m.fileArg)) return [];
     return [{ lineStart: m.lineStart, lineEnd: m.lineEnd, absolutePath: resolvePath(effectiveDir, m.fileArg) }];
   }
 
+  // The adapter-supplied truncated flag (Claude rawOutputPath set ⇒ inline
+  // stdout is only a preview) declares the response-derived decode
+  // untrustworthy — fail closed, parse nothing, invent no touches.
+  // `interrupted` is the plan's complete-records regime: fully-terminated
+  // records parse and the incomplete tail drops via the unconditional
+  // terminating-newline rule, which the default path already applies.
+  if (input.truncated) return [];
+
   if (gated.kind === 'diff') {
-    // Diff paths resolve against the effective git dir; the repo itself is
-    // the permitted root — a traversal path normalizes outside it and is
-    // rejected by the same containment check.
-    return spansFor(decodeUnifiedDiff(stdout), effectiveDir, [effectiveDir]);
+    // Diff-form paths are repo-root-relative regardless of cwd, so they
+    // resolve against the worktree root discovered from the effective dir
+    // (a `.git` entry marks it — no subprocess). The repo root is also the
+    // permitted root: a traversal path normalizes outside it and is rejected
+    // by the same containment check.
+    const repoRoot = findGitRoot(effectiveDir);
+    if (repoRoot === null) return [];
+    return capSpans(spansFor(decodeUnifiedDiff(stdout), repoRoot, [repoRoot]));
   }
 
   const info = analyzeSearchArgv(gated.argv, gated.start);
@@ -757,8 +1022,14 @@ export function parseResponse(input: ResponseParseInput): ResolvedSpan[] {
   // cwd when no path args are given (rg/grep search it by default).
   const roots = info.pathArgs.length > 0 ? info.pathArgs.map((p) => resolvePath(effectiveDir, p)) : [effectiveDir];
 
-  const layout = detectLayout(stdout, info.contextFlags);
   const singleFileArg = info.pathArgs.length === 1 ? info.pathArgs[0] : null;
+  // One-file eligibility: numbered evidence, exactly one explicit file
+  // argument that is a real file (a directory or no args means records carry
+  // path prefixes), and no -H/--with-filename (which forces path prefixes).
+  const oneFileEligible =
+    info.numbered && !info.withFilename && singleFileArg !== null && isFile(resolvePath(effectiveDir, singleFileArg));
+
+  const layout = detectLayout(stdout, info, oneFileEligible);
 
   const perFile = new Map<string, Set<number>>();
   if (layout !== null) {
@@ -802,5 +1073,5 @@ export function parseResponse(input: ResponseParseInput): ResolvedSpan[] {
     }
   }
 
-  return spans;
+  return capSpans(spans);
 }

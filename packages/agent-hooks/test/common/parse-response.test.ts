@@ -7,8 +7,13 @@
  * scope restriction, and the search-layout decoders; Phase 3b the unified-diff
  * decoder; Phase 3c the `git blame -L` command-text matcher; Phase 3d the
  * hostile-output, ANSI-rejection, truncated-flag, and cut-everything
- * truncation checks — all enabled here. Only the adapter-envelope checks
- * remain `it.skip` for Phase 3e.
+ * truncation checks — all enabled here. The evaluation-fix batch adds the
+ * fixtures for every verified finding: unnumbered-content and digits-named
+ * files never parsing as numbered, the rev:path exclusion, subdir-run diff
+ * decoding, dash-pathed context windows, git-grep rev/pathspec shapes, the
+ * pipeline attribution, the distinct-span cap, and the two-regime
+ * truncated/interrupted contract. Only the adapter-envelope checks remain
+ * `it.skip` for Phase 3e.
  *
  * The golden-matrix harness below builds the fixture store by executing the
  * REAL binaries — /usr/bin/rg (ripgrep 14.1.1), /usr/bin/grep (GNU grep
@@ -27,7 +32,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { ResolvedSpan } from '../../src/common/parse-command.js';
-import { parseResponse, type ResponseParseInput } from '../../src/common/parse-response.js';
+import { MAX_RESPONSE_SPANS, parseResponse, type ResponseParseInput } from '../../src/common/parse-response.js';
 import { makeTempRepo } from '../helpers.js';
 
 // ---------------------------------------------------------------------------
@@ -43,7 +48,21 @@ const SEARCH_FILES: Record<string, string> = {
   'src/c.ts': 'zero\none\nalpha\nthree\nfour\nfive\nalpha\nsix\n',
   // Matches at lines 3 and 4 — overlapping windows the tool merges.
   'src/d.ts': 'zero\none\nalpha\nalpha\ntwo\nthree\n',
-  'src/unicode.ts': 'café\nnaïve\n日本語テキスト\ncafé au lait\n'
+  'src/unicode.ts': 'café\nnaïve\n日本語テキスト\ncafé au lait\n',
+  // A dash inside the path: `-C` context records are `path-line-text`, and
+  // without anchoring to this exact path the window collapses to the bare
+  // match line.
+  'src/my-file.ts': 'zero\none\nalpha\nthree\n',
+  // A pure-digits filename: a recursive `rg -n needle` run here emits
+  // "9:1:needle" first — `path:line:text` for the file "9", never the
+  // one-file layout (which would need an explicit file arg and would touch
+  // the wrong position).
+  'coll/9': 'needle\n',
+  // Unnumbered single-file probes: digits in the CONTENT (a "123: TODO item"
+  // matching line) or in the FILENAME (2024-log.txt under `rg -l`) are not
+  // positions and must fall back to the whole-file read.
+  'notes.md': 'TODO item\n123: TODO item\nend\n',
+  '2024-log.txt': 'alpha\n'
 };
 
 interface ExpectedSpan {
@@ -149,10 +168,20 @@ function wholeFileExpected(files: Record<string, string>, path: string): Expecte
 
 // -- Real-binary runners ----------------------------------------------------
 
-/** Execute a real binary, capturing stdout and exit status without throwing on non-zero exits. */
+/**
+ * Execute a real binary, capturing stdout and exit status without throwing
+ * on non-zero exits. stdin is closed (['ignore']) so rg/grep never read it:
+ * with execFileSync's default pipe stdin, an rg invocation with no path args
+ * treats the pipe as its search input, sees EOF, and exits 1 — a fixture
+ * must capture what the binary searches when run at a real terminal (the
+ * directory), not what it reads from a closed pipe.
+ */
 function runCapture(bin: string, argv: string[], cwd: string): RunResult {
   try {
-    return { stdout: execFileSync(bin, argv, { cwd, encoding: 'utf8' }), exitStatus: 0 };
+    return {
+      stdout: execFileSync(bin, argv, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }),
+      exitStatus: 0
+    };
   } catch (err) {
     const e = err as { status?: number; stdout?: string | Buffer };
     return {
@@ -221,9 +250,14 @@ function buildGoldenMatrix(root: string): GoldenMatrix {
   const fixtures: GoldenFixture[] = [];
   const repos: Array<{ root: string; cleanup: () => void }> = [];
   const allFiles = Object.keys(SEARCH_FILES);
-
-  // Search layouts — real rg / grep / git runs over the same committed tree.
-  const recursive = searchExpected(SEARCH_FILES, allFiles, 'alpha', 0, 0);
+  // Commands that take a `src` path arg only ever emit src/ records; the
+  // tree also holds top-level files (notes.md, 2024-log.txt, coll/9) that a
+  // whole-repo search would see but a `src`-scoped one must not expect.
+  const srcFiles = allFiles.filter((p) => p.startsWith('src/'));
+  // `git grep -n alpha` with no path args searches the whole committed tree,
+  // so its expected spans cover every file that contains alpha — including
+  // the top-level 2024-log.txt.
+  const recursive = searchExpected(SEARCH_FILES, srcFiles, 'alpha', 0, 0);
   fixtures.push(
     searchFixture('rg-recursive', 'rg -n alpha src', '/usr/bin/rg', ['-n', 'alpha', 'src'], root, recursive)
   );
@@ -231,7 +265,14 @@ function buildGoldenMatrix(root: string): GoldenMatrix {
     searchFixture('grep-recursive', 'grep -rn alpha src', '/usr/bin/grep', ['-rn', 'alpha', 'src'], root, recursive)
   );
   fixtures.push(
-    searchFixture('git-grep-recursive', 'git grep -n alpha', 'git', ['grep', '-n', 'alpha'], root, recursive)
+    searchFixture(
+      'git-grep-recursive',
+      'git grep -n alpha',
+      'git',
+      ['grep', '-n', 'alpha'],
+      root,
+      searchExpected(SEARCH_FILES, allFiles, 'alpha', 0, 0)
+    )
   );
 
   fixtures.push(
@@ -263,7 +304,7 @@ function buildGoldenMatrix(root: string): GoldenMatrix {
       '/usr/bin/rg',
       ['-n', '-A', '1', '-B', '2', 'alpha', 'src'],
       root,
-      searchExpected(SEARCH_FILES, allFiles, 'alpha', 2, 1)
+      searchExpected(SEARCH_FILES, srcFiles, 'alpha', 2, 1)
     )
   );
 
@@ -277,7 +318,7 @@ function buildGoldenMatrix(root: string): GoldenMatrix {
       '/usr/bin/grep',
       ['-rnz', 'alpha', 'src'],
       root,
-      allFiles
+      srcFiles
         .filter((path) => SEARCH_FILES[path].includes('alpha'))
         .flatMap((path) => wholeFileExpected(SEARCH_FILES, path))
     )
@@ -293,6 +334,97 @@ function buildGoldenMatrix(root: string): GoldenMatrix {
       searchExpected(SEARCH_FILES, ['src/a.ts'], 'alpha', 0, 0)
     )
   );
+
+  // Unnumbered output must never parse as numbered: `grep` without -n prints
+  // bare matching lines, and a content line that merely LOOKS numbered
+  // ("123: TODO item") is content, not a position. `rg -l` prints file names
+  // only — a digits-leading name is a file, not a line. Both restore the
+  // contract-mandated whole-file fallback instead of inventing a position.
+  fixtures.push(
+    searchFixture(
+      'grep-unnumbered-digits-content',
+      'grep TODO notes.md',
+      '/usr/bin/grep',
+      ['TODO', 'notes.md'],
+      root,
+      wholeFileExpected(SEARCH_FILES, 'notes.md')
+    )
+  );
+  fixtures.push(
+    searchFixture(
+      'rg-list-digits-filename',
+      'rg -l alpha 2024-log.txt',
+      '/usr/bin/rg',
+      ['-l', 'alpha', '2024-log.txt'],
+      root,
+      wholeFileExpected(SEARCH_FILES, '2024-log.txt')
+    )
+  );
+
+  // A dash inside the path: context records are `path-line-text`, so the
+  // response's own match records must anchor them or the -C window on
+  // my-file.ts collapses to the bare match line. The sibling d.ts (dash-free)
+  // rides along to prove both shapes decode in one response.
+  fixtures.push(
+    searchFixture(
+      'rg-context-dash-path',
+      'rg -n -C 1 alpha src/my-file.ts src/d.ts',
+      '/usr/bin/rg',
+      ['-n', '-C', '1', 'alpha', 'src/my-file.ts', 'src/d.ts'],
+      root,
+      searchExpected(SEARCH_FILES, ['src/my-file.ts', 'src/d.ts'], 'alpha', 1, 1)
+    )
+  );
+
+  // A pure-digits filename emitted first ("9:1:needle") must not collapse a
+  // recursive search to the one-file layout — with no explicit file arg (and
+  // a directory arg below, which is not a file) the recursive reading wins.
+  {
+    const { stdout, exitStatus } = runCapture('/usr/bin/rg', ['-n', 'needle'], join(root, 'coll'));
+    fixtures.push({
+      name: 'rg-digits-named-file',
+      command: 'cd coll && rg -n needle',
+      cwd: root,
+      stdout,
+      exitStatus,
+      expected: [{ path: 'coll/9', lineStart: 1, lineEnd: 1 }],
+      files: SEARCH_FILES
+    });
+  }
+
+  // `git grep <rev>` fuses the rev into the record path ("HEAD:src/a.ts:…");
+  // those records drop as path-ambiguous — fail-closed and defensible, so
+  // the fixture pins the documented behavior (no touches, no fallback).
+  fixtures.push(
+    searchFixture('git-grep-rev-arg', 'git grep -n alpha HEAD', 'git', ['grep', '-n', 'alpha', 'HEAD'], root, [])
+  );
+
+  // Git pathspec magic (`:/`) is not a filesystem path — it must never
+  // become a permitted root (a literal `cwd/:/` would reject every decoded
+  // record). Dropped, roots fall back to the effective cwd and the records
+  // (cwd-relative, as git grep emits them from a subdir) resolve normally.
+  {
+    const ps = runGit(join(root, 'src'), ['grep', '-n', 'alpha', '--', ':/']);
+    // `:/` is the repo-top pathspec, so the search covers the whole tree; the
+    // parser must never treat the magic token as a permitted root (a literal
+    // `cwd/:/` would reject every record). From a subdir git grep emits
+    // cwd-relative paths; the out-of-tree `../2024-log.txt` record is dropped
+    // by scope restriction and the src/ records decode normally.
+    const psExpected = searchExpected(SEARCH_FILES, srcFiles, 'alpha', 0, 0).map((s) => ({
+      path: s.path.slice('src/'.length),
+      lineStart: s.lineStart,
+      lineEnd: s.lineEnd
+    }));
+    fixtures.push({
+      name: 'git-grep-pathspec-top',
+      command: 'git grep -n alpha -- :/',
+      cwd: join(root, 'src'),
+      stdout: ps.stdout,
+      exitStatus: ps.exitStatus,
+      expected: psExpected,
+      files: SEARCH_FILES
+    });
+  }
 
   // Whole-file no-line-number fallback: bare matching lines, no numbers.
   fixtures.push(
@@ -512,6 +644,82 @@ function buildGoldenMatrix(root: string): GoldenMatrix {
         repo.root,
         files,
         [{ path: 'blame.txt', lineStart: 2, lineEnd: 4 }]
+      )
+    );
+  }
+
+  // Diffs run from below the worktree root: git emits repo-root-relative
+  // paths (`diff --git a/sub/a.txt`), so the decoder must anchor to the
+  // discovered worktree root, never the subdir cwd — otherwise
+  // `<subdir>/sub/a.txt` resolves to nothing and every span is lost. Both
+  // the `cd` form and the `git -C` form must decode.
+  {
+    const repo = makeGitRepo();
+    repos.push(repo);
+    const base = { 'sub/a.txt': 'l1\nl2\nl3\nl4\nl5\nl6\n' };
+    writeFiles(repo.root, base);
+    commitAll(repo.root, 'base');
+    const modified = { 'sub/a.txt': 'l1\nl2\nCHANGED\nl4\nl5\nl6\n' };
+    writeFiles(repo.root, modified);
+    fixtures.push(
+      diffFixture(
+        'git-diff-cd-subdir',
+        'cd sub && git diff --no-color -U1',
+        ['diff', '--no-color', '-U1'],
+        repo.root,
+        modified,
+        [{ path: 'sub/a.txt', lineStart: 2, lineEnd: 4 }]
+      )
+    );
+    fixtures.push(
+      diffFixture(
+        'git-diff-C-subdir',
+        'git -C sub diff --no-color -U1',
+        ['-C', 'sub', 'diff', '--no-color', '-U1'],
+        repo.root,
+        modified,
+        [{ path: 'sub/a.txt', lineStart: 2, lineEnd: 4 }]
+      )
+    );
+  }
+
+  // `git show <rev>:<path>` streams the blob's RAW content. A diff-shaped
+  // blob (a vendored .patch) must not decode into fabricated touches on the
+  // files its content names — the content idiom is excluded from the diff
+  // gate, with and without --stat.
+  {
+    const repo = makeGitRepo();
+    repos.push(repo);
+    const patch = [
+      'diff --git a/src/a.ts b/src/a.ts',
+      'index 1111111..2222222 100644',
+      '--- a/src/a.ts',
+      '+++ b/src/a.ts',
+      '@@ -1,2 +1,2 @@',
+      ' alpha',
+      '+beta',
+      ''
+    ].join('\n');
+    writeFiles(repo.root, { 'patches/example2.patch': patch, 'src/a.ts': 'alpha\n' });
+    commitAll(repo.root, 'base');
+    fixtures.push(
+      diffFixture(
+        'git-show-revpath',
+        'git show HEAD:patches/example2.patch',
+        ['show', 'HEAD:patches/example2.patch'],
+        repo.root,
+        {},
+        []
+      )
+    );
+    fixtures.push(
+      diffFixture(
+        'git-show-revpath-stat',
+        'git show --stat HEAD:patches/example2.patch',
+        ['show', '--stat', 'HEAD:patches/example2.patch'],
+        repo.root,
+        {},
+        []
       )
     );
   }
@@ -882,12 +1090,33 @@ describe('parse-response (Phase 3a–3c — search layouts, unified diffs, and b
       );
     });
 
-    it('the truncated flag (rawOutputPath preview / interrupted) fails closed to no touches', () => {
-      // The adapter-supplied flag is strict mode: the response is declared
-      // untrustworthy (stdout may be only a preview), so nothing in it is
-      // parsed — not even the fully-terminated records below.
+    it('truncated (rawOutputPath preview) fails closed; interrupted parses complete records', () => {
+      // Plan step 6's two regimes are distinct signals. `truncated` (the
+      // adapter's rawOutputPath marker: inline stdout is only a preview) is
+      // strict mode — nothing is parsed, not even fully-terminated records.
       const f = fixture('rg-recursive');
       expect(parseResponse({ command: f.command, cwd: f.cwd, stdout: f.stdout, truncated: true })).toEqual([]);
+      // `interrupted` is the complete-records regime: an interrupted stream
+      // whose stdout holds fully-terminated records must produce spans, not
+      // []. The unconditional terminating-newline rule drops the incomplete
+      // tail, so the flag's output equals the default path's.
+      expect(
+        sortedSpans(parseResponse({ command: f.command, cwd: f.cwd, stdout: f.stdout, interrupted: true }))
+      ).toEqual(sortedSpans(resolveExpected(f)));
+      const cut = f.stdout.slice(0, -1);
+      expect(parseResponse({ command: f.command, cwd: f.cwd, stdout: cut, interrupted: true })).toEqual(
+        parseResponse({ command: f.command, cwd: f.cwd, stdout: cut })
+      );
+    });
+
+    it('the truncated gate never suppresses the command-text-derived blame matcher', () => {
+      // `git blame -L N,M file` evidence is the command text, not the
+      // response — a rawOutputPath preview of a blame run must not suppress
+      // the command-derived span.
+      const f = fixture('git-blame-l-range');
+      expect(parseResponse({ command: f.command, cwd: f.cwd, stdout: f.stdout, truncated: true })).toEqual(
+        sortedSpans(resolveExpected(f))
+      );
     });
 
     it('cutting every golden output at byte offsets never lets an incomplete record touch', () => {
@@ -935,6 +1164,160 @@ describe('parse-response (Phase 3a–3c — search layouts, unified diffs, and b
       expect(sortedSpans(parseResponse({ command: f.command, cwd: f.cwd, stdout: hostile }))).toEqual(
         sortedSpans(resolveExpected(f))
       );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Evaluation fixes: unnumbered output, digits-named files, dash-pathed
+  // context windows, git-grep rev/pathspec shapes, rev:path exclusion,
+  // subdir-run diffs, pipelines, and the span cap
+  // -------------------------------------------------------------------------
+
+  describe('unnumbered output never parses as numbered', () => {
+    it('content or filenames that merely look numbered fall back to the whole-file read', () => {
+      // (a) `grep TODO notes.md` without -n: the matching line "123: TODO
+      // item" is CONTENT — the parser must not touch line 123 of a 3-line
+      // file. (b) `rg -l alpha 2024-log.txt`: the output is the digits-named
+      // FILE, not a line number. Both restore the contract-mandated
+      // whole-file fallback (the probes previously suppressed it by parsing
+      // as numbered).
+      for (const name of ['grep-unnumbered-digits-content', 'rg-list-digits-filename']) {
+        const f = fixture(name);
+        expect(sortedSpans(parseFixture(f))).toEqual(sortedSpans(resolveExpected(f)));
+      }
+    });
+  });
+
+  describe('digits-named files and the one-file layout', () => {
+    it('a digits-named file emitted first never collapses a recursive search to one-file', () => {
+      // "9:1:needle" is `path:line:text` for the file "9" — with no explicit
+      // file arg the one-file layout cannot apply, and the recursive reading
+      // must win instead of dropping the whole response.
+      const f = fixture('rg-digits-named-file');
+      expect(sortedSpans(parseFixture(f))).toEqual(sortedSpans(resolveExpected(f)));
+      // The same through an explicit DIRECTORY arg: one path arg that is not
+      // a file (coll) must not qualify for one-file attribution either.
+      const dirForm = runCapture('/usr/bin/rg', ['-n', 'needle', 'coll'], root);
+      expect(
+        sortedSpans(
+          parseResponse({
+            command: 'rg -n needle coll',
+            cwd: root,
+            stdout: dirForm.stdout,
+            exitStatus: dirForm.exitStatus
+          })
+        )
+      ).toEqual(sortedSpans(resolveExpected(f)));
+    });
+  });
+
+  describe('context windows on dash-pathed files', () => {
+    it('the full -C window survives a dash inside the path', () => {
+      // The probe collapsed `[3,3]` instead of `[2,4]` for my-file.ts: its
+      // context records (`src/my-file.ts-2-one`) split inside the path and
+      // dropped. Anchoring to the response's match-record paths restores the
+      // window; the dash-free sibling d.ts rides along.
+      const f = fixture('rg-context-dash-path');
+      expect(f.stdout).toContain('src/my-file.ts-2-');
+      expect(sortedSpans(parseFixture(f))).toEqual(sortedSpans(resolveExpected(f)));
+    });
+  });
+
+  describe('git grep rev args and pathspec magic', () => {
+    it('rev args fail closed (documented); pathspec magic never becomes a permitted root', () => {
+      const rev = fixture('git-grep-rev-arg');
+      // `git grep -n alpha HEAD` fuses the rev into every record path
+      // ("HEAD:src/a.ts:1:alpha"); the records drop as path-ambiguous —
+      // fail-closed and defensible (the rev is known, but stripping it would
+      // guess at a path the response does not carry).
+      expect(rev.stdout).not.toBe('');
+      expect(parseFixture(rev)).toEqual([]);
+      // `:/` is not a filesystem path: as a path arg it made the permitted
+      // root the literal `cwd/:/` and every decoded path was rejected.
+      // Dropped, roots fall back to the effective cwd and the cwd-relative
+      // records resolve normally.
+      const ps = fixture('git-grep-pathspec-top');
+      expect(ps.stdout).not.toBe('');
+      expect(sortedSpans(parseFixture(ps))).toEqual(sortedSpans(resolveExpected(ps)));
+    });
+  });
+
+  describe('git show <rev>:<path> content idiom', () => {
+    it('raw blob content is excluded from the diff gate, with and without --stat', () => {
+      // The blob is diff-shaped and names real files — decoding it as
+      // diff-form output fabricated a touch on src/a.ts. The rev:path
+      // positional marks the content idiom; the response pass yields nothing.
+      for (const name of ['git-show-revpath', 'git-show-revpath-stat']) {
+        const f = fixture(name);
+        expect(f.stdout).not.toBe('');
+        expect(parseFixture(f)).toEqual([]);
+      }
+    });
+  });
+
+  describe('diffs run from below the worktree root', () => {
+    it('diff paths anchor to the worktree root, not the subdir cwd', () => {
+      // git emits repo-root-relative paths (`diff --git a/sub/a.txt`); the
+      // decoder must discover the worktree root from the effective dir (the
+      // `cd` target or the `git -C` target) and resolve there — the probe
+      // previously produced zero spans from a subdir while the same command
+      // from the root worked.
+      for (const name of ['git-diff-cd-subdir', 'git-diff-C-subdir']) {
+        const f = fixture(name);
+        expect(f.stdout).not.toBe('');
+        expect(sortedSpans(parseFixture(f))).toEqual(sortedSpans(resolveExpected(f)));
+      }
+    });
+  });
+
+  describe('pipelines', () => {
+    it('the response attributes to the first gated stage', () => {
+      // `rg -n alpha src | head -5` — the standard output-capping idiom. The
+      // final stage (`head`) is not gated, but the response IS the gated
+      // stage's output (head only truncates; the terminating-newline rule
+      // handles the cut), so the pipeline must parse identically to the
+      // gated stage alone and must never come back empty.
+      const full = runCapture('/usr/bin/rg', ['-n', 'alpha', 'src'], root);
+      const head5 = `${full.stdout.split('\n').slice(0, 5).join('\n')}\n`;
+      const piped = parseResponse({ command: 'rg -n alpha src | head -5', cwd: root, stdout: head5 });
+      const plain = parseResponse({ command: 'rg -n alpha src', cwd: root, stdout: head5 });
+      expect(piped).toEqual(plain);
+      expect(piped.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('distinct-span cap', () => {
+    it('caps at MAX_RESPONSE_SPANS, fail-closed beyond, never capping a coalesced window', () => {
+      // Synthetic recursive output over N distinct files (paths resolve
+      // inside the cwd root; existence is the touch core's concern, not the
+      // parser's). At the cap every span surfaces; beyond it exactly the cap
+      // is emitted in deterministic path order and the rest fail closed.
+      const many = (n: number): string =>
+        Array.from({ length: n }, (_, i) => `f${String(i + 1).padStart(2, '0')}.ts:1:x\n`).join('');
+      const parse = (stdout: string): ResolvedSpan[] => parseResponse({ command: 'rg -n foo', cwd: root, stdout });
+      expect(parse(many(MAX_RESPONSE_SPANS))).toHaveLength(MAX_RESPONSE_SPANS);
+      const capped = parse(many(MAX_RESPONSE_SPANS + 10));
+      expect(capped).toHaveLength(MAX_RESPONSE_SPANS);
+      expect(capped.map((s) => s.absolutePath)).toEqual(
+        Array.from({ length: MAX_RESPONSE_SPANS }, (_, i) => join(root, `f${String(i + 1).padStart(2, '0')}.ts`))
+      );
+      // A coalesced window covering a huge line range is ONE span and is
+      // never capped away: f01.ts's 5000 contiguous records coalesce to a
+      // single [1,5000] span, so the response is exactly 50 spans (the cap)
+      // and everything surfaces. Discontiguous records (1 and 5000 only)
+      // would be two spans and the cap would legitimately engage.
+      const f01All = Array.from({ length: 5000 }, (_, i) => `f01.ts:${i + 1}:x\n`).join('');
+      const tail = Array.from(
+        { length: MAX_RESPONSE_SPANS - 1 },
+        (_, i) => `f${String(i + 2).padStart(2, '0')}.ts:1:x\n`
+      ).join('');
+      const withHuge = parse(f01All + tail);
+      expect(withHuge).toHaveLength(MAX_RESPONSE_SPANS);
+      expect(withHuge.find((s) => s.absolutePath === join(root, 'f01.ts'))).toEqual({
+        lineStart: 1,
+        lineEnd: 5000,
+        absolutePath: join(root, 'f01.ts')
+      });
     });
   });
 
