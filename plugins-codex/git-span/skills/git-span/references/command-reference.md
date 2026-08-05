@@ -116,8 +116,8 @@ git span why <name> [<text>] [--format human|json] # write a new why into .span/
 git add .span && git commit                           # persist the edits
 ```
 
-`git span add` without `--at` hashes each anchor against the file content at
-`HEAD`; `--at <commit-ish>` hashes against an ordinary git commit-ish instead.
+`git span add` without `--at` hashes each anchor against the file content in the
+working tree; `--at <commit-ish>` hashes against an ordinary git commit-ish instead.
 `add` rejects an anchor whose end line exceeds the file's current line count
 (`end=N exceeds file line count (M)`). `--at` hashes against the commit-ish,
 not the working tree, so a new anchor whose working-tree content differs from

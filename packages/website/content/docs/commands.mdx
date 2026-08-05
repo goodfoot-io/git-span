@@ -29,7 +29,7 @@ git span add api-contract src/api.ts#L1-L3 tests/api.test.ts
 
 Key flags:
 
-- `--at <commit-ish>` — hash every anchor in this invocation against the file content at `<commit-ish>` instead of `HEAD`. Hashing against a commit-ish rather than the working tree can make a new anchor itself drifted when the working-tree content differs — the span-wide line reports it honestly.
+- `--at <commit-ish>` — hash every anchor in this invocation against the file content at `<commit-ish>` instead of the working tree. Hashing against a commit-ish rather than the working tree can make a new anchor itself drifted when the working-tree content differs — the span-wide line reports it honestly.
 - `--format <human|json>` — write-mode result format. Default `human`; `json` emits the mutation document (schema_version 1, identified by its `command` key) with the requested-address outcomes, the superseded/remaining anchor arrays, and the `span_health` block.
 
 Re-adding an address the span already tracks doesn't duplicate the anchor — it's resolved in place, re-hashed against the current content (`Added 0 anchors and resolved 1 in place`). That's the idiom for confirming an intentional content change `drift` flagged on a range that didn't move — after checking that the span's other anchors still agree with the new content; a coupled doc that now lags is updated first.

@@ -46,7 +46,13 @@ while IFS= read -r -d '' span_file; do
         if git span add "$SPAN_NAME" "$ADDR" 2>&1; then
             COUNT=$((COUNT + 1))
         else
-            echo "    ERROR: rewrite failed; leaving anchor as-is" >&2
+            # `git span add` exits non-zero whenever the span has any drift
+            # (the post-write check surfaces unrelated stale anchors), not
+            # only when the re-add itself failed — the script documents a
+            # clean-tree precondition in its header. Name both causes so the
+            # failure line cannot blame the rewrite for a precondition miss.
+            echo "    ERROR: git span add rejected the re-add; leaving anchor as-is" >&2
+            echo "    (the re-add may have failed, or the tree has unrelated span drift — this script requires a clean tree, see header)" >&2
             ERRORS=$((ERRORS + 1))
         fi
     done < <(grep 'sha256:' "$span_file")

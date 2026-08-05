@@ -1664,6 +1664,65 @@ fn fix_prints_summary_with_remaining_drift() -> Result<()> {
 }
 
 #[test]
+fn fix_summary_counts_anchors_not_layer_findings() -> Result<()> {
+    // The drift-remains summary must count distinct drifted ANCHORS — what
+    // the listing above it renders — not per-layer findings. An anchor
+    // whose recorded hash is stale at several layers (re-anchored on a
+    // dirty file, then edited again) contributes one finding per drifting
+    // layer; here file1 yields three (worktree/index/HEAD) and deleted
+    // file2 yields one, so findings (4) exceed anchors (2). The summary's
+    // N must equal the 2 anchors the listing shows, not the 4 findings.
+    let repo = TestRepo::seeded()?;
+    repo.span_stdout(["add", "m", "file1.txt#L1-L5", "file2.txt#L1-L5"])?;
+    repo.span_stdout(["why", "m", "mixed"])?;
+    repo.run_git(["add", ".span"])?;
+    repo.run_git(["commit", "-m", "span commit"])?;
+
+    // file1: prepend two lines (unstaged), re-anchor — `git span add`
+    // records the dirty worktree hash — then edit the anchored line again.
+    // The recorded hash now matches no layer: worktree, index, and HEAD
+    // all differ → three findings for this one anchor, and the change is
+    // material so `--fix` leaves it drifted.
+    repo.write_file(
+        "file1.txt",
+        "prefix1\nprefix2\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+    repo.span_stdout(["add", "m", "file1.txt#L1-L5"])?;
+    repo.write_file(
+        "file1.txt",
+        "prefix1\nprefix2\nlineTWO\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+    // file2: unfixable Deleted.
+    std::fs::remove_file(repo.path().join("file2.txt"))?;
+
+    let out = repo.run_span(["drift", "--fix", "--no-exit-code"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(
+            "Updated 0 anchors (0 updated, 0 removed); 2 anchors remain drifted — run git span drift again"
+        ),
+        "the summary must count the 2 drifted anchors the listing shows, not \
+         the 4 per-layer findings; stdout=\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("4 anchor") && !stdout.contains("3 anchor"),
+        "the findings count must not leak into the anchor summary; stdout=\n{stdout}"
+    );
+    // The listing above the summary renders exactly one line per anchor.
+    let file1_rows = stdout.matches("- file1.txt#L1-L5").count();
+    let file2_rows = stdout.matches("- file2.txt#L1-L5").count();
+    assert_eq!(
+        file1_rows, 1,
+        "file1 must render one listing row despite three layer findings; stdout=\n{stdout}"
+    );
+    assert_eq!(
+        file2_rows, 1,
+        "file2 must render one listing row; stdout=\n{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
 fn fix_prints_removed_count_for_interior_anchor() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;

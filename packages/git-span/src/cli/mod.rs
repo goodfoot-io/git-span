@@ -321,7 +321,8 @@ pub struct AddArgs {
     pub anchors: Vec<String>,
 
     /// Hash every anchor in this invocation against the file content at
-    /// `<commit-ish>` (an ordinary git commit-ish). Default is HEAD.
+    /// `<commit-ish>` (an ordinary git commit-ish). When omitted, anchors
+    /// are hashed against the working tree.
     #[arg(long, value_name = "COMMIT-ISH")]
     pub at: Option<String>,
 

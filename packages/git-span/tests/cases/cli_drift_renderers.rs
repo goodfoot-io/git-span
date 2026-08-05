@@ -229,6 +229,58 @@ fn discovery_json_includes_clean_span_with_pending_metadata() -> Result<()> {
 }
 
 #[test]
+fn json_clean_derives_from_actionable_drift_not_findings() -> Result<()> {
+    // A span whose only non-Fresh anchor is `RESOLVED_PENDING_COMMIT` is
+    // shown-but-clean: the finding is informational (display predicate:
+    // any non-Fresh anchor), but the verdict — exit code, human "0 drift",
+    // JSON `clean` — uses the actionable `anchor_status_is_drift` boundary.
+    // `clean` must not be `findings.is_empty()`: a hook gating on
+    // `clean == false` would block a tree the same CLI reports as clean
+    // (exit 0, "0 drift"). This scan is the exact case the fully-clean and
+    // actionable-drift pins cannot see — both agree across predicates.
+    let repo = TestRepo::seeded()?;
+    // Mirror `drift_resolved_pending_commit.rs::reanchor_unstaged_source`:
+    // commit an anchor, prepend two lines (unstaged), re-anchor to the
+    // shifted range, and stage only the span file.
+    repo.span_stdout(["add", "m", "file1.txt#L1-L5"])?;
+    repo.span_stdout(["why", "m", "seed"])?;
+    {
+        repo.run_git(["add", ".span"])?;
+        repo.run_git(["commit", "-m", "span m"])?;
+    }
+    repo.write_file(
+        "file1.txt",
+        "prefix1\nprefix2\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+    repo.span_stdout(["remove", "m", "file1.txt#L1-L5"])?;
+    repo.span_stdout(["add", "m", "file1.txt#L3-L7"])?;
+    repo.run_git(["add", ".span"])?;
+
+    let out = repo.run_span(["drift", "--format=json"])?;
+    assert_eq!(out.status.code(), Some(0));
+    let v: Value = serde_json::from_slice(&out.stdout)?;
+    assert_eq!(v["schema_version"], 3);
+    assert_eq!(
+        v["clean"], true,
+        "a RESOLVED_PENDING_COMMIT-only scan is clean (exit 0); `clean` must \
+         derive from the actionable-drift boundary, not `findings.is_empty()`; \
+         document: {v}"
+    );
+    assert!(
+        v["findings"]
+            .as_array()
+            .is_some_and(|a| {
+                !a.is_empty()
+                    && a.iter()
+                        .all(|f| f["status"]["code"] == "RESOLVED_PENDING_COMMIT")
+            }),
+        "the informational finding must still be present (display predicate); \
+         document: {v}"
+    );
+    Ok(())
+}
+
+#[test]
 fn human_pending_ops_render_range_addresses() -> Result<()> {
     // File-backed model: `add` and `remove` edit the worktree span file
     // directly. After adding file2.txt#L1-L5 and removing

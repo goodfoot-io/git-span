@@ -899,6 +899,30 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
 
     let drift_count = drift_findings;
 
+    // Distinct drifted anchors for the `--fix` remaining-drift summary: the
+    // human listing renders one row per anchor (per-span collapse in
+    // `render_human`), while `drift_findings` counts one finding per drifting
+    // LAYER — an anchor whose recorded hash is stale at several layers (e.g.
+    // re-anchored on a dirty file, then edited again) contributes multiple
+    // findings for one listed anchor. The summary counts what the listing
+    // shows, so its N stays reproducible against the anchor lines above it
+    // (the same dedupe the add/why span-wide line uses: one entry per
+    // drifted anchor).
+    let drifted_anchor_count: usize = findings
+        .iter()
+        .filter(|f| {
+            if !anchor_status_is_drift(&f.status) {
+                return false;
+            }
+            if followed_ids.contains(&f.anchor_id) {
+                return false;
+            }
+            true
+        })
+        .map(|f| (f.span.as_str(), f.anchor_id.as_str()))
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+
     // `--cluster`: connected components over the run's drifted spans, by
     // shared anchored file. Gated strictly on `args.cluster && drift_count >
     // 0` (no clusters possible with zero drifted spans). `full_anchor_paths`
@@ -1017,13 +1041,17 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
                 let total = updated + removed;
                 if drift_count > 0 {
                     println!(
-                        "Updated {} {} ({} updated, {} removed); {} anchor {} drifted — run git span drift again",
+                        "Updated {} {} ({} updated, {} removed); {} {} drifted — run git span drift again",
                         total,
                         if total == 1 { "anchor" } else { "anchors" },
                         updated,
                         removed,
-                        drift_count,
-                        if drift_count == 1 { "remains" } else { "remain" },
+                        drifted_anchor_count,
+                        if drifted_anchor_count == 1 {
+                            "anchor remains"
+                        } else {
+                            "anchors remain"
+                        },
                     );
                 } else if total > 0 {
                     let spans = fr.spans_touched;
@@ -1045,7 +1073,7 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
         }
         DriftFormat::Json => {
             let _perf = crate::perf::span("drift.render-json");
-            render_json(&spans, &findings, &followed_ids, &clusters)?;
+            render_json(&spans, &findings, &followed_ids, &clusters, drift_findings)?;
         }
     }
 
@@ -1814,14 +1842,24 @@ fn render_json(
     findings: &[Finding],
     followed_ids: &HashSet<String>,
     clusters: &[crate::cli::drift_cluster::DriftCluster],
+    drift_findings: usize,
 ) -> Result<()> {
     // Always emit a document — a clean scan must be representable so hooks
     // can distinguish "clean" from "no output" (`"clean": true`,
     // `"findings": []` — never empty stdout).
+    //
+    // `clean` is the hook-gating signal, so it must agree with the exit code
+    // and the human drift count — both of which use the actionable
+    // [`anchor_status_is_drift`] boundary. It must NOT be
+    // `findings.is_empty()`: findings use the wider display predicate (any
+    // non-Fresh anchor), so a span whose only non-Fresh anchor is
+    // `RESOLVED_PENDING_COMMIT` is *shown-but-clean* (exit 0, "0 drift",
+    // `DRIFT_FREE`). Deriving clean from the actionable-drift count keeps
+    // the hook signal and the CLI verdict from disagreeing.
     let v = json!({
         "schema_version": 3,
         "span": spans.first().map(|m| m.name.clone()).unwrap_or_default(),
-        "clean": findings.is_empty(),
+        "clean": drift_findings == 0,
         "findings": findings.iter().map(|f| finding_json(f, followed_ids)).collect::<Vec<_>>(),
         "clusters": clusters.iter().map(|c| json!({
             "spans": c.spans,

@@ -1793,9 +1793,11 @@ fn render_reconcile_block(name: &str, check: &ReconcileCheck, include_superseded
             if check.total_anchors == 1 { "" } else { "s" }
         );
         if check.pending_commit_count > 0 {
+            // The plan pins the suffix with a leading space:
+            // `` ; 1 anchor resolved, pending commit ``.
             write!(
                 &mut line,
-                "; {} anchor{} resolved, pending commit",
+                " ; {} anchor{} resolved, pending commit",
                 check.pending_commit_count,
                 if check.pending_commit_count == 1 { "" } else { "s" }
             )

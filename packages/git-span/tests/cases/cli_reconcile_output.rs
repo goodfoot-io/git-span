@@ -62,6 +62,54 @@ fn reconcile_output_successful_refresh_prints_span_wide_clean() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// Matrix row: clean with pending commit
+//
+// The clean span-wide line carries an informational `` ; 1 anchor resolved,
+// pending commit `` suffix (with the leading space) when the anchored
+// content differs from HEAD — the re-anchored-while-dirty shape. Exact
+// form: `` Span `x`: 0 drift across 1 span (N anchors checked). ; 1 anchor
+// resolved, pending commit ``.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reconcile_output_clean_line_carries_pending_commit_suffix() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    // Commit an anchor, prepend two lines (unstaged), re-anchor to the
+    // shifted range, and stage only the span file — the anchored content
+    // now differs from HEAD (mirrors
+    // `drift_resolved_pending_commit.rs::reanchor_unstaged_source`).
+    repo.span_stdout(["add", "pending-commit", "file1.txt#L1-L5"])?;
+    repo.span_stdout(["why", "pending-commit", "seed"])?;
+    {
+        repo.run_git(["add", ".span"])?;
+        repo.run_git(["commit", "-m", "span pending-commit"])?;
+    }
+    repo.write_file(
+        "file1.txt",
+        "prefix1\nprefix2\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+    repo.span_stdout(["remove", "pending-commit", "file1.txt#L1-L5"])?;
+    repo.span_stdout(["add", "pending-commit", "file1.txt#L3-L7"])?;
+    repo.run_git(["add", ".span"])?;
+
+    // A no-op refresh: identical address, content matches the stored
+    // (worktree) hash → UNCHANGED, exit 0, and the clean span-wide line
+    // with the pending-commit suffix.
+    let out = repo.run_span(["add", "pending-commit", "file1.txt#L3-L7"])?;
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(
+            "Span `pending-commit`: 0 drift across 1 span (1 anchor checked). ; 1 anchor resolved, pending commit"
+        ),
+        "the clean line must append the plan-pinned suffix with a leading \
+         space: `` ... checked). ; 1 anchor resolved, pending commit ``; \
+         stdout:\n{stdout}"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Matrix row: clean replacement
 //
 // `add` whole-file over an old same-path line range → superseded line +
