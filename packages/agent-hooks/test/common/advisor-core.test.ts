@@ -1234,13 +1234,20 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
         expect(result.cause).toBe('incompatible-cli');
         expect(result.reason).toContain('npm install -g git-span');
         // The raw diagnostic is bracketed the same way the aborted scan's
-        // stderr is: opening tag on its own line, the `git-span reported:`
-        // line indented beneath it, closing tag on its own line as the
-        // message's final line.
+        // stderr is: opening tag on its own line, every non-empty stderr line
+        // indented beneath it (blank lines stay blank), closing tag on its
+        // own line as the message's final line. The full multi-line block is
+        // pinned — first line, the blank line, and the indented usage line —
+        // so a regression to first-line-only indentation cannot pass.
         expect(result.reason).toContain(
-          ['<git-span-error>', `  git-span reported: ${detail.split('\n')[0]}`].join('\n')
+          [
+            '<git-span-error>',
+            `  git-span reported: ${detail.split('\n')[0]}`,
+            '',
+            '  Usage: git-span show <NAME>',
+            '</git-span-error>'
+          ].join('\n')
         );
-        expect(result.reason).toContain(['Usage: git-span show <NAME>', '</git-span-error>'].join('\n'));
         expect(result.reason.endsWith('</git-span-error>')).toBe(true);
       }
     });

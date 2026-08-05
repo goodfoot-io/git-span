@@ -171,13 +171,19 @@ describe('advisor version skew', () => {
       expect(reason).toContain('NOT verified');
       // The CLI's own stderr is a delimited artifact of the message now, not
       // an untagged trailing sentence: the `<git-span-error>` block brackets
-      // it — opening tag on its own line, the `git-span reported:` line
-      // indented beneath it, closing tag on its own line as the message's
-      // final line.
+      // it — opening tag on its own line, every non-empty stderr line
+      // indented beneath it (blank lines stay blank), closing tag on its own
+      // line as the message's final line. The multi-line shape is pinned in
+      // full so a regression to first-line-only indentation cannot pass.
       expect(reason).toContain(
-        ['<git-span-error>', "  git-span reported: error: unexpected argument '--format' found"].join('\n')
+        [
+          '<git-span-error>',
+          "  git-span reported: error: unexpected argument '--format' found",
+          '',
+          '  Usage: git-span show <NAME>',
+          '</git-span-error>'
+        ].join('\n')
       );
-      expect(reason).toContain(['Usage: git-span show <NAME>', '</git-span-error>'].join('\n'));
       expect(reason.endsWith('</git-span-error>')).toBe(true);
     });
   });

@@ -1,5 +1,5 @@
 packages/agent-hooks/README.md#L5-L8 rk64:1ea3c99fc5f0a3f4
-packages/agent-hooks/src/common/advisor-core.ts#L1641-L1996 rk64:320dc4f155d7bf46
+packages/agent-hooks/src/common/advisor-core.ts#L1641-L1996 rk64:3510581f2341788a
 packages/website/content/docs/agent-integration.mdx rk64:c43542c7cc0f9e9b
 plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md rk64:2ab438976c95388e
 plugins-codex/git-span/skills/git-span/references/understanding-hook-output.md rk64:e2a7e2791ef531bc

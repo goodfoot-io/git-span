@@ -1706,6 +1706,19 @@ function renderEnvironmentalReason(conditions: DriftPorcelainRow[], blocksText: 
 }
 
 /**
+ * Indent every non-empty line of `text` by two spaces, leaving blank lines
+ * blank — the body shape the `<git-span-error>` blocks use so a multi-line
+ * diagnostic reads as one delimited artifact. Blank lines must stay blank:
+ * two-space-only lines would read as trailing whitespace.
+ */
+function indentBlockBody(text: string): string {
+  return text
+    .split('\n')
+    .map((line) => (line.length > 0 ? `  ${line}` : line))
+    .join('\n');
+}
+
+/**
  * The advisory an `allow`/`scan-failed` result renders into `reason`: the scan
  * could not complete, so the changeset was NOT verified — but the command
  * proceeds anyway (fail-open, matching `environmental`).
@@ -1714,7 +1727,7 @@ function renderScanFailedReason(detail: string): string {
   return [
     'The implicit-dependency check could not run, so this change was NOT verified:',
     '<git-span-error>',
-    `  ${detail}`,
+    indentBlockBody(detail),
     '</git-span-error>',
     '',
     'The command proceeds anyway. Fix the scan error if verification matters for this change.'
@@ -1755,7 +1768,7 @@ function renderIncompatibleCliReason(err: AdvisorIncompatibleCliError): string {
     'auto-reanchored on edit.',
     '',
     '<git-span-error>',
-    `  git-span reported: ${err.detail}`,
+    indentBlockBody(`git-span reported: ${err.detail}`),
     '</git-span-error>'
   ].join('\n');
 }
