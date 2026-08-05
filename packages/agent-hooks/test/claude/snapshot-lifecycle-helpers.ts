@@ -6,17 +6,23 @@
  * input builders, logger capture) live in the per-harness lifecycle files that
  * import this module.
  *
- * Everything here compiles against the Phase 1 contract surfaces; the
- * disk-backed store and comparison functions are `Not Implemented` stubs until
- * Phase 3, which is why every consuming test is skipped.
+ * Since Phase 3 the store and comparison functions are real, so these helpers
+ * also partition the fixture session ids per consuming file: the claude and
+ * codex lifecycle files run in parallel forks over the shared session base,
+ * and each file must purge only the ids it owns.
  */
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
-import type { DriftPorcelainRow, PorcelainRow } from '../../src/common/agent-hooks-common.js';
+import { basename, dirname, join } from 'node:path';
+import {
+  type DriftPorcelainRow,
+  type PorcelainRow,
+  SESSION_BASE_DIR,
+  sessionDir
+} from '../../src/common/agent-hooks-common.js';
 import type { SnapshotFile, SnapshotRecord } from '../../src/common/snapshot-core.js';
 import type { MemoStore } from '../../src/common/span-surface.js';
 import type { TouchExecutors, TouchFixResult } from '../../src/common/touch-core.js';
@@ -73,6 +79,129 @@ export function addSpan(repoRoot: string, name: string, anchor: string): void {
     stdio: ['ignore', 'pipe', 'pipe'],
     encoding: 'utf8'
   });
+}
+
+// ---------------------------------------------------------------------------
+// Shared-session-base cleanup
+// ---------------------------------------------------------------------------
+
+/**
+ * Session ids owned by the claude lifecycle fixture file. Snapshot records
+ * and consumption tombstones persist in the shared per-session base
+ * (`~/.cache/git-span/session/<sanitized-id>`) for `recordTtlMs` (24h) after
+ * consumption, so re-running these fixtures against the real store would
+ * otherwise find a stale tombstone for a previously consumed
+ * (session, tool_use_id) and fail every call closed. The ids are unique per
+ * test and never shared across tests, so purging a fixture's own dirs before
+ * and after a run is always safe.
+ *
+ * The partition matters: the claude and codex lifecycle files run in
+ * parallel forks sharing the base, so a purge must cover only the ids the
+ * calling file owns — a union purge from one file would delete the other
+ * file's live records mid-test.
+ */
+export const CLAUDE_SESSION_IDS: readonly string[] = [
+  'sess-a',
+  'sess-b',
+  'sess-edit',
+  'sess-interleave-bashfirst',
+  'sess-interleave-neverflag',
+  'sess-interleave-prefail',
+  'sess-interleave-race',
+  'sess-interleave-ttlprune',
+  'sess-interleave-unfinished',
+  'sess-interleave-walktail',
+  'sess-interleave-walktail-unequal',
+  'sess-lifecycle',
+  'sess-lifecycle-absent',
+  'sess-lifecycle-delete',
+  'sess-lifecycle-dirty',
+  'sess-lifecycle-dirty2',
+  'sess-lifecycle-duplicate',
+  'sess-lifecycle-end',
+  'sess-lifecycle-failure-interrupt',
+  'sess-lifecycle-failure-nointerrupt',
+  'sess-lifecycle-failure-none',
+  'sess-lifecycle-failure-norecord',
+  'sess-lifecycle-failure-plain',
+  'sess-lifecycle-formatter',
+  'sess-lifecycle-generated',
+  'sess-lifecycle-pre-readonly',
+  'sess-lifecycle-pre-record',
+  'sess-lifecycle-rename',
+  'sess-lifecycle-script',
+  'sess-lifecycle-ttl-edit',
+  'sess-lifecycle-ttl-live',
+  'sess-lifecycle-ttl-old'
+];
+
+/**
+ * Session ids owned by the codex lifecycle fixture file — disjoint from
+ * `CLAUDE_SESSION_IDS`, so each file's purge never touches the other's live
+ * records while they run in parallel forks. (`sess-a`/`sess-b` sit on the
+ * claude side; both files use them only in in-memory ambiguity-rule tests
+ * that never reach the disk store.)
+ */
+export const CODEX_SESSION_IDS: readonly string[] = [
+  'sess-codex',
+  'sess-codex-delete',
+  'sess-codex-dirty',
+  'sess-codex-duplicate',
+  'sess-codex-failed',
+  'sess-codex-formatter',
+  'sess-codex-interleave-bashfirst',
+  'sess-codex-interleave-neverflag',
+  'sess-codex-interleave-unfinished',
+  'sess-codex-later',
+  'sess-codex-pre-envelope',
+  'sess-codex-pre-readonly',
+  'sess-codex-pre-record',
+  'sess-codex-race',
+  'sess-codex-rename',
+  'sess-codex-stop',
+  'sess-codex-subagent',
+  'sess-codex-ttl'
+];
+
+/**
+ * This worker's trash root: a sibling of the shared session base, so no
+ * sweep (which only scans the base itself) ever reads what lands here.
+ */
+const TRASH_ROOT = join(dirname(SESSION_BASE_DIR), `session-trash-${process.pid}`);
+
+let trashCounter = 0;
+
+/**
+ * Remove the given sessions' per-session state dirs (records, tombstones,
+ * memos) from the shared base *without unlinking live files*: each existing
+ * dir is renamed atomically into this worker's trash root.
+ *
+ * A plain recursive rmSync would unlink record files while other workers'
+ * write-time sweeps are mid-`readFileSync` on them, and Node aborts
+ * (uv_fs_close assertion) on a close-after-unlink on this fs. The rename
+ * leaves every inode in place, so a concurrent reader's open/close still
+ * succeeds; later opens of the original path fail ENOENT, which the store
+ * treats as an ordinary miss.
+ */
+export function purgeSessions(ids: readonly string[]): void {
+  mkdirSync(TRASH_ROOT, { recursive: true });
+  for (const sid of ids) {
+    const dir = sessionDir(sid);
+    if (!existsSync(dir)) continue;
+    renameSync(dir, join(TRASH_ROOT, `${basename(dir)}-${trashCounter}`));
+    trashCounter += 1;
+  }
+}
+
+/**
+ * Empty this worker's trash root. Safe in afterAll: nothing ever reads the
+ * trash (it sits outside the base), so unlinking it races no sweep. Stale
+ * trash roots from crashed runs belong to other pids and are left alone —
+ * deleting another worker's trash mid-run would be the cross-process write
+ * this rename scheme exists to avoid.
+ */
+export function flushPurgedSessions(): void {
+  rmSync(TRASH_ROOT, { recursive: true, force: true });
 }
 
 // ---------------------------------------------------------------------------

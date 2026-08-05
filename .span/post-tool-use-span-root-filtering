@@ -1,17 +1,21 @@
 packages/agent-hooks/src/claude/post-tool-use.ts#L101-L102 rk64:6131c861a7321434
 packages/agent-hooks/src/claude/post-tool-use.ts#L102-L103 rk64:6131c861a7321434
+packages/agent-hooks/src/claude/post-tool-use.ts#L135-L136 rk64:2b230556faaace06
+packages/agent-hooks/src/claude/post-tool-use.ts#L136-L137 rk64:2b230556faaace06
+packages/agent-hooks/src/claude/post-tool-use.ts#L145-L146 rk64:ae9a3c73bb6a2434
 packages/agent-hooks/src/claude/post-tool-use.ts#L172-L173 rk64:a4a52240fdf2da94
 packages/agent-hooks/src/claude/post-tool-use.ts#L189-L190 rk64:ff24fbb1fe52dda5
 packages/agent-hooks/src/claude/post-tool-use.ts#L202-L203 rk64:2b230556faaace06
-packages/agent-hooks/src/claude/post-tool-use.ts#L202-L203 rk64:2b230556faaace06
-packages/agent-hooks/src/claude/post-tool-use.ts#L202-L203 rk64:2b230556faaace06
+packages/agent-hooks/src/claude/post-tool-use.ts#L535-L536 rk64:2b230556faaace06
 packages/agent-hooks/src/codex/post-tool-use.ts#L284-L285 rk64:f8ea67e6e842812f
+packages/agent-hooks/src/codex/post-tool-use.ts#L299-L300 rk64:ae9a3c73bb6a2434
 packages/agent-hooks/src/codex/post-tool-use.ts#L306-L307 rk64:860118c6ec4a72b9
+packages/agent-hooks/src/codex/post-tool-use.ts#L342-L343 rk64:07e58cca4ae20237
+packages/agent-hooks/src/codex/post-tool-use.ts#L364-L365 rk64:07e58cca4ae20237
 packages/agent-hooks/src/codex/post-tool-use.ts#L373-L374 rk64:692ee3a51ecc25a9
 packages/agent-hooks/src/codex/post-tool-use.ts#L393-L394 rk64:6024f48de671f7ed
 packages/agent-hooks/src/codex/post-tool-use.ts#L419-L420 rk64:07e58cca4ae20237
-packages/agent-hooks/src/codex/post-tool-use.ts#L419-L420 rk64:07e58cca4ae20237
-packages/agent-hooks/src/codex/post-tool-use.ts#L419-L420 rk64:07e58cca4ae20237
+packages/agent-hooks/src/codex/post-tool-use.ts#L732-L733 rk64:07e58cca4ae20237
 packages/agent-hooks/src/common/span-surface.ts#L193-L196 rk64:c4c3d8f27377ba1c
 
 resolveTouchScope drops any touched file inside the resolved span root before the PostToolUse touch hook surfaces overlapping spans, so span documents themselves never trigger a span-surfacing block.

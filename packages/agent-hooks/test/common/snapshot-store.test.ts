@@ -31,8 +31,8 @@
 import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
-import { queueRoot, sessionDir } from '../../src/common/agent-hooks-common.js';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { queueRoot, SESSION_BASE_DIR, sessionDir } from '../../src/common/agent-hooks-common.js';
 import { DEFAULT_SNAPSHOT_BUDGETS, type SnapshotFile, type SnapshotRecord } from '../../src/common/snapshot-core.js';
 import {
   type ActivityEntry,
@@ -87,6 +87,22 @@ function newRepo(): { root: string; cleanup: () => void } {
   createdRepos.add(r);
   return r;
 }
+
+// A killed run (timeout, crash) never reaches afterEach, so its `session-store-*`
+// dirs — records pointing at temp repos the machine's /tmp sweeper later
+// deletes — would poison the next run: the store's write-time sweep visits
+// every record in the shared base and warns per gone repo, failing this file's
+// no-warns assertions. The prefix is this file's alone (memo-store and the
+// lifecycle fixtures use other id families), so purging it up front is scoped
+// and self-heals interrupted runs — the same beforeAll pattern the lifecycle
+// files use for their fixed ids.
+beforeAll(() => {
+  for (const name of readdirSync(SESSION_BASE_DIR, { withFileTypes: true })) {
+    if (name.isDirectory() && name.name.startsWith('session-store-')) {
+      rmSync(join(SESSION_BASE_DIR, name.name), { recursive: true, force: true });
+    }
+  }
+});
 
 afterEach(() => {
   for (const sid of createdSessions) {

@@ -1,8 +1,8 @@
 /**
- * Claude PostToolUse touch hook — thin SDK-bound entry point.
+ * Claude PostToolUse touch hook — heal + surface after a successful
+ * `Read`/`Edit`/`Write`, or a `Bash` call.
  *
- * Fires after a successful `Read`/`Edit`/`Write`, or a `Bash` call whose
- * `command` statically resolves to recognizable file+line-range idioms. The
+ * Fires after a successful `Read`/`Edit`/`Write`, or a `Bash` call. The
  * Claude-specific job is translating the structured `tool_input`
  * (`file_path`, `new_string`/`content`, `offset`/`limit`) and `tool_name` into
  * a harness-agnostic {@link TouchInput}, then handing off to the shared
@@ -12,6 +12,17 @@
  * spans overlapping the read's `offset`/`limit` window (whole-file when neither
  * is given) with positional statuses filtered out, and never mutates the tree.
  *
+ * A `Bash` call is snapshot-first: when the snapshot classifier decides a
+ * pre-walk record should exist for the command, the record's pre/post
+ * comparison is authoritative — exact post-state ranges for changed files,
+ * whole-file scopes for creates/deletes/renames, interleaved-edit resolution
+ * against the activity log, and the concurrency ambiguity table — and the
+ * static-parse path runs only as a co-parser for spans the snapshot did not
+ * cover (its paths are skipped when the comparison attributed or dropped
+ * them). When no record exists (the pre-walk failed open, or the classifier
+ * says the command is read-only or statically covered), the static path stays
+ * authoritative and byte-identical to Phase 1.
+ *
  * The block reaches the model loop via `hookSpecificOutput.additionalContext` and
  * the user-facing UI via `systemMessage`. Fail-open is load-bearing: an absent
  * CLI/`.span/`, timeout, or non-zero exit yields no signal and never blocks the
@@ -19,24 +30,50 @@
  * `hooks.json`); Codex's equivalent source value is divided to seconds at emit.
  */
 
+import { createHash } from 'node:crypto';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   type HookContext,
   type PostToolUseInput,
   postToolUseHook,
   postToolUseOutput
 } from '@goodfoot/claude-code-hooks';
-import { derivePath } from '../common/agent-hooks-common.js';
-import { bashResponseInterrupted, runBashTouches } from '../common/bash-touch.js';
-import { parseCommandDetailed } from '../common/parse-command.js';
-import { parseResponse, type ResponseParseInput } from '../common/parse-response.js';
-import { finishActivityEntry } from '../common/snapshot-store.js';
-import { createDiskMemoStore, type MemoFactory, resolveTouchScope } from '../common/span-surface.js';
+import { derivePath, queueRoot, sanitizeSessionId, sessionDir } from '../common/agent-hooks-common.js';
+import { parseCommandDetailed, type ResolvedSpan } from '../common/parse-command.js';
+import {
+  applyAmbiguityRules,
+  classifyCommandForSnapshot,
+  compareSnapshot,
+  type ReadFile,
+  type SiblingSnapshot,
+  type SnapshotBudgets,
+  type SnapshotFile,
+  type SnapshotRecord,
+  type StatFile
+} from '../common/snapshot-core.js';
+import {
+  type ActivityEntry,
+  activityEntriesCovering,
+  createSnapshotStore,
+  finishActivityEntry,
+  type SnapshotStore
+} from '../common/snapshot-store.js';
+import {
+  type CoreLogger,
+  createDiskMemoStore,
+  type MemoFactory,
+  type MemoStore,
+  resolveTouchScope
+} from '../common/span-surface.js';
 import {
   createDefaultTouchExecutors,
+  type ObservedWriteScope,
   runTouchHook,
   type TouchExecutors,
   type TouchInput
 } from '../common/touch-core.js';
+import { narrowCommand, resolveSnapshotBudgets, walkSnapshotFiles } from './snapshot.js';
 
 type ToolInput = Record<string, unknown>;
 
@@ -44,59 +81,6 @@ type ToolInput = Record<string, unknown>;
 function positiveIntField(toolInput: ToolInput, field: string): number | undefined {
   const raw = toolInput[field];
   return typeof raw === 'number' && Number.isInteger(raw) && raw > 0 ? raw : undefined;
-}
-
-/** The Bash `tool_response` fields a response-aware parse contributes, before `command`/`cwd` are attached at the call site. */
-type NormalizedToolResponse = Pick<
-  ResponseParseInput,
-  'stdout' | 'stderr' | 'exitStatus' | 'truncated' | 'interrupted'
->;
-
-/**
- * Normalize a Bash `tool_response` envelope into the shared parser's input
- * fields (notes/response-envelope-shapes.md). Tolerated shapes: a bare
- * string (legacy `tool_result`); the deployed CLI's object
- * `{stdout, stderr, rawOutputPath?, interrupted, timedOutAfterMs?, …}`; the
- * older `{output, success, exitCode, filePath}` object; and a
- * `[{type:'text',text}]` content-block array. Plan step 6's two regimes map
- * one-to-one: `rawOutputPath` set (the inline stdout is only a preview)
- * becomes `truncated: true` and the parser parses nothing; `interrupted` or
- * `timedOutAfterMs` (the command was cut off mid-run) becomes
- * `interrupted: true`, the complete-records regime — fully-terminated
- * records parse and the incomplete tail drops. Legacy `exitCode` becomes
- * `exitStatus` (metadata only; never a gate). Fail closed: any other shape
- * yields `null` and the branch degrades to today's command-only parsing.
- */
-function normalizeToolResponse(toolResponse: unknown): NormalizedToolResponse | null {
-  if (typeof toolResponse === 'string') return { stdout: toolResponse };
-  if (Array.isArray(toolResponse)) {
-    const text: string[] = [];
-    for (const block of toolResponse) {
-      if (block !== null && typeof block === 'object') {
-        const value = (block as { text?: unknown }).text;
-        if (typeof value === 'string') text.push(value);
-      }
-    }
-    return { stdout: text.join('') };
-  }
-  if (toolResponse !== null && typeof toolResponse === 'object') {
-    const record = toolResponse as Record<string, unknown>;
-    if (typeof record.stdout === 'string') {
-      return {
-        stdout: record.stdout,
-        stderr: typeof record.stderr === 'string' ? record.stderr : undefined,
-        truncated: record.rawOutputPath !== undefined,
-        interrupted: record.interrupted === true || record.timedOutAfterMs !== undefined
-      };
-    }
-    if (typeof record.output === 'string') {
-      return {
-        stdout: record.output,
-        exitStatus: typeof record.exitCode === 'number' ? record.exitCode : undefined
-      };
-    }
-  }
-  return null;
 }
 
 /**
@@ -129,6 +113,360 @@ function toTouchInput(
   return null;
 }
 
+/** sha256 hex of a file's bytes, or null when the read fails. */
+function hashOfFile(absPath: string): string | null {
+  try {
+    return createHash('sha256').update(readFileSync(absPath)).digest('hex');
+  } catch {
+    return null;
+  }
+}
+
+/** The empty exclude set — the static co-parser's default when no snapshot ran. */
+const EMPTY_PATHS: ReadonlySet<string> = new Set();
+
+/**
+ * The static-parse Bash path, extracted so the snapshot branch can co-run it:
+ * parse the command and translate every resolved span into a touch through the
+ * same shared core. `excludedPaths` (repo-relative) are skipped — paths the
+ * snapshot comparison already attributed or dropped must not be surfaced twice.
+ * With the empty set this is byte-identical to Phase 1's standalone Bash loop.
+ */
+async function runStaticParseTouches(
+  command: string,
+  cwd: string,
+  sessionId: string,
+  executors: TouchExecutors,
+  memo: MemoStore,
+  excludedPaths: ReadonlySet<string> = EMPTY_PATHS
+): Promise<string[]> {
+  const blocks: string[] = [];
+  const matches = parseCommandDetailed(command, { cwd });
+  for (const match of matches) {
+    if (match.status !== 'resolved') continue;
+    const span: ResolvedSpan = match.span;
+    const scope = resolveTouchScope(cwd, span.absolutePath);
+    if (!scope) continue;
+    if (excludedPaths.has(scope.repoRelPath)) continue;
+    let touch: TouchInput;
+    if (match.idiom === 'heredoc-write') {
+      // `>` overwrites: whole-file scope so deleted spans beyond the new
+      // EOF are surfaced. `>>` appends: narrow to the appended lines.
+      const written = span.redirect === '>' ? '' : (span.body ?? '');
+      touch = { kind: 'write', sessionId, cwd, filePath: span.absolutePath, written };
+    } else {
+      touch = {
+        kind: 'read',
+        sessionId,
+        cwd,
+        filePath: span.absolutePath,
+        offset: span.lineStart,
+        limit: span.lineEnd - span.lineStart + 1
+      };
+    }
+    const output = await runTouchHook(touch, executors, memo);
+    if (output.additionalContext) blocks.push(output.additionalContext);
+  }
+  return blocks;
+}
+
+/**
+ * The outcome of one snapshot-first Bash attribution: the comparison verdict
+ * plus the repo-relative paths the comparison's evidence covered. `excludedPaths`
+ * is the union of attributed, dropped (ambiguous / interleaved-tool / skipped)
+ * and rename-source paths — the static co-parser must skip exactly those.
+ */
+export interface SnapshotBashOutcome {
+  kind: 'no-record' | 'tombstoned' | 'done';
+  /** The snapshot touch's block; meaningful only on 'done'. */
+  additionalContext: string | null;
+  /** Attributed ∪ dropped ∪ skipped repo-relative paths. */
+  excludedPaths: Set<string>;
+}
+
+/** Injected stat over a repo-relative path: null when absent or unstat-able. */
+function statRelative(repoRoot: string): StatFile {
+  return (rel) => {
+    try {
+      const st = statSync(join(repoRoot, rel));
+      // The runtime's Stats lacks `mtimeNs`, so ns is derived from mtimeMs
+      // (truncated: BigInt refuses fractional values). The zero sub-ms part
+      // reads as a second-granularity clock to the core, which never trusts
+      // such a pair to prove non-change — it re-reads and hashes.
+      return { size: st.size, mtimeNs: BigInt(Math.trunc(st.mtimeMs)) * 1_000_000n };
+    } catch {
+      return null;
+    }
+  };
+}
+
+/** Injected byte read over a repo-relative path: null when absent or unreadable. */
+function readRelative(repoRoot: string): ReadFile {
+  return (rel) => {
+    try {
+      return readFileSync(join(repoRoot, rel));
+    } catch {
+      return null;
+    }
+  };
+}
+
+/** Parse a sibling's record file directly (find returns 'tombstoned' once consumed). */
+function readSiblingRecord(
+  sessionId: string,
+  toolUseId: string,
+  cache: Map<string, SnapshotRecord | null>
+): SnapshotRecord | null {
+  const key = `${sessionId}\t${toolUseId}`;
+  if (cache.has(key)) return cache.get(key) ?? null;
+  let record: SnapshotRecord | null = null;
+  try {
+    const raw = JSON.parse(
+      readFileSync(join(sessionDir(sessionId), 'snapshots', `${sanitizeSessionId(toolUseId)}.json`), 'utf8')
+    ) as unknown;
+    if (raw !== null && typeof raw === 'object' && (raw as SnapshotRecord).version === 1) {
+      record = raw as SnapshotRecord;
+    }
+  } catch {
+    record = null;
+  }
+  cache.set(key, record);
+  return record;
+}
+
+/**
+ * The ambiguity table's sibling set for one path: every repo record except
+ * mine, read directly from disk, viewed per path exactly as the core's
+ * {@link SiblingSnapshot} contract defines (pre/post null when the sibling's
+ * coverage excluded the path).
+ */
+function siblingsForPath(
+  mine: SnapshotRecord,
+  repoRoot: string,
+  path: string,
+  store: SnapshotStore,
+  cache: Map<string, SnapshotRecord | null>
+): SiblingSnapshot[] {
+  const out: SiblingSnapshot[] = [];
+  for (const entry of store.listRepoRecords(repoRoot)) {
+    if (entry.sessionId === mine.sessionId && entry.toolUseId === mine.toolUseId) continue;
+    const record = readSiblingRecord(entry.sessionId, entry.toolUseId, cache);
+    if (record === null) continue;
+    out.push({
+      sessionId: record.sessionId,
+      toolUseId: record.toolUseId,
+      createdAt: record.createdAt,
+      consumed: record.consumed,
+      consumedAt: record.consumedAt,
+      coverageGap: record.gaps.length > 0,
+      pre: record.files[path] ?? null,
+      post: record.post?.[path] ?? null
+    });
+  }
+  return out;
+}
+
+/**
+ * Direct scan of the activity log for entries still in flight (finishedAt
+ * null, startedAt before `now`, file mtime in the unfinished-entry TTL window)
+ * that cover the path — the consult reads only finished entries, so the
+ * unfinished ones must be scanned separately: their write may land at any
+ * moment, and the attribution that never fires is the attribution that never
+ * lies.
+ */
+function unfinishedEntryCovering(repoRoot: string, path: string, now: number, budgets: SnapshotBudgets): string | null {
+  const earliest = now - budgets.unfinishedEntryTtlMs;
+  let dir: string;
+  try {
+    dir = join(queueRoot(repoRoot), 'activity-log');
+  } catch {
+    return null;
+  }
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return null;
+  }
+  for (const name of names) {
+    if (!name.endsWith('.json')) continue;
+    const file = join(dir, name);
+    let mtimeMs: number;
+    try {
+      mtimeMs = statSync(file).mtimeMs;
+    } catch {
+      continue;
+    }
+    // Same mtime slack as the consult: an entry finished in the same integer
+    // millisecond as `now` reads 0..1 ms future — excluding it would silently
+    // reopen the interleaving window.
+    if (mtimeMs < earliest || mtimeMs > now + 1) continue;
+    let entry: ActivityEntry;
+    try {
+      entry = JSON.parse(readFileSync(file, 'utf8')) as ActivityEntry;
+    } catch {
+      continue;
+    }
+    if (entry.finishedAt !== null) continue;
+    if (typeof entry.startedAt !== 'number' || entry.startedAt >= now) continue;
+    if (entry.paths.some((p) => p.path === path)) return entry.toolUseId;
+  }
+  return null;
+}
+
+/**
+ * The snapshot-first Bash attribution, shared by PostToolUse and
+ * PostToolUseFailure (the failure policy compares whenever a record exists —
+ * `is_interrupt` gates nothing). Flow:
+ *
+ * 1. Find the record. A tombstone is a consumed duplicate — nothing to do. No
+ *    record means the pre-walk failed open — the caller falls back to the
+ *    static path (with a warning on the Post side).
+ * 2. Re-walk the repo exactly like the pre side (same classifier, same walk,
+ *    same budgets) and compare. The post walk is the same tier-1/tier-2 walk
+ *    so the comparison sees the same scope the pre record claimed.
+ * 3. Per attributed path, in order: the ambiguity table gates first (a
+ *    deterministic verdict per sibling — ambiguous paths drop whole with a
+ *    warn naming the reason and the conflicting call); then the unfinished
+ *    activity-entry scan (an in-flight edit may still write the path — drop
+ *    with an interleaved-tool note); then the four-outcome consult:
+ *    never-flag (finishedAt ≤ the path's per-file capturedAt — attribute, no
+ *    note), skip (the edit's pre/post hashes equal my pre/current — it is
+ *    already attributed by its own touch), bounded-double (else — attribute
+ *    with an absorbed-double note).
+ * 4. The consume is the single-winner gate: the O_EXCL tombstone means the
+ *    first consumer wins and a racing duplicate no-ops — the touch runs only
+ *    after a successful consume. The post map is fail-closed evidence: every
+ *    attributed path's post state — including ambiguous and skip-dropped
+ *    ones — is recorded so a later sibling's ambiguity read sees the window's
+ *    end state whatever the verdict here.
+ * 5. One multi-path touch across all attributed scopes: one heal pass on the
+ *    first scope's file, one repo-wide drift, per-scope surface computation.
+ *    Renames surface the OLD path (the span lives on the dead anchor); the
+ *    new path is excluded from the static co-parser along with every
+ *    attributed and dropped path.
+ */
+export async function snapshotBashBranch(
+  store: SnapshotStore,
+  sessionId: string,
+  toolUseId: string,
+  cwd: string,
+  command: string,
+  executors: TouchExecutors,
+  memo: MemoStore,
+  logger: CoreLogger,
+  budgets: SnapshotBudgets
+): Promise<SnapshotBashOutcome> {
+  const found = store.find(sessionId, toolUseId);
+  if (found === 'tombstoned') return { kind: 'tombstoned', additionalContext: null, excludedPaths: new Set() };
+  if (found === null) return { kind: 'no-record', additionalContext: null, excludedPaths: new Set() };
+
+  const repoRoot = found.repoRoot;
+  const now = Date.now();
+  const plan = classifyCommandForSnapshot(command, cwd);
+  const { files, gaps } = walkSnapshotFiles(repoRoot, plan.tier1Targets, budgets, now, logger);
+  const post = new Map<string, SnapshotFile>(Object.entries(files));
+  const compared = compareSnapshot({
+    record: found,
+    post,
+    postGaps: gaps,
+    budgets,
+    stat: statRelative(repoRoot),
+    read: readRelative(repoRoot),
+    now
+  });
+  for (const gap of compared.gaps) logger.info?.(`git-span snapshot compare: ${gap}`);
+
+  const postMap: Record<string, SnapshotFile> = {};
+  const excludedPaths = new Set<string>();
+  const scopes: ObservedWriteScope[] = [];
+  const siblingCache = new Map<string, SnapshotRecord | null>();
+
+  for (const [path, attribution] of compared.attributions) {
+    const postFile = post.get(path);
+    // Fail-closed evidence first: whatever the verdict below, the window's end
+    // state for this path is recorded on the consumed record.
+    if (postFile !== undefined) postMap[path] = postFile;
+
+    // 1. The ambiguity table gates first — an entangled path drops whole
+    // before any diff/range work.
+    const verdict = applyAmbiguityRules(found, siblingsForPath(found, repoRoot, path, store, siblingCache), path);
+    if (verdict.ambiguous) {
+      logger.warn(`git-span ambiguity: ${path} dropped (${verdict.reason})`);
+      excludedPaths.add(path);
+      continue;
+    }
+
+    // 2. An unfinished activity entry may still write the path — fail closed.
+    const inFlight = unfinishedEntryCovering(repoRoot, path, now, budgets);
+    if (inFlight !== null) {
+      logger.info?.(`git-span interleaved-tool: ${path} dropped (unfinished entry ${inFlight} in flight)`);
+      excludedPaths.add(path);
+      continue;
+    }
+
+    // 3. The four-outcome consult against finished entries active in the
+    // window (windowStart = now, so walk-tail entries that finished between
+    // the pre-read and the compare are still evaluated).
+    const consulted = activityEntriesCovering(repoRoot, path, now, now, budgets);
+    const capturedAt = found.files[path]?.capturedAt ?? found.createdAt;
+    const currentHash = postFile?.hash ?? null;
+    if (consulted.some((e) => e.finishedAt !== null && e.finishedAt <= capturedAt)) {
+      // never-flag — the entry fully ended before the path's per-file
+      // baseline: its change is baked into my pre and can never contaminate
+      // my post-diff. Attribute without a note.
+    } else if (
+      consulted.some((e) =>
+        e.paths.some(
+          (p) => p.path === path && p.preHash === (found.files[path]?.hash ?? null) && p.postHash === currentHash
+        )
+      )
+    ) {
+      // skip — the edit read my pre and its touch read my current state: its
+      // change is already attributed by the edit's own touch, never silently
+      // to me.
+      logger.info?.(`git-span covered-by-edit: ${path} skipped (equal baselines)`);
+      excludedPaths.add(path);
+      continue;
+    } else if (consulted.length > 0) {
+      // bounded-double — the edit's segment is absorbed, my residual is
+      // attributed; nothing is dropped.
+      logger.info?.(`git-span absorbed-double: ${path} attributed (interleaved edit absorbed)`);
+    }
+
+    // Attribute. Renames surface the old path — the span lives on the dead
+    // anchor, and the new path carries nothing.
+    if (attribution.kind === 'rename') {
+      scopes.push({ filePath: join(repoRoot, attribution.from), observed: { changed: [], wholeFile: true } });
+      excludedPaths.add(attribution.from);
+      excludedPaths.add(path);
+    } else {
+      const observed = attribution.kind === 'changed' ? attribution.observed : { changed: [], wholeFile: true };
+      scopes.push({ filePath: join(repoRoot, path), observed });
+      excludedPaths.add(path);
+    }
+  }
+
+  // Consume first: the tombstone is the single-winner gate. The loser of a
+  // duplicate-delivery race no-ops and never runs the touch.
+  const consumed = store.consume(sessionId, toolUseId, postMap);
+  if (consumed === null) return { kind: 'done', additionalContext: null, excludedPaths };
+
+  let additionalContext: string | null = null;
+  if (scopes.length > 0) {
+    const baseInput: TouchInput = {
+      kind: 'write',
+      sessionId,
+      cwd,
+      filePath: scopes[0]!.filePath,
+      written: ''
+    };
+    const output = await runTouchHook(baseInput, executors, memo, scopes);
+    additionalContext = output.additionalContext;
+  }
+  return { kind: 'done', additionalContext, excludedPaths };
+}
+
 export function createHandler(
   executors: TouchExecutors = createDefaultTouchExecutors(),
   memoFactory: MemoFactory = createDiskMemoStore
@@ -140,52 +478,53 @@ export function createHandler(
     const toolName = input.tool_name;
     const toolInput = (input.tool_input ?? {}) as ToolInput;
 
-    // Bash has no `file_path` field, so it gets its own branch: run the static
-    // command parser and hand the matches to the shared `runBashTouches`
-    // driver (plan §3 step 2), which owns the per-command verdict thread —
-    // post-state gates, join filtering, and the interrupted gate (plan §4) —
-    // and returns the merged blocks for the adapters' output builders. The
-    // tool_response is then normalized via `normalizeToolResponse` and merged
-    // in as a second evidence source (the response pass below). A
-    // command with no recognizable idiom yields no blocks and returns `null` —
-    // fail-open, same as the tool path below.
+    // Bash has no `file_path` field, so it gets its own branch: snapshot-first
+    // when the classifier decides a snapshot should exist — the comparison is
+    // authoritative, and the static parser co-runs only for spans the
+    // snapshot did not cover (its attributed/dropped paths are skipped).
+    // Without a record the static path stays authoritative, byte-identical to
+    // Phase 1. A command with no recognized idiom yields no blocks and returns
+    // `null` — fail-open, same as the tool path below.
     if (toolName === 'Bash') {
-      const command = typeof toolInput.command === 'string' ? toolInput.command : null;
+      const command = narrowCommand(input.tool_input);
       if (!command) return null;
-      // An interrupted command produces no touches, whatever its spans; the
-      // driver re-checks defensively.
-      if (bashResponseInterrupted(input.tool_response)) return null;
-      const matches = parseCommandDetailed(command, cwd);
-      const blocks = await runBashTouches(matches, sessionId, cwd, input.tool_response, executors, memo, (message) =>
-        ctx.logger.warn(message)
-      );
-      // The tool_response is a second evidence source: response-derivable
-      // commands (grep/ripgrep with numbered output, git diff/show/log -p,
-      // git blame -L) locate their read windows in the output, which the
-      // command text alone cannot. Normalize the envelope, merge its spans
-      // with the command-derived ones, and run each as a read touch; the
-      // memo dedupes duplicate surfaces across the two sources. An
-      // unrecognized envelope degrades to command-only parsing.
-      const response = normalizeToolResponse(input.tool_response);
-      if (response !== null) {
-        for (const span of parseResponse({ command, cwd, ...response })) {
-          const scope = resolveTouchScope(cwd, span.absolutePath);
-          if (!scope) continue;
-          const output = await runTouchHook(
-            {
-              kind: 'read',
-              sessionId,
-              cwd,
-              filePath: span.absolutePath,
-              offset: span.lineStart,
-              limit: span.lineEnd - span.lineStart + 1
-            },
-            executors,
-            memo
+      // The snapshot surface is keyed by (session_id, tool_use_id) — a post
+      // event without tool_use_id can never correlate a record, so the branch
+      // fails open to the static path (contract tests call this shape).
+      if (input.tool_use_id && classifyCommandForSnapshot(command, cwd).decision.kind === 'snapshot') {
+        const budgets = resolveSnapshotBudgets();
+        const store = createSnapshotStore(ctx.logger, budgets);
+        const outcome = await snapshotBashBranch(
+          store,
+          sessionId,
+          input.tool_use_id,
+          cwd,
+          command,
+          executors,
+          memo,
+          ctx.logger,
+          budgets
+        );
+        if (outcome.kind === 'tombstoned') return null;
+        if (outcome.kind === 'no-record') {
+          // The pre-walk failed open (or never ran) — the loss is visible,
+          // never silent, and the static path still runs.
+          ctx.logger.warn('git-span: snapshot decided but no record exists; falling back to the static path');
+        } else {
+          const blocks: string[] = [];
+          if (outcome.additionalContext) blocks.push(outcome.additionalContext);
+          blocks.push(
+            ...(await runStaticParseTouches(command, cwd, sessionId, executors, memo, outcome.excludedPaths))
           );
-          if (output.additionalContext) blocks.push(output.additionalContext);
+          if (blocks.length === 0) return null;
+          const combined = blocks.join('');
+          return postToolUseOutput({
+            hookSpecificOutput: { additionalContext: combined },
+            systemMessage: combined
+          });
         }
       }
+      const blocks = await runStaticParseTouches(command, cwd, sessionId, executors, memo);
       if (blocks.length === 0) return null;
       const combined = blocks.join('');
       return postToolUseOutput({
@@ -208,15 +547,14 @@ export function createHandler(
     const output = await runTouchHook(touch, executors, memo);
 
     // Activity-log stamp: at the end of the edit's own touch, stamp the
-    // path's postHash (the state its touch read) plus finishedAt, so an
-    // interleaved-edit check inside a Bash snapshot window can resolve this
-    // edit's boundary. Phase 1: the store is a `Not Implemented` stub and the
-    // stamp passes postHash: null (a null stamp can never resolve a boundary
-    // as clean) — fail open and continue the touch path.
+    // path's postHash (the on-disk state its touch read) plus finishedAt, so
+    // an interleaved-edit check inside a Bash snapshot window can resolve this
+    // edit's boundary. A failed read leaves postHash null — a null stamp can
+    // never resolve a boundary as clean. Fail open and continue the touch path.
     if (touch.kind === 'write') {
       try {
         finishActivityEntry(scope.repoRoot, sessionId, input.tool_use_id, [
-          { path: scope.repoRelPath, postHash: null }
+          { path: scope.repoRelPath, postHash: hashOfFile(absPath) }
         ]);
       } catch (err) {
         ctx.logger.warn('git-span activity-log stamp failed open', { err });

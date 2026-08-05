@@ -591,7 +591,11 @@ function classifySimple(text: string, argv: string[], currentDir: string, backgr
 export function classifyCommandForSnapshot(command: string, cwd: string): SnapshotPlan {
   const background = hasBackground(command);
   const { writes, masked } = extractHeredocs(command);
-  const simpleCommands = splitTopLevel(masked);
+  // The split reports completed lists plus a `malformed` verdict for a list
+  // bash rejects at parse time — nothing in a rejecting list (or after it)
+  // ever executes, so the surviving stages are exactly the writes that can
+  // happen.
+  const simpleCommands = splitTopLevel(masked).stages;
   let currentDir = cwd;
   let hasOpaque = false;
   let hasCovered = false;

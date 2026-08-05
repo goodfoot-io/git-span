@@ -28,7 +28,7 @@ import { execFileSync } from 'node:child_process';
 import { renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { Logger } from '@goodfoot/codex-hooks';
-import { describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createHandler as createPostToolUseHandler } from '../../src/codex/post-tool-use.js';
 import { createHandler as createSnapshotPreHook } from '../../src/codex/snapshot.js';
 import stopHook from '../../src/codex/stop.js';
@@ -43,14 +43,17 @@ import {
 import {
   addSpan,
   BASE_NOW,
+  CODEX_SESSION_IDS,
   createMemoryMemoStore,
   createTestRepo,
   driftRow,
+  flushPurgedSessions,
   gitAddCommit,
   makeExecutors,
   makeFile,
   makeRecord,
   porcelainRow,
+  purgeSessions,
   SPAN_A,
   SPAN_B,
   sha256Hex,
@@ -193,7 +196,30 @@ async function withRepo<T>(fn: (repo: TestRepo) => Promise<T>): Promise<T> {
 // Skipped acceptance checks
 // ---------------------------------------------------------------------------
 
-describe.skip('codex harness snapshot lifecycle (Phase 2 — skipped)', () => {
+describe('codex harness snapshot lifecycle (Phase 2)', () => {
+  // The store persists tombstones for `recordTtlMs` after consumption; a
+  // previously consumed (session, tool_use_id) would fail every call closed
+  // on a re-run. The fixture's ids are fixed and unique per test, so purge
+  // the codex file's own session dirs before the run (see the helpers'
+  // rationale). Only this file's ids: the claude file runs in a parallel
+  // fork over the same shared session base, and a union purge would delete
+  // its live records mid-test.
+  beforeAll(() => purgeSessions(CODEX_SESSION_IDS));
+  // The records/tombstones this run writes must not outlive it either: the
+  // core suite's write-time sweep walks every record in the shared session
+  // base and warns per repo whose temp dir is already gone, so a fixture
+  // record left behind (repo cleaned at test end, record persisting until
+  // the next run's beforeAll) fails the core file's no-warns assertions
+  // when the files run in parallel. Purge after every test — again scoped
+  // to this file's ids, mirroring snapshot-store.test.ts's afterEach
+  // cleanup convention. The purge *renames* the dirs out of the base rather
+  // than unlinking them: other workers' sweeps read shared-base record
+  // files, and a close-after-unlink crashes Node on this fs (see the
+  // helpers' rationale). The renamed dirs sit in a per-worker trash root
+  // outside the base and are emptied once, at the end of the file.
+  afterEach(() => purgeSessions(CODEX_SESSION_IDS));
+  afterAll(flushPurgedSessions);
+
   describe('A. PreToolUse — the write-only pre walk', () => {
     it('writes a pre-walk record carrying agent_id when present, correlated by (session_id, tool_use_id)', async () => {
       await withRepo(async (repo) => {
@@ -440,7 +466,9 @@ describe.skip('codex harness snapshot lifecycle (Phase 2 — skipped)', () => {
           );
           const block = toResult(raw);
           expect(block).toContain('## billing/checkout-request-flow');
-          expect(block).toContain('src/app.ts#L1-L5');
+          // The touch block renders anchors as `path #L1-L5` (canonical per
+          // advisor-core.test.ts).
+          expect(block).toContain('src/app.ts #L1-L5');
         });
       }
     );
@@ -475,12 +503,16 @@ describe.skip('codex harness snapshot lifecycle (Phase 2 — skipped)', () => {
         const block = toResult(raw);
         // The rename pairs as delete+create: the span lives on the old path.
         expect(block).toContain('## billing/checkout-request-flow');
-        expect(block).toContain('src/app.ts#L1-L5');
-        // The new path carries nothing — the CLI fails the path match and the
-        // executor fail-opens to an empty row set.
-        expect(() =>
-          execFileSync('git', ['span', 'list', '--porcelain', 'src/app2.ts'], { cwd: repo.root, encoding: 'utf8' })
-        ).toThrow();
+        expect(block).toContain('src/app.ts #L1-L5');
+        // The new path carries nothing — the CLI resolves the existing file
+        // path to zero spans and exits 0 with "No spans match the filters."
+        // (the path-mismatch exit 1 is only for paths absent from the tree),
+        // so the executor sees an empty row set.
+        const newPathList = execFileSync('git', ['span', 'list', '--porcelain', 'src/app2.ts'], {
+          cwd: repo.root,
+          encoding: 'utf8'
+        });
+        expect(newPathList).not.toContain(SPAN_A);
       });
     });
   });

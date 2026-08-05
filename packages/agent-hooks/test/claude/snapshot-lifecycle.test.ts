@@ -42,15 +42,21 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { renameSync, rmSync } from 'node:fs';
+import { renameSync, rmSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { Logger } from '@goodfoot/claude-code-hooks';
-import { describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createHandler as createPostToolUseHandler } from '../../src/claude/post-tool-use.js';
 import { createHandler as createFailureHandler } from '../../src/claude/post-tool-use-failure.js';
 import sessionEndHook from '../../src/claude/session-end.js';
 import { createHandler as createSnapshotPreHook } from '../../src/claude/snapshot.js';
-import { isDebt, parseDriftPorcelain, parsePorcelain } from '../../src/common/agent-hooks-common.js';
+import {
+  isDebt,
+  parseDriftPorcelain,
+  parsePorcelain,
+  queueRoot,
+  sanitizeSessionId
+} from '../../src/common/agent-hooks-common.js';
 import {
   applyAmbiguityRules,
   classifyCommandForSnapshot,
@@ -71,14 +77,17 @@ import {
 import {
   addSpan,
   BASE_NOW,
+  CLAUDE_SESSION_IDS,
   createMemoryMemoStore,
   createTestRepo,
   driftRow,
+  flushPurgedSessions,
   gitAddCommit,
   makeExecutors,
   makeFile,
   makeRecord,
   porcelainRow,
+  purgeSessions,
   SPAN_A,
   SPAN_B,
   sha256Hex,
@@ -114,10 +123,17 @@ const P10_FORMATTED = P10.replace('export const v3 = 3;', 'export const v3  = 3;
   'export const v4 = 4;',
   'export const v4 = 4; '
 );
-/** A failed formatter's partial write on P10: lines 1-3 rewritten, then death. */
-const P10_PARTIAL = P10.replace('export const v1 = 1;', 'export const v1  = 1;')
-  .replace('export const v2 = 2;', 'export const v2 = 2; ')
-  .replace('export const v3 = 3;', 'export const v3  = 3;');
+/**
+ * A failed formatter's partial write on P10: lines 1-3 rewritten with
+ * different values, then death. The mutation is semantic, not whitespace:
+ * the real CLI's `--fix` heals whitespace-only drift (re-anchoring and
+ * reporting RESOLVED_PENDING_COMMIT, which is never debt), so a whitespace
+ * partial write would surface nothing through the real pipeline; semantic
+ * change stays CHANGED debt and must surface.
+ */
+const P10_PARTIAL = P10.replace('export const v1 = 1;', 'export const v1 = 100;')
+  .replace('export const v2 = 2;', 'export const v2 = 20;')
+  .replace('export const v3 = 3;', 'export const v3 = 30;');
 /** P10 dirtied before a call runs. */
 const P10_DIRTY = P10.replace('export const v1 = 1;', 'export const v1  = 1;');
 const P30 = fileLines(30);
@@ -149,9 +165,12 @@ function noteCapturingLogger(): { logger: Logger; notes: string[] } {
 
 /** Read the touch block out of a hook result, or null when there is none. */
 function toResult(raw: unknown): string | null {
-  if (raw === null || typeof raw !== 'object') return null;
-  const hook = (raw as { hookSpecificOutput?: { additionalContext?: string | null } }).hookSpecificOutput;
-  return hook?.additionalContext ?? null;
+  if (raw === null || raw === undefined || typeof raw !== 'object') return null;
+  // The SDK nests the hook output under stdout: the result is
+  // { _type, stdout: { systemMessage?, hookSpecificOutput: { hookEventName,
+  // additionalContext } } }.
+  const stdout = (raw as { stdout?: { hookSpecificOutput?: { additionalContext?: string | null } } }).stdout;
+  return stdout?.hookSpecificOutput?.additionalContext ?? null;
 }
 
 function preInput(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -234,7 +253,30 @@ async function withRepo<T>(fn: (repo: TestRepo) => Promise<T>): Promise<T> {
 // Skipped acceptance checks
 // ---------------------------------------------------------------------------
 
-describe.skip('claude harness snapshot lifecycle (Phase 2 — skipped)', () => {
+describe('claude harness snapshot lifecycle (Phase 2)', () => {
+  // The store persists tombstones for `recordTtlMs` after consumption; a
+  // previously consumed (session, tool_use_id) would fail every call closed
+  // on a re-run. The fixture's ids are fixed and unique per test, so purge
+  // the claude file's own session dirs before the run (see the helpers'
+  // rationale). Only this file's ids: the codex file runs in a parallel fork
+  // over the same shared session base, and a union purge would delete its
+  // live records mid-test.
+  beforeAll(() => purgeSessions(CLAUDE_SESSION_IDS));
+  // The records/tombstones this run writes must not outlive it either: the
+  // core suite's write-time sweep walks every record in the shared session
+  // base and warns per repo whose temp dir is already gone, so a fixture
+  // record left behind (repo cleaned at test end, record persisting until
+  // the next run's beforeAll) fails the core file's no-warns assertions
+  // when the files run in parallel. Purge after every test — again scoped
+  // to this file's ids, mirroring snapshot-store.test.ts's afterEach
+  // cleanup convention. The purge *renames* the dirs out of the base rather
+  // than unlinking them: other workers' sweeps read shared-base record
+  // files, and a close-after-unlink crashes Node on this fs (see the
+  // helpers' rationale). The renamed dirs sit in a per-worker trash root
+  // outside the base and are emptied once, at the end of the file.
+  afterEach(() => purgeSessions(CLAUDE_SESSION_IDS));
+  afterAll(flushPurgedSessions);
+
   describe('A. PreToolUse — the write-only pre walk', () => {
     it('writes a pre-walk record for an opaque command, correlated by (session_id, tool_use_id)', async () => {
       await withRepo(async (repo) => {
@@ -802,7 +844,10 @@ describe.skip('claude harness snapshot lifecycle (Phase 2 — skipped)', () => {
           // The deletion is invisible to static parsing (rm has no read idiom);
           // only the snapshot comparison sees it.
           expect(block).toContain('## billing/checkout-request-flow');
-          expect(block).toContain('src/app.ts#L1-L5');
+          // The touch block renders anchors as `path #L1-L5` (canonical per
+          // advisor-core.test.ts); the span may move past the dead anchor, so
+          // only the space form is asserted.
+          expect(block).toContain('src/app.ts #L1-L5');
         });
       }
     );
@@ -830,12 +875,16 @@ describe.skip('claude harness snapshot lifecycle (Phase 2 — skipped)', () => {
         // The rename pairs as delete+create: the span lives on the old path,
         // and the dead anchor is the debt a human reconciles.
         expect(block).toContain('## billing/checkout-request-flow');
-        expect(block).toContain('src/app.ts#L1-L5');
-        // The new path carries nothing — the CLI fails the path match and the
-        // executor fail-opens to an empty row set.
-        expect(() =>
-          execFileSync('git', ['span', 'list', '--porcelain', 'src/app2.ts'], { cwd: repo.root, encoding: 'utf8' })
-        ).toThrow();
+        expect(block).toContain('src/app.ts #L1-L5');
+        // The new path carries nothing — the CLI resolves the existing file
+        // path to zero spans and exits 0 with "No spans match the filters."
+        // (the path-mismatch exit 1 is only for paths absent from the tree),
+        // so the executor sees an empty row set.
+        const newPathList = execFileSync('git', ['span', 'list', '--porcelain', 'src/app2.ts'], {
+          cwd: repo.root,
+          encoding: 'utf8'
+        });
+        expect(newPathList).not.toContain(SPAN_A);
       });
     });
   });
@@ -881,12 +930,19 @@ describe.skip('claude harness snapshot lifecycle (Phase 2 — skipped)', () => {
         const now = Date.now();
         const logger = new Logger();
         const store = createSnapshotStore(logger);
+        // The stale record is TTL-minus-margin relative to real now: every
+        // store.write runs the TTL sweep first, so a record already past TTL
+        // at write time would be cleaned by the write itself and never reach
+        // the explicit sweep below. The margin keeps it in-TTL at write; the
+        // injected future clock then expires it (mirrors snapshot-store.test.ts).
+        const CLOCK_MARGIN_MS = 60_000;
+        const staleCreatedAt = now - DEFAULT_SNAPSHOT_BUDGETS.recordTtlMs + CLOCK_MARGIN_MS;
         store.write(
           makeRecord({
             sessionId: 'sess-lifecycle-ttl-old',
             toolUseId: 'tu-ttl-old',
             repoRoot: repo.root,
-            createdAt: now - DEFAULT_SNAPSHOT_BUDGETS.recordTtlMs - 1000,
+            createdAt: staleCreatedAt,
             files: { 'src/app.ts': makeFile() }
           })
         );
@@ -899,7 +955,8 @@ describe.skip('claude harness snapshot lifecycle (Phase 2 — skipped)', () => {
             files: { 'src/app.ts': makeFile() }
           })
         );
-        expect(store.sweep(now).records).toBe(1);
+        const sweepNow = staleCreatedAt + DEFAULT_SNAPSHOT_BUDGETS.recordTtlMs + 1;
+        expect(store.sweep(sweepNow).records).toBe(1);
         expect(store.find('sess-lifecycle-ttl-old', 'tu-ttl-old')).toBeNull();
         expect(store.find('sess-lifecycle-ttl-live', 'tu-ttl-live')).not.toBeNull();
       });
@@ -910,6 +967,18 @@ describe.skip('claude harness snapshot lifecycle (Phase 2 — skipped)', () => {
         const now = Date.now();
         const logger = new Logger();
         const store = createSnapshotStore(logger);
+        // pruneStaleActivity only visits repos named by readable records — a
+        // repo with no records is invisible to the activity prune, so anchor
+        // this repo with a live record before the sweep.
+        store.write(
+          makeRecord({
+            sessionId: 'sess-lifecycle-ttl-edit',
+            toolUseId: 'tu-edit-anchor',
+            repoRoot: repo.root,
+            createdAt: now,
+            files: {}
+          })
+        );
         appendActivityEntry(repo.root, {
           sessionId: 'sess-lifecycle-ttl-edit',
           toolUseId: 'tu-edit-stale',
@@ -918,6 +987,16 @@ describe.skip('claude harness snapshot lifecycle (Phase 2 — skipped)', () => {
           finishedAt: null,
           paths: [{ path: 'src/app.ts', preHash: 'pre-h', postHash: null }]
         });
+        // The store's prune is entry-file-mtime-based: a just-appended entry
+        // reads as fresh, so age the file past the unfinished-entry TTL
+        // (utimesSync takes seconds).
+        const stale = join(
+          queueRoot(repo.root),
+          'activity-log',
+          `${sanitizeSessionId('sess-lifecycle-ttl-edit')}__${sanitizeSessionId('tu-edit-stale')}.json`
+        );
+        const oldSeconds = (now - DEFAULT_SNAPSHOT_BUDGETS.unfinishedEntryTtlMs - 60_000) / 1000;
+        utimesSync(stale, oldSeconds, oldSeconds);
         expect(store.sweep(now)).toEqual({ records: 0, tombstones: 0, activityEntries: 1, indexEntries: 0 });
       });
     });
@@ -1116,7 +1195,17 @@ describe.skip('claude harness snapshot lifecycle (Phase 2 — skipped)', () => {
           paths: [{ path: 'src/app.ts', preHash: sha256Hex('v1'), postHash: sha256Hex('v2') }]
         };
         appendActivityEntry(repo.root, entry);
-        const consulted = activityEntriesCovering(repo.root, 'src/app.ts', now - 2500, now, DEFAULT_SNAPSHOT_BUDGETS);
+        // The consult's `now` must be the consult time, not the fixture's
+        // earlier `now`: the entry file's mtime is (append time, now+ε), and
+        // a stale now would put that mtime past the `now + 1` window top and
+        // drop the just-written entry as future-clock.
+        const consulted = activityEntriesCovering(
+          repo.root,
+          'src/app.ts',
+          now - 2500,
+          Date.now(),
+          DEFAULT_SNAPSHOT_BUDGETS
+        );
         expect(consulted).toEqual([entry]);
       });
     });
@@ -1212,9 +1301,14 @@ describe.skip('claude harness snapshot lifecycle (Phase 2 — skipped)', () => {
         // The consult's windowStart precedes the pre-read (now-2500 vs
         // capturedAt now-2000): the entry's mtime is in-window and its
         // finishedAt (now-3000) precedes the window start, so the consult
-        // returns it — and the stamp comparison then never-flags it.
+        // returns it — and the stamp comparison then never-flags it. The
+        // `now` param is Date.now() at consult time: the entry file was just
+        // appended (mtime now+ε), and a stale now would drop it as future
+        // clock past the window top.
         afterAppend: (repoRoot) => {
-          consulted.push(activityEntriesCovering(repoRoot, 'src/app.ts', now - 2500, now, DEFAULT_SNAPSHOT_BUDGETS));
+          consulted.push(
+            activityEntriesCovering(repoRoot, 'src/app.ts', now - 2500, Date.now(), DEFAULT_SNAPSHOT_BUDGETS)
+          );
         }
       });
       expect(consulted).toEqual([[entry]]);
@@ -1371,7 +1465,16 @@ describe.skip('claude harness snapshot lifecycle (Phase 2 — skipped)', () => {
         v1,
         v2,
         entry,
-        afterAppend: (_repoRoot) => {
+        afterAppend: (repoRoot) => {
+          // Age the just-appended entry file past the unfinished-entry TTL —
+          // the prune is file-mtime-based (utimesSync takes seconds).
+          const stale = join(
+            queueRoot(repoRoot),
+            'activity-log',
+            `${sanitizeSessionId('sess-interleave-ttlprune')}__${sanitizeSessionId('tu-edit-ttlprune')}.json`
+          );
+          const oldSeconds = (now - DEFAULT_SNAPSHOT_BUDGETS.unfinishedEntryTtlMs - 60_000) / 1000;
+          utimesSync(stale, oldSeconds, oldSeconds);
           pruned.push(createSnapshotStore(new Logger()).sweep(now).activityEntries);
         }
       });

@@ -9,25 +9,60 @@
  * an interrupted command that cannot confirm its own window end is handled by
  * the concurrency rules, not by trusting the interrupt flag. A failure event
  * with no record discards with a `warn` — the loss is never silent.
- * Phase 1: thin handler — find the record via the `Not Implemented` store
- * stub, which fails open to that warn; Phase 3 fills the comparison.
+ *
+ * The comparison is the shared {@link snapshotBashBranch} from the
+ * PostToolUse adapter — no classifier gate (the failure policy compares
+ * whenever a record exists, whatever the command), no static-parse co-run (a
+ * failed command's static idioms are not reliable evidence), and the
+ * consumption rules are identical: a mutated-nothing failure still closes the
+ * record window, and a duplicate delivery finds the tombstone and no-ops.
+ * Fail-open is load-bearing: the failure hook must always succeed so the
+ * harness's own error handling is never compounded.
  */
 
-import { type HookContext, type PostToolUseFailureInput, postToolUseFailureHook } from '@goodfoot/claude-code-hooks';
+import {
+  type HookContext,
+  type PostToolUseFailureInput,
+  postToolUseFailureHook,
+  postToolUseFailureOutput
+} from '@goodfoot/claude-code-hooks';
 import { createSnapshotStore, type SnapshotStore } from '../common/snapshot-store.js';
-import type { CoreLogger } from '../common/span-surface.js';
+import { type CoreLogger, createDiskMemoStore, type MemoFactory } from '../common/span-surface.js';
+import { createDefaultTouchExecutors, type TouchExecutors } from '../common/touch-core.js';
+import { snapshotBashBranch } from './post-tool-use.js';
+import { resolveSnapshotBudgets } from './snapshot.js';
 
-export function createHandler(storeFactory: (logger: CoreLogger) => SnapshotStore = createSnapshotStore) {
+/** Narrow a failed `Bash` tool_input to its `command` string. */
+function narrowCommand(toolInput: unknown): string | null {
+  if (toolInput !== null && typeof toolInput === 'object' && 'command' in toolInput) {
+    const command = (toolInput as { command: unknown }).command;
+    if (typeof command === 'string' && command.length > 0) return command;
+  }
+  return null;
+}
+
+export function createHandler(
+  executors: TouchExecutors = createDefaultTouchExecutors(),
+  memoFactory: MemoFactory = createDiskMemoStore,
+  storeFactory: (logger: CoreLogger) => SnapshotStore = (logger) =>
+    createSnapshotStore(logger, resolveSnapshotBudgets())
+) {
   return async (input: PostToolUseFailureInput, ctx: HookContext) => {
     try {
-      const store = storeFactory(ctx.logger);
-      const found = store.find(input.session_id, input.tool_use_id);
-      if (found === 'tombstoned') {
-        // Already consumed (a duplicate delivery, or a failure-path replay) —
-        // nothing to do.
-        return null;
-      }
-      if (found === null) {
+      const command = narrowCommand(input.tool_input);
+      if (command === null) return null;
+      const outcome = await snapshotBashBranch(
+        storeFactory(ctx.logger),
+        input.session_id,
+        input.tool_use_id,
+        input.cwd ?? '',
+        command,
+        executors,
+        memoFactory(ctx.logger),
+        ctx.logger,
+        resolveSnapshotBudgets()
+      );
+      if (outcome.kind === 'no-record') {
         // A failure with no record discards with a warn — the loss is never
         // silent.
         ctx.logger.warn('git-span: failed Bash call has no snapshot record; discarding', {
@@ -35,12 +70,17 @@ export function createHandler(storeFactory: (logger: CoreLogger) => SnapshotStor
         });
         return null;
       }
-      // Phase 3: run the same comparison as PostToolUse and attribute what the
-      // diff shows — a failed command that mutated nothing yields no
-      // candidates, while partial mutations from a failed-but-not-interrupted
-      // command are never silently lost. is_interrupt is not a mutation report
-      // and gates nothing.
-      return null;
+      if (outcome.kind === 'tombstoned') {
+        // Already consumed (a duplicate delivery, or a failure-path replay) —
+        // nothing to do.
+        return null;
+      }
+      // The comparison found no mutation worth surfacing — the record window
+      // is still closed by the consume inside the branch.
+      if (outcome.additionalContext === null) return null;
+      return postToolUseFailureOutput({
+        hookSpecificOutput: { additionalContext: outcome.additionalContext }
+      });
     } catch (err) {
       // Fail open: never let the failure handler abort the harness — the
       // failure hook must always succeed so the harness's own error handling
