@@ -13,7 +13,7 @@
  * substitutions with no static range), plain `echo`/`printf` redirects (rare
  * and semantically ambiguous in the corpus).
  */
-import { resolve as resolvePath } from 'node:path';
+import { isAbsolute, resolve as resolvePath } from 'node:path';
 import { countFileLines, countGitBlobLines } from './command-resolve.js';
 import {
   argvOf,
@@ -24,6 +24,7 @@ import {
   stripRedirects,
   stripWrappers
 } from './shell-split.js';
+import { DEFAULT_PATH_ALLOWLIST, expandVariables } from './variable-expand.js';
 
 export interface ResolvedSpan {
   lineStart: number;
@@ -109,6 +110,8 @@ interface ExpandedStage {
   inPipeline: boolean;
   /** The emission's `cd` frame: +1 inside a subshell interior, discarded at the close. */
   dirFrame: number;
+  /** The script variable table as of this stage (plan §7): the executed non-pipe assignments seen so far, in order. */
+  assignments: ReadonlyMap<string, string>;
 }
 
 interface LoopFrame {
@@ -964,7 +967,8 @@ class ExecutionWalker {
         precededBy: member.precededBy,
         exec,
         inPipeline,
-        dirFrame: this.dirFrame
+        dirFrame: this.dirFrame,
+        assignments: new Map(this.assignments)
       });
     }
     return status;
@@ -1067,6 +1071,15 @@ class ExecutionWalker {
       }
     }
     if (stripped !== null && stripped[0] === 'set') this.applySetFlags(stripped.slice(1));
+    // Table lifecycle (plan §7): an executed non-pipe `unset NAME` deletes the
+    // entry, so `X=/a; unset X; cat $X/f` stays unresolved instead of
+    // resurrecting the stale value. `export NAME` without a value is a no-op
+    // for the table (bash keeps the value, just marks it exported).
+    if (stripped !== null && stripped[0] === 'unset') {
+      for (const w of stripped.slice(1)) {
+        if (!w.startsWith('-')) this.assignments.delete(w);
+      }
+    }
   }
 
   private applySetFlags(args: string[]): void {
@@ -1937,6 +1950,12 @@ const LINE_SELECTORS = [matchSed, matchHead, matchTail];
 
 export function parseCommandDetailed(command: string, opts: ParseOptions = {}): SpanMatch[] {
   const cwd = opts.cwd ?? process.cwd();
+  // Plan §7: the parser defaults `env` to the hook process env, gated by the
+  // allowlist — only `DEFAULT_PATH_ALLOWLIST` names may resolve from it. An
+  // explicitly injected env (tests, adapters) is consulted wholesale.
+  const allowlist = opts.allowlist ?? DEFAULT_PATH_ALLOWLIST;
+  const env: Record<string, string | undefined> =
+    opts.env ?? Object.fromEntries(allowlist.map((n) => [n, process.env[n]]));
   const { writes: heredocWrites, masked } = extractHeredocWrites(command);
   const { stages: simpleCommands, malformed } = splitTopLevel(masked);
 
@@ -1970,15 +1989,43 @@ export function parseCommandDetailed(command: string, opts: ParseOptions = {}): 
     return gitLineCache.get(key) ?? null;
   };
 
-  // `cd` frames: the walk assigns each stage the subshell frame it ran in; a
-  // subshell's `cd` re-bases within its fresh frame, discarded at the close.
-  const dirFrames: string[] = [cwd];
+  // `cd` frames (plan §6): the walk assigns each stage the subshell frame it
+  // ran in; a subshell's `cd` re-bases within its fresh frame, discarded at
+  // the close. Each frame tracks the composed effective directory, its
+  // certainty (an executed or may-have-run `cd` with an unresolvable target
+  // poisons it — relative resolution fails closed), and the pre-`cd` path
+  // (`cd -`'s OLDPWD).
+  interface DirFrame {
+    dir: string;
+    certain: boolean;
+    prev: string | undefined;
+  }
+  const dirFrames: DirFrame[] = [{ dir: cwd, certain: true, prev: undefined }];
+
+  /** The parts of a frame the resolution paths need (no OLDPWD). */
+  interface Frame {
+    dir: string;
+    certain: boolean;
+  }
+
+  /**
+   * The effective git repo dir for a candidate (plan §6): an absolute `-C`
+   * target is self-contained; a relative one composes with the tracked
+   * directory; no `-C` uses the tracked directory itself. Undefined when the
+   * frame is uncertain — the repo location is unknown, fail closed.
+   */
+  const gitDirOf = (c: { dirOverride?: string }, frame: Frame): string | undefined => {
+    if (c.dirOverride === undefined) return frame.certain ? frame.dir : undefined;
+    if (isAbsolute(c.dirOverride)) return c.dirOverride;
+    return frame.certain ? resolvePath(frame.dir, c.dirOverride) : undefined;
+  };
 
   /** The running window of the current pipeline group (plan §3). */
   interface WindowState {
     idiom: Idiom;
     fileArg: string;
     dir: string;
+    certain: boolean;
     dirOverride?: string;
     resolverKind: 'fs' | { kind: 'git'; rev: string };
     lo: number;
@@ -2017,29 +2064,38 @@ export function parseCommandDetailed(command: string, opts: ParseOptions = {}): 
         resolverKind: w.resolverKind,
         dirOverride: w.dirOverride
       },
-      w.dir
+      { dir: w.dir, certain: w.certain }
     );
   };
 
   /**
-   * Open a window over a narrowable source. An unresolvable source emits an
-   * `unresolved` entry and no window — downstream stdin selectors consume
-   * nothing (plan §3: unresolvable source ⇒ `unresolved` entry, no touch).
+   * Open a window over a narrowable source. An unresolvable source — an
+   * unexpanded path, an uncertain tracked directory, or an unresolvable
+   * `git -C` target (plan §6) — emits an `unresolved` entry and no window:
+   * downstream stdin selectors consume nothing (plan §3).
    */
-  const initWindow = (src: NarrowableSource, dir: string) => {
+  const initWindow = (src: NarrowableSource, frame: Frame) => {
+    if (
+      gitDirOf(src, frame) === undefined ||
+      (!frame.certain && src.resolverKind === 'fs' && !isAbsolute(src.fileArg))
+    ) {
+      emitCandidate(sourceCandidate(src), frame); // the gate reports the unresolved entry
+      return;
+    }
     const total = (
       src.resolverKind === 'fs'
-        ? cachedFsTotalLines(resolvePath(dir, src.fileArg))
-        : cachedGitTotalLines(src.dirOverride ?? dir, src.resolverKind.rev, src.fileArg)
+        ? cachedFsTotalLines(resolvePath(frame.dir, src.fileArg))
+        : cachedGitTotalLines(gitDirOf(src, frame)!, src.resolverKind.rev, src.fileArg)
     )();
     if (total === null) {
-      emitCandidate(sourceCandidate(src), dir);
+      emitCandidate(sourceCandidate(src), frame);
       return;
     }
     window = {
       idiom: src.idiom,
       fileArg: src.fileArg,
-      dir,
+      dir: frame.dir,
+      certain: frame.certain,
       dirOverride: src.dirOverride,
       resolverKind: src.resolverKind,
       lo: 1,
@@ -2103,13 +2159,13 @@ export function parseCommandDetailed(command: string, opts: ParseOptions = {}): 
           resolverKind: w.resolverKind,
           dirOverride: w.dirOverride
         },
-        w.dir
+        { dir: w.dir, certain: w.certain }
       );
     }
     if (!emitted) emitWindowTouch(w); // every range dropped — the pre-transform window survives
   };
 
-  const emitCandidate = (c: RawCandidate, dirForResolution: string) => {
+  const emitCandidate = (c: RawCandidate, frame: Frame) => {
     if (looksUnresolvable(c.fileArg)) {
       results.push({
         status: 'unresolved',
@@ -2119,11 +2175,36 @@ export function parseCommandDetailed(command: string, opts: ParseOptions = {}): 
       });
       return;
     }
-    const absolutePath = resolvePath(dirForResolution, c.fileArg);
+    // Plan §6 certainty: a relative path against an uncertain directory, or a
+    // git candidate whose repo frame cannot be composed, is unresolvable —
+    // never a guessed touch. Absolute paths are unaffected.
+    if (c.resolverKind === 'fs') {
+      if (!frame.certain && !isAbsolute(c.fileArg)) {
+        results.push({
+          status: 'unresolved',
+          idiom: c.idiom,
+          fileArg: c.fileArg,
+          reason: 'the working directory is uncertain — the relative path cannot be resolved'
+        });
+        return;
+      }
+    } else if (gitDirOf(c, frame) === undefined) {
+      results.push({
+        status: 'unresolved',
+        idiom: c.idiom,
+        fileArg: c.fileArg,
+        reason: 'the git -C target cannot be resolved against the tracked directory'
+      });
+      return;
+    }
+    // A git candidate's path resolves inside its repo dir (`-C` target or the
+    // tracked directory), not the process dir — plan §6.
+    const resolutionDir = c.resolverKind === 'fs' ? frame.dir : gitDirOf(c, frame)!;
+    const absolutePath = resolvePath(resolutionDir, c.fileArg);
     const totalLines =
       c.resolverKind === 'fs'
         ? cachedFsTotalLines(absolutePath)
-        : cachedGitTotalLines(c.dirOverride ?? dirForResolution, c.resolverKind.rev, c.fileArg);
+        : cachedGitTotalLines(resolutionDir, c.resolverKind.rev, c.fileArg);
     const range = resolveSpec(c.spec, totalLines);
     if (range === null) {
       results.push({
@@ -2144,8 +2225,12 @@ export function parseCommandDetailed(command: string, opts: ParseOptions = {}): 
   for (let i = 0; i < expanded.length; i++) {
     const item = expanded[i];
     while (dirFrames.length > item.dirFrame + 1) dirFrames.pop();
-    while (dirFrames.length < item.dirFrame + 1) dirFrames.push(dirFrames[dirFrames.length - 1]);
-    const currentDir = dirFrames[dirFrames.length - 1];
+    while (dirFrames.length < item.dirFrame + 1) dirFrames.push({ ...dirFrames[dirFrames.length - 1] });
+    const frame = dirFrames[dirFrames.length - 1];
+
+    // `$PWD` resolves to the tracked directory, not the stale hook env (plan
+    // §6) — the per-stage env overrides it with the composed frame.
+    const stageEnv = { ...env, PWD: frame.dir };
 
     const pipePrecedes = item.precededBy === 'pipe';
     const pipeFollows = expanded[i + 1] !== undefined && expanded[i + 1].precededBy === 'pipe';
@@ -2156,6 +2241,50 @@ export function parseCommandDetailed(command: string, opts: ParseOptions = {}): 
     if (!pipePrecedes && window !== null) {
       emitWindowTouch(window);
       window = null;
+    }
+
+    // `cd` bookkeeping (plan §6) runs before the exec gate: a may-have-run
+    // (`'unknown'`) cd poisons certainty even though its own stage emits
+    // nothing, and a skipped (`'no'`) cd leaves the dir unchanged.
+    const cdArgv = stripForEmission(stripRedirects(argvOf(item.text) ?? []));
+    if (cdArgv[0] === 'cd' && !item.inPipeline) {
+      if (item.exec === 'yes') {
+        // The target expands like any other word — `cd "$WORKSPACE_PATH"`
+        // finally works (plan §7). Bare `cd` is `$HOME` via the same
+        // expansion machinery.
+        const expandedArgv = stripForEmission(
+          stripRedirects(argvOf(expandVariables(item.text, item.assignments, stageEnv)) ?? [])
+        );
+        const target = expandedArgv[1];
+        if (target === undefined) {
+          const home = expandVariables('$HOME', item.assignments, stageEnv);
+          if (looksUnresolvable(home)) frame.certain = false;
+          else {
+            frame.prev = frame.dir;
+            frame.dir = resolvePath(frame.dir, home);
+            frame.certain = true;
+          }
+        } else if (target === '-') {
+          // `cd -` is bash's OLDPWD — the previous tracked path. With no
+          // previous path the cd fails and the shell stays put.
+          if (frame.prev !== undefined) {
+            const old = frame.dir;
+            frame.dir = frame.prev;
+            frame.prev = old;
+          }
+        } else if (looksUnresolvable(target)) {
+          // Variable/glob target: bash either moved to an unknown dir or
+          // failed and stayed — both live, so certainty is poisoned.
+          frame.certain = false;
+        } else {
+          frame.prev = frame.dir;
+          frame.dir = resolvePath(frame.dir, target);
+          frame.certain = true;
+        }
+      } else if (item.exec === 'unknown') {
+        frame.certain = false;
+      }
+      continue; // a cd never matches a source/consumer idiom
     }
 
     if (item.exec !== 'yes') {
@@ -2180,7 +2309,16 @@ export function parseCommandDetailed(command: string, opts: ParseOptions = {}): 
         });
         continue;
       }
-      const absolutePath = resolvePath(currentDir, w.target);
+      if (!frame.certain && !isAbsolute(w.target)) {
+        results.push({
+          status: 'unresolved',
+          idiom: 'heredoc-write',
+          fileArg: w.target,
+          reason: 'the working directory is uncertain — the relative path cannot be resolved'
+        });
+        continue;
+      }
+      const absolutePath = resolvePath(frame.dir, w.target);
       const bodyLines = w.body.length === 0 ? 0 : w.body.split('\n').length;
       if (bodyLines === 0) {
         // `cat > f <<'EOF'` with an empty body truncates the file to empty — a
@@ -2214,27 +2352,18 @@ export function parseCommandDetailed(command: string, opts: ParseOptions = {}): 
       continue;
     }
 
-    const rawArgv = argvOf(item.text) ?? [];
-    // Dispatch argv: redirects first (the read-side recovery, §4), then the
-    // transparent wrappers (§5), then the emission-side `!`/`command`/`exec`
-    // strip — so `command -p sed …` still reaches `sed`.
+    // Dispatch argv (plan §7): the stage's raw text is expanded before
+    // tokenizing — a resolved `cat "$WORKSPACE_PATH/f"` narrows through a
+    // pipeline exactly like `cat f`. Redirects are stripped first (the
+    // read-side recovery, §4), then the transparent wrappers (§5), then the
+    // emission-side `!`/`command`/`exec` strip — so `command -p sed …` still
+    // reaches `sed`.
+    const rawArgv = argvOf(expandVariables(item.text, item.assignments, stageEnv)) ?? [];
     const stripped = stripForEmission(stripWrappers(stripRedirects(rawArgv)));
     if (stripped.length === 0) {
       if (window !== null) {
         emitWindowTouch(window);
         window = null;
-      }
-      continue;
-    }
-
-    // A `cd` only re-bases when it executed and is not in pipe position. The
-    // check keeps the wrapper-stripping out of it — `env A=1 cd X` runs cd as
-    // a child and must not re-base.
-    const cdArgv = stripForEmission(stripRedirects(rawArgv));
-    if (cdArgv[0] === 'cd' && !item.inPipeline) {
-      const target = cdArgv[1];
-      if (target !== undefined && target !== '-' && !hasShellExpansion(target)) {
-        dirFrames[dirFrames.length - 1] = resolvePath(currentDir, target);
       }
       continue;
     }
@@ -2269,15 +2398,15 @@ export function parseCommandDetailed(command: string, opts: ParseOptions = {}): 
           });
           continue;
         case 'unnarrowable': {
-          for (const f of src.files) emitCandidate(wholeFileCandidate(f), currentDir);
+          for (const f of src.files) emitCandidate(wholeFileCandidate(f), frame);
           continue;
         }
         case 'narrowable':
         case 'git': {
           if (hasStdoutRedirect(rawArgv)) {
-            emitCandidate(sourceCandidate(src), currentDir);
+            emitCandidate(sourceCandidate(src), frame);
           } else {
-            initWindow(src, currentDir);
+            initWindow(src, frame);
           }
           continue;
         }
@@ -2314,9 +2443,9 @@ export function parseCommandDetailed(command: string, opts: ParseOptions = {}): 
     if (stripped[0] === 'cat' || stripped[0] === 'nl') {
       const src = analyzeSource(stripped);
       if (src.kind === 'narrowable') {
-        emitCandidate(wholeFileCandidate({ fileArg: src.fileArg, idiom: src.idiom }), currentDir);
+        emitCandidate(wholeFileCandidate({ fileArg: src.fileArg, idiom: src.idiom }), frame);
       } else if (src.kind === 'unnarrowable') {
-        for (const f of src.files) emitCandidate(wholeFileCandidate(f), currentDir);
+        for (const f of src.files) emitCandidate(wholeFileCandidate(f), frame);
       }
     } else {
       for (const matcher of [...LINE_SELECTORS, matchGitShow, matchGitLogL]) {
@@ -2329,7 +2458,7 @@ export function parseCommandDetailed(command: string, opts: ParseOptions = {}): 
               reason: outcome.reason
             });
           } else {
-            emitCandidate(outcome, outcome.dirOverride ?? currentDir);
+            emitCandidate(outcome, frame);
           }
         }
       }

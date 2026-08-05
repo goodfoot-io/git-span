@@ -34,6 +34,8 @@ beforeAll(() => {
   writeFileSync(join(dir, 'twenty.txt'), `${twentyLines}\n`);
   writeFileSync(join(dir, 'five.txt'), `${Array.from({ length: 5 }, (_, i) => `l${i + 1}`).join('\n')}\n`);
   writeFileSync(join(dir, 'empty.txt'), '');
+  mkdirSync(join(dir, 'sub'));
+  writeFileSync(join(dir, 'sub', 'five.txt'), `${Array.from({ length: 5 }, (_, i) => `l${i + 1}`).join('\n')}\n`);
 });
 
 afterAll(() => {
@@ -321,9 +323,19 @@ describe('cd tracking within one command', () => {
     expect(spans).toEqual([]);
   });
 
-  it('cd "$VAR" (unresolvable) falls back to the seed cwd, not "/"', () => {
-    const spans = parseCommand('cd "$WORKSPACE_PATH"; sed -n \'1,2p\' five.txt', { cwd: dir });
-    expect(spans).toEqual([{ lineStart: 1, lineEnd: 2, absolutePath: join(dir, 'five.txt') }]);
+  it('cd "$VAR" (unresolvable) falls back to the seed cwd, never "/" (plan §6 uncertainty)', () => {
+    // Plan §6: an executed cd whose target does not resolve makes the tracked
+    // directory uncertain — the shell either moved to an unknown dir or failed
+    // and stayed, so relative paths resolve to `unresolved`, never a guess at
+    // the old dir. env: {} keeps the check deterministic — the parser's env
+    // default (plan §7) would resolve $WORKSPACE_PATH from the hook env when
+    // present.
+    expect(parseCommand('cd "$WORKSPACE_PATH"; sed -n \'1,2p\' five.txt', { cwd: dir, env: {} })).toEqual([]);
+    // The dir value itself stays the seed (never "/"), so a later literal cd
+    // re-bases from it and restores certainty.
+    expect(parseCommand('cd "$WORKSPACE_PATH"; cd sub; sed -n \'1,2p\' five.txt', { cwd: dir, env: {} })).toEqual([
+      { lineStart: 1, lineEnd: 2, absolutePath: join(dir, 'sub', 'five.txt') }
+    ]);
   });
 });
 
@@ -367,10 +379,10 @@ describe('multiple statements in one command', () => {
 // construct stack, the case-region machine, and the heredoc machinery in
 // shell-split.ts decide sections 2, 3, 4, and 15, so their rows run. The
 // execution walk (`analyzeExecution`, plan §2) decides the walk-owned rows in
-// sections 1, 2, 4, 5, 7, 8, 9, 10, and 15. Still skipped: the sections that
-// depend on stripRedirects (plan §4, the rows of section 1/6), the
-// wrapper/variable surfaces (§5/§7), and the workdir threading (§6/§8) land in
-// later dispatches.
+// sections 1, 2, 4, 5, 7, 8, 9, 10, and 15. Variable expansion (plan §7) and
+// directory composition (plan §6) decide sections 13 and 14, so their rows
+// run too. Still skipped elsewhere: the xtrace oracle (plan §6, G6) and the
+// adapter workdir fixtures (plan §8, G7 — cross-adapter-contract.test.ts).
 // ---------------------------------------------------------------------------
 
 type ExpectedTouch = { file: string; lo?: number; hi?: number } | { write: string } | { unresolved: string };
@@ -1509,11 +1521,11 @@ describe('execution-aware walk — Phase 2 contract', () => {
     });
   });
 
-  describe.skip('13. variables (injected env — the walk never defaults to process.env in these checks)', () => {
+  describe('13. variables (injected env — the walk never defaults to process.env in these checks)', () => {
     const ROWS: FixtureRow[] = [
       [
         'cat "$WORKSPACE_PATH/f"',
-        [whole(join(p2Dir, 'f'))],
+        [whole('f')],
         { env: { WORKSPACE_PATH: p2Dir } },
         'an allowlisted name resolves from the hook env'
       ],
@@ -1523,9 +1535,9 @@ describe('execution-aware walk — Phase 2 contract', () => {
         undefined,
         'single-quoted — literal, stays unresolved'
       ],
-      ['cat $VAR/f', [whole(join(p2Dir, 'f'))], { env: { VAR: p2Dir } }, '$VAR and ${VAR} resolve'],
-      ['cat ${VAR}/f', [whole(join(p2Dir, 'f'))], { env: { VAR: p2Dir } }, undefined],
-      ['cat $HOME/f', [whole(join(p2Dir, 'f'))], { env: { HOME: p2Dir } }, undefined],
+      ['cat $VAR/f', [whole('f')], { env: { VAR: p2Dir } }, '$VAR and ${VAR} resolve'],
+      ['cat ${VAR}/f', [whole('f')], { env: { VAR: p2Dir } }, undefined],
+      ['cat $HOME/f', [whole('f')], { env: { HOME: p2Dir } }, undefined],
       [
         'cd "$WORKSPACE_PATH"; cat f',
         [whole(join(p2Dir, 'f'))],
@@ -1534,7 +1546,7 @@ describe('execution-aware walk — Phase 2 contract', () => {
       ],
       [
         `A=${p2Dir}; cat $A/f`,
-        [whole(join(p2Dir, 'f'))],
+        [whole('f')],
         undefined,
         'resolves via the executed-assignment table (substituted with a real dir)'
       ],
@@ -1543,14 +1555,9 @@ describe('execution-aware walk — Phase 2 contract', () => {
       ['cat ${!X}/f', [unresolved('${!X}/f')], undefined, 'indirect expansion stays unresolved'],
       ['cat $?/f', [unresolved('$?/f')], undefined, 'special parameters stay unresolved'],
       ['cat "$HOME/f"', [unresolved('$HOME/f')], undefined, 'an allowlisted name absent from the env stays unresolved'],
-      ['cat $PWD/f', [whole(join(p2Dir, 'f'))], { env: { PWD: p2Dir } }, '$PWD resolves against the tracked dir'],
+      ['cat $PWD/f', [whole('f')], { env: { PWD: p2Dir } }, '$PWD resolves against the tracked dir'],
       [`X=${p2Dir}; unset X; cat $X/f`, [unresolved('$X/f')], undefined, 'unset deletes the table entry'],
-      [
-        `X=${p2Dir}; export X; cat $X/f`,
-        [whole(join(p2Dir, 'f'))],
-        undefined,
-        'export without a value is a table no-op'
-      ]
+      [`X=${p2Dir}; export X; cat $X/f`, [whole('f')], undefined, 'export without a value is a table no-op']
     ];
 
     it.each<FixtureRow>(ROWS)('%s', (cmd, expected, opts) => {
@@ -1558,7 +1565,7 @@ describe('execution-aware walk — Phase 2 contract', () => {
     });
   });
 
-  describe.skip('14. directories — cd certainty (the adapter workdir fixtures live in cross-adapter-contract.test.ts)', () => {
+  describe('14. directories — cd certainty (the adapter workdir fixtures live in cross-adapter-contract.test.ts)', () => {
     const ROWS: FixtureRow[] = [
       [
         "cd $UNKNOWN; sed -n '1,2p' f",
@@ -1586,12 +1593,7 @@ describe('execution-aware walk — Phase 2 contract', () => {
         'a relative $HOME re-bases like any literal cd target'
       ],
       ["grep -q x f && cd sub; sed -n '1,2p' f", [unresolved('f')], undefined, 'a may-have-run cd poisons certainty'],
-      [
-        `cd $X; cd ${p2Dir}; sed -n '1,2p' f`,
-        [range(join(p2Dir, 'f'), 1, 2)],
-        undefined,
-        'a literal cd restores certainty'
-      ],
+      [`cd $X; cd ${p2Dir}; sed -n '1,2p' f`, [range('f', 1, 2)], undefined, 'a literal cd restores certainty'],
       [`cd ${p2Dir} | sed -n '1,2p' f`, [range('f', 1, 2)], undefined, 'a pipe-position cd never re-bases — subshell'],
       [
         "x=a; case $x in a) cd sub;; esac; sed -n '1,2p' f",
