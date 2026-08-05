@@ -63,6 +63,41 @@ fn span_bytes(repo: &TestRepo, name: &str) -> Result<Vec<u8>> {
     Ok(fs::read(repo.path().join(".span").join(name))?)
 }
 
+/// Assert `out` has the co-requested rejection shape: exit 1, both canonical
+/// addresses named, no remove command (the span tracks neither anchor), and
+/// prose guidance to drop one of the two anchors from the invocation.
+fn assert_co_requested_rejection(out: &std::process::Output, whole: &str, range: &str) {
+    assert!(
+        !out.status.success(),
+        "add must reject two co-requested same-path superseding anchors; exit {:?}\nstdout:\n{}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert_eq!(out.status.code(), Some(1), "rejection must exit 1");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(&format!("`{whole}`")),
+        "stderr must name the whole-file canonical address; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!("`{range}`")),
+        "stderr must name the range canonical address; stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("git span remove"),
+        "stderr must not print a remove command for an anchor the span does not track; stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("existing anchor"),
+        "the co-requested anchor must not be called the existing anchor; stderr:\n{stderr}"
+    );
+    let lower = stderr.to_lowercase();
+    assert!(
+        lower.contains("drop one of the two anchors"),
+        "stderr must tell the user to drop one of the two anchors from the invocation; stderr:\n{stderr}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // (1) Whole-file exists, add range → rejected
 // ---------------------------------------------------------------------------
@@ -444,6 +479,107 @@ fn add_superseding_overlap_reject_printed_remove_command_round_trips() -> Result
     assert!(
         !content.contains(path),
         "executing the printed remove command must delete the anchor; span file:\n{content}"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// (9) Co-requested anchors → conflict between the requested anchors
+// ---------------------------------------------------------------------------
+
+/// Two same-path superseding anchors requested in one invocation, on a span
+/// that contains neither, must be rejected as a conflict between the two
+/// REQUESTED anchors: nothing was written, so there is no remove command to
+/// print, and the only repair is dropping one anchor from the invocation.
+#[test]
+fn add_superseding_overlap_reject_co_requested_whole_file_then_range() -> Result<()> {
+    let repo = TestRepo::new()?;
+    repo.write_file("src/lib.rs", "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\n")?;
+    repo.commit_all("seed")?;
+
+    let out = repo.run_span(["add", "demo", "src/lib.rs", "src/lib.rs#L1-L4"])?;
+    assert_co_requested_rejection(&out, "src/lib.rs", "src/lib.rs#L1-L4");
+    assert!(
+        !repo.path().join(".span/demo").exists(),
+        "a rejected co-requested add must not create `.span/demo`"
+    );
+    Ok(())
+}
+
+/// The reversed order (range first, whole-file second) reports the same
+/// co-requested shape: both requested addresses named, no remove command.
+#[test]
+fn add_superseding_overlap_reject_co_requested_range_then_whole_file() -> Result<()> {
+    let repo = TestRepo::new()?;
+    repo.write_file("src/lib.rs", "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\n")?;
+    repo.commit_all("seed")?;
+
+    let out = repo.run_span(["add", "demo", "src/lib.rs#L1-L4", "src/lib.rs"])?;
+    assert_co_requested_rejection(&out, "src/lib.rs", "src/lib.rs#L1-L4");
+    assert!(
+        !repo.path().join(".span/demo").exists(),
+        "a rejected co-requested add must not create `.span/demo`"
+    );
+    Ok(())
+}
+
+/// The amendment arrangement: the span holds the whole-file anchor and the
+/// invocation is `<range> <whole-file>`. The first rejection is against the
+/// existing record and prints the working remove command; after following it
+/// the span is empty, and retrying the IDENTICAL invocation must now produce
+/// the co-requested shape — no remove command, invocation-fix guidance —
+/// never the "existing anchor" wording for a pair that was never added.
+#[test]
+fn add_superseding_overlap_reject_co_requested_after_following_existing_remove() -> Result<()> {
+    let repo = TestRepo::new()?;
+    repo.write_file("src/lib.rs", "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\n")?;
+    repo.commit_all("seed")?;
+
+    let first = repo.run_span(["add", "demo", "src/lib.rs"])?;
+    assert!(
+        first.status.success(),
+        "the whole-file add must succeed; exit {:?}\nstderr:\n{}",
+        first.status.code(),
+        String::from_utf8_lossy(&first.stderr)
+    );
+
+    // First rejection: the range conflicts with the existing whole-file
+    // record, so the printed remove command targets the tracked anchor and
+    // must actually work.
+    let invocation = ["add", "demo", "src/lib.rs#L1-L4", "src/lib.rs"];
+    let out = repo.run_span(invocation)?;
+    assert!(
+        !out.status.success(),
+        "add must reject the range against the existing whole-file anchor; exit {:?}\nstdout:\n{}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert_eq!(out.status.code(), Some(1), "rejection must exit 1");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("git span remove demo 'src/lib.rs'"),
+        "stderr must contain the exact quoted remove command; stderr:\n{stderr}"
+    );
+
+    // Follow the printed guidance: removing the tracked whole-file anchor
+    // must succeed (the span file is rewritten, now empty).
+    let removed = repo.run_span(["remove", "demo", "src/lib.rs"])?;
+    assert!(
+        removed.status.success(),
+        "the printed remove must succeed; exit {:?}\nstderr:\n{}",
+        removed.status.code(),
+        String::from_utf8_lossy(&removed.stderr)
+    );
+    let after_remove = span_bytes(&repo, "demo")?;
+
+    // Retry the identical invocation: nothing is tracked now, so the
+    // conflict is between the two requested anchors — co-requested shape.
+    let retry = repo.run_span(invocation)?;
+    assert_co_requested_rejection(&retry, "src/lib.rs", "src/lib.rs#L1-L4");
+    let after_retry = span_bytes(&repo, "demo")?;
+    assert_eq!(
+        after_remove, after_retry,
+        "a rejected co-requested add must leave `.span/demo` byte-identical"
     );
     Ok(())
 }

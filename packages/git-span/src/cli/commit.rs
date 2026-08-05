@@ -412,8 +412,23 @@ fn check_worktree_prefix_collision(
 pub(crate) enum WholeFileSide {
     /// The requested anchor is whole-file; the conflicting one is a range.
     Requested,
-    /// The existing anchor is whole-file; the requested one is a range.
+    /// The conflicting anchor is whole-file; the requested one is a range.
     Existing,
+}
+
+/// Where the conflicting anchor comes from: an anchor already tracked on the
+/// span, or a second anchor requested in the same invocation.
+///
+/// The two kinds need different remediation — an existing record can be
+/// removed with `git span remove`, while a co-requested anchor was never
+/// added (the invocation fails all-or-nothing) and can only be dropped from
+/// the command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConflictSource {
+    /// The conflict is against an anchor already tracked on the span.
+    ExistingRecord,
+    /// The conflict is between two anchors requested in the same invocation.
+    CoRequested,
 }
 
 /// A provable supersession between a requested anchor and an existing (or
@@ -424,10 +439,14 @@ pub(crate) struct SupersessionConflict {
     /// Canonical address of the requested anchor
     /// (`<path>` or `<path>#L<s>-L<e>`).
     pub requested_addr: String,
-    /// Canonical address of the anchor it conflicts with.
-    pub existing_addr: String,
+    /// Canonical address of the anchor it conflicts with — either an
+    /// existing record on the span or a co-requested anchor.
+    pub conflicting_addr: String,
     /// Which side of the pair is the whole-file anchor.
     pub whole_file_side: WholeFileSide,
+    /// Whether the conflicting anchor is tracked on the span or was
+    /// requested in the same invocation.
+    pub source: ConflictSource,
 }
 
 /// Return the first provable supersession conflict between the requested
@@ -480,7 +499,7 @@ pub(crate) fn supersession_conflict(
                 // The range keys identically to the whole-file record.
                 continue;
             }
-            let (whole_file_side, existing_addr) = if requested_whole {
+            let (whole_file_side, conflicting_addr) = if requested_whole {
                 (
                     WholeFileSide::Requested,
                     format_anchor_address(&r.path, Some(r.start_line), Some(r.end_line)),
@@ -493,8 +512,9 @@ pub(crate) fn supersession_conflict(
             };
             return Some(SupersessionConflict {
                 requested_addr: addr_from_extent(path, extent),
-                existing_addr,
+                conflicting_addr,
                 whole_file_side,
+                source: ConflictSource::ExistingRecord,
             });
         }
 
@@ -517,8 +537,9 @@ pub(crate) fn supersession_conflict(
             };
             return Some(SupersessionConflict {
                 requested_addr: addr_from_extent(path, extent),
-                existing_addr: addr_from_extent(other_path, other_extent),
+                conflicting_addr: addr_from_extent(other_path, other_extent),
                 whole_file_side,
+                source: ConflictSource::CoRequested,
             });
         }
     }
@@ -732,43 +753,90 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result
     {
         let _perf = crate::perf::span("add.preflight-supersession");
         if let Some(conflict) = supersession_conflict(&parsed, &span_file.anchors) {
-            let (summary, direction) = match conflict.whole_file_side {
-                WholeFileSide::Requested => (
-                    format!(
-                        "the requested whole-file anchor `{}` supersedes the existing \
-                         anchor `{}` on span `{}`.",
-                        conflict.requested_addr, conflict.existing_addr, args.name
-                    ),
-                    "the requested anchor is the whole file, and the existing one is a range",
-                ),
-                WholeFileSide::Existing => (
-                    format!(
-                        "`{}` is superseded by the existing whole-file anchor `{}` on \
-                         span `{}`.",
-                        conflict.requested_addr, conflict.existing_addr, args.name
-                    ),
-                    "the existing anchor is the whole file, and the requested one is a range",
-                ),
-            };
-            return Err(CliError {
-                subcommand: "add",
-                summary,
-                what_happened: format!(
-                    "`{}` and `{}` anchor the same path, and {}; adding both would leave \
-                     the superseded anchor reported as permanent drift, so the add is \
-                     rejected before anything is written.",
-                    conflict.requested_addr, conflict.existing_addr, direction
-                ),
-                next_steps: vec![
-                    NextStep::Prose(
-                        "Remove the conflicting anchor, then retry the add.".into(),
-                    ),
-                    NextStep::Bash(format!(
-                        "git span remove {} {}",
-                        args.name,
-                        quote_shell(&conflict.existing_addr)
-                    )),
-                ],
+            return Err(match conflict.source {
+                // The conflicting anchor is tracked on the span: removing it
+                // is actionable, so print the exact quoted remove command.
+                ConflictSource::ExistingRecord => {
+                    let (summary, direction) = match conflict.whole_file_side {
+                        WholeFileSide::Requested => (
+                            format!(
+                                "the requested whole-file anchor `{}` supersedes the existing \
+                                 anchor `{}` on span `{}`.",
+                                conflict.requested_addr, conflict.conflicting_addr, args.name
+                            ),
+                            "the requested anchor is the whole file, and the existing one is a range",
+                        ),
+                        WholeFileSide::Existing => (
+                            format!(
+                                "`{}` is superseded by the existing whole-file anchor `{}` on \
+                                 span `{}`.",
+                                conflict.requested_addr, conflict.conflicting_addr, args.name
+                            ),
+                            "the existing anchor is the whole file, and the requested one is a range",
+                        ),
+                    };
+                    CliError {
+                        subcommand: "add",
+                        summary,
+                        what_happened: format!(
+                            "`{}` and `{}` anchor the same path, and {}; adding both would leave \
+                             the superseded anchor reported as permanent drift, so the add is \
+                             rejected before anything is written.",
+                            conflict.requested_addr, conflict.conflicting_addr, direction
+                        ),
+                        next_steps: vec![
+                            NextStep::Prose(
+                                "Remove the conflicting anchor, then retry the add.".into(),
+                            ),
+                            NextStep::Bash(format!(
+                                "git span remove {} {}",
+                                args.name,
+                                quote_shell(&conflict.conflicting_addr)
+                            )),
+                        ],
+                    }
+                }
+                // The two anchors were requested together, so nothing was
+                // written — there is no record to remove. Say the requested
+                // anchors conflict and tell the user to fix the invocation.
+                ConflictSource::CoRequested => {
+                    let (summary, direction) = match conflict.whole_file_side {
+                        WholeFileSide::Requested => (
+                            format!(
+                                "the requested whole-file anchor `{}` supersedes the requested \
+                                 range `{}`; the two anchors in this invocation conflict with \
+                                 each other.",
+                                conflict.requested_addr, conflict.conflicting_addr
+                            ),
+                            "the requested anchor is the whole file, and the other requested \
+                             one is a range",
+                        ),
+                        WholeFileSide::Existing => (
+                            format!(
+                                "`{}` is superseded by the requested whole-file anchor `{}`; \
+                                 the two anchors in this invocation conflict with each other.",
+                                conflict.requested_addr, conflict.conflicting_addr
+                            ),
+                            "the other requested anchor is the whole file, and the requested \
+                             one is a range",
+                        ),
+                    };
+                    CliError {
+                        subcommand: "add",
+                        summary,
+                        what_happened: format!(
+                            "`{}` and `{}` anchor the same path, and {}; adding both would leave \
+                             the superseded anchor reported as permanent drift, so the add is \
+                             rejected before anything is written.",
+                            conflict.requested_addr, conflict.conflicting_addr, direction
+                        ),
+                        next_steps: vec![NextStep::Prose(format!(
+                            "Drop one of the two anchors (`{}` or `{}`) from the invocation, \
+                             then retry the add.",
+                            conflict.requested_addr, conflict.conflicting_addr
+                        ))],
+                    }
+                }
             }
             .into());
         }
@@ -2283,8 +2351,9 @@ mod tests {
             supersession_conflict(&requested, &existing),
             Some(SupersessionConflict {
                 requested_addr: "src/lib.rs#L1-L5".into(),
-                existing_addr: "src/lib.rs".into(),
+                conflicting_addr: "src/lib.rs".into(),
                 whole_file_side: WholeFileSide::Existing,
+                source: ConflictSource::ExistingRecord,
             })
         );
     }
@@ -2297,8 +2366,9 @@ mod tests {
             supersession_conflict(&requested, &existing),
             Some(SupersessionConflict {
                 requested_addr: "src/lib.rs".into(),
-                existing_addr: "src/lib.rs#L1-L5".into(),
+                conflicting_addr: "src/lib.rs#L1-L5".into(),
                 whole_file_side: WholeFileSide::Requested,
+                source: ConflictSource::ExistingRecord,
             })
         );
     }
@@ -2364,7 +2434,8 @@ mod tests {
     fn intra_invocation_whole_file_and_range_is_a_conflict() {
         // `add name P P#L1-L2` in one invocation must fail identically: the
         // first requested anchor (whole-file) is checked against its
-        // co-requested same-path range.
+        // co-requested same-path range. The conflict source is CoRequested —
+        // nothing is tracked on the span yet, so no remove command applies.
         let requested = vec![
             requested("src/lib.rs", AnchorExtent::WholeFile),
             requested(
@@ -2377,8 +2448,57 @@ mod tests {
             supersession_conflict(&requested, &existing),
             Some(SupersessionConflict {
                 requested_addr: "src/lib.rs".into(),
-                existing_addr: "src/lib.rs#L1-L5".into(),
+                conflicting_addr: "src/lib.rs#L1-L5".into(),
                 whole_file_side: WholeFileSide::Requested,
+                source: ConflictSource::CoRequested,
+            })
+        );
+    }
+
+    #[test]
+    fn intra_invocation_range_then_whole_file_is_a_conflict() {
+        // The reversed order (`add name P#L1-L2 P`) reports the range as the
+        // requested anchor and the whole-file as the co-requested conflict.
+        let requested = vec![
+            requested(
+                "src/lib.rs",
+                AnchorExtent::LineRange { start: 1, end: 5 },
+            ),
+            requested("src/lib.rs", AnchorExtent::WholeFile),
+        ];
+        let existing: Vec<AnchorRecord> = Vec::new();
+        assert_eq!(
+            supersession_conflict(&requested, &existing),
+            Some(SupersessionConflict {
+                requested_addr: "src/lib.rs#L1-L5".into(),
+                conflicting_addr: "src/lib.rs".into(),
+                whole_file_side: WholeFileSide::Existing,
+                source: ConflictSource::CoRequested,
+            })
+        );
+    }
+
+    #[test]
+    fn existing_record_conflict_wins_over_co_requested() {
+        // When the same requested anchor conflicts with both an existing
+        // record and a co-requested anchor, the existing-record match is
+        // reported (existing-inner iteration precedes co-requested): the
+        // first rejection is actionable with a remove command.
+        let existing = vec![record("src/lib.rs", 0, 0)];
+        let requested = vec![
+            requested(
+                "src/lib.rs",
+                AnchorExtent::LineRange { start: 1, end: 5 },
+            ),
+            requested("src/lib.rs", AnchorExtent::WholeFile),
+        ];
+        assert_eq!(
+            supersession_conflict(&requested, &existing),
+            Some(SupersessionConflict {
+                requested_addr: "src/lib.rs#L1-L5".into(),
+                conflicting_addr: "src/lib.rs".into(),
+                whole_file_side: WholeFileSide::Existing,
+                source: ConflictSource::ExistingRecord,
             })
         );
     }
@@ -2403,8 +2523,9 @@ mod tests {
             supersession_conflict(&requested, &existing),
             Some(SupersessionConflict {
                 requested_addr: "src/a.rs#L1-L2".into(),
-                existing_addr: "src/a.rs".into(),
+                conflicting_addr: "src/a.rs".into(),
                 whole_file_side: WholeFileSide::Existing,
+                source: ConflictSource::ExistingRecord,
             })
         );
     }
