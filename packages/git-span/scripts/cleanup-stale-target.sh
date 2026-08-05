@@ -48,8 +48,23 @@ bash "$script_dir/with-target-lock.sh" exclusive bash -c '
   if [ -f "$stamp_file" ] && [ "$(cat "$stamp_file")" = "$current_stamp" ]; then
     exit 0
   fi
+  # The wipe fires here. A wipe is fast — well under the fingerprint-tripwire
+  # threshold in with-target-lock.sh — so its stderr would never be persisted;
+  # record it durably instead so the tripwire logs can implicate or exonerate
+  # the stamp lifecycle. The tripwire dir is a dotfile dir, so the */ glob
+  # below never matches it and these logs survive the wipe.
+  tripwire_dir="$target_root/.fingerprint-tripwire"
+  mkdir -p "$tripwire_dir"
+  if [ -f "$stamp_file" ]; then reason="stale"; else reason="missing"; fi
+  dirs=""
   for dir in "$target_root"/*/; do
     [ -d "$dir" ] || continue
+    dirs="$dirs $dir"
+  done
+  wipe_line="WIPE $(date -u +%Y-%m-%dT%H:%M:%SZ) ${reason} removing${dirs}"
+  printf "%s\n" "$wipe_line" >> "$tripwire_dir/wipe-events.log"
+  echo "$wipe_line"
+  for dir in $dirs; do
     rm -rf "$dir"
   done
   mkdir -p "$target_root"
