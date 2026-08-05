@@ -1614,16 +1614,22 @@ fn fix_prints_reconciled_summary_for_updated_anchors() -> Result<()> {
 }
 
 #[test]
-fn fix_prints_zero_summary_on_clean_tree() -> Result<()> {
+fn fix_prints_no_summary_on_clean_tree() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;
 
-    // No drift at all — clean tree.
+    // No drift at all — clean tree. Zero work means no fix summary line;
+    // the `0 drift` line already covers the clean case. "Reconciled" must
+    // not appear when nothing was reconciled.
     let out = repo.run_span(["drift", "--fix"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("Reconciled 0 spans, 0 anchors (0 updated, 0 removed)."),
-        "expected zero summary on clean tree; stdout=\n{stdout}"
+        !stdout.contains("Reconciled"),
+        "clean tree with zero work must print no fix summary; stdout=\n{stdout}"
+    );
+    assert!(
+        stdout.contains("0 drift"),
+        "the 0 drift line covers the clean case; stdout=\n{stdout}"
     );
     Ok(())
 }
@@ -1646,10 +1652,13 @@ fn fix_prints_summary_with_remaining_drift() -> Result<()> {
 
     let out = repo.run_span(["drift", "--fix", "--no-exit-code"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
-    // The summary counts only the reconciled anchor despite remaining drift.
+    // The summary reports the fix and the remaining drift; "Reconciled"
+    // must not appear — the span is not reconciled while drift remains.
     assert!(
-        stdout.contains("Reconciled 1 span, 1 anchor (1 updated, 0 removed)."),
-        "expected summary with remaining drift; stdout=\n{stdout}"
+        stdout.contains(
+            "Updated 1 anchor (1 updated, 0 removed); 1 anchor remains drifted — run git span drift again"
+        ),
+        "expected updated summary with remaining drift; stdout=\n{stdout}"
     );
     Ok(())
 }
@@ -1671,7 +1680,7 @@ fn fix_prints_removed_count_for_interior_anchor() -> Result<()> {
     let out = repo.run_span(["drift", "--fix", "--no-exit-code"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("1 removed") || stdout.contains("Reconciled"),
+        stdout.contains("1 removed"),
         "expected summary mentioning removed interior anchor; stdout=\n{stdout}"
     );
     // With interior anchor removal (1 removed) plus 0 re-anchored (the

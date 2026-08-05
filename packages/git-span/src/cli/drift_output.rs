@@ -997,24 +997,46 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
                 );
             }
 
-            // Reconciled summary line: always printed after --fix, regardless
-            // of whether drift remains or all counts are zero.
+            // Fix summary line, printed after --fix per the three post-fix
+            // states:
+            //
+            // - actionable drift remains → "Updated M anchors (U updated,
+            //   K removed); N anchors remain drifted — run git span drift
+            //   again". "Reconciled" is withheld while drift remains —
+            //   nothing is reconciled. M is the real count (0 when the fix
+            //   could do no work); the drift report above carries the state.
+            // - zero drift with work done → "Reconciled N spans, M anchors
+            //   (U updated, K removed)." — now literally true.
+            // - zero drift with zero work → nothing printed: the `0 drift`
+            //   line above already covers the clean case.
             if args.fix
                 && let Some(ref fr) = fix_result
             {
                 let updated = fr.anchors_updated;
                 let removed = fr.anchors_removed;
                 let total = updated + removed;
-                let spans = fr.spans_touched;
-                println!(
-                    "Reconciled {} {}, {} {} ({} updated, {} removed).",
-                    spans,
-                    if spans == 1 { "span" } else { "spans" },
-                    total,
-                    if total == 1 { "anchor" } else { "anchors" },
-                    updated,
-                    removed,
-                );
+                if drift_count > 0 {
+                    println!(
+                        "Updated {} {} ({} updated, {} removed); {} anchor {} drifted — run git span drift again",
+                        total,
+                        if total == 1 { "anchor" } else { "anchors" },
+                        updated,
+                        removed,
+                        drift_count,
+                        if drift_count == 1 { "remains" } else { "remain" },
+                    );
+                } else if total > 0 {
+                    let spans = fr.spans_touched;
+                    println!(
+                        "Reconciled {} {}, {} {} ({} updated, {} removed).",
+                        spans,
+                        if spans == 1 { "span" } else { "spans" },
+                        total,
+                        if total == 1 { "anchor" } else { "anchors" },
+                        updated,
+                        removed,
+                    );
+                }
             }
         }
         DriftFormat::Porcelain => {
