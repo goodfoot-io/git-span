@@ -2021,6 +2021,206 @@ function classifyPatchHeredoc(
 }
 
 // ---------------------------------------------------------------------------
+// The formatter / fixer grammar (plan §5.8): a table-driven family over the
+// corpus-derived 16-tool set. Flag matching is exact-token on full argv words —
+// never prefix or substring — and the read-only list is consulted first, so
+// `--fix-dry-run` can never collide with `--fix` and `black --check` never
+// heals. Tools whose write form is a bare invocation (black, isort, rustfmt)
+// carry the empty form and fire on the write form itself. Leading transparent
+// package-runner wrappers (npx, yarn, pnpm exec/dlx, bunx, npm exec) strip
+// under a pinned option grammar; a wrapper that could rewrite argv fails
+// closed as unresolved.
+// ---------------------------------------------------------------------------
+
+/** One §5.8 table row: the tool command and its write/read-only token forms. */
+export interface FormatterToolRow {
+  command: string;
+  /** Token sequences whose exact-token presence marks the invocation a write. */
+  writeForms: string[][];
+  /** Token sequences consulted first — presence suppresses the write (the read-only mode wins). */
+  readOnlyForms: string[][];
+}
+
+/**
+ * The §5.8 table, exported so the corpus-coverage fixture can assert two-sided
+ * tool-set equality and per-tool read-only suppression (plan §5.8, Phase 3
+ * step 8).
+ */
+export const FORMATTER_TABLE: readonly FormatterToolRow[] = [
+  {
+    command: 'prettier',
+    writeForms: [['--write'], ['-w']],
+    readOnlyForms: [['--check'], ['--list-different'], ['--debug-check']]
+  },
+  { command: 'eslint', writeForms: [['--fix']], readOnlyForms: [['--fix-dry-run']] },
+  {
+    command: 'biome',
+    writeForms: [
+      ['check', '--write'],
+      ['check', '--fix'],
+      ['format', '--write']
+    ],
+    readOnlyForms: []
+  },
+  { command: 'gofmt', writeForms: [['-w']], readOnlyForms: [['-l']] },
+  { command: 'goimports', writeForms: [['-w']], readOnlyForms: [] },
+  { command: 'clang-format', writeForms: [['-i']], readOnlyForms: [['--dry-run']] },
+  { command: 'shfmt', writeForms: [['-w']], readOnlyForms: [['-d']] },
+  { command: 'yapf', writeForms: [['-i']], readOnlyForms: [['--diff']] },
+  { command: 'autopep8', writeForms: [['-i']], readOnlyForms: [['-d'], ['--diff']] },
+  { command: 'black', writeForms: [[]], readOnlyForms: [['--check'], ['--diff']] },
+  { command: 'isort', writeForms: [[]], readOnlyForms: [['--check-only'], ['--diff']] },
+  {
+    command: 'ruff',
+    writeForms: [['format'], ['check', '--fix']],
+    readOnlyForms: [
+      ['check', '--no-fix'],
+      ['format', '--check']
+    ]
+  },
+  { command: 'deno', writeForms: [['fmt']], readOnlyForms: [['fmt', '--check']] },
+  { command: 'dprint', writeForms: [['fmt']], readOnlyForms: [['check']] },
+  { command: 'rustfmt', writeForms: [[]], readOnlyForms: [['--check'], ['--emit', 'stdout']] },
+  {
+    command: 'terraform',
+    writeForms: [['fmt']],
+    readOnlyForms: [
+      ['fmt', '-check'],
+      ['fmt', '-diff']
+    ]
+  }
+];
+
+/** The pinned package-runner no-arg flags (plan §5.8): flags that cannot move or rewrite argv. */
+const RUNNER_NO_ARG_FLAGS = new Set(['-y', '--yes', '--no-install']);
+
+/** The outcome of stripping one leading package-runner wrapper. */
+type RunnerStrip = { kind: 'stripped'; stripped: string[] } | { kind: 'obscured' };
+
+/**
+ * Strip one leading transparent package-runner wrapper (plan §5.8): `npx`,
+ * `yarn`, `pnpm exec`/`pnpm dlx`, `bunx`, and `npm exec` followed directly by
+ * the wrapped command word, with only the pinned no-arg flags (`-y`/`--yes`,
+ * `--no-install`) and `npm exec`'s `--` terminator between. A string-form
+ * argument (`npx "prettier --write f"`), an argv-altering runner flag
+ * (`--package=X` or a flag consuming the next word), or a wrapper word that is
+ * itself a script (`.`-prefixed) obscures the wrapped argv — the wrapper is
+ * transparent only when the pinned grammar proves it so. Returns 'not-runner'
+ * when the word is not a runner at all (a different npm/pnpm subcommand, or a
+ * bare runner with no command word) — the table matches it directly, which
+ * fails closed for non-formatter runners.
+ */
+function stripPackageRunner(argv: string[]): RunnerStrip | 'not-runner' {
+  const runner = argv[0];
+  let rest = argv.slice(1);
+  if (runner === 'npx' || runner === 'yarn' || runner === 'bunx') {
+    // These runners take the command word directly.
+  } else if (runner === 'pnpm') {
+    if (rest[0] !== 'exec' && rest[0] !== 'dlx') return 'not-runner';
+    rest = rest.slice(1);
+  } else if (runner === 'npm') {
+    if (rest[0] !== 'exec') return 'not-runner';
+    rest = rest.slice(1);
+  } else {
+    return 'not-runner';
+  }
+  while (RUNNER_NO_ARG_FLAGS.has(rest[0])) rest = rest.slice(1);
+  if (runner === 'npm' && rest[0] === '--') rest = rest.slice(1);
+  if (rest.length === 0) return 'not-runner'; // a bare runner attributes nothing
+  const wrapped = rest[0];
+  if (wrapped.startsWith('-') || wrapped.startsWith('.') || /\s/.test(wrapped)) return { kind: 'obscured' };
+  return { kind: 'stripped', stripped: rest };
+}
+
+/**
+ * The formatter/fixer family (plan §5.8). The read-only forms are consulted
+ * first and win over any write form; a write form with no read-only form and
+ * every operand an explicit file emits a whole-file `modify` per operand;
+ * directory/glob/no-operand invocations touch nothing; unknown executables
+ * fail closed. A form's leading subcommand word (`check`/`format`/`fmt`) is
+ * positional — it must lead the tool's args, so `deno task fmt` is a script
+ * runner, not a formatter.
+ */
+function matchFormatter(
+  argv: string[],
+  dirForResolution: string,
+  simpleCommandIndex: number,
+  join: ResolvedSpan['join'],
+  results: SpanMatch[]
+): void {
+  const rest = stripTransparentWrapper(argv);
+  if (rest.length === 0) return;
+  let words = rest;
+  const strip = stripPackageRunner(rest);
+  if (strip === 'not-runner') {
+    // rest[0] is not a package runner — the table matches it directly.
+  } else if (strip.kind === 'obscured') {
+    pushUnresolved(results, 'formatter-write', rest[0], `the ${rest[0]} wrapper obscures the wrapped argv`);
+    return;
+  } else {
+    words = strip.stripped;
+  }
+  if (FOREIGN_WRAPPERS.has(words[0])) {
+    const wrapped = words[1];
+    if (wrapped !== undefined && FORMATTER_TABLE.some((r) => r.command === wrapped)) {
+      pushUnresolved(results, 'formatter-write', wrapped, `the ${words[0]} wrapper obscures the ${wrapped} argv`);
+    }
+    return;
+  }
+  const row = FORMATTER_TABLE.find((r) => r.command === words[0]);
+  if (row === undefined) return; // unknown executable — fail closed, no touch
+  const args = words.slice(1);
+  const formPresent = (form: string[]): boolean => {
+    const first = form[0];
+    if (first !== undefined && !first.startsWith('-') && args[0] !== first) return false;
+    return form.every((token) => args.includes(token));
+  };
+  // The read-only list is consulted first and wins over any write form:
+  // `eslint --fix --fix-dry-run f` writes nothing, `black --check f` never heals.
+  if (row.readOnlyForms.some(formPresent)) return;
+  if (!row.writeForms.some(formPresent)) return; // bare invocations of flag-required tools are read-only (stdout/lint)
+  // Consume the tool's subcommand word before collecting operands.
+  const subcommandWords = new Set<string>();
+  for (const form of row.writeForms) {
+    for (const token of form) {
+      if (!token.startsWith('-')) subcommandWords.add(token);
+    }
+  }
+  const afterSubcommand = subcommandWords.has(args[0]) ? args.slice(1) : args;
+  let afterDashDash = false;
+  const operands: string[] = [];
+  for (const a of afterSubcommand) {
+    if (afterDashDash) {
+      operands.push(a);
+      continue;
+    }
+    if (a === '--') {
+      afterDashDash = true;
+      continue;
+    }
+    if (a.startsWith('-')) continue; // unknown option → treated as an option (shared §5)
+    operands.push(a);
+  }
+  if (operands.length === 0) return; // no-operand invocations touch nothing
+  // Every operand must be an explicit file — a glob, variable, directory, or
+  // trailing-slash operand fails the whole command closed.
+  for (const operand of operands) {
+    if (looksUnresolvable(operand)) {
+      pushUnresolved(results, 'formatter-write', operand, 'path contains an unexpanded shell variable or glob');
+      return;
+    }
+    if (operand.endsWith('/') || isExistingDirectory(resolvePath(dirForResolution, operand))) return;
+  }
+  for (const operand of operands) {
+    results.push({
+      status: 'resolved',
+      idiom: 'formatter-write',
+      span: { operation: 'modify', absolutePath: resolvePath(dirForResolution, operand), simpleCommandIndex, join }
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Orchestrator
 // ---------------------------------------------------------------------------
 
@@ -2233,6 +2433,7 @@ export function parseCommandDetailed(command: string, cwd: string = process.cwd(
     matchRmTruncate(argv, currentDir, i, joinOf(simple), results);
     matchSedInplace(argv, currentDir, i, joinOf(simple), results);
     matchPatchApply(argv, redirects, currentDir, i, joinOf(simple), results);
+    matchFormatter(argv, currentDir, i, joinOf(simple), results);
     pipeEchoContent = literalContent(argv) ?? null;
   }
 

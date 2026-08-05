@@ -1098,14 +1098,14 @@ describe('patch and git apply (§5.7)', () => {
 });
 
 describe('formatters and fixers (§5.8)', () => {
-  it.skip('prettier: --write fires, --check is read-only', () => {
+  it('prettier: --write fires, --check is read-only', () => {
     expect(parseCommand(`prettier --write ${join(dir, 'f.ts')}`)).toEqual([
       { operation: 'modify', absolutePath: join(dir, 'f.ts'), simpleCommandIndex: 0 }
     ]);
     expect(parseCommand(`prettier --check ${join(dir, 'f.ts')}`)).toEqual([]);
   });
 
-  it.skip('eslint: --fix fires, bare lints, --fix-dry-run never collides with --fix', () => {
+  it('eslint: --fix fires, bare lints, --fix-dry-run never collides with --fix', () => {
     expect(parseCommand(`eslint --fix ${join(dir, 'f.ts')}`)).toEqual([
       { operation: 'modify', absolutePath: join(dir, 'f.ts'), simpleCommandIndex: 0 }
     ]);
@@ -1113,37 +1113,39 @@ describe('formatters and fixers (§5.8)', () => {
     expect(parseCommand(`eslint --fix-dry-run ${join(dir, 'f.ts')}`)).toEqual([]);
   });
 
-  it.skip('clang-format: bare emits to stdout (no touch), -i fires', () => {
+  it('clang-format: bare emits to stdout (no touch), -i fires', () => {
     expect(parseCommand(`clang-format ${join(dir, 'f.cpp')}`)).toEqual([]);
     expect(parseCommand(`clang-format -i ${join(dir, 'f.cpp')}`)).toEqual([
       { operation: 'modify', absolutePath: join(dir, 'f.cpp'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('black: bare is in-place, --check is read-only', () => {
+  it('black: bare is in-place, --check is read-only', () => {
     expect(parseCommand(`black ${join(dir, 'f.py')}`)).toEqual([
       { operation: 'modify', absolutePath: join(dir, 'f.py'), simpleCommandIndex: 0 }
     ]);
     expect(parseCommand(`black --check ${join(dir, 'f.py')}`)).toEqual([]);
   });
 
-  it.skip('ruff: check is a linter (even --fix), format is an in-place formatter', () => {
+  it('ruff: check --fix fixes, format is an in-place formatter, bare check lints', () => {
     expect(parseCommand(`ruff check ${join(dir, 'f.py')}`)).toEqual([]);
-    expect(parseCommand(`ruff check --fix ${join(dir, 'f.py')}`)).toEqual([]);
+    expect(parseCommand(`ruff check --fix ${join(dir, 'f.py')}`)).toEqual([
+      { operation: 'modify', absolutePath: join(dir, 'f.py'), simpleCommandIndex: 0 }
+    ]);
     expect(parseCommand(`ruff format ${join(dir, 'f.py')}`)).toEqual([
       { operation: 'modify', absolutePath: join(dir, 'f.py'), simpleCommandIndex: 0 }
     ]);
     expect(parseCommand(`ruff format --check ${join(dir, 'f.py')}`)).toEqual([]);
   });
 
-  it.skip('deno fmt fires; --check is read-only', () => {
+  it('deno fmt fires; --check is read-only', () => {
     expect(parseCommand(`deno fmt ${join(dir, 'f.ts')}`)).toEqual([
       { operation: 'modify', absolutePath: join(dir, 'f.ts'), simpleCommandIndex: 0 }
     ]);
     expect(parseCommand(`deno fmt --check ${join(dir, 'f.ts')}`)).toEqual([]);
   });
 
-  it.skip('gofmt: -w fires, -l is read-only, bare emits to stdout', () => {
+  it('gofmt: -w fires, -l is read-only, bare emits to stdout', () => {
     expect(parseCommand(`gofmt -w ${join(dir, 'f.go')}`)).toEqual([
       { operation: 'modify', absolutePath: join(dir, 'f.go'), simpleCommandIndex: 0 }
     ]);
@@ -1151,88 +1153,88 @@ describe('formatters and fixers (§5.8)', () => {
     expect(parseCommand(`gofmt ${join(dir, 'f.go')}`)).toEqual([]);
   });
 
-  it.skip('rustfmt: bare is in-place, --check is read-only', () => {
+  it('rustfmt: bare is in-place, --check is read-only', () => {
     expect(parseCommand(`rustfmt ${join(dir, 'f.rs')}`)).toEqual([
       { operation: 'modify', absolutePath: join(dir, 'f.rs'), simpleCommandIndex: 0 }
     ]);
     expect(parseCommand(`rustfmt --check ${join(dir, 'f.rs')}`)).toEqual([]);
   });
 
-  it.skip('terraform fmt fires; -check is read-only', () => {
+  it('terraform fmt fires; -check is read-only', () => {
     expect(parseCommand(`terraform fmt ${join(dir, 'f.tf')}`)).toEqual([
       { operation: 'modify', absolutePath: join(dir, 'f.tf'), simpleCommandIndex: 0 }
     ]);
     expect(parseCommand(`terraform fmt -check ${join(dir, 'f.tf')}`)).toEqual([]);
   });
 
-  it.skip('isort: bare is in-place, --check-only is read-only', () => {
+  it('isort: bare is in-place, --check-only is read-only', () => {
     expect(parseCommand(`isort ${join(dir, 'f.py')}`)).toEqual([
       { operation: 'modify', absolutePath: join(dir, 'f.py'), simpleCommandIndex: 0 }
     ]);
     expect(parseCommand(`isort --check-only ${join(dir, 'f.py')}`)).toEqual([]);
   });
 
-  it.skip('biome: check --write fires, bare check lints', () => {
+  it('biome: check --write fires, bare check lints', () => {
     expect(parseCommand(`biome check --write ${join(dir, 'f.ts')}`)).toEqual([
       { operation: 'modify', absolutePath: join(dir, 'f.ts'), simpleCommandIndex: 0 }
     ]);
     expect(parseCommand(`biome check ${join(dir, 'f.ts')}`)).toEqual([]);
   });
 
-  it.skip('shfmt: -w fires, -d is read-only', () => {
+  it('shfmt: -w fires, -d is read-only', () => {
     expect(parseCommand(`shfmt -w ${join(dir, 'f.sh')}`)).toEqual([
       { operation: 'modify', absolutePath: join(dir, 'f.sh'), simpleCommandIndex: 0 }
     ]);
     expect(parseCommand(`shfmt -d ${join(dir, 'f.sh')}`)).toEqual([]);
   });
 
-  it.skip('yapf: -i fires, --diff is read-only', () => {
+  it('yapf: -i fires, --diff is read-only', () => {
     expect(parseCommand(`yapf -i ${join(dir, 'f.py')}`)).toEqual([
       { operation: 'modify', absolutePath: join(dir, 'f.py'), simpleCommandIndex: 0 }
     ]);
     expect(parseCommand(`yapf --diff ${join(dir, 'f.py')}`)).toEqual([]);
   });
 
-  it.skip('autopep8: -i fires, -d is read-only', () => {
+  it('autopep8: -i fires, -d is read-only', () => {
     expect(parseCommand(`autopep8 -i ${join(dir, 'f.py')}`)).toEqual([
       { operation: 'modify', absolutePath: join(dir, 'f.py'), simpleCommandIndex: 0 }
     ]);
     expect(parseCommand(`autopep8 -d ${join(dir, 'f.py')}`)).toEqual([]);
   });
 
-  it.skip('goimports: -w fires, bare emits to stdout', () => {
+  it('goimports: -w fires, bare emits to stdout', () => {
     expect(parseCommand(`goimports -w ${join(dir, 'f.go')}`)).toEqual([
       { operation: 'modify', absolutePath: join(dir, 'f.go'), simpleCommandIndex: 0 }
     ]);
     expect(parseCommand(`goimports ${join(dir, 'f.go')}`)).toEqual([]);
   });
 
-  it.skip('dprint: fmt fires, check is read-only', () => {
+  it('dprint: fmt fires, check is read-only', () => {
     expect(parseCommand(`dprint fmt ${join(dir, 'f.ts')}`)).toEqual([
       { operation: 'modify', absolutePath: join(dir, 'f.ts'), simpleCommandIndex: 0 }
     ]);
     expect(parseCommand(`dprint check ${join(dir, 'f.ts')}`)).toEqual([]);
   });
 
-  it.skip('npx prettier --write fires through the transparent wrapper', () => {
+  it('npx prettier --write fires through the transparent wrapper', () => {
     expect(parseCommand(`npx prettier --write ${join(dir, 'f.ts')}`)).toEqual([
       { operation: 'modify', absolutePath: join(dir, 'f.ts'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('npx --no-install eslint --fix fires', () => {
+  it('npx --no-install eslint --fix fires', () => {
     expect(parseCommand(`npx --no-install eslint --fix ${join(dir, 'f.ts')}`)).toEqual([
       { operation: 'modify', absolutePath: join(dir, 'f.ts'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('npx -y prettier --write fires', () => {
+  it('npx -y prettier --write fires', () => {
     expect(parseCommand(`npx -y prettier --write ${join(dir, 'f.ts')}`)).toEqual([
       { operation: 'modify', absolutePath: join(dir, 'f.ts'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('yarn / pnpm exec / bunx / npm exec wrappers strip cleanly', () => {
+  it('yarn / pnpm exec / bunx / npm exec wrappers strip cleanly', () => {
     expect(parseCommand(`yarn prettier --write ${join(dir, 'f.ts')}`)).toEqual([
       { operation: 'modify', absolutePath: join(dir, 'f.ts'), simpleCommandIndex: 0 }
     ]);
@@ -1247,15 +1249,15 @@ describe('formatters and fixers (§5.8)', () => {
     ]);
   });
 
-  it.skip('a quoted npx invocation (string-form) is unresolved', () => {
+  it('a quoted npx invocation (string-form) is unresolved', () => {
     expectUnresolved(`npx "prettier --write ${join(dir, 'f.ts')}"`, 'formatter-write');
   });
 
-  it.skip('npx --package=foo prettier --write f is unresolved (argv altered)', () => {
+  it('npx --package=foo prettier --write f is unresolved (argv altered)', () => {
     expectUnresolved(`npx --package=foo prettier --write ${join(dir, 'f.ts')}`, 'formatter-write');
   });
 
-  it.skip('an unknown executable with --write fires nothing', () => {
+  it('an unknown executable with --write fires nothing', () => {
     expect(parseCommand(`somefixer --write ${join(dir, 'f.ts')}`)).toEqual([]);
   });
 });
