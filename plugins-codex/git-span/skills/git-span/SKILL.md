@@ -10,11 +10,12 @@ git span drift [<name-or-path>] [--fix] [--no-exit-code] [--format human|porcela
 git span add <name> <anchor>...          # declare or refresh; anchor = path or path#Lstart-Lend
 git span why <name> ["..."]           # bare = read; positional or stdin = write
 git span remove <name> <anchor>...       # retire a superseded anchor (pair with add)
+git span replace <name> <old-anchor> <new-anchor>   # one atomic swap: retire old, install new, or nothing
 git span delete <name>                   # whole span gone; NAME only, no anchor args
 git span list [<target>...] [--oneline]  # positional filter on name or path
 git span show <name>                     # == bare `git span <name>`
 ```
-After any `add`/`remove`/`why`/`delete`: `git add .span && git commit -m "..."`.
+After any `add`/`replace`/`remove`/`why`/`delete`: `git add .span && git commit -m "..."`.
 
 ## Same-commit workflow
 
@@ -35,10 +36,15 @@ locate a changed anchor's new extent; `history` does not report that destination
 - `drift --fix` only clears `Moved` anchors and whitespace-only `Changed` anchors. Real
   content drift stays reported on purpose — re-anchor directly with `add`; re-running
   `--fix` again will not change the result.
-- `add` never retires what it supersedes. Moving an anchor to a new path/range is
-  `remove <old-anchor>` then `add <new-anchor>`; skip `remove` and `drift` reports the old
-  one as `Moved` forever.
-- A whole-file anchor stays whole-file on refresh: re-add the same bare path; never narrow it to a range because edited code looks locally narrower. The exception is a file whose line count no longer reaches its anchored end — the extent genuinely contracted, so retire the old range and re-add at the file's current line count.
+- `add` never retires what it supersedes. Changing an anchor's identity (new path or
+  range) is one atomic swap — `replace <name> <old-anchor> <new-anchor>`; `replace`
+  refuses a same-identity swap (hash refresh stays `add`'s job) and never falls back to
+  additive behavior. Skip the retire half and `drift` reports the old one as `Moved`
+  forever.
+- A whole-file anchor stays whole-file on refresh: re-add the same bare path; never
+  narrow it to a range because edited code looks locally narrower. The exception is a
+  file whose line count no longer reaches its anchored end — the extent genuinely
+  contracted, so swap it with `git span replace` to the file's current line count.
 - Anchor end-line must equal the file's *current* line count — `add` rejects
   `end=N exceeds file line count (M)`. Run `wc -l <path>` right before writing
   `#Lstart-Lend`, especially right after editing that file.
@@ -87,8 +93,7 @@ git span history <name>                   # if intent or authority is unclear; c
 # Moved (same content, new path):  git span drift --fix <name>   suffices
 # Changed, anchors still agree:    keep the SAME range unless the file's line count moved
 # Changed, anchors disagree: conform the side a confirmed authority or satisfied gate decides
-git span remove <name> <old-anchor>       # only if path or range actually changed
-git span add <name> <new-anchor>          # wc -l <path> first
+git span replace <name> <old-anchor> <new-anchor>   # only if path or range actually changed; validates <new-anchor> like add (wc -l <path> first)
 git span why <name> "..."              # if relationship/lifecycle meaning changed
 git span drift <name>                     # must exit 0 before commit
 git add .span && git commit -m "..."

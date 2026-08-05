@@ -43,6 +43,22 @@ git span remove <name> <anchors>...
 
 Removes anchors from a span, editing the span file under the span root. Each anchor must match an existing one on the span exactly. Does not commit — run `git add .span && git commit` afterward.
 
+### replace
+
+```bash
+git span replace <name> <old-anchor> <new-anchor>
+```
+
+Replaces exactly one anchor on a span with another address, in a single atomic transaction: either the old identity is retired and the validated new identity is installed together, or nothing changes — there is never an intermediate state with both or neither. The new anchor passes the same validation as `add` (path safety, existence, gitignored/rewritten-target rejection, line-count extent), so a poisoned declaration is never written.
+
+Refusals (all leave the declaration byte-for-byte unchanged, exit 1):
+
+- `old-anchor` matches no anchor on the span, or matches more than one record (a hand-edited or legacy declaration can hold two same-identity records with different hashes — no canonical choice exists).
+- `old-anchor` and `new-anchor` are the same identity — in-place hash refresh is `add`'s job; `replace` changes identity.
+- `new-anchor` is already tracked by the span — the swap would leave two same-identity records behind; retire the old anchor with `remove` instead.
+
+On success the output names the retired and installed addresses and reports whether the span is drift-free; `--format json` carries `span`, `retired`, `installed`, `drift_free`, and the `drifted` addresses. Does not commit — run `git add .span && git commit` afterward.
+
 ### why
 
 ```bash

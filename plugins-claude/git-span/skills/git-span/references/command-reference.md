@@ -110,6 +110,7 @@ never read it as evidence that a span has no history or no drift.
 ```bash
 git span add <name> <anchor>... [--at <commit-ish>]   # write anchors into .span/<name>
 git span remove <name> <anchor>...                    # remove anchors from .span/<name>
+git span replace <name> <old-anchor> <new-anchor>     # atomic swap: retire old, install new, or nothing
 git span why <name>                                   # print current why
 git span why <name> [<text>]                       # write a new why into .span/<name>
 git add .span && git commit                           # persist the edits

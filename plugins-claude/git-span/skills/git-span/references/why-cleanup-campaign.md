@@ -236,7 +236,7 @@ definition, so only the failed unit needs rework.
 | Rewrite/write why | `git span why <name> "..."` |
 | Re-anchor, pure line-shift | `git span drift --fix` |
 | Refresh changed content at the same logical address | `git span add <name> <path#Lsame>` — preserve the exact existing anchor shape |
-| Re-anchor, path/range identity changed | `git span remove <name> <path#Lold>` then `git span add <name> <path#Lnew>` — add appends, never replaces |
+| Re-anchor, path/range identity changed | `git span replace <name> <path#Lold> <path#Lnew>` — one atomic swap, or nothing |
 | Re-hash whole-file anchor | `git span add <name> <path>` |
 | Consolidate duplicates | `git span add` the loser's anchors onto the keeper, then `git span delete <loser>`; merge the whys into one definition |
 | Rename | `git mv .span/<old> .span/<new>` |
