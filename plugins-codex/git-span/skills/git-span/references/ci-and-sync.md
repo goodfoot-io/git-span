@@ -34,8 +34,9 @@ git span drift --no-exit-code --format json > span-report.json
 counted, not blocked. `--format json` emits one JSON object —
 `{"findings": [...], "schema_version": 3, "span": "...", "clean": true|false}` —
 not newline-delimited records. The document is always emitted: a clean scan
-carries `"clean": true, "findings": []` rather than empty stdout, so a parser
-can distinguish clean from no output.
+carries `"clean": true` rather than empty stdout, so a parser can distinguish
+clean from no output; informational `RESOLVED_PENDING_COMMIT` findings may
+still be listed, so `clean` does not imply `findings: []`.
 
 ## Setup audit
 

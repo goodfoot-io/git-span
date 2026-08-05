@@ -147,7 +147,7 @@ Reports anchors whose content has drifted from their anchored state. `paths` may
 
 Key flags:
 
-- `--format <human|porcelain|json>` — default `human`. On a clean scan, `human` prints a summary line (`0 drift across M spans (K anchors checked)`); when drift is found it prints per-span listings (each anchor, then the span's why) instead. `json` always emits a document: a clean scan carries `"clean": true, "findings": []` (schema_version 3) — never empty stdout — and a drifted scan carries `"clean": false` plus the findings. `porcelain` still prints nothing on a clean scan (no header row).
+- `--format <human|porcelain|json>` — default `human`. On a clean scan, `human` prints a summary line (`0 drift across M spans (K anchors checked)`); when drift is found it prints per-span listings (each anchor, then the span's why) instead. `json` always emits a document: a clean scan carries `"clean": true` (schema_version 3) — never empty stdout; informational `RESOLVED_PENDING_COMMIT` findings may still be listed, so `clean` does not imply `findings: []` — and a drifted scan carries `"clean": false` plus the findings. `porcelain` still prints nothing on a clean scan (no header row).
 - `--no-exit-code` — exit 0 even when drift is found (report-only mode). Does not mask the interior-anchor integrity case below.
 - `--fix` — re-anchors drift in place. See the callout below for what it actually does. Only supported with `--format human`.
 
