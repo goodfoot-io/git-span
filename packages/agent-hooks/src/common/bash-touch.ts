@@ -411,16 +411,17 @@ export async function runBashTouches(
   // inconclusive with an 'exists' target (the advisory residual class:
   // existence-gated families fire and heal/surface; phantom deletes never
   // fire). A harness-supplied non-zero exit code suppresses the advisory
-  // class too: the command failed, so the existence-gated write (sed -i,
-  // patch, git apply, formatter) did not complete. That premise is exact
-  // for atomic failures and over-suppresses the non-atomic writers that
-  // modify before failing (patch applying earlier hunks, `git apply
-  // --reject`, formatters writing fixes then exiting nonzero) — the
-  // wrote-but-nonzero residue pinned by the gate's tests (see
-  // bashResponseExitCode); a zero or absent code proceeds, and
-  // content-verified decisive passes fire regardless (fail-open, plan §4).
-  // Guard-only commands have no touches. Explained fails and decisive
-  // fails never reach an executor.
+  // class too, bounded by two documented-residue faces (see
+  // bashResponseExitCode): the code is the compound's, so a masked failure
+  // (`git apply p.diff || echo ok` exiting 0) suppresses nothing and a
+  // trailing failure (`sed -i s/a/b/ f; false`) suppresses an earlier real
+  // write — and a nonzero code does not prove the write did not happen for
+  // the non-atomic writers that modify before failing (patch applying
+  // earlier hunks, `git apply --reject`, formatters writing fixes then
+  // exiting nonzero). A zero or absent code proceeds, and content-verified
+  // decisive passes fire regardless (fail-open, plan §4). Guard-only
+  // commands have no touches. Explained fails and decisive fails never
+  // reach an executor.
   const blocks: string[] = [];
   for (const idx of commandOrder) {
     if (skipped.has(idx)) continue;

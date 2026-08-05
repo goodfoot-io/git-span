@@ -663,6 +663,23 @@ describe('bash-write-integration — in-place editors (sed -i, patch, git apply)
     expect(res.fixPaths).toEqual(['nf.txt']);
     expect(readRel(r.root, 'nf.txt')).toBe('content\n');
   });
+
+  it('re-creating a deleted spanned path with a git-less new-file patch fires the create-overwrite touch (the user-visible miss case)', async () => {
+    const r = repo();
+    seedTrackedSpan(r.root, 'a.txt', 'l1\nl2\nl3\nl4\nl5\n', 'recreate-patch-span');
+    // A genuinely new file carries no span anchors, so a silent miss there
+    // is invisible — the re-creation of a still-spanned path is where the
+    // round-2 finding was user-visible: `git span drift` shows the dangling
+    // "a.txt#L1-L5" until the touch fires. The fix call below IS that
+    // surfaced drift (fake executors capture the path the hook heals).
+    expect(bashRun('rm a.txt', r.root)).toBe(0);
+    writeRel(r.root, 'new.diff', '--- /dev/null\n+++ a.txt\n@@ -0,0 +1,5 @@\n+n1\n+n2\n+n3\n+n4\n+n5\n');
+    expect(bashRun('patch -p0 < new.diff', r.root)).toBe(0);
+    const res = await runPipeline('patch -p0 < new.diff', r.root);
+    expect(parsedOps(res.matches, r.root)).toEqual([{ op: 'create-overwrite', rel: 'a.txt' }]);
+    expect(res.fixPaths).toEqual(['a.txt']);
+    expect(readRel(r.root, 'a.txt')).toBe('n1\nn2\nn3\nn4\nn5\n');
+  });
 });
 
 describe('bash-write-integration — restore/checkout pathspecs', () => {
@@ -1117,6 +1134,32 @@ describe('bash-write-integration — negative and failure cases (plan §Verifica
     // touch for this real write is suppressed by design, pinned here so the
     // boundary stays visible.
     expect(res.fixPaths).toEqual([]);
+  });
+
+  it('pinned residue: the compound face — a trailing failure suppresses an earlier real existence-gated write (sed wrote, the compound failed)', async () => {
+    const r = repo();
+    seedTrackedSpan(r.root, 'a.txt', 'one\ntwo\n', 'compound-residue-span');
+    // sed -i genuinely writes a.txt, then `false` fails: the compound's
+    // exit code is 1 while the earlier write really happened.
+    expect(bashRun("sed -i 's/one/ONE/' a.txt; false", r.root)).toBe(1);
+    expect(readRel(r.root, 'a.txt')).toBe('ONE\ntwo\n');
+    const res = await runPipeline("sed -i 's/one/ONE/' a.txt; false", r.root, { exitCode: 1 });
+    // Same documented residue as the patch face: the advisory class is
+    // suppressed by the compound's non-zero code even though this write
+    // demonstrably occurred (file state above proves it).
+    expect(res.fixPaths).toEqual([]);
+  });
+
+  it('a content-verified decisivePass fires despite a non-zero exit code (echo z > f; false)', async () => {
+    const r = repo();
+    seedTrackedSpan(r.root, 'f.txt', 'old\n', 'content-immune-span');
+    expect(bashRun('echo z > f.txt; false', r.root)).toBe(1);
+    const res = await runPipeline('echo z > f.txt; false', r.root, { exitCode: 1 });
+    // The exit-code suppression is bounded to the gate-inconclusive
+    // advisory class: the echo's exact-content gate passes on the real
+    // 'z\n' post-command, so the write fires regardless of the code.
+    expect(res.fixPaths).toEqual(['f.txt']);
+    expect(readRel(r.root, 'f.txt')).toBe('z\n');
   });
 });
 
