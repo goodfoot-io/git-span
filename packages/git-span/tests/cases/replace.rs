@@ -6,9 +6,9 @@
 //! Errors leave the declaration byte-for-byte unchanged; success leaves
 //! no intermediate state in which both or neither anchor is present.
 //!
-//! Phase 2 of the tdd-bootstrap sequence: every test here is `#[ignore]`d
-//! against the `run_replace` stub and unskipped in Phase 3 as the
-//! implementation lands.
+//! Contract-first (tdd-bootstrap): these checks were written skipped
+//! against the `run_replace` stub, then unskipped as the transaction
+//! landed.
 
 use crate::support::TestRepo;
 
@@ -39,7 +39,6 @@ fn span_bytes(repo: &TestRepo, name: &str) -> Result<Option<Vec<u8>>> {
 
 /// Range → range replacement: the old identity is gone, the new identity
 /// is present, and the output names both addresses.
-#[ignore]
 #[test]
 fn replace_range_to_range_retires_old_installs_new() -> Result<()> {
     let repo = TestRepo::seeded()?;
@@ -79,7 +78,6 @@ fn replace_range_to_range_retires_old_installs_new() -> Result<()> {
 }
 
 /// Whole-file → range replacement.
-#[ignore]
 #[test]
 fn replace_whole_file_to_range() -> Result<()> {
     let repo = TestRepo::seeded()?;
@@ -106,7 +104,6 @@ fn replace_whole_file_to_range() -> Result<()> {
 }
 
 /// Range → whole-file replacement.
-#[ignore]
 #[test]
 fn replace_range_to_whole_file() -> Result<()> {
     let repo = TestRepo::seeded()?;
@@ -138,7 +135,6 @@ fn replace_range_to_whole_file() -> Result<()> {
 
 /// The exact-identity contract: replacing an anchor with its own address
 /// is refused, with `git span add` named as the hash-refresh path.
-#[ignore]
 #[test]
 fn replace_same_identity_rejected() -> Result<()> {
     let repo = TestRepo::seeded()?;
@@ -161,7 +157,6 @@ fn replace_same_identity_rejected() -> Result<()> {
 }
 
 /// A missing old identity is reported as such, never silently additive.
-#[ignore]
 #[test]
 fn replace_missing_old_anchor_fails_closed() -> Result<()> {
     let repo = TestRepo::seeded()?;
@@ -185,12 +180,12 @@ fn replace_missing_old_anchor_fails_closed() -> Result<()> {
 
 /// Two records sharing the old identity (hand-edited or legacy file) make
 /// the old identity ambiguous; replace refuses rather than picking one.
-#[ignore]
 #[test]
 fn replace_duplicate_old_records_rejected() -> Result<()> {
     let repo = TestRepo::seeded()?;
     // Hand-write a span with two same-identity records (different hashes).
-    std::fs::create_dir_all(repo.path().join(".span"))?;
+    let span_p = span_path(&repo, "test/race");
+    std::fs::create_dir_all(span_p.parent().unwrap())?;
     std::fs::write(
         span_path(&repo, "test/race"),
         "file1.txt#L1-L5 rk64:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n\
@@ -216,7 +211,6 @@ fn replace_duplicate_old_records_rejected() -> Result<()> {
 }
 
 /// An unparseable new address fails before any mutation.
-#[ignore]
 #[test]
 fn replace_invalid_new_address_rejected() -> Result<()> {
     let repo = TestRepo::seeded()?;
@@ -235,7 +229,6 @@ fn replace_invalid_new_address_rejected() -> Result<()> {
 
 /// The new target must pass the same filtered-content gate as `add`: a
 /// gitignored path is permanently unresolvable through git's layers.
-#[ignore]
 #[test]
 fn replace_gitignored_new_anchor_rejected() -> Result<()> {
     let repo = TestRepo::new()?;
@@ -268,7 +261,6 @@ fn replace_gitignored_new_anchor_rejected() -> Result<()> {
 }
 
 /// A nonexistent new path is rejected up front.
-#[ignore]
 #[test]
 fn replace_nonexistent_new_path_rejected() -> Result<()> {
     let repo = TestRepo::seeded()?;
@@ -290,9 +282,33 @@ fn replace_nonexistent_new_path_rejected() -> Result<()> {
     Ok(())
 }
 
+/// A swap onto an identity the span already tracks is refused: two
+/// same-identity records (the writer sorts but does not dedupe) would
+/// recreate the ambiguity `replace_duplicate_old_records_rejected`
+/// refuses to resolve.
+#[test]
+fn replace_new_identity_already_tracked_rejected() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.span_stdout(["add", "test/race", "file1.txt#L1-L5", "file1.txt#L6-L10"])?;
+    let before = span_bytes(&repo, "test/race")?;
+
+    let out = repo.run_span(["replace", "test/race", "file1.txt#L1-L5", "file1.txt#L6-L10"])?;
+    assert_eq!(out.status.code(), Some(1), "already-tracked new identity must fail");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("file1.txt#L6-L10") && stderr.contains("test/race"),
+        "the diagnostic must name the new identity and span, got: {stderr}"
+    );
+    assert_eq!(
+        span_bytes(&repo, "test/race")?,
+        before,
+        "a rejected replace must not touch the declaration"
+    );
+    Ok(())
+}
+
 /// A new range beyond the file's line count is rejected (the same
 /// `add`-time extent check).
-#[ignore]
 #[test]
 fn replace_new_range_exceeds_line_count_rejected() -> Result<()> {
     let repo = TestRepo::seeded()?;
@@ -317,7 +333,6 @@ fn replace_new_range_exceeds_line_count_rejected() -> Result<()> {
 /// serializes the read-modify-write cycles. Mirrors the
 /// `concurrent_add_race` model (no Barrier — see that test's note about
 /// the shared temp-file name).
-#[ignore]
 #[test]
 fn concurrent_replace_and_add_no_lost_update() -> Result<()> {
     let repo = TestRepo::seeded()?;
@@ -378,7 +393,6 @@ fn concurrent_replace_and_add_no_lost_update() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// `--format json` carries the same state as the human report.
-#[ignore]
 #[test]
 fn replace_json_output_carries_state() -> Result<()> {
     let repo = TestRepo::seeded()?;
@@ -403,7 +417,6 @@ fn replace_json_output_carries_state() -> Result<()> {
 
 /// The drift-free report is honest about OTHER anchors: when a second
 /// anchor has drifted, the report says so and names it.
-#[ignore]
 #[test]
 fn replace_reports_drift_when_other_anchor_drifted() -> Result<()> {
     let repo = TestRepo::seeded()?;
@@ -440,7 +453,6 @@ fn replace_reports_drift_when_other_anchor_drifted() -> Result<()> {
 /// `replace` is a reserved token: it cannot be used as a span name, and
 /// `git span replace` routes to the subcommand (clap usage error, not a
 /// span-not-found).
-#[ignore]
 #[test]
 fn replace_is_reserved_span_name() -> Result<()> {
     let repo = TestRepo::seeded()?;

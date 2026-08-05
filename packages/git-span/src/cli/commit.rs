@@ -10,7 +10,7 @@
 
 use crate::cli::error::from_lib_error;
 use crate::cli::format::{IDEMPOTENT_TAG, format_anchor_address};
-use crate::cli::{AddArgs, CliError, NextStep, RemoveArgs, ReplaceArgs, WhyArgs};
+use crate::cli::{AddArgs, CliError, NextStep, RemoveArgs, ReplaceArgs, ReplaceFormat, WhyArgs};
 use crate::git::IndexEntrySnapshot;
 use crate::span_file::AnchorRecord;
 use crate::span_file::SpanFile;
@@ -798,18 +798,302 @@ pub fn run_remove(repo: &gix::Repository, args: RemoveArgs, span_root: &str) -> 
 // replace
 // ---------------------------------------------------------------------------
 
-pub fn run_replace(_repo: &gix::Repository, args: ReplaceArgs, _span_root: &str) -> Result<i32> {
+pub fn run_replace(repo: &gix::Repository, args: ReplaceArgs, span_root: &str) -> Result<i32> {
     crate::validation::validate_span_name(&args.name)?;
-    Err(CliError {
-        subcommand: "replace",
-        summary: "`git span replace` is not implemented yet.".into(),
-        what_happened: "The replacement transaction is under construction.".into(),
-        next_steps: vec![NextStep::Bash(format!(
-            "git span add {} {}",
-            args.name, args.new_anchor
-        ))],
+
+    // Parse both addresses first; fail-closed with no partial state.
+    let (old_path, old_extent) = {
+        let _perf = crate::perf::span("replace.parse-anchors");
+        parse_address(&args.old_anchor)
+            .ok_or_else(|| invalid_anchor_error("replace", &args.old_anchor))?
+    };
+    let (new_path, new_extent) =
+        parse_address(&args.new_anchor).ok_or_else(|| invalid_anchor_error("replace", &args.new_anchor))?;
+
+    let (old_start, old_end) = match &old_extent {
+        AnchorExtent::LineRange { start, end } => (*start, *end),
+        AnchorExtent::WholeFile => (0, 0),
+    };
+    let (new_start, new_end) = match &new_extent {
+        AnchorExtent::LineRange { start, end } => (*start, *end),
+        AnchorExtent::WholeFile => (0, 0),
+    };
+
+    // Exact-identity contract: an anchor replaced with its own address is
+    // `git span add`'s job (the in-place `Resolved` hash refresh), not
+    // `replace`'s. Refusing keeps `replace` crisp — it changes identity,
+    // and never silently degrades into additive behavior.
+    if old_path == new_path && old_start == new_start && old_end == new_end {
+        return Err(CliError {
+            subcommand: "replace",
+            summary: format!(
+                "`{}` is already the identity of the anchor being replaced.",
+                args.old_anchor
+            ),
+            what_happened: "The old and new address are the same. `git span add` refreshes \
+                an anchor's content hash in place; `replace` exists to change identity."
+                .to_string(),
+            next_steps: vec![NextStep::Bash(format!(
+                "git span add {} {}",
+                args.name, args.new_anchor
+            ))],
+        }
+        .into());
     }
-    .into())
+
+    // New-target validation reuses the full `add` pipeline so a poisoned
+    // declaration is never written: anchor-path safety, span-root
+    // exclusion, the index-snapshot existence probe, the stage-time
+    // precheck (gitignored / rewritten targets), and the git-normalized
+    // content hash. All of this runs *before* the lock is taken and any
+    // read happens, mirroring `run_add`'s fail-closed ordering.
+    let index_snapshot = crate::git::index_entries(repo).map_err(|e| CliError {
+        subcommand: "replace",
+        summary: "failed to read the git index.".into(),
+        what_happened: e.to_string(),
+        next_steps: vec![NextStep::Bash("git status".into())],
+    })?;
+    {
+        let _perf = crate::perf::span("replace.validate-targets");
+        let workdir = repo
+            .workdir()
+            .ok_or_else(|| anyhow::anyhow!("bare repository is not supported"))?
+            .to_path_buf();
+        crate::span_root::validate_repo_relative_path("anchor path", &new_path).map_err(|e| {
+            CliError {
+                subcommand: "replace",
+                summary: format!("`{new_path}` is not a valid anchor path."),
+                what_happened: e.to_string(),
+                next_steps: vec![NextStep::Prose(
+                    "Anchor paths must be repo-relative, must not contain \
+                     `..`, and must not be inside `.git`."
+                        .into(),
+                )],
+            }
+        })?;
+
+        crate::span_root::reject_anchor_inside_span_root(span_root, &new_path).map_err(|e| {
+            CliError {
+                subcommand: "replace",
+                summary: format!("`{new_path}` is not a valid anchor path."),
+                what_happened: e.to_string(),
+                next_steps: vec![NextStep::Prose(format!(
+                    "Anchor paths must not be inside the span root `{span_root}`. \
+                     Choose a source file outside the span directory."
+                ))],
+            }
+        })?;
+
+        // Existence: tracked in the index or present in the worktree. A
+        // path with no content to hash cannot be anchored.
+        let exists = {
+            let tracked = index_snapshot.iter().any(|en| en.path == new_path);
+            tracked || workdir.join(&new_path).exists()
+        };
+        if !exists {
+            return Err(CliError {
+                subcommand: "replace",
+                summary: format!("`{new_path}` does not exist."),
+                what_happened: format!(
+                    "`{new_path}` is neither tracked nor present in the \
+                     worktree, so there is no content to anchor."
+                ),
+                next_steps: vec![
+                    NextStep::Bash(format!("ls {new_path}")),
+                    NextStep::Prose("Create the file or correct the anchor path.".into()),
+                ],
+            }
+            .into());
+        }
+
+        validate_add_target(repo, std::path::Path::new(&new_path), &new_extent, &index_snapshot)
+            .map_err(|err| {
+                let next_steps = match &err {
+                    crate::types::AddPrecheckError::GitignoredPath { .. } => vec![
+                        NextStep::Prose(
+                            "git-span tracks content through git and cannot resolve a path \
+                             git never sees. Un-ignore the path (edit `.gitignore`) or anchor \
+                             a committed file instead."
+                                .into(),
+                        ),
+                        NextStep::Bash(format!("git check-ignore -v {new_path}")),
+                    ],
+                    _ => vec![NextStep::Prose(
+                        "Fix the path or choose a different extent.".into(),
+                    )],
+                };
+                from_lib_error(
+                    "replace",
+                    format!("anchor precheck failed for `{new_path}`."),
+                    err,
+                    next_steps,
+                )
+            })?;
+    }
+
+    // Acquire an exclusive advisory lock on the span file before reading
+    // to prevent concurrent read-modify-write races (lost-update).
+    let _replace_lock = {
+        let _perf = crate::perf::span("replace.lock-span");
+        lock_span_file(repo, span_root, &args.name)?
+    };
+
+    // Read the current worktree span file.
+    let mut span_file = {
+        let _perf = crate::perf::span("replace.read-current");
+        read_worktree_span(repo, span_root, &args.name)?
+    };
+
+    // Count records matching the old identity. Zero is a plain
+    // missing-anchor error; more than one is an ambiguity — the writer
+    // sorts but does not dedupe, so a hand-edited or legacy declaration
+    // can hold two same-identity records whose hashes differ, and no
+    // canonical choice exists.
+    let matches: Vec<usize> = span_file
+        .anchors
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| {
+            a.path == old_path && a.start_line == old_start && a.end_line == old_end
+        })
+        .map(|(i, _)| i)
+        .collect();
+    match matches.len() {
+        0 => {
+            return Err(CliError {
+                subcommand: "replace",
+                summary: format!("`{}` is not an anchor on `{}`.", args.old_anchor, args.name),
+                what_happened: format!(
+                    "`{}` does not currently track that anchor, so there is nothing to replace.",
+                    args.name,
+                ),
+                next_steps: vec![NextStep::Bash(format!("git span show {}", args.name))],
+            }
+            .into())
+        }
+        n if n > 1 => {
+            return Err(CliError {
+                subcommand: "replace",
+                summary: format!("`{}` is ambiguous on span `{}`.", args.old_anchor, args.name),
+                what_happened: format!(
+                    "{n} records in the declaration share this identity with different \
+                     content hashes, so no canonical choice exists. Fix the declaration \
+                     by hand, then retry."
+                ),
+                next_steps: vec![NextStep::Bash(format!("git span show {}", args.name))],
+            }
+            .into())
+        }
+        _ => {}
+    }
+
+    // A swap onto an identity the span already tracks would leave two
+    // same-identity records behind — the exact ambiguity state rejected
+    // above. Retiring the old anchor on its own is the one-command path.
+    if span_file.anchors.iter().any(|a| {
+        a.path == new_path && a.start_line == new_start && a.end_line == new_end
+    }) {
+        return Err(CliError {
+            subcommand: "replace",
+            summary: format!("`{}` is already an anchor on `{}`.", args.new_anchor, args.name),
+            what_happened: "The new identity is already tracked, so a swap would leave two \
+                records with the same identity (the writer sorts but does not dedupe)."
+                .to_string(),
+            next_steps: vec![NextStep::Bash(format!(
+                "git span remove {} {}",
+                args.name, args.old_anchor
+            ))],
+        }
+        .into());
+    }
+
+    // Hash the new content and mutate exactly one record — the only
+    // mutation in the transaction. `why` and every unrelated anchor are
+    // preserved.
+    let (algorithm, content_hash) = {
+        let _perf = crate::perf::span("replace.process");
+        hash_anchor_content(repo, &new_path, &new_extent, None, &index_snapshot)?
+    };
+    {
+        let idx = matches[0];
+        let record = &mut span_file.anchors[idx];
+        record.path = new_path.clone();
+        record.start_line = new_start;
+        record.end_line = new_end;
+        record.algorithm = algorithm;
+        record.content_hash = content_hash;
+    }
+
+    // Write the updated span file.
+    {
+        let _perf = crate::perf::span("replace.write-span-file");
+        write_worktree_span(repo, span_root, &args.name, &mut span_file)?;
+    }
+    // Release the lock before the read-only drift resolve.
+    drop(_replace_lock);
+
+    // --- Output -----------------------------------------------------------
+    // Resolve only the replaced span (uncached engine path, so there is
+    // no store staleness after the write) and report its drift-free
+    // state: exactly the `drift` discovery boundary, so `replace` and
+    // `drift` can never disagree about the span they both just saw.
+    // Repository-read failures get the same curated shape `drift` uses.
+    let curate = |e: crate::Error| -> anyhow::Error {
+        match e {
+            crate::Error::Git(e) => crate::cli::resolver_read_error("replace", e).into(),
+            _ => e.into(),
+        }
+    };
+    let resolved = {
+        let _perf = crate::perf::span("replace.drift-report");
+        let options = crate::types::EngineOptions::full();
+        let names = [args.name.clone()];
+        crate::resolver::resolve_named_spans(repo, span_root, &names, options).map_err(curate)?
+    };
+    let span = match resolved.into_iter().next() {
+        Some((_, Ok(span))) => span,
+        Some((_, Err(e))) => return Err(curate(e)),
+        None => unreachable!("resolve_named_spans returns one result per requested name"),
+    };
+    let drift_free = !crate::resolver::span_is_reportable_in_drift_discovery(&span);
+    let drifted_addrs: Vec<String> = span
+        .anchors
+        .iter()
+        .filter(|a| crate::resolver::anchor_status_is_drift(&a.status))
+        .map(|a| {
+            let path_str = a.anchored.path.to_string_lossy();
+            addr_from_extent(&path_str, &a.anchored.extent)
+        })
+        .collect();
+
+    match args.format {
+        ReplaceFormat::Human => {
+            println!(
+                "Replaced anchor on span `{}`: retired `{}`, installed `{}`.",
+                args.name, args.old_anchor, args.new_anchor
+            );
+            if drift_free {
+                println!("Span is drift-free.");
+            } else {
+                println!("Span is not drift-free.");
+                for addr in &drifted_addrs {
+                    println!("- drifted: `{addr}`");
+                }
+            }
+        }
+        ReplaceFormat::Json => {
+            let obj = serde_json::json!({
+                "span": args.name,
+                "retired": args.old_anchor,
+                "installed": args.new_anchor,
+                "drift_free": drift_free,
+                "drifted": drifted_addrs,
+            });
+            println!("{}", serde_json::to_string_pretty(&obj)?);
+        }
+    }
+
+    Ok(0)
 }
 
 // ---------------------------------------------------------------------------

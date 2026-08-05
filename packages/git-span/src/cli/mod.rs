@@ -414,8 +414,8 @@ pub enum ReplaceFormat {
     /// Prose summary naming the retired address, installed address, and
     /// the span's drift-free state.
     Human,
-    /// JSON carrying `retired`, `installed`, `span`, and `drift_free`
-    /// (plus `drifted` when not drift-free).
+    /// JSON carrying `span`, `retired`, `installed`, `drift_free`, and
+    /// `drifted` (the drifted anchors' addresses, empty when drift-free).
     Json,
 }
 
