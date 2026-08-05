@@ -13,7 +13,8 @@
  * `A/M/D <path>` lines) rather than pasting the literal the detector checks for.
  */
 
-import { writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Logger } from '@goodfoot/codex-hooks';
 import { describe, expect, it } from 'vitest';
@@ -67,19 +68,25 @@ interface FakeOpts {
 function makeExecutors(opts: FakeOpts = {}): {
   executors: TouchExecutors;
   calls: { fix: number; list: number; drift: number; why: number };
+  fixPaths: string[];
+  listPaths: string[];
 } {
   const calls = { fix: 0, list: 0, drift: 0, why: 0 };
+  const fixPaths: string[] = [];
+  const listPaths: string[] = [];
   const boom = () => {
     throw new Error('spawn git ENOENT');
   };
   const executors: TouchExecutors = {
-    fix: async (): Promise<TouchFixResult> => {
+    fix: async (filePath): Promise<TouchFixResult> => {
       calls.fix += 1;
+      fixPaths.push(filePath);
       if (opts.reject) boom();
       return { modified: false };
     },
-    list: async (): Promise<PorcelainRow[]> => {
+    list: async (filePath): Promise<PorcelainRow[]> => {
       calls.list += 1;
+      listPaths.push(filePath);
       if (opts.reject) boom();
       return opts.list ?? [];
     },
@@ -94,7 +101,7 @@ function makeExecutors(opts: FakeOpts = {}): {
       return 'Checkout request flow that carries a charge attempt from the browser to the Stripe-backed server.';
     }
   };
-  return { executors, calls };
+  return { executors, calls, fixPaths, listPaths };
 }
 
 function inMemoryMemoFactory(): MemoFactory {
@@ -462,6 +469,254 @@ describe('codex post-tool-use touch signal', () => {
       // scoped to the append range and this span does not surface — proving
       // the body reached the touch core.
       expect(result.stdout.hookSpecificOutput?.additionalContext).toBeUndefined();
+    } finally {
+      repo.cleanup();
+    }
+  });
+});
+
+describe('Bash write touches per family (Phase 2 — skipped acceptance checks)', () => {
+  /** Seed post-command file state: write, git-add the tracked ones, then delete the null-content ones. */
+  function seed(repo: { root: string }, files: Array<[string, string | null]>, tracked: string[] = []): void {
+    for (const [rel, content] of files) {
+      if (content !== null) writeFileSync(join(repo.root, rel), content);
+    }
+    if (tracked.length > 0) execFileSync('git', ['add', ...tracked], { cwd: repo.root });
+    for (const [rel, content] of files) {
+      if (content === null) rmSync(join(repo.root, rel), { force: true });
+    }
+  }
+
+  function bashInput(repo: { root: string }, command: string): Record<string, unknown> {
+    return {
+      ...postInput(repo.root, null),
+      tool_name: 'Bash',
+      tool_input: { command }
+    };
+  }
+
+  it.skip('redirection: echo hello > f produces a whole-file write touch on f', async () => {
+    const repo = makeTempRepo();
+    try {
+      seed(repo, [['f.txt', 'hello\n']]);
+      const { executors, fixPaths } = makeExecutors();
+      const handler = createHandler(executors, inMemoryMemoFactory());
+
+      await handler(bashInput(repo, `echo hello > ${join(repo.root, 'f.txt')}`) as never, { logger } as never);
+
+      expect(fixPaths).toEqual([join(repo.root, 'f.txt')]);
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it.skip('redirection: echo x >> f threads the append body into the write touch', async () => {
+    const repo = makeTempRepo();
+    try {
+      seed(repo, [['f.txt', 'a\nx\n']]);
+      const { executors, fixPaths } = makeExecutors();
+      const handler = createHandler(executors, inMemoryMemoFactory());
+
+      await handler(bashInput(repo, `echo x >> ${join(repo.root, 'f.txt')}`) as never, { logger } as never);
+
+      expect(fixPaths).toEqual([join(repo.root, 'f.txt')]);
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it.skip('heredoc: cat > f <<EOF produces a whole-file write touch on f', async () => {
+    const repo = makeTempRepo();
+    try {
+      seed(repo, [['h.txt', 'alpha\n']]);
+      const command = `cat > ${join(repo.root, 'h.txt')} <<'EOF'\nalpha\nEOF\n`;
+      const { executors, fixPaths } = makeExecutors();
+      const handler = createHandler(executors, inMemoryMemoFactory());
+
+      await handler(bashInput(repo, command) as never, { logger } as never);
+
+      expect(fixPaths).toEqual([join(repo.root, 'h.txt')]);
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it.skip('cp: read on the source, create-overwrite on the dest', async () => {
+    const repo = makeTempRepo();
+    try {
+      seed(repo, [
+        ['a.txt', 's1\ns2\n'],
+        ['b.txt', 's1\ns2\n']
+      ]);
+      const { executors, fixPaths, listPaths } = makeExecutors();
+      const handler = createHandler(executors, inMemoryMemoFactory());
+
+      await handler(
+        bashInput(repo, `cp ${join(repo.root, 'a.txt')} ${join(repo.root, 'b.txt')}`) as never,
+        {
+          logger
+        } as never
+      );
+
+      expect(fixPaths).toEqual([join(repo.root, 'b.txt')]);
+      expect(listPaths).toContain(join(repo.root, 'a.txt'));
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it.skip('mv: delete on the source, rename-copy on the dest', async () => {
+    const repo = makeTempRepo();
+    try {
+      seed(
+        repo,
+        [
+          ['a.txt', null],
+          ['c.txt', 'a1\na2\n']
+        ],
+        ['a.txt']
+      );
+      const { executors, fixPaths } = makeExecutors();
+      const handler = createHandler(executors, inMemoryMemoFactory());
+
+      await handler(
+        bashInput(repo, `mv ${join(repo.root, 'a.txt')} ${join(repo.root, 'c.txt')}`) as never,
+        {
+          logger
+        } as never
+      );
+
+      expect(fixPaths).toEqual([join(repo.root, 'a.txt'), join(repo.root, 'c.txt')]);
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it.skip('rm: delete touch on a real (index-tracked, deleted) target', async () => {
+    const repo = makeTempRepo();
+    try {
+      seed(repo, [['d.txt', null]], ['d.txt']);
+      const { executors, fixPaths } = makeExecutors();
+      const handler = createHandler(executors, inMemoryMemoFactory());
+
+      await handler(bashInput(repo, `rm ${join(repo.root, 'd.txt')}`) as never, { logger } as never);
+
+      expect(fixPaths).toEqual([join(repo.root, 'd.txt')]);
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it.skip('truncate -s 0: truncate touch on an empty post-command file', async () => {
+    const repo = makeTempRepo();
+    try {
+      seed(repo, [['e.txt', '']]);
+      const { executors, fixPaths } = makeExecutors();
+      const handler = createHandler(executors, inMemoryMemoFactory());
+
+      await handler(bashInput(repo, `truncate -s 0 ${join(repo.root, 'e.txt')}`) as never, { logger } as never);
+
+      expect(fixPaths).toEqual([join(repo.root, 'e.txt')]);
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it.skip('sed -i: modify touch (script-first disambiguation)', async () => {
+    const repo = makeTempRepo();
+    try {
+      seed(repo, [['s.txt', 'a\n']]);
+      const { executors, fixPaths } = makeExecutors();
+      const handler = createHandler(executors, inMemoryMemoFactory());
+
+      await handler(bashInput(repo, `sed -i 's/a/b/' ${join(repo.root, 's.txt')}`) as never, { logger } as never);
+
+      expect(fixPaths).toEqual([join(repo.root, 's.txt')]);
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it.skip('git apply: modify touch on the hunk target', async () => {
+    const repo = makeTempRepo();
+    try {
+      const diff = ['--- a/notes.txt', '+++ b/notes.txt', '@@ -1,3 +1,3 @@', ' one', '-two', "+two'", ' three'].join(
+        '\n'
+      );
+      seed(repo, [
+        ['notes.txt', "one\ntwo'\nthree\n"],
+        ['patch.diff', `${diff}\n`]
+      ]);
+      const { executors, fixPaths } = makeExecutors();
+      const handler = createHandler(executors, inMemoryMemoFactory());
+
+      await handler(bashInput(repo, `git apply ${join(repo.root, 'patch.diff')}`) as never, { logger } as never);
+
+      expect(fixPaths).toEqual([join(repo.root, 'notes.txt')]);
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it.skip('formatter: prettier --write produces a modify touch', async () => {
+    const repo = makeTempRepo();
+    try {
+      seed(repo, [['fmt.ts', 'export const x = 1;\n']]);
+      const { executors, fixPaths } = makeExecutors();
+      const handler = createHandler(executors, inMemoryMemoFactory());
+
+      await handler(bashInput(repo, `prettier --write ${join(repo.root, 'fmt.ts')}`) as never, { logger } as never);
+
+      expect(fixPaths).toEqual([join(repo.root, 'fmt.ts')]);
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it.skip('git restore f: create-overwrite touch', async () => {
+    const repo = makeTempRepo();
+    try {
+      seed(repo, [['r.txt', 'x\n']]);
+      const { executors, fixPaths } = makeExecutors();
+      const handler = createHandler(executors, inMemoryMemoFactory());
+
+      await handler(bashInput(repo, `git restore ${join(repo.root, 'r.txt')}`) as never, { logger } as never);
+
+      expect(fixPaths).toEqual([join(repo.root, 'r.txt')]);
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it.skip('git checkout -- f: create-overwrite touch', async () => {
+    const repo = makeTempRepo();
+    try {
+      seed(repo, [['k.txt', 'x\n']]);
+      const { executors, fixPaths } = makeExecutors();
+      const handler = createHandler(executors, inMemoryMemoFactory());
+
+      await handler(bashInput(repo, `git checkout -- ${join(repo.root, 'k.txt')}`) as never, { logger } as never);
+
+      expect(fixPaths).toEqual([join(repo.root, 'k.txt')]);
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it.skip('no touch for non-family hosts: ls > f and echo x 2> err', async () => {
+    const repo = makeTempRepo();
+    try {
+      seed(repo, [
+        ['f.txt', 'x\n'],
+        ['err.txt', '']
+      ]);
+      const { executors, calls } = makeExecutors();
+      const handler = createHandler(executors, inMemoryMemoFactory());
+
+      await handler(bashInput(repo, `ls > ${join(repo.root, 'f.txt')}`) as never, { logger } as never);
+      await handler(bashInput(repo, `echo x 2> ${join(repo.root, 'err.txt')}`) as never, { logger } as never);
+
+      expect(calls).toEqual({ fix: 0, list: 0, drift: 0, why: 0 });
     } finally {
       repo.cleanup();
     }

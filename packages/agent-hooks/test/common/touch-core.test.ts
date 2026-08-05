@@ -12,12 +12,21 @@
  * `DriftPorcelainRow`, `MemoStore`) rather than loosened/`any`-typed shapes —
  * that fidelity is the payoff of the bootstrap: an awkward fake here is a
  * contract-ergonomics finding, not something to work around.
+ *
+ * The trailing describes are card main-212's Phase 2 additions: the
+ * `targetState`/`postState` gate contract (plan §3 step 1), the exact-range
+ * bypass, delete-path surfacing, the delete-reality probe batching, and the
+ * absent-source resolution for cp/install dests (plan §3 step 2 — driven
+ * through `runBashTouches`). All checks are `it.skip` until Phase 3.
  */
 
-import { writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DriftPorcelainRow, PorcelainRow } from '../../src/common/agent-hooks-common.js';
+import { runBashTouches } from '../../src/common/bash-touch.js';
+import type { ResolvedSpan, SpanMatch } from '../../src/common/parse-command.js';
 import type { MemoStore } from '../../src/common/span-surface.js';
 import type { TouchExecutors, TouchFixResult, TouchReadInput, TouchWriteInput } from '../../src/common/touch-core.js';
 import { recoverRange, runTouchHook } from '../../src/common/touch-core.js';
@@ -81,6 +90,47 @@ function driftRow(overrides: Partial<DriftPorcelainRow> = {}): DriftPorcelainRow
     end: 10,
     status: 'CHANGED',
     ...overrides
+  };
+}
+
+/**
+ * Counting fake executors that also record the paths each executor was called
+ * with — the driver checks assert exactly which touches fired (and that
+ * suppressed spans never reached an executor).
+ */
+function countingExecutors(): {
+  executors: TouchExecutors;
+  calls: { fix: number; list: number; drift: number; why: number };
+  fixPaths: string[];
+  listPaths: string[];
+} {
+  const calls = { fix: 0, list: 0, drift: 0, why: 0 };
+  const fixPaths: string[] = [];
+  const listPaths: string[] = [];
+  return {
+    executors: {
+      fix: async (filePath): Promise<TouchFixResult> => {
+        calls.fix += 1;
+        fixPaths.push(filePath);
+        return { modified: false };
+      },
+      list: async (filePath): Promise<PorcelainRow[]> => {
+        calls.list += 1;
+        listPaths.push(filePath);
+        return [];
+      },
+      drift: async (): Promise<DriftPorcelainRow[]> => {
+        calls.drift += 1;
+        return [];
+      },
+      why: async (): Promise<string | null> => {
+        calls.why += 1;
+        return null;
+      }
+    },
+    calls,
+    fixPaths,
+    listPaths
   };
 }
 
@@ -414,6 +464,384 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       const onDiskContent = ['alpha', 'beta', 'gamma', 'delta'].join('\n');
 
       expect(recoverRange(written, onDiskContent)).toEqual({ start: 2, end: 3 });
+    });
+  });
+
+  // =========================================================================
+  // Card main-212 Phase 2 — post-state write gates (plan §3 step 1)
+  // =========================================================================
+
+  describe('runTouchHook — post-state gates (plan §3 step 1)', () => {
+    let repo: { root: string; cleanup: () => void };
+
+    afterEach(() => {
+      repo?.cleanup();
+    });
+
+    it.skip("the 'exists' gate passes when the target is a real file: fix runs", async () => {
+      repo = makeTempRepo();
+      const filePath = join(repo.root, 'app.ts');
+      writeFileSync(filePath, 'export const app = 1;\n');
+      const memo = createMemoryMemoStore();
+      const executors: TouchExecutors = {
+        fix: async (): Promise<TouchFixResult> => ({ modified: false }),
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+        drift: async (): Promise<DriftPorcelainRow[]> => [],
+        why: async (): Promise<string | null> => WHY
+      };
+
+      const output = await runTouchHook(
+        writeInput({ cwd: repo.root, filePath, targetState: 'exists' }),
+        executors,
+        memo
+      );
+
+      expect(output.additionalContext).not.toBeNull();
+      expect(output.additionalContext).toContain('## billing/checkout-request-flow');
+    });
+
+    it.skip("the 'exists' gate fails closed when the target is missing: zero executor calls", async () => {
+      repo = makeTempRepo();
+      const filePath = join(repo.root, 'never-created.txt');
+      const memo = createMemoryMemoStore();
+      let fixCalls = 0;
+      let listCalls = 0;
+      const executors: TouchExecutors = {
+        fix: async (): Promise<TouchFixResult> => {
+          fixCalls += 1;
+          return { modified: false };
+        },
+        list: async (): Promise<PorcelainRow[]> => {
+          listCalls += 1;
+          return [];
+        },
+        drift: async (): Promise<DriftPorcelainRow[]> => [],
+        why: async (): Promise<string | null> => null
+      };
+
+      const output = await runTouchHook(
+        writeInput({ cwd: repo.root, filePath, targetState: 'exists' }),
+        executors,
+        memo
+      );
+
+      expect(fixCalls).toBe(0);
+      expect(listCalls).toBe(0);
+      expect(output.additionalContext).toBeNull();
+    });
+
+    it.skip("the 'exists' gate fails closed when the target is a directory", async () => {
+      repo = makeTempRepo();
+      const dirPath = join(repo.root, 'a-dir');
+      mkdirSync(dirPath);
+      const memo = createMemoryMemoStore();
+      let fixCalls = 0;
+      const executors: TouchExecutors = {
+        fix: async (): Promise<TouchFixResult> => {
+          fixCalls += 1;
+          return { modified: false };
+        },
+        list: async (): Promise<PorcelainRow[]> => [],
+        drift: async (): Promise<DriftPorcelainRow[]> => [],
+        why: async (): Promise<string | null> => null
+      };
+
+      const output = await runTouchHook(
+        writeInput({ cwd: repo.root, filePath: dirPath, targetState: 'exists' }),
+        executors,
+        memo
+      );
+
+      expect(fixCalls).toBe(0);
+      expect(output.additionalContext).toBeNull();
+    });
+
+    it.skip("the 'absent' gate passes for a real (index-tracked, deleted) target: fix runs", async () => {
+      repo = makeTempRepo();
+      const filePath = join(repo.root, 'gone.ts');
+      writeFileSync(filePath, 'a\nb\n');
+      execFileSync('git', ['add', 'gone.ts'], { cwd: repo.root });
+      rmSync(filePath);
+      const memo = createMemoryMemoStore();
+      let fixCalls = 0;
+      const executors: TouchExecutors = {
+        fix: async (): Promise<TouchFixResult> => {
+          fixCalls += 1;
+          return { modified: false };
+        },
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'gone.ts' })],
+        drift: async (): Promise<DriftPorcelainRow[]> => [],
+        why: async (): Promise<string | null> => WHY
+      };
+
+      const output = await runTouchHook(
+        writeInput({ cwd: repo.root, filePath, targetState: 'absent', postState: { realDelete: true }, written: '' }),
+        executors,
+        memo
+      );
+
+      expect(fixCalls).toBe(1);
+      expect(output.additionalContext).toContain('## billing/checkout-request-flow');
+    });
+
+    it.skip("the 'absent' gate fails closed when the target was never real (phantom): zero executor calls", async () => {
+      repo = makeTempRepo();
+      const filePath = join(repo.root, 'phantom.txt');
+      const memo = createMemoryMemoStore();
+      let fixCalls = 0;
+      const executors: TouchExecutors = {
+        fix: async (): Promise<TouchFixResult> => {
+          fixCalls += 1;
+          return { modified: false };
+        },
+        list: async (): Promise<PorcelainRow[]> => [],
+        drift: async (): Promise<DriftPorcelainRow[]> => [],
+        why: async (): Promise<string | null> => null
+      };
+
+      const output = await runTouchHook(
+        writeInput({ cwd: repo.root, filePath, targetState: 'absent', postState: { realDelete: true }, written: '' }),
+        executors,
+        memo
+      );
+
+      expect(fixCalls).toBe(0);
+      expect(output.additionalContext).toBeNull();
+    });
+  });
+
+  describe('runTouchHook — exact-range bypass and delete-path surfacing', () => {
+    let repo: { root: string; cleanup: () => void };
+
+    afterEach(() => {
+      repo?.cleanup();
+    });
+
+    it.skip('a statically known input.range bypasses recoverRangeFromDisk', async () => {
+      // The written block is absent from the on-disk file (so disk recovery
+      // would degrade to whole-file); the given range {1,1} excludes the only
+      // covering anchor {5,5} — honoring the range surfaces nothing, while
+      // whole-file recovery would surface the span.
+      repo = makeTempRepo();
+      const filePath = join(repo.root, 'mod.rs');
+      writeFileSync(filePath, Array.from({ length: 10 }, (_, i) => `line ${i + 1}`).join('\n'));
+      const memo = createMemoryMemoStore();
+      const executors: TouchExecutors = {
+        fix: async (): Promise<TouchFixResult> => ({ modified: false }),
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'mod.rs', start: 5, end: 5 })],
+        drift: async (): Promise<DriftPorcelainRow[]> => [],
+        why: async (): Promise<string | null> => null
+      };
+
+      const output = await runTouchHook(
+        writeInput({ cwd: repo.root, filePath, written: 'NOT ON DISK\n', range: { start: 1, end: 1 } }),
+        executors,
+        memo
+      );
+
+      expect(output.additionalContext).toBeNull();
+    });
+
+    it.skip('input.range scopes the surface to intersecting anchors', async () => {
+      repo = makeTempRepo();
+      const filePath = join(repo.root, 'mod.rs');
+      writeFileSync(filePath, Array.from({ length: 10 }, (_, i) => `line ${i + 1}`).join('\n'));
+      const memo = createMemoryMemoStore();
+      const executors: TouchExecutors = {
+        fix: async (): Promise<TouchFixResult> => ({ modified: false }),
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'mod.rs', start: 2, end: 2 })],
+        drift: async (): Promise<DriftPorcelainRow[]> => [],
+        why: async (): Promise<string | null> => WHY
+      };
+
+      const output = await runTouchHook(
+        writeInput({ cwd: repo.root, filePath, written: 'NOT ON DISK\n', range: { start: 1, end: 3 } }),
+        executors,
+        memo
+      );
+
+      expect(output.additionalContext).not.toBeNull();
+      expect(output.additionalContext).toContain('## billing/checkout-request-flow');
+    });
+
+    it.skip('a delete touch surfaces the deleted file through the write path (porcelain on a deleted file)', async () => {
+      repo = makeTempRepo();
+      const filePath = join(repo.root, 'gone.ts');
+      writeFileSync(filePath, 'a\nb\n');
+      execFileSync('git', ['add', 'gone.ts'], { cwd: repo.root });
+      rmSync(filePath);
+      const memo = createMemoryMemoStore();
+      const executors: TouchExecutors = {
+        fix: async (): Promise<TouchFixResult> => ({ modified: false }),
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow({ path: 'gone.ts' })],
+        drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ path: 'gone.ts', status: 'DELETED' })],
+        why: async (): Promise<string | null> => WHY
+      };
+
+      const output = await runTouchHook(
+        writeInput({ cwd: repo.root, filePath, targetState: 'absent', postState: { realDelete: true }, written: '' }),
+        executors,
+        memo
+      );
+
+      expect(output.additionalContext).not.toBeNull();
+      expect(output.additionalContext).toContain('## billing/checkout-request-flow');
+    });
+  });
+
+  // =========================================================================
+  // Card main-212 Phase 2 — driver-level: delete-reality probe batching and
+  // the absent-source resolution for cp/install dests. These run through
+  // `runBashTouches` because the probe cache is per-command driver machinery
+  // (plan §3 step 1c, step 2).
+  // =========================================================================
+
+  describe('delete-reality probe batching (plan §3 step 1c)', () => {
+    it.skip('a 10-path rm records exactly two probe invocations; repeated targets fold into the same batch', async () => {
+      vi.resetModules();
+      const gitCalls: string[][] = [];
+      vi.doMock('node:child_process', async (importOriginal) => {
+        const actual = await importOriginal<typeof import('node:child_process')>();
+        return {
+          ...actual,
+          execFileSync: (...args: Parameters<typeof actual.execFileSync>): ReturnType<typeof actual.execFileSync> => {
+            const [file, cmdArgs] = args;
+            if (file === 'git' && Array.isArray(cmdArgs)) gitCalls.push(cmdArgs);
+            return actual.execFileSync(...args);
+          }
+        };
+      });
+      try {
+        const { runBashTouches: run } = await import('../../src/common/bash-touch.js');
+        const repo = makeTempRepo();
+        const root = repo.root;
+        const paths = Array.from({ length: 10 }, (_, i) => `del-${i}.txt`);
+        for (const rel of paths) writeFileSync(join(root, rel), 'x\n');
+        execFileSync('git', ['add', ...paths], { cwd: root });
+        for (const rel of paths) rmSync(join(root, rel));
+        // 13 spans (10 paths + 3 repeats): the per-command probe cache folds
+        // the repeats into the same single ls-files and span-list batches.
+        const matches: SpanMatch[] = [...paths, 'del-0.txt', 'del-3.txt', 'del-7.txt'].map((rel) => ({
+          status: 'resolved' as const,
+          idiom: 'rm-write' as const,
+          span: { operation: 'delete' as const, absolutePath: join(root, rel), simpleCommandIndex: 0 }
+        }));
+        const executors: TouchExecutors = {
+          fix: async (): Promise<TouchFixResult> => ({ modified: false }),
+          list: async (): Promise<PorcelainRow[]> => [],
+          drift: async (): Promise<DriftPorcelainRow[]> => [],
+          why: async (): Promise<string | null> => null
+        };
+
+        await run(matches, SESSION_ID, root, {}, executors, createMemoryMemoStore());
+
+        const lsFiles = gitCalls.filter((c) => c[0] === 'ls-files');
+        const spanLists = gitCalls.filter((c) => c[0] === 'span' && c.includes('list'));
+        expect(lsFiles).toHaveLength(1);
+        expect(spanLists).toHaveLength(1);
+        // The single ls-files batch carries every distinct path.
+        expect(lsFiles[0]).toContain('--');
+        for (const rel of paths) expect(lsFiles[0]).toContain(rel);
+        repo.cleanup();
+      } finally {
+        vi.doUnmock('node:child_process');
+        vi.resetModules();
+      }
+    });
+  });
+
+  describe('absent-source resolution for cp/install dests (plan §3 step 2)', () => {
+    let repo: { root: string; cleanup: () => void };
+
+    afterEach(() => {
+      repo?.cleanup();
+    });
+
+    function resolved(idiom: 'cp-write' | 'rm-write', s: ResolvedSpan): SpanMatch {
+      return { status: 'resolved', idiom, span: s };
+    }
+
+    it.skip('cp missing existing: a phantom source suppresses the dest — zero executor calls', async () => {
+      repo = makeTempRepo();
+      const root = repo.root;
+      const missing = join(root, 'missing.txt');
+      const existing = join(root, 'existing.txt');
+      writeFileSync(existing, 'kept\n');
+      const { executors, calls } = countingExecutors();
+
+      await runBashTouches(
+        [
+          resolved('cp-write', {
+            operation: 'read',
+            absolutePath: missing,
+            lineStart: 1,
+            lineEnd: 2,
+            simpleCommandIndex: 0
+          }),
+          resolved('cp-write', { operation: 'create-overwrite', absolutePath: existing, simpleCommandIndex: 0 })
+        ],
+        SESSION_ID,
+        root,
+        {},
+        executors,
+        createMemoryMemoStore()
+      );
+
+      expect(calls).toEqual({ fix: 0, list: 0, drift: 0, why: 0 });
+    });
+
+    it.skip('cp a b && rm a: a real source whose absence the later rm pass explains — the dest fires', async () => {
+      repo = makeTempRepo();
+      const root = repo.root;
+      const a = join(root, 'a.txt');
+      const b = join(root, 'b.txt');
+      writeFileSync(a, 'a1\na2\n');
+      writeFileSync(b, 'a1\na2\n');
+      execFileSync('git', ['add', 'a.txt'], { cwd: root });
+      rmSync(a);
+      const { executors, fixPaths } = countingExecutors();
+
+      await runBashTouches(
+        [
+          resolved('cp-write', { operation: 'read', absolutePath: a, lineStart: 1, lineEnd: 2, simpleCommandIndex: 0 }),
+          resolved('cp-write', { operation: 'create-overwrite', absolutePath: b, simpleCommandIndex: 0 }),
+          resolved('rm-write', { operation: 'delete', absolutePath: a, simpleCommandIndex: 1, join: '&&' })
+        ],
+        SESSION_ID,
+        root,
+        {},
+        executors,
+        createMemoryMemoStore()
+      );
+
+      expect(fixPaths).toEqual([b, a]);
+    });
+
+    it.skip('rm a; cp a b with b pre-existing: a real source whose absence nothing explains — the dest is suppressed (the rm delete still fires)', async () => {
+      repo = makeTempRepo();
+      const root = repo.root;
+      const a = join(root, 'a.txt');
+      const b = join(root, 'b.txt');
+      writeFileSync(a, 'a1\na2\n');
+      writeFileSync(b, 'b1\nb2\n');
+      execFileSync('git', ['add', 'a.txt'], { cwd: root });
+      rmSync(a);
+      const { executors, fixPaths } = countingExecutors();
+
+      await runBashTouches(
+        [
+          resolved('rm-write', { operation: 'delete', absolutePath: a, simpleCommandIndex: 0 }),
+          resolved('cp-write', { operation: 'read', absolutePath: a, lineStart: 1, lineEnd: 2, simpleCommandIndex: 1 }),
+          resolved('cp-write', { operation: 'create-overwrite', absolutePath: b, simpleCommandIndex: 1 })
+        ],
+        SESSION_ID,
+        root,
+        {},
+        executors,
+        createMemoryMemoStore()
+      );
+
+      expect(fixPaths).toEqual([a]);
     });
   });
 });

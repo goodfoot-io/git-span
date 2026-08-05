@@ -8,7 +8,8 @@
  * surfacing / cadence logic itself is covered by test/common/touch-core.test.ts.
  */
 
-import { writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Logger } from '@goodfoot/claude-code-hooks';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -34,19 +35,25 @@ interface FakeOpts {
 function makeExecutors(opts: FakeOpts = {}): {
   executors: TouchExecutors;
   calls: { fix: number; list: number; drift: number; why: number };
+  fixPaths: string[];
+  listPaths: string[];
 } {
   const calls = { fix: 0, list: 0, drift: 0, why: 0 };
+  const fixPaths: string[] = [];
+  const listPaths: string[] = [];
   const boom = () => {
     throw new Error('spawn git ENOENT');
   };
   const executors: TouchExecutors = {
-    fix: async (): Promise<TouchFixResult> => {
+    fix: async (filePath): Promise<TouchFixResult> => {
       calls.fix += 1;
+      fixPaths.push(filePath);
       if (opts.reject) boom();
       return { modified: opts.fixModified ?? false };
     },
-    list: async (): Promise<PorcelainRow[]> => {
+    list: async (filePath): Promise<PorcelainRow[]> => {
       calls.list += 1;
+      listPaths.push(filePath);
       if (opts.reject) boom();
       return opts.list ?? [];
     },
@@ -61,7 +68,7 @@ function makeExecutors(opts: FakeOpts = {}): {
       return WHY;
     }
   };
-  return { executors, calls };
+  return { executors, calls, fixPaths, listPaths };
 }
 
 function inMemoryMemoFactory(): MemoFactory {
@@ -306,5 +313,185 @@ describe('claude post-tool-use touch signal', () => {
     // surfaces it as deleted — previously this was silent because the body
     // was not threaded into the touch.
     expect(result.stdout.hookSpecificOutput?.additionalContext).toContain(SPAN);
+  });
+});
+
+describe('Bash write touches per family (Phase 2 — skipped acceptance checks)', () => {
+  let repo: { root: string; cleanup: () => void };
+  beforeAll(() => {
+    repo = makeTempRepo();
+  });
+  afterAll(() => repo.cleanup());
+
+  const p = (rel: string): string => join(repo.root, rel);
+
+  /**
+   * Seed post-command file state: write `files` (a `null` content is a
+   * placeholder written so it can be tracked), git-add the tracked ones, then
+   * delete the `null`-content ones. Index entries survive `rm`.
+   */
+  function seed(files: Array<[string, string | null]>, tracked: string[] = []): void {
+    for (const [rel, content] of files) {
+      writeFileSync(p(rel), content ?? 'placeholder\n');
+    }
+    if (tracked.length > 0) execFileSync('git', ['add', ...tracked], { cwd: repo.root });
+    for (const [rel, content] of files) {
+      if (content === null) rmSync(p(rel), { force: true });
+    }
+  }
+
+  function bashInput(command: string): Record<string, unknown> {
+    return postInput({ cwd: repo.root, tool_name: 'Bash', tool_input: { command } });
+  }
+
+  it.skip('redirection: echo hello > f produces a whole-file write touch on f', async () => {
+    seed([['f.txt', 'hello\n']]);
+    const { executors, fixPaths } = makeExecutors();
+    const handler = createHandler(executors, inMemoryMemoFactory());
+
+    await handler(bashInput(`echo hello > ${p('f.txt')}`) as never, { logger });
+
+    expect(fixPaths).toEqual([p('f.txt')]);
+  });
+
+  it.skip('redirection: echo x >> f threads the append body into the write touch', async () => {
+    seed([['f.txt', 'a\nx\n']]);
+    const { executors, fixPaths } = makeExecutors();
+    const handler = createHandler(executors, inMemoryMemoFactory());
+
+    await handler(bashInput(`echo x >> ${p('f.txt')}`) as never, { logger });
+
+    expect(fixPaths).toEqual([p('f.txt')]);
+  });
+
+  it.skip('heredoc: cat > f <<EOF produces a whole-file write touch on f', async () => {
+    seed([['h.txt', 'alpha\n']]);
+    const command = `cat > ${p('h.txt')} <<'EOF'\nalpha\nEOF\n`;
+    const { executors, fixPaths } = makeExecutors();
+    const handler = createHandler(executors, inMemoryMemoFactory());
+
+    await handler(bashInput(command) as never, { logger });
+
+    expect(fixPaths).toEqual([p('h.txt')]);
+  });
+
+  it.skip('cp: read on the source, create-overwrite on the dest', async () => {
+    seed([
+      ['a.txt', 's1\ns2\n'],
+      ['b.txt', 's1\ns2\n']
+    ]);
+    const { executors, fixPaths, listPaths } = makeExecutors();
+    const handler = createHandler(executors, inMemoryMemoFactory());
+
+    await handler(bashInput(`cp ${p('a.txt')} ${p('b.txt')}`) as never, { logger });
+
+    expect(fixPaths).toEqual([p('b.txt')]);
+    expect(listPaths).toContain(p('a.txt'));
+  });
+
+  it.skip('mv: delete on the source, rename-copy on the dest', async () => {
+    seed(
+      [
+        ['a.txt', null],
+        ['c.txt', 'a1\na2\n']
+      ],
+      ['a.txt']
+    );
+    const { executors, fixPaths } = makeExecutors();
+    const handler = createHandler(executors, inMemoryMemoFactory());
+
+    await handler(bashInput(`mv ${p('a.txt')} ${p('c.txt')}`) as never, { logger });
+
+    expect(fixPaths).toEqual([p('a.txt'), p('c.txt')]);
+  });
+
+  it.skip('rm: delete touch on a real (index-tracked, deleted) target', async () => {
+    seed([['d.txt', null]], ['d.txt']);
+    const { executors, fixPaths } = makeExecutors();
+    const handler = createHandler(executors, inMemoryMemoFactory());
+
+    await handler(bashInput(`rm ${p('d.txt')}`) as never, { logger });
+
+    expect(fixPaths).toEqual([p('d.txt')]);
+  });
+
+  it.skip('truncate -s 0: truncate touch on an empty post-command file', async () => {
+    seed([['e.txt', '']]);
+    const { executors, fixPaths } = makeExecutors();
+    const handler = createHandler(executors, inMemoryMemoFactory());
+
+    await handler(bashInput(`truncate -s 0 ${p('e.txt')}`) as never, { logger });
+
+    expect(fixPaths).toEqual([p('e.txt')]);
+  });
+
+  it.skip('sed -i: modify touch (script-first disambiguation)', async () => {
+    seed([['s.txt', 'a\n']]);
+    const { executors, fixPaths } = makeExecutors();
+    const handler = createHandler(executors, inMemoryMemoFactory());
+
+    await handler(bashInput(`sed -i 's/a/b/' ${p('s.txt')}`) as never, { logger });
+
+    expect(fixPaths).toEqual([p('s.txt')]);
+  });
+
+  it.skip('git apply: modify touch on the hunk target', async () => {
+    const diff = ['--- a/notes.txt', '+++ b/notes.txt', '@@ -1,3 +1,3 @@', ' one', '-two', "+two'", ' three'].join(
+      '\n'
+    );
+    seed([
+      ['notes.txt', "one\ntwo'\nthree\n"],
+      ['patch.diff', `${diff}\n`]
+    ]);
+    const { executors, fixPaths } = makeExecutors();
+    const handler = createHandler(executors, inMemoryMemoFactory());
+
+    await handler(bashInput(`git apply ${p('patch.diff')}`) as never, { logger });
+
+    expect(fixPaths).toEqual([p('notes.txt')]);
+  });
+
+  it.skip('formatter: prettier --write produces a modify touch', async () => {
+    seed([['fmt.ts', 'export const x = 1;\n']]);
+    const { executors, fixPaths } = makeExecutors();
+    const handler = createHandler(executors, inMemoryMemoFactory());
+
+    await handler(bashInput(`prettier --write ${p('fmt.ts')}`) as never, { logger });
+
+    expect(fixPaths).toEqual([p('fmt.ts')]);
+  });
+
+  it.skip('git restore f: create-overwrite touch', async () => {
+    seed([['r.txt', 'x\n']]);
+    const { executors, fixPaths } = makeExecutors();
+    const handler = createHandler(executors, inMemoryMemoFactory());
+
+    await handler(bashInput(`git restore ${p('r.txt')}`) as never, { logger });
+
+    expect(fixPaths).toEqual([p('r.txt')]);
+  });
+
+  it.skip('git checkout -- f: create-overwrite touch', async () => {
+    seed([['k.txt', 'x\n']]);
+    const { executors, fixPaths } = makeExecutors();
+    const handler = createHandler(executors, inMemoryMemoFactory());
+
+    await handler(bashInput(`git checkout -- ${p('k.txt')}`) as never, { logger });
+
+    expect(fixPaths).toEqual([p('k.txt')]);
+  });
+
+  it.skip('no touch for non-family hosts: ls > f and echo x 2> err', async () => {
+    seed([
+      ['f.txt', 'x\n'],
+      ['err.txt', '']
+    ]);
+    const { executors, calls } = makeExecutors();
+    const handler = createHandler(executors, inMemoryMemoFactory());
+
+    await handler(bashInput(`ls > ${p('f.txt')}`) as never, { logger });
+    await handler(bashInput(`echo x 2> ${p('err.txt')}`) as never, { logger });
+
+    expect(calls).toEqual({ fix: 0, list: 0, drift: 0, why: 0 });
   });
 });
