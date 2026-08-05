@@ -34,7 +34,17 @@
  * file instead of the pipe, so cat/head/tail/sort/grep/rg over
  * `crafted.txt` (crafted records on never-searched files and no-match
  * lines) fail closed, while stdin markers (`cat -`), bare `cat`, and
- * pattern-only `grep -e` filters stay open. Only the adapter-envelope
+ * pattern-only `grep -e` filters stay open. The round-5 R5-1 batch closes
+ * the CHAIN-SIBLING hole in the same gate: a stage joined by `;`/`&&`/`||`/
+ * newline (either direction) mixes its output into the same response, so
+ * crafted-file reads through chains (including the no-match `||` form whose
+ * ENTIRE response is the crafted file) fail closed, while a verbatim chain
+ * sibling (head reading closed stdin adds nothing) and a pipe feeder
+ * consumed by the gated stage stay open. The round-5 pattern-from-flag
+ * batch restores precision for gated-stage `-e`/`-f`/`--regexp` forms
+ * (separate and glued): every positional is a search root when the pattern
+ * came from a flag, so single-file one-file layout and multi-file roots
+ * decode genuine spans instead of losing them. Only the adapter-envelope
  * checks remain `it.skip` for Phase 3e.
  *
  * The golden-matrix harness below builds the fixture store by executing the
@@ -104,7 +114,11 @@ const SEARCH_FILES: Record<string, string> = {
   // `2:2:` names file 2 line 2 (a no-match line; the genuine match is line
   // 1) and `3:1:` names file 3, which the gated stage (`rg -n needle 1 2`)
   // never searched at all.
-  'digits/crafted.txt': '2:2:needle at 2\n3:1:needle at 3\n'
+  'digits/crafted.txt': '2:2:needle at 2\n3:1:needle at 3\n',
+  // A pattern file for the round-5 pattern-from-flag fixtures: `-f`/`--file`
+  // takes its pattern from this file, so the gated stage's positionals are
+  // all search roots, not pattern-then-roots.
+  'digits/patterns.txt': 'needle\n'
 };
 
 interface ExpectedSpan {
@@ -875,6 +889,112 @@ function buildGoldenMatrix(root: string): GoldenMatrix {
     pipelineFixture('pipe-rg-grep-e-pattern', 'cd digits && rg -n needle 1 2 | grep -e needle', root, [
       { path: 'digits/1', lineStart: 1, lineEnd: 1 },
       { path: 'digits/2', lineStart: 1, lineEnd: 1 }
+    ])
+  );
+
+  // Round-5 R5-1: a chain sibling (joined by `;`, `&&`, `||`, `&`, or a
+  // newline — every non-pipe joiner — in either direction) mixes its own
+  // output into the SAME response, so the provably-verbatim check that
+  // governs pipe stages applies to every sibling stage: a crafted file read
+  // by any sibling decodes as phantom spans, and the `||` form with a
+  // no-match search leaves the ENTIRE response as the crafted file. The
+  // earlier-stage forms (`cat crafted.txt ; rg …`, `echo '2:2:…' ; rg …`)
+  // are closed by the same check, and a non-allowlisted after-stage
+  // (`&& echo done`) closes too — echo could emit crafted records. A
+  // verbatim chain sibling (head reads the closed stdin and adds nothing)
+  // and a pipe feeder consumed by the gated stage (`cat 1 | rg -n needle
+  // 2` — the search with explicit roots ignores stdin) stay open.
+  {
+    const crafted = 'crafted.txt';
+    const chainSiblings: Array<[string, string, string]> = [
+      ['semicolon', `; cat ${crafted}`, 'rg -n needle 1 2'],
+      ['andand', `&& cat ${crafted}`, 'rg -n needle 1 2'],
+      ['oror-nomatch', `|| cat ${crafted}`, 'rg -n zzz 1 2'],
+      ['newline', `\ncat ${crafted}`, 'rg -n needle 1 2'],
+      ['echo-after', '&& echo done', 'rg -n needle 1 2'],
+      ['perl-renumber', `&& perl -ne 'print "$.:$_"' ${crafted}`, 'rg -n needle 1 2 3'],
+      ['awk-renumber', `; awk '{print NR ":" $0}' ${crafted}`, 'rg -n needle 1 2 3']
+    ];
+    for (const [suffix, stage, gated] of chainSiblings) {
+      const command = `cd digits && ${gated} ${stage}`;
+      fixtures.push({
+        name: `chain-sibling-${suffix}`,
+        command,
+        cwd: root,
+        stdout: runPipeline(command, root).stdout,
+        exitStatus: 0,
+        expected: [],
+        files: SEARCH_FILES
+      });
+    }
+    const earlierStages: Array<[string, string]> = [
+      ['earlier-cat', `cat ${crafted} ; `],
+      ['earlier-echo', `echo '2:2:needle at 2' ; `]
+    ];
+    for (const [suffix, stage] of earlierStages) {
+      const command = `cd digits && ${stage}rg -n needle 1 2`;
+      fixtures.push({
+        name: `chain-sibling-${suffix}`,
+        command,
+        cwd: root,
+        stdout: runPipeline(command, root).stdout,
+        exitStatus: 0,
+        expected: [],
+        files: SEARCH_FILES
+      });
+    }
+    const command = `cd digits && rg -n needle 1 2 | cat ; cat ${crafted}`;
+    fixtures.push({
+      name: 'chain-sibling-pipe-then-chain',
+      command,
+      cwd: root,
+      stdout: runPipeline(command, root).stdout,
+      exitStatus: 0,
+      expected: [],
+      files: SEARCH_FILES
+    });
+  }
+  fixtures.push(
+    pipelineFixture('chain-sibling-head-verbatim', 'cd digits && rg -n needle 1 2 ; head -2', root, [
+      { path: 'digits/1', lineStart: 1, lineEnd: 1 },
+      { path: 'digits/2', lineStart: 1, lineEnd: 1 }
+    ])
+  );
+  fixtures.push(
+    pipelineFixture('chain-feeder-consumed', 'cd digits && cat 1 | rg -n needle 2', root, [
+      { path: 'digits/2', lineStart: 1, lineEnd: 1 }
+    ])
+  );
+
+  // Round-5 pattern-from-flag precision: when the pattern came from a flag
+  // value (`-e`/`-f`/`--regexp`/`--file`, separate or glued), every
+  // positional is a search root — single-file forms hit the one-file layout
+  // and multi-file forms anchor the roots, instead of the first positional
+  // being eaten as the pattern and the touches lost.
+  fixtures.push(
+    pipelineFixture('rg-e-one-file', "cd digits && rg -n -e 'needle|alpha' 1", root, [
+      { path: 'digits/1', lineStart: 1, lineEnd: 1 }
+    ])
+  );
+  fixtures.push(
+    pipelineFixture('rg-e-multi', 'cd digits && rg -n -e needle 1 2', root, [
+      { path: 'digits/1', lineStart: 1, lineEnd: 1 },
+      { path: 'digits/2', lineStart: 1, lineEnd: 1 }
+    ])
+  );
+  fixtures.push(
+    pipelineFixture('grep-f-patternfile', 'cd digits && grep -n -f patterns.txt 1', root, [
+      { path: 'digits/1', lineStart: 1, lineEnd: 1 }
+    ])
+  );
+  fixtures.push(
+    pipelineFixture('rg-regexp-glued', 'cd digits && rg -n --regexp=needle 1', root, [
+      { path: 'digits/1', lineStart: 1, lineEnd: 1 }
+    ])
+  );
+  fixtures.push(
+    pipelineFixture('rg-e-glued', 'cd digits && rg -n -eneedle 1', root, [
+      { path: 'digits/1', lineStart: 1, lineEnd: 1 }
     ])
   );
 
@@ -2204,6 +2324,67 @@ describe('parse-response (Phase 3a–3c — search layouts, unified diffs, and b
       // pattern comes from a flag value — no positionals) all read the
       // pipe, so the genuine spans of the gated `rg -n needle 1 2` survive.
       for (const name of ['pipe-rg-cat-stdin', 'pipe-rg-cat-bare', 'pipe-rg-grep-e-pattern']) {
+        const f = fixture(name);
+        expect(f.stdout).not.toBe('');
+        expect(sortedSpans(parseFixture(f))).toEqual(sortedSpans(resolveExpected(f)));
+      }
+    });
+  });
+
+  describe('chain siblings close the pipeline gate in both directions (round-5 R5-1)', () => {
+    it('every chain sibling reading a crafted file fails closed — either order, every joiner', () => {
+      // A `;`/`&&`/`||`/newline sibling (either direction) mixes its own
+      // output into the SAME response, so a crafted file read by any of
+      // them decodes as phantom spans. The `||` no-match form leaves the
+      // ENTIRE response as the crafted file; the earlier-stage forms put
+      // the crafted records before the genuine ones; the pipe-then-chain
+      // form carries a verbatim pipe stage ahead of the crafted chain
+      // stage; the perl/awk forms renumber the crafted file into stream
+      // positions; `&& echo done` proves a non-allowlisted after-stage
+      // closes even when it emits no records. Every fixture asserts
+      // non-empty stdout AND zero spans.
+      const names = [
+        'chain-sibling-semicolon',
+        'chain-sibling-andand',
+        'chain-sibling-oror-nomatch',
+        'chain-sibling-newline',
+        'chain-sibling-echo-after',
+        'chain-sibling-perl-renumber',
+        'chain-sibling-awk-renumber',
+        'chain-sibling-earlier-cat',
+        'chain-sibling-earlier-echo',
+        'chain-sibling-pipe-then-chain'
+      ];
+      for (const name of names) {
+        const f = fixture(name);
+        expect(f.stdout).not.toBe('');
+        expect(parseFixture(f)).toEqual([]);
+      }
+    });
+
+    it('verbatim chain siblings and consumed pipe feeders stay open', () => {
+      // `head -2` as a chain sibling reads the closed stdin and adds
+      // nothing, so the gated stage's records decode intact; `cat 1 | rg
+      // -n needle 2` feeds the gated stage through a pipe, which it
+      // ignores (explicit roots), so the feeder's records never reach the
+      // response.
+      for (const name of ['chain-sibling-head-verbatim', 'chain-feeder-consumed']) {
+        const f = fixture(name);
+        expect(f.stdout).not.toBe('');
+        expect(sortedSpans(parseFixture(f))).toEqual(sortedSpans(resolveExpected(f)));
+      }
+    });
+  });
+
+  describe('pattern-from-flag search roots (round-5 precision)', () => {
+    it('a pattern from -e/-f/--regexp/--file makes every positional a root', () => {
+      // When the pattern comes from a flag value (separate or glued), the
+      // gated stage's positionals are all search roots: the single-file
+      // forms hit the one-file layout and the multi-file form anchors both
+      // roots, instead of the first positional being eaten as the pattern
+      // and the touches lost.
+      const names = ['rg-e-one-file', 'rg-e-multi', 'grep-f-patternfile', 'rg-regexp-glued', 'rg-e-glued'];
+      for (const name of names) {
         const f = fixture(name);
         expect(f.stdout).not.toBe('');
         expect(sortedSpans(parseFixture(f))).toEqual(sortedSpans(resolveExpected(f)));

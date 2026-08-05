@@ -65,8 +65,15 @@
  *   the rest of an unbounded renumberer set) may renumber or rewrite the
  *   records, the response then carries stream positions instead of file
  *   lines, and the pipeline attributes nothing.
- *   In an &&/||/; chain the first gated stage is the most likely owner of
- *   response-shaped records. `cd` tracking applies only until the first
+ *   In a `;`/`&&`/`||`/`&`/newline chain the same provably-verbatim check
+ *   applies to EVERY sibling stage, in either direction: a sibling's output
+ *   mixes into the same response, so a crafted file read by any of them
+ *   decodes as phantom touches — a chain is attributable only when every
+ *   sibling passes the allowlist (`cd` stages, whose output is empty,
+ *   excepted). A `|`-joined feeder earlier in the pipeline is consumed by
+ *   the gated stage — a search with explicit roots ignores stdin — and its
+ *   records never reach the response; it stays open.
+ *   `cd` tracking applies only until the first
  *   gated stage is found — the evidence was produced in that directory.
  * - **Stdin-fed search fails closed**: a non-git search bin (`rg`/`grep`/
  *   `egrep`/`fgrep`) with no path args whose input is piped or redirected
@@ -264,7 +271,12 @@ function hasShellExpansion(s: string): boolean {
 }
 
 interface SearchArgvInfo {
-  /** Positional path args after the pattern; empty when the command named none. */
+  /**
+   * Positional path args; empty when the command named none. The first
+   * positional is the pattern unless the pattern came from a flag value
+   * (`-e`/`-f`/`--regexp`/`--file`), in which case every positional is a
+   * path.
+   */
   pathArgs: string[];
   /** Whether -A/-B/-C (any context window) was requested. */
   contextFlags: boolean;
@@ -315,6 +327,7 @@ function analyzeSearchArgv(argv: string[], start: number): SearchArgvInfo {
   let contextFlags = false;
   let numbered = false;
   let withFilename = false;
+  let patternFromFlag = false;
   let stdinRedirect = false;
   let i = start;
   while (i < argv.length) {
@@ -335,6 +348,7 @@ function analyzeSearchArgv(argv: string[], start: number): SearchArgvInfo {
       if (name === 'after-context' || name === 'before-context' || name === 'context') contextFlags = true;
       if (name === 'line-number') numbered = true;
       if (name === 'with-filename') withFilename = true;
+      if (name === 'regexp' || name === 'file') patternFromFlag = true;
       if (eq === -1 && VALUE_LONG_FLAGS.has(name)) {
         i += 2;
         continue;
@@ -349,6 +363,7 @@ function analyzeSearchArgv(argv: string[], start: number): SearchArgvInfo {
         if (c === 'A' || c === 'B' || c === 'C') contextFlags = true;
         if (c === 'n') numbered = true;
         if (c === 'H') withFilename = true;
+        if (c === 'e' || c === 'f') patternFromFlag = true;
         if (VALUE_SHORT_FLAGS.has(c)) {
           // A value-taking flag consumes the rest of the cluster as its value
           // (-C1) or, when last, the next argument (-C 1).
@@ -362,12 +377,18 @@ function analyzeSearchArgv(argv: string[], start: number): SearchArgvInfo {
     positionals.push(a);
     i += 1;
   }
-  // The first positional is the pattern; the rest are explicit search roots.
-  // Git pathspec magic is not a filesystem path and never becomes a root —
-  // but its presence is tracked, because it makes git grep search the whole
-  // tree from a subdir.
-  const pathArgs = positionals.length > 0 ? positionals.slice(1).filter((p) => !isPathspecMagic(p)) : [];
-  const pathspecMagic = positionals.length > 0 && positionals.slice(1).some((p) => isPathspecMagic(p));
+  // The first positional is the pattern — unless the pattern came from a
+  // flag value (`-e`/`-f`/`--regexp`/`--file`, separate or glued), in which
+  // case every positional is an explicit search root, exactly as
+  // hasGrepFileOperand treats a grep-family pipeline stage. Git pathspec
+  // magic is not a filesystem path and never becomes a root — but its
+  // presence is tracked, because it makes git grep search the whole tree
+  // from a subdir.
+  const firstPositional = patternFromFlag ? 0 : 1;
+  const pathArgs =
+    positionals.length > firstPositional ? positionals.slice(firstPositional).filter((p) => !isPathspecMagic(p)) : [];
+  const pathspecMagic =
+    positionals.length > firstPositional && positionals.slice(firstPositional).some((p) => isPathspecMagic(p));
   return { pathArgs, contextFlags, numbered, withFilename, pathspecMagic, stdinRedirect };
 }
 
@@ -1357,8 +1378,12 @@ export function parseResponse(input: ResponseParseInput): ResolvedSpan[] {
   // uniq/cut only truncate, reorder, or dedupe, and the terminating-newline
   // rule handles the cut — while a renumbering stage (grep -n, nl, cat -n,
   // awk, sed) turns the records into stream positions, so such pipelines
-  // fail closed below; and in an &&/||/; chain the first gated stage is the
-  // most likely owner of response-shaped records. `cd` tracking applies only
+  // fail closed below. In a `;`/`&&`/`||`/`&`/newline chain every sibling
+  // stage's output mixes into the SAME response, so the chain is
+  // attributable only when every sibling (either direction) passes the same
+  // provably-verbatim check the pipe stages get — a crafted file read by
+  // any sibling would decode as phantom touches otherwise. `cd` tracking
+  // applies only
   // until the first gated stage is found: the evidence was produced in that
   // directory, and a `cd` in a later stage says nothing about where the
   // response was made.
@@ -1405,14 +1430,36 @@ export function parseResponse(input: ResponseParseInput): ResolvedSpan[] {
     }
     if (gated === null) continue;
     gatedPrecededBy = simple.precededBy;
-    // A later stage of the SAME pipeline must be provably verbatim: the
-    // default of isRenumberingFilter is closed, so any bin outside the
-    // verbatim allowlist (python, ruby, mawk, …) may renumber or rewrite
-    // the records, destroy the file-line mapping they carry, and the
-    // pipeline fails closed: attribute nothing.
-    for (let j = i + 1; j < parts.length && parts[j].precededBy === '|'; j++) {
-      const laterArgv = argvOf(parts[j].text);
-      if (laterArgv !== null && laterArgv.length > 0 && isRenumberingFilter(laterArgv)) return [];
+    // Every OTHER stage's records can reach the response, so each must be
+    // provably verbatim — the default of isRenumberingFilter is closed, so
+    // any bin outside the verbatim allowlist (python, ruby, mawk, …) may
+    // renumber or rewrite the records, destroy the file-line mapping they
+    // carry, and the pipeline fails closed: attribute nothing. That covers
+    // the pipe stages of the same pipeline AND the chain siblings joined
+    // by `;`, `&&`, `||`, `&`, or a newline — in either direction — whose
+    // output mixes into the same response: a crafted file read by any
+    // sibling decodes as phantom touches, so a chain is attributable only
+    // when every sibling passes the same verbatim check. `cd` stages are
+    // skipped above (their output is empty), and a `|`-joined feeder
+    // EARLIER in the pipeline is consumed by the gated stage — a search
+    // with explicit roots ignores stdin, so the feeder's records never
+    // reach the response.
+    for (let j = 0; j < parts.length; j++) {
+      if (j === i) continue;
+      if (j < i) {
+        // A feeder's output is consumed only when EVERY part between it
+        // and the gated stage is pipe-joined — a `;`/`&&`/… anywhere in
+        // between makes it a chain sibling whose output reaches the
+        // response (through the stages between them).
+        let consumed = true;
+        for (let k = j + 1; k <= i && consumed; k++) {
+          if (parts[k].precededBy !== '|') consumed = false;
+        }
+        if (consumed) continue;
+      }
+      const siblingArgv = argvOf(parts[j].text);
+      if (siblingArgv === null || siblingArgv.length === 0 || siblingArgv[0] === 'cd') continue;
+      if (isRenumberingFilter(siblingArgv)) return [];
     }
   }
   if (gated === null || gated.dirUnresolvable) return [];
