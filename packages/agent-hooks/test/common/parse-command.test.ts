@@ -520,50 +520,50 @@ function expectUnresolved(cmd: string, idiom: Idiom, cwd?: string): void {
 }
 
 describe('redirections — truncating and appending writes (§5.1)', () => {
-  it.skip('echo > f: create-overwrite whole-file write (no body threaded)', () => {
+  it('echo > f: create-overwrite whole-file write (no body threaded)', () => {
     expect(parseCommand(`echo x > ${join(dir, 'f')}`)).toEqual([
       { operation: 'create-overwrite', absolutePath: join(dir, 'f'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('echo >> f: append threading the literal body', () => {
+  it('echo >> f: append threading the literal body', () => {
     expect(parseCommand(`echo x >> ${join(dir, 'f')}`)).toEqual([
       { operation: 'append', absolutePath: join(dir, 'f'), written: 'x\n', simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('printf >> f: the printf literal is threaded without a trailing newline', () => {
+  it('printf >> f: the printf literal is threaded without a trailing newline', () => {
     expect(parseCommand(`printf 'x' >> ${join(dir, 'f')}`)).toEqual([
       { operation: 'append', absolutePath: join(dir, 'f'), written: 'x', simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('&> f: stdout+stderr capture is a create-overwrite', () => {
+  it('&> f: stdout+stderr capture is a create-overwrite', () => {
     expect(parseCommand(`echo alpha beta &> ${join(dir, 'f')}`)).toEqual([
       { operation: 'create-overwrite', absolutePath: join(dir, 'f'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('&>> f: append, body not threaded (double-redirect ambiguity fails closed)', () => {
+  it('&>> f: append, body not threaded (double-redirect ambiguity fails closed)', () => {
     expect(parseCommand(`echo x &>> ${join(dir, 'f')}`)).toEqual([
       { operation: 'append', absolutePath: join(dir, 'f'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('fd-specific redirects are excluded: 2> err, 3> f, 2>&1, 2>/dev/null', () => {
+  it('fd-specific redirects are excluded: 2> err, 3> f, 2>&1, 2>/dev/null', () => {
     expect(parseCommand(`echo x 2> ${join(dir, 'err')}`)).toEqual([]);
     expect(parseCommand(`echo x 3> ${join(dir, 'f')}`)).toEqual([]);
     expect(parseCommand('echo x 2>&1')).toEqual([]);
     expect(parseCommand(`echo x 2>/dev/null`)).toEqual([]);
   });
 
-  it.skip('an fd-excluded stderr redirect does not suppress the stdout write', () => {
+  it('an fd-excluded stderr redirect does not suppress the stdout write', () => {
     expect(parseCommand(`echo x > ${join(dir, 'out')} 2> ${join(dir, 'err')}`)).toEqual([
       { operation: 'create-overwrite', absolutePath: join(dir, 'out'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip(': > f and bare > f truncate', () => {
+  it(': > f and bare > f truncate', () => {
     expect(parseCommand(`: > ${join(dir, 'f')}`)).toEqual([
       { operation: 'truncate', absolutePath: join(dir, 'f'), simpleCommandIndex: 0 }
     ]);
@@ -572,15 +572,15 @@ describe('redirections — truncating and appending writes (§5.1)', () => {
     ]);
   });
 
-  it.skip(': >> f appends nothing: no touch', () => {
+  it(': >> f appends nothing: no touch', () => {
     expect(parseCommand(`: >> ${join(dir, 'f')}`)).toEqual([]);
   });
 
-  it.skip('a quoted ">" is a literal argument, not a redirect', () => {
+  it('a quoted ">" is a literal argument, not a redirect', () => {
     expect(parseCommand(`echo '>' ${join(dir, 'f')}`)).toEqual([]);
   });
 
-  it.skip('attached targets: >f and >>f', () => {
+  it('attached targets: >f and >>f', () => {
     expect(parseCommand(`echo x >${join(dir, 'f')}`)).toEqual([
       { operation: 'create-overwrite', absolutePath: join(dir, 'f'), simpleCommandIndex: 0 }
     ]);
@@ -589,33 +589,33 @@ describe('redirections — truncating and appending writes (§5.1)', () => {
     ]);
   });
 
-  it.skip('a quoted redirect target may contain spaces', () => {
+  it('a quoted redirect target may contain spaces', () => {
     const target = join(dir, 'my file');
     expect(parseCommand(`echo x > "${target}"`)).toEqual([
       { operation: 'create-overwrite', absolutePath: target, simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('an arbitrary command with a redirect gets no write touch (ls > f, grep x f > g, python3 x.py > out)', () => {
+  it('an arbitrary command with a redirect gets no write touch (ls > f, grep x f > g, python3 x.py > out)', () => {
     expect(parseCommand(`ls > ${join(dir, 'f')}`)).toEqual([]);
     expect(parseCommand(`grep x ${join(dir, 'src.txt')} > ${join(dir, 'g')}`)).toEqual([]);
     expect(parseCommand(`python3 ${join(dir, 'x.py')} > ${join(dir, 'out')}`)).toEqual([]);
   });
 
-  it.skip('a read-family command with a redirect keeps its read span but gets no write touch (cat f > g)', () => {
+  it('a read-family command with a redirect keeps its read span but gets no write touch (cat f > g)', () => {
     expect(parseCommand(`cat ${join(dir, 'src.txt')} > ${join(dir, 'g')}`)).toEqual([
       { operation: 'read', lineStart: 1, lineEnd: 4, absolutePath: join(dir, 'src.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('echo x > a > b: every content redirect resolves, in order', () => {
+  it('echo x > a > b: every content redirect resolves, in order', () => {
     expect(parseCommand(`echo x > ${join(dir, 'a')} > ${join(dir, 'b')}`)).toEqual([
       { operation: 'create-overwrite', absolutePath: join(dir, 'a'), simpleCommandIndex: 0 },
       { operation: 'create-overwrite', absolutePath: join(dir, 'b'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('bare tee f: create-overwrite; tee -a f: whole-file append', () => {
+  it('bare tee f: create-overwrite; tee -a f: whole-file append', () => {
     expect(parseCommand(`tee ${join(dir, 'f')}`)).toEqual([
       { operation: 'create-overwrite', absolutePath: join(dir, 'f'), simpleCommandIndex: 0 }
     ]);
@@ -626,86 +626,86 @@ describe('redirections — truncating and appending writes (§5.1)', () => {
 });
 
 describe('heredoc orderings and hosts (§5.2)', () => {
-  it.skip('cat <<EOF > f: the target may precede the redirect', () => {
+  it('cat <<EOF > f: the target may precede the redirect', () => {
     const cmd = `cat <<'EOF' > ${join(dir, 'f')}\nbody\nEOF\n`;
     expect(parseCommand(cmd)).toEqual([
       { operation: 'create-overwrite', absolutePath: join(dir, 'f'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('cat <<EOF >> f: the body is threaded as an append', () => {
+  it('cat <<EOF >> f: the body is threaded as an append', () => {
     const cmd = `cat <<'EOF' >> ${join(dir, 'f')}\nalpha\nbeta\nEOF\n`;
     expect(parseCommand(cmd)).toEqual([
       { operation: 'append', absolutePath: join(dir, 'f'), written: 'alpha\nbeta', simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('a quoted heredoc target may contain spaces', () => {
+  it('a quoted heredoc target may contain spaces', () => {
     const target = join(dir, 'my file');
     const cmd = `cat > "${target}" <<'EOF'\nbody\nEOF\n`;
     expect(parseCommand(cmd)).toEqual([{ operation: 'create-overwrite', absolutePath: target, simpleCommandIndex: 0 }]);
   });
 
-  it.skip('tee f <<EOF: create-overwrite', () => {
+  it('tee f <<EOF: create-overwrite', () => {
     const cmd = `tee ${join(dir, 'f')} <<'EOF'\nalpha\nbeta\nEOF\n`;
     expect(parseCommand(cmd)).toEqual([
       { operation: 'create-overwrite', absolutePath: join(dir, 'f'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('tee -a f <<EOF: append threading the body', () => {
+  it('tee -a f <<EOF: append threading the body', () => {
     const cmd = `tee -a ${join(dir, 'f')} <<'EOF'\nalpha\nbeta\nEOF\n`;
     expect(parseCommand(cmd)).toEqual([
       { operation: 'append', absolutePath: join(dir, 'f'), written: 'alpha\nbeta', simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('tee <<EOF f: option and file-operand positions are free', () => {
+  it('tee <<EOF f: option and file-operand positions are free', () => {
     const cmd = `tee <<'EOF' ${join(dir, 'f')}\nbody\nEOF\n`;
     expect(parseCommand(cmd)).toEqual([
       { operation: 'create-overwrite', absolutePath: join(dir, 'f'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('echo x | tee f: create-overwrite from a literal pipe source', () => {
+  it('echo x | tee f: create-overwrite from a literal pipe source', () => {
     expect(parseCommand(`echo x | tee ${join(dir, 'f')}`)).toEqual([
       { operation: 'create-overwrite', absolutePath: join(dir, 'f'), simpleCommandIndex: 1 }
     ]);
   });
 
-  it.skip('echo x | tee -a f: append threading the literal body', () => {
+  it('echo x | tee -a f: append threading the literal body', () => {
     expect(parseCommand(`echo x | tee -a ${join(dir, 'f')}`)).toEqual([
       { operation: 'append', absolutePath: join(dir, 'f'), written: 'x\n', simpleCommandIndex: 1 }
     ]);
   });
 
-  it.skip('stdin-patch heredoc: git apply - <<EOF resolves the hunk targets', () => {
+  it('stdin-patch heredoc: git apply - <<EOF resolves the hunk targets', () => {
     const cmd = `git apply - <<'EOF'\n${PATCH_NOTES_DIFF}\nEOF\n`;
     expect(parseCommand(cmd, dir)).toEqual([
       { operation: 'modify', lineStart: 1, lineEnd: 3, absolutePath: join(dir, 'notes.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('<<- strips leading tabs from the body', () => {
+  it('<<- strips leading tabs from the body', () => {
     const cmd = `cat > ${join(dir, 'f')} <<-EOF\n\tindented\nEOF\n`;
     expect(parseCommand(cmd)).toEqual([
       { operation: 'create-overwrite', absolutePath: join(dir, 'f'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('a bare unquoted delimiter still resolves the heredoc', () => {
+  it('a bare unquoted delimiter still resolves the heredoc', () => {
     const cmd = `cat > ${join(dir, 'f')} <<EOF\nbody\nEOF\n`;
     expect(parseCommand(cmd)).toEqual([
       { operation: 'create-overwrite', absolutePath: join(dir, 'f'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('non-family hosts: python3 - <<EOF > out and ls > out <<EOF touch nothing', () => {
+  it('non-family hosts: python3 - <<EOF > out and ls > out <<EOF touch nothing', () => {
     expect(parseCommand(`python3 - <<'EOF' > ${join(dir, 'out')}\nprint(1)\nEOF\n`)).toEqual([]);
     expect(parseCommand(`ls > ${join(dir, 'out')} <<'EOF'\nbody\nEOF\n`)).toEqual([]);
   });
 
-  it.skip('a read-family command with a heredoc stdin keeps no file spans (the source is stdin)', () => {
+  it('a read-family command with a heredoc stdin keeps no file spans (the source is stdin)', () => {
     const cmd = `sed -n '1,2p' <<'EOF' > ${join(dir, 'out')}\nalpha\nbeta\nEOF\n`;
     expect(parseCommand(cmd)).toEqual([]);
   });
