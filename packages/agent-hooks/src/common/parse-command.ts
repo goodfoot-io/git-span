@@ -197,11 +197,13 @@ function walkStrip(argv: string[]): string[] {
   return argv.slice(i);
 }
 
-/** Emission-side strip: leading `!`, `command`, and `exec` before matcher dispatch. */
+/** Emission-side strip: leading `!`, `command`, `exec`, and `builtin` (restricted to the recognized builtins) before matcher dispatch. */
 function stripForEmission(argv: string[]): string[] {
   let i = 0;
   while (i < argv.length && argv[i] === '!') i++;
   while (i < argv.length && (argv[i] === 'command' || argv[i] === 'exec')) i++;
+  while (i < argv.length && argv[i] === 'builtin' && argv[i + 1] !== undefined && RECOGNIZED_BUILTINS.has(argv[i + 1]))
+    i++;
   return argv.slice(i);
 }
 
@@ -2256,12 +2258,15 @@ export function parseCommandDetailed(command: string, opts: ParseOptions = {}): 
           stripRedirects(argvOf(expandVariables(item.text, item.assignments, stageEnv)) ?? [])
         );
         const target = expandedArgv[1];
-        if (target === undefined) {
+        if (target === undefined || target === '~' || target.startsWith('~/')) {
+          // Bare `cd` is `$HOME`; a `~`/`~/…` target is the same tilde
+          // expansion (plan §6) — the allowlisted HOME via the expansion
+          // machinery, certain when it resolves, uncertain otherwise.
           const home = expandVariables('$HOME', item.assignments, stageEnv);
           if (looksUnresolvable(home)) frame.certain = false;
           else {
             frame.prev = frame.dir;
-            frame.dir = resolvePath(frame.dir, home);
+            frame.dir = resolvePath(frame.dir, target === undefined ? home : home + target.slice(1));
             frame.certain = true;
           }
         } else if (target === '-') {
@@ -2272,6 +2277,11 @@ export function parseCommandDetailed(command: string, opts: ParseOptions = {}): 
             frame.dir = frame.prev;
             frame.prev = old;
           }
+        } else if (target.startsWith('~')) {
+          // A `~user`-style target resolves to that user's home — unknown to
+          // the walk: bash moved to an unknown dir or failed and stayed, both
+          // live, so certainty is poisoned.
+          frame.certain = false;
         } else if (looksUnresolvable(target)) {
           // Variable/glob target: bash either moved to an unknown dir or
           // failed and stayed — both live, so certainty is poisoned.

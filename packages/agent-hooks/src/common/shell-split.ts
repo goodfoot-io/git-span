@@ -283,17 +283,31 @@ export function splitTopLevel(cmd: string): SplitResult {
       if (heredocs[0].close.test(line)) {
         heredocs.shift();
         if (heredocs.length === 0) inBody = false;
-        i = lineEnd === -1 ? n : lineEnd + 1;
-      } else {
-        i = lineEnd === -1 ? n : lineEnd + 1;
       }
+      if (levels[levels.length - 1].length > 0 || caseRegion !== null) {
+        // Inside an open construct the body line folds into the construct's
+        // interior text (a newline inside an open construct is not a
+        // boundary, plan §1) — the interior re-split re-scans it as body.
+        buf += line;
+        if (lineEnd !== -1) buf += '\n';
+      }
+      i = lineEnd === -1 ? n : lineEnd + 1;
       continue;
     }
     // The newline right after a heredoc's delimiter line ends the delimiter's
     // line — it splits normally (a completed list, but without advancing
     // `listStart`: a completeness violation that rejects later drops the
-    // delimiter's-line stage too) — and starts the body.
+    // delimiter's-line stage too) — and starts the body. Inside an open
+    // construct the newline is not a boundary: the delimiter's line, the
+    // body, and the close line all fold into the construct's one stage, and
+    // the walk's interior re-split applies the same heredoc machinery there.
     if (c === '\n' && heredocs.length > 0) {
+      if (levels[levels.length - 1].length > 0 || caseRegion !== null) {
+        buf += c;
+        inBody = true;
+        i += 1;
+        continue;
+      }
       if (isUnconsumedOperator() || lastWordIsDanglingRedirect()) {
         reject('dangling-operator');
         break;
@@ -623,6 +637,12 @@ export function splitTopLevel(cmd: string): SplitResult {
           heredocs.push({
             close: new RegExp(`^${allowTabs ? '\t*' : ''}${escapeRegExp(delim)}[ \\t]*$`)
           });
+          if (levels[levels.length - 1].length > 0 || caseRegion !== null) {
+            // Inside an open construct the operator+delimiter stay in the
+            // stage text — the walk's interior re-split re-recognizes the
+            // heredoc there (plan §3).
+            buf += cmd.slice(i, j);
+          }
           i = j;
           continue;
         }

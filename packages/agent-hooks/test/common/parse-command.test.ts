@@ -875,6 +875,36 @@ describe('execution-aware walk — Phase 2 contract', () => {
         'no break anywhere — the loop provably never exits'
       ],
       [
+        "while true; do cat f <<EOF\nbody\nEOF\ndone; sed -n '1,2p' g",
+        [whole('f')],
+        undefined,
+        "a heredoc body can't hide the never-exit loop — bash spins (timeout 124), the tail sed never runs"
+      ],
+      [
+        "until false; do cat f <<EOF\nbody\nEOF\ndone; sed -n '1,2p' g",
+        [whole('f')],
+        undefined,
+        'the until twin — the same never-exit fire'
+      ],
+      [
+        "if true; then cat f <<EOF\nbody\nEOF\nfi; sed -n '1,2p' g",
+        [whole('f'), range('g', 1, 2)],
+        undefined,
+        'a heredoc interior folds into the construct — bash reads whole f and runs sed'
+      ],
+      [
+        "{ cat f <<EOF\nbody\nEOF\n}; sed -n '1,2p' g",
+        [whole('f'), range('g', 1, 2)],
+        undefined,
+        'the brace twin — interior stages keep their reads'
+      ],
+      [
+        "x=a; case $x in a) cat f <<EOF\nbody\nEOF\n;; esac; sed -n '1,2p' g",
+        [whole('f'), range('g', 1, 2)],
+        undefined,
+        'the case twin — the matched branch keeps its read and the tail sed runs'
+      ],
+      [
         "while true; do if grep -q zzz f; then break; else exit 1; fi; done; sed -n '1,2p' g",
         [],
         undefined,
@@ -1096,6 +1126,13 @@ describe('execution-aware walk — Phase 2 contract', () => {
       ["grep -q x f || sed -n '1,2p' g", [], undefined, undefined],
       ["cd sub && sed -n '1,2p' f", [], undefined, undefined],
       ["cd sub; sed -n '1,2p' f", [range('sub/f', 1, 2)], undefined, undefined],
+      [
+        "builtin cd sub; sed -n '1,2p' f",
+        [range('sub/f', 1, 2)],
+        undefined,
+        'the builtin wrapper forwards to the cd builtin — the emission-side strip composes (probe: reads sub/f)'
+      ],
+      ["command cd sub; sed -n '1,2p' f", [range('sub/f', 1, 2)], undefined, 'the command twin still composes'],
       ["! true && sed -n '1,2p' f", [], undefined, undefined],
       [
         "false && cd sub; sed -n '1,2p' f",
@@ -1591,6 +1628,30 @@ describe('execution-aware walk — Phase 2 contract', () => {
         [range('sub/f', 1, 2)],
         { env: { HOME: 'sub' } },
         'a relative $HOME re-bases like any literal cd target'
+      ],
+      [
+        "cd ~; sed -n '1,2p' f",
+        [range('f', 1, 2)],
+        { env: { HOME: p2Dir } },
+        'cd ~ is tilde expansion of $HOME — resolves exactly like bare cd (probe: reads $HOME/f)'
+      ],
+      [
+        "cd ~/sub; sed -n '1,2p' f",
+        [range('sub/f', 1, 2)],
+        { env: { HOME: p2Dir } },
+        'a ~-prefixed target composes against $HOME (probe: reads $HOME/sub/f)'
+      ],
+      [
+        "cd ~; sed -n '1,2p' f",
+        [unresolved('f')],
+        undefined,
+        "HOME unresolvable — uncertain, never a literal '~' path (bash falls back to getpwuid; the fail-closed side)"
+      ],
+      [
+        "cd ~user; sed -n '1,2p' f",
+        [unresolved('f')],
+        undefined,
+        'a ~user-style target is unresolvable — unknown dir or failed-and-stayed, never a literal path'
       ],
       ["grep -q x f && cd sub; sed -n '1,2p' f", [unresolved('f')], undefined, 'a may-have-run cd poisons certainty'],
       [`cd $X; cd ${p2Dir}; sed -n '1,2p' f`, [range('f', 1, 2)], undefined, 'a literal cd restores certainty'],
