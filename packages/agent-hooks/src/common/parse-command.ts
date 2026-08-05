@@ -15,7 +15,15 @@
  */
 import { resolve as resolvePath } from 'node:path';
 import { countFileLines, countGitBlobLines } from './command-resolve.js';
-import { argvOf, type Operator, type SimpleCommand, splitTopLevel, splitWords } from './shell-split.js';
+import {
+  argvOf,
+  type Operator,
+  type SimpleCommand,
+  splitTopLevel,
+  splitWords,
+  stripRedirects,
+  stripWrappers
+} from './shell-split.js';
 
 export interface ResolvedSpan {
   lineStart: number;
@@ -1023,7 +1031,11 @@ class ExecutionWalker {
 
   private knownStatus(argv: string[] | null): ChainStatus {
     if (argv === null || argv.length === 0) return 'success';
-    const a = walkStrip(argv);
+    // Redirects and transparent wrappers are stripped before status evaluation
+    // (plan §4/§5): `env FOO=1 true` and `timeout 5 true` are known successes,
+    // `true > out` keeps its success, and a fail-closed wrapper (`env -i …`)
+    // stays unknown.
+    const a = walkStrip(stripWrappers(stripRedirects(argv)));
     if (a.length === 0) return 'success';
     if (a[0] === 'true' || a[0] === ':') return 'success';
     if (a[0] === 'false') return 'failure';
@@ -1479,7 +1491,17 @@ function matchSed(argv: string[]): MatchResult[] {
   return results;
 }
 
-function parseHeadTailFlags(rest: string[]): {
+/**
+ * Parse `head`/`tail` flags and file args. A bare `+N` is a from-N count only
+ * for `tail` (`tail +5 f` starts at line 5); GNU `head` treats bare `+N` as a
+ * *file* (coreutils 9.7 — probe: `head +5 f` errors "cannot open '+5'" and
+ * reads f's first 10 lines), so `barePlusIsCount` is false for head and the
+ * word falls through to the file list.
+ */
+function parseHeadTailFlags(
+  rest: string[],
+  barePlusIsCount: boolean
+): {
   count: number | null;
   fromStart: boolean;
   disqualified: boolean;
@@ -1533,8 +1555,12 @@ function parseHeadTailFlags(rest: string[]): {
       continue;
     }
     if (/^\+\d+$/.test(a)) {
-      fromStart = true;
-      count = Number.parseInt(a.slice(1), 10);
+      if (barePlusIsCount) {
+        fromStart = true;
+        count = Number.parseInt(a.slice(1), 10);
+      } else {
+        files.push(a);
+      }
       continue;
     }
     if (/^-\d+$/.test(a)) {
@@ -1553,9 +1579,10 @@ function parseHeadTailFlags(rest: string[]): {
 
 function matchHead(argv: string[]): MatchResult[] {
   if (argv[0] !== 'head') return [];
-  const { count, disqualified, files } = parseHeadTailFlags(argv.slice(1));
+  const { count, disqualified, files } = parseHeadTailFlags(argv.slice(1), false);
   if (disqualified) return [];
-  const realFiles = files.filter((f) => f !== '-');
+  // Bare `+N` is a GNU-head file artifact, never a real read — drop it.
+  const realFiles = files.filter((f) => f !== '-' && !/^\+\d+$/.test(f));
   if (realFiles.length === 0) return [];
   const n = count ?? 10;
   return realFiles.map((fileArg) => ({
@@ -1569,7 +1596,7 @@ function matchHead(argv: string[]): MatchResult[] {
 
 function matchTail(argv: string[]): MatchResult[] {
   if (argv[0] !== 'tail') return [];
-  const { count, fromStart, disqualified, files } = parseHeadTailFlags(argv.slice(1));
+  const { count, fromStart, disqualified, files } = parseHeadTailFlags(argv.slice(1), true);
   if (disqualified) return [];
   const realFiles = files.filter((f) => f !== '-');
   if (realFiles.length === 0) return [];
@@ -1761,6 +1788,148 @@ function extractHeredocWrites(raw: string): { writes: HeredocWrite[]; masked: st
 }
 
 // ---------------------------------------------------------------------------
+// Window algebra (plan §3): source analysis and stdin-selector classification
+// ---------------------------------------------------------------------------
+
+/** `nl`'s arg-taking flags — each consumes the following word (plan §3). */
+const NL_ARG_FLAGS = new Set(['-b', '-i', '-l', '-s', '-v', '-w']);
+
+/** Stdout-form redirect operators on the pre-strip argv (plan §3 severance): `>`, `>>`, `&>`, `&>>`, `1>`, `1>>`, `>|`. */
+const STDOUT_REDIRECT_TWO_TOKEN = /^(?:>>?|&>>?|1>>?|>\|)$/;
+const STDOUT_REDIRECT_FUSED = /^(?:>>?|&>>?|1>>?)[^<>&|]/;
+const STDOUT_REDIRECT_FUSED_PIPE = /^>\|[^<>&|]/;
+
+/** Whether a pre-strip argv carries a stdout-form redirect (stderr `2>` and dup `2>&1` never sever). */
+const hasStdoutRedirect = (raw: string[]): boolean =>
+  raw.some(
+    (w) => STDOUT_REDIRECT_TWO_TOKEN.test(w) || STDOUT_REDIRECT_FUSED.test(w) || STDOUT_REDIRECT_FUSED_PIPE.test(w)
+  );
+
+type SourceAnalysis =
+  | { kind: 'none' }
+  | { kind: 'unnarrowable'; files: { fileArg: string; idiom: 'cat-file' | 'nl-file' }[] }
+  | { kind: 'narrowable'; fileArg: string; idiom: 'cat-file' | 'nl-file'; resolverKind: 'fs'; dirOverride?: string }
+  | {
+      kind: 'git';
+      fileArg: string;
+      idiom: 'git-show-rev-path';
+      rev: string;
+      resolverKind: { kind: 'git'; rev: string };
+      dirOverride?: string;
+    }
+  | { kind: 'gitUnresolved'; fileArg: string; reason: string };
+
+/** A source that opens a narrowable window: a single-file `cat`/`nl` or a `git show rev:path`. */
+type NarrowableSource = Extract<SourceAnalysis, { kind: 'narrowable' | 'git' }>;
+
+/**
+ * The pipeline-source analysis (plan §3): a `cat`/`nl` whose file args —
+ * every non-flag word, where a `-`-prefixed word is a flag and a bare `-` is
+ * a stdin marker — are all files-or-`-` with at least one file, or a
+ * `git show rev:path`. A single-file source is narrowable; a multi-file or
+ * stdin-mixed source is un-narrowable (each file emits its own conservative
+ * whole-file read, and stdin selectors never narrow it).
+ */
+function analyzeSource(argv: string[]): SourceAnalysis {
+  if (argv[0] === 'cat' || argv[0] === 'nl') {
+    const files: string[] = [];
+    if (argv[0] === 'cat') {
+      for (let i = 1; i < argv.length; i++) {
+        const a = argv[i];
+        if (a.startsWith('-') && a !== '-') continue; // a flag — cat flags never take arguments
+        files.push(a);
+      }
+    } else {
+      for (let i = 1; i < argv.length; i++) {
+        const a = argv[i];
+        if (a === '-') {
+          files.push(a);
+          continue;
+        }
+        if (a.startsWith('-')) {
+          if (NL_ARG_FLAGS.has(a)) i += 1; // arg-taking flag consumes the next word
+          continue;
+        }
+        files.push(a);
+      }
+    }
+    const real = files.filter((f) => f !== '-');
+    if (real.length === 0) return { kind: 'none' };
+    const idiom = argv[0] === 'cat' ? 'cat-file' : 'nl-file';
+    if (real.length === 1 && !files.includes('-')) {
+      return { kind: 'narrowable', fileArg: real[0], idiom, resolverKind: 'fs' };
+    }
+    return { kind: 'unnarrowable', files: real.map((fileArg) => ({ fileArg, idiom })) };
+  }
+  if (argv[0] === 'git') {
+    const outcomes = matchGitShow(argv);
+    if (outcomes.length === 1) {
+      const o = outcomes[0];
+      if (o.kind === 'unresolved') {
+        return { kind: 'gitUnresolved', fileArg: o.fileArg, reason: o.reason };
+      }
+      if (o.kind === 'candidate' && o.resolverKind !== 'fs') {
+        return {
+          kind: 'git',
+          fileArg: o.fileArg,
+          idiom: 'git-show-rev-path',
+          rev: o.resolverKind.rev,
+          resolverKind: o.resolverKind,
+          dirOverride: o.dirOverride
+        };
+      }
+    }
+  }
+  return { kind: 'none' };
+}
+
+type StdinSelector =
+  | { kind: 'head'; count: number }
+  | { kind: 'tail'; count: number; fromStart: boolean }
+  | { kind: 'sed'; ranges: { start: number; end: number | '$' }[] };
+
+/**
+ * Whether a wrapper-stripped stage is a stdin line-selector (plan §3): a
+ * `sed -n` range script, `head`, or `tail` with no file args (a bare `-` is a
+ * stdin marker, not a file). A recognized selector carrying its own file args
+ * is a non-consumer — it never reads the pipe — and returns null.
+ */
+function classifyStdinSelector(argv: string[]): StdinSelector | null {
+  if (argv[0] === 'head' || argv[0] === 'tail') {
+    const { count, fromStart, disqualified, files } = parseHeadTailFlags(argv.slice(1), argv[0] === 'tail');
+    if (disqualified) return null; // byte/zero-terminated reads are not line selectors
+    const fileArgs = files.filter((f) => f !== '-');
+    if (fileArgs.length > 0) return null;
+    return argv[0] === 'head' ? { kind: 'head', count: count ?? 10 } : { kind: 'tail', count: count ?? 10, fromStart };
+  }
+  if (argv[0] === 'sed') {
+    const rest = argv.slice(1);
+    if (!rest.includes('-n')) return null;
+    let scriptIdx = -1;
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === '-n') continue;
+      if (sedScriptSegments(rest[i]).some((seg) => SED_RANGE.test(seg))) {
+        scriptIdx = i;
+        break;
+      }
+    }
+    if (scriptIdx === -1) return null;
+    const fileCandidates = rest.filter((a, i) => i !== scriptIdx && a !== '-n' && !a.startsWith('-'));
+    if (fileCandidates.length !== 0) return null; // non-consumer — reads its file, never the pipe
+    const ranges: { start: number; end: number | '$' }[] = [];
+    for (const segment of sedScriptSegments(rest[scriptIdx])) {
+      const m = segment.match(SED_RANGE);
+      if (!m) continue;
+      const start = Number.parseInt(m[1], 10);
+      ranges.push({ start, end: m[2] === undefined ? start : m[2] === '$' ? '$' : Number.parseInt(m[2], 10) });
+    }
+    if (ranges.length === 0) return null;
+    return { kind: 'sed', ranges };
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Orchestrator
 // ---------------------------------------------------------------------------
 
@@ -1804,8 +1973,19 @@ export function parseCommandDetailed(command: string, opts: ParseOptions = {}): 
   // `cd` frames: the walk assigns each stage the subshell frame it ran in; a
   // subshell's `cd` re-bases within its fresh frame, discarded at the close.
   const dirFrames: string[] = [cwd];
-  let lastPlainFileSource: string | null = null;
-  let pendingSource: { fileArg: string; dir: string; idiom: 'cat-file' | 'nl-file' } | null = null;
+
+  /** The running window of the current pipeline group (plan §3). */
+  interface WindowState {
+    idiom: Idiom;
+    fileArg: string;
+    dir: string;
+    dirOverride?: string;
+    resolverKind: 'fs' | { kind: 'git'; rev: string };
+    lo: number;
+    hi: number;
+    consumed: boolean;
+  }
+  let window: WindowState | null = null;
 
   const wholeFileCandidate = (s: { fileArg: string; idiom: 'cat-file' | 'nl-file' }): RawCandidate => ({
     kind: 'candidate',
@@ -1814,6 +1994,120 @@ export function parseCommandDetailed(command: string, opts: ParseOptions = {}): 
     spec: { kind: 'toEof', start: 1 },
     resolverKind: 'fs'
   });
+
+  /** A source's whole-file read as a candidate (fs or git resolver). */
+  const sourceCandidate = (src: NarrowableSource): RawCandidate => ({
+    kind: 'candidate',
+    idiom: src.idiom,
+    fileArg: src.fileArg,
+    spec: { kind: 'toEof', start: 1 },
+    resolverKind: src.resolverKind,
+    dirOverride: src.dirOverride
+  });
+
+  /** Emit the window's touch: one narrow range when a stdin selector consumed it, else the whole-file read. */
+  const emitWindowTouch = (w: WindowState) => {
+    const spec: LineRangeSpec = w.consumed ? { kind: 'literal', start: w.lo, end: w.hi } : { kind: 'toEof', start: 1 };
+    emitCandidate(
+      {
+        kind: 'candidate',
+        idiom: w.idiom,
+        fileArg: w.fileArg,
+        spec,
+        resolverKind: w.resolverKind,
+        dirOverride: w.dirOverride
+      },
+      w.dir
+    );
+  };
+
+  /**
+   * Open a window over a narrowable source. An unresolvable source emits an
+   * `unresolved` entry and no window — downstream stdin selectors consume
+   * nothing (plan §3: unresolvable source ⇒ `unresolved` entry, no touch).
+   */
+  const initWindow = (src: NarrowableSource, dir: string) => {
+    const total = (
+      src.resolverKind === 'fs'
+        ? cachedFsTotalLines(resolvePath(dir, src.fileArg))
+        : cachedGitTotalLines(src.dirOverride ?? dir, src.resolverKind.rev, src.fileArg)
+    )();
+    if (total === null) {
+      emitCandidate(sourceCandidate(src), dir);
+      return;
+    }
+    window = {
+      idiom: src.idiom,
+      fileArg: src.fileArg,
+      dir,
+      dirOverride: src.dirOverride,
+      resolverKind: src.resolverKind,
+      lo: 1,
+      hi: total,
+      consumed: false
+    };
+  };
+
+  /**
+   * Apply a stdin selector's transform to the live window, clamped to the
+   * current window. A narrowing transform marks the window consumed (the
+   * emitted touch is the narrow range, not the whole-file read). Returns
+   * false when the transform empties the window — the pre-transform window
+   * survives (what a reader actually consumed) and stays unconsumed.
+   */
+  const applyWindowTransform = (sel: StdinSelector): boolean => {
+    const w = window!;
+    const lo = w.lo;
+    const hi = w.hi;
+    let nLo: number;
+    let nHi: number;
+    if (sel.kind === 'head') {
+      nLo = lo;
+      nHi = lo + sel.count - 1;
+    } else if (sel.kind === 'tail') {
+      if (sel.fromStart) {
+        nLo = lo + sel.count - 1;
+        nHi = hi;
+      } else {
+        nLo = hi - sel.count + 1;
+        nHi = hi;
+      }
+    } else {
+      nLo = lo + sel.ranges[0].start - 1;
+      nHi = sel.ranges[0].end === '$' ? hi : lo + sel.ranges[0].end - 1;
+    }
+    nLo = Math.max(nLo, lo);
+    nHi = Math.min(nHi, hi);
+    if (nLo > nHi) return false;
+    w.lo = nLo;
+    w.hi = nHi;
+    w.consumed = true;
+    return true;
+  };
+
+  /** A multi-range stdin sed delivers each range as its own touch and severs; empty clamps drop. */
+  const emitMultiRange = (ranges: { start: number; end: number | '$' }[]) => {
+    const w = window!;
+    let emitted = false;
+    for (const r of ranges) {
+      const mLo = Math.max(w.lo, w.lo + r.start - 1);
+      const mHi = Math.min(w.hi, r.end === '$' ? w.hi : w.lo + r.end - 1);
+      if (mLo > mHi) continue;
+      emitted = true;
+      emitCandidate(
+        {
+          kind: 'candidate',
+          idiom: w.idiom,
+          fileArg: w.fileArg,
+          spec: { kind: 'literal', start: mLo, end: mHi },
+          resolverKind: w.resolverKind,
+          dirOverride: w.dirOverride
+        },
+        w.dir
+      );
+    }
+    if (!emitted) emitWindowTouch(w); // every range dropped — the pre-transform window survives
+  };
 
   const emitCandidate = (c: RawCandidate, dirForResolution: string) => {
     if (looksUnresolvable(c.fileArg)) {
@@ -1853,21 +2147,28 @@ export function parseCommandDetailed(command: string, opts: ParseOptions = {}): 
     while (dirFrames.length < item.dirFrame + 1) dirFrames.push(dirFrames[dirFrames.length - 1]);
     const currentDir = dirFrames[dirFrames.length - 1];
 
+    const pipePrecedes = item.precededBy === 'pipe';
+    const pipeFollows = expanded[i + 1] !== undefined && expanded[i + 1].precededBy === 'pipe';
+
+    // A pipeline group is done at its next non-pipe stage: flush the window
+    // (one narrow touch if a stdin selector consumed the source, else the
+    // conservative whole-file read — plan §3, emit).
+    if (!pipePrecedes && window !== null) {
+      emitWindowTouch(window);
+      window = null;
+    }
+
     if (item.exec !== 'yes') {
       // A dead or unknown stage never runs — no touch, no side effects.
-      if (pendingSource !== null) {
-        emitCandidate(wholeFileCandidate(pendingSource), pendingSource.dir);
-        pendingSource = null;
-      }
       continue;
     }
 
     const heredocRef = item.text.match(/^__heredoc_(\d+)__$/);
     if (heredocRef) {
-      lastPlainFileSource = null;
-      if (pendingSource !== null) {
-        emitCandidate(wholeFileCandidate(pendingSource), pendingSource.dir);
-        pendingSource = null;
+      // The heredoc-write stage doesn't read the pipe — alignment severs.
+      if (window !== null) {
+        emitWindowTouch(window);
+        window = null;
       }
       const w = heredocWrites[Number.parseInt(heredocRef[1], 10)];
       if (looksUnresolvable(w.target)) {
@@ -1913,111 +2214,130 @@ export function parseCommandDetailed(command: string, opts: ParseOptions = {}): 
       continue;
     }
 
-    const argv = stripForEmission(argvOf(item.text) ?? []);
-    if (argv.length === 0) {
-      lastPlainFileSource = null;
+    const rawArgv = argvOf(item.text) ?? [];
+    // Dispatch argv: redirects first (the read-side recovery, §4), then the
+    // transparent wrappers (§5), then the emission-side `!`/`command`/`exec`
+    // strip — so `command -p sed …` still reaches `sed`.
+    const stripped = stripForEmission(stripWrappers(stripRedirects(rawArgv)));
+    if (stripped.length === 0) {
+      if (window !== null) {
+        emitWindowTouch(window);
+        window = null;
+      }
       continue;
     }
 
-    // A `cd` only re-bases when it executed and is not in pipe position.
-    if (argv[0] === 'cd' && !item.inPipeline) {
-      lastPlainFileSource = null;
-      const target = argv[1];
+    // A `cd` only re-bases when it executed and is not in pipe position. The
+    // check keeps the wrapper-stripping out of it — `env A=1 cd X` runs cd as
+    // a child and must not re-base.
+    const cdArgv = stripForEmission(stripRedirects(rawArgv));
+    if (cdArgv[0] === 'cd' && !item.inPipeline) {
+      const target = cdArgv[1];
       if (target !== undefined && target !== '-' && !hasShellExpansion(target)) {
         dirFrames[dirFrames.length - 1] = resolvePath(currentDir, target);
       }
       continue;
     }
 
-    let isPlainSource = false;
-    let plainFileArg: string | null = null;
-    if (argv[0] === 'cat' && argv.length === 2 && !argv[1].startsWith('-')) {
-      isPlainSource = true;
-      plainFileArg = argv[1];
-      lastPlainFileSource = hasShellExpansion(argv[1]) ? null : resolvePath(currentDir, argv[1]);
-    } else if (argv[0] === 'nl' && argv.length >= 2 && !argv[argv.length - 1].startsWith('-')) {
-      isPlainSource = true;
-      const f = argv[argv.length - 1];
-      plainFileArg = f;
-      lastPlainFileSource = hasShellExpansion(f) ? null : resolvePath(currentDir, f);
+    // A residual redirect token (`>|`, anything else beginning with `>`/`<`
+    // that stripRedirects left alone, §4) fails closed: the stage matches
+    // nothing — no source, no selector, no touch.
+    if (stripped.some((w) => w.startsWith('>') || w.startsWith('<'))) {
+      if (window !== null) {
+        emitWindowTouch(window);
+        window = null;
+      }
+      continue;
     }
 
-    let matched = false;
-    for (const matcher of [...LINE_SELECTORS, matchGitShow, matchGitLogL]) {
-      for (const outcome of matcher(argv)) {
-        matched = true;
-        if (outcome.kind === 'unresolved') {
+    // The source of a pipeline group (plan §3): a narrowable `cat`/`nl` or
+    // `git show` opens the window and defers its whole-file read; a
+    // multi-file/stdin-mixed source emits each file's conservative whole-file
+    // read and never narrows; a stdout-form redirect on the source empties
+    // the pipe — its whole-file read stands and downstream consumes nothing.
+    if (!pipePrecedes && pipeFollows && (stripped[0] === 'cat' || stripped[0] === 'nl' || stripped[0] === 'git')) {
+      const src = analyzeSource(stripped);
+      switch (src.kind) {
+        case 'none':
+          break; // fall through to the ordinary dispatch
+        case 'gitUnresolved':
           results.push({
             status: 'unresolved',
-            idiom: outcome.idiom,
-            fileArg: outcome.fileArg,
-            reason: outcome.reason
+            idiom: 'git-show-rev-path',
+            fileArg: src.fileArg,
+            reason: src.reason
           });
-        } else {
-          emitCandidate(outcome, outcome.dirOverride ?? currentDir);
-          // `git show rev:path` prints the blob verbatim, so (unlike `git log -L`,
-          // which prints diff-formatted history) it's a valid one-hop pipe source
-          // for a downstream line-selector, same as `cat`/`nl`.
-          if (outcome.idiom === 'git-show-rev-path' && !looksUnresolvable(outcome.fileArg)) {
-            isPlainSource = true;
-            lastPlainFileSource = resolvePath(outcome.dirOverride ?? currentDir, outcome.fileArg);
+          continue;
+        case 'unnarrowable': {
+          for (const f of src.files) emitCandidate(wholeFileCandidate(f), currentDir);
+          continue;
+        }
+        case 'narrowable':
+        case 'git': {
+          if (hasStdoutRedirect(rawArgv)) {
+            emitCandidate(sourceCandidate(src), currentDir);
+          } else {
+            initWindow(src, currentDir);
           }
+          continue;
         }
       }
     }
 
-    if (!matched && item.precededBy === 'pipe' && lastPlainFileSource) {
-      const withFile = [...argv, lastPlainFileSource];
-      for (const matcher of LINE_SELECTORS) {
-        for (const outcome of matcher(withFile)) {
-          matched = true;
-          if (outcome.kind === 'candidate') emitCandidate(outcome, currentDir);
-          else
+    // A pipe member of a live window (plan §3, consumers): a stdin
+    // line-selector transforms the window while aligned; a non-consumer or
+    // unrecognized stage severs — the touch is the window at the sever point
+    // and later stages are ignored for window purposes. A stdout-form
+    // redirect on the stage only moves its own output — it reads normally,
+    // then severs.
+    if (pipePrecedes && window !== null) {
+      const sel = classifyStdinSelector(stripped);
+      if (sel !== null) {
+        if (sel.kind === 'sed' && sel.ranges.length > 1) {
+          emitMultiRange(sel.ranges);
+          window = null;
+        } else {
+          applyWindowTransform(sel);
+          if (hasStdoutRedirect(rawArgv)) {
+            emitWindowTouch(window);
+            window = null;
+          }
+        }
+      } else {
+        emitWindowTouch(window);
+        window = null;
+      }
+    }
+
+    // Ordinary dispatch: a cat/nl stage's own whole-file read (a lone stage
+    // or a non-source pipe member), and the line-selector/git idioms.
+    if (stripped[0] === 'cat' || stripped[0] === 'nl') {
+      const src = analyzeSource(stripped);
+      if (src.kind === 'narrowable') {
+        emitCandidate(wholeFileCandidate({ fileArg: src.fileArg, idiom: src.idiom }), currentDir);
+      } else if (src.kind === 'unnarrowable') {
+        for (const f of src.files) emitCandidate(wholeFileCandidate(f), currentDir);
+      }
+    } else {
+      for (const matcher of [...LINE_SELECTORS, matchGitShow, matchGitLogL]) {
+        for (const outcome of matcher(stripped)) {
+          if (outcome.kind === 'unresolved') {
             results.push({
               status: 'unresolved',
               idiom: outcome.idiom,
               fileArg: outcome.fileArg,
               reason: outcome.reason
             });
+          } else {
+            emitCandidate(outcome, outcome.dirOverride ?? currentDir);
+          }
         }
       }
     }
-
-    // The deferred whole-file read of a pipe source: a source whose next
-    // expanded stage is a pipe member holds its whole-file emission until the
-    // consumer runs — a narrowing consumer's range stands instead, an
-    // unrecognized pipeline-final consumer gets the conservative whole-file
-    // read (never nothing). A middle consumer (itself piped on) stays
-    // source-only, matching the one-hop propagation rule.
-    if (pendingSource !== null) {
-      const pipeFinal = expanded[i + 1] === undefined || expanded[i + 1].precededBy !== 'pipe';
-      if (item.precededBy === 'pipe' && !matched && pipeFinal) {
-        emitCandidate(wholeFileCandidate(pendingSource), pendingSource.dir);
-      }
-      pendingSource = null;
-    }
-
-    // A bare `cat file`/`nl file` that is not feeding a downstream pipe stage
-    // reads the whole file: emit the same whole-file span `git show rev:path`
-    // produces. When a pipe follows, the downstream line-selector already
-    // emits the precise range, so the source stays source-only.
-    if (plainFileArg !== null) {
-      const next = expanded[i + 1];
-      if (next === undefined || next.precededBy !== 'pipe') {
-        emitCandidate(
-          wholeFileCandidate({ fileArg: plainFileArg, idiom: argv[0] === 'cat' ? 'cat-file' : 'nl-file' }),
-          currentDir
-        );
-      } else {
-        pendingSource = { fileArg: plainFileArg, dir: currentDir, idiom: argv[0] === 'cat' ? 'cat-file' : 'nl-file' };
-      }
-    }
-
-    if (!isPlainSource) lastPlainFileSource = null;
   }
 
-  if (pendingSource !== null) {
-    emitCandidate(wholeFileCandidate(pendingSource), pendingSource.dir);
+  if (window !== null) {
+    emitWindowTouch(window);
   }
 
   return results;

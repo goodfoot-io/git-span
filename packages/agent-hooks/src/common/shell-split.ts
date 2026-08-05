@@ -818,30 +818,168 @@ export function argvOf(simpleCmd: string): string[] | null {
 }
 
 /**
+ * Redirect operators that drop together with their plain target word (plan §4
+ * two-token shapes): `>`, `>>`, `<`, `<>`, `&>`, `&>>`, and digit-prefixed
+ * forms like `2>`/`2>>`/`3<`. `>|` is deliberately absent — it fails closed.
+ */
+const REDIRECT_TWO_TOKEN = /^(?:>>?|<>|<|&>>?|[0-9]+(?:>>?|<>|<))$/;
+
+/** Dup forms that drop alone (plan §4): `2>&1`, `>&-`, `3<&0`. */
+const REDIRECT_DUP = /^(?:[0-9]+)?[<>]&(?:[0-9]+|-)$/;
+
+/** Fused operator+target words that drop whole (plan §4): `>out`, `2>err`, `&>out`. */
+const REDIRECT_FUSED = /^(?:>>?|<>|<|&>>?|[0-9]+(?:>>?|<>|<))[^<>&|]/;
+
+/** Heredoc/here-string operators with a separate target word: `<<`, `<<-`, `<<<`. */
+const HEREDOC_TWO_TOKEN = /^(?:<<-?|<<<)$/;
+
+/** Fused heredoc words (plan §4): `<<EOF`, `<<-EOF`, `<<<x`. */
+const HEREDOC_FUSED = /^(?:<<-?|<<<)[^<>&|]/;
+
+/** Whether a word is itself a redirect token — never a valid redirect target. */
+const REDIRECT_TOKEN = (w: string): boolean =>
+  REDIRECT_TWO_TOKEN.test(w) ||
+  REDIRECT_DUP.test(w) ||
+  REDIRECT_FUSED.test(w) ||
+  HEREDOC_TWO_TOKEN.test(w) ||
+  HEREDOC_FUSED.test(w);
+
+/**
  * Strip redirect tokens from a simple command's argv so the read-side
  * matchers see the words that were actually read (plan §4): two-token
- * operators (`>`, `>>`, `&>`, digit-prefixed `2>`/`3<`, ...) drop together
- * with their plain target word, dup forms (`2>&1`, `>&-`) drop alone, fused
- * forms (`>out`, `2>err`) drop as one word, and heredoc/here-string operators
- * drop with their target word. Applied to every stage — sources, selectors,
- * and predicates — before status evaluation and matcher dispatch.
- *
- * Not implemented yet — Phase 1 declares the contract surface only.
+ * operators (`>`, `>>`, `<`, `<>`, `&>`, `&>>`, digit-prefixed `2>`/`2>>`/
+ * `3<`, ...) drop together with their plain target word, dup forms (`2>&1`,
+ * `>&-`, `3<&0`) drop alone, fused forms (`>out`, `2>err`, `&>out`) drop as
+ * one word, and heredoc/here-string operators drop with their target word in
+ * both spellings. A two-token operator's target must be a plain file word — a
+ * following redirect token (`cat f > 2>&1`) is bash's "syntax error near
+ * unexpected token" and leaves the operator dangling, unmatched. Anything
+ * else beginning with `>`/`<` (notably `>|`) is left alone — the caller
+ * treats a residual redirect word as an unmatched stage. Applied to every
+ * stage — sources, selectors, and predicates — before status evaluation and
+ * matcher dispatch.
  */
-export function stripRedirects(_argv: string[]): string[] {
-  throw new Error('Not Implemented');
+export function stripRedirects(argv: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (REDIRECT_TWO_TOKEN.test(a) || HEREDOC_TWO_TOKEN.test(a)) {
+      const next = argv[i + 1];
+      // The operator's target must be a plain file word — a following redirect
+      // token means the operator dangles and the command never runs. The
+      // dangling operator itself is left in place so the caller rejects the
+      // stage as unmatched.
+      if (next !== undefined && !REDIRECT_TOKEN(next)) {
+        i += 1;
+      } else {
+        out.push(a);
+      }
+      continue;
+    }
+    if (REDIRECT_DUP.test(a) || REDIRECT_FUSED.test(a) || HEREDOC_FUSED.test(a)) continue;
+    out.push(a);
+  }
+  return out;
+}
+
+/** Shell builtins the walk recognizes a `builtin` wrapper may forward (plan §5). */
+const WRAPPER_BUILTINS = new Set([
+  'exit',
+  'exec',
+  'true',
+  'false',
+  ':',
+  'cd',
+  'set',
+  'unset',
+  'export',
+  'readonly',
+  'return',
+  'break',
+  'continue'
+]);
+
+/** Externals whose absolute executable paths strip to their basename (plan §5). */
+const RECOGNIZED_EXTERNAL_NAMES = new Set([
+  'sed',
+  'head',
+  'tail',
+  'cat',
+  'nl',
+  'git',
+  'true',
+  'false',
+  'timeout',
+  'env',
+  'command'
+]);
+
+/** A `timeout` duration word: `5`, `5.5s`, `1m`, `2h`, ... */
+const TIMEOUT_DURATION = /^\d+(?:\.\d+)?[smhd]?$/;
+
+/** A literal `NAME=value` env-prefix word. */
+const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=.*$/;
+
+/**
+ * One strip step. Returns null when the wrapper is not clean (fail closed —
+ * the caller restores the original argv, so nothing is forwarded to the
+ * matchers), or the argv with one wrapper layer removed.
+ */
+function stripWrappersOnce(argv: string[]): string[] | null {
+  let i = 0;
+  while (i < argv.length && argv[i] === '!') i++;
+  if (i >= argv.length) return argv.slice(i);
+  const head = argv[i];
+  if (head === 'command') {
+    const next = argv[i + 1];
+    if (next === '-v' || next === '-V') return null; // a query — runs nothing
+    if (next === '-p') return argv.slice(i + 2);
+    if (next !== undefined && !next.startsWith('-')) return argv.slice(i + 1);
+    return null;
+  }
+  if (head === 'builtin') {
+    const next = argv[i + 1];
+    if (next !== undefined && WRAPPER_BUILTINS.has(next)) return argv.slice(i + 2);
+    return null; // `builtin sed` errors — never forward a non-builtin word
+  }
+  if (head === 'env') {
+    let j = i + 1;
+    while (j < argv.length && ENV_ASSIGNMENT.test(argv[j])) j++;
+    if (j === i + 1) return null; // `-i`, `-u X`, a non-assignment word — not a clean wrapper
+    return argv.slice(j);
+  }
+  if (head === 'timeout') {
+    let j = i + 1;
+    while (j < argv.length && argv[j].startsWith('--')) j++;
+    if (j >= argv.length || !TIMEOUT_DURATION.test(argv[j])) return null; // no duration — nothing runs
+    return argv.slice(j + 1);
+  }
+  if (head.startsWith('/')) {
+    const base = head.slice(head.lastIndexOf('/') + 1);
+    if (RECOGNIZED_EXTERNAL_NAMES.has(base)) return [base, ...argv.slice(i + 1)];
+    return null; // `/usr/bin/exit` and friends are not recognized externals
+  }
+  if (head.includes('/')) return null; // a relative colliding path is a local binary, not the coreutil
+  return argv.slice(i);
 }
 
 /**
  * Strip transparent wrapper prefixes from a simple command's argv so matcher
  * dispatch sees the underlying command word (plan §5): `command` (stopping at
  * the query forms `-v`/`-V`), `builtin` restricted to the walk's recognized
- * builtins, `env NAME=value` prefixes, `timeout` plus its flags and one
+ * builtins, `env NAME=value` prefixes, `timeout` plus its `--*` flags and one
  * duration, and absolute executable paths whose basename is in the recognized
  * set — iterating until fixed-point so stacked wrappers still reach the word.
- *
- * Not implemented yet — Phase 1 declares the contract surface only.
+ * Any unclean wrapper fails closed: the original argv is returned unchanged,
+ * so the stage matches nothing.
  */
-export function stripWrappers(_argv: string[]): string[] {
-  throw new Error('Not Implemented');
+export function stripWrappers(argv: string[]): string[] {
+  let current = argv;
+  for (let iter = 0; iter < argv.length + 2; iter++) {
+    const next = stripWrappersOnce(current);
+    if (next === null) return argv;
+    if (next.length === current.length && next.every((w, k) => w === current[k])) return current;
+    current = next;
+  }
+  return argv;
 }

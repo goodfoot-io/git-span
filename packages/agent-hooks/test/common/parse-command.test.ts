@@ -199,20 +199,14 @@ describe('git show rev:path', () => {
     expect(detailed[0].status).toBe('unresolved');
   });
 
-  it('piped into sed -n yields both the whole-file span and the precise range (verbatim blob content, unlike git log -L)', () => {
+  it('piped into sed -n emits only the narrow range (the window algebra absorbs the one-hop whole-file read)', () => {
     const spans = parseCommand("git show HEAD:blob.ts | sed -n '2,4p'", { cwd: repo.root });
-    expect(spans).toEqual([
-      { lineStart: 1, lineEnd: 8, absolutePath: join(repo.root, 'blob.ts') },
-      { lineStart: 2, lineEnd: 4, absolutePath: join(repo.root, 'blob.ts') }
-    ]);
+    expect(spans).toEqual([{ lineStart: 2, lineEnd: 4, absolutePath: join(repo.root, 'blob.ts') }]);
   });
 
   it('piped into head -N', () => {
     const spans = parseCommand('git show HEAD:blob.ts | head -3', { cwd: repo.root });
-    expect(spans).toEqual([
-      { lineStart: 1, lineEnd: 8, absolutePath: join(repo.root, 'blob.ts') },
-      { lineStart: 1, lineEnd: 3, absolutePath: join(repo.root, 'blob.ts') }
-    ]);
+    expect(spans).toEqual([{ lineStart: 1, lineEnd: 3, absolutePath: join(repo.root, 'blob.ts') }]);
   });
 });
 
@@ -291,9 +285,9 @@ describe('pipe-source propagation (one hop only)', () => {
     expect(spans).toEqual([{ lineStart: 2, lineEnd: 4, absolutePath: join(dir, 'twenty.txt') }]);
   });
 
-  it('does not propagate two hops', () => {
+  it('does not propagate two hops: a non-consumer middle stage severs the window, the source emits its whole-file read', () => {
     const spans = parseCommand(`cat ${join(dir, 'twenty.txt')} | grep foo | head -3`);
-    expect(spans).toEqual([]);
+    expect(spans).toEqual([{ lineStart: 1, lineEnd: 20, absolutePath: join(dir, 'twenty.txt') }]);
   });
 
   it('cat file | newline sed -n: the newline continues the pipeline (no standalone cat span, precise range)', () => {
@@ -484,9 +478,7 @@ describe('execution-aware walk — Phase 2 contract', () => {
       ['cat f\nhead -3 g', [whole('f'), range('g', 1, 3)], undefined, 'unchanged']
     ];
 
-    // Still skipped: these rows' touches depend on stripRedirects (plan §4 —
-    // the read-side argv recovery, a later dispatch).
-    const SKIPPED_ROWS: FixtureRow[] = [
+    const REDIRECT_ROWS: FixtureRow[] = [
       ["cat f 2>&1 && sed -n '1,2p' g", [whole('f')], undefined, undefined],
       [
         "cat f 2>&1 | sed -n '2,4p'",
@@ -511,7 +503,7 @@ describe('execution-aware walk — Phase 2 contract', () => {
       expectTouches(cmd, expected, opts);
     });
 
-    it.skip.each<FixtureRow>(SKIPPED_ROWS)('%s', (cmd, expected, opts) => {
+    it.each<FixtureRow>(REDIRECT_ROWS)('%s', (cmd, expected, opts) => {
       expectTouches(cmd, expected, opts);
     });
   });
@@ -1021,9 +1013,7 @@ describe('execution-aware walk — Phase 2 contract', () => {
       ['cat f > 2>&1', [], undefined, undefined]
     ];
 
-    // Still skipped: these negatives' touches depend on stripRedirects (the
-    // read-side argv recovery, a later dispatch).
-    const SKIPPED_ROWS: FixtureRow[] = [
+    const REDIRECT_ROWS: FixtureRow[] = [
       ['cat f > out', [whole('f')], undefined, 'target present'],
       [
         'cat f > out\nhead -3 g',
@@ -1039,7 +1029,7 @@ describe('execution-aware walk — Phase 2 contract', () => {
       expectTouches(cmd, expected, opts);
     });
 
-    it.skip.each<FixtureRow>(SKIPPED_ROWS)('%s', (cmd, expected, opts) => {
+    it.each<FixtureRow>(REDIRECT_ROWS)('%s', (cmd, expected, opts) => {
       expectTouches(cmd, expected, opts);
     });
   });
@@ -1397,7 +1387,7 @@ describe('execution-aware walk — Phase 2 contract', () => {
     });
   });
 
-  describe.skip('11. pipelines (window algebra)', () => {
+  describe('11. pipelines (window algebra)', () => {
     const ROWS: FixtureRow[] = [
       ["cat f | sed -n '2,4p'", [range('f', 2, 4)], undefined, '2–4 only'],
       ['cat f | head -20', [whole('f')], undefined, '1–20, clamped to the file'],
@@ -1461,12 +1451,6 @@ describe('execution-aware walk — Phase 2 contract', () => {
       ],
       ["cat f 2> err | sed -n '2,4p'", [range('f', 2, 4)], undefined, 'stderr redirects never sever'],
       [
-        'head +5 f',
-        [whole('f')],
-        undefined,
-        'GNU head treats bare +N as a file — the bare-+N count handling is tail-only'
-      ],
-      [
         'cat f | head +5',
         [whole('f')],
         undefined,
@@ -1474,12 +1458,28 @@ describe('execution-aware walk — Phase 2 contract', () => {
       ]
     ];
 
+    // Still skipped: GNU head treats bare +N as a file (never a count), so the
+    // natural expectation is the 1–10 window plus a +5 file artifact — the
+    // `whole('f')` fixture is not derivable from the algebra.
+    const SKIPPED_ROWS: FixtureRow[] = [
+      [
+        'head +5 f',
+        [whole('f')],
+        undefined,
+        'GNU head treats bare +N as a file — the bare-+N count handling is tail-only'
+      ]
+    ];
+
     it.each<FixtureRow>(ROWS)('%s', (cmd, expected, opts) => {
+      expectTouches(cmd, expected, opts);
+    });
+
+    it.skip.each<FixtureRow>(SKIPPED_ROWS)('%s', (cmd, expected, opts) => {
       expectTouches(cmd, expected, opts);
     });
   });
 
-  describe.skip('12. wrappers', () => {
+  describe('12. wrappers', () => {
     const ROWS: FixtureRow[] = [
       ["/usr/bin/sed -n '1,2p' f", [range('f', 1, 2)], undefined, 'absolute path with a recognized basename strips'],
       ["command sed -n '1,2p' f", [range('f', 1, 2)], undefined, undefined],
