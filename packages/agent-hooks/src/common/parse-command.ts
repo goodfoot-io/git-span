@@ -467,7 +467,19 @@ const LINE_SELECTORS = [matchSed, matchHead, matchTail];
 export function parseCommandDetailed(command: string, opts: ParseOptions = {}): SpanMatch[] {
   const cwd = opts.cwd ?? process.cwd();
   const { writes: heredocWrites, masked } = extractHeredocWrites(command);
-  const { stages: simpleCommands } = splitTopLevel(masked);
+  const { stages: simpleCommands, malformed } = splitTopLevel(masked);
+
+  // Verdict consumption (plan §1, list-scope + terminal semantics): the
+  // splitter has already dropped the rejecting list's stages and truncated at
+  // the first malformed list, so `simpleCommands` is exactly the completed
+  // earlier lists and walks normally below — the full-line kinds
+  // ('unclosed-quote', 'unbalanced-paren', 'dangling-operator', 'pipe-bang',
+  // 'unclosed-brace', 'unclosed-case', 'unclosed-construct') emit no touches
+  // without further handling. 'unterminated-heredoc' (the partial, arriving
+  // with the heredoc machinery in a later phase) keeps the current behavior:
+  // its stage list runs through the delimiter's line and likewise analyzes
+  // as-is.
+  void malformed;
 
   const results: SpanMatch[] = [];
   const fsLineCache = new Map<string, number | null>();

@@ -425,7 +425,7 @@ describe('execution-aware walk — Phase 2 contract', () => {
     expect(canonicalize(matches)).toEqual(expected.map((e) => canonicalizeTouch(e, cwd)));
   }
 
-  describe.skip('1. operators — full union, continuation gate, redirect-&, read-side stripping', () => {
+  describe('1. operators — full union, continuation gate, redirect-&, read-side stripping', () => {
     it('emits the full operator union per boundary', () => {
       const ops = splitTopLevel('a && b || c; d\ne & f | g |& h').stages.map((s) => s.precededBy);
       expect(ops).toEqual(['start', 'and', 'or', 'semicolon', 'newline', 'background', 'pipe', 'pipe']);
@@ -478,13 +478,13 @@ describe('execution-aware walk — Phase 2 contract', () => {
       ["sed -n '1,2p' f > /dev/null &", [range('f', 1, 2)], undefined, 'clean background boundary']
     ];
 
-    it.each<FixtureRow>(ROWS)('%s', (cmd, expected, opts) => {
+    it.skip.each<FixtureRow>(ROWS)('%s', (cmd, expected, opts) => {
       expectTouches(cmd, expected, opts);
     });
   });
 
-  describe.skip('2. malformed — verdict kinds and list scope', () => {
-    it('every expectation is probe-pinned against bash (exit 2 — bash parses the full text, errors, and runs nothing)', () => {
+  describe('2. malformed — verdict kinds and list scope', () => {
+    it.skip('every expectation is probe-pinned against bash (exit 2 — bash parses the full text, errors, and runs nothing)', () => {
       expect(true).toBe(true);
     });
 
@@ -501,6 +501,16 @@ describe('execution-aware walk — Phase 2 contract', () => {
       ['false | ! true', [], undefined, undefined],
       ['cat f &', [whole('f')], undefined, 'trailing & is valid background'],
       ['cat f;', [whole('f')], undefined, 'valid terminator'],
+      ['cat f <<', [], undefined, '<< with no delimiter word — the dangling-redirect branch of dangling-operator'],
+      ["cat f\necho 'oops", [whole('f')], undefined, undefined],
+      ['cat f\nsed g &&', [whole('f')], undefined, undefined],
+      ["echo 'oops\ncat f", [], undefined, 'the open quote carries both lines into one list']
+    ];
+
+    // Still skipped: these rows' expectations are determined by the heredoc
+    // machinery, the case-region machine, the construct machine, or
+    // analyzeExecution (later dispatches).
+    const SKIPPED_ROWS: FixtureRow[] = [
       ['cat f <<EOF\nbody', [whole('f')], undefined, 'unterminated heredoc: bash warns, cat runs, the tail is body'],
       [
         "cat f <<EOF; sed -n '1,2p' g",
@@ -514,7 +524,6 @@ describe('execution-aware walk — Phase 2 contract', () => {
         undefined,
         "sed gates on cat's unknown status — the opaque-gate bar, not the verdict"
       ],
-      ['cat f <<', [], undefined, '<< with no delimiter word — the dangling-redirect branch of dangling-operator'],
       [
         "cat f <<EOF\ncat g\nEOF\nsed -n '1,2p' h",
         [whole('f'), range('h', 1, 2)],
@@ -523,8 +532,6 @@ describe('execution-aware walk — Phase 2 contract', () => {
       ],
       ['cat f\nif true; then', [whole('f')], undefined, 'cat ran, then exit 2'],
       ['cat f\ncase $x in a) echo hi', [whole('f')], undefined, undefined],
-      ["cat f\necho 'oops", [whole('f')], undefined, undefined],
-      ['cat f\nsed g &&', [whole('f')], undefined, undefined],
       [
         "cat f\n( if true; then )\nsed -n '1,2p' g",
         [whole('f')],
@@ -538,7 +545,6 @@ describe('execution-aware walk — Phase 2 contract', () => {
         undefined,
         'a valid middle list walks normally, exit 0'
       ],
-      ["echo 'oops\ncat f", [], undefined, 'the open quote carries both lines into one list'],
       ['if true; then\ncat f', [], undefined, 'the open construct carries the tail into one list'],
       ['case $x in a) cat f\ncat g', [], undefined, 'an open case region is not a boundary — unclosed-case at EOF'],
       ['if false; then\ncat f\nfi', [], undefined, 'exit 0 — the body never runs — multi-line body phantom'],
@@ -546,6 +552,10 @@ describe('execution-aware walk — Phase 2 contract', () => {
     ];
 
     it.each<FixtureRow>(ROWS)('%s', (cmd, expected, opts) => {
+      expectTouches(cmd, expected, opts);
+    });
+
+    it.skip.each<FixtureRow>(SKIPPED_ROWS)('%s', (cmd, expected, opts) => {
       expectTouches(cmd, expected, opts);
     });
   });
@@ -939,7 +949,7 @@ describe('execution-aware walk — Phase 2 contract', () => {
     });
   });
 
-  describe.skip('6. malformed — ${…} and dangling redirect tokens', () => {
+  describe('6. malformed — ${…} and dangling redirect tokens', () => {
     const ROWS: FixtureRow[] = [
       ["x='abc)'; echo ${x%)}", [], undefined, 'valid bash — no verdict; echo is opaque anyway'],
       ['echo ${x//(/}', [], undefined, 'a ( inside a brace never triggers'],
@@ -957,7 +967,12 @@ describe('execution-aware walk — Phase 2 contract', () => {
       ['cat f > && echo hi', [], undefined, undefined],
       ['cat f >\nhead -3 g', [], undefined, 'a redirect target never continues onto a later line'],
       ['cat f > > out', [], undefined, 'a redirect token immediately followed by another redirect token has no target'],
-      ['cat f > 2>&1', [], undefined, undefined],
+      ['cat f > 2>&1', [], undefined, undefined]
+    ];
+
+    // Still skipped: these negatives' touches depend on stripRedirects (the
+    // read-side argv recovery, a later dispatch).
+    const SKIPPED_ROWS: FixtureRow[] = [
       ['cat f > out', [whole('f')], undefined, 'target present'],
       [
         'cat f > out\nhead -3 g',
@@ -972,18 +987,32 @@ describe('execution-aware walk — Phase 2 contract', () => {
     it.each<FixtureRow>(ROWS)('%s', (cmd, expected, opts) => {
       expectTouches(cmd, expected, opts);
     });
+
+    it.skip.each<FixtureRow>(SKIPPED_ROWS)('%s', (cmd, expected, opts) => {
+      expectTouches(cmd, expected, opts);
+    });
   });
 
-  describe.skip('7. comments', () => {
+  describe('7. comments', () => {
     const ROWS: FixtureRow[] = [
-      ["false && # explain\nsed -n '1,2p' f", [], undefined, 'gate preserved across the comment'],
       ['true && # c\ncat f', [whole('f')], undefined, undefined],
       ["sed -n '1,2p' f # note", [range('f', 1, 2)], undefined, undefined],
       ['cat f # note', [whole('f')], undefined, undefined],
       ['cat f # note\nhead -3 g', [whole('f'), range('g', 1, 3)], undefined, undefined]
     ];
 
+    // Still skipped: the `[]` expectation needs analyzeExecution's and-gate
+    // (the splitter keeps the 'and' gate; gating off the sed is the walk's
+    // job, a later dispatch).
+    const SKIPPED_ROWS: FixtureRow[] = [
+      ["false && # explain\nsed -n '1,2p' f", [], undefined, 'gate preserved across the comment']
+    ];
+
     it.each<FixtureRow>(ROWS)('%s', (cmd, expected, opts) => {
+      expectTouches(cmd, expected, opts);
+    });
+
+    it.skip.each<FixtureRow>(SKIPPED_ROWS)('%s', (cmd, expected, opts) => {
       expectTouches(cmd, expected, opts);
     });
   });
