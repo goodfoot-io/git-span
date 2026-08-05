@@ -1,10 +1,10 @@
 plugins-claude/git-span/agents/expert.md rk64:92119ed4ab0ea7af
-plugins-claude/git-span/skills/git-span/SKILL.md#L41-L41 rk64:9057023635ae0e3c
+plugins-claude/git-span/skills/git-span/SKILL.md#L44-L47 rk64:208d10a605282398
 plugins-claude/git-span/skills/git-span/references/triage.md rk64:dca29dcc545e6641
 plugins-claude/git-span/skills/git-span/references/whole-file-and-lfs.md rk64:1aa9958f802dee1e
 plugins-claude/git-span/skills/reconcile/SKILL.md rk64:f585a8b1ae733e7e
 plugins-codex/git-span/agents/expert.md rk64:92119ed4ab0ea7af
-plugins-codex/git-span/skills/git-span/SKILL.md#L41-L41 rk64:9057023635ae0e3c
+plugins-codex/git-span/skills/git-span/SKILL.md#L44-L47 rk64:208d10a605282398
 plugins-codex/git-span/skills/git-span/references/triage.md rk64:dca29dcc545e6641
 plugins-codex/git-span/skills/git-span/references/whole-file-and-lfs.md rk64:1aa9958f802dee1e
 plugins-codex/git-span/skills/reconcile/SKILL.md rk64:e1ee4452a1f91ab6
