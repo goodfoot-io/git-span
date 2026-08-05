@@ -1,12 +1,12 @@
 /**
- * Skipped acceptance checks for common/parse-response.ts (Phase 2 of the TDD
- * bootstrap described in plans/initial.md). Phase 1 declared
- * `ResponseParseInput` and `parseResponse` (plus the search/diff record
- * types) as not-implemented stubs; this file writes the contract's acceptance
- * checks against those stubs so Phase 3's implementation has a fixed target.
- * Every case here is marked `it.skip` — none are expected to run (the stub
- * throws `Not Implemented`); Phase 3 unskips them one by one while
- * implementing minimally against each.
+ * Acceptance checks for common/parse-response.ts (TDD bootstrap described in
+ * plans/initial.md). Phase 1 declared `ResponseParseInput` and `parseResponse`
+ * (plus the search/diff record types) as not-implemented stubs; this file
+ * writes the contract's acceptance checks against those stubs so Phase 3's
+ * implementation has a fixed target. Phase 3a has implemented command gating,
+ * scope restriction, and the search-layout decoders and enabled those checks;
+ * the diff/blame/hostile-output/truncated-flag/adapter-envelope checks remain
+ * `it.skip` for their later phases.
  *
  * The golden-matrix harness below builds the fixture store by executing the
  * REAL binaries — /usr/bin/rg (ripgrep 14.1.1), /usr/bin/grep (GNU grep
@@ -570,7 +570,7 @@ function normalizeEnvelope(envelope: unknown): Pick<ResponseParseInput, 'stdout'
 // Skipped acceptance checks
 // ---------------------------------------------------------------------------
 
-describe('parse-response (Phase 2 — skipped acceptance checks)', () => {
+describe('parse-response (Phase 3a — search layouts active)', () => {
   let mainRepo: { root: string; cleanup: () => void } | undefined;
   let root: string;
   let fixtures: Map<string, GoldenFixture>;
@@ -603,7 +603,7 @@ describe('parse-response (Phase 2 — skipped acceptance checks)', () => {
   // -------------------------------------------------------------------------
 
   describe('command gating', () => {
-    it.skip('non-derivable commands never misparse path:line-looking output', () => {
+    it('non-derivable commands never misparse path:line-looking output', () => {
       const f = fixture('rg-recursive');
       // The same rg-shaped stdout under commands the parser must not
       // response-decode — a bare `ls`/`cat`/`echo` whose output happens to
@@ -621,38 +621,38 @@ describe('parse-response (Phase 2 — skipped acceptance checks)', () => {
   // -------------------------------------------------------------------------
 
   describe('search layouts', () => {
-    it.skip('recursive path:line:text — rg, grep, and git grep decode identically', () => {
+    it('recursive path:line:text — rg, grep, and git grep decode identically', () => {
       for (const name of ['rg-recursive', 'grep-recursive', 'git-grep-recursive']) {
         const f = fixture(name);
         expect(sortedSpans(parseFixture(f))).toEqual(sortedSpans(resolveExpected(f)));
       }
     });
 
-    it.skip('context path-line-text groups (-C): per-file windows, `--` separators', () => {
+    it('context path-line-text groups (-C): per-file windows, `--` separators', () => {
       const f = fixture('rg-context-c1');
       // c.ts emits two `--`-separated windows [2,4] and [6,8] (matches at 3
       // and 7); d.ts one merged window [2,5].
       expect(sortedSpans(parseFixture(f))).toEqual(sortedSpans(resolveExpected(f)));
     });
 
-    it.skip('asymmetric -A/-B windows merge per file', () => {
+    it('asymmetric -A/-B windows merge per file', () => {
       const f = fixture('rg-context-ab');
       expect(sortedSpans(parseFixture(f))).toEqual(sortedSpans(resolveExpected(f)));
     });
 
-    it.skip('--heading: file header lines followed by line:text records', () => {
+    it('--heading: file header lines followed by line:text records', () => {
       const f = fixture('rg-heading');
       expect(sortedSpans(parseFixture(f))).toEqual(sortedSpans(resolveExpected(f)));
     });
 
-    it.skip('null-separated (-z): NUL-terminated per-file records decode to whole-file reads', () => {
+    it('null-separated (-z): NUL-terminated per-file records decode to whole-file reads', () => {
       const f = fixture('grep-null-z');
       // Every record is `path:1:…` holding the entire file content, so the
       // only well-defined touch is the whole file.
       expect(sortedSpans(parseFixture(f))).toEqual(sortedSpans(resolveExpected(f)));
     });
 
-    it.skip('one-file output: bare line:text records attribute to the single explicit file', () => {
+    it('one-file output: bare line:text records attribute to the single explicit file', () => {
       const f = fixture('rg-one-file');
       const spans = sortedSpans(parseFixture(f));
       expect(spans).toEqual(sortedSpans(resolveExpected(f)));
@@ -665,7 +665,7 @@ describe('parse-response (Phase 2 — skipped acceptance checks)', () => {
   // -------------------------------------------------------------------------
 
   describe('whole-file no-line-number fallback', () => {
-    it.skip('fires only for exactly one explicit file with no parseable numbered record', () => {
+    it('fires only for exactly one explicit file with no parseable numbered record', () => {
       // `grep` without -n prints bare matching lines — no line numbers at
       // all — so the only well-defined touch for the single explicit file
       // is the whole file.
@@ -683,7 +683,7 @@ describe('parse-response (Phase 2 — skipped acceptance checks)', () => {
   // -------------------------------------------------------------------------
 
   describe('coalescing', () => {
-    it.skip('adjacent/overlapping derived ranges merge into one span; duplicates never create duplicate surfaces', () => {
+    it('adjacent/overlapping derived ranges merge into one span; duplicates never create duplicate surfaces', () => {
       const f = fixture('rg-context-c1');
       const spans = parseFixture(f);
       expect(sortedSpans(spans)).toEqual(sortedSpans(resolveExpected(f)));
@@ -705,7 +705,7 @@ describe('parse-response (Phase 2 — skipped acceptance checks)', () => {
   // -------------------------------------------------------------------------
 
   describe('scope restriction', () => {
-    it.skip('decoded paths outside the command-declared roots are rejected', () => {
+    it('decoded paths outside the command-declared roots are rejected', () => {
       const f = fixture('rg-recursive');
       // The command declares `src` as its only search root; a `../` sibling
       // record and an absolute path sit outside it and must not touch.
@@ -756,6 +756,16 @@ describe('parse-response (Phase 2 — skipped acceptance checks)', () => {
       // side 3..9 — the merged span must be the union 3..9.
       expect(sortedSpans(parseFixture(f))).toEqual(sortedSpans(resolveExpected(f)));
     });
+
+    it.skip('a cut-off @@ header drops its hunk', () => {
+      // A cut-off `@@` header (missing the closing `@@`) is unparseable and
+      // its hunk is ignored — only the first hunk's range survives.
+      const d = fixture('git-diff-basic');
+      const cutHeader = d.stdout.slice(0, d.stdout.indexOf('@@ -6') + 4);
+      expect(sortedSpans(parseResponse({ command: d.command, cwd: d.cwd, stdout: cutHeader }))).toEqual([
+        { lineStart: 2, lineEnd: 4, absolutePath: join(d.cwd, 'a.txt') }
+      ]);
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -790,28 +800,40 @@ describe('parse-response (Phase 2 — skipped acceptance checks)', () => {
   // -------------------------------------------------------------------------
 
   describe('truncation, fail-closed', () => {
-    it.skip('a record whose terminating newline is absent is dropped; a cut-off @@ header drops its hunk', () => {
+    it('a record whose terminating newline is absent is dropped', () => {
       const s = fixture('rg-recursive');
       const full = s.stdout;
+      // rg emits files in a nondeterministic order, so derive the final
+      // record — the one the cuts below target — from the captured stdout
+      // itself rather than assuming a file name.
+      const lastLine = full.trimEnd().split('\n').at(-1) ?? '';
+      const m = /^([^:]+):(\d+):/.exec(lastLine);
+      expect(m).not.toBeNull();
+      const finalSpan: ResolvedSpan = {
+        absolutePath: join(s.cwd, m?.[1] ?? ''),
+        lineStart: Number.parseInt(m?.[2] ?? '0', 10),
+        lineEnd: Number.parseInt(m?.[2] ?? '0', 10)
+      };
+      const expectedWithoutFinal = sortedSpans(
+        resolveExpected(s).filter(
+          (sp) =>
+            !(
+              sp.absolutePath === finalSpan.absolutePath &&
+              sp.lineStart === finalSpan.lineStart &&
+              sp.lineEnd === finalSpan.lineEnd
+            )
+        )
+      );
       // Every real record ends with a newline; slicing it off leaves the
-      // final record unterminated — the final b.ts:4 match must not touch.
-      const withoutFinalNewline = full.slice(0, -1);
-      expect(sortedSpans(parseResponse({ command: s.command, cwd: s.cwd, stdout: withoutFinalNewline }))).toEqual(
-        sortedSpans(resolveExpected(s).filter((sp) => !(sp.absolutePath.endsWith('b.ts') && sp.lineStart === 4)))
+      // final record unterminated — its match must not touch.
+      expect(sortedSpans(parseResponse({ command: s.command, cwd: s.cwd, stdout: full.slice(0, -1) }))).toEqual(
+        expectedWithoutFinal
       );
       // A cut into the middle of the final record's text drops it too.
-      const midFinalRecord = full.slice(0, full.lastIndexOf('src/b.ts:4') + 8);
+      const midFinalRecord = full.slice(0, full.lastIndexOf(lastLine) + lastLine.indexOf(':') + 1);
       expect(sortedSpans(parseResponse({ command: s.command, cwd: s.cwd, stdout: midFinalRecord }))).toEqual(
-        sortedSpans(resolveExpected(s).filter((sp) => !(sp.absolutePath.endsWith('b.ts') && sp.lineStart === 4)))
+        expectedWithoutFinal
       );
-
-      // A cut-off `@@` header (missing the closing `@@`) is unparseable and
-      // its hunk is ignored — only the first hunk's range survives.
-      const d = fixture('git-diff-basic');
-      const cutHeader = d.stdout.slice(0, d.stdout.indexOf('@@ -6') + 4);
-      expect(sortedSpans(parseResponse({ command: d.command, cwd: d.cwd, stdout: cutHeader }))).toEqual([
-        { lineStart: 2, lineEnd: 4, absolutePath: join(d.cwd, 'a.txt') }
-      ]);
     });
 
     it.skip('the truncated flag (rawOutputPath preview / interrupted) fails closed to no touches', () => {
