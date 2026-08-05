@@ -32,8 +32,10 @@ git span drift --no-exit-code --format json > span-report.json
 `--no-exit-code` forces exit 0 regardless of findings (`drift` otherwise exits
 1 on any drift). Use for dashboards or audit work where drifted spans are
 counted, not blocked. `--format json` emits one JSON object —
-`{"findings": [...], "schema_version": N, "span": "..."}` — not
-newline-delimited records.
+`{"findings": [...], "schema_version": 3, "span": "...", "clean": true|false}` —
+not newline-delimited records. The document is always emitted: a clean scan
+carries `"clean": true, "findings": []` rather than empty stdout, so a parser
+can distinguish clean from no output.
 
 ## Setup audit
 

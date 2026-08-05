@@ -51,6 +51,8 @@ For each anchor still drifting after `--fix`, decide which side of the coupling 
 - **The anchors now disagree.** Conform the side that a confirmed authority or satisfied gate decides, then validate any code change. Without a confirmed contrary authority, docs follow deliberate committed code. After a gate transition, revise or retire the why and every superseded anchor. Surface ambiguous authority instead of recording a contradiction as the new baseline, and require scoped zero drift either way.
 - **Coupling is gone.** Remove just that anchor with `git span remove`, or delete the whole span with `git span delete` if none of its anchors are still meaningful.
 
+Each `git span add` (and `git span why` write) ends with a scoped post-write check over the touched span, so the mutation output itself carries the reconciliation verdict: the requested-address lines (`added` / `resolved in place` / `unchanged`) state only the local fact, then the span-wide line asserts the whole-span state — `0 drift across ...`, `N anchors drifted — ...`, `state indeterminate (index changed during check)`, or `state unverified`. The exit code matches drift's contract: 0 = clean, 1 = drift remains or the check errored, 2 = indeterminate (index changed during check) — retryable, so re-run the command. Old anchors the mutation leaves drifted are printed with their canonical address and a runnable `git span remove` next action. Read the mutation's span-wide line before committing; the trailing `git span drift <name>` stays the final confirmation.
+
 Before deciding, recover the original intent:
 
 ```bash

@@ -56,7 +56,11 @@ A handful of helper files live alongside the span files:
 | Any subcommand | 0 | Success |
 | `drift` | 0 | No drift found, or `--no-exit-code` passed while drift is present |
 | `drift` | 1 | Drift found (`Changed`/`Moved` anchors), or an interior-anchor integrity violation |
-| `add` / `why` / etc. | 1 | Operational or validation error (invalid name, out-of-range anchor, and similar) |
+| `drift` | 2 | Resolver `index_changed` verdict — the scan could not determine drift state; retryable |
+| `add` / `why` (write mode) | 0 | Write succeeded and the post-write check completed and found no actionable drift |
+| `add` / `why` (write mode) | 1 | Write succeeded but actionable drift remains, or the post-write check errored — the output says which (remains lines vs `state unverified`; JSON `DRIFT` vs `UNKNOWN` + `reason`) |
+| `add` / `why` (write mode) | 2 | Post-write check indeterminate (`index changed during check`) — retryable |
+| `add` / `why` / etc. | 1 | Operational or validation error (invalid name, out-of-range anchor, and similar); `why --format json` in read mode is also rejected fail-closed with exit 1 |
 | Any command | 2 | A clap usage error — bad flag, missing required argument |
 | `merge-driver` | 0 | Fully resolved |
 | `merge-driver` | 1 | Partial resolution (residue markers written) |

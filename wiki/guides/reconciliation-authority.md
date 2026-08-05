@@ -16,10 +16,18 @@ that residue — the meaning-altering `Changed` and `Deleted` anchors
 ([types.rs](../../packages/git-span/src/types.rs#L133-L144)).
 
 Re-anchoring records the current content as the anchored baseline; the tool
-performs no semantic check. So before re-anchoring, confirm the coupled
-artifacts still agree — and when they don't, edit the disagreeing artifact
-first. Reconciliation that only touches span metadata over a live
-disagreement hides the drift signal without resolving it.
+performs no semantic check. `add` and `why` (write mode) do end with a scoped
+post-write resolver check, and its span-wide line — `0 drift across ...`,
+`N anchors drifted — ...`, `state indeterminate`, or `state unverified` — is
+the only place span-wide cleanliness is asserted, with drift's 0/1/2 exit
+contract (0 clean / 1 drift remains or check errored / 2 index changed,
+retryable). The requested-address lines (`added` / `resolved in place` /
+`unchanged`) state only the local fact and never assert span health. The
+check is mechanical drift detection, not semantic agreement: before
+re-anchoring, confirm the coupled artifacts still agree — and when they
+don't, edit the disagreeing artifact first. Reconciliation that only touches
+span metadata over a live disagreement hides the drift signal without
+resolving it.
 
 ## Decision rule
 

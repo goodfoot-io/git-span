@@ -213,8 +213,9 @@ definition, so only the failed unit needs rework.
   only your target. Unit disjointness keeps its effect inside your unit;
   never run it outside it.
 - `drift --fix` no-ops ("Reconciled 0 spans") on a non-trivial change even
-  when it *looks* like a pure shift — don't retry it; re-anchor manually
-  (swap the old range for the new one with `git span replace`) once.
+  when it *looks* like a pure shift — with no work done it prints no summary
+  line (the `0 drift` line covers the clean case) — don't retry it; re-anchor
+  manually (swap the old range for the new one with `git span replace`) once.
 - Anchor ranges can shift between your inspect step and your fix step (usually
   your own earlier comment edit) — re-run `git span show <name>` immediately
   before `git span remove` to get the live range, don't reuse a range noted

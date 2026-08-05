@@ -215,6 +215,14 @@ Never add a narrower range just because edited code now looks locally narrower: 
 For deletion syntax or why rules, invoke the corresponding `git-span:git-span`
 section.
 
+Every `add`/`why` write now ends with a post-write span-wide check that shares
+`drift`'s exit contract: exit 0 = clean, exit 1 = actionable drift remains or
+the check errored (the output says which: remains lines vs `state unverified`),
+exit 2 = indeterminate — the resolver's `index_changed` verdict, retryable.
+Read the mutation's span-wide line (`0 drift across ...`, `N anchors drifted —
+...`, `state indeterminate`, `state unverified`) before the trailing scoped
+`drift`; drift's own 0/1/2 semantics are unchanged.
+
 5. `git span drift <name>` — require exit 0 and zero drift for this span.
 
 Confirm the intended canonical address occurs exactly once, every superseded address is absent, and the why remains accurate.

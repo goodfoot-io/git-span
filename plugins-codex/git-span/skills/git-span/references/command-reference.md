@@ -108,18 +108,45 @@ never read it as evidence that a span has no history or no drift.
 ## Editing a span
 
 ```bash
-git span add <name> <anchor>... [--at <commit-ish>]   # write anchors into .span/<name>
+git span add <name> <anchor>... [--at <commit-ish>] [--format human|json] # write anchors into .span/<name>
 git span remove <name> <anchor>...                    # remove anchors from .span/<name>
 git span replace <name> <old-anchor> <new-anchor>     # atomic swap: retire old, install new, or nothing
 git span why <name>                                   # print current why
-git span why <name> [<text>]                       # write a new why into .span/<name>
+git span why <name> [<text>] [--format human|json] # write a new why into .span/<name> (json = write mode only)
 git add .span && git commit                           # persist the edits
 ```
 
 `git span add` without `--at` hashes each anchor against the file content at
 `HEAD`; `--at <commit-ish>` hashes against an ordinary git commit-ish instead.
 `add` rejects an anchor whose end line exceeds the file's current line count
-(`end=N exceeds file line count (M)`).
+(`end=N exceeds file line count (M)`). `--at` hashes against the commit-ish,
+not the working tree, so a new anchor whose working-tree content differs from
+that commit-ish is itself actionable drift for the post-write check — the
+span-wide line reports it honestly (exit 1); that is the intended reading, not
+a bug.
+
+Every `add` (and `why` write) ends with a scoped post-write check over the
+touched span, and its span-wide verdict is the only place span-wide state is
+asserted. After the requested-address lines it prints superseded old anchors
+(`` Old anchor superseded by `<new>`: `<old>` — next: git span remove ... ``),
+old anchors that remain drifted (`` Old anchor remains: `<addr>` (<status>) —
+next: git span remove ... ``), and one span-wide line — `` Span `x`: 0 drift
+across 1 span (N anchors checked). ``, `` Span `x`: N anchors drifted — ... ``,
+`` Span `x`: state indeterminate (index changed during check) — re-run the
+command or git span drift x ``, or `` Span `x`: state unverified (<reason>) —
+run git span drift x ``. The requested-address lines never assert span health:
+the local fact is local, and "clean" appears only as the check's span-wide
+fact. `add`/`why` write mode carry drift's exit contract: 0 = write succeeded
+and the check found no actionable drift; 1 = actionable drift remains or the
+check errored (the output says which); 2 = indeterminate (index changed during
+check) — retryable.
+
+`--format human|json` selects the write-mode result (default `human`); `json`
+emits the mutation document (`schema_version: 1`, identified by its top-level
+`command` key) with the requested-address outcomes, the superseded/remaining
+arrays, and the `span_health` block. `why --format json` is write-mode only —
+read mode rejects it fail-closed with a usage-style error (exit 1, no stdout)
+rather than printing prose.
 
 `git span why <name>` never gates on the span existing: a bare read of an
 unknown name prints `` `<name>` has no why recorded. `` at exit 0, and

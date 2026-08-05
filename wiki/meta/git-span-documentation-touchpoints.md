@@ -28,6 +28,16 @@ For a span joining plugin trees, name the Claude-to-Codex direction in its why.
 - Reserved names: [validation.rs](/packages/git-span/src/validation.rs#L7-L28).
 - Command behavior and exits: `packages/git-span/src/cli/`, especially `commit.rs`,
   `drift_output.rs`, and `show.rs`.
+- Mutation output contract: `add`/`why` `--format human|json` in
+  [cli/mod.rs](/packages/git-span/src/cli/mod.rs); the post-write reconcile block
+  (superseded/remains lines and the span-wide line) and the mutation JSON family
+  (`schema_version: 1`, top-level `command` key) in
+  [commit.rs](/packages/git-span/src/cli/commit.rs); the always-emit drift JSON
+  document (`schema_version: 3`, `clean` key) and the `--fix` three-case summary
+  (drift-remains line / reconciled line / no line on zero-work runs) in
+  [drift_output.rs](/packages/git-span/src/cli/drift_output.rs). The shared 0/1/2
+  exit contract is pinned by [cli_reconcile_output.rs](/packages/git-span/tests/cases/cli_reconcile_output.rs)
+  and [cli_exit_codes.rs](/packages/git-span/tests/cases/cli_exit_codes.rs).
 - Man-page source: [gen-manpage.rs](/packages/git-span/src/bin/gen-manpage.rs).
 - Generated man page: [git-span.1](/packages/git-span/man/git-span.1). Regenerate from
   `packages/git-span` with `yarn build:man`.
@@ -66,6 +76,9 @@ judgment. Claude and Codex router branches may differ by harness.
 - Why lifecycle caveats: `.../references/command-quirks-and-errors.md`.
 - Candidate declaration handoff: `.../references/finding-span-candidates.md`.
 - Hook examples and copied text: `.../references/understanding-hook-output.md`.
+- Command grammar, mutation output, and exit contract: `.../references/command-reference.md`.
+- Read-only inspection and drift JSON envelope: `.../references/inspect.md`.
+- CI envelopes and the always-emit clean document: `.../references/ci-and-sync.md`.
 - Wiki-created spans: [.claude/rules/wiki.md](/.claude/rules/wiki.md).
 
 ### Website and marketing
