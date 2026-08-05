@@ -389,26 +389,36 @@ export async function runBashTouches(
     }
   }
 
-  // The later-recreate explanation (round-3): a delete's decisiveFail —
-  // "file present, so the delete didn't happen" — is also explained when a
-  // LATER command writes the same path with a file-producing operation whose
-  // own gate did not fail (a decisiveFail there proves the write didn't
-  // happen) AND the working tree actually differs from the index — the
-  // re-create's mark, read from the per-command probe. A file that still
-  // matches the index means the chain short-circuited before the write (the
-  // rm failed and `&&` dropped the rest), so the fail stands and the join
-  // filter still suppresses the joined command. This is the existence-gated
+  // The later-recreate explanation (round-3, mark widened round-4): a
+  // delete's decisiveFail — "file present, so the delete didn't happen" — is
+  // also explained when a LATER command writes the same path with a
+  // file-producing operation whose own gate did not fail (a decisiveFail
+  // there proves the write didn't happen) AND the path carries any tracked
+  // status row — index column or worktree column, read from the per-command
+  // probe (see the probe's per-column reasoning). A file with NO status row
+  // means it still matches HEAD: the chain short-circuited before the write
+  // (the rm failed and `&&` dropped the rest), so the fail stands and the
+  // join filter still suppresses the joined command. The index column is
+  // what separates the two realities a clean worktree cannot: `rm f && patch
+  // -p0 < d && git add f` ends with f staged (`M ` row, blank worktree
+  // column) — the write ran and was verified into the index — while a
+  // genuinely failed rm leaves no row at all. This is the existence-gated
   // sibling of the decisivePass explanation above: `rm f && patch -p0 <
   // new.diff` ends with f present because the patch re-created it, not
   // because the rm failed, and the patch's gate is inconclusive — only this
   // rule can see the re-create. Content-verified re-creates (echo/cp/
   // truncate with a body) never need it — their decisivePass explains via
-  // the map above. Residual: a pre-existing uncommitted change on the
-  // deleted path masks the discriminator (the file differed from the index
-  // before the compound ever ran), so an rm that failed on a dirty path lets
-  // the joined write fire advisory — same bounded harm as the plan's
-  // documented "coincidentally passes" join corner, and a harness-supplied
-  // non-zero exit code still suppresses the advisory class in pass B.
+  // the map above. Residual: a pre-existing uncommitted OR staged change on
+  // the deleted path masks the discriminator (the file differed from the
+  // index before the compound ever ran), so an rm that failed on a dirty
+  // path lets the joined write fire advisory — same bounded harm as the
+  // plan's documented "coincidentally passes" join corner, and a
+  // harness-supplied non-zero exit code still suppresses the advisory class
+  // in pass B. The staged face is the widening's one cost: round-3's blank-Y
+  // rule kept `M `/`A ` rows invisible, so a failed rm on a pre-staged path
+  // stayed fully suppressed; the index column now marks it, and the joined
+  // write fires advisory wherever genuine staged drift exists against the
+  // span baseline (pinned end-to-end in the integration suite).
   const recreateByPath = new Map<string, number>();
   for (const idx of commandOrder) {
     const list = evals.get(idx);

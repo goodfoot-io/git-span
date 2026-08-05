@@ -239,7 +239,7 @@ export interface RealityProbeCache {
    * file-producing write, in first-seen order.
    */
   changedCandidates: string[];
-  /** Lazy: candidates whose tracked working-tree content differs from the index, computed once. */
+  /** Lazy: candidates carrying any tracked status row (index or worktree column), computed once. */
   changedPaths: Set<string> | null;
 }
 
@@ -348,22 +348,56 @@ function realPaths(cache: RealityProbeCache, cwd: string): Set<string> {
 }
 
 /**
- * The working-tree-vs-index probe (plan §3 step 2, round-3): lazily run one
- * `git status --porcelain -z` batch over the seeded candidates and cache the
- * set whose tracked working-tree content differs from the index — the
- * re-create's mark. The driver consults it before explaining a delete's
- * decisiveFail ("file present, so the delete didn't happen") by a later
- * same-path write: an end-state-present file that still matches the index is
- * a failed rm (the `&&` chain short-circuited before the write ran), not a
- * re-create. The Y (worktree) status column decides — a row whose index
- * column alone differs (`A ` for an added-but-uncommitted file whose
- * working tree matches the index) is no re-create, only a non-space Y column
- * (` M`, `MM`, `AM`) proves the working-tree content differs from the index.
- * `--untracked-files=no` suppresses the `?? ` rows — an untracked path
- * carries no index baseline, so it can never count as re-created (fail
- * closed). `-z` prints raw, NUL-separated `XY <path>` entries so space- and
- * quote-bearing paths parse unambiguously. Fail-safe: an unresolvable repo or
- * a probe failure yields an empty set, never an error.
+ * The working-tree-vs-index probe (plan §3 step 2, round-3; widened round-4):
+ * lazily run one `git status --porcelain -z` batch over the seeded candidates
+ * and cache the set carrying any tracked status row — the re-create's mark.
+ * The driver consults it before explaining a delete's decisiveFail ("file
+ * present, so the delete didn't happen") by a later same-path write; a
+ * decisiveFail implies the path EXISTS at compound end, so every row shape
+ * below is judged against that reality.
+ *
+ * Round-3 read only the Y (worktree) column, treating "working tree ==
+ * index" as proof the re-create write never ran. That probe state is shared
+ * by two realities the rule conflated: (a) the write genuinely never ran —
+ * a failed rm short-circuits the `&&` chain, the file still matches HEAD and
+ * the index, and NO row exists — and (b) the write ran AND was staged in the
+ * same compound (`rm f && patch < d && git add f` → `M ` row, blank Y): the
+ * round-4 finding, a verified write left silent. The rule now marks ANY
+ * tracked status row: the X (index) column or the Y (worktree) column
+ * non-blank. `--untracked-files=no` suppresses `?? ` rows, and `?`/`!` are
+ * rejected defensively — an untracked or ignored path carries no index
+ * baseline, so it can never count as re-created (fail closed).
+ *
+ * Per-column reasoning against the delete-span reality (the path is tracked
+ * in the index per the delete-reality probe, and exists at compound end):
+ * - `M ` / `A ` (index differs from HEAD, worktree matches the index): the
+ *   compound staged a write (`git add`; `A ` when the path's baseline was
+ *   itself a staged add, so never in HEAD) — case (b), the re-create is
+ *   verified real in the index.
+ * - `R ` (a staged rename whose destination is the path): same — the index
+ *   records the write.
+ * - `D ` (index deleted, worktree matches): the file is either absent
+ *   (matching the staged delete — no decisiveFail, the axis is never
+ *   consulted) or recreated-but-untracked after a `git rm` (hidden by
+ *   `--untracked-files=no`, the row persists) — a present file means the
+ *   compound wrote it, so it counts.
+ * - Y-column rows (` M`, `MM`, ` D`, `AM`...): the round-3 rule unchanged —
+ *   the worktree demonstrably differs from the index.
+ *
+ * Case (a) still yields NO row (the file matches HEAD — the chain
+ * short-circuited before anything changed), so the genuine suppression holds.
+ * The one residual class (documented in the axis's call site): a PRE-EXISTING
+ * uncommitted or staged change on the deleted path masks the discriminator —
+ * the status row predates the compound, so a failed rm lets the joined write
+ * fire advisory. The staged face is the widening's one cost: round-3's
+ * blank-Y rule kept `M `/`A ` rows invisible, so only the worktree-dirty
+ * mask fired; the index column now marks both. It only manifests where
+ * genuine drift exists against the span baseline, and a harness-supplied
+ * non-zero exit code still suppresses the advisory class in pass B — the
+ * same bounded harm as the plan's documented "coincidentally passes" join
+ * corner. `-z` prints raw, NUL-separated `XY <path>` entries so space- and
+ * quote-bearing paths parse unambiguously. Fail-safe: an unresolvable repo
+ * or a probe failure yields an empty set, never an error.
  */
 function changedOnDisk(cache: RealityProbeCache, cwd: string): Set<string> {
   if (cache.changedPaths !== null) return cache.changedPaths;
@@ -381,8 +415,12 @@ function changedOnDisk(cache: RealityProbeCache, cwd: string): Set<string> {
         });
         for (const entry of out.split('\0')) {
           if (entry.length < 4) continue; // skip the trailing empty entry and rename-pair path rows
+          const indexStatus = entry.charAt(0);
           const worktreeStatus = entry.charAt(1);
-          if (worktreeStatus === ' ' || worktreeStatus === '?') continue; // index-only or untracked → no mark
+          if (indexStatus === ' ' && worktreeStatus === ' ') continue; // no tracked difference → no mark
+          if (indexStatus === '?' || indexStatus === '!' || worktreeStatus === '?' || worktreeStatus === '!') {
+            continue; // untracked or ignored → no index baseline (fail closed)
+          }
           changed.add(join(repoRoot, entry.slice(3)));
         }
       } catch (err) {
@@ -395,9 +433,11 @@ function changedOnDisk(cache: RealityProbeCache, cwd: string): Set<string> {
 }
 
 /**
- * Whether the path's tracked working-tree content differs from the index —
- * the later-recreate explanation's mark. `false` on any probe failure or for
- * any path outside the seeded candidates (fail closed).
+ * Whether the path carries a tracked status row — its index content, its
+ * working-tree content, or both differ from the committed/index baseline
+ * (see the probe's per-column reasoning) — the later-recreate explanation's
+ * mark. `false` on any probe failure or for any path outside the seeded
+ * candidates (fail closed).
  */
 export function workingTreeChanged(probeCache: RealityProbeCache, cwd: string, absPath: string): boolean {
   return changedOnDisk(probeCache, cwd).has(absPath);

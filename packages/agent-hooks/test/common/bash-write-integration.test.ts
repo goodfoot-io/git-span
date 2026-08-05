@@ -712,6 +712,119 @@ describe('bash-write-integration — in-place editors (sed -i, patch, git apply)
     expect(readRel(r.root, 'a.txt')).toBe('n1\nn2\nn3\nn4\nn5\n');
   });
 
+  it('&&-joined rm a.txt && patch -p0 < new.diff && git add a.txt (re-create staged in the same compound): the create-overwrite touch fires (round-4 miss case)', async () => {
+    const r = repo();
+    seedTrackedSpan(r.root, 'a.txt', 'l1\nl2\nl3\nl4\nl5\n', 'recreate-and-staged-patch-span');
+    // The round-4 finding's exact shape: `git add` at the end of the
+    // compound stages the re-created a.txt, so the probe's status row is
+    // `M ` — index differs from HEAD, worktree matches the index — the
+    // state the round-3 Y-column rule read as "no re-create" (byte-identical
+    // worktree-vs-index to the short-circuited-chain state, distinguished
+    // only by the index column). The widened rule marks any tracked status
+    // row, the delete's fail is explained, && fails open, and the
+    // create-overwrite fires (fake executors capture the healed path).
+    writeRel(r.root, 'new.diff', '--- /dev/null\n+++ a.txt\n@@ -0,0 +1,5 @@\n+n1\n+n2\n+n3\n+n4\n+n5\n');
+    expect(bashRun('rm a.txt && patch -p0 < new.diff && git add a.txt', r.root)).toBe(0);
+    const res = await runPipeline('rm a.txt && patch -p0 < new.diff && git add a.txt', r.root);
+    expect(parsedOps(res.matches, r.root)).toEqual([
+      { op: 'delete', rel: 'a.txt' },
+      { op: 'create-overwrite', rel: 'a.txt' }
+    ]);
+    expect(res.fixPaths).toEqual(['a.txt']);
+    expect(readRel(r.root, 'a.txt')).toBe('n1\nn2\nn3\nn4\nn5\n');
+  });
+
+  it('&&-joined rm a.txt && git apply new.diff && git add a.txt (re-create staged): the create-overwrite touch fires', async () => {
+    const r = repo();
+    seedTrackedSpan(r.root, 'a.txt', 'l1\nl2\nl3\nl4\nl5\n', 'recreate-and-staged-gitapply-span');
+    writeRel(r.root, 'new.diff', '--- /dev/null\n+++ a.txt\n@@ -0,0 +1,5 @@\n+n1\n+n2\n+n3\n+n4\n+n5\n');
+    expect(bashRun('rm a.txt && git apply new.diff && git add a.txt', r.root)).toBe(0);
+    const res = await runPipeline('rm a.txt && git apply new.diff && git add a.txt', r.root);
+    expect(res.fixPaths).toEqual(['a.txt']);
+    expect(readRel(r.root, 'a.txt')).toBe('n1\nn2\nn3\nn4\nn5\n');
+  });
+
+  it('&&-joined rm a.txt && patch -p0 < new.diff with the rm failing on a PRE-DIRTY path: the advisory still fires (the documented residual)', async () => {
+    const r = repo();
+    try {
+      seedTrackedSpan(r.root, 'a.txt', 'l1\nl2\nl3\nl4\nl5\n', 'recreate-and-dirty-residual-span');
+      // A pre-existing uncommitted change (the compound never runs to the
+      // patch — the read-only dir fails the rm and `&&` drops it) makes the
+      // file differ from the index BEFORE the compound: the documented
+      // residual that masks the discriminator — the probe still sees a
+      // status row, so the joined write fires advisory. Same bounded harm as
+      // the plan's "coincidentally passes" join corner.
+      writeRel(r.root, 'a.txt', 'dirty-before\n');
+      writeRel(r.root, 'new.diff', '--- /dev/null\n+++ a.txt\n@@ -0,0 +1,5 @@\n+n1\n+n2\n+n3\n+n4\n+n5\n');
+      chmodSync(r.root, 0o500);
+      expect(bashRun('rm a.txt && patch -p0 < new.diff', r.root)).not.toBe(0);
+      const res = await runPipeline('rm a.txt && patch -p0 < new.diff', r.root);
+      expect(res.fixPaths).toEqual(['a.txt']);
+      expect(readRel(r.root, 'a.txt')).toBe('dirty-before\n');
+    } finally {
+      chmodSync(r.root, 0o700);
+    }
+  });
+
+  it('&&-joined rm a.txt && patch -p0 < new.diff && git add a.txt on a NEVER-COMMITTED path: the create-overwrite touch fires (the round-4 `A ` variant)', async () => {
+    const r = repo();
+    // The `A ` row shape: the path is staged (`git add`) but never in HEAD —
+    // a delete+recreate+stage compound over a baseline that came from a
+    // prior staged add. The index column is what marks it (X=A, Y blank),
+    // exactly as for `M `; the delete-reality probe reads the index, so the
+    // delete still targets a real tracked path. The delete's fail is
+    // explained and && fails open; the create-overwrite fires.
+    writeRel(r.root, 'a.txt', 'l1\nl2\nl3\nl4\nl5\n');
+    execFileSync('git', ['-C', r.root, 'add', 'a.txt'], { stdio: 'ignore' });
+    writeRel(r.root, 'new.diff', '--- /dev/null\n+++ a.txt\n@@ -0,0 +1,5 @@\n+n1\n+n2\n+n3\n+n4\n+n5\n');
+    expect(bashRun('rm a.txt && patch -p0 < new.diff && git add a.txt', r.root)).toBe(0);
+    const res = await runPipeline('rm a.txt && patch -p0 < new.diff && git add a.txt', r.root);
+    expect(res.fixPaths).toEqual(['a.txt']);
+    expect(readRel(r.root, 'a.txt')).toBe('n1\nn2\nn3\nn4\nn5\n');
+  });
+
+  it('&&-joined rm a.txt && patch -p0 < new.diff && git add a.txt round-tripping IDENTICAL content: zero touches — the clean porcelain denies the re-create mark', async () => {
+    const r = repo();
+    seedTrackedSpan(r.root, 'a.txt', 'l1\nl2\nl3\nl4\nl5\n', 'recreate-and-identical-roundtrip-span');
+    // The case the probe exists to kill: the compound re-creates the file
+    // with the very content HEAD already holds (and stages it), so the
+    // porcelain ends clean — no row, no re-create mark, the delete-gate
+    // fail stays unexplained, and && suppresses the patch. Zero touches is
+    // correct: there is zero drift to surface, and a content-neutral failed
+    // rm would leave the same porcelain — the probe cannot and need not
+    // tell the two apart.
+    writeRel(r.root, 'new.diff', '--- /dev/null\n+++ a.txt\n@@ -0,0 +1,5 @@\n+l1\n+l2\n+l3\n+l4\n+l5\n');
+    expect(bashRun('rm a.txt && patch -p0 < new.diff && git add a.txt', r.root)).toBe(0);
+    const res = await runPipeline('rm a.txt && patch -p0 < new.diff && git add a.txt', r.root);
+    expect(res.fixPaths).toEqual([]);
+    expect(readRel(r.root, 'a.txt')).toBe('l1\nl2\nl3\nl4\nl5\n');
+  });
+
+  it("&&-joined rm a.txt && patch -p0 < new.diff with the rm failing on a PRE-STAGED path: the advisory still fires (the widening's one cost)", async () => {
+    const r = repo();
+    try {
+      seedTrackedSpan(r.root, 'a.txt', 'l1\nl2\nl3\nl4\nl5\n', 'recreate-and-staged-residual-span');
+      // The widening's one cost, end-to-end: a pre-existing STAGED change
+      // (`git add` before the compound — index differs from HEAD, worktree
+      // clean) plus a failed rm (read-only dir) leaves the `M ` row the
+      // round-4 rule marks, so the joined write fires advisory even though
+      // the patch never ran — round-3's blank-Y rule kept this invisible.
+      // Only manifests where genuine staged drift exists against the span
+      // baseline; a harness-supplied non-zero exit code still suppresses
+      // the advisory class in pass B.
+      writeRel(r.root, 'a.txt', 'staged-before\n');
+      execFileSync('git', ['-C', r.root, 'add', 'a.txt'], { stdio: 'ignore' });
+      writeRel(r.root, 'new.diff', '--- /dev/null\n+++ a.txt\n@@ -0,0 +1,5 @@\n+n1\n+n2\n+n3\n+n4\n+n5\n');
+      chmodSync(r.root, 0o500);
+      expect(bashRun('rm a.txt && patch -p0 < new.diff', r.root)).not.toBe(0);
+      const res = await runPipeline('rm a.txt && patch -p0 < new.diff', r.root);
+      expect(res.fixPaths).toEqual(['a.txt']);
+      expect(readRel(r.root, 'a.txt')).toBe('staged-before\n');
+    } finally {
+      chmodSync(r.root, 0o700);
+    }
+  });
+
   it('&&-joined rm a.txt && : > a.txt re-creates a spanned path with an empty truncate: the truncate touch fires (round-3 empty-truncate dialect)', async () => {
     const r = repo();
     seedTrackedSpan(r.root, 'a.txt', 'l1\nl2\nl3\nl4\nl5\n', 'recreate-and-empty-truncate-span');

@@ -317,6 +317,35 @@ describe('runBashTouches — per-command verdicts, explanations, and the join fi
     writeFileSync(join(root, rel), onDiskContent);
   }
 
+  /**
+   * Commit the seeded working tree — the baseline a genuinely clean file
+   * needs. The round-4 widened probe reads the INDEX column too, so a file
+   * that is merely `git add`ed (never committed) now carries a status row;
+   * only a file matching HEAD yields no row.
+   */
+  function commitSeed(root: string, msg = 'seed'): void {
+    execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', msg], {
+      cwd: root,
+      stdio: 'ignore'
+    });
+  }
+
+  /**
+   * Seed a tracked path whose INDEX differs from HEAD while the working tree
+   * matches the index — the post-command state a `rm f && patch -p0 < d &&
+   * git add f` compound leaves behind (the re-created content is staged).
+   * This is the probe state the round-3 Y-column rule conflated with a failed
+   * rm: byte-identical worktree-vs-index, distinguished only by the index
+   * column.
+   */
+  function seedStaged(root: string, rel: string, baselineContent: string, stagedContent: string): void {
+    writeFileSync(join(root, rel), baselineContent);
+    execFileSync('git', ['add', rel], { cwd: root });
+    commitSeed(root);
+    writeFileSync(join(root, rel), stagedContent);
+    execFileSync('git', ['add', rel], { cwd: root });
+  }
+
   function resolved(idiom: 'rm-write' | 'redirect-write' | 'sed-inplace' | 'cp-write', s: ResolvedSpan): SpanMatch {
     return { status: 'resolved', idiom, span: s };
   }
@@ -565,9 +594,13 @@ describe('runBashTouches — per-command verdicts, explanations, and the join fi
     // The discriminator pin: the same compound shape with the file still
     // matching the index means the chain short-circuited before the create
     // ran (the rm failed). The end-state presence is the rm's failure, not
-    // the create's doing — the joined command stays suppressed.
+    // the create's doing — the joined command stays suppressed. The seed
+    // COMMITS the file: the widened round-4 probe reads the index column, so
+    // a bare `git add` (an `A ` row) would now be a re-create mark — only a
+    // file matching HEAD produces no status row, the genuine (a) reality.
     const root = freshRepo();
     seedState(root, [['f.txt', 'unchanged\n']], ['f.txt']);
+    commitSeed(root);
     const { executors, calls } = makeCountingExecutors();
 
     await runBashTouches(
@@ -580,6 +613,33 @@ describe('runBashTouches — per-command verdicts, explanations, and the join fi
     );
 
     expect(calls).toEqual({ fix: 0, list: 0, drift: 0, why: 0 });
+  });
+
+  it('rm f && <existence-gated create> with the re-create staged (index differs from HEAD, worktree matches): the create fires — an index-column row is the round-4 re-create mark', async () => {
+    // The round-4 miss shape, gate-level: `rm a.txt && patch -p0 < new.diff
+    // && git add a.txt` ends with a.txt present AND staged. The probe's `M `
+    // row (X=M, Y blank) is the same "worktree == index" state the failed-rm
+    // discriminator above was built around — only the INDEX column separates
+    // the verified write from the short-circuited chain, so the round-3
+    // Y-column rule was blind to it. Any tracked status row is now the
+    // re-create mark; the delete's fail is explained and && fails open. The
+    // delete touch stays explained-suppressed (the verdict is 'unknown', so
+    // pass B drops it); the create fires.
+    const root = freshRepo();
+    seedStaged(root, 'f.txt', 'old\n', 'new\n');
+    const f = join(root, 'f.txt');
+    const { executors, fixPaths } = makeCountingExecutors();
+
+    await runBashTouches(
+      [resolved('rm-write', deleteOn(root, 'f.txt', 0)), resolved('sed-inplace', createOn(root, 'f.txt', 1, '&&'))],
+      SESSION_ID,
+      root,
+      {},
+      executors,
+      createMemoryMemoStore()
+    );
+
+    expect(fixPaths).toEqual([f]);
   });
 
   it('rm f && sed -i f with the rm failing (f dirty): zero executor calls — a modify never re-creates, so no later write can explain the delete-gate fail', async () => {
