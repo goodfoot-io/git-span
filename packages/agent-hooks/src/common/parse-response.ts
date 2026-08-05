@@ -64,7 +64,11 @@
  *   `grep needle<crafted.txt`, a consumed `-e`/`-f` value) — because the
  *   stage then reads a file instead of the pipe; the hasUnquotedRedirect
  *   scan is quote-aware, so a quoted literal `<` in a pattern
- *   (`rg -n '<div>'`) is not a redirect. The terminating-newline rule handles
+ *   (`rg -n '<div>'`) is not a redirect. A `<<`/`<<-` HEREDOC stage
+ *   (`cat <<'EOF'`) reads its stdin from the body text — a crafted body is
+ *   the same fabricated-record source as a crafted file — and the splitter
+ *   strips the operator from the text, so the per-stage `heredoc` flag
+ *   drives the same fail-closed rule. The terminating-newline rule handles
  *   the cut. Everything else fails CLOSED — the default is inverted, so
  *   any stage not provably verbatim (python, ruby, mawk, gawk, paste, and
  *   the rest of an unbounded renumberer set) may renumber or rewrite the
@@ -85,11 +89,13 @@
  *   (`printf '…' | rg -n needle`, `< file`, `<<<`, `<(…)`, and the GLUED
  *   forms — `rg needle<file`, `head -2<file`, a consumed `-e`/`-f` value
  *   like `-e needle<file` — where the redirect is invisible to argv
- *   splitting and only the quote-aware hasUnquotedRedirect scan sees it)
- *   reads STDIN, not files — the response's records are stream positions,
- *   and decoding them as paths fabricates touches (a stdin line number
- *   like "9" becomes a path, and with a real file named `9` at the cwd the
- *   phantom surfaces).
+ *   splitting and only the quote-aware hasUnquotedRedirect scan sees it, or
+ *   a `<<`/`<<-` HEREDOC body — where the splitter strips the operator from
+ *   the text and only the per-stage `heredoc` flag sees it) reads STDIN,
+ *   not files — the response's records are stream positions, and decoding
+ *   them as paths fabricates touches (a stdin line number like "9" becomes
+ *   a path, and with a real file named `9` at the cwd the phantom
+ *   surfaces).
  *   Such an invocation yields no response-derived spans. Explicit path args
  *   mean the bin searches files (the redirect/pipe is then irrelevant), and
  *   `git grep` never reads stdin — both preserved. This invariant binds only
@@ -1407,6 +1413,10 @@ export function parseResponse(input: ResponseParseInput): ResolvedSpan[] {
   // no standalone `<` token survives argv splitting. Quote-aware: a quoted
   // literal `<` in a pattern (`rg -n '<div>'`) is not a redirect.
   let gatedRedirect = false;
+  // Whether the gated stage's stdin comes from a `<<`/`<<-` HEREDOC body —
+  // the splitter strips the operator+delimiter from the stage text, so only
+  // the per-stage flag sees the redirect.
+  let gatedHeredoc = false;
   const split = splitTopLevel(command);
   // A Bash parse error means nothing executed (bash exits 2 at parse time) —
   // the response could not have been produced by this command, so fail
@@ -1451,6 +1461,7 @@ export function parseResponse(input: ResponseParseInput): ResolvedSpan[] {
     if (gated === null) continue;
     gatedPrecededBy = simple.precededBy;
     gatedRedirect = hasUnquotedRedirect(simple.text);
+    gatedHeredoc = simple.heredoc ?? false;
     // Every OTHER stage's records can reach the response, so each must be
     // provably verbatim — the default of isRenumberingFilter is closed, so
     // any bin outside the verbatim allowlist (python, ruby, mawk, …) may
@@ -1488,6 +1499,11 @@ export function parseResponse(input: ResponseParseInput): ResolvedSpan[] {
       // fail closed like any other file operand. Quote-aware: a quoted
       // literal `<` in a pattern (`rg -n '<div>'`) is not a redirect.
       if (hasUnquotedRedirect(siblingText)) return [];
+      // A heredoc (`cat <<'EOF'`) feeds the stage's stdin from its BODY — a
+      // crafted body is the same fabricated-record source as a crafted file.
+      // The splitter strips `<<` from the text, so only the per-stage flag
+      // sees the redirect.
+      if (parts[j].heredoc) return [];
       if (isRenumberingFilter(siblingArgv)) return [];
     }
   }
@@ -1553,14 +1569,16 @@ export function parseResponse(input: ResponseParseInput): ResolvedSpan[] {
   // gatedRedirect extends the rule to a redirect GLUED inside a token
   // (`rg needle<crafted.txt`, a consumed `-e`/`-f` value): argv splitting
   // never surfaces a standalone `<` token, so only the quote-aware raw-text
-  // scan sees it. Fail closed: no response-derived spans. Explicit path
-  // args scope the search to files (the redirect/pipe is then irrelevant),
-  // and `git grep` never reads stdin — both stay open.
+  // scan sees it. gatedHeredoc extends it to a `<<`/`<<-` HEREDOC body — the
+  // splitter strips the operator from the text, so only the per-stage flag
+  // sees the redirect. Fail closed: no response-derived spans. Explicit
+  // path args scope the search to files (the redirect/pipe is then
+  // irrelevant), and `git grep` never reads stdin — both stay open.
   const stdinFed =
     gated.kind === 'search' &&
     gated.argv[0] !== 'git' &&
     info.pathArgs.length === 0 &&
-    (gatedPrecededBy === 'pipe' || info.stdinRedirect || gatedRedirect);
+    (gatedPrecededBy === 'pipe' || info.stdinRedirect || gatedRedirect || gatedHeredoc);
   if (stdinFed) return [];
 
   // git grep scoping: plain invocation from a subdir is scoped to the subdir

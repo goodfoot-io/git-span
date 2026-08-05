@@ -17,6 +17,13 @@ export interface SimpleCommand {
   text: string;
   /** The operator immediately before this command ('pipe' for a pipeline stage, 'and' for `&&`, 'or' for `||`, 'semicolon' for `;`, 'newline' for a newline separator, 'background' for `&`, or 'start' for the first command). */
   precededBy: Operator;
+  /**
+   * Whether this stage's stdin is fed by a `<<`/`<<-` heredoc body. The
+   * operator+delimiter are stripped from `text` (the stage keeps a plain
+   * argv), so a consumer that scans for an unquoted `<` as a stdin redirect
+   * cannot see the heredoc in the text — this flag surfaces it.
+   */
+  heredoc?: boolean;
 }
 
 /** The verdict kinds `splitTopLevel` can return when the input is a Bash parse error (plan §1). */
@@ -112,10 +119,12 @@ function escapeRegExp(s: string): string {
  *   open at EOF is 'unclosed-case'.
  *
  * - The heredoc machinery: `<<`/`<<-` at depth 0 with a delimiter word strips
- *   the operator+delimiter from the stage text and scans body lines raw until
- *   the delimiter line; an unterminated heredoc is the 'unterminated-heredoc'
- *   partial — the delimiter's line (and everything before it) analyzes
- *   normally and the body produces no stages.
+ *   the operator+delimiter from the stage text (the stage keeps a plain argv)
+ *   and scans body lines raw until the delimiter line; an unterminated
+ *   heredoc is the 'unterminated-heredoc' partial — the delimiter's line (and
+ *   everything before it) analyzes normally and the body produces no stages.
+ *   The stripped stage carries the `heredoc` flag so consumers can see that
+ *   its stdin is the body, not a pipe or a file.
  */
 export function splitTopLevel(cmd: string): SplitResult {
   const parts: SimpleCommand[] = [];
@@ -197,9 +206,10 @@ export function splitTopLevel(cmd: string): SplitResult {
         reject('pipe-bang');
         return;
       }
-      parts.push({ text: s, precededBy: pendingOp });
+      parts.push({ text: s, precededBy: pendingOp, ...(bufHeredoc ? { heredoc: true } : {}) });
     }
     buf = '';
+    bufHeredoc = false;
     pendingOp = nextOp;
   };
 
@@ -226,6 +236,8 @@ export function splitTopLevel(cmd: string): SplitResult {
   const heredocs: PendingHeredoc[] = [];
   /** In the body of a pending heredoc — lines are scanned raw for the close line. */
   let inBody = false;
+  /** Whether the stage currently in the buffer feeds its stdin from a heredoc body (surfaced on the flushed SimpleCommand). */
+  let bufHeredoc = false;
 
   while (i < n) {
     const c = cmd[i];
@@ -637,6 +649,10 @@ export function splitTopLevel(cmd: string): SplitResult {
           heredocs.push({
             close: new RegExp(`^${allowTabs ? '\t*' : ''}${escapeRegExp(delim)}[ \\t]*$`)
           });
+          // The operator+delimiter leave the stage text below, so mark the
+          // stage: its stdin comes from the heredoc body, and consumers that
+          // read `<` from the text would otherwise never see the redirect.
+          bufHeredoc = true;
           if (levels[levels.length - 1].length > 0 || caseRegion !== null) {
             // Inside an open construct the operator+delimiter stay in the
             // stage text — the walk's interior re-split re-recognizes the

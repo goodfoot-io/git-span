@@ -51,8 +51,14 @@
  * redirect to bash but invisible to token-level checks, so the quote-aware
  * hasUnquotedRedirect scan fails every such stage closed — while a quoted
  * literal `<` in a pattern (`rg -n 'x<needle' lt.ts`) and a glued redirect
- * under explicit roots stay open. Only the adapter-envelope checks remain
- * `it.skip` for Phase 3e.
+ * under explicit roots stay open. The round-7 R7-1 batch closes the
+ * HEREDOC hole in both gates: bash feeds a `<<`/`<<-` heredoc's BODY to the
+ * stage's stdin, but the splitter strips the operator+delimiter from the
+ * stage text so no text scan sees the redirect — a per-stage `heredoc`
+ * flag (carried on SimpleCommand) fails every sibling (later, earlier,
+ * quoted, tabbed-delimiter) and rootless gated rg/grep shape closed, while
+ * a heredoc under explicit roots stays open. Only the adapter-envelope
+ * checks remain `it.skip` for Phase 3e.
  *
  * The golden-matrix harness below builds the fixture store by executing the
  * REAL binaries — /usr/bin/rg (ripgrep 14.1.1), /usr/bin/grep (GNU grep
@@ -1090,6 +1096,72 @@ function buildGoldenMatrix(root: string): GoldenMatrix {
       { path: 'digits/1', lineStart: 1, lineEnd: 1 },
       { path: 'digits/2', lineStart: 1, lineEnd: 1 }
     ])
+  );
+
+  // Round-7 R7-1: a `<<`/`<<-` HEREDOC feeds the stage's stdin from its
+  // BODY — bash delivers the body text, so a crafted body is the same
+  // fabricated-record source as a crafted file. The splitter strips the
+  // operator+delimiter from the stage text (the stage keeps a plain argv),
+  // so no text scan can see the redirect — the per-stage `heredoc` flag
+  // drives the same fail-closed rule as the unquoted-`<` scan: a heredoc
+  // sibling (either direction, quoted/tabbed delimiters) closes the chain,
+  // a heredoc `|` sibling's explicit redirect overrides the pipe, and a
+  // gated rg/grep with a heredoc and no roots is stdin-fed. A heredoc under
+  // explicit roots stays open — the search ignores stdin.
+  {
+    const body = '2:2:needle at 2\n3:1:needle at 3';
+    const chainHeredocs: Array<[string, string]> = [
+      ['later', `cd digits && rg -n needle 1 2 ; cat <<'EOF'\n${body}\nEOF`],
+      ['earlier', `cd digits && cat <<'EOF'\n${body}\nEOF\nrg -n needle 1 2`],
+      ['dq', `cd digits && rg -n needle 1 2 ; cat <<"EOF"\n${body}\nEOF`],
+      ['tab', `cd digits && rg -n needle 1 2 ; cat <<-EOF\n${body}\n\tEOF`]
+    ];
+    for (const [suffix, command] of chainHeredocs) {
+      fixtures.push({
+        name: `chain-sibling-heredoc-${suffix}`,
+        command,
+        cwd: root,
+        stdout: runPipeline(command, root).stdout,
+        exitStatus: 0,
+        expected: [],
+        files: SEARCH_FILES
+      });
+    }
+    fixtures.push({
+      name: 'pipe-rg-heredoc-cat',
+      command: `cd digits && rg -n needle 1 2 | cat <<'EOF'\n${body}\nEOF`,
+      cwd: root,
+      stdout: runPipeline(`cd digits && rg -n needle 1 2 | cat <<'EOF'\n${body}\nEOF`, root).stdout,
+      exitStatus: 0,
+      expected: [],
+      files: SEARCH_FILES
+    });
+    const gatedHeredocs: Array<[string, string]> = [
+      ['rg', `cd digits && rg -n needle <<'EOF'\n${body}\nEOF`],
+      ['grep-dq', `cd digits && grep -n needle <<"EOF"\n${body}\nEOF`]
+    ];
+    for (const [suffix, command] of gatedHeredocs) {
+      fixtures.push({
+        name: `gated-heredoc-${suffix}-noroots`,
+        command,
+        cwd: root,
+        stdout: runPipeline(command, root).stdout,
+        exitStatus: 0,
+        expected: [],
+        files: SEARCH_FILES
+      });
+    }
+  }
+  fixtures.push(
+    pipelineFixture(
+      'gated-heredoc-roots',
+      `cd digits && rg -n needle 1 2 <<'EOF'\n2:2:needle at 2\n3:1:needle at 3\nEOF`,
+      root,
+      [
+        { path: 'digits/1', lineStart: 1, lineEnd: 1 },
+        { path: 'digits/2', lineStart: 1, lineEnd: 1 }
+      ]
+    )
   );
 
   // Whole-file no-line-number fallback: bare matching lines, no numbers.
@@ -2521,6 +2593,44 @@ describe('parse-response (Phase 3a–3c — search layouts, unified diffs, and b
       // but explicit roots make the search ignore stdin, so the genuine
       // records decode.
       for (const name of ['rg-quoted-angle-pattern', 'rg-e-glued-redirect-roots']) {
+        const f = fixture(name);
+        expect(f.stdout).not.toBe('');
+        expect(sortedSpans(parseFixture(f))).toEqual(sortedSpans(resolveExpected(f)));
+      }
+    });
+  });
+
+  describe('heredoc-fed stages fail closed (round-7 R7-1)', () => {
+    it('a `<<`/`<<-` heredoc feeds stdin from its body — every sibling and rootless-gated shape fails closed with non-empty stdout', () => {
+      // Bash delivers the heredoc BODY to the stage's stdin, so a crafted
+      // body is the same fabricated-record source as a crafted file — but
+      // the splitter strips the operator+delimiter from the stage text, so
+      // no text scan sees the redirect; the per-stage `heredoc` flag closes
+      // the chain (later, earlier, quoted, and tabbed-delimiter forms), the
+      // pipe sibling whose explicit heredoc overrides the pipe, and the
+      // gated rg/grep with a heredoc and no roots (stdin-fed). Every fixture
+      // asserts non-empty stdout AND zero spans.
+      const names = [
+        'chain-sibling-heredoc-later',
+        'chain-sibling-heredoc-earlier',
+        'chain-sibling-heredoc-dq',
+        'chain-sibling-heredoc-tab',
+        'pipe-rg-heredoc-cat',
+        'gated-heredoc-rg-noroots',
+        'gated-heredoc-grep-dq-noroots'
+      ];
+      for (const name of names) {
+        const f = fixture(name);
+        expect(f.stdout).not.toBe('');
+        expect(parseFixture(f)).toEqual([]);
+      }
+    });
+
+    it('a heredoc under explicit roots stays open — the search ignores stdin', () => {
+      // `rg -n needle 1 2 <<'EOF'` — the heredoc is present, but explicit
+      // roots make the search ignore stdin (mirroring the glued-redirect
+      // twin), so the genuine records decode.
+      for (const name of ['gated-heredoc-roots']) {
         const f = fixture(name);
         expect(f.stdout).not.toBe('');
         expect(sortedSpans(parseFixture(f))).toEqual(sortedSpans(resolveExpected(f)));
