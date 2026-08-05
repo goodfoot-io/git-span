@@ -57,7 +57,14 @@
  * stage text so no text scan sees the redirect — a per-stage `heredoc`
  * flag (carried on SimpleCommand) fails every sibling (later, earlier,
  * quoted, tabbed-delimiter) and rootless gated rg/grep shape closed, while
- * a heredoc under explicit roots stays open. Only the adapter-envelope
+ * a heredoc under explicit roots stays open. The round-8 R7-2 batch
+ * restores the single-file context layout: rg/grep emit a bare `--` group
+ * separator between non-adjacent windows, and recordsAreOneFile must
+ * tolerate it (it is not a record and can never become a touch) or the
+ * whole response fails closed — which also broke the truncation invariant,
+ * letting a cut prefix decode records the complete output refused. The
+ * fixtures pin rg -C1/-C2 and grep -A1/-B1 single-file windows (glued and
+ * spaced) plus the merged-window stay-open twin. Only the adapter-envelope
  * checks remain `it.skip` for Phase 3e.
  *
  * The golden-matrix harness below builds the fixture store by executing the
@@ -93,6 +100,10 @@ const SEARCH_FILES: Record<string, string> = {
   'src/c.ts': 'zero\none\nalpha\nthree\nfour\nfive\nalpha\nsix\n',
   // Matches at lines 3 and 4 — overlapping windows the tool merges.
   'src/d.ts': 'zero\none\nalpha\nalpha\ntwo\nthree\n',
+  // Matches at lines 3 and 12 — with -C 2 the windows are [1,5] and [10,14]
+  // (a four-line gap), so the single-file run emits a `--` group separator
+  // even for wider context.
+  'src/wide.ts': 'zero\none\nalpha\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\nalpha\ntwelve\nthirteen\n',
   'src/unicode.ts': 'café\nnaïve\n日本語テキスト\ncafé au lait\n',
   // A dash inside the path: `-C` context records are `path-line-text`, and
   // without anchoring to this exact path the window collapses to the bare
@@ -425,6 +436,64 @@ function buildGoldenMatrix(root: string): GoldenMatrix {
       ['-n', '-A', '1', '-B', '2', 'alpha', 'src'],
       root,
       searchExpected(SEARCH_FILES, srcFiles, 'alpha', 2, 1)
+    )
+  );
+
+  // A single explicit FILE with a context window (round-8 R7-2): rg/grep
+  // emit a bare `--` group separator between non-adjacent windows, and the
+  // one-file layout must tolerate it — the separator is not a record and can
+  // never become a touch, so skipping it cannot fabricate. Glued and spaced
+  // context flags, rg -C and grep -A/-B.
+  fixtures.push(
+    searchFixture(
+      'rg-context-one-file',
+      'rg -n -C1 alpha src/c.ts',
+      '/usr/bin/rg',
+      ['-n', '-C1', 'alpha', 'src/c.ts'],
+      root,
+      searchExpected(SEARCH_FILES, ['src/c.ts'], 'alpha', 1, 1)
+    )
+  );
+  fixtures.push(
+    searchFixture(
+      'rg-context-one-file-c2',
+      'rg -n -C 2 alpha src/wide.ts',
+      '/usr/bin/rg',
+      ['-n', '-C', '2', 'alpha', 'src/wide.ts'],
+      root,
+      searchExpected(SEARCH_FILES, ['src/wide.ts'], 'alpha', 2, 2)
+    )
+  );
+  fixtures.push(
+    searchFixture(
+      'grep-context-one-file-a',
+      'grep -n -A1 alpha src/c.ts',
+      '/usr/bin/grep',
+      ['-n', '-A1', 'alpha', 'src/c.ts'],
+      root,
+      searchExpected(SEARCH_FILES, ['src/c.ts'], 'alpha', 0, 1)
+    )
+  );
+  fixtures.push(
+    searchFixture(
+      'grep-context-one-file-b',
+      'grep -n -B1 alpha src/c.ts',
+      '/usr/bin/grep',
+      ['-n', '-B1', 'alpha', 'src/c.ts'],
+      root,
+      searchExpected(SEARCH_FILES, ['src/c.ts'], 'alpha', 1, 0)
+    )
+  );
+  // Adjacent match groups merge into one window with no separator — the
+  // stay-open twin proving the tolerance never over-closes.
+  fixtures.push(
+    searchFixture(
+      'rg-context-one-file-merged',
+      'rg -n -C 1 alpha src/d.ts',
+      '/usr/bin/rg',
+      ['-n', '-C', '1', 'alpha', 'src/d.ts'],
+      root,
+      searchExpected(SEARCH_FILES, ['src/d.ts'], 'alpha', 1, 1)
     )
   );
 
@@ -1784,6 +1853,24 @@ describe('parse-response (Phase 3a–3c — search layouts, unified diffs, and b
     it('asymmetric -A/-B windows merge per file', () => {
       const f = fixture('rg-context-ab');
       expect(sortedSpans(parseFixture(f))).toEqual(sortedSpans(resolveExpected(f)));
+    });
+
+    it('a single explicit file with context windows: `--` group separators are not records (round-8 R7-2)', () => {
+      // rg/grep emit a bare `--` between non-adjacent windows; the one-file
+      // layout must tolerate it (the separator never becomes a touch), for
+      // glued and spaced context flags and rg -C / grep -A / grep -B alike.
+      // The merged-window twin (adjacent groups, no separator) stays open.
+      for (const name of [
+        'rg-context-one-file',
+        'rg-context-one-file-c2',
+        'grep-context-one-file-a',
+        'grep-context-one-file-b',
+        'rg-context-one-file-merged'
+      ]) {
+        const f = fixture(name);
+        expect(f.stdout).not.toBe('');
+        expect(sortedSpans(parseFixture(f))).toEqual(sortedSpans(resolveExpected(f)));
+      }
     });
 
     it('--heading: file header lines followed by line:text records', () => {

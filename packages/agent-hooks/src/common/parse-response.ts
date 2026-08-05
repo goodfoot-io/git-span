@@ -849,12 +849,17 @@ function completeLines(stdout: string): string[] {
 /**
  * Whether every non-empty record of a `line:text` response parses as
  * numbered — the cross-record consistency check that keeps one-file
- * attribution from resting on a single record's shape.
+ * attribution from resting on a single record's shape. A bare `--` line is
+ * the group separator a context run (`-A`/`-B`/`-C`) emits between
+ * non-adjacent windows: it is not a record and can never become a touch, so
+ * tolerating it cannot fabricate — while rejecting it sends the whole
+ * response to layout null (zero spans) and, worse, lets a truncated prefix
+ * decode records the complete output refuses (cutting must never add).
  */
 function recordsAreOneFile(stdout: string): boolean {
   const lines = completeLines(stdout);
   if (lines.length === 0) return false;
-  return lines.every((line) => line === '' || parseOneFileRecord(line) !== null);
+  return lines.every((line) => line === '' || line === '--' || parseOneFileRecord(line) !== null);
 }
 
 /**
