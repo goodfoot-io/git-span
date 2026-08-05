@@ -46,16 +46,23 @@
  * - **Pipelines**: the response is attributed to the FIRST gated stage
  *   (left-to-right walk; if no stage gates, nothing to parse). In a pipeline
  *   the final stage's stdout is the gated stage's output when every later
- *   stage only truncates, reorders, or dedupes (head/tail/wc/sort/uniq/cut —
- *   each surviving line's content is verbatim, so decoded spans stay
- *   genuine); the terminating-newline rule handles the cut. A later stage
- *   that RENUMBERS or rewrites records (grep with `-n`/`--line-number`,
- *   `nl`, `cat -n`, `awk`, `sed`) destroys the file-line mapping — the
- *   response then carries stream positions, not file lines — so the pipeline
- *   fails closed (attribute nothing). In an &&/||/; chain the first gated
- *   stage is the most likely owner of response-shaped records. `cd` tracking
- *   applies only until the first gated stage is found — the evidence was
- *   produced in that directory.
+ *   stage is PROVABLY VERBATIM — the allowlist is the closable set:
+ *   head/tail/wc/sort/uniq/cut (truncate/reorder/dedupe — each surviving
+ *   line's content is verbatim), plain `cat` (no `-n`/`--number`), the grep
+ *   family without numbered evidence (`-n`/`--line-number`), and the
+ *   expression-allowlisted sed/awk/perl/tr carve-outs (numeric-address
+ *   `p`/`q`/`d` scripts, condition-only NR-comparison/parity awk programs,
+ *   stream-position `print if/unless $. N d` perl scripts, and
+ *   digit/colon/newline-free `tr -d` deletions — all provably pass whole
+ *   records through byte-verbatim); the terminating-newline rule handles
+ *   the cut. Everything else fails CLOSED — the default is inverted, so
+ *   any stage not provably verbatim (python, ruby, mawk, gawk, paste, and
+ *   the rest of an unbounded renumberer set) may renumber or rewrite the
+ *   records, the response then carries stream positions instead of file
+ *   lines, and the pipeline attributes nothing.
+ *   In an &&/||/; chain the first gated stage is the most likely owner of
+ *   response-shaped records. `cd` tracking applies only until the first
+ *   gated stage is found — the evidence was produced in that directory.
  * - **Stdin-fed search fails closed**: a non-git search bin (`rg`/`grep`/
  *   `egrep`/`fgrep`) with no path args whose input is piped or redirected
  *   (`printf '…' | rg -n needle`, `< file`, `<<<`, `<(…)`) reads STDIN, not
@@ -543,30 +550,53 @@ function diffRelativeBase(
 }
 
 /**
+ * Post-gated pipeline stages that provably only truncate, reorder, or
+ * dedupe the earlier stage's records — each surviving line's content is
+ * byte-verbatim, so the decoded spans stay genuine. The unconditional
+ * members of the closable allowlist for the inverted default of
+ * isRenumberingFilter; the conditional carve-outs (sed/awk/perl/tr with
+ * allowlisted scripts) are handled by their own stage checks below.
+ */
+const VERBATIM_PASS_BINS = new Set(['head', 'tail', 'wc', 'sort', 'uniq', 'cut']);
+
+/**
  * Whether a post-first-gated-stage pipeline stage renumbers or restructures
  * the earlier stage's records so the response no longer carries the file
- * lines the gated stage produced. Name-based: grep/egrep/fgrep/rg with
- * numbered evidence (`-n`/`--line-number`), `nl`, and `cat -n` always
- * renumber or rewrite records; `sed` and `awk` fail closed UNLESS their
- * script/program provably passes whole records through byte-verbatim
- * (isVerbatimSedStage / isVerbatimAwkStage — numeric-address `p`/`q`/`d`
- * forms and condition-only NR-comparison/parity programs output the same
- * bytes the earlier stage emitted, so the decoded spans stay genuine);
- * head/tail/wc/sort/uniq/cut only truncate, reorder, or dedupe — each
- * surviving line's content is verbatim.
+ * lines the gated stage produced. The DEFAULT IS INVERTED (fail closed):
+ * a stage is allowed only when it is provably verbatim — renumbering is a
+ * property of the binary, and the renumberer set (perl, python, ruby, mawk,
+ * gawk, nawk, tr, paste, …) is unbounded, so a deny list can never be
+ * closed and any bin outside the allowlist is treated as a renumberer.
+ * The allowlist is pipeline-shape only (a renumbered record is byte-
+ * identical to legit output, so content/record-shape discrimination is
+ * unsound): grep/egrep/fgrep/rg WITHOUT numbered evidence
+ * (`-n`/`--line-number` — a plain filter passes records through verbatim),
+ * plain `cat` (no `-n`/`--number`), head/tail/wc/sort/uniq/cut (truncate/
+ * reorder/dedupe), and `sed`/`awk`/`perl`/`tr` whose script/program
+ * provably passes whole records through byte-verbatim (isVerbatimSedStage /
+ * isVerbatimAwkStage / isVerbatimPerlStage / isVerbatimTrStage — numeric-
+ * address `p`/`q`/`d` forms, condition-only NR-comparison/parity programs,
+ * stream-position `print if/unless $. N d` perl scripts, and
+ * digit/colon/newline-free `tr -d` deletions output the same bytes the
+ * earlier stage emitted, so the decoded spans stay genuine). `nl` always
+ * renumbers.
  */
 function isRenumberingFilter(argv: string[]): boolean {
   const bin = argv[0];
   if (bin === 'nl') return true;
   if (bin === 'sed') return !isVerbatimSedStage(argv);
   if (bin === 'awk') return !isVerbatimAwkStage(argv);
+  if (bin === 'perl') return !isVerbatimPerlStage(argv);
+  if (bin === 'tr') return !isVerbatimTrStage(argv);
   if (bin === 'cat') {
     return argv.some((a) => a === '--number' || (a.startsWith('-') && !a.startsWith('--') && a.includes('n')));
   }
   if (SEARCH_BINS.has(bin)) {
     return argv.some((a) => a === '--line-number' || (a.startsWith('-') && !a.startsWith('--') && a.includes('n')));
   }
-  return false;
+  // The inverted default: any bin outside the known-verbatim allowlist
+  // (head/tail/wc/sort/uniq/cut) fails closed.
+  return !VERBATIM_PASS_BINS.has(bin);
 }
 
 /**
@@ -627,6 +657,54 @@ function isVerbatimAwkStage(argv: string[]): boolean {
   if (argv.length !== 2) return false;
   const program = argv[1];
   return /^NR\s*(<=|>=|==|!=|<|>)\s*\d+$/.test(program) || /^NR\s*%\s*\d+\s*(==|!=)\s*\d+$/.test(program);
+}
+
+/**
+ * The script of a post-gated `perl` stage's argv when its form is exactly
+ * `perl -ne <script>` or `perl -n -e <script>` — nothing else. Any other
+ * flag (`-p`, `-a`, `-F`, …) or any positional beyond the script (file args
+ * — the stage then reads files, not the pipe) returns null and fails
+ * closed.
+ */
+function verbatimPerlScript(argv: string[]): string | null {
+  if (argv.length === 3 && argv[1] === '-ne') return argv[2];
+  if (argv.length === 4 && argv[1] === '-n' && argv[2] === '-e') return argv[3];
+  return null;
+}
+
+/**
+ * Whether a post-gated `perl` stage provably prints whole input records
+ * byte-verbatim (stream-position selection only). `-n` wraps the script in
+ * a line loop without auto-printing, and the script must be a bare `print`
+ * guarded by a stream-position condition (`print if $. <= 2`, `print unless
+ * $. > 2`, `print if $. == 2`) — bare `print` emits `$_` verbatim including
+ * its trailing newline, so records stay complete for the terminating-newline
+ * rule and their positions are exactly the earlier stage's file lines.
+ * Anything else — including `print "$.:$_"` (renumbers), `-p`, any other
+ * expression, any file args — fails closed.
+ */
+function isVerbatimPerlStage(argv: string[]): boolean {
+  const script = verbatimPerlScript(argv);
+  if (script === null) return false;
+  return /^\s*print\s+(?:if|unless)\s+\$\.\s*(<=|>=|==|!=|<|>)\s*\d+\s*;?\s*$/.test(script);
+}
+
+/**
+ * Whether a post-gated `tr` stage provably deletes a character set that
+ * leaves the earlier records' shape and line numbers untouched. Only the
+ * exact `tr -d <set>` form qualifies (one set token, no other flags, no
+ * file args); the set must contain NONE of `0-9` (deleting digits
+ * renumbers), `:` (deleting colons destroys the record shape — this also
+ * blocks `[:…:]` class syntax), or the `\n` escape (deleting newlines
+ * merges records). Allowed: `tr -d '\r'` (the CRLF idiom), `tr -d ' '`,
+ * `tr -d '\t\r'`, `tr -d 'a-z'`. Any substitution form (`tr '1' '9'` —
+ * rewrites digits inside line numbers), `-s`/`-c`, or anything else fails
+ * closed.
+ */
+function isVerbatimTrStage(argv: string[]): boolean {
+  if (argv.length !== 3 || argv[1] !== '-d') return false;
+  const set = argv[2];
+  return !/[0-9:]/.test(set) && !set.includes('\\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -1240,10 +1318,11 @@ export function parseResponse(input: ResponseParseInput): ResolvedSpan[] {
     }
     if (gated === null) continue;
     gatedPrecededBy = simple.precededBy;
-    // A later stage of the SAME pipeline may only truncate, reorder, or
-    // dedupe the gated stage's records; a renumbering/rewriting stage
-    // (isRenumberingFilter) would destroy the file-line mapping the records
-    // carry, so the pipeline fails closed: attribute nothing.
+    // A later stage of the SAME pipeline must be provably verbatim: the
+    // default of isRenumberingFilter is closed, so any bin outside the
+    // verbatim allowlist (python, ruby, mawk, …) may renumber or rewrite
+    // the records, destroy the file-line mapping they carry, and the
+    // pipeline fails closed: attribute nothing.
     for (let j = i + 1; j < parts.length && parts[j].precededBy === '|'; j++) {
       const laterArgv = argvOf(parts[j].text);
       if (laterArgv !== null && laterArgv.length > 0 && isRenumberingFilter(laterArgv)) return [];

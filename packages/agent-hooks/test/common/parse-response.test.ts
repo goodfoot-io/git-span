@@ -23,7 +23,13 @@
  * colon values decode like the glued control) and the verbatim sed/awk
  * truncator fixtures (numeric-address and NR-condition scripts decode to
  * the same spans as the head control; rewritten or non-allowlisted scripts
- * still fail closed). Only the adapter-envelope checks remain
+ * still fail closed). The round-3 R3-3 batch INVERTS the renumberer
+ * closure to a provably-verbatim allowlist: unlisted renumberers (perl,
+ * python3, mawk — verified on this system — and tr's digit rewrite) over
+ * digit-named files fail closed, while plain digit-named-arg searches,
+ * plain grep filters without numbered evidence, stream-position perl
+ * truncators (`print if $. <= 2`), and shape-preserving `tr -d` deletions
+ * (`tr -d '\r'`) stay open. Only the adapter-envelope checks remain
  * `it.skip` for Phase 3e.
  *
  * The golden-matrix harness below builds the fixture store by executing the
@@ -77,7 +83,16 @@ const SEARCH_FILES: Record<string, string> = {
   // A 20-record file for the verbatim truncator fixtures: a sed/awk stage
   // that cuts records (`sed -n '1,2p'`, `sed '12q'`, `awk 'NR<=2'`) must
   // preserve the surviving records' positions exactly like `head -2`.
-  'src/needles.ts': 'needle\n'.repeat(20)
+  'src/needles.ts': 'needle\n'.repeat(20),
+  // Digit-named files for the round-3 R3-3 renumberer fixtures: an unlisted
+  // renumberer (`perl -ne 'print "$.:$_"'`) turns the genuine
+  // `path:line:text` records into stream positions, so file i decodes at
+  // line i — phantom lines (file 2's line 2, file 3's line 3 are no-match
+  // lines here) while the genuine line-1 matches go unrecorded. All three
+  // carry the needle at line 1 so the real search emits one record per file.
+  'digits/1': 'needle\n',
+  'digits/2': 'needle\nx\n',
+  'digits/3': 'needle\nx\nx\n'
 };
 
 interface ExpectedSpan {
@@ -694,6 +709,100 @@ function buildGoldenMatrix(root: string): GoldenMatrix {
   );
   fixtures.push(
     pipelineFixture('pipe-rg-awk-fields', "rg -n needle src/needles.ts | awk 'NR<=2 {print $1}'", root, [])
+  );
+
+  // Round-3 R3-3: the renumbering closure is name-based and was BYPASSABLE —
+  // any renumberer outside the deny list (perl, python3, mawk, tr, …) passed
+  // the later-stage scan and its renumbered records reached the decoders.
+  // The default is now INVERTED (fail closed) with a provably-verbatim
+  // allowlist, so the fabrication shapes below must yield NO spans:
+  // `perl -ne 'print "$.:$_"'` prepends its stream ordinal to each record
+  // (`1:1:1:needle`), so file i decodes at line i — phantom lines on
+  // digits/2 (line 2) and digits/3 (line 3) are no-match lines while the
+  // genuine line-1 matches go unrecorded; python3 and mawk renumber through
+  // their own bins; `tr '1' '9'` rewrites the digits inside line numbers
+  // (line 12 becomes 92 — a phantom line); `tr -d '0-9'` deletes them
+  // outright (record shape destroyed).
+  {
+    const perlRenumber = `cd digits && rg -n needle 1 2 3 | perl -ne 'print "$.:$_"'`;
+    fixtures.push({
+      name: 'pipe-rg-perl-renumber',
+      command: perlRenumber,
+      cwd: root,
+      stdout: runPipeline(perlRenumber, root).stdout,
+      exitStatus: 0,
+      expected: [],
+      files: SEARCH_FILES
+    });
+    const pythonRenumber = `cd digits && rg -n needle 1 2 3 | python3 -c "import sys; [print(f'{i}:{l}', end='') for i, l in enumerate(sys.stdin, 1)]"`;
+    fixtures.push({
+      name: 'pipe-rg-python-renumber',
+      command: pythonRenumber,
+      cwd: root,
+      stdout: runPipeline(pythonRenumber, root).stdout,
+      exitStatus: 0,
+      expected: [],
+      files: SEARCH_FILES
+    });
+    const mawkRenumber = `cd digits && rg -n needle 1 2 3 | mawk '{print NR ":" $0}'`;
+    fixtures.push({
+      name: 'pipe-rg-mawk-renumber',
+      command: mawkRenumber,
+      cwd: root,
+      stdout: runPipeline(mawkRenumber, root).stdout,
+      exitStatus: 0,
+      expected: [],
+      files: SEARCH_FILES
+    });
+  }
+  fixtures.push(pipelineFixture('pipe-rg-tr-sub', "rg -n needle src/needles.ts | tr '1' '9'", root, []));
+  fixtures.push(pipelineFixture('pipe-rg-tr-d-digits', "rg -n needle src/needles.ts | tr -d '0-9'", root, []));
+
+  // The allowlisted carve-outs stay open: a stream-position perl truncator
+  // (`print if $. <= 2` — bare print emits $_ verbatim including its
+  // trailing newline) cuts exactly like `head -2`, and `tr -d '\r'` (the
+  // CRLF idiom — a set with no digits, colons, or newline escapes) deletes
+  // nothing from the LF-terminated records. The legit digit-named-arg
+  // search (no later stage; the files are real, so the existence backstop
+  // passes) and a plain `grep -v` filter (grep-family without numbered
+  // evidence) keep their spans too.
+  fixtures.push(
+    pipelineFixture('pipe-rg-perl-truncate', "rg -n needle src/needles.ts | perl -ne 'print if $. <= 2'", root, [
+      { path: 'src/needles.ts', lineStart: 1, lineEnd: 2 }
+    ])
+  );
+  fixtures.push(
+    pipelineFixture('pipe-rg-perl-single', "rg -n needle src/needles.ts | perl -ne 'print if $. == 2'", root, [
+      { path: 'src/needles.ts', lineStart: 2, lineEnd: 2 }
+    ])
+  );
+  fixtures.push(
+    pipelineFixture('pipe-rg-tr-crlf', "rg -n alpha src/a.ts | tr -d '\\r'", root, [
+      { path: 'src/a.ts', lineStart: 1, lineEnd: 1 },
+      { path: 'src/a.ts', lineStart: 4, lineEnd: 4 }
+    ])
+  );
+  {
+    const digits = 'cd digits && rg -n needle 1 2 3';
+    fixtures.push({
+      name: 'rg-digits-named-args',
+      command: digits,
+      cwd: root,
+      stdout: runPipeline(digits, root).stdout,
+      exitStatus: 0,
+      expected: [
+        { path: 'digits/1', lineStart: 1, lineEnd: 1 },
+        { path: 'digits/2', lineStart: 1, lineEnd: 1 },
+        { path: 'digits/3', lineStart: 1, lineEnd: 1 }
+      ],
+      files: SEARCH_FILES
+    });
+  }
+  fixtures.push(
+    pipelineFixture('pipe-rg-grep-v-skip', 'rg -n alpha src/a.ts | grep -v skip', root, [
+      { path: 'src/a.ts', lineStart: 1, lineEnd: 1 },
+      { path: 'src/a.ts', lineStart: 4, lineEnd: 4 }
+    ])
   );
 
   // Whole-file no-line-number fallback: bare matching lines, no numbers.
@@ -1900,6 +2009,87 @@ describe('parse-response (Phase 3a–3c — search layouts, unified diffs, and b
         expect(f.stdout).not.toBe('');
         expect(parseFixture(f)).toEqual([]);
       }
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Round-3 R3-3: the renumberer closure, inverted to a provably-verbatim
+  // allowlist (perl/python/mawk/tr shapes that the old deny list let
+  // through)
+  // -------------------------------------------------------------------------
+
+  describe('renumberer closure — inverted allowlist default (round-3 R3-3)', () => {
+    it('unlisted renumberers over digit-named files fail closed', () => {
+      // `perl -ne 'print "$.:$_"'`, python3, and mawk all prepend their
+      // stream ordinal to each record (`1:1:1:needle`), so every record
+      // decodes as path=ordinal at line=ordinal — phantom lines on
+      // digits/2 and digits/3 while the genuine line-1 matches go
+      // unrecorded. None of the bins is provably verbatim, so each whole
+      // pipeline must attribute nothing.
+      for (const name of ['pipe-rg-perl-renumber', 'pipe-rg-python-renumber', 'pipe-rg-mawk-renumber']) {
+        const f = fixture(name);
+        expect(f.stdout).not.toBe('');
+        expect(parseFixture(f)).toEqual([]);
+      }
+    });
+
+    it('tr digit rewrites and digit deletions fail closed', () => {
+      // `tr '1' '9'` substitutes digits inside the line-number column
+      // (line 12 becomes 92 — a phantom line); `tr -d '0-9'` deletes the
+      // line numbers outright (record shape destroyed). Neither is a
+      // shape-preserving deletion, so both fail closed.
+      for (const name of ['pipe-rg-tr-sub', 'pipe-rg-tr-d-digits']) {
+        const f = fixture(name);
+        expect(f.stdout).not.toBe('');
+        expect(parseFixture(f)).toEqual([]);
+      }
+    });
+
+    it('verbatim perl truncators decode like the head control', () => {
+      // A stream-position guard with bare `print` emits `$_` byte-verbatim
+      // (including its trailing newline — records stay complete for the
+      // terminating-newline rule), so the selected records keep the gated
+      // stage's file lines: `perl -ne 'print if $. <= 2'` equals the head
+      // -2 control, and `print if $. == 2` pins a single line-2 span.
+      const truncate = fixture('pipe-rg-perl-truncate');
+      expect(truncate.stdout).not.toBe('');
+      expect(truncate.stdout).toContain(':needle');
+      expect(sortedSpans(parseFixture(truncate))).toEqual(sortedSpans(resolveExpected(truncate)));
+      expect(sortedSpans(parseFixture(truncate))).toEqual(sortedSpans(parseFixture(fixture('pipe-rg-head-2-needles'))));
+      const single = fixture('pipe-rg-perl-single');
+      expect(single.stdout).not.toBe('');
+      expect(sortedSpans(parseFixture(single))).toEqual(sortedSpans(resolveExpected(single)));
+      // The split `-n -e` argv form is allowlisted identically: same
+      // script, same stdout, same spans.
+      expect(
+        sortedSpans(
+          parseResponse({
+            command: `rg -n needle src/needles.ts | perl -n -e 'print if $. <= 2'`,
+            cwd: truncate.cwd,
+            stdout: truncate.stdout,
+            exitStatus: truncate.exitStatus
+          })
+        )
+      ).toEqual(sortedSpans(resolveExpected(truncate)));
+    });
+
+    it('shape-preserving tr -d stays open; plain digit-named searches and plain grep filters too', () => {
+      // `tr -d '\r'` (the CRLF idiom) deletes a set with no digits, colons,
+      // or newline escapes — the LF-terminated records pass through
+      // byte-verbatim, so the spans surface.
+      const crlf = fixture('pipe-rg-tr-crlf');
+      expect(crlf.stdout).not.toBe('');
+      expect(sortedSpans(parseFixture(crlf))).toEqual(sortedSpans(resolveExpected(crlf)));
+      // A plain `rg -n needle 1 2 3` over the digit-named files (no later
+      // stage) keeps its genuine spans — the files are real, so the
+      // existence backstop passes them through.
+      const digits = fixture('rg-digits-named-args');
+      expect(digits.stdout).not.toBe('');
+      expect(sortedSpans(parseFixture(digits))).toEqual(sortedSpans(resolveExpected(digits)));
+      // A plain grep filter without numbered evidence passes whole records
+      // through verbatim — the spans survive.
+      const skip = fixture('pipe-rg-grep-v-skip');
+      expect(sortedSpans(parseFixture(skip))).toEqual(sortedSpans(resolveExpected(skip)));
     });
   });
 
