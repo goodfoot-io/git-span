@@ -13,7 +13,7 @@
 use crate::support::TestRepo;
 
 use anyhow::Result;
-use git_span::cli::AddArgs;
+use git_span::cli::{AddArgs, AddFormat};
 use git_span::cli::commit::run_add;
 use git_span::cli::commit::run_replace;
 use serde_json::Value;
@@ -362,6 +362,7 @@ fn concurrent_replace_and_add_no_lost_update() -> Result<()> {
             name: "test/race".into(),
             anchors: vec!["file2.txt#L1-L5".into()],
             at: None,
+            format: AddFormat::Human,
         };
         run_add(&gix_repo, args, ".span")?;
         Ok(())
