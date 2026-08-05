@@ -292,9 +292,10 @@ export function createHandler(
           written?: string;
         };
         if (match.idiom === 'heredoc-write') {
-          // `>` overwrites: whole-file scope so deleted spans beyond the new
-          // EOF are surfaced. `>>` appends: narrow to the appended lines.
-          const written = span.redirect === '>' ? '' : (span.body ?? '');
+          // `>` overwrites and truncations: whole-file scope so deleted spans
+          // beyond the new EOF are surfaced. `>>` appends: narrow to the
+          // appended lines (`span.written`).
+          const written = span.operation === 'append' ? (span.written ?? '') : '';
           touchInput = { kind: 'write', sessionId, cwd, filePath: absPath, written };
         } else {
           touchInput = {
@@ -303,7 +304,8 @@ export function createHandler(
             cwd,
             filePath: absPath,
             offset: span.lineStart,
-            limit: span.lineEnd - span.lineStart + 1
+            limit:
+              span.lineStart !== undefined && span.lineEnd !== undefined ? span.lineEnd - span.lineStart + 1 : undefined
           };
         }
         const output = await runTouchHook(touchInput as TouchInput, executors, memo);

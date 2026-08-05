@@ -84,12 +84,12 @@ export function createHandler(
     // Bash has no `file_path` field, so it gets its own branch: run the static
     // command parser and translate every resolved span into a touch through the
     // same shared core. Read idioms carry the parsed line window; a heredoc
-    // write carries its written body (`span.body`) so the touch core can narrow
-    // the write to the lines that changed — `>` overwrites locate the written
-    // block, `>>` appends locate the appended block, and a `written: ''` whole-
-    // file scope covers truncations. A command with no recognizable idiom
-    // yields no blocks and returns `null` — fail-open, same as the tool path
-    // below.
+    // write carries its written body (`span.written`) so the touch core can
+    // narrow the write to the lines that changed — `>` overwrites locate the
+    // written block, `>>` appends locate the appended block, and a
+    // `written: ''` whole-file scope covers truncations. A command with no
+    // recognizable idiom yields no blocks and returns `null` — fail-open, same
+    // as the tool path below.
     if (toolName === 'Bash') {
       const command = typeof toolInput.command === 'string' ? toolInput.command : null;
       if (!command) return null;
@@ -102,9 +102,10 @@ export function createHandler(
         if (!scope) continue;
         let touch: TouchInput;
         if (match.idiom === 'heredoc-write') {
-          // `>` overwrites: whole-file scope so deleted spans beyond the new
-          // EOF are surfaced. `>>` appends: narrow to the appended lines.
-          const written = span.redirect === '>' ? '' : (span.body ?? '');
+          // `>` overwrites and truncations: whole-file scope so deleted spans
+          // beyond the new EOF are surfaced. `>>` appends: narrow to the
+          // appended lines (`span.written`).
+          const written = span.operation === 'append' ? (span.written ?? '') : '';
           touch = { kind: 'write', sessionId, cwd, filePath: span.absolutePath, written };
         } else {
           touch = {
@@ -113,7 +114,8 @@ export function createHandler(
             cwd,
             filePath: span.absolutePath,
             offset: span.lineStart,
-            limit: span.lineEnd - span.lineStart + 1
+            limit:
+              span.lineStart !== undefined && span.lineEnd !== undefined ? span.lineEnd - span.lineStart + 1 : undefined
           };
         }
         const output = await runTouchHook(touch, executors, memo);

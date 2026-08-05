@@ -15,24 +15,44 @@
  */
 import { resolve as resolvePath } from 'node:path';
 import { countFileLines, countGitBlobLines } from './command-resolve.js';
-import { argvOf, splitTopLevel } from './shell-split.js';
+import { argvOf, type SimpleCommand, splitTopLevel } from './shell-split.js';
+
+/**
+ * The explicit operation kind of a resolved span. The adapters translate from
+ * this, never from `idiom === 'heredoc-write'`-style checks (plan §1).
+ */
+export type Operation =
+  | 'read' // read idioms; cp/install source operands
+  | 'create-overwrite' // truncating content writes: > redirects, tee, heredoc >, cp/mv dest, restore/checkout, patch add
+  | 'append' // >> redirects, tee -a, heredoc >>
+  | 'modify' // in-place edits with unknown content: sed -i, patch hunks, formatter write flags
+  | 'rename-copy' // mv/git mv/patch-rename destination (whole-file write, same touch as create-overwrite)
+  | 'truncate' // : > f, bare > f, truncate
+  | 'delete'; // rm, mv/git mv source, patch delete
 
 export interface ResolvedSpan {
-  lineStart: number;
-  lineEnd: number;
+  operation: Operation;
   absolutePath: string;
   /**
-   * The exact body of a `heredoc-write` span — the content the heredoc writes.
-   * Absent (undefined) for read idioms.
+   * Exact range: every read; modify operations with a statically known range
+   * (sed -i numeric addresses, patch hunk unions). Absent for writes →
+   * whole-file scope.
    */
-  body?: string;
+  lineStart?: number;
+  lineEnd?: number;
+  /** Statically known written content — append bodies only (heredoc/echo/printf/tee literals). */
+  written?: string;
   /**
-   * The heredoc redirect operator. `>` means the file was overwritten
-   * (whole-file scope — any span beyond the new EOF was deleted and must
-   * surface); `>>` means the body was appended (narrow to the append range).
-   * Absent (undefined) for read idioms.
+   * Ordinal of the span's simple command within the compound, in walker
+   * order; groups the spans of one command for join gating (plan §3 step 2).
    */
-  redirect?: '>' | '>>';
+  simpleCommandIndex: number;
+  /**
+   * The operator preceding the span's simple command; only `'&&'`/`'||'` gate.
+   * Absent for `start`/`;`/newline/`&`/`|` boundaries.
+   */
+  join?: '&&' | '||';
+  note?: string;
 }
 
 export type Idiom =
@@ -43,7 +63,21 @@ export type Idiom =
   | 'nl-file'
   | 'git-show-rev-path'
   | 'git-log-L'
-  | 'heredoc-write';
+  | 'heredoc-write'
+  // The write-touch families (plan §5). Idiom stays match metadata for tests
+  // and unresolved reasons; adapter behavior keys on `operation`, never idiom.
+  | 'redirect-write' // §5.1: echo/printf/tee content redirects
+  | 'truncate-write' // §5.1: bare `> f` / `: > f` truncations
+  | 'cp-write' // §5.3
+  | 'install-write' // §5.3
+  | 'mv-write' // §5.4: mv and git mv
+  | 'rm-write' // §5.5: rm and git rm
+  | 'truncate-command' // §5.5: the truncate command
+  | 'sed-inplace' // §5.6: sed -i
+  | 'patch-write' // §5.7: patch and git apply
+  | 'formatter-write' // §5.8
+  | 'git-restore-write' // §5.9: git restore pathspecs
+  | 'git-checkout-write'; // §5.9: git checkout -- pathspecs
 
 export type SpanMatch =
   | { status: 'resolved'; idiom: Idiom; span: ResolvedSpan; note?: string }
@@ -453,7 +487,16 @@ export function parseCommandDetailed(command: string, cwd: string = process.cwd(
   let currentDir = cwd;
   let lastPlainFileSource: string | null = null;
 
-  const emitCandidate = (c: RawCandidate, dirForResolution: string) => {
+  /** The `join` stamp for a simple command: only the conditional operators gate (plan §3 step 2). */
+  const joinOf = (simple: SimpleCommand): ResolvedSpan['join'] =>
+    simple.precededBy === '&&' || simple.precededBy === '||' ? simple.precededBy : undefined;
+
+  const emitCandidate = (
+    c: RawCandidate,
+    dirForResolution: string,
+    simpleCommandIndex: number,
+    join: ResolvedSpan['join']
+  ) => {
     if (looksUnresolvable(c.fileArg)) {
       results.push({
         status: 'unresolved',
@@ -481,7 +524,14 @@ export function parseCommandDetailed(command: string, cwd: string = process.cwd(
     results.push({
       status: 'resolved',
       idiom: c.idiom,
-      span: { lineStart: range.lineStart, lineEnd: range.lineEnd, absolutePath }
+      span: {
+        operation: 'read',
+        lineStart: range.lineStart,
+        lineEnd: range.lineEnd,
+        absolutePath,
+        simpleCommandIndex,
+        join
+      }
     });
   };
 
@@ -501,36 +551,30 @@ export function parseCommandDetailed(command: string, cwd: string = process.cwd(
         continue;
       }
       const absolutePath = resolvePath(currentDir, w.target);
-      const bodyLines = w.body.length === 0 ? 0 : w.body.split('\n').length;
-      if (bodyLines === 0) {
+      if (w.body.length === 0) {
         // `cat > f <<'EOF'` with an empty body truncates the file to empty — a
-        // real write that must produce a touch (whole-file, via `body: ''`).
+        // real write that must produce a touch (the `truncate` operation).
         // `>>` with an empty body appends nothing and is a genuine no-op.
         if (w.redirect !== '>') continue;
         results.push({
           status: 'resolved',
           idiom: 'heredoc-write',
-          span: { lineStart: 1, lineEnd: 1, absolutePath, body: '', redirect: w.redirect }
+          span: { operation: 'truncate', absolutePath, simpleCommandIndex: i, join: joinOf(simple) }
         });
         continue;
       }
-      const spec: LineRangeSpec =
-        w.redirect === '>' ? { kind: 'literal', start: 1, end: bodyLines } : { kind: 'appendLines', count: bodyLines };
-      const range = resolveSpec(spec, cachedFsTotalLines(absolutePath));
-      if (range === null) {
-        results.push({
-          status: 'unresolved',
-          idiom: 'heredoc-write',
-          fileArg: absolutePath,
-          reason: 'append target: could not read existing file to find its current length'
-        });
-      } else {
-        results.push({
-          status: 'resolved',
-          idiom: 'heredoc-write',
-          span: { lineStart: range.lineStart, lineEnd: range.lineEnd, absolutePath, body: w.body, redirect: w.redirect }
-        });
-      }
+      // Truncating `>` overwrites scope whole-file by design — span content
+      // beyond the new EOF must surface — and never thread the body; `>>`
+      // appends carry the written body for the touch core's range recovery.
+      // Neither carries a line range (whole-file writes, plan §1).
+      results.push({
+        status: 'resolved',
+        idiom: 'heredoc-write',
+        span:
+          w.redirect === '>'
+            ? { operation: 'create-overwrite', absolutePath, simpleCommandIndex: i, join: joinOf(simple) }
+            : { operation: 'append', absolutePath, written: w.body, simpleCommandIndex: i, join: joinOf(simple) }
+      });
       continue;
     }
 
@@ -577,7 +621,9 @@ export function parseCommandDetailed(command: string, cwd: string = process.cwd(
             spec: { kind: 'toEof', start: 1 },
             resolverKind: 'fs'
           },
-          currentDir
+          currentDir,
+          i,
+          joinOf(simple)
         );
       }
     }
@@ -594,7 +640,7 @@ export function parseCommandDetailed(command: string, cwd: string = process.cwd(
             reason: outcome.reason
           });
         } else {
-          emitCandidate(outcome, outcome.dirOverride ?? currentDir);
+          emitCandidate(outcome, outcome.dirOverride ?? currentDir, i, joinOf(simple));
           // `git show rev:path` prints the blob verbatim, so (unlike `git log -L`,
           // which prints diff-formatted history) it's a valid one-hop pipe source
           // for a downstream line-selector, same as `cat`/`nl`.
@@ -610,7 +656,7 @@ export function parseCommandDetailed(command: string, cwd: string = process.cwd(
       const withFile = [...argv, lastPlainFileSource];
       for (const matcher of LINE_SELECTORS) {
         for (const outcome of matcher(withFile)) {
-          if (outcome.kind === 'candidate') emitCandidate(outcome, currentDir);
+          if (outcome.kind === 'candidate') emitCandidate(outcome, currentDir, i, joinOf(simple));
           else
             results.push({
               status: 'unresolved',

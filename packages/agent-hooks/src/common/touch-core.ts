@@ -136,7 +136,7 @@ export interface TouchReadInput extends TouchInputBase {
   limit?: number;
 }
 
-/** A write touch (Claude `Edit`/`Write`, Codex `apply_patch`). */
+/** A write touch (Claude `Edit`/`Write`, Codex `apply_patch`, or a translated Bash write span). */
 export interface TouchWriteInput extends TouchInputBase {
   kind: 'write';
   /**
@@ -146,6 +146,30 @@ export interface TouchWriteInput extends TouchInputBase {
    * "no locatable block" and the touch is scoped file-wide.
    */
   written: string;
+  /**
+   * Exact post-edit range when statically known (sed -i numeric addresses,
+   * patch hunk unions); bypasses {@link recoverRangeFromDisk} (plan §3
+   * step 3).
+   */
+  range?: LineRange;
+  /**
+   * The file's expected post-command state; the write path gates on it before
+   * invoking any executor (plan §3 step 1). Absent means `'exists'` — the
+   * Edit/Write and apply_patch paths' default.
+   */
+  targetState?: 'exists' | 'absent';
+  /**
+   * Statically knowable expected post-content, verified before any executor
+   * call (plan §3 step 1b). `content` compares the on-disk state after the
+   * command ran; `realDelete` is delete-only — the path must also be
+   * index-tracked or spanned (probes cached per command).
+   */
+  postState?: {
+    /** `exact`: file bytes equal; `suffix`: file content ends with it; `empty`: zero bytes; `size`: byte count. */
+    content?: { exact: string } | { suffix: string } | { empty: true } | { size: number };
+    /** delete-only: the path must also be index-tracked or spanned (probes cached per command). */
+    realDelete?: boolean;
+  };
 }
 
 /** The harness-agnostic touch the core consumes. */
@@ -528,9 +552,14 @@ export async function runTouchHook(
   try {
     let range: LineRange | 'whole-file' = 'whole-file';
     if (input.kind === 'write') {
+      // Phase 1 gate stub (plan §3 step 1): evaluateWriteGate is Phase 3
+      // work. Until the post-state gate exists, an 'absent' target cannot be
+      // verified and fails closed — no executor call for a deletion that may
+      // not have happened.
+      if (input.targetState === 'absent') return { additionalContext: null, treeModified: false };
       const fix = await executors.fix(input.filePath, input.cwd);
       treeModified = fix.modified;
-      range = recoverRangeFromDisk(input.written, input.filePath);
+      range = input.range ?? recoverRangeFromDisk(input.written, input.filePath);
     } else {
       range = recoverReadRange(input.offset, input.limit, input.filePath);
     }

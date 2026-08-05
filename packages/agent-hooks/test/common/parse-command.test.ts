@@ -10,6 +10,11 @@
  * range(s) it statically, reliably reads or writes. These tests exercise it
  * against real fixture files in a temp directory, and a real (throwaway) git
  * repo for the `git show`/`git log -L` idioms.
+ *
+ * Every resolved span carries its `operation` kind, the ordinal
+ * `simpleCommandIndex` of its simple command within the compound, and —
+ * where the simple command was joined with `&&`/`||` — the `join` operator
+ * (plan §1, §3 step 2).
  */
 
 import { execFileSync } from 'node:child_process';
@@ -37,18 +42,24 @@ afterAll(() => {
 describe('bare cat/nl whole-file reads', () => {
   it('bare cat file resolves to whole-file range', () => {
     const spans = parseCommand(`cat ${join(dir, 'twenty.txt')}`);
-    expect(spans).toEqual([{ lineStart: 1, lineEnd: 20, absolutePath: join(dir, 'twenty.txt') }]);
+    expect(spans).toEqual([
+      { operation: 'read', lineStart: 1, lineEnd: 20, absolutePath: join(dir, 'twenty.txt'), simpleCommandIndex: 0 }
+    ]);
   });
 
   it('bare nl file resolves to whole-file range', () => {
     const spans = parseCommand(`nl ${join(dir, 'five.txt')}`);
-    expect(spans).toEqual([{ lineStart: 1, lineEnd: 5, absolutePath: join(dir, 'five.txt') }]);
+    expect(spans).toEqual([
+      { operation: 'read', lineStart: 1, lineEnd: 5, absolutePath: join(dir, 'five.txt'), simpleCommandIndex: 0 }
+    ]);
   });
 
   it('cat file | head -N still only emits the head range (pipe source, no standalone cat span)', () => {
     const spans = parseCommand(`cat ${join(dir, 'twenty.txt')} | head -3`);
     // Only the head range; bare cat is a pipe source, not a standalone read
-    expect(spans).toEqual([{ lineStart: 1, lineEnd: 3, absolutePath: join(dir, 'twenty.txt') }]);
+    expect(spans).toEqual([
+      { operation: 'read', lineStart: 1, lineEnd: 3, absolutePath: join(dir, 'twenty.txt'), simpleCommandIndex: 1 }
+    ]);
   });
 
   it('cat with no file argument (stdin) does not match', () => {
@@ -60,21 +71,23 @@ describe('multi-range sed -n', () => {
   it('two ranges on one file emit two spans', () => {
     const spans = parseCommand(`sed -n '2,4p;6,8p' ${join(dir, 'twenty.txt')}`);
     expect(spans).toEqual([
-      { lineStart: 2, lineEnd: 4, absolutePath: join(dir, 'twenty.txt') },
-      { lineStart: 6, lineEnd: 8, absolutePath: join(dir, 'twenty.txt') }
+      { operation: 'read', lineStart: 2, lineEnd: 4, absolutePath: join(dir, 'twenty.txt'), simpleCommandIndex: 0 },
+      { operation: 'read', lineStart: 6, lineEnd: 8, absolutePath: join(dir, 'twenty.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
   it('single-range sed -n still works (regression)', () => {
     const spans = parseCommand(`sed -n '10,20p' ${join(dir, 'twenty.txt')}`);
-    expect(spans).toEqual([{ lineStart: 10, lineEnd: 20, absolutePath: join(dir, 'twenty.txt') }]);
+    expect(spans).toEqual([
+      { operation: 'read', lineStart: 10, lineEnd: 20, absolutePath: join(dir, 'twenty.txt'), simpleCommandIndex: 0 }
+    ]);
   });
 
   it('mixed script (range + non-range segments) only emits matching ranges', () => {
     const spans = parseCommand(`sed -n '2,4p;d;6,8p' ${join(dir, 'twenty.txt')}`);
     expect(spans).toEqual([
-      { lineStart: 2, lineEnd: 4, absolutePath: join(dir, 'twenty.txt') },
-      { lineStart: 6, lineEnd: 8, absolutePath: join(dir, 'twenty.txt') }
+      { operation: 'read', lineStart: 2, lineEnd: 4, absolutePath: join(dir, 'twenty.txt'), simpleCommandIndex: 0 },
+      { operation: 'read', lineStart: 6, lineEnd: 8, absolutePath: join(dir, 'twenty.txt'), simpleCommandIndex: 0 }
     ]);
   });
 });
@@ -82,22 +95,30 @@ describe('multi-range sed -n', () => {
 describe('sed -n range', () => {
   it('numeric,numeric', () => {
     const spans = parseCommand(`sed -n '10,20p' ${join(dir, 'twenty.txt')}`);
-    expect(spans).toEqual([{ lineStart: 10, lineEnd: 20, absolutePath: join(dir, 'twenty.txt') }]);
+    expect(spans).toEqual([
+      { operation: 'read', lineStart: 10, lineEnd: 20, absolutePath: join(dir, 'twenty.txt'), simpleCommandIndex: 0 }
+    ]);
   });
 
   it('numeric,$ resolves against real EOF', () => {
     const spans = parseCommand(`sed -n '15,$p' ${join(dir, 'twenty.txt')}`);
-    expect(spans).toEqual([{ lineStart: 15, lineEnd: 20, absolutePath: join(dir, 'twenty.txt') }]);
+    expect(spans).toEqual([
+      { operation: 'read', lineStart: 15, lineEnd: 20, absolutePath: join(dir, 'twenty.txt'), simpleCommandIndex: 0 }
+    ]);
   });
 
   it('single line address', () => {
     const spans = parseCommand(`sed -n '3p' ${join(dir, 'five.txt')}`);
-    expect(spans).toEqual([{ lineStart: 3, lineEnd: 3, absolutePath: join(dir, 'five.txt') }]);
+    expect(spans).toEqual([
+      { operation: 'read', lineStart: 3, lineEnd: 3, absolutePath: join(dir, 'five.txt'), simpleCommandIndex: 0 }
+    ]);
   });
 
   it('unquoted numeric range', () => {
     const spans = parseCommand(`sed -n 1,4p ${join(dir, 'five.txt')}`);
-    expect(spans).toEqual([{ lineStart: 1, lineEnd: 4, absolutePath: join(dir, 'five.txt') }]);
+    expect(spans).toEqual([
+      { operation: 'read', lineStart: 1, lineEnd: 4, absolutePath: join(dir, 'five.txt'), simpleCommandIndex: 0 }
+    ]);
   });
 
   it('no -n flag does not match (prints whole file plus dupes, not a range read)', () => {
@@ -106,24 +127,39 @@ describe('sed -n range', () => {
 
   it('embedded in a larger && chain', () => {
     const spans = parseCommand(`echo start && sed -n '1,2p' ${join(dir, 'five.txt')} && echo done`);
-    expect(spans).toEqual([{ lineStart: 1, lineEnd: 2, absolutePath: join(dir, 'five.txt') }]);
+    expect(spans).toEqual([
+      {
+        operation: 'read',
+        lineStart: 1,
+        lineEnd: 2,
+        absolutePath: join(dir, 'five.txt'),
+        simpleCommandIndex: 1,
+        join: '&&'
+      }
+    ]);
   });
 });
 
 describe('head', () => {
   it('-n N with file', () => {
     const spans = parseCommand(`head -n 5 ${join(dir, 'twenty.txt')}`);
-    expect(spans).toEqual([{ lineStart: 1, lineEnd: 5, absolutePath: join(dir, 'twenty.txt') }]);
+    expect(spans).toEqual([
+      { operation: 'read', lineStart: 1, lineEnd: 5, absolutePath: join(dir, 'twenty.txt'), simpleCommandIndex: 0 }
+    ]);
   });
 
   it('legacy -N form', () => {
     const spans = parseCommand(`head -30 ${join(dir, 'twenty.txt')}`);
-    expect(spans).toEqual([{ lineStart: 1, lineEnd: 20, absolutePath: join(dir, 'twenty.txt') }]);
+    expect(spans).toEqual([
+      { operation: 'read', lineStart: 1, lineEnd: 20, absolutePath: join(dir, 'twenty.txt'), simpleCommandIndex: 0 }
+    ]);
   });
 
   it('no count defaults to 10', () => {
     const spans = parseCommand(`head ${join(dir, 'twenty.txt')}`);
-    expect(spans).toEqual([{ lineStart: 1, lineEnd: 10, absolutePath: join(dir, 'twenty.txt') }]);
+    expect(spans).toEqual([
+      { operation: 'read', lineStart: 1, lineEnd: 10, absolutePath: join(dir, 'twenty.txt'), simpleCommandIndex: 0 }
+    ]);
   });
 
   it('no trailing file (reading stdin/a pipe) does not match', () => {
@@ -134,12 +170,16 @@ describe('head', () => {
 describe('tail', () => {
   it('-n +N (from start) resolves against real EOF', () => {
     const spans = parseCommand(`tail -n +18 ${join(dir, 'twenty.txt')}`);
-    expect(spans).toEqual([{ lineStart: 18, lineEnd: 20, absolutePath: join(dir, 'twenty.txt') }]);
+    expect(spans).toEqual([
+      { operation: 'read', lineStart: 18, lineEnd: 20, absolutePath: join(dir, 'twenty.txt'), simpleCommandIndex: 0 }
+    ]);
   });
 
   it('-n N (from end) resolves against real EOF', () => {
     const spans = parseCommand(`tail -n 3 ${join(dir, 'twenty.txt')}`);
-    expect(spans).toEqual([{ lineStart: 18, lineEnd: 20, absolutePath: join(dir, 'twenty.txt') }]);
+    expect(spans).toEqual([
+      { operation: 'read', lineStart: 18, lineEnd: 20, absolutePath: join(dir, 'twenty.txt'), simpleCommandIndex: 0 }
+    ]);
   });
 
   it('-f (follow) is disqualified: open-ended, not a bounded range', () => {
@@ -167,12 +207,16 @@ describe('git show rev:path', () => {
 
   it('HEAD:path resolves whole-file range from the real blob', () => {
     const spans = parseCommand('git show HEAD:blob.ts', repo.root);
-    expect(spans).toEqual([{ lineStart: 1, lineEnd: 8, absolutePath: join(repo.root, 'blob.ts') }]);
+    expect(spans).toEqual([
+      { operation: 'read', lineStart: 1, lineEnd: 8, absolutePath: join(repo.root, 'blob.ts'), simpleCommandIndex: 0 }
+    ]);
   });
 
   it('git -C <dir> show rev:path uses -C as the resolution directory', () => {
     const spans = parseCommand(`git -C ${repo.root} show HEAD:blob.ts`, '/');
-    expect(spans).toEqual([{ lineStart: 1, lineEnd: 8, absolutePath: join(repo.root, 'blob.ts') }]);
+    expect(spans).toEqual([
+      { operation: 'read', lineStart: 1, lineEnd: 8, absolutePath: join(repo.root, 'blob.ts'), simpleCommandIndex: 0 }
+    ]);
   });
 
   it('git show without a rev:path colon does not match', () => {
@@ -188,16 +232,16 @@ describe('git show rev:path', () => {
   it('piped into sed -n yields both the whole-file span and the precise range (verbatim blob content, unlike git log -L)', () => {
     const spans = parseCommand("git show HEAD:blob.ts | sed -n '2,4p'", repo.root);
     expect(spans).toEqual([
-      { lineStart: 1, lineEnd: 8, absolutePath: join(repo.root, 'blob.ts') },
-      { lineStart: 2, lineEnd: 4, absolutePath: join(repo.root, 'blob.ts') }
+      { operation: 'read', lineStart: 1, lineEnd: 8, absolutePath: join(repo.root, 'blob.ts'), simpleCommandIndex: 0 },
+      { operation: 'read', lineStart: 2, lineEnd: 4, absolutePath: join(repo.root, 'blob.ts'), simpleCommandIndex: 1 }
     ]);
   });
 
   it('piped into head -N', () => {
     const spans = parseCommand('git show HEAD:blob.ts | head -3', repo.root);
     expect(spans).toEqual([
-      { lineStart: 1, lineEnd: 8, absolutePath: join(repo.root, 'blob.ts') },
-      { lineStart: 1, lineEnd: 3, absolutePath: join(repo.root, 'blob.ts') }
+      { operation: 'read', lineStart: 1, lineEnd: 8, absolutePath: join(repo.root, 'blob.ts'), simpleCommandIndex: 0 },
+      { operation: 'read', lineStart: 1, lineEnd: 3, absolutePath: join(repo.root, 'blob.ts'), simpleCommandIndex: 1 }
     ]);
   });
 });
@@ -205,36 +249,54 @@ describe('git show rev:path', () => {
 describe('git log -L', () => {
   it('fully literal, needs no fs/git access', () => {
     const spans = parseCommand('git log -L 12,40:src/Router.ts');
-    expect(spans).toEqual([{ lineStart: 12, lineEnd: 40, absolutePath: join(process.cwd(), 'src/Router.ts') }]);
+    expect(spans).toEqual([
+      {
+        operation: 'read',
+        lineStart: 12,
+        lineEnd: 40,
+        absolutePath: join(process.cwd(), 'src/Router.ts'),
+        simpleCommandIndex: 0
+      }
+    ]);
   });
 
   it('fused -L12,40:path form', () => {
     const spans = parseCommand('git log -L12,40:src/Router.ts');
-    expect(spans).toEqual([{ lineStart: 12, lineEnd: 40, absolutePath: join(process.cwd(), 'src/Router.ts') }]);
+    expect(spans).toEqual([
+      {
+        operation: 'read',
+        lineStart: 12,
+        lineEnd: 40,
+        absolutePath: join(process.cwd(), 'src/Router.ts'),
+        simpleCommandIndex: 0
+      }
+    ]);
   });
 });
 
 describe('heredoc writes', () => {
-  it('cat > file <<EOF overwrite: whole body is the range, and the span carries the body', () => {
+  it('cat > file <<EOF overwrite: whole-file write span without a line range', () => {
     const cmd = `cat > ${join(dir, 'out1.txt')} <<'EOF'\nalpha\nbeta\ngamma\nEOF\n`;
     const spans = parseCommand(cmd);
     expect(spans).toEqual([
-      { lineStart: 1, lineEnd: 3, absolutePath: join(dir, 'out1.txt'), body: 'alpha\nbeta\ngamma', redirect: '>' }
+      { operation: 'create-overwrite', absolutePath: join(dir, 'out1.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it('cat >> file <<EOF append: range starts after existing EOF, and the span carries the appended body', () => {
+  it('cat >> file <<EOF append: whole-file write span carrying the appended body', () => {
     const target = join(dir, 'five.txt');
     const cmd = `cat >> ${target} <<'EOF'\nnew1\nnew2\nEOF\n`;
     const spans = parseCommand(cmd);
-    expect(spans).toEqual([{ lineStart: 6, lineEnd: 7, absolutePath: target, body: 'new1\nnew2', redirect: '>>' }]);
+    expect(spans).toEqual([
+      { operation: 'append', absolutePath: target, written: 'new1\nnew2', simpleCommandIndex: 0 }
+    ]);
   });
 
   it('heredoc body containing && is not mis-split by the outer command splitter', () => {
     const cmd = `cat > ${join(dir, 'out2.sh')} <<'EOF'\necho a && echo b\necho c\nEOF\n`;
     const spans = parseCommand(cmd);
     expect(spans).toEqual([
-      { lineStart: 1, lineEnd: 2, absolutePath: join(dir, 'out2.sh'), body: 'echo a && echo b\necho c', redirect: '>' }
+      { operation: 'create-overwrite', absolutePath: join(dir, 'out2.sh'), simpleCommandIndex: 0 }
     ]);
   });
 
@@ -242,12 +304,12 @@ describe('heredoc writes', () => {
     const cmd = `cat > ${join(dir, 'a.txt')} <<'EOF'\nx\nEOF\ncat > ${join(dir, 'b.txt')} <<'EOF'\ny\nz\nEOF\n`;
     const spans = parseCommand(cmd);
     expect(spans).toEqual([
-      { lineStart: 1, lineEnd: 1, absolutePath: join(dir, 'a.txt'), body: 'x', redirect: '>' },
-      { lineStart: 1, lineEnd: 2, absolutePath: join(dir, 'b.txt'), body: 'y\nz', redirect: '>' }
+      { operation: 'create-overwrite', absolutePath: join(dir, 'a.txt'), simpleCommandIndex: 0 },
+      { operation: 'create-overwrite', absolutePath: join(dir, 'b.txt'), simpleCommandIndex: 1 }
     ]);
   });
 
-  it('empty-body > heredoc truncates the file: emits a write span with an empty body', () => {
+  it('empty-body > heredoc truncates the file: emits a truncate span', () => {
     const target = join(dir, 'trunc.txt');
     const cmd = `cat > ${target} <<'EOF'\nEOF\n`;
     const detailed = parseCommandDetailed(cmd);
@@ -255,7 +317,7 @@ describe('heredoc writes', () => {
       {
         status: 'resolved',
         idiom: 'heredoc-write',
-        span: { lineStart: 1, lineEnd: 1, absolutePath: target, body: '', redirect: '>' }
+        span: { operation: 'truncate', absolutePath: target, simpleCommandIndex: 0 }
       }
     ]);
   });
@@ -269,12 +331,16 @@ describe('heredoc writes', () => {
 describe('pipe-source propagation (one hop only)', () => {
   it('cat file | head -N', () => {
     const spans = parseCommand(`cat ${join(dir, 'twenty.txt')} | head -3`);
-    expect(spans).toEqual([{ lineStart: 1, lineEnd: 3, absolutePath: join(dir, 'twenty.txt') }]);
+    expect(spans).toEqual([
+      { operation: 'read', lineStart: 1, lineEnd: 3, absolutePath: join(dir, 'twenty.txt'), simpleCommandIndex: 1 }
+    ]);
   });
 
   it('nl file | sed -n range', () => {
     const spans = parseCommand(`nl -ba ${join(dir, 'twenty.txt')} | sed -n '2,4p'`);
-    expect(spans).toEqual([{ lineStart: 2, lineEnd: 4, absolutePath: join(dir, 'twenty.txt') }]);
+    expect(spans).toEqual([
+      { operation: 'read', lineStart: 2, lineEnd: 4, absolutePath: join(dir, 'twenty.txt'), simpleCommandIndex: 1 }
+    ]);
   });
 
   it('does not propagate two hops', () => {
@@ -284,19 +350,23 @@ describe('pipe-source propagation (one hop only)', () => {
 
   it('cat file | newline sed -n: the newline continues the pipeline (no standalone cat span, precise range)', () => {
     const spans = parseCommand(`cat ${join(dir, 'twenty.txt')} |\nsed -n '2,4p'`);
-    expect(spans).toEqual([{ lineStart: 2, lineEnd: 4, absolutePath: join(dir, 'twenty.txt') }]);
+    expect(spans).toEqual([
+      { operation: 'read', lineStart: 2, lineEnd: 4, absolutePath: join(dir, 'twenty.txt'), simpleCommandIndex: 1 }
+    ]);
   });
 
   it('cat file | newline head -N: the newline continues the pipeline', () => {
     const spans = parseCommand(`cat ${join(dir, 'twenty.txt')} |\nhead -3`);
-    expect(spans).toEqual([{ lineStart: 1, lineEnd: 3, absolutePath: join(dir, 'twenty.txt') }]);
+    expect(spans).toEqual([
+      { operation: 'read', lineStart: 1, lineEnd: 3, absolutePath: join(dir, 'twenty.txt'), simpleCommandIndex: 1 }
+    ]);
   });
 
   it('plain newline still separates commands: standalone cat span stays', () => {
     const spans = parseCommand(`cat ${join(dir, 'twenty.txt')}\nhead -3 ${join(dir, 'five.txt')}`);
     expect(spans).toEqual([
-      { lineStart: 1, lineEnd: 20, absolutePath: join(dir, 'twenty.txt') },
-      { lineStart: 1, lineEnd: 3, absolutePath: join(dir, 'five.txt') }
+      { operation: 'read', lineStart: 1, lineEnd: 20, absolutePath: join(dir, 'twenty.txt'), simpleCommandIndex: 0 },
+      { operation: 'read', lineStart: 1, lineEnd: 3, absolutePath: join(dir, 'five.txt'), simpleCommandIndex: 1 }
     ]);
   });
 });
@@ -304,12 +374,30 @@ describe('pipe-source propagation (one hop only)', () => {
 describe('cd tracking within one command', () => {
   it('cd /abs && relative sed resolves against the new dir', () => {
     const spans = parseCommand(`cd ${dir} && sed -n '1,2p' five.txt`, '/nonexistent');
-    expect(spans).toEqual([{ lineStart: 1, lineEnd: 2, absolutePath: join(dir, 'five.txt') }]);
+    expect(spans).toEqual([
+      {
+        operation: 'read',
+        lineStart: 1,
+        lineEnd: 2,
+        absolutePath: join(dir, 'five.txt'),
+        simpleCommandIndex: 1,
+        join: '&&'
+      }
+    ]);
   });
 
   it('cd "$VAR" (unresolvable) falls back to the seed cwd, not "/"', () => {
     const spans = parseCommand('cd "$WORKSPACE_PATH" && sed -n \'1,2p\' five.txt', dir);
-    expect(spans).toEqual([{ lineStart: 1, lineEnd: 2, absolutePath: join(dir, 'five.txt') }]);
+    expect(spans).toEqual([
+      {
+        operation: 'read',
+        lineStart: 1,
+        lineEnd: 2,
+        absolutePath: join(dir, 'five.txt'),
+        simpleCommandIndex: 1,
+        join: '&&'
+      }
+    ]);
   });
 });
 
@@ -330,8 +418,8 @@ describe('multiple statements in one command', () => {
   it('two sed calls resolve independently, in order', () => {
     const spans = parseCommand(`sed -n '1,2p' ${join(dir, 'five.txt')}; sed -n '3,4p' ${join(dir, 'twenty.txt')}`);
     expect(spans).toEqual([
-      { lineStart: 1, lineEnd: 2, absolutePath: join(dir, 'five.txt') },
-      { lineStart: 3, lineEnd: 4, absolutePath: join(dir, 'twenty.txt') }
+      { operation: 'read', lineStart: 1, lineEnd: 2, absolutePath: join(dir, 'five.txt'), simpleCommandIndex: 0 },
+      { operation: 'read', lineStart: 3, lineEnd: 4, absolutePath: join(dir, 'twenty.txt'), simpleCommandIndex: 1 }
     ]);
   });
 });
