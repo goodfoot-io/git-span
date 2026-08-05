@@ -130,11 +130,30 @@ export function bashResponseInterrupted(toolResponse: unknown): boolean {
   return false;
 }
 
+/**
+ * The Bash `tool_response`'s process exit code, when the harness supplies
+ * one. The SDK types the response `unknown` on both adapters and Claude's
+ * Bash envelopes do not currently carry an `exit_code` field, so this is a
+ * defensive shape-probe with the plan §4 fail-open posture: present → the
+ * integer code, absent or any other shape → undefined, and the caller
+ * proceeds exactly as today. (The hook subprocess's own exit status — the
+ * SDK's `SDKHookResponseMessage.exit_code` — is a different channel and is
+ * never read here.)
+ */
+export function bashResponseExitCode(toolResponse: unknown): number | undefined {
+  if (toolResponse !== null && typeof toolResponse === 'object') {
+    const code = (toolResponse as Record<string, unknown>).exit_code;
+    if (typeof code === 'number' && Number.isInteger(code)) return code;
+  }
+  return undefined;
+}
+
 // ---------------------------------------------------------------------------
 // The per-command verdict driver (plan §3 step 2)
 // ---------------------------------------------------------------------------
 
 type ResolvedMatch = Extract<SpanMatch, { status: 'resolved' }>;
+type GuardMatch = Extract<SpanMatch, { status: 'builtin-guard' }>;
 
 type Verdict = 'failed' | 'succeeded' | 'unknown';
 
@@ -171,12 +190,20 @@ function evalSpanGate(match: ResolvedMatch, touch: TouchInput | null, probeCache
   return evaluateWriteGate(touch, probeCache);
 }
 
-/** The operator preceding a command, from its first span (all spans of one command share it). */
-function joinOfCommand(matches: ResolvedMatch[]): '&&' | '||' | undefined {
-  for (const m of matches) {
-    if (m.span.join !== undefined) return m.span.join;
+/** The operator preceding a command, from its first span (all spans of one command share it) — or from its guard match when the command has no spans. */
+function joinOfCommand(
+  idx: number,
+  groups: Map<number, ResolvedMatch[]>,
+  guardByIndex: Map<number, GuardMatch>
+): '&&' | '||' | undefined {
+  const spans = groups.get(idx);
+  if (spans !== undefined) {
+    for (const m of spans) {
+      if (m.span.join !== undefined) return m.span.join;
+    }
+    return undefined;
   }
-  return undefined;
+  return guardByIndex.get(idx)?.join;
 }
 
 /**
@@ -184,8 +211,10 @@ function joinOfCommand(matches: ResolvedMatch[]): '&&' | '||' | undefined {
  * pass A `evaluateWriteGate` sweep (every span, before any join decision),
  * the explanation map, per-command verdicts, the join filter with chained
  * skips, and pass B per-surviving-span `runTouchHook` — plus the whole-command
- * `interrupted` gate (plan §4). Returns the non-null `additionalContext`
- * blocks for the adapter to join; the session memo dedups repeated targets.
+ * `interrupted` and exit-code gates (plan §4) and the span-less-guard
+ * commands (`false`/`true`/`:` join verdicts with no spans of their own).
+ * Returns the non-null `additionalContext` blocks for the adapter to join;
+ * the session memo dedups repeated targets.
  */
 export async function runBashTouches(
   matches: SpanMatch[],
@@ -198,7 +227,9 @@ export async function runBashTouches(
 ): Promise<string[]> {
   // A command that did not complete produces no touches, whatever its spans.
   if (bashResponseInterrupted(toolResponse)) return [];
+  const exitCode = bashResponseExitCode(toolResponse);
   const resolved = matches.filter((m): m is ResolvedMatch => m.status === 'resolved');
+  const guards = matches.filter((m): m is GuardMatch => m.status === 'builtin-guard');
   if (resolved.length === 0) return [];
 
   // Seed the per-command probe cache (plan §3 step 1c) with every absent
@@ -213,8 +244,11 @@ export async function runBashTouches(
   }
   const probeCache = createRealityProbeCache(probePaths);
 
-  // Group by simple command in walker order.
+  // Group by simple command in walker order. Span-less guard commands
+  // (`false`/`true`/`:`) join the order with no group: their deterministic
+  // exit status drives the join filter, and they never touch anything.
   const groups = new Map<number, ResolvedMatch[]>();
+  const guardByIndex = new Map<number, GuardMatch>();
   const commandOrder: number[] = [];
   for (const m of resolved) {
     const idx = m.span.simpleCommandIndex;
@@ -226,6 +260,11 @@ export async function runBashTouches(
       commandOrder.push(idx);
     }
   }
+  for (const g of guards) {
+    if (groups.has(g.simpleCommandIndex) || guardByIndex.has(g.simpleCommandIndex)) continue;
+    guardByIndex.set(g.simpleCommandIndex, g);
+    commandOrder.push(g.simpleCommandIndex);
+  }
   commandOrder.sort((a, b) => a - b);
 
   // Pass A: translate every span once and evaluate its gate, pairing
@@ -233,7 +272,8 @@ export async function runBashTouches(
   // declaration order (the parser emits sources before destinations).
   const evals = new Map<number, SpanEval[]>();
   for (const idx of commandOrder) {
-    const spans = groups.get(idx)!;
+    const spans = groups.get(idx);
+    if (spans === undefined) continue; // guard-only command — nothing to evaluate
     const readPaths = spans
       .filter((m) => (m.idiom === 'cp-write' || m.idiom === 'install-write') && m.span.operation === 'read')
       .map((m) => m.span.absolutePath);
@@ -283,7 +323,9 @@ export async function runBashTouches(
   // a decisivePass on each path.
   const passByPath = new Map<string, number>();
   for (const idx of commandOrder) {
-    for (const e of evals.get(idx)!) {
+    const list = evals.get(idx);
+    if (list === undefined) continue;
+    for (const e of list) {
       if (e.outcome === 'decisivePass') {
         const prev = passByPath.get(e.path);
         if (prev === undefined || idx > prev) passByPath.set(e.path, idx);
@@ -296,7 +338,9 @@ export async function runBashTouches(
   // demonstrably rewrote or deleted is the overwrite, not the earlier command
   // failing (plan §3 step 2).
   for (const idx of commandOrder) {
-    for (const e of evals.get(idx)!) {
+    const list = evals.get(idx);
+    if (list === undefined) continue;
+    for (const e of list) {
       if (e.outcome === 'pending') {
         const passIdx = e.sourceKey !== null ? passByPath.get(e.sourceKey) : undefined;
         e.outcome = passIdx !== undefined && passIdx > e.commandIndex ? 'decisivePass' : 'decisiveFail';
@@ -308,12 +352,20 @@ export async function runBashTouches(
   }
 
   // Per-command verdicts: 'failed' on any unexplained decisiveFail, else
-  // 'succeeded' on at least one decisive outcome, else 'unknown'.
+  // 'succeeded' on at least one decisive outcome, else 'unknown'. A
+  // guard-only command's deterministic exit status IS its verdict (plan §3
+  // step 2's span-less-guard rule).
   const computed = new Map<number, Verdict>();
   for (const idx of commandOrder) {
+    const list = evals.get(idx);
+    if (list === undefined) {
+      const guard = guardByIndex.get(idx);
+      computed.set(idx, guard !== undefined ? (guard.exitStatus === 0 ? 'succeeded' : 'failed') : 'unknown');
+      continue;
+    }
     let failed = false;
     let passed = false;
-    for (const e of evals.get(idx)!) {
+    for (const e of list) {
       if (e.outcome === 'decisiveFail' && !e.explained) failed = true;
       if (e.outcome === 'decisivePass') passed = true;
     }
@@ -328,7 +380,7 @@ export async function runBashTouches(
   const skipped = new Set<number>();
   let prevIndex: number | null = null;
   for (const idx of commandOrder) {
-    const join = joinOfCommand(groups.get(idx)!);
+    const join = joinOfCommand(idx, groups, guardByIndex);
     const prevVerdict = prevIndex !== null ? effective.get(prevIndex) : undefined;
     if (prevVerdict !== undefined && join !== undefined) {
       if ((join === '&&' && prevVerdict === 'failed') || (join === '||' && prevVerdict === 'succeeded')) {
@@ -345,15 +397,24 @@ export async function runBashTouches(
   // Pass B: run the touch hook for surviving spans only — decisivePass, or
   // inconclusive with an 'exists' target (the advisory residual class:
   // existence-gated families fire and heal/surface; phantom deletes never
-  // fire). Explained fails and decisive fails never reach an executor.
+  // fire). A harness-supplied non-zero exit code suppresses the advisory
+  // class too — the command failed, so the existence-gated write (sed -i,
+  // patch, git apply, formatter) demonstrably did not happen; a zero or
+  // absent code proceeds, and content-verified decisive passes fire
+  // regardless (fail-open, plan §4). Guard-only commands have no touches.
+  // Explained fails and decisive fails never reach an executor.
   const blocks: string[] = [];
   for (const idx of commandOrder) {
     if (skipped.has(idx)) continue;
+    const list = evals.get(idx);
+    if (list === undefined) continue;
     let touches = 0;
-    for (const e of evals.get(idx)!) {
+    for (const e of list) {
       if (e.touch === null || e.explained) continue;
       if (e.outcome === 'decisiveFail') continue;
       if (e.outcome === 'inconclusive' && e.touch.kind === 'write' && e.touch.targetState === 'absent') continue;
+      if (e.outcome === 'inconclusive' && e.touch.kind === 'write' && exitCode !== undefined && exitCode !== 0)
+        continue;
       if (touches >= 32) {
         // Hard per-command volume cap (plan §3 step 2): drop the surplus with
         // a warning rather than blow the hook timeout on a 50-copy chain.

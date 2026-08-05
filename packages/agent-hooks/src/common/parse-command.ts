@@ -7,9 +7,11 @@
  *
  * Deliberately NOT covered (see the research report): awk NR-tricks (rare,
  * unconstrained syntax), grep -n/-A/-B/-C (the window is anchored to match
- * position, which is data-dependent, not in the command text), and embedded
+ * position, which is data-dependent, not in the command text), embedded
  * python3/node heredoc scripts (a different language's AST, not a shell
- * concern).
+ * concern), and `find <dir> -name/-path ... -delete` (the deleted paths are
+ * the directory's contents as the finder walks it — data-dependent, not
+ * statically enumerable; the recursive-removal fail-closed rule applies).
  *
  * The card's write-touch families — redirections and heredocs (§5.1–§5.2),
  * cp and install (§5.3), mv and git mv (§5.4), rm and truncate (§5.5),
@@ -104,7 +106,22 @@ export type Idiom =
 
 export type SpanMatch =
   | { status: 'resolved'; idiom: Idiom; span: ResolvedSpan; note?: string }
-  | { status: 'unresolved'; idiom: Idiom; fileArg: string; reason: string };
+  | { status: 'unresolved'; idiom: Idiom; fileArg: string; reason: string }
+  | {
+      /**
+       * A span-less command with a deterministic exit status — `false` (1),
+       * `true` (0), `:` (0). No span and no touch, but the join driver needs
+       * the verdict: `false && echo x > f` skips the echo, `true || echo x >
+       * f` skips it too, and without the guard both would fire an exact-gate
+       * touch for a write that never ran (plan §3 step 2's span-less-guard
+       * rule). Filtered out of `parseCommand`'s span list with the
+       * unresolveds.
+       */
+      status: 'builtin-guard';
+      simpleCommandIndex: number;
+      join: ResolvedSpan['join'];
+      exitStatus: 0 | 1;
+    };
 
 // ---------------------------------------------------------------------------
 // Line-range specs: what a matched idiom says about the range, before we know
@@ -439,6 +456,8 @@ interface HeredocWrite {
   opener: string;
   /** The heredoc body; `<<-` bodies have leading tabs stripped per line. */
   body: string;
+  /** Whether the delimiter was quoted/escaped (`<<'EOF'`, `<<"EOF"`, `<<\EOF`): the body then undergoes no shell expansion. */
+  quotedDelim: boolean;
 }
 
 interface HeredocOpener {
@@ -450,6 +469,8 @@ interface HeredocOpener {
   delim: string;
   /** `<<-`: strip leading tabs from the body and the closer line. */
   tabStrip: boolean;
+  /** Whether the delimiter was quoted/escaped — the shell skips body expansion then. */
+  quotedDelim: boolean;
 }
 
 const BARE_DELIM = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -493,7 +514,10 @@ function findHeredocOpener(raw: string, from: number): HeredocOpener | null {
         continue;
       }
       if (c === '\\' && k + 1 < n) {
+        // A backslash-escaped delimiter char quotes the delimiter — the body
+        // is literal (`<<\EOF`), same as quotes.
         d += raw[k + 1];
+        sawQuote = true;
         k += 2;
         continue;
       }
@@ -630,7 +654,7 @@ function findHeredocOpener(raw: string, from: number): HeredocOpener | null {
         i += opLen;
         continue;
       }
-      return { cmdStart, openerLineEnd, delim, tabStrip };
+      return { cmdStart, openerLineEnd, delim, tabStrip, quotedDelim: sawQuote };
     }
     i += 1;
   }
@@ -689,7 +713,7 @@ function extractHeredocWrites(raw: string): { writes: HeredocWrite[]; masked: st
     if (open.tabStrip) body = body.replace(/^\t+/gm, '');
     masked += raw.slice(cursor, open.cmdStart);
     masked += `__heredoc_${writes.length}__`;
-    writes.push({ opener: raw.slice(open.cmdStart, open.openerLineEnd), body });
+    writes.push({ opener: raw.slice(open.cmdStart, open.openerLineEnd), body, quotedDelim: open.quotedDelim });
     cursor = close.lineEnd;
   }
   masked += raw.slice(cursor);
@@ -909,8 +933,11 @@ function matchRedirectFamily(
     if (host === 'tee') matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join, results);
     return;
   }
-  if (host === undefined || host === ':') {
-    // Bare `> f` and `: > f` truncate; `>>`/`&>>` append nothing → no touch.
+  if (host === undefined || host === ':' || host === 'exec') {
+    // Bare `> f`, `: > f` and `exec > f` truncate (exec applies the redirect
+    // to the shell's own fd 1 immediately — the fd-1 target is static, so the
+    // truncation happens even though the command never writes);
+    // `>>`/`&>>` append nothing → no touch.
     for (const r of contentRedirects) {
       if (r.op === '>>' || r.op === '&>>' || r.target === null) continue;
       const absolutePath = resolveTarget(results, 'truncate-write', r.target, currentDir);
@@ -974,9 +1001,21 @@ function matchRedirectFamily(
 /** Wrapper words that obscure the wrapped command's argv (plan §5): a family command behind one is unresolved, never guessed. */
 const FOREIGN_WRAPPERS = new Set(['sudo', 'xargs', 'nohup', 'time', 'nice', 'doas']);
 
-/** Strip at most one `command`/`env` wrapper — mechanically transparent (plan §5). */
+/** A leading `NAME=value` assignment token (`env FOO=bar cp a b` keeps one after the wrapper word). */
+const ASSIGNMENT_TOKEN = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+/**
+ * Strip at most one `command`/`env` wrapper — mechanically transparent (plan
+ * §5) — and any leading assignments after it: `env FOO=bar cp a b` sets FOO
+ * then runs cp, exactly the transparent-prefix class the walk strips before
+ * tokenizing (`FOO=bar env cp a b` arrives here with the assignments already
+ * gone).
+ */
 function stripTransparentWrapper(argv: string[]): string[] {
-  return argv[0] === 'command' || argv[0] === 'env' ? argv.slice(1) : argv;
+  const unwrapped = argv[0] === 'command' || argv[0] === 'env' ? argv.slice(1) : argv;
+  let i = 0;
+  while (i < unwrapped.length && ASSIGNMENT_TOKEN.test(unwrapped[i])) i += 1;
+  return i > 0 ? unwrapped.slice(i) : unwrapped;
 }
 
 function pushUnresolved(results: SpanMatch[], idiom: Idiom, fileArg: string, reason: string): void {
@@ -1000,6 +1039,14 @@ interface CopyMoveSpec {
   idiom: 'cp-write' | 'install-write' | 'mv-write';
   /** Known no-value flags (consumed, never operands). */
   noValue: ReadonlySet<string>;
+  /**
+   * No-clobber flags (`cp -n`/`--no-clobber`): consumed like no-value flags,
+   * but the write still parses — the skip is invisible to the post-command
+   * byte-compare gate, which cannot distinguish a real copy from a pre-existing
+   * equal dest (the documented no-op residue, pinned in
+   * bash-write-integration.test.ts).
+   */
+  noClobber: ReadonlySet<string>;
   /** Known value-taking flags (the next word is the value — `-t DIR`, or an install mode/owner/group). */
   valueTaking: ReadonlySet<string>;
   /** Flags that fail the whole command closed (`cp -b`/`--backup`, `install -d`, git mv dry-run `-n`/`--dry-run`). */
@@ -1012,7 +1059,8 @@ interface CopyMoveSpec {
 
 const CP_SPEC: CopyMoveSpec = {
   idiom: 'cp-write',
-  noValue: new Set(['-r', '-R', '-p', '-f', '-v', '-n', '-i', '-u', '-a', '-d', '-L', '-P']),
+  noValue: new Set(['-r', '-R', '-p', '-f', '-v', '-i', '-u', '-a', '-d', '-L', '-P']),
+  noClobber: new Set(['-n', '--no-clobber']),
   valueTaking: new Set(['-t', '--target-directory']),
   excluded: new Set(['-b', '--backup']),
   sourceOperation: 'read',
@@ -1022,6 +1070,7 @@ const CP_SPEC: CopyMoveSpec = {
 const INSTALL_SPEC: CopyMoveSpec = {
   idiom: 'install-write',
   noValue: new Set(['-D', '-s', '-v']),
+  noClobber: new Set(),
   valueTaking: new Set(['-t', '--target-directory', '-m', '-o', '-g']),
   excluded: new Set(['-d']),
   sourceOperation: 'read',
@@ -1030,7 +1079,11 @@ const INSTALL_SPEC: CopyMoveSpec = {
 
 const MV_SPEC: CopyMoveSpec = {
   idiom: 'mv-write',
+  // `mv -n` stays in noValue, not noClobber: an mv skip leaves the source in
+  // place, and the delete's own absence gate then fails the touch — the
+  // no-clobber blind spot is cp's byte-compare, not mv's.
   noValue: new Set(['-f', '-i', '-n', '-v', '-u']),
+  noClobber: new Set(),
   valueTaking: new Set(['-t', '--target-directory']),
   excluded: new Set(),
   sourceOperation: 'delete',
@@ -1040,6 +1093,7 @@ const MV_SPEC: CopyMoveSpec = {
 const GIT_MV_SPEC: CopyMoveSpec = {
   idiom: 'mv-write',
   noValue: new Set(['-f', '-k', '-v']),
+  noClobber: new Set(),
   valueTaking: new Set(),
   // `git mv -n`/`--dry-run` is a trial run that moves nothing (the same
   // read-only class as `patch --dry-run`, plan §5.7) — fail closed.
@@ -1098,7 +1152,7 @@ function copyMoveParts(args: string[], spec: CopyMoveSpec): CopyMoveParts | null
       i += 2;
       continue;
     }
-    if (spec.noValue.has(a)) {
+    if (spec.noValue.has(a) || spec.noClobber.has(a)) {
       i += 1;
       continue;
     }
@@ -1449,6 +1503,24 @@ function matchRmTruncate(
 }
 
 /**
+ * Whether the body of an unquoted heredoc is shell-literal. The shell expands
+ * `$` and backtick substitutions and processes backslash escapes (`\$`, `` \` ``,
+ * `\\`, backslash-newline) in an unquoted body before the host reads it; a
+ * bare backslash before any other char survives literally. A quoted delimiter
+ * makes the body literal regardless — checked by the caller.
+ */
+function heredocBodyIsLiteral(body: string): boolean {
+  if (body.includes('$') || body.includes('`')) return false;
+  for (let i = 0; i < body.length; i++) {
+    if (body[i] !== '\\') continue;
+    const next = body[i + 1];
+    if (next === undefined || next === '$' || next === '`' || next === '\\' || next === '\n') return false;
+    i += 1;
+  }
+  return true;
+}
+
+/**
  * The heredoc write grammar (plan §5.2) for the host families whose bodies are
  * content: `cat` (body → the content redirects), `tee` (body → the operands),
  * and `patch`/`git apply` (body → patch text, §5.7). Any other host's heredoc
@@ -1463,15 +1535,21 @@ function matchRmTruncate(
  * overwrite (the trailing `\n` the extraction strips is restored, since the
  * gate compares full file bytes), the suffix gate's body on the append (plan
  * §3 step 1b lists "tee/heredoc with a literal body" in the exact class).
+ * An unquoted delimiter lets the shell expand the body before the host reads
+ * it, so only a literal body (no `$`, backtick, or shell-processed backslash)
+ * threads — an expandable one degrades to the existence-gated advisory class
+ * rather than risk a decisive-fail on content that never reached the file.
  */
 function classifyHeredocOpener(
   opener: string,
   body: string,
+  quotedDelim: boolean,
   currentDir: string,
   simpleCommandIndex: number,
   join: ResolvedSpan['join'],
   results: SpanMatch[]
 ): void {
+  const bodyLiteral = quotedDelim || heredocBodyIsLiteral(body);
   const tokens = tokenize(stripLeadingAssignments(opener).trim());
   if (tokens === null) return;
   const { argv, redirects } = analyzeTokens(tokens);
@@ -1495,7 +1573,7 @@ function classifyHeredocOpener(
             absolutePath,
             simpleCommandIndex,
             join,
-            ...(singlePlainAppend && r.op === '>>' ? { written: body } : {})
+            ...(singlePlainAppend && r.op === '>>' && bodyLiteral ? { written: body } : {})
           }
         });
       } else {
@@ -1512,7 +1590,7 @@ function classifyHeredocOpener(
                   join,
                   // The exact gate compares full file bytes, so the trailing
                   // `\n` the extraction stripped comes back on the overwrite.
-                  ...(singlePlainOverwrite ? { written: `${body}\n` } : {})
+                  ...(singlePlainOverwrite && bodyLiteral ? { written: `${body}\n` } : {})
                 }
         });
       }
@@ -1539,7 +1617,7 @@ function classifyHeredocOpener(
               absolutePath,
               simpleCommandIndex,
               join,
-              ...(contentRedirects.length === 0 ? { written: body } : {})
+              ...(contentRedirects.length === 0 && bodyLiteral ? { written: body } : {})
             }
           });
         } else {
@@ -1557,7 +1635,7 @@ function classifyHeredocOpener(
                     // Same restored-`\n` exact body as the redirect branch; a
                     // tee operand with a content redirect present keeps the
                     // redirect's threading only (mirror of the append branch).
-                    ...(contentRedirects.length === 0 ? { written: `${body}\n` } : {})
+                    ...(contentRedirects.length === 0 && bodyLiteral ? { written: `${body}\n` } : {})
                   }
           });
         }
@@ -1612,12 +1690,17 @@ function matchSedInplace(
 /**
  * The sed -i operand grammar: `-i` bare, `-iSUFFIX` attached, or a separate
  * suffix word resolved by the standard disambiguation — the word after `-i`
- * is the suffix only when it does not start with `-` and a script plus at
- * least one file operand still follow it (the BSD separate-suffix reading;
- * GNU's attached-only reading otherwise). An attached or disambiguated suffix
- * is a backup: a non-empty suffix emits an additional create-overwrite touch
- * on `<file><SUFFIX>`; an empty suffix (which the quote-aware tokenizer drops
- * entirely — `sed -i '' f` and `sed -i f` tokenize alike) creates no backup.
+ * is the suffix only when it does not start with `-`, is not script-shaped
+ * (a sed command letter or an address start — `s/a/b/`, `2d`, `/x/d`), and a
+ * script plus at least one file operand still follow it (the BSD
+ * separate-suffix reading; GNU's attached-only reading otherwise). A
+ * script-shaped word is the script under GNU's reading: `sed -i s/a/b/ f g`
+ * would otherwise steal the first file operand as a suffix and silently miss
+ * its write (the multi-file-sed misparse). An attached or disambiguated
+ * suffix is a backup: a non-empty suffix emits an additional create-overwrite
+ * touch on `<file><SUFFIX>`; an empty suffix (which the quote-aware tokenizer
+ * drops entirely — `sed -i '' f` and `sed -i f` tokenize alike) creates no
+ * backup.
  *
  * The script is the script argument plus every `-e` argument, split on `;`.
  * Segments that are all numeric-addressed substitutions yield the exact range
@@ -1628,6 +1711,15 @@ function matchSedInplace(
  * whole-file modify with no range. An absent script (no script argument, no
  * `-e`) is unresolved.
  */
+/**
+ * A word that can only be a sed script, never a BSD separate suffix: a sed
+ * command letter (`s`/`y`/`d`/…), or an address start (digit, `/`, `\`, `$`,
+ * `~`). The multi-file form `sed -i s/a/b/ f g` puts the script immediately
+ * after bare `-i` (GNU's reading; the BSD reading needs a separate suffix
+ * word first, and a letter-leading or address-leading word is not one).
+ */
+const SED_SCRIPT_SHAPE = /^(?:[A-Za-z]|\d|\/|\\|\$|~)/;
+
 function matchSedInplaceArgs(
   args: string[],
   dir: string,
@@ -1689,9 +1781,12 @@ function matchSedInplaceArgs(
         continue;
       }
       const restAfter = args.slice(i + 2);
-      if (restAfter.length >= 2) {
+      if (restAfter.length >= 2 && !SED_SCRIPT_SHAPE.test(w)) {
         // The BSD separate-suffix reading: w is the suffix, and a script plus
-        // at least one file operand still follow.
+        // at least one file operand still follow — only for a suffix-shaped
+        // word (`.bak`, `''`). A script-shaped word is the script under GNU's
+        // reading, so `sed -i s/a/b/ f g` treats `s/a/b/` as the script and
+        // both f and g as files.
         suffix = w;
         i += 2;
         continue;
@@ -2526,6 +2621,18 @@ function matchGitRestoreCheckout(
 
 const LINE_SELECTORS = [matchSed, matchHead, matchTail];
 
+/**
+ * Span-less commands whose exit status is deterministic — usable as guards in
+ * `&&`/`||` joins (plan §3 step 2's span-less-guard rule): `false` always
+ * exits 1, `true` and `:` always 0, so a following joined command's skip is
+ * knowable even though neither produces a span.
+ */
+const BUILTIN_GUARD_STATUS = new Map<string, 0 | 1>([
+  ['false', 1],
+  ['true', 0],
+  [':', 0]
+]);
+
 export function parseCommandDetailed(command: string, cwd: string = process.cwd()): SpanMatch[] {
   const { writes: heredocWrites, masked } = extractHeredocWrites(command);
   const simpleCommands = splitTopLevel(masked);
@@ -2700,7 +2807,7 @@ export function parseCommandDetailed(command: string, cwd: string = process.cwd(
       }
       const openerArgv = analyzeTokens(tokens).argv;
       matchReads(simple, openerArgv, i);
-      classifyHeredocOpener(w.opener, w.body, currentDir, i, joinOf(simple), results);
+      classifyHeredocOpener(w.opener, w.body, w.quotedDelim, currentDir, i, joinOf(simple), results);
       pipeEchoContent = literalContent(openerArgv) ?? null;
       continue;
     }
@@ -2727,6 +2834,7 @@ export function parseCommandDetailed(command: string, cwd: string = process.cwd(
       continue;
     }
 
+    const before = results.length;
     matchReads(simple, argv, i);
     matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, i, joinOf(simple), results);
     matchCopyMoveFamily(argv, currentDir, i, joinOf(simple), results);
@@ -2735,6 +2843,20 @@ export function parseCommandDetailed(command: string, cwd: string = process.cwd(
     matchPatchApply(argv, redirects, currentDir, i, joinOf(simple), results);
     matchFormatter(argv, currentDir, i, joinOf(simple), results);
     matchGitRestoreCheckout(argv, currentDir, i, joinOf(simple), results);
+    if (results.length === before) {
+      // No span for this command: a deterministic builtin is still a usable
+      // join guard (`false && echo x > f` must skip the echo). Any other
+      // command stays span-less and unknowable — the driver fails open.
+      const status = BUILTIN_GUARD_STATUS.get(argv[0]);
+      if (status !== undefined) {
+        results.push({
+          status: 'builtin-guard',
+          simpleCommandIndex: i,
+          join: joinOf(simple),
+          exitStatus: status
+        });
+      }
+    }
     pipeEchoContent = literalContent(argv) ?? null;
   }
 

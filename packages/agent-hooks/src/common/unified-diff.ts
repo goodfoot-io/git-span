@@ -21,6 +21,14 @@
  * otherwise. `/dev/null` is checked before stripping — the header marker
  * would otherwise lose its `dev/` component.
  *
+ * `diff -u` headers carry a tab-separated timestamp (`--- f.txt\t2024-01-01
+ * 00:00:00`) and may be CRLF-terminated; both are stripped before path
+ * resolution. The target of a modify hunk is the `---` side: patch and git
+ * apply rewrite the file named there (for `diff -u f.txt f.new`, the `+++`
+ * side is only a label), so the `+++` line overrides the path only for the
+ * `/dev/null` markers — a `--- /dev/null` side (a new file) names the target
+ * on `+++`, and a `+++ /dev/null` side marks a deletion.
+ *
  * Malformed or empty patch text returns null (fail closed — the caller emits
  * unresolved rather than guessing at targets).
  */
@@ -58,6 +66,17 @@ function stripLevelFor(raw: string, strip: PathStrip): number {
   return strip === 'auto' ? (raw.startsWith('a/') || raw.startsWith('b/') ? 1 : 0) : strip;
 }
 
+/**
+ * The raw `---`/`+++` header path: the text up to the first tab (the
+ * `diff -u` timestamp column), or the whole word when there is none. CRLF
+ * is handled at the line level (see parseUnifiedDiffRange), which also
+ * covers hunk headers.
+ */
+function headerPathText(raw: string): string {
+  const tab = raw.indexOf('\t');
+  return tab === -1 ? raw : raw.slice(0, tab);
+}
+
 export function parseUnifiedDiffRange(patchText: string, strip: PathStrip): UnifiedDiffTarget[] | null {
   const results: UnifiedDiffTarget[] = [];
   let sawBlock = false;
@@ -72,10 +91,11 @@ export function parseUnifiedDiffRange(patchText: string, strip: PathStrip): Unif
   let renameTo: string | null = null;
   let binary = false;
 
-  /** The header path with the `-pN` level applied — `/dev/null` kept verbatim (the marker is never a real path). */
+  /** The header path, tab/CR-stripped, with the `-pN` level applied — `/dev/null` kept verbatim (the marker is never a real path). */
   const stripped = (raw: string): string => {
-    if (raw === '/dev/null') return raw;
-    return stripPathComponents(raw, stripLevelFor(raw, strip));
+    const text = headerPathText(raw);
+    if (text === '/dev/null') return text;
+    return stripPathComponents(text, stripLevelFor(text, strip));
   };
 
   const finish = (): void => {
@@ -100,7 +120,11 @@ export function parseUnifiedDiffRange(patchText: string, strip: PathStrip): Unif
     binary = false;
   };
 
-  for (const line of patchText.split('\n')) {
+  for (const rawLine of patchText.split('\n')) {
+    // A trailing `\r` (CRLF patch text — Windows-authored diffs) pollutes
+    // headers, hunk headers, and path lines alike; both patch and git apply
+    // strip it, so the parser does too.
+    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
     if (line.startsWith('--- ')) {
       sawBlock = true;
       if (current !== null) finish();
@@ -118,7 +142,11 @@ export function parseUnifiedDiffRange(patchText: string, strip: PathStrip): Unif
       const path = stripped(line.slice(4));
       if (current === null) current = { path, kind: pendingKind ?? 'modify', hunks: [], countChanging: false };
       else if (path === '/dev/null') current.kind = 'deleted';
-      else current.path = path;
+      else if (current.path === '/dev/null') current.path = path;
+      // Otherwise keep the `---` side: patch and git apply rewrite the file
+      // named on the `---` line, and `diff -u f f.new` headers name the
+      // pre-image there — the `+++` path is only a label (the diff-uu
+      // patch-header miss).
       pendingKind = null;
       continue;
     }

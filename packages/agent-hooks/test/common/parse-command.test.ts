@@ -80,6 +80,28 @@ const PATCH_DELETED_DIFF = [
 /** `diff -u`-format deletion — no `deleted file mode` header, `+++ /dev/null` only → `delete`. */
 const PATCH_DEVNULL_DIFF = ['--- a/gone.txt', '+++ /dev/null', '@@ -1,2 +0,0 @@', '-g1', '-g2'].join('\n');
 
+/** `diff -u`-format headers carrying the tab-separated timestamp column (the `--- f.txt\t<ts>` shape). */
+const PATCH_TAB_TS_DIFF = [
+  '--- notes.txt\t2024-01-01 00:00:00.000000000 +0000',
+  '+++ notes.txt\t2024-01-01 00:00:01.000000000 +0000',
+  '@@ -1,3 +1,3 @@',
+  ' one',
+  '-two',
+  "+two'",
+  ' three'
+].join('\n');
+
+/** CRLF-terminated patch text (`\r` on every line, Windows-authored). */
+const PATCH_CRLF_DIFF = [
+  '--- a/notes.txt\r',
+  '+++ b/notes.txt\r',
+  '@@ -1,3 +1,3 @@\r',
+  ' one\r',
+  '-two\r',
+  "+two'\r",
+  ' three\r'
+].join('\n');
+
 const PATCH_NEW_DIFF = [
   'diff --git a/new.txt b/new.txt',
   'new file mode 100644',
@@ -582,6 +604,20 @@ describe('redirections — truncating and appending writes (§5.1)', () => {
     ]);
   });
 
+  it('exec > f truncates (the fd-1 target is static even though exec writes nothing)', () => {
+    expect(parseCommand(`exec > ${join(dir, 'f')}`)).toEqual([
+      { operation: 'truncate', absolutePath: join(dir, 'f'), simpleCommandIndex: 0 }
+    ]);
+  });
+
+  it('exec > f with a dup redirect still truncates; exec >> f appends nothing', () => {
+    expect(parseCommand(`exec > ${join(dir, 'f')} 2>&1`)).toEqual([
+      { operation: 'truncate', absolutePath: join(dir, 'f'), simpleCommandIndex: 0 }
+    ]);
+    expect(parseCommand(`exec >> ${join(dir, 'f')}`)).toEqual([]);
+    expect(parseCommand(`exec 2> ${join(dir, 'err')}`)).toEqual([]);
+  });
+
   it(': >> f appends nothing: no touch', () => {
     expect(parseCommand(`: >> ${join(dir, 'f')}`)).toEqual([]);
   });
@@ -721,6 +757,48 @@ describe('heredoc orderings and hosts (§5.2)', () => {
     const cmd = `sed -n '1,2p' <<'EOF' > ${join(dir, 'out')}\nalpha\nbeta\nEOF\n`;
     expect(parseCommand(cmd)).toEqual([]);
   });
+
+  it('an unquoted delimiter with $ in the body never threads it as exact content', () => {
+    // The shell expands $HOME before cat reads the body, so the bytes the
+    // file gets are not the body's raw text — the span stays existence-gated.
+    const cmd = `cat > ${join(dir, 'f')} <<EOF\n$HOME is $HOME\nEOF\n`;
+    expect(parseCommand(cmd)).toEqual([
+      { operation: 'create-overwrite', absolutePath: join(dir, 'f'), simpleCommandIndex: 0 }
+    ]);
+  });
+
+  it('an unquoted delimiter with a backtick body threads nothing either', () => {
+    const cmd = `cat > ${join(dir, 'f')} <<EOF\n\`date\`\nEOF\n`;
+    expect(parseCommand(cmd)).toEqual([
+      { operation: 'create-overwrite', absolutePath: join(dir, 'f'), simpleCommandIndex: 0 }
+    ]);
+  });
+
+  it('an unquoted expandable body on an append threads nothing (existence-gated append)', () => {
+    const cmd = `cat >> ${join(dir, 'f')} <<EOF\n$X\nEOF\n`;
+    expect(parseCommand(cmd)).toEqual([{ operation: 'append', absolutePath: join(dir, 'f'), simpleCommandIndex: 0 }]);
+  });
+
+  it('a quoted delimiter keeps threading exact content even with $ in the body (control)', () => {
+    const cmd = `cat > ${join(dir, 'f')} <<'EOF'\n$HOME\nEOF\n`;
+    expect(parseCommand(cmd)).toEqual([
+      { operation: 'create-overwrite', absolutePath: join(dir, 'f'), written: '$HOME\n', simpleCommandIndex: 0 }
+    ]);
+  });
+
+  it('a backslash-escaped delimiter quotes the body too (<<\\EOF)', () => {
+    const cmd = `cat > ${join(dir, 'f')} <<\\EOF\n$HOME\nEOF\n`;
+    expect(parseCommand(cmd)).toEqual([
+      { operation: 'create-overwrite', absolutePath: join(dir, 'f'), written: '$HOME\n', simpleCommandIndex: 0 }
+    ]);
+  });
+
+  it('an unquoted body with a plain backslash still threads (no shell-processed escape)', () => {
+    const cmd = `cat > ${join(dir, 'f')} <<EOF\nalpha\\beta\nEOF\n`;
+    expect(parseCommand(cmd)).toEqual([
+      { operation: 'create-overwrite', absolutePath: join(dir, 'f'), written: 'alpha\\beta\n', simpleCommandIndex: 0 }
+    ]);
+  });
 });
 
 describe('cp and install destinations (§5.3)', () => {
@@ -796,6 +874,27 @@ describe('cp and install destinations (§5.3)', () => {
 
   it('FOO=1 cp src dst: env assignments are stripped', () => {
     expect(parseCommand(`FOO=1 cp ${join(dir, 'src.txt')} ${join(dir, 'dst.txt')}`)).toEqual([
+      { operation: 'read', lineStart: 1, lineEnd: 4, absolutePath: join(dir, 'src.txt'), simpleCommandIndex: 0 },
+      { operation: 'create-overwrite', absolutePath: join(dir, 'dst.txt'), simpleCommandIndex: 0 }
+    ]);
+  });
+
+  it('env FOO=bar cp src dst: assignments after the env wrapper are stripped', () => {
+    expect(parseCommand(`env FOO=bar cp ${join(dir, 'src.txt')} ${join(dir, 'dst.txt')}`)).toEqual([
+      { operation: 'read', lineStart: 1, lineEnd: 4, absolutePath: join(dir, 'src.txt'), simpleCommandIndex: 0 },
+      { operation: 'create-overwrite', absolutePath: join(dir, 'dst.txt'), simpleCommandIndex: 0 }
+    ]);
+  });
+
+  it('env FOO=1 BAR=2 cp src dst: every leading assignment is stripped', () => {
+    expect(parseCommand(`env FOO=1 BAR=2 cp ${join(dir, 'src.txt')} ${join(dir, 'dst.txt')}`)).toEqual([
+      { operation: 'read', lineStart: 1, lineEnd: 4, absolutePath: join(dir, 'src.txt'), simpleCommandIndex: 0 },
+      { operation: 'create-overwrite', absolutePath: join(dir, 'dst.txt'), simpleCommandIndex: 0 }
+    ]);
+  });
+
+  it('cp -n src dst: the no-clobber flag is consumed, the pair still parses', () => {
+    expect(parseCommand(`cp -n ${join(dir, 'src.txt')} ${join(dir, 'dst.txt')}`)).toEqual([
       { operation: 'read', lineStart: 1, lineEnd: 4, absolutePath: join(dir, 'src.txt'), simpleCommandIndex: 0 },
       { operation: 'create-overwrite', absolutePath: join(dir, 'dst.txt'), simpleCommandIndex: 0 }
     ]);
@@ -999,6 +1098,41 @@ describe('sed -i in-place edits (§5.6)', () => {
   it('sed -i without a script is unresolved', () => {
     expectUnresolved(`sed -i '' ${join(dir, 'twenty.txt')}`, 'sed-inplace');
   });
+
+  it('multi-file bare -i: the script word after -i is never a suffix (the multi-file sed misparse)', () => {
+    // `sed -i s/a/b/ f g`: the script is the word right after bare -i (GNU's
+    // reading), so both files are operands — neither may be swallowed as a
+    // BSD separate suffix.
+    expect(parseCommand(`sed -i s/a/b/ ${join(dir, 'twenty.txt')} ${join(dir, 'five.txt')}`)).toEqual([
+      { operation: 'modify', lineStart: 1, lineEnd: 20, absolutePath: join(dir, 'twenty.txt'), simpleCommandIndex: 0 },
+      { operation: 'modify', lineStart: 1, lineEnd: 5, absolutePath: join(dir, 'five.txt'), simpleCommandIndex: 0 }
+    ]);
+  });
+
+  it('multi-file with an attached suffix: both files modify, both backups fire', () => {
+    expect(parseCommand(`sed -i.bak s/a/b/ ${join(dir, 'twenty.txt')} ${join(dir, 'five.txt')}`)).toEqual([
+      { operation: 'modify', lineStart: 1, lineEnd: 20, absolutePath: join(dir, 'twenty.txt'), simpleCommandIndex: 0 },
+      { operation: 'create-overwrite', absolutePath: join(dir, 'twenty.txt.bak'), simpleCommandIndex: 0 },
+      { operation: 'modify', lineStart: 1, lineEnd: 5, absolutePath: join(dir, 'five.txt'), simpleCommandIndex: 0 },
+      { operation: 'create-overwrite', absolutePath: join(dir, 'five.txt.bak'), simpleCommandIndex: 0 }
+    ]);
+  });
+
+  it('multi-file with a BSD separate suffix: suffix-shaped word still reads as the suffix', () => {
+    expect(parseCommand(`sed -i .bak s/a/b/ ${join(dir, 'twenty.txt')} ${join(dir, 'five.txt')}`)).toEqual([
+      { operation: 'modify', lineStart: 1, lineEnd: 20, absolutePath: join(dir, 'twenty.txt'), simpleCommandIndex: 0 },
+      { operation: 'create-overwrite', absolutePath: join(dir, 'twenty.txt.bak'), simpleCommandIndex: 0 },
+      { operation: 'modify', lineStart: 1, lineEnd: 5, absolutePath: join(dir, 'five.txt'), simpleCommandIndex: 0 },
+      { operation: 'create-overwrite', absolutePath: join(dir, 'five.txt.bak'), simpleCommandIndex: 0 }
+    ]);
+  });
+
+  it('an address-leading script word after bare -i is a script, not a suffix', () => {
+    expect(parseCommand(`sed -i 2d ${join(dir, 'twenty.txt')} ${join(dir, 'five.txt')}`)).toEqual([
+      { operation: 'modify', absolutePath: join(dir, 'twenty.txt'), simpleCommandIndex: 0 },
+      { operation: 'modify', absolutePath: join(dir, 'five.txt'), simpleCommandIndex: 0 }
+    ]);
+  });
 });
 
 describe('patch and git apply (§5.7)', () => {
@@ -1098,6 +1232,35 @@ describe('patch and git apply (§5.7)', () => {
     const cmd = `git apply <<'EOF'\n${PATCH_GROWING_DIFF}\nEOF\n`;
     expect(parseCommand(cmd, dir)).toEqual([
       { operation: 'modify', absolutePath: join(dir, 'notes.txt'), simpleCommandIndex: 0 }
+    ]);
+  });
+
+  it('diff -u headers with a tab+timestamp: patch -p0 targets the --- side', () => {
+    const cmd = `patch -p0 <<'EOF'\n${PATCH_TAB_TS_DIFF}\nEOF\n`;
+    expect(parseCommand(cmd, dir)).toEqual([
+      { operation: 'modify', lineStart: 1, lineEnd: 3, absolutePath: join(dir, 'notes.txt'), simpleCommandIndex: 0 }
+    ]);
+  });
+
+  it('diff -u headers with a tab+timestamp: git apply reads them too', () => {
+    const cmd = `git apply <<'EOF'\n${PATCH_TAB_TS_DIFF}\nEOF\n`;
+    expect(parseCommand(cmd, dir)).toEqual([
+      { operation: 'modify', lineStart: 1, lineEnd: 3, absolutePath: join(dir, 'notes.txt'), simpleCommandIndex: 0 }
+    ]);
+  });
+
+  it('CRLF patch text parses: the \\r never pollutes headers or hunk headers', () => {
+    const cmd = `patch -p1 <<'EOF'\n${PATCH_CRLF_DIFF}\nEOF\n`;
+    expect(parseCommand(cmd, dir)).toEqual([
+      { operation: 'modify', lineStart: 1, lineEnd: 3, absolutePath: join(dir, 'notes.txt'), simpleCommandIndex: 0 }
+    ]);
+  });
+
+  it('diff -u f f.new: the +++ side is a label — the --- side is the target', () => {
+    const diff = ['--- notes.txt', '+++ notes.new', '@@ -1,3 +1,3 @@', ' one', '-two', '+two!', ' three'].join('\n');
+    const cmd = `patch -p0 <<'EOF'\n${diff}\nEOF\n`;
+    expect(parseCommand(cmd, dir)).toEqual([
+      { operation: 'modify', lineStart: 1, lineEnd: 3, absolutePath: join(dir, 'notes.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
@@ -1361,5 +1524,81 @@ describe('git restore and git checkout pathspecs (§5.9)', () => {
     expect(parseCommand(`git -C ${dir} restore five.txt`, '/')).toEqual([
       { operation: 'create-overwrite', absolutePath: join(dir, 'five.txt'), simpleCommandIndex: 0 }
     ]);
+  });
+});
+
+describe('span-less builtin guards (§3 step 2)', () => {
+  it('false && echo x > f: the guard carries its exit status, the write still parses', () => {
+    const detailed = parseCommandDetailed(`false && echo x > ${join(dir, 'f')}`);
+    expect(detailed).toEqual([
+      { status: 'builtin-guard', simpleCommandIndex: 0, join: undefined, exitStatus: 1 },
+      {
+        status: 'resolved',
+        idiom: 'redirect-write',
+        span: {
+          operation: 'create-overwrite',
+          absolutePath: join(dir, 'f'),
+          written: 'x\n',
+          simpleCommandIndex: 1,
+          join: '&&'
+        }
+      }
+    ]);
+    // parseCommand filters guards out with the unresolveds.
+    expect(parseCommand(`false && echo x > ${join(dir, 'f')}`)).toEqual([
+      { operation: 'create-overwrite', absolutePath: join(dir, 'f'), written: 'x\n', simpleCommandIndex: 1, join: '&&' }
+    ]);
+  });
+
+  it('true || echo x > f: the guard marks the succeeded join, the write still parses', () => {
+    const detailed = parseCommandDetailed(`true || echo x > ${join(dir, 'f')}`);
+    expect(detailed).toEqual([
+      { status: 'builtin-guard', simpleCommandIndex: 0, join: undefined, exitStatus: 0 },
+      {
+        status: 'resolved',
+        idiom: 'redirect-write',
+        span: {
+          operation: 'create-overwrite',
+          absolutePath: join(dir, 'f'),
+          written: 'x\n',
+          simpleCommandIndex: 1,
+          join: '||'
+        }
+      }
+    ]);
+  });
+
+  it(': as a guard: a bare `:` exits 0', () => {
+    const detailed = parseCommandDetailed(`: && echo x > ${join(dir, 'f')}`);
+    expect(detailed[0]).toEqual({ status: 'builtin-guard', simpleCommandIndex: 0, join: undefined, exitStatus: 0 });
+  });
+
+  it('a guard inside a compound still emits spans for the other commands', () => {
+    expect(parseCommand(`cd ${dir} && false && echo x > f`)).toEqual([
+      { operation: 'create-overwrite', absolutePath: join(dir, 'f'), written: 'x\n', simpleCommandIndex: 2, join: '&&' }
+    ]);
+  });
+
+  it('a plain unknown span-less command emits no guard (fail open)', () => {
+    expect(parseCommandDetailed(`whatever || echo x > ${join(dir, 'f')}`, dir)).toEqual([
+      {
+        status: 'resolved',
+        idiom: 'redirect-write',
+        span: {
+          operation: 'create-overwrite',
+          absolutePath: join(dir, 'f'),
+          written: 'x\n',
+          simpleCommandIndex: 1,
+          join: '||'
+        }
+      }
+    ]);
+  });
+});
+
+describe('find -delete is deliberately not covered (§5.5)', () => {
+  it('find . -name "*.txt" -delete emits no span (paths are directory-content-dependent)', () => {
+    expect(parseCommand('find . -name "*.txt" -delete')).toEqual([]);
+    expect(parseCommand(`find ${dir} -name report.txt -delete`)).toEqual([]);
   });
 });

@@ -186,21 +186,26 @@ interface PipelineResult {
 /**
  * The full pipeline the adapters run: parse the command, then drive the
  * shared per-command verdict logic with fake executors. `interrupted` feeds
- * the §4 whole-command gate; `list`/`drift` serve the surface rows the
- * whole-file-scope fixtures need.
+ * the §4 whole-command gate; `exitCode` feeds the §4 exit-code gate (a
+ * harness-supplied non-zero code suppresses the existence-gated advisory
+ * class); `list`/`drift` serve the surface rows the whole-file-scope fixtures
+ * need.
  */
 async function runPipeline(
   command: string,
   repoRoot: string,
-  opts: { interrupted?: boolean; list?: PorcelainRow[]; drift?: DriftPorcelainRow[] } = {}
+  opts: { interrupted?: boolean; exitCode?: number; list?: PorcelainRow[]; drift?: DriftPorcelainRow[] } = {}
 ): Promise<PipelineResult> {
   const matches = parseCommandDetailed(command, repoRoot);
   const cap = makeCaptureExecutors(opts.list, opts.drift);
+  const toolResponse: Record<string, unknown> = {};
+  if (opts.interrupted) toolResponse.interrupted = true;
+  if (opts.exitCode !== undefined) toolResponse.exit_code = opts.exitCode;
   const blocks = await runBashTouches(
     matches,
     SESSION_ID,
     repoRoot,
-    opts.interrupted ? { interrupted: true } : {},
+    toolResponse,
     cap.executors,
     createMemoryMemoStore()
   );
@@ -360,6 +365,42 @@ describe('bash-write-integration — content-writing families (plan §Verificati
     expect(parsedOps(res.matches, r.root)).toEqual([{ op: 'delete', rel: '-f.txt' }]);
     expect(res.fixPaths).toEqual(['-f.txt']);
   });
+
+  it('an unquoted heredoc with $ expands at runtime: existence-gated touch, no exact claim', async () => {
+    const r = repo();
+    seedTrackedSpan(r.root, 'h.txt', 'old\n', 'heredoc-expand-span');
+    const command = 'cat <<EOF > h.txt\n$HOME-secret\nEOF\n';
+    expect(bashRun(command, r.root)).toBe(0);
+    const res = await runPipeline(command, r.root);
+    // No `written` threading: the shell expanded the body, so the parser
+    // cannot know the exact bytes — the touch stays in the advisory class.
+    expect(parsedOps(res.matches, r.root)).toEqual([{ op: 'create-overwrite', rel: 'h.txt' }]);
+    expect(res.fixPaths).toEqual(['h.txt']);
+    const after = readRel(r.root, 'h.txt');
+    expect(after).toMatch(/-secret\n$/);
+    expect(after).not.toBe('$HOME-secret\n');
+  });
+
+  it('a quoted delimiter keeps the exact claim even with $ in the body (control)', async () => {
+    const r = repo();
+    seedTrackedSpan(r.root, 'h.txt', 'old\n', 'heredoc-quoted-span');
+    const command = "cat <<'EOF' > h.txt\n$HOME\nEOF\n";
+    expect(bashRun(command, r.root)).toBe(0);
+    const res = await runPipeline(command, r.root);
+    expect(parsedOps(res.matches, r.root)).toEqual([{ op: 'create-overwrite', rel: 'h.txt', written: '$HOME\n' }]);
+    expect(res.fixPaths).toEqual(['h.txt']);
+    expect(readRel(r.root, 'h.txt')).toBe('$HOME\n');
+  });
+
+  it('exec > f truncates the fd-1 target', async () => {
+    const r = repo();
+    seedTrackedSpan(r.root, 'f.txt', 'data\n', 'exec-trunc-span');
+    expect(bashRun('exec > f.txt', r.root)).toBe(0);
+    const res = await runPipeline('exec > f.txt', r.root);
+    expect(parsedOps(res.matches, r.root)).toEqual([{ op: 'truncate', rel: 'f.txt' }]);
+    expect(res.fixPaths).toEqual(['f.txt']);
+    expect(readRel(r.root, 'f.txt')).toBe('');
+  });
 });
 
 describe('bash-write-integration — copy/install/move/delete families', () => {
@@ -431,6 +472,59 @@ describe('bash-write-integration — copy/install/move/delete families', () => {
     expect(bashRun('rm a.txt b.txt', r.root)).toBe(0);
     const res = await runPipeline('rm a.txt b.txt', r.root);
     expect(res.fixPaths).toEqual(['a.txt', 'b.txt']);
+  });
+
+  it('cp -n with a pre-existing equal dest fires the dest (the documented no-op residue)', async () => {
+    const r = repo();
+    seedTrackedSpan(r.root, 'a.txt', 'same\n', 'cpn-src-span');
+    seedTrackedSpan(r.root, 'b.txt', 'same\n', 'cpn-dest-span');
+    expect(bashRun('cp -n a.txt b.txt', r.root)).toBe(0);
+    const res = await runPipeline('cp -n a.txt b.txt', r.root);
+    // The byte-compare gate cannot see the -n skip: a dest that equals the
+    // source fires whether the copy or a pre-existing equal file produced
+    // it — pinned residue, the no-clobber blind spot.
+    expect(res.fixPaths).toEqual(['b.txt']);
+    expect(readRel(r.root, 'b.txt')).toBe('same\n');
+  });
+
+  it('cp -n with a pre-existing different dest fires nothing (the skip really skips)', async () => {
+    const r = repo();
+    seedTrackedSpan(r.root, 'a.txt', 'same\n', 'cpn-diff-src-span');
+    seedTrackedSpan(r.root, 'b.txt', 'other\n', 'cpn-diff-dest-span');
+    expect(bashRun('cp -n a.txt b.txt', r.root)).toBe(0);
+    const res = await runPipeline('cp -n a.txt b.txt', r.root);
+    // Different content: the copy did not happen (b was skipped) and the
+    // byte-compare fails — the gate holds the dest back.
+    expect(res.fixPaths).toEqual([]);
+    expect(readRel(r.root, 'b.txt')).toBe('other\n');
+  });
+
+  it('rm with an already-absent tracked operand still fires both deletes (the harmless residue)', async () => {
+    const r = repo();
+    seedTrackedSpan(r.root, 'a.txt', 'x\n', 'rmabs-a-span');
+    writeRel(r.root, 'b.txt', 'y\n');
+    commitAll(r.root, 'seed b.txt');
+    // b.txt is gone from the working tree but still in the index — the
+    // delete-reality probe treats it as a tracked deletion, so its touch
+    // fires alongside a.txt's; the file is already absent, so the heal is a
+    // no-op (pinned residue). GNU rm exits 1 over the already-absent
+    // operand; no exit code is supplied to the pipeline, so it proceeds.
+    expect(bashRun('rm b.txt', r.root)).toBe(0);
+    expect(bashRun('rm a.txt b.txt', r.root)).not.toBe(0);
+    const res = await runPipeline('rm a.txt b.txt', r.root);
+    expect(res.fixPaths).toEqual(['a.txt', 'b.txt']);
+  });
+
+  it('rm with an untracked absent operand never fires the phantom delete', async () => {
+    const r = repo();
+    seedTrackedSpan(r.root, 'a.txt', 'x\n', 'rmabs2-span');
+    // GNU rm exits 1 over the absent operand — the pipeline still proceeds
+    // (no harness exit code), and the phantom-delete rule holds the
+    // never-tracked path back.
+    expect(bashRun('rm a.txt never-existed.txt', r.root)).not.toBe(0);
+    const res = await runPipeline('rm a.txt never-existed.txt', r.root);
+    expect(res.fixPaths).toEqual(['a.txt']);
+    expect(res.fixPaths).not.toContain('never-existed.txt');
   });
 });
 
@@ -507,6 +601,47 @@ describe('bash-write-integration — in-place editors (sed -i, patch, git apply)
     const res = await runPipeline('patch -p1 < pd.diff', r.root);
     expect(parsedOps(res.matches, r.root)).toEqual([{ op: 'delete', rel: 'pd.txt' }]);
     expect(res.fixPaths).toEqual(['pd.txt']);
+  });
+
+  it('diff -u headers with tab timestamps: patch -p0 targets the --- side', async () => {
+    const r = repo();
+    seedTrackedSpan(r.root, 'keep.txt', 'k1\nk2\nk3\n', 'diffu-patch-span');
+    writeRel(
+      r.root,
+      'u.diff',
+      '--- keep.txt\t2024-01-01 00:00:00.000000000 +0000\n+++ keep.txt\t2024-01-01 00:00:01.000000000 +0000\n@@ -1,3 +1,3 @@\n k1\n-k2\n+k2!\n k3\n'
+    );
+    expect(bashRun('patch -p0 < u.diff', r.root)).toBe(0);
+    const res = await runPipeline('patch -p0 < u.diff', r.root);
+    expect(parsedOps(res.matches, r.root)).toEqual([{ op: 'modify', rel: 'keep.txt', range: '1-3' }]);
+    expect(res.fixPaths).toEqual(['keep.txt']);
+    expect(readRel(r.root, 'keep.txt')).toBe('k1\nk2!\nk3\n');
+  });
+
+  it('diff -u headers with tab timestamps: git apply reads the --- side too', async () => {
+    const r = repo();
+    seedTrackedSpan(r.root, 'keep.txt', 'k1\nk2\nk3\n', 'diffu-apply-span');
+    writeRel(
+      r.root,
+      'u.diff',
+      '--- keep.txt\t2024-01-01 00:00:00.000000000 +0000\n+++ keep.txt\t2024-01-01 00:00:01.000000000 +0000\n@@ -1,3 +1,3 @@\n k1\n-k2\n+k2!\n k3\n'
+    );
+    expect(bashRun('git apply u.diff', r.root)).toBe(0);
+    const res = await runPipeline('git apply u.diff', r.root);
+    expect(parsedOps(res.matches, r.root)).toEqual([{ op: 'modify', rel: 'keep.txt', range: '1-3' }]);
+    expect(res.fixPaths).toEqual(['keep.txt']);
+    expect(readRel(r.root, 'keep.txt')).toBe('k1\nk2!\nk3\n');
+  });
+
+  it('a diff -u label pair (--- f / +++ f.new) still targets the --- side', async () => {
+    const r = repo();
+    seedTrackedSpan(r.root, 'keep.txt', 'k1\nk2\nk3\n', 'diffu-label-span');
+    writeRel(r.root, 'u.diff', '--- keep.txt\n+++ keep.new\n@@ -1,3 +1,3 @@\n k1\n-k2\n+k2!\n k3\n');
+    expect(bashRun('patch -p0 < u.diff', r.root)).toBe(0);
+    const res = await runPipeline('patch -p0 < u.diff', r.root);
+    expect(parsedOps(res.matches, r.root)).toEqual([{ op: 'modify', rel: 'keep.txt', range: '1-3' }]);
+    expect(res.fixPaths).toEqual(['keep.txt']);
+    expect(readRel(r.root, 'keep.txt')).toBe('k1\nk2!\nk3\n');
   });
 });
 
@@ -915,6 +1050,80 @@ describe('bash-write-integration — negative and failure cases (plan §Verifica
     // unchanged content proves the heal is a no-op.
     expect(res.fixPaths).toEqual(['keep.txt']);
     expect(readRel(r.root, 'keep.txt')).toBe('k1\nk2\n');
+  });
+
+  it('a harness-supplied non-zero exit code suppresses the failed existence-gated advisory touch', async () => {
+    const r = repo();
+    seedTrackedSpan(r.root, 'keep.txt', 'k1\nk2\n', 'exitcode-span');
+    writeRel(r.root, 'bad.diff', '--- a/keep.txt\n+++ b/keep.txt\n@@ -1,2 +1,2 @@\n k1\n-wrong-context\n+zzz\n');
+    // No trailing success: the compound itself fails (git apply exits 1).
+    expect(bashRun('git apply bad.diff', r.root)).toBe(1);
+    const res = await runPipeline('git apply bad.diff', r.root, { exitCode: 1 });
+    // The harness proved the command failed, so the existence-gated write
+    // demonstrably did not happen — no advisory touch (fail-open posture:
+    // absent/zero exit codes proceed exactly as today, pinned above).
+    expect(res.fixPaths).toEqual([]);
+    expect(readRel(r.root, 'keep.txt')).toBe('k1\nk2\n');
+  });
+
+  it('a harness-supplied zero exit code on a failing command still proceeds (fail-open)', async () => {
+    const r = repo();
+    seedTrackedSpan(r.root, 'keep.txt', 'k1\nk2\n', 'exitcode-zero-span');
+    writeRel(r.root, 'bad.diff', '--- a/keep.txt\n+++ b/keep.txt\n@@ -1,2 +1,2 @@\n k1\n-wrong-context\n+zzz\n');
+    expect(bashRun('git apply bad.diff; echo done', r.root)).toBe(0);
+    const res = await runPipeline('git apply bad.diff; echo done', r.root, { exitCode: 0 });
+    expect(res.fixPaths).toEqual(['keep.txt']);
+    expect(readRel(r.root, 'keep.txt')).toBe('k1\nk2\n');
+  });
+});
+
+describe('bash-write-integration — span-less builtin guards (plan §3 step 2)', () => {
+  const repos: Array<{ root: string; cleanup: () => void }> = [];
+  afterEach(() => {
+    for (const repo of repos.splice(0)) repo.cleanup();
+  });
+  function repo(): { root: string; cleanup: () => void } {
+    const r = freshRepo();
+    repos.push(r);
+    return r;
+  }
+
+  it('false && echo x > f: the write never runs, and the exact-coincident touch is suppressed', async () => {
+    const r = repo();
+    seedTrackedSpan(r.root, 'f.txt', 'x\n', 'guard-false-span');
+    expect(bashRun('false && echo x > f.txt', r.root)).toBe(1);
+    const res = await runPipeline('false && echo x > f.txt', r.root);
+    // Without the guard verdict the echo's exact gate would pass on content
+    // coincidence and fire a touch for a write that never ran.
+    expect(res.fixPaths).toEqual([]);
+    expect(readRel(r.root, 'f.txt')).toBe('x\n');
+  });
+
+  it('true || echo x > f: the succeeded-guard || skip suppresses the exact-coincident touch', async () => {
+    const r = repo();
+    seedTrackedSpan(r.root, 'f.txt', 'x\n', 'guard-true-span');
+    expect(bashRun('true || echo x > f.txt', r.root)).toBe(0);
+    const res = await runPipeline('true || echo x > f.txt', r.root);
+    expect(res.fixPaths).toEqual([]);
+    expect(readRel(r.root, 'f.txt')).toBe('x\n');
+  });
+
+  it('true && echo x > f: a succeeded guard does not suppress the write that really ran', async () => {
+    const r = repo();
+    seedTrackedSpan(r.root, 'f.txt', 'old\n', 'guard-trueand-span');
+    expect(bashRun('true && echo x > f.txt', r.root)).toBe(0);
+    const res = await runPipeline('true && echo x > f.txt', r.root);
+    expect(res.fixPaths).toEqual(['f.txt']);
+    expect(readRel(r.root, 'f.txt')).toBe('x\n');
+  });
+
+  it('false && sed -i f: a failed guard suppresses the existence-gated sed', async () => {
+    const r = repo();
+    seedTrackedSpan(r.root, 'f.txt', 'a1\na2\n', 'guard-sed-span');
+    expect(bashRun("false && sed -i 's/a1/b1/' f.txt", r.root)).toBe(1);
+    const res = await runPipeline("false && sed -i 's/a1/b1/' f.txt", r.root);
+    expect(res.fixPaths).toEqual([]);
+    expect(readRel(r.root, 'f.txt')).toBe('a1\na2\n');
   });
 });
 

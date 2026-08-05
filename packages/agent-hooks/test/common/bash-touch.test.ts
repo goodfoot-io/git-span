@@ -600,4 +600,174 @@ describe('runBashTouches — per-command verdicts, explanations, and the join fi
 
     expect(calls).toEqual({ fix: 0, list: 0, drift: 0, why: 0 });
   });
+
+  it('a harness-supplied non-zero exit code suppresses the existence-gated advisory touch', async () => {
+    const root = freshRepo();
+    seedState(root, [['f.txt', 'unchanged\n']], ['f.txt']);
+    const { executors, calls } = makeCountingExecutors();
+
+    await runBashTouches(
+      [resolved('sed-inplace', modifyOn(root, 'f.txt', 0))],
+      SESSION_ID,
+      root,
+      { exit_code: 1 },
+      executors,
+      createMemoryMemoStore()
+    );
+
+    expect(calls).toEqual({ fix: 0, list: 0, drift: 0, why: 0 });
+  });
+
+  it('a harness-supplied zero exit code proceeds: the advisory touch fires', async () => {
+    const root = freshRepo();
+    seedState(root, [['f.txt', 'unchanged\n']], ['f.txt']);
+    const f = join(root, 'f.txt');
+    const { executors, fixPaths } = makeCountingExecutors();
+
+    await runBashTouches(
+      [resolved('sed-inplace', modifyOn(root, 'f.txt', 0))],
+      SESSION_ID,
+      root,
+      { exit_code: 0 },
+      executors,
+      createMemoryMemoStore()
+    );
+
+    expect(fixPaths).toEqual([f]);
+  });
+
+  it('an absent exit code proceeds exactly as today: the advisory touch fires', async () => {
+    const root = freshRepo();
+    seedState(root, [['f.txt', 'unchanged\n']], ['f.txt']);
+    const f = join(root, 'f.txt');
+    const { executors, fixPaths } = makeCountingExecutors();
+
+    await runBashTouches(
+      [resolved('sed-inplace', modifyOn(root, 'f.txt', 0))],
+      SESSION_ID,
+      root,
+      {},
+      executors,
+      createMemoryMemoStore()
+    );
+
+    expect(fixPaths).toEqual([f]);
+  });
+
+  it('a non-zero exit code never suppresses a content-verified decisive pass (a real write)', async () => {
+    const root = freshRepo();
+    seedState(root, [['f.txt', 'x\n']], ['f.txt']);
+    const f = join(root, 'f.txt');
+    const { executors, fixPaths } = makeCountingExecutors();
+
+    await runBashTouches(
+      [resolved('redirect-write', createOn(root, 'f.txt', 0, undefined, 'x\n'))],
+      SESSION_ID,
+      root,
+      { exit_code: 1 },
+      executors,
+      createMemoryMemoStore()
+    );
+
+    expect(fixPaths).toEqual([f]);
+  });
+
+  it('a span-less failed guard (false) skips the &&-joined write even with content coincidence', async () => {
+    const root = freshRepo();
+    seedState(root, [['f.txt', 'x\n']], ['f.txt']);
+    const { executors, calls } = makeCountingExecutors();
+
+    await runBashTouches(
+      [
+        { status: 'builtin-guard', simpleCommandIndex: 0, join: undefined, exitStatus: 1 },
+        resolved('redirect-write', createOn(root, 'f.txt', 1, '&&', 'x\n'))
+      ],
+      SESSION_ID,
+      root,
+      {},
+      executors,
+      createMemoryMemoStore()
+    );
+
+    expect(calls).toEqual({ fix: 0, list: 0, drift: 0, why: 0 });
+  });
+
+  it('a span-less succeeded guard (true) skips the ||-joined write even with content coincidence', async () => {
+    const root = freshRepo();
+    seedState(root, [['f.txt', 'x\n']], ['f.txt']);
+    const { executors, calls } = makeCountingExecutors();
+
+    await runBashTouches(
+      [
+        { status: 'builtin-guard', simpleCommandIndex: 0, join: undefined, exitStatus: 0 },
+        resolved('redirect-write', createOn(root, 'f.txt', 1, '||', 'x\n'))
+      ],
+      SESSION_ID,
+      root,
+      {},
+      executors,
+      createMemoryMemoStore()
+    );
+
+    expect(calls).toEqual({ fix: 0, list: 0, drift: 0, why: 0 });
+  });
+
+  it('true && write fires: a succeeded guard does not suppress the joined write', async () => {
+    const root = freshRepo();
+    seedState(root, [['f.txt', 'x\n']], ['f.txt']);
+    const f = join(root, 'f.txt');
+    const { executors, fixPaths } = makeCountingExecutors();
+
+    await runBashTouches(
+      [
+        { status: 'builtin-guard', simpleCommandIndex: 0, join: undefined, exitStatus: 0 },
+        resolved('redirect-write', createOn(root, 'f.txt', 1, '&&', 'x\n'))
+      ],
+      SESSION_ID,
+      root,
+      {},
+      executors,
+      createMemoryMemoStore()
+    );
+
+    expect(fixPaths).toEqual([f]);
+  });
+
+  it('chained guards: false && true && write skips all the way down', async () => {
+    const root = freshRepo();
+    seedState(root, [['f.txt', 'x\n']], ['f.txt']);
+    const { executors, calls } = makeCountingExecutors();
+
+    await runBashTouches(
+      [
+        { status: 'builtin-guard', simpleCommandIndex: 0, join: undefined, exitStatus: 1 },
+        { status: 'builtin-guard', simpleCommandIndex: 1, join: '&&', exitStatus: 0 },
+        resolved('redirect-write', createOn(root, 'f.txt', 2, '&&', 'x\n'))
+      ],
+      SESSION_ID,
+      root,
+      {},
+      executors,
+      createMemoryMemoStore()
+    );
+
+    expect(calls).toEqual({ fix: 0, list: 0, drift: 0, why: 0 });
+  });
+
+  it('guard-only input: no spans, no touches, nothing fires', async () => {
+    const root = freshRepo();
+    seedState(root, [['f.txt', 'x\n']], ['f.txt']);
+    const { executors, calls } = makeCountingExecutors();
+
+    await runBashTouches(
+      [{ status: 'builtin-guard', simpleCommandIndex: 0, join: undefined, exitStatus: 1 }],
+      SESSION_ID,
+      root,
+      {},
+      executors,
+      createMemoryMemoStore()
+    );
+
+    expect(calls).toEqual({ fix: 0, list: 0, drift: 0, why: 0 });
+  });
 });
