@@ -18,7 +18,12 @@
  * (pathspec magic and `--full-name` from a subdir), the diff `--relative`
  * and two-arg blob-blob exclusions, the blame-above-ANSI ordering, the
  * renumbering-pipeline fail-closed fixtures, and the numbered-garbage
- * whole-file-fallback exclusion. Only the adapter-envelope checks remain
+ * whole-file-fallback exclusion. The round-3 evaluation-fix batch adds the
+ * pickaxe/log value-flag fixtures (`-S`/`-G`/`--grep`/`--since` space-form
+ * colon values decode like the glued control) and the verbatim sed/awk
+ * truncator fixtures (numeric-address and NR-condition scripts decode to
+ * the same spans as the head control; rewritten or non-allowlisted scripts
+ * still fail closed). Only the adapter-envelope checks remain
  * `it.skip` for Phase 3e.
  *
  * The golden-matrix harness below builds the fixture store by executing the
@@ -68,7 +73,11 @@ const SEARCH_FILES: Record<string, string> = {
   // matching line) or in the FILENAME (2024-log.txt under `rg -l`) are not
   // positions and must fall back to the whole-file read.
   'notes.md': 'TODO item\n123: TODO item\nend\n',
-  '2024-log.txt': 'alpha\n'
+  '2024-log.txt': 'alpha\n',
+  // A 20-record file for the verbatim truncator fixtures: a sed/awk stage
+  // that cuts records (`sed -n '1,2p'`, `sed '12q'`, `awk 'NR<=2'`) must
+  // preserve the surviving records' positions exactly like `head -2`.
+  'src/needles.ts': 'needle\n'.repeat(20)
 };
 
 interface ExpectedSpan {
@@ -289,6 +298,12 @@ function diffFixture(
   // while the parser derives the effective dir from the command text.
   const { stdout, exitStatus } = runGit(captureCwd ?? root, argv);
   return { name, command, cwd: root, stdout, exitStatus, expected, files };
+}
+
+/** A real-pipeline fixture: the stage pipeline runs end to end via `sh -c`. */
+function pipelineFixture(name: string, command: string, root: string, expected: ExpectedSpan[]): GoldenFixture {
+  const { stdout, exitStatus } = runPipeline(command, root);
+  return { name, command, cwd: root, stdout, exitStatus, expected, files: SEARCH_FILES };
 }
 
 // -- Matrix builder ---------------------------------------------------------
@@ -622,6 +637,64 @@ function buildGoldenMatrix(root: string): GoldenMatrix {
     expected: [{ path: 'coll/9', lineStart: 1, lineEnd: 1 }],
     files: SEARCH_FILES
   });
+
+  // Truncating sed/awk stages whose scripts PROVABLY pass the earlier
+  // records through byte-verbatim cut the response exactly like `head`: the
+  // surviving records still carry the gated stage's file lines, so the
+  // decoded spans must equal the head -2 control on the same 20-record
+  // input. The expression-shape allowlist (numeric-address p/q/d for sed,
+  // condition-only NR comparisons for awk) is the ONLY discriminator — no
+  // record-shape check may reopen the digit-named-file fabrication class.
+  fixtures.push(
+    pipelineFixture('pipe-rg-sed-np', "rg -n needle src/needles.ts | sed -n '1,2p'", root, [
+      { path: 'src/needles.ts', lineStart: 1, lineEnd: 2 }
+    ])
+  );
+  fixtures.push(
+    pipelineFixture('pipe-rg-sed-q', "rg -n needle src/needles.ts | sed '12q'", root, [
+      { path: 'src/needles.ts', lineStart: 1, lineEnd: 12 }
+    ])
+  );
+  fixtures.push(
+    pipelineFixture('pipe-rg-awk-le', "rg -n needle src/needles.ts | awk 'NR<=2'", root, [
+      { path: 'src/needles.ts', lineStart: 1, lineEnd: 2 }
+    ])
+  );
+  fixtures.push(
+    pipelineFixture('pipe-rg-awk-eq', "rg -n needle src/needles.ts | awk 'NR==1'", root, [
+      { path: 'src/needles.ts', lineStart: 1, lineEnd: 1 }
+    ])
+  );
+  // The head controls on the same input — each verbatim stage must equal
+  // the head stage truncating at its own cut point.
+  fixtures.push(
+    pipelineFixture('pipe-rg-head-1-needles', 'rg -n needle src/needles.ts | head -1', root, [
+      { path: 'src/needles.ts', lineStart: 1, lineEnd: 1 }
+    ])
+  );
+  fixtures.push(
+    pipelineFixture('pipe-rg-head-2-needles', 'rg -n needle src/needles.ts | head -2', root, [
+      { path: 'src/needles.ts', lineStart: 1, lineEnd: 2 }
+    ])
+  );
+  fixtures.push(
+    pipelineFixture('pipe-rg-head-12-needles', 'rg -n needle src/needles.ts | head -12', root, [
+      { path: 'src/needles.ts', lineStart: 1, lineEnd: 12 }
+    ])
+  );
+
+  // Non-allowlisted sed/awk stages still fail closed: `s///` rewrites strip
+  // the positions, brace/field actions renumber, and `1,2!d` — a
+  // range-complement delete that HAPPENS to preserve records — is not one
+  // of the provable numeric forms, so it fails closed with the rest.
+  fixtures.push(pipelineFixture('pipe-rg-sed-sub', "rg -n needle src/needles.ts | sed 's/^[0-9]*://'", root, []));
+  fixtures.push(pipelineFixture('pipe-rg-sed-range-delete', "rg -n needle src/needles.ts | sed '1,2!d'", root, []));
+  fixtures.push(
+    pipelineFixture('pipe-rg-awk-print', 'rg -n needle src/needles.ts | awk \'{print NR ":" $0}\'', root, [])
+  );
+  fixtures.push(
+    pipelineFixture('pipe-rg-awk-fields', "rg -n needle src/needles.ts | awk 'NR<=2 {print $1}'", root, [])
+  );
 
   // Whole-file no-line-number fallback: bare matching lines, no numbers.
   fixtures.push(
@@ -1011,6 +1084,78 @@ function buildGoldenMatrix(root: string): GoldenMatrix {
       expected: [],
       files: { 'a.txt': 'l1\nCHANGED\nl3\n' }
     });
+  }
+
+  // `git log -p` pickaxe/grep value flags (round-3): `-S`/`-G`/`--grep`/
+  // `--since` consume their values as SEPARATE tokens whose colons are
+  // value content, never rev:path positionals — `git log -p -S ':auth'` is
+  // the classic archaeology idiom (exit 0 against the real binary) and the
+  // diff gate must not reject the whole invocation. The glued `-S:auth`
+  // control proves exact-token membership keeps glued values safe by
+  // construction.
+  {
+    const repo = makeGitRepo();
+    repos.push(repo);
+    writeFiles(repo.root, { 'auth.txt': 'line1\nline2\nline3\n' });
+    commitAll(repo.root, 'base');
+    writeFiles(repo.root, { 'auth.txt': "line1\ntoken ':auth' added\nline2\nline3\n" });
+    commitAll(repo.root, 'add :fix token');
+    const files = { 'auth.txt': "line1\ntoken ':auth' added\nline2\nline3\n" };
+    // The change commit adds the token line (hunk `@@ -1,3 +1,4 @@` →
+    // lines 1-4); `--since '2024-01-01T12:00:00'` also shows the base
+    // commit's creation hunk (`@@ -0,0 +1,3 @@` → lines 1-3) — the union is
+    // still lines 1-4.
+    const added = [{ path: 'auth.txt', lineStart: 1, lineEnd: 4 }];
+    fixtures.push(
+      diffFixture(
+        'git-log-pickaxe-space',
+        "git log -p --no-color -S ':auth'",
+        ['log', '-p', '--no-color', '-S', ':auth'],
+        repo.root,
+        files,
+        added
+      )
+    );
+    fixtures.push(
+      diffFixture(
+        'git-log-pickaxe-glued',
+        'git log -p --no-color -S:auth',
+        ['log', '-p', '--no-color', '-S:auth'],
+        repo.root,
+        files,
+        added
+      )
+    );
+    fixtures.push(
+      diffFixture(
+        'git-log-pickaxe-regex',
+        "git log -p --no-color -G ':\\w+'",
+        ['log', '-p', '--no-color', '-G', ':\\w+'],
+        repo.root,
+        files,
+        added
+      )
+    );
+    fixtures.push(
+      diffFixture(
+        'git-log-grep-colon',
+        "git log -p --no-color --grep ':fix'",
+        ['log', '-p', '--no-color', '--grep', ':fix'],
+        repo.root,
+        files,
+        added
+      )
+    );
+    fixtures.push(
+      diffFixture(
+        'git-log-since-iso',
+        "git log -p --no-color --since '2024-01-01T12:00:00'",
+        ['log', '-p', '--no-color', '--since', '2024-01-01T12:00:00'],
+        repo.root,
+        files,
+        added
+      )
+    );
   }
 
   return { fixtures, repos };
@@ -1633,6 +1778,31 @@ describe('parse-response (Phase 3a–3c — search layouts, unified diffs, and b
     });
   });
 
+  describe('git log pickaxe and value flags', () => {
+    it('space-form -S/-G/--grep/--since values containing colons decode like the glued control', () => {
+      // The pickaxe and log-filter flags consume their values as separate
+      // tokens; a colon inside such a value (`-S ':auth'`, `-G ':\w+'`,
+      // `--grep ':fix'`, `--since '2024-01-01T12:00:00'`) is value content,
+      // never a rev:path positional. The probe previously rejected the whole
+      // `git log -p` invocation (0 spans) — a real archaeology idiom that is
+      // exit 0 against git 2.47.3. The glued `-S:auth` control rides along:
+      // exact-token valueFlags membership keeps glued values safe by
+      // construction.
+      for (const name of [
+        'git-log-pickaxe-space',
+        'git-log-pickaxe-glued',
+        'git-log-pickaxe-regex',
+        'git-log-grep-colon',
+        'git-log-since-iso'
+      ]) {
+        const f = fixture(name);
+        expect(f.stdout).not.toBe('');
+        expect(f.stdout).toContain('diff --git a/auth.txt');
+        expect(sortedSpans(parseFixture(f))).toEqual(sortedSpans(resolveExpected(f)));
+      }
+    });
+  });
+
   describe('pipelines', () => {
     it('the response attributes to the first gated stage', () => {
       // `rg -n alpha src | head -5` — the standard output-capping idiom. The
@@ -1693,6 +1863,43 @@ describe('parse-response (Phase 3a–3c — search layouts, unified diffs, and b
       const head = fixture('pipe-rg-head-2');
       expect(head.stdout).toBe('coll/9:1:needle\n');
       expect(sortedSpans(parseFixture(head))).toEqual(sortedSpans(resolveExpected(head)));
+    });
+
+    it('verbatim sed/awk truncators decode to the same spans as the head control', () => {
+      // A sed/awk stage whose script provably passes whole records through
+      // byte-verbatim cuts the response exactly like `head`: `sed -n '1,2p'`
+      // and `sed '12q'` print whole records, `awk 'NR<=2'` and `awk 'NR==1'`
+      // select them with the default print action — the round-2 renumberer
+      // rule killed these pipelines unconditionally while `| head -2` in the
+      // same position stayed green. The allowlist discriminates on the
+      // script EXPRESSION only — never on record shape, which would reopen
+      // the digit-named-file fabrication class. Each stage is compared
+      // against the head stage truncating at its own cut point.
+      const controls: Record<string, string> = {
+        'pipe-rg-sed-np': 'pipe-rg-head-2-needles',
+        'pipe-rg-sed-q': 'pipe-rg-head-12-needles',
+        'pipe-rg-awk-le': 'pipe-rg-head-2-needles',
+        'pipe-rg-awk-eq': 'pipe-rg-head-1-needles'
+      };
+      for (const [name, controlName] of Object.entries(controls)) {
+        const f = fixture(name);
+        expect(f.stdout).not.toBe('');
+        expect(f.stdout).toContain(':needle');
+        expect(sortedSpans(parseFixture(f))).toEqual(sortedSpans(resolveExpected(f)));
+        expect(sortedSpans(parseFixture(f))).toEqual(sortedSpans(parseFixture(fixture(controlName))));
+      }
+    });
+
+    it('non-allowlisted sed/awk scripts still fail closed', () => {
+      // `s///` rewrites strip the positions, brace/field actions renumber,
+      // and `1,2!d` — a range-complement delete that HAPPENS to preserve
+      // records — is not one of the provable numeric forms, so it fails
+      // closed with everything outside the expression allowlist.
+      for (const name of ['pipe-rg-sed-sub', 'pipe-rg-sed-range-delete', 'pipe-rg-awk-print', 'pipe-rg-awk-fields']) {
+        const f = fixture(name);
+        expect(f.stdout).not.toBe('');
+        expect(parseFixture(f)).toEqual([]);
+      }
     });
   });
 

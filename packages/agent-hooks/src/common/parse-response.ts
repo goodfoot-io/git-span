@@ -64,7 +64,11 @@
  *   path, and with a real file named `9` at the cwd the phantom surfaces).
  *   Such an invocation yields no response-derived spans. Explicit path args
  *   mean the bin searches files (the redirect/pipe is then irrelevant), and
- *   `git grep` never reads stdin — both preserved.
+ *   `git grep` never reads stdin — both preserved. This invariant binds only
+ *   the directly-gated stage: the attribution walk stops at the first gated
+ *   stage, so an un-gated feeder earlier in the pipeline (e.g.
+ *   `find | xargs rg …`) never reaches the stdin rule, and its feed-shape
+ *   is no evidence about the search's stdin.
  * - **Decoded paths must be real files**: as a family-wide backstop, a
  *   recursive-layout record whose decoded path is not an existing regular
  *   file (the same `isFile` check the one-file eligibility uses, resolving
@@ -471,9 +475,31 @@ function hasFlag(argv: string[], start: number, flag: string): boolean {
  * cannot false-positive.
  */
 function hasDiffRevPathArg(argv: string[], start: number, cwd: string): boolean {
-  // `-L <range>:<file>` (git log/blame) consumes its range as a separate
-  // token; the range's `:` is a line-range separator, not a rev:path.
-  const valueFlags = new Set(['--output', '--src-prefix', '--dst-prefix', '-L']);
+  // Value-consuming flags whose SEPARATE value token must never be scanned
+  // as a positional: `-L <range>:<file>` (git log/blame — the range's `:` is
+  // a line-range separator, not a rev:path), the pickaxe `-S`/`-G` and the
+  // log filters `--grep`/`--author`/`--committer`, and the date limits
+  // `--since`/`--until`/`--before`/`--after`, whose space-form ISO timestamp
+  // values (`--since '2024-01-01T12:00:00'`) contain colons — a
+  // `git log -p -S ':auth'` archaeology invocation is exit-0 valid and its
+  // value token must not reject the whole decode. Exact-token membership
+  // keeps glued forms safe by construction: `-S:auth` is never in the set
+  // and skips no token.
+  const valueFlags = new Set([
+    '--output',
+    '--src-prefix',
+    '--dst-prefix',
+    '-L',
+    '-S',
+    '-G',
+    '--grep',
+    '--author',
+    '--committer',
+    '--since',
+    '--until',
+    '--before',
+    '--after'
+  ]);
   for (let i = start; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--') return false;
@@ -520,14 +546,20 @@ function diffRelativeBase(
  * Whether a post-first-gated-stage pipeline stage renumbers or restructures
  * the earlier stage's records so the response no longer carries the file
  * lines the gated stage produced. Name-based: grep/egrep/fgrep/rg with
- * numbered evidence (`-n`/`--line-number`), `nl`, `cat -n`, `awk`, and `sed`
- * all renumber or rewrite records; head/tail/wc/sort/uniq/cut only
- * truncate, reorder, or dedupe — each surviving line's content is verbatim,
- * so the decoded spans stay genuine.
+ * numbered evidence (`-n`/`--line-number`), `nl`, and `cat -n` always
+ * renumber or rewrite records; `sed` and `awk` fail closed UNLESS their
+ * script/program provably passes whole records through byte-verbatim
+ * (isVerbatimSedStage / isVerbatimAwkStage — numeric-address `p`/`q`/`d`
+ * forms and condition-only NR-comparison/parity programs output the same
+ * bytes the earlier stage emitted, so the decoded spans stay genuine);
+ * head/tail/wc/sort/uniq/cut only truncate, reorder, or dedupe — each
+ * surviving line's content is verbatim.
  */
 function isRenumberingFilter(argv: string[]): boolean {
   const bin = argv[0];
-  if (bin === 'nl' || bin === 'awk' || bin === 'sed') return true;
+  if (bin === 'nl') return true;
+  if (bin === 'sed') return !isVerbatimSedStage(argv);
+  if (bin === 'awk') return !isVerbatimAwkStage(argv);
   if (bin === 'cat') {
     return argv.some((a) => a === '--number' || (a.startsWith('-') && !a.startsWith('--') && a.includes('n')));
   }
@@ -535,6 +567,66 @@ function isRenumberingFilter(argv: string[]): boolean {
     return argv.some((a) => a === '--line-number' || (a.startsWith('-') && !a.startsWith('--') && a.includes('n')));
   }
   return false;
+}
+
+/**
+ * Whether `script` provably prints or omits whole input records byte-
+ * verbatim (numeric addresses only). With `-n` (auto-print suppressed) the
+ * script must explicitly print: `p` (single record), `,p` (a record range),
+ * or `,$p` (a record to the end). Without `-n` the default auto-print keeps
+ * records verbatim, so `q` (quit after a record — a prefix cut) and `d`
+ * (delete a single record — a subset cut) qualify. Pattern addresses and
+ * any rewrite command (`s///`, `y///`, `=`, `a`/`i`/`c`) change or insert
+ * record content and are never allowlisted.
+ */
+function isVerbatimSedScript(script: string, suppressAutoPrint: boolean): boolean {
+  if (suppressAutoPrint) {
+    return /^\d+p$/.test(script) || /^\d+,\d+p$/.test(script) || /^\d+,\$p$/.test(script);
+  }
+  return /^\d+q$/.test(script) || /^\d+d$/.test(script);
+}
+
+/**
+ * Whether a post-gated `sed` stage's whole argv provably passes the earlier
+ * records through byte-verbatim. The script must be the first non-flag
+ * positional; only `-n` may precede it, and any further positional (a
+ * second script, or file args — the stage then reads files, not the pipe)
+ * fails closed. Any other flag (`-e`, `-f`, `-E`, `-u`, `-z`, …) changes
+ * script semantics or record separation and fails closed. `1,2!d` is
+ * deliberately NOT allowlisted — a range-complement delete happens to
+ * preserve records, but the allowlist admits only the provable numeric
+ * forms, so it fails closed like everything else.
+ */
+function isVerbatimSedStage(argv: string[]): boolean {
+  let script: string | null = null;
+  let suppressAutoPrint = false;
+  for (let i = 1; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '-n') {
+      suppressAutoPrint = true;
+      continue;
+    }
+    if (a.startsWith('-') && a !== '-') return false;
+    if (script !== null) return false;
+    script = a;
+  }
+  return script !== null && isVerbatimSedScript(script, suppressAutoPrint);
+}
+
+/**
+ * Whether a post-gated `awk` stage's program provably selects whole records
+ * with the default print action, so the output bytes are verbatim. The
+ * program must be the sole positional (no `-F`/`-v`/`-f` flags, no file
+ * args) and match a condition-only form: `NR OP N` with OP in
+ * {`<`, `<=`, `>`, `>=`, `==`, `!=`} against decimal digits (record-number
+ * windows), or `NR % N == M` / `NR % N != M` (parity subsets). NO braces,
+ * NO actions, NO field/record references (`$`), NO `print`, NO `sub`/
+ * `gsub` — any of those rewrites or renumbers and fails closed.
+ */
+function isVerbatimAwkStage(argv: string[]): boolean {
+  if (argv.length !== 2) return false;
+  const program = argv[1];
+  return /^NR\s*(<=|>=|==|!=|<|>)\s*\d+$/.test(program) || /^NR\s*%\s*\d+\s*(==|!=)\s*\d+$/.test(program);
 }
 
 // ---------------------------------------------------------------------------
