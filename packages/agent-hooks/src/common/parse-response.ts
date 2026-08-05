@@ -13,9 +13,10 @@
  *
  * Phase 3a of the TDD bootstrap (plans/initial.md) is live: command gating,
  * scope restriction against the command's declared roots, ANSI rejection, the
- * five search-layout decoders, whole-file fallback, and coalescing. The
- * unified-diff and git-blame decoders are later phases — commands in those
- * families return [] until then. The acceptance checks in
+ * five search-layout decoders, whole-file fallback, and coalescing. Phase 3b
+ * added the unified-diff decoder (`git diff`, diff-form `git show`, `git log
+ * -p`) with binary/combined/submodule rejection, and Phase 3c the
+ * `git blame -L N,M file` command-text matcher. The acceptance checks in
  * test/common/parse-response.test.ts were written in Phase 2.
  */
 import { resolve as resolvePath, sep } from 'node:path';
@@ -179,20 +180,23 @@ function analyzeSearchArgv(argv: string[], start: number): SearchArgvInfo {
   return { pathArgs, contextFlags };
 }
 
-interface GitGrepInfo {
+interface GitSubcommandInfo {
   /** The `git -C` directory, when present and statically resolvable. */
   dir: string | null;
   dirUnresolvable: boolean;
-  /** Index just past the `grep` subcommand, where the search argv begins. */
+  /** The subcommand token (`grep`, `diff`, `show`, `log`, `blame`, …). */
+  subcommand: string;
+  /** Index just past the subcommand, where its argv begins. */
   start: number;
 }
 
 /**
- * Locate the `grep` subcommand of a `git` command, honoring `-C`/`-c` like
- * parse-command.ts's findGitSubcommand. Returns null when git runs any other
- * subcommand (diff/show/log/blame are later phases and fail the gate here).
+ * Locate the subcommand token of a `git` command, honoring `-C`/`-c` like
+ * parse-command.ts's findGitSubcommand. Returns null when no subcommand
+ * token appears (bare `git`). Which subcommands response-decode is the
+ * gate's call, not this scanner's.
  */
-function findGitGrep(argv: string[]): GitGrepInfo | null {
+function findGitSubcommand(argv: string[]): GitSubcommandInfo | null {
   let dir: string | null = null;
   let dirUnresolvable = false;
   let i = 1;
@@ -214,10 +218,28 @@ function findGitGrep(argv: string[]): GitGrepInfo | null {
       i += 1;
       continue;
     }
-    if (a !== 'grep') return null;
-    return { dir, dirUnresolvable, start: i + 1 };
+    return { dir, dirUnresolvable, subcommand: a, start: i + 1 };
   }
   return null;
+}
+
+/** A response-derivable command that passed the gate, with its decoder's inputs. */
+type GatedCommand = {
+  kind: 'search' | 'diff' | 'blame';
+  argv: string[];
+  /** Index just past the binary (search) or subcommand (git), where its argv begins. */
+  start: number;
+  /** The `git -C` directory, when present and statically resolvable. */
+  dir: string | null;
+  dirUnresolvable: boolean;
+};
+
+/** Whether a `git log` invocation is diff-form (`-p`/`--patch` present). */
+function hasDiffPatchFlag(argv: string[], start: number): boolean {
+  for (let i = start; i < argv.length; i++) {
+    if (argv[i] === '-p' || argv[i] === '--patch') return true;
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -404,20 +426,260 @@ function coalesce(lines: number[]): Array<[number, number]> {
   return ranges;
 }
 
+/**
+ * Resolve per-file line sets into spans: paths resolve against `baseDir`,
+ * must sit inside one of the permitted `roots` (a traversal path normalizes
+ * outside them and is rejected), and their lines coalesce into contiguous
+ * ranges.
+ */
+function spansFor(perFile: Map<string, Set<number>>, baseDir: string, roots: string[]): ResolvedSpan[] {
+  const spans: ResolvedSpan[] = [];
+  for (const [path, lines] of perFile) {
+    const abs = resolvePath(baseDir, path);
+    if (!insideRoot(abs, roots)) continue;
+    for (const [lineStart, lineEnd] of coalesce([...lines])) {
+      spans.push({ lineStart, lineEnd, absolutePath: abs });
+    }
+  }
+  return spans;
+}
+
+// ---------------------------------------------------------------------------
+// Unified-diff decoder (`git diff`, diff-form `git show`, `git log -p`)
+// ---------------------------------------------------------------------------
+
+/**
+ * A unified-diff hunk header: `@@ -a[,b] +c[,d] @@`; omitted counts mean 1.
+ * A cut-off header (missing the closing `@@`) does not match and its hunk is
+ * ignored. Combined-diff `@@@` headers do not match (their records are
+ * rejected at the `diff --cc` line anyway).
+ */
+const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
+
+/** Strip the `a/`/`b/` prefix a unified-diff path carries. */
+function stripDiffPrefix(p: string): string {
+  return p.startsWith('a/') || p.startsWith('b/') ? p.slice(2) : p;
+}
+
+/**
+ * Parse a `diff --git a/old b/new` file header, `diff --cc`/`--combined`
+ * (a real merge-conflict combined diff: no ranges), or return null for
+ * non-header lines. A header whose paths are quoted is unparseable — the
+ * plan's fail-closed rule for quoted/unescapable paths.
+ */
+function parseDiffHeader(
+  line: string
+):
+  | { kind: 'file'; oldPath: string | null; newPath: string | null }
+  | { kind: 'combined' }
+  | { kind: 'unparseable' }
+  | null {
+  if (line.startsWith('diff --cc ') || line.startsWith('diff --combined ')) return { kind: 'combined' };
+  if (!line.startsWith('diff --git ')) return null;
+  const tokens = line.slice('diff --git '.length).trim().split(/\s+/);
+  if (tokens.length !== 2 || tokens[0].startsWith('"') || tokens[1].startsWith('"')) return { kind: 'unparseable' };
+  return { kind: 'file', oldPath: stripDiffPrefix(tokens[0]), newPath: stripDiffPrefix(tokens[1]) };
+}
+
+/**
+ * Parse a `--- a/path` / `+++ b/path` side line. `/dev/null` means the side
+ * does not exist (new-file / deletion sides). A quoted path is unparseable.
+ */
+function parseDiffSide(
+  line: string,
+  marker: '---' | '+++'
+): { kind: 'side'; path: string | null } | { kind: 'unparseable' } | null {
+  if (!line.startsWith(`${marker} `)) return null;
+  const p = line.slice(marker.length + 1);
+  if (p.startsWith('"')) return { kind: 'unparseable' };
+  return { kind: 'side', path: p === '/dev/null' ? null : stripDiffPrefix(p) };
+}
+
+/** One file section of a response, in the decoder's working state. */
+interface DiffRecordState {
+  oldPath: string | null;
+  newPath: string | null;
+  /** Rename/copy metadata present (`rename from`/`rename to`, `copy from`/`copy to`): the new path is the only touch target. */
+  rename: boolean;
+  binary: boolean;
+  combined: boolean;
+  submodule: boolean;
+  /** A quoted/unescapable path: the record produces no range. */
+  unusable: boolean;
+  /** A hunk header has been seen: later `---`/`+++`-looking lines are hunk body lines, not side headers. */
+  sawHunk: boolean;
+}
+
+/**
+ * Decode a unified-diff response into per-path line sets. Only hunk headers
+ * carry positional data — body lines are ignored — and each header's side
+ * ranges attach to its side's path (`/dev/null` sides have no path).
+ * Binary, combined, submodule, and unparseable records emit nothing;
+ * rename/copy records emit the new side only. `index` lines and
+ * `\ No newline at end of file` markers are metadata and fall through. The
+ * universal terminating-newline rule applies via completeLines.
+ */
+function decodeUnifiedDiff(stdout: string): Map<string, Set<number>> {
+  const perFile = new Map<string, Set<number>>();
+  let current: DiffRecordState | null = null;
+  for (const line of completeLines(stdout)) {
+    const header = parseDiffHeader(line);
+    if (header !== null) {
+      current = {
+        oldPath: header.kind === 'file' ? header.oldPath : null,
+        newPath: header.kind === 'file' ? header.newPath : null,
+        rename: false,
+        binary: false,
+        combined: header.kind === 'combined',
+        submodule: false,
+        unusable: header.kind === 'unparseable',
+        sawHunk: false
+      };
+      continue;
+    }
+    if (current === null) continue;
+    if (line.startsWith('Binary files ')) {
+      current.binary = true;
+      continue;
+    }
+    // Submodule markers: a `mode 160000` metadata line, or `Subproject
+    // commit` lines (their own +/- body lines). The mode check excludes
+    // hunk body lines so file content that mentions the mode can't reject
+    // a real record.
+    const isBodyLine = line.startsWith(' ') || line.startsWith('+') || line.startsWith('-') || line.startsWith('\\');
+    if (!isBodyLine && line.includes('mode 160000')) {
+      current.submodule = true;
+      continue;
+    }
+    if (line.includes('Subproject commit')) {
+      current.submodule = true;
+      continue;
+    }
+    if (
+      line.startsWith('rename from ') ||
+      line.startsWith('rename to ') ||
+      line.startsWith('copy from ') ||
+      line.startsWith('copy to ')
+    ) {
+      current.rename = true;
+      continue;
+    }
+    if (!current.sawHunk) {
+      const oldSide = parseDiffSide(line, '---');
+      if (oldSide !== null) {
+        if (oldSide.kind === 'unparseable') current.unusable = true;
+        else current.oldPath = oldSide.path;
+        continue;
+      }
+      const newSide = parseDiffSide(line, '+++');
+      if (newSide !== null) {
+        if (newSide.kind === 'unparseable') current.unusable = true;
+        else current.newPath = newSide.path;
+        continue;
+      }
+    }
+    const hunk = HUNK_HEADER.exec(line);
+    if (hunk !== null) {
+      current.sawHunk = true;
+      emitHunkRange(perFile, current, hunk);
+    }
+  }
+  return perFile;
+}
+
+/** Attribute one hunk header's per-side ranges to its record's paths. */
+function emitHunkRange(perFile: Map<string, Set<number>>, record: DiffRecordState, hunk: RegExpExecArray): void {
+  if (record.binary || record.combined || record.submodule || record.unusable) return;
+  const oldStart = Number.parseInt(hunk[1], 10);
+  const oldCount = hunk[2] === undefined ? 1 : Number.parseInt(hunk[2], 10);
+  const newStart = Number.parseInt(hunk[3], 10);
+  const newCount = hunk[4] === undefined ? 1 : Number.parseInt(hunk[4], 10);
+  // Rename/copy: the new path is the touch target; the old side is dropped
+  // (the old path may not exist on disk — it was renamed away).
+  if (record.rename) {
+    if (record.newPath !== null) addLines(perFile, record.newPath, newStart, newCount);
+    return;
+  }
+  if (record.oldPath !== null) addLines(perFile, record.oldPath, oldStart, oldCount);
+  if (record.newPath !== null) addLines(perFile, record.newPath, newStart, newCount);
+}
+
+/** Add `count` consecutive 1-based lines starting at `start` to `path`'s set. */
+function addLines(perFile: Map<string, Set<number>>, path: string, start: number, count: number): void {
+  if (start < 1 || count <= 0) return;
+  let lines = perFile.get(path);
+  if (lines === undefined) {
+    lines = new Set();
+    perFile.set(path, lines);
+  }
+  for (let n = start; n < start + count; n++) lines.add(n);
+}
+
+// ---------------------------------------------------------------------------
+// `git blame -L` command-text matcher
+// ---------------------------------------------------------------------------
+
+/**
+ * Match a `git blame -L N,M <file>` invocation from command text: the exact
+ * literal `N,M` range from the `-L` value and the single path positional
+ * that follows it (earlier positionals are revisions). `git log -L` embeds
+ * the path in its spec and parse-command.ts already covers it; blame takes
+ * the path as a positional, which the command-only parser does not handle.
+ */
+function matchBlameRange(
+  argv: string[],
+  start: number
+): { lineStart: number; lineEnd: number; fileArg: string } | null {
+  let spec: string | null = null;
+  let specIdx = -1;
+  const positionals: Array<{ arg: string; idx: number }> = [];
+  for (let i = start; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--') {
+      for (let j = i + 1; j < argv.length; j++) positionals.push({ arg: argv[j], idx: j });
+      break;
+    }
+    if (a === '-L') {
+      spec = argv[i + 1] ?? null;
+      specIdx = i;
+      i += 1;
+      continue;
+    }
+    if (a.startsWith('-L')) {
+      spec = a.slice(2);
+      specIdx = i;
+      continue;
+    }
+    if (a.startsWith('-')) continue;
+    positionals.push({ arg: a, idx: i });
+  }
+  if (spec === null) return null;
+  const m = /^(\d+),(\d+)$/.exec(spec);
+  if (m === null) return null;
+  const files = positionals.filter((p) => p.idx > specIdx);
+  if (files.length !== 1) return null;
+  return {
+    lineStart: Number.parseInt(m[1], 10),
+    lineEnd: Number.parseInt(m[2], 10),
+    fileArg: files[0].arg
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Orchestrator
 // ---------------------------------------------------------------------------
 
 /**
- * Derives precise per-file read ranges from a response-producing search
- * command: command gating, scope restriction against the command's declared
- * roots, search-layout decoding, coalescing, and the fail-closed
- * truncation/hostile-output rules. Returns [] for anything not
+ * Derives precise per-file read ranges from a response-producing command:
+ * command gating, scope restriction against the command's declared roots,
+ * search-layout decoding, unified-diff decoding, coalescing, and the
+ * fail-closed truncation/hostile-output rules. Returns [] for anything not
  * response-derivable or not fully observed.
  *
  * Phase 3a covers the grep/ripgrep family (`rg`, `grep`, `egrep`, `fgrep`,
- * `git grep`) only; diff-form `git diff`/`git show`/`git log` and
- * `git blame -L` commands return [] until the later decoder phases land.
+ * `git grep`); Phase 3b the diff-form `git diff`/`git show`/`git log -p`
+ * unified-diff decoder; Phase 3c the `git blame -L N,M file` command-text
+ * matcher.
  */
 export function parseResponse(input: ResponseParseInput): ResolvedSpan[] {
   const { command, cwd, stdout } = input;
@@ -428,9 +690,10 @@ export function parseResponse(input: ResponseParseInput): ResolvedSpan[] {
 
   // Walk the simple commands tracking `cd`, exactly like parse-command.ts:
   // the response is attributed to the final command, which must be a gated
-  // search command. A pipeline stage like `head` or `wc` resets the gate.
+  // search, diff, or blame command. A pipeline stage like `head` or `wc`
+  // resets the gate.
   let currentDir = cwd;
-  let gated: { argv: string[]; start: number; dir: string | null; dirUnresolvable: boolean } | null = null;
+  let gated: GatedCommand | null = null;
   for (const simple of splitTopLevel(command)) {
     const argv = argvOf(simple.text);
     if (argv === null || argv.length === 0) continue;
@@ -443,11 +706,15 @@ export function parseResponse(input: ResponseParseInput): ResolvedSpan[] {
     }
     gated = null;
     if (SEARCH_BINS.has(argv[0])) {
-      gated = { argv, start: 1, dir: null, dirUnresolvable: false };
+      gated = { kind: 'search', argv, start: 1, dir: null, dirUnresolvable: false };
     } else if (argv[0] === 'git') {
-      const gitGrep = findGitGrep(argv);
-      if (gitGrep !== null) {
-        gated = { argv, ...gitGrep };
+      const sub = findGitSubcommand(argv);
+      if (sub !== null) {
+        const base = { argv, start: sub.start, dir: sub.dir, dirUnresolvable: sub.dirUnresolvable };
+        if (sub.subcommand === 'grep') gated = { kind: 'search', ...base };
+        else if (sub.subcommand === 'diff' || sub.subcommand === 'show') gated = { kind: 'diff', ...base };
+        else if (sub.subcommand === 'log' && hasDiffPatchFlag(argv, sub.start)) gated = { kind: 'diff', ...base };
+        else if (sub.subcommand === 'blame') gated = { kind: 'blame', ...base };
       }
     }
   }
@@ -456,6 +723,22 @@ export function parseResponse(input: ResponseParseInput): ResolvedSpan[] {
   // The directory search paths are relative to — the `git -C` target when
   // present, otherwise the shell cwd after any `cd`.
   const effectiveDir = gated.dir !== null ? resolvePath(currentDir, gated.dir) : currentDir;
+
+  // `git blame -L N,M file` resolves straight from the command text; the
+  // response's content is irrelevant to it.
+  if (gated.kind === 'blame') {
+    const m = matchBlameRange(gated.argv, gated.start);
+    if (m === null || hasShellExpansion(m.fileArg) || /[*?]/.test(m.fileArg)) return [];
+    return [{ lineStart: m.lineStart, lineEnd: m.lineEnd, absolutePath: resolvePath(effectiveDir, m.fileArg) }];
+  }
+
+  if (gated.kind === 'diff') {
+    // Diff paths resolve against the effective git dir; the repo itself is
+    // the permitted root — a traversal path normalizes outside it and is
+    // rejected by the same containment check.
+    return spansFor(decodeUnifiedDiff(stdout), effectiveDir, [effectiveDir]);
+  }
+
   const info = analyzeSearchArgv(gated.argv, gated.start);
 
   // Permitted roots: the command's explicit search roots, or the effective
@@ -488,14 +771,7 @@ export function parseResponse(input: ResponseParseInput): ResolvedSpan[] {
     }
   }
 
-  const spans: ResolvedSpan[] = [];
-  for (const [path, lines] of perFile) {
-    const abs = resolvePath(effectiveDir, path);
-    if (!insideRoot(abs, roots)) continue;
-    for (const [lineStart, lineEnd] of coalesce([...lines])) {
-      spans.push({ lineStart, lineEnd, absolutePath: abs });
-    }
-  }
+  const spans = spansFor(perFile, effectiveDir, roots);
 
   // Whole-file fallback: non-empty output with no parseable numbered record
   // and exactly one explicit file resolves to a whole-file read of it. The

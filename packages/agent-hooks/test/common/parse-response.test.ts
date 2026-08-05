@@ -3,10 +3,11 @@
  * plans/initial.md). Phase 1 declared `ResponseParseInput` and `parseResponse`
  * (plus the search/diff record types) as not-implemented stubs; this file
  * writes the contract's acceptance checks against those stubs so Phase 3's
- * implementation has a fixed target. Phase 3a has implemented command gating,
- * scope restriction, and the search-layout decoders and enabled those checks;
- * the diff/blame/hostile-output/truncated-flag/adapter-envelope checks remain
- * `it.skip` for their later phases.
+ * implementation has a fixed target. Phase 3a implemented command gating,
+ * scope restriction, and the search-layout decoders; Phase 3b the unified-diff
+ * decoder; Phase 3c the `git blame -L` command-text matcher — their checks are
+ * enabled. The hostile-output/truncated-flag/adapter-envelope checks remain
+ * `it.skip` for their later phases (3d/3e).
  *
  * The golden-matrix harness below builds the fixture store by executing the
  * REAL binaries — /usr/bin/rg (ripgrep 14.1.1), /usr/bin/grep (GNU grep
@@ -570,7 +571,7 @@ function normalizeEnvelope(envelope: unknown): Pick<ResponseParseInput, 'stdout'
 // Skipped acceptance checks
 // ---------------------------------------------------------------------------
 
-describe('parse-response (Phase 3a — search layouts active)', () => {
+describe('parse-response (Phase 3a–3c — search layouts, unified diffs, and blame active)', () => {
   let mainRepo: { root: string; cleanup: () => void } | undefined;
   let root: string;
   let fixtures: Map<string, GoldenFixture>;
@@ -720,7 +721,7 @@ describe('parse-response (Phase 3a — search layouts active)', () => {
   // -------------------------------------------------------------------------
 
   describe('unified-diff decode', () => {
-    it.skip('decodes diff --git / --- / +++ / @@ hunks into per-file read ranges', () => {
+    it('decodes diff --git / --- / +++ / @@ hunks into per-file read ranges', () => {
       // The same change through `git diff` and `git show --format=` must
       // decode to the same ranges.
       for (const name of ['git-diff-basic', 'git-show-diff']) {
@@ -729,35 +730,35 @@ describe('parse-response (Phase 3a — search layouts active)', () => {
       }
     });
 
-    it.skip('exit status is metadata only — a diff that exits 1 parses identically', () => {
+    it('exit status is metadata only — a diff that exits 1 parses identically', () => {
       const f = fixture('git-diff-basic');
       expect(sortedSpans(parseResponse({ command: f.command, cwd: f.cwd, stdout: f.stdout, exitStatus: 1 }))).toEqual(
         sortedSpans(resolveExpected(f))
       );
     });
 
-    it.skip('new files (/dev/null old side) and deletions (/dev/null new side) emit the live side only', () => {
+    it('new files (/dev/null old side) and deletions (/dev/null new side) emit the live side only', () => {
       const nf = fixture('git-diff-new');
       expect(sortedSpans(parseFixture(nf))).toEqual(sortedSpans(resolveExpected(nf)));
       const df = fixture('git-diff-delete');
       expect(sortedSpans(parseFixture(df))).toEqual(sortedSpans(resolveExpected(df)));
     });
 
-    it.skip('rename/copy: the new path is the touch target; hunks-less renames and copies emit nothing', () => {
+    it('rename/copy: the new path is the touch target; hunks-less renames and copies emit nothing', () => {
       const rf = fixture('git-diff-rename');
       expect(sortedSpans(parseFixture(rf))).toEqual(sortedSpans(resolveExpected(rf)));
       const cf = fixture('git-diff-copy');
       expect(sortedSpans(parseFixture(cf))).toEqual(sortedSpans(resolveExpected(cf)));
     });
 
-    it.skip('per-side hunk ranges (old a,b vs new c,d) merge into one span per file', () => {
+    it('per-side hunk ranges (old a,b vs new c,d) merge into one span per file', () => {
       const f = fixture('git-diff-per-side');
       // The hunk is `@@ -3,5 +3,7 @@`: the old side covers 3..7, the new
       // side 3..9 — the merged span must be the union 3..9.
       expect(sortedSpans(parseFixture(f))).toEqual(sortedSpans(resolveExpected(f)));
     });
 
-    it.skip('a cut-off @@ header drops its hunk', () => {
+    it('a cut-off @@ header drops its hunk', () => {
       // A cut-off `@@` header (missing the closing `@@`) is unparseable and
       // its hunk is ignored — only the first hunk's range survives.
       const d = fixture('git-diff-basic');
@@ -773,7 +774,7 @@ describe('parse-response (Phase 3a — search layouts active)', () => {
   // -------------------------------------------------------------------------
 
   describe('binary, combined, and submodule diffs', () => {
-    it.skip('binary markers, combined-diff (@@@) headers, and subproject lines produce no ranges', () => {
+    it('binary markers, combined-diff (@@@) headers, and subproject lines produce no ranges', () => {
       for (const name of ['git-diff-binary', 'git-diff-combined', 'git-diff-submodule']) {
         const f = fixture(name);
         // The outputs are real and non-empty — the decoder must actively
@@ -789,7 +790,7 @@ describe('parse-response (Phase 3a — search layouts active)', () => {
   // -------------------------------------------------------------------------
 
   describe('git blame -L command-text range', () => {
-    it.skip('recognizes an exact literal -L N,M range from the command text', () => {
+    it('recognizes an exact literal -L N,M range from the command text', () => {
       const f = fixture('git-blame-l-range');
       expect(sortedSpans(parseFixture(f))).toEqual(sortedSpans(resolveExpected(f)));
     });
