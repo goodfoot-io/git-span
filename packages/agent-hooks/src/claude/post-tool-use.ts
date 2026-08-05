@@ -45,7 +45,10 @@ function positiveIntField(toolInput: ToolInput, field: string): number | undefin
 }
 
 /** The Bash `tool_response` fields a response-aware parse contributes, before `command`/`cwd` are attached at the call site. */
-type NormalizedToolResponse = Pick<ResponseParseInput, 'stdout' | 'stderr' | 'exitStatus' | 'truncated'>;
+type NormalizedToolResponse = Pick<
+  ResponseParseInput,
+  'stdout' | 'stderr' | 'exitStatus' | 'truncated' | 'interrupted'
+>;
 
 /**
  * Normalize a Bash `tool_response` envelope into the shared parser's input
@@ -53,12 +56,14 @@ type NormalizedToolResponse = Pick<ResponseParseInput, 'stdout' | 'stderr' | 'ex
  * string (legacy `tool_result`); the deployed CLI's object
  * `{stdout, stderr, rawOutputPath?, interrupted, timedOutAfterMs?, …}`; the
  * older `{output, success, exitCode, filePath}` object; and a
- * `[{type:'text',text}]` content-block array. `rawOutputPath` set (the
- * inline stdout is only a preview), `interrupted`, or `timedOutAfterMs`
- * marks the response truncated — the parser fails closed on the flag and
- * parses nothing. Legacy `exitCode` becomes `exitStatus` (metadata only;
- * never a gate). Fail closed: any other shape yields `null` and the branch
- * degrades to today's command-only parsing.
+ * `[{type:'text',text}]` content-block array. Plan step 6's two regimes map
+ * one-to-one: `rawOutputPath` set (the inline stdout is only a preview)
+ * becomes `truncated: true` and the parser parses nothing; `interrupted` or
+ * `timedOutAfterMs` (the command was cut off mid-run) becomes
+ * `interrupted: true`, the complete-records regime — fully-terminated
+ * records parse and the incomplete tail drops. Legacy `exitCode` becomes
+ * `exitStatus` (metadata only; never a gate). Fail closed: any other shape
+ * yields `null` and the branch degrades to today's command-only parsing.
  */
 function normalizeToolResponse(toolResponse: unknown): NormalizedToolResponse | null {
   if (typeof toolResponse === 'string') return { stdout: toolResponse };
@@ -78,8 +83,8 @@ function normalizeToolResponse(toolResponse: unknown): NormalizedToolResponse | 
       return {
         stdout: record.stdout,
         stderr: typeof record.stderr === 'string' ? record.stderr : undefined,
-        truncated:
-          record.rawOutputPath !== undefined || record.interrupted === true || record.timedOutAfterMs !== undefined
+        truncated: record.rawOutputPath !== undefined,
+        interrupted: record.interrupted === true || record.timedOutAfterMs !== undefined
       };
     }
     if (typeof record.output === 'string') {

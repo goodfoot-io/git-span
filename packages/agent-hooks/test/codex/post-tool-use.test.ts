@@ -172,6 +172,17 @@ describe('classifyApplyPatchResponse', () => {
     expect(classifyApplyPatchResponse({})).toBe('unknown');
     expect(classifyApplyPatchResponse(null)).toBe('unknown');
   });
+  it('classifies every array shape as unknown, never as a confirmed rejection', () => {
+    // normalizeShellResponse accepts text-block arrays for the shell-parse
+    // evidence source, but the baseline extractResponseText returned null for
+    // arrays — so the apply_patch gate must treat them as unrecognized and
+    // proceed defensively (with a warning), even when the joined text carries
+    // the success header or is empty.
+    expect(classifyApplyPatchResponse([{ type: 'text', text: SUCCESS_RESPONSE }])).toBe('unknown');
+    expect(classifyApplyPatchResponse([{ type: 'text', text: FAILURE_RESPONSE }])).toBe('unknown');
+    expect(classifyApplyPatchResponse([])).toBe('unknown');
+    expect(classifyApplyPatchResponse([{ type: 'image', image: 'data:...' }])).toBe('unknown');
+  });
 });
 
 describe('shell envelope narrowing', () => {
@@ -260,6 +271,29 @@ describe('codex post-tool-use touch signal', () => {
       const { logger: capture, warnings } = warnCapturingLogger();
       const handler = createHandler(executors, inMemoryMemoFactory());
       await handler(postInput(repo.root, updateEnvelope(), { exitCode: 0 }) as never, { logger: capture } as never);
+
+      expect(calls.fix).toBe(1);
+      expect(warnings.some((m) => m.includes('unrecognized'))).toBe(true);
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it('runs the touch (and warns) for an array-shaped tool_response, even one whose text carries the success header', async () => {
+    const repo = makeTempRepo();
+    try {
+      const { executors, calls } = makeExecutors({ list: [porcelainRow()], drift: [driftRow('CHANGED')] });
+      const { logger: capture, warnings } = warnCapturingLogger();
+      const handler = createHandler(executors, inMemoryMemoFactory());
+      // An array is an unrecognized apply_patch shape (the baseline
+      // extractResponseText returned null for arrays), so it classifies
+      // 'unknown' and proceeds defensively — the joined success header must
+      // not be read as a confirmation, and its absence must not read as a
+      // rejection that suppresses the touch.
+      await handler(
+        postInput(repo.root, updateEnvelope(), [{ type: 'text', text: SUCCESS_RESPONSE }]) as never,
+        { logger: capture } as never
+      );
 
       expect(calls.fix).toBe(1);
       expect(warnings.some((m) => m.includes('unrecognized'))).toBe(true);
@@ -565,6 +599,41 @@ describe('codex post-tool-use touch signal', () => {
         // a touch, and the command itself has no command-derived idiom.
         expect(result).toBeUndefined();
         expect(calls.list).toBe(0);
+      } finally {
+        repo.cleanup();
+      }
+    });
+
+    it('an interrupted or timed-out object tool_response still parses the terminated records', async () => {
+      const repo = makeTempRepo();
+      try {
+        const filePath = writeModRs(repo.root);
+        // The complete-records regime (plan step 6): `interrupted` /
+        // `timedOutAfterMs` mean the command was cut off mid-run, not that
+        // the inline stdout is a preview — fully-terminated records must
+        // surface their spans. The adapter maps them to the `interrupted`
+        // field, which the parser's terminating-newline rule already handles.
+        const stdout = `${filePath}:50:alpha\n`;
+        for (const toolResponse of [
+          { stdout, stderr: '', interrupted: true },
+          { stdout, stderr: '', timedOutAfterMs: 60_000 }
+        ]) {
+          const { executors, calls } = makeExecutors({
+            list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
+            drift: [driftRow('CHANGED')]
+          });
+          const handler = createHandler(executors, inMemoryMemoFactory());
+          const input = {
+            ...postInput(repo.root, null),
+            tool_name: 'Bash',
+            tool_input: { command: `rg -n alpha ${filePath}` },
+            tool_response: toolResponse
+          };
+
+          const result = toResult(await handler(input as never, { logger } as never));
+          expect(calls.list, JSON.stringify(toolResponse)).toBe(1);
+          expect(result.stdout.hookSpecificOutput?.additionalContext, JSON.stringify(toolResponse)).toContain(SPAN);
+        }
       } finally {
         repo.cleanup();
       }

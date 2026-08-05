@@ -373,7 +373,7 @@ describe('claude post-tool-use touch signal', () => {
       expect(result.stdout.hookSpecificOutput?.additionalContext).toBeUndefined();
     });
 
-    it('a rawOutputPath-spilled, interrupted, or timed-out Bash response invents no touches', async () => {
+    it('a rawOutputPath spill fails closed, while interrupted or timed-out responses parse complete records', async () => {
       const filePath = writeModRs();
       const { executors, calls } = makeExecutors({
         list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
@@ -381,23 +381,40 @@ describe('claude post-tool-use touch signal', () => {
       });
       const handler = createHandler(executors, inMemoryMemoFactory());
       const stdout = `${filePath}:50:alpha\n`;
-      for (const toolResponse of [
-        { stdout, stderr: '', rawOutputPath: '/tmp/large.out', interrupted: false },
+
+      // Plan step 6's strict regime: `rawOutputPath` set means the inline
+      // stdout is only a preview — the parser fails closed and invents no
+      // touches.
+      const spillInput = postInput({
+        cwd: repo.root,
+        tool_name: 'Bash',
+        tool_input: { command: `rg -n alpha ${filePath}` },
+        tool_response: { stdout, stderr: '', rawOutputPath: '/tmp/large.out', interrupted: false }
+      });
+      const spillResult = toResult(await handler(spillInput as never, { logger }));
+      expect(calls.list).toBe(0);
+      expect(spillResult.stdout.hookSpecificOutput?.additionalContext).toBeUndefined();
+
+      // The complete-records regime: `interrupted`/`timedOutAfterMs` mean the
+      // command was cut off mid-run — the terminated records are fully
+      // observed and must surface their spans, not collapse into `truncated`.
+      // Each envelope gets its own session so the shared memo's surface
+      // dedupe cannot mask a missing output.
+      for (const [index, toolResponse] of [
         { stdout, stderr: '', interrupted: true },
         { stdout, stderr: '', timedOutAfterMs: 60_000 }
-      ]) {
+      ].entries()) {
+        const listBefore = calls.list;
         const input = postInput({
           cwd: repo.root,
+          session_id: `sess-two-regime-${index}`,
           tool_name: 'Bash',
           tool_input: { command: `rg -n alpha ${filePath}` },
           tool_response: toolResponse
         });
-
         const result = toResult(await handler(input as never, { logger }));
-        // The truncated flag fails closed: the preview is never parsed into
-        // a touch, and the command itself has no command-derived idiom.
-        expect(calls.list, JSON.stringify(toolResponse)).toBe(0);
-        expect(result.stdout.hookSpecificOutput?.additionalContext).toBeUndefined();
+        expect(calls.list - listBefore, JSON.stringify(toolResponse)).toBe(1);
+        expect(result.stdout.hookSpecificOutput?.additionalContext, JSON.stringify(toolResponse)).toContain(SPAN);
       }
     });
 

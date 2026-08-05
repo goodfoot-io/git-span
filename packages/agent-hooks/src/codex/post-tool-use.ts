@@ -189,7 +189,10 @@ export function narrowCodeModeExec(toolInput: unknown): CodeModeExecNarrow {
 }
 
 /** The shell `tool_response` fields a response-aware parse contributes, before `command`/`cwd` are attached at the call site. */
-type NormalizedShellResponse = Pick<ResponseParseInput, 'stdout' | 'stderr' | 'exitStatus' | 'truncated'>;
+type NormalizedShellResponse = Pick<
+  ResponseParseInput,
+  'stdout' | 'stderr' | 'exitStatus' | 'truncated' | 'interrupted'
+>;
 
 /**
  * Tolerantly normalize the tool's textual output and metadata out of a
@@ -197,10 +200,12 @@ type NormalizedShellResponse = Pick<ResponseParseInput, 'stdout' | 'stderr' | 'e
  * (today's Codex) is used as-is; a text-block array joins its blocks; an
  * object is probed for the first {@link RESPONSE_TEXT_FIELDS} entry that
  * holds a string, carrying along `stderr`, `exitCode`/`exitStatus`, and the
- * truncation markers (`rawOutputPath` set / `interrupted` /
- * `timedOutAfterMs`) when the envelope has them — the same normalization the
- * Claude adapter applies to its Bash envelope. Returns `null` when no text
- * can be recovered (unknown object shape, `null`, or a non-string/
+ * two-regime markers when the envelope has them — `rawOutputPath` set (the
+ * inline stdout is only a preview) becomes `truncated: true`; `interrupted`
+ * or `timedOutAfterMs` (the command was cut off mid-run) becomes
+ * `interrupted: true`, the complete-records regime — the same normalization
+ * the Claude adapter applies to its Bash envelope. Returns `null` when no
+ * text can be recovered (unknown object shape, `null`, or a non-string/
  * non-object), which the caller treats as an *unrecognized* — not *failed* —
  * response.
  */
@@ -230,8 +235,8 @@ function normalizeShellResponse(toolResponse: unknown): NormalizedShellResponse 
               : typeof record.exitStatus === 'number'
                 ? record.exitStatus
                 : undefined,
-          truncated:
-            record.rawOutputPath !== undefined || record.interrupted === true || record.timedOutAfterMs !== undefined
+          truncated: record.rawOutputPath !== undefined,
+          interrupted: record.interrupted === true || record.timedOutAfterMs !== undefined
         };
       }
     }
@@ -242,15 +247,27 @@ function normalizeShellResponse(toolResponse: unknown): NormalizedShellResponse 
 /**
  * Classify an `apply_patch` `tool_response` for the touch gate:
  *
- * - `'success'` — text was recovered and carries {@link APPLY_PATCH_SUCCESS_PREFIX}.
- * - `'failure'` — text was recovered but lacks the header: a genuine rejection
- *   or error. The ONLY classification that suppresses the touch.
- * - `'unknown'` — no text could be recovered (unrecognized shape). We proceed
- *   defensively here rather than risk missing a real edit's heal/surface; Codex
- *   core fires PostToolUse only on success, so this cannot heal/surface a patch
- *   that never applied.
+ * - `'success'` — text was recovered from a bare string or a text-field
+ *   object and carries {@link APPLY_PATCH_SUCCESS_PREFIX}.
+ * - `'failure'` — text was recovered from a bare string or a text-field
+ *   object but lacks the header: a genuine rejection or error. The ONLY
+ *   classification that suppresses the touch.
+ * - `'unknown'` — no text could be recovered (unrecognized shape), or the
+ *   response is a block/text array. We proceed defensively here rather than
+ *   risk missing a real edit's heal/surface; Codex core fires PostToolUse
+ *   only on success, so this cannot heal/surface a patch that never applied.
+ *
+ * The array check restores the pre-normalizer contract: the baseline
+ * `extractResponseText` returned `null` for every array shape (text-block,
+ * empty, non-text), so arrays classified `'unknown'` and proceeded with a
+ * warning. `normalizeShellResponse` deliberately widened to arrays for the
+ * shell-parse evidence source, so classification reads the raw envelope to
+ * keep the apply_patch gate behavior-identical — a joined array whose text
+ * merely lacks the success header must never be mistaken for a confirmed
+ * rejection.
  */
 export function classifyApplyPatchResponse(toolResponse: unknown): 'success' | 'failure' | 'unknown' {
+  if (Array.isArray(toolResponse)) return 'unknown';
   const normalized = normalizeShellResponse(toolResponse);
   if (normalized === null) return 'unknown';
   return normalized.stdout.startsWith(APPLY_PATCH_SUCCESS_PREFIX) ? 'success' : 'failure';
