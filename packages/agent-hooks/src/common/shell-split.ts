@@ -43,6 +43,48 @@ export interface SplitResult {
   malformed?: MalformedVerdict;
 }
 
+/** The construct kinds the kind-matched stack tracks (plan §3). */
+type ConstructKind = 'if' | 'loop' | 'for' | 'select' | 'brace';
+
+/** One open construct: its kind, and whether a body word has been seen. */
+interface OpenConstruct {
+  kind: ConstructKind;
+  /**
+   * Whether a body has started. For `if` the body starts at `then`/`else`/
+   * `elif`, for loops at `do`, for brace groups at any command word — a
+   * closer with no body (`if x; fi`, `{ }`) is a Bash parse error.
+   */
+  body: boolean;
+}
+
+/** The case region's position state (plan §3). */
+type CasePos = 'subject' | 'pattern-start' | 'pattern' | 'command';
+
+/** An open case region: opaque content owned by the case scan. */
+interface CaseRegion {
+  pos: CasePos;
+  /** In a `command` position: whether the current list item is still empty (only `)`, `;`, `&`, and newlines reset it). */
+  cmdEmpty: boolean;
+  /** The region's own paren depth — global paren depth is frozen while the region is open (the region is not a stack; it outlives paren closes). */
+  localDepth: number;
+}
+
+/** A pending heredoc whose body has not started yet (or whose body is being scanned). */
+interface PendingHeredoc {
+  /** The line that closes the body: the delimiter, optionally `\t`-prefixed for `<<-`, with optional trailing whitespace. */
+  close: RegExp;
+}
+
+/** The words that put the parser back at command start when they are the buffer's last word (plan §3). */
+const COMMAND_OPENER_WORDS = new Set(['do', 'then', 'else', 'elif', 'if', 'while', 'until', '!', 'time', '{', '(']);
+
+/** Word chars end at whitespace and the operator/paren/redirect metachars. */
+const WORD_END = /[\s;&|()<>]/;
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /**
  * Split a command string into simple-command substrings at top-level &&, ||,
  * ;, |, |&, &, and newline boundaries. Quotes and $()/``/() nesting are
@@ -50,6 +92,30 @@ export interface SplitResult {
  * opaque, pipe/and/or newlines are line continuations, and Bash parse errors
  * (plan §1) come back as a `malformed` verdict with the stage list truncated
  * at the rejecting list.
+ *
+ * Phase 2 (plan §3) adds three machines:
+ *
+ * - The kind-matched construct stack: `if`/`while`/`until`/`for`/`select`/
+ *   `{`/`}`/`function` open construct frames at command position, context
+ *   keywords (`do`, `then`, `else`, `elif`, `in`) and closers (`fi`, `done`,
+ *   `esac`, `}`) require a matching opener on top of the stack (with the
+ *   right body state), and while a construct is open at depth 0 the boundary
+ *   operators are text — the construct folds to one stage. Each `(` pushes a
+ *   fresh stack and each `)` fires 'unclosed-construct' when its level is
+ *   non-empty (fire-before-restore).
+ *
+ * - The case-region machine: `case` in command position opens a region closed
+ *   by a matching `esac`. The region's content is opaque — pattern `)`s and
+ *   `|`s are pattern syntax, not parens/pipes — with its own paren depth
+ *   (the global depth freezes while open), `;;`/`;&`/`;;&` returning to
+ *   pattern-start and `)`, `;`, `&`, and newlines to command start. A region
+ *   open at EOF is 'unclosed-case'.
+ *
+ * - The heredoc machinery: `<<`/`<<-` at depth 0 with a delimiter word strips
+ *   the operator+delimiter from the stage text and scans body lines raw until
+ *   the delimiter line; an unterminated heredoc is the 'unterminated-heredoc'
+ *   partial — the delimiter's line (and everything before it) analyzes
+ *   normally and the body produces no stages.
  */
 export function splitTopLevel(cmd: string): SplitResult {
   const parts: SimpleCommand[] = [];
@@ -113,6 +179,15 @@ export function splitTopLevel(cmd: string): SplitResult {
     return false;
   };
 
+  /**
+   * Whether a new command can start here: the buffer is empty, a boundary
+   * operator or `(`/`)` precedes, the buffer ends with a newline (a newline
+   * inside an open construct is text but still ends the list item), or the
+   * last word expects a command body (`then`, `do`, `{`, …).
+   */
+  const isCommandPosition = (): boolean =>
+    buf.trim() === '' || /\n$/.test(buf) || /[;&|()]$/.test(buf.trimEnd()) || COMMAND_OPENER_WORDS.has(lastWord());
+
   const flush = (nextOp: Operator) => {
     const s = buf.trim();
     if (s) {
@@ -127,6 +202,30 @@ export function splitTopLevel(cmd: string): SplitResult {
     buf = '';
     pendingOp = nextOp;
   };
+
+  // The kind-matched construct stack, one list per paren level: `(` pushes a
+  // fresh level, `)` pops it and fires when it is non-empty — an unclosed
+  // construct cannot outlive the subshell that closed (plan §3).
+  const levels: OpenConstruct[][] = [[]];
+  const top = (): OpenConstruct | undefined => {
+    const lv = levels[levels.length - 1];
+    return lv.length > 0 ? lv[lv.length - 1] : undefined;
+  };
+  /** Set by openers and body keywords, cleared by other words and `(` — an operator or closer directly after it is an empty-list parse error (`if true; then; fi`, `{ ; }`). */
+  let afterKeyword = false;
+  /** `function` seen; the next word is the function name, and `{` right after it opens the definition body. */
+  let functionSeen = false;
+  let nameSeen = false;
+
+  // The open case region, if any (plan §3). While open, its content is opaque
+  // to every other machine: the global paren depth is frozen, the construct
+  // stack is untouched, and boundary operators are text.
+  let caseRegion: CaseRegion | null = null;
+
+  // Pending heredocs (plan §3): `<<`/`<<-` at depth 0 with a delimiter word.
+  const heredocs: PendingHeredoc[] = [];
+  /** In the body of a pending heredoc — lines are scanned raw for the close line. */
+  let inBody = false;
 
   while (i < n) {
     const c = cmd[i];
@@ -174,24 +273,311 @@ export function splitTopLevel(cmd: string): SplitResult {
       i += 1;
       continue;
     }
+    // Heredoc body mode: scan lines raw until the first pending heredoc's
+    // close line (a line that is exactly the delimiter, optionally tab-
+    // prefixed for `<<-`, with optional trailing whitespace). The body is
+    // opaque — it produces no stages — and unterminated bodies end at EOF.
+    if (inBody) {
+      const lineEnd = cmd.indexOf('\n', i);
+      const line = lineEnd === -1 ? cmd.slice(i) : cmd.slice(i, lineEnd);
+      if (heredocs[0].close.test(line)) {
+        heredocs.shift();
+        if (heredocs.length === 0) inBody = false;
+        i = lineEnd === -1 ? n : lineEnd + 1;
+      } else {
+        i = lineEnd === -1 ? n : lineEnd + 1;
+      }
+      continue;
+    }
+    // The newline right after a heredoc's delimiter line ends the delimiter's
+    // line — it splits normally (a completed list, but without advancing
+    // `listStart`: a completeness violation that rejects later drops the
+    // delimiter's-line stage too) — and starts the body.
+    if (c === '\n' && heredocs.length > 0) {
+      if (isUnconsumedOperator() || lastWordIsDanglingRedirect()) {
+        reject('dangling-operator');
+        break;
+      }
+      flush('newline');
+      inBody = true;
+      i += 1;
+      continue;
+    }
+    // `#` begins a comment when it starts a word at depth 0 (empty buffer or
+    // preceded by whitespace); comments run to the newline, keeping the buffer
+    // empty for the continuation rule. Mid-word and quoted `#` are text, and
+    // comments inside parens are opaque like everything else there (plan §1).
+    if (c === '#' && depth === 0 && isWordStart()) {
+      while (i < n && cmd[i] !== '\n') i += 1;
+      continue;
+    }
+    // The case-region scan owns everything at its local depth 0 — pattern
+    // syntax, list terminators, and words — while the region is open.
+    if (caseRegion) {
+      const r = caseRegion;
+      if (r.localDepth === 0) {
+        const s2 = cmd.slice(i, i + 2);
+        const s3 = cmd.slice(i, i + 3);
+        // `;;`/`;&`/`;;&` end the current pattern list — back to pattern-start.
+        if (s3 === ';;&' || s2 === ';;' || s2 === ';&') {
+          r.pos = 'pattern-start';
+          buf += s3 === ';;&' ? s3 : s2;
+          i += s3 === ';;&' ? 3 : 2;
+          continue;
+        }
+        // `;` returns to command start (a `;;` was handled above).
+        if (c === ';') {
+          r.pos = 'command';
+          r.cmdEmpty = true;
+          buf += c;
+          i += 1;
+          continue;
+        }
+        // A single `&` (not part of a redirect or `&&`) is the background
+        // operator — also command start.
+        const last = buf[buf.length - 1];
+        if (c === '&' && cmd[i + 1] !== '>' && cmd[i + 1] !== '&' && last !== '>' && last !== '<') {
+          r.pos = 'command';
+          r.cmdEmpty = true;
+          buf += c;
+          i += 1;
+          continue;
+        }
+        if (c === '\n') {
+          // A pattern cannot continue across a newline (bash errors), but a
+          // newline after `in` or inside a list item is fine.
+          if (r.pos === 'pattern') {
+            reject('unclosed-case');
+            break;
+          }
+          if (r.pos === 'command') r.cmdEmpty = true;
+          buf += c;
+          i += 1;
+          continue;
+        }
+        if (c === '#' && isWordStart()) {
+          // A comment inside the region runs to the newline like outside.
+          while (i < n && cmd[i] !== '\n') i += 1;
+          continue;
+        }
+        if (isWordStart() && !WORD_END.test(c)) {
+          let j = i;
+          while (j < n && !WORD_END.test(cmd[j])) j += 1;
+          const w = cmd.slice(i, j);
+          // `esac` closes at a pattern-list start or at the start of a list
+          // item; elsewhere it is an ordinary word (`echo esac`, `a|esac)`),
+          // as is `case` in the subject (`case esac in …`).
+          if (w === 'esac' && (r.pos === 'pattern-start' || (r.pos === 'command' && r.cmdEmpty))) {
+            caseRegion = null;
+            afterKeyword = false;
+          } else if (w === 'in' && r.pos === 'subject') {
+            r.pos = 'pattern-start';
+          } else if (r.pos === 'pattern-start') {
+            r.pos = 'pattern';
+          } else if (r.pos === 'command') {
+            r.cmdEmpty = false;
+          }
+          buf += w;
+          i = j;
+          continue;
+        }
+      }
+      // Local depth > 0 or non-word chars fall through to the paren branches
+      // and the generic buffer.
+    }
     if (c === '(') {
-      depth += 1;
+      if (caseRegion) {
+        caseRegion.localDepth += 1;
+      } else {
+        // A subshell starts a command — `if true; then ( echo hi ); fi` is
+        // valid while `if true; then; fi` is not; the same subshell counts as
+        // a body word for an enclosing brace group (`{ ( echo hi ); }`).
+        const t = top();
+        if (t?.kind === 'brace') t.body = true;
+        depth += 1;
+        levels.push([]);
+      }
+      afterKeyword = false;
       buf += c;
       i += 1;
       continue;
     }
     if (c === ')') {
-      // A stray `)` at depth 0 (and brace depth 0, outside quotes) is a parse
-      // error — `echo x) && …` (plan §1). `)` inside quotes, `${…}`, and
-      // heredoc bodies never reaches this branch.
-      if (depth === 0) {
-        reject('unbalanced-paren');
-        break;
+      if (caseRegion) {
+        // At local depth 0 a `)` is the pattern terminator (or the end of a
+        // list item) — the region owns it and the global depth stays frozen.
+        if (caseRegion.localDepth === 0) {
+          caseRegion.pos = 'command';
+          caseRegion.cmdEmpty = true;
+        } else {
+          caseRegion.localDepth -= 1;
+        }
+      } else {
+        // A stray `)` at depth 0 (and brace depth 0, outside quotes) is a parse
+        // error — `echo x) && …` (plan §1). `)` inside quotes, `${…}`, and
+        // heredoc bodies never reaches this branch.
+        if (depth === 0) {
+          reject('unbalanced-paren');
+          break;
+        }
+        // Fire-before-restore: an unclosed construct on the closing level
+        // cannot outlive the subshell (plan §3).
+        if (levels[levels.length - 1].length > 0) {
+          reject('unclosed-construct');
+          break;
+        }
+        depth -= 1;
+        levels.pop();
       }
-      depth -= 1;
       buf += c;
       i += 1;
       continue;
+    }
+    // Construct keywords and the case-region opener: recognized at word
+    // starts at any paren depth (constructs track through subshells), outside
+    // quotes, ${…}, heredoc bodies, and open case regions (the region scan
+    // above owns those words). Word-end chars (`;`, `&`, `|`, `<`, `>`)
+    // never begin a word here.
+    if (
+      !caseRegion &&
+      !WORD_END.test(c) &&
+      (isWordStart() || /[()]$/.test(buf)) &&
+      !(c === '$' && cmd[i + 1] === '{')
+    ) {
+      let j = i;
+      while (j < n && !WORD_END.test(cmd[j])) j += 1;
+      const w = cmd.slice(i, j);
+      const isFnShape = (): boolean => /^[A-Za-z_][A-Za-z0-9_]*\(\)$/.test(lastWord()) || lastWord() === '()';
+      if (w === 'in' && top() !== undefined && ['for', 'select'].includes(top()!.kind)) {
+        // The for/select word-list separator — recognized wherever it appears
+        // while a for/select is open (`for i in a b`, `select x in a`).
+      } else if (w === '{' && (isCommandPosition() || isFnShape() || (functionSeen && nameSeen))) {
+        // `{` opens a brace group at command position, or right after a
+        // function name (`f() {`, `f(){`, `function f {`). `{cat` is a word.
+        if (functionSeen && nameSeen) {
+          functionSeen = false;
+          nameSeen = false;
+        }
+        if (top()?.kind === 'brace') top()!.body = true;
+        levels[levels.length - 1].push({ kind: 'brace', body: false });
+        afterKeyword = true;
+      } else if (w === '}' && isCommandPosition()) {
+        const t = top();
+        if (afterKeyword || t === undefined || t.kind !== 'brace' || !t.body) {
+          reject('unclosed-construct');
+          break;
+        }
+        levels[levels.length - 1].pop();
+        afterKeyword = false;
+      } else if (isCommandPosition()) {
+        if (w === 'case') {
+          caseRegion = { pos: 'subject', cmdEmpty: false, localDepth: 0 };
+          afterKeyword = false;
+        } else if (w === 'function') {
+          functionSeen = true;
+          nameSeen = false;
+          afterKeyword = false;
+        } else if (w === 'if') {
+          if (top()?.kind === 'brace') top()!.body = true;
+          levels[levels.length - 1].push({ kind: 'if', body: false });
+          afterKeyword = true;
+        } else if (w === 'while' || w === 'until') {
+          if (top()?.kind === 'brace') top()!.body = true;
+          levels[levels.length - 1].push({ kind: 'loop', body: false });
+          afterKeyword = true;
+        } else if (w === 'for') {
+          if (top()?.kind === 'brace') top()!.body = true;
+          levels[levels.length - 1].push({ kind: 'for', body: false });
+          afterKeyword = true;
+        } else if (w === 'select') {
+          if (top()?.kind === 'brace') top()!.body = true;
+          levels[levels.length - 1].push({ kind: 'select', body: false });
+          afterKeyword = true;
+        } else if (w === 'do') {
+          const t = top();
+          if (t === undefined || !['for', 'loop', 'select'].includes(t.kind)) {
+            reject('unclosed-construct');
+            break;
+          }
+          t.body = true;
+          afterKeyword = true;
+        } else if (w === 'then') {
+          const t = top();
+          if (t === undefined || t.kind !== 'if') {
+            reject('unclosed-construct');
+            break;
+          }
+          t.body = true;
+          afterKeyword = true;
+        } else if (w === 'else' || w === 'elif') {
+          // else/elif require a body already — an empty if-list is an error.
+          const t = top();
+          if (t === undefined || t.kind !== 'if' || !t.body) {
+            reject('unclosed-construct');
+            break;
+          }
+          afterKeyword = true;
+        } else if (w === 'in') {
+          const t = top();
+          if (t === undefined || !['for', 'select'].includes(t.kind)) {
+            reject('unclosed-construct');
+            break;
+          }
+        } else if (w === 'fi') {
+          const t = top();
+          if (t === undefined || t.kind !== 'if' || !t.body) {
+            reject('unclosed-construct');
+            break;
+          }
+          levels[levels.length - 1].pop();
+          afterKeyword = false;
+        } else if (w === 'done') {
+          const t = top();
+          if (t === undefined || !['for', 'loop', 'select'].includes(t.kind) || !t.body) {
+            reject('unclosed-construct');
+            break;
+          }
+          levels[levels.length - 1].pop();
+          afterKeyword = false;
+        } else if (w === 'esac') {
+          // No open region — a stray esac is a parse error.
+          reject('unclosed-construct');
+          break;
+        } else {
+          afterKeyword = false;
+          if (top()?.kind === 'brace') top()!.body = true;
+          if (functionSeen) {
+            if (nameSeen) {
+              functionSeen = false;
+              nameSeen = false;
+            } else {
+              nameSeen = true;
+            }
+          }
+        }
+      } else {
+        // An argument-position word: nothing opens, the empty-body flag
+        // clears, and the function-name handoff advances.
+        afterKeyword = false;
+        if (functionSeen) {
+          if (nameSeen) {
+            functionSeen = false;
+            nameSeen = false;
+          } else {
+            nameSeen = true;
+          }
+        }
+      }
+      buf += w;
+      i = j;
+      continue;
+    }
+    // A `;`/`&` directly after an opener or body keyword is an empty-list
+    // parse error at any depth (`if true; then; fi`, `{ ; }`,
+    // `for i in a b; do; done`, `( if true; then; fi )`).
+    if (caseRegion === null && levels[levels.length - 1].length > 0 && (c === ';' || c === '&') && afterKeyword) {
+      reject('unclosed-construct');
+      break;
     }
     if (depth === 0) {
       // A redirect token with no target word, immediately followed by another
@@ -207,92 +593,123 @@ export function splitTopLevel(cmd: string): SplitResult {
         i += 1;
         continue;
       }
-      // `#` begins a comment when it starts a word (empty buffer or preceded
-      // by whitespace); comments run to the newline, keeping the buffer empty
-      // for the continuation rule. Mid-word and quoted `#` are text (plan §1).
-      if (c === '#' && isWordStart()) {
-        while (i < n && cmd[i] !== '\n') i += 1;
-        continue;
-      }
-      if (cmd.slice(i, i + 2) === '&&') {
-        if (isUnconsumedOperator() || lastWordIsDanglingRedirect()) {
-          reject('dangling-operator');
-          break;
+      // Heredoc recognition (plan §3): `<<`/`<<-` (not `<<<`) at depth 0 with
+      // a delimiter word. The operator+delimiter are stripped from the stage
+      // text — the stage keeps a plain argv (`cat f` stays `cat f`).
+      if (c === '<' && cmd[i + 1] === '<' && cmd[i + 2] !== '<') {
+        let j = i + 2;
+        let allowTabs = false;
+        if (cmd[j] === '-') {
+          allowTabs = true;
+          j += 1;
         }
-        flush('and');
-        i += 2;
-        continue;
-      }
-      if (cmd.slice(i, i + 2) === '||') {
-        if (isUnconsumedOperator() || lastWordIsDanglingRedirect()) {
-          reject('dangling-operator');
-          break;
+        while (cmd[j] === ' ' || cmd[j] === '\t') j += 1;
+        let delim = '';
+        if (cmd[j] === "'" || cmd[j] === '"') {
+          const q = cmd.indexOf(cmd[j], j + 1);
+          if (q === -1) {
+            delim = cmd.slice(j + 1);
+            j = n;
+          } else {
+            delim = cmd.slice(j + 1, q);
+            j = q + 1;
+          }
+        } else {
+          const wordStart = j;
+          while (j < n && !WORD_END.test(cmd[j])) j += 1;
+          delim = cmd.slice(wordStart, j);
         }
-        flush('or');
-        i += 2;
-        continue;
-      }
-      if (cmd.slice(i, i + 2) === '|&') {
-        if (isUnconsumedOperator() || lastWordIsDanglingRedirect()) {
-          reject('dangling-operator');
-          break;
-        }
-        flush('pipe');
-        i += 2;
-        continue;
-      }
-      if (c === ';') {
-        if (isUnconsumedOperator() || lastWordIsDanglingRedirect()) {
-          reject('dangling-operator');
-          break;
-        }
-        flush('semicolon');
-        i += 1;
-        continue;
-      }
-      if (c === '|') {
-        if (isUnconsumedOperator() || lastWordIsDanglingRedirect()) {
-          reject('dangling-operator');
-          break;
-        }
-        flush('pipe');
-        i += 1;
-        continue;
-      }
-      if (c === '\n') {
-        // A newline is a line continuation — not a statement separator — when
-        // a pipe/and/or operator is pending with a whitespace-only buffer
-        // since it (`cat a.txt |\nsed ...`, `false &&\nsed ...`). `cat f | head -1\ncat g`
-        // is therefore two lists, and a redirect target never continues onto
-        // a later line (plan §1).
-        if (isUnconsumedOperator()) {
-          i += 1;
+        if (delim !== '') {
+          heredocs.push({
+            close: new RegExp(`^${allowTabs ? '\t*' : ''}${escapeRegExp(delim)}[ \\t]*$`)
+          });
+          i = j;
           continue;
         }
-        if (lastWordIsDanglingRedirect()) {
-          reject('dangling-operator');
-          break;
-        }
-        flush('newline');
-        listStart = parts.length;
-        i += 1;
-        continue;
       }
-      if (c === '&') {
-        // A bare `&` is a background operator only when it is not part of a
-        // redirect token: the next character is `>` (`&>`/`&>>`), or the
-        // buffer's last character is `>` or `<` (`2>&1`, `>& file`, `3<&0`).
-        // Splitting inside those tokens would produce junk stages.
-        const next = cmd[i + 1];
-        const last = buf[buf.length - 1];
-        if (next !== '>' && last !== '>' && last !== '<') {
+      // While a construct is open at depth 0 the boundary operators are text —
+      // the construct is one stage.
+      if (caseRegion === null && levels[levels.length - 1].length === 0) {
+        if (cmd.slice(i, i + 2) === '&&') {
           if (isUnconsumedOperator() || lastWordIsDanglingRedirect()) {
             reject('dangling-operator');
             break;
           }
-          flush('background');
+          flush('and');
+          i += 2;
+          continue;
+        }
+        if (cmd.slice(i, i + 2) === '||') {
+          if (isUnconsumedOperator() || lastWordIsDanglingRedirect()) {
+            reject('dangling-operator');
+            break;
+          }
+          flush('or');
+          i += 2;
+          continue;
+        }
+        if (cmd.slice(i, i + 2) === '|&') {
+          if (isUnconsumedOperator() || lastWordIsDanglingRedirect()) {
+            reject('dangling-operator');
+            break;
+          }
+          flush('pipe');
+          i += 2;
+          continue;
+        }
+        if (c === ';') {
+          if (isUnconsumedOperator() || lastWordIsDanglingRedirect()) {
+            reject('dangling-operator');
+            break;
+          }
+          flush('semicolon');
           i += 1;
           continue;
+        }
+        if (c === '|') {
+          if (isUnconsumedOperator() || lastWordIsDanglingRedirect()) {
+            reject('dangling-operator');
+            break;
+          }
+          flush('pipe');
+          i += 1;
+          continue;
+        }
+        if (c === '\n') {
+          // A newline is a line continuation — not a statement separator — when
+          // a pipe/and/or operator is pending with a whitespace-only buffer
+          // since it (`cat a.txt |\nsed ...`, `false &&\nsed ...`). `cat f | head -1\ncat g`
+          // is therefore two lists, and a redirect target never continues onto
+          // a later line (plan §1).
+          if (isUnconsumedOperator()) {
+            i += 1;
+            continue;
+          }
+          if (lastWordIsDanglingRedirect()) {
+            reject('dangling-operator');
+            break;
+          }
+          flush('newline');
+          listStart = parts.length;
+          i += 1;
+          continue;
+        }
+        if (c === '&') {
+          // A bare `&` is a background operator only when it is not part of a
+          // redirect token: the next character is `>` (`&>`/`&>>`), or the
+          // buffer's last character is `>` or `<` (`2>&1`, `>& file`, `3<&0`).
+          // Splitting inside those tokens would produce junk stages.
+          const next = cmd[i + 1];
+          const last = buf[buf.length - 1];
+          if (next !== '>' && last !== '>' && last !== '<') {
+            if (isUnconsumedOperator() || lastWordIsDanglingRedirect()) {
+              reject('dangling-operator');
+              break;
+            }
+            flush('background');
+            i += 1;
+            continue;
+          }
         }
       }
     }
@@ -300,19 +717,30 @@ export function splitTopLevel(cmd: string): SplitResult {
     i += 1;
   }
 
-  // End of input: the EOF-state verdicts — an unclosed quote, brace, or paren
-  // level — then the unconsumed-operator checks, then the final flush. A
-  // verdict set mid-scan already dropped the rejecting list and ended the
-  // loop, so `parts` is exactly the completed earlier lists here.
+  // End of input: the EOF-state verdicts — an unclosed quote, brace, case
+  // region, paren level, or construct — then the unconsumed-operator checks,
+  // then the unterminated-heredoc partial, then the final flush. A verdict
+  // set mid-scan already dropped the rejecting list and ended the loop, so
+  // `parts` is exactly the completed earlier lists here.
   if (malformed) return { stages: parts, malformed };
   if (inSquote || inDquote) {
     reject('unclosed-quote');
   } else if (braceDepth > 0) {
     reject('unclosed-brace');
+  } else if (caseRegion !== null) {
+    reject('unclosed-case');
   } else if (depth > 0) {
     reject('unbalanced-paren');
+  } else if (levels[levels.length - 1].length > 0) {
+    reject('unclosed-construct');
   } else if (isUnconsumedOperator() || lastWordIsDanglingRedirect()) {
     reject('dangling-operator');
+  } else if (inBody || heredocs.length > 0) {
+    // Unterminated heredoc — bash warns, runs the delimiter's line, and
+    // treats the tail as body: the partial. The delimiter's-line stage(s)
+    // analyze as-is; the body produces no stages (plan §3).
+    flush('newline');
+    malformed = 'unterminated-heredoc';
   } else {
     flush('newline');
   }

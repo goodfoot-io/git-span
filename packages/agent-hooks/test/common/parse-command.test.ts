@@ -346,18 +346,20 @@ describe('multiple statements in one command', () => {
 // Phase 2 — execution-aware walk contract.
 //
 // Every fixture bullet of plans/execution-aware-walk.md's Phase 2 section,
-// transcribed as skipped checks (one `describe.skip` group per concern, so
-// Phase 3 can unskip one at a time). The commands below use the plan's arrow
-// form — command → expected touches — with the plan's parenthetical
-// annotations as row notes. `[]` means no touches; `1–2` means a line range;
-// "whole-file" means a whole-file touch; `+`-separated entries mean multiple
-// touches in order. Descriptors are canonicalized against the fixture cwd
-// (files resolve to absolute paths, whole-file 1..TOTAL collapses to
-// `{ file }`) before comparison with the walk's `SpanMatch[]` output.
+// transcribed as checks (one `describe.skip` group per concern, so each
+// concern can be unskipped once its machinery lands). The commands below use
+// the plan's arrow form — command → expected touches — with the plan's
+// parenthetical annotations as row notes. `[]` means no touches; `1–2` means
+// a line range; "whole-file" means a whole-file touch; `+`-separated entries
+// mean multiple touches in order. Descriptors are canonicalized against the
+// fixture cwd (files resolve to absolute paths, whole-file 1..TOTAL collapses
+// to `{ file }`) before comparison with the walk's `SpanMatch[]` output.
 //
-// NOTHING here is implemented yet: the walk (`analyzeExecution`), the
-// wrapper/variable/heredoc surfaces, and the workdir threading land in
-// Phase 3. The tests are written against the final behavior and stay skipped.
+// The Phase 2 splitter machinery (plan §3) is implemented: the kind-matched
+// construct stack, the case-region machine, and the heredoc machinery in
+// shell-split.ts decide sections 2, 3, 4, and 15, so their rows run. Still
+// skipped: the walk (`analyzeExecution`), the wrapper/variable surfaces, and
+// the workdir threading land in later dispatches.
 // ---------------------------------------------------------------------------
 
 type ExpectedTouch = { file: string; lo?: number; hi?: number } | { write: string } | { unresolved: string };
@@ -507,22 +509,27 @@ describe('execution-aware walk — Phase 2 contract', () => {
       ["echo 'oops\ncat f", [], undefined, 'the open quote carries both lines into one list']
     ];
 
-    // Still skipped: these rows' expectations are determined by the heredoc
-    // machinery, the case-region machine, the construct machine, or
-    // analyzeExecution (later dispatches).
+    // Still skipped: this row's expectation is determined by analyzeExecution
+    // (the opaque-gate bar on the `&&` chain, not the splitter verdict).
     const SKIPPED_ROWS: FixtureRow[] = [
+      [
+        "cat f <<EOF && sed -n '1,2p' g",
+        [whole('f')],
+        undefined,
+        "sed gates on cat's unknown status — the opaque-gate bar, not the verdict"
+      ]
+    ];
+
+    // These rows are decided by the heredoc machinery, the case-region
+    // machine, the construct machine, and the list-scope verdict semantics —
+    // all Phase 2 splitter machinery (plan §3).
+    const SPLITTER_ROWS: FixtureRow[] = [
       ['cat f <<EOF\nbody', [whole('f')], undefined, 'unterminated heredoc: bash warns, cat runs, the tail is body'],
       [
         "cat f <<EOF; sed -n '1,2p' g",
         [whole('f'), range('g', 1, 2)],
         undefined,
         "the delimiter's line splits normally — bash warns and runs both"
-      ],
-      [
-        "cat f <<EOF && sed -n '1,2p' g",
-        [whole('f')],
-        undefined,
-        "sed gates on cat's unknown status — the opaque-gate bar, not the verdict"
       ],
       [
         "cat f <<EOF\ncat g\nEOF\nsed -n '1,2p' h",
@@ -555,12 +562,16 @@ describe('execution-aware walk — Phase 2 contract', () => {
       expectTouches(cmd, expected, opts);
     });
 
+    it.each<FixtureRow>(SPLITTER_ROWS)('%s', (cmd, expected, opts) => {
+      expectTouches(cmd, expected, opts);
+    });
+
     it.skip.each<FixtureRow>(SKIPPED_ROWS)('%s', (cmd, expected, opts) => {
       expectTouches(cmd, expected, opts);
     });
   });
 
-  describe.skip('3. malformed — delimiter-line completeness and construct balance', () => {
+  describe('3. malformed — delimiter-line completeness and construct balance', () => {
     const ROWS: FixtureRow[] = [
       [
         'cat f <<EOF; case $x in a) echo hi',
@@ -659,14 +670,21 @@ describe('execution-aware walk — Phase 2 contract', () => {
     });
   });
 
-  describe.skip('4. malformed — case regions (every valid shape probe-pinned)', () => {
-    const ROWS: FixtureRow[] = [
+  describe('4. malformed — case regions (every valid shape probe-pinned)', () => {
+    // Still skipped: these rows' expectations are determined by
+    // analyzeExecution — the executed-assignment table and the opaque-gate
+    // bar on the `&&` chain (later dispatches).
+    const SKIPPED_ROWS: FixtureRow[] = [
       [
         "x=a; case $x in a) cat f;; esac; sed -n '1,2p' g",
         [whole('f'), range('g', 1, 2)],
         undefined,
         'the subject $x resolves to a from the executed-assignment table and the pattern is fully literal — the decidable-control rule attributes the matched branch'
       ],
+      ["case $x in a) sed -n '1,2p' g;; esac && cat f", [], undefined, 'opaque case stage gates the tail']
+    ];
+
+    const ROWS: FixtureRow[] = [
       [
         'case $x in a|b) cat f;; esac',
         [],
@@ -710,7 +728,6 @@ describe('execution-aware walk — Phase 2 contract', () => {
         undefined,
         "one cat-argv stage — the region's sed is an argument, never matches"
       ],
-      ["case $x in a) sed -n '1,2p' g;; esac && cat f", [], undefined, 'opaque case stage gates the tail'],
       ['case $x in a) cat f', [], undefined, 'unclosed region — exit 2'],
       ['case $x in a) cat f <<EOF\nbody', [], undefined, 'the esac is swallowed by the unterminated heredoc body'],
       ['echo $(case $x in a) cat f;; esac)', [], undefined, 'one opaque echo stage'],
@@ -718,6 +735,10 @@ describe('execution-aware walk — Phase 2 contract', () => {
     ];
 
     it.each<FixtureRow>(ROWS)('%s', (cmd, expected, opts) => {
+      expectTouches(cmd, expected, opts);
+    });
+
+    it.skip.each<FixtureRow>(SKIPPED_ROWS)('%s', (cmd, expected, opts) => {
       expectTouches(cmd, expected, opts);
     });
   });
@@ -1556,8 +1577,10 @@ describe('execution-aware walk — Phase 2 contract', () => {
     });
   });
 
-  describe.skip('15. heredocs', () => {
-    const ROWS: FixtureRow[] = [
+  describe('15. heredocs', () => {
+    // Still skipped: these rows' expectations are determined by
+    // analyzeExecution — the gated write/stage never runs (later dispatches).
+    const SKIPPED_ROWS: FixtureRow[] = [
       ['false && cat > f <<EOF', [], undefined, 'the gated write never runs'],
       [
         "cat > f <<EOF && sed -n '1,2p' g",
@@ -1565,6 +1588,10 @@ describe('execution-aware walk — Phase 2 contract', () => {
         undefined,
         'write yes, sed suppressed (write masking unchanged)'
       ],
+      ['false && cat f <<EOF\nbody', [], undefined, 'gated heredoc stage']
+    ];
+
+    const ROWS: FixtureRow[] = [
       ['cat > f <<EOF\nbody\nEOF', [writeTo('f')], undefined, 'whole-body write; the closing line is a separator'],
       ['cat >> f <<EOF\nbody\nEOF', [writeTo('f')], undefined, 'append — no truncate'],
       [
@@ -1580,7 +1607,6 @@ describe('execution-aware walk — Phase 2 contract', () => {
         'body text never becomes stages — no g touch (today the body splits and cat g is a phantom)'
       ],
       ['cat f <<EOF\nbody', [whole('f')], undefined, 'unterminated — bash warns and runs cat; the tail is body'],
-      ['false && cat f <<EOF\nbody', [], undefined, 'gated heredoc stage'],
       [
         'cat f <<EOF # note\nbody\nEOF',
         [whole('f')],
@@ -1590,6 +1616,10 @@ describe('execution-aware walk — Phase 2 contract', () => {
     ];
 
     it.each<FixtureRow>(ROWS)('%s', (cmd, expected, opts) => {
+      expectTouches(cmd, expected, opts);
+    });
+
+    it.skip.each<FixtureRow>(SKIPPED_ROWS)('%s', (cmd, expected, opts) => {
       expectTouches(cmd, expected, opts);
     });
   });
