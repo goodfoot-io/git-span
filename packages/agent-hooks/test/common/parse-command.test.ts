@@ -80,6 +80,9 @@ const PATCH_DELETED_DIFF = [
 /** `diff -u`-format deletion — no `deleted file mode` header, `+++ /dev/null` only → `delete`. */
 const PATCH_DEVNULL_DIFF = ['--- a/gone.txt', '+++ /dev/null', '@@ -1,2 +0,0 @@', '-g1', '-g2'].join('\n');
 
+/** `diff -u`-format creation — no `new file mode` header, `--- /dev/null` only → `create-overwrite`. */
+const PATCH_DIFFU_NEW_DIFF = ['--- /dev/null', '+++ nf.txt', '@@ -0,0 +1 @@', '+n1'].join('\n');
+
 /** `diff -u`-format headers carrying the tab-separated timestamp column (the `--- f.txt\t<ts>` shape). */
 const PATCH_TAB_TS_DIFF = [
   '--- notes.txt\t2024-01-01 00:00:00.000000000 +0000',
@@ -1218,6 +1221,13 @@ describe('patch and git apply (§5.7)', () => {
     const cmd = `git apply <<'EOF'\n${PATCH_DEVNULL_DIFF}\nEOF\n`;
     expect(parseCommand(cmd, dir)).toEqual([
       { operation: 'delete', absolutePath: join(dir, 'gone.txt'), simpleCommandIndex: 0 }
+    ]);
+  });
+
+  it('a --- /dev/null-only creation (diff -u style, no new file mode header) resolves create-overwrite', () => {
+    const cmd = `git apply <<'EOF'\n${PATCH_DIFFU_NEW_DIFF}\nEOF\n`;
+    expect(parseCommand(cmd, dir)).toEqual([
+      { operation: 'create-overwrite', absolutePath: join(dir, 'nf.txt'), simpleCommandIndex: 0 }
     ]);
   });
 

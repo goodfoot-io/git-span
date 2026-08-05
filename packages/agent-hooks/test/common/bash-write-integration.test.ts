@@ -643,6 +643,26 @@ describe('bash-write-integration — in-place editors (sed -i, patch, git apply)
     expect(res.fixPaths).toEqual(['keep.txt']);
     expect(readRel(r.root, 'keep.txt')).toBe('k1\nk2!\nk3\n');
   });
+
+  it('diff -u new-file shape (--- /dev/null, no new file mode header): patch -p0 creates the file and fires a create-overwrite touch', async () => {
+    const r = repo();
+    writeRel(r.root, 'nf.diff', '--- /dev/null\n+++ nf.txt\n@@ -0,0 +1 @@\n+content\n');
+    expect(bashRun('patch -p0 < nf.diff', r.root)).toBe(0);
+    const res = await runPipeline('patch -p0 < nf.diff', r.root);
+    expect(parsedOps(res.matches, r.root)).toEqual([{ op: 'create-overwrite', rel: 'nf.txt' }]);
+    expect(res.fixPaths).toEqual(['nf.txt']);
+    expect(readRel(r.root, 'nf.txt')).toBe('content\n');
+  });
+
+  it('diff -u new-file shape (--- /dev/null, no new file mode header): git apply creates the file and fires a create-overwrite touch', async () => {
+    const r = repo();
+    writeRel(r.root, 'nf.diff', '--- /dev/null\n+++ nf.txt\n@@ -0,0 +1 @@\n+content\n');
+    expect(bashRun('git apply nf.diff', r.root)).toBe(0);
+    const res = await runPipeline('git apply nf.diff', r.root);
+    expect(parsedOps(res.matches, r.root)).toEqual([{ op: 'create-overwrite', rel: 'nf.txt' }]);
+    expect(res.fixPaths).toEqual(['nf.txt']);
+    expect(readRel(r.root, 'nf.txt')).toBe('content\n');
+  });
 });
 
 describe('bash-write-integration — restore/checkout pathspecs', () => {
@@ -1074,6 +1094,29 @@ describe('bash-write-integration — negative and failure cases (plan §Verifica
     const res = await runPipeline('git apply bad.diff; echo done', r.root, { exitCode: 0 });
     expect(res.fixPaths).toEqual(['keep.txt']);
     expect(readRel(r.root, 'keep.txt')).toBe('k1\nk2\n');
+  });
+
+  it('pinned residue: a non-zero exit code suppresses even a wrote-then-failed patch (hunk 1 applied, hunk 2 failed)', async () => {
+    const r = repo();
+    seedTrackedSpan(r.root, 'partial.txt', 'one\ntwo\nthree\nfour\n', 'wrote-nonzero-span');
+    // Hunk 1 applies (two → two!), hunk 2's context ('WRONG') matches
+    // nothing: GNU patch leaves the applied hunk written, saves rejects to
+    // partial.txt.rej, and exits 1 — a genuine write despite the failure.
+    writeRel(
+      r.root,
+      'partial.diff',
+      '--- partial.txt\n+++ partial.txt\n@@ -1,2 +1,2 @@\n one\n-two\n+two!\n@@ -3,3 +3,3 @@\n WRONG\n-zzz\n+yyy\n'
+    );
+    expect(bashRun('patch -p0 < partial.diff', r.root)).toBe(1);
+    // The file really was modified — the "did not happen" premise is false here.
+    expect(readRel(r.root, 'partial.txt')).toBe('one\ntwo!\nthree\nfour\n');
+    const res = await runPipeline('patch -p0 < partial.diff', r.root, { exitCode: 1 });
+    // Documented residue (accept-and-document, plan §4): the non-zero
+    // suppression over-suppresses non-atomic writers that modify before
+    // failing (patch, `git apply --reject`, formatters) — the advisory
+    // touch for this real write is suppressed by design, pinned here so the
+    // boundary stays visible.
+    expect(res.fixPaths).toEqual([]);
   });
 });
 

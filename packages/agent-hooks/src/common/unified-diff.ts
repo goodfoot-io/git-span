@@ -13,7 +13,9 @@
  * Per-file classifications: `new file mode` → create-overwrite; `deleted file
  * mode` → delete; `rename from`/`rename to` → source delete + dest
  * rename-copy; binary diffs → whole-file modify; a `+++ /dev/null` target (the
- * shape `diff -u`-format deletions take) → delete.
+ * shape `diff -u`-format deletions take) → delete, and a `--- /dev/null` side
+ * (the `diff -u`-format creation shape, with no `new file mode` header) →
+ * create-overwrite.
  *
  * Git-style `a/…`/`b/…` prefixes are stripped per the caller's `-pN` strip
  * level: a number strips that many leading path components, and `'auto'`
@@ -142,7 +144,14 @@ export function parseUnifiedDiffRange(patchText: string, strip: PathStrip): Unif
       const path = stripped(line.slice(4));
       if (current === null) current = { path, kind: pendingKind ?? 'modify', hunks: [], countChanging: false };
       else if (path === '/dev/null') current.kind = 'deleted';
-      else if (current.path === '/dev/null') current.path = path;
+      else if (current.path === '/dev/null') {
+        // A `--- /dev/null` side replaced by a real `+++` path is a new file
+        // (the `diff -u`-format creation shape — no `new file mode` header).
+        // Its `@@ -0,0 +N @@` hunk has no pre-edit lines, so the
+        // create-overwrite is decided here, not from hunk coverage.
+        current.path = path;
+        current.kind = 'new';
+      }
       // Otherwise keep the `---` side: patch and git apply rewrite the file
       // named on the `---` line, and `diff -u f f.new` headers name the
       // pre-image there — the `+++` path is only a label (the diff-uu

@@ -139,6 +139,19 @@ export function bashResponseInterrupted(toolResponse: unknown): boolean {
  * proceeds exactly as today. (The hook subprocess's own exit status — the
  * SDK's `SDKHookResponseMessage.exit_code` — is a different channel and is
  * never read here.)
+ *
+ * Granularity edge (documented residue): the code is the whole compound
+ * command's, not one simple command's — a masked failure (`git apply
+ * p.diff || echo ok` exiting 0) suppresses nothing, and a trailing failure
+ * (`sed -i s/a/b/ f; false` exiting 1) suppresses the earlier real write.
+ * And the "failed, so the write did not happen" premise behind the
+ * suppression holds for atomic failures (`git apply` without `--reject`,
+ * prettier on a syntax error) but over-suppresses the non-atomic writers
+ * that modify before failing — GNU `patch` applying earlier hunks, `git
+ * apply --reject` writing the applicable hunks plus `.rej` files, and
+ * formatters (`eslint --fix`, `rubocop -a`) writing their fixes before
+ * exiting nonzero on remaining violations. That wrote-but-nonzero corner is
+ * accepted and pinned by the gate's tests rather than carved out.
  */
 export function bashResponseExitCode(toolResponse: unknown): number | undefined {
   if (toolResponse !== null && typeof toolResponse === 'object') {
@@ -398,11 +411,16 @@ export async function runBashTouches(
   // inconclusive with an 'exists' target (the advisory residual class:
   // existence-gated families fire and heal/surface; phantom deletes never
   // fire). A harness-supplied non-zero exit code suppresses the advisory
-  // class too — the command failed, so the existence-gated write (sed -i,
-  // patch, git apply, formatter) demonstrably did not happen; a zero or
-  // absent code proceeds, and content-verified decisive passes fire
-  // regardless (fail-open, plan §4). Guard-only commands have no touches.
-  // Explained fails and decisive fails never reach an executor.
+  // class too: the command failed, so the existence-gated write (sed -i,
+  // patch, git apply, formatter) did not complete. That premise is exact
+  // for atomic failures and over-suppresses the non-atomic writers that
+  // modify before failing (patch applying earlier hunks, `git apply
+  // --reject`, formatters writing fixes then exiting nonzero) — the
+  // wrote-but-nonzero residue pinned by the gate's tests (see
+  // bashResponseExitCode); a zero or absent code proceeds, and
+  // content-verified decisive passes fire regardless (fail-open, plan §4).
+  // Guard-only commands have no touches. Explained fails and decisive
+  // fails never reach an executor.
   const blocks: string[] = [];
   for (const idx of commandOrder) {
     if (skipped.has(idx)) continue;
