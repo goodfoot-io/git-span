@@ -73,17 +73,18 @@ export function narrowApplyPatchCommand(toolInput: unknown): string | null {
 /**
  * Narrow the classic `exec_command` envelope (cli_version ≤ 0.130.0):
  * `tool_input.arguments` is a JSON *string* of shape
- * `{"cmd": "...", "workdir": "..."}` — parse it and return the `cmd`. Returns
- * `null` for any other shape (not JSON, no `cmd` field, or not this envelope).
+ * `{"cmd": "...", "workdir": "..."}` — parse it and return the `cmd` and
+ * `workdir`. Returns `null` for any other shape (not JSON, no `cmd` field, or
+ * not this envelope); `workdir` is `null` when absent or not a string.
  */
-export function narrowExecCommand(toolInput: unknown): string | null {
+export function narrowExecCommand(toolInput: unknown): { cmd: string; workdir: string | null } | null {
   if (toolInput !== null && typeof toolInput === 'object' && 'arguments' in toolInput) {
     const args = (toolInput as { arguments: unknown }).arguments;
     if (typeof args === 'string') {
       try {
         const parsed = JSON.parse(args);
         if (parsed !== null && typeof parsed === 'object' && typeof parsed.cmd === 'string') {
-          return parsed.cmd;
+          return { cmd: parsed.cmd, workdir: typeof parsed.workdir === 'string' ? parsed.workdir : null };
         }
       } catch {
         return null;
@@ -105,6 +106,8 @@ export interface CodeModeExecNarrow {
   matched: boolean;
   /** The recovered `cmd` string, or `null` when matched but unparsable / absent. */
   cmd: string | null;
+  /** The recovered `workdir` string, or `null` when absent or not a string. */
+  workdir: string | null;
 }
 
 /**
@@ -165,18 +168,22 @@ export function narrowCodeModeExec(toolInput: unknown): CodeModeExecNarrow {
         try {
           const parsed = JSON.parse(quoteObjectKeys(match[1]));
           if (parsed !== null && typeof parsed === 'object' && typeof parsed.cmd === 'string') {
-            return { matched: true, cmd: parsed.cmd };
+            return {
+              matched: true,
+              cmd: parsed.cmd,
+              workdir: typeof parsed.workdir === 'string' ? parsed.workdir : null
+            };
           }
-          return { matched: true, cmd: null };
+          return { matched: true, cmd: null, workdir: null };
         } catch {
           // matched, but the literal did not parse — the call is still a
           // code-mode exec whose command cannot be recovered statically.
-          return { matched: true, cmd: null };
+          return { matched: true, cmd: null, workdir: null };
         }
       }
     }
   }
-  return { matched: false, cmd: null };
+  return { matched: false, cmd: null, workdir: null };
 }
 
 /**
@@ -250,7 +257,7 @@ export function createHandler(
         const raw = (input.tool_input as Record<string, unknown> | null)?.command;
         command = typeof raw === 'string' ? raw : null;
       } else {
-        command = narrowExecCommand(input.tool_input);
+        command = narrowExecCommand(input.tool_input)?.cmd ?? null;
       }
       if (command === null && tool_name === 'exec') {
         // Code-mode `exec` wraps the same call in JS source. A matched call
@@ -274,7 +281,7 @@ export function createHandler(
       }
       if (!command) return undefined;
 
-      const matches = parseCommandDetailed(command, cwd);
+      const matches = parseCommandDetailed(command, { cwd });
       const blocks: string[] = [];
       for (const match of matches) {
         if (match.status !== 'resolved') continue;

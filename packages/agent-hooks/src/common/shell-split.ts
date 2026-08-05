@@ -6,15 +6,43 @@
  * this ports the same algorithm.
  */
 
+/**
+ * The normalized boundary operators `splitTopLevel` emits — the single
+ * representation both adapters consume.
+ */
+export type Operator = 'pipe' | 'and' | 'or' | 'semicolon' | 'newline' | 'background' | 'start';
+
 /** One `simple command` found in a larger script, plus which operator preceded it. */
 export interface SimpleCommand {
   text: string;
-  /** The operator immediately before this command ('|' for a pipeline stage, otherwise '&&'/';'/'\n'/etc., or 'start' for the first command). */
-  precededBy: '|' | 'other' | 'start';
+  /** The operator immediately before this command ('pipe' for a pipeline stage, 'and' for `&&`, 'or' for `||`, 'semicolon' for `;`, 'newline' for a newline separator, 'background' for `&`, or 'start' for the first command). */
+  precededBy: Operator;
 }
 
-/** Split a command string into simple-command substrings at top-level &&, ||, ;, |, |&, and newline boundaries. Quotes and $()/``/() nesting are respected (not split inside). */
-export function splitTopLevel(cmd: string): SimpleCommand[] {
+/** The verdict kinds `splitTopLevel` can return when the input is a Bash parse error (plan §1). */
+export type MalformedVerdict =
+  | 'unclosed-quote'
+  | 'unbalanced-paren'
+  | 'dangling-operator'
+  | 'pipe-bang'
+  | 'unterminated-heredoc'
+  | 'unclosed-brace'
+  | 'unclosed-case'
+  | 'unclosed-construct';
+
+/** The result of a top-level split: the stage list, plus a `malformed` verdict when the input is a Bash parse error. */
+export interface SplitResult {
+  stages: SimpleCommand[];
+  /**
+   * Set when the input is a Bash parse error — bash rejects the entire list at
+   * parse time (exit 2, nothing executed), so any stage-derived touch would be
+   * a phantom. Never set yet: the malformed verdict machine is a later phase.
+   */
+  malformed?: MalformedVerdict;
+}
+
+/** Split a command string into simple-command substrings at top-level &&, ||, ;, |, |&, &, and newline boundaries. Quotes and $()/``/() nesting are respected (not split inside). */
+export function splitTopLevel(cmd: string): SplitResult {
   const parts: SimpleCommand[] = [];
   let buf = '';
   let i = 0;
@@ -22,9 +50,9 @@ export function splitTopLevel(cmd: string): SimpleCommand[] {
   let depth = 0;
   let inSquote = false;
   let inDquote = false;
-  let pendingOp: SimpleCommand['precededBy'] = 'start';
+  let pendingOp: Operator = 'start';
 
-  const flush = (nextOp: SimpleCommand['precededBy']) => {
+  const flush = (nextOp: Operator) => {
     const s = buf.trim();
     if (s) parts.push({ text: s, precededBy: pendingOp });
     buf = '';
@@ -38,7 +66,7 @@ export function splitTopLevel(cmd: string): SimpleCommand[] {
    * closure, and would otherwise narrow the direct comparison to the
    * initializer `'start'`.
    */
-  const isPendingPipe = (): boolean => pendingOp === '|';
+  const isPendingPipe = (): boolean => pendingOp === 'pipe';
 
   while (i < n) {
     const c = cmd[i];
@@ -90,54 +118,62 @@ export function splitTopLevel(cmd: string): SimpleCommand[] {
     }
     if (depth === 0) {
       if (cmd.slice(i, i + 2) === '&&') {
-        flush('other');
+        flush('and');
         i += 2;
         continue;
       }
       if (cmd.slice(i, i + 2) === '||') {
-        flush('other');
+        flush('or');
         i += 2;
         continue;
       }
       if (cmd.slice(i, i + 2) === '|&') {
-        flush('|');
+        flush('pipe');
         i += 2;
         continue;
       }
       if (c === ';') {
-        flush('other');
+        flush('semicolon');
         i += 1;
         continue;
       }
       if (c === '|') {
-        flush('|');
+        flush('pipe');
         i += 1;
         continue;
       }
       if (c === '\n') {
         // A newline immediately after a pipe operator is a line continuation
         // (`cat a.txt |\nsed ...` keeps the pipeline), not a statement
-        // separator: skipping it preserves `precededBy: '|'` for the next
-        // stage instead of degrading it to 'other'.
+        // separator: skipping it preserves `precededBy: 'pipe'` for the next
+        // stage instead of degrading it to 'newline'.
         if (isPendingPipe()) {
           i += 1;
           continue;
         }
-        flush('other');
+        flush('newline');
         i += 1;
         continue;
       }
       if (c === '&') {
-        flush('other');
-        i += 1;
-        continue;
+        // A bare `&` is a background operator only when it is not part of a
+        // redirect token: the next character is `>` (`&>`/`&>>`), or the
+        // buffer's last character is `>` or `<` (`2>&1`, `>& file`, `3<&0`).
+        // Splitting inside those tokens would produce junk stages.
+        const next = cmd[i + 1];
+        const last = buf[buf.length - 1];
+        if (next !== '>' && last !== '>' && last !== '<') {
+          flush('background');
+          i += 1;
+          continue;
+        }
       }
     }
     buf += c;
     i += 1;
   }
-  flush('other');
-  return parts;
+  flush('newline');
+  return { stages: parts };
 }
 
 const LEADING_ASSIGNMENT = /^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/;
@@ -208,4 +244,33 @@ export function splitWords(s: string): string[] | null {
 /** Best-effort argv for a simple command: leading assignments stripped, quote-aware split. Returns null if the command doesn't tokenize cleanly (unbalanced quotes). */
 export function argvOf(simpleCmd: string): string[] | null {
   return splitWords(stripLeadingAssignments(simpleCmd).trim());
+}
+
+/**
+ * Strip redirect tokens from a simple command's argv so the read-side
+ * matchers see the words that were actually read (plan §4): two-token
+ * operators (`>`, `>>`, `&>`, digit-prefixed `2>`/`3<`, ...) drop together
+ * with their plain target word, dup forms (`2>&1`, `>&-`) drop alone, fused
+ * forms (`>out`, `2>err`) drop as one word, and heredoc/here-string operators
+ * drop with their target word. Applied to every stage — sources, selectors,
+ * and predicates — before status evaluation and matcher dispatch.
+ *
+ * Not implemented yet — Phase 1 declares the contract surface only.
+ */
+export function stripRedirects(_argv: string[]): string[] {
+  throw new Error('Not Implemented');
+}
+
+/**
+ * Strip transparent wrapper prefixes from a simple command's argv so matcher
+ * dispatch sees the underlying command word (plan §5): `command` (stopping at
+ * the query forms `-v`/`-V`), `builtin` restricted to the walk's recognized
+ * builtins, `env NAME=value` prefixes, `timeout` plus its flags and one
+ * duration, and absolute executable paths whose basename is in the recognized
+ * set — iterating until fixed-point so stacked wrappers still reach the word.
+ *
+ * Not implemented yet — Phase 1 declares the contract surface only.
+ */
+export function stripWrappers(_argv: string[]): string[] {
+  throw new Error('Not Implemented');
 }

@@ -177,7 +177,7 @@ describe('classifyApplyPatchResponse', () => {
 describe('shell envelope narrowing', () => {
   it('narrowExecCommand recovers cmd from the classic JSON arguments envelope', () => {
     const toolInput = { arguments: JSON.stringify({ cmd: "sed -n '1,2p' /tmp/f", workdir: '/tmp' }) };
-    expect(narrowExecCommand(toolInput)).toBe("sed -n '1,2p' /tmp/f");
+    expect(narrowExecCommand(toolInput)).toEqual({ cmd: "sed -n '1,2p' /tmp/f", workdir: '/tmp' });
   });
 
   it('narrowExecCommand returns null for non-JSON arguments, a missing cmd, or a non-envelope shape', () => {
@@ -193,26 +193,27 @@ describe('shell envelope narrowing', () => {
       input:
         'const r = await tools.exec_command({cmd:"sed -n \'1,240p\' /path", shell:"bash", workdir:"/path"});\ntext(JSON.stringify(r));'
     });
-    expect(result).toEqual({ matched: true, cmd: "sed -n '1,240p' /path" });
+    expect(result).toEqual({ matched: true, cmd: "sed -n '1,240p' /path", workdir: '/path' });
   });
 
   it('narrowCodeModeExec leaves an already-quoted literal untouched', () => {
     const result = narrowCodeModeExec({ input: 'tools.exec_command({"cmd":"echo hi", "workdir":"/tmp"})' });
-    expect(result).toEqual({ matched: true, cmd: 'echo hi' });
+    expect(result).toEqual({ matched: true, cmd: 'echo hi', workdir: '/tmp' });
   });
 
   it('narrowCodeModeExec does not mistake a comma-colon inside a string value for a key', () => {
     const result = narrowCodeModeExec({ input: 'tools.exec_command({cmd:"sed -i \'s/a,b:c/d/\' f", workdir:"/tmp"})' });
-    expect(result).toEqual({ matched: true, cmd: "sed -i 's/a,b:c/d/' f" });
+    expect(result).toEqual({ matched: true, cmd: "sed -i 's/a,b:c/d/' f", workdir: '/tmp' });
   });
 
   it('narrowCodeModeExec distinguishes an unmatched envelope from a matched-but-unparsable one', () => {
-    expect(narrowCodeModeExec({ input: 'const x = 1;' })).toEqual({ matched: false, cmd: null });
-    expect(narrowCodeModeExec(null)).toEqual({ matched: false, cmd: null });
+    expect(narrowCodeModeExec({ input: 'const x = 1;' })).toEqual({ matched: false, cmd: null, workdir: null });
+    expect(narrowCodeModeExec(null)).toEqual({ matched: false, cmd: null, workdir: null });
     // Variable-built command: the call matches, but the literal cannot parse.
     expect(narrowCodeModeExec({ input: 'tools.exec_command({cmd: process.cwd()})' })).toEqual({
       matched: true,
-      cmd: null
+      cmd: null,
+      workdir: null
     });
   });
 });

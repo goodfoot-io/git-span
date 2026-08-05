@@ -15,7 +15,7 @@
  */
 import { resolve as resolvePath } from 'node:path';
 import { countFileLines, countGitBlobLines } from './command-resolve.js';
-import { argvOf, splitTopLevel } from './shell-split.js';
+import { argvOf, type SimpleCommand, splitTopLevel } from './shell-split.js';
 
 export interface ResolvedSpan {
   lineStart: number;
@@ -48,6 +48,38 @@ export type Idiom =
 export type SpanMatch =
   | { status: 'resolved'; idiom: Idiom; span: ResolvedSpan; note?: string }
   | { status: 'unresolved'; idiom: Idiom; fileArg: string; reason: string };
+
+/** Options for the Bash command parser (plan §8). */
+export interface ParseOptions {
+  /** The working directory to resolve relative paths against; defaults to `process.cwd()`. */
+  cwd?: string;
+  /** The hook process env, for allowlisted path-variable resolution; defaults to `process.env`. */
+  env?: Record<string, string | undefined>;
+  /** Variable names allowed to resolve from `env`; defaults to `DEFAULT_PATH_ALLOWLIST`. */
+  allowlist?: readonly string[];
+}
+
+/** Whether a simple command is known to have executed, provably not, or undeterminable (plan §2). */
+export type ExecStatus = 'yes' | 'no' | 'unknown';
+
+/** The execution-aware walk's verdict for one simple command (plan §2). */
+export interface StageExec {
+  /** `'yes'` — provably executed; `'no'` — provably not; `'unknown'` — undeterminable (fail closed). */
+  exec: ExecStatus;
+}
+
+/**
+ * Compute, per simple command, whether it executed (plan §2): pipeline
+ * grouping, `&&`/`||` chain gating against known statuses, `!` group-level
+ * negation, in-string errexit/pipefail liveness, terminator and never-return
+ * fires, and the decidable-control construct classes. IO-free and exported so
+ * the xtrace oracle can compare executed sets against real bash.
+ *
+ * Not implemented yet — Phase 1 declares the contract surface only.
+ */
+export function analyzeExecution(_simpleCommands: SimpleCommand[]): StageExec[] {
+  throw new Error('Not Implemented');
+}
 
 // ---------------------------------------------------------------------------
 // Line-range specs: what a matched idiom says about the range, before we know
@@ -432,9 +464,10 @@ function extractHeredocWrites(raw: string): { writes: HeredocWrite[]; masked: st
 
 const LINE_SELECTORS = [matchSed, matchHead, matchTail];
 
-export function parseCommandDetailed(command: string, cwd: string = process.cwd()): SpanMatch[] {
+export function parseCommandDetailed(command: string, opts: ParseOptions = {}): SpanMatch[] {
+  const cwd = opts.cwd ?? process.cwd();
   const { writes: heredocWrites, masked } = extractHeredocWrites(command);
-  const simpleCommands = splitTopLevel(masked);
+  const { stages: simpleCommands } = splitTopLevel(masked);
 
   const results: SpanMatch[] = [];
   const fsLineCache = new Map<string, number | null>();
@@ -568,7 +601,7 @@ export function parseCommandDetailed(command: string, cwd: string = process.cwd(
     // emits the precise range, so the source stays source-only.
     if (plainFileArg !== null) {
       const next = simpleCommands[i + 1];
-      if (next === undefined || next.precededBy !== '|') {
+      if (next === undefined || next.precededBy !== 'pipe') {
         emitCandidate(
           {
             kind: 'candidate',
@@ -606,7 +639,7 @@ export function parseCommandDetailed(command: string, cwd: string = process.cwd(
       }
     }
 
-    if (!matched && simple.precededBy === '|' && lastPlainFileSource) {
+    if (!matched && simple.precededBy === 'pipe' && lastPlainFileSource) {
       const withFile = [...argv, lastPlainFileSource];
       for (const matcher of LINE_SELECTORS) {
         for (const outcome of matcher(withFile)) {
@@ -628,9 +661,9 @@ export function parseCommandDetailed(command: string, cwd: string = process.cwd(
   return results;
 }
 
-/** Parses a Bash `command` string into the file+line-range spans it statically, reliably reads or writes. `cwd` defaults to `process.cwd()` — pass the hook's own `cwd` field for correct resolution of relative paths and `cd`/`git -C` targets, and of `git show`/`git log -L` revisions. */
-export function parseCommand(command: string, cwd: string = process.cwd()): ResolvedSpan[] {
-  const detailed = parseCommandDetailed(command, cwd);
+/** Parses a Bash `command` string into the file+line-range spans it statically, reliably reads or writes. Pass `opts.cwd` (defaults to `process.cwd()`) for correct resolution of relative paths and `cd`/`git -C` targets, and of `git show`/`git log -L` revisions; `opts.env`/`opts.allowlist` feed the Phase 3 allowlisted variable resolution. */
+export function parseCommand(command: string, opts: ParseOptions = {}): ResolvedSpan[] {
+  const detailed = parseCommandDetailed(command, opts);
   const spans: ResolvedSpan[] = [];
   for (const m of detailed) {
     if (m.status === 'resolved') spans.push(m.span);

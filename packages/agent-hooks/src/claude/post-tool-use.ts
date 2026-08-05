@@ -93,7 +93,7 @@ export function createHandler(
     if (toolName === 'Bash') {
       const command = typeof toolInput.command === 'string' ? toolInput.command : null;
       if (!command) return null;
-      const matches = parseCommandDetailed(command, cwd);
+      const matches = parseCommandDetailed(command, { cwd });
       const blocks: string[] = [];
       for (const match of matches) {
         if (match.status !== 'resolved') continue;

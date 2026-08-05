@@ -166,27 +166,27 @@ describe('git show rev:path', () => {
   afterAll(() => repo.cleanup());
 
   it('HEAD:path resolves whole-file range from the real blob', () => {
-    const spans = parseCommand('git show HEAD:blob.ts', repo.root);
+    const spans = parseCommand('git show HEAD:blob.ts', { cwd: repo.root });
     expect(spans).toEqual([{ lineStart: 1, lineEnd: 8, absolutePath: join(repo.root, 'blob.ts') }]);
   });
 
   it('git -C <dir> show rev:path uses -C as the resolution directory', () => {
-    const spans = parseCommand(`git -C ${repo.root} show HEAD:blob.ts`, '/');
+    const spans = parseCommand(`git -C ${repo.root} show HEAD:blob.ts`, { cwd: '/' });
     expect(spans).toEqual([{ lineStart: 1, lineEnd: 8, absolutePath: join(repo.root, 'blob.ts') }]);
   });
 
   it('git show without a rev:path colon does not match', () => {
-    expect(parseCommand('git show HEAD --stat', repo.root)).toEqual([]);
+    expect(parseCommand('git show HEAD --stat', { cwd: repo.root })).toEqual([]);
   });
 
   it('unknown revision: matched idiom, unresolved result', () => {
-    const detailed = parseCommandDetailed('git show not-a-real-rev:blob.ts', repo.root);
+    const detailed = parseCommandDetailed('git show not-a-real-rev:blob.ts', { cwd: repo.root });
     expect(detailed.length).toBe(1);
     expect(detailed[0].status).toBe('unresolved');
   });
 
   it('piped into sed -n yields both the whole-file span and the precise range (verbatim blob content, unlike git log -L)', () => {
-    const spans = parseCommand("git show HEAD:blob.ts | sed -n '2,4p'", repo.root);
+    const spans = parseCommand("git show HEAD:blob.ts | sed -n '2,4p'", { cwd: repo.root });
     expect(spans).toEqual([
       { lineStart: 1, lineEnd: 8, absolutePath: join(repo.root, 'blob.ts') },
       { lineStart: 2, lineEnd: 4, absolutePath: join(repo.root, 'blob.ts') }
@@ -194,7 +194,7 @@ describe('git show rev:path', () => {
   });
 
   it('piped into head -N', () => {
-    const spans = parseCommand('git show HEAD:blob.ts | head -3', repo.root);
+    const spans = parseCommand('git show HEAD:blob.ts | head -3', { cwd: repo.root });
     expect(spans).toEqual([
       { lineStart: 1, lineEnd: 8, absolutePath: join(repo.root, 'blob.ts') },
       { lineStart: 1, lineEnd: 3, absolutePath: join(repo.root, 'blob.ts') }
@@ -303,12 +303,12 @@ describe('pipe-source propagation (one hop only)', () => {
 
 describe('cd tracking within one command', () => {
   it('cd /abs && relative sed resolves against the new dir', () => {
-    const spans = parseCommand(`cd ${dir} && sed -n '1,2p' five.txt`, '/nonexistent');
+    const spans = parseCommand(`cd ${dir} && sed -n '1,2p' five.txt`, { cwd: '/nonexistent' });
     expect(spans).toEqual([{ lineStart: 1, lineEnd: 2, absolutePath: join(dir, 'five.txt') }]);
   });
 
   it('cd "$VAR" (unresolvable) falls back to the seed cwd, not "/"', () => {
-    const spans = parseCommand('cd "$WORKSPACE_PATH" && sed -n \'1,2p\' five.txt', dir);
+    const spans = parseCommand('cd "$WORKSPACE_PATH" && sed -n \'1,2p\' five.txt', { cwd: dir });
     expect(spans).toEqual([{ lineStart: 1, lineEnd: 2, absolutePath: join(dir, 'five.txt') }]);
   });
 });
