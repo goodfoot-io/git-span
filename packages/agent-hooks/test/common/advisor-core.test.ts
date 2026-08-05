@@ -21,6 +21,7 @@ import * as nodePath from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   type AdvisorExecutors,
+  AdvisorIncompatibleCliError,
   type AdvisorMemoState,
   AdvisorScanError,
   buildHunkReadArgs,
@@ -1196,6 +1197,13 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(result.kind).toBe('scan-failed');
       if (result.kind === 'scan-failed') {
         expect(result.reason).toContain('Permission denied');
+        // The failed command's stderr is a delimited artifact of the advisory
+        // itself: `<git-span-error>` on its own line, the diagnostic indented
+        // beneath it, the closing tag on its own line — the same block
+        // styling the `<git-span>` context blocks use.
+        expect(result.reason).toContain(
+          ['<git-span-error>', '  fatal: unable to read src/app.ts: Permission denied', '</git-span-error>'].join('\n')
+        );
         expect(result.reason).not.toContain('To proceed anyway');
       }
       // A distinct kind from the ordinary silent allow a truly-clean scan
@@ -1203,6 +1211,38 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(result).not.toEqual({ decision: 'allow', kind: 'silent' });
       // No debt-state to memoize for a scan that never ran to completion.
       expect(recorded).toBe(false);
+    });
+
+    it('a version-skewed CLI (AdvisorIncompatibleCliError) fails open with a scan-failed reason that names the skew and brackets the CLI stderr in a `<git-span-error>` block', async () => {
+      // The same fail-open decision as an aborted scan, but the cause is the
+      // install, not the repository — the reason must name the skew and the
+      // remedy rather than pointing the user at a scan error they cannot act
+      // on, and the raw diagnostic stays as a delimited block.
+      const memo = createMemoryAdvisorMemoState();
+      const detail = "error: unexpected argument '--format' found\n\nUsage: git-span show <NAME>";
+      const executors = createFakeAdvisorExecutors({
+        drift: async (): Promise<DriftPorcelainRow[]> => {
+          throw new AdvisorIncompatibleCliError(detail, '1.0.141');
+        }
+      });
+
+      const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo);
+
+      expect(result.decision).toBe('allow');
+      expect(result.kind).toBe('scan-failed');
+      if (result.kind === 'scan-failed') {
+        expect(result.cause).toBe('incompatible-cli');
+        expect(result.reason).toContain('npm install -g git-span');
+        // The raw diagnostic is bracketed the same way the aborted scan's
+        // stderr is: opening tag on its own line, the `git-span reported:`
+        // line indented beneath it, closing tag on its own line as the
+        // message's final line.
+        expect(result.reason).toContain(
+          ['<git-span-error>', `  git-span reported: ${detail.split('\n')[0]}`].join('\n')
+        );
+        expect(result.reason).toContain(['Usage: git-span show <NAME>', '</git-span-error>'].join('\n'));
+        expect(result.reason.endsWith('</git-span-error>')).toBe(true);
+      }
     });
 
     it('a hard scan failure keeps warning on repeated evaluations — no memo involvement', async () => {

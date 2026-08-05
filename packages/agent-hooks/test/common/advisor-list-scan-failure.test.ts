@@ -26,7 +26,12 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as nodePath from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { AdvisorScanError, createDefaultAdvisorExecutors } from '../../src/common/advisor-core.js';
+import {
+  type AdvisorMemoState,
+  AdvisorScanError,
+  createDefaultAdvisorExecutors,
+  evaluateAdvisor
+} from '../../src/common/advisor-core.js';
 
 const hasGitSpan = (() => {
   try {
@@ -46,6 +51,18 @@ const suite = hasGitSpan ? describe : describe.skip;
  * installed.
  */
 const MISSING_ARG = 'src/no-such-file-anywhere.ts';
+
+/** An in-memory {@link AdvisorMemoState} — one Set of presented digests. */
+function memoryMemoState(): AdvisorMemoState {
+  const seen = new Set<string>();
+  return {
+    has: (digest) => seen.has(digest),
+    record: (digest) => {
+      seen.add(digest);
+      return true;
+    }
+  };
+}
 
 suite('createDefaultAdvisorExecutors().list — hard CLI failure', () => {
   let repoRoot: string;
@@ -92,5 +109,23 @@ suite('createDefaultAdvisorExecutors().list — hard CLI failure', () => {
   it('throws AdvisorScanError rather than reporting zero coverage', async () => {
     const executors = createDefaultAdvisorExecutors();
     await expect(executors.list(['src/app.ts', MISSING_ARG], repoRoot)).rejects.toBeInstanceOf(AdvisorScanError);
+  });
+
+  it('resolves to a scan-failed reason that carries the stderr in a `<git-span-error>` block', async () => {
+    const executors = createDefaultAdvisorExecutors();
+    const result = await evaluateAdvisor(['src/app.ts', MISSING_ARG], repoRoot, executors, memoryMemoState());
+
+    // The aborted scan allows (fail-open) with the distinguishable scan-failed
+    // kind — never a silent allow that reads the failed query as "zero
+    // coverage".
+    expect(result).toMatchObject({ decision: 'allow', kind: 'scan-failed' });
+    if (result.kind === 'scan-failed') {
+      // The failed command's own stderr rides in a delimited block: opening
+      // tag on its own line, the diagnostic indented beneath it, closing tag
+      // on its own line. The stderr wording is CLI-version-dependent, so the
+      // block structure is asserted rather than the exact text.
+      expect(result.reason).toContain('<git-span-error>\n  ');
+      expect(result.reason).toContain('\n</git-span-error>');
+    }
   });
 });

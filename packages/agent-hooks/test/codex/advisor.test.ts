@@ -203,8 +203,25 @@ describe('codex advisor adapter', () => {
     const result = toResult(await handler(preInput('git commit -m "wip"') as never, { logger } as never));
 
     expect(result.stdout.hookSpecificOutput?.permissionDecision).toBeUndefined();
+    const block = [
+      '<git-span-error>',
+      '  fatal: unable to read src/app.ts: Permission denied',
+      '</git-span-error>'
+    ].join('\n');
+    // Both delivery channels carry the tagged block: `additionalContext`
+    // (wrapped in the outer `<git-span>`) and the bare `systemMessage`.
     expect(result.stdout.hookSpecificOutput?.additionalContext).toContain('Permission denied');
+    expect(result.stdout.hookSpecificOutput?.additionalContext).toContain('<git-span>');
+    expect(result.stdout.hookSpecificOutput?.additionalContext).toContain(block);
     expect(result.stdout.systemMessage).toContain('Permission denied');
+    expect(result.stdout.systemMessage).toContain(block);
+    // The wrap is applied exactly once, and only on the context channel: the
+    // outer `<git-span>` tag appears once — the inner `<git-span-error>`
+    // block cannot trip the no-double-wrap guard, so it is not wrapped
+    // again, and the `systemMessage` stays unwrapped.
+    expect(result.stdout.hookSpecificOutput?.additionalContext?.match(/<git-span>/g)).toHaveLength(1);
+    expect(result.stdout.hookSpecificOutput?.additionalContext?.match(/<git-span-error>/g)).toHaveLength(1);
+    expect(result.stdout.systemMessage).not.toContain('<git-span>');
   });
 
   it('fails open (allow) when a dependency throws an uncaught error', async () => {

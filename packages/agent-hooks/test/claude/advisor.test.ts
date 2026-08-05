@@ -209,6 +209,12 @@ describe('claude advisor adapter', () => {
 
     expect(result.stdout.hookSpecificOutput).toBeUndefined(); // allowed, not denied
     expect(result.stdout.systemMessage).toContain('Permission denied');
+    // The failed command's own stderr travels as a delimited artifact of the
+    // systemMessage: `<git-span-error>` on its own line, the diagnostic
+    // indented beneath it, the closing tag on its own line.
+    expect(result.stdout.systemMessage).toContain(
+      ['<git-span-error>', '  fatal: unable to read src/app.ts: Permission denied', '</git-span-error>'].join('\n')
+    );
   });
 
   it('fails open (allow) when a dependency throws an uncaught error', async () => {

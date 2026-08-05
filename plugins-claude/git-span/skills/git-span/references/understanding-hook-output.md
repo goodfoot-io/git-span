@@ -238,8 +238,10 @@ the uncovered-writes check so a span repair riding the same commit never
 self-triggers the advisor. If the scan itself can't complete (an
 `AdvisorScanError`, e.g. an unreadable anchor file), the advisor holds nothing
 on that account either — it allows with a warning that span debt was NOT
-verified for this changeset, naming the underlying failure; there's nothing
-to memoize because every evaluation of a still-failing scan warns again.
+verified for this changeset, carrying the failed command's own stderr as a
+delimited `<git-span-error>` block so the raw diagnostic is clearly bounded;
+there's nothing to memoize because every evaluation of a still-failing scan
+warns again.
 
 **`git status`** is never held — it only reports. The same two checklists
 above render as `systemMessage` (never `permissionDecision: 'deny'`), with one
@@ -321,7 +323,8 @@ nothing." Silence from either hook is the correct steady state when
 `git span` isn't installed, the repo has no spans, or nothing needs to be
 said — never an error condition. The one noisy case is the advisor's own
 scoped scan failing to complete (see "The advisor: what a held command sees"
-above): that still fails open, but visibly — a warning names the failure
+above): that still fails open, but visibly — a warning names the failure and
+carries the failed command's stderr in a delimited `<git-span-error>` block
 instead of staying silent, since an unverified changeset is worth flagging
 even though nothing was held.
 
