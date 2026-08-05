@@ -1,6 +1,6 @@
 ---
 name: git-span
-description: Track, declare, and reconcile implicit semantic couplings — file/line-range anchors coupled by nothing a schema, test, or build step enforces.
+description: Track, declare, reconcile, and clean up implicit semantic couplings — file/line-range anchors coupled by nothing a schema, test, or build step enforces.
 ---
 
 # git-span
@@ -143,4 +143,5 @@ Pick the first that fits:
 14. Anything else — 2+ spans need attention, or a coupling might no longer hold at all →
     `references/triage.md`.
 15. Sweeping `.span/**` (or a large slice of it) up to the why-writing standard, not just
-    one drifted span → `references/why-cleanup-campaign.md`.
+    one drifted span — including a request to "clean up" or "cleaning up" spans →
+    `references/why-cleanup-campaign.md`.
