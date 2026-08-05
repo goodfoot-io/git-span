@@ -244,6 +244,22 @@ pub enum DriftFormat {
     Json,
 }
 
+/// Output format for `git span add`'s write-mode result.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+pub enum AddFormat {
+    Human,
+    Json,
+}
+
+/// Output format for `git span why`'s write-mode result.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+pub enum WhyFormat {
+    Human,
+    Json,
+}
+
 #[derive(Debug, Clone, clap::Args)]
 pub struct DriftArgs {
     /// File paths, globs, or span names to report drift for.
@@ -308,6 +324,13 @@ pub struct AddArgs {
     /// `<commit-ish>` (an ordinary git commit-ish). Default is HEAD.
     #[arg(long, value_name = "COMMIT-ISH")]
     pub at: Option<String>,
+
+    /// Output format for the write-mode result (`human` or `json`).
+    ///
+    /// Applies to the write mode: `json` emits the mutation document
+    /// (schema_version 1) instead of the human summary.
+    #[arg(long, value_enum, default_value_t = AddFormat::Human)]
+    pub format: AddFormat,
 }
 
 #[derive(Debug, clap::Args)]
@@ -348,6 +371,12 @@ pub struct WhyArgs {
     /// Why text to write. Omit to read from piped stdin or print the
     /// current why when stdin is a terminal.
     pub why_text: Option<String>,
+
+    /// Output format for the write-mode result (`human` or `json`).
+    ///
+    /// Applies to the write mode; read mode always prints prose.
+    #[arg(long, value_enum, default_value_t = WhyFormat::Human)]
+    pub format: WhyFormat,
 }
 
 #[derive(Debug, clap::Args)]

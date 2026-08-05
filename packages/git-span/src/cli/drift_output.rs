@@ -1783,7 +1783,8 @@ fn render_porcelain(
 }
 
 // ---------------------------------------------------------------------------
-// JSON renderer (`{ "schema_version": 2, findings }`).
+// JSON renderer (always emits a document: `{ "schema_version": 3, clean,
+// findings }`).
 // ---------------------------------------------------------------------------
 
 fn render_json(
@@ -1792,12 +1793,13 @@ fn render_json(
     followed_ids: &HashSet<String>,
     clusters: &[crate::cli::drift_cluster::DriftCluster],
 ) -> Result<()> {
-    if findings.is_empty() {
-        return Ok(());
-    }
+    // Always emit a document — a clean scan must be representable so hooks
+    // can distinguish "clean" from "no output" (`"clean": true`,
+    // `"findings": []` — never empty stdout).
     let v = json!({
-        "schema_version": 2,
+        "schema_version": 3,
         "span": spans.first().map(|m| m.name.clone()).unwrap_or_default(),
+        "clean": findings.is_empty(),
         "findings": findings.iter().map(|f| finding_json(f, followed_ids)).collect::<Vec<_>>(),
         "clusters": clusters.iter().map(|c| json!({
             "spans": c.spans,
@@ -1827,7 +1829,10 @@ fn extent_json(e: AnchorExtent) -> Value {
     }
 }
 
-fn status_json(s: &AnchorStatus) -> Value {
+/// Render an anchor status as the JSON value used by drift findings and (via
+/// promotion) the mutation-family documents, so the anchor-status vocabulary
+/// is shared by construction rather than by convention.
+pub(crate) fn status_json(s: &AnchorStatus) -> Value {
     match s {
         AnchorStatus::ContentUnavailable(reason) => json!({
             "code": "CONTENT_UNAVAILABLE",

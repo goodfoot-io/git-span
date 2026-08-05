@@ -16,6 +16,7 @@ use crate::support;
 
 use anyhow::Result;
 use git_span::cli::AddArgs;
+use git_span::cli::AddFormat;
 use git_span::cli::commit::run_add;
 use git_span::{index_entries_call_count, reset_index_entries_call_count};
 use support::TestRepo;
@@ -36,6 +37,7 @@ fn run_add_calls_index_entries_exactly_once() -> Result<()> {
             "file1.txt#L1-L5".into(),
         ],
         at: None,
+        format: AddFormat::Human,
     };
 
     run_add(&gix_repo, args, ".span")?;

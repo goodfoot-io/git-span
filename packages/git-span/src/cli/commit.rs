@@ -1159,6 +1159,265 @@ fn run_why_reader(repo: &gix::Repository, name: &str, span_root: &str) -> Result
     Ok(0)
 }
 
+// ---------------------------------------------------------------------------
+// Reconcile check (post-write span-wide health)
+// ---------------------------------------------------------------------------
+//
+// After an anchor mutation, the command output must distinguish the
+// requested-address success (the *local* fact) from the fate of superseded
+// old anchors and the span-wide drift-free state — the *span-wide* fact,
+// asserted only by a scoped resolver check over the resulting declaration.
+// The surface below is the contract: `ReconcileCheck` carries the three
+// facts, the JSON document family (schema_version 1) is the structured
+// rendering, and `is_superseded` is the provable-supersession predicate.
+// Phase 1 lands the stubs; the resolver plumbing lands in Phase 3.
+
+/// Mutation-family JSON document version. Versioning is per family: the
+/// mutation document starts at 1 while the drift scan document uses its own
+/// 2→3 history, and the two shapes are identified by their top-level keys
+/// (`command` vs `findings`) — two shapes claiming the same version number
+/// would make the number meaningless.
+pub const MUTATION_JSON_SCHEMA_VERSION: u32 = 1;
+
+/// Stable outcome enum for `addresses[].outcome` in the mutation document:
+/// `ADDED | RESOLVED | UNCHANGED`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum AddressOutcome {
+    /// Brand-new anchor record created.
+    Added,
+    /// Existing anchor's hash updated in place.
+    Resolved,
+    /// Anchor already matched the stored hash.
+    Unchanged,
+}
+
+/// Stable enum for `superseded[].state`: `RETIRED | REMAINS`.
+///
+/// `RETIRED` is the integration seam for the main-204 atomic-replacement
+/// capability (when `add` itself retires the old anchor) and is not produced
+/// on this branch — here supersession always reports `REMAINS` (the anchor is
+/// still in the declaration) and hands the operator the runnable retire
+/// command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SupersessionState {
+    /// The mutation itself removed the old anchor from the declaration.
+    Retired,
+    /// The old anchor is still in the declaration; retire it with the
+    /// printed `git span remove` next action.
+    Remains,
+}
+
+/// Stable enum for `span_health.state`: `DRIFT_FREE | DRIFT | UNKNOWN`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SpanHealthState {
+    /// Span-wide clean: no anchor has a status for which
+    /// `anchor_status_is_drift()` returns true.
+    DriftFree,
+    /// At least one actionable-drift anchor on the span.
+    Drift,
+    /// The check could not produce a verdict — `reason` carries the detail
+    /// ("index changed during scan" or the check-error detail).
+    Unknown,
+}
+
+/// One requested address and its outcome in the mutation document.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct AnchorOutcome {
+    pub address: String,
+    pub outcome: AddressOutcome,
+}
+
+/// One provably superseded old anchor: the covering new address, its state,
+/// and the runnable retire next action.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct SupersededAnchor {
+    /// Canonical address of the old anchor (e.g. `src/read-user.ts#L1-L5`).
+    pub address: String,
+    /// Canonical address of the new anchor that covers it.
+    pub superseded_by: String,
+    pub state: SupersessionState,
+    /// Runnable next action (e.g. `git span remove <span> <addr>`).
+    pub next_step: String,
+}
+
+/// One actionable-drift anchor that remains after the mutation.
+///
+/// `status` is the exact output of `drift_output::status_json`, so the
+/// anchor-status vocabulary is shared with drift's findings by construction.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct RemainingAnchor {
+    pub address: String,
+    pub status: serde_json::Value,
+    pub next_step: String,
+}
+
+/// One drifting anchor inside `span_health.drifting`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct DriftingAnchor {
+    pub address: String,
+    pub status: serde_json::Value,
+}
+
+/// The span-wide health block of the mutation document.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct SpanHealth {
+    pub state: SpanHealthState,
+    pub drift_count: usize,
+    pub drifting: Vec<DriftingAnchor>,
+    /// Count of `RESOLVED_PENDING_COMMIT` anchors: clean by definition, but
+    /// never hidden.
+    pub resolved_pending_commit_count: usize,
+    /// Present only on `UNKNOWN` ("index changed during scan" or the
+    /// check-error detail).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// The mutation-family JSON document (`schema_version: 1`).
+///
+/// Every top-level key is always emitted (arrays possibly empty), so hooks
+/// rely on a stable key set rather than key presence.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct MutationDocument {
+    pub schema_version: u32,
+    pub command: String,
+    pub span: String,
+    pub addresses: Vec<AnchorOutcome>,
+    pub superseded: Vec<SupersededAnchor>,
+    pub remaining: Vec<RemainingAnchor>,
+    pub span_health: SpanHealth,
+}
+
+impl MutationDocument {
+    /// Build a document with the family's `schema_version: 1` pinned.
+    pub fn new(
+        command: &str,
+        span: &str,
+        addresses: Vec<AnchorOutcome>,
+        superseded: Vec<SupersededAnchor>,
+        remaining: Vec<RemainingAnchor>,
+        span_health: SpanHealth,
+    ) -> Self {
+        Self {
+            schema_version: MUTATION_JSON_SCHEMA_VERSION,
+            command: command.to_string(),
+            span: span.to_string(),
+            addresses,
+            superseded,
+            remaining,
+            span_health,
+        }
+    }
+}
+
+/// Result of the post-write span-wide reconcile check.
+///
+/// `indeterminate` is the resolver's `index_changed` verdict only and drives
+/// exit 2 (the retryable condition, exactly as `git span drift` defines it);
+/// `check_error` is the fatal path and drives exit 1. `clean` is the
+/// span-wide fact — it never names local mutation success.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReconcileCheck {
+    /// Old anchors the invocation provably supersedes.
+    pub superseded: Vec<SupersededAnchor>,
+    /// Actionable-drift anchors not touched by this invocation and not
+    /// reported as superseded (the two arrays are disjoint by definition).
+    pub remaining: Vec<RemainingAnchor>,
+    /// Span-wide drift-free verdict.
+    pub clean: bool,
+    /// Resolver `index_changed` verdict — the retryable indeterminate.
+    pub indeterminate: bool,
+    /// Fatal check-error detail, when the check itself errored.
+    pub check_error: Option<String>,
+    /// Total anchors on the span at check time.
+    pub total_anchors: usize,
+    /// `RESOLVED_PENDING_COMMIT` anchors on the span (clean, informational).
+    pub pending_commit_count: usize,
+}
+
+/// Convert an `AnchorRecord`'s stored `(start_line, end_line)` into an
+/// `AnchorExtent` (whole-file anchors store `0, 0`).
+fn anchor_record_extent(a: &AnchorRecord) -> AnchorExtent {
+    if a.start_line == 0 && a.end_line == 0 {
+        AnchorExtent::WholeFile
+    } else {
+        AnchorExtent::LineRange {
+            start: a.start_line,
+            end: a.end_line,
+        }
+    }
+}
+
+/// Provable-supersession rule (plan §Definitions): an old anchor is
+/// superseded by a new anchor of the same invocation only when, on the same
+/// path, the new extent *covers* the old extent:
+///
+/// - a new whole-file anchor covers any old extent on the path (line range
+///   or whole-file);
+/// - a new line range covers an old line range iff `new.start <= old.start`
+///   and `new.end >= old.end`;
+/// - identical `(path, extent)` is NOT supersession — that is the existing
+///   resolved-in-place (hash update) case;
+/// - disjoint same-path ranges, partial overlaps, and any cross-path pair are
+///   never supersession.
+pub fn is_superseded(old: &AnchorRecord, new_path: &str, new_extent: &AnchorExtent) -> bool {
+    if old.path != new_path {
+        return false;
+    }
+    let old_extent = anchor_record_extent(old);
+    if old_extent == *new_extent {
+        return false;
+    }
+    match new_extent {
+        AnchorExtent::WholeFile => true,
+        AnchorExtent::LineRange { start, end } => match old_extent {
+            AnchorExtent::WholeFile => false,
+            AnchorExtent::LineRange {
+                start: old_start,
+                end: old_end,
+            } => *start <= old_start && *end >= old_end,
+        },
+    }
+}
+
+/// Run the post-write span-wide reconcile check over the touched span.
+///
+/// Per plan §Mechanism, the check runs while still holding the exclusive
+/// span-file flock, resolves the single span via
+/// `resolve_named_spans_retaining_source_layers` (with
+/// `EngineOptions { layers: LayerSet::full(), ignore_unavailable: false,
+/// needs_all_layers: true, since: None, fuzzy_threshold: 0.95 }` — the
+/// human-renderer configuration, so per-anchor statuses match what
+/// `git span drift <span>` would show), reads the `index_changed` verdict
+/// from the returned `SourceLayers`, and derives the three facts:
+///
+/// - superseded: requested addresses vs. the pre-write anchor set
+///   (`is_superseded`);
+/// - remains: actionable-drift anchors not touched by this invocation;
+/// - clean: no anchor of the resolved span has a status for which
+///   `anchor_status_is_drift()` returns true.
+///
+/// Phase 1 contract stub: the body is not implemented and returns a
+/// not-implemented sentinel so the surface compiles and tests can pin the
+/// shape. The resolver call and fact derivation land in Phase 3.
+pub fn run_reconcile_check(
+    repo: &gix::Repository,
+    span_root: &str,
+    name: &str,
+    touched: &[(String, AnchorExtent)],
+    pre_write_anchors: &[AnchorRecord],
+) -> Result<ReconcileCheck> {
+    // Phase 1 stub — inputs are part of the contract signature but the body
+    // does not use them yet.
+    let _ = (repo, span_root, touched, pre_write_anchors);
+    anyhow::bail!(
+        "reconcile check for span `{name}` is not implemented (Phase 1 contract stub)"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1361,5 +1620,156 @@ mod tests {
         assert_eq!(reparsed.anchors[1].end_line, 10);
         assert_eq!(reparsed.anchors[2].start_line, 20);
         assert_eq!(reparsed.anchors[2].end_line, 30);
+    }
+
+    /// Build a minimal `AnchorRecord` for the supersession rule table.
+    /// Whole-file anchors store `(0, 0)`.
+    fn rec(path: &str, start_line: u32, end_line: u32) -> AnchorRecord {
+        AnchorRecord {
+            path: path.into(),
+            start_line,
+            end_line,
+            algorithm: "rk64".into(),
+            content_hash: "x".into(),
+        }
+    }
+
+    fn lines(start: u32, end: u32) -> AnchorExtent {
+        AnchorExtent::LineRange { start, end }
+    }
+
+    /// The plan's supersession rule table: identical extent → not superseded;
+    /// whole-file covers range; range covers range; partial overlap → not
+    /// superseded; disjoint same-path → not superseded; cross-path → not
+    /// superseded.
+    #[test]
+    fn is_superseded_rule_table() {
+        let old_range = rec("src/a.ts", 1, 5);
+        let old_whole = rec("src/a.ts", 0, 0);
+
+        // Identical (path, extent) is NOT supersession — the resolved-in-place
+        // (hash update) case, for both line ranges and whole-file anchors.
+        assert!(!is_superseded(&old_range, "src/a.ts", &lines(1, 5)));
+        assert!(!is_superseded(&old_whole, "src/a.ts", &AnchorExtent::WholeFile));
+
+        // Whole-file covers any old extent on the path (line range).
+        assert!(is_superseded(&old_range, "src/a.ts", &AnchorExtent::WholeFile));
+
+        // Range covers range iff new.start <= old.start && new.end >= old.end.
+        assert!(is_superseded(&old_range, "src/a.ts", &lines(1, 6)));
+        assert!(is_superseded(&old_range, "src/a.ts", &lines(0, 5)));
+        assert!(is_superseded(&old_range, "src/a.ts", &lines(1, 10)));
+
+        // Partial overlap → not superseded (each direction).
+        assert!(!is_superseded(&old_range, "src/a.ts", &lines(2, 6)));
+        assert!(!is_superseded(&old_range, "src/a.ts", &lines(4, 10)));
+        assert!(!is_superseded(&old_range, "src/a.ts", &lines(2, 4)));
+
+        // Disjoint same-path ranges → not superseded (each direction).
+        assert!(!is_superseded(&old_range, "src/a.ts", &lines(6, 10)));
+        assert!(!is_superseded(&old_range, "src/a.ts", &lines(0, 0)));
+
+        // A line range can never cover a whole-file anchor.
+        assert!(!is_superseded(&old_whole, "src/a.ts", &lines(1, 100)));
+
+        // Cross-path → never superseded, regardless of extents.
+        assert!(!is_superseded(&old_range, "src/b.ts", &AnchorExtent::WholeFile));
+        assert!(!is_superseded(&old_range, "src/b.ts", &lines(0, 100)));
+        assert!(!is_superseded(&old_whole, "src/b.ts", &AnchorExtent::WholeFile));
+    }
+
+    /// The mutation document's serde contract: the exact enum spellings and
+    /// top-level key set from the plan's example document (schema_version 1,
+    /// `command`/`span`/`addresses`/`superseded`/`remaining`/`span_health`).
+    #[test]
+    fn mutation_document_serializes_contract_shape() {
+        let doc = MutationDocument::new(
+            "add",
+            "user-id-lifecycle",
+            vec![AnchorOutcome {
+                address: "src/read-user.ts#L1-L3".into(),
+                outcome: AddressOutcome::Added,
+            }],
+            vec![SupersededAnchor {
+                address: "src/read-user.ts#L1-L5".into(),
+                superseded_by: "src/read-user.ts#L1-L3".into(),
+                state: SupersessionState::Remains,
+                next_step: "git span remove user-id-lifecycle src/read-user.ts#L1-L5".into(),
+            }],
+            vec![RemainingAnchor {
+                address: "src/read-user.ts".into(),
+                status: serde_json::json!({ "code": "CHANGED" }),
+                next_step: "git span remove user-id-lifecycle src/read-user.ts".into(),
+            }],
+            SpanHealth {
+                state: SpanHealthState::Drift,
+                drift_count: 1,
+                drifting: vec![DriftingAnchor {
+                    address: "src/read-user.ts".into(),
+                    status: serde_json::json!({ "code": "CHANGED" }),
+                }],
+                resolved_pending_commit_count: 0,
+                reason: None,
+            },
+        );
+        let v: serde_json::Value = serde_json::to_value(&doc).unwrap();
+        assert_eq!(v["schema_version"], 1);
+        assert_eq!(v["command"], "add");
+        assert_eq!(v["span"], "user-id-lifecycle");
+        assert_eq!(v["addresses"][0]["outcome"], "ADDED");
+        assert_eq!(v["superseded"][0]["state"], "REMAINS");
+        assert_eq!(v["superseded"][0]["superseded_by"], "src/read-user.ts#L1-L3");
+        assert_eq!(v["remaining"][0]["status"]["code"], "CHANGED");
+        assert_eq!(v["span_health"]["state"], "DRIFT");
+        assert_eq!(v["span_health"]["drift_count"], 1);
+        assert!(v["span_health"].get("reason").is_none());
+
+        // A clean span: DRIFT_FREE, empty arrays, no reason key.
+        let clean = MutationDocument::new(
+            "add",
+            "s",
+            vec![],
+            vec![],
+            vec![],
+            SpanHealth {
+                state: SpanHealthState::DriftFree,
+                drift_count: 0,
+                drifting: vec![],
+                resolved_pending_commit_count: 0,
+                reason: None,
+            },
+        );
+        let v: serde_json::Value = serde_json::to_value(&clean).unwrap();
+        assert_eq!(v["span_health"]["state"], "DRIFT_FREE");
+        assert!(v["addresses"].as_array().is_some_and(Vec::is_empty));
+        assert!(v["superseded"].as_array().is_some_and(Vec::is_empty));
+        assert!(v["remaining"].as_array().is_some_and(Vec::is_empty));
+        assert!(v["span_health"].get("reason").is_none());
+
+        // UNKNOWN carries the reason string.
+        let unknown = SpanHealth {
+            state: SpanHealthState::Unknown,
+            drift_count: 0,
+            drifting: vec![],
+            resolved_pending_commit_count: 0,
+            reason: Some("index changed during scan".into()),
+        };
+        let v: serde_json::Value = serde_json::to_value(&unknown).unwrap();
+        assert_eq!(v["state"], "UNKNOWN");
+        assert_eq!(v["reason"], "index changed during scan");
+
+        // The remaining stable spellings.
+        assert_eq!(
+            serde_json::to_value(AddressOutcome::Resolved).unwrap(),
+            "RESOLVED"
+        );
+        assert_eq!(
+            serde_json::to_value(AddressOutcome::Unchanged).unwrap(),
+            "UNCHANGED"
+        );
+        assert_eq!(
+            serde_json::to_value(SupersessionState::Retired).unwrap(),
+            "RETIRED"
+        );
     }
 }

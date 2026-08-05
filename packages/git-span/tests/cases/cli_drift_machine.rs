@@ -61,7 +61,8 @@ fn json_has_schema_version() -> Result<()> {
     drift(&repo)?;
     let out = repo.run_span(["drift", "m", "--format=json"])?;
     let v: Value = serde_json::from_slice(&out.stdout)?;
-    assert_eq!(v["schema_version"], 2);
+    assert_eq!(v["schema_version"], 3);
+    assert_eq!(v["clean"], false);
     assert!(v["findings"].is_array());
     Ok(())
 }
@@ -74,8 +75,9 @@ fn json_envelope_has_span_field() -> Result<()> {
     drift(&repo)?;
     let out = repo.run_span(["drift", "m", "--format=json"])?;
     let v: Value = serde_json::from_slice(&out.stdout)?;
-    assert_eq!(v["schema_version"], 2);
+    assert_eq!(v["schema_version"], 3);
     assert_eq!(v["span"], "m");
+    assert_eq!(v["clean"], false);
     Ok(())
 }
 

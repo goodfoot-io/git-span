@@ -49,7 +49,8 @@ fn json_envelope_has_schema_version_and_findings() -> Result<()> {
     drift_in_head(&repo)?;
     let out = repo.run_span(["drift", "m", "--format=json"])?;
     let v: Value = serde_json::from_slice(&out.stdout)?;
-    assert_eq!(v["schema_version"], 2);
+    assert_eq!(v["schema_version"], 3);
+    assert_eq!(v["clean"], false);
     assert!(v["findings"].is_array(), "envelope: {v}");
     let first = &v["findings"][0];
     assert_eq!(first["status"]["code"], "CHANGED");
@@ -202,8 +203,10 @@ fn discovery_json_includes_clean_span_with_pending_metadata() -> Result<()> {
     // File-backed model: `git span why` rewrites the why section of the
     // worktree span file directly — there is no staged "pending"
     // metadata op. A why-only edit on an otherwise clean span produces
-    // no drift: exit 0, and the JSON workspace scan emits no findings
-    // (the renderer is silent when there is nothing drift).
+    // no drift: exit 0, and the JSON workspace scan emits the always-on
+    // clean document (schema_version 3, `"clean": true`, `"findings": []`
+    // — never empty stdout, so hooks can distinguish "clean" from "no
+    // output").
     let repo = TestRepo::seeded()?;
     seed(&repo, "clean-with-pending")?;
     repo.span_stdout(["why", "clean-with-pending", "updated reason"])?;
@@ -211,10 +214,14 @@ fn discovery_json_includes_clean_span_with_pending_metadata() -> Result<()> {
     let out = repo.run_span(["drift", "--format=json"])?;
     assert_eq!(out.status.code(), Some(0));
     assert!(
-        out.stdout.is_empty()
-            || serde_json::from_slice::<Value>(&out.stdout)?["findings"]
-                .as_array()
-                .is_some_and(Vec::is_empty),
+        !out.stdout.is_empty(),
+        "clean scan must emit a document, got empty stdout"
+    );
+    let v: Value = serde_json::from_slice(&out.stdout)?;
+    assert_eq!(v["schema_version"], 3);
+    assert_eq!(v["clean"], true);
+    assert!(
+        v["findings"].as_array().is_some_and(Vec::is_empty),
         "why-only edit must not create findings; stdout={}",
         String::from_utf8_lossy(&out.stdout)
     );
