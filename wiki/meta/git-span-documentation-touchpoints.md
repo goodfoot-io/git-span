@@ -121,8 +121,8 @@ Keep text marked verbatim exact in the website integration page and both
 `understanding-hook-output.md` files. Reconciliation text must say:
 
 - refresh the exact anchor when identity is unchanged — whole-file stays whole-file and a range keeps its exact boundaries;
-- treat a file shrunken below its anchored end as an identity change — retire the old range and re-add at the file's current line count;
-- remove the old anchor before adding a changed path or range;
+- treat a file shrunken below its anchored end as an identity change — swap it with `git span replace` to the file's current line count;
+- swap a changed path or range with `git span replace`;
 - update or retire a stale why; and
 - require scoped zero drift.
 
@@ -161,8 +161,8 @@ Relevant declarations include:
 - `wiki/meta/references`
 
 Inspect with `git span`, not raw `.span/**` parsing. Refresh the exact existing anchor when
-its identity is unchanged. If identity changes, remove the old address before adding the
-new one. Require zero drift.
+its identity is unchanged. If identity changes, `git span replace` swaps the old address for
+the new one atomically. Require zero drift.
 
 ## Update sequence
 

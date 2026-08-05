@@ -1635,7 +1635,7 @@ function renderDriftReason(
   const names = [...new Set(findings.map((row) => row.name))];
   const subject = names.length === 1 ? 'an implicit dependency' : 'implicit dependencies';
   const name = names.length === 1 ? names[0] : '<name>';
-  const action = `preserve anchor shape; if an address changed, remove its old anchor before adding the new one; update or retire the why only if its meaning changed; require \`git span drift ${name}\` to report zero`;
+  const action = `preserve anchor shape; if an address changed, swap the old anchor for the new one with \`git span replace\`; update or retire the why only if its meaning changed; require \`git span drift ${name}\` to report zero`;
   if (alreadySeen) {
     const paths = [...new Set(findings.map((row) => row.path))];
     const closing = `Already flagged above — restore agreement and require scoped zero drift; update or retire the why only if its meaning changed.`;

@@ -63,7 +63,7 @@ commit. Otherwise continue.
 | drift-claim | confirm | asserts a fact about code that may have changed (a mechanism, a count, a "fixed" problem) | verify against current anchor bytes; rewrite or use `git span history <name>` if creation-vs-current is unclear |
 | lifecycle-gate | confirm | behavior is conditional on named evidence | verify the evidence; preserve behavior and why when unmet, invalidated, or unavailable; when satisfied, make the change, then revise or retire the why and every superseded anchor |
 | drift-range | confirm | anchor content shifted but still the same logical site | `drift --fix` (Moved / whitespace-only Changed) or manual re-anchor (real content drift) |
-| mis-anchored | confirm | anchor range points at the WRONG code entirely — the why describes something living elsewhere in the file. `drift` reports 0 drift for this (the hash matches the wrong bytes) — it is caught only by reading the anchor against the why's claims, never by `drift` alone | find the real site, remove the old range, then add the new one |
+| mis-anchored | confirm | anchor range points at the WRONG code entirely — the why describes something living elsewhere in the file. `drift` reports 0 drift for this (the hash matches the wrong bytes) — it is caught only by reading the anchor against the why's claims, never by `drift` alone | find the real site, then swap the old range for the new one with `git span replace` |
 | duplicate/overlap | confirm | two spans assert the same coupling | consolidate (Operations table) |
 | generated-output | confirm | a script or generator writes an anchored path and nobody hand-edits it | drop the output anchors, keep the producer↔consumer contract |
 | mirror-bundle | confirm | ≥2 basename pairs of *near-identical copies* across two roots differing by one path segment, no anchored enforcer. Surfaces that restate one rule in their own register are distinct roles, not this class | keep ONE span (`add` rejects directory roots). Parity check exists: anchor the normative side's files plus the check. No check: the span *is* the parity mechanism — keep both sides of each pair, name the normative direction in the why, and recommend building a check; dropping the mirror side removes the only drift detection. Tree too large to enumerate (dozens of pairs): anchor one representative pair and say in the why it stands for the tree. Never split per pair, never delete |
@@ -214,7 +214,7 @@ definition, so only the failed unit needs rework.
   never run it outside it.
 - `drift --fix` no-ops ("Reconciled 0 spans") on a non-trivial change even
   when it *looks* like a pure shift — don't retry it; re-anchor manually
-  (remove the old range, then add the new one) once.
+  (swap the old range for the new one with `git span replace`) once.
 - Anchor ranges can shift between your inspect step and your fix step (usually
   your own earlier comment edit) — re-run `git span show <name>` immediately
   before `git span remove` to get the live range, don't reuse a range noted

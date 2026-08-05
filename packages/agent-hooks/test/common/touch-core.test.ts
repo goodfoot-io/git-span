@@ -137,7 +137,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
       expect(block).toContain('\n\n---\n\n');
       expect(block).toContain('Restore agreement before committing');
       expect(block).toContain('Preserve anchor shape');
-      expect(block).toContain('remove its old anchor before adding the new one');
+      expect(block).toContain('swap the old anchor for the new one with `git span replace`');
       expect(block).toContain('`git span drift billing/checkout-request-flow` to report zero');
       expect(block).toContain('Follow confirmed authority');
       expect(block).toContain('Conform a side only when confirmed authority or a satisfied gate decides it');

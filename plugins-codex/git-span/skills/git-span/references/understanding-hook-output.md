@@ -66,8 +66,8 @@ Stripe-backed server.
 ---
 
 Restore agreement before committing. Follow confirmed authority. Preserve
-anchor shape; if an address changed, remove its old anchor
-before adding the new one. Update or retire the why only if its meaning
+anchor shape; if an address changed, swap the old anchor for the new one
+with `git span replace`. Update or retire the why only if its meaning
 changed. Require `git span drift billing/checkout-request-flow` to report
 zero, then check the other anchors. Conform a side only when confirmed authority
 or a satisfied gate decides it; report ambiguity or an obsolete coupling.
@@ -165,8 +165,8 @@ Stripe-backed server.
 
 Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to
 bring the coupled files back into agreement (follow confirmed authority) —
-preserve anchor shape; if an address changed, remove its
-old anchor before adding the new one; update or retire the why only if its
+preserve anchor shape; if an address changed, swap the old anchor for the new
+one with `git span replace`; update or retire the why only if its
 meaning changed; require `git span drift billing/checkout-request-flow` to
 report zero. Then retry. Load the `git-span:reconcile` skill in the fork. The
 hold will not fire again for the same debt state. Conform a side only when
