@@ -4,12 +4,10 @@ packages/agent-hooks/src/codex/stop.ts#L15-L26 rk64:2f3619d13de2b07a
 packages/agent-hooks/src/codex/subagent-stop.ts#L16-L27 rk64:d363bcf4f119d5dd
 packages/agent-hooks/src/common/snapshot-store.ts#L514-L520 rk64:d76e8664d58c1a80
 packages/agent-hooks/test/claude/snapshot-lifecycle.test.ts#L882-L964 rk64:446ac9b1f0579caf
-packages/agent-hooks/test/claude/snapshot-lifecycle.test.ts#L882-L964 rk64:446ac9b1f0579caf
-packages/agent-hooks/test/codex/snapshot-lifecycle.test.ts#L520-L668 rk64:83002762ae10be4d
+packages/agent-hooks/test/codex/snapshot-lifecycle.test.ts#L520-L668 rk64:50afc09e92850f86
 packages/agent-hooks/test/codex/snapshot-lifecycle.test.ts#L533-L690 rk64:406e742bb806d8fb
-packages/agent-hooks/test/codex/snapshot-lifecycle.test.ts#L533-L690 rk64:406e742bb806d8fb
-packages/agent-hooks/test/common/snapshot-store.test.ts#L470-L613 rk64:ec4ce28dade11ddc
+packages/agent-hooks/test/common/snapshot-store.test.ts#L470-L613 rk64:73673b3d3783b61d
 packages/agent-hooks/test/common/snapshot-store.test.ts#L491-L658 rk64:a19df8265deb5b4e
-packages/agent-hooks/test/common/snapshot-store.test.ts#L517-L684 rk64:f7d89fe6d32ed3fd
+packages/agent-hooks/test/common/snapshot-store.test.ts#L517-L684 rk64:67de959625717973
 
 SessionEnd, Stop, and SubagentStop drive the store's single removeSession contract, which removes records, tombstones, activity entries, and index entries, and SubagentStop's agentId-scoped removal depends on the Codex snapshot adapter recording agent_id on the record — a session's state never outlives its session and a completed subagent's records never mis-attribute a later sibling's writes. The store's TTL-sweep and removeSession checks and the cleanup/asymmetry harness sections pin that contract as the skipped evidence gate Phase 3 must satisfy.
