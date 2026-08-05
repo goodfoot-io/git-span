@@ -44,8 +44,15 @@
  * batch restores precision for gated-stage `-e`/`-f`/`--regexp` forms
  * (separate and glued): every positional is a search root when the pattern
  * came from a flag, so single-file one-file layout and multi-file roots
- * decode genuine spans instead of losing them. Only the adapter-envelope
- * checks remain `it.skip` for Phase 3e.
+ * decode genuine spans instead of losing them. The round-6 R6-1 batch
+ * closes the GLUED-REDIRECT hole in both gates: a `<` glued to a flag,
+ * pattern, or consumed `-e`/`-f` value (`head -2<crafted.txt`, `grep
+ * needle<crafted.txt`, `rg -f patterns.txt<crafted.txt`) is a stdin
+ * redirect to bash but invisible to token-level checks, so the quote-aware
+ * hasUnquotedRedirect scan fails every such stage closed — while a quoted
+ * literal `<` in a pattern (`rg -n 'x<needle' lt.ts`) and a glued redirect
+ * under explicit roots stay open. Only the adapter-envelope checks remain
+ * `it.skip` for Phase 3e.
  *
  * The golden-matrix harness below builds the fixture store by executing the
  * REAL binaries — /usr/bin/rg (ripgrep 14.1.1), /usr/bin/grep (GNU grep
@@ -118,7 +125,11 @@ const SEARCH_FILES: Record<string, string> = {
   // A pattern file for the round-5 pattern-from-flag fixtures: `-f`/`--file`
   // takes its pattern from this file, so the gated stage's positionals are
   // all search roots, not pattern-then-roots.
-  'digits/patterns.txt': 'needle\n'
+  'digits/patterns.txt': 'needle\n',
+  // A literal `<` INSIDE a quoted pattern for the round-6 R6-1 quote-aware
+  // fixtures: bash reads it as part of the pattern, never as a redirect, so
+  // the single-file search stays genuine.
+  'digits/lt.ts': 'x<needle\n'
 };
 
 interface ExpectedSpan {
@@ -995,6 +1006,89 @@ function buildGoldenMatrix(root: string): GoldenMatrix {
   fixtures.push(
     pipelineFixture('rg-e-glued', 'cd digits && rg -n -eneedle 1', root, [
       { path: 'digits/1', lineStart: 1, lineEnd: 1 }
+    ])
+  );
+
+  // Round-6 R6-1: a stdin redirect GLUED to a preceding token
+  // (`head -2<crafted.txt` is `head -2 < crafted.txt` to bash) is invisible
+  // to token-level gates — the token starts with a flag or fills the
+  // pattern slot, and a consumed `-e`/`-f` value is never inspected. The
+  // quote-aware hasUnquotedRedirect check fails closed on every stage whose
+  // text carries an unquoted `<`: verbatim bins and grep-family siblings
+  // read the crafted file instead of the pipe, and a gated rg/grep with a
+  // glued redirect and no roots becomes a stdin-fed search. A quoted
+  // literal `<` in a pattern (`rg -n 'x<needle' lt.ts`) is NOT a redirect
+  // and stays open, and a glued redirect with explicit roots
+  // (`rg -e needle<crafted.txt 1 2` — the search ignores stdin) stays open
+  // too.
+  {
+    const crafted = 'crafted.txt';
+    const gluedStages: Array<[string, string]> = [
+      ['head', `head -2<${crafted}`],
+      ['head-lines', `head --lines=1<${crafted}`],
+      ['sort', `sort -k2<${crafted}`],
+      ['grep', `grep needle<${crafted}`],
+      ['grep-e', `grep -e needle<${crafted}`]
+    ];
+    for (const [suffix, stage] of gluedStages) {
+      const command = `cd digits && rg -n needle 1 2 | ${stage}`;
+      fixtures.push({
+        name: `pipe-rg-glued-redirect-${suffix}`,
+        command,
+        cwd: root,
+        stdout: runPipeline(command, root).stdout,
+        exitStatus: 0,
+        expected: [],
+        files: SEARCH_FILES
+      });
+    }
+    const chainGlued: Array<[string, string]> = [
+      ['semicolon', `; head -2<${crafted}`],
+      ['pipe-head', `; head -2<${crafted} | cat`]
+    ];
+    for (const [suffix, stage] of chainGlued) {
+      const command = `cd digits && rg -n needle 1 2 ${stage}`;
+      fixtures.push({
+        name: `chain-sibling-glued-redirect-${suffix}`,
+        command,
+        cwd: root,
+        stdout: runPipeline(command, root).stdout,
+        exitStatus: 0,
+        expected: [],
+        files: SEARCH_FILES
+      });
+    }
+    // The gated stage's own glued redirect: the `-e`/`-f` VALUE carries the
+    // redirect, so no standalone `<` token survives argv splitting — only
+    // the raw-text scan sees it, and the stdin-fed rule fires.
+    const gatedGlued: Array<[string, string]> = [
+      ['rg-e', 'rg -n -e needle<crafted.txt'],
+      ['grep-e', 'grep -n -e needle<crafted.txt'],
+      ['rg-f', 'rg -n -f patterns.txt<crafted.txt'],
+      ['grep-f', 'grep -n -f patterns.txt<crafted.txt']
+    ];
+    for (const [suffix, stage] of gatedGlued) {
+      const command = `cd digits && ${stage}`;
+      fixtures.push({
+        name: `gated-glued-redirect-${suffix}`,
+        command,
+        cwd: root,
+        stdout: runPipeline(command, root).stdout,
+        exitStatus: 0,
+        expected: [],
+        files: SEARCH_FILES
+      });
+    }
+  }
+  fixtures.push(
+    pipelineFixture('rg-quoted-angle-pattern', "cd digits && rg -n 'x<needle' lt.ts", root, [
+      { path: 'digits/lt.ts', lineStart: 1, lineEnd: 1 }
+    ])
+  );
+  fixtures.push(
+    pipelineFixture('rg-e-glued-redirect-roots', 'cd digits && rg -n -e needle<crafted.txt 1 2', root, [
+      { path: 'digits/1', lineStart: 1, lineEnd: 1 },
+      { path: 'digits/2', lineStart: 1, lineEnd: 1 }
     ])
   );
 
@@ -2385,6 +2479,48 @@ describe('parse-response (Phase 3a–3c — search layouts, unified diffs, and b
       // and the touches lost.
       const names = ['rg-e-one-file', 'rg-e-multi', 'grep-f-patternfile', 'rg-regexp-glued', 'rg-e-glued'];
       for (const name of names) {
+        const f = fixture(name);
+        expect(f.stdout).not.toBe('');
+        expect(sortedSpans(parseFixture(f))).toEqual(sortedSpans(resolveExpected(f)));
+      }
+    });
+  });
+
+  describe('glued stdin redirects fail closed (round-6 R6-1)', () => {
+    it('a `<` glued to a flag, pattern, or value token redirects stdin — every shape fails closed with non-empty stdout', () => {
+      // `head -2<crafted.txt` is `head -2 < crafted.txt` to bash, but argv
+      // splitting never surfaces a standalone `<` token: verbatim bins and
+      // grep-family siblings read the crafted file instead of the pipe, and
+      // a gated rg/grep whose `-e`/`-f` VALUE carries the redirect (no roots
+      // left) becomes a stdin-fed search. Every fixture asserts non-empty
+      // stdout AND zero spans — the crafted records must never decode.
+      const names = [
+        'pipe-rg-glued-redirect-head',
+        'pipe-rg-glued-redirect-head-lines',
+        'pipe-rg-glued-redirect-sort',
+        'pipe-rg-glued-redirect-grep',
+        'pipe-rg-glued-redirect-grep-e',
+        'chain-sibling-glued-redirect-semicolon',
+        'chain-sibling-glued-redirect-pipe-head',
+        'gated-glued-redirect-rg-e',
+        'gated-glued-redirect-grep-e',
+        'gated-glued-redirect-rg-f',
+        'gated-glued-redirect-grep-f'
+      ];
+      for (const name of names) {
+        const f = fixture(name);
+        expect(f.stdout).not.toBe('');
+        expect(parseFixture(f)).toEqual([]);
+      }
+    });
+
+    it('a quoted literal `<` and a glued redirect with explicit roots stay open', () => {
+      // `rg -n 'x<needle' lt.ts` — the `<` is INSIDE the quotes, so bash
+      // reads it as part of the pattern, never as a redirect; and
+      // `rg -n -e needle<crafted.txt 1 2` — the glued redirect is present,
+      // but explicit roots make the search ignore stdin, so the genuine
+      // records decode.
+      for (const name of ['rg-quoted-angle-pattern', 'rg-e-glued-redirect-roots']) {
         const f = fixture(name);
         expect(f.stdout).not.toBe('');
         expect(sortedSpans(parseFixture(f))).toEqual(sortedSpans(resolveExpected(f)));

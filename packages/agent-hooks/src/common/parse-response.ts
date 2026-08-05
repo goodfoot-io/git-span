@@ -59,7 +59,12 @@
  *   token that is not a flag names a file the stage reads instead of the
  *   pipe, so the response's records come from that file, not the gated
  *   stage, and a crafted record decodes as a phantom touch — that form
- *   fails closed with the rest. The terminating-newline rule handles
+ *   fails closed with the rest. The same rule covers an UNQUOTED `<` — a
+ *   stdin redirect, standalone or GLUED inside a token (`head -2<crafted.txt`,
+ *   `grep needle<crafted.txt`, a consumed `-e`/`-f` value) — because the
+ *   stage then reads a file instead of the pipe; the hasUnquotedRedirect
+ *   scan is quote-aware, so a quoted literal `<` in a pattern
+ *   (`rg -n '<div>'`) is not a redirect. The terminating-newline rule handles
  *   the cut. Everything else fails CLOSED — the default is inverted, so
  *   any stage not provably verbatim (python, ruby, mawk, gawk, paste, and
  *   the rest of an unbounded renumberer set) may renumber or rewrite the
@@ -77,10 +82,14 @@
  *   gated stage is found — the evidence was produced in that directory.
  * - **Stdin-fed search fails closed**: a non-git search bin (`rg`/`grep`/
  *   `egrep`/`fgrep`) with no path args whose input is piped or redirected
- *   (`printf '…' | rg -n needle`, `< file`, `<<<`, `<(…)`) reads STDIN, not
- *   files — the response's records are stream positions, and decoding them
- *   as paths fabricates touches (a stdin line number like "9" becomes a
- *   path, and with a real file named `9` at the cwd the phantom surfaces).
+ *   (`printf '…' | rg -n needle`, `< file`, `<<<`, `<(…)`, and the GLUED
+ *   forms — `rg needle<file`, `head -2<file`, a consumed `-e`/`-f` value
+ *   like `-e needle<file` — where the redirect is invisible to argv
+ *   splitting and only the quote-aware hasUnquotedRedirect scan sees it)
+ *   reads STDIN, not files — the response's records are stream positions,
+ *   and decoding them as paths fabricates touches (a stdin line number
+ *   like "9" becomes a path, and with a real file named `9` at the cwd the
+ *   phantom surfaces).
  *   Such an invocation yields no response-derived spans. Explicit path args
  *   mean the bin searches files (the redirect/pipe is then irrelevant), and
  *   `git grep` never reads stdin — both preserved. This invariant binds only
@@ -145,7 +154,7 @@ import { existsSync, statSync } from 'node:fs';
 import { dirname, join, resolve as resolvePath, sep } from 'node:path';
 import { countFileLines } from './command-resolve.js';
 import type { ResolvedSpan } from './parse-command.js';
-import { argvOf, splitTopLevel } from './shell-split.js';
+import { argvOf, hasUnquotedRedirect, type Operator, splitTopLevel } from './shell-split.js';
 
 /**
  * The normalized tool-response input the adapters hand the shared parser.
@@ -1391,8 +1400,19 @@ export function parseResponse(input: ResponseParseInput): ResolvedSpan[] {
   let gated: GatedCommand | null = null;
   // Whether the gated stage's stdin came from a pipe — the signal that its
   // records are stream positions when no search roots were given.
-  let gatedPrecededBy: '|' | 'other' | 'start' = 'start';
-  const parts = splitTopLevel(command);
+  let gatedPrecededBy: Operator = 'start';
+  // Whether the gated stage's own text carries an UNQUOTED `<` — a stdin
+  // redirect, standalone or glued inside a token (`rg needle<crafted.txt`,
+  // a consumed `-e`/`-f` value). The stdin-fed rule must see it even when
+  // no standalone `<` token survives argv splitting. Quote-aware: a quoted
+  // literal `<` in a pattern (`rg -n '<div>'`) is not a redirect.
+  let gatedRedirect = false;
+  const split = splitTopLevel(command);
+  // A Bash parse error means nothing executed (bash exits 2 at parse time) —
+  // the response could not have been produced by this command, so fail
+  // closed rather than attribute it to half-parsed stages.
+  if (split.malformed !== undefined) return [];
+  const parts = split.stages;
   for (let i = 0; i < parts.length; i++) {
     const simple = parts[i];
     const argv = argvOf(simple.text);
@@ -1430,6 +1450,7 @@ export function parseResponse(input: ResponseParseInput): ResolvedSpan[] {
     }
     if (gated === null) continue;
     gatedPrecededBy = simple.precededBy;
+    gatedRedirect = hasUnquotedRedirect(simple.text);
     // Every OTHER stage's records can reach the response, so each must be
     // provably verbatim — the default of isRenumberingFilter is closed, so
     // any bin outside the verbatim allowlist (python, ruby, mawk, …) may
@@ -1453,12 +1474,20 @@ export function parseResponse(input: ResponseParseInput): ResolvedSpan[] {
         // response (through the stages between them).
         let consumed = true;
         for (let k = j + 1; k <= i && consumed; k++) {
-          if (parts[k].precededBy !== '|') consumed = false;
+          if (parts[k].precededBy !== 'pipe') consumed = false;
         }
         if (consumed) continue;
       }
-      const siblingArgv = argvOf(parts[j].text);
+      const siblingText = parts[j].text;
+      const siblingArgv = argvOf(siblingText);
       if (siblingArgv === null || siblingArgv.length === 0 || siblingArgv[0] === 'cd') continue;
+      // An unquoted `<` — even GLUED inside a flag, pattern, or value token
+      // (`head -2<crafted.txt`, `grep needle<crafted.txt`, `-e needle<f`) —
+      // redirects the stage's stdin to a file, so its records come from that
+      // file, not the pipe: a crafted record decodes as a phantom touch, so
+      // fail closed like any other file operand. Quote-aware: a quoted
+      // literal `<` in a pattern (`rg -n '<div>'`) is not a redirect.
+      if (hasUnquotedRedirect(siblingText)) return [];
       if (isRenumberingFilter(siblingArgv)) return [];
     }
   }
@@ -1521,14 +1550,17 @@ export function parseResponse(input: ResponseParseInput): ResolvedSpan[] {
   // `<<<`, `<(…)`) — line numbers are then stream positions, not file
   // lines, and decoding them fabricates touches (a stdin line "9" becomes a
   // path, and with a real file named `9` at the cwd the phantom surfaces).
-  // Fail closed: no response-derived spans. Explicit path args scope the
-  // search to files (the redirect/pipe is then irrelevant), and `git grep`
-  // never reads stdin — both stay open.
+  // gatedRedirect extends the rule to a redirect GLUED inside a token
+  // (`rg needle<crafted.txt`, a consumed `-e`/`-f` value): argv splitting
+  // never surfaces a standalone `<` token, so only the quote-aware raw-text
+  // scan sees it. Fail closed: no response-derived spans. Explicit path
+  // args scope the search to files (the redirect/pipe is then irrelevant),
+  // and `git grep` never reads stdin — both stay open.
   const stdinFed =
     gated.kind === 'search' &&
     gated.argv[0] !== 'git' &&
     info.pathArgs.length === 0 &&
-    (gatedPrecededBy === '|' || info.stdinRedirect);
+    (gatedPrecededBy === 'pipe' || info.stdinRedirect || gatedRedirect);
   if (stdinFed) return [];
 
   // git grep scoping: plain invocation from a subdir is scoped to the subdir

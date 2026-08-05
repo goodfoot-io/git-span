@@ -832,6 +832,54 @@ export function splitWords(s: string): string[] | null {
   return words;
 }
 
+/**
+ * Whether an UNQUOTED `<` — a stdin redirect, standalone (`< file`) or glued
+ * inside a token (`head -2<f`, `rg needle<f`, a consumed `-e`/`-f` value like
+ * `-e needle<f`) — appears in a simple command. Bash treats `<` as a redirect
+ * operator only outside quotes, so the scan is quote-aware: a literal `<` in
+ * a pattern like `rg -n '<div>'` or an awk script like `'NR<=2'` must never
+ * be mistaken for a redirect. Process substitution `<(…)` and here-strings
+ * `<<<` also begin with an unquoted `<` — both count as redirects here (fail
+ * closed; a read-touch bin never legitimately needs them).
+ */
+export function hasUnquotedRedirect(simpleCmd: string): boolean {
+  let inSquote = false;
+  let inDquote = false;
+  for (let i = 0; i < simpleCmd.length; i++) {
+    const c = simpleCmd[i];
+    if (inSquote) {
+      // No escapes inside single quotes — the next `'` always closes.
+      if (c === "'") inSquote = false;
+      continue;
+    }
+    if (inDquote) {
+      // Inside double quotes a backslash only escapes `"`, `\`, `$`, and
+      // backtick; everything else (including `<`) is literal.
+      if (c === '\\' && i + 1 < simpleCmd.length && '"\\$`'.includes(simpleCmd[i + 1])) {
+        i += 1;
+      } else if (c === '"') {
+        inDquote = false;
+      }
+      continue;
+    }
+    if (c === "'") {
+      inSquote = true;
+      continue;
+    }
+    if (c === '"') {
+      inDquote = true;
+      continue;
+    }
+    if (c === '\\' && i + 1 < simpleCmd.length) {
+      // An escaped character is literal — `\<` is not a redirect.
+      i += 1;
+      continue;
+    }
+    if (c === '<') return true;
+  }
+  return false;
+}
+
 /** Best-effort argv for a simple command: leading assignments stripped, quote-aware split. Returns null if the command doesn't tokenize cleanly (unbalanced quotes). */
 export function argvOf(simpleCmd: string): string[] | null {
   return splitWords(stripLeadingAssignments(simpleCmd).trim());
