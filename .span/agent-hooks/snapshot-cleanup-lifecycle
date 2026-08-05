@@ -1,11 +1,13 @@
 packages/agent-hooks/src/claude/session-end.ts#L15-L26 rk64:97b4fc1421831461
 packages/agent-hooks/src/codex/snapshot.ts#L6-L14 rk64:3a48b304dd3ae9ef
+packages/agent-hooks/src/codex/snapshot.ts#L7-L15 rk64:3a48b304dd3ae9ef
 packages/agent-hooks/src/codex/stop.ts#L15-L26 rk64:2f3619d13de2b07a
 packages/agent-hooks/src/codex/subagent-stop.ts#L16-L27 rk64:d363bcf4f119d5dd
 packages/agent-hooks/src/common/snapshot-store.ts#L498-L504 rk64:d76e8664d58c1a80
 packages/agent-hooks/test/claude/snapshot-lifecycle.test.ts#L872-L954 rk64:446ac9b1f0579caf
 packages/agent-hooks/test/codex/snapshot-lifecycle.test.ts#L520-L668 rk64:83002762ae10be4d
 packages/agent-hooks/test/codex/snapshot-lifecycle.test.ts#L521-L678 rk64:406e742bb806d8fb
+packages/agent-hooks/test/codex/snapshot-lifecycle.test.ts#L525-L682 rk64:406e742bb806d8fb
 packages/agent-hooks/test/common/snapshot-store.test.ts#L470-L613 rk64:ec4ce28dade11ddc
 packages/agent-hooks/test/common/snapshot-store.test.ts#L517-L684 rk64:f7d89fe6d32ed3fd
 

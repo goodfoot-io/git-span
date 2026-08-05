@@ -49,6 +49,7 @@ import {
   hashFile,
   hunksToPostRanges,
   pairRenames,
+  recordHasPathCoverageGap,
   type SiblingSnapshot,
   type SnapshotFile,
   type SnapshotRecord
@@ -1579,5 +1580,84 @@ describe('budgets', () => {
     // bigint replacer) — the property pinned is the worst-case ON-DISK size.
     const bytes = Buffer.byteLength(JSON.stringify(worstCase, bigintToJson), 'utf8');
     expect(bytes).toBeLessThan(DEFAULT_SNAPSHOT_BUDGETS.maxStorageBytes);
+  });
+});
+
+describe('git -C/--git-dir target the repo the exec-config read sees', () => {
+  it('git -C <other-repo> diff — exec keys come from the other repo, invisible to the cwd read: opaque', () => {
+    const other = makeTempRepo();
+    try {
+      const repo = makeTempRepo();
+      try {
+        expect(classifyCommandForSnapshot(`git -C ${other.root} diff`, repo.root).decision).toEqual({
+          kind: 'snapshot',
+          reason: 'opaque'
+        });
+      } finally {
+        repo.cleanup();
+      }
+    } finally {
+      other.cleanup();
+    }
+  });
+
+  it('git -C . diff — the same repo as the hook cwd: read-only unchanged, cwd config read', () => {
+    const repo = makeTempRepo();
+    try {
+      expect(classifyCommandForSnapshot('git -C . diff', repo.root).decision).toEqual({
+        kind: 'no-snapshot',
+        reason: 'read-only'
+      });
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it('git --git-dir=<path> diff — the repo is redirected: opaque', () => {
+    const repo = makeTempRepo();
+    try {
+      expect(classifyCommandForSnapshot(`git --git-dir=${join(repo.root, '.git')} diff`, repo.root).decision).toEqual({
+        kind: 'snapshot',
+        reason: 'opaque'
+      });
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it('git --git-dir <path> diff — the separate-argument redirect form is opaque too (and not misread as the subcommand)', () => {
+    const repo = makeTempRepo();
+    try {
+      expect(classifyCommandForSnapshot(`git --git-dir ${join(repo.root, '.git')} diff`, repo.root).decision).toEqual({
+        kind: 'snapshot',
+        reason: 'opaque'
+      });
+    } finally {
+      repo.cleanup();
+    }
+  });
+});
+
+describe('recordHasPathCoverageGap — the pre-walk gap family the guard reads', () => {
+  it('every current pre-walk path-coverage gap form matches (a rephrase breaks this fixture, not the guard)', () => {
+    for (const gap of [
+      'file-count budget exceeded: 5120/5000',
+      'pre-side wall budget exceeded: captured 12 files, stopped',
+      'total-bytes budget exceeded: 1048577/1048576',
+      'repo walk truncated: git ls-files failed; coverage is incomplete'
+    ]) {
+      expect(recordHasPathCoverageGap(record({ gaps: [gap] })), gap).toBe(true);
+    }
+  });
+
+  it('the line-hash form is range-precision loss only and never matches the family', () => {
+    expect(recordHasPathCoverageGap(record({ gaps: ['line-hash budget exceeded: 3 files recorded coarse'] }))).toBe(
+      false
+    );
+  });
+
+  it('the per-file exclusion diagnostics name the path but never match the family', () => {
+    expect(recordHasPathCoverageGap(record({ gaps: ['binary file excluded: src/app.bin'] }))).toBe(false);
+    expect(recordHasPathCoverageGap(record({ gaps: ['oversize file excluded: src/big.txt'] }))).toBe(false);
   });
 });

@@ -449,14 +449,35 @@ function findRedirects(argv: string[], currentDir: string): { present: boolean; 
  */
 function classifyGitExec(argv: string[], assignments: string, cwd: string): 'read-only' | 'opaque' | null {
   if (argv[0] !== 'git') return null;
-  // Find the subcommand after the program name, skipping -C/-c and leading flags.
+  // Find the subcommand after the program name, skipping -C/-c, --git-dir /
+  // --work-tree, and leading flags. The -C targets are resolved in order (git
+  // applies each -C relative to the previous one) so the command's working
+  // directory is known; a --git-dir/--work-tree redirect makes the repo's
+  // config source unknowable to this hook's cwd-scoped read — fail closed.
   let subIdx = -1;
   let subcommand: string | null = null;
+  let cTarget: string | null = null;
+  let repoRedirected = false;
   let i = 1;
   while (i < argv.length) {
     const a = argv[i]!;
-    if (a === '-C' || a === '-c') {
+    if (a === '-C') {
+      cTarget = resolve(cTarget ?? cwd, argv[i + 1] ?? '');
       i += 2;
+      continue;
+    }
+    if (a === '-c') {
+      i += 2;
+      continue;
+    }
+    if (a === '--git-dir' || a === '--work-tree') {
+      repoRedirected = true;
+      i += 2;
+      continue;
+    }
+    if (a.startsWith('--git-dir=') || a.startsWith('--work-tree=')) {
+      repoRedirected = true;
+      i += 1;
       continue;
     }
     if (a.startsWith('-')) {
@@ -473,6 +494,17 @@ function classifyGitExec(argv: string[], assignments: string, cwd: string): 'rea
     return argv.some((a) => a === '-w' || a === '--web') ? 'opaque' : 'read-only';
   }
   if (!GIT_READ_SUBCOMMANDS.has(subcommand)) return 'opaque';
+  // The command may run in a different repo than the hook cwd: with `-C` the
+  // diff-exec keys come from the TARGET repo's config, which the cwd-scoped
+  // read below cannot see; with `--git-dir`/`--work-tree` the repo itself is
+  // redirected. Only a `-C` target proven to resolve to the same top-level as
+  // the cwd keeps the read-only path with the cwd config read.
+  if (repoRedirected) return 'opaque';
+  if (cTarget !== null) {
+    const cwdRoot = repoTopLevel(cwd);
+    const targetRoot = repoTopLevel(cTarget);
+    if (cwdRoot === null || targetRoot === null || cwdRoot !== targetRoot) return 'opaque';
+  }
   const rendersDiff = subcommand === 'diff' || subcommand === 'log' || subcommand === 'show';
   // Command-text pager forms force opaque (the pager program is env-dependent);
   // ambient PAGER/GIT_PAGER are inert because the hook's stdout is a pipe.
@@ -499,6 +531,25 @@ function classifyGitExec(argv: string[], assignments: string, cwd: string): 'rea
     if (driver && !noTextconv) return 'opaque';
   }
   return 'read-only';
+}
+
+/**
+ * The repo top-level a directory resolves to (git's canonicalized answer), or
+ * null when the directory is not inside a repo or git cannot answer — the
+ * fail-closed side of the `-C` target check: an unresolvable target can never
+ * be proven to be the hook cwd's repo.
+ */
+function repoTopLevel(dir: string): string | null {
+  try {
+    const out = execFileSync('git', ['-C', dir, 'rev-parse', '--show-toplevel'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore']
+    });
+    const trimmed = out.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  } catch {
+    return null;
+  }
 }
 
 /** The one scoped config read: any exec key in the effective config opens a channel. */

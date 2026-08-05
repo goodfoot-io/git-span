@@ -709,17 +709,22 @@ export function createHandler(
     // Without a record the static path stays authoritative, byte-identical to
     // Phase 1. A command with no recognized idiom yields no blocks and returns
     // undefined — fail-open, same as the apply_patch path below.
-    if (tool_name === 'Bash' || tool_name === 'exec_command' || tool_name === 'exec') {
-      let command: string | null = null;
+    if (
+      tool_name === 'Bash' ||
+      tool_name === 'shell' ||
+      tool_name === 'local_shell' ||
+      tool_name === 'exec_command' ||
+      tool_name === 'exec'
+    ) {
+      // Extraction-first: the shell envelopes (Bash/shell/local_shell — the
+      // harness already unwrapped the code-mode envelope, so the command sits in
+      // `tool_input.command` as a string or argv array, exactly as the Claude
+      // adapter receives it) all resolve via extractShellCommand; the classic
+      // `exec_command` envelope carries `workdir` beside `cmd` (plan §8) and
+      // threads it through like the code-mode envelope below.
+      let command: string | null = extractShellCommand(input.tool_input);
       let workdir: string | null = null;
-      if (tool_name === 'Bash') {
-        // The harness already unwrapped the code-mode envelope — the command is
-        // in `tool_input.command` (string or argv array), exactly as the Claude
-        // adapter receives it.
-        command = extractShellCommand(input.tool_input);
-      } else {
-        // The classic `exec_command` envelope carries `workdir` beside `cmd`
-        // (plan §8) — thread it through like the code-mode envelope below.
+      if (command === null) {
         const classic = narrowExecCommand(input.tool_input);
         command = classic?.cmd ?? null;
         workdir = classic?.workdir ?? null;
@@ -869,4 +874,12 @@ export function createHandler(
   };
 }
 
-export default postToolUseHook({ matcher: 'apply_patch|exec_command|exec|Bash', timeout: 10_000 }, createHandler());
+/**
+ * The tool-name family the Post handler can consume: the pre family (every
+ * spelling the pre matcher registers — `shell`/`local_shell` included) plus
+ * `apply_patch`. Exported so the fixture can pin pre ⊆ post: a pre-registered
+ * spelling the post side cannot consume breaks the matcher-family test.
+ */
+export const SNAPSHOT_POST_MATCHER = 'apply_patch|exec_command|exec|shell|local_shell|Bash';
+
+export default postToolUseHook({ matcher: SNAPSHOT_POST_MATCHER, timeout: 10_000 }, createHandler());

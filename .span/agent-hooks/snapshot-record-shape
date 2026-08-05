@@ -3,7 +3,9 @@ packages/agent-hooks/src/common/snapshot-core.ts#L122-L181 rk64:ab33c55979bfbf93
 packages/agent-hooks/src/common/snapshot-store.ts#L66-L75 rk64:19367420390ba99a
 packages/agent-hooks/test/claude/snapshot-lifecycle-helpers.ts rk64:17ef8fc01810fa69
 packages/agent-hooks/test/common/snapshot-core.test.ts#L463-L526 rk64:c2e41b31230abf70
+packages/agent-hooks/test/common/snapshot-core.test.ts#L464-L527 rk64:c2e41b31230abf70
 packages/agent-hooks/test/common/snapshot-core.test.ts#L1513-L1568 rk64:e11b695b473a0394
+packages/agent-hooks/test/common/snapshot-core.test.ts#L1514-L1569 rk64:e11b695b473a0394
 packages/agent-hooks/test/common/snapshot-store.test.ts#L248-L419 rk64:45d9f2d7a9b492a8
 packages/agent-hooks/test/common/snapshot-store.test.ts#L494-L522 rk64:3ca5a89c9f1cd9ec
 

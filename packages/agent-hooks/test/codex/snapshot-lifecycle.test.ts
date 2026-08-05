@@ -29,8 +29,12 @@ import { renameSync, rmSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { Logger } from '@goodfoot/codex-hooks';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { createHandler as createPostToolUseHandler } from '../../src/codex/post-tool-use.js';
-import { createHandler as createSnapshotPreHook } from '../../src/codex/snapshot.js';
+import { createHandler as createPostToolUseHandler, SNAPSHOT_POST_MATCHER } from '../../src/codex/post-tool-use.js';
+import {
+  createHandler as createSnapshotPreHook,
+  resolveSnapshotBudgets,
+  SNAPSHOT_PRE_MATCHER
+} from '../../src/codex/snapshot.js';
 import stopHook from '../../src/codex/stop.js';
 import subagentStopHook from '../../src/codex/subagent-stop.js';
 import { sanitizeSessionId, sessionDir } from '../../src/common/agent-hooks-common.js';
@@ -888,6 +892,144 @@ describe('codex harness snapshot lifecycle (Phase 2)', () => {
       });
       expect(block).toBeNull();
       expect(notes.some((n) => n.includes('interleaved-tool'))).toBe(true);
+    });
+  });
+
+  describe('G. matcher family, config subsection form, exclusion visibility', () => {
+    // These fixtures use their own session ids; purge them after each test
+    // like the rest of the file so no record outlives the run.
+    const WAVE_C_SESSIONS = ['sess-codex-shell-spelled', 'sess-codex-binary-excluded', 'sess-codex-oversize-excluded'];
+    afterEach(() => purgeSessions(WAVE_C_SESSIONS));
+
+    it('every tool name the pre matcher registers is consumable post-side — pre ⊆ post', () => {
+      const pre = SNAPSHOT_PRE_MATCHER.split('|');
+      const post = SNAPSHOT_POST_MATCHER.split('|');
+      for (const name of pre) {
+        expect(post, `pre matcher registers ${name}, missing from the post matcher`).toContain(name);
+      }
+    });
+
+    it('a shell-spelled call snapshots pre and attributes post end-to-end', async () => {
+      await withRepo(async (repo) => {
+        const sessionId = 'sess-codex-shell-spelled';
+        const tuId = 'tu-codex-shell-1';
+        writeFile(repo.root, 'src/app.ts', P10);
+        gitAddCommit(repo.root, 'add app.ts');
+        const logger = new Logger();
+        const pre = createSnapshotPreHook();
+        await pre(
+          preInput({
+            session_id: sessionId,
+            cwd: repo.root,
+            tool_use_id: tuId,
+            tool_name: 'shell',
+            tool_input: { command: 'npx prettier --write src/app.ts' }
+          }) as never,
+          { logger } as never
+        );
+        const record = createSnapshotStore(logger).find(sessionId, tuId);
+        expect(record).not.toBeNull();
+        expect(record).not.toBe('tombstoned');
+        if (record === null || record === 'tombstoned') throw new Error('record missing');
+        expect(record.files['src/app.ts']).toBeDefined();
+        // The formatter's effect: lines 3-4 reflowed, nothing else.
+        writeFile(repo.root, 'src/app.ts', P10_FORMATTED);
+        const { executors } = makeExecutors({
+          rows: (filePath) =>
+            filePath.endsWith('/src/app.ts')
+              ? [porcelainRow({ name: SPAN_A, path: 'src/app.ts', start: 3, end: 5 })]
+              : [],
+          drift: () => [driftRow({ name: SPAN_A, path: 'src/app.ts', start: 3, end: 5 })]
+        });
+        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+        const raw = await handler(
+          postInput({
+            session_id: sessionId,
+            cwd: repo.root,
+            tool_use_id: tuId,
+            tool_name: 'shell',
+            tool_input: { command: 'npx prettier --write src/app.ts' }
+          }) as never,
+          { logger } as never
+        );
+        expect(toResult(raw)).toContain('## billing/checkout-request-flow');
+        expect(createSnapshotStore(logger).find(sessionId, tuId)).toBe('tombstoned');
+      });
+    });
+
+    it('git config git-span.snapshot.max-files — the git subsection form resolves like the dash form', async () => {
+      await withRepo(async (repo) => {
+        execFileSync('git', ['-C', repo.root, 'config', 'git-span.snapshot.max-files', '2'], { stdio: 'ignore' });
+        const budgets = resolveSnapshotBudgets(repo.root);
+        expect(budgets.maxFiles).toBe(2);
+        // The other budgets are untouched — the subsection key maps onto the
+        // same key space as the dash form.
+        expect(budgets.maxTotalBytes).toBe(DEFAULT_SNAPSHOT_BUDGETS.maxTotalBytes);
+      });
+    });
+
+    it('the dash form git-span.snapshot-max-total-bytes keeps resolving', async () => {
+      await withRepo(async (repo) => {
+        execFileSync('git', ['-C', repo.root, 'config', 'git-span.snapshot-max-total-bytes', '4096'], {
+          stdio: 'ignore'
+        });
+        expect(resolveSnapshotBudgets(repo.root).maxTotalBytes).toBe(4096);
+      });
+    });
+
+    it('a binary file excluded from the pre walk is named in the record gaps, never silent', async () => {
+      await withRepo(async (repo) => {
+        const sessionId = 'sess-codex-binary-excluded';
+        const tuId = 'tu-codex-binary-1';
+        writeFile(repo.root, 'src/app.ts', P10);
+        writeFile(repo.root, 'src/app.bin', '\x00\x01\x02binary');
+        gitAddCommit(repo.root, 'add files');
+        const logger = new Logger();
+        const pre = createSnapshotPreHook();
+        await pre(
+          preInput({
+            session_id: sessionId,
+            cwd: repo.root,
+            tool_use_id: tuId,
+            tool_input: { command: 'npx prettier --write src/app.ts' }
+          }) as never,
+          { logger } as never
+        );
+        const record = createSnapshotStore(logger).find(sessionId, tuId);
+        expect(record).not.toBeNull();
+        expect(record).not.toBe('tombstoned');
+        if (record === null || record === 'tombstoned') throw new Error('record missing');
+        expect(record.files['src/app.ts']).toBeDefined();
+        expect(record.files['src/app.bin']).toBeUndefined();
+        expect(record.gaps).toContain('binary file excluded: src/app.bin');
+      });
+    });
+
+    it('an oversize file excluded from the pre walk is named in the record gaps, never silent', async () => {
+      await withRepo(async (repo) => {
+        const sessionId = 'sess-codex-oversize-excluded';
+        const tuId = 'tu-codex-oversize-1';
+        writeFile(repo.root, 'src/app.ts', P10);
+        writeFile(repo.root, 'src/big.txt', 'x'.repeat(DEFAULT_SNAPSHOT_BUDGETS.maxBytesPerFile + 1));
+        gitAddCommit(repo.root, 'add files');
+        const logger = new Logger();
+        const pre = createSnapshotPreHook();
+        await pre(
+          preInput({
+            session_id: sessionId,
+            cwd: repo.root,
+            tool_use_id: tuId,
+            tool_input: { command: 'npx prettier --write src/app.ts' }
+          }) as never,
+          { logger } as never
+        );
+        const record = createSnapshotStore(logger).find(sessionId, tuId);
+        expect(record).not.toBeNull();
+        expect(record).not.toBe('tombstoned');
+        if (record === null || record === 'tombstoned') throw new Error('record missing');
+        expect(record.files['src/big.txt']).toBeUndefined();
+        expect(record.gaps).toContain('oversize file excluded: src/big.txt');
+      });
     });
   });
 });

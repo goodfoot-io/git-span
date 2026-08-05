@@ -24,10 +24,10 @@
  * keys `files` by repo-relative path — the same key space `compareSnapshot`
  * and the PostToolUse adapter read.
  *
- * Budgets come from the `GIT_SPAN_SNAPSHOT_*` environment variables, falling
- * back to the defaults; the git-config layer of the plan's precedence is
- * deferred to the config pass (it would add a subprocess per opaque call
- * inside the pre-side budget).
+ * Budgets resolve per call: `GIT_SPAN_SNAPSHOT_*` environment overrides, then
+ * one scoped repo-config read (the `git-span.snapshot-*` and
+ * `git-span.snapshot.*` subsection key forms), then the compiled defaults; a
+ * malformed value keeps the default, so the config layer fails open.
  *
  * Fail-open is load-bearing: any error yields no record and never blocks the
  * command — the Post side then falls back to today's static-parse path.
@@ -148,7 +148,9 @@ export interface WalkResult {
  * walk's gap texts are the path-coverage family the comparison reads
  * (`file-count budget` / `total-bytes budget` / `wall budget` / `truncat`) —
  * those cut coverage and disqualify delete/create candidates; the line-hash
- * gap is range-precision loss only and never matches that family.
+ * gap is range-precision loss only and never matches that family, and the
+ * per-file exclusion diagnostics (`binary file excluded:` / `oversize file
+ * excluded:`) name the path but never match the family either.
  */
 export function walkSnapshotFiles(
   repoRoot: string,
@@ -208,7 +210,18 @@ export function walkSnapshotFiles(
     }
     if (lineBudget <= 0) budgetCoarse += 1;
     const entry = hashFile({ absPath, now, budgets, remainingLineBudget: lineBudget, stat: statFile, read: readFile });
-    if (entry === null) continue; // binary / over the per-file byte cap — silent exclusions
+    if (entry === null) {
+      // The exclusion is visible, never silent: name the path so a missing
+      // file in the record is explainable. One re-read discriminates the two
+      // causes hashFile conflates (exclusion is rare, so the extra read is
+      // cheap); an unreadable file stays silent, per the plan.
+      const content = readFile(absPath);
+      if (content === null) continue;
+      gaps.push(
+        content.length > budgets.maxBytesPerFile ? `oversize file excluded: ${rel}` : `binary file excluded: ${rel}`
+      );
+      continue;
+    }
     totalBytes += st.size;
     files[rel] = entry;
     if (entry.coarse !== true) lineBudget -= entry.lines?.length ?? 0;
@@ -220,13 +233,14 @@ export function walkSnapshotFiles(
 }
 
 /**
- * Budgets: `GIT_SPAN_SNAPSHOT_*` env overrides, else `git-span.snapshot-*`
- * config in the repo, else the defaults — the `resolveSpanRoot` precedence.
- * The config layer is one scoped `git config --get-regexp` read for the whole
- * key family (the classifier's one-subprocess idiom), so a snapshot call pays
- * one subprocess for the entire budget set; a repo-less or failed read falls
- * through to env + defaults, and values are validated exactly like the env
- * layer, so a malformed key keeps the default (fail-open, never a crash).
+ * Budgets: `GIT_SPAN_SNAPSHOT_*` env overrides, else `git-span.snapshot-*` /
+ * `git-span.snapshot.*` config in the repo, else the defaults — the
+ * `resolveSpanRoot` precedence. The config layer is one scoped
+ * `git config --get-regexp` read for the whole key family (the classifier's
+ * one-subprocess idiom), so a snapshot call pays one subprocess for the
+ * entire budget set; a repo-less or failed read falls through to env +
+ * defaults, and values are validated exactly like the env layer, so a
+ * malformed key keeps the default (fail-open, never a crash).
  */
 export function resolveSnapshotBudgets(repoRoot: string | null): SnapshotBudgets {
   const budgets: SnapshotBudgets = { ...DEFAULT_SNAPSHOT_BUDGETS };
@@ -264,22 +278,29 @@ export function resolveSnapshotBudgets(repoRoot: string | null): SnapshotBudgets
 
 /**
  * One scoped `git config --get-regexp` read for the whole `git-span.snapshot-*`
- * key family. Output lines are `key value`; a key repeated across config
- * scopes resolves to its last line, matching `git config --get`'s
- * highest-precedence value. Exit 1 (no matching keys) or any git error
- * yields an empty map — the config layer simply falls through to defaults.
+ * / `git-span.snapshot.*` key family (the dash form and the git subsection
+ * form). Output lines are `key value`; a key repeated across config scopes
+ * resolves to its last line, matching `git config --get`'s
+ * highest-precedence value. A subsection key is normalized onto the dash
+ * form's key space (`git-span.snapshot.max-files` → `git-span.snapshot-max-files`),
+ * the key {@link resolveSnapshotBudgets} looks up. Exit 1 (no matching keys)
+ * or any git error yields an empty map — the config layer simply falls
+ * through to defaults.
  */
 function readSnapshotConfig(repoRoot: string): Map<string, string> {
   const values = new Map<string, string>();
   try {
-    const out = execFileSync('git', ['-C', repoRoot, 'config', '--get-regexp', '^git-span\\.snapshot-'], {
+    const out = execFileSync('git', ['-C', repoRoot, 'config', '--get-regexp', '^git-span\\.snapshot[-.]'], {
       stdio: ['ignore', 'pipe', 'ignore'],
       encoding: 'utf8'
     });
     for (const line of out.split('\n')) {
       const sep = line.indexOf(' ');
       if (sep <= 0) continue;
-      values.set(line.slice(0, sep), line.slice(sep + 1).trim());
+      const key = line.slice(0, sep);
+      // Only the subsection separator needs normalization — the dash form is
+      // already the key space resolveSnapshotBudgets looks up.
+      values.set(key.replace(/^git-span\.snapshot\./, 'git-span.snapshot-'), line.slice(sep + 1).trim());
     }
   } catch (err) {
     void err; // no matching keys (exit 1) or git error — config layer empty
