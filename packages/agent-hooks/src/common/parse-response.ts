@@ -49,12 +49,17 @@
  *   stage is PROVABLY VERBATIM — the allowlist is the closable set:
  *   head/tail/wc/sort/uniq/cut (truncate/reorder/dedupe — each surviving
  *   line's content is verbatim), plain `cat` (no `-n`/`--number`), the grep
- *   family without numbered evidence (`-n`/`--line-number`), and the
- *   expression-allowlisted sed/awk/perl/tr carve-outs (numeric-address
- *   `p`/`q`/`d` scripts, condition-only NR-comparison/parity awk programs,
- *   stream-position `print if/unless $. N d` perl scripts, and
- *   digit/colon/newline-free `tr -d` deletions — all provably pass whole
- *   records through byte-verbatim); the terminating-newline rule handles
+ *   family without numbered evidence (`-n`/`--line-number`) and without
+ *   file operands beyond the pattern slot, and the expression-allowlisted
+ *   sed/awk/perl/tr carve-outs (numeric-address `p`/`q`/`d` scripts,
+ *   condition-only NR-comparison/parity awk programs, stream-position
+ *   `print if/unless $. N d` perl scripts, and digit/colon/newline-free
+ *   `tr -d` deletions — all provably pass whole records through
+ *   byte-verbatim). Every allowlisted stage must carry NO FILE OPERANDS: a
+ *   token that is not a flag names a file the stage reads instead of the
+ *   pipe, so the response's records come from that file, not the gated
+ *   stage, and a crafted record decodes as a phantom touch — that form
+ *   fails closed with the rest. The terminating-newline rule handles
  *   the cut. Everything else fails CLOSED — the default is inverted, so
  *   any stage not provably verbatim (python, ruby, mawk, gawk, paste, and
  *   the rest of an unbounded renumberer set) may renumber or rewrite the
@@ -555,7 +560,10 @@ function diffRelativeBase(
  * byte-verbatim, so the decoded spans stay genuine. The unconditional
  * members of the closable allowlist for the inverted default of
  * isRenumberingFilter; the conditional carve-outs (sed/awk/perl/tr with
- * allowlisted scripts) are handled by their own stage checks below.
+ * allowlisted scripts) are handled by their own stage checks below. Every
+ * allowlisted stage is additionally required to carry no file operands
+ * (hasFileOperand) — a token that is not a flag names a file the stage
+ * reads instead of the pipe.
  */
 const VERBATIM_PASS_BINS = new Set(['head', 'tail', 'wc', 'sort', 'uniq', 'cut']);
 
@@ -570,16 +578,22 @@ const VERBATIM_PASS_BINS = new Set(['head', 'tail', 'wc', 'sort', 'uniq', 'cut']
  * The allowlist is pipeline-shape only (a renumbered record is byte-
  * identical to legit output, so content/record-shape discrimination is
  * unsound): grep/egrep/fgrep/rg WITHOUT numbered evidence
- * (`-n`/`--line-number` — a plain filter passes records through verbatim),
- * plain `cat` (no `-n`/`--number`), head/tail/wc/sort/uniq/cut (truncate/
- * reorder/dedupe), and `sed`/`awk`/`perl`/`tr` whose script/program
- * provably passes whole records through byte-verbatim (isVerbatimSedStage /
- * isVerbatimAwkStage / isVerbatimPerlStage / isVerbatimTrStage — numeric-
- * address `p`/`q`/`d` forms, condition-only NR-comparison/parity programs,
- * stream-position `print if/unless $. N d` perl scripts, and
- * digit/colon/newline-free `tr -d` deletions output the same bytes the
- * earlier stage emitted, so the decoded spans stay genuine). `nl` always
- * renumbers.
+ * (`-n`/`--line-number` — a plain filter passes records through verbatim)
+ * and WITHOUT file operands beyond the pattern slot, plain `cat` (no
+ * `-n`/`--number`, no file operands), head/tail/wc/sort/uniq/cut
+ * (truncate/reorder/dedupe, no file operands), and `sed`/`awk`/`perl`/`tr`
+ * whose script/program provably passes whole records through byte-verbatim
+ * (isVerbatimSedStage / isVerbatimAwkStage / isVerbatimPerlStage /
+ * isVerbatimTrStage — numeric-address `p`/`q`/`d` forms, condition-only
+ * NR-comparison/parity programs, stream-position `print if/unless $. N d`
+ * perl scripts, and digit/colon/newline-free `tr -d` deletions output the
+ * same bytes the earlier stage emitted, so the decoded spans stay
+ * genuine). A FILE OPERAND — a token that is not a flag — makes the stage
+ * read that file instead of the pipe: the response's records then come
+ * from the file, not the gated stage, and a crafted record decodes as a
+ * phantom touch, so every allowlisted bin fails closed on file operands
+ * (the scripted bins by argv-shape, the rest via hasFileOperand). `nl`
+ * always renumbers.
  */
 function isRenumberingFilter(argv: string[]): boolean {
   const bin = argv[0];
@@ -589,14 +603,87 @@ function isRenumberingFilter(argv: string[]): boolean {
   if (bin === 'perl') return !isVerbatimPerlStage(argv);
   if (bin === 'tr') return !isVerbatimTrStage(argv);
   if (bin === 'cat') {
-    return argv.some((a) => a === '--number' || (a.startsWith('-') && !a.startsWith('--') && a.includes('n')));
+    if (argv.some((a) => a === '--number' || (a.startsWith('-') && !a.startsWith('--') && a.includes('n'))))
+      return true;
+    return hasFileOperand(argv);
   }
   if (SEARCH_BINS.has(bin)) {
-    return argv.some((a) => a === '--line-number' || (a.startsWith('-') && !a.startsWith('--') && a.includes('n')));
+    if (argv.some((a) => a === '--line-number' || (a.startsWith('-') && !a.startsWith('--') && a.includes('n'))))
+      return true;
+    return hasGrepFileOperand(argv);
   }
   // The inverted default: any bin outside the known-verbatim allowlist
-  // (head/tail/wc/sort/uniq/cut) fails closed.
-  return !VERBATIM_PASS_BINS.has(bin);
+  // (head/tail/wc/sort/uniq/cut) fails closed — and the allowlist bins
+  // themselves fail closed on file operands.
+  if (VERBATIM_PASS_BINS.has(bin)) return hasFileOperand(argv);
+  return true;
+}
+
+/**
+ * Whether any argv token is a FILE OPERAND for a stage that otherwise reads
+ * the pipe. A token that is not a flag names a file (after the `--`
+ * terminator every token is a positional, since option parsing has ended);
+ * `-` names stdin, which is the pipe itself, and `--` is only the
+ * terminator — both stay open. Example: `rg -n needle f | head -2` carries
+ * no file operand and passes verbatim, but `rg -n needle f | head -2
+ * crafted.txt` reads crafted.txt instead of the pipe — its records are not
+ * the gated stage's, so the pipeline must fail closed.
+ */
+function hasFileOperand(argv: string[]): boolean {
+  let afterTerminator = false;
+  for (let i = 1; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--') {
+      afterTerminator = true;
+      continue;
+    }
+    if (a === '-') continue; // stdin — the pipe
+    if (afterTerminator || !a.startsWith('-')) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether a grep-family stage's argv names a FILE OPERAND — the stage then
+ * reads that file instead of the pipe. Without `-e`/`-f` the first
+ * positional is the PATTERN (`rg needle`/`grep needle` in a pipeline reads
+ * stdin and passes records through verbatim), so a file operand is any
+ * positional BEYOND the pattern slot; with the pattern coming from a flag
+ * value (`-e PAT`, `-f PATFILE`, `--regexp`, `--file`, glued `-ePAT` /
+ * `-fPATFILE` / `--regexp=PAT` / `--file=PATFILE`) every positional is a
+ * file. The values consumed by `-e`/`-f` and their long forms are pattern
+ * sources — never file operands.
+ */
+function hasGrepFileOperand(argv: string[]): boolean {
+  let patternFromFlag = false;
+  let seenPattern = false;
+  for (let i = 1; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--') {
+      // Option parsing ends; every remaining token is a positional.
+      for (let j = i + 1; j < argv.length; j++) {
+        if (!patternFromFlag && !seenPattern) seenPattern = true;
+        else return true;
+      }
+      return false;
+    }
+    if (a === '-e' || a === '-f' || a === '--regexp' || a === '--file') {
+      patternFromFlag = true;
+      i++; // consume the value token (the pattern or the pattern file)
+      continue;
+    }
+    if (a.startsWith('-')) {
+      if (a.startsWith('--')) {
+        if (a.startsWith('--regexp=') || a.startsWith('--file=')) patternFromFlag = true;
+      } else if (a.length > 2 && (a[1] === 'e' || a[1] === 'f')) {
+        patternFromFlag = true; // glued short value form: -ePAT / -fPATFILE
+      }
+      continue;
+    }
+    if (!patternFromFlag && !seenPattern) seenPattern = true;
+    else return true; // a positional beyond the pattern is a file operand
+  }
+  return false;
 }
 
 /**

@@ -29,8 +29,13 @@
  * digit-named files fail closed, while plain digit-named-arg searches,
  * plain grep filters without numbered evidence, stream-position perl
  * truncators (`print if $. <= 2`), and shape-preserving `tr -d` deletions
- * (`tr -d '\r'`) stay open. Only the adapter-envelope checks remain
- * `it.skip` for Phase 3e.
+ * (`tr -d '\r'`) stay open. The round-4 R4-2 batch closes the FILE-OPERAND
+ * hole in the same allowlist: a post-gated stage naming a file reads that
+ * file instead of the pipe, so cat/head/tail/sort/grep/rg over
+ * `crafted.txt` (crafted records on never-searched files and no-match
+ * lines) fail closed, while stdin markers (`cat -`), bare `cat`, and
+ * pattern-only `grep -e` filters stay open. Only the adapter-envelope
+ * checks remain `it.skip` for Phase 3e.
  *
  * The golden-matrix harness below builds the fixture store by executing the
  * REAL binaries — /usr/bin/rg (ripgrep 14.1.1), /usr/bin/grep (GNU grep
@@ -92,7 +97,14 @@ const SEARCH_FILES: Record<string, string> = {
   // carry the needle at line 1 so the real search emits one record per file.
   'digits/1': 'needle\n',
   'digits/2': 'needle\nx\n',
-  'digits/3': 'needle\nx\nx\n'
+  'digits/3': 'needle\nx\nx\n',
+  // A crafted record file for the round-4 R4-2 file-operand fixtures: a
+  // post-gated stage that names it as a FILE OPERAND reads this file
+  // instead of the pipe, and its crafted records decode as phantom spans —
+  // `2:2:` names file 2 line 2 (a no-match line; the genuine match is line
+  // 1) and `3:1:` names file 3, which the gated stage (`rg -n needle 1 2`)
+  // never searched at all.
+  'digits/crafted.txt': '2:2:needle at 2\n3:1:needle at 3\n'
 };
 
 interface ExpectedSpan {
@@ -802,6 +814,67 @@ function buildGoldenMatrix(root: string): GoldenMatrix {
     pipelineFixture('pipe-rg-grep-v-skip', 'rg -n alpha src/a.ts | grep -v skip', root, [
       { path: 'src/a.ts', lineStart: 1, lineEnd: 1 },
       { path: 'src/a.ts', lineStart: 4, lineEnd: 4 }
+    ])
+  );
+
+  // Round-4 R4-2: a post-gated stage that names a FILE OPERAND reads that
+  // file instead of the pipe — its output is not the gated stage's records,
+  // and the crafted records below (`2:2:needle at 2`, `3:1:needle at 3`)
+  // decode as phantom spans on files the search never matched (or never
+  // searched). Every allowlisted bin — cat, the six pass-through bins, and
+  // the grep family — must fail closed on file operands. The `--`
+  // terminator form (`cat -- crafted.txt`) is closed the same way, while
+  // the stdin markers (`cat -`, bare `cat`) and pattern-only grep filters
+  // (`grep -e needle`) keep reading the pipe and stay open.
+  {
+    const crafted = 'crafted.txt';
+    const fileOperandStages: Array<[string, string]> = [
+      ['cat', `cat ${crafted}`],
+      ['cat-terminator', `cat -- ${crafted}`],
+      ['head', `head -1 ${crafted}`],
+      ['tail', `tail -1 ${crafted}`],
+      ['sort', `sort ${crafted}`],
+      ['grep', `grep needle ${crafted}`],
+      ['grep-e', `grep -e needle ${crafted}`],
+      ['rg', `rg needle ${crafted}`]
+    ];
+    for (const [suffix, stage] of fileOperandStages) {
+      fixtures.push({
+        name: `pipe-rg-file-operand-${suffix}`,
+        command: `cd digits && rg -n needle 1 2 | ${stage}`,
+        cwd: root,
+        stdout: runPipeline(`cd digits && rg -n needle 1 2 | ${stage}`, root).stdout,
+        exitStatus: 0,
+        expected: [],
+        files: SEARCH_FILES
+      });
+    }
+    fixtures.push({
+      name: 'pipe-rg-file-operand-one-file-cat',
+      command: `cd digits && rg -n needle 1 | cat ${crafted}`,
+      cwd: root,
+      stdout: runPipeline(`cd digits && rg -n needle 1 | cat ${crafted}`, root).stdout,
+      exitStatus: 0,
+      expected: [],
+      files: SEARCH_FILES
+    });
+  }
+  fixtures.push(
+    pipelineFixture('pipe-rg-cat-stdin', 'cd digits && rg -n needle 1 2 | cat -', root, [
+      { path: 'digits/1', lineStart: 1, lineEnd: 1 },
+      { path: 'digits/2', lineStart: 1, lineEnd: 1 }
+    ])
+  );
+  fixtures.push(
+    pipelineFixture('pipe-rg-cat-bare', 'cd digits && rg -n needle 1 2 | cat', root, [
+      { path: 'digits/1', lineStart: 1, lineEnd: 1 },
+      { path: 'digits/2', lineStart: 1, lineEnd: 1 }
+    ])
+  );
+  fixtures.push(
+    pipelineFixture('pipe-rg-grep-e-pattern', 'cd digits && rg -n needle 1 2 | grep -e needle', root, [
+      { path: 'digits/1', lineStart: 1, lineEnd: 1 },
+      { path: 'digits/2', lineStart: 1, lineEnd: 1 }
     ])
   );
 
@@ -2090,6 +2163,51 @@ describe('parse-response (Phase 3a–3c — search layouts, unified diffs, and b
       // through verbatim — the spans survive.
       const skip = fixture('pipe-rg-grep-v-skip');
       expect(sortedSpans(parseFixture(skip))).toEqual(sortedSpans(resolveExpected(skip)));
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Round-4 R4-2: file operands on the pass-through allowlist (cat, the six
+  // bins, the grep family) read a FILE instead of the pipe — fabricated
+  // records
+  // -------------------------------------------------------------------------
+
+  describe('file operands close the pass-through allowlist (round-4 R4-2)', () => {
+    it('every allowlisted bin fails closed on a file operand', () => {
+      // Each stage names `crafted.txt` (records `2:2:needle at 2`,
+      // `3:1:needle at 3`) — the bin reads THAT file instead of the pipe,
+      // and the crafted records decode as phantom spans: file 2 line 2 is a
+      // no-match line (the genuine match is line 1), and file 3 was never
+      // searched by the gated stage at all. The `--` terminator form is
+      // closed the same way. Without the guard the fabricated spans would
+      // surface, so each fixture asserts non-empty stdout AND zero spans.
+      const names = [
+        'pipe-rg-file-operand-cat',
+        'pipe-rg-file-operand-cat-terminator',
+        'pipe-rg-file-operand-head',
+        'pipe-rg-file-operand-tail',
+        'pipe-rg-file-operand-sort',
+        'pipe-rg-file-operand-grep',
+        'pipe-rg-file-operand-grep-e',
+        'pipe-rg-file-operand-rg',
+        'pipe-rg-file-operand-one-file-cat'
+      ];
+      for (const name of names) {
+        const f = fixture(name);
+        expect(f.stdout).not.toBe('');
+        expect(parseFixture(f)).toEqual([]);
+      }
+    });
+
+    it('stdin markers, bare cat, and pattern-only grep filters stay open', () => {
+      // `cat -` (the stdin marker), bare `cat`, and `grep -e needle` (the
+      // pattern comes from a flag value — no positionals) all read the
+      // pipe, so the genuine spans of the gated `rg -n needle 1 2` survive.
+      for (const name of ['pipe-rg-cat-stdin', 'pipe-rg-cat-bare', 'pipe-rg-grep-e-pattern']) {
+        const f = fixture(name);
+        expect(f.stdout).not.toBe('');
+        expect(sortedSpans(parseFixture(f))).toEqual(sortedSpans(resolveExpected(f)));
+      }
     });
   });
 
