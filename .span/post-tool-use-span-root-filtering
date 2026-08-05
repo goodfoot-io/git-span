@@ -1,6 +1,14 @@
+packages/agent-hooks/src/claude/post-tool-use.ts#L101-L102 rk64:6131c861a7321434
+packages/agent-hooks/src/claude/post-tool-use.ts#L102-L103 rk64:6131c861a7321434
+packages/agent-hooks/src/claude/post-tool-use.ts#L135-L136 rk64:2b230556faaace06
+packages/agent-hooks/src/claude/post-tool-use.ts#L136-L137 rk64:2b230556faaace06
 packages/agent-hooks/src/claude/post-tool-use.ts#L171-L172 rk64:a4a52240fdf2da94
 packages/agent-hooks/src/claude/post-tool-use.ts#L188-L189 rk64:ff24fbb1fe52dda5
 packages/agent-hooks/src/claude/post-tool-use.ts#L201-L202 rk64:2b230556faaace06
+packages/agent-hooks/src/codex/post-tool-use.ts#L284-L285 rk64:f8ea67e6e842812f
+packages/agent-hooks/src/codex/post-tool-use.ts#L306-L307 rk64:860118c6ec4a72b9
+packages/agent-hooks/src/codex/post-tool-use.ts#L342-L343 rk64:07e58cca4ae20237
+packages/agent-hooks/src/codex/post-tool-use.ts#L364-L365 rk64:07e58cca4ae20237
 packages/agent-hooks/src/codex/post-tool-use.ts#L372-L373 rk64:692ee3a51ecc25a9
 packages/agent-hooks/src/codex/post-tool-use.ts#L392-L393 rk64:6024f48de671f7ed
 packages/agent-hooks/src/codex/post-tool-use.ts#L418-L419 rk64:07e58cca4ae20237

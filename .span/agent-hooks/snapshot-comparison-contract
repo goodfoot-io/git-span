@@ -1,0 +1,5 @@
+packages/agent-hooks/src/claude/post-tool-use-failure.ts#L20-L52 rk64:16464aa0ff2f7405
+packages/agent-hooks/src/common/snapshot-core.ts#L358-L426 rk64:1d19542e1092ff66
+packages/agent-hooks/src/common/touch-core.ts#L156-L189 rk64:7deffdb44694d2ec
+
+compareSnapshot is the authoritative pre/post comparison whose output touch-core's observed-scope path consumes, and the Claude PostToolUseFailure handler must run the same comparison as PostToolUse whenever a record exists — partial mutations of a failed command are never silently lost and is_interrupt gates nothing.

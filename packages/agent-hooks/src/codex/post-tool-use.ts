@@ -40,6 +40,7 @@ import { abspathAgainst } from '../common/agent-hooks-common.js';
 import { bashResponseInterrupted, runBashTouches } from '../common/bash-touch.js';
 import { parseCommandDetailed } from '../common/parse-command.js';
 import { parseResponse, type ResponseParseInput } from '../common/parse-response.js';
+import { finishActivityEntry } from '../common/snapshot-store.js';
 import { createDiskMemoStore, type MemoFactory, resolveTouchScope } from '../common/span-surface.js';
 import { createDefaultTouchExecutors, runTouchHook, type TouchExecutors } from '../common/touch-core.js';
 import { parseApplyPatch } from './apply-patch.js';
@@ -434,6 +435,21 @@ export function createHandler(
         executors,
         memo
       );
+
+      // Activity-log stamp: at the end of this anchor's own touch, stamp the
+      // path's postHash (the state its touch read) plus finishedAt, so an
+      // interleaved-edit check inside a Bash snapshot window can resolve the
+      // patch's boundary. Phase 1: the store is a `Not Implemented` stub and
+      // the stamp passes postHash: null (a null stamp can never resolve a
+      // boundary as clean) — fail open and continue the touch path.
+      try {
+        finishActivityEntry(scope.repoRoot, sessionId, input.tool_use_id, [
+          { path: scope.repoRelPath, postHash: null }
+        ]);
+      } catch (err) {
+        ctx.logger.warn('git-span activity-log stamp failed open', { err });
+      }
+
       if (output.additionalContext) blocks.push(output.additionalContext);
     }
 

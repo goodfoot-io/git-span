@@ -1,0 +1,5 @@
+packages/agent-hooks/src/claude/snapshot.ts#L30-L58 rk64:cefe57bd28189050
+packages/agent-hooks/src/codex/snapshot.ts#L20-L49 rk64:309694e1a7631488
+packages/agent-hooks/src/common/snapshot-core.ts#L183-L235 rk64:246e89666fb94797
+
+classifyCommandForSnapshot is the single classifier the PreToolUse snapshot adapters call, and the PostToolUse comparison must call the same classifier per the plan, so both sides always agree on whether a snapshot should exist; the adapters branch on the same SnapshotDecision kinds and fail open by returning null, never by classifying differently.

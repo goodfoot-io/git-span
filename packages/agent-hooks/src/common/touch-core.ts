@@ -33,6 +33,7 @@ import {
   resolveSpanRoot
 } from './agent-hooks-common.js';
 import { collapseByPath, type RangeLabel, renderAnchorTree } from './anchor-tree.js';
+import type { ObservedWriteRanges } from './snapshot-core.js';
 import type { MemoStore } from './span-surface.js';
 
 // ---------------------------------------------------------------------------
@@ -144,6 +145,12 @@ export interface TouchWriteInput extends TouchInputBase {
    * re-anchor the touched region against the healed on-disk file. For a
    * whole-file create this is the entire file body; an empty string means
    * "no locatable block" and the touch is scoped file-wide.
+   *
+   * Mutually exclusive with {@link TouchWriteInput.observed}: the static-parse
+   * path feeds `written` (the written body, when the parser recovered one);
+   * the snapshot path feeds `observed` (exact post-state ranges). Exactly one
+   * is set — a touch with both is a contract violation, and one with neither
+   * is scoped file-wide, as today's empty `written` is.
    */
   written: string;
   /**
@@ -189,6 +196,14 @@ export interface TouchWriteInput extends TouchInputBase {
    * Set by the `runBashTouches` driver on paired rename-copy touches.
    */
   renameSourcePath?: string;
+  /**
+   * Exact post-state ranges observed from the pre/post snapshot comparison,
+   * when this touch is attributed by the snapshot path instead of static
+   * parsing. Mutually exclusive with {@link TouchWriteInput.written} — see
+   * its note. Phase 1 declares the field; the snapshot stubs never populate
+   * it until Phase 3.
+   */
+  observed?: ObservedWriteRanges;
 }
 
 /** The harness-agnostic touch the core consumes. */
@@ -506,6 +521,28 @@ export function evaluateWriteGate(input: TouchWriteInput, probeCache: RealityPro
   }
 
   return 'inconclusive';
+}
+
+// ---------------------------------------------------------------------------
+// Snapshot-observed scope (the snapshot path's multi-path touch)
+// ---------------------------------------------------------------------------
+
+/**
+ * One changed path the snapshot comparison attributed, passed to
+ * {@link runTouchHook} as a scope list — the snapshot path is multi-path: a
+ * single Bash call can change any number of files, where the static-parse
+ * path's one {@link TouchWriteInput} handles exactly one. The touch runs one
+ * heal pass across all changed paths, one repo-wide drift, and per-scope
+ * surface computation against the shared session memo, blocks joined.
+ */
+export interface ObservedWriteScope {
+  /** Absolute, canonicalized path of the changed file. */
+  filePath: string;
+  /**
+   * The observed post-state ranges: exact ranges for line-level changes,
+   * whole-file for creates, deletes, renames, and coarse/budgeted files.
+   */
+  observed: ObservedWriteRanges;
 }
 
 // ---------------------------------------------------------------------------
@@ -877,6 +914,11 @@ async function computeSurface(
  * probe into pass B (plan §3 step 2) so surviving deletes re-gate without
  * re-probing; direct callers get a per-call cache seeded with the touched
  * path when the target is `'absent'`.
+ * - **Snapshot path** (`scopes` given): the multi-path variant driven by the
+ *   snapshot comparison instead of static parsing — one heal pass across all
+ *   changed paths, one repo-wide drift, per-scope surface computation against
+ *   the shared session memo, blocks joined. Phase 1: `Not Implemented` — the
+ *   scope list is never populated until the Phase 3 snapshot pass.
  *
  * Fails open: any executor rejection or internal error yields
  * `additionalContext: null` (no signal, editing never blocked) rather than
@@ -887,8 +929,17 @@ export async function runTouchHook(
   input: TouchInput,
   executors: TouchExecutors,
   memo: MemoStore,
-  probeCache?: RealityProbeCache
+  probeCache?: RealityProbeCache,
+  scopes?: ObservedWriteScope[]
 ): Promise<TouchOutput> {
+  if (scopes !== undefined && scopes.length > 0) {
+    // Phase 3 (touch-core observed ranges): the snapshot path's multi-path
+    // touch — one heal pass across all changed paths, one repo-wide drift,
+    // per-scope surface against the shared session memo, blocks joined, under
+    // the post-side wall budget and touched-files cap. Stubbed in Phase 1:
+    // the snapshot adapters never reach it.
+    throw new Error('Not Implemented');
+  }
   let treeModified = false;
   try {
     let range: LineRange | 'whole-file' = 'whole-file';
