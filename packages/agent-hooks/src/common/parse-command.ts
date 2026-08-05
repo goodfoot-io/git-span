@@ -2221,6 +2221,209 @@ function matchFormatter(
 }
 
 // ---------------------------------------------------------------------------
+// The git restore / git checkout grammar (plan §5.9), the last pure-parser
+// family. Restore has no revision operand form — its positional args are
+// always pathspecs; checkout skips a pre-`--` revision/ref operand and takes
+// pathspecs only after `--`. Every explicit-file pathspec is a whole-file
+// create-overwrite touch; a directory-shaped pathspec (`.`/`..`, trailing `/`,
+// or a path that stats as a directory), `--staged`-only restore, and
+// `-p`/`--patch` interactive hunk selection all fail closed.
+// ---------------------------------------------------------------------------
+
+/** git restore no-value flags (plan §5.9); `-s`/`--source`, `--staged`, `-W`/`--worktree`, `-m`/`--merge`, and `-p`/`--patch` are handled explicitly. */
+const RESTORE_NO_VALUE = new Set(['-q', '-f', '-u']);
+
+/**
+ * The shared restore/checkout pathspec emission (plan §5.9): an explicit-file
+ * pathspec (no globs, no `.`/`..`, no directory, no trailing `/`) is a
+ * create-overwrite whole-file touch; a directory-shaped pathspec is
+ * unresolved — a directory restore/checkout rewrites arbitrary files beneath
+ * it and cannot be attributed to a file write.
+ */
+function emitRestoreCheckoutPathspec(
+  results: SpanMatch[],
+  idiom: 'git-restore-write' | 'git-checkout-write',
+  operand: string,
+  dir: string,
+  simpleCommandIndex: number,
+  join: ResolvedSpan['join']
+): void {
+  if (looksUnresolvable(operand)) {
+    pushUnresolved(results, idiom, operand, 'path contains an unexpanded shell variable or glob');
+    return;
+  }
+  const absolutePath = resolvePath(dir, operand);
+  if (operand === '.' || operand === '..' || operand.endsWith('/') || isExistingDirectory(absolutePath)) {
+    pushUnresolved(
+      results,
+      idiom,
+      operand,
+      'directory-shaped pathspec rewrites arbitrary files beneath it — not attributable to a file write'
+    );
+    return;
+  }
+  results.push({
+    status: 'resolved',
+    idiom,
+    span: { operation: 'create-overwrite', absolutePath, simpleCommandIndex, join }
+  });
+}
+
+/**
+ * The git restore operand grammar (plan §5.9): `-s`/`--source=<tree>` is
+ * value-taking — the tree operand never resolves as a pathspec; `-p`/`--patch`
+ * interactive hunk selection is unresolved; `-m`/`--merge` (the merge
+ * machinery, conditional on the index being unmerged) and `--staged` without
+ * `--worktree` (index-only — the working file survives) touch nothing.
+ */
+function matchRestoreOperands(
+  args: string[],
+  dir: string,
+  simpleCommandIndex: number,
+  join: ResolvedSpan['join'],
+  results: SpanMatch[]
+): void {
+  let staged = false;
+  let worktree = false;
+  let afterDashDash = false;
+  const operands: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (afterDashDash) {
+      operands.push(a);
+      continue;
+    }
+    if (a === '--') {
+      afterDashDash = true;
+      continue;
+    }
+    if (a === '-p' || a === '--patch') {
+      pushUnresolved(
+        results,
+        'git-restore-write',
+        a,
+        'interactive patch mode applies user-chosen hunks — no static span'
+      );
+      return;
+    }
+    if (a === '-s' || a === '--source') {
+      i += 1; // the tree operand is never a pathspec
+      continue;
+    }
+    if (a.startsWith('--source=')) continue;
+    if (a === '-m' || a === '--merge') return;
+    if (a === '--staged') {
+      staged = true;
+      continue;
+    }
+    if (a === '-W' || a === '--worktree') {
+      worktree = true;
+      continue;
+    }
+    if (RESTORE_NO_VALUE.has(a)) continue;
+    if (a.startsWith('-')) continue; // unknown option → treated as an option (fail closed)
+    operands.push(a);
+  }
+  if (staged && !worktree) return; // index-only restore does not touch the working file
+  for (const operand of operands) {
+    emitRestoreCheckoutPathspec(results, 'git-restore-write', operand, dir, simpleCommandIndex, join);
+  }
+}
+
+/**
+ * The git checkout operand grammar (plan §5.9): `-b`/`-B`/`--orphan <branch>`
+ * are value-taking — the branch name never resolves as a pathspec; `-p`/
+ * `--patch` interactive hunk selection is unresolved; a pre-`--` positional is
+ * a revision/ref operand and is skipped. Pathspecs only after `--`.
+ */
+function matchCheckoutOperands(
+  args: string[],
+  dir: string,
+  simpleCommandIndex: number,
+  join: ResolvedSpan['join'],
+  results: SpanMatch[]
+): void {
+  let afterDashDash = false;
+  const operands: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (afterDashDash) {
+      operands.push(a);
+      continue;
+    }
+    if (a === '--') {
+      afterDashDash = true;
+      continue;
+    }
+    if (a === '-p' || a === '--patch') {
+      pushUnresolved(
+        results,
+        'git-checkout-write',
+        a,
+        'interactive patch mode applies user-chosen hunks — no static span'
+      );
+      return;
+    }
+    if (a === '-b' || a === '-B' || a === '--orphan') {
+      i += 1; // the branch name is never a pathspec
+      continue;
+    }
+    if (a === '-f' || a === '-q' || a === '-m' || a === '-t') continue;
+    if (a.startsWith('-')) continue; // unknown option → treated as an option (fail closed)
+    // A pre-`--` positional is a revision/ref operand — never a pathspec.
+  }
+  for (const operand of operands) {
+    emitRestoreCheckoutPathspec(results, 'git-checkout-write', operand, dir, simpleCommandIndex, join);
+  }
+}
+
+/**
+ * The git restore / git checkout family (plan §5.9): via `findGitSubcommand`
+ * (handles `git -C`/`-c`), the two subcommands resolve their pathspecs to
+ * whole-file create-overwrite touches; a wrapped subcommand fails closed.
+ */
+function matchGitRestoreCheckout(
+  argv: string[],
+  dirForResolution: string,
+  simpleCommandIndex: number,
+  join: ResolvedSpan['join'],
+  results: SpanMatch[]
+): void {
+  const rest = stripTransparentWrapper(argv);
+  if (rest.length === 0) return;
+  const command = rest[0];
+  if (command === 'git') {
+    const sub = findGitSubcommand(rest.slice(1));
+    if (sub === null || (sub.subcommand !== 'restore' && sub.subcommand !== 'checkout')) return;
+    if (sub.cDirUnresolvable) {
+      pushUnresolved(
+        results,
+        sub.subcommand === 'restore' ? 'git-restore-write' : 'git-checkout-write',
+        sub.subcommand,
+        'git -C target contains an unresolved shell variable'
+      );
+      return;
+    }
+    const dir = sub.cDir ?? dirForResolution;
+    const args = rest.slice(1).slice(sub.subIdx + 1);
+    if (sub.subcommand === 'restore') matchRestoreOperands(args, dir, simpleCommandIndex, join, results);
+    else matchCheckoutOperands(args, dir, simpleCommandIndex, join, results);
+    return;
+  }
+  if (FOREIGN_WRAPPERS.has(command)) {
+    const wrapped = rest[1];
+    if (wrapped === 'restore' || wrapped === 'checkout') {
+      pushUnresolved(
+        results,
+        wrapped === 'restore' ? 'git-restore-write' : 'git-checkout-write',
+        wrapped,
+        `the ${command} wrapper obscures the ${wrapped} argv`
+      );
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Orchestrator
 // ---------------------------------------------------------------------------
 
@@ -2434,6 +2637,7 @@ export function parseCommandDetailed(command: string, cwd: string = process.cwd(
     matchSedInplace(argv, currentDir, i, joinOf(simple), results);
     matchPatchApply(argv, redirects, currentDir, i, joinOf(simple), results);
     matchFormatter(argv, currentDir, i, joinOf(simple), results);
+    matchGitRestoreCheckout(argv, currentDir, i, joinOf(simple), results);
     pipeEchoContent = literalContent(argv) ?? null;
   }
 

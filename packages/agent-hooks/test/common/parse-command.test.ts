@@ -1263,13 +1263,13 @@ describe('formatters and fixers (§5.8)', () => {
 });
 
 describe('git restore and git checkout pathspecs (§5.9)', () => {
-  it.skip('git restore f: create-overwrite', () => {
+  it('git restore f: create-overwrite', () => {
     expect(parseCommand(`git restore ${join(dir, 'five.txt')}`)).toEqual([
       { operation: 'create-overwrite', absolutePath: join(dir, 'five.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('git restore --source=tree f: the -s value is a tree, not a pathspec', () => {
+  it('git restore --source=tree f: the -s value is a tree, not a pathspec', () => {
     expect(parseCommand(`git restore --source=HEAD~1 ${join(dir, 'five.txt')}`)).toEqual([
       { operation: 'create-overwrite', absolutePath: join(dir, 'five.txt'), simpleCommandIndex: 0 }
     ]);
@@ -1278,7 +1278,7 @@ describe('git restore and git checkout pathspecs (§5.9)', () => {
     ]);
   });
 
-  it.skip('git restore --staged --worktree f: both sides → create-overwrite', () => {
+  it('git restore --staged --worktree f: both sides → create-overwrite', () => {
     expect(parseCommand(`git restore --staged --worktree ${join(dir, 'five.txt')}`)).toEqual([
       { operation: 'create-overwrite', absolutePath: join(dir, 'five.txt'), simpleCommandIndex: 0 }
     ]);
@@ -1287,59 +1287,59 @@ describe('git restore and git checkout pathspecs (§5.9)', () => {
     ]);
   });
 
-  it.skip('git restore --staged f: the index-only write touches nothing', () => {
+  it('git restore --staged f: the index-only write touches nothing', () => {
     expect(parseCommand(`git restore --staged ${join(dir, 'five.txt')}`)).toEqual([]);
   });
 
-  it.skip('git restore -m f: conflict-resolution restore touches nothing', () => {
+  it('git restore -m f: conflict-resolution restore touches nothing', () => {
     expect(parseCommand(`git restore -m ${join(dir, 'five.txt')}`)).toEqual([]);
   });
 
-  it.skip('git restore --patch f: interactive hunk selection is unresolved', () => {
+  it('git restore --patch f: interactive hunk selection is unresolved', () => {
     expectUnresolved(`git restore --patch ${join(dir, 'five.txt')}`, 'git-restore-write');
   });
 
-  it.skip('git restore -- f: the -- separator is stripped', () => {
+  it('git restore -- f: the -- separator is stripped', () => {
     expect(parseCommand(`git restore -- ${join(dir, 'five.txt')}`)).toEqual([
       { operation: 'create-overwrite', absolutePath: join(dir, 'five.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('git restore .: directory-shaped pathspecs are unresolved', () => {
+  it('git restore .: directory-shaped pathspecs are unresolved', () => {
     expectUnresolved('git restore .', 'git-restore-write');
   });
 
-  it.skip('git restore dir/ and dir: directory-shaped pathspecs are unresolved', () => {
+  it('git restore dir/ and dir: directory-shaped pathspecs are unresolved', () => {
     expectUnresolved(`git restore ${join(dir, 'destdir')}/`, 'git-restore-write');
     expectUnresolved(`git restore ${join(dir, 'destdir')}`, 'git-restore-write');
   });
 
-  it.skip('git checkout -- f: create-overwrite', () => {
+  it('git checkout -- f: create-overwrite', () => {
     expect(parseCommand(`git checkout -- ${join(dir, 'five.txt')}`)).toEqual([
       { operation: 'create-overwrite', absolutePath: join(dir, 'five.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('git checkout f: a branch operand touches nothing', () => {
+  it('git checkout f: a branch operand touches nothing', () => {
     expect(parseCommand(`git checkout ${join(dir, 'five.txt')}`)).toEqual([]);
   });
 
-  it.skip('git checkout -b new: no pathspec, no touch', () => {
+  it('git checkout -b new: no pathspec, no touch', () => {
     expect(parseCommand('git checkout -b feature/x')).toEqual([]);
   });
 
-  it.skip('git checkout -- dir: directory-shaped → unresolved', () => {
+  it('git checkout -- dir: directory-shaped → unresolved', () => {
     expectUnresolved(`git checkout -- ${join(dir, 'destdir')}`, 'git-checkout-write');
     expectUnresolved('git checkout -- .', 'git-checkout-write');
   });
 
-  it.skip('git checkout branch -- f: the pathspec after the ref resolves', () => {
+  it('git checkout branch -- f: the pathspec after the ref resolves', () => {
     expect(parseCommand(`git checkout main -- ${join(dir, 'five.txt')}`)).toEqual([
       { operation: 'create-overwrite', absolutePath: join(dir, 'five.txt'), simpleCommandIndex: 0 }
     ]);
   });
 
-  it.skip('git -C dir restore five.txt resolves against dir', () => {
+  it('git -C dir restore five.txt resolves against dir', () => {
     expect(parseCommand(`git -C ${dir} restore five.txt`, '/')).toEqual([
       { operation: 'create-overwrite', absolutePath: join(dir, 'five.txt'), simpleCommandIndex: 0 }
     ]);
