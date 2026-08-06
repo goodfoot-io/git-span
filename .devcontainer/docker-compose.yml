@@ -19,6 +19,8 @@ services:
     volumes:
       - ..:/workspace:cached
       - ${HOME}/devcontainer/git-span:/home/node:cached
+      - claude-code-bashhistory:/commandhistory
+      - git-span-cargo-target:/var/cache/git-span/cargo-target
     env_file:
       - .env
     environment:
@@ -27,3 +29,7 @@ services:
     # No dns: pin — `tailscale up --accept-dns` manages /etc/resolv.conf
     # (MagicDNS at 100.100.100.100, with split-DNS to upstreams).
     command: sleep infinity
+
+volumes:
+  claude-code-bashhistory:
+  git-span-cargo-target:
