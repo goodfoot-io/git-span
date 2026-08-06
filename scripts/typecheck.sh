@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-# Run cargo check for the Rust CLI and the extension package typecheck in
-# parallel. Let Yarn resolve package-local tool binaries for the extension.
+# Typecheck the Rust CLI and every TypeScript package in parallel, delegating
+# each check to its package's `typecheck` script. Let Yarn resolve tool binaries.
 
 WORKSPACE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -37,6 +37,22 @@ if [ -d "$WORKSPACE_ROOT/packages/discover" ]; then
   PIDS+=($!)
 else
   echo "Warning: packages/discover not found, skipping TypeScript typecheck." >&2
+fi
+
+if [ -d "$WORKSPACE_ROOT/packages/agent-hooks" ]; then
+  echo "Running agent-hooks typecheck..."
+  (cd "$WORKSPACE_ROOT/packages/agent-hooks" && yarn typecheck) &
+  PIDS+=($!)
+else
+  echo "Warning: packages/agent-hooks not found, skipping TypeScript typecheck." >&2
+fi
+
+if [ -d "$WORKSPACE_ROOT/packages/website" ]; then
+  echo "Running website typecheck..."
+  (cd "$WORKSPACE_ROOT/packages/website" && yarn typecheck) &
+  PIDS+=($!)
+else
+  echo "Warning: packages/website not found, skipping TypeScript typecheck." >&2
 fi
 
 for PID in "${PIDS[@]}"; do
