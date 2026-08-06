@@ -38,9 +38,10 @@
 //! (`x86_64-unknown-linux-gnu` / `aarch64-unknown-linux-gnu`) in the config.
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+
+use crate::support;
 
 /// Monorepo root: `packages/git-span` (CARGO_MANIFEST_DIR) → `packages` → root.
 fn repo_root() -> PathBuf {
@@ -76,13 +77,7 @@ fn write_mini_crate(root: &Path, repo: &Path) {
         pkg.join("scripts/cc.mold-wrapper.sh"),
     )
     .expect("copy linker wrapper");
-    make_executable(&pkg.join("scripts/cc.mold-wrapper.sh"));
-}
-
-fn make_executable(path: &Path) {
-    let mut perms = fs::metadata(path).expect("stat").permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(path, perms).expect("make executable");
+    support::make_executable(&pkg.join("scripts/cc.mold-wrapper.sh")).expect("make wrapper executable");
 }
 
 /// `cargo build` from `cwd` into the shared `target_dir`, with `path` (a
@@ -133,7 +128,7 @@ fn cargo_config_linker_worktree_invariance() {
     // the fixed config resolves to).
     let bare = wrapper_bin.join("cc.mold-wrapper");
     fs::copy(repo.join("packages/git-span/scripts/cc.mold-wrapper.sh"), &bare).expect("copy bare wrapper");
-    make_executable(&bare);
+    support::make_executable(&bare).expect("make bare wrapper executable");
     let path = wrapper_bin.to_string_lossy().into_owned();
 
     // Build from A, then from B. With a worktree-invariant linker config the
