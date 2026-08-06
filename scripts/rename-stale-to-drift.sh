@@ -789,7 +789,7 @@ if [ "$SKIP_POST" -eq 1 ]; then
     say "  (verification still runs)"
 else
     say "yarn workspace agent-hooks build          # bundled hooks embed the renamed source"
-    say "yarn workspace git-span build   # release binary + regenerated man page"
+    say "yarn workspace git-span build   # regenerated man page"
     say "git span drift --fix && git span drift    # re-anchor .span/, confirm clean"
     say "yarn validate                             # full typecheck/lint/test/build gate"
 fi

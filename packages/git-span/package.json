@@ -8,7 +8,7 @@
   "scripts": {
     "postinstall": "node scripts/postinstall.js",
     "build:man": "bash scripts/with-target-lock.sh shared env CARGO_TARGET_DIR=\"${GIT_SPAN_CARGO_TARGET_ROOT:-/var/cache/git-span/cargo-target}/git-span/build\" cargo run --quiet --locked --bin gen-manpage -- man/git-span.1",
-    "build": "yarn build:man && bash scripts/with-target-lock.sh shared env CARGO_TARGET_DIR=\"${GIT_SPAN_CARGO_TARGET_ROOT:-/var/cache/git-span/cargo-target}/git-span/build\" cargo build --release --locked",
+    "build": "yarn build:man",
     "build:local": "bash scripts/build-local.sh",
     "build:clean": "bash scripts/cleanup-stale-target.sh && bash scripts/clean-shared-build.sh && yarn build",
     "test": "bash scripts/with-target-lock.sh shared env CARGO_TARGET_DIR=\"${GIT_SPAN_CARGO_TARGET_ROOT:-/var/cache/git-span/cargo-target}/git-span/build\" cargo nextest run --locked",
