@@ -16,7 +16,7 @@
     "knip": "knip --config ./knip.config.json",
     "knip:fix": "knip --fix --config ./knip.config.json",
     "lint": "yarn workspaces foreach --parallel -A run lint",
-    "test": "yarn workspaces foreach -A run test",
+    "test": "yarn workspaces foreach -A --parallel --jobs 3 --interlaced --verbose run test",
     "typecheck": "bash scripts/typecheck.sh",
     "build": "node scripts/ensure-worktree-local-generated.mjs --all && yarn workspaces foreach -At run build",
     "watch": "yarn workspaces foreach -Api run watch",
