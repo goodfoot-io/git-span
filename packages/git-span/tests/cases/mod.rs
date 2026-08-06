@@ -6,6 +6,8 @@ pub mod add_index_loaded_once;
 pub mod anchor_inside_span_root_reject;
 pub mod anchor_path_portability;
 pub mod cargo_config_layout;
+pub mod cargo_config_linker_worktree_invariance;
+pub mod cargo_target_missing_stamp_preserves_cache;
 pub mod cli_exit_codes;
 pub mod cli_history;
 pub mod cli_ls;
