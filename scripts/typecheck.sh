@@ -11,7 +11,7 @@ EXIT=0
 
 # --- Rust CLI typecheck ---
 if [ -f "$WORKSPACE_ROOT/packages/git-span/Cargo.toml" ]; then
-  echo "Running cargo check for packages/git-span..."
+  echo "Running Rust typecheck for packages/git-span..."
   # Delegate to the package-level `typecheck` script so this entry point uses
   # the exact same flags (RUSTFLAGS, --locked), shared target lock, and target
   # directory (git-span/check). A second flag profile writing into the same
