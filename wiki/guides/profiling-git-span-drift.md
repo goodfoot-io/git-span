@@ -170,7 +170,7 @@ being re-mmap+BLAKE3-hashed on every invocation. `cache-path.exe-digest-memo-loo
 | `cache-path.incremental-anchor-resolutions` / `cache-path.incremental-reused-spans` / `cache-path.incremental-resolved-spans` | Anchors re-resolved, spans reused unchanged, and spans rebuilt on the incremental ancestor-reuse path. |
 | `cache-path.dirty-anchor-resolutions` / `cache-path.dirty-reused-spans` / `cache-path.dirty-resolved-spans` | The same three counts on the dirty affected-set path. |
 
-**Integrity, corruption recovery, and bounded lifecycle** (emitted when a maintenance pass runs — only above the quota high-water mark, off the hot read path):
+**Integrity, corruption recovery, and bounded lifecycle** (liveness reconciliation runs at every maintenance trigger — each drift open and publish; the eviction pass and its gc counters only above the reuse-buffer high-water mark, off the hot read path):
 
 | Line | Meaning |
 |------|---------|
@@ -180,4 +180,4 @@ being re-mmap+BLAKE3-hashed on every invocation. `cache-path.exe-digest-memo-loo
 | `cache-path.gc-bytes-before` / `cache-path.gc-bytes-after` | Store size on disk before and after the bounded eviction + WAL truncate. |
 | `cache-path.gc-generations-removed` / `cache-path.gc-rows-removed` | Non-live generations and rows the quota pass evicted. |
 | `cache-path.gc-corruption-recovered: true` | A corruption recovery folded into this maintenance pass. |
-| `cache-path.maintain-skipped: size: <err>` / `cache-path.maintain-failed: <err>` | The maintenance pass could not size or complete (the command still succeeds). |
+| `cache-path.maintain-skipped: non-live count: <err>` / `cache-path.maintain-failed: <err>` | The maintenance trigger could not count non-live generations, or the pass could not complete (the command still succeeds). |
