@@ -52,6 +52,13 @@ jobs:
           working-directory: packages/git-span
           args: --release --locked
           cache-workspaces: packages/git-span
+        env:
+          # cross-rs's musl containers have neither mold nor cc.mold-wrapper
+          # on PATH, which .cargo/config.toml pins as the host-target linker
+          # (used to compile build scripts/proc macros even under cross
+          # compilation). Override to plain cc for these containerized
+          # builds; see packages/git-span/Cross.toml for the passthrough.
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: cc
 
       - name: Copy binary to npm package
         shell: bash

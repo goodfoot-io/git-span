@@ -1,0 +1,8 @@
+# .cargo/config.toml pins the bare-name `cc.mold-wrapper` as the linker for
+# the host target (x86_64-unknown-linux-gnu), which build scripts and proc
+# macros compile for even when cross-compiling for a musl target. The
+# cross-rs container has neither mold nor the wrapper on PATH, so the host
+# linker is overridden back to plain `cc` for cross builds only — that
+# override must be explicitly allow-listed to cross the container boundary.
+[build.env]
+passthrough = ["CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER"]
