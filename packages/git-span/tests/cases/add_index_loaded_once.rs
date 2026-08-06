@@ -1,8 +1,8 @@
 //! Reproduction test for card main-105: `run_add` re-reads the git index
 //! and opens the repository ~4 times per anchor instead of once.
 //!
-//! The invariant this test enforces: for its fixture (2 whole-file + 1
-//! line-range anchor), `index_entries` is called exactly **7** times during
+//! The invariant this test enforces: for its fixture (1 whole-file + 2
+//! line-range anchors), `index_entries` is called exactly **5** times during
 //! a single `run_add` invocation. Before the fix, `run_add` called it per
 //! anchor in the existence probe, twice inside `validate_add_target` (via
 //! `submodule_classify` and `is_tracked_path`), and once inside
@@ -30,9 +30,14 @@
 //!    are intrinsic to whole-file layer comparison. Line-range anchors add
 //!    no loads.
 //!
-//! Total for this fixture: 1 + 2 + 2·2 = 7. Adding whole-file anchors
+//! Total for this fixture: 1 + 2 + 2·1 = 5. Adding whole-file anchors
 //! costs exactly 2 each; adding line-range anchors costs 0. The index is
 //! never re-materialized per anchor.
+//!
+//! (The two whole-file anchors of the original fixture became one: the
+//! supersession preflight rejects a whole-file anchor beside a same-path
+//! range, so the second whole-file anchor was moved onto `file2.txt` as a
+//! disjoint pair of ranges, `#L1-L5` + `#L8-L12`.)
 
 use crate::support;
 
@@ -66,10 +71,10 @@ fn run_add_calls_index_entries_exactly_once() -> Result<()> {
 
     let count = index_entries_call_count();
     assert_eq!(
-        count, 7,
-        "index_entries called {count} times — expected exactly 7 for this \
+        count, 5,
+        "index_entries called {count} times — expected exactly 5 for this \
          fixture (1 mutation-pipeline snapshot + 2 reconcile-check span \
-         reads + 2 whole-file layer probes × 2 whole-file anchors). \
+         reads + 2 whole-file layer probes × 1 whole-file anchor). \
          The index is being re-materialized per anchor instead of once."
     );
 
