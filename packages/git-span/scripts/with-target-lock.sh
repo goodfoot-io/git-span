@@ -24,7 +24,18 @@ if [ -z "${HOME:-}" ]; then
 fi
 
 ROOT="${GIT_SPAN_CARGO_TARGET_ROOT:-/var/cache/git-span/cargo-target}"
-mkdir -p "$ROOT"
+# Fail closed with an actionable message instead of a bare mkdir permission
+# denied: the default root is root-owned everywhere except a devcontainer
+# rebuilt with the git-span-cargo-target named volume.
+if ! mkdir -p "$ROOT" || [ ! -w "$ROOT" ]; then
+  echo "ERROR: cargo target root $ROOT is not writable — a scripted cargo task needs to create $ROOT/.target.lock and write build artifacts there" >&2
+  echo "  On a host, plain Docker, or a devcontainer that predates the main-215 rebuild, the default" >&2
+  echo "  /var/cache/git-span/cargo-target is root-owned. Rebuild the devcontainer (the named volume" >&2
+  echo "  git-span-cargo-target is mounted at /var/cache/git-span/cargo-target on rebuild), or set" >&2
+  echo "  GIT_SPAN_CARGO_TARGET_ROOT to a writable path such as \$HOME/.cache/git-span/cargo-target" >&2
+  echo "  or /var/tmp/git-span/cargo-target." >&2
+  exit 1
+fi
 exec 9>"$ROOT/.target.lock"
 
 case "$mode" in

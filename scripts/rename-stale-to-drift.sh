@@ -887,7 +887,7 @@ if [ "$SKIP_POST" -eq 0 ]; then
     yarn workspace git-span build
 
     head_ln "post: re-anchor .span/"
-    BIN_DIR="${GIT_SPAN_CARGO_TARGET_ROOT:-$HOME/.cache/git-span/cargo-target}/git-span/build/release"
+    BIN_DIR="${GIT_SPAN_CARGO_TARGET_ROOT:-/var/cache/git-span/cargo-target}/git-span/build/release"
     if [ ! -x "$BIN_DIR/git-span" ]; then
         echo "expected binary at $BIN_DIR/git-span not found" >&2
         exit 1

@@ -41,8 +41,9 @@ one-dir-per-task.**
 
 All scripted cargo tasks write under a shared per-user root. In the
 devcontainer the root is a named Docker volume (`git-span-cargo-target`) mounted
-at `/var/cache/git-span/cargo-target` on container-native storage; every entry
-point honors the `GIT_SPAN_CARGO_TARGET_ROOT` override (e.g. for CI isolation):
+at `/var/cache/git-span/cargo-target` on container-native storage; every
+scripted entry point writing to the shared root honors the
+`GIT_SPAN_CARGO_TARGET_ROOT` override (e.g. for CI isolation):
 
 ```
 /var/cache/git-span/cargo-target/   # default root
@@ -106,8 +107,8 @@ phases stayed parallel (`cargo nextest run` executes test binaries
 concurrently; only its *build* was serialized), so the tax was compilation
 wall-clock only. Main-215's move of the root to a named volume on
 container-native storage restored write/read coherence and made the pin
-unnecessary; the pins were removed from the scripts and CI, and the directory
-split remains as the one still-required mitigation.
+unnecessary; the pins were removed from the shared-root scripts and CI, and
+the directory split remains as the one still-required mitigation.
 
 ## Worktree safety
 

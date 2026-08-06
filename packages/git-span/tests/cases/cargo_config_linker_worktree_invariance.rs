@@ -14,7 +14,7 @@
 //! worktree B hashes `…/B/…`. The hashes differ, every unit built from the
 //! other directory goes `dirty: ConfigSettingsChanged`, and the whole graph
 //! recompiles — even though the shared target root at
-//! `$HOME/.cache/git-span/cargo-target` already holds every rlib. A bare-name
+//! `/var/cache/git-span/cargo-target` already holds every rlib. A bare-name
 //! linker (`linker = "cc.mold-wrapper"`) resolved via PATH hashes identically
 //! from every worktree, which is the fix shape.
 //!

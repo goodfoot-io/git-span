@@ -2,7 +2,7 @@
 //! the entire shared cargo target root even when nothing changed.
 //!
 //! The shared root (`$GIT_SPAN_CARGO_TARGET_ROOT`, default
-//! `$HOME/.cache/git-span/cargo-target`) is served by every scripted cargo
+//! `/var/cache/git-span/cargo-target`) is served by every scripted cargo
 //! task in all 30+ sibling card worktrees, and
 //! `scripts/cleanup-stale-target.sh` (the `build:clean` step) owns its
 //! invalidation: it stamps the root with a freshness fingerprint built from
@@ -21,7 +21,7 @@
 //! cargo config.
 //!
 //! Discrimination: the test runs the real script against a private temp root
-//! (never the real `$HOME/.cache/git-span/cargo-target`) that holds fake warm
+//! (never the real `/var/cache/git-span/cargo-target`) that holds fake warm
 //! artifacts in the documented layout — `git-span/build/libgit_span.rlib` and
 //! `git-span-core/check/libgit_span_core.rmeta` — and deliberately omits
 //! `.freshness-stamp`. All freshness inputs (lockfiles, rustc, cargo config)

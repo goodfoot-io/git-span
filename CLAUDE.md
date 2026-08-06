@@ -10,6 +10,10 @@ Resolve every warning and failure validation surfaces, including ones you didn't
 Greenfield Yarn 4.x monorepo, packages in `./packages/`. Use Yarn, never `npm`; prefer local over origin branches. No migrations, backwards compatibility, or fallbacks. Choose the "right way" over the "easy way"; prefer fail-closed workflows over fail-open. When asked to commit, commit to the current local branch — never create a new branch first, even on `main`.
 </workspace>
 
+<build>
+Cargo builds write to the shared root `/var/cache/git-span/cargo-target` (a container-native named volume in the devcontainer). That default root is root-owned on hosts, plain Docker, and pre-rebuild containers — set `GIT_SPAN_CARGO_TARGET_ROOT` to a writable path there (see README "Per-user Cargo target directory").
+</build>
+
 <tools>
 # ast-grep
 

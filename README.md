@@ -142,7 +142,10 @@ for details. In the devcontainer the root is backed by a named volume
 container-native storage — the relocation that lets scripted cargo tasks
 compile with default parallelism again — and it stays shared across all
 worktrees on the same machine: a worktree cloned from `main` will reuse
-dependency artifacts already built by another worktree.
+dependency artifacts already built by another worktree. On machines without
+that rebuild — a host, plain Docker, or a pre-rebuild container — the default
+`/var/cache/git-span/cargo-target` is root-owned, so set
+`GIT_SPAN_CARGO_TARGET_ROOT` to a writable path before running any cargo task.
 
 Override the target root via `GIT_SPAN_CARGO_TARGET_ROOT`:
 

@@ -15,6 +15,8 @@ All yarn scripts and tooling scripts honor the `GIT_SPAN_CARGO_TARGET_ROOT` envi
 variable to override this root (e.g., for CI isolation). The per-worktree fallback
 `packages/git-span/target-cache/` (via [.cargo/config.toml](./packages/git-span/.cargo/config.toml))
 is still present for ad-hoc `cargo` invocations but is not the default for any scripted entry point.
+Outside a devcontainer rebuilt with the named volume the default root is root-owned, so set
+`GIT_SPAN_CARGO_TARGET_ROOT` to a writable path there.
 
 **Build-phase serialization:** Cargo's `.cargo-lock` serializes builds across worktrees
 sharing the same group subdirectory. Concurrent `yarn test` runs in different worktrees
