@@ -67,7 +67,15 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     vscode.window.registerCustomEditorProvider(SPAN_FILE_VIEW_TYPE, new SpanFileEditorProvider(), {
-      supportsMultipleEditorsPerDocument: false
+      supportsMultipleEditorsPerDocument: false,
+      // Keep each span editor's webview content (DOM, scroll position, Monaco
+      // instances, open/closed cards) alive while its tab is hidden. Without
+      // this the panel is destroyed on hidden and reloaded on return, and the
+      // ready/re-post handshake can only recover the document, never the view.
+      // The trade is resident memory per open span tab for as long as the tab
+      // stays open -- accepted in exchange for no reload flicker and no
+      // view-state loss.
+      webviewOptions: { retainContextWhenHidden: true }
     })
   );
 }
