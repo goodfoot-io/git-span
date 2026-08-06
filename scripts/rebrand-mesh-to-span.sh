@@ -235,7 +235,7 @@ if [ "$SKIP_POST" -eq 1 ]; then
 else
     say "yarn install                      # refresh lockfile state after package renames"
     say "yarn workspace agent-hooks build  # regenerate bundled hooks (base64 source maps)"
-    say "yarn workspace @goodfoot/git-span build   # git-span release binary + man page"
+    say "yarn workspace git-span build:local      # git-span release binary + man page"
     say "git span stale --fix && git span stale    # re-anchor .span files, confirm clean"
     say "yarn validate                     # full typecheck/lint/test/build gate"
 fi
@@ -303,8 +303,8 @@ if [ "$SKIP_POST" -eq 0 ]; then
     head_ln "post: rebuild bundled agent hooks"
     yarn workspace agent-hooks build
 
-    head_ln "post: build git-span"
-    yarn workspace @goodfoot/git-span build
+    head_ln "post: build git-span (build:local)"
+    yarn workspace git-span build:local
 
     head_ln "post: re-anchor .span files"
     BIN_DIR="${GIT_SPAN_CARGO_TARGET_ROOT:-/var/cache/git-span/cargo-target}/git-span/build/release"

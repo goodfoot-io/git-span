@@ -21,8 +21,12 @@ During local development, run commands from `packages/git-span`:
 
 ```bash
 cd packages/git-span
-yarn build
+yarn build:local
 ```
+
+`build:local` compiles the release binary into the shared Cargo target root,
+installs it to `~/.local/bin`, and regenerates the man page; the bare
+`yarn build` only regenerates the man page.
 
 Common command shape:
 
@@ -163,7 +167,7 @@ build (it takes the exclusive target-root lock) rather than corrupting it.
 git clone https://github.com/goodfoot-io/git-span.git
 cd git-span
 yarn install
-yarn build
+yarn workspace git-span build:local
 yarn validate
 ```
 
