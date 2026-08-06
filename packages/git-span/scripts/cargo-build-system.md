@@ -5,8 +5,11 @@ This document explains how the Rust crates (`packages/git-span` and
 concurrent worktrees stay safe, and the one cargo invariant the whole layout
 exists to protect. Read it before changing any `cargo` invocation in a
 `package.json` script, a `scripts/*.sh` helper, or a CI workflow — those entry
-points are deliberately kept identical and a divergence reintroduces the
-failures described below.
+points are deliberately kept on one flag-and-target-group profile and a
+divergence reintroduces the failures described below. (The one subcommand
+difference today: local `typecheck` and `lint` both run `cargo clippy`, while
+CI's typecheck is a plain `cargo check` step — same `RUSTFLAGS`, same group, so
+the two share fingerprints; see [CI parity](#ci-parity).)
 
 ## The invariant: never mix rmeta and rlib in one target directory
 
@@ -50,11 +53,11 @@ scripted entry point writing to the shared root honors the
 ├── .target.lock                 # flock coordinating tasks vs. cleanup (all worktrees)
 ├── .freshness-stamp             # toolchain/lockfile/config fingerprint
 ├── git-span/
-│   ├── check/                   # cargo check (typecheck) + cargo clippy (lint)  → rmeta
+│   ├── check/                   # cargo clippy (typecheck + lint)  → rmeta
 │   ├── build/                   # cargo nextest + cargo build --release + gen-manpage → rlib
 │   └── udeps/                   # cargo +nightly udeps (separate toolchain)
 └── git-span-core/
-    ├── check/                   # cargo check + cargo clippy → rmeta
+    ├── check/                   # cargo clippy (typecheck + lint) → rmeta
     └── build/                   # cargo test → rlib
 ```
 
@@ -74,6 +77,13 @@ rebuilds dependencies just because flags changed (the "fingerprint thrash"
 problem). The `check` group sets `RUSTFLAGS="-W unused -W dead-code"` for both
 `check` and `clippy`; the `build` group sets no extra flags. The two groups are
 isolated directories, so the flag difference between them costs nothing.
+
+Locally the check group has a single command: `yarn typecheck` runs the exact
+`cargo clippy` command `yarn lint` runs (same wrapper, env, flags, target
+directory), so the two steps in `yarn validate` share one artifact set and the
+second invocation is a fingerprint no-op. Plain `cargo check` survives only as
+CI's typecheck step, which writes into the same group with the same
+`RUSTFLAGS` — see [CI parity](#ci-parity).
 
 ## Serial compilation — history
 
@@ -205,6 +215,14 @@ incremental-metadata overhead. If you change a cargo command in a `package.json`
 script, change the corresponding CI step in lockstep — the
 `devops/cargo-test-parallelism` and `devops/core-crate-test-consistency` spans
 exist to flag exactly that coupling.
+
+One deliberate exception: CI's typecheck is a plain `cargo check` step while
+local typecheck runs `cargo clippy` (the lint command). CI is cold on every
+run, so it has no warm cache whose fingerprints a second invalidation surface
+could wipe — the card main-217 motivation for delegation does not apply there —
+and both commands share the same `RUSTFLAGS` and `check/` group, so the
+rmeta/rlib invariant and fingerprint profile stay uniform. The check group's
+*flag profile* is what must never diverge; the subcommand may.
 
 ## Maintenance
 
