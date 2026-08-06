@@ -1274,6 +1274,66 @@ fn maintain_plateaus_across_many_distinct_evictable_generations() {
     );
 }
 
+/// Card main-224: a store that plateaus just UNDER the byte cap is never
+/// maintained — `maintain`'s eviction gate is size-only
+/// (`reclaimed_main_bytes > cap`), so non-live generations accumulate
+/// indefinitely while the footprint sits under the cap. The bounded pass must
+/// sweep stale non-live generations even when the cap was never crossed,
+/// retaining only the modest reuse buffer of recent ones (16 generations, the
+/// `STORE_REUSE_BUFFER_GENERATIONS` bound the fix introduces).
+#[test]
+fn maintain_sweeps_stale_non_live_generations_under_cap() {
+    let dir = tmp();
+    let mut store = open(dir.path());
+    // Far above anything the corpus below can reach: the store stays under the
+    // byte cap the whole time, so only a count/age gate can reclaim it.
+    let cap = 8 * 1024 * 1024;
+
+    for n in 0..60u8 {
+        let k = key(n);
+        store
+            .publish_generation(&make_big_input(k, 4096, 1))
+            .unwrap();
+        // A superseded generation: no longer referenced by any worktree and
+        // aged out of the reuse window.
+        store.set_live(&k, false).unwrap();
+        set_bucket(&store, &k, now_bucket() - 100);
+    }
+    assert!(
+        store.database_size_bytes().unwrap() < cap,
+        "precondition: the corpus plateaus under the cap"
+    );
+
+    let stats = store.maintain(cap).unwrap();
+
+    // The pass must reclaim the stale generations even though the store is
+    // under the cap — retaining at most the reuse buffer of recent non-live
+    // generations.
+    assert!(
+        stats.generations_removed >= 60 - 16,
+        "stale non-live generations under the cap must be swept: removed {}",
+        stats.generations_removed
+    );
+    assert!(
+        stats.bytes_after < stats.bytes_before,
+        "the sweep must actually shrink the on-disk footprint: {} -> {}",
+        stats.bytes_before,
+        stats.bytes_after
+    );
+    let remaining: i64 = store
+        .conn
+        .query_row(
+            "SELECT count(*) FROM generation WHERE live = 0",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        remaining <= 16,
+        "non-live generations must be bounded by the reuse buffer, not the loop count: {remaining}"
+    );
+}
+
 /// Faithful in-test model of 6B's PRODUCTION trigger *after the liveness fix*
 /// (card main-157 Phase 6C's measured gap, now closed):
 /// [`super::super::exact`]`::maybe_maintain` — size probe, then, only above the

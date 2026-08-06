@@ -678,6 +678,44 @@ fn maybe_maintain_keeps_generation_under_cap() {
     );
 }
 
+/// Card main-224: the production trigger short-circuits on a size-only probe
+/// (`database_size_bytes <= cap`), so a store that has plateaued just under
+/// the cap retains every stale non-live generation forever — no publish
+/// crosses the cap, so [`maintain`](CacheStore::maintain) never runs. The
+/// trigger must sweep non-live generations beyond the reuse buffer even when
+/// the store is under the cap, shrinking the on-disk footprint.
+#[test]
+fn maybe_maintain_sweeps_stale_non_live_under_cap() {
+    let (_td, repo) = drifted_repo("capsweep");
+    let mut store = CacheStore::open(&repo).expect("open");
+    // 60 non-live generations, far beyond the reuse buffer.
+    for n in 0..60u8 {
+        publish_non_live(&mut store, [n; 32]);
+    }
+    unsafe {
+        // Default 256 MiB cap — far above this tiny store.
+        std::env::remove_var("GIT_SPAN_STORE_MAX_BYTES");
+    }
+    assert!(
+        store.database_size_bytes().unwrap() < store_max_bytes(&repo),
+        "precondition: the store plateaus under the cap"
+    );
+
+    let before = store.database_size_bytes().unwrap();
+    maybe_maintain(
+        &repo,
+        &mut store,
+        "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        &[1u8; 32],
+    );
+    let after = store.database_size_bytes().unwrap();
+
+    assert!(
+        after < before,
+        "the trigger must reclaim stale generations even under the cap: {before} -> {after}"
+    );
+}
+
 /// A real `drift` run with a 1-byte cap still returns the correct result and
 /// leaves the just-published *live* generation intact (a live generation is
 /// never evicted, even at the high-water mark) — the trigger's only effect is
@@ -707,6 +745,58 @@ fn tiny_cap_run_keeps_output_and_live_generation() {
             GetOutcome::Hit(_)
         ),
         "a live generation is never evicted, even under a 1-byte cap"
+    );
+}
+
+/// Card main-224 acceptance signal: on a store that has plateaued near the cap
+/// without a recent publish, running the repository's normal `git span`
+/// workflow brings the non-live generation count and on-disk size down
+/// WITHOUT a new snapshot being published first. The maintenance opportunity
+/// must be the drift invocation itself — a warm, hit-only run — not just the
+/// publish that follows a cold build.
+#[test]
+fn drift_run_sweeps_stale_generations_without_publish() {
+    reset_test_state();
+    clear_memo();
+    let (_td, repo) = drifted_repo("capsweeprun");
+    enable_store();
+    unsafe {
+        std::env::remove_var("GIT_SPAN_STORE_MAX_BYTES");
+    }
+    let opts = EngineOptions::full();
+
+    // Cold run: builds and publishes the current state's live generation.
+    let spans = resolved(drift_spans_new_store(&repo, SPAN_ROOT, opts).expect("cold"));
+    assert_eq!(spans.len(), 1, "the one drifted span is still reported");
+
+    // Populate stale non-live generations directly into the store, as a
+    // long-lived checkout accumulates when the cap-gated eviction never fires.
+    let mut store = CacheStore::open(&repo).expect("open");
+    for n in 0..60u8 {
+        publish_non_live(&mut store, [n; 32]);
+    }
+    // Close (checkpoint + WAL truncate on last-connection close), then
+    // re-open: measure the settled main-file footprint so the assertion below
+    // can only be satisfied by actual eviction, not by the routine WAL
+    // checkpointing any open/close cycle performs.
+    drop(store);
+    let size_before = {
+        let store = CacheStore::open(&repo).expect("open");
+        let n = store.database_size_bytes().expect("size");
+        drop(store);
+        n
+    };
+
+    // Warm run: an exact hit — no new snapshot published — must still sweep
+    // the stale generations.
+    let spans = resolved(drift_spans_new_store(&repo, SPAN_ROOT, opts).expect("warm"));
+    assert_eq!(spans.len(), 1, "the warm run still reports the same drift");
+
+    let store = CacheStore::open(&repo).expect("open");
+    let size_after = store.database_size_bytes().expect("size");
+    assert!(
+        size_after < size_before,
+        "a normal drift run must reclaim stale generations without publishing: {size_before} -> {size_after}"
     );
 }
 
