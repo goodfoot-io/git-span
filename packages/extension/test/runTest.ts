@@ -410,6 +410,52 @@ if (args[0] === 'history' && args[2] === '--format' && args[3] === 'json') {
     process.exit(0);
   }
 
+  if (spanName === 'fixture-span-line-numbers') {
+    // A 10-line extent whose declared range starts at file line 1641: the
+    // ladder and matcher must report 1641 as each side's start line, or the
+    // webview's gutter numbers the rows from 1 with no way to cross-reference
+    // them against the file. The newest commit edits line 1642 (hunk
+    // @@ -1641,5 +1641,5 @@) and the worktree drift is at line 1648, both in
+    // the extent's file-absolute coordinates, mirroring fixture-span-drifted
+    // shifted by +1640.
+    const firstAdd = 'one\\ntwo\\nthree\\nfour\\nfive\\nsix\\nseven\\neight\\nnine\\nten\\n';
+    const historical = 'one\\ntwo2\\nthree\\nfour\\nfive\\nsix\\nseven\\neight\\nnine\\nten\\n';
+    const current = 'one\\ntwo2\\nthree\\nfour\\nfive\\nsix\\nseven\\neight drift\\nnine\\nten\\n';
+    writeJson({
+      schema_version: 2,
+      span: spanName,
+      commits: [
+        {
+          hash: 'f2f2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4',
+          date: '2024-01-07T00:00:00Z',
+          summary: 'Edit the 1641 anchor',
+          anchors: [
+            {
+              path: 'src.ts#L1641-L1650',
+              diff: 'diff --git a/src.ts#L1641-L1650 b/src.ts#L1641-L1650\\nindex rk64:aaa..rk64:bbb 100644\\n--- a/src.ts#L1641-L1650\\n+++ b/src.ts#L1641-L1650\\n@@ -1641,5 +1641,5 @@\\n one\\n-two\\n+two2\\n three\\n four\\n five\\n'
+            }
+          ]
+        },
+        {
+          hash: 'f1f2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4',
+          date: '2024-01-06T00:00:00Z',
+          summary: 'Add the 1641 anchor',
+          anchors: [{ path: 'src.ts#L1641-L1650', content: firstAdd }]
+        }
+      ],
+      current: {
+        anchors: [
+          {
+            path: 'src.ts#L1641-L1650',
+            diff: 'diff --git a/src.ts#L1641-L1650 b/src.ts#L1641-L1650\\nindex rk64:bbb..rk64:ccc 100644\\n--- a/src.ts#L1641-L1650\\n+++ b/src.ts#L1641-L1650\\n@@ -1645,6 +1645,6 @@\\n five\\n six\\n seven\\n-eight\\n+eight drift\\n nine\\n ten\\n',
+            content: current
+          }
+        ]
+      }
+    });
+    process.exit(0);
+  }
+
   process.stderr.write('git-span-fixture: unknown fixture span ' + spanName + '\\n');
   process.exit(1);
 }
