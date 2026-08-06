@@ -1,10 +1,13 @@
 packages/agent-hooks/src/claude/activity-log.ts#L21-L45 rk64:f82ef39b57e028ee
+packages/agent-hooks/src/claude/post-tool-use.ts#L147-L161 rk64:edcca3b47511676e
 packages/agent-hooks/src/claude/post-tool-use.ts#L150-L164 rk64:edcca3b47511676e
 packages/agent-hooks/src/codex/activity-log.ts#L19-L43 rk64:f7e9801368d44bd4
+packages/agent-hooks/src/codex/post-tool-use.ts#L370-L382 rk64:820e7c76656d310d
 packages/agent-hooks/src/codex/post-tool-use.ts#L418-L430 rk64:820e7c76656d310d
 packages/agent-hooks/src/common/snapshot-store.ts#L113-L172 rk64:19f143d08c078e41
 packages/agent-hooks/src/common/snapshot-store.ts#L348-L400 rk64:7db6bc9c2f2281da
 packages/agent-hooks/test/claude/snapshot-lifecycle.test.ts#L1209-L1583 rk64:9beef75d5cb413b9
+packages/agent-hooks/test/claude/snapshot-lifecycle.test.ts#L1212-L1586 rk64:9beef75d5cb413b9
 packages/agent-hooks/test/codex/snapshot-lifecycle.test.ts#L819-L943 rk64:73bfab68626f921d
 packages/agent-hooks/test/common/snapshot-store.test.ts#L693-L954 rk64:bdec03c5f85e581e
 

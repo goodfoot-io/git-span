@@ -808,7 +808,10 @@ describe('claude harness snapshot lifecycle', () => {
           human = e.stdout ?? '';
         }
         expect(exitCode).toBe(1);
-        expect(human).toContain('Reconciled 0');
+        // "Reconciled" is withheld while drift remains — nothing was
+        // reconciled — so the CLI prints the "Updated ... remain drifted"
+        // form instead (packages/git-span/src/cli/drift_output.rs).
+        expect(human).toContain('anchor remains drifted');
         // The anchor is untouched — a dead anchor is a decision for a human,
         // not a --fix side effect.
         const rows = parsePorcelain(

@@ -3,7 +3,7 @@ packages/agent-hooks/src/codex/snapshot.ts#L7-L15 rk64:3a48b304dd3ae9ef
 packages/agent-hooks/src/codex/stop.ts#L15-L26 rk64:2f3619d13de2b07a
 packages/agent-hooks/src/codex/subagent-stop.ts#L16-L27 rk64:d363bcf4f119d5dd
 packages/agent-hooks/src/common/snapshot-store.ts#L532-L538 rk64:d76e8664d58c1a80
-packages/agent-hooks/test/claude/snapshot-lifecycle.test.ts#L883-L965 rk64:446ac9b1f0579caf
+packages/agent-hooks/test/claude/snapshot-lifecycle.test.ts#L886-L968 rk64:446ac9b1f0579caf
 packages/agent-hooks/test/codex/snapshot-lifecycle.test.ts#L521-L729 rk64:a633f86c7d0e0bfe
 packages/agent-hooks/test/common/snapshot-store.test.ts#L470-L684 rk64:c0158b9d47e30176
 
