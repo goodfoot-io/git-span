@@ -50,6 +50,14 @@ RUN chmod +x /usr/local/bin/cc.mold-wrapper
 # to step a drifted container clock.
 RUN echo "node ALL=(root) NOPASSWD: /usr/sbin/chronyd" > /etc/sudoers.d/node-chrony && \
   chmod 0440 /etc/sudoers.d/node-chrony
+
+# Mount point for the shared cargo target root named volume
+# (git-span-cargo-target at /var/cache/git-span/cargo-target — see
+# devcontainer.json mounts/remoteEnv). /var/cache is root-owned and there is no
+# passwordless sudo, so a fresh named volume seeds from this directory's
+# contents: it must exist and be node-owned, or every scripted cargo task fails
+# on a root-owned volume.
+RUN mkdir -p /var/cache/git-span/cargo-target && chown -R node:node /var/cache/git-span
 USER node
 
 # Yarn workspace-local caches + a larger Node heap.

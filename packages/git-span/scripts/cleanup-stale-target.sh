@@ -11,7 +11,7 @@ node -e "try { if (require('fs').lstatSync('target').isSymbolicLink()) { require
 # scripts/cargo-build-system.md for the directory layout).
 #
 # The default root must match the root every cargo task actually uses
-# ($HOME/.cache/git-span/cargo-target) — stamping the per-worktree
+# (/var/cache/git-span/cargo-target) — stamping the per-worktree
 # target-cache/ fallback would guard a directory the scripted tasks never
 # write to. Both crates (git-span and git-span-core) share this root, so the
 # stamp folds in both lockfiles and both cargo configs: a change to either
@@ -27,7 +27,7 @@ node -e "try { if (require('fs').lstatSync('target').isSymbolicLink()) { require
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 . "$script_dir/cargo-target-stamp.sh"
-target_root="${GIT_SPAN_CARGO_TARGET_ROOT:-$HOME/.cache/git-span/cargo-target}"
+target_root="${GIT_SPAN_CARGO_TARGET_ROOT:-/var/cache/git-span/cargo-target}"
 stamp_file="$target_root/.freshness-stamp"
 
 current_stamp="$(compute_target_stamp)"

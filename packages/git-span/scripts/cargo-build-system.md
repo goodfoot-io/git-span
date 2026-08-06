@@ -39,10 +39,13 @@ one-dir-per-task.**
 
 ## Directory layout
 
-All scripted cargo tasks write under a shared per-user root:
+All scripted cargo tasks write under a shared per-user root. In the
+devcontainer the root is a named Docker volume (`git-span-cargo-target`) mounted
+at `/var/cache/git-span/cargo-target` on container-native storage; every entry
+point honors the `GIT_SPAN_CARGO_TARGET_ROOT` override (e.g. for CI isolation):
 
 ```
-${GIT_SPAN_CARGO_TARGET_ROOT:-$HOME/.cache/git-span/cargo-target}/
+/var/cache/git-span/cargo-target/   # default root
 ├── .target.lock                 # flock coordinating tasks vs. cleanup (all worktrees)
 ├── .freshness-stamp             # toolchain/lockfile/config fingerprint
 ├── git-span/
@@ -71,35 +74,40 @@ problem). The `check` group sets `RUSTFLAGS="-W unused -W dead-code"` for both
 `check` and `clippy`; the `build` group sets no extra flags. The two groups are
 isolated directories, so the flag difference between them costs nothing.
 
-## Serial compilation (`CARGO_BUILD_JOBS=1` / `--build-jobs 1`)
+## Serial compilation — history
 
-Every scripted cargo invocation pins the compile graph to a single job:
+Scripted cargo invocations once pinned the compile graph to a single job —
 `CARGO_BUILD_JOBS=1` for `check`/`clippy`/`build`/`run`, and `--build-jobs 1`
 for `cargo nextest run` (nextest's build phase otherwise defaults to all cores,
-ignoring the env var). This is a **correctness** requirement, not a tuning knob.
+ignoring the env var). That was a **correctness** requirement, not a tuning
+knob, and it is gone: with the shared root relocated to container-native
+storage (card **main-215**), every scripted task runs with **default job
+parallelism**.
 
-With default parallelism, sibling `rustc` jobs intermittently abort with
-`error[E0463]: can't find crate for <dep>` — and it is a *different* dependency
-on each run (`bstr`, `serde`, `rustix`, `prodash`, …). cargo respects the
-dependency DAG, so a dependent never *schedules* before its dependency
-finishes; the failure is that a just-written `.rlib`/`.rmeta` is not yet visible
-to a concurrent reader job when it opens it. The shared target root lives on the
-devcontainer's `virtiofs` mount, whose write/read visibility across concurrent
-processes is not immediately coherent, which is the most likely trigger. Serial
-compilation removes the concurrency and the race with it.
+The pin existed because the shared root lived on the devcontainer's `virtiofs`
+mount. With default parallelism, sibling `rustc` jobs intermittently aborted
+with `error[E0463]: can't find crate for <dep>` — a *different* dependency on
+each run (`bstr`, `serde`, `rustix`, `prodash`, …). cargo respects the
+dependency DAG, so a dependent never *scheduled* before its dependency
+finished; the failure was that a just-written `.rlib`/`.rmeta` was not yet
+visible to a concurrent reader job when it opened it. virtiofs's write/read
+visibility across concurrent processes is not immediately coherent, which was
+the trigger; serial compilation removed the concurrency and the race with it.
 
-This serialization was removed once (card **main-122**, on the theory that the
-per-task directory split plus `test = false` were the whole fix) and the race
-returned exactly as that card predicted it might. The directory split fixes the
-*rlib/rmeta* race; it does **not** fix this *intra-build parallelism* race.
-The two are independent and both mitigations are required.
+The serialization was removed once before (card **main-122**, on the theory
+that the per-task directory split plus `test = false` were the whole fix) and
+the race returned exactly as that card predicted it might. The directory split
+fixes the *rlib/rmeta* race; it did **not** fix the *intra-build parallelism*
+race. The two were independent and both mitigations were required while the
+root was on virtiofs.
 
-The cost is real — a 10-core machine compiles one crate at a time. The run
-phases stay parallel: `cargo nextest run` executes test binaries concurrently
-(only its *build* is serialized), so the tax is compilation wall-clock only.
-Serialization is applied in the scripts and CI rather than in
-`.cargo/config.toml` so that the release cross-build (`actions-rust-cross`,
-bare `cargo build --release` on a non-`virtiofs` runner) keeps full parallelism.
+The cost was real — a 10-core machine compiled one crate at a time. The run
+phases stayed parallel (`cargo nextest run` executes test binaries
+concurrently; only its *build* was serialized), so the tax was compilation
+wall-clock only. Main-215's move of the root to a named volume on
+container-native storage restored write/read coherence and made the pin
+unnecessary; the pins were removed from the scripts and CI, and the directory
+split remains as the one still-required mitigation.
 
 ## Worktree safety
 

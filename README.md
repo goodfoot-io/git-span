@@ -131,15 +131,18 @@ CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="/opt/homebrew/opt/lld/bin/lld" car
 **Per-user Cargo target directory:**
 
 Build artifacts are stored in a shared per-user directory at
-`$HOME/.cache/git-span/cargo-target/<crate>/<group>/` — `<group>` is `check`
+`/var/cache/git-span/cargo-target/<crate>/<group>/` — `<group>` is `check`
 (non-codegen `cargo check`/`clippy`) or `build` (codegen `cargo test`/`build`).
 The two are kept separate on purpose: mixing rmeta-only (`check`) and rlib
 (`build`) artifacts in one directory causes spurious `can't find crate` link
 failures. See
 [packages/git-span/scripts/cargo-build-system.md](packages/git-span/scripts/cargo-build-system.md)
-for details. This directory is shared across all worktrees on the same machine —
-a worktree cloned from `main` will reuse dependency artifacts already built by
-another worktree.
+for details. In the devcontainer the root is backed by a named volume
+(`git-span-cargo-target`, mounted at `/var/cache/git-span/cargo-target`) on
+container-native storage — the relocation that lets scripted cargo tasks
+compile with default parallelism again — and it stays shared across all
+worktrees on the same machine: a worktree cloned from `main` will reuse
+dependency artifacts already built by another worktree.
 
 Override the target root via `GIT_SPAN_CARGO_TARGET_ROOT`:
 

@@ -23,7 +23,7 @@ if [ -z "${HOME:-}" ]; then
   exit 1
 fi
 
-ROOT="${GIT_SPAN_CARGO_TARGET_ROOT:-$HOME/.cache/git-span/cargo-target}"
+ROOT="${GIT_SPAN_CARGO_TARGET_ROOT:-/var/cache/git-span/cargo-target}"
 mkdir -p "$ROOT"
 exec 9>"$ROOT/.target.lock"
 

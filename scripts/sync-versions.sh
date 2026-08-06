@@ -146,7 +146,7 @@ if [ -f "$cargo_lock" ] && [ -f "$cargo_toml" ]; then
     (
       cd "$REPO_ROOT/packages/git-span" && \
       bash scripts/with-target-lock.sh shared \
-        env CARGO_TARGET_DIR="${GIT_SPAN_CARGO_TARGET_ROOT:-$HOME/.cache/git-span/cargo-target}/git-span/build" \
+        env CARGO_TARGET_DIR="${GIT_SPAN_CARGO_TARGET_ROOT:-/var/cache/git-span/cargo-target}/git-span/build" \
         cargo update --workspace --quiet
     )
     echo "Updated: $cargo_lock ($lock_version -> $VERSION)"
@@ -165,7 +165,7 @@ if [ -f "$manpage" ] && [ -f "$cargo_toml" ]; then
     (
       cd "$REPO_ROOT/packages/git-span" && \
       bash scripts/with-target-lock.sh shared \
-        env CARGO_BUILD_JOBS=1 CARGO_TARGET_DIR="${GIT_SPAN_CARGO_TARGET_ROOT:-$HOME/.cache/git-span/cargo-target}/git-span/build" \
+        env CARGO_TARGET_DIR="${GIT_SPAN_CARGO_TARGET_ROOT:-/var/cache/git-span/cargo-target}/git-span/build" \
         cargo run --quiet --locked --bin gen-manpage -- man/git-span.1
     )
     echo "Updated: $manpage ($manpage_version -> $VERSION)"

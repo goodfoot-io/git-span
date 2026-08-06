@@ -1,7 +1,7 @@
-packages/git-span/package.json#L11-L11 rk64:fc4934129b266cc3
+packages/git-span/package.json#L11-L11 rk64:dc269efa6eed1a11
 packages/git-span/package.json#L13-L13 rk64:d69c071b2deb5df1
-packages/git-span/scripts/build-local.sh#L6-L6 rk64:13c8b7f9d84dcb1b
-packages/git-span/scripts/build-local.sh#L11-L11 rk64:e2eb70850baf2617
+packages/git-span/scripts/build-local.sh#L6-L6 rk64:43c22a83906a42d6
+packages/git-span/scripts/build-local.sh#L11-L11 rk64:c594f0952641ba56
 packages/git-span/scripts/clean-shared-build.sh#L2-L10 rk64:7a8cade02e7e2a6d
 
-The release build path — yarn build, build-local.sh, and the build:clean sequence — invokes cargo build --release under one CARGO_BUILD_JOBS=1 flag against the shared per-crate target directory, and clean-shared-build.sh removes only the codegen tree under an exclusive lock so a concurrent build is never clobbered.
+The release build path — yarn build, build-local.sh, and the build:clean sequence — runs cargo build --release with default job parallelism against the shared per-crate target directory, and clean-shared-build.sh removes only the codegen tree under an exclusive lock so a concurrent build is never clobbered.
