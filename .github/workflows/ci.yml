@@ -30,6 +30,13 @@ jobs:
       - name: Install mold and clang
         run: sudo apt-get update && sudo apt-get install -y mold clang
 
+      # The [target.*].linker config pins the bare name `cc.mold-wrapper`
+      # (worktree-invariant fingerprint; see README "Linker (Linux only)") —
+      # it must be on PATH for the raw-cargo steps below. CI does not go
+      # through with-target-lock.sh, so the scripted self-heal does not apply.
+      - name: Install mold cc wrapper on PATH
+        run: sudo install -m 755 packages/git-span/scripts/cc.mold-wrapper.sh /usr/local/bin/cc.mold-wrapper
+
       - name: Install Rust stable toolchain
         uses: dtolnay/rust-toolchain@stable
         with:

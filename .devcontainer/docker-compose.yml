@@ -11,8 +11,11 @@ services:
     devices:
       - /dev/net/tun:/dev/net/tun
     build:
-      context: .
-      dockerfile: Dockerfile
+      # Context is the repo root, not .devcontainer/: the Dockerfile COPYs the
+      # mold cc wrapper from packages/git-span/scripts (its committed source of
+      # truth) to /usr/local/bin so ad-hoc raw cargo links through it.
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
     volumes:
       - ..:/workspace:cached
       - ${HOME}/devcontainer/git-span:/home/node:cached

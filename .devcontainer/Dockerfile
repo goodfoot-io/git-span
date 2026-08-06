@@ -35,6 +35,17 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive && apt-get install -
 RUN mold --version
 RUN cloudflared --version
 
+# Install the mold cc wrapper onto PATH under its bare name. The
+# [target.*].linker config pins `linker = "cc.mold-wrapper"` and Cargo 1.97
+# hashes the *resolved* linker value into every unit fingerprint — a relative
+# path would resolve to a per-worktree absolute path and force full-graph
+# recompiles from sibling worktrees, while the bare name hashes the same
+# literal everywhere and is looked up on PATH at spawn time. Scripted runs
+# self-heal via with-target-lock.sh regardless; this install covers ad-hoc raw
+# cargo in the devcontainer.
+COPY packages/git-span/scripts/cc.mold-wrapper.sh /usr/local/bin/cc.mold-wrapper
+RUN chmod +x /usr/local/bin/cc.mold-wrapper
+
 # Extra sudoers entry (beyond the base's node-packages): chronyd, used at runtime
 # to step a drifted container clock.
 RUN echo "node ALL=(root) NOPASSWD: /usr/sbin/chronyd" > /etc/sudoers.d/node-chrony && \

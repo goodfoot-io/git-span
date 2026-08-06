@@ -123,6 +123,59 @@ Within a single group directory, cargo's own `.cargo-lock` serializes the build
 phase across processes, so two worktrees compiling the same group build serially
 then run in parallel. That brief serialization is expected, not a hang.
 
+## Linker wrapper: bare name, worktree-invariant fingerprints
+
+Linux links run through the mold cc wrapper
+([`cc.mold-wrapper.sh`](./cc.mold-wrapper.sh)) selected via the
+`[target.*].linker` config key (RUSTFLAGS-immune, unlike `rustflags`). The key
+must be a **bare name** (`linker = "cc.mold-wrapper"`), not a path — this is a
+worktree-invariance requirement, not a style preference:
+
+- Cargo 1.97 hashes the *resolved* `[target.*].linker` value into every unit
+  fingerprint. A relative path (`linker = "scripts/cc.mold-wrapper.sh"`) is
+  resolved against the config's directory, so a run from worktree A hashes
+  `…/A/packages/git-span/scripts/…` and a run from sibling worktree B hashes
+  `…/B/…`. Every unit built from the other directory goes
+  `dirty: ConfigSettingsChanged` and the whole graph recompiles even though
+  the shared root already holds every rlib.
+- A value without `/` is kept as-is: the fingerprint covers only the literal
+  string, which is identical from every worktree, and the PATH lookup happens
+  at spawn time. Wrapper content, path, or staleness can therefore never cause
+  a rebuild.
+
+The wrapper must exist on PATH for the build to link at all. Scripted entry
+points self-heal: [`with-target-lock.sh`](./with-target-lock.sh) copies
+`cc.mold-wrapper.sh` to `$HOME/.local/bin/cc.mold-wrapper` (copy-if-missing —
+a user-installed wrapper is never clobbered) and prepends that dir to PATH for
+the wrapped command. The devcontainer image installs it to `/usr/local/bin`
+for ad-hoc raw `cargo`, and CI installs it in the workflow (CI does not run
+through `with-target-lock.sh`). See README "Linker (Linux only)" for manual
+installs.
+
+## Freshness stamp lifecycle
+
+The shared root's `.freshness-stamp` (see the layout above) records the inputs
+the cache was built with: sha256 of both crates' `Cargo.lock`, `rustc
+--version`, and sha256 of both crates' `.cargo/config.toml`. The computation
+lives once in [`cargo-target-stamp.sh`](./cargo-target-stamp.sh), sourced by
+both [`with-target-lock.sh`](./with-target-lock.sh) and
+[`cleanup-stale-target.sh`](./cleanup-stale-target.sh).
+
+- **Healthy builds refresh.** Every scripted cargo task ends (on status 0) by
+  calling `refresh_target_stamp`, which writes the stamp only if it is missing
+  or differs — so after any build the stamp reflects the inputs that build
+  compiled. The refresh is advisory: a failure warns on stderr and does not
+  fail the build, because cleanup re-evaluates on its own.
+- **Missing stamp → record, do not wipe.** `cleanup-stale-target.sh` treats a
+  missing stamp as *no evidence* that anything changed (the root predates the
+  stamp feature, or a wipe already cleared it) — it records the stamp and
+  appends a `STAMP … created-missing` line to the wipe-events log instead of
+  deleting warm artifacts.
+- **Stale stamp → whole-root wipe.** When the stamp exists but differs from
+  the current inputs (lockfile, toolchain, or config change), the script
+  `rm -rf`s every top-level directory under the root under the exclusive lock
+  and writes the fresh stamp, logging a `WIPE … stale removing …` line.
+
 ## Raw `cargo` (ad-hoc, not used by any scripted entry point)
 
 A bare `cargo` invocation that does **not** set `CARGO_TARGET_DIR` falls back to
@@ -148,8 +201,10 @@ exist to flag exactly that coupling.
 
 - `yarn build:clean` — wipe the `git-span/build` tree and rebuild. Honors the
   exclusive lock.
-- `cleanup-stale-target.sh` — wipes the whole root when the toolchain version,
-  either crate's `Cargo.lock`, or either crate's `.cargo/config.toml` changes
-  (cargo's own `cargo clean` only touches the default target dir and would leave
-  these subdirectories stale).
+- `cleanup-stale-target.sh` — reconciles the root's freshness stamp (see the
+  lifecycle above): records a missing stamp without wiping, wipes the whole
+  root when a stale stamp shows the toolchain version, either crate's
+  `Cargo.lock`, or either crate's `.cargo/config.toml` changed (cargo's own
+  `cargo clean` only touches the default target dir and would leave these
+  subdirectories stale).
 - Override the root for isolation (e.g. CI) with `GIT_SPAN_CARGO_TARGET_ROOT`.

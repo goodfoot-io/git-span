@@ -44,6 +44,50 @@ fn package_local_cargo_config_has_no_rustc_wrapper() {
 }
 
 #[test]
+fn cargo_config_linker_values_are_worktree_invariant_bare_names() {
+    // Cargo 1.97 hashes the *resolved* [target.*].linker value into every unit
+    // fingerprint. A relative-path linker resolves to a per-worktree absolute
+    // path (dirty: ConfigSettingsChanged from sibling worktrees → full-graph
+    // recompiles against the warm shared root — main-218/main-220); a bare
+    // name is hashed as the literal string, identical from every worktree, and
+    // is looked up on PATH at spawn time. Both packages must pin a bare name
+    // in both Linux GNU target sections.
+    let root = workspace_root();
+    for pkg in ["git-span", "git-span-core"] {
+        let path = root.join("packages").join(pkg).join(".cargo/config.toml");
+        let body = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+        let linker_values: Vec<&str> = body
+            .lines()
+            .filter_map(|l| {
+                let l = l.split('#').next().unwrap_or("").trim();
+                l.strip_prefix("linker = ")
+                    .map(|v| v.trim().trim_matches('"'))
+            })
+            .collect();
+        assert_eq!(
+            linker_values.len(),
+            2,
+            "{} must pin the linker in both target sections \
+             (x86_64-unknown-linux-gnu and aarch64-unknown-linux-gnu); found: {:?}",
+            path.display(),
+            linker_values
+        );
+        for v in &linker_values {
+            assert!(
+                !v.contains('/'),
+                "{}: linker {v:?} is a relative path — cargo resolves it to a \
+                 per-worktree absolute path and hashes that into every unit \
+                 fingerprint, forcing full-graph recompiles from sibling \
+                 worktrees (main-220). Use a bare name (\"cc.mold-wrapper\") \
+                 resolved via PATH.",
+                path.display()
+            );
+        }
+    }
+}
+
+#[test]
 fn devcontainer_has_no_rustc_wrapper() {
     let path = workspace_root()
         .join(".devcontainer")

@@ -102,6 +102,22 @@ sudo apt-get install mold        # Ubuntu/Debian — recommended
 # sudo apt-get install lld       # alternative linker (override with CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER)
 ```
 
+The mold cc wrapper [packages/git-span/scripts/cc.mold-wrapper.sh](packages/git-span/scripts/cc.mold-wrapper.sh)
+must be on `PATH` under its bare name `cc.mold-wrapper`: the devcontainer
+installs it to `/usr/local/bin`; for other environments:
+
+```bash
+install -m 755 packages/git-span/scripts/cc.mold-wrapper.sh ~/.local/bin/cc.mold-wrapper
+```
+
+The `[target.*].linker` config pins the bare name on purpose — a relative-path
+linker resolves to a per-worktree absolute path that Cargo hashes into every
+unit fingerprint, forcing full-graph recompiles whenever a sibling worktree's
+build ran; the bare name hashes identically from every worktree and is looked
+up on `PATH` at spawn time. Scripted builds self-heal via
+[with-target-lock.sh](packages/git-span/scripts/with-target-lock.sh), which
+materializes the wrapper at `~/.local/bin` if missing.
+
 On macOS no extra install is required — the mold linker config is gated to
 Linux GNU targets only. If you cross-compile to Linux from macOS, install `lld`
 (via Homebrew or Xcode) and override the linker:
