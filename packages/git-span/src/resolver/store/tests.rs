@@ -1171,11 +1171,16 @@ fn key_u32(n: u32) -> [u8; 32] {
 }
 
 /// Faithful in-test model of 6B's production trigger
-/// [`super::super::exact`]`::maybe_maintain`: a cheap size probe gates the
-/// bounded pass, which runs only above the high-water mark. Returns the pass's
-/// stats (all-zero when under the cap, i.e. the probe-only fast path).
+/// [`super::super::exact`]`::maybe_maintain`: the cheap probe — over the byte
+/// cap OR non-live generations beyond the reuse buffer (card main-224) —
+/// gates the bounded pass, which runs only above a high-water mark. Returns
+/// the pass's stats (all-zero below the water marks, i.e. the probe-only fast
+/// path).
 fn run_maybe_maintain(store: &mut CacheStore, cap: u64) -> GcStats {
-    if store.database_size_bytes().unwrap() <= cap {
+    let over_cap = store.database_size_bytes().unwrap() > cap;
+    let over_buffer =
+        store.non_live_generation_count().unwrap() > STORE_REUSE_BUFFER_GENERATIONS;
+    if !over_cap && !over_buffer {
         return GcStats::default();
     }
     store.maintain(cap).unwrap()
@@ -1342,7 +1347,10 @@ fn maintain_sweeps_stale_non_live_generations_under_cap() {
 /// for the git worktree enumeration [`super::super::exact`]`::reconcile_liveness`
 /// performs in production: the single commit currently checked out.
 fn run_maybe_maintain_reconciled(store: &mut CacheStore, cap: u64, live_head: &str) -> GcStats {
-    if store.database_size_bytes().unwrap() <= cap {
+    let over_cap = store.database_size_bytes().unwrap() > cap;
+    let over_buffer =
+        store.non_live_generation_count().unwrap() > STORE_REUSE_BUFFER_GENERATIONS;
+    if !over_cap && !over_buffer {
         return GcStats::default();
     }
     let live: HashSet<String> = std::iter::once(live_head.to_string()).collect();

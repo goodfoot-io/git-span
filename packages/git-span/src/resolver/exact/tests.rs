@@ -636,8 +636,7 @@ fn maybe_maintain_evicts_non_live_over_cap() {
     maybe_maintain(
         &repo,
         &mut store,
-        "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
-        &key,
+        Some(("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", &key)),
     );
 
     assert!(
@@ -665,8 +664,7 @@ fn maybe_maintain_keeps_generation_under_cap() {
     maybe_maintain(
         &repo,
         &mut store,
-        "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
-        &key,
+        Some(("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", &key)),
     );
 
     assert!(
@@ -705,8 +703,7 @@ fn maybe_maintain_sweeps_stale_non_live_under_cap() {
     maybe_maintain(
         &repo,
         &mut store,
-        "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
-        &[1u8; 32],
+        Some(("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", &[1u8; 32])),
     );
     let after = store.database_size_bytes().unwrap();
 
@@ -1034,7 +1031,7 @@ fn broken_worktree_does_not_disable_reconciliation() {
     publish_live_at(&mut store, k_drift, h_drift);
 
     // The production trigger, with the current worktree's (head, key).
-    maybe_maintain(&repo, &mut store, &h_main, &k_main);
+    maybe_maintain(&repo, &mut store, Some((&h_main, &k_main)));
 
     assert!(
         matches!(

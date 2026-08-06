@@ -253,8 +253,9 @@ fn eligible(options: &EngineOptions) -> bool {
 }
 
 /// Default store byte ceiling: 256 MiB (`notes/architecture-and-complexity.md`
-/// GC section). The bounded quota [`CacheStore::maintain`] enforces after a
-/// publish; overridable per-repo (see [`store_max_bytes`]).
+/// GC section). The bounded quota [`CacheStore::maintain`] enforces whenever
+/// the maintenance trigger runs — after a publish and at every drift open
+/// (card main-224); overridable per-repo (see [`store_max_bytes`]).
 pub(crate) const DEFAULT_STORE_MAX_BYTES: u64 = 268_435_456;
 
 /// Resolve the configured store byte ceiling for `repo`.
@@ -343,6 +344,16 @@ pub(crate) fn drift_spans_new_store(
     if let Some(reason) = store.recovered_on_open() {
         crate::perf::note(&format!("cache-path.corruption-recovered: {reason:?}"));
     }
+
+    // Card main-224: every drift invocation is a maintenance opportunity, not
+    // just publish. The gated bounded pass (see [`maybe_maintain`]) sweeps
+    // non-live generations beyond the reuse buffer even when the store has
+    // plateaued under the byte cap — the observed shape where the size-only
+    // publish trigger never fires and stale generations accumulate. The cheap
+    // size/count probe keeps this off the hot path when there is nothing to
+    // reclaim; no generation was just published here, so no same-head
+    // narrowing applies.
+    maybe_maintain(repo, &mut store, None);
 
     // Snapshot the complete invocation state up front: this is both the exact
     // read key and the baseline `revalidate` diffs against after a cold build.
@@ -798,13 +809,13 @@ fn publish_if_eligible(
     match published {
         Ok(()) => {
             crate::perf::counter("cache-path.publish-ok", 1);
-            // The one production trigger for 6A's quota maintenance: bounded
+            // The publish-time trigger for bounded store maintenance: bounded
             // foreground work, gated by a cheap high-water check (see
             // [`maybe_maintain`]), right after a generation lands. The just-
             // published `(head, key)` is the current worktree's live generation
             // — passed through so reconciliation can demote the drifted same-head
             // overlays dirty-state churn leaves behind (card main-157 F2).
-            maybe_maintain(repo, store, &token.head, key);
+            maybe_maintain(repo, store, Some((&token.head, key)));
         }
         Err(e) => {
             incr_publish_failures();
@@ -814,18 +825,29 @@ fn publish_if_eligible(
     }
 }
 
-/// Run bounded quota maintenance after a successful publish, but only at the
-/// high-water mark. A cheap [`CacheStore::database_size_bytes`] probe
-/// (`PRAGMA page_count`/`page_size` + a WAL stat) gates the expensive pass:
-/// when the store is under `cap`, this returns after the probe and never runs
-/// the eviction loop, page reclaim, or WAL checkpoint. When over `cap`,
+/// Run bounded store maintenance, but only at a high-water mark. A cheap probe
+/// gates the expensive pass: the store is over the byte cap
+/// ([`CacheStore::database_size_bytes`] — `PRAGMA page_count`/`page_size` + a
+/// WAL stat) OR its non-live generation count exceeds
+/// [`STORE_REUSE_BUFFER_GENERATIONS`](crate::resolver::store::STORE_REUSE_BUFFER_GENERATIONS).
+/// When neither holds, this returns after the probe and never runs the
+/// eviction loop, page reclaim, or WAL checkpoint. When either holds,
 /// [`CacheStore::maintain`] evicts non-live generations and truncates the WAL
 /// as bounded foreground work — no background thread, no deferral, so
 /// maintenance can never be perpetually not-run.
 ///
-/// This is the sole production caller of `maintain`: 6A landed the mechanism
-/// inert (a callable API nobody called); 6B wires it here.
-fn maybe_maintain(repo: &gix::Repository, store: &mut CacheStore, head: &str, key: &[u8; 32]) {
+/// The count leg (card main-224) is what sweeps a store that has plateaued
+/// just under the cap: the size-only probe returned early forever, so stale
+/// non-live generations accumulated unboundedly even though nothing kept them
+/// alive. `current` is the just-published `(head, key)` when this runs right
+/// after a publish (scoping the same-head demotion rule in
+/// [`reconcile_liveness`]); `None` when the pass runs from the drift
+/// open-time path with no generation just published.
+fn maybe_maintain(
+    repo: &gix::Repository,
+    store: &mut CacheStore,
+    current: Option<(&str, &[u8; 32])>,
+) {
     let cap = store_max_bytes(repo);
     let size = match store.database_size_bytes() {
         Ok(n) => n,
@@ -834,17 +856,25 @@ fn maybe_maintain(repo: &gix::Repository, store: &mut CacheStore, head: &str, ke
             return;
         }
     };
-    if size <= cap {
+    let over_buffer = match store.non_live_generation_count() {
+        Ok(n) => n > crate::resolver::store::STORE_REUSE_BUFFER_GENERATIONS,
+        Err(e) => {
+            crate::perf::note(&format!("cache-path.maintain-skipped: non-live count: {e}"));
+            return;
+        }
+    };
+    if size <= cap && !over_buffer {
         return;
     }
-    // Over the high-water mark: first reconcile liveness so superseded
-    // generations become evictable, then run the bounded quota pass. Publish
+    // Over a high-water mark: first reconcile liveness so superseded
+    // generations become evictable, then run the bounded pass. Publish
     // always marks the new generation `live`; without this step nothing ever
     // demotes a superseded one, every generation stays permanently live, and
     // `maintain`'s `WHERE live = 0` candidate filter reclaims nothing — the
-    // measured quota defeat this fixes (card main-157 Phase 6C). This runs only
-    // above the cap, so its worktree enumeration is off the hot read path.
-    reconcile_liveness(repo, store, head, key);
+    // measured quota defeat this fixes (card main-157 Phase 6C). This runs
+    // only above a high-water mark, so its worktree enumeration is off the hot
+    // read path.
+    reconcile_liveness(repo, store, current);
     match store.maintain(cap) {
         Ok(stats) => emit_gc_stats(cap, &stats),
         Err(e) => crate::perf::note(&format!("cache-path.maintain-failed: {e}")),
@@ -865,11 +895,16 @@ fn maybe_maintain(repo: &gix::Repository, store: &mut CacheStore, head: &str, ke
 /// `maintain` (called next) still runs regardless; it simply finds fewer (or
 /// no) candidates when reconciliation was skipped.
 ///
-/// `head`/`key` are the just-published current generation. They scope the
-/// same-head demotion rule (card main-157 F2): among the summary-only overlays
-/// dirty-state churn leaves at the current HEAD, only the current key stays
-/// live. See [`CacheStore::reconcile_live_heads`].
-fn reconcile_liveness(repo: &gix::Repository, store: &mut CacheStore, head: &str, key: &[u8; 32]) {
+/// `current` is the just-published current generation, when one exists. It
+/// scopes the same-head demotion rule (card main-157 F2): among the
+/// summary-only overlays dirty-state churn leaves at the current HEAD, only
+/// the current key stays live. `None` (the drift open-time path, card
+/// main-224) applies no such narrowing. See [`CacheStore::reconcile_live_heads`].
+fn reconcile_liveness(
+    repo: &gix::Repository,
+    store: &mut CacheStore,
+    current: Option<(&str, &[u8; 32])>,
+) {
     let live_heads = match crate::git::live_worktree_heads(repo) {
         Ok(h) => h,
         Err(e) => {
@@ -877,7 +912,7 @@ fn reconcile_liveness(repo: &gix::Repository, store: &mut CacheStore, head: &str
             return;
         }
     };
-    match store.reconcile_live_heads(&live_heads, Some((head, key))) {
+    match store.reconcile_live_heads(&live_heads, current) {
         Ok(demoted) => crate::perf::counter("cache-path.reconcile-demoted", demoted),
         Err(e) => crate::perf::note(&format!("cache-path.reconcile-failed: {e}")),
     }
