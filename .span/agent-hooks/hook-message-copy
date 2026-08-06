@@ -1,5 +1,4 @@
-packages/agent-hooks/src/common/advisor-core.ts#L1602-L1957 rk64:7ad12149462b48d7
-packages/agent-hooks/src/common/advisor-core.ts#L1641-L1996 rk64:3510581f2341788a
+packages/agent-hooks/src/common/advisor-core.ts#L1602-L1996 rk64:294de994283fb3a5
 packages/agent-hooks/src/common/touch-core.ts#L603-L632 rk64:2ebd57907c32ae1e
 
 packages/agent-hooks/README.md#L5-L8 rk64:b5a4c0c4ef258b01
