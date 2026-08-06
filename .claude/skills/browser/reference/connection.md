@@ -1,3 +1,8 @@
+---
+title: Connection & Tab Visibility
+summary: Managing browser connections and tab visibility.
+---
+
 # Connection & Tab Visibility
 
 ## The omnibox popup problem

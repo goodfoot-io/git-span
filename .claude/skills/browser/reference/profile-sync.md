@@ -1,23 +1,18 @@
+---
+title: Profile sync
+summary: The persistent local Chrome profile that keeps sessions logged in across tasks.
+---
+
 # Profile sync
 
-Start a remote Browser Use browser already logged in, by reusing an existing cloud profile (cookies only — no localStorage/IndexedDB/extensions, so this only helps on session-cookie sites).
+`bin/start-chrome.sh` launches Chrome with `--user-data-dir=$HOME/.cache/browser-use-skill/profile` — a persistent profile, not a tempdir. Cookies, localStorage, and IndexedDB all survive across `start-chrome.sh`/`stop-chrome.sh` cycles, so signing in once keeps later sessions in this container logged in. This is local to this container instance only — it doesn't sync anywhere.
 
-```python
-list_cloud_profiles()
-# [{id, name, userId, cookieDomains, lastUsedAt}, ...] — every profile under this API key
+## Resetting it
 
-start_remote_daemon("work", profileName="my-work")   # name→id resolved client-side
-start_remote_daemon("work", profileId="<uuid>")      # or pass UUID directly
+To log out of everything:
 
-stop_remote_daemon("work")                           # shut the daemon and PATCH the cloud browser to stop — billing ends
+```bash
+bash /workspace/.claude/skills/browser/bin/stop-chrome.sh
+rm -rf "$HOME/.cache/browser-use-skill/profile"
+bash /workspace/.claude/skills/browser/bin/start-chrome.sh
 ```
-
-Cookies are real auth — don't pick a profile unilaterally. List `list_cloud_profiles()` and ask the user which one to reuse (or confirm starting clean) before passing `profileName`/`profileId` to `start_remote_daemon`.
-
-Cookies mutated during a remote session only persist on a clean `stop_remote_daemon` call — sessions that hit the timeout lose in-session state.
-
-Profile names are not unique: `matches = [p["id"] for p in list_cloud_profiles() if p["name"] == "<name>"]` — verify `len(matches) == 1` before trusting a name-based lookup.
-
-## Traps
-
-- Default proxy (`proxyCountryCode="us"`) blocks some destinations with `ERR_TUNNEL_CONNECTION_FAILED` (e.g. `cloud.browser-use.com` itself). Pass `proxyCountryCode=None` to `start_remote_daemon` to disable the BU proxy, or a different country code to pick a different exit.

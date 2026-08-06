@@ -1,3 +1,8 @@
+---
+title: Screenshots
+summary: Capturing screenshots during browser automation using capture_screenshot().
+---
+
 # Screenshots
 
 `capture_screenshot()` writes a PNG of the current viewport. The file is in **device pixels** — on a 2× display a 2296×1143 CSS viewport produces a 4592×2286 PNG.
