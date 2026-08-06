@@ -801,16 +801,6 @@ fn distinct_key_callers_build_concurrently() {
 
 // -- 8. GC retention ------------------------------------------------------
 
-fn set_bucket(store: &CacheStore, k: &[u8; 32], bucket: i64) {
-    store
-        .conn
-        .execute(
-            "UPDATE generation SET access_bucket = ?2 WHERE key_digest = ?1",
-            rusqlite::params![hex32(k), bucket],
-        )
-        .unwrap();
-}
-
 fn row_total(store: &CacheStore) -> i64 {
     store
         .conn
@@ -886,8 +876,9 @@ fn touch_advances_access_bucket_only_across_bucket_boundaries() {
 
 // -- 8b. Quota-driven maintenance (card main-157 Phase 6A) ----------------
 
-/// A generation with a large summary, so a handful cross a small artificial
-/// cap. `rows` full reuse rows plus a matching path index.
+/// A generation with a large summary, so a handful of evictions move enough
+/// bytes to make the store-size assertions meaningful. `rows` full reuse rows
+/// plus a matching path index.
 fn make_big_input(k: [u8; 32], summary_bytes: usize, rows: usize) -> GenerationInput {
     let mut input = make_input(k, V1, b"", rows);
     input.summary = vec![0xABu8; summary_bytes];
@@ -904,7 +895,7 @@ fn wal_len(dir: &Path) -> u64 {
 }
 
 #[test]
-fn maintain_evicts_below_cap_keeping_live_and_recent() {
+fn maintain_evicts_beyond_reuse_buffer_keeping_live_and_recent() {
     let dir = tmp();
     let mut store = open(dir.path());
     let now = now_bucket();
@@ -921,26 +912,29 @@ fn maintain_evicts_below_cap_keeping_live_and_recent() {
     store
         .publish_generation(&make_big_input(key(2), 256, 1))
         .unwrap();
-    // Eviction fodder: three old, non-live, and large.
-    for n in 3..6u8 {
+    // Eviction fodder: seventeen old, non-live, and large — enough to push the
+    // non-live count (19) one past the 16-generation reuse buffer, so the
+    // count leg fires the pass.
+    for n in 3..20u8 {
         store
             .publish_generation(&make_big_input(key(n), 512 * 1024, 2))
             .unwrap();
-        set_bucket(&store, &key(n), now - 100);
+        // Strictly increasing age so the evicted trio is exactly keys 3-5:
+        // smaller bucket = older, so keys 3-5 get the smallest buckets and
+        // keys 6-19 the larger (newer) ones.
+        set_bucket(&store, &key(n), now - 100 + i64::from(n - 3));
     }
+    assert!(
+        store.non_live_generation_count().unwrap() > STORE_REUSE_BUFFER_GENERATIONS,
+        "precondition: the corpus exceeds the reuse buffer"
+    );
 
     let before = store.database_size_bytes().unwrap();
-    let cap = 400 * 1024;
-    assert!(before > cap, "corpus ({before}) should exceed cap ({cap})");
+    let stats = store.maintain().unwrap();
 
-    let stats = store.maintain(cap).unwrap();
-
-    // Footprint dropped below the cap.
+    // The pass evicts only what exceeds the reuse buffer: the three oldest
+    // fodder generations, keeping the live + recent survivors.
     let after = store.database_size_bytes().unwrap();
-    assert!(
-        after <= cap,
-        "size after maintain ({after}) should be <= cap ({cap})",
-    );
     assert_eq!(stats.bytes_before, before);
     assert_eq!(stats.bytes_after, after);
     assert!(after < before);
@@ -974,11 +968,17 @@ fn maintain_prefers_summary_only_over_full_even_if_newer() {
         .publish_generation_summary_only(&make_big_input(key(2), 512 * 1024, 0))
         .unwrap();
     set_bucket(&store, &key(2), now);
+    // Fifteen more non-live full generations so the non-live count (17) pokes
+    // one past the 16-generation reuse buffer — the count leg that makes the
+    // pass run, leaving exactly one eviction to be ordered.
+    for n in 3..18u8 {
+        store
+            .publish_generation(&make_big_input(key(n), 32 * 1024, 1))
+            .unwrap();
+        set_bucket(&store, &key(n), now - 100);
+    }
 
-    let cap = 700 * 1024;
-    assert!(store.database_size_bytes().unwrap() > cap);
-
-    let stats = store.maintain(cap).unwrap();
+    let stats = store.maintain().unwrap();
 
     assert_eq!(stats.generations_removed, 1);
     // Summary-only newer one evicted; full older one survived.
@@ -996,9 +996,9 @@ fn maintain_truncates_wal_even_without_eviction() {
         .unwrap();
     assert!(wal_len(dir.path()) > 0, "publish should have grown the WAL");
 
-    // A cap far above the corpus: no eviction, but the WAL is still truncated.
-    let huge_cap = 512 * 1024 * 1024;
-    let stats = store.maintain(huge_cap).unwrap();
+    // One non-live generation is under the 16-generation count water-mark: no
+    // eviction, but the WAL is still truncated.
+    let stats = store.maintain().unwrap();
     assert_eq!(stats.generations_removed, 0);
     assert_eq!(
         wal_len(dir.path()),
@@ -1029,7 +1029,7 @@ fn maintain_reports_corruption_recovery_event() {
 
     let mut recovered = open(dir.path());
     assert_eq!(recovered.recovered_on_open(), Some(BypassReason::Corrupt));
-    let stats = recovered.maintain(512 * 1024 * 1024).unwrap();
+    let stats = recovered.maintain().unwrap();
     assert!(
         stats.corruption_recovered,
         "maintain must surface the quarantine/recreate recovery event",
@@ -1039,12 +1039,7 @@ fn maintain_reports_corruption_recovery_event() {
     let clean_dir = tmp();
     let mut clean = open(clean_dir.path());
     assert_eq!(clean.recovered_on_open(), None);
-    assert!(
-        !clean
-            .maintain(512 * 1024 * 1024)
-            .unwrap()
-            .corruption_recovered
-    );
+    assert!(!clean.maintain().unwrap().corruption_recovered);
 }
 
 #[test]
@@ -1064,12 +1059,18 @@ fn reader_never_observes_partial_generation_under_quota_maintenance() {
         let mut store = open(&writer_dir);
         wb.wait();
         for _ in 0..300 {
-            store
-                .publish_generation(&make_input(k, V1, b"complete", ROWS))
-                .unwrap();
-            // A cap of 0 forces eviction of every non-live generation, exactly
-            // like the publish/GC stress test but through the quota path.
-            store.maintain(0).unwrap();
+            // 17 non-live generations per round — one past the 16-generation
+            // reuse buffer — so the count leg forces eviction every round,
+            // exactly like the publish/GC stress test but through the quota
+            // path. key(9) is published first and aged, so it is
+            // deterministically the eviction victim the reader hammers.
+            for n in 0..17u8 {
+                store
+                    .publish_generation(&make_input(key(n), V1, b"complete", ROWS))
+                    .unwrap();
+            }
+            set_bucket(&store, &k, now_bucket() - 100);
+            store.maintain().unwrap();
         }
     });
 
@@ -1171,19 +1172,19 @@ fn key_u32(n: u32) -> [u8; 32] {
 }
 
 /// Faithful in-test model of 6B's production trigger
-/// [`super::super::exact`]`::maybe_maintain`: the cheap probe — over the byte
-/// cap OR non-live generations beyond the reuse buffer (card main-224) —
-/// gates the bounded pass, which runs only above a high-water mark. Returns
-/// the pass's stats (all-zero below the water marks, i.e. the probe-only fast
-/// path).
-fn run_maybe_maintain(store: &mut CacheStore, cap: u64) -> GcStats {
-    let over_cap = store.database_size_bytes().unwrap() > cap;
+/// [`super::super::exact`]`::maybe_maintain`: production reconciles liveness
+/// first (demoting superseded generations — a no-op for every corpus here,
+/// which holds no live generation at a dead head), then the cheap probe —
+/// non-live generations beyond the reuse buffer (card main-224) — gates the
+/// bounded pass, which runs only above the high-water mark. Returns the pass's
+/// stats (all-zero below the water mark, i.e. the probe-only fast path).
+fn run_maybe_maintain(store: &mut CacheStore) -> GcStats {
     let over_buffer =
         store.non_live_generation_count().unwrap() > STORE_REUSE_BUFFER_GENERATIONS;
-    if !over_cap && !over_buffer {
+    if !over_buffer {
         return GcStats::default();
     }
-    store.maintain(cap).unwrap()
+    store.maintain().unwrap()
 }
 
 // -- 6C.1 Repeated-current-version-commit growth --------------------------
@@ -1192,12 +1193,14 @@ fn run_maybe_maintain(store: &mut CacheStore, cap: u64) -> GcStats {
 /// state re-published under the same canonical key (what a cross-process exact
 /// re-query does before it starts hitting) replaces atomically, so the store
 /// stays flat no matter how many times it is re-queried — bounded by
-/// construction, independent of iteration count.
+/// construction, independent of iteration count. Footprint is measured
+/// *settled* (store closed, WAL checkpointed), matching the cross-process
+/// shape: the same-key corpus never crosses the count leg's reuse buffer, so
+/// the trigger correctly never runs a maintenance pass over it.
 #[test]
 fn repeated_identical_state_query_stays_bounded() {
     let dir = tmp();
     let mut store = open(dir.path());
-    let cap = 256 * 1024;
     let k = key(1);
 
     let mut sizes = Vec::new();
@@ -1207,7 +1210,16 @@ fn repeated_identical_state_query_stays_bounded() {
         store
             .publish_generation(&make_big_input(k, 64 * 1024, 4))
             .unwrap();
-        run_maybe_maintain(&mut store, cap);
+        run_maybe_maintain(&mut store);
+        // Measure the *settled* footprint: close (checkpoint + WAL truncate on
+        // last-connection close), then re-open. The live WAL is transient cost
+        // — a cross-process re-query (this test's shape) never carries it into
+        // the next process — and with the byte cap retired (card main-223) the
+        // count-only trigger no longer checkpoints on every publish the way
+        // the size leg's per-iteration pass did, so an open-store measurement
+        // would grow with the WAL, not with the store.
+        drop(store);
+        store = open(dir.path());
         sizes.push(store.database_size_bytes().unwrap());
     }
 
@@ -1232,8 +1244,8 @@ fn repeated_identical_state_query_stays_bounded() {
 /// generations, *provided a superseded generation is demoted to non-live* (the
 /// retention signal `maintain` acts on). Each iteration publishes a fresh
 /// distinct-key generation, marks it non-live and aged (modelling a superseded
-/// state), then runs the production trigger. Storage plateaus below a small
-/// multiple of the cap instead of growing linearly with iteration count.
+/// state), then runs the production trigger. Storage plateaus at the reuse
+/// buffer instead of growing linearly with iteration count.
 ///
 /// This isolates `maintain`'s bounding from the liveness-wiring gap that
 /// `every_live_generation_defeats_the_quota_measured_gap` documents: the
@@ -1242,7 +1254,6 @@ fn repeated_identical_state_query_stays_bounded() {
 fn maintain_plateaus_across_many_distinct_evictable_generations() {
     let dir = tmp();
     let mut store = open(dir.path());
-    let cap = 512 * 1024;
     let old_bucket = now_bucket() - 10;
 
     let mut sizes = Vec::new();
@@ -1255,19 +1266,22 @@ fn maintain_plateaus_across_many_distinct_evictable_generations() {
         // it and age it out of the recent window so the quota may reclaim it.
         store.set_live(&k, false).unwrap();
         set_bucket(&store, &k, old_bucket);
-        run_maybe_maintain(&mut store, cap);
+        run_maybe_maintain(&mut store);
         sizes.push(store.database_size_bytes().unwrap());
     }
 
-    // Once past the cap the first time, the footprint stays bounded.
+    // Once past the reuse buffer the first time, the footprint stays bounded:
+    // at most the buffer's worth of generations, independent of iteration
+    // count. (Each generation is ~32 KiB of summary + a few pages of rows, so
+    // 16 generations land well under 48 KiB apiece.)
     let steady_max = sizes[200..].iter().copied().max().unwrap();
     eprintln!(
-        "GROWTH distinct-evictable n=400 cap={cap} at50={} at100={} at250={} at399={} steady_max={steady_max}",
+        "GROWTH distinct-evictable n=400 buffer={STORE_REUSE_BUFFER_GENERATIONS} at50={} at100={} at250={} at399={} steady_max={steady_max}",
         sizes[50], sizes[100], sizes[250], sizes[399],
     );
     assert!(
-        steady_max <= 2 * cap,
-        "distinct-generation footprint grew unbounded: steady-state max {steady_max} exceeds 2x cap ({cap})",
+        steady_max <= (STORE_REUSE_BUFFER_GENERATIONS + 1) * 48 * 1024,
+        "distinct-generation footprint grew unbounded: steady-state max {steady_max} exceeds the reuse-buffer bound",
     );
     // Not proportional to iteration count: the footprint at iteration 399 is no
     // larger than at iteration 250 (a true plateau, not a slow climb).
@@ -1277,22 +1291,29 @@ fn maintain_plateaus_across_many_distinct_evictable_generations() {
         sizes[250],
         sizes[399],
     );
+    // The non-live count itself plateaus at the buffer — the count-bounded
+    // retention contract, not a size measurement.
+    let non_live: i64 = store
+        .conn
+        .query_row(
+            "SELECT count(*) FROM generation WHERE live = 0",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        non_live as u64 <= STORE_REUSE_BUFFER_GENERATIONS,
+        "non-live generations must plateau at the reuse buffer: {non_live}"
+    );
 }
 
-/// Card main-224: a store that plateaus just UNDER the byte cap is never
-/// maintained — `maintain`'s eviction gate is size-only
-/// (`reclaimed_main_bytes > cap`), so non-live generations accumulate
-/// indefinitely while the footprint sits under the cap. The bounded pass must
-/// sweep stale non-live generations even when the cap was never crossed,
-/// retaining only the modest reuse buffer of recent ones (16 generations, the
-/// `STORE_REUSE_BUFFER_GENERATIONS` bound the fix introduces).
+/// Card main-224: the count leg is the maintenance trigger — the bounded pass
+/// sweeps non-live generations beyond [`STORE_REUSE_BUFFER_GENERATIONS`],
+/// retaining only the modest reuse buffer of recent ones (16 generations).
 #[test]
 fn maintain_sweeps_stale_non_live_generations_under_cap() {
     let dir = tmp();
     let mut store = open(dir.path());
-    // Far above anything the corpus below can reach: the store stays under the
-    // byte cap the whole time, so only a count/age gate can reclaim it.
-    let cap = 8 * 1024 * 1024;
 
     for n in 0..60u8 {
         let k = key(n);
@@ -1304,16 +1325,11 @@ fn maintain_sweeps_stale_non_live_generations_under_cap() {
         store.set_live(&k, false).unwrap();
         set_bucket(&store, &k, now_bucket() - 100);
     }
-    assert!(
-        store.database_size_bytes().unwrap() < cap,
-        "precondition: the corpus plateaus under the cap"
-    );
 
-    let stats = store.maintain(cap).unwrap();
+    let stats = store.maintain().unwrap();
 
-    // The pass must reclaim the stale generations even though the store is
-    // under the cap — retaining at most the reuse buffer of recent non-live
-    // generations.
+    // The pass must reclaim the stale generations — retaining at most the
+    // reuse buffer of recent non-live generations.
     assert!(
         stats.generations_removed >= 60 - 16,
         "stale non-live generations under the cap must be swept: removed {}",
@@ -1339,25 +1355,26 @@ fn maintain_sweeps_stale_non_live_generations_under_cap() {
     );
 }
 
-/// Faithful in-test model of 6B's PRODUCTION trigger *after the liveness fix*
+/// Faithful in-test model of the PRODUCTION trigger *after the liveness fix*
 /// (card main-157 Phase 6C's measured gap, now closed):
-/// [`super::super::exact`]`::maybe_maintain` — size probe, then, only above the
-/// high-water mark, [`CacheStore::reconcile_live_heads`] against the active
-/// worktree HEAD set followed by [`CacheStore::maintain`]. `live_head` stands in
-/// for the git worktree enumeration [`super::super::exact`]`::reconcile_liveness`
-/// performs in production: the single commit currently checked out.
-fn run_maybe_maintain_reconciled(store: &mut CacheStore, cap: u64, live_head: &str) -> GcStats {
-    let over_cap = store.database_size_bytes().unwrap() > cap;
-    let over_buffer =
-        store.non_live_generation_count().unwrap() > STORE_REUSE_BUFFER_GENERATIONS;
-    if !over_cap && !over_buffer {
-        return GcStats::default();
-    }
+/// [`super::super::exact`]`::maybe_maintain` — [`CacheStore::reconcile_live_heads`]
+/// against the active worktree HEAD set first (its demotions are what push the
+/// count leg over the water mark on a fresh store, card main-223), then the
+/// count probe, then — only above the high-water mark — [`CacheStore::maintain`].
+/// `live_head` stands in for the git worktree enumeration
+/// [`super::super::exact`]`::reconcile_liveness` performs in production: the
+/// single commit currently checked out.
+fn run_maybe_maintain_reconciled(store: &mut CacheStore, live_head: &str) -> GcStats {
     let live: HashSet<String> = std::iter::once(live_head.to_string()).collect();
     // Moving-HEAD model: rule 1 (superseded-head demotion) alone drives this
     // helper, so no current (head, key) narrowing is supplied.
     store.reconcile_live_heads(&live, None).unwrap();
-    store.maintain(cap).unwrap()
+    let over_buffer =
+        store.non_live_generation_count().unwrap() > STORE_REUSE_BUFFER_GENERATIONS;
+    if !over_buffer {
+        return GcStats::default();
+    }
+    store.maintain().unwrap()
 }
 
 /// The stored `live` flag for a key (raw column read, test-only).
@@ -1423,17 +1440,16 @@ fn reconcile_live_heads_demotes_only_superseded() {
 ///
 /// A sequence of distinct current-version states — a developer committing
 /// repeatedly, each commit a fresh HEAD and a fresh canonical key — now
-/// plateaus under a small multiple of the cap instead of climbing linearly with
-/// the commit count. This is the direct before/after of the measured gap that
+/// plateaus at the reuse buffer instead of climbing linearly with the commit
+/// count. This is the direct before/after of the measured gap that
 /// `phase-6-lifecycle-measurement.md` documented: the same 16 KiB-per-generation
-/// live-publish sequence that reached 10.8x the cap with zero reclamation now
-/// bounds itself, because reconciliation feeds `maintain` the superseded
+/// live-publish sequence that reached 10.8x a byte cap with zero reclamation
+/// now bounds itself, because reconciliation feeds `maintain` the superseded
 /// generations the unfixed wiring never demoted.
 #[test]
 fn superseded_generations_reconciled_and_evicted() {
     let dir = tmp();
     let mut store = open(dir.path());
-    let cap = 256 * 1024;
 
     let mut sizes = Vec::new();
     let mut removed_total = 0u64;
@@ -1449,7 +1465,7 @@ fn superseded_generations_reconciled_and_evicted() {
         // The production trigger, faithfully ordered: reconcile against the one
         // checked-out HEAD (the prior commits are no longer live), then run the
         // bounded quota pass.
-        let stats = run_maybe_maintain_reconciled(&mut store, cap, &head);
+        let stats = run_maybe_maintain_reconciled(&mut store, &head);
         removed_total += stats.generations_removed;
         sizes.push(store.database_size_bytes().unwrap());
     }
@@ -1457,15 +1473,15 @@ fn superseded_generations_reconciled_and_evicted() {
     let last = *sizes.last().unwrap();
     let steady_max = sizes[80..].iter().copied().max().unwrap();
     eprintln!(
-        "GROWTH reconciled-live n=160 cap={cap} at20={} at40={} at80={} at160={last} steady_max={steady_max} removed_total={removed_total}",
+        "GROWTH reconciled-live n=160 buffer={STORE_REUSE_BUFFER_GENERATIONS} at20={} at40={} at80={} at160={last} steady_max={steady_max} removed_total={removed_total}",
         sizes[20], sizes[40], sizes[80],
     );
-    // Bounded: past the cap the first time, the footprint stays within a small
-    // multiple of the cap — no linear growth with commit count. (Unfixed, this
-    // reached 10.8x the cap and kept climbing.)
+    // Bounded: once the reuse buffer fills, the footprint stays within the
+    // buffer's worth of generations — no linear growth with commit count.
+    // (Unfixed, this reached 10.8x the cap and kept climbing.)
     assert!(
-        steady_max <= 2 * cap,
-        "reconciled-live footprint grew unbounded: steady-state max {steady_max} exceeds 2x cap ({cap})",
+        steady_max <= (STORE_REUSE_BUFFER_GENERATIONS + 1) * 32 * 1024,
+        "reconciled-live footprint grew unbounded: steady-state max {steady_max} exceeds the reuse-buffer bound",
     );
     // A true plateau, not a slow climb: iteration 159 is no larger than
     // iteration 80.
@@ -1503,7 +1519,6 @@ fn superseded_generations_reconciled_and_evicted() {
 fn same_head_dirty_churn_reconciled_and_evicted() {
     let dir = tmp();
     let mut store = open(dir.path());
-    let cap = 256 * 1024;
     let head = "fixedheadcommitoiddeadbeefcafef00dfixedhead";
 
     // The warm clean baseline at the fixed head: rows-bearing (row_count > 0),
@@ -1532,15 +1547,19 @@ fn same_head_dirty_churn_reconciled_and_evicted() {
         input.live = true;
         store.publish_generation_summary_only(&input).unwrap();
 
-        // The production trigger, faithfully ordered: above the high-water mark,
-        // reconcile against the (unchanged) single live head — scoped to the
-        // just-published current (head, key) — then the bounded quota pass.
-        if store.database_size_bytes().unwrap() > cap {
-            let live: HashSet<String> = std::iter::once(head.to_string()).collect();
-            store
-                .reconcile_live_heads(&live, Some((head, &overlay)))
-                .unwrap();
-            let stats = store.maintain(cap).unwrap();
+        // The production trigger, faithfully ordered (card main-223): reconcile
+        // first — the just-published current (head, key) scopes the same-head
+        // rule that demotes every prior overlay — then the count probe, then
+        // the bounded quota pass above the high-water mark. Reconciliation must
+        // precede the probe: every overlay here publishes `live`, so the
+        // non-live count can never cross the reuse buffer on its own — the
+        // demotions from this call are what feed the count leg.
+        let live: HashSet<String> = std::iter::once(head.to_string()).collect();
+        store
+            .reconcile_live_heads(&live, Some((head, &overlay)))
+            .unwrap();
+        if store.non_live_generation_count().unwrap() > STORE_REUSE_BUFFER_GENERATIONS {
+            let stats = store.maintain().unwrap();
             removed_total += stats.generations_removed;
         }
         sizes.push(store.database_size_bytes().unwrap());
@@ -1549,16 +1568,17 @@ fn same_head_dirty_churn_reconciled_and_evicted() {
     let last = *sizes.last().unwrap();
     let steady_max = sizes[100..].iter().copied().max().unwrap();
     eprintln!(
-        "GROWTH same-head-churn n=200 cap={cap} at20={} at50={} at100={} at200={last} steady_max={steady_max} removed_total={removed_total}",
+        "GROWTH same-head-churn n=200 buffer={STORE_REUSE_BUFFER_GENERATIONS} at20={} at50={} at100={} at200={last} steady_max={steady_max} removed_total={removed_total}",
         sizes[20], sizes[50], sizes[100],
     );
-    // Bounded: HEAD held constant, the footprint stays within a small multiple
-    // of the cap instead of climbing linearly with the churn count. (Unfixed —
-    // head-scoped liveness only — this reached ~5x the cap and kept climbing,
+    // Bounded: HEAD held constant, the footprint stays within the reuse
+    // buffer's worth of overlays (plus the live baseline and current overlay)
+    // instead of climbing linearly with the churn count. (Unfixed — head-
+    // scoped liveness only — this reached ~5x the cap and kept climbing,
     // reclaiming nothing.)
     assert!(
-        steady_max <= 2 * cap,
-        "same-head-churn footprint grew unbounded: steady-state max {steady_max} exceeds 2x cap ({cap})",
+        steady_max <= (STORE_REUSE_BUFFER_GENERATIONS + 2) * 32 * 1024,
+        "same-head-churn footprint grew unbounded: steady-state max {steady_max} exceeds the reuse-buffer bound",
     );
     // A true plateau, not a slow climb: the last iteration is no larger than
     // iteration 100.
@@ -1909,14 +1929,15 @@ fn conc_kill_child_entrypoint() {
             }
         });
     }
-    // GC: quota maintenance with a tiny cap — constant eviction + vacuum +
-    // WAL checkpoint churn (the transactions most likely to be mid-flight).
+    // GC: quota maintenance — constant eviction (the builder keeps publishing
+    // non-live generations past the reuse buffer) + vacuum + WAL checkpoint
+    // churn (the transactions most likely to be mid-flight).
     {
         let d = dir.clone();
         std::thread::spawn(move || {
             let mut store = open(&d);
             loop {
-                let _ = store.maintain(8 * 1024);
+                let _ = store.maintain();
             }
         });
     }

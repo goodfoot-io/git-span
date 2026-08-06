@@ -560,45 +560,6 @@ fn clean_run_publishes_and_is_eligible() {
 
 // ── Quota-maintenance trigger (sub-scope 6B) ─────────────────────────────────
 
-/// The byte-ceiling config resolves with the documented precedence:
-/// `GIT_SPAN_STORE_MAX_BYTES` env override > `git config git-span.storeMaxBytes`
-/// > [`DEFAULT_STORE_MAX_BYTES`]; an unparseable layer falls through.
-#[test]
-fn store_max_bytes_env_over_config_over_default() {
-    let (_td, repo) = drifted_repo("capcfg");
-    let workdir = repo.workdir().expect("workdir").to_path_buf();
-
-    unsafe {
-        std::env::remove_var("GIT_SPAN_STORE_MAX_BYTES");
-    }
-    assert_eq!(
-        store_max_bytes(&repo),
-        DEFAULT_STORE_MAX_BYTES,
-        "no env, no config => 256 MiB default"
-    );
-
-    // Config alone (re-open so the config snapshot includes the new key).
-    git(&workdir, &["config", "git-span.storeMaxBytes", "4096"]);
-    let repo = gix::open(&workdir).expect("reopen");
-    assert_eq!(store_max_bytes(&repo), 4096, "config value when no env");
-
-    // Env overrides config.
-    unsafe {
-        std::env::set_var("GIT_SPAN_STORE_MAX_BYTES", "8192");
-    }
-    assert_eq!(store_max_bytes(&repo), 8192, "env wins over config");
-
-    // Unparseable env falls through to config.
-    unsafe {
-        std::env::set_var("GIT_SPAN_STORE_MAX_BYTES", "not-a-number");
-    }
-    assert_eq!(
-        store_max_bytes(&repo),
-        4096,
-        "unparseable env falls through to config"
-    );
-}
-
 /// Publish one non-live generation to a store, then craft the input directly.
 fn publish_non_live(store: &mut CacheStore, key: [u8; 32]) {
     let input = GenerationInput {
@@ -614,14 +575,31 @@ fn publish_non_live(store: &mut CacheStore, key: [u8; 32]) {
 }
 
 /// At the high-water mark the post-publish trigger evicts a non-live
-/// generation: with a 1-byte cap, [`maybe_maintain`] runs `maintain` and the
-/// non-live generation is gone.
+/// generation: with 17 non-live generations (one past the 16-generation reuse
+/// buffer), [`maybe_maintain`] runs `maintain` and the targeted generation is
+/// gone.
 #[test]
-fn maybe_maintain_evicts_non_live_over_cap() {
+fn maybe_maintain_evicts_non_live_beyond_reuse_buffer() {
     let (_td, repo) = drifted_repo("capevict");
     let mut store = CacheStore::open(&repo).expect("open");
     let key = [7u8; 32];
+    // 17 non-live generations — one past the reuse buffer — so the count leg
+    // alone forces the pass. The targeted generation is published first and
+    // aged so eviction order deterministically picks it. The loop publishes
+    // sixteen more (1..=17 minus the targeted key): publish replaces by key,
+    // so re-publishing [7; 32] would collapse the corpus back to 16.
     publish_non_live(&mut store, key);
+    for n in 1..18u8 {
+        if n == 7 {
+            continue;
+        }
+        publish_non_live(&mut store, [n; 32]);
+    }
+    crate::resolver::store::set_bucket(
+        &store,
+        &key,
+        crate::resolver::store::now_bucket() - 100,
+    );
     assert!(
         matches!(
             store.get_generation(&key, SUMMARY_VERSION).expect("get"),
@@ -630,9 +608,6 @@ fn maybe_maintain_evicts_non_live_over_cap() {
         "generation must be present before maintenance"
     );
 
-    unsafe {
-        std::env::set_var("GIT_SPAN_STORE_MAX_BYTES", "1");
-    }
     maybe_maintain(
         &repo,
         &mut store,
@@ -644,23 +619,20 @@ fn maybe_maintain_evicts_non_live_over_cap() {
             store.get_generation(&key, SUMMARY_VERSION).expect("get"),
             GetOutcome::Miss
         ),
-        "a non-live generation over the cap must be evicted by the trigger"
+        "a non-live generation beyond the reuse buffer must be evicted by the trigger"
     );
 }
 
-/// Under the cap the trigger is a no-op beyond the cheap size probe: even a
-/// non-live generation survives, since nothing is over the high-water mark.
+/// Within the reuse buffer the trigger is a no-op beyond the cheap count
+/// probe: even a non-live generation survives, since nothing is over the
+/// high-water mark.
 #[test]
-fn maybe_maintain_keeps_generation_under_cap() {
+fn maybe_maintain_keeps_generation_within_reuse_buffer() {
     let (_td, repo) = drifted_repo("capkeep");
     let mut store = CacheStore::open(&repo).expect("open");
     let key = [9u8; 32];
     publish_non_live(&mut store, key);
 
-    unsafe {
-        // Default 256 MiB — far above a tiny fresh store.
-        std::env::remove_var("GIT_SPAN_STORE_MAX_BYTES");
-    }
     maybe_maintain(
         &repo,
         &mut store,
@@ -672,16 +644,14 @@ fn maybe_maintain_keeps_generation_under_cap() {
             store.get_generation(&key, SUMMARY_VERSION).expect("get"),
             GetOutcome::Hit(_)
         ),
-        "under cap, the trigger must not evict anything"
+        "within the reuse buffer, the trigger must not evict anything"
     );
 }
 
-/// Card main-224: the production trigger short-circuits on a size-only probe
-/// (`database_size_bytes <= cap`), so a store that has plateaued just under
-/// the cap retains every stale non-live generation forever — no publish
-/// crosses the cap, so [`maintain`](CacheStore::maintain) never runs. The
-/// trigger must sweep non-live generations beyond the reuse buffer even when
-/// the store is under the cap, shrinking the on-disk footprint.
+/// Card main-224: the production trigger's cheap probe is the non-live
+/// generation count, so a store holding more than the reuse buffer keeps its
+/// stale non-live generations until the trigger sweeps them — shrinking the
+/// on-disk footprint.
 #[test]
 fn maybe_maintain_sweeps_stale_non_live_under_cap() {
     let (_td, repo) = drifted_repo("capsweep");
@@ -690,14 +660,6 @@ fn maybe_maintain_sweeps_stale_non_live_under_cap() {
     for n in 0..60u8 {
         publish_non_live(&mut store, [n; 32]);
     }
-    unsafe {
-        // Default 256 MiB cap — far above this tiny store.
-        std::env::remove_var("GIT_SPAN_STORE_MAX_BYTES");
-    }
-    assert!(
-        store.database_size_bytes().unwrap() < store_max_bytes(&repo),
-        "precondition: the store plateaus under the cap"
-    );
 
     let before = store.database_size_bytes().unwrap();
     maybe_maintain(
@@ -709,22 +671,29 @@ fn maybe_maintain_sweeps_stale_non_live_under_cap() {
 
     assert!(
         after < before,
-        "the trigger must reclaim stale generations even under the cap: {before} -> {after}"
+        "the trigger must reclaim stale generations: {before} -> {after}"
     );
 }
 
-/// A real `drift` run with a 1-byte cap still returns the correct result and
-/// leaves the just-published *live* generation intact (a live generation is
-/// never evicted, even at the high-water mark) — the trigger's only effect is
-/// on the store file, never on the command's output.
+/// A real `drift` run against a store holding more non-live generations than
+/// the reuse buffer still returns the correct result and leaves the just-
+/// published *live* generation intact (a live generation is never evicted,
+/// even at the high-water mark) — the trigger's only effect is on the store
+/// file, never on the command's output.
 #[test]
-fn tiny_cap_run_keeps_output_and_live_generation() {
+fn count_forced_run_keeps_output_and_live_generation() {
     reset_test_state();
     clear_memo();
     let (_td, repo) = drifted_repo("capdrift");
     enable_store();
-    unsafe {
-        std::env::set_var("GIT_SPAN_STORE_MAX_BYTES", "1");
+    // Seed a stale store: 17 non-live generations (one past the 16-generation
+    // reuse buffer) so the run's open-time maintenance trigger fires and
+    // sweeps them.
+    {
+        let mut store = CacheStore::open(&repo).expect("open");
+        for n in 0..17u8 {
+            publish_non_live(&mut store, [n; 32]);
+        }
     }
     let opts = EngineOptions::full();
     let key = capture_state_token(&repo, SPAN_ROOT, opts)
@@ -741,25 +710,22 @@ fn tiny_cap_run_keeps_output_and_live_generation() {
             store.get_generation(&key, SUMMARY_VERSION).expect("get"),
             GetOutcome::Hit(_)
         ),
-        "a live generation is never evicted, even under a 1-byte cap"
+        "a live generation is never evicted, even with the trigger forced"
     );
 }
 
-/// Card main-224 acceptance signal: on a store that has plateaued near the cap
-/// without a recent publish, running the repository's normal `git span`
-/// workflow brings the non-live generation count and on-disk size down
-/// WITHOUT a new snapshot being published first. The maintenance opportunity
-/// must be the drift invocation itself — a warm, hit-only run — not just the
-/// publish that follows a cold build.
+/// Card main-224 acceptance signal: on a store holding more non-live
+/// generations than the reuse buffer without a recent publish, running the
+/// repository's normal `git span` workflow brings the non-live generation
+/// count and on-disk size down WITHOUT a new snapshot being published first.
+/// The maintenance opportunity must be the drift invocation itself — a warm,
+/// hit-only run — not just the publish that follows a cold build.
 #[test]
 fn drift_run_sweeps_stale_generations_without_publish() {
     reset_test_state();
     clear_memo();
     let (_td, repo) = drifted_repo("capsweeprun");
     enable_store();
-    unsafe {
-        std::env::remove_var("GIT_SPAN_STORE_MAX_BYTES");
-    }
     let opts = EngineOptions::full();
 
     // Cold run: builds and publishes the current state's live generation.
@@ -767,7 +733,7 @@ fn drift_run_sweeps_stale_generations_without_publish() {
     assert_eq!(spans.len(), 1, "the one drifted span is still reported");
 
     // Populate stale non-live generations directly into the store, as a
-    // long-lived checkout accumulates when the cap-gated eviction never fires.
+    // long-lived checkout accumulates when maintenance never fires.
     let mut store = CacheStore::open(&repo).expect("open");
     for n in 0..60u8 {
         publish_non_live(&mut store, [n; 32]);
@@ -805,14 +771,20 @@ fn drift_run_sweeps_stale_generations_without_publish() {
 /// generation, exactly the "sequence of trivial commits each triggering a fresh
 /// generation" sub-case the exit gate names — then runs the real `drift` path.
 ///
-/// The store footprint is flat across the whole sequence — bounded by the
-/// single live generation the current commit references, not by the commit
-/// count — because reconciliation demotes every prior commit's generation (its
-/// HEAD is no longer checked out) and the quota pass evicts them. The unfixed
-/// behavior grew linearly with the commit count and reclaimed nothing
+/// The store footprint plateaus across the whole sequence — bounded by the
+/// count leg's reuse buffer
+/// ([`STORE_REUSE_BUFFER_GENERATIONS`](crate::resolver::store::STORE_REUSE_BUFFER_GENERATIONS)),
+/// not by the commit count — because reconciliation demotes every prior
+/// commit's generation (its HEAD is no longer checked out) and the maintenance
+/// pass evicts everything beyond the buffer. The unfixed behavior grew
+/// linearly with the commit count and reclaimed nothing
 /// (`store::tests::superseded_generations_reconciled_and_evicted` pins the
-/// before/after at the store layer with a realistic cap). Here the first
-/// commit's generation is reclaimed while the current one stays findable.
+/// before/after at the store layer). Here the superseded generations are aged
+/// to strictly older access buckets as they publish, making the eviction order
+/// deterministic (same-second `created_at` values would otherwise tie): the
+/// oldest 23 are reclaimed, the newest 16 survive as the reuse buffer, and the
+/// first commit's generation — the oldest of all — is reclaimed while the
+/// current one stays findable.
 #[test]
 fn repeated_commits_cannot_grow_store_unbounded() {
     reset_test_state();
@@ -832,16 +804,13 @@ fn repeated_commits_cannot_grow_store_unbounded() {
     write_span(dir, "alpha", &[("src/a.txt", 1, 3)], "why alpha");
 
     enable_store();
-    // A 1-byte cap forces the quota pass to run on every publish: after
-    // reconciliation demotes the superseded generations, `maintain` evicts
-    // every non-live one, so the store holds only the current live generation —
-    // a footprint independent of the commit count. (The current generation is
-    // live, so it is never evicted, exactly as `tiny_cap_...` asserts.)
-    unsafe {
-        std::env::set_var("GIT_SPAN_STORE_MAX_BYTES", "1");
-    }
-
-    let iters = 12usize;
+    // The count leg fires only once superseded generations accumulate past the
+    // 16-generation reuse buffer, so run well beyond that: after reconciliation
+    // demotes each superseded generation, `maintain` evicts everything beyond
+    // the buffer, and the store holds only the buffer plus the current live
+    // generation — a footprint independent of the commit count. (The current
+    // generation is live, so it is never evicted.)
+    let iters = 40usize;
     let mut sizes = Vec::with_capacity(iters);
     let mut keys = Vec::with_capacity(iters);
     for n in 0..iters {
@@ -863,33 +832,69 @@ fn repeated_commits_cannot_grow_store_unbounded() {
         let _ = drift_spans_new_store(&repo, SPAN_ROOT, opts).expect("drift");
 
         let store = CacheStore::open(&repo).expect("open");
+        // Age the just-published generation to a strictly increasing access
+        // bucket (newest = largest). Eviction order is `access_bucket ASC`, so
+        // this makes the reclaimed set deterministic — the oldest 23 commits
+        // are reclaimed, the newest 16 survive as the reuse buffer. Without
+        // it, same-second `created_at` ties leave the eviction victims
+        // arbitrary. (The current generation is `live`, so aging it never
+        // makes it evictable.)
+        crate::resolver::store::set_bucket(
+            &store,
+            &key,
+            crate::resolver::store::now_bucket() - (iters - n) as i64,
+        );
         sizes.push(store.database_size_bytes().unwrap());
     }
 
-    let first = sizes[0];
     let last = *sizes.last().unwrap();
-    let max = *sizes.iter().max().unwrap();
-    eprintln!("GROWTH repeated-commits n={iters} first={first} last={last} max={max}");
+    let steady_max = sizes[20..].iter().copied().max().unwrap();
 
-    // Flat: the footprint after the last commit is within one generation's
-    // slack of the first — it does not grow with the commit count. Under the
-    // unfixed all-live semantics this climbed monotonically instead.
+    // Plateau: once the reuse buffer fills (commit 17+), the footprint stops
+    // growing with the commit count — the last commit is within one
+    // generation's slack of the plateau-start footprint at commit 20. Under
+    // the unfixed all-live semantics this climbed monotonically instead.
     assert!(
-        max <= first + 64 * 1024,
-        "store grew with commit count: first={first} max={max} (unbounded)",
+        last <= sizes[20] + 64 * 1024,
+        "store grew with commit count: [20]={} last={last} (unbounded)",
+        sizes[20],
+    );
+    // The plateau itself is a bounded working set (reuse buffer + one live
+    // generation), not one generation per commit: the steady-state maximum is
+    // within a fixed multiple of the plateau-start footprint, independent of
+    // the 40-commit run.
+    assert!(
+        steady_max <= 2 * sizes[20] + 64 * 1024,
+        "store grew past a bounded plateau: [20]={} steady_max={steady_max} (unbounded)",
+        sizes[20],
     );
 
     let repo = gix::open(dir).expect("gix open");
     let store = CacheStore::open(&repo).expect("open");
-    // Every superseded commit's generation was demoted and reclaimed...
-    for (n, key) in keys.iter().enumerate().take(iters - 1) {
+
+    // The count leg's contract: exactly the superseded generations BEYOND the
+    // 16-generation reuse buffer are reclaimed — the oldest 23 commits (each
+    // aged to a strictly older access bucket above, so the order is
+    // deterministic)...
+    for (n, key) in keys.iter().enumerate().take(iters - 1 - 16) {
         assert_eq!(
             store.get_generation(key, SUMMARY_VERSION).expect("get"),
             GetOutcome::Miss,
             "superseded generation from commit {n} must have been reclaimed",
         );
     }
-    // ...while the current worktree's active generation stays live and findable.
+    // ...while the newest 16 superseded generations survive as the reuse
+    // buffer, and the current worktree's active generation stays live and
+    // findable.
+    for (n, key) in keys.iter().enumerate().skip(iters - 1 - 16).take(16) {
+        assert!(
+            matches!(
+                store.get_generation(key, SUMMARY_VERSION).expect("get"),
+                GetOutcome::Hit(_)
+            ),
+            "reuse-buffer generation from commit {n} must be retained",
+        );
+    }
     assert!(
         matches!(
             store
@@ -1015,12 +1020,13 @@ fn broken_worktree_does_not_disable_reconciliation() {
     );
 
     // Half 2: reconciliation demotes a drifted head no resolvable worktree sits
-    // on, while both live worktrees' generations survive. A 1-byte cap makes the
-    // quota pass evict every demoted (non-live) generation.
+    // on, while both live worktrees' generations survive. Seventeen filler
+    // non-live generations seed the count leg — one past the 16-generation
+    // reuse buffer even before the drift generation is demoted — so the pass's
+    // count probe fires; reconciliation then demotes the drift generation,
+    // crossing the buffer by one more, and the quota pass evicts it (aged the
+    // oldest candidate).
     enable_store();
-    unsafe {
-        std::env::set_var("GIT_SPAN_STORE_MAX_BYTES", "1");
-    }
     let mut store = CacheStore::open(&repo).expect("open store");
     let k_main = [1u8; 32];
     let k_healthy = [2u8; 32];
@@ -1029,6 +1035,17 @@ fn broken_worktree_does_not_disable_reconciliation() {
     publish_live_at(&mut store, k_main, &h_main);
     publish_live_at(&mut store, k_healthy, &h_healthy);
     publish_live_at(&mut store, k_drift, h_drift);
+    for n in 0..17u8 {
+        publish_non_live(&mut store, [100 + n; 32]);
+    }
+    // Age the drift generation so eviction order deterministically reclaims it
+    // (every candidate is a fresh summary-only generation at the current
+    // access bucket, so without this the victim is a tie).
+    crate::resolver::store::set_bucket(
+        &store,
+        &k_drift,
+        crate::resolver::store::now_bucket() - 100,
+    );
 
     // The production trigger, with the current worktree's (head, key).
     maybe_maintain(&repo, &mut store, Some((&h_main, &k_main)));

@@ -177,7 +177,6 @@ being re-mmap+BLAKE3-hashed on every invocation. `cache-path.exe-digest-memo-loo
 | `cache-path.corruption-recovered: <reason>` | The store quarantined and recreated an incompatible-schema or `SQLITE_CORRUPT` database on open; a silent recovery made reportable. |
 | `cache-path.reconcile-demoted` | Superseded generations demoted from `live` after reconciling against the repository's active worktree HEADs, making them evictable. |
 | `cache-path.reconcile-skipped: live-heads: <err>` / `cache-path.reconcile-failed: <err>` | Liveness reconciliation could not run in full (fail closed: nothing is demoted, correctness preserved). |
-| `cache-path.store-cap-bytes` | The configured byte ceiling (default 256 MiB; overridable via `GIT_SPAN_STORE_MAX_BYTES` or `git config git-span.storeMaxBytes`). |
 | `cache-path.gc-bytes-before` / `cache-path.gc-bytes-after` | Store size on disk before and after the bounded eviction + WAL truncate. |
 | `cache-path.gc-generations-removed` / `cache-path.gc-rows-removed` | Non-live generations and rows the quota pass evicted. |
 | `cache-path.gc-corruption-recovered: true` | A corruption recovery folded into this maintenance pass. |

@@ -77,11 +77,10 @@ use schema::{
 pub(crate) const ACCESS_BUCKET_SECS: i64 = 3_600;
 
 /// Non-live generations retained as a reuse buffer beyond the live set (card
-/// main-224). [`Self::maintain`] sweeps non-live generations beyond this count
-/// even when the store is under the byte cap, so recently-accessed generations
-/// stay reusable across branch-switch churn while a store that plateaus under
-/// the cap still gets reclaimed — retention is bounded by construction, not
-/// only when a publish happens to cross the cap.
+/// main-224). [`Self::maintain`] sweeps non-live generations beyond this
+/// count — the maintenance trigger — so recently-accessed generations stay
+/// reusable across branch-switch churn while stale ones are reclaimed:
+/// retention is bounded by construction.
 pub(crate) const STORE_REUSE_BUFFER_GENERATIONS: u64 = 16;
 
 /// One immutable normalized reuse row within a generation. `row_kind` is a
@@ -1029,10 +1028,10 @@ impl CacheStore {
 
     /// Actual on-disk footprint of the store: the main database file
     /// (`page_count * page_size`) plus the live WAL file. WAL bytes are real
-    /// disk usage until a checkpoint truncates them, so the quota must count
-    /// them (`notes/architecture-and-complexity.md` GC section). Cheap header
-    /// reads — safe to call anywhere, but the quota decision that consumes it
-    /// (`maintain`) is never on a hot read path.
+    /// disk usage until a checkpoint truncates them, so [`Self::maintain`]
+    /// counts them when reporting [`GcStats`] (`notes/architecture-and-
+    /// complexity.md` GC section). Cheap header reads — safe to call anywhere,
+    /// and never on a hot read path.
     pub(crate) fn database_size_bytes(&self) -> StoreResult<u64> {
         let page_count: i64 = self
             .conn
@@ -1054,10 +1053,9 @@ impl CacheStore {
     }
 
     /// Count of non-live generations — the cheap retention probe the trigger
-    /// uses to sweep a store that has plateaued under the byte cap (card
-    /// main-224). Non-live is exactly [`Self::eviction_candidates`]'
-    /// eligibility signal, so the count bounds retention by construction
-    /// rather than only when the cap is crossed.
+    /// uses to sweep stale generations (card main-224). Non-live is exactly
+    /// [`Self::eviction_candidates`]' eligibility signal, so the count bounds
+    /// retention by construction.
     pub(crate) fn non_live_generation_count(&self) -> StoreResult<u64> {
         let n: i64 = self
             .conn
@@ -1073,10 +1071,13 @@ impl CacheStore {
     /// Projected footprint of the main file *after* the freelist is reclaimed:
     /// `(page_count - freelist_count) * page_size`. Deleting a generation moves
     /// its pages onto the freelist (auto-vacuum INCREMENTAL) without shrinking
-    /// the file, so this — not [`Self::database_size_bytes`] — is what the
-    /// eviction loop tests against, so freed-but-not-yet-reclaimed pages do not
+    /// the file, so a size-driven eviction loop must test this projection —
+    /// not [`Self::database_size_bytes`] — or freed-but-not-yet-reclaimed pages
     /// keep it looping. WAL is excluded because the pass truncates it at the
-    /// end.
+    /// end. Retained for the retention-policy replay spike
+    /// (`store::tests::evict_under_cap_with_order`), the only size-driven
+    /// consumer left; the production `maintain` loop is count-gated.
+    #[cfg(test)]
     fn reclaimed_main_bytes(&self) -> StoreResult<u64> {
         let page_count: i64 = self
             .conn
@@ -1096,11 +1097,9 @@ impl CacheStore {
 
     /// Quota-driven bounded maintenance. Evicts non-live generations —
     /// cheapest-to-rebuild and least-recently-accessed first — in bounded
-    /// per-generation transactions while the store is over `cap_bytes` OR its
-    /// non-live count exceeds [`STORE_REUSE_BUFFER_GENERATIONS`]. The size leg
-    /// is the quota; the count leg (card main-224) sweeps a store that has
-    /// plateaued under the cap, so stale generations are reclaimed even when
-    /// no publish ever crosses it, retaining only the modest reuse buffer.
+    /// per-generation transactions while the non-live count exceeds
+    /// [`STORE_REUSE_BUFFER_GENERATIONS`] (card main-224): stale generations
+    /// are swept down to the modest reuse buffer, live generations never.
     /// Then, whether or not anything was evicted, reclaims freed pages and
     /// checkpoint-truncates the WAL so the on-disk footprint actually drops.
     ///
@@ -1109,8 +1108,7 @@ impl CacheStore {
     /// summary-only/dirty generations (`row_count = 0`, cheap to rebuild, no
     /// reuse value) over full committed generations that carry reuse rows, and
     /// within each group evicts the oldest access bucket first — so recently
-    /// accessed generations survive as long as evicting older ones frees enough
-    /// space.
+    /// accessed generations survive.
     ///
     /// Invisibility: each eviction is [`Self::gc_delete_one`]'s single
     /// transaction (generation row first), so a concurrent reader sees a whole
@@ -1121,26 +1119,22 @@ impl CacheStore {
     ///
     /// This is a callable mechanism, not a production trigger: 6B invokes it
     /// from a real high-water-mark path.
-    pub(crate) fn maintain(&mut self, cap_bytes: u64) -> StoreResult<GcStats> {
+    pub(crate) fn maintain(&mut self) -> StoreResult<GcStats> {
         let mut stats = GcStats {
             corruption_recovered: self.recovered_on_open.is_some(),
             bytes_before: self.database_size_bytes()?,
             ..GcStats::default()
         };
 
-        // Evict while over the cap OR beyond the reuse buffer. The size leg is
-        // decided against the reclaimed projection so freed-but-unreclaimed
-        // pages from an earlier deletion don't inflate the measurement
-        // mid-loop. The count leg (card main-224) sweeps stale non-live
-        // generations even when the store has plateaued under the cap.
-        let mut over_cap = self.reclaimed_main_bytes()? > cap_bytes;
+        // Evict while the non-live count exceeds the reuse buffer (card
+        // main-224): stale non-live generations are swept even when the
+        // footprint is small, retaining only the modest reuse buffer.
         let mut over_buffer =
             self.non_live_generation_count()? > STORE_REUSE_BUFFER_GENERATIONS;
-        if over_cap || over_buffer {
+        if over_buffer {
             for cand in self.eviction_candidates()? {
-                over_cap = self.reclaimed_main_bytes()? > cap_bytes;
                 over_buffer = self.non_live_generation_count()? > STORE_REUSE_BUFFER_GENERATIONS;
-                if !over_cap && !over_buffer {
+                if !over_buffer {
                     break;
                 }
                 self.in_write_txn.set(true);
@@ -1305,4 +1299,18 @@ pub(crate) fn unhex32(s: &str) -> Option<[u8; 32]> {
         *byte = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok()?;
     }
     Some(out)
+}
+
+/// Test-only: force a generation's access bucket so eviction-order tests can
+/// age a specific generation deterministically — raw SQL bypasses `touch`,
+/// making the victim strictly older than every same-bucket candidate.
+#[cfg(test)]
+pub(crate) fn set_bucket(store: &CacheStore, k: &[u8; 32], bucket: i64) {
+    store
+        .conn
+        .execute(
+            "UPDATE generation SET access_bucket = ?2 WHERE key_digest = ?1",
+            rusqlite::params![hex32(k), bucket],
+        )
+        .unwrap();
 }

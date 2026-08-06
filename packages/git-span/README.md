@@ -8,7 +8,7 @@ The primary CLI surface lives in `src/cli/mod.rs`. Run `git span --help` or `git
 
 `git span drift` (and related resolution paths) are backed by a single persistent cache: a SQLite database at `<common_dir>/span/store.db` (plus its `-wal` and `-shm` companions), implemented in `src/resolver/store/`. This is the whole on-disk cache footprint — remove `store.db*` to reset it. Setting `GIT_SPAN_CACHE=0` disables it for a run.
 
-The store is bounded by a byte high-water mark (256 MiB by default; override with `GIT_SPAN_STORE_MAX_BYTES` or `git config git-span.storeMaxBytes`), with transactional GC that runs only when a publish crosses the cap. It lives in the Git *common* directory, so it is shared across linked worktrees of one clone on one host; it is not shared cross-host or cross-clone. Earlier releases kept two separate caches (a `cache/v1/` filesystem trail store and a `stale-cache.db`); both were replaced by this one store and leave no files behind on a fresh clone.
+The store is bounded by a count-based sweep: stale non-live generations are swept to a 16-generation reuse buffer, and maintenance runs after a publish and at drift open. It lives in the Git *common* directory, so it is shared across linked worktrees of one clone on one host; it is not shared cross-host or cross-clone. Earlier releases kept two separate caches (a `cache/v1/` filesystem trail store and a `stale-cache.db`); both were replaced by this one store and leave no files behind on a fresh clone.
 
 ### The shared executable-digest store
 
