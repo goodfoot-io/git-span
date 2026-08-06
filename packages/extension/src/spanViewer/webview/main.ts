@@ -66,6 +66,7 @@ import { hasStatusDot, statusDotLabel } from './anchorStatusDot.js';
 import { anchorCardKey, CardOpenStore, commitCardKey, DECLARATION_CARD_KEY } from './cardState.js';
 import { LINE_HEIGHT, shouldCollapse } from './collapseRule.js';
 import { RESPONSIVE_DIFF_LAYOUT_OPTIONS } from './diffLayout.js';
+import { gutterLineNumbers } from './diffLineNumbers.js';
 import { disclosureIconClass } from './disclosureIcon.js';
 import { formatAge } from './formatAge.js';
 import { normalizeThemeColor } from './themeColor.js';
@@ -522,14 +523,29 @@ function createPreview(content: string, language: string, card?: HTMLDetailsElem
  * the raw line counts exists. Clipping means the reader sees the card's final
  * open state on the first paint instead of watching a tall body snap shut.
  *
+ * The models carry only the anchor extent's own lines, so without an offset
+ * Monaco would number the gutter from 1. When a side's file-absolute first
+ * line is given, that side's gutter is renumbered from it (see
+ * {@linkcode gutterLineNumbers}); omitted sides keep Monaco's default, which
+ * is right for whole-file diffs like the `.span` declaration's.
+ *
  * @param original - The pre-edit side of the diff.
  * @param modified - The post-edit side of the diff.
  * @param language - The Monaco language id to highlight with.
  * @param card - Optional card whose initial open state this body decides.
+ * @param originalStartLine - The original side's file-absolute first line.
+ * @param modifiedStartLine - The modified side's file-absolute first line.
  * @returns The diff editor's host element, or the clip wrapper around it.
  * @throws Never.
  */
-function createDiff(original: string, modified: string, language: string, card?: HTMLDetailsElement): HTMLElement {
+function createDiff(
+  original: string,
+  modified: string,
+  language: string,
+  card?: HTMLDetailsElement,
+  originalStartLine?: number,
+  modifiedStartLine?: number
+): HTMLElement {
   const lineCount = Math.max(countLines(original), countLines(modified));
   const host = el('div', 'monaco-host');
   host.style.height = `${Math.max(lineCount, 1) * LINE_HEIGHT}px`;
@@ -559,6 +575,17 @@ function createDiff(original: string, modified: string, language: string, card?:
   });
   diffEditor.setModel({ original: originalModel, modified: modifiedModel });
   track(diffEditor);
+
+  // The offset is per side, not per diff: the diff editor shares one
+  // `lineNumbers` value across both sub-editors, and a rename block's sides
+  // live in different addresses' line spaces. Applied after `setModel`, which
+  // is where each sub-editor's options take effect.
+  if (originalStartLine !== undefined) {
+    diffEditor.getOriginalEditor().updateOptions({ lineNumbers: gutterLineNumbers(originalStartLine) });
+  }
+  if (modifiedStartLine !== undefined) {
+    diffEditor.getModifiedEditor().updateOptions({ lineNumbers: gutterLineNumbers(modifiedStartLine) });
+  }
 
   const measure = bindContentHeight(host, [diffEditor.getOriginalEditor(), diffEditor.getModifiedEditor()]);
 
@@ -775,7 +802,16 @@ function createAnchorCard(anchor: PostedAnchor): HTMLElement {
     case 'reconciled':
       // Drifted-deleted (current null) renders original=recorded, modified='';
       // drifted-new (historical null) renders original='', modified=current.
-      body.appendChild(createDiff(anchor.historical ?? '', anchor.current ?? '', resolveLanguage(anchor.path), card));
+      body.appendChild(
+        createDiff(
+          anchor.historical ?? '',
+          anchor.current ?? '',
+          resolveLanguage(anchor.path),
+          card,
+          anchor.historicalStartLine,
+          anchor.currentStartLine
+        )
+      );
       break;
     case 'relocated':
       // Never a diff editor with identical sides: banner plus plain preview.
@@ -938,7 +974,16 @@ function buildCommitBody(commit: PostedHistoryCommit, body: HTMLElement): void {
     } else if (block.unavailable) {
       body.appendChild(createStatusCard(block.truncated === true ? TRUNCATED_COPY : UNRECONSTRUCTABLE_COPY));
     } else if (block.pair !== undefined) {
-      body.appendChild(createDiff(block.pair.original, block.pair.modified, resolveLanguage(block.path)));
+      body.appendChild(
+        createDiff(
+          block.pair.original,
+          block.pair.modified,
+          resolveLanguage(block.path),
+          undefined,
+          block.pair.originalStartLine,
+          block.pair.modifiedStartLine
+        )
+      );
     }
   }
 }

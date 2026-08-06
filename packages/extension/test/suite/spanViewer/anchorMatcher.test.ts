@@ -118,7 +118,9 @@ describe('anchorMatcher', () => {
       assert.deepStrictEqual(matchAnchor(FIRST_ADD, history), {
         kind: 'drifted',
         historical: 'hello\nhi\n',
-        current: 'hello\nhey\n'
+        current: 'hello\nhey\n',
+        historicalStartLine: 1,
+        currentStartLine: 1
       });
     });
 
@@ -163,7 +165,9 @@ describe('anchorMatcher', () => {
       assert.deepStrictEqual(matchAnchor('f.txt#L5-L8', history), {
         kind: 'drifted',
         historical: pre,
-        current: post
+        current: post,
+        historicalStartLine: 5,
+        currentStartLine: 5
       });
     });
 
@@ -256,7 +260,9 @@ describe('anchorMatcher', () => {
       assert.deepStrictEqual(matchAnchor(FIRST_ADD, history), {
         kind: 'drifted',
         historical: 'hello\nhi\n',
-        current: null
+        current: null,
+        historicalStartLine: 1,
+        currentStartLine: 1
       });
     });
 
@@ -276,7 +282,9 @@ describe('anchorMatcher', () => {
       assert.deepStrictEqual(matchAnchor(FIRST_ADD, history), {
         kind: 'drifted',
         historical: null,
-        current: 'hello\nhi\n'
+        current: 'hello\nhi\n',
+        historicalStartLine: 1,
+        currentStartLine: 1
       });
     });
 
@@ -297,7 +305,9 @@ describe('anchorMatcher', () => {
       assert.deepStrictEqual(matchAnchor(FIRST_ADD, history), {
         kind: 'reconciled',
         historical: null,
-        current: 'hello\nhey\n'
+        current: 'hello\nhey\n',
+        historicalStartLine: 1,
+        currentStartLine: 1
       });
     });
 
@@ -394,7 +404,9 @@ describe('anchorMatcher', () => {
       assert.deepStrictEqual(matchAnchor('f.txt#L3-L5', history), {
         kind: 'drifted',
         historical: 'alpha\nbeta\ngamma\n',
-        current: 'alpha\nBETA\ngamma\n'
+        current: 'alpha\nBETA\ngamma\n',
+        historicalStartLine: 1,
+        currentStartLine: 3
       });
     });
 
@@ -451,7 +463,9 @@ describe('anchorMatcher', () => {
       assert.deepStrictEqual(matchAnchor('f.txt#L3-L5', history), {
         kind: 'drifted',
         historical: 'alpha\nbeta\ngamma\n',
-        current: 'alpha\nBETA\ngamma\n'
+        current: 'alpha\nBETA\ngamma\n',
+        historicalStartLine: 1,
+        currentStartLine: 3
       });
     });
 
@@ -529,7 +543,9 @@ describe('anchorMatcher', () => {
       assert.deepStrictEqual(matchAnchor(FIRST_ADD, history), {
         kind: 'drifted',
         historical: 'hello\nhi\n',
-        current: 'hello\nhi\n'
+        current: 'hello\nhi\n',
+        historicalStartLine: 1,
+        currentStartLine: 1
       });
     });
 

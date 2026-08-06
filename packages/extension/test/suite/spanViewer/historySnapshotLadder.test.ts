@@ -54,21 +54,27 @@ describe('historySnapshotLadder', () => {
         date: '2026-01-01T00:00:00-04:00',
         summary: 'edit d',
         original: t1,
-        modified: t2
+        modified: t2,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
       assert.deepStrictEqual(result.rungs[1], {
         hash: 'c2',
         date: '2026-01-01T00:00:00-04:00',
         summary: 'edit b',
         original: t0,
-        modified: t1
+        modified: t1,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
       assert.deepStrictEqual(result.rungs[2], {
         hash: 'c1',
         date: '2026-01-01T00:00:00-04:00',
         summary: 'add anchor',
         original: '',
-        modified: t0
+        modified: t0,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
     });
 
@@ -216,7 +222,9 @@ describe('historySnapshotLadder', () => {
         date: '2026-01-01T00:00:00-04:00',
         summary: 'add anchor',
         original: '',
-        modified: x0
+        modified: x0,
+        originalStartLine: 3,
+        modifiedStartLine: 3
       });
     });
 
@@ -256,14 +264,18 @@ describe('historySnapshotLadder', () => {
         date: '2026-01-01T00:00:00-04:00',
         summary: 'edit',
         original: t0,
-        modified: t2
+        modified: t2,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
       assert.deepStrictEqual(result.rungs[1], {
         hash: 'c1',
         date: '2026-01-01T00:00:00-04:00',
         summary: 'new anchor',
         original: '',
-        modified: t0
+        modified: t0,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
       assert.strictEqual(result.rungs[2]?.hash, 'c0');
       assert.strictEqual(result.rungs[2]?.truncatedAt, true);
@@ -298,14 +310,18 @@ describe('historySnapshotLadder', () => {
         date: '2026-01-01T00:00:00-04:00',
         summary: 'edit',
         original: x0,
-        modified: x1
+        modified: x1,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
       assert.deepStrictEqual(result.rungs[1], {
         hash: 'c1',
         date: '2026-01-01T00:00:00-04:00',
         summary: 'delete anchor',
         original: x1,
-        modified: ''
+        modified: '',
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
     });
 
@@ -343,14 +359,18 @@ describe('historySnapshotLadder', () => {
         date: '2026-01-01T00:00:00-04:00',
         summary: 'edit',
         original: t0,
-        modified: t2
+        modified: t2,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
       assert.deepStrictEqual(result.rungs[1], {
         hash: 'c1',
         date: '2026-01-01T00:00:00-04:00',
         summary: 'add anchor',
         original: '',
-        modified: t0
+        modified: t0,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
     });
 
@@ -425,7 +445,15 @@ describe('historySnapshotLadder', () => {
       assert.strictEqual(result.rungs.length, 2);
       assert.deepStrictEqual(
         result.rungs[0],
-        { hash: 'c2', date: '2026-01-01T00:00:00-04:00', summary: 'edit line two', original: t0, modified: t1 },
+        {
+          hash: 'c2',
+          date: '2026-01-01T00:00:00-04:00',
+          summary: 'edit line two',
+          original: t0,
+          modified: t1,
+          originalStartLine: 1,
+          modifiedStartLine: 1
+        },
         'the C2 rung shows the committed snapshot pair, not worktree-tainted text'
       );
       assert.deepStrictEqual(result.rungs[1], {
@@ -433,7 +461,9 @@ describe('historySnapshotLadder', () => {
         date: '2026-01-01T00:00:00-04:00',
         summary: 'add anchor',
         original: '',
-        modified: t0
+        modified: t0,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
     });
 
@@ -506,21 +536,27 @@ describe('historySnapshotLadder', () => {
         date: '2026-01-01T00:00:00-04:00',
         summary: 'edit line seven',
         original: t1,
-        modified: t2
+        modified: t2,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
       assert.deepStrictEqual(result.rungs[1], {
         hash: 'c2',
         date: '2026-01-01T00:00:00-04:00',
         summary: 'edit line two',
         original: t0,
-        modified: t1
+        modified: t1,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
       assert.deepStrictEqual(result.rungs[2], {
         hash: 'c1',
         date: '2026-01-01T00:00:00-04:00',
         summary: 'add anchor',
         original: '',
-        modified: t0
+        modified: t0,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
     });
 
@@ -596,21 +632,27 @@ describe('historySnapshotLadder', () => {
         date: '2026-01-01T00:00:00-04:00',
         summary: 'edit line seven',
         original: t1,
-        modified: t2
+        modified: t2,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
       assert.deepStrictEqual(result.rungs[1], {
         hash: 'c2',
         date: '2026-01-01T00:00:00-04:00',
         summary: 'edit line two',
         original: t0,
-        modified: t1
+        modified: t1,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
       assert.deepStrictEqual(result.rungs[2], {
         hash: 'c1',
         date: '2026-01-01T00:00:00-04:00',
         summary: 'record anchor',
         original: '',
-        modified: t0
+        modified: t0,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
     });
 
@@ -676,21 +718,27 @@ describe('historySnapshotLadder', () => {
         date: '2026-01-01T00:00:00-04:00',
         summary: 'edit line seven',
         original: t1,
-        modified: t2
+        modified: t2,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
       assert.deepStrictEqual(result.rungs[1], {
         hash: 'c2',
         date: '2026-01-01T00:00:00-04:00',
         summary: 'edit line two',
         original: t0,
-        modified: t1
+        modified: t1,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
       assert.deepStrictEqual(result.rungs[2], {
         hash: 'c1',
         date: '2026-01-01T00:00:00-04:00',
         summary: 'add anchor',
         original: '',
-        modified: t0
+        modified: t0,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
     });
 
@@ -725,14 +773,18 @@ describe('historySnapshotLadder', () => {
         date: '2026-01-01T00:00:00-04:00',
         summary: 'edit',
         original: t0,
-        modified: t1
+        modified: t1,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
       assert.deepStrictEqual(result.rungs[1], {
         hash: 'c1',
         date: '2026-01-01T00:00:00-04:00',
         summary: 'add anchor',
         original: '',
-        modified: t0
+        modified: t0,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
     });
 
@@ -767,14 +819,18 @@ describe('historySnapshotLadder', () => {
         date: '2026-01-01T00:00:00-04:00',
         summary: 'edit',
         original: t0,
-        modified: t1
+        modified: t1,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
       assert.deepStrictEqual(result.rungs[1], {
         hash: 'c1',
         date: '2026-01-01T00:00:00-04:00',
         summary: 'add anchor',
         original: '',
-        modified: t0
+        modified: t0,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
     });
 
@@ -809,14 +865,18 @@ describe('historySnapshotLadder', () => {
           date: '2026-01-01T00:00:00-04:00',
           summary: 'delete anchor',
           original: t0,
-          modified: ''
+          modified: '',
+          originalStartLine: 1,
+          modifiedStartLine: 1
         },
         {
           hash: 'c1',
           date: '2026-01-01T00:00:00-04:00',
           summary: 'add anchor',
           original: '',
-          modified: t0
+          modified: t0,
+          originalStartLine: 1,
+          modifiedStartLine: 1
         }
       ]);
     });
@@ -892,21 +952,27 @@ describe('historySnapshotLadder', () => {
         date: '2026-01-01T00:00:00-04:00',
         summary: 'edit line seven',
         original: t1,
-        modified: t2
+        modified: t2,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
       assert.deepStrictEqual(result.rungs[1], {
         hash: 'c2',
         date: '2026-01-01T00:00:00-04:00',
         summary: 'edit line two',
         original: t0,
-        modified: t1
+        modified: t1,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
       assert.deepStrictEqual(result.rungs[2], {
         hash: 'c1',
         date: '2026-01-01T00:00:00-04:00',
         summary: 'record anchor',
         original: '',
-        modified: t0
+        modified: t0,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
     });
 
@@ -1013,28 +1079,36 @@ describe('historySnapshotLadder', () => {
         date: '2026-01-01T00:00:00-04:00',
         summary: 'edit line seven',
         original: t0,
-        modified: t1
+        modified: t1,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
       assert.deepStrictEqual(result.rungs[1], {
         hash: 'c3',
         date: '2026-01-01T00:00:00-04:00',
         summary: 're-add anchor',
         original: '',
-        modified: t0
+        modified: t0,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
       assert.deepStrictEqual(result.rungs[2], {
         hash: 'c2',
         date: '2026-01-01T00:00:00-04:00',
         summary: 'delete anchor',
         original: t0,
-        modified: ''
+        modified: '',
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
       assert.deepStrictEqual(result.rungs[3], {
         hash: 'c1',
         date: '2026-01-01T00:00:00-04:00',
         summary: 'record anchor',
         original: '',
-        modified: t0
+        modified: t0,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
     });
 
@@ -1070,14 +1144,18 @@ describe('historySnapshotLadder', () => {
         date: '2026-01-01T00:00:00-04:00',
         summary: 'edit line two',
         original: t0,
-        modified: t1
+        modified: t1,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
       assert.deepStrictEqual(result.rungs[1], {
         hash: 'c1',
         date: '2026-01-01T00:00:00-04:00',
         summary: 'record anchor',
         original: '',
-        modified: t0
+        modified: t0,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
     });
 
@@ -1127,14 +1205,18 @@ describe('historySnapshotLadder', () => {
         date: '2026-01-01T00:00:00-04:00',
         summary: 'edit line two',
         original: t0,
-        modified: t1
+        modified: t1,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
       assert.deepStrictEqual(result.rungs[1], {
         hash: 'c1',
         date: '2026-01-01T00:00:00-04:00',
         summary: 'record anchor',
         original: '',
-        modified: t0
+        modified: t0,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
     });
 
@@ -1181,7 +1263,9 @@ describe('historySnapshotLadder', () => {
           date: '2026-01-01T00:00:00-04:00',
           summary: 'record anchor',
           original: '',
-          modified: 'alpha\nbeta\ngamma\n'
+          modified: 'alpha\nbeta\ngamma\n',
+          originalStartLine: 1,
+          modifiedStartLine: 1
         }
       ]);
     });
@@ -1245,14 +1329,18 @@ describe('historySnapshotLadder', () => {
           date: '2026-01-01T00:00:00-04:00',
           summary: 're-anchor',
           original: 'alpha\nbeta\ngamma\n',
-          modified: 'alpha\nbeta\ngamma\n'
+          modified: 'alpha\nbeta\ngamma\n',
+          originalStartLine: 3,
+          modifiedStartLine: 1
         },
         {
           hash: 'c1',
           date: '2026-01-01T00:00:00-04:00',
           summary: 'record anchor',
           original: '',
-          modified: 'alpha\nbeta\ngamma\n'
+          modified: 'alpha\nbeta\ngamma\n',
+          originalStartLine: 3,
+          modifiedStartLine: 3
         }
       ]);
     });
@@ -1290,21 +1378,27 @@ describe('historySnapshotLadder', () => {
         date: '2026-01-01T00:00:00-04:00',
         summary: 're-add anchor',
         original: '',
-        modified: t0
+        modified: t0,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
       assert.deepStrictEqual(result.rungs[1], {
         hash: 'c2',
         date: '2026-01-01T00:00:00-04:00',
         summary: 'delete anchor',
         original: t0,
-        modified: ''
+        modified: '',
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
       assert.deepStrictEqual(result.rungs[2], {
         hash: 'c1',
         date: '2026-01-01T00:00:00-04:00',
         summary: 'record anchor',
         original: '',
-        modified: t0
+        modified: t0,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
     });
 
@@ -1333,7 +1427,9 @@ describe('historySnapshotLadder', () => {
         summary: 'rename',
         original: '',
         modified: '',
-        truncatedAt: true
+        truncatedAt: true,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
     });
 
@@ -1369,21 +1465,27 @@ describe('historySnapshotLadder', () => {
         date: '2026-01-01T00:00:00-04:00',
         summary: 'edit',
         original: t0,
-        modified: t1
+        modified: t1,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
       assert.deepStrictEqual(result.rungs[1], {
         hash: 'c2',
         date: '2026-01-01T00:00:00-04:00',
         summary: 'rename',
         original: t0,
-        modified: t0
+        modified: t0,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
       assert.deepStrictEqual(result.rungs[2], {
         hash: 'c1',
         date: '2026-01-01T00:00:00-04:00',
         summary: 'add anchor',
         original: '',
-        modified: t0
+        modified: t0,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
     });
 
@@ -1441,7 +1543,9 @@ describe('historySnapshotLadder', () => {
         date: '2026-01-01T00:00:00-04:00',
         summary: 'add anchor',
         original: '',
-        modified: x0
+        modified: x0,
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
     });
 
@@ -1481,7 +1585,9 @@ describe('historySnapshotLadder', () => {
           date: '2026-01-01T00:00:00-04:00',
           summary: 'record anchor',
           original: '',
-          modified: t0
+          modified: t0,
+          originalStartLine: 1,
+          modifiedStartLine: 1
         }
       ]);
     });
@@ -1560,21 +1666,27 @@ describe('historySnapshotLadder', () => {
         date: '2026-01-01T00:00:00-04:00',
         summary: 'c4-drift-fix',
         original: 'x\ny\na\n',
-        modified: 'a\nb\nc\n'
+        modified: 'a\nb\nc\n',
+        originalStartLine: 1,
+        modifiedStartLine: 3
       });
       assert.deepStrictEqual(result.rungs[1], {
         hash: 'c3',
         date: '2026-01-01T00:00:00-04:00',
         summary: 'c3-modify',
         original: 'a\nb\nc\n',
-        modified: 'x\ny\na\n'
+        modified: 'x\ny\na\n',
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
       assert.deepStrictEqual(result.rungs[2], {
         hash: 'c2',
         date: '2026-01-01T00:00:00-04:00',
         summary: 'c2-record',
         original: '',
-        modified: 'a\nb\nc\n'
+        modified: 'a\nb\nc\n',
+        originalStartLine: 1,
+        modifiedStartLine: 1
       });
     });
 
@@ -1649,14 +1761,18 @@ describe('historySnapshotLadder', () => {
         date: '2026-01-01T00:00:00-04:00',
         summary: 'c3-reanchor-keep-token',
         original: 'gamma\ndelta\nepsilon\n',
-        modified: 'alpha\nbeta\ngamma\n'
+        modified: 'alpha\nbeta\ngamma\n',
+        originalStartLine: 3,
+        modifiedStartLine: 1
       });
       assert.deepStrictEqual(result.rungs[1], {
         hash: 'c2',
         date: '2026-01-01T00:00:00-04:00',
         summary: 'c2-record',
         original: '',
-        modified: 'gamma\ndelta\nepsilon\n'
+        modified: 'gamma\ndelta\nepsilon\n',
+        originalStartLine: 3,
+        modifiedStartLine: 3
       });
     });
   });
