@@ -1,6 +1,6 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH git-span 1  "git-span 1.0.144"
+.TH git-span 1  "git-span 1.0.145"
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
 .SH NAME
@@ -110,6 +110,9 @@ Add anchors to a span, writing the span file under the span root. Stage and comm
 git\-span\-remove(1)
 Remove anchors from a span, editing the span file under the span root. Stage and commit the change with `git add .span && git commit`
 .TP
+git\-span\-replace(1)
+Replace one anchor on a span with another address, in a single atomic transaction: either the old identity is retired and the new identity installed together, or nothing changes
+.TP
 git\-span\-why(1)
 Read or stage the span\*(Aqs why — one or two complete present\-tense clauses carrying decision\-relevant nonlocal context
 .TP
@@ -133,7 +136,7 @@ Print this message or the help of the given subcommand(s)
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
 .SH VERSION
-v1.0.144
+v1.0.145
 .SH EXAMPLES
 Anchor a new span alongside a code change:
 .PP

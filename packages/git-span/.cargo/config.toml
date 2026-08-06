@@ -16,11 +16,17 @@ incremental = true
 [env]
 RUST_TEST_THREADS = "1"
 
-# Linux links run through the mold cc wrapper (scripts/cc.mold-wrapper.sh, installed
-# and verified in .devcontainer/Dockerfile; README "Linker (Linux only)" covers
-# non-devcontainer installs). The [target.*].linker key is deliberately RUSTFLAGS-immune.
+# Linux links run through the mold cc wrapper cc.mold-wrapper.sh, installed to
+# PATH by .devcontainer/Dockerfile, self-healed for scripted runs by
+# with-target-lock.sh (copied to $HOME/.local/bin on demand), and documented
+# in README "Linker (Linux only)". The linker is a BARE NAME, deliberately: Cargo
+# 1.97 hashes the *resolved* linker value into every unit fingerprint, so a
+# relative-path linker (resolved to a per-worktree absolute path) forces
+# full-graph recompiles from sibling worktrees; the bare name hashes the same
+# literal from every worktree and the PATH lookup happens at spawn time. The
+# [target.*].linker key is deliberately RUSTFLAGS-immune.
 [target.x86_64-unknown-linux-gnu]
-linker = "scripts/cc.mold-wrapper.sh"
+linker = "cc.mold-wrapper"
 
 [target.aarch64-unknown-linux-gnu]
-linker = "scripts/cc.mold-wrapper.sh"
+linker = "cc.mold-wrapper"

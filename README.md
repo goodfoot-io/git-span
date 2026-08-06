@@ -21,8 +21,12 @@ During local development, run commands from `packages/git-span`:
 
 ```bash
 cd packages/git-span
-yarn build
+yarn build:local
 ```
+
+`build:local` compiles the release binary into the shared Cargo target root,
+installs it to `~/.local/bin`, and regenerates the man page; the bare
+`yarn build` only regenerates the man page.
 
 Common command shape:
 
@@ -32,6 +36,8 @@ git span add checkout-request-flow src/client.ts#L10-L40 src/server.ts#L20-L64
 git span why checkout-request-flow "The browser initiates the charge request that the Stripe-backed server validates; the server contract is authoritative for accepted fields."
 git add .span && git commit -m "Record checkout-request-flow span"
 git span drift checkout-request-flow
+git span replace checkout-request-flow src/client.ts#L10-L40 src/client.ts#L12-L42   # atomic swap: retire the old anchor, install the new, or nothing
+git add .span && git commit -m "Move checkout-request-flow anchor after the handler rename"
 ```
 
 ### Exit codes
@@ -100,6 +106,22 @@ sudo apt-get install mold        # Ubuntu/Debian — recommended
 # sudo apt-get install lld       # alternative linker (override with CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER)
 ```
 
+The mold cc wrapper [packages/git-span/scripts/cc.mold-wrapper.sh](packages/git-span/scripts/cc.mold-wrapper.sh)
+must be on `PATH` under its bare name `cc.mold-wrapper`: the devcontainer
+installs it to `/usr/local/bin`; for other environments:
+
+```bash
+install -m 755 packages/git-span/scripts/cc.mold-wrapper.sh ~/.local/bin/cc.mold-wrapper
+```
+
+The `[target.*].linker` config pins the bare name on purpose — a relative-path
+linker resolves to a per-worktree absolute path that Cargo hashes into every
+unit fingerprint, forcing full-graph recompiles whenever a sibling worktree's
+build ran; the bare name hashes identically from every worktree and is looked
+up on `PATH` at spawn time. Scripted builds self-heal via
+[with-target-lock.sh](packages/git-span/scripts/with-target-lock.sh), which
+materializes the wrapper at `~/.local/bin` if missing.
+
 On macOS no extra install is required — the mold linker config is gated to
 Linux GNU targets only. If you cross-compile to Linux from macOS, install `lld`
 (via Homebrew or Xcode) and override the linker:
@@ -113,15 +135,21 @@ CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="/opt/homebrew/opt/lld/bin/lld" car
 **Per-user Cargo target directory:**
 
 Build artifacts are stored in a shared per-user directory at
-`$HOME/.cache/git-span/cargo-target/<crate>/<group>/` — `<group>` is `check`
+`/var/cache/git-span/cargo-target/<crate>/<group>/` — `<group>` is `check`
 (non-codegen `cargo check`/`clippy`) or `build` (codegen `cargo test`/`build`).
 The two are kept separate on purpose: mixing rmeta-only (`check`) and rlib
 (`build`) artifacts in one directory causes spurious `can't find crate` link
 failures. See
 [packages/git-span/scripts/cargo-build-system.md](packages/git-span/scripts/cargo-build-system.md)
-for details. This directory is shared across all worktrees on the same machine —
-a worktree cloned from `main` will reuse dependency artifacts already built by
-another worktree.
+for details. In the devcontainer the root is backed by a named volume
+(`git-span-cargo-target`, mounted at `/var/cache/git-span/cargo-target`) on
+container-native storage — the relocation that lets scripted cargo tasks
+compile with default parallelism again — and it stays shared across all
+worktrees on the same machine: a worktree cloned from `main` will reuse
+dependency artifacts already built by another worktree. On machines without
+that rebuild — a host, plain Docker, or a pre-rebuild container — the default
+`/var/cache/git-span/cargo-target` is root-owned, so set
+`GIT_SPAN_CARGO_TARGET_ROOT` to a writable path before running any cargo task.
 
 Override the target root via `GIT_SPAN_CARGO_TARGET_ROOT`:
 
@@ -139,7 +167,7 @@ build (it takes the exclusive target-root lock) rather than corrupting it.
 git clone https://github.com/goodfoot-io/git-span.git
 cd git-span
 yarn install
-yarn build
+yarn workspace git-span build:local
 yarn validate
 ```
 

@@ -28,6 +28,18 @@ pub fn format_follow_up_command(bash: &str) -> String {
     format!("```bash\n{bash}\n```")
 }
 
+/// Quote `s` as a single-quoted POSIX shell argument, escaping embedded
+/// single quotes as `'\''`.
+///
+/// Anchor paths may legally contain spaces and single quotes
+/// (`normalize_anchor_path` only rewrites backslashes), so the printed
+/// `git span remove <name> '<path>'` repair command must survive both. The
+/// output is valid in any POSIX shell: each `'...'` segment is literal, and
+/// `'\''` closes the quote, emits one literal `'`, and reopens it.
+pub fn quote_shell(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 /// " (idempotent)" tag.
 pub const IDEMPOTENT_TAG: &str = " (idempotent)";
 
@@ -105,5 +117,29 @@ mod tests {
     #[test]
     fn destructive_tag() {
         assert_eq!(DESTRUCTIVE_TAG, " (destructive)");
+    }
+
+    // ---------------------------------------------------------------------
+    // quote_shell contract
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn quote_shell_wraps_plain_path_in_single_quotes() {
+        assert_eq!(quote_shell("src/lib.rs"), "'src/lib.rs'");
+    }
+
+    #[test]
+    fn quote_shell_escapes_embedded_single_quote() {
+        // `'it'\''s here.txt'` — the `'\''` sequence closes the quote,
+        // emits one literal `'`, and reopens it.
+        assert_eq!(quote_shell("it's here.txt"), "'it'\\''s here.txt'");
+    }
+
+    #[test]
+    fn quote_shell_preserves_spaces() {
+        assert_eq!(
+            quote_shell("dir with space/file.rs"),
+            "'dir with space/file.rs'"
+        );
     }
 }

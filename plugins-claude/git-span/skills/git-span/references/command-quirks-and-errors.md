@@ -99,7 +99,7 @@ git log -p -- .span/<name>            # full diff of every edit
 ## `git span doctor`
 
 A setup audit, not a semantic-drift check: confirms every visible span file
-under the span root parses, and reports a store-size summary (bytes used vs.
-configured cap). Run it when local behavior looks wrong — but see above: a
+under the span root parses, and reports a store-size summary (bytes used).
+Run it when local behavior looks wrong — but see above: a
 single malformed span file makes the whole run fail with an unscoped error
 rather than a clean per-span report.

@@ -16,9 +16,9 @@
  * where the simple command was joined with `&&`/`||` — the `join` operator
  * (plan §1, §3 step 2).
  *
- * The trailing describe blocks are the card's Phase 2 acceptance checks for
- * the write-touch family grammars (plan §5) — all `it.skip`, written against
- * the Phase 1 stubs so Phase 3 can unskip them one family at a time.
+ * The trailing describe blocks are the card's Phase 2 acceptance checks:
+ * the write-touch family grammars (plan §5), unskipped as each family
+ * landed, then main's execution-aware-walk contract (merged below).
  */
 
 import { execFileSync } from 'node:child_process';
@@ -26,7 +26,14 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { type Idiom, parseCommand, parseCommandDetailed } from '../../src/common/parse-command.js';
+import {
+  type Idiom,
+  type ParseOptions,
+  parseCommand,
+  parseCommandDetailed,
+  type SpanMatch
+} from '../../src/common/parse-command.js';
+import { splitTopLevel } from '../../src/common/shell-split.js';
 import { makeTempRepo } from '../helpers.js';
 
 // ---------------------------------------------------------------------------
@@ -140,6 +147,8 @@ beforeAll(() => {
   writeFileSync(join(dir, 'f.rs'), 'fn main() {}\n');
   writeFileSync(join(dir, 'f.sh'), 'echo hi\n');
   writeFileSync(join(dir, 'f.tf'), 'resource "x" "y" {}\n');
+  mkdirSync(join(dir, 'sub'));
+  writeFileSync(join(dir, 'sub', 'five.txt'), `${Array.from({ length: 5 }, (_, i) => `l${i + 1}`).join('\n')}\n`);
 });
 
 afterAll(() => {
@@ -232,7 +241,10 @@ describe('sed -n range', () => {
     expect(parseCommand(`sed 's/a/b/' ${join(dir, 'five.txt')}`)).toEqual([]);
   });
 
-  it('embedded in a larger && chain', () => {
+  it('embedded in a larger && chain: an opaque first stage poisons the chain (plan §2 owned consequence)', () => {
+    // `echo` is not a known-status stage — its unknown status gates everything
+    // downstream in the `&&` chain, so sed never emits (plan §2: `echo start &&
+    // sed f` emits nothing).
     const spans = parseCommand(`echo start && sed -n '1,2p' ${join(dir, 'five.txt')} && echo done`);
     expect(spans).toEqual([
       {
@@ -320,18 +332,18 @@ describe('git show rev:path', () => {
   });
 
   it('git -C <dir> show rev:path uses -C as the resolution directory', () => {
-    const spans = parseCommand(`git -C ${repo.root} show HEAD:blob.ts`, '/');
+    const spans = parseCommand(`git -C ${repo.root} show HEAD:blob.ts`, { cwd: '/' });
     expect(spans).toEqual([
       { operation: 'read', lineStart: 1, lineEnd: 8, absolutePath: join(repo.root, 'blob.ts'), simpleCommandIndex: 0 }
     ]);
   });
 
   it('git show without a rev:path colon does not match', () => {
-    expect(parseCommand('git show HEAD --stat', repo.root)).toEqual([]);
+    expect(parseCommand('git show HEAD --stat', { cwd: repo.root })).toEqual([]);
   });
 
   it('unknown revision: matched idiom, unresolved result', () => {
-    const detailed = parseCommandDetailed('git show not-a-real-rev:blob.ts', repo.root);
+    const detailed = parseCommandDetailed('git show not-a-real-rev:blob.ts', { cwd: repo.root });
     expect(detailed.length).toBe(1);
     expect(detailed[0].status).toBe('unresolved');
   });
@@ -516,6 +528,13 @@ describe('cd tracking within one command', () => {
       }
     ]);
   });
+
+  it('cd "$WORKSPACE_PATH"; cd sub — the seed persists, so a later literal cd re-bases from it', () => {
+    const spans = parseCommand('cd "$WORKSPACE_PATH"; cd sub; sed -n \'1,2p\' five.txt', dir);
+    expect(spans).toEqual([
+      { operation: 'read', lineStart: 1, lineEnd: 2, absolutePath: join(dir, 'sub', 'five.txt'), simpleCommandIndex: 2 }
+    ]);
+  });
 });
 
 describe('unresolvable paths are excluded from parseCommand, surfaced by parseCommandDetailed', () => {
@@ -541,7 +560,6 @@ describe('multiple statements in one command', () => {
   });
 });
 
-// ===========================================================================
 // Phase 2 — write-touch family acceptance checks (plan §5). All checks are
 // `it.skip`: they pin the Phase 3 outcomes the family grammars must produce,
 // compiling against the Phase 1 stubs today.
@@ -1610,5 +1628,396 @@ describe('find -delete is deliberately not covered (§5.5)', () => {
   it('find . -name "*.txt" -delete emits no span (paths are directory-content-dependent)', () => {
     expect(parseCommand('find . -name "*.txt" -delete')).toEqual([]);
     expect(parseCommand(`find ${dir} -name report.txt -delete`)).toEqual([]);
+  });
+});
+// ---------------------------------------------------------------------------
+// Phase 2 — execution-aware walk contract, merged.
+//
+// The branch (HEAD of this merge) replaced the emission path with the
+// write-touch family grammars and driver-side gating (plan §5, §3); main's
+// execution walk (`analyzeExecution`) survives only as dead-but-exported
+// machinery (xtrace-oracle.test.ts imports it). These rows pin what the
+// merged parser actually emits: main's `splitTopLevel` decides the malformed,
+// case-region, and comment rows in sections 2, 3, 4, 6, and 7; the heredoc
+// machinery and the emission path decide sections 1 and 15. The walk-owned
+// rows main pinned — chain gating (sections 1, 7, 8), decidable constructs
+// (5), errexit and pipefail (9, 10), pipeline window algebra (11), wrappers
+// (12), variable expansion (13), and cd certainty (14) — are superseded: the
+// merged parser always emits spans and stamps each with its `join` operator,
+// deferring gating to the driver in bash-touch.ts, so those sections were
+// dropped in the merge. `builtin-guard` matches (span-less deterministic
+// exit statuses: false/true/:) are the driver's join inputs, not touches —
+// canonicalize below filters them.
+//
+// The commands below use the plan's arrow form — command → expected touches —
+// with the plan's parenthetical annotations as row notes. `[]` means no
+// touches; `1–2` means a line range; "whole-file" means a whole-file touch;
+// `+`-separated entries mean multiple touches in order. Descriptors are
+// canonicalized against the fixture cwd (files resolve to absolute paths,
+// whole-file 1..TOTAL collapses to `{ file }`) before comparison with the
+// parser's `SpanMatch[]` output.
+// ---------------------------------------------------------------------------
+type ExpectedTouch = { file: string; lo?: number; hi?: number } | { write: string } | { unresolved: string };
+type CanonicalTouch = { file: string; lo?: number; hi?: number } | { write: string } | { unresolved: string };
+type FixtureRow = readonly [
+  cmd: string,
+  expected: ExpectedTouch[],
+  opts: ParseOptions | undefined,
+  note: string | undefined
+];
+
+// The fixture dirs are created at module scope, not in beforeAll: the rows of
+// the it.each tables below embed their absolute paths at collection time, and
+// collection runs before any hook.
+const TOTAL = 20;
+const twentyLines = Array.from({ length: TOTAL }, (_, i) => `line ${i + 1}`).join('\n');
+const p2Dir = mkdtempSync(join(tmpdir(), 'execution-aware-walk-'));
+for (const name of ['f', 'g', 'h', 'a', 'b']) writeFileSync(join(p2Dir, name), `${twentyLines}\n`);
+mkdirSync(join(p2Dir, 'sub'));
+writeFileSync(join(p2Dir, 'sub', 'f'), `${twentyLines}\n`);
+afterAll(() => {
+  rmSync(p2Dir, { recursive: true, force: true });
+});
+describe('execution-aware walk — Phase 2 contract', () => {
+  const whole = (file: string): ExpectedTouch => ({ file });
+  const range = (file: string, lo: number, hi: number): ExpectedTouch => ({ file, lo, hi });
+  const writeTo = (file: string): ExpectedTouch => ({ write: file });
+
+  /** Walk output → canonical descriptor space. */
+  function canonicalize(matches: SpanMatch[]): CanonicalTouch[] {
+    // `builtin-guard` matches are the driver's join inputs, not touches — the
+    // parser emits them for span-less deterministic commands (`false`/`true`/
+    // `:` in `&&`/`||` chains), and they carry no span to canonicalize.
+    return matches.flatMap<CanonicalTouch>((m) => {
+      if (m.status === 'builtin-guard') return [];
+      if (m.status === 'unresolved') return [{ unresolved: m.fileArg }];
+      if (m.idiom === 'heredoc-write') return [{ write: m.span.absolutePath }];
+      const { lineStart, lineEnd } = m.span;
+      if (lineStart === 1 && lineEnd === TOTAL) return [{ file: m.span.absolutePath }];
+      return [{ file: m.span.absolutePath, lo: lineStart, hi: lineEnd }];
+    });
+  }
+  /** Expected descriptor → canonical descriptor (relative names join against the base). */
+  function canonicalizeTouch(e: ExpectedTouch, base: string): CanonicalTouch {
+    if ('write' in e) return { write: join(base, e.write) };
+    if ('unresolved' in e) return { unresolved: e.unresolved };
+    if (e.lo === undefined || (e.lo === 1 && e.hi === TOTAL)) return { file: join(base, e.file) };
+    return { file: join(base, e.file), lo: e.lo, hi: e.hi };
+  }
+
+  /** Parse `cmd` and assert the walk's touches equal the expected set. */
+  function expectTouches(cmd: string, expected: ExpectedTouch[], opts: ParseOptions = {}): void {
+    const cwd = opts.cwd ?? p2Dir;
+    const matches = parseCommandDetailed(cmd, { cwd, env: {}, ...opts });
+    expect(canonicalize(matches)).toEqual(expected.map((e) => canonicalizeTouch(e, cwd)));
+  }
+  describe('1. operators — full union, continuation gate, redirect-&, read-side stripping', () => {
+    it('emits the full operator union per boundary', () => {
+      const ops = splitTopLevel('a && b || c; d\ne & f | g |& h').stages.map((s) => s.precededBy);
+      expect(ops).toEqual(['start', 'and', 'or', 'semicolon', 'newline', 'background', 'pipe', 'pipe']);
+    });
+
+    it("|& splits as 'pipe'", () => {
+      const ops = splitTopLevel("cat f |& sed -n '1,2p' g").stages.map((s) => s.precededBy);
+      expect(ops).toEqual(['start', 'pipe']);
+    });
+
+    it("& splits as 'background'", () => {
+      const ops = splitTopLevel("false & sed -n '1,2p' f").stages.map((s) => s.precededBy);
+      expect(ops).toEqual(['start', 'background']);
+    });
+
+    it('a trailing & is a clean background boundary, not a junk stage', () => {
+      expect(splitTopLevel("sed -n '1,2p' f > /dev/null &").stages).toEqual([
+        { text: "sed -n '1,2p' f > /dev/null", precededBy: 'start' }
+      ]);
+    });
+
+    const ROWS: FixtureRow[] = [
+      [
+        'false ||\ncat f',
+        [whole('f')],
+        undefined,
+        'newline preserves the or gate — the failed predicate opens it (the plan L163 "true ||" spelling contradicts §2 and group 8: true || X runs nothing in bash)'
+      ],
+      ['cat f |\nhead -3', [range('f', 1, 3)], undefined, 'existing pipe continuation'],
+      [
+        'cat f | head -1\ncat g',
+        [range('f', 1, 1), whole('g')],
+        undefined,
+        'newline after a complete stage is a separator — the walk must not merge cat g into the pipeline'
+      ],
+      ['cat f\nhead -3 g', [whole('f'), range('g', 1, 3)], undefined, 'unchanged']
+    ];
+
+    const REDIRECT_ROWS: FixtureRow[] = [
+      [
+        "cat f 2>&1 | sed -n '2,4p'",
+        [range('f', 2, 4)],
+        undefined,
+        'stripped source is a clean one-file cat; 2>&1 never severs'
+      ],
+      ['head -3 f > out', [range('f', 1, 3)], undefined, undefined],
+      ["sed -n '1,5p' f > out", [range('f', 1, 5)], undefined, undefined],
+      ['cat f > out', [whole('f')], undefined, undefined],
+      ['cat f | head -3 > out', [range('f', 1, 3)], undefined, undefined],
+      ["sed -n '1,2p' f > /dev/null &", [range('f', 1, 2)], undefined, 'clean background boundary']
+    ];
+
+    it.each<FixtureRow>(ROWS)('%s', (cmd, expected, opts) => {
+      expectTouches(cmd, expected, opts);
+    });
+
+    it.each<FixtureRow>(REDIRECT_ROWS)('%s', (cmd, expected, opts) => {
+      expectTouches(cmd, expected, opts);
+    });
+  });
+
+  describe('2. malformed — verdict kinds and list scope', () => {
+    it.skip('every expectation is probe-pinned against bash (exit 2 — bash parses the full text, errors, and runs nothing)', () => {
+      expect(true).toBe(true);
+    });
+
+    const ROWS: FixtureRow[] = [
+      ["cat f && echo 'oops", [], undefined, "unclosed quote loses cat f's read too"],
+      ["sed -n '1,2p' f &&", [], undefined, undefined],
+      ['cat f &&\n', [], undefined, 'dangling operator across a continuation newline'],
+      ['cat f |', [], undefined, undefined],
+      ['cat f |&', [], undefined, undefined],
+      ["sed -n '1,2p' f && # note", [], undefined, "a trailing comment doesn't rescue an unconsumed operator"],
+      ['echo $((1+2', [], undefined, 'unclosed paren at EOF'],
+      ["cat f && echo x) && sed -n '1,2p' g", [], undefined, 'stray ) at depth 0'],
+      ["cat f | ! sed -n '1,2p' g", [], undefined, undefined],
+      ['false | ! true', [], undefined, undefined],
+      ['cat f &', [whole('f')], undefined, 'trailing & is valid background'],
+      ['cat f;', [whole('f')], undefined, 'valid terminator'],
+      ['cat f <<', [], undefined, '<< with no delimiter word — the dangling-redirect branch of dangling-operator'],
+      ["cat f\necho 'oops", [whole('f')], undefined, undefined],
+      ['cat f\nsed g &&', [whole('f')], undefined, undefined],
+      ["echo 'oops\ncat f", [], undefined, 'the open quote carries both lines into one list']
+    ];
+
+    // These rows are decided by the heredoc machinery, the case-region
+    // machine, the construct machine, and the list-scope verdict semantics —
+    // all Phase 2 splitter machinery (plan §3).
+    const SPLITTER_ROWS: FixtureRow[] = [
+      [
+        "cat f <<EOF; sed -n '1,2p' g",
+        [whole('f'), range('g', 1, 2)],
+        undefined,
+        "the delimiter's line splits normally — bash warns and runs both"
+      ],
+      [
+        "cat f <<EOF\ncat g\nEOF\nsed -n '1,2p' h",
+        [whole('f'), range('h', 1, 2)],
+        undefined,
+        "heredoc body is opaque — no g touch (today the body's cat g splits into a phantom stage)"
+      ],
+      ['cat f\nif true; then', [whole('f')], undefined, 'cat ran, then exit 2'],
+      ['cat f\ncase $x in a) echo hi', [whole('f')], undefined, undefined],
+      [
+        "cat f\n( if true; then )\nsed -n '1,2p' g",
+        [whole('f')],
+        undefined,
+        'the rejection is terminal — the well-formed sed after the error is dead'
+      ],
+      ['cat f\n( if true; then )\ncat g', [whole('f')], undefined, undefined],
+      [
+        "cat f\n( if true; then echo hi; fi )\nsed -n '1,2p' g",
+        [whole('f'), range('g', 1, 2)],
+        undefined,
+        'a valid middle list walks normally, exit 0'
+      ],
+      ['if true; then\ncat f', [], undefined, 'the open construct carries the tail into one list'],
+      ['case $x in a) cat f\ncat g', [], undefined, 'an open case region is not a boundary — unclosed-case at EOF'],
+      ['if false; then\ncat f\nfi', [], undefined, 'exit 0 — the body never runs — multi-line body phantom'],
+      ['cat f\nif false; then\ncat g\nfi', [whole('f')], undefined, 'exit 0 — f only']
+    ];
+
+    it.each<FixtureRow>(ROWS)('%s', (cmd, expected, opts) => {
+      expectTouches(cmd, expected, opts);
+    });
+
+    it.each<FixtureRow>(SPLITTER_ROWS)('%s', (cmd, expected, opts) => {
+      expectTouches(cmd, expected, opts);
+    });
+  });
+
+  describe('3. malformed — delimiter-line completeness and construct balance', () => {
+    const ROWS: FixtureRow[] = [
+      [
+        'cat f <<EOF; case $x in a) echo hi',
+        [],
+        undefined,
+        "an unclosed case opened on the delimiter's line dominates the partial — the cat read dies"
+      ],
+      ['cat f <<EOF && case $x in a) echo hi', [], undefined, 'same, && form'],
+      ['cat f <<EOF; if true; then echo hi', [], undefined, 'unclosed if — unclosed-construct'],
+      ['cat f <<EOF; { echo hi', [], undefined, 'unclosed brace group'],
+      ['cat f <<EOF; ( echo hi', [], undefined, 'unclosed subshell — unbalanced-paren dominates'],
+      [
+        'if true\nthen cat f <<EOF\nbody',
+        [],
+        undefined,
+        "a construct opened before the delimiter's line, still open — exit 2"
+      ],
+      ['cat f <<EOF; case $x in a) echo hi;; esac; echo AFTER', [whole('f')], undefined, undefined],
+      ['cat f <<EOF; if true; then echo hi; fi', [whole('f')], undefined, undefined],
+      ['cat f <<EOF; { echo hi; }', [whole('f')], undefined, undefined],
+      ['cat f <<EOF; for i in a b; do echo hi; done', [whole('f')], undefined, undefined],
+      ['cat f <<EOF; echo {', [whole('f')], undefined, '{ in argument position is a word — nothing opens'],
+      ['cat f; if true; then', [], undefined, undefined],
+      ['cat f; while true; do', [], undefined, undefined],
+      ['cat f; select x in a; do', [], undefined, undefined],
+      ['cat f; { echo hi', [], undefined, undefined],
+      ['cat f; {', [], undefined, undefined],
+      ['f() { cat f', [], undefined, undefined],
+      ['( if true; then ); cat f', [], undefined, undefined],
+      ['echo $(if true; then) && cat f', [], undefined, undefined],
+      ['echo $(if true; then); cat f', [], undefined, undefined],
+      ["( if true; then ) | sed -n '1,2p' g", [], undefined, undefined],
+      ['( ( if true; then ) ); cat f', [], undefined, undefined],
+      [
+        '( while true; do ); cat f',
+        [],
+        undefined,
+        'an unclosed construct on a paren level fires at the ) — fire-before-restore'
+      ],
+      [
+        'echo $(case $x in a) cat f); cat g',
+        [],
+        undefined,
+        'a case region is not a stack — it outlives the paren close and fires unclosed-case at EOF'
+      ],
+      ['( if true; then echo hi; fi ); cat f', [whole('f')], undefined, undefined],
+      [
+        'if true; then ( echo hi ); fi; cat f',
+        [whole('f')],
+        undefined,
+        'an outer construct survives an inner clean pop'
+      ],
+      ['cat f; if x; fi', [], undefined, "a closer with no body — bash: unexpected token `fi'"],
+      ['cat f; for i in a b; done', [], undefined, 'no do'],
+      ['cat f; then echo hi', [], undefined, undefined],
+      ['cat f; do', [], undefined, undefined],
+      ['cat f; elif x; then y', [], undefined, 'context keywords with no matching opener'],
+      ['cat f; fi', [], undefined, undefined],
+      ['cat f; done', [], undefined, undefined],
+      ['cat f; }', [], undefined, undefined],
+      ['cat f; esac', [], undefined, undefined],
+      ['cat f; if true; then; fi', [], undefined, 'empty then-list — bash errors at the ;'],
+      ['cat f; { ; }', [], undefined, undefined],
+      ['if; then x; fi', [], undefined, undefined],
+      ['for i in a b; do; done', [], undefined, undefined],
+      ['if x; then y; else; fi', [], undefined, undefined],
+      ['{ }', [], undefined, undefined],
+      ['f() { }', [], undefined, undefined],
+      ['{ echo }', [], undefined, 'the } is an argument word — the group dies at EOF'],
+      ['cat f; if true; then echo hi; fi', [whole('f')], undefined, undefined],
+      ['cat f; for i in a b; do echo hi; done', [whole('f')], undefined, undefined],
+      ['cat f; { echo hi; }', [whole('f')], undefined, undefined],
+      ['cat f; until true; do echo hi; done', [whole('f')], undefined, undefined],
+      [
+        'cat f; if x; then y; fi',
+        [whole('f')],
+        undefined,
+        'valid bash — x fails at runtime, exit 127, the list still runs'
+      ],
+      [
+        "cat f; if true; then echo hi; fi; sed -n '1,2p' g",
+        [whole('f'), range('g', 1, 2)],
+        undefined,
+        'constructs fold to one stage — the tail still runs'
+      ],
+      ['cat f; echo hi }', [whole('f')], undefined, 'argument-position } is a word'],
+      ['echo then', [], undefined, 'argument-position keywords are words — valid bash, echo opaque'],
+      ['echo fi', [], undefined, undefined],
+      ['f() { cat f; }', [], undefined, 'function definition — exit 0, the body never runs'],
+      ['function f { cat f; }', [], undefined, undefined],
+      ['if true; then\nx; fi', [], undefined, 'newline after then is fine — x fails at runtime, construct valid']
+    ];
+
+    it.each<FixtureRow>(ROWS)('%s', (cmd, expected, opts) => {
+      expectTouches(cmd, expected, opts);
+    });
+  });
+
+  describe('4. malformed — case regions (every valid shape probe-pinned)', () => {
+    const ROWS: FixtureRow[] = [
+      [
+        'case $x in a|b) cat f;; esac',
+        [],
+        undefined,
+        'in-pattern | is pattern syntax, not a pipe split — and the region is opaque'
+      ],
+      [
+        'case $x in a) case $y in b) cat f;; esac;; esac',
+        [],
+        undefined,
+        'nested regions — the inner case is region text; the outer region is one opaque stage'
+      ],
+      [
+        'for i in a; do case $i in a) cat f;; esac; done',
+        [],
+        undefined,
+        '$i is a loop variable, never bound into the assignment table — a fail-closed miss'
+      ],
+      [
+        'case $x in a) echo case;; esac; cat f',
+        [whole('f')],
+        undefined,
+        "the region is one opaque case stage — the body's echo case never touches"
+      ],
+      [
+        'case $x in a|esac) cat f;; esac',
+        [],
+        undefined,
+        'mid-pattern esac is a pattern word — and the region is opaque'
+      ],
+      ['case $x in a) echo $(echo esac);; esac; cat f', [whole('f')], undefined, 'esac inside $(…) never closes'],
+      [
+        'case $x in a) cat f <<EOF\nbody\nEOF;; esac',
+        [],
+        undefined,
+        'the delimiter line EOF;; esac is not a bare EOF — the heredoc swallows the esac — nothing runs'
+      ],
+      [
+        "cat f && case $x in a) sed -n '1,2p' g;; esac",
+        [whole('f')],
+        undefined,
+        "one cat-argv stage — the region's sed is an argument, never matches"
+      ],
+      ['case $x in a) cat f', [], undefined, 'unclosed region — exit 2'],
+      ['case $x in a) cat f <<EOF\nbody', [], undefined, 'the esac is swallowed by the unterminated heredoc body'],
+      ['echo $(case $x in a) cat f;; esac)', [], undefined, 'one opaque echo stage'],
+      ['echo case; cat f', [whole('f')], undefined, 'argument-position case opens nothing']
+    ];
+
+    it.each<FixtureRow>(ROWS)('%s', (cmd, expected, opts) => {
+      expectTouches(cmd, expected, opts);
+    });
+  });
+
+  describe('15. heredocs', () => {
+    const ROWS: FixtureRow[] = [
+      ['cat > f <<EOF\nbody\nEOF', [writeTo('f')], undefined, 'whole-body write; the closing line is a separator'],
+      ['cat >> f <<EOF\nbody\nEOF', [writeTo('f')], undefined, 'append — no truncate'],
+      [
+        'cat f <<EOF\nbody\nEOF',
+        [whole('f')],
+        undefined,
+        "a heredoc without a redirect is body text — the stage keeps its own reads (changed from today's unmatch)"
+      ],
+      [
+        "cat f <<EOF\ncat g\nEOF\nsed -n '1,2p' h",
+        [whole('f'), range('h', 1, 2)],
+        undefined,
+        'body text never becomes stages — no g touch (today the body splits and cat g is a phantom)'
+      ]
+    ];
+
+    it.each<FixtureRow>(ROWS)('%s', (cmd, expected, opts) => {
+      expectTouches(cmd, expected, opts);
+    });
   });
 });

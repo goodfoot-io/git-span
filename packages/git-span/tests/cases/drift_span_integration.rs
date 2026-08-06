@@ -444,13 +444,20 @@ fn add_under_eol_normalization_freshly_added_anchors_are_fresh() -> Result<()> {
         "src.txt",
         "line1\r\nline2\r\nline3\r\nline4\r\nline5\r\nline6\r\nline7\r\nline8\r\n",
     )?;
+    // A second CRLF file carries the whole-file anchor: `add` rejects a
+    // whole-file anchor beside a same-path range, so each extent gets its
+    // own path while both still exercise the CRLF→LF canonicalization.
+    repo.write_file(
+        "src2.txt",
+        "line1\r\nline2\r\nline3\r\nline4\r\nline5\r\nline6\r\nline7\r\nline8\r\n",
+    )?;
     repo.commit_all("seed crlf source under text=auto")?;
     repo.run_git(["commit-graph", "write", "--reachable", "--changed-paths"])?;
 
     // Add against the CRLF worktree, then commit the span so the
     // resolver sees a HEAD-layer span with the add-time stored hash.
     repo.run_span(["add", "m", "src.txt#L2-L5"])?;
-    repo.run_span(["add", "m", "src.txt"])?;
+    repo.run_span(["add", "m", "src2.txt"])?;
     repo.run_span(["why", "m", "eol normalization regression"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span m"])?;
@@ -1125,16 +1132,24 @@ fn drift_spans_filters_clean_leaves_drift() -> Result<()> {
     Ok(())
 }
 
-/// All-clean repo + `--format=json` → empty stdout, exit 0.
+/// All-clean repo + `--format=json` → always-emit clean document
+/// (`schema_version: 3`, `"clean": true`, `"findings": []`), exit 0.
 #[test]
-fn all_clean_json_empty_stdout() -> Result<()> {
+fn all_clean_json_emits_clean_document() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_line_range_span(&repo, "clean")?;
     let out = repo.run_span(["drift", "--format=json"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.trim().is_empty(),
-        "json output must be empty when all spans are clean, got: {stdout}"
+        !stdout.trim().is_empty(),
+        "json output must be a document when all spans are clean, got: {stdout}"
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout)?;
+    assert_eq!(v["schema_version"], 3);
+    assert_eq!(v["clean"], true);
+    assert!(
+        v["findings"].as_array().is_some_and(Vec::is_empty),
+        "clean scan must emit an empty findings array, got: {v}"
     );
     assert_eq!(out.status.code(), Some(0), "exit 0 when no drift");
     Ok(())

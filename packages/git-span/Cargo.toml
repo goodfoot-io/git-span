@@ -1,6 +1,6 @@
 [package]
 name = "git-span"
-version = "1.0.144"
+version = "1.0.145"
 edition = "2024"
 build = "build.rs"
 
@@ -76,14 +76,16 @@ bench = false
 # needs rlibs. `test = false` here plus that directory split eliminate the
 # rlib/rmeta race.
 #
-# A SECOND, independent race also exists and needs its own mitigation: with
-# default job parallelism, sibling rustc jobs intermittently abort with E0463
+# A SECOND, independent race also existed and needed its own mitigation: with
+# default job parallelism, sibling rustc jobs intermittently aborted with E0463
 # "can't find crate for <dep>" (a different dep each run — bstr, serde, rustix,
-# …) because a just-written rlib/rmeta is not yet visible to a concurrent
+# …) because a just-written rlib/rmeta was not yet visible to a concurrent
 # reader job on the shared virtiofs target root. Every scripted cargo
-# invocation therefore pins compilation to one job (CARGO_BUILD_JOBS=1 /
+# invocation therefore pinned compilation to one job (CARGO_BUILD_JOBS=1 /
 # nextest --build-jobs 1). Removing that serialization (card main-122) brought
-# the race back. See scripts/cargo-build-system.md for the full rationale.
+# the race back; card main-215's relocation of the shared root to
+# container-native storage removed the trigger and the pins with it. Only the
+# directory split above remains required. See scripts/cargo-build-system.md.
 [[bin]]
 name = "gen-manpage"
 path = "src/bin/gen-manpage.rs"

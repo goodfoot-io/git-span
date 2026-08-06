@@ -1,6 +1,6 @@
 packages/git-span/src/resolver/dirty/mod.rs#L393-L400 rk64:befb8374fd30fd64
 packages/git-span/src/resolver/engine/mod.rs#L771-L799 rk64:77bd9e86a26fec3d
-packages/git-span/src/resolver/exact/mod.rs#L618-L625 rk64:6c4f6b3cc6aa1f96
+packages/git-span/src/resolver/exact/mod.rs#L593-L600 rk64:6c4f6b3cc6aa1f96
 packages/git-span/src/resolver/incremental/mod.rs#L257-L264 rk64:9ee14c29e95a8ed6
 
 Each anchor-resolution call site must pass the rayon task-split floor matching its batch-size regime: cold_miss passes the lowered cold-scan floor tuned for real multi-core saturation, while incremental/dirty pass the higher small-batch floor that keeps their tiny subsets pinned to a single task.

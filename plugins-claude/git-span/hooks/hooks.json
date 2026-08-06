@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/post-tool-use.mjs",
+            "command": "node \"$CLAUDE_PLUGIN_ROOT\"/hooks/bin/post-tool-use.mjs",
             "timeout": 10000
           }
         ],
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node $CLAUDE_PLUGIN_ROOT/hooks/bin/advisor.mjs",
+            "command": "node \"$CLAUDE_PLUGIN_ROOT\"/hooks/bin/advisor.mjs",
             "timeout": 10000
           }
         ],

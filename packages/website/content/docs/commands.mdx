@@ -29,11 +29,12 @@ git span add api-contract src/api.ts#L1-L3 tests/api.test.ts
 
 Key flags:
 
-- `--at <commit-ish>` — hash every anchor in this invocation against the file content at `<commit-ish>` instead of `HEAD`.
+- `--at <commit-ish>` — hash every anchor in this invocation against the file content at `<commit-ish>` instead of the working tree. Hashing against a commit-ish rather than the working tree can make a new anchor itself drifted when the working-tree content differs — the span-wide line reports it honestly.
+- `--format <human|json>` — write-mode result format. Default `human`; `json` emits the mutation document (schema_version 1, identified by its `command` key) with the requested-address outcomes, the superseded/remaining anchor arrays, and the `span_health` block.
 
 Re-adding an address the span already tracks doesn't duplicate the anchor — it's resolved in place, re-hashed against the current content (`Added 0 anchors and resolved 1 in place`). That's the idiom for confirming an intentional content change `drift` flagged on a range that didn't move — after checking that the span's other anchors still agree with the new content; a coupled doc that now lags is updated first.
 
-Exits 1 on an invalid name or an out-of-range anchor. Does not commit — stage and commit the change yourself with `git add .span && git commit`.
+Every `add` ends with a scoped post-write check over the touched span. After the requested-address lines it prints superseded old anchors and old anchors that remain drifted — each with a runnable `git span remove` next action — then one span-wide line that alone asserts span-wide state: `0 drift across ...`, `N anchors drifted — ...`, `state indeterminate (index changed during check)`, or `state unverified`. The requested-address lines never assert span health; "clean" appears only as the check's span-wide fact. `add` shares `drift`'s exit contract: 0 = clean, 1 = drift remains or the check errored, 2 = indeterminate (index changed during check) — retryable. Exits 1 on an invalid name or an out-of-range anchor. Does not commit — stage and commit the change yourself with `git add .span && git commit`.
 
 ### remove
 
@@ -43,14 +44,30 @@ git span remove <name> <anchors>...
 
 Removes anchors from a span, editing the span file under the span root. Each anchor must match an existing one on the span exactly. Does not commit — run `git add .span && git commit` afterward.
 
+### replace
+
+```bash
+git span replace <name> <old-anchor> <new-anchor>
+```
+
+Replaces exactly one anchor on a span with another address, in a single atomic transaction: either the old identity is retired and the validated new identity is installed together, or nothing changes — there is never an intermediate state with both or neither. The new anchor passes the same validation as `add` (path safety, existence, gitignored/rewritten-target rejection, line-count extent), so a poisoned declaration is never written.
+
+Refusals (all leave the declaration byte-for-byte unchanged, exit 1):
+
+- `old-anchor` matches no anchor on the span, or matches more than one record (a hand-edited or legacy declaration can hold two same-identity records with different hashes — no canonical choice exists).
+- `old-anchor` and `new-anchor` are the same identity — in-place hash refresh is `add`'s job; `replace` changes identity.
+- `new-anchor` is already tracked by the span — the swap would leave two same-identity records behind; retire the old anchor with `remove` instead.
+
+On success the output names the retired and installed addresses and reports whether the span is drift-free; `--format json` carries `span`, `retired`, `installed`, `drift_free`, and the `drifted` addresses. Does not commit — run `git add .span && git commit` afterward.
+
 ### why
 
 ```bash
 git span why <name>
-git span why <name> "<why>"
+git span why <name> "<why>" [--format human|json]
 ```
 
-Reads or stages a span's why. Use one or two complete present-tense clauses for the relationship and any decisive nonlocal authority, invariant, permitted difference, lifecycle state, evidence gate, or focused conditional verification. Labels are optional but must introduce complete clauses. Omit generic work orders and CLI procedure. Bare `git span why <name>` prints; a positional argument or piped stdin writes. Commit the span file.
+Reads or stages a span's why. Use one or two complete present-tense clauses for the relationship and any decisive nonlocal authority, invariant, permitted difference, lifecycle state, evidence gate, or focused conditional verification. Labels are optional but must introduce complete clauses. Omit generic work orders and CLI procedure. Bare `git span why <name>` prints; a positional argument or piped stdin writes. A write ends with the same post-write span-wide check as `add` and shares its exit contract (0 clean / 1 drift remains or check errored / 2 index changed, retryable) — the output prints `Set why on span <name>. (idempotent)`, then any remains lines and the span-wide line; superseded lines are absent because `why` touches no addresses. `--format json` applies to the write mode only: it emits the mutation document (`command: "why"`, `why_written: true`) instead of prose, and read mode rejects it fail-closed (exit 1, no stdout) rather than printing prose. Commit the span file.
 
 The why is inherited across routine re-anchors only while its meaning remains true. Revise or retire it when the relationship or lifecycle state changes.
 
@@ -130,7 +147,7 @@ Reports anchors whose content has drifted from their anchored state. `paths` may
 
 Key flags:
 
-- `--format <human|porcelain|json>` — default `human`. On a clean scan, `human` prints a summary line (`0 drift across M spans (K anchors checked)`); when drift is found it prints per-span listings (each anchor, then the span's why) instead. `porcelain` and `json` print **nothing** on a clean scan — no header row, no `{"findings": []}` — empty stdout plus exit 0 is the clean signal.
+- `--format <human|porcelain|json>` — default `human`. On a clean scan, `human` prints a summary line (`0 drift across M spans (K anchors checked)`); when drift is found it prints per-span listings (each anchor, then the span's why) instead. `json` always emits a document: a clean scan carries `"clean": true` (schema_version 3) — never empty stdout; informational `RESOLVED_PENDING_COMMIT` findings may still be listed, so `clean` does not imply `findings: []` — and a drifted scan carries `"clean": false` plus the findings. `porcelain` still prints nothing on a clean scan (no header row).
 - `--no-exit-code` — exit 0 even when drift is found (report-only mode). Does not mask the interior-anchor integrity case below.
 - `--fix` — re-anchors drift in place. See the callout below for what it actually does. Only supported with `--format human`.
 
@@ -146,7 +163,7 @@ Exit codes: 0 (no drift, or `--no-exit-code` with drift present), 1 (drift found
 git span doctor
 ```
 
-Audits the local span setup — reports span count and findings, plus store size against its configured cap. Exits 0.
+Audits the local span setup — reports span count and findings, plus a store-size summary (bytes used). Exits 0.
 
 ### merge-driver
 

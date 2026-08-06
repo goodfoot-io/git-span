@@ -45,7 +45,7 @@ git span drift --format porcelain
 ```
 
 <Callout type="info">
-Both machine formats print nothing at all to stdout on a clean scan — no `{"findings": []}`, no `# porcelain v2` header. Empty stdout plus exit 0 is the clean signal; a parsing step that expects a JSON envelope on every run will break on the clean case. The human format (the default) prints a summary line on a clean scan.
+`--format json` always emits a document — a clean scan carries `"clean": true` (schema_version 3) rather than empty stdout, so a parser can rely on an envelope on every run and read `clean` for the verdict; informational `RESOLVED_PENDING_COMMIT` findings may still be listed, so `clean` does not imply `findings: []`. `--format porcelain` still prints nothing on a clean scan (no header row); empty stdout plus exit 0 is the clean signal there. The human format (the default) prints a summary line on a clean scan.
 </Callout>
 
 See [Command reference](/docs/commands) for the full set of `drift` flags, and [Concepts](/docs/concepts) for what counts as drift.

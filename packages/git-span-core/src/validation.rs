@@ -10,6 +10,7 @@ pub const RESERVED_SPAN_NAMES: &[&str] = &[
     "add",
     "show",
     "remove",
+    "replace",
     "commit",
     "why",
     "restore",

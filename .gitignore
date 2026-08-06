@@ -94,3 +94,4 @@ profiling/
 reports/*
 
 packages/website/.dev.vars
+.env.*

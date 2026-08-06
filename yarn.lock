@@ -1837,29 +1837,29 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@goodfoot/claude-code-hooks@npm:^1.7.0":
-  version: 1.7.0
-  resolution: "@goodfoot/claude-code-hooks@npm:1.7.0"
+"@goodfoot/claude-code-hooks@npm:^1.7.3":
+  version: 1.7.3
+  resolution: "@goodfoot/claude-code-hooks@npm:1.7.3"
   dependencies:
     esbuild: "npm:^0.24.0"
     glob: "npm:^11.0.0"
     typescript: "npm:^5.9.3"
   bin:
     claude-code-hooks: dist/cli.js
-  checksum: 10c0/96bfbd094632fd2492a94d47bb91f94ac5466161171dd678c6bb50509c6465c2dc3c6b2986f5be5b83237bc162f5a6f48ce7a56175e8daedc589d5fd46c1de06
+  checksum: 10c0/1ee70d26244440d75bd0735edcc26c7da32a5187b88b1efea431f398778aea8ced890962720215f63a42ab5340619654f9463f6367f1f3192a9dfe597f07bbcd
   languageName: node
   linkType: hard
 
-"@goodfoot/codex-hooks@npm:^1.1.3":
-  version: 1.1.3
-  resolution: "@goodfoot/codex-hooks@npm:1.1.3"
+"@goodfoot/codex-hooks@npm:^1.1.5":
+  version: 1.1.5
+  resolution: "@goodfoot/codex-hooks@npm:1.1.5"
   dependencies:
     esbuild: "npm:^0.28.0"
     glob: "npm:^13.0.6"
     typescript: "npm:^6.0.3"
   bin:
     codex-hooks: dist/cli.js
-  checksum: 10c0/5ba362e9b104698a81168e97504afac8e41ae2237ee0545a7529da56c33b8361e722752d281e98ec7d018ffea56301756ece123e58c4c373e43b0c9c8522e837
+  checksum: 10c0/6102366676f99902368852b5640e6180ea376c0dbed2a4730b3336f10e81c40fdfdaa0a1c2430107e5831bf928830ad7eaab58303d46df1382bd4a29211010a8
   languageName: node
   linkType: hard
 
@@ -4854,8 +4854,8 @@ __metadata:
   resolution: "agent-hooks@workspace:packages/agent-hooks"
   dependencies:
     "@biomejs/biome": "npm:2.4.12"
-    "@goodfoot/claude-code-hooks": "npm:^1.7.0"
-    "@goodfoot/codex-hooks": "npm:^1.1.3"
+    "@goodfoot/claude-code-hooks": "npm:^1.7.3"
+    "@goodfoot/codex-hooks": "npm:^1.1.5"
     "@types/node": "npm:^22.0.0"
     typescript: "npm:^5.9.3"
     vitest: "npm:^4.0.16"
@@ -7375,13 +7375,13 @@ __metadata:
   languageName: node
   linkType: hard
 
-"git-span-darwin-arm64@npm:1.0.144, git-span-darwin-arm64@workspace:npm/git-span-darwin-arm64":
+"git-span-darwin-arm64@npm:1.0.145, git-span-darwin-arm64@workspace:npm/git-span-darwin-arm64":
   version: 0.0.0-use.local
   resolution: "git-span-darwin-arm64@workspace:npm/git-span-darwin-arm64"
   languageName: unknown
   linkType: soft
 
-"git-span-darwin-x64@npm:1.0.144, git-span-darwin-x64@workspace:npm/git-span-darwin-x64":
+"git-span-darwin-x64@npm:1.0.145, git-span-darwin-x64@workspace:npm/git-span-darwin-x64":
   version: 0.0.0-use.local
   resolution: "git-span-darwin-x64@workspace:npm/git-span-darwin-x64"
   languageName: unknown
@@ -7410,19 +7410,19 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"git-span-linux-arm64@npm:1.0.144, git-span-linux-arm64@workspace:npm/git-span-linux-arm64":
+"git-span-linux-arm64@npm:1.0.145, git-span-linux-arm64@workspace:npm/git-span-linux-arm64":
   version: 0.0.0-use.local
   resolution: "git-span-linux-arm64@workspace:npm/git-span-linux-arm64"
   languageName: unknown
   linkType: soft
 
-"git-span-linux-x64@npm:1.0.144, git-span-linux-x64@workspace:npm/git-span-linux-x64":
+"git-span-linux-x64@npm:1.0.145, git-span-linux-x64@workspace:npm/git-span-linux-x64":
   version: 0.0.0-use.local
   resolution: "git-span-linux-x64@workspace:npm/git-span-linux-x64"
   languageName: unknown
   linkType: soft
 
-"git-span-win32-x64@npm:1.0.144, git-span-win32-x64@workspace:npm/git-span-win32-x64":
+"git-span-win32-x64@npm:1.0.145, git-span-win32-x64@workspace:npm/git-span-win32-x64":
   version: 0.0.0-use.local
   resolution: "git-span-win32-x64@workspace:npm/git-span-win32-x64"
   languageName: unknown
@@ -7432,11 +7432,11 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "git-span@workspace:packages/git-span"
   dependencies:
-    git-span-darwin-arm64: "npm:1.0.144"
-    git-span-darwin-x64: "npm:1.0.144"
-    git-span-linux-arm64: "npm:1.0.144"
-    git-span-linux-x64: "npm:1.0.144"
-    git-span-win32-x64: "npm:1.0.144"
+    git-span-darwin-arm64: "npm:1.0.145"
+    git-span-darwin-x64: "npm:1.0.145"
+    git-span-linux-arm64: "npm:1.0.145"
+    git-span-linux-x64: "npm:1.0.145"
+    git-span-win32-x64: "npm:1.0.145"
   dependenciesMeta:
     git-span-darwin-arm64:
       optional: true

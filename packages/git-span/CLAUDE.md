@@ -1,6 +1,6 @@
 <cargo>
 Cargo build artifacts are written to a **shared per-user directory** at
-`$HOME/.cache/git-span/cargo-target/<crate>/<group>/`, where `<crate>` is `git-span` or
+`/var/cache/git-span/cargo-target/<crate>/<group>/`, where `<crate>` is `git-span` or
 `git-span-core` and `<group>` is `check` (non-codegen tasks: `cargo check`, `cargo clippy`
 — rmeta) or `build` (codegen tasks: `cargo nextest`, `cargo build`, `cargo run` — rlib).
 `git-span/udeps/` is a third group for the nightly `cargo udeps`. **Non-codegen (rmeta) and
@@ -15,13 +15,15 @@ All yarn scripts and tooling scripts honor the `GIT_SPAN_CARGO_TARGET_ROOT` envi
 variable to override this root (e.g., for CI isolation). The per-worktree fallback
 `packages/git-span/target-cache/` (via [.cargo/config.toml](./packages/git-span/.cargo/config.toml))
 is still present for ad-hoc `cargo` invocations but is not the default for any scripted entry point.
+Outside a devcontainer rebuilt with the named volume the default root is root-owned, so set
+`GIT_SPAN_CARGO_TARGET_ROOT` to a writable path there.
 
 **Build-phase serialization:** Cargo's `.cargo-lock` serializes builds across worktrees
 sharing the same group subdirectory. Concurrent `yarn test` runs in different worktrees
 build serially (order of seconds) then test in parallel. This is normal — not a hang.
 
 **Shared target-root lock:** Every scripted cargo task runs under a *shared* flock on
-`$HOME/.cache/git-span/cargo-target/.target.lock` (via
+`/var/cache/git-span/cargo-target/.target.lock` (via
 `packages/git-span/scripts/with-target-lock.sh`), and anything that deletes from the
 shared root (`clean-shared-build.sh`, the freshness-stamp wipe in
 `cleanup-stale-target.sh`) takes the *exclusive* lock. A `yarn build:clean` in one

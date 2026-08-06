@@ -35,10 +35,29 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive && apt-get install -
 RUN mold --version
 RUN cloudflared --version
 
+# Install the mold cc wrapper onto PATH under its bare name. The
+# [target.*].linker config pins `linker = "cc.mold-wrapper"` and Cargo 1.97
+# hashes the *resolved* linker value into every unit fingerprint — a relative
+# path would resolve to a per-worktree absolute path and force full-graph
+# recompiles from sibling worktrees, while the bare name hashes the same
+# literal everywhere and is looked up on PATH at spawn time. Scripted runs
+# self-heal via with-target-lock.sh regardless; this install covers ad-hoc raw
+# cargo in the devcontainer.
+COPY packages/git-span/scripts/cc.mold-wrapper.sh /usr/local/bin/cc.mold-wrapper
+RUN chmod +x /usr/local/bin/cc.mold-wrapper
+
 # Extra sudoers entry (beyond the base's node-packages): chronyd, used at runtime
 # to step a drifted container clock.
 RUN echo "node ALL=(root) NOPASSWD: /usr/sbin/chronyd" > /etc/sudoers.d/node-chrony && \
   chmod 0440 /etc/sudoers.d/node-chrony
+
+# Mount point for the shared cargo target root named volume
+# (git-span-cargo-target at /var/cache/git-span/cargo-target — see
+# devcontainer.json mounts/remoteEnv). /var/cache is root-owned and there is no
+# passwordless sudo, so a fresh named volume seeds from this directory's
+# contents: it must exist and be node-owned, or every scripted cargo task fails
+# on a root-owned volume.
+RUN mkdir -p /var/cache/git-span/cargo-target && chown -R node:node /var/cache/git-span
 USER node
 
 # Yarn workspace-local caches + a larger Node heap.

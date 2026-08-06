@@ -66,8 +66,8 @@ Stripe-backed server.
 ---
 
 Restore agreement before committing. Follow confirmed authority. Preserve
-anchor shape; if an address changed, remove its old anchor
-before adding the new one. Update or retire the why only if its meaning
+anchor shape; if an address changed, swap the old anchor for the new one
+with `git span replace`. Update or retire the why only if its meaning
 changed. Require `git span drift billing/checkout-request-flow` to report
 zero, then check the other anchors. Conform a side only when confirmed authority
 or a satisfied gate decides it; report ambiguity or an obsolete coupling.
@@ -165,8 +165,8 @@ Stripe-backed server.
 
 Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to
 bring the coupled files back into agreement (follow confirmed authority) —
-preserve anchor shape; if an address changed, remove its
-old anchor before adding the new one; update or retire the why only if its
+preserve anchor shape; if an address changed, swap the old anchor for the new
+one with `git span replace`; update or retire the why only if its
 meaning changed; require `git span drift billing/checkout-request-flow` to
 report zero. Then retry. Load the `git-span:reconcile` skill in the fork. The
 hold will not fire again for the same debt state. Conform a side only when
@@ -195,7 +195,7 @@ Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to
 determine if this file carries implicit dependencies and to then use
 `git span` to document them:
 
-`git span add <name> <path#Lstart-Lend> [<path#Lstart-Lend>] ...`
+`git span add <name> <anchor> [<anchor>] ...`  — an anchor is a path or a `path#Lstart-Lend` range
 `git span why <name> "<why>"`
 
 The "<why>" is one or two complete present-tense clauses stating the
@@ -248,8 +248,10 @@ the uncovered-writes check so a span repair riding the same commit never
 self-triggers the advisor. If the scan itself can't complete (an
 `AdvisorScanError`, e.g. an unreadable anchor file), the advisor holds nothing
 on that account either — it allows with a warning that span debt was NOT
-verified for this changeset, naming the underlying failure; there's nothing
-to memoize because every evaluation of a still-failing scan warns again.
+verified for this changeset, carrying the failed command's own stderr as a
+delimited `<git-span-error>` block so the raw diagnostic is clearly bounded;
+there's nothing to memoize because every evaluation of a still-failing scan
+warns again.
 
 **`git status`** is never held — it only reports. The same two checklists
 above render as `additionalContext`/`systemMessage` (never
@@ -334,7 +336,8 @@ nothing." Silence from either hook is the correct steady state when
 `git span` isn't installed, the repo has no spans, or nothing needs to be
 said — never an error condition. The one noisy case is the advisor's own
 scoped scan failing to complete (see "The advisor: what a held command sees"
-above): that still fails open, but visibly — a warning names the failure
+above): that still fails open, but visibly — a warning names the failure and
+carries the failed command's stderr in a delimited `<git-span-error>` block
 instead of staying silent, since an unverified changeset is worth flagging
 even though nothing was held. Hook timeouts are configured in **seconds**
 under Codex's `hooks.json` (Claude Code's equivalent is milliseconds) — if

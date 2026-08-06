@@ -785,11 +785,11 @@ fi
 
 head_ln "step 4-6: post steps (apply mode)"
 if [ "$SKIP_POST" -eq 1 ]; then
-    say "SKIPPED (--skip-post): hook rebuild; git-span build; re-anchor; yarn validate"
+    say "SKIPPED (--skip-post): hook rebuild; git-span build:local; re-anchor; yarn validate"
     say "  (verification still runs)"
 else
     say "yarn workspace agent-hooks build          # bundled hooks embed the renamed source"
-    say "yarn workspace git-span build   # release binary + regenerated man page"
+    say "yarn workspace git-span build:local     # release binary + man page"
     say "git span drift --fix && git span drift    # re-anchor .span/, confirm clean"
     say "yarn validate                             # full typecheck/lint/test/build gate"
 fi
@@ -883,11 +883,11 @@ if [ "$SKIP_POST" -eq 0 ]; then
     head_ln "post: rebuild bundled agent hooks"
     yarn workspace agent-hooks build
 
-    head_ln "post: build git-span (binary + man page)"
-    yarn workspace git-span build
+    head_ln "post: build git-span via build:local (release binary + man page)"
+    yarn workspace git-span build:local
 
     head_ln "post: re-anchor .span/"
-    BIN_DIR="${GIT_SPAN_CARGO_TARGET_ROOT:-$HOME/.cache/git-span/cargo-target}/git-span/build/release"
+    BIN_DIR="${GIT_SPAN_CARGO_TARGET_ROOT:-/var/cache/git-span/cargo-target}/git-span/build/release"
     if [ ! -x "$BIN_DIR/git-span" ]; then
         echo "expected binary at $BIN_DIR/git-span not found" >&2
         exit 1

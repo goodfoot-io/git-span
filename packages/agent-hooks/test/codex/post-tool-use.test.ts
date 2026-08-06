@@ -179,12 +179,23 @@ describe('classifyApplyPatchResponse', () => {
     expect(classifyApplyPatchResponse({})).toBe('unknown');
     expect(classifyApplyPatchResponse(null)).toBe('unknown');
   });
+  it('classifies every array shape as unknown, never as a confirmed rejection', () => {
+    // normalizeShellResponse accepts text-block arrays for the shell-parse
+    // evidence source, but the baseline extractResponseText returned null for
+    // arrays — so the apply_patch gate must treat them as unrecognized and
+    // proceed defensively (with a warning), even when the joined text carries
+    // the success header or is empty.
+    expect(classifyApplyPatchResponse([{ type: 'text', text: SUCCESS_RESPONSE }])).toBe('unknown');
+    expect(classifyApplyPatchResponse([{ type: 'text', text: FAILURE_RESPONSE }])).toBe('unknown');
+    expect(classifyApplyPatchResponse([])).toBe('unknown');
+    expect(classifyApplyPatchResponse([{ type: 'image', image: 'data:...' }])).toBe('unknown');
+  });
 });
 
 describe('shell envelope narrowing', () => {
   it('narrowExecCommand recovers cmd from the classic JSON arguments envelope', () => {
     const toolInput = { arguments: JSON.stringify({ cmd: "sed -n '1,2p' /tmp/f", workdir: '/tmp' }) };
-    expect(narrowExecCommand(toolInput)).toBe("sed -n '1,2p' /tmp/f");
+    expect(narrowExecCommand(toolInput)).toEqual({ cmd: "sed -n '1,2p' /tmp/f", workdir: '/tmp' });
   });
 
   it('narrowExecCommand returns null for non-JSON arguments, a missing cmd, or a non-envelope shape', () => {
@@ -200,26 +211,27 @@ describe('shell envelope narrowing', () => {
       input:
         'const r = await tools.exec_command({cmd:"sed -n \'1,240p\' /path", shell:"bash", workdir:"/path"});\ntext(JSON.stringify(r));'
     });
-    expect(result).toEqual({ matched: true, cmd: "sed -n '1,240p' /path" });
+    expect(result).toEqual({ matched: true, cmd: "sed -n '1,240p' /path", workdir: '/path' });
   });
 
   it('narrowCodeModeExec leaves an already-quoted literal untouched', () => {
     const result = narrowCodeModeExec({ input: 'tools.exec_command({"cmd":"echo hi", "workdir":"/tmp"})' });
-    expect(result).toEqual({ matched: true, cmd: 'echo hi' });
+    expect(result).toEqual({ matched: true, cmd: 'echo hi', workdir: '/tmp' });
   });
 
   it('narrowCodeModeExec does not mistake a comma-colon inside a string value for a key', () => {
     const result = narrowCodeModeExec({ input: 'tools.exec_command({cmd:"sed -i \'s/a,b:c/d/\' f", workdir:"/tmp"})' });
-    expect(result).toEqual({ matched: true, cmd: "sed -i 's/a,b:c/d/' f" });
+    expect(result).toEqual({ matched: true, cmd: "sed -i 's/a,b:c/d/' f", workdir: '/tmp' });
   });
 
   it('narrowCodeModeExec distinguishes an unmatched envelope from a matched-but-unparsable one', () => {
-    expect(narrowCodeModeExec({ input: 'const x = 1;' })).toEqual({ matched: false, cmd: null });
-    expect(narrowCodeModeExec(null)).toEqual({ matched: false, cmd: null });
+    expect(narrowCodeModeExec({ input: 'const x = 1;' })).toEqual({ matched: false, cmd: null, workdir: null });
+    expect(narrowCodeModeExec(null)).toEqual({ matched: false, cmd: null, workdir: null });
     // Variable-built command: the call matches, but the literal cannot parse.
     expect(narrowCodeModeExec({ input: 'tools.exec_command({cmd: process.cwd()})' })).toEqual({
       matched: true,
-      cmd: null
+      cmd: null,
+      workdir: null
     });
   });
 });
@@ -277,6 +289,32 @@ describe('codex post-tool-use touch signal', () => {
       const { logger: capture, warnings } = warnCapturingLogger();
       const handler = createHandler(executors, inMemoryMemoFactory());
       await handler(postInput(repo.root, updateEnvelope(), { exitCode: 0 }) as never, { logger: capture } as never);
+
+      expect(calls.fix).toBe(1);
+      expect(warnings.some((m) => m.includes('unrecognized'))).toBe(true);
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it('runs the touch (and warns) for an array-shaped tool_response, even one whose text carries the success header', async () => {
+    // The target file must be on disk: the write gate (plan §3 step 1) fails
+    // closed when the apply target is absent, so the seeded repo is
+    // required — the hook runs post-apply, and the file exists by then.
+    const repo = repoWithFoo();
+    try {
+      const { executors, calls } = makeExecutors({ list: [porcelainRow()], drift: [driftRow('CHANGED')] });
+      const { logger: capture, warnings } = warnCapturingLogger();
+      const handler = createHandler(executors, inMemoryMemoFactory());
+      // An array is an unrecognized apply_patch shape (the baseline
+      // extractResponseText returned null for arrays), so it classifies
+      // 'unknown' and proceeds defensively — the joined success header must
+      // not be read as a confirmation, and its absence must not read as a
+      // rejection that suppresses the touch.
+      await handler(
+        postInput(repo.root, updateEnvelope(), [{ type: 'text', text: SUCCESS_RESPONSE }]) as never,
+        { logger: capture } as never
+      );
 
       expect(calls.fix).toBe(1);
       expect(warnings.some((m) => m.includes('unrecognized'))).toBe(true);
@@ -505,6 +543,193 @@ describe('codex post-tool-use touch signal', () => {
     } finally {
       repo.cleanup();
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // Response-derived shell read touches (Phase 3e): the tool_response is a
+  // second evidence source for grep/ripgrep and git diff/show/log -p
+  // commands whose read windows live in the output, not the command text.
+  // String and object envelopes must normalize to the same spans, and a
+  // truncated response must fail closed.
+  // -------------------------------------------------------------------------
+
+  describe('response-derived shell read touches', () => {
+    /** A 500-line mod.rs whose `list` fake anchors SPAN at lines 39-189. */
+    function writeModRs(root: string): string {
+      const filePath = join(root, 'mod.rs');
+      writeFileSync(filePath, Array.from({ length: 500 }, (_, i) => `line ${i + 1}`).join('\n'));
+      return filePath;
+    }
+
+    it('a bare-string tool_response drives a response-derived read touch (Bash envelope)', async () => {
+      const repo = makeTempRepo();
+      try {
+        const filePath = writeModRs(repo.root);
+        const { executors, calls } = makeExecutors({
+          list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
+          drift: [driftRow('CHANGED')]
+        });
+        const handler = createHandler(executors, inMemoryMemoFactory());
+        const input = {
+          ...postInput(repo.root, null),
+          tool_name: 'Bash',
+          tool_input: { command: `rg -n alpha ${filePath}` },
+          tool_response: `${filePath}:50:alpha\n`
+        };
+
+        const result = toResult(await handler(input as never, { logger } as never));
+        expect(calls.fix).toBe(0); // read path never heals
+        expect(result.stdout.hookSpecificOutput?.additionalContext).toContain(SPAN);
+      } finally {
+        repo.cleanup();
+      }
+    });
+
+    it('object-wrapped tool_response shapes drive the same touch (classic exec_command envelope)', async () => {
+      const repo = makeTempRepo();
+      try {
+        const filePath = writeModRs(repo.root);
+        for (const toolResponse of [
+          { output: `${filePath}:50:alpha\n`, exitCode: 0 },
+          { stdout: `${filePath}:50:alpha\n`, stderr: '' },
+          { content: `${filePath}:50:alpha\n` },
+          { text: `${filePath}:50:alpha\n` }
+        ]) {
+          const { executors, calls } = makeExecutors({
+            list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
+            drift: [driftRow('CHANGED')]
+          });
+          const handler = createHandler(executors, inMemoryMemoFactory());
+          const input = {
+            ...postInput(repo.root, null),
+            tool_name: 'exec_command',
+            tool_input: { arguments: JSON.stringify({ cmd: `rg -n alpha ${filePath}`, workdir: repo.root }) },
+            tool_response: toolResponse
+          };
+
+          const result = toResult(await handler(input as never, { logger } as never));
+          expect(calls.fix).toBe(0); // read path never heals
+          expect(result.stdout.hookSpecificOutput?.additionalContext, JSON.stringify(toolResponse)).toContain(SPAN);
+        }
+      } finally {
+        repo.cleanup();
+      }
+    });
+
+    it('a truncated object tool_response fails closed to no response-derived touch', async () => {
+      const repo = makeTempRepo();
+      try {
+        const filePath = writeModRs(repo.root);
+        const { executors, calls } = makeExecutors({
+          list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
+          drift: [driftRow('CHANGED')]
+        });
+        const handler = createHandler(executors, inMemoryMemoFactory());
+        const input = {
+          ...postInput(repo.root, null),
+          tool_name: 'Bash',
+          tool_input: { command: `rg -n alpha ${filePath}` },
+          tool_response: {
+            stdout: `${filePath}:50:alpha\n`,
+            stderr: '',
+            rawOutputPath: '/tmp/large.out',
+            interrupted: false
+          }
+        };
+
+        const result = await handler(input as never, { logger } as never);
+        // The truncated flag fails closed: the preview is never parsed into
+        // a touch, and the command itself has no command-derived idiom.
+        expect(result).toBeUndefined();
+        expect(calls.list).toBe(0);
+      } finally {
+        repo.cleanup();
+      }
+    });
+
+    it('an interrupted or timed-out object tool_response produces no touches (the interrupted gate)', async () => {
+      const repo = makeTempRepo();
+      try {
+        const filePath = writeModRs(repo.root);
+        // The interrupted gate (plan §4): `interrupted` / `timedOutAfterMs`
+        // mean the command did not complete — no touches for the whole
+        // command, whatever its spans. This supersedes the complete-records
+        // regime (plan step 6), which parsed the fully-terminated records.
+        const stdout = `${filePath}:50:alpha\n`;
+        for (const toolResponse of [
+          { stdout, stderr: '', interrupted: true },
+          { stdout, stderr: '', timedOutAfterMs: 60_000 }
+        ]) {
+          const { executors, calls } = makeExecutors({
+            list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
+            drift: [driftRow('CHANGED')]
+          });
+          const handler = createHandler(executors, inMemoryMemoFactory());
+          const input = {
+            ...postInput(repo.root, null),
+            tool_name: 'Bash',
+            tool_input: { command: `rg -n alpha ${filePath}` },
+            tool_response: toolResponse
+          };
+
+          const result = toResult(await handler(input as never, { logger } as never));
+          expect(calls.list, JSON.stringify(toolResponse)).toBe(0);
+          expect(result.stdout.hookSpecificOutput?.additionalContext, JSON.stringify(toolResponse)).toBeUndefined();
+        }
+      } finally {
+        repo.cleanup();
+      }
+    });
+
+    it('merges command-derived and response-derived spans, deduping the surface via the memo (Bash envelope)', async () => {
+      const repo = makeTempRepo();
+      try {
+        const filePath = writeModRs(repo.root);
+        // `git log -p -L 39,60:mod.rs` is at once a command-derived read
+        // idiom (parseCommandDetailed resolves the literal -L range) and a
+        // diff-form git log (parseResponse decodes the patch response) —
+        // the two evidence sources merge into overlapping read touches on
+        // one file.
+        const command = `git log -p -L 39,60:${filePath}`;
+        const diffResponse = [
+          `diff --git a/${filePath} b/${filePath}`,
+          'index 551e09f4..48593813 100644',
+          `--- a/${filePath}`,
+          `+++ b/${filePath}`,
+          '@@ -39,6 +39,6 @@',
+          ' line 39',
+          ' line 40',
+          '-line 41',
+          '+line 41 CHANGED',
+          ' line 42',
+          ' line 43',
+          ' line 44',
+          ''
+        ].join('\n');
+        const { executors, calls } = makeExecutors({
+          list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
+          drift: []
+        });
+        const handler = createHandler(executors, inMemoryMemoFactory());
+        const input = {
+          ...postInput(repo.root, null),
+          tool_name: 'Bash',
+          tool_input: { command },
+          tool_response: diffResponse
+        };
+
+        const result = toResult(await handler(input as never, { logger } as never));
+        expect(calls.fix).toBe(0); // both sources are reads
+        expect(calls.list).toBe(2); // one touch per merged source
+        const ctx = result.stdout.hookSpecificOutput?.additionalContext ?? '';
+        expect(ctx).toContain(SPAN);
+        // The response-derived hunk overlaps the command-derived range on
+        // the same span; the per-session memo dedupes the duplicate surface.
+        expect(ctx.match(/## billing\/checkout-request-flow/g) ?? []).toHaveLength(1);
+      } finally {
+        repo.cleanup();
+      }
+    });
   });
 });
 

@@ -195,7 +195,9 @@ fn history_follows_first_parent_and_ours_merges_leave_no_side_branch_residue() -
 
 #[test]
 fn history_and_drift_reject_git_replacement_topology_before_output() -> Result<()> {
-    let repo = committed_drift_repo("replace")?;
+    // The span name cannot be the bare `replace` — it is a reserved
+    // subcommand token now — so the fixture uses a derivative label.
+    let repo = committed_drift_repo("replace-topology")?;
     let head = repo.head_sha()?;
     let parent = repo.git_stdout(["rev-parse", "HEAD~1"])?;
     repo.run_git(["replace", &head, &parent])?;
@@ -214,7 +216,7 @@ fn history_and_drift_reject_git_replacement_topology_before_output() -> Result<(
         "fixture precondition: Git replacement refs must change the effective parent graph"
     );
 
-    let history = repo.run_span(["history", "replace", "--format=json"])?;
+    let history = repo.run_span(["history", "replace-topology", "--format=json"])?;
     let drift = repo.run_span(["drift", "--format=json"])?;
     for (name, out) in [("history", history), ("drift", drift)] {
         assert!(

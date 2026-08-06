@@ -62,7 +62,15 @@ fn pending_why_matching_committed_message_is_not_duplicated() -> Result<()> {
         repo.run_git(["commit", "-m", "span commit"])?;
     }
     drift(&repo, "mutate")?;
-    repo.span_stdout(["why", "m", "shared why text"])?;
+    // The why write lands, but the post-write check reports the drifted
+    // anchor → exit 1 (plan: why write on a span with a stale anchor).
+    let out = repo.run_span(["why", "m", "shared why text"])?;
+    let why_stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "stale anchor must make the why write exit 1; stdout=\n{why_stdout}"
+    );
     let stdout = repo.span_stdout(["drift", "m", "--no-exit-code"])?;
     // The block heading is the span name.
     assert!(
@@ -237,8 +245,22 @@ fn named_lookup_all_drifted_shows_pending_add() -> Result<()> {
     )?;
 
     // Add a second anchor; file-backed, this lands directly in the
-    // worktree span file (file2.txt is pristine → Fresh).
-    repo.span_stdout(["add", "m", "file2.txt#L1-L5"])?;
+    // worktree span file (file2.txt is pristine → Fresh). The post-write
+    // check sees the stale first anchor, so the add succeeds locally
+    // (exit-0 fact) but the span-wide verdict is drift → exit 1 (plan
+    // `reconciliation-output.md`: local success never implies span-wide
+    // reconciliation).
+    let out = repo.run_span(["add", "m", "file2.txt#L1-L5"])?;
+    let add_stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "drifted stale anchor must make the add exit 1; stdout=\n{add_stdout}"
+    );
+    assert!(
+        add_stdout.contains("Added 1 anchor to span `m`."),
+        "the local add success is still worded locally; stdout=\n{add_stdout}"
+    );
 
     // Named lookup: `git span drift m`.
     let out = repo.run_span(["drift", "m", "--no-exit-code"])?;

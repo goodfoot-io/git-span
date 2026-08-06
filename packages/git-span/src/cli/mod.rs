@@ -102,6 +102,16 @@ pub enum Commands {
     /// root. Stage and commit the change with `git add .span && git commit`.
     Remove(RemoveArgs),
 
+    /// Replace one anchor on a span with another address, in a single
+    /// atomic transaction: either the old identity is retired and the
+    /// new identity installed together, or nothing changes.
+    ///
+    /// The old address must match an existing anchor exactly — `replace`
+    /// never falls back to additive behavior. To refresh an anchor's
+    /// content hash at an unchanged address, use `git span add` instead.
+    /// Stage and commit the change with `git add .span && git commit`.
+    Replace(ReplaceArgs),
+
     /// Read or stage the span's why — one or two complete present-tense
     /// clauses carrying decision-relevant nonlocal context.
     ///
@@ -234,6 +244,22 @@ pub enum DriftFormat {
     Json,
 }
 
+/// Output format for `git span add`'s write-mode result.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+pub enum AddFormat {
+    Human,
+    Json,
+}
+
+/// Output format for `git span why`'s write-mode result.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+pub enum WhyFormat {
+    Human,
+    Json,
+}
+
 #[derive(Debug, Clone, clap::Args)]
 pub struct DriftArgs {
     /// File paths, globs, or span names to report drift for.
@@ -295,9 +321,17 @@ pub struct AddArgs {
     pub anchors: Vec<String>,
 
     /// Hash every anchor in this invocation against the file content at
-    /// `<commit-ish>` (an ordinary git commit-ish). Default is HEAD.
+    /// `<commit-ish>` (an ordinary git commit-ish). When omitted, anchors
+    /// are hashed against the working tree.
     #[arg(long, value_name = "COMMIT-ISH")]
     pub at: Option<String>,
+
+    /// Output format for the write-mode result (`human` or `json`).
+    ///
+    /// Applies to the write mode: `json` emits the mutation document
+    /// (schema_version 1) instead of the human summary.
+    #[arg(long, value_enum, default_value_t = AddFormat::Human)]
+    pub format: AddFormat,
 }
 
 #[derive(Debug, clap::Args)]
@@ -312,6 +346,25 @@ pub struct RemoveArgs {
 }
 
 #[derive(Debug, clap::Args)]
+pub struct ReplaceArgs {
+    /// Span whose anchor to replace.
+    pub name: String,
+
+    /// Existing anchor to retire, as `<path>` or `<path>#L<start>-L<end>`
+    /// (must match exactly one anchor on the span).
+    pub old_anchor: String,
+
+    /// New anchor address to install in its place, as `<path>` or
+    /// `<path>#L<start>-L<end>` (validated like `add`; must differ from
+    /// the old address).
+    pub new_anchor: String,
+
+    /// Output format (human or json).
+    #[arg(long, value_enum, default_value_t = ReplaceFormat::Human)]
+    pub format: ReplaceFormat,
+}
+
+#[derive(Debug, clap::Args)]
 pub struct WhyArgs {
     /// Span whose why text to read or stage.
     pub name: String,
@@ -319,6 +372,12 @@ pub struct WhyArgs {
     /// Why text to write. Omit to read from piped stdin or print the
     /// current why when stdin is a terminal.
     pub why_text: Option<String>,
+
+    /// Output format for the write-mode result (`human` or `json`).
+    ///
+    /// Applies to the write mode; read mode always prints prose.
+    #[arg(long, value_enum, default_value_t = WhyFormat::Human)]
+    pub format: WhyFormat,
 }
 
 #[derive(Debug, clap::Args)]
@@ -376,6 +435,17 @@ pub enum HistoryFormat {
     /// Git-log-style text: newest-first commit entries with unified diffs.
     Human,
     /// `schema_version: 2` JSON carrying the identical raw patch strings.
+    Json,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+pub enum ReplaceFormat {
+    /// Prose summary naming the retired address, installed address, and
+    /// the span's drift-free state.
+    Human,
+    /// JSON carrying `span`, `retired`, `installed`, `drift_free`, and
+    /// `drifted` (the drifted anchors' addresses, empty when drift-free).
     Json,
 }
 
@@ -466,6 +536,10 @@ pub fn dispatch(
         Commands::Remove(args) => {
             let _perf = crate::perf::span("command.remove");
             commit::run_remove(repo, args, span_root)
+        }
+        Commands::Replace(args) => {
+            let _perf = crate::perf::span("command.replace");
+            commit::run_replace(repo, args, span_root)
         }
         Commands::Why(args) => {
             let _perf = crate::perf::span("command.why");

@@ -8,15 +8,21 @@
 //! directly; spans are tracked files, so there is no separate staging
 //! area or commit step beyond the worktree write.
 
+use crate::cli::drift_label::format_drift_label;
+use crate::cli::drift_output::status_json;
 use crate::cli::error::from_lib_error;
-use crate::cli::format::{IDEMPOTENT_TAG, format_anchor_address};
-use crate::cli::{AddArgs, CliError, NextStep, RemoveArgs, WhyArgs};
+use crate::cli::format::{IDEMPOTENT_TAG, format_anchor_address, quote_shell};
+use crate::cli::{AddArgs, AddFormat, CliError, NextStep, RemoveArgs, ReplaceArgs, ReplaceFormat, WhyArgs, WhyFormat};
 use crate::git::IndexEntrySnapshot;
+use crate::resolver::{anchor_status_is_drift, resolve_named_spans_retaining_source_layers};
 use crate::span_file::AnchorRecord;
 use crate::span_file::SpanFile;
 use crate::span_file::parse_address;
 use crate::span_file_reader::SpanFileReader;
-use crate::types::{AnchorExtent, validate_add_target};
+use crate::types::{
+    AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, EngineOptions, LayerSet,
+    validate_add_target,
+};
 use anyhow::{Context, Result};
 use fs4::fs_std::FileExt;
 use git_span_core::{RK64_ALGORITHM, cheap_fingerprint_with_extent, rk64_to_hex};
@@ -401,6 +407,145 @@ fn check_worktree_prefix_collision(
 // add
 // ---------------------------------------------------------------------------
 
+/// Which side of a supersession conflict is the whole-file anchor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WholeFileSide {
+    /// The requested anchor is whole-file; the conflicting one is a range.
+    Requested,
+    /// The conflicting anchor is whole-file; the requested one is a range.
+    Existing,
+}
+
+/// Where the conflicting anchor comes from: an anchor already tracked on the
+/// span, or a second anchor requested in the same invocation.
+///
+/// The two kinds need different remediation — an existing record can be
+/// removed with `git span remove`, while a co-requested anchor was never
+/// added (the invocation fails all-or-nothing) and can only be dropped from
+/// the command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConflictSource {
+    /// The conflict is against an anchor already tracked on the span.
+    ExistingRecord,
+    /// The conflict is between two anchors requested in the same invocation.
+    CoRequested,
+}
+
+/// A provable supersession between a requested anchor and an existing (or
+/// co-requested) anchor on the same path: exactly one side is whole-file
+/// and the pair is not an exact identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SupersessionConflict {
+    /// Canonical address of the requested anchor
+    /// (`<path>` or `<path>#L<s>-L<e>`).
+    pub requested_addr: String,
+    /// Canonical address of the anchor it conflicts with — either an
+    /// existing record on the span or a co-requested anchor.
+    pub conflicting_addr: String,
+    /// Which side of the pair is the whole-file anchor.
+    pub whole_file_side: WholeFileSide,
+    /// Whether the conflicting anchor is tracked on the span or was
+    /// requested in the same invocation.
+    pub source: ConflictSource,
+}
+
+/// Return the first provable supersession conflict between the requested
+/// anchors and a span's existing anchors.
+///
+/// Provable supersession is: same path, exactly one side whole-file, and not
+/// an exact identity. Range-vs-range pairs (disjoint, partially overlapping,
+/// or nested) are never provable — a bounded range may address distinct
+/// concerns, and the command does not guess. The requested list is checked
+/// against the existing records *and* against the other requested anchors
+/// (post-coalesce), so a single invocation cannot create the same trap it
+/// rejects.
+///
+/// Iteration is requested-outer, existing-inner, then co-requested, so the
+/// reported conflict is the deterministic first match in that order. The
+/// canonical addresses render via [`format_anchor_address`];
+/// [`WholeFileSide`] says which side of the pair is whole-file.
+pub(crate) fn supersession_conflict(
+    requested: &[(String, AnchorExtent)],
+    existing: &[AnchorRecord],
+) -> Option<SupersessionConflict> {
+    /// Whole-file records use the `(0, 0)` sentinel (`start_line == 0 &&
+    /// end_line == 0`).
+    fn record_is_whole_file(r: &AnchorRecord) -> bool {
+        r.start_line == 0 && r.end_line == 0
+    }
+    /// A line range degenerate to `(0, 0)` would key identically to a
+    /// whole-file anchor — an exact identity, never a conflict.
+    fn extent_is_sentinel(e: &AnchorExtent) -> bool {
+        matches!(e, AnchorExtent::LineRange { start: 0, end: 0 })
+    }
+
+    // Requested-outer: each requested anchor against every existing record,
+    // then against every co-requested anchor. The first match in this order
+    // is reported.
+    for (i, (path, extent)) in requested.iter().enumerate() {
+        let requested_whole = matches!(extent, AnchorExtent::WholeFile);
+
+        // Against the span's existing records.
+        for r in existing {
+            if r.path != *path {
+                continue;
+            }
+            let existing_whole = record_is_whole_file(r);
+            if requested_whole == existing_whole {
+                // Exact identity (or a pure range pair) — never provable.
+                continue;
+            }
+            if !requested_whole && extent_is_sentinel(extent) {
+                // The range keys identically to the whole-file record.
+                continue;
+            }
+            let (whole_file_side, conflicting_addr) = if requested_whole {
+                (
+                    WholeFileSide::Requested,
+                    format_anchor_address(&r.path, Some(r.start_line), Some(r.end_line)),
+                )
+            } else {
+                (
+                    WholeFileSide::Existing,
+                    format_anchor_address(&r.path, None, None),
+                )
+            };
+            return Some(SupersessionConflict {
+                requested_addr: addr_from_extent(path, extent),
+                conflicting_addr,
+                whole_file_side,
+                source: ConflictSource::ExistingRecord,
+            });
+        }
+
+        // Against the other co-requested anchors (post-coalesce).
+        for (j, (other_path, other_extent)) in requested.iter().enumerate() {
+            if j == i || *other_path != *path {
+                continue;
+            }
+            let other_whole = matches!(other_extent, AnchorExtent::WholeFile);
+            if requested_whole == other_whole {
+                continue;
+            }
+            if !requested_whole && extent_is_sentinel(extent) {
+                continue;
+            }
+            let whole_file_side = if requested_whole {
+                WholeFileSide::Requested
+            } else {
+                WholeFileSide::Existing
+            };
+            return Some(SupersessionConflict {
+                requested_addr: addr_from_extent(path, extent),
+                conflicting_addr: addr_from_extent(other_path, other_extent),
+                whole_file_side,
+                source: ConflictSource::CoRequested,
+            });
+        }
+    }
+    None
+}
+
 pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result<i32> {
     crate::validation::validate_span_name(&args.name)?;
 
@@ -582,6 +727,10 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result
         let _perf = crate::perf::span("add.read-current");
         read_worktree_span(repo, span_root, &args.name)?
     };
+    // Snapshot the pre-write anchor set: the supersession fact is computed
+    // from the requested addresses against what was on the span before this
+    // invocation's write.
+    let pre_write_anchors = span_file.anchors.clone();
 
     // Build a lookup of existing anchors: (path, start_line, end_line) -> content_hash.
     let existing: std::collections::HashMap<(String, u32, u32), String> = span_file
@@ -594,6 +743,104 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result
             )
         })
         .collect();
+
+    // Supersession preflight: reject any requested anchor that provably
+    // supersedes an existing (or co-requested) anchor on the same path —
+    // whole-file vs range in either direction, barring exact identity —
+    // before any mutation or content hashing. Placement before the process
+    // loop checks every requested anchor against the original existing set,
+    // which makes multi-anchor invocations all-or-nothing by construction.
+    {
+        let _perf = crate::perf::span("add.preflight-supersession");
+        if let Some(conflict) = supersession_conflict(&parsed, &span_file.anchors) {
+            return Err(match conflict.source {
+                // The conflicting anchor is tracked on the span: removing it
+                // is actionable, so print the exact quoted remove command.
+                ConflictSource::ExistingRecord => {
+                    let (summary, direction) = match conflict.whole_file_side {
+                        WholeFileSide::Requested => (
+                            format!(
+                                "the requested whole-file anchor `{}` supersedes the existing \
+                                 anchor `{}` on span `{}`.",
+                                conflict.requested_addr, conflict.conflicting_addr, args.name
+                            ),
+                            "the requested anchor is the whole file, and the existing one is a range",
+                        ),
+                        WholeFileSide::Existing => (
+                            format!(
+                                "`{}` is superseded by the existing whole-file anchor `{}` on \
+                                 span `{}`.",
+                                conflict.requested_addr, conflict.conflicting_addr, args.name
+                            ),
+                            "the existing anchor is the whole file, and the requested one is a range",
+                        ),
+                    };
+                    CliError {
+                        subcommand: "add",
+                        summary,
+                        what_happened: format!(
+                            "`{}` and `{}` anchor the same path, and {}; adding both would leave \
+                             the superseded anchor reported as permanent drift, so the add is \
+                             rejected before anything is written.",
+                            conflict.requested_addr, conflict.conflicting_addr, direction
+                        ),
+                        next_steps: vec![
+                            NextStep::Prose(
+                                "Remove the conflicting anchor, then retry the add.".into(),
+                            ),
+                            NextStep::Bash(format!(
+                                "git span remove {} {}",
+                                args.name,
+                                quote_shell(&conflict.conflicting_addr)
+                            )),
+                        ],
+                    }
+                }
+                // The two anchors were requested together, so nothing was
+                // written — there is no record to remove. Say the requested
+                // anchors conflict and tell the user to fix the invocation.
+                ConflictSource::CoRequested => {
+                    let (summary, direction) = match conflict.whole_file_side {
+                        WholeFileSide::Requested => (
+                            format!(
+                                "the requested whole-file anchor `{}` supersedes the requested \
+                                 range `{}`; the two anchors in this invocation conflict with \
+                                 each other.",
+                                conflict.requested_addr, conflict.conflicting_addr
+                            ),
+                            "the requested anchor is the whole file, and the other requested \
+                             one is a range",
+                        ),
+                        WholeFileSide::Existing => (
+                            format!(
+                                "`{}` is superseded by the requested whole-file anchor `{}`; \
+                                 the two anchors in this invocation conflict with each other.",
+                                conflict.requested_addr, conflict.conflicting_addr
+                            ),
+                            "the other requested anchor is the whole file, and the requested \
+                             one is a range",
+                        ),
+                    };
+                    CliError {
+                        subcommand: "add",
+                        summary,
+                        what_happened: format!(
+                            "`{}` and `{}` anchor the same path, and {}; adding both would leave \
+                             the superseded anchor reported as permanent drift, so the add is \
+                             rejected before anything is written.",
+                            conflict.requested_addr, conflict.conflicting_addr, direction
+                        ),
+                        next_steps: vec![NextStep::Prose(format!(
+                            "Drop one of the two anchors (`{}` or `{}`) from the invocation, \
+                             then retry the add.",
+                            conflict.requested_addr, conflict.conflicting_addr
+                        ))],
+                    }
+                }
+            }
+            .into());
+        }
+    }
 
     // Track per-anchor outcomes for the summary.
     struct AddOutcome {
@@ -658,57 +905,100 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result
         write_worktree_span(repo, span_root, &args.name, &mut span_file)?;
     }
 
+    // --- Post-write reconcile check ---------------------------------------
+    // Runs while still holding the exclusive span-file lock (`_add_lock`
+    // lives until the end of `run_add`), so the check sees the just-written
+    // declaration and is serialized against concurrent mutations of the same
+    // span (plan §Mechanism).
+    let check = {
+        let _perf = crate::perf::span("add.reconcile-check");
+        let start = std::time::Instant::now();
+        let check = run_reconcile_check(repo, span_root, &args.name, &parsed, &pre_write_anchors)?;
+        crate::perf::counter("add.reconcile-us", start.elapsed().as_micros() as u64);
+        check
+    };
+
     // --- Output -----------------------------------------------------------
-    let added_count = outcomes
-        .iter()
-        .filter(|o| matches!(o.kind, AddOutcomeKind::Added))
-        .count();
-    let resolved_count = outcomes
-        .iter()
-        .filter(|o| matches!(o.kind, AddOutcomeKind::Resolved))
-        .count();
-    let unchanged_count = outcomes
-        .iter()
-        .filter(|o| matches!(o.kind, AddOutcomeKind::Unchanged))
-        .count();
-    // Summary line.
-    let mut summary = format!(
-        "Added {} anchor{}",
-        added_count,
-        if added_count == 1 { "" } else { "s" },
-    );
-    if resolved_count > 0 {
-        write!(&mut summary, " and resolved {resolved_count} in place").unwrap();
-    }
-    if unchanged_count > 0 {
-        write!(&mut summary, "; {unchanged_count} unchanged").unwrap();
-    }
-    write!(&mut summary, " to span `{}`.", args.name).unwrap();
-    println!("{summary}");
-    println!();
+    let exit = reconcile_exit_code(&check);
+    match args.format {
+        AddFormat::Human => {
+            let added_count = outcomes
+                .iter()
+                .filter(|o| matches!(o.kind, AddOutcomeKind::Added))
+                .count();
+            let resolved_count = outcomes
+                .iter()
+                .filter(|o| matches!(o.kind, AddOutcomeKind::Resolved))
+                .count();
+            let unchanged_count = outcomes
+                .iter()
+                .filter(|o| matches!(o.kind, AddOutcomeKind::Unchanged))
+                .count();
+            // Summary line.
+            let mut summary = format!(
+                "Added {} anchor{}",
+                added_count,
+                if added_count == 1 { "" } else { "s" },
+            );
+            if resolved_count > 0 {
+                write!(&mut summary, " and resolved {resolved_count} in place").unwrap();
+            }
+            if unchanged_count > 0 {
+                write!(&mut summary, "; {unchanged_count} unchanged").unwrap();
+            }
+            write!(&mut summary, " to span `{}`.", args.name).unwrap();
+            println!("{summary}");
+            println!();
 
-    for o in &outcomes {
-        let line = match o.kind {
-            AddOutcomeKind::Added => {
-                format!("- added: `{}` `{}`", args.name, o.addr)
+            for o in &outcomes {
+                let line = match o.kind {
+                    AddOutcomeKind::Added => {
+                        format!("- added: `{}` `{}`", args.name, o.addr)
+                    }
+                    AddOutcomeKind::Resolved => {
+                        format!(
+                            "- resolved in-place: `{}` `{}` (hash changed)",
+                            args.name, o.addr
+                        )
+                    }
+                    AddOutcomeKind::Unchanged => {
+                        format!(
+                            "- unchanged: `{}` `{}` (content matches stored hash)",
+                            args.name, o.addr
+                        )
+                    }
+                };
+                println!("{line}");
             }
-            AddOutcomeKind::Resolved => {
-                format!(
-                    "- resolved in-place: `{}` `{}` (hash changed)",
-                    args.name, o.addr
-                )
-            }
-            AddOutcomeKind::Unchanged => {
-                format!(
-                    "- unchanged: `{}` `{}` (content matches stored hash)",
-                    args.name, o.addr
-                )
-            }
-        };
-        println!("{line}");
-    }
 
-    Ok(0)
+            // The post-write facts: superseded, remains, and the single
+            // span-wide line. Local success (above) never names span-wide
+            // state.
+            render_reconcile_block(&args.name, &check, true);
+        }
+        AddFormat::Json => {
+            let doc = MutationDocument::new(
+                "add",
+                &args.name,
+                outcomes
+                    .iter()
+                    .map(|o| AnchorOutcome {
+                        address: o.addr.clone(),
+                        outcome: match o.kind {
+                            AddOutcomeKind::Added => AddressOutcome::Added,
+                            AddOutcomeKind::Resolved => AddressOutcome::Resolved,
+                            AddOutcomeKind::Unchanged => AddressOutcome::Unchanged,
+                        },
+                    })
+                    .collect(),
+                check.superseded.clone(),
+                check.remaining.clone(),
+                span_health_from_check(&check),
+            );
+            println!("{}", serde_json::to_string_pretty(&doc)?);
+        }
+    }
+    Ok(exit)
 }
 
 // ---------------------------------------------------------------------------
@@ -795,47 +1085,421 @@ pub fn run_remove(repo: &gix::Repository, args: RemoveArgs, span_root: &str) -> 
 }
 
 // ---------------------------------------------------------------------------
+// replace
+// ---------------------------------------------------------------------------
+
+pub fn run_replace(repo: &gix::Repository, args: ReplaceArgs, span_root: &str) -> Result<i32> {
+    crate::validation::validate_span_name(&args.name)?;
+
+    // Parse both addresses first; fail-closed with no partial state.
+    let (old_path, old_extent) = {
+        let _perf = crate::perf::span("replace.parse-anchors");
+        parse_address(&args.old_anchor)
+            .ok_or_else(|| invalid_anchor_error("replace", &args.old_anchor))?
+    };
+    let (new_path, new_extent) =
+        parse_address(&args.new_anchor).ok_or_else(|| invalid_anchor_error("replace", &args.new_anchor))?;
+
+    let (old_start, old_end) = match &old_extent {
+        AnchorExtent::LineRange { start, end } => (*start, *end),
+        AnchorExtent::WholeFile => (0, 0),
+    };
+    let (new_start, new_end) = match &new_extent {
+        AnchorExtent::LineRange { start, end } => (*start, *end),
+        AnchorExtent::WholeFile => (0, 0),
+    };
+
+    // Exact-identity contract: an anchor replaced with its own address is
+    // `git span add`'s job (the in-place `Resolved` hash refresh), not
+    // `replace`'s. Refusing keeps `replace` crisp — it changes identity,
+    // and never silently degrades into additive behavior.
+    if old_path == new_path && old_start == new_start && old_end == new_end {
+        return Err(CliError {
+            subcommand: "replace",
+            summary: format!(
+                "`{}` is already the identity of the anchor being replaced.",
+                args.old_anchor
+            ),
+            what_happened: "The old and new address are the same. `git span add` refreshes \
+                an anchor's content hash in place; `replace` exists to change identity."
+                .to_string(),
+            next_steps: vec![NextStep::Bash(format!(
+                "git span add {} {}",
+                args.name, args.new_anchor
+            ))],
+        }
+        .into());
+    }
+
+    // New-target validation reuses the full `add` pipeline so a poisoned
+    // declaration is never written: anchor-path safety, span-root
+    // exclusion, the index-snapshot existence probe, the stage-time
+    // precheck (gitignored / rewritten targets), and the git-normalized
+    // content hash. All of this runs *before* the lock is taken and any
+    // read happens, mirroring `run_add`'s fail-closed ordering.
+    let index_snapshot = crate::git::index_entries(repo).map_err(|e| CliError {
+        subcommand: "replace",
+        summary: "failed to read the git index.".into(),
+        what_happened: e.to_string(),
+        next_steps: vec![NextStep::Bash("git status".into())],
+    })?;
+    {
+        let _perf = crate::perf::span("replace.validate-targets");
+        let workdir = repo
+            .workdir()
+            .ok_or_else(|| anyhow::anyhow!("bare repository is not supported"))?
+            .to_path_buf();
+        crate::span_root::validate_repo_relative_path("anchor path", &new_path).map_err(|e| {
+            CliError {
+                subcommand: "replace",
+                summary: format!("`{new_path}` is not a valid anchor path."),
+                what_happened: e.to_string(),
+                next_steps: vec![NextStep::Prose(
+                    "Anchor paths must be repo-relative, must not contain \
+                     `..`, and must not be inside `.git`."
+                        .into(),
+                )],
+            }
+        })?;
+
+        crate::span_root::reject_anchor_inside_span_root(span_root, &new_path).map_err(|e| {
+            CliError {
+                subcommand: "replace",
+                summary: format!("`{new_path}` is not a valid anchor path."),
+                what_happened: e.to_string(),
+                next_steps: vec![NextStep::Prose(format!(
+                    "Anchor paths must not be inside the span root `{span_root}`. \
+                     Choose a source file outside the span directory."
+                ))],
+            }
+        })?;
+
+        // Existence: tracked in the index or present in the worktree. A
+        // path with no content to hash cannot be anchored.
+        let exists = {
+            let tracked = index_snapshot.iter().any(|en| en.path == new_path);
+            tracked || workdir.join(&new_path).exists()
+        };
+        if !exists {
+            return Err(CliError {
+                subcommand: "replace",
+                summary: format!("`{new_path}` does not exist."),
+                what_happened: format!(
+                    "`{new_path}` is neither tracked nor present in the \
+                     worktree, so there is no content to anchor."
+                ),
+                next_steps: vec![
+                    NextStep::Bash(format!("ls {new_path}")),
+                    NextStep::Prose("Create the file or correct the anchor path.".into()),
+                ],
+            }
+            .into());
+        }
+
+        validate_add_target(repo, std::path::Path::new(&new_path), &new_extent, &index_snapshot)
+            .map_err(|err| {
+                let next_steps = match &err {
+                    crate::types::AddPrecheckError::GitignoredPath { .. } => vec![
+                        NextStep::Prose(
+                            "git-span tracks content through git and cannot resolve a path \
+                             git never sees. Un-ignore the path (edit `.gitignore`) or anchor \
+                             a committed file instead."
+                                .into(),
+                        ),
+                        NextStep::Bash(format!("git check-ignore -v {new_path}")),
+                    ],
+                    _ => vec![NextStep::Prose(
+                        "Fix the path or choose a different extent.".into(),
+                    )],
+                };
+                from_lib_error(
+                    "replace",
+                    format!("anchor precheck failed for `{new_path}`."),
+                    err,
+                    next_steps,
+                )
+            })?;
+    }
+
+    // Acquire an exclusive advisory lock on the span file before reading
+    // to prevent concurrent read-modify-write races (lost-update).
+    let _replace_lock = {
+        let _perf = crate::perf::span("replace.lock-span");
+        lock_span_file(repo, span_root, &args.name)?
+    };
+
+    // Read the current worktree span file.
+    let mut span_file = {
+        let _perf = crate::perf::span("replace.read-current");
+        read_worktree_span(repo, span_root, &args.name)?
+    };
+
+    // Count records matching the old identity. Zero is a plain
+    // missing-anchor error; more than one is an ambiguity — the writer
+    // sorts but does not dedupe, so a hand-edited or legacy declaration
+    // can hold two same-identity records whose hashes differ, and no
+    // canonical choice exists.
+    let matches: Vec<usize> = span_file
+        .anchors
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| {
+            a.path == old_path && a.start_line == old_start && a.end_line == old_end
+        })
+        .map(|(i, _)| i)
+        .collect();
+    match matches.len() {
+        0 => {
+            return Err(CliError {
+                subcommand: "replace",
+                summary: format!("`{}` is not an anchor on `{}`.", args.old_anchor, args.name),
+                what_happened: format!(
+                    "`{}` does not currently track that anchor, so there is nothing to replace.",
+                    args.name,
+                ),
+                next_steps: vec![NextStep::Bash(format!("git span show {}", args.name))],
+            }
+            .into())
+        }
+        n if n > 1 => {
+            return Err(CliError {
+                subcommand: "replace",
+                summary: format!("`{}` is ambiguous on span `{}`.", args.old_anchor, args.name),
+                what_happened: format!(
+                    "{n} records in the declaration share this identity with different \
+                     content hashes, so no canonical choice exists. Fix the declaration \
+                     by hand, then retry."
+                ),
+                next_steps: vec![NextStep::Bash(format!("git span show {}", args.name))],
+            }
+            .into())
+        }
+        _ => {}
+    }
+
+    // A swap onto an identity the span already tracks would leave two
+    // same-identity records behind — the exact ambiguity state rejected
+    // above. Retiring the old anchor on its own is the one-command path.
+    if span_file.anchors.iter().any(|a| {
+        a.path == new_path && a.start_line == new_start && a.end_line == new_end
+    }) {
+        return Err(CliError {
+            subcommand: "replace",
+            summary: format!("`{}` is already an anchor on `{}`.", args.new_anchor, args.name),
+            what_happened: "The new identity is already tracked, so a swap would leave two \
+                records with the same identity (the writer sorts but does not dedupe)."
+                .to_string(),
+            next_steps: vec![NextStep::Bash(format!(
+                "git span remove {} {}",
+                args.name, args.old_anchor
+            ))],
+        }
+        .into());
+    }
+
+    // Hash the new content and mutate exactly one record — the only
+    // mutation in the transaction. `why` and every unrelated anchor are
+    // preserved.
+    let (algorithm, content_hash) = {
+        let _perf = crate::perf::span("replace.process");
+        hash_anchor_content(repo, &new_path, &new_extent, None, &index_snapshot)?
+    };
+    {
+        let idx = matches[0];
+        let record = &mut span_file.anchors[idx];
+        record.path = new_path.clone();
+        record.start_line = new_start;
+        record.end_line = new_end;
+        record.algorithm = algorithm;
+        record.content_hash = content_hash;
+    }
+
+    // Write the updated span file.
+    {
+        let _perf = crate::perf::span("replace.write-span-file");
+        write_worktree_span(repo, span_root, &args.name, &mut span_file)?;
+    }
+    // Release the lock before the read-only drift resolve.
+    drop(_replace_lock);
+
+    // --- Output -----------------------------------------------------------
+    // Resolve only the replaced span (uncached engine path, so there is
+    // no store staleness after the write) and report its drift-free
+    // state: exactly the `drift` discovery boundary, so `replace` and
+    // `drift` can never disagree about the span they both just saw.
+    // Repository-read failures get the same curated shape `drift` uses.
+    let curate = |e: crate::Error| -> anyhow::Error {
+        match e {
+            crate::Error::Git(e) => crate::cli::resolver_read_error("replace", e).into(),
+            _ => e.into(),
+        }
+    };
+    let resolved = {
+        let _perf = crate::perf::span("replace.drift-report");
+        let options = crate::types::EngineOptions::full();
+        let names = [args.name.clone()];
+        crate::resolver::resolve_named_spans(repo, span_root, &names, options).map_err(curate)?
+    };
+    let span = match resolved.into_iter().next() {
+        Some((_, Ok(span))) => span,
+        Some((_, Err(e))) => return Err(curate(e)),
+        None => unreachable!("resolve_named_spans returns one result per requested name"),
+    };
+    let drift_free = !crate::resolver::span_is_reportable_in_drift_discovery(&span);
+    let drifted_addrs: Vec<String> = span
+        .anchors
+        .iter()
+        .filter(|a| crate::resolver::anchor_status_is_drift(&a.status))
+        .map(|a| {
+            let path_str = a.anchored.path.to_string_lossy();
+            addr_from_extent(&path_str, &a.anchored.extent)
+        })
+        .collect();
+
+    match args.format {
+        ReplaceFormat::Human => {
+            println!(
+                "Replaced anchor on span `{}`: retired `{}`, installed `{}`.",
+                args.name, args.old_anchor, args.new_anchor
+            );
+            if drift_free {
+                println!("Span is drift-free.");
+            } else {
+                println!("Span is not drift-free.");
+                for addr in &drifted_addrs {
+                    println!("- drifted: `{addr}`");
+                }
+            }
+        }
+        ReplaceFormat::Json => {
+            let obj = serde_json::json!({
+                "span": args.name,
+                "retired": args.old_anchor,
+                "installed": args.new_anchor,
+                "drift_free": drift_free,
+                "drifted": drifted_addrs,
+            });
+            println!("{}", serde_json::to_string_pretty(&obj)?);
+        }
+    }
+
+    Ok(0)
+}
+
+// ---------------------------------------------------------------------------
 // why
 // ---------------------------------------------------------------------------
 
 pub fn run_why(repo: &gix::Repository, args: WhyArgs, span_root: &str) -> Result<i32> {
+    let WhyArgs {
+        name,
+        why_text,
+        format,
+    } = args;
+
     // Positional text → write mode. Piped stdin → write mode (only when
     // data is actually present — an empty stdin falls through to read).
     // Terminal stdin with no positional → read mode (print current why).
-    if let Some(m) = args.why_text {
-        crate::validation::validate_span_name(&args.name)?;
-        let _perf = crate::perf::span("why.write");
-        run_why_writer(repo, &args.name, &m, span_root)?;
-        return print_why_written(&args.name);
-    }
-    if !std::io::stdin().is_terminal() {
+    let write_body: Option<String> = if let Some(m) = why_text {
+        Some(m)
+    } else if !std::io::stdin().is_terminal() {
         let mut body = String::new();
         std::io::stdin().read_to_string(&mut body)?;
-        if !body.is_empty() {
-            crate::validation::validate_span_name(&args.name)?;
-            let _perf = crate::perf::span("why.write");
-            run_why_writer(repo, &args.name, &body, span_root)?;
-            return print_why_written(&args.name);
+        if body.is_empty() {
+            None
+        } else {
+            Some(body)
+        }
+    } else {
+        None
+    };
+
+    let Some(body) = write_body else {
+        // Read mode. `--format json` is rejected fail-closed with a
+        // usage-style `CliError` before any output (exit 1, no stdout),
+        // mirroring drift's `--fix`-with-machine-format rejection — an
+        // ignored flag that silently prints prose would teach a migrating
+        // hook to parse prose as a document.
+        if matches!(format, WhyFormat::Json) {
+            return Err(CliError {
+                subcommand: "why",
+                summary: "`--format json` is only supported in write mode.".into(),
+                what_happened: "Read mode prints the current why as prose; a hook \
+                                migrating to `--format json` would parse prose as a \
+                                document."
+                    .into(),
+                next_steps: vec![NextStep::Bash(format!(
+                    "git span why {name} <why text> --format json"
+                ))],
+            }
+            .into());
+        }
+        let _perf = crate::perf::span("why.read");
+        return run_why_reader(repo, &name, span_root);
+    };
+
+    crate::validation::validate_span_name(&name)?;
+    let _perf = crate::perf::span("why.write");
+    run_why_write_mode(repo, &name, &body, span_root, format)
+}
+
+/// Write mode: write the why while holding the exclusive span-file lock,
+/// then run the post-write reconcile check under the same lock (plan
+/// §Mechanism) and render the remains/span-wide block. The supersession
+/// fact is empty by construction — `why` touches no addresses — so no
+/// superseded lines and an empty `superseded` array in JSON.
+fn run_why_write_mode(
+    repo: &gix::Repository,
+    name: &str,
+    body: &str,
+    span_root: &str,
+    format: WhyFormat,
+) -> Result<i32> {
+    // The lock is held through the check below: it serializes the write and
+    // the check against concurrent mutations of the same span, and the check
+    // sees the just-written declaration.
+    let _why_lock = {
+        let _perf = crate::perf::span("why.lock-span");
+        lock_span_file(repo, span_root, name)?
+    };
+    let pre_write_anchors = {
+        let _perf = crate::perf::span("why.read-current");
+        let mut span_file = read_worktree_span(repo, span_root, name)?;
+        let anchors = span_file.anchors.clone();
+        span_file.why = body.to_string();
+        {
+            let _perf = crate::perf::span("why.write-span-file");
+            write_worktree_span(repo, span_root, name, &mut span_file)?;
+        }
+        anchors
+    };
+    let check = {
+        let _perf = crate::perf::span("why.reconcile-check");
+        let start = std::time::Instant::now();
+        let check = run_reconcile_check(repo, span_root, name, &[], &pre_write_anchors)?;
+        crate::perf::counter("why.reconcile-us", start.elapsed().as_micros() as u64);
+        check
+    };
+    let exit = reconcile_exit_code(&check);
+    match format {
+        WhyFormat::Human => {
+            println!("Set why on span `{name}`.{IDEMPOTENT_TAG}");
+            render_reconcile_block(name, &check, false);
+        }
+        WhyFormat::Json => {
+            let doc = MutationDocument::new(
+                "why",
+                name,
+                Vec::new(),
+                Vec::new(),
+                check.remaining.clone(),
+                span_health_from_check(&check),
+            )
+            .with_why_written();
+            println!("{}", serde_json::to_string_pretty(&doc)?);
         }
     }
-    let _perf = crate::perf::span("why.read");
-    run_why_reader(repo, &args.name, span_root)
-}
-
-fn print_why_written(name: &str) -> Result<i32> {
-    println!("Set why on span `{name}`.{IDEMPOTENT_TAG}");
-    Ok(0)
-}
-
-fn run_why_writer(repo: &gix::Repository, name: &str, body: &str, span_root: &str) -> Result<()> {
-    // Acquire an exclusive advisory lock on the span file before reading
-    // to prevent concurrent read-modify-write races.
-    let _why_lock = lock_span_file(repo, span_root, name)?;
-
-    let mut span_file = read_worktree_span(repo, span_root, name)?;
-    span_file.why = body.to_string();
-    write_worktree_span(repo, span_root, name, &mut span_file)?;
-    Ok(())
+    Ok(exit)
 }
 
 fn run_why_reader(repo: &gix::Repository, name: &str, span_root: &str) -> Result<i32> {
@@ -855,6 +1519,541 @@ fn run_why_reader(repo: &gix::Repository, name: &str, span_root: &str) -> Result
         }
     }
     Ok(0)
+}
+
+// ---------------------------------------------------------------------------
+// Reconcile check (post-write span-wide health)
+// ---------------------------------------------------------------------------
+//
+// After an anchor mutation, the command output must distinguish the
+// requested-address success (the *local* fact) from the fate of superseded
+// old anchors and the span-wide drift-free state — the *span-wide* fact,
+// asserted only by a scoped resolver check over the resulting declaration.
+// The surface below is the contract: `ReconcileCheck` carries the three
+// facts, the JSON document family (schema_version 1) is the structured
+// rendering, and `is_superseded` is the provable-supersession predicate.
+// Phase 1 lands the stubs; the resolver plumbing lands in Phase 3.
+
+/// Mutation-family JSON document version. Versioning is per family: the
+/// mutation document starts at 1 while the drift scan document uses its own
+/// 2→3 history, and the two shapes are identified by their top-level keys
+/// (`command` vs `findings`) — two shapes claiming the same version number
+/// would make the number meaningless.
+pub const MUTATION_JSON_SCHEMA_VERSION: u32 = 1;
+
+/// Stable outcome enum for `addresses[].outcome` in the mutation document:
+/// `ADDED | RESOLVED | UNCHANGED`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum AddressOutcome {
+    /// Brand-new anchor record created.
+    Added,
+    /// Existing anchor's hash updated in place.
+    Resolved,
+    /// Anchor already matched the stored hash.
+    Unchanged,
+}
+
+/// Stable enum for `superseded[].state`: `RETIRED | REMAINS`.
+///
+/// `RETIRED` is the integration seam for the main-204 atomic-replacement
+/// capability (when `add` itself retires the old anchor) and is not produced
+/// on this branch — here supersession always reports `REMAINS` (the anchor is
+/// still in the declaration) and hands the operator the runnable retire
+/// command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SupersessionState {
+    /// The mutation itself removed the old anchor from the declaration.
+    Retired,
+    /// The old anchor is still in the declaration; retire it with the
+    /// printed `git span remove` next action.
+    Remains,
+}
+
+/// Stable enum for `span_health.state`: `DRIFT_FREE | DRIFT | UNKNOWN`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SpanHealthState {
+    /// Span-wide clean: no anchor has a status for which
+    /// `anchor_status_is_drift()` returns true.
+    DriftFree,
+    /// At least one actionable-drift anchor on the span.
+    Drift,
+    /// The check could not produce a verdict — `reason` carries the detail
+    /// ("index changed during scan" or the check-error detail).
+    Unknown,
+}
+
+/// One requested address and its outcome in the mutation document.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct AnchorOutcome {
+    pub address: String,
+    pub outcome: AddressOutcome,
+}
+
+/// One provably superseded old anchor: the covering new address, its state,
+/// and the runnable retire next action.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct SupersededAnchor {
+    /// Canonical address of the old anchor (e.g. `src/read-user.ts#L1-L5`).
+    pub address: String,
+    /// Canonical address of the new anchor that covers it.
+    pub superseded_by: String,
+    pub state: SupersessionState,
+    /// Runnable next action (e.g. `git span remove <span> <addr>`).
+    pub next_step: String,
+}
+
+/// One actionable-drift anchor that remains after the mutation.
+///
+/// `status` is the exact output of `drift_output::status_json`, so the
+/// anchor-status vocabulary is shared with drift's findings by construction.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct RemainingAnchor {
+    pub address: String,
+    pub status: serde_json::Value,
+    pub next_step: String,
+    /// Human drift-label vocabulary for the human remains line (plan
+    /// §Output contract: "reusing the drift-label vocabulary"). Rendering
+    /// detail, never serialized — the JSON document carries `address`,
+    /// `status`, and `next_step` only.
+    #[serde(skip_serializing)]
+    pub label: String,
+}
+
+/// One drifting anchor inside `span_health.drifting`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct DriftingAnchor {
+    pub address: String,
+    pub status: serde_json::Value,
+}
+
+/// The span-wide health block of the mutation document.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct SpanHealth {
+    pub state: SpanHealthState,
+    pub drift_count: usize,
+    pub drifting: Vec<DriftingAnchor>,
+    /// Count of `RESOLVED_PENDING_COMMIT` anchors: clean by definition, but
+    /// never hidden.
+    pub resolved_pending_commit_count: usize,
+    /// Present only on `UNKNOWN` ("index changed during scan" or the
+    /// check-error detail).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// The mutation-family JSON document (`schema_version: 1`).
+///
+/// Every top-level key is always emitted (arrays possibly empty), so hooks
+/// rely on a stable key set rather than key presence.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct MutationDocument {
+    pub schema_version: u32,
+    pub command: String,
+    pub span: String,
+    pub addresses: Vec<AnchorOutcome>,
+    pub superseded: Vec<SupersededAnchor>,
+    pub remaining: Vec<RemainingAnchor>,
+    pub span_health: SpanHealth,
+    /// `Some(true)` only on `why` documents (plan §Output contract: the why
+    /// document carries `why_written: true`); absent on `add` documents,
+    /// which the plan's example shows without the key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub why_written: Option<bool>,
+}
+
+impl MutationDocument {
+    /// Build a document with the family's `schema_version: 1` pinned.
+    pub fn new(
+        command: &str,
+        span: &str,
+        addresses: Vec<AnchorOutcome>,
+        superseded: Vec<SupersededAnchor>,
+        remaining: Vec<RemainingAnchor>,
+        span_health: SpanHealth,
+    ) -> Self {
+        Self {
+            schema_version: MUTATION_JSON_SCHEMA_VERSION,
+            command: command.to_string(),
+            span: span.to_string(),
+            addresses,
+            superseded,
+            remaining,
+            span_health,
+            why_written: None,
+        }
+    }
+
+    /// Mark the document as a written `why` (`why_written: true`).
+    pub fn with_why_written(mut self) -> Self {
+        self.why_written = Some(true);
+        self
+    }
+}
+
+/// Result of the post-write span-wide reconcile check.
+///
+/// `indeterminate` is the resolver's `index_changed` verdict only and drives
+/// exit 2 (the retryable condition, exactly as `git span drift` defines it);
+/// `check_error` is the fatal path and drives exit 1. `clean` is the
+/// span-wide fact — it never names local mutation success.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReconcileCheck {
+    /// Old anchors the invocation provably supersedes.
+    pub superseded: Vec<SupersededAnchor>,
+    /// Actionable-drift anchors not touched by this invocation and not
+    /// reported as superseded (the two arrays are disjoint by definition).
+    pub remaining: Vec<RemainingAnchor>,
+    /// Every actionable-drift anchor on the span, touched or not — the
+    /// span-wide drifted line lists all of them (plan: "lists every
+    /// actionable-drift anchor, touched or not — covers the `--at` case
+    /// where the *new* anchor is itself drifted"), and JSON
+    /// `span_health.drifting` is rendered from this list. Empty on
+    /// indeterminate and check-error verdicts (nothing trustworthy to list).
+    pub drifting: Vec<DriftingAnchor>,
+    /// Span-wide drift-free verdict.
+    pub clean: bool,
+    /// Resolver `index_changed` verdict — the retryable indeterminate.
+    pub indeterminate: bool,
+    /// Fatal check-error detail, when the check itself errored.
+    pub check_error: Option<String>,
+    /// Total anchors on the span at check time.
+    pub total_anchors: usize,
+    /// `RESOLVED_PENDING_COMMIT` anchors on the span (clean, informational).
+    pub pending_commit_count: usize,
+}
+
+/// Convert an `AnchorRecord`'s stored `(start_line, end_line)` into an
+/// `AnchorExtent` (whole-file anchors store `0, 0`).
+fn anchor_record_extent(a: &AnchorRecord) -> AnchorExtent {
+    if a.start_line == 0 && a.end_line == 0 {
+        AnchorExtent::WholeFile
+    } else {
+        AnchorExtent::LineRange {
+            start: a.start_line,
+            end: a.end_line,
+        }
+    }
+}
+
+/// Provable-supersession rule (plan §Definitions): an old anchor is
+/// superseded by a new anchor of the same invocation only when, on the same
+/// path, the new extent *covers* the old extent:
+///
+/// - a new whole-file anchor covers any old extent on the path (line range
+///   or whole-file);
+/// - a new line range covers an old line range iff `new.start <= old.start`
+///   and `new.end >= old.end`;
+/// - identical `(path, extent)` is NOT supersession — that is the existing
+///   resolved-in-place (hash update) case;
+/// - disjoint same-path ranges, partial overlaps, and any cross-path pair are
+///   never supersession.
+pub fn is_superseded(old: &AnchorRecord, new_path: &str, new_extent: &AnchorExtent) -> bool {
+    if old.path != new_path {
+        return false;
+    }
+    let old_extent = anchor_record_extent(old);
+    if old_extent == *new_extent {
+        return false;
+    }
+    match new_extent {
+        AnchorExtent::WholeFile => true,
+        AnchorExtent::LineRange { start, end } => match old_extent {
+            AnchorExtent::WholeFile => false,
+            AnchorExtent::LineRange {
+                start: old_start,
+                end: old_end,
+            } => *start <= old_start && *end >= old_end,
+        },
+    }
+}
+
+/// Run the post-write span-wide reconcile check over the touched span.
+///
+/// Per plan §Mechanism, the check runs while still holding the exclusive
+/// span-file flock, resolves the single span via
+/// `resolve_named_spans_retaining_source_layers` (with
+/// `EngineOptions { layers: LayerSet::full(), ignore_unavailable: false,
+/// needs_all_layers: true, since: None, fuzzy_threshold: 0.95 }` — the
+/// human-renderer configuration, so per-anchor statuses match what
+/// `git span drift <span>` would show), reads the `index_changed` verdict
+/// from the returned `SourceLayers`, and derives the three facts:
+///
+/// - superseded: requested addresses vs. the pre-write anchor set
+///   (`is_superseded`);
+/// - remains: actionable-drift anchors not touched by this invocation;
+/// - clean: no anchor of the resolved span has a status for which
+///   `anchor_status_is_drift()` returns true.
+///
+/// A resolver hard error is captured as `check_error: Some(...)` (the fatal
+/// path, exit 1) rather than propagated: the write already succeeded and the
+/// local facts must still print, followed by the `state unverified` line. The
+/// `index_changed` verdict is captured as `indeterminate: true` (exit 2, the
+/// retryable condition) and makes the per-anchor verdicts untrustworthy, so
+/// `remaining`/`drifting` are emptied for that verdict — only the provable
+/// supersession facts survive it.
+pub fn run_reconcile_check(
+    repo: &gix::Repository,
+    span_root: &str,
+    name: &str,
+    touched: &[(String, AnchorExtent)],
+    pre_write_anchors: &[AnchorRecord],
+) -> Result<ReconcileCheck> {
+    let options = EngineOptions {
+        layers: LayerSet::full(),
+        ignore_unavailable: false,
+        since: None,
+        needs_all_layers: true,
+        fuzzy_threshold: 0.95,
+    };
+    let names = vec![name.to_string()];
+    let (resolved, source_layers) = match resolve_named_spans_retaining_source_layers(
+        repo, span_root, &names, options,
+    ) {
+        Ok(pair) => pair,
+        Err(e) => {
+            return Ok(check_error_result(name, touched, pre_write_anchors, e.to_string()));
+        }
+    };
+    let (_, resolution) = resolved.into_iter().next().unwrap_or_else(|| {
+        (
+            name.to_string(),
+            Err(crate::Error::SpanNotFound(name.to_string())),
+        )
+    });
+    let span = match resolution {
+        Ok(span) => span,
+        Err(e) => {
+            return Ok(check_error_result(name, touched, pre_write_anchors, e.to_string()));
+        }
+    };
+
+    let superseded = superseded_for(name, touched, pre_write_anchors);
+    // (path, extent) keys of the pre-write anchors reported as superseded —
+    // such an anchor's fate is the supersession fact, never the remains fact.
+    let superseded_keys: std::collections::HashSet<(String, AnchorExtent)> =
+        pre_write_anchors
+            .iter()
+            .filter(|old| touched.iter().any(|(p, e)| is_superseded(old, p, e)))
+            .map(|old| (old.path.clone(), anchor_record_extent(old)))
+            .collect();
+    let touched_keys: std::collections::HashSet<(String, AnchorExtent)> =
+        touched.iter().cloned().collect();
+
+    let mut remaining: Vec<RemainingAnchor> = Vec::new();
+    let mut drifting: Vec<DriftingAnchor> = Vec::new();
+    for a in &span.anchors {
+        if !anchor_status_is_drift(&a.status) {
+            continue;
+        }
+        let key = (
+            a.anchored.path.to_string_lossy().into_owned(),
+            a.anchored.extent,
+        );
+        let address = resolved_anchor_address(&a.anchored);
+        drifting.push(DriftingAnchor {
+            address: address.clone(),
+            status: status_json(&a.status),
+        });
+        if touched_keys.contains(&key) || superseded_keys.contains(&key) {
+            continue;
+        }
+        remaining.push(RemainingAnchor {
+            address,
+            status: status_json(&a.status),
+            next_step: format!("git span remove {name} {}", resolved_anchor_address(&a.anchored)),
+            label: drift_label_for(a),
+        });
+    }
+
+    let indeterminate = source_layers.index_changed;
+    let pending_commit_count = span
+        .anchors
+        .iter()
+        .filter(|a| matches!(a.status, AnchorStatus::ResolvedPendingCommit))
+        .count();
+    Ok(ReconcileCheck {
+        superseded,
+        remaining: if indeterminate { Vec::new() } else { remaining },
+        drifting: if indeterminate { Vec::new() } else { drifting },
+        clean: !indeterminate && !span.anchors.iter().any(|a| anchor_status_is_drift(&a.status)),
+        indeterminate,
+        check_error: None,
+        total_anchors: span.anchors.len(),
+        pending_commit_count,
+    })
+}
+
+/// A `ReconcileCheck` for the fatal path: the write happened but the check
+/// could not produce a verdict. The supersession facts are still derivable
+/// (they are provable from the pre-write declaration, no resolver needed);
+/// nothing else is.
+fn check_error_result(
+    name: &str,
+    touched: &[(String, AnchorExtent)],
+    pre_write_anchors: &[AnchorRecord],
+    detail: String,
+) -> ReconcileCheck {
+    ReconcileCheck {
+        superseded: superseded_for(name, touched, pre_write_anchors),
+        remaining: Vec::new(),
+        drifting: Vec::new(),
+        clean: false,
+        indeterminate: false,
+        check_error: Some(detail),
+        total_anchors: 0,
+        pending_commit_count: 0,
+    }
+}
+
+/// The plan's provable-supersession report for one invocation: for every
+/// pre-write anchor covered by a requested address of this invocation, the
+/// covering new address, `REMAINS` state (the anchor is still in the
+/// declaration on this branch), and the runnable retire command.
+fn superseded_for(
+    name: &str,
+    touched: &[(String, AnchorExtent)],
+    pre_write_anchors: &[AnchorRecord],
+) -> Vec<SupersededAnchor> {
+    let mut out = Vec::new();
+    for old in pre_write_anchors {
+        let Some((new_path, new_extent)) = touched
+            .iter()
+            .find(|(p, e)| is_superseded(old, p, e))
+        else {
+            continue;
+        };
+        let old_addr = addr_from_extent(&old.path, &anchor_record_extent(old));
+        out.push(SupersededAnchor {
+            address: old_addr.clone(),
+            superseded_by: addr_from_extent(new_path, new_extent),
+            state: SupersessionState::Remains,
+            next_step: format!("git span remove {name} {old_addr}"),
+        });
+    }
+    out
+}
+
+/// Canonical address of a resolved anchor's anchored location.
+fn resolved_anchor_address(loc: &AnchorLocation) -> String {
+    match loc.extent {
+        AnchorExtent::LineRange { start, end } => {
+            format_anchor_address(&loc.path.to_string_lossy(), Some(start), Some(end))
+        }
+        AnchorExtent::WholeFile => format_anchor_address(&loc.path.to_string_lossy(), None, None),
+    }
+}
+
+/// The resolver status label for the human remains line, from the shared
+/// drift-label vocabulary.
+fn drift_label_for(a: &AnchorResolved) -> String {
+    format_drift_label(&a.status, a.source, a.locus.as_ref(), a.current.is_some())
+}
+
+/// Map a `ReconcileCheck` verdict to the three-state exit contract (plan
+/// §Exit codes): 2 = indeterminate (the resolver's `index_changed` verdict
+/// only — the retryable condition, exactly as `git span drift` defines it,
+/// distinct from both 0 (clean) and 1 (drift / check error)); 1 = drift
+/// remains or the check errored; 0 = clean.
+///
+/// Extracted as a testable function because the Phase-2 seam test drives
+/// the verdict → exit mapping through real code, not a hand-rolled
+/// construction.
+pub(crate) fn reconcile_exit_code(check: &ReconcileCheck) -> i32 {
+    if check.indeterminate {
+        2
+    } else if check.check_error.is_some() || !check.clean {
+        1
+    } else {
+        0
+    }
+}
+
+/// Build the JSON `span_health` block from a check verdict.
+fn span_health_from_check(check: &ReconcileCheck) -> SpanHealth {
+    let (state, reason) = if check.indeterminate {
+        (SpanHealthState::Unknown, Some("index changed during scan".into()))
+    } else if let Some(detail) = &check.check_error {
+        (SpanHealthState::Unknown, Some(detail.clone()))
+    } else if check.clean {
+        (SpanHealthState::DriftFree, None)
+    } else {
+        (SpanHealthState::Drift, None)
+    };
+    SpanHealth {
+        state,
+        drift_count: check.drifting.len(),
+        drifting: check.drifting.clone(),
+        resolved_pending_commit_count: check.pending_commit_count,
+        reason,
+    }
+}
+
+/// Render the post-write facts block (human): blank line, superseded lines
+/// (when the invocation touches addresses), remains lines, blank line, and
+/// the single span-wide line. Wording is character-for-character per plan
+/// §Output contract. `include_superseded` is false for `why` — it touches no
+/// addresses, so the supersession fact is empty by construction.
+fn render_reconcile_block(name: &str, check: &ReconcileCheck, include_superseded: bool) {
+    println!();
+    if include_superseded {
+        for s in &check.superseded {
+            println!(
+                "Old anchor superseded by `{}`: `{}` — next: `{}`",
+                s.superseded_by, s.address, s.next_step
+            );
+        }
+    }
+    for r in &check.remaining {
+        println!(
+            "Old anchor remains: `{}` ({}) — next: `{}`",
+            r.address, r.label, r.next_step
+        );
+    }
+    if !check.superseded.is_empty() || !check.remaining.is_empty() {
+        println!();
+    }
+    if let Some(detail) = &check.check_error {
+        println!(
+            "Span `{name}`: state unverified ({detail}) — run `git span drift {name}`."
+        );
+    } else if check.indeterminate {
+        println!(
+            "Span `{name}`: state indeterminate (index changed during check) — re-run the command or `git span drift {name}`."
+        );
+    } else if check.clean {
+        let mut line = format!(
+            "Span `{name}`: 0 drift across 1 span ({} anchor{} checked).",
+            check.total_anchors,
+            if check.total_anchors == 1 { "" } else { "s" }
+        );
+        if check.pending_commit_count > 0 {
+            // The plan pins the suffix with a leading space:
+            // `` ; 1 anchor resolved, pending commit ``.
+            write!(
+                &mut line,
+                " ; {} anchor{} resolved, pending commit",
+                check.pending_commit_count,
+                if check.pending_commit_count == 1 { "" } else { "s" }
+            )
+            .unwrap();
+        }
+        println!("{line}");
+    } else {
+        let addrs: Vec<String> = check
+            .drifting
+            .iter()
+            .map(|d| format!("`{}`", d.address))
+            .collect();
+        println!(
+            "Span `{name}`: {} anchor{} drifted — {}. Run `git span drift {name}` for details.",
+            check.drifting.len(),
+            if check.drifting.len() == 1 { "" } else { "s" },
+            addrs.join(", ")
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1059,5 +2258,371 @@ mod tests {
         assert_eq!(reparsed.anchors[1].end_line, 10);
         assert_eq!(reparsed.anchors[2].start_line, 20);
         assert_eq!(reparsed.anchors[2].end_line, 30);
+    }
+
+    /// Build a minimal `AnchorRecord` for the supersession rule table.
+    /// Whole-file anchors store `(0, 0)`.
+    fn rec(path: &str, start_line: u32, end_line: u32) -> AnchorRecord {
+        AnchorRecord {
+            path: path.into(),
+            start_line,
+            end_line,
+            algorithm: "rk64".into(),
+            content_hash: "x".into(),
+        }
+    }
+
+    fn lines(start: u32, end: u32) -> AnchorExtent {
+        AnchorExtent::LineRange { start, end }
+    }
+
+    /// The plan's supersession rule table: identical extent → not superseded;
+    /// whole-file covers range; range covers range; partial overlap → not
+    /// superseded; disjoint same-path → not superseded; cross-path → not
+    /// superseded.
+    #[test]
+    fn is_superseded_rule_table() {
+        let old_range = rec("src/a.ts", 1, 5);
+        let old_whole = rec("src/a.ts", 0, 0);
+
+        // Identical (path, extent) is NOT supersession — the resolved-in-place
+        // (hash update) case, for both line ranges and whole-file anchors.
+        assert!(!is_superseded(&old_range, "src/a.ts", &lines(1, 5)));
+        assert!(!is_superseded(&old_whole, "src/a.ts", &AnchorExtent::WholeFile));
+
+        // Whole-file covers any old extent on the path (line range).
+        assert!(is_superseded(&old_range, "src/a.ts", &AnchorExtent::WholeFile));
+
+        // Range covers range iff new.start <= old.start && new.end >= old.end.
+        assert!(is_superseded(&old_range, "src/a.ts", &lines(1, 6)));
+        assert!(is_superseded(&old_range, "src/a.ts", &lines(0, 5)));
+        assert!(is_superseded(&old_range, "src/a.ts", &lines(1, 10)));
+
+        // Partial overlap → not superseded (each direction).
+        assert!(!is_superseded(&old_range, "src/a.ts", &lines(2, 6)));
+        assert!(!is_superseded(&old_range, "src/a.ts", &lines(4, 10)));
+        assert!(!is_superseded(&old_range, "src/a.ts", &lines(2, 4)));
+
+        // Disjoint same-path ranges → not superseded (each direction).
+        assert!(!is_superseded(&old_range, "src/a.ts", &lines(6, 10)));
+        assert!(!is_superseded(&old_range, "src/a.ts", &lines(0, 0)));
+
+        // A line range can never cover a whole-file anchor.
+        assert!(!is_superseded(&old_whole, "src/a.ts", &lines(1, 100)));
+
+        // Cross-path → never superseded, regardless of extents.
+        assert!(!is_superseded(&old_range, "src/b.ts", &AnchorExtent::WholeFile));
+        assert!(!is_superseded(&old_range, "src/b.ts", &lines(0, 100)));
+        assert!(!is_superseded(&old_whole, "src/b.ts", &AnchorExtent::WholeFile));
+    }
+
+    // ---------------------------------------------------------------------
+    // Supersession predicate contract
+    //
+    // These checks pin the `supersession_conflict` signature and the
+    // predicate matrix from the plan.
+    // ---------------------------------------------------------------------
+
+    /// An `AnchorRecord` with the given (path, start, end); `(0, 0)` is the
+    /// whole-file sentinel.
+    fn record(path: &str, start_line: u32, end_line: u32) -> AnchorRecord {
+        AnchorRecord {
+            path: path.into(),
+            start_line,
+            end_line,
+            algorithm: "rk64".into(),
+            content_hash: "stub-hash".into(),
+        }
+    }
+
+    /// A requested anchor: `(path, extent)` as `run_add` passes it.
+    fn requested(path: &str, extent: AnchorExtent) -> (String, AnchorExtent) {
+        (path.into(), extent)
+    }
+
+    #[test]
+    fn existing_whole_file_vs_new_range_is_a_conflict() {
+        let existing = vec![record("src/lib.rs", 0, 0)];
+        let requested = vec![requested(
+            "src/lib.rs",
+            AnchorExtent::LineRange { start: 1, end: 5 },
+        )];
+        assert_eq!(
+            supersession_conflict(&requested, &existing),
+            Some(SupersessionConflict {
+                requested_addr: "src/lib.rs#L1-L5".into(),
+                conflicting_addr: "src/lib.rs".into(),
+                whole_file_side: WholeFileSide::Existing,
+                source: ConflictSource::ExistingRecord,
+            })
+        );
+    }
+
+    #[test]
+    fn new_whole_file_vs_existing_range_is_a_conflict() {
+        let existing = vec![record("src/lib.rs", 1, 5)];
+        let requested = vec![requested("src/lib.rs", AnchorExtent::WholeFile)];
+        assert_eq!(
+            supersession_conflict(&requested, &existing),
+            Some(SupersessionConflict {
+                requested_addr: "src/lib.rs".into(),
+                conflicting_addr: "src/lib.rs#L1-L5".into(),
+                whole_file_side: WholeFileSide::Requested,
+                source: ConflictSource::ExistingRecord,
+            })
+        );
+    }
+
+    #[test]
+    fn exact_identity_whole_file_is_not_a_conflict() {
+        let existing = vec![record("src/lib.rs", 0, 0)];
+        let requested = vec![requested("src/lib.rs", AnchorExtent::WholeFile)];
+        assert!(supersession_conflict(&requested, &existing).is_none());
+    }
+
+    #[test]
+    fn exact_identity_range_is_not_a_conflict() {
+        let existing = vec![record("src/lib.rs", 1, 5)];
+        let requested = vec![requested(
+            "src/lib.rs",
+            AnchorExtent::LineRange { start: 1, end: 5 },
+        )];
+        assert!(supersession_conflict(&requested, &existing).is_none());
+    }
+
+    #[test]
+    fn disjoint_ranges_same_file_are_not_a_conflict() {
+        let existing = vec![record("src/lib.rs", 1, 5)];
+        let requested = vec![requested(
+            "src/lib.rs",
+            AnchorExtent::LineRange { start: 10, end: 20 },
+        )];
+        assert!(supersession_conflict(&requested, &existing).is_none());
+    }
+
+    #[test]
+    fn partially_overlapping_ranges_are_not_a_conflict() {
+        let existing = vec![record("src/lib.rs", 1, 5)];
+        let requested = vec![requested(
+            "src/lib.rs",
+            AnchorExtent::LineRange { start: 3, end: 10 },
+        )];
+        assert!(supersession_conflict(&requested, &existing).is_none());
+    }
+
+    #[test]
+    fn nested_ranges_are_not_a_conflict() {
+        let existing = vec![record("src/lib.rs", 1, 10)];
+        let requested = vec![requested(
+            "src/lib.rs",
+            AnchorExtent::LineRange { start: 3, end: 5 },
+        )];
+        assert!(supersession_conflict(&requested, &existing).is_none());
+    }
+
+    #[test]
+    fn different_paths_are_not_a_conflict() {
+        let existing = vec![record("src/a.rs", 0, 0)];
+        let requested = vec![requested(
+            "src/b.rs",
+            AnchorExtent::LineRange { start: 1, end: 5 },
+        )];
+        assert!(supersession_conflict(&requested, &existing).is_none());
+    }
+
+    #[test]
+    fn intra_invocation_whole_file_and_range_is_a_conflict() {
+        // `add name P P#L1-L2` in one invocation must fail identically: the
+        // first requested anchor (whole-file) is checked against its
+        // co-requested same-path range. The conflict source is CoRequested —
+        // nothing is tracked on the span yet, so no remove command applies.
+        let requested = vec![
+            requested("src/lib.rs", AnchorExtent::WholeFile),
+            requested(
+                "src/lib.rs",
+                AnchorExtent::LineRange { start: 1, end: 5 },
+            ),
+        ];
+        let existing: Vec<AnchorRecord> = Vec::new();
+        assert_eq!(
+            supersession_conflict(&requested, &existing),
+            Some(SupersessionConflict {
+                requested_addr: "src/lib.rs".into(),
+                conflicting_addr: "src/lib.rs#L1-L5".into(),
+                whole_file_side: WholeFileSide::Requested,
+                source: ConflictSource::CoRequested,
+            })
+        );
+    }
+
+    #[test]
+    fn intra_invocation_range_then_whole_file_is_a_conflict() {
+        // The reversed order (`add name P#L1-L2 P`) reports the range as the
+        // requested anchor and the whole-file as the co-requested conflict.
+        let requested = vec![
+            requested(
+                "src/lib.rs",
+                AnchorExtent::LineRange { start: 1, end: 5 },
+            ),
+            requested("src/lib.rs", AnchorExtent::WholeFile),
+        ];
+        let existing: Vec<AnchorRecord> = Vec::new();
+        assert_eq!(
+            supersession_conflict(&requested, &existing),
+            Some(SupersessionConflict {
+                requested_addr: "src/lib.rs#L1-L5".into(),
+                conflicting_addr: "src/lib.rs".into(),
+                whole_file_side: WholeFileSide::Existing,
+                source: ConflictSource::CoRequested,
+            })
+        );
+    }
+
+    #[test]
+    fn existing_record_conflict_wins_over_co_requested() {
+        // When the same requested anchor conflicts with both an existing
+        // record and a co-requested anchor, the existing-record match is
+        // reported (existing-inner iteration precedes co-requested): the
+        // first rejection is actionable with a remove command.
+        let existing = vec![record("src/lib.rs", 0, 0)];
+        let requested = vec![
+            requested(
+                "src/lib.rs",
+                AnchorExtent::LineRange { start: 1, end: 5 },
+            ),
+            requested("src/lib.rs", AnchorExtent::WholeFile),
+        ];
+        assert_eq!(
+            supersession_conflict(&requested, &existing),
+            Some(SupersessionConflict {
+                requested_addr: "src/lib.rs#L1-L5".into(),
+                conflicting_addr: "src/lib.rs".into(),
+                whole_file_side: WholeFileSide::Existing,
+                source: ConflictSource::ExistingRecord,
+            })
+        );
+    }
+
+    #[test]
+    fn conflict_reports_the_deterministic_first_match() {
+        // Both requested anchors conflict with their same-path existing
+        // whole-file anchor; the first match in requested-outer,
+        // existing-inner order must win.
+        let existing = vec![record("src/a.rs", 0, 0), record("src/b.rs", 0, 0)];
+        let requested = vec![
+            requested(
+                "src/a.rs",
+                AnchorExtent::LineRange { start: 1, end: 2 },
+            ),
+            requested(
+                "src/b.rs",
+                AnchorExtent::LineRange { start: 3, end: 4 },
+            ),
+        ];
+        assert_eq!(
+            supersession_conflict(&requested, &existing),
+            Some(SupersessionConflict {
+                requested_addr: "src/a.rs#L1-L2".into(),
+                conflicting_addr: "src/a.rs".into(),
+                whole_file_side: WholeFileSide::Existing,
+                source: ConflictSource::ExistingRecord,
+            })
+        );
+    }
+
+    /// The mutation document's serde contract: the exact enum spellings and
+    /// top-level key set from the plan's example document (schema_version 1,
+    /// `command`/`span`/`addresses`/`superseded`/`remaining`/`span_health`).
+    #[test]
+    fn mutation_document_serializes_contract_shape() {
+        let doc = MutationDocument::new(
+            "add",
+            "user-id-lifecycle",
+            vec![AnchorOutcome {
+                address: "src/read-user.ts#L1-L3".into(),
+                outcome: AddressOutcome::Added,
+            }],
+            vec![SupersededAnchor {
+                address: "src/read-user.ts#L1-L5".into(),
+                superseded_by: "src/read-user.ts#L1-L3".into(),
+                state: SupersessionState::Remains,
+                next_step: "git span remove user-id-lifecycle src/read-user.ts#L1-L5".into(),
+            }],
+            vec![RemainingAnchor {
+                address: "src/read-user.ts".into(),
+                status: serde_json::json!({ "code": "CHANGED" }),
+                next_step: "git span remove user-id-lifecycle src/read-user.ts".into(),
+                label: "changed in the working tree".into(),
+            }],
+            SpanHealth {
+                state: SpanHealthState::Drift,
+                drift_count: 1,
+                drifting: vec![DriftingAnchor {
+                    address: "src/read-user.ts".into(),
+                    status: serde_json::json!({ "code": "CHANGED" }),
+                }],
+                resolved_pending_commit_count: 0,
+                reason: None,
+            },
+        );
+        let v: serde_json::Value = serde_json::to_value(&doc).unwrap();
+        assert_eq!(v["schema_version"], 1);
+        assert_eq!(v["command"], "add");
+        assert_eq!(v["span"], "user-id-lifecycle");
+        assert_eq!(v["addresses"][0]["outcome"], "ADDED");
+        assert_eq!(v["superseded"][0]["state"], "REMAINS");
+        assert_eq!(v["superseded"][0]["superseded_by"], "src/read-user.ts#L1-L3");
+        assert_eq!(v["remaining"][0]["status"]["code"], "CHANGED");
+        assert_eq!(v["span_health"]["state"], "DRIFT");
+        assert_eq!(v["span_health"]["drift_count"], 1);
+        assert!(v["span_health"].get("reason").is_none());
+
+        // A clean span: DRIFT_FREE, empty arrays, no reason key.
+        let clean = MutationDocument::new(
+            "add",
+            "s",
+            vec![],
+            vec![],
+            vec![],
+            SpanHealth {
+                state: SpanHealthState::DriftFree,
+                drift_count: 0,
+                drifting: vec![],
+                resolved_pending_commit_count: 0,
+                reason: None,
+            },
+        );
+        let v: serde_json::Value = serde_json::to_value(&clean).unwrap();
+        assert_eq!(v["span_health"]["state"], "DRIFT_FREE");
+        assert!(v["addresses"].as_array().is_some_and(Vec::is_empty));
+        assert!(v["superseded"].as_array().is_some_and(Vec::is_empty));
+        assert!(v["remaining"].as_array().is_some_and(Vec::is_empty));
+        assert!(v["span_health"].get("reason").is_none());
+
+        // UNKNOWN carries the reason string.
+        let unknown = SpanHealth {
+            state: SpanHealthState::Unknown,
+            drift_count: 0,
+            drifting: vec![],
+            resolved_pending_commit_count: 0,
+            reason: Some("index changed during scan".into()),
+        };
+        let v: serde_json::Value = serde_json::to_value(&unknown).unwrap();
+        assert_eq!(v["state"], "UNKNOWN");
+        assert_eq!(v["reason"], "index changed during scan");
+
+        // The remaining stable spellings.
+        assert_eq!(
+            serde_json::to_value(AddressOutcome::Resolved).unwrap(),
+            "RESOLVED"
+        );
+        assert_eq!(
+            serde_json::to_value(AddressOutcome::Unchanged).unwrap(),
+            "UNCHANGED"
+        );
+        assert_eq!(
+            serde_json::to_value(SupersessionState::Retired).unwrap(),
+            "RETIRED"
+        );
     }
 }

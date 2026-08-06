@@ -45,7 +45,7 @@ The devcontainer image does not set this at startup — many hardened hosts reje
 git span drift --perf-trace /tmp/trace.csv
 ```
 
-Writes one CSV row per resolved anchor to `/tmp/trace.csv`. The flag ([`src/cli/mod.rs`](../../packages/git-span/src/cli/mod.rs#L250-L256)) is opt-in; without it, no per-anchor instrumentation runs.
+Writes one CSV row per resolved anchor to `/tmp/trace.csv`. The flag ([`src/cli/mod.rs`](../../packages/git-span/src/cli/mod.rs#L276-L282)) is opt-in; without it, no per-anchor instrumentation runs.
 
 ### CSV schema
 
@@ -170,15 +170,14 @@ being re-mmap+BLAKE3-hashed on every invocation. `cache-path.exe-digest-memo-loo
 | `cache-path.incremental-anchor-resolutions` / `cache-path.incremental-reused-spans` / `cache-path.incremental-resolved-spans` | Anchors re-resolved, spans reused unchanged, and spans rebuilt on the incremental ancestor-reuse path. |
 | `cache-path.dirty-anchor-resolutions` / `cache-path.dirty-reused-spans` / `cache-path.dirty-resolved-spans` | The same three counts on the dirty affected-set path. |
 
-**Integrity, corruption recovery, and bounded lifecycle** (emitted when a maintenance pass runs — only above the quota high-water mark, off the hot read path):
+**Integrity, corruption recovery, and bounded lifecycle** (liveness reconciliation runs at every maintenance trigger — each drift open and publish; the eviction pass and its gc counters only above the reuse-buffer high-water mark, off the hot read path):
 
 | Line | Meaning |
 |------|---------|
 | `cache-path.corruption-recovered: <reason>` | The store quarantined and recreated an incompatible-schema or `SQLITE_CORRUPT` database on open; a silent recovery made reportable. |
 | `cache-path.reconcile-demoted` | Superseded generations demoted from `live` after reconciling against the repository's active worktree HEADs, making them evictable. |
 | `cache-path.reconcile-skipped: live-heads: <err>` / `cache-path.reconcile-failed: <err>` | Liveness reconciliation could not run in full (fail closed: nothing is demoted, correctness preserved). |
-| `cache-path.store-cap-bytes` | The configured byte ceiling (default 256 MiB; overridable via `GIT_SPAN_STORE_MAX_BYTES` or `git config git-span.storeMaxBytes`). |
 | `cache-path.gc-bytes-before` / `cache-path.gc-bytes-after` | Store size on disk before and after the bounded eviction + WAL truncate. |
 | `cache-path.gc-generations-removed` / `cache-path.gc-rows-removed` | Non-live generations and rows the quota pass evicted. |
 | `cache-path.gc-corruption-recovered: true` | A corruption recovery folded into this maintenance pass. |
-| `cache-path.maintain-skipped: size: <err>` / `cache-path.maintain-failed: <err>` | The maintenance pass could not size or complete (the command still succeeds). |
+| `cache-path.maintain-skipped: non-live count: <err>` / `cache-path.maintain-failed: <err>` | The maintenance trigger could not count non-live generations, or the pass could not complete (the command still succeeds). |

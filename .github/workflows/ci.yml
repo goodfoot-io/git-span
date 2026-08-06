@@ -15,20 +15,27 @@ jobs:
     # build) write rlib into a `build` dir, per crate. They MUST stay separate —
     # sharing one dir leaves rmeta-only artifacts that fail downstream rlib
     # links with E0463 "can't find crate". CARGO_INCREMENTAL=0 because cold CI
-    # builds never recoup the incremental metadata overhead. CARGO_BUILD_JOBS=1
-    # serializes the compile graph: with default parallelism, sibling rustc jobs
-    # intermittently fail to see each other's just-written rlib/rmeta and abort
-    # with E0463 on a different dependency each run (see card main-122 and
-    # scripts/cargo-build-system.md). Serial compilation is the durable fix.
+    # builds never recoup the incremental metadata overhead. Runners are not the
+    # devcontainer's virtiofs mount, so the single-job compile-graph
+    # serialization the shared target root once required there (card main-122,
+    # resolved by main-215's relocation to container-native storage) never
+    # applied here — the pin existed only for parity, and default job
+    # parallelism is now universal policy.
     env:
       CARGO_INCREMENTAL: "0"
-      CARGO_BUILD_JOBS: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install mold and clang
         run: sudo apt-get update && sudo apt-get install -y mold clang
+
+      # The [target.*].linker config pins the bare name `cc.mold-wrapper`
+      # (worktree-invariant fingerprint; see README "Linker (Linux only)") —
+      # it must be on PATH for the raw-cargo steps below. CI does not go
+      # through with-target-lock.sh, so the scripted self-heal does not apply.
+      - name: Install mold cc wrapper on PATH
+        run: sudo install -m 755 packages/git-span/scripts/cc.mold-wrapper.sh /usr/local/bin/cc.mold-wrapper
 
       - name: Install Rust stable toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -60,7 +67,7 @@ jobs:
       - name: Cargo test (git-span)
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/git-span-target/git-span/build
-        run: cd packages/git-span && cargo nextest run --build-jobs 1 --locked
+        run: cd packages/git-span && cargo nextest run --locked
 
       - name: Cargo clippy (git-span-core)
         env:

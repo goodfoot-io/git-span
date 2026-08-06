@@ -1,4 +1,4 @@
-.github/workflows/ci.yml#L60-L63 rk64:265fc800e97fb60e
-packages/git-span/package.json#L14-L14 rk64:9ebd2f2d3f1153e1
+.github/workflows/ci.yml#L67-L70 rk64:919e31792255bf91
+packages/git-span/package.json#L14-L14 rk64:8a9b383e9720e94f
 
-The git-span nextest run command matches between the local yarn test script and CI's Cargo test step, sharing the same --build-jobs 1 flag and CARGO_TARGET_DIR convention.
+The git-span nextest run command matches between the local yarn test script and CI's Cargo test step — both now run with default job parallelism, sharing the command shape and the CARGO_TARGET_DIR convention.

@@ -120,13 +120,16 @@ export function bashSpanToTouch(span: ResolvedSpan, sessionId: string, cwd: stri
  * Whether the Bash `tool_response` signals that the command was interrupted
  * (plan §4). The SDK types the response `unknown` on both adapters, so this
  * is a defensive runtime shape-probe: an object carrying a truthy
- * `interrupted` field classifies as interrupted; any other shape (string,
- * null, object without the field) proceeds fail-open, matching today's
- * behavior.
+ * `interrupted` field — or the `timedOutAfterMs` marker, the same condition
+ * in the other spelling the response-pass normalizers map to `interrupted` —
+ * classifies as interrupted; any other shape (string, null, object without
+ * either field) proceeds fail-open, matching today's behavior. The gate
+ * reads the raw envelope, so it must recognize both spellings.
  */
 export function bashResponseInterrupted(toolResponse: unknown): boolean {
   if (toolResponse !== null && typeof toolResponse === 'object') {
-    return Boolean((toolResponse as Record<string, unknown>).interrupted);
+    const record = toolResponse as Record<string, unknown>;
+    return record.interrupted === true || record.timedOutAfterMs !== undefined;
   }
   return false;
 }

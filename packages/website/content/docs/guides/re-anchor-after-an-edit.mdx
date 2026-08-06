@@ -49,16 +49,17 @@ Added 0 anchors and resolved 1 in place to span `checkout-flow`.
 
 Before re-adding, check the span's *other* anchors still agree with the new content — the re-hash records the current bytes as the baseline with no semantic check. Conform a side only when confirmed authority or a satisfied gate decides it; otherwise surface the ambiguity instead of re-anchoring over disagreement. Without a confirmed contrary authority, a doc that lags deliberate committed code follows the code.
 
-## Moved range: remove the old anchor, add the new one
+## Moved range: swap the anchor identity atomically
 
-If the code moved to a different range, remove the drifted address before recording the new one:
+If the code moved to a different range or path, swap the drifted address in one command:
 
 ```bash
-git span remove checkout-flow web/checkout.tsx#L4-L6
-git span add checkout-flow web/checkout.tsx#L6-L8
+git span replace checkout-flow web/checkout.tsx#L4-L6 web/checkout.tsx#L6-L8
 ```
 
-`add` never retires a different anchor, so remove the exact old address before recording a new one.
+`replace` retires exactly the old identity and installs the new one in a single locked transaction — either both happen or nothing changes, so there is never an intermediate state with both anchors or neither. The new address passes the same validation as `add` (including the line-count check above). The swap is refused — leaving the declaration untouched — if the span doesn't track the old identity exactly, if the new identity is already tracked, or if the two addresses are the same identity (an in-place hash refresh is `add`'s job).
+
+`add` rejects an anchor that provably supersedes an existing same-path anchor — a whole-file anchor versus a range, in either direction — naming the conflict and printing the exact `git span remove` command to run. Disjoint same-file ranges remain valid. Remove the exact old address first, then retry the add.
 
 Check the result:
 
@@ -86,7 +87,7 @@ checks before requiring scoped zero drift.
 git add .span && git commit
 ```
 
-Before committing, run scoped `git span drift checkout-flow` and require zero drift. `add` refreshes only the exact path/range specified; it does not retire a different superseded anchor.
+Before committing, run scoped `git span drift checkout-flow` and require zero drift. `add` refreshes only the exact path/range specified; it does not retire a different superseded anchor — `replace` is the one-command identity swap — and an anchor that provably supersedes an existing same-path anchor (whole-file vs range, either direction) is rejected with the exact `git span remove` command printed.
 
 ## See also
 

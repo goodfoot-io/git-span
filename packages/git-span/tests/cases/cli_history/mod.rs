@@ -184,8 +184,21 @@ fn seed_history_scenario() -> Result<(TestRepo, &'static str)> {
     repo.write_file("file2.txt", "ALPHA\nBETA\ngamma\ndelta\nepsilon\n")?;
     repo.commit_all("C2: edit file2 content only")?;
 
-    // C3: why prose only.
-    repo.span_stdout(["why", span, "Second why: prose alone changed."])?;
+    // C3: why prose only. The C2 edit changed anchored content, so the
+    // post-write reconcile check (plan `reconciliation-output.md`) reports
+    // the stale anchor: the why write lands locally but exits 1 — local
+    // success never implies span-wide reconciliation.
+    let out = repo.run_span(["why", span, "Second why: prose alone changed."])?;
+    let why_stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "stale anchored content must make the why write exit 1; stdout=\n{why_stdout}"
+    );
+    assert!(
+        why_stdout.contains(&format!("Set why on span `{span}`.")),
+        "the why write still succeeded locally; stdout=\n{why_stdout}"
+    );
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "C3: edit why prose only"])?;
 

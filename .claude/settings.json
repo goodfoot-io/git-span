@@ -10,10 +10,6 @@
     "pr": "",
     "sessionUrl": false
   },
-  "disableBundledSkills": true,
-  "disableWorkflows": true,
-  "disableClaudeAiConnectors": true,
-  "disableArtifact": false,
   "permissions": {
     "allow": [],
     "deny": [
@@ -28,6 +24,8 @@
     "defaultMode": "bypassPermissions",
     "disableAutoMode": "disable"
   },
+  "disableClaudeAiConnectors": true,
+  "disableBundledSkills": true,
   "hooks": {
     "Stop": [
       {
@@ -40,6 +38,8 @@
       }
     ]
   },
+  "disableWorkflows": true,
+  "disableArtifact": false,
   "enabledPlugins": {
     "typescript-lsp@claude-plugins-official": true,
     "typescript-hooks@goodfoot": true,
@@ -51,10 +51,10 @@
     "code-simplifier@claude-plugins-official": false,
     "frontend-design@claude-plugins-official": false,
     "plugin-dev@claude-plugins-official": false,
-    "claude-code-hooks@goodfoot": false,
+    "claude-code-hooks@goodfoot": true,
     "git-span@git-span": true,
     "wiki@goodfoot-wiki": true,
-    "mattpocock-skills@claude-plugins-official": true
+    "mattpocock-skills@claude-plugins-official": false
   },
   "extraKnownMarketplaces": {
     "git-span": {

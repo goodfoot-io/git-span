@@ -15,7 +15,7 @@ The CLI itself doesn't change: every capability the plugin uses is a plain `git 
 ## Touch hook + advisor
 
 - **Touch hook** (`PostToolUse`) — fires synchronously right after each file read/edit/write. It re-anchors pure positional drift (a line-shift from the edit) against the file's real post-edit content, silently — no output, nothing in the transcript, because there's nothing left to act on. If genuine semantic drift survives that heal (the anchored content no longer matches what a span asserts), it injects a bounded context block naming the span, its status, and what to do. Each `(span, status)` pair surfaces at most once per session.
-- **Advisor** (`PreToolUse` on the shell tool) — fires before `git commit`/`git push`/`git status` runs. It resolves the actual changeset (staged files, plus tracked-modified files under `-a`/`-am`; for `git status`, staged plus tracked-modified, the same working-tree picture `git status` itself prints), reruns a scoped `git span drift --fix`, and classifies what's left. For `git commit`/`git push`, real span debt — semantic drift, or a changed file no span covers — holds the command with a checklist once per distinct debt state, so the report gets read; an identical retry proceeds. The advisor reports rather than enforces, so a `git commit`/`git push` whose exact debt state a prior `git status` already surfaced in full also proceeds, without holding on a state the agent has already been shown. `git status` is never held: the same checklist surfaces as advisory context instead, re-reported live on every call since a status preview has no memory of what it already showed. Positional drift never causes a hold; the touch hook already healed it. If the scan itself fails to complete, the advisor holds nothing on that account — it warns that span debt wasn't verified and lets the command proceed.
+- **Advisor** (`PreToolUse` on the shell tool) — fires before `git commit`/`git push`/`git status` runs. It resolves the actual changeset (staged files, plus tracked-modified files under `-a`/`-am`; for `git status`, staged plus tracked-modified, the same working-tree picture `git status` itself prints), reruns a scoped `git span drift --fix`, and classifies what's left. For `git commit`/`git push`, real span debt — semantic drift, or a changed file no span covers — holds the command with a checklist once per distinct debt state, so the report gets read; an identical retry proceeds. The advisor reports rather than enforces, so a `git commit`/`git push` whose exact debt state a prior `git status` already surfaced in full also proceeds, without holding on a state the agent has already been shown. `git status` is never held: the same checklist surfaces as advisory context instead, re-reported live on every call since a status preview has no memory of what it already showed. Positional drift never causes a hold; the touch hook already healed it. If the scan itself fails to complete, the advisor holds nothing on that account — it warns that span debt wasn't verified and lets the command proceed, carrying the failed command's own stderr as a delimited `<git-span-error>` block inside the warning so the raw diagnostic is clearly bounded.
 
 <Callout type="info">
 Both hooks fail open on everything that decides *whether* there is something to say: a missing `git span` binary, a timeout, or an unexpected result resolves to "allow silently, inject nothing." Neither can brick an edit or a commit on its own failure.
@@ -42,8 +42,8 @@ Stripe-backed server.
 ---
 
 Dispatch a forked subagent to bring the coupled files back into agreement
-(follow confirmed authority) — preserve anchor shape; if an
-address changed, remove its old anchor before adding the new one; update or
+(follow confirmed authority) — preserve anchor shape; if an address changed,
+swap the old anchor for the new one with `git span replace`; update or
 retire the why only if its meaning changed; require `git span drift
 checkout-flow` to report zero. Then retry. Load the `git-span:reconcile`
 skill in the fork. The hold will not fire again for the same debt state.
@@ -64,7 +64,7 @@ The `## <name>` header and the why sentence are the same shape `git span list` p
 Dispatch a forked subagent to determine if this file carries implicit
 dependencies and to then use `git span` to document them:
 
-`git span add <name> <path#Lstart-Lend> [<path#Lstart-Lend>] ...`
+`git span add <name> <anchor> [<anchor>] ...`  — an anchor is a path or a `path#Lstart-Lend` range
 `git span why <name> "<why>"`
 
 The "<why>" is one or two complete present-tense clauses stating the

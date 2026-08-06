@@ -252,41 +252,6 @@ fn eligible(options: &EngineOptions) -> bool {
         && (options.fuzzy_threshold - 0.95).abs() < 1e-9
 }
 
-/// Default store byte ceiling: 256 MiB (`notes/architecture-and-complexity.md`
-/// GC section). The bounded quota [`CacheStore::maintain`] enforces after a
-/// publish; overridable per-repo (see [`store_max_bytes`]).
-pub(crate) const DEFAULT_STORE_MAX_BYTES: u64 = 268_435_456;
-
-/// Resolve the configured store byte ceiling for `repo`.
-///
-/// Precedence mirrors the span-dir chain (`GIT_SPAN_DIR` env > `git config
-/// git-span.dir` > default) in [`crate::cli::dispatch`]: the
-/// `GIT_SPAN_STORE_MAX_BYTES` environment override wins over `git config
-/// git-span.storeMaxBytes`, which wins over [`DEFAULT_STORE_MAX_BYTES`]. An
-/// absent or unparseable value at either layer falls through to the next — a
-/// bad override degrades to the bounded default, never to unbounded growth
-/// (fail closed on the quota).
-pub(crate) fn store_max_bytes(repo: &gix::Repository) -> u64 {
-    if let Ok(raw) = std::env::var("GIT_SPAN_STORE_MAX_BYTES")
-        && let Some(n) = parse_byte_ceiling(&raw)
-    {
-        return n;
-    }
-    if let Some(raw) = crate::git::config_string(repo, "git-span.storeMaxBytes")
-        && let Some(n) = parse_byte_ceiling(&raw)
-    {
-        return n;
-    }
-    DEFAULT_STORE_MAX_BYTES
-}
-
-/// Parse a byte-ceiling config/env value: a plain non-negative integer count of
-/// bytes. `None` on any non-numeric input so the caller falls through to the
-/// next precedence layer.
-fn parse_byte_ceiling(raw: &str) -> Option<u64> {
-    raw.trim().parse::<u64>().ok()
-}
-
 /// Whether the whole invocation's effective copy-detection mode is a genuinely
 /// global one (a repo/commit-wide copy pool), in which case EVERY span is
 /// widened to "any tracked path changed" sensitivity (`reuse`). `SameCommit`
@@ -338,11 +303,21 @@ pub(crate) fn drift_spans_new_store(
     };
 
     // Surface a corruption/schema-mismatch recovery this open performed as a
-    // diagnostics event regardless of whether a later quota pass runs (6A's
-    // `maintain` only folds it into `GcStats` when the store is over cap).
+    // diagnostics event regardless of whether a later maintenance pass runs
+    // (6A's `maintain` only folds it into `GcStats` when it runs).
     if let Some(reason) = store.recovered_on_open() {
         crate::perf::note(&format!("cache-path.corruption-recovered: {reason:?}"));
     }
+
+    // Card main-224: every drift invocation is a maintenance opportunity, not
+    // just publish. The gated bounded pass (see [`maybe_maintain`]) sweeps
+    // non-live generations beyond the reuse buffer — the observed shape where
+    // the publish-only trigger never fires and stale generations accumulate.
+    // Reconciliation runs first, so this open-time call is what demotes the
+    // previous commit's superseded generation and feeds the count leg that
+    // gates the bounded sweep; no generation was just published here, so no
+    // same-head narrowing applies.
+    maybe_maintain(repo, &mut store, None);
 
     // Snapshot the complete invocation state up front: this is both the exact
     // read key and the baseline `revalidate` diffs against after a cold build.
@@ -798,13 +773,14 @@ fn publish_if_eligible(
     match published {
         Ok(()) => {
             crate::perf::counter("cache-path.publish-ok", 1);
-            // The one production trigger for 6A's quota maintenance: bounded
-            // foreground work, gated by a cheap high-water check (see
-            // [`maybe_maintain`]), right after a generation lands. The just-
-            // published `(head, key)` is the current worktree's live generation
-            // — passed through so reconciliation can demote the drifted same-head
-            // overlays dirty-state churn leaves behind (card main-157 F2).
-            maybe_maintain(repo, store, &token.head, key);
+            // The publish-time trigger for bounded store maintenance: bounded
+            // foreground work whose eviction sweep is gated by a cheap
+            // high-water count check (see [`maybe_maintain`]), right after a
+            // generation lands. The just-published `(head, key)` is the current
+            // worktree's live generation — passed through so reconciliation can
+            // demote the drifted same-head overlays dirty-state churn leaves
+            // behind (card main-157 F2).
+            maybe_maintain(repo, store, Some((&token.head, key)));
         }
         Err(e) => {
             incr_publish_failures();
@@ -814,39 +790,55 @@ fn publish_if_eligible(
     }
 }
 
-/// Run bounded quota maintenance after a successful publish, but only at the
-/// high-water mark. A cheap [`CacheStore::database_size_bytes`] probe
-/// (`PRAGMA page_count`/`page_size` + a WAL stat) gates the expensive pass:
-/// when the store is under `cap`, this returns after the probe and never runs
-/// the eviction loop, page reclaim, or WAL checkpoint. When over `cap`,
-/// [`CacheStore::maintain`] evicts non-live generations and truncates the WAL
-/// as bounded foreground work — no background thread, no deferral, so
-/// maintenance can never be perpetually not-run.
+/// Run bounded store maintenance, but only at a high-water mark. Liveness is
+/// reconciled first — demoting every generation whose publish-time HEAD no
+/// active worktree sits on (and, right after a publish, the same-head
+/// summary-only overlays dirty-state churn leaves behind) — then a cheap count
+/// probe gates the expensive sweep: the store's non-live generation count
+/// exceeds
+/// [`STORE_REUSE_BUFFER_GENERATIONS`](crate::resolver::store::STORE_REUSE_BUFFER_GENERATIONS)
+/// (card main-224). Below the water mark this returns after the reconcile and
+/// the probe, never running the eviction loop, page reclaim, or WAL
+/// checkpoint; above it, [`CacheStore::maintain`] evicts non-live generations
+/// and truncates the WAL as bounded foreground work — no background thread, no
+/// deferral, so maintenance can never be perpetually not-run.
 ///
-/// This is the sole production caller of `maintain`: 6A landed the mechanism
-/// inert (a callable API nobody called); 6B wires it here.
-fn maybe_maintain(repo: &gix::Repository, store: &mut CacheStore, head: &str, key: &[u8; 32]) {
-    let cap = store_max_bytes(repo);
-    let size = match store.database_size_bytes() {
-        Ok(n) => n,
+/// Reconciliation runs unconditionally, not behind the probe, because the
+/// count leg is the pipeline's only ignition once the byte cap is gone (card
+/// main-223): publish always marks the new generation `live`, so without a
+/// demotion nothing ever becomes an eviction candidate, the non-live count
+/// stays at zero, and the probe can never fire. Reconcile-before-probe lets
+/// each drift's demotions accumulate into the count leg — on a fresh store the
+/// moving-HEAD sequence demotes the previous commit's generation at every
+/// drift, crossing the reuse buffer after 17 commits, and the sweep then
+/// plateaus the footprint. The probe still keeps the *expensive* sweep off the
+/// every-drift path, and the reconcile itself is cheap (one HEAD resolution,
+/// a linked-worktree enumeration, and a per-dead-head `UPDATE`).
+///
+/// `current` is the just-published `(head, key)` when this runs right after a
+/// publish (scoping the same-head demotion rule in [`reconcile_liveness`]);
+/// `None` when the pass runs from the drift open-time path with no generation
+/// just published.
+fn maybe_maintain(
+    repo: &gix::Repository,
+    store: &mut CacheStore,
+    current: Option<(&str, &[u8; 32])>,
+) {
+    // Demote superseded generations first: this is also what pushes a fresh
+    // store's non-live count over the water mark (see the note above).
+    reconcile_liveness(repo, store, current);
+    let over_buffer = match store.non_live_generation_count() {
+        Ok(n) => n > crate::resolver::store::STORE_REUSE_BUFFER_GENERATIONS,
         Err(e) => {
-            crate::perf::note(&format!("cache-path.maintain-skipped: size: {e}"));
+            crate::perf::note(&format!("cache-path.maintain-skipped: non-live count: {e}"));
             return;
         }
     };
-    if size <= cap {
+    if !over_buffer {
         return;
     }
-    // Over the high-water mark: first reconcile liveness so superseded
-    // generations become evictable, then run the bounded quota pass. Publish
-    // always marks the new generation `live`; without this step nothing ever
-    // demotes a superseded one, every generation stays permanently live, and
-    // `maintain`'s `WHERE live = 0` candidate filter reclaims nothing — the
-    // measured quota defeat this fixes (card main-157 Phase 6C). This runs only
-    // above the cap, so its worktree enumeration is off the hot read path.
-    reconcile_liveness(repo, store, head, key);
-    match store.maintain(cap) {
-        Ok(stats) => emit_gc_stats(cap, &stats),
+    match store.maintain() {
+        Ok(stats) => emit_gc_stats(&stats),
         Err(e) => crate::perf::note(&format!("cache-path.maintain-failed: {e}")),
     }
 }
@@ -862,14 +854,20 @@ fn maybe_maintain(repo: &gix::Repository, store: &mut CacheStore, head: &str, ke
 /// correctness — a genuinely-live generation is never demoted on a partial set,
 /// so the current worktree's active state, and every sibling worktree's, stays
 /// findable — at the cost of deferring reclamation to a later, cleaner pass.
-/// `maintain` (called next) still runs regardless; it simply finds fewer (or
-/// no) candidates when reconciliation was skipped.
+/// If the count probe then crosses the high-water mark, `maintain` still runs
+/// regardless; it simply finds fewer (or no) candidates when reconciliation
+/// was skipped.
 ///
-/// `head`/`key` are the just-published current generation. They scope the
-/// same-head demotion rule (card main-157 F2): among the summary-only overlays
-/// dirty-state churn leaves at the current HEAD, only the current key stays
-/// live. See [`CacheStore::reconcile_live_heads`].
-fn reconcile_liveness(repo: &gix::Repository, store: &mut CacheStore, head: &str, key: &[u8; 32]) {
+/// `current` is the just-published current generation, when one exists. It
+/// scopes the same-head demotion rule (card main-157 F2): among the
+/// summary-only overlays dirty-state churn leaves at the current HEAD, only
+/// the current key stays live. `None` (the drift open-time path, card
+/// main-224) applies no such narrowing. See [`CacheStore::reconcile_live_heads`].
+fn reconcile_liveness(
+    repo: &gix::Repository,
+    store: &mut CacheStore,
+    current: Option<(&str, &[u8; 32])>,
+) {
     let live_heads = match crate::git::live_worktree_heads(repo) {
         Ok(h) => h,
         Err(e) => {
@@ -877,7 +875,7 @@ fn reconcile_liveness(repo: &gix::Repository, store: &mut CacheStore, head: &str
             return;
         }
     };
-    match store.reconcile_live_heads(&live_heads, Some((head, key))) {
+    match store.reconcile_live_heads(&live_heads, current) {
         Ok(demoted) => crate::perf::counter("cache-path.reconcile-demoted", demoted),
         Err(e) => crate::perf::note(&format!("cache-path.reconcile-failed: {e}")),
     }
@@ -885,8 +883,7 @@ fn reconcile_liveness(repo: &gix::Repository, store: &mut CacheStore, head: &str
 
 /// Emit the GC/maintenance-effect diagnostics for one quota pass, following the
 /// existing `cache-path.*` counter/note convention.
-fn emit_gc_stats(cap: u64, stats: &GcStats) {
-    crate::perf::counter("cache-path.store-cap-bytes", cap);
+fn emit_gc_stats(stats: &GcStats) {
     crate::perf::counter("cache-path.gc-bytes-before", stats.bytes_before);
     crate::perf::counter("cache-path.gc-bytes-after", stats.bytes_after);
     crate::perf::counter(

@@ -1,3 +1,8 @@
+---
+title: Uploads
+summary: Uploading files during browser automation using JavaScript and the DataTransfer API.
+---
+
 # Uploads
 
 `cdp("Input.setInputFiles", ...)` does not work through the `browser-use` helper (fails with a `sessionId` CDP protocol error). Use JS + the `DataTransfer` API instead:

@@ -1,7 +1,11 @@
-# Linux links run through git-span's mold cc wrapper (installed and verified in
-# .devcontainer/Dockerfile; README "Linker (Linux only)" covers non-devcontainer installs).
+# Linux links run through git-span's mold cc wrapper (installed to PATH by
+# .devcontainer/Dockerfile, self-healed for scripted runs by
+# with-target-lock.sh, documented in README "Linker (Linux only)"). The linker
+# is a BARE NAME: a relative path resolves to a per-worktree absolute path that
+# Cargo 1.97 hashes into every unit fingerprint, forcing full-graph recompiles
+# from sibling worktrees; the bare name hashes identically everywhere.
 [target.x86_64-unknown-linux-gnu]
-linker = "../git-span/scripts/cc.mold-wrapper.sh"
+linker = "cc.mold-wrapper"
 
 [target.aarch64-unknown-linux-gnu]
-linker = "../git-span/scripts/cc.mold-wrapper.sh"
+linker = "cc.mold-wrapper"

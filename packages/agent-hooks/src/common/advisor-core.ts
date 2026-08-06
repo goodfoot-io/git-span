@@ -493,6 +493,18 @@ export interface GitExecutor {
  *   span debt. `all`/`paths` are not meaningful for a status check and are
  *   ignored.
  *
+ * The resolved paths are filtered against the working tree before being
+ * returned: any path absent from the tree is dropped, because the scoped scan
+ * queries (`git span drift <paths>`, `git span list --porcelain <paths>`) fail
+ * hard on a path that no longer exists — exit 1, empty stdout, an error on
+ * stderr — and the executors read that shape as an aborted scan. A deletion
+ * (staged or not) is a working-tree modification, so the diff-name reads list
+ * it; without this filter a routine `rm` would turn every status check into
+ * the "could not run" advisory. A deleted file has no content whose implicit
+ * dependencies could be documented, so it never belongs in the changeset. The
+ * list is returned unchanged when no repo root can be resolved for `cwd`, or
+ * when it is already empty.
+ *
  * The `all` flag and `paths` are threaded in explicitly (rather than read back
  * out of the command) because the caller/adapter derives them from the parse:
  * `paths` is {@link ParsedGitCommand.paths}, and `all` (which {@link ParsedGitCommand}
@@ -511,7 +523,13 @@ export interface GitExecutor {
  * @param git The injected git surface backing the resolution.
  * @param paths Explicit pathspecs from `git commit -- <pathspec>…`, if any.
  */
-export async function resolveChangeset(
+/**
+ * The raw diff-read resolution behind {@link resolveChangeset}, without the
+ * working-tree existence filter — kept separate so the exported wrapper can
+ * drop deleted-path entries once, at the single point every changeset kind
+ * passes through, rather than in each executor.
+ */
+async function resolveChangesetUnfiltered(
   kind: 'commit' | 'push' | 'status',
   all: boolean,
   cwd: string,
@@ -535,6 +553,27 @@ export async function resolveChangeset(
   if (!all) return { paths: staged, range: { kind: 'staged' } };
   const tracked = await git.trackedModifiedPaths(cwd);
   return { paths: mergeUniquePaths(staged, tracked), range: { kind: 'worktree' } };
+}
+
+export async function resolveChangeset(
+  kind: 'commit' | 'push' | 'status',
+  all: boolean,
+  cwd: string,
+  git: GitExecutor,
+  paths?: string[]
+): Promise<Changeset> {
+  const changeset = await resolveChangesetUnfiltered(kind, all, cwd, git, paths);
+  // A deleted tracked path is a working-tree modification, so the diff-name
+  // reads list it — but the scoped scan queries abort hard on a path the
+  // working tree no longer has, and a deleted file has no content whose
+  // implicit dependencies could be documented. Drop changeset paths absent
+  // from the working tree, repo-relative to the resolved root; when the root
+  // is unresolvable (or the list is empty), leave the list unchanged. This
+  // single point fixes the `fix`/`drift`/`list` executors at once, upstream of
+  // every scan query.
+  const repoRoot = resolveRepoRoot(cwd);
+  if (!repoRoot || changeset.paths.length === 0) return changeset;
+  return { ...changeset, paths: changeset.paths.filter((p) => fs.existsSync(nodePath.join(repoRoot, p))) };
 }
 
 /** Concatenate path lists in order, dropping later duplicates of an earlier path. */
@@ -1596,7 +1635,7 @@ function renderDriftReason(
   const names = [...new Set(findings.map((row) => row.name))];
   const subject = names.length === 1 ? 'an implicit dependency' : 'implicit dependencies';
   const name = names.length === 1 ? names[0] : '<name>';
-  const action = `preserve anchor shape; if an address changed, remove its old anchor before adding the new one; update or retire the why only if its meaning changed; require \`git span drift ${name}\` to report zero`;
+  const action = `preserve anchor shape; if an address changed, swap the old anchor for the new one with \`git span replace\`; update or retire the why only if its meaning changed; require \`git span drift ${name}\` to report zero`;
   if (alreadySeen) {
     const paths = [...new Set(findings.map((row) => row.path))];
     const closing = `Already flagged above — restore agreement and require scoped zero drift; update or retire the why only if its meaning changed.`;
@@ -1667,6 +1706,19 @@ function renderEnvironmentalReason(conditions: DriftPorcelainRow[], blocksText: 
 }
 
 /**
+ * Indent every non-empty line of `text` by two spaces, leaving blank lines
+ * blank — the body shape the `<git-span-error>` blocks use so a multi-line
+ * diagnostic reads as one delimited artifact. Blank lines must stay blank:
+ * two-space-only lines would read as trailing whitespace.
+ */
+function indentBlockBody(text: string): string {
+  return text
+    .split('\n')
+    .map((line) => (line.length > 0 ? `  ${line}` : line))
+    .join('\n');
+}
+
+/**
  * The advisory an `allow`/`scan-failed` result renders into `reason`: the scan
  * could not complete, so the changeset was NOT verified — but the command
  * proceeds anyway (fail-open, matching `environmental`).
@@ -1674,7 +1726,9 @@ function renderEnvironmentalReason(conditions: DriftPorcelainRow[], blocksText: 
 function renderScanFailedReason(detail: string): string {
   return [
     'The implicit-dependency check could not run, so this change was NOT verified:',
-    `  ${detail}`,
+    '<git-span-error>',
+    indentBlockBody(detail),
+    '</git-span-error>',
     '',
     'The command proceeds anyway. Fix the scan error if verification matters for this change.'
   ].join('\n');
@@ -1686,7 +1740,8 @@ function renderScanFailedReason(detail: string): string {
  * names whichever subcommand the binary's argument parser guessed at, which is
  * never the command the user ran and reliably sends readers looking for a
  * problem in their repository. Lead with the diagnosis and the remedy, and keep
- * the raw diagnostic at the bottom for whoever is debugging the hook itself.
+ * the raw diagnostic at the bottom, in a `<git-span-error>` block, for whoever
+ * is debugging the hook itself.
  */
 function renderIncompatibleCliReason(err: AdvisorIncompatibleCliError): string {
   const installed = err.installedVersion;
@@ -1712,7 +1767,9 @@ function renderIncompatibleCliReason(err: AdvisorIncompatibleCliError): string {
     'the two are aligned, span drift is not being checked and spans are not being',
     'auto-reanchored on edit.',
     '',
-    `git-span reported: ${err.detail}`
+    '<git-span-error>',
+    indentBlockBody(`git-span reported: ${err.detail}`),
+    '</git-span-error>'
   ].join('\n');
 }
 
@@ -1951,7 +2008,7 @@ function renderUncoveredReason(
     '',
     actionLine,
     '',
-    '`git span add <name> <path#Lstart-Lend> [<path#Lstart-Lend>] ...`',
+    '`git span add <name> <anchor> [<anchor>] ...`  — an anchor is a path or a `path#Lstart-Lend` range',
     '`git span why <name> "<why>"`',
     '',
     'The "<why>" is one or two complete present-tense clauses stating the relationship and any decisive nonlocal authority, invariant, permitted difference, lifecycle state, evidence gate, or focused conditional verification. Labels are optional but must introduce complete clauses. Omit generic work orders and CLI procedure.'

@@ -1,3 +1,8 @@
+---
+title: Tabs
+summary: Managing browser tabs during automation sessions.
+---
+
 # Tabs
 
 ```python
@@ -27,3 +32,4 @@ What CDP is bad at:
 - `chrome://omnibox-popup.top-chrome/` can appear as a fake page target; ignore it for user-facing tab lists.
 - If a page has `w=0 h=0`, you may be attached to the wrong target or a non-window surface.
 - For dynamic UIs, re-read element rects after opening dropdowns / modals before coordinate-clicking.
+- `new_tab(url)` always creates and attaches to a fresh tab, even if you already have one open — it never navigates an existing tab. Navigating the tab you're already attached to is `goto_url(url)`. Calling `new_tab()` when you meant `goto_url()` silently leaves a stale tab attached/behind and `page_info()`/`goto_url()` calls will act on the wrong page until you notice and re-attach.

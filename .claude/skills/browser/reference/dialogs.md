@@ -1,3 +1,8 @@
+---
+title: Dialogs
+summary: Handling browser dialogs (alert, confirm, prompt, beforeunload) during browser automation.
+---
+
 # Dialogs
 
 Browser dialogs (`alert`, `confirm`, `prompt`, `beforeunload`) freeze the JS thread. Two approaches depending on timing.

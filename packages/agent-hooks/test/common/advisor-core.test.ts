@@ -21,6 +21,7 @@ import * as nodePath from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   type AdvisorExecutors,
+  AdvisorIncompatibleCliError,
   type AdvisorMemoState,
   AdvisorScanError,
   buildHunkReadArgs,
@@ -405,7 +406,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
         expect(result.reason).toContain('└─ api/charge.ts #L30-L76\n');
         expect(result.reason).not.toContain('- src/app.ts#L1-L10');
         expect(result.reason).toContain('Checkout request flow');
-        expect(result.reason).toContain('remove its old anchor before adding the new one');
+        expect(result.reason).toContain('swap the old anchor for the new one with `git span replace`');
         expect(result.reason).toContain('git span drift billing/checkout-request-flow');
       }
     });
@@ -1196,6 +1197,13 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(result.kind).toBe('scan-failed');
       if (result.kind === 'scan-failed') {
         expect(result.reason).toContain('Permission denied');
+        // The failed command's stderr is a delimited artifact of the advisory
+        // itself: `<git-span-error>` on its own line, the diagnostic indented
+        // beneath it, the closing tag on its own line — the same block
+        // styling the `<git-span>` context blocks use.
+        expect(result.reason).toContain(
+          ['<git-span-error>', '  fatal: unable to read src/app.ts: Permission denied', '</git-span-error>'].join('\n')
+        );
         expect(result.reason).not.toContain('To proceed anyway');
       }
       // A distinct kind from the ordinary silent allow a truly-clean scan
@@ -1203,6 +1211,45 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(result).not.toEqual({ decision: 'allow', kind: 'silent' });
       // No debt-state to memoize for a scan that never ran to completion.
       expect(recorded).toBe(false);
+    });
+
+    it('a version-skewed CLI (AdvisorIncompatibleCliError) fails open with a scan-failed reason that names the skew and brackets the CLI stderr in a `<git-span-error>` block', async () => {
+      // The same fail-open decision as an aborted scan, but the cause is the
+      // install, not the repository — the reason must name the skew and the
+      // remedy rather than pointing the user at a scan error they cannot act
+      // on, and the raw diagnostic stays as a delimited block.
+      const memo = createMemoryAdvisorMemoState();
+      const detail = "error: unexpected argument '--format' found\n\nUsage: git-span show <NAME>";
+      const executors = createFakeAdvisorExecutors({
+        drift: async (): Promise<DriftPorcelainRow[]> => {
+          throw new AdvisorIncompatibleCliError(detail, '1.0.141');
+        }
+      });
+
+      const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo);
+
+      expect(result.decision).toBe('allow');
+      expect(result.kind).toBe('scan-failed');
+      if (result.kind === 'scan-failed') {
+        expect(result.cause).toBe('incompatible-cli');
+        expect(result.reason).toContain('npm install -g git-span');
+        // The raw diagnostic is bracketed the same way the aborted scan's
+        // stderr is: opening tag on its own line, every non-empty stderr line
+        // indented beneath it (blank lines stay blank), closing tag on its
+        // own line as the message's final line. The full multi-line block is
+        // pinned — first line, the blank line, and the indented usage line —
+        // so a regression to first-line-only indentation cannot pass.
+        expect(result.reason).toContain(
+          [
+            '<git-span-error>',
+            `  git-span reported: ${detail.split('\n')[0]}`,
+            '',
+            '  Usage: git-span show <NAME>',
+            '</git-span-error>'
+          ].join('\n')
+        );
+        expect(result.reason.endsWith('</git-span-error>')).toBe(true);
+      }
     });
 
     it('a hard scan failure keeps warning on repeated evaluations — no memo involvement', async () => {
@@ -1516,7 +1563,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       // Full-string pin of the complete closing: one assertion covers the exact
       // reconciliation order, retry placement, and scoped drift requirement.
       expect(result.reason).toContain(
-        'Dispatch a forked subagent to bring the coupled files back into agreement (follow confirmed authority) — preserve anchor shape; if an address changed, remove its old anchor before adding the new one; update or retire the why only if its meaning changed; require `git span drift billing/checkout-request-flow` to report zero. Then retry. Load the `git-span:reconcile` skill in the fork. The hold will not fire again for the same debt state. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.'
+        'Dispatch a forked subagent to bring the coupled files back into agreement (follow confirmed authority) — preserve anchor shape; if an address changed, swap the old anchor for the new one with `git span replace`; update or retire the why only if its meaning changed; require `git span drift billing/checkout-request-flow` to report zero. Then retry. Load the `git-span:reconcile` skill in the fork. The hold will not fire again for the same debt state. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.'
       );
     });
 
@@ -1540,7 +1587,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       // ships it: `spawn_agent` with `fork_turns: "all"` leads, followed by the
       // reconciliation order, retry, and skill line.
       expect(result.reason).toContain(
-        'Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to bring the coupled files back into agreement (follow confirmed authority) — preserve anchor shape; if an address changed, remove its old anchor before adding the new one; update or retire the why only if its meaning changed; require `git span drift billing/checkout-request-flow` to report zero. Then retry. Load the `git-span:reconcile` skill in the fork. The hold will not fire again for the same debt state. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.'
+        'Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to bring the coupled files back into agreement (follow confirmed authority) — preserve anchor shape; if an address changed, swap the old anchor for the new one with `git span replace`; update or retire the why only if its meaning changed; require `git span drift billing/checkout-request-flow` to report zero. Then retry. Load the `git-span:reconcile` skill in the fork. The hold will not fire again for the same debt state. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.'
       );
     });
 
@@ -1570,7 +1617,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
         );
         // Full-string pin of the byte-identical pre-harness closing.
         expect(result.reason).toContain(
-          'Bring the coupled files back into agreement (follow confirmed authority), then reconcile: preserve anchor shape; if an address changed, remove its old anchor before adding the new one; update or retire the why only if its meaning changed; require `git span drift billing/checkout-request-flow` to report zero. Retry the command; the hold will not fire again for the same debt state. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.'
+          'Bring the coupled files back into agreement (follow confirmed authority), then reconcile: preserve anchor shape; if an address changed, swap the old anchor for the new one with `git span replace`; update or retire the why only if its meaning changed; require `git span drift billing/checkout-request-flow` to report zero. Retry the command; the hold will not fire again for the same debt state. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.'
         );
         expect(result.reason).not.toContain('forked subagent');
       }
@@ -1602,7 +1649,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       // the `<name>` placeholder path — both pinned here, in the closing.
       expect(result.reason).toContain('This change leaves implicit dependencies out of date:');
       expect(result.reason).toContain(
-        'Dispatch a forked subagent to bring the coupled files back into agreement (follow confirmed authority) — preserve anchor shape; if an address changed, remove its old anchor before adding the new one; update or retire the why only if its meaning changed; require `git span drift <name>` to report zero. Then retry. Load the `git-span:reconcile` skill in the fork. The hold will not fire again for the same debt state. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.'
+        'Dispatch a forked subagent to bring the coupled files back into agreement (follow confirmed authority) — preserve anchor shape; if an address changed, swap the old anchor for the new one with `git span replace`; update or retire the why only if its meaning changed; require `git span drift <name>` to report zero. Then retry. Load the `git-span:reconcile` skill in the fork. The hold will not fire again for the same debt state. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.'
       );
     });
 
@@ -1653,11 +1700,113 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       if (result.kind === 'semantic-drift-report') {
         // Full closing pinned: report-only omits retry and keeps the skill line.
         expect(result.reason).toContain(
-          'Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to bring the coupled files back into agreement (follow confirmed authority) — preserve anchor shape; if an address changed, remove its old anchor before adding the new one; update or retire the why only if its meaning changed; require `git span drift billing/checkout-request-flow` to report zero. Load the `git-span:reconcile` skill in the fork. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.'
+          'Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to bring the coupled files back into agreement (follow confirmed authority) — preserve anchor shape; if an address changed, swap the old anchor for the new one with `git span replace`; update or retire the why only if its meaning changed; require `git span drift billing/checkout-request-flow` to report zero. Load the `git-span:reconcile` skill in the fork. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.'
         );
         expect(result.reason).not.toContain('then retry');
         expect(result.reason).not.toContain('You may retry this command directly');
       }
+    });
+
+    it('a whole-file semantic edit renders the bare path and keeps the preserve-shape closing — never a fabricated `#L` range', async () => {
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow({ start: 0, end: 0 })],
+        drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'CHANGED', start: 0, end: 0 })],
+        listBlocks: async (): Promise<string> =>
+          ['## billing/checkout-request-flow', '- src/app.ts', '', 'Why text.'].join('\n')
+      });
+
+      const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo);
+
+      expect(result.decision).toBe('hold');
+      if (result.kind !== 'semantic-drift') throw new Error('unreachable');
+      // Scenario: whole-file semantic edit. start/end of 0 is the whole-file
+      // anchor, so the finding renders the bare path with zero `#L` marker —
+      // a fabricated range would bias a whole-file refresh toward a new range
+      // — and the closing keeps the preserve-shape rule.
+      expect(result.reason).toContain('└─ src/app.ts — changed');
+      expect(result.reason).not.toContain('app.ts#L');
+      expect(result.reason).toContain('preserve anchor shape');
+    });
+
+    it('a same-range hash refresh renders the exact range and never suggests a two-step re-anchor', async () => {
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+        drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'CHANGED' })],
+        listBlocks: async (): Promise<string> =>
+          ['## billing/checkout-request-flow', '- src/app.ts#L1-L10', '', 'Why text.'].join('\n')
+      });
+
+      const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo);
+
+      expect(result.decision).toBe('hold');
+      if (result.kind !== 'semantic-drift') throw new Error('unreachable');
+      // Scenario: same-range hash refresh. The logical region did not move, so
+      // the message renders the exact `#L1-L10` boundaries, the closing's
+      // swap instruction stays conditional on an address change (never a
+      // blanket prescription), and nothing in the message hints at movement.
+      expect(result.reason).toContain('└─ src/app.ts #L1-L10 — changed');
+      expect(result.reason).toContain(
+        'preserve anchor shape; if an address changed, swap the old anchor for the new one with `git span replace`'
+      );
+      expect(result.reason).not.toContain('moved');
+    });
+
+    it('a post-move CHANGED finding at the destination address renders, never the stale pre-move address', async () => {
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+        // The fixture's MOVED row is positional context only — MOVED is never
+        // debt (isDebt('MOVED') is false), so it never annotates a bullet;
+        // what renders is the CHANGED finding at the post-re-anchor address
+        // (`#L3-L7`).
+        drift: async (): Promise<DriftPorcelainRow[]> => [
+          driftRow({ status: 'MOVED', start: 3, end: 7 }),
+          driftRow({ status: 'CHANGED', start: 3, end: 7 })
+        ],
+        listBlocks: async (): Promise<string> =>
+          ['## billing/checkout-request-flow', '- src/app.ts#L3-L7', '', 'Why text.'].join('\n')
+      });
+
+      const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo);
+
+      expect(result.decision).toBe('hold');
+      if (result.kind !== 'semantic-drift') throw new Error('unreachable');
+      // Scenario: post-move CHANGED at the destination address. The message
+      // renders `#L3-L7` — the address the agent swaps to — never a stale
+      // `#L1-L10`, and the closing gates the swap on the address change. The
+      // move event itself never renders through the advisor.
+      expect(result.reason).toContain('└─ src/app.ts #L3-L7 — changed');
+      expect(result.reason).not.toContain('app.ts#L1-L10');
+      expect(result.reason).toContain(
+        'if an address changed, swap the old anchor for the new one with `git span replace`'
+      );
+    });
+
+    it('a span holding both a whole-file anchor and a range anchor on one file renders each distinctly', async () => {
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow({ start: 0, end: 0 }), porcelainRow()],
+        drift: async (): Promise<DriftPorcelainRow[]> => [
+          driftRow({ status: 'CHANGED', start: 0, end: 0 }),
+          driftRow({ status: 'CHANGED' })
+        ],
+        listBlocks: async (): Promise<string> =>
+          ['## billing/checkout-request-flow', '- src/app.ts', '- src/app.ts#L1-L10', '', 'Why text.'].join('\n')
+      });
+
+      const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo);
+
+      expect(result.decision).toBe('hold');
+      if (result.kind !== 'semantic-drift') throw new Error('unreachable');
+      // Scenario: whole-file-plus-range duplication. Both anchors on the same
+      // file render distinctly — the stacked whole-file entry keeps its
+      // explicit `(whole file)` marker, the range keeps its `#L1-L10` column —
+      // so the agent can see the overlap and retire the one that no longer
+      // reflects the logical region.
+      expect(result.reason).toContain('src/app.ts (whole file) — changed');
+      expect(result.reason).toContain('#L1-L10 — changed');
     });
 
     it("a 'report-only' uncovered preview with harness 'codex' names `spawn_agent` and the in-fork skill line", async () => {
@@ -1720,7 +1869,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
         [
           'Dispatch a forked subagent to determine if these files carry implicit dependencies and to then use `git span` to document them:',
           '',
-          '`git span add <name> <path#Lstart-Lend> [<path#Lstart-Lend>] ...`',
+          '`git span add <name> <anchor> [<anchor>] ...`  — an anchor is a path or a `path#Lstart-Lend` range',
           '`git span why <name> "<why>"`',
           '',
           'The "<why>" is one or two complete present-tense clauses stating the relationship and any decisive nonlocal authority, invariant, permitted difference, lifecycle state, evidence gate, or focused conditional verification. Labels are optional but must introduce complete clauses. Omit generic work orders and CLI procedure.',

@@ -28,7 +28,7 @@ identity**:
 Whole-file is the **recommended default for prose spans**: line-range anchors
 on prose drift noisily under editorial churn (heading renumbers, reflow,
 rewrites that preserve meaning). When a prose `CHANGED` finding fires from
-churn like that, treat it with the `Changed, coupling still holds` row in
+churn like that, treat it with the `Changed; anchors still agree at the same address` row in
 `references/triage.md` — re-anchor the same range/whole-file extent, don't
 chase a "new" range just because the surrounding text moved.
 

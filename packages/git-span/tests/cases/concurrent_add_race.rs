@@ -32,6 +32,7 @@ use crate::support;
 
 use anyhow::Result;
 use git_span::cli::AddArgs;
+use git_span::cli::AddFormat;
 use git_span::cli::commit::run_add;
 use support::TestRepo;
 
@@ -53,6 +54,7 @@ fn concurrent_add_race_loses_anchors() -> Result<()> {
             name: "test/race".into(),
             anchors: vec!["file1.txt#L6-L10".into()],
             at: None,
+            format: AddFormat::Human,
         };
         run_add(&gix_repo, args, ".span")?;
         Ok(())
@@ -66,6 +68,7 @@ fn concurrent_add_race_loses_anchors() -> Result<()> {
             name: "test/race".into(),
             anchors: vec!["file2.txt#L1-L5".into()],
             at: None,
+            format: AddFormat::Human,
         };
         run_add(&gix_repo, args, ".span")?;
         Ok(())

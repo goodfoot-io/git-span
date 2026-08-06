@@ -704,8 +704,20 @@ fn fix_does_not_coalesce_terminal_ranges() -> Result<()> {
 #[test]
 fn fix_leaves_whole_file_anchor_inert() -> Result<()> {
     let repo = TestRepo::seeded()?;
-    repo.span_stdout(["add", "m", "file1.txt", "file1.txt#L1-L5"])?;
-    repo.span_stdout(["why", "m", "mixed"])?;
+    // `add` now refuses to create a whole-file anchor beside a same-path
+    // range in one invocation, so author the legacy-shaped span directly —
+    // a span can still carry the combination, and drift --fix must leave
+    // both records alone.
+    let file1 = "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
+    let whole_hash = rk64_to_hex(cheap_fingerprint_with_extent(
+        file1.as_bytes(),
+        &git_span_core::AnchorExtent::WholeFile,
+    ));
+    let range_hash = line_slice_hash(file1, 1, 5);
+    let span_content = format!(
+        "file1.txt rk64:{whole_hash}\nfile1.txt#L1-L5 rk64:{range_hash}\n\nmixed\n"
+    );
+    repo.write_file(".span/m", &span_content)?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span commit"])?;
 
@@ -1614,16 +1626,22 @@ fn fix_prints_reconciled_summary_for_updated_anchors() -> Result<()> {
 }
 
 #[test]
-fn fix_prints_zero_summary_on_clean_tree() -> Result<()> {
+fn fix_prints_no_summary_on_clean_tree() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;
 
-    // No drift at all — clean tree.
+    // No drift at all — clean tree. Zero work means no fix summary line;
+    // the `0 drift` line already covers the clean case. "Reconciled" must
+    // not appear when nothing was reconciled.
     let out = repo.run_span(["drift", "--fix"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("Reconciled 0 spans, 0 anchors (0 updated, 0 removed)."),
-        "expected zero summary on clean tree; stdout=\n{stdout}"
+        !stdout.contains("Reconciled"),
+        "clean tree with zero work must print no fix summary; stdout=\n{stdout}"
+    );
+    assert!(
+        stdout.contains("0 drift"),
+        "the 0 drift line covers the clean case; stdout=\n{stdout}"
     );
     Ok(())
 }
@@ -1646,10 +1664,72 @@ fn fix_prints_summary_with_remaining_drift() -> Result<()> {
 
     let out = repo.run_span(["drift", "--fix", "--no-exit-code"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
-    // The summary counts only the reconciled anchor despite remaining drift.
+    // The summary reports the fix and the remaining drift; "Reconciled"
+    // must not appear — the span is not reconciled while drift remains.
     assert!(
-        stdout.contains("Reconciled 1 span, 1 anchor (1 updated, 0 removed)."),
-        "expected summary with remaining drift; stdout=\n{stdout}"
+        stdout.contains(
+            "Updated 1 anchor (1 updated, 0 removed); 1 anchor remains drifted — run git span drift again"
+        ),
+        "expected updated summary with remaining drift; stdout=\n{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn fix_summary_counts_anchors_not_layer_findings() -> Result<()> {
+    // The drift-remains summary must count distinct drifted ANCHORS — what
+    // the listing above it renders — not per-layer findings. An anchor
+    // whose recorded hash is stale at several layers (re-anchored on a
+    // dirty file, then edited again) contributes one finding per drifting
+    // layer; here file1 yields three (worktree/index/HEAD) and deleted
+    // file2 yields one, so findings (4) exceed anchors (2). The summary's
+    // N must equal the 2 anchors the listing shows, not the 4 findings.
+    let repo = TestRepo::seeded()?;
+    repo.span_stdout(["add", "m", "file1.txt#L1-L5", "file2.txt#L1-L5"])?;
+    repo.span_stdout(["why", "m", "mixed"])?;
+    repo.run_git(["add", ".span"])?;
+    repo.run_git(["commit", "-m", "span commit"])?;
+
+    // file1: prepend two lines (unstaged), re-anchor — `git span add`
+    // records the dirty worktree hash — then edit the anchored line again.
+    // The recorded hash now matches no layer: worktree, index, and HEAD
+    // all differ → three findings for this one anchor, and the change is
+    // material so `--fix` leaves it drifted.
+    repo.write_file(
+        "file1.txt",
+        "prefix1\nprefix2\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+    repo.span_stdout(["add", "m", "file1.txt#L1-L5"])?;
+    repo.write_file(
+        "file1.txt",
+        "prefix1\nprefix2\nlineTWO\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+    // file2: unfixable Deleted.
+    std::fs::remove_file(repo.path().join("file2.txt"))?;
+
+    let out = repo.run_span(["drift", "--fix", "--no-exit-code"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(
+            "Updated 0 anchors (0 updated, 0 removed); 2 anchors remain drifted — run git span drift again"
+        ),
+        "the summary must count the 2 drifted anchors the listing shows, not \
+         the 4 per-layer findings; stdout=\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("4 anchor") && !stdout.contains("3 anchor"),
+        "the findings count must not leak into the anchor summary; stdout=\n{stdout}"
+    );
+    // The listing above the summary renders exactly one line per anchor.
+    let file1_rows = stdout.matches("- file1.txt#L1-L5").count();
+    let file2_rows = stdout.matches("- file2.txt#L1-L5").count();
+    assert_eq!(
+        file1_rows, 1,
+        "file1 must render one listing row despite three layer findings; stdout=\n{stdout}"
+    );
+    assert_eq!(
+        file2_rows, 1,
+        "file2 must render one listing row; stdout=\n{stdout}"
     );
     Ok(())
 }
@@ -1671,7 +1751,7 @@ fn fix_prints_removed_count_for_interior_anchor() -> Result<()> {
     let out = repo.run_span(["drift", "--fix", "--no-exit-code"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("1 removed") || stdout.contains("Reconciled"),
+        stdout.contains("1 removed"),
         "expected summary mentioning removed interior anchor; stdout=\n{stdout}"
     );
     // With interior anchor removal (1 removed) plus 0 re-anchored (the

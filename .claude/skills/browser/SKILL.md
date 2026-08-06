@@ -1,62 +1,47 @@
 ---
 name: browser
-description: Direct browser control via CDP for web interaction (automation, scraping, testing, screenshots) using the browser-use CLI against Browser Use Cloud remote browsers. This container has no local Chrome/CDP — every session is a cloud browser.
+title: Browser
+summary: Direct browser control via CDP for web interaction using a local headless Chromium managed by this skill.
+description: Direct browser control via CDP for web interaction (automation, scraping, testing, screenshots) using the browser-use CLI against a local headless Chromium started by this skill's bin/ scripts.
 ---
 
 <instructions>
 
-## Why remote-only
-
-There is no local Chrome in this container, so **never** attempt the local-Chrome flow (`chrome://inspect`, `--doctor` "chrome running" checks, `browser-use auth login`). Every session must be a Browser Use Cloud remote daemon.
-
-## 1. Start a remote daemon
-
-`BU_NAME` is an arbitrary label you invent per session — not a fixed or persistent value. Pick a new short made-up name each time you start a fresh browser (e.g. `r7k2`); reusing a name that's still running fails with `daemon already alive` (see the 429/`--doctor` note below for intentionally reusing an existing one).
-
-Cloud browsers bill until stopped, and a crashed/abandoned agent won't call `stop_remote_daemon` — always pass `timeout=<minutes, 1-240>` as a safety net so the browser self-terminates even if step 3 never runs:
+## 1. Ensure Chrome is running
 
 ```bash
-browser-use <<'PY'
-start_remote_daemon("r7k2", timeout=30)
-PY
+bash /workspace/.claude/skills/browser/bin/start-chrome.sh
 ```
 
-This prints a `liveUrl` — share it with the user so they can watch the session. There is no local GUI.
+Idempotent — no-ops if Chrome is already up. Run it at the start of every session. If it fails because Chromium isn't installed, run:
 
-If this fails with an HTTP 429 (rate limited), run `browser-use --doctor` to list already-running sessions and reuse one with its existing name (`BU_NAME=<existing-name>`) instead of retrying `start_remote_daemon`.
+```bash
+bash /workspace/.claude/skills/browser/bin/install-chromium.sh
+```
+
+then retry `start-chrome.sh`.
 
 ## 2. Drive it
 
-**Every single command — not just the first — must set `BU_NAME`** to the same name used in `start_remote_daemon`. Omitting it makes the daemon try to fall back to a local Chrome that doesn't exist in this container, crashing with a `DevToolsActivePort not found` error and killing the session:
-
 ```bash
-# ✅ correct — BU_NAME set on every call
-BU_NAME=r7k2 browser-use <<'PY'
+browser-use <<'PY'
 new_tab("https://example.com")
 ensure_real_tab()   # attach to the real tab, not an invisible omnibox popup
 wait_for_load()
 print(page_info())
 PY
-
-# ❌ wrong — no BU_NAME, daemon tries local Chrome, crashes the session
-browser-use <<'PY'
-list_tabs()
-PY
 ```
 
-- First navigation on a tab is `new_tab(url)`, not `goto_url(url)`.
-- Call `ensure_real_tab()` right after `new_tab()`/`start_remote_daemon()` — a fresh session's only CDP target can be an invisible `chrome://omnibox-popup` page, which silently swallows navigation/clicks meant for the real page.
+- First navigation on a tab is `new_tab(url)`, not `goto_url(url)`. `new_tab()` always opens a **new** tab and attaches to it — calling it again does not navigate your current tab, it leaves the old tab open and attaches you to a different one. For every navigation after the first on a given tab, use `goto_url(url)`.
+- Call `ensure_real_tab()` right after `new_tab()` — a fresh session's only CDP target can be an invisible `chrome://omnibox-popup` page, which silently swallows navigation/clicks meant for the real page.
 - Helpers (`new_tab`, `page_info`, `capture_screenshot`, `click_at_xy`, `js`, `cdp`, etc.) are pre-imported — no imports needed in the heredoc.
-- Do not start a new remote daemon and then keep using a different `BU_NAME` — one name per active session.
 
-## 3. Stop it when done
+## 3. Stop it (optional)
 
-Cloud daemons bill until stopped or timed out. Before ending a task, ask the user directly: "Should I close this browser now?" If yes:
+Local process, not a billed service — fine to leave running between tasks, which also keeps the persistent profile warm. Ask the user before stopping if a task clearly isn't finished.
 
 ```bash
-BU_NAME=r7k2 browser-use <<'PY'
-stop_remote_daemon("r7k2")
-PY
+bash /workspace/.claude/skills/browser/bin/stop-chrome.sh
 ```
 
 ## Page workflow
@@ -77,7 +62,7 @@ PY
 | `reference/connection.md` | A tab seems attached but invisible/wrong, or `new_tab`/`goto_url` act on the wrong target |
 | `reference/dialogs.md` | `page_info()` returns a `dialog` key, or a flow triggers `alert`/`confirm`/`prompt`/`beforeunload` |
 | `reference/uploads.md` | Task needs a file upload (`cdp("Input.setInputFiles", ...)` does not work) |
-| `reference/profile-sync.md` | The task needs a logged-in session (reuse an existing Browser Use cloud profile) |
+| `reference/profile-sync.md` | The task needs a logged-in session (reuse the persistent local Chrome profile), or you need to reset it |
 | `reference/screenshots.md` | Screenshots come back oversized, or click coordinates from a screenshot land in the wrong place |
 | `reference/tabs.md` | Managing more than one tab in a session |
 
@@ -86,11 +71,11 @@ Upstream source (for updates, or to check for newly-filled-in topics not yet mir
 ## Design constraints
 
 - Coordinate clicks are the default — CDP mouse events pass through iframes/shadow DOM/cross-origin content at the compositor level.
-- Connection model: `BU_NAME` selects the daemon; `BU_CDP_URL` (HTTP DevTools endpoint, resolved to WebSocket by the daemon) / `BU_CDP_WS` are available for advanced cases.
+- Connection model: `browser-use` always connects via `BU_CDP_URL` to the local Chrome managed by `bin/start-chrome.sh` — no cloud fallback.
 
 ## Gotchas
 
 - Omnibox popups are not real work tabs.
-- Multiple sub-agents needing isolated browsing must use distinct `BU_NAME`s (and distinct `start_remote_daemon` names) — they are separate billed cloud browsers.
+- All sessions in this container share the one local Chrome instance and its tabs/state — if concurrent work needs isolation, deliberately use separate tabs/contexts rather than assuming separate browsers.
 
 </instructions>

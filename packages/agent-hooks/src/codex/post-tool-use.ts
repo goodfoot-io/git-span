@@ -34,10 +34,12 @@
  * Codex build's seconds conversion at emit remains correct.
  */
 
+import { resolve as resolvePath } from 'node:path';
 import { type HookContext, type PostToolUseInput, postToolUseHook, postToolUseOutput } from '@goodfoot/codex-hooks';
 import { abspathAgainst } from '../common/agent-hooks-common.js';
 import { bashResponseInterrupted, runBashTouches } from '../common/bash-touch.js';
 import { parseCommandDetailed } from '../common/parse-command.js';
+import { parseResponse, type ResponseParseInput } from '../common/parse-response.js';
 import { createDiskMemoStore, type MemoFactory, resolveTouchScope } from '../common/span-surface.js';
 import { createDefaultTouchExecutors, runTouchHook, type TouchExecutors } from '../common/touch-core.js';
 import { parseApplyPatch } from './apply-patch.js';
@@ -69,17 +71,18 @@ export function narrowApplyPatchCommand(toolInput: unknown): string | null {
 /**
  * Narrow the classic `exec_command` envelope (cli_version ≤ 0.130.0):
  * `tool_input.arguments` is a JSON *string* of shape
- * `{"cmd": "...", "workdir": "..."}` — parse it and return the `cmd`. Returns
- * `null` for any other shape (not JSON, no `cmd` field, or not this envelope).
+ * `{"cmd": "...", "workdir": "..."}` — parse it and return the `cmd` and
+ * `workdir`. Returns `null` for any other shape (not JSON, no `cmd` field, or
+ * not this envelope); `workdir` is `null` when absent or not a string.
  */
-export function narrowExecCommand(toolInput: unknown): string | null {
+export function narrowExecCommand(toolInput: unknown): { cmd: string; workdir: string | null } | null {
   if (toolInput !== null && typeof toolInput === 'object' && 'arguments' in toolInput) {
     const args = (toolInput as { arguments: unknown }).arguments;
     if (typeof args === 'string') {
       try {
         const parsed = JSON.parse(args);
         if (parsed !== null && typeof parsed === 'object' && typeof parsed.cmd === 'string') {
-          return parsed.cmd;
+          return { cmd: parsed.cmd, workdir: typeof parsed.workdir === 'string' ? parsed.workdir : null };
         }
       } catch {
         return null;
@@ -101,6 +104,8 @@ export interface CodeModeExecNarrow {
   matched: boolean;
   /** The recovered `cmd` string, or `null` when matched but unparsable / absent. */
   cmd: string | null;
+  /** The recovered `workdir` string, or `null` when absent or not a string. */
+  workdir: string | null;
 }
 
 /**
@@ -161,35 +166,75 @@ export function narrowCodeModeExec(toolInput: unknown): CodeModeExecNarrow {
         try {
           const parsed = JSON.parse(quoteObjectKeys(match[1]));
           if (parsed !== null && typeof parsed === 'object' && typeof parsed.cmd === 'string') {
-            return { matched: true, cmd: parsed.cmd };
+            return {
+              matched: true,
+              cmd: parsed.cmd,
+              workdir: typeof parsed.workdir === 'string' ? parsed.workdir : null
+            };
           }
-          return { matched: true, cmd: null };
+          return { matched: true, cmd: null, workdir: null };
         } catch {
           // matched, but the literal did not parse — the call is still a
           // code-mode exec whose command cannot be recovered statically.
-          return { matched: true, cmd: null };
+          return { matched: true, cmd: null, workdir: null };
         }
       }
     }
   }
-  return { matched: false, cmd: null };
+  return { matched: false, cmd: null, workdir: null };
 }
 
+/** The shell `tool_response` fields a response-aware parse contributes, before `command`/`cwd` are attached at the call site. */
+type NormalizedShellResponse = Pick<
+  ResponseParseInput,
+  'stdout' | 'stderr' | 'exitStatus' | 'truncated' | 'interrupted'
+>;
+
 /**
- * Tolerantly pull the tool's textual output out of a `tool_response` of
- * uncertain shape (SDK-typed `unknown`): a bare string (today's Codex) is
- * returned as-is; an object is probed for the first {@link RESPONSE_TEXT_FIELDS}
- * entry that holds a string. Returns `null` when no text can be recovered
- * (unknown object shape, `null`, or a non-string/non-object), which the caller
- * treats as an *unrecognized* — not *failed* — response.
+ * Tolerantly normalize the tool's textual output and metadata out of a
+ * `tool_response` of uncertain shape (SDK-typed `unknown`): a bare string
+ * (today's Codex) is used as-is; a text-block array joins its blocks; an
+ * object is probed for the first {@link RESPONSE_TEXT_FIELDS} entry that
+ * holds a string, carrying along `stderr`, `exitCode`/`exitStatus`, and the
+ * two-regime markers when the envelope has them — `rawOutputPath` set (the
+ * inline stdout is only a preview) becomes `truncated: true`; `interrupted`
+ * or `timedOutAfterMs` (the command was cut off mid-run) becomes
+ * `interrupted: true`, the complete-records regime — the same normalization
+ * the Claude adapter applies to its Bash envelope. Returns `null` when no
+ * text can be recovered (unknown object shape, `null`, or a non-string/
+ * non-object), which the caller treats as an *unrecognized* — not *failed* —
+ * response.
  */
-function extractResponseText(toolResponse: unknown): string | null {
-  if (typeof toolResponse === 'string') return toolResponse;
+function normalizeShellResponse(toolResponse: unknown): NormalizedShellResponse | null {
+  if (typeof toolResponse === 'string') return { stdout: toolResponse };
+  if (Array.isArray(toolResponse)) {
+    const text: string[] = [];
+    for (const block of toolResponse) {
+      if (block !== null && typeof block === 'object') {
+        const value = (block as { text?: unknown }).text;
+        if (typeof value === 'string') text.push(value);
+      }
+    }
+    return { stdout: text.join('') };
+  }
   if (toolResponse !== null && typeof toolResponse === 'object') {
     const record = toolResponse as Record<string, unknown>;
     for (const field of RESPONSE_TEXT_FIELDS) {
       const value = record[field];
-      if (typeof value === 'string') return value;
+      if (typeof value === 'string') {
+        return {
+          stdout: value,
+          stderr: typeof record.stderr === 'string' ? record.stderr : undefined,
+          exitStatus:
+            typeof record.exitCode === 'number'
+              ? record.exitCode
+              : typeof record.exitStatus === 'number'
+                ? record.exitStatus
+                : undefined,
+          truncated: record.rawOutputPath !== undefined,
+          interrupted: record.interrupted === true || record.timedOutAfterMs !== undefined
+        };
+      }
     }
   }
   return null;
@@ -198,18 +243,30 @@ function extractResponseText(toolResponse: unknown): string | null {
 /**
  * Classify an `apply_patch` `tool_response` for the touch gate:
  *
- * - `'success'` — text was recovered and carries {@link APPLY_PATCH_SUCCESS_PREFIX}.
- * - `'failure'` — text was recovered but lacks the header: a genuine rejection
- *   or error. The ONLY classification that suppresses the touch.
- * - `'unknown'` — no text could be recovered (unrecognized shape). We proceed
- *   defensively here rather than risk missing a real edit's heal/surface; Codex
- *   core fires PostToolUse only on success, so this cannot heal/surface a patch
- *   that never applied.
+ * - `'success'` — text was recovered from a bare string or a text-field
+ *   object and carries {@link APPLY_PATCH_SUCCESS_PREFIX}.
+ * - `'failure'` — text was recovered from a bare string or a text-field
+ *   object but lacks the header: a genuine rejection or error. The ONLY
+ *   classification that suppresses the touch.
+ * - `'unknown'` — no text could be recovered (unrecognized shape), or the
+ *   response is a block/text array. We proceed defensively here rather than
+ *   risk missing a real edit's heal/surface; Codex core fires PostToolUse
+ *   only on success, so this cannot heal/surface a patch that never applied.
+ *
+ * The array check restores the pre-normalizer contract: the baseline
+ * `extractResponseText` returned `null` for every array shape (text-block,
+ * empty, non-text), so arrays classified `'unknown'` and proceeded with a
+ * warning. `normalizeShellResponse` deliberately widened to arrays for the
+ * shell-parse evidence source, so classification reads the raw envelope to
+ * keep the apply_patch gate behavior-identical — a joined array whose text
+ * merely lacks the success header must never be mistaken for a confirmed
+ * rejection.
  */
 export function classifyApplyPatchResponse(toolResponse: unknown): 'success' | 'failure' | 'unknown' {
-  const text = extractResponseText(toolResponse);
-  if (text === null) return 'unknown';
-  return text.startsWith(APPLY_PATCH_SUCCESS_PREFIX) ? 'success' : 'failure';
+  if (Array.isArray(toolResponse)) return 'unknown';
+  const normalized = normalizeShellResponse(toolResponse);
+  if (normalized === null) return 'unknown';
+  return normalized.stdout.startsWith(APPLY_PATCH_SUCCESS_PREFIX) ? 'success' : 'failure';
 }
 
 /** A reader that always declines, forcing the parser to whole-file anchors. */
@@ -227,6 +284,9 @@ export function createHandler(
 
     // Shell touch: extract the command from whichever envelope shape the harness
     // delivers, parse, and run each resolved span through the shared touch core.
+    // The branch also normalizes `tool_response` via `normalizeShellResponse`
+    // and merges `parseResponse`'s spans in as read touches (the tool_response
+    // pass below).
     //
     // - `Bash`: the harness-unwrapped shape Codex ≥0.144 actually sends —
     //   `tool_input.command` is the raw shell command string (same shape the
@@ -240,13 +300,18 @@ export function createHandler(
     // fail-open, same as the apply_patch path below.
     if (tool_name === 'Bash' || tool_name === 'exec_command' || tool_name === 'exec') {
       let command: string | null = null;
+      let workdir: string | null = null;
       if (tool_name === 'Bash') {
         // The harness already unwrapped the code-mode envelope — the command is
         // in `tool_input.command`, exactly as the Claude adapter receives it.
         const raw = (input.tool_input as Record<string, unknown> | null)?.command;
         command = typeof raw === 'string' ? raw : null;
       } else {
-        command = narrowExecCommand(input.tool_input);
+        // The classic `exec_command` envelope carries `workdir` beside `cmd`
+        // (plan §8) — thread it through like the code-mode envelope below.
+        const classic = narrowExecCommand(input.tool_input);
+        command = classic?.cmd ?? null;
+        workdir = classic?.workdir ?? null;
       }
       if (command === null && tool_name === 'exec') {
         // Code-mode `exec` wraps the same call in JS source. A matched call
@@ -267,16 +332,60 @@ export function createHandler(
           );
         }
         command = codeMode.cmd;
+        workdir = codeMode.workdir;
       }
       if (!command) return undefined;
+
+      // Plan §8: a workdir present and free of `$`/backtick absolutizes against
+      // the envelope's own `input.cwd` — the shell tool resolves a relative
+      // workdir against that same base — and is the single frame for the whole
+      // touch (parse base, absolutization, scope check, and the touch record's
+      // cwd, which the executors drive their git span runs from). A
+      // template-literal workdir (containing `$`/backtick) is unresolvable and
+      // falls back to hook `cwd`.
+      const effectiveCwd = workdir !== null && !/[`$]/.test(workdir) ? resolvePath(cwd, workdir) : cwd;
 
       // An interrupted command produces no touches, whatever its spans; the
       // driver re-checks defensively.
       if (bashResponseInterrupted(input.tool_response)) return undefined;
-      const matches = parseCommandDetailed(command, cwd);
-      const blocks = await runBashTouches(matches, sessionId, cwd, input.tool_response, executors, memo, (message) =>
-        ctx.logger.warn(message)
+      const matches = parseCommandDetailed(command, effectiveCwd);
+      const blocks = await runBashTouches(
+        matches,
+        sessionId,
+        effectiveCwd,
+        input.tool_response,
+        executors,
+        memo,
+        (message) => ctx.logger.warn(message)
       );
+      // The tool_response is a second evidence source for the shell:
+      // response-derivable commands (grep/ripgrep with numbered output,
+      // git diff/show/log -p, git blame -L) locate their read windows in the
+      // output, which the command text alone cannot. Normalize the envelope,
+      // merge its spans with the command-derived ones, and run each as a
+      // read touch; the memo dedupes duplicate surfaces across the sources.
+      // An unrecognized envelope degrades to command-only parsing.
+      const response = normalizeShellResponse(input.tool_response);
+      if (response !== null) {
+        for (const span of parseResponse({ command, cwd: effectiveCwd, ...response })) {
+          const absPath = abspathAgainst(effectiveCwd, span.absolutePath);
+          const scope = resolveTouchScope(effectiveCwd, absPath);
+          if (!scope) continue;
+          const output = await runTouchHook(
+            {
+              kind: 'read',
+              sessionId,
+              cwd: effectiveCwd,
+              filePath: absPath,
+              offset: span.lineStart,
+              limit: span.lineEnd - span.lineStart + 1
+            },
+            executors,
+            memo
+          );
+          if (output.additionalContext) blocks.push(output.additionalContext);
+        }
+      }
       if (blocks.length === 0) return undefined;
       const combined = blocks.join('');
       return postToolUseOutput({ additionalContext: combined, systemMessage: combined });
