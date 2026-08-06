@@ -37,25 +37,45 @@ esac || {
 }
 
 # Fingerprint tripwire: tee the wrapped run's stderr into a temp file and
-# persist it when the run is slow, so a cold rebuild's cargo fingerprint log
-# (CARGO_LOG=cargo::core::compiler::fingerprint=info names the stale input
-# directly — e.g. "stale: changed ...") survives as evidence. The
-# worktree-divergent [target.*].linker config hash makes a cross-worktree cold
-# run ~80-265s; warm runs stay ~1s and leave no trace, so the shared check
-# cache is not littered. GIT_SPAN_FINGERPRINT_TRIPWIRE=0 restores the plain
-# pass-through (byte-identical, for CI/release flows); GIT_SPAN_FINGERPRINT_THRESHOLD
-# tunes persistence (elapsed seconds, default 15).
+# persist it when a slow run's capture shows cargo fingerprint invalidation
+# evidence, so a cold rebuild's log (CARGO_LOG=cargo::core::compiler::fingerprint=info
+# names the stale input directly — e.g. "stale: changed ...", "dirty:
+# ConfigSettingsChanged", "dependency on X is newer than we are") survives for
+# the cache-invalidation investigation. Persistence is gated on BOTH elapsed
+# >= GIT_SPAN_FINGERPRINT_THRESHOLD (default 15s) and at least one fingerprint
+# marker in the capture: the worktree-divergent [target.*].linker config hash
+# makes a cross-worktree cold run ~80-265s and emits markers throughout, while
+# warm runs — fast or slow; nextest routinely exceeds 15s across 34 worktrees —
+# emit none and are discarded, so the evidence dir stays clean and bounded
+# (captures are pruned after 14 days). GIT_SPAN_FINGERPRINT_TRIPWIRE=0 restores
+# the plain pass-through (byte-identical, for CI/release flows); the threshold
+# default is 15 seconds.
 if [ "${GIT_SPAN_FINGERPRINT_TRIPWIRE:-1}" = "0" ]; then
   exec "$@"
 fi
 
 threshold="${GIT_SPAN_FINGERPRINT_THRESHOLD:-15}"
+# A non-numeric threshold would make the -ge gate below fail under set -e,
+# losing both the evidence and the wrapped command's status — sanitize early.
+case "$threshold" in
+  ''|*[!0-9]*) threshold=15 ;;
+esac
+
 tmp_log="$(mktemp "$ROOT/.tripwire.XXXXXX")"
+# Accepted orphan behavior: a SIGTERM to this wrapper's pid (timeout/supervisors)
+# kills only the wrapper — the wrapped cargo keeps running orphaned, still
+# holding the flock via the inherited fd 9, and this dotfile temp file is left
+# behind (0-N bytes, invisible to the wipe globs). Terminal ^C is unaffected
+# (process-group SIGINT). The flock outliving its wrapper is the lesser evil
+# to releasing it under an in-flight build.
 
 start="$(date +%s)"
 set +e
-# stderr is teed live (terminal output unchanged) and captured; stdout is
-# untouched. No trap: the wrapped command keeps its terminal signals.
+# stderr is teed live and captured; stdout is untouched. The tee makes stderr
+# a pipe, not a tty, so cargo/nextest fall back to non-interactive formatting
+# (no color/progress; nextest switches to line-per-test output) — content is
+# preserved, the tty format is not. Deliberately accepted for capture. No
+# trap: the wrapped command keeps its terminal signals.
 CARGO_LOG=cargo::core::compiler::fingerprint=info "$@" 2> >(tee "$tmp_log" >&2)
 status=$?
 # The tee runs as a process-substitution child — wait for it to finish
@@ -64,10 +84,26 @@ wait
 set -e
 elapsed="$(($(date +%s) - start))"
 
-if [ "$elapsed" -ge "$threshold" ]; then
+# Persist only on evidence: the capture must contain a real cargo fingerprint
+# invalidation marker — the cargo 1.97 line formats: "dirty:
+# ConfigSettingsChanged", `stale: changed "..."`, the mtime-mode "is newer
+# than we are", and the "failed to read" fingerprint read error — AND elapsed
+# >= threshold. Fast runs and evidence-free slow runs both discard the temp
+# file. Test-name noise like `resolver::dirty::tests` matches none of these
+# patterns.
+if [ "$elapsed" -ge "$threshold" ] && grep -Eq 'dirty: ConfigSettingsChanged|stale: changed "|is newer than we are|failed to read' "$tmp_log"; then
   tripwire_dir="$ROOT/.fingerprint-tripwire"
   mkdir -p "$tripwire_dir"
-  cmd_name="$(basename "${1:-}")"
+  # Retention: prune fingerprint captures older than 14 days.
+  find "$tripwire_dir" -name 'fingerprint-*.log' -mtime +14 -delete
+  # cmd_name is the wrapped command's first word, skipping the `env` prefix
+  # every scripted caller inserts (with-target-lock.sh shared env ...).
+  cmd_name=""
+  for word in "$@"; do
+    [ "$word" = "env" ] && continue
+    cmd_name="$(basename "$word")"
+    break
+  done
   [ -n "$cmd_name" ] || cmd_name="$(basename "$0")"
   worktree_id="$(printf '%s' "$PWD" | tr '/' '-')"
   ts="$(date -u +%Y%m%dT%H%M%SZ)"

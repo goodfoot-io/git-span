@@ -56,15 +56,18 @@ bash "$script_dir/with-target-lock.sh" exclusive bash -c '
   tripwire_dir="$target_root/.fingerprint-tripwire"
   mkdir -p "$tripwire_dir"
   if [ -f "$stamp_file" ]; then reason="stale"; else reason="missing"; fi
-  dirs=""
+  # Array, not a space-joined string: GIT_SPAN_CARGO_TARGET_ROOT is a
+  # documented user override and may contain spaces — an unquoted re-loop
+  # would split each wiped path into fragments and rm -rf outside the root.
+  dirs=()
   for dir in "$target_root"/*/; do
     [ -d "$dir" ] || continue
-    dirs="$dirs $dir"
+    dirs+=("$dir")
   done
-  wipe_line="WIPE $(date -u +%Y-%m-%dT%H:%M:%SZ) ${reason} removing${dirs}"
+  wipe_line="WIPE $(date -u +%Y-%m-%dT%H:%M:%SZ) ${reason} removing${dirs[*]:+ ${dirs[*]}}"
   printf "%s\n" "$wipe_line" >> "$tripwire_dir/wipe-events.log"
   echo "$wipe_line"
-  for dir in $dirs; do
+  for dir in "${dirs[@]}"; do
     rm -rf "$dir"
   done
   mkdir -p "$target_root"
