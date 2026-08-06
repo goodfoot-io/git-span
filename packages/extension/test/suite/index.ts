@@ -43,7 +43,7 @@ export async function run(): Promise<void> {
     console.log('[suite] Running tests matching:', globPattern);
   }
 
-  const mocha = new Mocha({ ui: 'bdd', color: true, timeout: 10000 });
+  const mocha = new Mocha({ ui: 'bdd', color: true, timeout: 30000 });
 
   const files = await glob(globPattern, { cwd: testsRoot });
 

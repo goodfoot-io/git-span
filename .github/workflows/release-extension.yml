@@ -16,7 +16,6 @@ env:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    if: false  # disabled
 
     steps:
       - uses: actions/checkout@v4
@@ -57,16 +56,6 @@ jobs:
       - name: Production build
         working-directory: packages/extension
         run: yarn vscode:prepublish
-
-      - name: Set published extension name
-        working-directory: packages/extension
-        run: |
-          node -e "
-            const fs = require('fs');
-            const pkg = JSON.parse(fs.readFileSync('package.json'));
-            pkg.name = 'git-span';
-            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));
-          "
 
       - name: Package extension
         working-directory: packages/extension

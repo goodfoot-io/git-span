@@ -11,6 +11,14 @@ export default defineConfig({
   test: {
     include: ['test/**/*.test.ts'],
     globals: false,
-    reporters: ['dot']
+    reporters: ['dot'],
+    // The first test of the first file to run pays the cold ESM transform and
+    // import of the full discover module chain. Under the root `yarn test`
+    // harness — which runs the workspace suites concurrently with git-span's
+    // cargo compile — that import measured ~4.7s CPU against vitest's 5s
+    // default test timeout: roughly 0.3s of headroom that a heavier load
+    // window erases (the same exposure class stretched agent-hooks past 11s).
+    // 30s keeps the bound meaningful while absorbing harness-load cold-start.
+    testTimeout: 30_000
   }
 });
