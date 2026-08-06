@@ -721,7 +721,15 @@ function buildPostedHistory(
       if (rung !== undefined) {
         blocks.push(
           rung.truncatedAt === undefined
-            ? { path: match.address, pair: { original: rung.original, modified: rung.modified } }
+            ? {
+                path: match.address,
+                pair: {
+                  original: rung.original,
+                  modified: rung.modified,
+                  originalStartLine: rung.originalStartLine,
+                  modifiedStartLine: rung.modifiedStartLine
+                }
+              }
             : { path: match.address, unavailable: true, truncated: true }
         );
       } else if (info.seedFailed) {
@@ -1297,7 +1305,14 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
         case 'drifted':
         case 'reconciled':
           drifted++;
-          anchors.push({ ...base, kind: plan.kind, historical: plan.historical, current: plan.current });
+          anchors.push({
+            ...base,
+            kind: plan.kind,
+            historical: plan.historical,
+            current: plan.current,
+            historicalStartLine: plan.historicalStartLine,
+            currentStartLine: plan.currentStartLine
+          });
           break;
         case 'relocated':
           relocated++;

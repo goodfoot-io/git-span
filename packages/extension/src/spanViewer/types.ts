@@ -152,8 +152,26 @@ export interface PostedAnchorBase {
  */
 export type PostedAnchor =
   | (PostedAnchorBase & { kind: 'clean'; content: string })
-  | (PostedAnchorBase & { kind: 'drifted'; historical: string | null; current: string | null })
-  | (PostedAnchorBase & { kind: 'reconciled'; historical: string | null; current: string | null })
+  | (PostedAnchorBase & {
+      kind: 'drifted';
+      historical: string | null;
+      current: string | null;
+      /**
+       * The file-absolute first line of each side's line space, so the diff
+       * renderer can number the gutters from the file's real coordinates
+       * instead of 1. A rename block's historical side lives in the
+       * from-address's extent; see {@link AnchorPlan}.
+       */
+      historicalStartLine: number;
+      currentStartLine: number;
+    })
+  | (PostedAnchorBase & {
+      kind: 'reconciled';
+      historical: string | null;
+      current: string | null;
+      historicalStartLine: number;
+      currentStartLine: number;
+    })
   | (PostedAnchorBase & { kind: 'relocated'; content: string; proposed: string })
   | (PostedAnchorBase & { kind: 'unavailable'; reason: UnavailableReason })
   | (PostedAnchorBase & { kind: 'changed' })
@@ -169,8 +187,12 @@ export interface PostedHistoryBlock {
   path: string;
   /** Present on a header-only rebound block, which has no diff editor. */
   rebound?: ReboundTransition;
-  /** Present on a content block: the ladder-resolved `(original, modified)` pair. */
-  pair?: { original: string; modified: string };
+  /**
+   * Present on a content block: the ladder-resolved `(original, modified)`
+   * pair plus each side's file-absolute first line, so the diff renderer can
+   * number each gutter from the real file coordinates instead of from 1.
+   */
+  pair?: { original: string; modified: string; originalStartLine: number; modifiedStartLine: number };
   /** True on a block whose ladder produced nothing (seed unrecoverable). */
   unavailable?: boolean;
   /** True on the rung where the walk stopped; nothing older is rendered. */
@@ -249,10 +271,28 @@ export interface PostedDocument {
 export type AnchorPlan =
   /** Has timeline history and no asserted drift; content is read from the workspace file. */
   | { kind: 'clean' }
-  /** Declared and drifted; `historical`/`current` may be null for deleted/new anchors. */
-  | { kind: 'drifted'; historical: string | null; current: string | null }
+  /**
+   * Declared and drifted; `historical`/`current` may be null for
+   * deleted/new anchors. Each side also carries the file-absolute first line
+   * of its own line space (a rename's old side lives in the from-address's
+   * extent), so the diff renderer can number the gutter from the file's real
+   * coordinates.
+   */
+  | {
+      kind: 'drifted';
+      historical: string | null;
+      current: string | null;
+      historicalStartLine: number;
+      currentStartLine: number;
+    }
   /** Declared and drifted before any commit touched it (no timeline history). */
-  | { kind: 'reconciled'; historical: string | null; current: string | null }
+  | {
+      kind: 'reconciled';
+      historical: string | null;
+      current: string | null;
+      historicalStartLine: number;
+      currentStartLine: number;
+    }
   /** No timeline history and no asserted drift. */
   | { kind: 'dangling' }
   /** The recorded content was found at a different address; identical bytes by construction. */

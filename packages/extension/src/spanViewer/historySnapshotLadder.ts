@@ -105,6 +105,17 @@ export interface LadderRung {
   summary: string;
   original: string;
   modified: string;
+  /**
+   * The file-absolute first line of each side's line space: the extent start
+   * of the address each side's hunks were rebased against (`extentStartLine`
+   * for the modified side, the rename-from address's start for a rename
+   * block's old side). The webview numbers each diff side's gutter from it,
+   * so a row can be cross-referenced against the file without arithmetic.
+   * Carried on every rung, including empty-sided ones, so the posted block
+   * never has to guess.
+   */
+  originalStartLine: number;
+  modifiedStartLine: number;
   /** Present when the walk stopped at this rung; nothing older is rendered. */
   truncatedAt?: true;
 }
@@ -364,6 +375,8 @@ export function buildHistorySnapshotLadder(options: BuildHistorySnapshotLadderOp
               summary: commit.summary,
               original: '',
               modified: '',
+              originalStartLine: extentStartLine,
+              modifiedStartLine: extentStartLine,
               truncatedAt: true
             });
             return { rungs, truncated: true };
@@ -373,7 +386,11 @@ export function buildHistorySnapshotLadder(options: BuildHistorySnapshotLadderOp
             date: commit.date,
             summary: commit.summary,
             original,
-            modified: anchor.content
+            modified: anchor.content,
+            // The re-anchor destination's deletion lives at the crossed-from
+            // address, the content block at the declared one.
+            originalStartLine: extentStartLineOf(crossedFrom),
+            modifiedStartLine: extentStartLine
           });
           running = original;
           continue;
@@ -386,7 +403,9 @@ export function buildHistorySnapshotLadder(options: BuildHistorySnapshotLadderOp
         date: commit.date,
         summary: commit.summary,
         original: '',
-        modified: anchor.content
+        modified: anchor.content,
+        originalStartLine: extentStartLine,
+        modifiedStartLine: extentStartLine
       });
       return { rungs, truncated };
     }
@@ -398,6 +417,8 @@ export function buildHistorySnapshotLadder(options: BuildHistorySnapshotLadderOp
         summary: commit.summary,
         original: '',
         modified: '',
+        originalStartLine: extentStartLine,
+        modifiedStartLine: extentStartLine,
         truncatedAt: true
       });
       truncated = true;
@@ -416,11 +437,21 @@ export function buildHistorySnapshotLadder(options: BuildHistorySnapshotLadderOp
           summary: commit.summary,
           original: '',
           modified: '',
+          originalStartLine: extentStartLine,
+          modifiedStartLine: extentStartLine,
           truncatedAt: true
         });
         return { rungs, truncated: true };
       }
-      rungs.push({ hash: commit.hash, date: commit.date, summary: commit.summary, original, modified: '' });
+      rungs.push({
+        hash: commit.hash,
+        date: commit.date,
+        summary: commit.summary,
+        original,
+        modified: '',
+        originalStartLine: extentStartLine,
+        modifiedStartLine: extentStartLine
+      });
       // The deleted bytes are the state the older walk continues from. The
       // rung is the lineage origin only when nothing older matched; a
       // committed delete-then-re-add at the same address renders the record
@@ -439,11 +470,21 @@ export function buildHistorySnapshotLadder(options: BuildHistorySnapshotLadderOp
           summary: commit.summary,
           original: '',
           modified: '',
+          originalStartLine: extentStartLine,
+          modifiedStartLine: extentStartLine,
           truncatedAt: true
         });
         return { rungs, truncated: true };
       }
-      rungs.push({ hash: commit.hash, date: commit.date, summary: commit.summary, original: '', modified });
+      rungs.push({
+        hash: commit.hash,
+        date: commit.date,
+        summary: commit.summary,
+        original: '',
+        modified,
+        originalStartLine: extentStartLine,
+        modifiedStartLine: extentStartLine
+      });
       // A full addition is the anchor's origin only when it is the oldest
       // lineage match; a committed delete-then-re-add at the same address
       // produces a mid-lineage addition, and the deletion and record rungs
@@ -468,6 +509,8 @@ export function buildHistorySnapshotLadder(options: BuildHistorySnapshotLadderOp
           summary: commit.summary,
           original: '',
           modified: '',
+          originalStartLine: extentStartLineOf(renameFrom),
+          modifiedStartLine: extentStartLine,
           truncatedAt: true
         });
         truncated = true;
@@ -478,22 +521,31 @@ export function buildHistorySnapshotLadder(options: BuildHistorySnapshotLadderOp
         date: commit.date,
         summary: commit.summary,
         original: running,
-        modified: running
+        modified: running,
+        // Identical bytes, but each side lives in its own address's line
+        // space: the old address's extent for the pre-rename rows, the new
+        // address's for the post-rename ones.
+        originalStartLine: extentStartLineOf(renameFrom),
+        modifiedStartLine: extentStartLine
       });
       continue;
     }
 
+    // A rename-and-edit block's old side lives in the old address's line
+    // space and its new side in the new address's, so each side rebases
+    // against its own extent start.
+    const originalExtentStartLine = renameFrom === undefined ? extentStartLine : extentStartLineOf(renameFrom);
     try {
-      // A rename-and-edit block's old side lives in the old address's line
-      // space and its new side in the new address's, so each side rebases
-      // against its own extent start.
-      const original = reconstructOriginal(
-        diff,
-        running,
-        extentStartLine,
-        renameFrom === undefined ? extentStartLine : extentStartLineOf(renameFrom)
-      );
-      rungs.push({ hash: commit.hash, date: commit.date, summary: commit.summary, original, modified: running });
+      const original = reconstructOriginal(diff, running, extentStartLine, originalExtentStartLine);
+      rungs.push({
+        hash: commit.hash,
+        date: commit.date,
+        summary: commit.summary,
+        original,
+        modified: running,
+        originalStartLine: originalExtentStartLine,
+        modifiedStartLine: extentStartLine
+      });
       running = original;
     } catch {
       // One bad hunk truncates the tail of this anchor's history: newer
@@ -505,6 +557,8 @@ export function buildHistorySnapshotLadder(options: BuildHistorySnapshotLadderOp
         summary: commit.summary,
         original: '',
         modified: '',
+        originalStartLine: originalExtentStartLine,
+        modifiedStartLine: extentStartLine,
         truncatedAt: true
       });
       truncated = true;

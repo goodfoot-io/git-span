@@ -174,7 +174,12 @@ describe('spanFileEditorProvider (end-to-end)', () => {
       firstBlocks !== undefined && firstBlocks[0] !== undefined,
       'Expected the first commit to have a content block'
     );
-    assert.deepStrictEqual(firstBlocks[0].pair, { original: '', modified: 'hello from fixture' });
+    assert.deepStrictEqual(firstBlocks[0].pair, {
+      original: '',
+      modified: 'hello from fixture',
+      originalStartLine: 1,
+      modifiedStartLine: 1
+    });
   });
 
   it('falls back gracefully for non-span content under .span/', async () => {
@@ -233,13 +238,61 @@ describe('spanFileEditorProvider (end-to-end)', () => {
       newestBlocks !== undefined && newestBlocks[0] !== undefined,
       'Expected the newest commit to have a content block'
     );
-    assert.deepStrictEqual(newestBlocks[0].pair, { original: S1, modified: S2 });
+    assert.deepStrictEqual(newestBlocks[0].pair, {
+      original: S1,
+      modified: S2,
+      originalStartLine: 1,
+      modifiedStartLine: 1
+    });
     const oldestBlocks = posted.history[1]?.blocks;
     assert.ok(
       oldestBlocks !== undefined && oldestBlocks[0] !== undefined,
       'Expected the oldest commit to have a content block'
     );
-    assert.deepStrictEqual(oldestBlocks[0].pair, { original: '', modified: S1 });
+    assert.deepStrictEqual(oldestBlocks[0].pair, {
+      original: '',
+      modified: S1,
+      originalStartLine: 1,
+      modifiedStartLine: 1
+    });
+  });
+
+  it("posts each side's file-absolute start line alongside history pairs and the anchor card", async () => {
+    // The span declares a 10-line extent starting at file line 1641: the
+    // gutter must number the history diff rows from 1641 (not 1), and the
+    // drifted anchor card's sides must carry the same file-absolute starts
+    // so the webview can cross-reference a row against the file on disk.
+    fs.writeFileSync(path.join(workspacePath, 'src.ts'), S3);
+    const uri = await openSpan('fixture-span-line-numbers', 'src.ts#L1641-L1650 rk64:deadbeef\n\nWhy.\n');
+
+    const outcome = await waitForSuccessfulOutcome(uri);
+    assert.strictEqual(outcome.danglingCount, 0);
+
+    const posted = await waitForPostedDocument(uri);
+    assert.strictEqual(posted.anchors.length, 1, 'Expected exactly one anchor card');
+    const anchor = posted.anchors[0];
+    assert.ok(
+      anchor !== undefined && anchor.kind === 'drifted',
+      `Expected a drifted anchor card, got: ${JSON.stringify(anchor)}`
+    );
+    assert.strictEqual(anchor.historical, S2, 'Expected the offset-normalized reverse-apply as the historical side');
+    assert.strictEqual(anchor.current, S3, 'Expected the worktree content as the current side');
+    const anchorCard = anchor as { historicalStartLine?: number; currentStartLine?: number };
+    assert.strictEqual(anchorCard.historicalStartLine, 1641, 'Expected the historical side to start at file line 1641');
+    assert.strictEqual(anchorCard.currentStartLine, 1641, 'Expected the current side to start at file line 1641');
+
+    assert.strictEqual(posted.history.length, 2, 'Expected both commits in the history accordion');
+    const newestBlocks = posted.history[0]?.blocks;
+    assert.ok(
+      newestBlocks !== undefined && newestBlocks[0] !== undefined,
+      'Expected the newest commit to have a content block'
+    );
+    assert.deepStrictEqual(newestBlocks[0].pair, {
+      original: S1,
+      modified: S2,
+      originalStartLine: 1641,
+      modifiedStartLine: 1641
+    });
   });
 
   it('posts both the header-only rebound block and the content block for a rebind-plus-edit commit', async () => {
@@ -269,7 +322,12 @@ describe('spanFileEditorProvider (end-to-end)', () => {
     assert.deepStrictEqual(blocks[0]?.rebound, { from: 'rk64:aaaa', to: 'rk64:bbbb' });
     assert.ok(blocks[0]?.pair === undefined, 'Expected the rebound block to be header-only (no diff editor)');
     assert.strictEqual(blocks[1]?.path, 'src.ts#L1-L3');
-    assert.deepStrictEqual(blocks[1]?.pair, { original: preState, modified: postState });
+    assert.deepStrictEqual(blocks[1]?.pair, {
+      original: preState,
+      modified: postState,
+      originalStartLine: 1,
+      modifiedStartLine: 1
+    });
   });
 
   it('posts the "content changed" status card when the anchor file is edited between the CLI spawn and the disk read, and still posts the history accordion entry', async () => {
@@ -299,7 +357,12 @@ describe('spanFileEditorProvider (end-to-end)', () => {
       blocks !== undefined && blocks[0] !== undefined,
       'Expected a content block for the raced anchor in the history accordion'
     );
-    assert.deepStrictEqual(blocks[0].pair, { original: '', modified: 'hello from fixture' });
+    assert.deepStrictEqual(blocks[0].pair, {
+      original: '',
+      modified: 'hello from fixture',
+      originalStartLine: 1,
+      modifiedStartLine: 1
+    });
   });
 
   it('renders the all-dangling state as a posted document and re-renders when the anchor file is restored', async () => {

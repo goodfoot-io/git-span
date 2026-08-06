@@ -298,14 +298,38 @@ export function matchAnchor(liveAddress: string, history: HistoryDocument): Anch
     }
     return plan;
   }
+  // Every drift plan carries each side's file-absolute first line, so the
+  // diff renderer can number the gutters from the file's real coordinates.
+  // The declared address's extent start backs the current side (and the
+  // historical side whenever the address did not change); a rename block's
+  // old side lives in the from-address's line space instead.
+  const liveStartLine = extentStartLineOf(liveAddress);
   if (isFullDeletion(currentEntry.diff)) {
-    return { kind: 'drifted', historical: currentEntry.content, current: null };
+    return {
+      kind: 'drifted',
+      historical: currentEntry.content,
+      current: null,
+      historicalStartLine: liveStartLine,
+      currentStartLine: liveStartLine
+    };
   }
   if (isFullAddition(currentEntry.diff)) {
-    return { kind: 'drifted', historical: null, current: currentEntry.content };
+    return {
+      kind: 'drifted',
+      historical: null,
+      current: currentEntry.content,
+      historicalStartLine: liveStartLine,
+      currentStartLine: liveStartLine
+    };
   }
   if (!hasLineage) {
-    return { kind: 'reconciled', historical: null, current: currentEntry.content };
+    return {
+      kind: 'reconciled',
+      historical: null,
+      current: currentEntry.content,
+      historicalStartLine: liveStartLine,
+      currentStartLine: liveStartLine
+    };
   }
   if (!hasHunks(currentEntry.diff)) {
     // Header-only diff with content: a committed-but-unreconciled anchor whose
@@ -313,21 +337,25 @@ export function matchAnchor(liveAddress: string, history: HistoryDocument): Anch
     // sources are non-empty so the anchor IS drifted, but the diff has no
     // hunks because the content never changed, so the historical side is the
     // content itself. Reconstructing would throw on the empty hunk list.
-    return { kind: 'drifted', historical: currentEntry.content, current: currentEntry.content };
+    return {
+      kind: 'drifted',
+      historical: currentEntry.content,
+      current: currentEntry.content,
+      historicalStartLine: liveStartLine,
+      currentStartLine: liveStartLine
+    };
   }
   // A rename block's old side lives in the old address's line space and its
   // new side in the declared address's, so each side rebases against its own
   // extent start -- exactly like the ladder's rename rung does.
   const renameFrom = extractRenameFrom(currentEntry.diff);
+  const historicalStartLine = renameFrom === undefined ? liveStartLine : extentStartLineOf(renameFrom);
   return {
     kind: 'drifted',
-    historical: reconstructOriginal(
-      currentEntry.diff,
-      currentEntry.content,
-      extentStartLineOf(liveAddress),
-      renameFrom === undefined ? extentStartLineOf(liveAddress) : extentStartLineOf(renameFrom)
-    ),
-    current: currentEntry.content
+    historical: reconstructOriginal(currentEntry.diff, currentEntry.content, liveStartLine, historicalStartLine),
+    current: currentEntry.content,
+    historicalStartLine,
+    currentStartLine: liveStartLine
   };
 }
 

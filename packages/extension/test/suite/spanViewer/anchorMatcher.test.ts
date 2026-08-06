@@ -118,7 +118,9 @@ describe('anchorMatcher', () => {
       assert.deepStrictEqual(matchAnchor(FIRST_ADD, history), {
         kind: 'drifted',
         historical: 'hello\nhi\n',
-        current: 'hello\nhey\n'
+        current: 'hello\nhey\n',
+        historicalStartLine: 1,
+        currentStartLine: 1
       });
     });
 
@@ -163,7 +165,38 @@ describe('anchorMatcher', () => {
       assert.deepStrictEqual(matchAnchor('f.txt#L5-L8', history), {
         kind: 'drifted',
         historical: pre,
-        current: post
+        current: post,
+        historicalStartLine: 5,
+        currentStartLine: 5
+      });
+    });
+
+    it("returns drifted with each side's file-absolute start line", () => {
+      // Extent f.txt#L1641-L1644: the drift diff renders at file-absolute
+      // 1641, and the gutter must number both sides from 1641, not from 1.
+      // The expected plan carries the start lines explicitly, so a plan that
+      // drops them fails the deep-equal on key mismatch.
+      const pre = 'line 1641\nline 1642\nline 1643\nline 1644\n';
+      const post = 'line 1641\nline 1642 EDITED\nline 1643\nline 1644\n';
+      const history = historyFixture({
+        commits: [commit('c1', 'Add', [{ path: 'f.txt#L1641-L1644', content: pre }])],
+        current: {
+          anchors: [
+            {
+              path: 'f.txt#L1641-L1644',
+              diff: 'diff --git a/f.txt b/f.txt\n@@ -1641,4 +1641,4 @@\n line 1641\n-line 1642\n+line 1642 EDITED\n line 1643\n line 1644\n',
+              content: post,
+              sources: ['WORKTREE']
+            }
+          ]
+        }
+      });
+      assert.deepStrictEqual(matchAnchor('f.txt#L1641-L1644', history), {
+        kind: 'drifted',
+        historical: pre,
+        current: post,
+        historicalStartLine: 1641,
+        currentStartLine: 1641
       });
     });
 
@@ -227,7 +260,9 @@ describe('anchorMatcher', () => {
       assert.deepStrictEqual(matchAnchor(FIRST_ADD, history), {
         kind: 'drifted',
         historical: 'hello\nhi\n',
-        current: null
+        current: null,
+        historicalStartLine: 1,
+        currentStartLine: 1
       });
     });
 
@@ -247,7 +282,9 @@ describe('anchorMatcher', () => {
       assert.deepStrictEqual(matchAnchor(FIRST_ADD, history), {
         kind: 'drifted',
         historical: null,
-        current: 'hello\nhi\n'
+        current: 'hello\nhi\n',
+        historicalStartLine: 1,
+        currentStartLine: 1
       });
     });
 
@@ -268,7 +305,9 @@ describe('anchorMatcher', () => {
       assert.deepStrictEqual(matchAnchor(FIRST_ADD, history), {
         kind: 'reconciled',
         historical: null,
-        current: 'hello\nhey\n'
+        current: 'hello\nhey\n',
+        historicalStartLine: 1,
+        currentStartLine: 1
       });
     });
 
@@ -365,7 +404,9 @@ describe('anchorMatcher', () => {
       assert.deepStrictEqual(matchAnchor('f.txt#L3-L5', history), {
         kind: 'drifted',
         historical: 'alpha\nbeta\ngamma\n',
-        current: 'alpha\nBETA\ngamma\n'
+        current: 'alpha\nBETA\ngamma\n',
+        historicalStartLine: 1,
+        currentStartLine: 3
       });
     });
 
@@ -422,7 +463,62 @@ describe('anchorMatcher', () => {
       assert.deepStrictEqual(matchAnchor('f.txt#L3-L5', history), {
         kind: 'drifted',
         historical: 'alpha\nbeta\ngamma\n',
-        current: 'alpha\nBETA\ngamma\n'
+        current: 'alpha\nBETA\ngamma\n',
+        historicalStartLine: 1,
+        currentStartLine: 3
+      });
+    });
+
+    it("numbers a drifted rename card's sides against their own addresses", () => {
+      // The current entry re-anchors f.txt#L1-L3 to f.txt#L3-L5 with drift:
+      // the old side (historical) lives in the FROM address's line space
+      // (start 1), the new side (current) in the declared address's (start
+      // 3) -- one shared start line would number the historical rows 2
+      // short of the file.
+      const currentEntry: CurrentAnchor = {
+        path: 'f.txt#L3-L5',
+        diff: [
+          'diff --git a/f.txt#L1-L3 b/f.txt#L3-L5',
+          'similarity index 66%',
+          'rename from f.txt#L1-L3',
+          'rename to f.txt#L3-L5',
+          'drift source worktree, head',
+          'index rk64:455e176970060f71..rk64:bb9e92ed860ae671',
+          '--- a/f.txt#L1-L3',
+          '+++ b/f.txt#L3-L5',
+          '@@ -1,3 +3,3 @@',
+          ' alpha',
+          '-beta',
+          '+BETA',
+          ' gamma'
+        ].join('\n'),
+        content: 'alpha\nBETA\ngamma\n',
+        sources: ['WORKTREE', 'HEAD']
+      };
+      const history = historyFixture({
+        commits: [
+          commit('c2', 'Re-anchor', [
+            {
+              path: 'f.txt#L1-L3',
+              diff: [
+                'diff --git a/f.txt#L3-L5 b/f.txt#L1-L3',
+                'rename from f.txt#L3-L5',
+                'rename to f.txt#L1-L3',
+                'index rk64:aaaa..rk64:aaaa'
+              ].join('\n')
+            }
+          ]),
+          commit('c1', 'Add', [{ path: 'f.txt#L3-L5', content: 'alpha\nbeta\ngamma\n' }])
+        ],
+        current: { anchors: [currentEntry] }
+      });
+
+      assert.deepStrictEqual(matchAnchor('f.txt#L3-L5', history), {
+        kind: 'drifted',
+        historical: 'alpha\nbeta\ngamma\n',
+        current: 'alpha\nBETA\ngamma\n',
+        historicalStartLine: 1,
+        currentStartLine: 3
       });
     });
 
@@ -447,7 +543,9 @@ describe('anchorMatcher', () => {
       assert.deepStrictEqual(matchAnchor(FIRST_ADD, history), {
         kind: 'drifted',
         historical: 'hello\nhi\n',
-        current: 'hello\nhi\n'
+        current: 'hello\nhi\n',
+        historicalStartLine: 1,
+        currentStartLine: 1
       });
     });
 
