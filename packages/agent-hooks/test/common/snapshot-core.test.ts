@@ -2016,28 +2016,28 @@ describe('classifyTextOrBinary — the proportional text/binary classifier (main
     }
   });
 
-  it.skip('the real NUL-containing TypeScript sources classify as text', () => {
+  it('the real NUL-containing TypeScript sources classify as text', () => {
     for (const file of NUL_FALSE_POSITIVE_SOURCES) {
       expect(classifyTextOrBinary(readFileSync(file)), file).toBe(true);
     }
   });
 
-  it.skip('genuinely binary content (gzip bytes) classifies as binary', () => {
+  it('genuinely binary content (gzip bytes) classifies as binary', () => {
     const binary = gzipSync(Buffer.from('some text made genuinely binary by compression\n'.repeat(50)));
     expect(classifyTextOrBinary(binary)).toBe(false);
   });
 
-  it.skip('a synthetic full-range byte blob classifies as binary', () => {
+  it('a synthetic full-range byte blob classifies as binary', () => {
     const bytes = Buffer.alloc(2000);
     for (let i = 0; i < bytes.length; i += 1) bytes[i] = i % 251;
     expect(classifyTextOrBinary(bytes)).toBe(false);
   });
 
-  it.skip('an empty file classifies as text', () => {
+  it('an empty file classifies as text', () => {
     expect(classifyTextOrBinary(Buffer.alloc(0))).toBe(true);
   });
 
-  it.skip('ASCII text with a single NUL classifies as text — the rule is proportional, never NUL presence', () => {
+  it('ASCII text with a single NUL classifies as text — the rule is proportional, never NUL presence', () => {
     const oneNul = Buffer.concat([
       Buffer.from('const marker = "'),
       Buffer.from([0]),
@@ -2071,7 +2071,7 @@ describe('captureWriteTree — private index/object-dir capture (main-228 Phase 
     return { root, input, calls, cleanup: () => rmSync(root, { recursive: true, force: true }) };
   }
 
-  it.skip('an unchanged tree costs exactly add -A + write-tree under the private env — no other calls, no content reads', () => {
+  it('an unchanged tree costs exactly add -A + write-tree under the private env — no other calls, no content reads', () => {
     const fx = captureFixture((args) => (args[0] === 'write-tree' ? `${PRE_TREE}\n` : ''));
     try {
       const result = captureWriteTree(fx.input);
@@ -2091,7 +2091,7 @@ describe('captureWriteTree — private index/object-dir capture (main-228 Phase 
     }
   });
 
-  it.skip('the private object dir carries info/alternates pointing at the real object store — the load-bearing setup', () => {
+  it('the private object dir carries info/alternates pointing at the real object store — the load-bearing setup', () => {
     const fx = captureFixture((args) => (args[0] === 'write-tree' ? `${PRE_TREE}\n` : ''));
     try {
       captureWriteTree(fx.input);
@@ -2101,7 +2101,7 @@ describe('captureWriteTree — private index/object-dir capture (main-228 Phase 
     }
   });
 
-  it.skip('the temp index is primed by copying the real index (warm stat cache)', () => {
+  it('the temp index is primed by copying the real index (warm stat cache)', () => {
     const fx = captureFixture((args) => (args[0] === 'write-tree' ? `${PRE_TREE}\n` : ''));
     try {
       captureWriteTree(fx.input);
@@ -2111,7 +2111,7 @@ describe('captureWriteTree — private index/object-dir capture (main-228 Phase 
     }
   });
 
-  it.skip('wall-budget exhaustion degrades to a stat-only sweep with a path-coverage gap, span documents filtered', () => {
+  it('wall-budget exhaustion degrades to a stat-only sweep with a path-coverage gap, span documents filtered', () => {
     const fx = captureFixture((args) => {
       if (args[0] === 'add') throw new Error('timed out');
       if (args[0] === 'ls-files') return 'src/a.ts\0.span/doc.md\0';
@@ -2131,7 +2131,7 @@ describe('captureWriteTree — private index/object-dir capture (main-228 Phase 
     }
   });
 
-  it.skip('total git failure yields no tree, no statOnly, and a gap — the caller fails open', () => {
+  it('total git failure yields no tree, no statOnly, and a gap — the caller fails open', () => {
     const fx = captureFixture(() => {
       throw new Error('git unavailable');
     });
@@ -2194,7 +2194,7 @@ describe('compareTrees — tree-to-tree attribution (main-228 Phase 2)', () => {
     return { input, calls };
   }
 
-  it.skip('equal tree SHAs short-circuit: every tree path is unchanged, no diff or content calls at all', () => {
+  it('equal tree SHAs short-circuit: every tree path is unchanged, no diff or content calls at all', () => {
     const fx = compareFixture({ lsTree: [FILE_A, 'src/b.ts'], preTreeSha: PRE_TREE, postTreeSha: PRE_TREE });
     const result = compareTrees(fx.input);
     expect(result.attributions.size).toBe(0);
@@ -2205,7 +2205,7 @@ describe('compareTrees — tree-to-tree attribution (main-228 Phase 2)', () => {
     expect(fx.calls.map((c) => c.args[0])).toEqual(['ls-tree']);
   });
 
-  it.skip('a middle edit maps to the exact post range, with SHA-256 content-hash VALUES for both sides', () => {
+  it('a middle edit maps to the exact post range, with SHA-256 content-hash VALUES for both sides', () => {
     const fx = compareFixture({
       lsTree: [FILE_A, 'src/b.ts'],
       nameStatus: `M\0${FILE_A}\0`,
@@ -2225,7 +2225,7 @@ describe('compareTrees — tree-to-tree attribution (main-228 Phase 2)', () => {
     expect(hashes?.post).not.toBe(gitBlobOid(POST_A));
   });
 
-  it.skip('an append maps to the exact appended post range', () => {
+  it('an append maps to the exact appended post range', () => {
     const post = Buffer.from('l1\nl2\nl3\nl4\nl5\n');
     const fx = compareFixture({
       lsTree: [FILE_A],
@@ -2240,7 +2240,7 @@ describe('compareTrees — tree-to-tree attribution (main-228 Phase 2)', () => {
     });
   });
 
-  it.skip('a delete-only hunk forces whole-file scope (no post coordinate for deleted lines)', () => {
+  it('a delete-only hunk forces whole-file scope (no post coordinate for deleted lines)', () => {
     const post = Buffer.from('l1\n');
     const fx = compareFixture({
       lsTree: [FILE_A],
@@ -2255,7 +2255,7 @@ describe('compareTrees — tree-to-tree attribution (main-228 Phase 2)', () => {
     });
   });
 
-  it.skip('creates and deletes attribute as such, with one-sided content hashes', () => {
+  it('creates and deletes attribute as such, with one-sided content hashes', () => {
     const created = Buffer.from('new\n');
     const fx = compareFixture({
       lsTree: [FILE_A],
@@ -2269,7 +2269,7 @@ describe('compareTrees — tree-to-tree attribution (main-228 Phase 2)', () => {
     expect(result.contentHashes.get('src/new.ts')).toEqual({ pre: null, post: sha256Hex(created) });
   });
 
-  it.skip('renames pair only at the -M100% byte-identical floor, and the flag itself is pinned in the call log', () => {
+  it('renames pair only at the -M100% byte-identical floor, and the flag itself is pinned in the call log', () => {
     const fx = compareFixture({
       lsTree: ['old/name.ts'],
       nameStatus: `R100\0old/name.ts\0new/name.ts\0`,
@@ -2287,7 +2287,7 @@ describe('compareTrees — tree-to-tree attribution (main-228 Phase 2)', () => {
     expect(nameStatusCall?.args).toContain('--text');
   });
 
-  it.skip('a binary-classified changed file degrades to whole-file scope with a binary-scope gap — attributed, never excluded', () => {
+  it('a binary-classified changed file degrades to whole-file scope with a binary-scope gap — attributed, never excluded', () => {
     const preBin = gzipSync(Buffer.from('pre binary payload'.repeat(30)));
     const postBin = gzipSync(Buffer.from('post binary payload'.repeat(30)));
     const fx = compareFixture({
@@ -2308,7 +2308,7 @@ describe('compareTrees — tree-to-tree attribution (main-228 Phase 2)', () => {
     expect(result.contentHashes.get('assets/blob.bin')).toEqual({ pre: sha256Hex(preBin), post: sha256Hex(postBin) });
   });
 
-  it.skip('span documents are filtered from the diff result — neither attributed nor unchanged', () => {
+  it('span documents are filtered from the diff result — neither attributed nor unchanged', () => {
     const fx = compareFixture({
       lsTree: [FILE_A, '.span/agent-hooks/some-span'],
       nameStatus: `M\0.span/agent-hooks/some-span\0`,
@@ -2319,7 +2319,7 @@ describe('compareTrees — tree-to-tree attribution (main-228 Phase 2)', () => {
     expect(result.unchanged).toEqual(new Set([FILE_A]));
   });
 
-  it.skip('the touched-files cap cuts later changed paths with the persisting gap text', () => {
+  it('the touched-files cap cuts later changed paths with the persisting gap text', () => {
     const fx = compareFixture({
       lsTree: [FILE_A, 'src/b.ts'],
       nameStatus: `M\0${FILE_A}\0M\0src/b.ts\0`,
@@ -2334,7 +2334,7 @@ describe('compareTrees — tree-to-tree attribution (main-228 Phase 2)', () => {
     expect(recordHasPathCoverageGap(result)).toBe(true);
   });
 
-  it.skip('post-side wall exhaustion stops before any content work with the persisting gap text', () => {
+  it('post-side wall exhaustion stops before any content work with the persisting gap text', () => {
     const fx = compareFixture({
       lsTree: [FILE_A],
       nameStatus: `M\0${FILE_A}\0`,
@@ -2347,7 +2347,7 @@ describe('compareTrees — tree-to-tree attribution (main-228 Phase 2)', () => {
     expect(recordHasPathCoverageGap(result)).toBe(true);
   });
 
-  it.skip('an unreadable blob drops the path with the unreadable-at-compare gap, never a fabricated attribution', () => {
+  it('an unreadable blob drops the path with the unreadable-at-compare gap, never a fabricated attribution', () => {
     const fx = compareFixture({
       lsTree: [FILE_A],
       nameStatus: `M\0${FILE_A}\0`,
@@ -2360,7 +2360,7 @@ describe('compareTrees — tree-to-tree attribution (main-228 Phase 2)', () => {
 });
 
 describe('compareStatOnly — the degrade-mode file-granularity comparison (main-228 Phase 2)', () => {
-  it.skip('creates, deletes, and size/mtime changes attribute whole-file; equal stats read unchanged', () => {
+  it('creates, deletes, and size/mtime changes attribute whole-file; equal stats read unchanged', () => {
     const pre: Record<string, StatOnlyEntry> = {
       'src/same.ts': { size: 10, mtimeNs: TRUSTED_MTIME },
       'src/gone.ts': { size: 5, mtimeNs: TRUSTED_MTIME },
@@ -2394,7 +2394,7 @@ describe('compareStatOnly — the degrade-mode file-granularity comparison (main
 describe('hashTreePath — the on-demand sibling hash read (main-228 Phase 2)', () => {
   const BLOB = Buffer.from('shared sibling content\n');
 
-  it.skip('hashes a tree path into the SHA-256 value of its blob bytes — never the git SHA-1 OID', () => {
+  it('hashes a tree path into the SHA-256 value of its blob bytes — never the git SHA-1 OID', () => {
     const { run, calls } = scriptedRunner((args) => {
       expect(args).toEqual(['cat-file', 'blob', `${PRE_TREE}:src/a.ts`]);
       return BLOB;
@@ -2411,7 +2411,7 @@ describe('hashTreePath — the on-demand sibling hash read (main-228 Phase 2)', 
     expect(calls).toHaveLength(1);
   });
 
-  it.skip('a path absent from the tree reads null (cat-file failure), never a throw', () => {
+  it('a path absent from the tree reads null (cat-file failure), never a throw', () => {
     const { run } = scriptedRunner(() => {
       throw new Error('fatal: path not in tree');
     });
@@ -2420,7 +2420,7 @@ describe('hashTreePath — the on-demand sibling hash read (main-228 Phase 2)', 
     ).toBeNull();
   });
 
-  it.skip('the ambiguity table keeps resolving against tree-sourced SHA-256 hashes exactly as against v1 per-path maps', () => {
+  it('the ambiguity table keeps resolving against tree-sourced SHA-256 hashes exactly as against v1 per-path maps', () => {
     // The interop pin (plan decision 6): sibling pre/post now come from
     // hashTreePath over the sibling's recorded trees. A consumed-after
     // sibling whose post blob equals its pre blob stays NOT ambiguous; the

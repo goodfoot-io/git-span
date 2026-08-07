@@ -26,9 +26,9 @@
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { lstatSync } from 'node:fs';
-import { isAbsolute, join, relative, resolve } from 'node:path';
-import type { LineRange } from './agent-hooks-common.js';
+import { copyFileSync, lstatSync, mkdirSync, writeFileSync } from 'node:fs';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { isInsideSpanRoot, type LineRange } from './agent-hooks-common.js';
 import { argvOf, splitTopLevel, tokenize } from './shell-split.js';
 
 // ---------------------------------------------------------------------------
@@ -1468,7 +1468,7 @@ export interface CompareSnapshotResult {
  * `covered` column until that mirror was removed as dead.
  */
 const PATH_COVERAGE_GAP =
-  /^(?:file-count budget exceeded:|total-bytes budget exceeded:|pre-side wall budget exceeded:|post-side wall budget exhausted:|repo walk truncated:|touched-files cap \d+ exceeded:|post-walk coverage gap:|pre-walk coverage gap:|unreadable at compare:|snapshot compare aborted:)/;
+  /^(?:file-count budget exceeded:|total-bytes budget exceeded:|pre-side wall budget exceeded:|post-side wall budget exhausted:|repo walk truncated:|touched-files cap \d+ exceeded:|post-walk coverage gap:|pre-walk coverage gap:|unreadable at compare:|snapshot compare aborted:|write-tree degraded to stat-only:)/;
 
 export function recordHasPathCoverageGap(record: { gaps: string[] }): boolean {
   return record.gaps.some((g) => PATH_COVERAGE_GAP.test(g));
@@ -1829,9 +1829,50 @@ export type GitRunner = (
  * verdicts degrade that path to whole-file scope with a `binary-scope` gap —
  * attributed either way, never silently excluded.
  */
-export function classifyTextOrBinary(_content: Buffer): boolean {
-  throw new Error('Not Implemented');
+export function classifyTextOrBinary(content: Buffer): boolean {
+  if (content.length === 0) return true;
+  let suspect = 0;
+  let i = 0;
+  while (i < content.length) {
+    const b = content[i]!;
+    if (b < 0x80) {
+      // ASCII: everything printable plus the common text controls (BS, TAB,
+      // LF, VT, FF, CR, ESC) is fine; other controls, NUL, and DEL are suspect.
+      if ((b < 0x20 && (b < 0x08 || b > 0x0d) && b !== 0x1b) || b === 0x7f) suspect += 1;
+      i += 1;
+      continue;
+    }
+    // Multibyte: a well-formed UTF-8 sequence is text; malformed lead or
+    // continuation bytes are suspect one byte at a time (resynchronizing).
+    const len = b >= 0xf0 && b <= 0xf4 ? 4 : b >= 0xe0 && b <= 0xef ? 3 : b >= 0xc2 && b <= 0xdf ? 2 : 0;
+    if (len === 0) {
+      suspect += 1;
+      i += 1;
+      continue;
+    }
+    let wellFormed = i + len <= content.length;
+    for (let j = 1; wellFormed && j < len; j += 1) {
+      const c = content[i + j]!;
+      if (c < 0x80 || c > 0xbf) wellFormed = false;
+    }
+    if (wellFormed) {
+      i += len;
+    } else {
+      suspect += 1;
+      i += 1;
+    }
+  }
+  return suspect / content.length <= BINARY_SUSPECT_RATIO;
 }
+
+/**
+ * The classifier's threshold: content whose suspect-byte fraction exceeds
+ * this reads binary. Real sources with NUL-bearing literals sit orders of
+ * magnitude below it (a handful of bytes over kilobytes of code); compressed
+ * or full-range binary content sits far above (a third or more of its bytes
+ * are non-text under the UTF-8 walk).
+ */
+const BINARY_SUSPECT_RATIO = 0.1;
 
 /** The inputs {@link captureWriteTree} needs; subprocess I/O is injected. */
 export interface CaptureWriteTreeInput {
@@ -1882,8 +1923,54 @@ export interface CaptureWriteTreeResult {
  * documents filtered) with a path-coverage gap naming the degrade; when even
  * that fails, the result carries only gaps and the caller fails open.
  */
-export function captureWriteTree(_input: CaptureWriteTreeInput): CaptureWriteTreeResult {
-  throw new Error('Not Implemented');
+export function captureWriteTree(input: CaptureWriteTreeInput): CaptureWriteTreeResult {
+  const { repoRoot, objectDir, indexFile, alternates, realIndexFile, spanRoot, wallBudgetMs, runGit, stat } = input;
+  const gaps: string[] = [];
+  const start = Date.now();
+  const remaining = (): number => Math.max(1, wallBudgetMs - (Date.now() - start));
+  try {
+    mkdirSync(join(objectDir, 'info'), { recursive: true, mode: 0o700 });
+    writeFileSync(join(objectDir, 'info', 'alternates'), `${alternates}\n`, { mode: 0o600 });
+    if (realIndexFile !== null) copyFileSync(realIndexFile, indexFile);
+    const env = { GIT_INDEX_FILE: indexFile, GIT_OBJECT_DIRECTORY: objectDir };
+    runGit(['add', '-A'], { cwd: repoRoot, env, timeoutMs: remaining() });
+    const out = runGit(['write-tree'], { cwd: repoRoot, env, timeoutMs: remaining() });
+    const treeSha = out.toString('utf8').trim();
+    if (/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(treeSha)) return { treeSha, gaps };
+    gaps.push(`write-tree degraded to stat-only: unexpected write-tree output ${JSON.stringify(treeSha)}`);
+  } catch (err) {
+    gaps.push(`write-tree degraded to stat-only: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  // Degrade: enumerate tracked + untracked-non-ignored files against the REAL
+  // index (no private env — the temp index may be partially written) and stat
+  // each. File-granularity evidence only; the gap above is path-coverage
+  // family, so siblings fail closed on this record.
+  try {
+    const raw = runGit(['ls-files', '-z', '--cached', '--others', '--exclude-standard'], {
+      cwd: repoRoot,
+      timeoutMs: remaining()
+    }).toString('utf8');
+    const spanRel = spanRootRelative(repoRoot, spanRoot);
+    const statOnly: Record<string, StatOnlyEntry> = {};
+    for (const rel of raw.split('\0')) {
+      if (rel.length === 0 || isInsideSpanRoot(rel, spanRel)) continue;
+      const st = stat(join(repoRoot, rel));
+      if (st !== null) statOnly[rel] = { size: st.size, mtimeNs: st.mtimeNs };
+    }
+    return { treeSha: null, statOnly, gaps };
+  } catch (err) {
+    gaps.push(`stat-only sweep failed: ${err instanceof Error ? err.message : String(err)}`);
+    return { treeSha: null, gaps };
+  }
+}
+
+/**
+ * The span root as a repo-relative posix path for {@link isInsideSpanRoot} —
+ * capture and compare receive it absolute from the harness, while the filter
+ * compares repo-relative enumeration output.
+ */
+function spanRootRelative(repoRoot: string, spanRoot: string): string {
+  return isAbsolute(spanRoot) ? relative(repoRoot, spanRoot).split(sep).join('/') : spanRoot;
 }
 
 /** The inputs {@link compareTrees} needs; subprocess I/O is injected. */
@@ -1951,8 +2038,150 @@ export interface CompareTreesResult {
  * `binary-scope` gap. The touched-files cap and the post-side wall budget
  * stop the loop with the same diagnostic contract as compareSnapshot.
  */
-export function compareTrees(_input: CompareTreesInput): CompareTreesResult {
-  throw new Error('Not Implemented');
+export function compareTrees(input: CompareTreesInput): CompareTreesResult {
+  const { preTreeSha, postTreeSha, repoRoot, objectDir, spanRoot, budgets, wallStart, runGit } = input;
+  const clock = input.wallClock ?? Date.now;
+  const wallMs = budgets.postSideWallSeconds * 1000;
+  const wallExhausted = (): boolean => clock() - wallStart > wallMs;
+  const remaining = (): number => Math.max(1, wallMs - (clock() - wallStart));
+  const env = { GIT_OBJECT_DIRECTORY: objectDir };
+  const spanRel = spanRootRelative(repoRoot, spanRoot);
+  const attributions = new Map<string, PathAttribution>();
+  const gaps: string[] = [];
+  const contentHashes = new Map<string, { pre: string | null; post: string | null }>();
+  const catBlob = (tree: string, path: string): Buffer =>
+    runGit(['cat-file', 'blob', `${tree}:${path}`], { cwd: repoRoot, env, timeoutMs: remaining() });
+
+  // The co-parser exclusion set starts as the whole pre tree (a tree walk, no
+  // content reads); diff entries subtract their pre-side paths below.
+  const preTreePaths = runGit(['ls-tree', '-r', '--name-only', '-z', preTreeSha], {
+    cwd: repoRoot,
+    env,
+    timeoutMs: remaining()
+  })
+    .toString('utf8')
+    .split('\0')
+    .filter((p) => p.length > 0 && !isInsideSpanRoot(p, spanRel));
+  const unchanged = new Set(preTreePaths);
+  if (preTreeSha === postTreeSha) return { attributions, unchanged, gaps, contentHashes };
+
+  const raw = runGit(['diff', '--name-status', '-M100%', '--text', '-z', preTreeSha, postTreeSha], {
+    cwd: repoRoot,
+    env,
+    timeoutMs: remaining()
+  }).toString('utf8');
+  type DiffEntry = { status: 'M' | 'A' | 'D'; path: string } | { status: 'R'; from: string; to: string };
+  const entries: DiffEntry[] = [];
+  const tokens = raw.split('\0');
+  for (let i = 0; i < tokens.length; ) {
+    const status = tokens[i]!;
+    if (status.length === 0) {
+      i += 1;
+      continue;
+    }
+    if (status.startsWith('R') || status.startsWith('C')) {
+      const from = tokens[i + 1] ?? '';
+      const to = tokens[i + 2] ?? '';
+      i += 3;
+      if (isInsideSpanRoot(from, spanRel) || isInsideSpanRoot(to, spanRel)) continue;
+      unchanged.delete(from);
+      entries.push({ status: 'R', from, to });
+      continue;
+    }
+    const path = tokens[i + 1] ?? '';
+    i += 2;
+    if (isInsideSpanRoot(path, spanRel)) continue;
+    if (status === 'M' || status === 'D') unchanged.delete(path);
+    if (status === 'M' || status === 'A' || status === 'D') entries.push({ status, path });
+  }
+
+  let changedCount = 0;
+  let attributed = 0;
+  for (let i = 0; i < entries.length; i += 1) {
+    const entry = entries[i]!;
+    if (wallExhausted()) {
+      const rest = entries.slice(i).map((e) => (e.status === 'R' ? e.to : e.path));
+      gaps.push(
+        `post-side wall budget exhausted: attributed ${attributed}/${entries.length}, unattributed ${rest.join(', ')}`
+      );
+      break;
+    }
+    if (entry.status === 'R') {
+      attributions.set(entry.to, { kind: 'rename', from: entry.from });
+      attributed += 1;
+      continue;
+    }
+    const path = entry.path;
+    if (entry.status === 'A' || entry.status === 'D') {
+      const tree = entry.status === 'A' ? postTreeSha : preTreeSha;
+      let hash: string;
+      try {
+        hash = createHash('sha256').update(catBlob(tree, path)).digest('hex');
+      } catch {
+        gaps.push(`unreadable at compare: ${path} dropped without attribution`);
+        continue;
+      }
+      contentHashes.set(path, entry.status === 'A' ? { pre: null, post: hash } : { pre: hash, post: null });
+      attributions.set(path, { kind: entry.status === 'A' ? 'created' : 'deleted' });
+      attributed += 1;
+      continue;
+    }
+    if (changedCount >= budgets.maxTouchedFiles) {
+      gaps.push(`touched-files cap ${budgets.maxTouchedFiles} exceeded: ${path} not attributed`);
+      continue;
+    }
+    changedCount += 1;
+    let preBlob: Buffer;
+    let postBlob: Buffer;
+    try {
+      preBlob = catBlob(preTreeSha, path);
+      postBlob = catBlob(postTreeSha, path);
+    } catch {
+      gaps.push(`unreadable at compare: ${path} dropped without attribution`);
+      continue;
+    }
+    contentHashes.set(path, {
+      pre: createHash('sha256').update(preBlob).digest('hex'),
+      post: createHash('sha256').update(postBlob).digest('hex')
+    });
+    if (classifyTextOrBinary(preBlob) && classifyTextOrBinary(postBlob)) {
+      const diffOut = runGit(['diff', '--unified=0', '--text', preTreeSha, postTreeSha, '--', path], {
+        cwd: repoRoot,
+        env,
+        timeoutMs: remaining()
+      }).toString('utf8');
+      const hunks = parseUnifiedZeroHunks(diffOut);
+      // Trees differ per name-status but the hunk parse came back empty —
+      // never let that silently shrink attribution: whole-file scope.
+      attributions.set(path, {
+        kind: 'changed',
+        observed: hunks.length > 0 ? hunksToPostRanges(hunks) : { changed: [], wholeFile: true }
+      });
+    } else {
+      gaps.push(`binary-scope: ${path} classified binary, whole-file scope`);
+      attributions.set(path, { kind: 'changed', observed: { changed: [], wholeFile: true } });
+    }
+    attributed += 1;
+  }
+  return { attributions, unchanged, gaps, contentHashes };
+}
+
+/**
+ * Parse `git diff --unified=0` output into {@link DiffHunk}s from its `@@`
+ * headers alone (zero context means the headers carry the exact regions; an
+ * omitted count is git shorthand for 1).
+ */
+function parseUnifiedZeroHunks(diffText: string): DiffHunk[] {
+  const hunks: DiffHunk[] = [];
+  for (const m of diffText.matchAll(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm)) {
+    hunks.push({
+      preStart: Number(m[1]),
+      preLines: m[2] === undefined ? 1 : Number(m[2]),
+      postStart: Number(m[3]),
+      postLines: m[4] === undefined ? 1 : Number(m[4])
+    });
+  }
+  return hunks;
 }
 
 /**
@@ -1965,10 +2194,25 @@ export function compareTrees(_input: CompareTreesInput): CompareTreesResult {
  * closed on it regardless).
  */
 export function compareStatOnly(
-  _pre: Record<string, StatOnlyEntry>,
-  _post: Record<string, StatOnlyEntry>
+  pre: Record<string, StatOnlyEntry>,
+  post: Record<string, StatOnlyEntry>
 ): CompareTreesResult {
-  throw new Error('Not Implemented');
+  const attributions = new Map<string, PathAttribution>();
+  const unchanged = new Set<string>();
+  for (const [path, preEntry] of Object.entries(pre)) {
+    const postEntry = post[path];
+    if (postEntry === undefined) {
+      attributions.set(path, { kind: 'deleted' });
+    } else if (postEntry.size === preEntry.size && postEntry.mtimeNs === preEntry.mtimeNs) {
+      unchanged.add(path);
+    } else {
+      attributions.set(path, { kind: 'changed', observed: { changed: [], wholeFile: true } });
+    }
+  }
+  for (const path of Object.keys(post)) {
+    if (!(path in pre)) attributions.set(path, { kind: 'created' });
+  }
+  return { attributions, unchanged, gaps: [], contentHashes: new Map() };
 }
 
 /** The inputs {@link hashTreePath} needs. */
@@ -1991,6 +2235,14 @@ export interface HashTreePathInput {
  * uses now that records persist tree SHAs instead of per-path hash maps.
  * Callers memoize per (treeSha, path) within one branch invocation.
  */
-export function hashTreePath(_input: HashTreePathInput): string | null {
-  throw new Error('Not Implemented');
+export function hashTreePath(input: HashTreePathInput): string | null {
+  try {
+    const blob = input.runGit(['cat-file', 'blob', `${input.treeSha}:${input.path}`], {
+      cwd: input.repoRoot,
+      env: { GIT_OBJECT_DIRECTORY: input.objectDir }
+    });
+    return createHash('sha256').update(blob).digest('hex');
+  } catch {
+    return null;
+  }
 }
