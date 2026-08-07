@@ -298,7 +298,7 @@ describe('touch-core observed write ranges', () => {
         { filePath: `${REPO_ROOT}/src/b.ts`, observed: observedRanges([{ start: 2, end: 3 }]) }
       ];
 
-      const output = await runTouchHook(writeInput(), executors, memo, scopes);
+      const output = await runTouchHook(writeInput(), executors, memo, undefined, scopes);
 
       // One scoped fix call per changed path (each is a `git span drift <file>
       // --fix` subprocess pair, so N paths cost ~2N subprocesses — bounded by
@@ -332,7 +332,7 @@ describe('touch-core observed write ranges', () => {
 
       // Both scopes' spans share the name — the second scope's render is
       // deduped by the memo, so the block carries the span exactly once.
-      const output = await runTouchHook(writeInput(), executors, memo, scopes);
+      const output = await runTouchHook(writeInput(), executors, memo, undefined, scopes);
       const block = output.additionalContext ?? '';
       expect(block.match(/## billing\/checkout-request-flow/g)).toHaveLength(1);
     });
@@ -349,7 +349,7 @@ describe('touch-core observed write ranges', () => {
         { filePath: `${REPO_ROOT}/src/b.ts`, observed: observedRanges([{ start: 2, end: 3 }]) }
       ];
 
-      const output = await runTouchHook(writeInput(), executors, memo, scopes);
+      const output = await runTouchHook(writeInput(), executors, memo, undefined, scopes);
 
       expect(output.additionalContext).toContain('## billing/checkout-request-flow');
       expect(output.additionalContext).not.toContain('## billing/payment-created-flow');
@@ -362,7 +362,7 @@ describe('touch-core observed write ranges', () => {
         { filePath: `${REPO_ROOT}/src/a.ts`, observed: observedRanges([{ start: 2, end: 3 }]) }
       ];
 
-      const output = await runTouchHook(writeInput(), executors, memo, scopes);
+      const output = await runTouchHook(writeInput(), executors, memo, undefined, scopes);
 
       expect(output.additionalContext).toBeNull();
       expect(calls.fix).toBe(1); // the heal pass still ran across the batch

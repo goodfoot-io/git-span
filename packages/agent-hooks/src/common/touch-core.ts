@@ -1014,10 +1014,19 @@ export async function runTouchHook(
   try {
     let range: LineRange[] | 'whole-file' = 'whole-file';
     if (input.kind === 'write') {
-      const probe = probeCache ?? createRealityProbeCache(input.targetState === 'absent' ? [input.filePath] : []);
-      const outcome = evaluateWriteGate(input, probe);
-      if (outcome === 'decisiveFail' || (outcome === 'inconclusive' && input.targetState === 'absent')) {
-        return { additionalContext: null, treeModified: false };
+      // The reality-probe write gate targets touches whose producer commits to
+      // a `targetState` claim (every production write touch does) — it
+      // verifies that claim against disk before any executor call. `observed`
+      // ranges instead come from an actual pre/post snapshot comparison —
+      // reality is already established by the time the touch carries them, so
+      // the gate does not apply there either (the scope-list branch above, the
+      // only production caller of `observed`, likewise skips it).
+      if (input.observed === undefined && input.targetState !== undefined) {
+        const probe = probeCache ?? createRealityProbeCache(input.targetState === 'absent' ? [input.filePath] : []);
+        const outcome = evaluateWriteGate(input, probe);
+        if (outcome === 'decisiveFail' || (outcome === 'inconclusive' && input.targetState === 'absent')) {
+          return { additionalContext: null, treeModified: false };
+        }
       }
       const fix = await executors.fix(input.filePath, input.cwd);
       treeModified = fix.modified;
