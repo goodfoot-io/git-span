@@ -477,10 +477,12 @@ function bindContentHeight(host: HTMLElement, editors: readonly monaco.editor.IC
  * @param content - The content to preview.
  * @param language - The Monaco language id to highlight with.
  * @param card - Optional card whose initial open state this body decides.
+ * @param startLine - The extent's file-absolute first line; omitted for a
+ *   whole-file preview, which keeps Monaco's default numbering from 1.
  * @returns The preview's host element.
  * @throws Never.
  */
-function createPreview(content: string, language: string, card?: HTMLDetailsElement): HTMLElement {
+function createPreview(content: string, language: string, card?: HTMLDetailsElement, startLine?: number): HTMLElement {
   const lineCount = countLines(content);
   const host = el('div', 'monaco-host');
   host.style.height = `${Math.max(lineCount, 1) * LINE_HEIGHT}px`;
@@ -502,6 +504,9 @@ function createPreview(content: string, language: string, card?: HTMLDetailsElem
     ...NO_VERTICAL_SCROLL_OPTIONS
   });
   track(editor);
+  if (startLine !== undefined) {
+    editor.updateOptions({ lineNumbers: gutterLineNumbers(startLine) });
+  }
   void bindContentHeight(host, [editor]);
   return host;
 }
@@ -796,7 +801,7 @@ function createAnchorCard(anchor: PostedAnchor): HTMLElement {
   const body = el('div');
   switch (anchor.kind) {
     case 'clean':
-      body.appendChild(createPreview(anchor.content, resolveLanguage(anchor.path), card));
+      body.appendChild(createPreview(anchor.content, resolveLanguage(anchor.path), card, anchor.range?.start));
       break;
     case 'drifted':
     case 'reconciled':
@@ -816,7 +821,7 @@ function createAnchorCard(anchor: PostedAnchor): HTMLElement {
     case 'relocated':
       // Never a diff editor with identical sides: banner plus plain preview.
       body.appendChild(createRenameBanner(anchor.address, anchor.proposed));
-      body.appendChild(createPreview(anchor.content, resolveLanguage(anchor.path), card));
+      body.appendChild(createPreview(anchor.content, resolveLanguage(anchor.path), card, anchor.range?.start));
       break;
     case 'unavailable':
       body.appendChild(createStatusCard(UNAVAILABLE_COPY[anchor.reason]));
