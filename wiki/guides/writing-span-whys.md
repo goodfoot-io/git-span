@@ -485,7 +485,5 @@ The final test is:
 
 ## Related
 
-- [Evaluating Span Whys](evaluating-span-whys.md) — the controlled evaluation
-  method behind these recommendations.
 - [Git Span Documentation Touchpoints](../meta/git-span-documentation-touchpoints.md)
   — related documentation surfaces to review when this convention changes.

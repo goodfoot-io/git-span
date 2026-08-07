@@ -220,4 +220,3 @@ infrastructure error, generated diff, or nonzero drift blocks completion.
 ## References
 
 - [Writing Span Whys](../guides/writing-span-whys.md)
-- [Evaluating Span Whys](../guides/evaluating-span-whys.md)
