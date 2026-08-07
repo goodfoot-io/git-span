@@ -1324,6 +1324,16 @@ describe('codex harness snapshot lifecycle', () => {
 });
 
 describe('codex harness snapshot lifecycle — wave-E coverage-gap family', () => {
+  // This describe is a sibling of the file's first block, not nested inside
+  // it, so it does not inherit that block's purge hooks — its fixed session
+  // ids (capcut/binary/partialbudget) leaked into the shared session base
+  // forever otherwise, tripping the core store suite's no-warns assertions
+  // on a later run. Same purge convention as the first block, scoped to the
+  // same CODEX_SESSION_IDS list (a superset covers this block's ids too).
+  beforeAll(() => purgeSessions(CODEX_SESSION_IDS));
+  afterEach(() => purgeSessions(CODEX_SESSION_IDS));
+  afterAll(flushPurgedSessions);
+
   it('a sibling that hits the touched-files cap persists its cut gap — the consumed-after consult fails closed, never clean', async () => {
     // The phantom-attribution scenario: the sibling's compare cut a changed
     // path at the touched-files cap, so its consume carried no post entry
