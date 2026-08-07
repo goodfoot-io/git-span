@@ -68,4 +68,4 @@ ENV NODE_OPTIONS=--max-old-space-size=4096
 # Repo dev CLIs (installed to the base's system npm prefix, so they survive the
 # /home/node bind mount).
 RUN npm install -g @anthropic-ai/claude-code @openai/codex && \
-  npm install -g tsx dotenv-cli @ast-grep/cli jsdoczoom
+  npm install -g tsx dotenv-cli @ast-grep/cli jsdoczoom agent-browser git-span
