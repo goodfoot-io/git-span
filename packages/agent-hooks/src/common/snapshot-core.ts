@@ -1722,3 +1722,267 @@ export function applyAmbiguityRules(mine: SnapshotRecord, siblings: SiblingSnaps
   }
   return { ambiguous: false };
 }
+
+// ---------------------------------------------------------------------------
+// Tree-SHA snapshot mechanism (card main-228) — v2 contract
+//
+// Replaces the per-line-hash record above: each side of a snapshot-decided
+// call takes a private `git write-tree` snapshot (temp index primed from the
+// real index, private GIT_OBJECT_DIRECTORY whose info/alternates points at
+// the real object store — the alternates are load-bearing: without them
+// `git add -A` re-copies every blob into the private dir) and persists only
+// the tree SHA plus correlation/gap metadata. The post side compares two
+// 40-char strings first; only on mismatch does it pay for
+// `git diff --name-status -M100% --text` (tree-to-tree) and, per changed
+// path, `git diff --unified=0 --text` — producing the same
+// ObservedWriteRanges/PathAttribution shapes so nothing downstream of the
+// touch core changes. Per-path hashes stay Node SHA-256 over blob bytes (the
+// activity log's ActivityPathStamp hash space), NEVER git SHA-1 OIDs.
+// ---------------------------------------------------------------------------
+
+/**
+ * One path's stat-only state — the degrade capture when the wall budget
+ * cuts the `git add -A` + `write-tree` pair short (or git is unavailable):
+ * file-granularity create/delete/modify evidence, whole-file scope only.
+ */
+export interface StatOnlyEntry {
+  /** Byte size of the file at capture. */
+  size: number;
+  /** mtime in nanoseconds (BigInt) at capture. */
+  mtimeNs: bigint;
+}
+
+/**
+ * The post side's persisted state on a v2 record, written at consumption:
+ * its own tree SHA (or its own stat-only degrade). Later siblings' ambiguity
+ * checks derive per-path pre/post hashes from the two tree SHAs on demand
+ * ({@link hashTreePath}) instead of reading persisted per-path maps.
+ */
+export interface SnapshotPostStateV2 {
+  /** The post-side write-tree SHA; null only on stat-only degrade. */
+  treeSha: string | null;
+  /** Present only on stat-only degrade (post-side wall budget cut). */
+  statOnly?: Record<string, StatOnlyEntry>;
+}
+
+/**
+ * The v2 snapshot record: a tree SHA and correlation/gap metadata — a few
+ * hundred bytes, never megabytes. The store's version-mismatch read fails
+ * closed, so v1 records on disk are discarded on read and reaped by TTL; no
+ * migration. (Named with the V2 suffix only while the v1 record above is
+ * still live; the harness wiring phase renames it to SnapshotRecord.)
+ */
+export interface SnapshotRecordV2 {
+  /** Record format version. A mismatch on read fails closed. */
+  version: 2;
+  sessionId: string;
+  toolUseId: string;
+  /** Subagent agent id, recorded by the PreToolUse adapters when present. */
+  agentId?: string;
+  /** Absolute repo root the snapshot was taken in. */
+  repoRoot: string;
+  /** The instant the record was written (same clock as the activity log's finishedAt). */
+  createdAt: number;
+  /** Whether a PostToolUse has consumed this record. */
+  consumed: boolean;
+  /** Stamped at consumption; null while the record is live. */
+  consumedAt: number | null;
+  /** The pre-side write-tree SHA; null only on stat-only degrade. */
+  treeSha: string | null;
+  /** Present only on stat-only degrade (pre-side wall budget cut). */
+  statOnly?: Record<string, StatOnlyEntry>;
+  /**
+   * Coverage-gap diagnostics — the same diagnostic-string contract as v1
+   * with a smaller vocabulary: the stat-only degrade emits a
+   * `write-tree degraded to stat-only:` gap (path-coverage family — content
+   * coverage is unknowable, so siblings fail closed), and the comparison
+   * emits the same `touched-files cap`/`post-side wall budget exhausted`/
+   * `binary-scope` family it does today.
+   */
+  gaps: string[];
+  /** Post-side state, written at consumption. */
+  post?: SnapshotPostStateV2;
+}
+
+/**
+ * Injected git subprocess runner — the tree mechanism's one I/O seam,
+ * mirroring hashFile's injected stat/read convention. Returns stdout bytes
+ * (cat-file reads need raw bytes); throws on a non-zero exit or timeout.
+ * The caller owns cwd and the private GIT_INDEX_FILE/GIT_OBJECT_DIRECTORY
+ * environment; the runner merges `env` over the ambient environment.
+ */
+export type GitRunner = (
+  args: string[],
+  opts: { cwd: string; env?: Record<string, string>; timeoutMs?: number }
+) => Buffer;
+
+/**
+ * Classify one changed file's full content as text (true) or binary (false).
+ *
+ * Git's own binary heuristic (any NUL in the first ~8000 bytes) false-
+ * positives on real sources with NUL bytes in literals
+ * (packages/discover/src/paths.ts and siblings), and `git diff --numstat`
+ * reports the same unoverridable binary marker for both those files and
+ * genuine binaries — so the mechanism needs its own proportional check:
+ * the fraction of non-text bytes across the WHOLE content, not NUL presence
+ * in a prefix. Text verdicts accept `git diff --text`'s exact hunks; binary
+ * verdicts degrade that path to whole-file scope with a `binary-scope` gap —
+ * attributed either way, never silently excluded.
+ */
+export function classifyTextOrBinary(_content: Buffer): boolean {
+  throw new Error('Not Implemented');
+}
+
+/** The inputs {@link captureWriteTree} needs; subprocess I/O is injected. */
+export interface CaptureWriteTreeInput {
+  /** Absolute repo root (the runner's cwd). */
+  repoRoot: string;
+  /** Private GIT_OBJECT_DIRECTORY for this call; created if absent. */
+  objectDir: string;
+  /** Private temp index file path for this call (keyed by tool_use_id). */
+  indexFile: string;
+  /** Absolute path of the REAL object store the private dir's info/alternates points at. */
+  alternates: string;
+  /** The repo's span root; stat-only degrade filters span documents like the diff filter does. */
+  spanRoot: string;
+  /** Wall budget for the add+write-tree pair; exhaustion degrades to stat-only. */
+  wallBudgetMs: number;
+  /** Injected git runner. */
+  runGit: GitRunner;
+  /** Injected stat for the stat-only degrade walk: null when absent/unstat-able. */
+  stat: StatFile;
+}
+
+/** The outcome of one write-tree capture (either side of a call). */
+export interface CaptureWriteTreeResult {
+  /** The write-tree SHA; null when the capture degraded (or failed outright). */
+  treeSha: string | null;
+  /** The stat-only degrade capture; present only when treeSha is null and the stat walk succeeded. */
+  statOnly?: Record<string, StatOnlyEntry>;
+  /** Degrade/failure diagnostics (`write-tree degraded to stat-only:` is path-coverage family). */
+  gaps: string[];
+}
+
+/**
+ * Take one private write-tree snapshot: ensure the private object dir exists
+ * with `info/alternates` pointing at the real object store (load-bearing —
+ * without it every blob is re-copied), prime the temp index by copying the
+ * real index (warm stat cache: unchanged files are never read), then
+ * `git add -A` + `git write-tree` under GIT_INDEX_FILE/GIT_OBJECT_DIRECTORY.
+ * On wall-budget exhaustion or git failure, degrade to a stat-only sweep
+ * (path → size/mtimeNs over tracked + untracked-non-ignored files, span
+ * documents filtered) with a path-coverage gap naming the degrade; when even
+ * that fails, the result carries only gaps and the caller fails open.
+ */
+export function captureWriteTree(_input: CaptureWriteTreeInput): CaptureWriteTreeResult {
+  throw new Error('Not Implemented');
+}
+
+/** The inputs {@link compareTrees} needs; subprocess I/O is injected. */
+export interface CompareTreesInput {
+  /** The pre-side write-tree SHA. */
+  preTreeSha: string;
+  /** The post-side write-tree SHA. */
+  postTreeSha: string;
+  /** Absolute repo root (the runner's cwd). */
+  repoRoot: string;
+  /** The call's private object dir — both trees live there; diff/cat-file reads run under it. */
+  objectDir: string;
+  /** The repo's span root; span documents are filtered from the diff result. */
+  spanRoot: string;
+  /** The budgets in force (post-side wall budget; touched-files cap). */
+  budgets: Pick<SnapshotBudgets, 'postSideWallSeconds' | 'maxTouchedFiles'>;
+  /**
+   * The instant the post-side work began. The wall budget measures elapsed
+   * time since THIS instant — the comparison's own cost, never the command's
+   * runtime.
+   */
+  wallStart: number;
+  /** Injected git runner. */
+  runGit: GitRunner;
+  /** Injectable wall clock, defaulting to Date.now (fixtures pin the budget). */
+  wallClock?: () => number;
+}
+
+/**
+ * The comparison's outcome — the same attributions/unchanged/gaps contract
+ * as {@link CompareSnapshotResult}, plus the per-changed-path content hashes
+ * the interleaved-edit consult and the ambiguity table compare against.
+ */
+export interface CompareTreesResult {
+  /** Attribution per repo-relative path; unchanged paths are omitted. */
+  attributions: Map<string, PathAttribution>;
+  /**
+   * Every pre-tree path the comparison proved untouched (tree equality or
+   * absent from the tree-to-tree diff) — the co-parser exclusion set, exactly
+   * as v1's confirmed-unchanged walk produced. Enumerated from
+   * `git ls-tree -r --name-only` (a tree walk, no content reads).
+   */
+  unchanged: Set<string>;
+  /** Diagnostics: budget stops, `binary-scope` degrades, unreadable drops. */
+  gaps: string[];
+  /**
+   * Node SHA-256 hex over pre/post blob bytes per CHANGED path (null side =
+   * absent from that tree). This is the ActivityPathStamp hash space — the
+   * consult and the ambiguity table compare these against activity-log
+   * stamps, so they must never become git SHA-1 OIDs.
+   */
+  contentHashes: Map<string, { pre: string | null; post: string | null }>;
+}
+
+/**
+ * Compare two write-trees into per-path attributions. Equal SHAs
+ * short-circuit: no diff, no attributions — every tree path is unchanged.
+ * Otherwise `git diff --name-status -M100% --text -z` names the changed
+ * paths (the 100% floor pairs only byte-identical renames, matching
+ * pairRenames' contract); per changed path the blob pair is read
+ * (`git cat-file blob`), hashed (Node SHA-256), classified
+ * ({@link classifyTextOrBinary}), and — when text on both sides —
+ * `git diff --unified=0 --text` hunks map through {@link hunksToPostRanges}
+ * to exact post ranges; a binary side degrades to whole-file scope with a
+ * `binary-scope` gap. The touched-files cap and the post-side wall budget
+ * stop the loop with the same diagnostic contract as compareSnapshot.
+ */
+export function compareTrees(_input: CompareTreesInput): CompareTreesResult {
+  throw new Error('Not Implemented');
+}
+
+/**
+ * Compare two stat-only sweeps (either side degraded): file-granularity
+ * create/delete/modify attributions, whole-file scope only — the visible,
+ * budget-bounded fallback when the full write-tree mechanism could not
+ * finish. A path present on both sides with equal (size, mtimeNs) reads
+ * unchanged (degrade mode trades the v1 clock-trust re-read for cost — the
+ * record already carries the path-coverage degrade gap, so siblings fail
+ * closed on it regardless).
+ */
+export function compareStatOnly(
+  _pre: Record<string, StatOnlyEntry>,
+  _post: Record<string, StatOnlyEntry>
+): CompareTreesResult {
+  throw new Error('Not Implemented');
+}
+
+/** The inputs {@link hashTreePath} needs. */
+export interface HashTreePathInput {
+  /** The tree to read from. */
+  treeSha: string;
+  /** Repo-relative path within the tree. */
+  path: string;
+  /** Absolute repo root (the runner's cwd). */
+  repoRoot: string;
+  /** The record's private object dir the tree lives in. */
+  objectDir: string;
+  /** Injected git runner. */
+  runGit: GitRunner;
+}
+
+/**
+ * Node SHA-256 hex of `treeSha:path`'s blob bytes, or null when the path is
+ * absent from the tree — the on-demand sibling-hash read the ambiguity table
+ * uses now that records persist tree SHAs instead of per-path hash maps.
+ * Callers memoize per (treeSha, path) within one branch invocation.
+ */
+export function hashTreePath(_input: HashTreePathInput): string | null {
+  throw new Error('Not Implemented');
+}
