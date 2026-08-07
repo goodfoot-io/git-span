@@ -5,20 +5,19 @@
  * formatters, generators, embedded Python/Node/Ruby/Perl scripts, project
  * tools — a per-tool pre/post file snapshot correlated by (session_id,
  * tool_use_id) attributes the writes the call actually produced. The core is
- * pure logic: command classification, line/file hashing, Myers diff over
- * line-hash arrays, hunk→post-range mapping, rename pairing, pre/post
- * comparison, and the concurrency ambiguity rules. I/O is injected (the
- * stat/read functions the walkers pass in), except for the classifier's one
- * scoped `git config --get-regexp` subprocess — the exec-channel read for git
- * read subcommands, the only subprocess the pre-side classification runs. It
+ * pure logic plus injected subprocess I/O: command classification, the
+ * private write-tree capture, tree-to-tree comparison (git-diff hunks mapped
+ * to post ranges), the text/binary classifier, and the concurrency ambiguity
+ * rules. Git runs through the injected {@link GitRunner} seam and file stats
+ * through {@link StatFile}, except for the classifier's one scoped
+ * `git config --get-regexp` subprocess — the exec-channel read for git read
+ * subcommands, the only subprocess the pre-side classification runs. It
  * imports nothing from either hook SDK and is typed structurally, per the
  * `common/` layer convention.
  *
- * The two line-hash budget caps (per-file 4000, per-record 200,000) with the
- * coarse-file fallback are contract decisions — baked into
- * {@link DEFAULT_SNAPSHOT_BUDGETS} exactly as the plan states — as are the
- * touched-files cap (100) and the post-side wall budget (5 s), which together
- * are the PostToolUse timeout detection.
+ * The touched-files cap (100) and the post-side wall budget (5 s) are
+ * contract decisions — baked into {@link DEFAULT_SNAPSHOT_BUDGETS} exactly as
+ * the plan states — and together they are the PostToolUse timeout detection.
  *
  * Reused from the shared kernel (not redefined): `LineRange` (1-based
  * inclusive line ranges) from agent-hooks-common.ts.
@@ -42,28 +41,17 @@ import { argvOf, splitTopLevel, tokenize } from './shell-split.js';
  * are the shipped defaults, per the plan.
  */
 export interface SnapshotBudgets {
-  /** Tier-2 walk: max files captured per record (default 5000). */
-  maxFiles: number;
-  /** Per-file byte cap; larger files are excluded, never recorded coarse (default 1 MiB). */
-  maxBytesPerFile: number;
-  /** Sum of file bytes across one record's pre walk (default 64 MiB). */
-  maxTotalBytes: number;
-  /** Line-hash cap per file; over it the file is recorded coarse — byte hash only (default 4000). */
-  maxLineHashesPerFile: number;
   /**
-   * Line-hash cap per record; after it (in deterministic walk order) every
-   * remaining file is recorded coarse with a gap diagnostic (default 200,000).
-   * Together with the per-file cap this bounds a record's worst-case serialized
-   * size so the global storage cap holds several full records.
+   * Pre-side max wall seconds for the `git add -A` + `write-tree` pair
+   * (default 1); exhaustion degrades the capture to a stat-only sweep.
    */
-  maxLineHashesPerRecord: number;
-  /** Pre-side max wall seconds for the whole snapshot walk (default 1). */
   preSideMaxWallSeconds: number;
   /**
-   * Max storage across all records in the repo. Exhaustion refuses new
-   * snapshot writes with a diagnostic — never drop-oldest, because deleting
-   * records would silently destroy the ambiguity evidence the concurrency
-   * rules depend on (default 64 MiB).
+   * Max storage across all of the repo's live calls — the per-call private
+   * object dirs plus the record files. Exhaustion refuses new snapshot
+   * writes with a diagnostic — never drop-oldest, because deleting records
+   * would silently destroy the ambiguity evidence the concurrency rules
+   * depend on (default 64 MiB).
    */
   maxStorageBytes: number;
   /**
@@ -87,11 +75,6 @@ export interface SnapshotBudgets {
 
 /** The shipped budget defaults, exactly as the plan states them. */
 export const DEFAULT_SNAPSHOT_BUDGETS: SnapshotBudgets = {
-  maxFiles: 5000,
-  maxBytesPerFile: 1024 * 1024,
-  maxTotalBytes: 64 * 1024 * 1024,
-  maxLineHashesPerFile: 4000,
-  maxLineHashesPerRecord: 200_000,
   preSideMaxWallSeconds: 1,
   maxStorageBytes: 64 * 1024 * 1024,
   maxTouchedFiles: 100,
@@ -99,86 +82,6 @@ export const DEFAULT_SNAPSHOT_BUDGETS: SnapshotBudgets = {
   recordTtlMs: 24 * 60 * 60 * 1000,
   unfinishedEntryTtlMs: 15 * 60 * 1000
 };
-
-// ---------------------------------------------------------------------------
-// Record shapes
-// ---------------------------------------------------------------------------
-
-/** The snapshot's tier: explicit targets only, or the repo-wide eligible walk. */
-export type SnapshotTier = 'explicit' | 'repo';
-
-/**
- * One file's pre (or post) state in a snapshot record: identity, byte hash +
- * size, and an ordered line-hash array. Line bytes are hashed **including the
- * terminator**, so a missing final newline and CRLF round-trips are
- * distinguishable. `mtimeNs` (BigInt) is the post-side cheap filter: a path
- * whose (size, mtimeNs) both match its pre entry is skipped without a
- * re-read — gated on a non-zero sub-second part, because on second-granularity
- * clocks a same-second write does not advance mtime. `capturedAt` is the
- * instant the pre walk read this file, on the same clock as the record's
- * `createdAt` and the activity log's `finishedAt` — the per-path baseline the
- * interleaved-edit check compares against.
- */
-export interface SnapshotFile {
-  /** SHA-256 hex of the file bytes. */
-  hash: string;
-  /** Byte size of the file at capture. */
-  size: number;
-  /** mtime in nanoseconds (BigInt) at capture. */
-  mtimeNs: bigint;
-  /** The instant the walk read this file (same clock as createdAt). */
-  capturedAt: number;
-  /**
-   * Ordered line hashes (line bytes hashed including the terminator). Absent
-   * when `coarse` — the per-file line cap or the per-record line budget cut
-   * in, and the file compares by byte hash only (whole-file scope on change,
-   * with a `coarse-scope` diagnostic; range precision is budgeted away,
-   * visibly, never claimed).
-   */
-  lines?: string[];
-  /** True when no line hashes were recorded (byte-hash-only comparison). */
-  coarse?: boolean;
-}
-
-/**
- * One JSON record per tool call, written to
- * `~/.cache/git-span/session/<session>/snapshots/<sanitized-tool_use_id>.json`
- * with 0600 permissions (dirs 0700). `files` holds the pre-state per
- * repo-relative path. Consumption writes `post` (the same per-file shape, for
- * paths that changed), sets `consumed: true`, and stamps `consumedAt` — the
- * ambiguity table's window-overlap rows read it — and the record is then
- * retained until TTL/session-end because later calls' ambiguity checks need
- * its pre/post per-path state. A `version` mismatch on read fails closed
- * (discard + diagnostic).
- */
-export interface SnapshotRecord {
-  /** Record format version. A mismatch on read fails closed. */
-  version: 1;
-  sessionId: string;
-  toolUseId: string;
-  /** Subagent agent id, recorded by the PreToolUse adapters when present. */
-  agentId?: string;
-  /** Absolute repo root the snapshot was taken in. */
-  repoRoot: string;
-  /** The instant the record was written (same clock as capturedAt/finishedAt). */
-  createdAt: number;
-  /** Whether a PostToolUse has consumed this record. */
-  consumed: boolean;
-  /** Stamped at consumption; null while the record is live. */
-  consumedAt: number | null;
-  tier: SnapshotTier;
-  /**
-   * Coverage-gap diagnostics (budget cuts, refusals, comparison stops). The
-   * comparison never describes partial coverage as complete; a sibling record
-   * carrying gaps is treated as covering every in-scope path for the
-   * ambiguity check, because its coverage is unknowable.
-   */
-  gaps: string[];
-  /** Pre-state per repo-relative path. */
-  files: Record<string, SnapshotFile>;
-  /** Post-state per changed path, written at consumption. */
-  post?: Record<string, SnapshotFile>;
-}
 
 // ---------------------------------------------------------------------------
 // Command classification
@@ -730,10 +633,10 @@ export function classifyCommandForSnapshot(command: string, cwd: string): Snapsh
 }
 
 // ---------------------------------------------------------------------------
-// File hashing
+// File stat
 // ---------------------------------------------------------------------------
 
-/** The stat fields the snapshot needs from a file (the (size, mtimeNs) pair is the post-side cheap filter). */
+/** The stat fields the stat-only degrade sweep records per path. */
 export interface FileStat {
   /** Byte size of the file. */
   size: number;
@@ -743,85 +646,6 @@ export interface FileStat {
 
 /** Injected file stat: null when the file is absent or unstat-able. */
 export type StatFile = (absPath: string) => FileStat | null;
-
-/** Injected byte read: null when the file is absent or unreadable. */
-export type ReadFile = (absPath: string) => Buffer | null;
-
-/** The inputs {@link hashFile} needs; the caller owns the path and clock. */
-export interface HashFileInput {
-  /** Absolute path of the file to hash. */
-  absPath: string;
-  /** The clock instant to stamp as the entry's `capturedAt`. */
-  now: number;
-  /** The budgets in force (per-file byte cap; per-file line cap). */
-  budgets: SnapshotBudgets;
-  /**
-   * Line-hash budget remaining for the record (deterministic walk order): 0
-   * forces a coarse entry regardless of the per-file cap.
-   */
-  remainingLineBudget: number;
-  /** Injected stat: null when the file is absent or unstat-able. */
-  stat: StatFile;
-  /** Injected byte read: null when the file is absent or unreadable. */
-  read: ReadFile;
-}
-
-/**
- * Hash one file into a snapshot entry — byte hash, size, mtimeNs, and ordered
- * line hashes — or null when the file cannot be read. A file over the
- * per-file line cap (or with no line budget remaining) is recorded coarse
- * (byte hash, size, mtimeNs; no line hashes). A file over the per-file byte
- * cap is excluded (null).
- */
-/** Count newline-terminated lines, plus a bare final line without a terminator. */
-function lineCount(content: Buffer): number {
-  let n = 0;
-  for (let i = 0; i < content.length; i += 1) {
-    if (content[i] === 0x0a) n += 1;
-  }
-  if (content.length > 0 && content[content.length - 1] !== 0x0a) n += 1;
-  return n;
-}
-
-/** Split buffer content into line hashes, each line hashed including its terminator. */
-function contentLines(content: Buffer): string[] {
-  const lines: string[] = [];
-  let start = 0;
-  for (let i = 0; i < content.length; i += 1) {
-    if (content[i] === 0x0a) {
-      lines.push(
-        createHash('sha256')
-          .update(content.subarray(start, i + 1))
-          .digest('hex')
-      );
-      start = i + 1;
-    }
-  }
-  if (start < content.length) {
-    lines.push(createHash('sha256').update(content.subarray(start)).digest('hex'));
-  }
-  return lines;
-}
-
-export function hashFile(input: HashFileInput): SnapshotFile | null {
-  const { absPath, now, budgets, remainingLineBudget, stat, read } = input;
-  const st = stat(absPath);
-  if (st === null) return null;
-  const content = read(absPath);
-  if (content === null) return null;
-  if (content.length > budgets.maxBytesPerFile) return null;
-  // Binary exclusion: a NUL in the first 8 KiB marks a binary file — never recorded.
-  const scanEnd = Math.min(content.length, 8192);
-  for (let i = 0; i < scanEnd; i += 1) {
-    if (content[i] === 0) return null;
-  }
-  const hash = createHash('sha256').update(content).digest('hex');
-  const base = { hash, size: st.size, mtimeNs: st.mtimeNs, capturedAt: now };
-  if (remainingLineBudget <= 0 || lineCount(content) > budgets.maxLineHashesPerFile) {
-    return { ...base, coarse: true };
-  }
-  return { ...base, lines: contentLines(content) };
-}
 
 // ---------------------------------------------------------------------------
 // Diff
@@ -852,449 +676,6 @@ export interface ObservedWriteRanges {
   wholeFile: boolean;
 }
 
-// ---------------------------------------------------------------------------
-// Diff internals — a faithful port of libxdiff (git v2.47.3 xdiffi.c /
-// xprepare.c), restricted to the exact-overlap regime: the mxcost floor (256)
-// and the >256-cost heuristics are out of scope, and the XDF_INDENT_HEURISTIC
-// scoring branch of xdl_change_compact is verified to have no effect on the
-// fixture's pairs, so both are omitted. The mxcost floor is NOT unreachable —
-// a heavily fragmented write (many small edits, e.g. a large reorder) can
-// exceed 256 edits in one box and splitBox throws
-// {@link SnapshotDiffCostFloorError}; compareSnapshot catches it and falls
-// back to whole-file attribution, and the harness branch's belt-and-braces
-// consume is the backstop for anything else. Verified byte-exact against
-// `git diff --no-index -U0` on the fixture's 21 explicit cases plus 300
-// seeded generated pairs.
-// ---------------------------------------------------------------------------
-
-const XDL_MAX_EQLIMIT = 1024;
-const XDL_SIMSCAN_WINDOW = 100;
-const XDL_KPDIS_RUN = 4;
-const DISCARD = 0;
-const KEEP = 1;
-const INVESTIGATE = 2;
-/** Sentinel for "unreachable" in the backward K vectors (xdl_split). */
-const XDL_LINE_MAX = 2 ** 53;
-
-/** xdl_bogosqrt: `for (i = 1; n > 0; n >>= 2) i <<= 1; return i;`. */
-function bogosqrt(n: number): number {
-  let i = 1;
-  while (n > 0) {
-    n = Math.floor(n / 4);
-    i *= 2;
-  }
-  return i;
-}
-
-/**
- * xdl_trim_ends + xdl_cleanup_records: unique lines are marked changed
- * immediately, everything else forms the effective sequences the divide and
- * conquer runs on. Returns the kept sequences plus, for each, the map from
- * kept slot to original index, and `changed1`/`changed2` — boolean arrays over
- * ALL original lines that the recursion and compaction mark in place.
- */
-function cleanupRecords(lines1: string[], lines2: string[]) {
-  const n1 = lines1.length;
-  const n2 = lines2.length;
-
-  // xdl_trim_ends: walk past the common prefix, then (up to min(n1,n2) -
-  // dstart times) the common suffix. The window [dstart, dend] is what the
-  // classification below sees.
-  let dstart = 0;
-  const lim = Math.min(n1, n2);
-  while (dstart < lim && lines1[dstart] === lines2[dstart]) dstart += 1;
-  let i = 0;
-  while (i < lim - dstart && lines1[n1 - 1 - i] === lines2[n2 - 1 - i]) i += 1;
-  const dend1 = n1 - i - 1;
-  const dend2 = n2 - i - 1;
-
-  // Class counts per distinct line hash (xdl_classify_record: the minimal
-  // perfect hash index — content equality is hash equality here).
-  const count1 = new Map<string, number>();
-  const count2 = new Map<string, number>();
-  for (const l of lines1) count1.set(l, (count1.get(l) ?? 0) + 1);
-  for (const l of lines2) count2.set(l, (count2.get(l) ?? 0) + 1);
-
-  const mlim1 = Math.min(bogosqrt(n1), XDL_MAX_EQLIMIT);
-  const mlim2 = Math.min(bogosqrt(n2), XDL_MAX_EQLIMIT);
-
-  // Per-line verdicts: no match on the other side → DISCARD; few matches →
-  // KEEP; many matches → INVESTIGATE (xdl_clean_mmatch decides below).
-  const action1 = new Array<number>(dend1 - dstart + 1);
-  for (let j = 0; j < action1.length; j += 1) {
-    const nm = count2.get(lines1[j + dstart]) ?? 0;
-    action1[j] = nm === 0 ? DISCARD : nm < mlim1 ? KEEP : INVESTIGATE;
-  }
-  const action2 = new Array<number>(dend2 - dstart + 1);
-  for (let j = 0; j < action2.length; j += 1) {
-    const nm = count1.get(lines2[j + dstart]) ?? 0;
-    action2[j] = nm === 0 ? DISCARD : nm < mlim2 ? KEEP : INVESTIGATE;
-  }
-
-  /**
-   * xdl_clean_mmatch: a multimatch line is discarded only when discards
-   * outnumber multimatch lines 4:1 in its (windowed) neighborhood, and both
-   * sides of it contain at least one discard.
-   */
-  const cleanMmatch = (action: number[], idx: number, len: number): boolean => {
-    let s = 0;
-    let e = len - 1;
-    if (idx - s > XDL_SIMSCAN_WINDOW) s = idx - XDL_SIMSCAN_WINDOW;
-    if (e - idx > XDL_SIMSCAN_WINDOW) e = idx + XDL_SIMSCAN_WINDOW;
-    let rdis0 = 0;
-    let rpdis0 = 1;
-    for (let r = 1; idx - r >= s; r += 1) {
-      const a = action[idx - r];
-      if (a === DISCARD) rdis0 += 1;
-      else if (a === INVESTIGATE) rpdis0 += 1;
-      else if (a === KEEP) break;
-    }
-    if (rdis0 === 0) return false;
-    let rdis1 = 0;
-    let rpdis1 = 1;
-    for (let r = 1; idx + r <= e; r += 1) {
-      const a = action[idx + r];
-      if (a === DISCARD) rdis1 += 1;
-      else if (a === INVESTIGATE) rpdis1 += 1;
-      else if (a === KEEP) break;
-    }
-    if (rdis1 === 0) return false;
-    rdis1 += rdis0;
-    rpdis1 += rpdis0;
-    return rpdis1 * XDL_KPDIS_RUN < rpdis1 + rdis1;
-  };
-
-  // KEEPs form the effective sequences; DISCARDs land on the original
-  // coordinates of changed[] (reference_index maps kept slot → original).
-  const changed1 = new Array<boolean>(n1).fill(false);
-  const changed2 = new Array<boolean>(n2).fill(false);
-  const seq1: string[] = [];
-  const ref1: number[] = [];
-  for (let j = 0; j < action1.length; j += 1) {
-    let a = action1[j];
-    if (a === INVESTIGATE) a = cleanMmatch(action1, j, action1.length) ? DISCARD : KEEP;
-    if (a === KEEP) {
-      seq1.push(lines1[j + dstart]);
-      ref1.push(j + dstart);
-    } else {
-      changed1[j + dstart] = true;
-    }
-  }
-  const seq2: string[] = [];
-  const ref2: number[] = [];
-  for (let j = 0; j < action2.length; j += 1) {
-    let a = action2[j];
-    if (a === INVESTIGATE) a = cleanMmatch(action2, j, action2.length) ? DISCARD : KEEP;
-    if (a === KEEP) {
-      seq2.push(lines2[j + dstart]);
-      ref2.push(j + dstart);
-    } else {
-      changed2[j + dstart] = true;
-    }
-  }
-  return { seq1, seq2, ref1, ref2, changed1, changed2 };
-}
-
-/**
- * xdl_split: a split point crossed by a shortest edit path of the box
- * [off1, lim1) x [off2, lim2) in effective-sequence coordinates. Both paths
- * index the same diagonal space (no mirrored k-axes); in-domain reads are
- * always fresh because each round writes its extension sentinels first.
- * Throws {@link SnapshotDiffCostFloorError} if the exact path exceeds 256
- * edits — the mxcost/heuristic fallbacks xdiff would use are out of scope,
- * and compareSnapshot degrades such a box to whole-file attribution.
- */
-export class SnapshotDiffCostFloorError extends Error {
-  constructor(ec: number) {
-    super(`splitBox exceeded the exact-regime cost floor (ec=${ec})`);
-    this.name = 'SnapshotDiffCostFloorError';
-  }
-}
-function splitBox(
-  seq1: string[],
-  seq2: string[],
-  off1: number,
-  lim1: number,
-  off2: number,
-  lim2: number
-): { i1: number; i2: number } {
-  const dmin = off1 - lim2;
-  const dmax = lim1 - off2;
-  const fmid = off1 - off2;
-  const bmid = lim1 - lim2;
-  const odd = (fmid - bmid) & 1;
-  let fmin = fmid;
-  let fmax = fmid;
-  let bmin = bmid;
-  let bmax = bmid;
-  const kvdf = new Map<number, number>();
-  const kvdb = new Map<number, number>();
-  kvdf.set(fmid, off1);
-  kvdb.set(bmid, lim1);
-
-  for (let ec = 1; ; ec += 1) {
-    if (fmin > dmin) kvdf.set(--fmin - 1, -1);
-    else ++fmin;
-    if (fmax < dmax) kvdf.set(++fmax + 1, -1);
-    else --fmax;
-    for (let d = fmax; d >= fmin; d -= 2) {
-      const kvdfDm1 = kvdf.get(d - 1) ?? -1;
-      const kvdfDp1 = kvdf.get(d + 1) ?? -1;
-      let i1: number;
-      if (kvdfDm1 >= kvdfDp1) i1 = kvdfDm1 + 1;
-      else i1 = kvdfDp1;
-      let i2 = i1 - d;
-      while (i1 < lim1 && i2 < lim2 && seq1[i1] === seq2[i2]) {
-        i1 += 1;
-        i2 += 1;
-      }
-      kvdf.set(d, i1);
-      if (odd && bmin <= d && d <= bmax && (kvdb.get(d) ?? XDL_LINE_MAX) <= i1) {
-        return { i1, i2 };
-      }
-    }
-
-    if (bmin > dmin) kvdb.set(--bmin - 1, XDL_LINE_MAX);
-    else ++bmin;
-    if (bmax < dmax) kvdb.set(++bmax + 1, XDL_LINE_MAX);
-    else --bmax;
-    for (let d = bmax; d >= bmin; d -= 2) {
-      const kvdbDm1 = kvdb.get(d - 1) ?? XDL_LINE_MAX;
-      const kvdbDp1 = kvdb.get(d + 1) ?? XDL_LINE_MAX;
-      let i1: number;
-      if (kvdbDm1 < kvdbDp1) i1 = kvdbDm1;
-      else i1 = kvdbDp1 - 1;
-      let i2 = i1 - d;
-      while (i1 > off1 && i2 > off2 && seq1[i1 - 1] === seq2[i2 - 1]) {
-        i1 -= 1;
-        i2 -= 1;
-      }
-      kvdb.set(d, i1);
-      if (!odd && fmin <= d && d <= fmax && i1 <= (kvdf.get(d) ?? -1)) {
-        return { i1, i2 };
-      }
-    }
-
-    if (ec >= 256) {
-      throw new SnapshotDiffCostFloorError(ec);
-    }
-  }
-}
-
-/**
- * xdl_recs_cmp: divide and conquer over the effective sequences, marking
- * `changed` (original coordinates, via the ref maps) in place. At every level
- * the box is shrunk by consuming common prefix/suffix snakes first — that is
- * what terminates the degenerate meeting of the forward and backward paths.
- */
-function divideAndConquer(
-  seq1: string[],
-  seq2: string[],
-  ref1: number[],
-  ref2: number[],
-  changed1: boolean[],
-  changed2: boolean[]
-): void {
-  const recurse = (off1: number, lim1: number, off2: number, lim2: number): void => {
-    while (off1 < lim1 && off2 < lim2 && seq1[off1] === seq2[off2]) {
-      off1 += 1;
-      off2 += 1;
-    }
-    while (off1 < lim1 && off2 < lim2 && seq1[lim1 - 1] === seq2[lim2 - 1]) {
-      lim1 -= 1;
-      lim2 -= 1;
-    }
-    if (off1 === lim1) {
-      for (let j = off2; j < lim2; j += 1) changed2[ref2[j]] = true;
-      return;
-    }
-    if (off2 === lim2) {
-      for (let j = off1; j < lim1; j += 1) changed1[ref1[j]] = true;
-      return;
-    }
-    const spl = splitBox(seq1, seq2, off1, lim1, off2, lim2);
-    recurse(off1, spl.i1, off2, spl.i2);
-    recurse(spl.i1, lim1, spl.i2, lim2);
-  };
-  recurse(0, seq1.length, 0, seq2.length);
-}
-
-// xdl_change_compact: slide each change group as far up and down as possible,
-// merge it into any group it bumps into, then — when shifting was possible —
-// align the group with the last group of changes in the other file that it
-// can line up with. All coordinates are ORIGINAL line positions: compaction
-// runs on the full changed[] arrays, after the D&C has marked them through
-// the reference maps. A group is `[start, end)` of changed lines (end is the
-// first unchanged line after it; an empty group has start === end).
-
-interface DiffGroup {
-  start: number;
-  end: number;
-}
-
-function groupInit(changed: boolean[], _nrec: number): DiffGroup {
-  let end = 0;
-  while (changed[end]) end += 1;
-  return { start: 0, end };
-}
-
-function groupNext(changed: boolean[], nrec: number, g: DiffGroup): number {
-  if (g.end === nrec) return -1;
-  g.start = g.end + 1;
-  g.end = g.start;
-  while (changed[g.end]) g.end += 1;
-  return 0;
-}
-
-function groupPrevious(changed: boolean[], g: DiffGroup): number {
-  if (g.start === 0) return -1;
-  g.end = g.start - 1;
-  g.start = g.end;
-  while (changed[g.start - 1]) g.start -= 1;
-  return 0;
-}
-
-function groupSlideDown(lines: string[], changed: boolean[], g: DiffGroup): number {
-  if (g.end < lines.length && lines[g.start] === lines[g.end]) {
-    changed[g.start] = false;
-    g.start += 1;
-    changed[g.end] = true;
-    g.end += 1;
-    while (changed[g.end]) g.end += 1;
-    return 0;
-  }
-  return -1;
-}
-
-function groupSlideUp(lines: string[], changed: boolean[], g: DiffGroup): number {
-  if (g.start > 0 && lines[g.start - 1] === lines[g.end - 1]) {
-    g.start -= 1;
-    changed[g.start] = true;
-    g.end -= 1;
-    changed[g.end] = false;
-    while (changed[g.start - 1]) g.start -= 1;
-    return 0;
-  }
-  return -1;
-}
-
-/**
- * xdl_change_compact(xdf, xdfo) for one file, in the xdl_diff call order
- * (file 1 against file 2, then file 2 against file 1). The changed[] arrays
- * carry a trailing falsy sentinel, mirroring the C rchg allocation of
- * nrec + 2 zeroed entries.
- */
-function changeCompact(
-  lines: string[],
-  _otherLines: string[],
-  changed: boolean[],
-  otherChanged: boolean[],
-  onrec: number
-): void {
-  const g = groupInit(changed, lines.length);
-  const go = groupInit(otherChanged, onrec);
-  for (;;) {
-    // Empty group in the file being compacted: skip it.
-    if (g.end !== g.start) {
-      let groupsize: number;
-      let endMatchingOther: number;
-      let earliestEnd: number;
-      do {
-        groupsize = g.end - g.start;
-        // Last "end" that aligns this group with a changed group in the
-        // other file; -1 until one is found.
-        endMatchingOther = -1;
-        // Shift backward as far as possible.
-        while (groupSlideUp(lines, changed, g) === 0) {
-          if (groupPrevious(otherChanged, go) !== 0) throw new Error('group sync broken sliding up');
-        }
-        earliestEnd = g.end;
-        if (go.end > go.start) endMatchingOther = g.end;
-        // Shift forward as far as possible.
-        for (;;) {
-          if (groupSlideDown(lines, changed, g) !== 0) break;
-          if (groupNext(otherChanged, onrec, go) !== 0) throw new Error('group sync broken sliding down');
-          if (go.end > go.start) endMatchingOther = g.end;
-        }
-      } while (groupsize !== g.end - g.start);
-
-      if (g.end !== earliestEnd && endMatchingOther !== -1) {
-        // Move the (possibly merged) group back to line up with the last
-        // group of changes from the other file that it can align with.
-        while (go.end === go.start) {
-          if (groupSlideUp(lines, changed, g) !== 0) throw new Error('match disappeared');
-          if (groupPrevious(otherChanged, go) !== 0) throw new Error('group sync broken sliding to match');
-        }
-      }
-      // (The XDF_INDENT_HEURISTIC scoring branch is omitted — verified to
-      // have no effect on the fixture's pairs.)
-    }
-    // Move past the just-processed group.
-    if (groupNext(changed, lines.length, g) !== 0) break;
-    if (groupNext(otherChanged, onrec, go) !== 0) throw new Error('group sync broken moving to next group');
-  }
-  if (groupNext(otherChanged, onrec, go) === 0) throw new Error('group sync broken at end of file');
-}
-
-/**
- * xdl_build_script: changed[] runs → change atoms in forward order, relying
- * on a falsy sentinel at index -1 (and past the end) of each changed[].
- */
-function buildScript(
-  changed1: boolean[],
-  changed2: boolean[]
-): { i1: number; i2: number; chg1: number; chg2: number }[] {
-  const atoms: { i1: number; i2: number; chg1: number; chg2: number }[] = [];
-  const n1 = changed1.length;
-  const n2 = changed2.length;
-  const at = (arr: boolean[], idx: number): boolean => (idx >= 0 && idx < arr.length ? arr[idx] : false);
-  let i1 = n1;
-  let i2 = n2;
-  for (; i1 >= 0 || i2 >= 0; i1 -= 1, i2 -= 1) {
-    if (at(changed1, i1 - 1) || at(changed2, i2 - 1)) {
-      const l1 = i1;
-      while (at(changed1, i1 - 1)) i1 -= 1;
-      const l2 = i2;
-      while (at(changed2, i2 - 1)) i2 -= 1;
-      atoms.unshift({ i1, i2, chg1: l1 - i1, chg2: l2 - i2 });
-    }
-  }
-  return atoms;
-}
-
-/**
- * Hunk header emission, matching xdl_emit_diff / xdl_emit_hunk_hdr with
- * ctxlen = 0 (one hunk per atom; the zero-count side's start stays 0-based,
- * the count is omitted when it is 1 — git emits `-0,0`, `-3,0`, `-2`, ...).
- * `preStart` 0 for a pure insertion at the start; `postStart` 0 for a pure
- * deletion at the start.
- */
-function atomsToHunks(atoms: { i1: number; i2: number; chg1: number; chg2: number }[]): DiffHunk[] {
-  return atoms.map((a) => ({
-    preStart: a.chg1 === 0 ? a.i1 : a.i1 + 1,
-    preLines: a.chg1,
-    postStart: a.chg2 === 0 ? a.i2 : a.i2 + 1,
-    postLines: a.chg2
-  }));
-}
-
-/**
- * Myers diff over the pre/post line-hash arrays. Pure function, O(ND) — a
- * faithful port of git's libxdiff (v2.47.3): trim + classification cleanup,
- * divide-and-conquer middle-snake split, change-group compaction, and hunk
- * emission with `-U0` semantics. The line hashes are opaque strings, so two
- * different lines mapped to the same hash diff as identical (the
- * injected-collision seam the comparison catches by byte hash).
- */
-export function diffLineHashes(pre: string[], post: string[]): DiffHunk[] {
-  const { seq1, seq2, ref1, ref2, changed1, changed2 } = cleanupRecords(pre, post);
-  divideAndConquer(seq1, seq2, ref1, ref2, changed1, changed2);
-  // xdl_diff runs compaction once per file, in this order.
-  changeCompact(pre, post, changed1, changed2, post.length);
-  changeCompact(post, pre, changed2, changed1, pre.length);
-  return atomsToHunks(buildScript(changed1, changed2));
-}
-
 /**
  * Map diff hunks to post-state ranges: inserted/modified lines become exact
  * post-state ranges; any delete-only hunk (no reliable post-state coordinate
@@ -1312,51 +693,6 @@ export function hunksToPostRanges(hunks: DiffHunk[]): ObservedWriteRanges {
 }
 
 // ---------------------------------------------------------------------------
-// Rename pairing
-// ---------------------------------------------------------------------------
-
-/** A delete+create pair resolved into a rename (identical byte hashes, unique match). */
-export interface RenamePair {
-  /** Repo-relative pre path. */
-  from: string;
-  /** Repo-relative post path. */
-  to: string;
-}
-
-/**
- * Pair rename candidates: pre-absent paths with post-present paths of
- * identical byte hash. Only unique hash matches pair; content ties are left
- * as delete+create.
- */
-export function pairRenames(
-  pre: ReadonlyMap<string, SnapshotFile>,
-  post: ReadonlyMap<string, SnapshotFile>
-): RenamePair[] {
-  const preByHash = new Map<string, string[]>();
-  for (const [path, f] of pre) {
-    if (post.has(path)) continue; // present on both sides — not a candidate
-    const arr = preByHash.get(f.hash) ?? [];
-    arr.push(path);
-    preByHash.set(f.hash, arr);
-  }
-  const postByHash = new Map<string, string[]>();
-  for (const [path, f] of post) {
-    if (pre.has(path)) continue;
-    const arr = postByHash.get(f.hash) ?? [];
-    arr.push(path);
-    postByHash.set(f.hash, arr);
-  }
-  const pairs: RenamePair[] = [];
-  for (const [hash, prePaths] of preByHash) {
-    const postPaths = postByHash.get(hash);
-    // Only unique hash matches pair; content ties stay delete+create.
-    if (postPaths === undefined || postPaths.length !== 1 || prePaths.length !== 1) continue;
-    pairs.push({ from: prePaths[0]!, to: postPaths[0]! });
-  }
-  return pairs;
-}
-
-// ---------------------------------------------------------------------------
 // Pre/post comparison
 // ---------------------------------------------------------------------------
 
@@ -1371,227 +707,23 @@ export type PathAttribution =
   | { kind: 'deleted' }
   | { kind: 'rename'; from: string };
 
-/** The inputs {@link compareSnapshot} needs; I/O is injected. */
-export interface CompareSnapshotInput {
-  /** The pre record written at PreToolUse (files, coverage gaps, identity). */
-  record: SnapshotRecord;
-  /** The post walk's per-path state, keyed by repo-relative path. */
-  post: ReadonlyMap<string, SnapshotFile>;
-  /** The post walk's coverage gaps (a path-coverage gap disqualifies delete candidates). */
-  postGaps: string[];
-  /** The budgets in force (post-side wall budget; touched-files cap). */
-  budgets: SnapshotBudgets;
-  /** Injected stat: null when a path is absent. */
-  stat: StatFile;
-  /** Injected byte read: null when a path is absent/unreadable. */
-  read: ReadFile;
-  /**
-   * The instant the post-side work began (the handler's `now` captured at
-   * post-side entry, before the post walk). The wall budget measures elapsed
-   * time since THIS instant — the comparison's own cost — never since the
-   * record's `createdAt`, which includes the whole command runtime and would
-   * zero out attribution for any opaque write command longer than the budget.
-   */
-  wallStart: number;
-  /**
-   * Injectable wall clock for the post-side wall budget, defaulting to
-   * Date.now. Injectable so fixtures can pin the budget deterministically.
-   */
-  wallClock?: () => number;
-}
-
-/** The comparison's outcome: per-path attributions plus coverage diagnostics. */
-export interface CompareSnapshotResult {
-  /**
-   * Attribution per path, keyed by repo-relative path. Unchanged paths are
-   * omitted; every path outside the pre/post coverage intersection is
-   * dropped with a diagnostic, never attributed.
-   */
-  attributions: Map<string, PathAttribution>;
-  /**
-   * Pre-recorded paths the compare walked on both sides and found byte-for-
-   * byte identical (or chmod/mtime-only noise) — confirmed in scope, nothing
-   * to attribute. Distinct from a path outside the pre/post coverage
-   * intersection (a gap, never confirmed either way): a caller merging this
-   * comparison with a co-parser must exclude both an attributed change and a
-   * confirmed no-op, but must still let the co-parser run over paths this
-   * comparison never actually covered.
-   */
-  unchanged: Set<string>;
-  /**
-   * Diagnostics: dropped paths and their reasons (coverage-intersection
-   * gaps, interleaved-tool verdicts live in the ambiguity pass), `coarse-scope`
-   * notes, zero-hunk collision notes, and budget-stop notes naming exactly
-   * which paths were attributed and which were not.
-   */
-  gaps: string[];
-}
-
 /**
- * Compare the pre record against the post walk. For each pre-recorded path:
- * absent → delete candidate; (size, mtimeNs) both matching its pre entry
- * (with a non-zero sub-second mtimeNs part — second-granularity clocks are
- * never trusted to prove non-change) → unchanged, no re-read; else re-read
- * and byte-hash: equal → unchanged (chmod/mtime-only noise), differing →
- * changed. Post-only paths are create candidates only when the pre record
- * reports no path-coverage gap (a coarse pre entry still records the file, so
- * it does not disqualify); pre-only paths are delete candidates only when the
- * post walk's coverage is complete. Rename candidates pair pre-absent /
- * post-present paths with identical byte hashes. Changed files diff over
- * their line-hash arrays (line-hash collision → zero hunks → whole-file +
- * diagnostic, so a hash collision can never silently shrink attribution);
- * changed coarse files degrade to whole-file scope with a `coarse-scope`
- * diagnostic. The post-side wall budget is checked per scope before any
- * diff/touch work; on exhaustion the comparison stops adding scopes and
- * records a diagnostic. The budget's clock starts at `wallStart` — the
- * post-side work's own start — so a command's runtime never exhausts it;
- * only the comparison's own cost can. The changed-path count is capped by
- * `budgets.maxTouchedFiles`; beyond it, coverage-gap diagnostics and no
- * touches — and the cut gaps persist onto the record at consume, so a later
- * sibling's null-post read of a cut path fails closed (coverage-unknowable),
- * never reads "consumed without changing P".
- */
-/**
- * Whether a record's gaps include a path-coverage gap — some paths were never
- * recorded (file-count/total-bytes/wall-budget cuts, truncated walks) or the
- * comparison stopped before recording a path's post state (touched-files cap,
- * post-side wall exhaustion, unreadable-at-compare, an aborted comparison).
- * The line-hash budget cut is NOT one: a coarse entry still records the file's
- * byte hash, which is all the pre-evidence a create candidate needs. Nor are
- * the precision-loss compare diagnostics (coarse-scope / zero-hunk collision /
- * diff cost floor) — those paths ARE attributed and their post state is
- * recorded, so a missing post entry still means "unchanged". Every match is
- * anchored to the emitter's fixed prefix: gap strings interpolate user file
- * names (exclusion diagnostics, cap-cut paths), so an unanchored scan would
- * let a file named like a gap phrase open the family. The same gap-family
- * feed the predicate here; the store's index mirrored the family as its
- * `covered` column until that mirror was removed as dead.
+ * Whether a record's gaps include a path-coverage gap — the capture degraded
+ * to stat-only (content coverage unknowable) or the comparison stopped before
+ * recording a path's post state (touched-files cap, post-side wall
+ * exhaustion, unreadable-at-compare, an aborted comparison). The
+ * precision-loss diagnostics (`binary-scope`) are NOT in the family — those
+ * paths ARE attributed and their post state is recorded, so a missing post
+ * entry still means "unchanged". Every match is anchored to the emitter's
+ * fixed prefix: gap strings interpolate user file names (cap-cut paths,
+ * unreadable drops), so an unanchored scan would let a file named like a gap
+ * phrase open the family.
  */
 const PATH_COVERAGE_GAP =
-  /^(?:file-count budget exceeded:|total-bytes budget exceeded:|pre-side wall budget exceeded:|post-side wall budget exhausted:|repo walk truncated:|touched-files cap \d+ exceeded:|post-walk coverage gap:|pre-walk coverage gap:|unreadable at compare:|snapshot compare aborted:|write-tree degraded to stat-only:)/;
+  /^(?:post-side wall budget exhausted:|touched-files cap \d+ exceeded:|unreadable at compare:|snapshot compare aborted:|write-tree degraded to stat-only:)/;
 
 export function recordHasPathCoverageGap(record: { gaps: string[] }): boolean {
   return record.gaps.some((g) => PATH_COVERAGE_GAP.test(g));
-}
-
-export function compareSnapshot(input: CompareSnapshotInput): CompareSnapshotResult {
-  const { record, post, postGaps, budgets, stat, read, wallStart } = input;
-  const clock = input.wallClock ?? Date.now;
-  const attributions = new Map<string, PathAttribution>();
-  const unchanged = new Set<string>();
-  const gaps: string[] = [];
-  const prePaths = Object.keys(record.files);
-  const preMap = new Map<string, SnapshotFile>(Object.entries(record.files));
-  const renamePairs = pairRenames(preMap, post);
-  const renameSources = new Set(renamePairs.map((p) => p.from));
-  const renameTargets = new Set(renamePairs.map((p) => p.to));
-  for (const p of renamePairs) attributions.set(p.to, { kind: 'rename', from: p.from });
-  const wallMs = budgets.postSideWallSeconds * 1000;
-  // The budget measures the comparison's own elapsed time since the post-side
-  // work began — never the record's age (createdAt is the pre-walk start, so
-  // record-age elapsed includes the whole command runtime).
-  const wallExhausted = (): boolean => clock() - wallStart > wallMs;
-  let changedCount = 0;
-
-  for (let i = 0; i < prePaths.length; i += 1) {
-    const path = prePaths[i]!;
-    if (renameSources.has(path)) continue; // paired away — no delete candidate
-    if (wallExhausted()) {
-      gaps.push(
-        `post-side wall budget exhausted: attributed ${changedCount}/${prePaths.length}, unattributed ${prePaths.slice(i).join(', ')}`
-      );
-      break;
-    }
-    const preEntry = preMap.get(path)!;
-    const postEntry = post.get(path) ?? null;
-    let size: number | null = null;
-    let mtimeNs: bigint | null = null;
-    if (postEntry !== null) {
-      size = postEntry.size;
-      mtimeNs = postEntry.mtimeNs;
-    } else {
-      const st = stat(path);
-      if (st === null) {
-        // Absent on disk. Only a complete post walk proves deletion — under any
-        // post coverage gap it may be a file the walk never reached.
-        if (postGaps.length > 0) {
-          gaps.push(`post-walk coverage gap: ${path} dropped — may be a budget-excluded file, no phantom delete`);
-        } else {
-          attributions.set(path, { kind: 'deleted' });
-        }
-        continue;
-      }
-      size = st.size;
-      mtimeNs = st.mtimeNs;
-    }
-    if (size === preEntry.size && mtimeNs === preEntry.mtimeNs && preEntry.mtimeNs % 1_000_000_000n !== 0n) {
-      unchanged.add(path); // (size, mtimeNs) both match with a trustworthy clock — unchanged, no re-read
-      continue;
-    }
-    const content = read(path);
-    if (content === null) {
-      gaps.push(`unreadable at compare: ${path} dropped without attribution`);
-      continue;
-    }
-    const hash = createHash('sha256').update(content).digest('hex');
-    if (hash === preEntry.hash) {
-      unchanged.add(path); // chmod/mtime-only noise
-      continue;
-    }
-    if (changedCount >= budgets.maxTouchedFiles) {
-      gaps.push(`touched-files cap ${budgets.maxTouchedFiles} exceeded: ${path} not attributed`);
-      continue;
-    }
-    changedCount += 1;
-    if (preEntry.coarse === true) {
-      // Coarse pre entry — byte-hash-only comparison, whole-file scope.
-      attributions.set(path, { kind: 'changed', observed: { changed: [], wholeFile: true } });
-      gaps.push(`coarse-scope: ${path} has no line hashes, whole-file scope`);
-      continue;
-    }
-    let hunks: DiffHunk[];
-    try {
-      hunks = diffLineHashes(preEntry.lines ?? [], contentLines(content));
-    } catch (err) {
-      if (err instanceof SnapshotDiffCostFloorError) {
-        // The exact-regime diff has a 256-edit cost floor per box; a heavily
-        // fragmented write can exceed it. Fall back to whole-file scope with a
-        // diagnostic — mirroring the zero-hunk collision handling — so the
-        // attribution never shrinks silently and the compare never aborts
-        // with an unconsumed record.
-        attributions.set(path, { kind: 'changed', observed: { changed: [], wholeFile: true } });
-        gaps.push(`diff cost floor exceeded: ${path}, whole-file scope`);
-        continue;
-      }
-      throw err;
-    }
-    if (hunks.length === 0) {
-      // Byte hash changed but every line hash matched — a line-hash collision.
-      // Never let it silently shrink attribution: whole-file scope + diagnostic.
-      attributions.set(path, { kind: 'changed', observed: { changed: [], wholeFile: true } });
-      gaps.push(`zero-hunk collision: ${path} byte hash changed but line hashes identical, whole-file scope`);
-      continue;
-    }
-    attributions.set(path, { kind: 'changed', observed: hunksToPostRanges(hunks) });
-  }
-
-  if (!wallExhausted()) {
-    const postPaths = [...post.keys()].filter((p) => !preMap.has(p) && !renameTargets.has(p));
-    for (const path of postPaths) {
-      if (wallExhausted()) {
-        gaps.push(
-          `post-side wall budget exhausted: attributed ${changedCount}/${prePaths.length + postPaths.length}, unattributed ${postPaths.join(', ')}`
-        );
-        break;
-      }
-      if (recordHasPathCoverageGap(record)) {
-        gaps.push(`pre-walk coverage gap: ${path} dropped — may be a budget-excluded file, no phantom create`);
-        continue;
-      }
-      attributions.set(path, { kind: 'created' });
-    }
-  }
-  return { attributions, unchanged, gaps };
 }
 
 // ---------------------------------------------------------------------------
@@ -1618,9 +750,35 @@ export interface SiblingSnapshot {
    */
   coverageGap: boolean;
   /** Its pre-state for the path, or null when its coverage excluded the path. */
-  pre: SnapshotFile | null;
+  pre: SiblingPathState | null;
   /** Its post-state for the path, or null when it consumed without changing it. */
-  post: SnapshotFile | null;
+  post: SiblingPathState | null;
+}
+
+/**
+ * One side's per-path state as the table reads it: the Node SHA-256 hex of
+ * the path's bytes in that side's tree — derived on demand via
+ * {@link hashTreePath} from the sibling's recorded tree SHAs, never persisted
+ * per path.
+ */
+export interface SiblingPathState {
+  /** SHA-256 hex of the path's bytes on that side. */
+  hash: string;
+}
+
+/**
+ * My own record's view for the ambiguity check: the instant my pre capture
+ * wrote the record, and my pre-state hash for the path in question (null when
+ * my pre tree lacked the path — a created path, or a stat-only degrade).
+ * Derived by the harness from the comparison's content hashes; the table's
+ * row logic is unchanged from the per-path-map era — only where its inputs
+ * come from changed.
+ */
+export interface AmbiguityBaseline {
+  /** The instant my pre capture wrote the record. */
+  createdAt: number;
+  /** My pre-state hash for the path; null when my pre side lacked it. */
+  preHash: string | null;
 }
 
 /**
@@ -1659,8 +817,12 @@ export type AmbiguityVerdict =
  * A gapped unconsumed sibling covers every path (coverageGap), closing the
  * "truncated sibling becomes invisible" hole.
  */
-export function applyAmbiguityRules(mine: SnapshotRecord, siblings: SiblingSnapshot[], path: string): AmbiguityVerdict {
-  const myPreHash = mine.files[path]?.hash ?? null;
+export function applyAmbiguityRules(
+  mine: AmbiguityBaseline,
+  siblings: SiblingSnapshot[],
+  path: string
+): AmbiguityVerdict {
+  const myPreHash = mine.preHash;
   // Fully deterministic order: every consumer of an entangled path evaluates
   // the same sibling set in the same order and reaches the same verdict.
   const ordered = [...siblings].sort((a, b) => {
@@ -1758,7 +920,7 @@ export interface StatOnlyEntry {
  * checks derive per-path pre/post hashes from the two tree SHAs on demand
  * ({@link hashTreePath}) instead of reading persisted per-path maps.
  */
-export interface SnapshotPostStateV2 {
+export interface SnapshotPostState {
   /** The post-side write-tree SHA; null only on stat-only degrade. */
   treeSha: string | null;
   /** Present only on stat-only degrade (post-side wall budget cut). */
@@ -1769,10 +931,9 @@ export interface SnapshotPostStateV2 {
  * The v2 snapshot record: a tree SHA and correlation/gap metadata — a few
  * hundred bytes, never megabytes. The store's version-mismatch read fails
  * closed, so v1 records on disk are discarded on read and reaped by TTL; no
- * migration. (Named with the V2 suffix only while the v1 record above is
- * still live; the harness wiring phase renames it to SnapshotRecord.)
+ * migration.
  */
-export interface SnapshotRecordV2 {
+export interface SnapshotRecord {
   /** Record format version. A mismatch on read fails closed. */
   version: 2;
   sessionId: string;
@@ -1801,7 +962,7 @@ export interface SnapshotRecordV2 {
    */
   gaps: string[];
   /** Post-side state, written at consumption. */
-  post?: SnapshotPostStateV2;
+  post?: SnapshotPostState;
 }
 
 /**
@@ -1946,22 +1107,47 @@ export function captureWriteTree(input: CaptureWriteTreeInput): CaptureWriteTree
   // each. File-granularity evidence only; the gap above is path-coverage
   // family, so siblings fail closed on this record.
   try {
-    const raw = runGit(['ls-files', '-z', '--cached', '--others', '--exclude-standard'], {
-      cwd: repoRoot,
-      timeoutMs: remaining()
-    }).toString('utf8');
-    const spanRel = spanRootRelative(repoRoot, spanRoot);
-    const statOnly: Record<string, StatOnlyEntry> = {};
-    for (const rel of raw.split('\0')) {
-      if (rel.length === 0 || isInsideSpanRoot(rel, spanRel)) continue;
-      const st = stat(join(repoRoot, rel));
-      if (st !== null) statOnly[rel] = { size: st.size, mtimeNs: st.mtimeNs };
-    }
-    return { treeSha: null, statOnly, gaps };
+    return {
+      treeSha: null,
+      statOnly: statOnlySweep({ repoRoot, spanRoot, timeoutMs: remaining(), runGit, stat }),
+      gaps
+    };
   } catch (err) {
     gaps.push(`stat-only sweep failed: ${err instanceof Error ? err.message : String(err)}`);
     return { treeSha: null, gaps };
   }
+}
+
+/**
+ * The stat-only sweep: tracked + untracked-non-ignored paths (span documents
+ * filtered) each stat'ed to (size, mtimeNs). {@link captureWriteTree}'s
+ * degrade path runs it after a failed write-tree, and the post side runs it
+ * standalone when the PRE side degraded — a post write-tree would have no pre
+ * tree to compare against, so mirroring the degrade is the only mode that
+ * yields comparable evidence. Throws when the enumeration itself fails; the
+ * caller owns the diagnostic.
+ */
+export function statOnlySweep(input: {
+  repoRoot: string;
+  spanRoot: string;
+  timeoutMs: number;
+  runGit: GitRunner;
+  stat: StatFile;
+}): Record<string, StatOnlyEntry> {
+  const raw = input
+    .runGit(['ls-files', '-z', '--cached', '--others', '--exclude-standard'], {
+      cwd: input.repoRoot,
+      timeoutMs: input.timeoutMs
+    })
+    .toString('utf8');
+  const spanRel = spanRootRelative(input.repoRoot, input.spanRoot);
+  const statOnly: Record<string, StatOnlyEntry> = {};
+  for (const rel of raw.split('\0')) {
+    if (rel.length === 0 || isInsideSpanRoot(rel, spanRel)) continue;
+    const st = input.stat(join(input.repoRoot, rel));
+    if (st !== null) statOnly[rel] = { size: st.size, mtimeNs: st.mtimeNs };
+  }
+  return statOnly;
 }
 
 /**

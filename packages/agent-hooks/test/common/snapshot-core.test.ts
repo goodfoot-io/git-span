@@ -1,34 +1,22 @@
 /**
- * Skipped acceptance checks for snapshot-core.ts (Phase 2 of the card main-213
- * TDD bootstrap described in plans/snapshot-attribute.md). Phase 1 declared the
- * snapshot contract surface — budgets, record shapes, and the pure functions —
- * as `Not Implemented` stubs; this file writes the contract's acceptance
- * checks against those stubs so the Phase 3 implementation has a fixed target.
- * Phase 3 implemented the module and unskipped every case: the checks below
- * are the live acceptance suite.
+ * Acceptance checks for snapshot-core.ts — the tree-SHA snapshot contract
+ * (card main-228). The v1 per-line-hash mechanism (Myers diff over persisted
+ * line hashes, walked per-file at pre time) is gone; the surface under test
+ * is the v2 mechanism: the snapshot decision classifier, the private
+ * `git write-tree` capture with its stat-only degrade, tree-to-tree
+ * comparison via `git diff --name-status`/`-U0` hunks, the proportional
+ * text/binary classifier (git's NUL heuristic false-positives on real
+ * source files in this repo — the fixtures embed excerpts of them), the
+ * on-demand sibling hashing via `git cat-file`, and the concurrency
+ * ambiguity table over {@link AmbiguityBaseline} + {@link SiblingSnapshot}.
  *
- * The diff oracle is `git diff --no-index -U0` on generated pre/post pairs:
- * the property tests assert `diffLineHashes` reproduces git's xdiff hunk
- * layout EXACTLY — coordinates, pure-insertion/deletion 0-sides, adjacent
- * change-region merging, and its tie-breaking on duplicated lines — because
- * the snapshot path attributes the same ranges a developer sees in `git
- * diff`. A naive Myers backtrack does NOT match git (verified: ~36% of
- * duplicate-heavy pairs and ~1% of unique-line pairs diverge on tie-breaks
- * and hunk merging); the oracle is the spec Phase 3 ports against, not a
- * loose sanity check. The fixture's own line-hash helper hashes each line
- * INCLUDING its terminator, so a missing final newline and CRLF round-trips
- * are distinguishable — the contract's `SnapshotFile.lines` semantics.
- *
- * The injected-hash-collision seam is the function's own signature: both
- * `diffLineHashes` and the comparison operate on opaque line-hash strings, so
- * a test can hand them two arrays that are equal as hash strings while the
- * files' byte hashes differ — exactly the collision the plan says must fall
- * back to whole-file scope with a diagnostic, never silently shrink.
- *
- * Fakes are constructed against the real exported types (SnapshotRecord,
- * SnapshotFile, SiblingSnapshot, CompareSnapshotInput, HashFileInput) rather
- * than loosened/`any`-typed shapes — that fidelity is the payoff of the
- * bootstrap: an awkward fake here is a contract-ergonomics finding.
+ * Conventions: git-facing checks run against scripted {@link GitRunner}
+ * transcripts (call-log assertions pin the "0 new objects" and "-M100%
+ * floor" properties) or real temp repos for the classifier's exec-config
+ * reads — never mocks of the contract types. Hash checks assert VALUES
+ * (Node SHA-256 of the fixture bytes, never git SHA-1 blob OIDs), so a
+ * regression into git's OID space fails loudly instead of silently breaking
+ * the activity-log boundary comparisons.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -37,31 +25,24 @@ import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { gzipSync } from 'node:zlib';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
+  type AmbiguityBaseline,
   applyAmbiguityRules,
   type CaptureWriteTreeInput,
-  type CompareSnapshotInput,
   type CompareTreesInput,
   captureWriteTree,
   classifyCommandForSnapshot,
   classifyTextOrBinary,
-  compareSnapshot,
   compareStatOnly,
   compareTrees,
   DEFAULT_SNAPSHOT_BUDGETS,
   type DiffHunk,
-  diffLineHashes,
   type GitRunner,
-  type HashFileInput,
-  hashFile,
   hashTreePath,
   hunksToPostRanges,
-  pairRenames,
   recordHasPathCoverageGap,
   type SiblingSnapshot,
-  type SnapshotFile,
-  type SnapshotRecord,
   type StatOnlyEntry
 } from '../../src/common/snapshot-core.js';
 import { createSnapshotStore } from '../../src/common/snapshot-store.js';
@@ -72,10 +53,8 @@ import { makeTempRepo } from '../helpers.js';
 const SESSION_ID = 'session-snapshot-core';
 const TOOL_USE_ID = 'toolu_01snapshotcoretest';
 const REPO_ROOT = '/repo';
-/** An mtimeNs with a NON-ZERO sub-second part (a trustworthy clock). */
+/** An mtimeNs fixture value for stat-only entries. */
 const TRUSTED_MTIME = 1_780_000_000_123_456_789n;
-/** An mtimeNs with a ZERO sub-second part (second-granularity clock). */
-const COARSE_MTIME = 1_780_000_000_000_000_000n;
 
 // ---------------------------------------------------------------------------
 // Local helpers (fixture-side definitions of the contract's semantics)
@@ -84,52 +63,6 @@ const COARSE_MTIME = 1_780_000_000_000_000_000n;
 /** SHA-256 hex of a byte string — the record's byte/line hash format. */
 function sha256Hex(data: Buffer | string): string {
   return createHash('sha256').update(data).digest('hex');
-}
-
-/** Mirror the store's bigint-to-string JSON replacer: mtimeNs serializes as a string. */
-function bigintToJson(_key: string, value: unknown): unknown {
-  return typeof value === 'bigint' ? value.toString() : value;
-}
-
-/**
- * Hash the lines of `content`, each INCLUDING its terminator ('\n' or '\r\n';
- * a final line without a terminator is hashed as-is). An empty file yields no
- * lines. This is the fixture's own definition of the contract's line-hash
- * semantics — the expected values the Phase 3 implementation must produce.
- */
-function hashLines(content: string): string[] {
-  const hashes: string[] = [];
-  let start = 0;
-  for (let i = 0; i < content.length; i += 1) {
-    if (content.charCodeAt(i) === 10) {
-      hashes.push(sha256Hex(content.slice(start, i + 1)));
-      start = i + 1;
-    }
-  }
-  if (start < content.length) hashes.push(sha256Hex(content.slice(start)));
-  return hashes;
-}
-
-/** A snapshot file entry with contract-shaped defaults. */
-function fileEntry(overrides: Partial<SnapshotFile> = {}): SnapshotFile {
-  return { hash: 'pre-hash', size: 10, mtimeNs: TRUSTED_MTIME, capturedAt: 1000, lines: [], ...overrides };
-}
-
-/** A pre-walk record with contract-shaped defaults. */
-function record(overrides: Partial<SnapshotRecord> = {}): SnapshotRecord {
-  return {
-    version: 1,
-    sessionId: SESSION_ID,
-    toolUseId: TOOL_USE_ID,
-    repoRoot: REPO_ROOT,
-    createdAt: 1000,
-    consumed: false,
-    consumedAt: null,
-    tier: 'explicit',
-    gaps: [],
-    files: {},
-    ...overrides
-  };
 }
 
 /** A sibling record's per-path view, for the ambiguity table fixtures. */
@@ -143,34 +76,6 @@ function sibling(overrides: Partial<SiblingSnapshot> = {}): SiblingSnapshot {
     coverageGap: false,
     pre: null,
     post: null,
-    ...overrides
-  };
-}
-
-/** A compareSnapshot input with contract-shaped defaults. */
-function compareInput(overrides: Partial<CompareSnapshotInput> = {}): CompareSnapshotInput {
-  return {
-    record: record(),
-    post: new Map<string, SnapshotFile>(),
-    postGaps: [],
-    budgets: DEFAULT_SNAPSHOT_BUDGETS,
-    stat: () => null,
-    read: () => null,
-    wallStart: 1500,
-    wallClock: () => 1500,
-    ...overrides
-  };
-}
-
-/** A hashFile input with contract-shaped defaults (reads 'a\nb\nc\n'). */
-function hashInput(overrides: Partial<HashFileInput> = {}): HashFileInput {
-  return {
-    absPath: '/repo/a.ts',
-    now: 1000,
-    budgets: DEFAULT_SNAPSHOT_BUDGETS,
-    remainingLineBudget: DEFAULT_SNAPSHOT_BUDGETS.maxLineHashesPerRecord,
-    stat: () => ({ size: 6, mtimeNs: TRUSTED_MTIME }),
-    read: () => Buffer.from('a\nb\nc\n'),
     ...overrides
   };
 }
@@ -201,230 +106,6 @@ function repoWithConfig(entries: Array<[string, string]>): { root: string; clean
   }
   return repo;
 }
-
-// ---------------------------------------------------------------------------
-// Diff oracle (git diff --no-index -U0)
-// ---------------------------------------------------------------------------
-
-const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
-
-/**
- * Parse git's `@@ -a[,b] +c[,d] @@` hunk headers VERBATIM into DiffHunk
- * coordinates (git emits 1-based starts, `0` for the count-only side of a
- * pure insertion/deletion at a file edge — exactly the contract's shape). The
- * `,1` count is omitted by git and defaults to 1; non-`@@` lines (headers,
- * `\ No newline at end of file` markers) are ignored.
- */
-function parseGitHunks(diffOutput: string): DiffHunk[] {
-  const hunks: DiffHunk[] = [];
-  for (const line of diffOutput.split('\n')) {
-    const m = HUNK_HEADER.exec(line);
-    if (m === null) continue;
-    hunks.push({
-      preStart: Number(m[1]),
-      preLines: m[2] === undefined ? 1 : Number(m[2]),
-      postStart: Number(m[3]),
-      postLines: m[4] === undefined ? 1 : Number(m[4])
-    });
-  }
-  return hunks;
-}
-
-/**
- * The oracle: `git diff --no-index -U0` on the two files. Exit 1 is the
- * files-differ signal (the diff text is on stdout); exit 0 with no output
- * means identical. Only the hunk headers are consumed.
- *
- * The git process runs with cwd OUTSIDE any repository (`dir` is a bare temp
- * dir): an in-repo cwd would apply the repo's .gitattributes (e.g. the
- * git-span repo's `* text=auto`), which normalizes CRLF to LF and would make
- * git report CRLF-vs-LF pairs identical instead of different content.
- */
-function runGitDiffOracle(pre: string, post: string, dir: string): DiffHunk[] {
-  const prePath = join(dir, 'pre.txt');
-  const postPath = join(dir, 'post.txt');
-  writeFileSync(prePath, pre);
-  writeFileSync(postPath, post);
-  let stdout = '';
-  try {
-    stdout = execFileSync('git', ['diff', '--no-index', '-U0', '--', prePath, postPath], {
-      cwd: dir,
-      encoding: 'utf8'
-    });
-  } catch (err) {
-    const status = (err as { status?: number }).status;
-    if (status !== 1) throw err;
-    stdout = String((err as { stdout?: string }).stdout ?? '');
-  }
-  return parseGitHunks(stdout);
-}
-
-/** Deterministic PRNG (mulberry32) so the property test is reproducible. */
-function mulberry32(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a |= 0;
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-interface GeneratedPair {
-  pre: string;
-  post: string;
-}
-
-/**
- * Generate a (pre, post) line pair from a small alphabet (short lines, heavy
- * duplication — the tie-breaking regime where diff algorithms diverge) with
- * random insertions/deletions/replacements, optionally CRLF endings and/or a
- * missing final newline on both files.
- */
-function generatePair(rand: () => number, opts: { crlf: boolean; missingFinalNewline: boolean }): GeneratedPair {
-  const alphabet = ['a', 'b', 'c', 'd'];
-  const makeLines = (count: number): string[] =>
-    Array.from({ length: count }, () => alphabet[Math.floor(rand() * alphabet.length)]);
-  const pre = makeLines(1 + Math.floor(rand() * 40));
-  const post = [...pre];
-  const ops = 1 + Math.floor(rand() * 10);
-  for (let i = 0; i < ops; i += 1) {
-    const op = rand();
-    const idx = Math.floor(rand() * (post.length + 1));
-    if (op < 0.33 && post.length > 0) post.splice(Math.min(idx, post.length - 1), 1);
-    else if (op < 0.66) post.splice(idx, 0, alphabet[Math.floor(rand() * alphabet.length)]);
-    else if (post.length > 0) post[Math.min(idx, post.length - 1)] = alphabet[Math.floor(rand() * alphabet.length)];
-  }
-  const eol = opts.crlf ? '\r\n' : '\n';
-  let preText = pre.join(eol);
-  let postText = post.join(eol);
-  if (!opts.missingFinalNewline) {
-    preText += eol;
-    postText += eol;
-  }
-  return { pre: preText, post: postText };
-}
-
-let oracleDir: string;
-
-beforeAll(() => {
-  oracleDir = mkdtempSync(join(tmpdir(), 'snapshot-diff-oracle-'));
-});
-
-afterAll(() => {
-  rmSync(oracleDir, { recursive: true, force: true });
-});
-
-/** Assert diffLineHashes reproduces the oracle's hunks for one pair. */
-function expectGitDiffMatch(pre: string, post: string): void {
-  expect(diffLineHashes(hashLines(pre), hashLines(post))).toEqual(runGitDiffOracle(pre, post, oracleDir));
-}
-
-describe('diffLineHashes — git diff --no-index -U0 oracle', () => {
-  it('pure insertion at the start of the file', () => {
-    expectGitDiffMatch('b\nc\n', 'a\nb\nc\n');
-  });
-
-  it('pure insertion in the middle of the file', () => {
-    expectGitDiffMatch('a\nb\nc\n', 'a\nX\nb\nc\n');
-  });
-
-  it('pure insertion at the end of the file (git reports the last-line coordinate)', () => {
-    expectGitDiffMatch('a\nb\nc\n', 'a\nb\nc\nd\n');
-  });
-
-  it('pure deletion at the start of the file', () => {
-    expectGitDiffMatch('a\nb\nc\n', 'b\nc\n');
-  });
-
-  it('pure deletion in the middle of the file', () => {
-    expectGitDiffMatch('a\nb\nc\n', 'a\nc\n');
-  });
-
-  it('pure deletion at the end of the file', () => {
-    expectGitDiffMatch('a\nb\nc\n', 'a\nb\n');
-  });
-
-  it('a single-line replacement', () => {
-    expectGitDiffMatch('a\nb\nc\n', 'a\nX\nc\n');
-  });
-
-  it('adjacent replacements merge into one hunk under -U0', () => {
-    expectGitDiffMatch('a\nb\nc\nd\n', 'x\ny\nc\nd\n');
-  });
-
-  it('duplicated lines: deletion between copies of the same line', () => {
-    expectGitDiffMatch('x\ny\nx\nz\n', 'x\nx\nz\n');
-  });
-
-  it('duplicated lines: replacement of one copy of a duplicated line', () => {
-    expectGitDiffMatch('x\ny\nx\nz\n', 'x\ny\nX\nz\n');
-  });
-
-  it('missing final newline on the pre side only', () => {
-    expectGitDiffMatch('a\nb', 'a\nb\n');
-  });
-
-  it('missing final newline on the post side only', () => {
-    expectGitDiffMatch('a\nb\n', 'a\nb');
-  });
-
-  it('missing final newline on both sides with a content change', () => {
-    expectGitDiffMatch('a\nb', 'a\nX');
-  });
-
-  it('CRLF round-trip with a replacement', () => {
-    expectGitDiffMatch('a\r\nb\r\nc\r\n', 'a\r\nX\r\nc\r\n');
-  });
-
-  it('CRLF and LF variants of the same logical lines are different content', () => {
-    expectGitDiffMatch('a\nb\n', 'a\r\nb\r\n');
-  });
-
-  it('empty pre file (all insertions)', () => {
-    expectGitDiffMatch('', 'a\nb\n');
-  });
-
-  it('empty post file (all deletions)', () => {
-    expectGitDiffMatch('a\nb\n', '');
-  });
-
-  it('both files empty — no hunks', () => {
-    expectGitDiffMatch('', '');
-  });
-
-  it('identical files — no hunks', () => {
-    expectGitDiffMatch('a\nb\nc\n', 'a\nb\nc\n');
-  });
-
-  it('single-line files', () => {
-    expectGitDiffMatch('a\n', 'b\n');
-  });
-
-  it('every line replaced', () => {
-    expectGitDiffMatch('a\nb\nc\n', 'x\ny\nz\n');
-  });
-
-  it('matches the oracle on seeded generated pairs (property test)', () => {
-    // Small alphabet → duplicated lines (the tie-breaking regime), CRLF and
-    // missing-final-newline alternated by seed so every mode is exercised.
-    const rand = mulberry32(20260804);
-    for (let seed = 0; seed < 40; seed += 1) {
-      const pair = generatePair(rand, { crlf: seed % 2 === 0, missingFinalNewline: seed % 3 === 0 });
-      expectGitDiffMatch(pair.pre, pair.post);
-    }
-  });
-
-  it('identical line-hash arrays diff to zero hunks (the injected-collision seam)', () => {
-    // The seam: diffLineHashes operates on opaque hash strings, so two
-    // DIFFERENT lines mapped to the SAME hash string (a collision) diff as
-    // identical — this is the zero-hunk input the comparison must catch by
-    // byte hash and fall back to whole-file scope.
-    const pre = [sha256Hex('a\n'), sha256Hex('b\n'), sha256Hex('c\n')];
-    expect(diffLineHashes(pre, [...pre])).toEqual([]);
-  });
-});
 
 describe('hunksToPostRanges', () => {
   it('a pure insertion maps to an exact post-state range', () => {
@@ -482,116 +163,6 @@ describe('hunksToPostRanges', () => {
       { preStart: 5, preLines: 0, postStart: 4, postLines: 2 }
     ];
     expect(hunksToPostRanges(hunks)).toEqual({ changed: [], wholeFile: true });
-  });
-});
-
-describe('hashFile', () => {
-  it('records byte hash, size, mtimeNs, capturedAt, and ordered terminator-inclusive line hashes', () => {
-    const now = 1000;
-    const result = hashFile(hashInput({ now }));
-    expect(result).toEqual({
-      hash: sha256Hex('a\nb\nc\n'),
-      size: 6,
-      mtimeNs: TRUSTED_MTIME,
-      capturedAt: now,
-      lines: [sha256Hex('a\n'), sha256Hex('b\n'), sha256Hex('c\n')]
-    });
-  });
-
-  it('returns null for a missing file (stat fails)', () => {
-    expect(hashFile(hashInput({ stat: () => null }))).toBeNull();
-  });
-
-  it('returns null for an unreadable file (read fails)', () => {
-    expect(hashFile(hashInput({ read: () => null }))).toBeNull();
-  });
-
-  it('a file over the per-file byte cap is excluded (null), never recorded', () => {
-    const budgets = { ...DEFAULT_SNAPSHOT_BUDGETS, maxBytesPerFile: 5 };
-    expect(hashFile(hashInput({ budgets, read: () => Buffer.from('1234567890') }))).toBeNull();
-  });
-
-  it('a file over the per-file line cap is recorded coarse — byte hash only, no lines', () => {
-    const budgets = { ...DEFAULT_SNAPSHOT_BUDGETS, maxLineHashesPerFile: 2 };
-    const result = hashFile(hashInput({ budgets }));
-    expect(result).toEqual({
-      hash: sha256Hex('a\nb\nc\n'),
-      size: 6,
-      mtimeNs: TRUSTED_MTIME,
-      capturedAt: 1000,
-      coarse: true
-    });
-  });
-
-  it('a depleted per-record line budget forces coarse regardless of the per-file cap', () => {
-    const result = hashFile(hashInput({ remainingLineBudget: 0 }));
-    expect(result?.coarse).toBe(true);
-    expect(result?.lines).toBeUndefined();
-  });
-
-  it('line hashes include the terminator: a missing final newline round-trips', () => {
-    expect(hashLines('a\nb')).toEqual([sha256Hex('a\n'), sha256Hex('b')]);
-    expect(hashLines('a\nb\n')).toEqual([sha256Hex('a\n'), sha256Hex('b\n')]);
-    expect(sha256Hex('b')).not.toBe(sha256Hex('b\n'));
-  });
-
-  it('line hashes include the terminator: CRLF round-trips', () => {
-    expect(hashLines('a\r\nb\r\n')).toEqual([sha256Hex('a\r\n'), sha256Hex('b\r\n')]);
-    expect(hashLines('a\r\nb\r\n')).not.toEqual(hashLines('a\nb\n'));
-  });
-
-  it('an empty file records zero lines', () => {
-    const result = hashFile(
-      hashInput({ read: () => Buffer.from(''), stat: () => ({ size: 0, mtimeNs: TRUSTED_MTIME }) })
-    );
-    expect(result?.size).toBe(0);
-    expect(result?.lines).toEqual([]);
-  });
-});
-
-describe('pairRenames', () => {
-  it('pairs pre-absent/post-present paths with an identical byte hash', () => {
-    const pre = new Map<string, SnapshotFile>([
-      ['a.txt', fileEntry({ hash: 'h1' })],
-      ['b.txt', fileEntry({ hash: 'h2' })]
-    ]);
-    const post = new Map<string, SnapshotFile>([
-      ['b.txt', fileEntry({ hash: 'h2' })],
-      ['c.txt', fileEntry({ hash: 'h1' })]
-    ]);
-    expect(pairRenames(pre, post)).toEqual([{ from: 'a.txt', to: 'c.txt' }]);
-  });
-
-  it('content ties (duplicate hashes) are left as delete+create, never paired', () => {
-    const pre = new Map<string, SnapshotFile>([
-      ['a1.txt', fileEntry({ hash: 'hX' })],
-      ['a2.txt', fileEntry({ hash: 'hX' })]
-    ]);
-    const post = new Map<string, SnapshotFile>([
-      ['b1.txt', fileEntry({ hash: 'hX' })],
-      ['b2.txt', fileEntry({ hash: 'hX' })]
-    ]);
-    expect(pairRenames(pre, post)).toEqual([]);
-  });
-
-  it('no identical hash — no pairing', () => {
-    const pre = new Map<string, SnapshotFile>([['a.txt', fileEntry({ hash: 'h1' })]]);
-    const post = new Map<string, SnapshotFile>([['c.txt', fileEntry({ hash: 'h2' })]]);
-    expect(pairRenames(pre, post)).toEqual([]);
-  });
-
-  it('a unique pair among tied hashes still pairs', () => {
-    const pre = new Map<string, SnapshotFile>([
-      ['a.txt', fileEntry({ hash: 'hU' })],
-      ['a1.txt', fileEntry({ hash: 'hX' })],
-      ['a2.txt', fileEntry({ hash: 'hX' })]
-    ]);
-    const post = new Map<string, SnapshotFile>([
-      ['c.txt', fileEntry({ hash: 'hU' })],
-      ['b1.txt', fileEntry({ hash: 'hX' })],
-      ['b2.txt', fileEntry({ hash: 'hX' })]
-    ]);
-    expect(pairRenames(pre, post)).toEqual([{ from: 'a.txt', to: 'c.txt' }]);
   });
 });
 
@@ -1132,12 +703,12 @@ describe('classifyCommandForSnapshot', () => {
 });
 
 describe('applyAmbiguityRules — the full ambiguity table', () => {
-  const mine = record({ files: { 'src/a.ts': fileEntry({ hash: 'my-pre' }) } });
+  const mine: AmbiguityBaseline = { createdAt: 1000, preHash: 'my-pre' };
 
   it('unconsumed sibling created after mine — ambiguous (its write window has not provably ended)', () => {
     const verdict = applyAmbiguityRules(
       mine,
-      [sibling({ createdAt: 2000, consumed: false, pre: fileEntry({ hash: 'sib-pre' }) })],
+      [sibling({ createdAt: 2000, consumed: false, pre: { hash: 'sib-pre' } })],
       'src/a.ts'
     );
     expect(verdict.ambiguous).toBe(true);
@@ -1147,7 +718,7 @@ describe('applyAmbiguityRules — the full ambiguity table', () => {
   it('unconsumed sibling created before mine — ambiguous (pre order and pre equality are irrelevant)', () => {
     const verdict = applyAmbiguityRules(
       mine,
-      [sibling({ createdAt: 500, consumed: false, pre: fileEntry({ hash: 'same-as-mine' }) })],
+      [sibling({ createdAt: 500, consumed: false, pre: { hash: 'same-as-mine' } })],
       'src/a.ts'
     );
     expect(verdict.ambiguous).toBe(true);
@@ -1161,8 +732,8 @@ describe('applyAmbiguityRules — the full ambiguity table', () => {
           createdAt: 2000,
           consumed: true,
           consumedAt: 2100,
-          pre: fileEntry({ hash: 'sib-pre' }),
-          post: fileEntry({ hash: 'sib-post' })
+          pre: { hash: 'sib-pre' },
+          post: { hash: 'sib-post' }
         })
       ],
       'src/a.ts'
@@ -1178,8 +749,8 @@ describe('applyAmbiguityRules — the full ambiguity table', () => {
           createdAt: 2000,
           consumed: true,
           consumedAt: 2100,
-          pre: fileEntry({ hash: 'sib' }),
-          post: fileEntry({ hash: 'sib' })
+          pre: { hash: 'sib' },
+          post: { hash: 'sib' }
         })
       ],
       'src/a.ts'
@@ -1202,7 +773,7 @@ describe('applyAmbiguityRules — the full ambiguity table', () => {
           consumed: true,
           consumedAt: 2100,
           coverageGap: true,
-          pre: fileEntry({ hash: 'sib-pre' }),
+          pre: { hash: 'sib-pre' },
           post: null
         })
       ],
@@ -1225,7 +796,7 @@ describe('applyAmbiguityRules — the full ambiguity table', () => {
           consumed: true,
           consumedAt: 2100,
           coverageGap: false,
-          pre: fileEntry({ hash: 'sib-pre' }),
+          pre: { hash: 'sib-pre' },
           post: null
         })
       ],
@@ -1242,8 +813,8 @@ describe('applyAmbiguityRules — the full ambiguity table', () => {
           createdAt: 500,
           consumed: true,
           consumedAt: 600,
-          pre: fileEntry({ hash: 'sib' }),
-          post: fileEntry({ hash: 'sib' })
+          pre: { hash: 'sib' },
+          post: { hash: 'sib' }
         })
       ],
       'src/a.ts'
@@ -1259,8 +830,8 @@ describe('applyAmbiguityRules — the full ambiguity table', () => {
           createdAt: 500,
           consumed: true,
           consumedAt: 600,
-          pre: fileEntry({ hash: 'older' }),
-          post: fileEntry({ hash: 'my-pre' })
+          pre: { hash: 'older' },
+          post: { hash: 'my-pre' }
         })
       ],
       'src/a.ts'
@@ -1280,8 +851,8 @@ describe('applyAmbiguityRules — the full ambiguity table', () => {
           createdAt: 500,
           consumed: true,
           consumedAt: 800,
-          pre: fileEntry({ hash: 'sib-pre' }),
-          post: fileEntry({ hash: 'sib-post' })
+          pre: { hash: 'sib-pre' },
+          post: { hash: 'sib-post' }
         })
       ],
       'src/a.ts'
@@ -1300,8 +871,8 @@ describe('applyAmbiguityRules — the full ambiguity table', () => {
           createdAt: 500,
           consumed: true,
           consumedAt: 1200,
-          pre: fileEntry({ hash: 'sib-pre' }),
-          post: fileEntry({ hash: 'sib-post' })
+          pre: { hash: 'sib-pre' },
+          post: { hash: 'sib-post' }
         })
       ],
       'src/a.ts'
@@ -1330,10 +901,10 @@ describe('applyAmbiguityRules — the full ambiguity table', () => {
           createdAt: 2000,
           consumed: true,
           consumedAt: 2100,
-          pre: fileEntry({ hash: 's' }),
-          post: fileEntry({ hash: 's' })
+          pre: { hash: 's' },
+          post: { hash: 's' }
         }),
-        sibling({ toolUseId: 'dirty', createdAt: 2200, consumed: false, pre: fileEntry({ hash: 'sib-pre' }) })
+        sibling({ toolUseId: 'dirty', createdAt: 2200, consumed: false, pre: { hash: 'sib-pre' } })
       ],
       'src/a.ts'
     );
@@ -1348,8 +919,8 @@ describe('applyAmbiguityRules — the full ambiguity table', () => {
     const verdict = applyAmbiguityRules(
       mine,
       [
-        sibling({ toolUseId: 'z-tool', createdAt: 2000, consumed: false, pre: fileEntry({ hash: 'sib-pre' }) }),
-        sibling({ toolUseId: 'a-tool', createdAt: 2000, consumed: false, pre: fileEntry({ hash: 'sib-pre' }) })
+        sibling({ toolUseId: 'z-tool', createdAt: 2000, consumed: false, pre: { hash: 'sib-pre' } }),
+        sibling({ toolUseId: 'a-tool', createdAt: 2000, consumed: false, pre: { hash: 'sib-pre' } })
       ],
       'src/a.ts'
     );
@@ -1364,371 +935,6 @@ describe('applyAmbiguityRules — the full ambiguity table', () => {
       'src/a.ts'
     );
     expect(verdict).toEqual({ ambiguous: false });
-  });
-});
-
-describe('compareSnapshot', () => {
-  it('a path whose (size, mtimeNs) both match its pre entry is skipped without a re-read', () => {
-    const read = vi.fn(() => null);
-    const result = compareSnapshot(
-      compareInput({
-        record: record({ files: { 'src/a.ts': fileEntry({ hash: 'pre-hash', size: 10, mtimeNs: TRUSTED_MTIME }) } }),
-        post: new Map([
-          ['src/a.ts', fileEntry({ hash: 'pre-hash', size: 10, mtimeNs: TRUSTED_MTIME, capturedAt: 1500 })]
-        ]),
-        read
-      })
-    );
-    expect(result.attributions.size).toBe(0);
-    expect(read).not.toHaveBeenCalled();
-  });
-
-  it('a zero sub-second mtimeNs never proves non-change: a same-second content change is re-hashed and caught', () => {
-    // Second-granularity clock: a write within the same second does not
-    // advance mtime, so a size+mtime pair-match would skip a real change.
-    // The pre entry's zero sub-second part forces the re-hash.
-    const read = vi.fn(() => Buffer.from('a\nX\nc\n'));
-    const result = compareSnapshot(
-      compareInput({
-        record: record({
-          files: {
-            'src/a.ts': fileEntry({
-              hash: sha256Hex('a\nb\nc\n'),
-              size: 6,
-              mtimeNs: COARSE_MTIME,
-              lines: hashLines('a\nb\nc\n')
-            })
-          }
-        }),
-        post: new Map([
-          ['src/a.ts', fileEntry({ hash: 'post-hash', size: 6, mtimeNs: COARSE_MTIME, capturedAt: 1500 })]
-        ]),
-        read
-      })
-    );
-    expect(read).toHaveBeenCalledTimes(1);
-    expect(result.attributions.get('src/a.ts')).toEqual({
-      kind: 'changed',
-      observed: { changed: [{ start: 2, end: 2 }], wholeFile: false }
-    });
-  });
-
-  it('a byte-hash-equal re-read is unchanged — chmod/mtime-only noise never attributes', () => {
-    const read = vi.fn(() => Buffer.from('a\nb\nc\n'));
-    const result = compareSnapshot(
-      compareInput({
-        record: record({
-          files: {
-            'src/a.ts': fileEntry({
-              hash: sha256Hex('a\nb\nc\n'),
-              size: 6,
-              mtimeNs: TRUSTED_MTIME,
-              lines: hashLines('a\nb\nc\n')
-            })
-          }
-        }),
-        post: new Map([
-          [
-            'src/a.ts',
-            fileEntry({ hash: sha256Hex('a\nb\nc\n'), size: 6, mtimeNs: TRUSTED_MTIME + 1n, capturedAt: 1500 })
-          ]
-        ]),
-        read
-      })
-    );
-    expect(result.attributions.size).toBe(0);
-  });
-
-  it('a changed path attributes exact post-state ranges from the line-hash diff', () => {
-    const result = compareSnapshot(
-      compareInput({
-        record: record({
-          files: {
-            'src/a.ts': fileEntry({ hash: 'pre-hash', size: 6, mtimeNs: TRUSTED_MTIME, lines: hashLines('a\nb\nc\n') })
-          }
-        }),
-        post: new Map([
-          [
-            'src/a.ts',
-            fileEntry({
-              hash: 'post-hash',
-              size: 6,
-              mtimeNs: TRUSTED_MTIME + 2n,
-              capturedAt: 1500,
-              lines: hashLines('a\nB\nc\n')
-            })
-          ]
-        ]),
-        read: () => Buffer.from('a\nB\nc\n')
-      })
-    );
-    expect(result.attributions.get('src/a.ts')).toEqual({
-      kind: 'changed',
-      observed: { changed: [{ start: 2, end: 2 }], wholeFile: false }
-    });
-  });
-
-  it('a pre-recorded path absent from disk is a delete candidate', () => {
-    const result = compareSnapshot(
-      compareInput({
-        record: record({ files: { 'src/a.ts': fileEntry() } }),
-        stat: () => null
-      })
-    );
-    expect(result.attributions.get('src/a.ts')).toEqual({ kind: 'deleted' });
-  });
-
-  it('a pre-only path under a post coverage gap is dropped, never a phantom delete', () => {
-    const result = compareSnapshot(
-      compareInput({
-        record: record({ files: { 'src/a.ts': fileEntry() } }),
-        postGaps: ['post-walk truncated at file-count budget'],
-        stat: () => null
-      })
-    );
-    expect(result.attributions.has('src/a.ts')).toBe(false);
-    expect(result.gaps.some((g) => g.includes('src/a.ts'))).toBe(true);
-  });
-
-  it('a post-only path is a create candidate when the pre walk had no path-coverage gap', () => {
-    const result = compareSnapshot(
-      compareInput({
-        record: record({ files: {} }),
-        post: new Map([['src/new.ts', fileEntry({ hash: 'new-hash', capturedAt: 1500 })]])
-      })
-    );
-    expect(result.attributions.get('src/new.ts')).toEqual({ kind: 'created' });
-  });
-
-  it('a post-only path under a pre path-coverage gap is dropped with the gap diagnostic (it may be a budget-excluded file)', () => {
-    const result = compareSnapshot(
-      compareInput({
-        record: record({ gaps: ['file-count budget exceeded: 5120/5000'] }),
-        post: new Map([['src/new.ts', fileEntry({ hash: 'new-hash', capturedAt: 1500 })]])
-      })
-    );
-    expect(result.attributions.has('src/new.ts')).toBe(false);
-    expect(result.gaps.some((g) => g.includes('src/new.ts'))).toBe(true);
-  });
-
-  it('a binary/oversize exclusion in a repo does NOT drop a create candidate (the exclusion is not a coverage gap)', () => {
-    // The repo contains a PNG and a huge file: both excluded from the walk
-    // consistently pre/post, so no ambiguity is introduced — the create
-    // candidate's pre-absence is real evidence, never a budget cut.
-    const result = compareSnapshot(
-      compareInput({
-        record: record({ gaps: ['binary file excluded: assets/logo.png', 'oversize file excluded: data/huge.txt'] }),
-        post: new Map([['src/new.ts', fileEntry({ hash: 'new-hash', capturedAt: 1500 })]])
-      })
-    );
-    expect(result.attributions.get('src/new.ts')).toEqual({ kind: 'created' });
-  });
-
-  it('an exclusion whose FILE NAME contains a gap phrase still does not drop the create candidate (anchored to the prefix)', () => {
-    const result = compareSnapshot(
-      compareInput({
-        record: record({ gaps: ['binary file excluded: notes/wall budget.md'] }),
-        post: new Map([['src/new.ts', fileEntry({ hash: 'new-hash', capturedAt: 1500 })]])
-      })
-    );
-    expect(result.attributions.get('src/new.ts')).toEqual({ kind: 'created' });
-  });
-
-  it('a line-hash gap (coarse entries) does NOT disqualify a create candidate', () => {
-    // A coarse entry still records the file in pre with its byte hash, which
-    // is all the pre-evidence a create needs — only a path-coverage gap
-    // disqualifies.
-    const result = compareSnapshot(
-      compareInput({
-        record: record({
-          gaps: ['line-hash budget exceeded: 240 files recorded coarse'],
-          files: { 'src/other.ts': fileEntry({ coarse: true }) }
-        }),
-        post: new Map([
-          ['src/other.ts', fileEntry({ hash: 'same', capturedAt: 1500 })],
-          ['src/new.ts', fileEntry({ hash: 'new-hash', capturedAt: 1500 })]
-        ])
-      })
-    );
-    expect(result.attributions.get('src/new.ts')).toEqual({ kind: 'created' });
-  });
-
-  it('a pre-absent/post-present path with an identical unique byte hash pairs as a rename', () => {
-    const result = compareSnapshot(
-      compareInput({
-        record: record({ files: { 'old.ts': fileEntry({ hash: 'same-hash', size: 5 }) } }),
-        post: new Map([['new.ts', fileEntry({ hash: 'same-hash', size: 5, capturedAt: 1500 })]]),
-        stat: () => null
-      })
-    );
-    expect(result.attributions.get('new.ts')).toEqual({ kind: 'rename', from: 'old.ts' });
-    expect(result.attributions.has('old.ts')).toBe(false);
-  });
-
-  it('a changed coarse file attributes whole-file scope with a coarse-scope diagnostic', () => {
-    const result = compareSnapshot(
-      compareInput({
-        record: record({
-          files: { 'huge.gen.ts': fileEntry({ hash: 'pre-hash', size: 500, mtimeNs: TRUSTED_MTIME, coarse: true }) }
-        }),
-        post: new Map([
-          [
-            'huge.gen.ts',
-            fileEntry({ hash: 'post-hash', size: 600, mtimeNs: TRUSTED_MTIME + 5n, capturedAt: 1500, coarse: true })
-          ]
-        ]),
-        read: () => Buffer.from('x'.repeat(600))
-      })
-    );
-    expect(result.attributions.get('huge.gen.ts')).toEqual({
-      kind: 'changed',
-      observed: { changed: [], wholeFile: true }
-    });
-    expect(result.gaps.some((g) => /coarse-scope/i.test(g))).toBe(true);
-  });
-
-  it('a zero-hunk collision (line hashes identical, byte hash different) falls back to whole-file with a diagnostic', () => {
-    // Injected hash seam: the pre and post line-hash arrays are identical
-    // (colliding) while the byte hash differs — the diff yields zero hunks
-    // and attribution must never silently shrink.
-    const lines = hashLines('a\nb\nc\n');
-    const result = compareSnapshot(
-      compareInput({
-        record: record({
-          files: { 'src/a.ts': fileEntry({ hash: 'pre-hash', size: 6, mtimeNs: TRUSTED_MTIME, lines }) }
-        }),
-        post: new Map([
-          [
-            'src/a.ts',
-            fileEntry({ hash: 'post-hash', size: 6, mtimeNs: TRUSTED_MTIME + 9n, capturedAt: 1500, lines: [...lines] })
-          ]
-        ]),
-        read: () => Buffer.from('a\nb\nc\n')
-      })
-    );
-    expect(result.attributions.get('src/a.ts')).toEqual({
-      kind: 'changed',
-      observed: { changed: [], wholeFile: true }
-    });
-    expect(result.gaps.some((g) => /collision|zero-hunk/i.test(g))).toBe(true);
-  });
-
-  it('a diff cost-floor overflow (heavy fragmentation) falls back to whole-file scope with a diagnostic', () => {
-    // The exact-regime diff has a 256-edit cost floor per box; a heavily
-    // fragmented write — every one of 300 lines displaced, e.g. a full
-    // reorder by a generator — exceeds it. The compare must not abort: it
-    // falls back to whole-file scope with a diagnostic, mirroring the
-    // zero-hunk collision handling, so attribution never silently shrinks
-    // and the record never goes unconsumed.
-    const preContent = Array.from({ length: 300 }, (_, i) => `line ${i}\n`).join('');
-    const postContent = Array.from({ length: 300 }, (_, i) => `line ${299 - i}\n`).join('');
-    const result = compareSnapshot(
-      compareInput({
-        record: record({
-          files: {
-            'src/gen.ts': fileEntry({
-              hash: 'pre-hash',
-              size: preContent.length,
-              mtimeNs: TRUSTED_MTIME,
-              lines: hashLines(preContent)
-            })
-          }
-        }),
-        post: new Map([
-          [
-            'src/gen.ts',
-            fileEntry({ hash: 'post-hash', size: postContent.length, mtimeNs: TRUSTED_MTIME + 5n, capturedAt: 1500 })
-          ]
-        ]),
-        read: () => Buffer.from(postContent)
-      })
-    );
-    expect(result.attributions.get('src/gen.ts')).toEqual({
-      kind: 'changed',
-      observed: { changed: [], wholeFile: true }
-    });
-    expect(result.gaps.some((g) => /diff cost floor exceeded/i.test(g))).toBe(true);
-  });
-
-  it('the post-side wall budget is anchored at the wall start, not the record age: a long-ago record with a fresh wall start still attributes', () => {
-    // The budget measures the comparison's own elapsed time since the post-side
-    // work began (wallStart) — never the record's age. createdAt is the
-    // pre-walk start, so record-age elapsed would include the whole command
-    // runtime: a long-running command must not starve its own attribution. A
-    // record created 100 s ago with a just-started post-side pass attributes
-    // every path (frozen clock: zero elapsed).
-    const budgets = { ...DEFAULT_SNAPSHOT_BUDGETS, postSideWallSeconds: 1 };
-    const result = compareSnapshot(
-      compareInput({
-        record: record({
-          createdAt: 1000,
-          files: {
-            'src/a.ts': fileEntry({ hash: 'h1', mtimeNs: TRUSTED_MTIME }),
-            'src/b.ts': fileEntry({ hash: 'h2', mtimeNs: TRUSTED_MTIME }),
-            'src/c.ts': fileEntry({ hash: 'h3', mtimeNs: TRUSTED_MTIME })
-          }
-        }),
-        wallStart: 1000 + 100_000,
-        wallClock: () => 1000 + 100_000,
-        budgets,
-        stat: () => null
-      })
-    );
-    expect(result.attributions.size).toBe(3);
-    expect(result.gaps.some((g) => /budget/i.test(g))).toBe(false);
-  });
-
-  it('a wall start far in the past exhausts the budget even for a brand-new record, and the diagnostic names the unattributed split', () => {
-    // The converse pin: the record's age is irrelevant — only the elapsed
-    // compare time counts. A record created at the very instant the post-side
-    // work began still exhausts when the wall clock has since advanced 2 s
-    // past a 1 s budget: nothing may be attributed, and the diagnostic must
-    // name exactly which paths were and were not attributed — never a bare
-    // fail-open.
-    const budgets = { ...DEFAULT_SNAPSHOT_BUDGETS, postSideWallSeconds: 1 };
-    const result = compareSnapshot(
-      compareInput({
-        record: record({
-          createdAt: 1000 + 100_000,
-          files: {
-            'src/a.ts': fileEntry({ hash: 'h1', mtimeNs: TRUSTED_MTIME }),
-            'src/b.ts': fileEntry({ hash: 'h2', mtimeNs: TRUSTED_MTIME }),
-            'src/c.ts': fileEntry({ hash: 'h3', mtimeNs: TRUSTED_MTIME })
-          }
-        }),
-        wallStart: 1000 + 100_000,
-        wallClock: () => 1000 + 100_000 + 2_000,
-        budgets,
-        stat: () => null
-      })
-    );
-    expect(result.attributions.size).toBe(0);
-    expect(result.gaps.some((g) => /budget/i.test(g) && g.includes('src/a.ts') && g.includes('src/c.ts'))).toBe(true);
-  });
-
-  it('the touched-files cap bounds the changed-path count; beyond it, diagnostics and no touches', () => {
-    const budgets = { ...DEFAULT_SNAPSHOT_BUDGETS, maxTouchedFiles: 1 };
-    const pre: Record<string, SnapshotFile> = {
-      'src/a.ts': fileEntry({ hash: 'h1', mtimeNs: TRUSTED_MTIME, lines: hashLines('a\n') }),
-      'src/b.ts': fileEntry({ hash: 'h2', mtimeNs: TRUSTED_MTIME, lines: hashLines('b\n') }),
-      'src/c.ts': fileEntry({ hash: 'h3', mtimeNs: TRUSTED_MTIME, lines: hashLines('c\n') })
-    };
-    const post = new Map<string, SnapshotFile>([
-      ['src/a.ts', fileEntry({ hash: 'h1x', size: 2, mtimeNs: TRUSTED_MTIME + 1n, capturedAt: 1500 })],
-      ['src/b.ts', fileEntry({ hash: 'h2x', size: 2, mtimeNs: TRUSTED_MTIME + 1n, capturedAt: 1500 })],
-      ['src/c.ts', fileEntry({ hash: 'h3x', size: 2, mtimeNs: TRUSTED_MTIME + 1n, capturedAt: 1500 })]
-    ]);
-    const result = compareSnapshot(
-      compareInput({
-        record: record({ files: pre }),
-        post,
-        budgets,
-        read: () => Buffer.from('x\n'),
-        wallStart: 1500
-      })
-    );
-    expect(result.attributions.size).toBe(1);
-    expect(result.gaps.some((g) => /touched|cap/i.test(g))).toBe(true);
   });
 });
 
@@ -1783,11 +989,6 @@ describe('post side agreement and the observed/written invariant', () => {
 describe('budgets', () => {
   it('the shipped defaults are exactly the plan-mandated values', () => {
     expect(DEFAULT_SNAPSHOT_BUDGETS).toEqual({
-      maxFiles: 5000,
-      maxBytesPerFile: 1024 * 1024,
-      maxTotalBytes: 64 * 1024 * 1024,
-      maxLineHashesPerFile: 4000,
-      maxLineHashesPerRecord: 200_000,
       preSideMaxWallSeconds: 1,
       maxStorageBytes: 64 * 1024 * 1024,
       maxTouchedFiles: 100,
@@ -1795,47 +996,6 @@ describe('budgets', () => {
       recordTtlMs: 24 * 60 * 60 * 1000,
       unfinishedEntryTtlMs: 15 * 60 * 1000
     });
-  });
-
-  it('a binary file (NUL in the first 8 KiB) is never recorded — excluded at the hash seam', () => {
-    // The tier-2 walker's eligibility rule (NUL scan of the first 8 KiB)
-    // lands at the hash seam: a NUL-containing file must not produce a
-    // record entry, so its content never enters the snapshot.
-    const binary = Buffer.concat([Buffer.from('a\n'), Buffer.from([0]), Buffer.from('b\n')]);
-    expect(
-      hashFile(hashInput({ read: () => binary, stat: () => ({ size: binary.length, mtimeNs: TRUSTED_MTIME }) }))
-    ).toBeNull();
-  });
-
-  it('storage coherence: a worst-case record stays well under the global storage cap', () => {
-    // Worst case = the per-record line budget fully consumed: 200,000 line
-    // hashes (64 hex chars each) across files at the per-file cap. At ~66 B
-    // per stored line hash that bounds a record to ~15 MB, so the 64 MiB
-    // global cap holds several full records and refusal stays a rare
-    // multi-record event rather than a one-record feature kill.
-    const files: Record<string, SnapshotFile> = {};
-    let lineCount = 0;
-    for (let f = 0; lineCount < DEFAULT_SNAPSHOT_BUDGETS.maxLineHashesPerRecord; f += 1) {
-      const perFile = Math.min(
-        DEFAULT_SNAPSHOT_BUDGETS.maxLineHashesPerFile,
-        DEFAULT_SNAPSHOT_BUDGETS.maxLineHashesPerRecord - lineCount
-      );
-      const lines: string[] = [];
-      for (let i = 0; i < perFile; i += 1) lines.push(sha256Hex(`file ${f} line ${i}`));
-      lineCount += perFile;
-      files[`generated/file-${f}.txt`] = fileEntry({
-        hash: sha256Hex(`file ${f}`),
-        size: perFile * 32,
-        mtimeNs: COARSE_MTIME,
-        lines
-      });
-    }
-    expect(lineCount).toBe(DEFAULT_SNAPSHOT_BUDGETS.maxLineHashesPerRecord);
-    const worstCase = record({ files });
-    // Serialized the way the store serializes it (mtimeNs as a string via the
-    // bigint replacer) — the property pinned is the worst-case ON-DISK size.
-    const bytes = Buffer.byteLength(JSON.stringify(worstCase, bigintToJson), 'utf8');
-    expect(bytes).toBeLessThan(DEFAULT_SNAPSHOT_BUDGETS.maxStorageBytes);
   });
 });
 
@@ -1895,68 +1055,47 @@ describe('git -C/--git-dir target the repo the exec-config read sees', () => {
 });
 
 describe('recordHasPathCoverageGap — the gap family the guard and the consult read', () => {
-  it('every current pre-walk path-coverage gap form matches (a rephrase breaks this fixture, not the guard)', () => {
+  it('every coverage gap form matches (a rephrase breaks this fixture, not the guard)', () => {
+    // The pre-side degrade persists on the record at write; the compare-phase
+    // forms are appended by the post handlers before the consume. A later
+    // sibling consult must read any of them as coverage-unknowable, never as
+    // "consumed without changing P".
     for (const gap of [
-      'file-count budget exceeded: 5120/5000',
-      'pre-side wall budget exceeded: captured 12 files, stopped',
-      'total-bytes budget exceeded: 1048577/1048576',
-      'repo walk truncated: git ls-files failed; coverage is incomplete'
-    ]) {
-      expect(recordHasPathCoverageGap(record({ gaps: [gap] })), gap).toBe(true);
-    }
-  });
-
-  it('every compare-phase path-coverage gap form matches — they persist onto the record at consume', () => {
-    // These gaps are appended to the record by the post handlers before the
-    // consume; a later sibling consult must read the record as
-    // coverage-unknowable, never as "consumed without changing P".
-    for (const gap of [
-      'touched-files cap 2 exceeded: src/b.ts not attributed',
+      'write-tree degraded to stat-only: git add failed',
+      'write-tree degraded to stat-only: unexpected write-tree output "?"',
       'post-side wall budget exhausted: attributed 1/5, unattributed src/b.ts, src/c.ts',
-      'post-walk coverage gap: src/a.ts dropped — may be a budget-excluded file, no phantom delete',
-      'pre-walk coverage gap: src/new.ts dropped — may be a budget-excluded file, no phantom create',
+      'touched-files cap 2 exceeded: src/b.ts not attributed',
       'unreadable at compare: src/a.ts dropped without attribution',
       'snapshot compare aborted: boom'
     ]) {
-      expect(recordHasPathCoverageGap(record({ gaps: [gap] })), gap).toBe(true);
+      expect(recordHasPathCoverageGap({ gaps: [gap] }), gap).toBe(true);
     }
   });
 
-  it('the line-hash form is range-precision loss only and never matches the family', () => {
-    expect(recordHasPathCoverageGap(record({ gaps: ['line-hash budget exceeded: 3 files recorded coarse'] }))).toBe(
+  it('the binary-scope degrade is attributed-with-diagnostics, never a coverage gap', () => {
+    // A binary-classified path IS attributed (whole-file scope) and its post
+    // state IS part of the recorded tree, so a missing sibling post entry
+    // still means "unchanged" — the family must not open.
+    expect(recordHasPathCoverageGap({ gaps: ['binary-scope: src/app.bin classified binary, whole-file scope'] })).toBe(
       false
     );
   });
 
-  it('the precision-loss compare diagnostics are attributed-with-diagnostics, never coverage gaps', () => {
-    // Those paths ARE attributed and their post state IS recorded, so a
-    // missing post entry still means "unchanged" — the family must not open.
-    for (const gap of [
-      'coarse-scope: src/a.ts has no line hashes, whole-file scope',
-      'zero-hunk collision: src/a.ts byte hash changed but line hashes identical, whole-file scope',
-      'diff cost floor exceeded: src/a.ts, whole-file scope'
-    ]) {
-      expect(recordHasPathCoverageGap(record({ gaps: [gap] })), gap).toBe(false);
-    }
+  it('the stat-only sweep failure diagnostic never matches alone — the degrade gap beside it carries the coverage loss', () => {
+    expect(recordHasPathCoverageGap({ gaps: ['stat-only sweep failed: boom'] })).toBe(false);
   });
 
-  it('the per-file exclusion diagnostics name the path but never match the family', () => {
-    expect(recordHasPathCoverageGap(record({ gaps: ['binary file excluded: src/app.bin'] }))).toBe(false);
-    expect(recordHasPathCoverageGap(record({ gaps: ['oversize file excluded: src/big.txt'] }))).toBe(false);
-  });
-
-  it('an exclusion naming a file that itself contains a gap phrase never matches (the match is anchored to the prefix)', () => {
-    // The interpolation-proof assertion: an unanchored scan would let a user
-    // file named like a gap phrase open the family — and with it drop every
-    // create candidate and defer every sibling consult in the repo.
+  it('a diagnostic naming a file that itself contains a gap phrase never matches (the match is anchored to the prefix)', () => {
+    // The interpolation-proof assertion: gap strings interpolate user file
+    // names (cap-cut paths, unreadable drops), so an unanchored scan would
+    // let a file named like a gap phrase open the family — and with it defer
+    // every sibling consult in the repo.
     for (const gap of [
-      'binary file excluded: notes/wall budget.md',
-      'oversize file excluded: src/file-count budget exceeded.txt',
-      'oversize file excluded: repo walk truncated.txt',
-      'binary file excluded: src/post-side wall budget exhausted.log',
-      'binary file excluded: src/touched-files cap 5 exceeded.md'
+      'binary-scope: notes/post-side wall budget exhausted.log classified binary, whole-file scope',
+      'binary-scope: src/touched-files cap 5 exceeded.md classified binary, whole-file scope',
+      'stat-only sweep failed: snapshot compare aborted: nested phrase'
     ]) {
-      expect(recordHasPathCoverageGap(record({ gaps: [gap] })), gap).toBe(false);
+      expect(recordHasPathCoverageGap({ gaps: [gap] }), gap).toBe(false);
     }
   });
 });
@@ -2448,7 +1587,7 @@ describe('hashTreePath — the on-demand sibling hash read (main-228 Phase 2)', 
     });
     expect(sibPre).toBe(sha256Hex(BLOB));
     expect(sibPost).toBe(sha256Hex(BLOB));
-    const mine = record({ createdAt: 1000, files: { 'src/a.ts': fileEntry({ hash: sha256Hex(BLOB) }) } });
+    const mine: AmbiguityBaseline = { createdAt: 1000, preHash: sha256Hex(BLOB) };
     const sibling: SiblingSnapshot = {
       sessionId: 'other-session',
       toolUseId: 'toolu_sibling',
@@ -2456,13 +1595,13 @@ describe('hashTreePath — the on-demand sibling hash read (main-228 Phase 2)', 
       consumed: true,
       consumedAt: 2500,
       coverageGap: false,
-      pre: fileEntry({ hash: sibPre! }),
-      post: fileEntry({ hash: sibPost! })
+      pre: { hash: sibPre! },
+      post: { hash: sibPost! }
     };
     expect(applyAmbiguityRules(mine, [sibling], 'src/a.ts')).toEqual({ ambiguous: false });
     const changedSibling: SiblingSnapshot = {
       ...sibling,
-      post: fileEntry({ hash: sha256Hex(Buffer.from('different post content\n')) })
+      post: { hash: sha256Hex(Buffer.from('different post content\n')) }
     };
     expect(applyAmbiguityRules(mine, [changedSibling], 'src/a.ts').ambiguous).toBe(true);
   });

@@ -1,7 +1,7 @@
 /**
  * Shared fixture helpers for the Phase 2 snapshot-lifecycle acceptance checks
- * (card main-213): temp-repo + real-`git span` CLI setup, snapshot record/file
- * builders, a content-hash helper, and the executor/memo fakes the harness
+ * (card main-213): temp-repo + real-`git span` CLI setup, the v2 snapshot
+ * record builder, a content-hash helper, and the executor/memo fakes the harness
  * lifecycle files drive the touch pipeline with. SDK-specific shapes (hook
  * input builders, logger capture) live in the per-harness lifecycle files that
  * import this module.
@@ -23,7 +23,7 @@ import {
   SESSION_BASE_DIR,
   sessionDir
 } from '../../src/common/agent-hooks-common.js';
-import type { SnapshotFile, SnapshotRecord } from '../../src/common/snapshot-core.js';
+import type { SnapshotRecord } from '../../src/common/snapshot-core.js';
 import type { MemoStore } from '../../src/common/span-surface.js';
 import type { TouchExecutors, TouchFixResult } from '../../src/common/touch-core.js';
 
@@ -234,30 +234,17 @@ export function sha256Hex(content: string): string {
 /** A timestamp in the past that every fixture's clocks are relative to. */
 export const BASE_NOW = 1_800_000_000_000;
 
-/** A snapshot file entry; mtimeNs carries a non-zero sub-second part by default. */
-export function makeFile(overrides: Partial<SnapshotFile> = {}): SnapshotFile {
-  return {
-    hash: 'a'.repeat(64),
-    size: 11,
-    mtimeNs: BigInt(BASE_NOW) * 1_000_000n + 1n,
-    capturedAt: BASE_NOW,
-    lines: ['line-hash-1', 'line-hash-2'],
-    ...overrides
-  };
-}
-
 export function makeRecord(overrides: Partial<SnapshotRecord> = {}): SnapshotRecord {
   return {
-    version: 1,
+    version: 2,
     sessionId: 'sess-lifecycle',
     toolUseId: 'tu-bash-1',
     repoRoot: '/repo',
     createdAt: BASE_NOW,
     consumed: false,
     consumedAt: null,
-    tier: 'repo',
+    treeSha: 'a'.repeat(40),
     gaps: [],
-    files: {},
     ...overrides
   };
 }

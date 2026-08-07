@@ -1,26 +1,29 @@
 /**
  * Acceptance checks for the Claude harness snapshot lifecycle (card
- * main-213): the full PreToolUse → PostToolUse / PostToolUseFailure →
- * SessionEnd flow through the committed adapter modules (src/claude/snapshot.ts,
+ * main-213; mechanism rewritten to tree-SHA snapshots by card main-228): the
+ * full PreToolUse → PostToolUse / PostToolUseFailure → SessionEnd flow
+ * through the committed adapter modules (src/claude/snapshot.ts,
  * src/claude/post-tool-use.ts, src/claude/post-tool-use-failure.ts,
- * src/claude/session-end.ts) and the shared store/activity-log contract.
+ * src/claude/session-end.ts) and the shared store/harness/activity-log
+ * contract.
  *
- * These fixtures run against the implemented adapters (Phase 3). Fixtures
- * that need the real `git span` CLI are gated with
+ * Fixtures that need the real `git span` CLI are gated with
  * `it.skipIf(!hasGitSpan)` so they fail visibly when the CLI is missing,
  * mirroring porcelain-contract.test.ts.
  *
  * The lifecycle contract, per the plan:
  *
- * - PreToolUse classifies the command and, when it decides a snapshot, walks
- *   and persists the record for (session_id, tool_use_id) — a write-only hook
- *   that never returns a signal, fails open without a record when
- *   uncorrelatable, and writes nothing for provably read-only commands.
- * - PostToolUse finds the record, compares pre vs post, resolves interleaved
- *   edits against the activity log, and touches through the observed-write
- *   scope list. Formatter runs, embedded scripts, generations, deletes, and
- *   renames are all attributed; a dirty baseline never surfaces; a duplicate
- *   delivery consumes exactly once; a record with no PostToolUse stays live as
+ * - PreToolUse classifies the command and, when it decides a snapshot, takes
+ *   the private write-tree capture and persists the tree-SHA record for
+ *   (session_id, tool_use_id) — a write-only hook that never returns a
+ *   signal, fails open without a record when uncorrelatable, and writes
+ *   nothing for provably read-only commands.
+ * - PostToolUse finds the record, captures the post side in the same mode,
+ *   compares tree against tree, resolves interleaved edits against the
+ *   activity log, and touches through the observed-write scope list.
+ *   Formatter runs, embedded scripts, generations, deletes, and renames are
+ *   all attributed; a dirty baseline never surfaces; a duplicate delivery
+ *   consumes exactly once; a record with no PostToolUse stays live as
  *   ambiguity evidence.
  * - PostToolUseFailure runs the same comparison whenever a record exists —
  *   `is_interrupt` gates nothing. Mutated-nothing failures produce no
@@ -29,15 +32,16 @@
  * - Deleted paths surface through dead anchors: `git span list --porcelain`
  *   reaches them (exit 0), `git span drift` reports them as debt, and `--fix`
  *   leaves them alone for a human to reconcile.
- * - SessionEnd and the TTL sweep reclaim records, tombstones, activity
- *   entries, and index entries.
+ * - SessionEnd and the TTL sweep reclaim records, tombstones, per-call
+ *   capture artifacts, activity entries, and index entries.
  * - The concurrency ambiguity table (8 rows) and the activity-log interleaving
  *   four outcomes (never-flag, skip, bounded-double, unfinished fail-closed)
  *   resolve deterministic orderings and racing duplicates.
  *
- * Clock fixtures use real `Date.now()` values (the activity-log consult reads
- * entry-file mtimes, which are real writes) except where a fake clock is the
- * point (the mtimeNs soundness checks drive compareSnapshot directly).
+ * Clock fixtures use real `Date.now()` values (the pre capture stamps
+ * createdAt with the real clock, and the activity-log consult reads
+ * entry-file mtimes, which are real writes); interleaving entry stamps are
+ * computed relative to the captured record's own createdAt.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -50,11 +54,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createHandler as createPostToolUseHandler } from '../../src/claude/post-tool-use.js';
 import { createHandler as createFailureHandler } from '../../src/claude/post-tool-use-failure.js';
 import sessionEndHook from '../../src/claude/session-end.js';
-import {
-  createHandler as createSnapshotPreHook,
-  resolveSnapshotBudgets,
-  walkSnapshotFiles
-} from '../../src/claude/snapshot.js';
+import { createHandler as createSnapshotPreHook } from '../../src/claude/snapshot.js';
 import {
   isDebt,
   parseDriftPorcelain,
@@ -64,17 +64,15 @@ import {
   sessionDir
 } from '../../src/common/agent-hooks-common.js';
 import {
+  type AmbiguityBaseline,
   applyAmbiguityRules,
   classifyCommandForSnapshot,
-  compareSnapshot,
   DEFAULT_SNAPSHOT_BUDGETS,
-  type ReadFile,
   recordHasPathCoverageGap,
   type SiblingSnapshot,
-  type SnapshotFile,
-  type SnapshotRecord,
-  type StatFile
+  type SnapshotRecord
 } from '../../src/common/snapshot-core.js';
+import { resolveSnapshotBudgets } from '../../src/common/snapshot-harness.js';
 import {
   type ActivityEntry,
   activityEntriesCovering,
@@ -91,7 +89,6 @@ import {
   flushPurgedSessions,
   gitAddCommit,
   makeExecutors,
-  makeFile,
   makeRecord,
   porcelainRow,
   purgeSessions,
@@ -231,18 +228,22 @@ function sessionEndInput(sessionId: string): Record<string, unknown> {
   };
 }
 
-/** A sibling record view built from the sibling's own record — fidelity over looseness. */
-function siblingFrom(record: SnapshotRecord, path: string, overrides: Partial<SiblingSnapshot> = {}): SiblingSnapshot {
+/**
+ * A sibling's per-path view for the ambiguity table fixtures. In v2 the
+ * harness derives these hashes on demand from the sibling's recorded tree
+ * SHAs (hashTreePath over its private object dir) — the fixtures hand the
+ * table the same derived shape directly.
+ */
+function siblingView(overrides: Partial<SiblingSnapshot> = {}): SiblingSnapshot {
   return {
-    sessionId: record.sessionId,
-    toolUseId: record.toolUseId,
-    createdAt: record.createdAt,
-    consumed: record.consumed,
-    consumedAt: record.consumedAt,
-    // The handler's derivation, mirrored: kind-based, never ANY-gap.
-    coverageGap: recordHasPathCoverageGap(record),
-    pre: record.files[path] ?? null,
-    post: record.post?.[path] ?? null,
+    sessionId: 'sess-lifecycle',
+    toolUseId: 'tu-bash-1',
+    createdAt: 200,
+    consumed: false,
+    consumedAt: null,
+    coverageGap: false,
+    pre: null,
+    post: null,
     ...overrides
   };
 }
@@ -308,15 +309,19 @@ describe('claude harness snapshot lifecycle', () => {
         expect(record).not.toBe('tombstoned');
         if (record === null || record === 'tombstoned') throw new Error('record missing');
         expect(record).toMatchObject({
+          version: 2,
           sessionId,
           toolUseId: tuId,
           repoRoot: repo.root,
           consumed: false,
-          consumedAt: null,
-          tier: 'repo'
+          consumedAt: null
         });
-        // The pre walk captured the file the opaque command can write.
-        expect(record.files['src/app.ts']).toBeDefined();
+        // The capture is one private write-tree over the whole repo: the
+        // record persists only the tree SHA (never a per-path map), and a
+        // non-degraded capture carries no stat-only evidence.
+        expect(record.treeSha).toMatch(/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/);
+        expect(record.statOnly).toBeUndefined();
+        expect(record.gaps).toEqual([]);
       });
     });
 
@@ -485,15 +490,7 @@ describe('claude harness snapshot lifecycle', () => {
         const logger = new Logger();
         const store = createSnapshotStore(logger);
         writeFile(repo.root, 'src/app.ts', P10);
-        store.write(
-          makeRecord({
-            sessionId,
-            toolUseId: tuId,
-            repoRoot: repo.root,
-            createdAt: BASE_NOW,
-            files: { 'src/app.ts': makeFile({ hash: sha256Hex(P10), size: P10.length }) }
-          })
-        );
+        store.write(makeRecord({ sessionId, toolUseId: tuId, repoRoot: repo.root, createdAt: BASE_NOW }));
         // No PostToolUse ever fires for this call — the record must stay live
         // and unconsumed so a later call's ambiguity check can read it.
         const found = store.find(sessionId, tuId);
@@ -512,16 +509,17 @@ describe('claude harness snapshot lifecycle', () => {
         const sessionId = 'sess-lifecycle-duplicate';
         const tuId = 'tu-dup-1';
         const logger = new Logger();
-        const store = createSnapshotStore(logger);
         writeFile(repo.root, 'src/app.ts', P10);
-        store.write(
-          makeRecord({
-            sessionId,
-            toolUseId: tuId,
-            repoRoot: repo.root,
-            createdAt: BASE_NOW,
-            files: { 'src/app.ts': makeFile({ hash: sha256Hex(P10), size: P10.length }) }
-          })
+        gitAddCommit(repo.root, 'add app.ts');
+        const pre = createSnapshotPreHook();
+        await pre(
+          preInput({
+            session_id: sessionId,
+            cwd: repo.root,
+            tool_use_id: tuId,
+            tool_input: { command: 'npx prettier --write src/app.ts' }
+          }) as never,
+          { logger }
         );
         writeFile(repo.root, 'src/app.ts', P10_FORMATTED);
         const { executors, calls } = makeExecutors({
@@ -911,15 +909,7 @@ describe('claude harness snapshot lifecycle', () => {
         const sessionId = 'sess-lifecycle-end';
         const logger = new Logger();
         const store = createSnapshotStore(logger);
-        store.write(
-          makeRecord({
-            sessionId,
-            toolUseId: 'tu-end-1',
-            repoRoot: repo.root,
-            createdAt: now,
-            files: { 'src/app.ts': makeFile() }
-          })
-        );
+        store.write(makeRecord({ sessionId, toolUseId: 'tu-end-1', repoRoot: repo.root, createdAt: now }));
         expect(store.tombstone(sessionId, 'tu-end-1', now)).toBe(true);
         appendActivityEntry(repo.root, {
           sessionId,
@@ -957,8 +947,7 @@ describe('claude harness snapshot lifecycle', () => {
             sessionId: 'sess-lifecycle-ttl-old',
             toolUseId: 'tu-ttl-old',
             repoRoot: repo.root,
-            createdAt: staleCreatedAt,
-            files: { 'src/app.ts': makeFile() }
+            createdAt: staleCreatedAt
           })
         );
         store.write(
@@ -966,8 +955,7 @@ describe('claude harness snapshot lifecycle', () => {
             sessionId: 'sess-lifecycle-ttl-live',
             toolUseId: 'tu-ttl-live',
             repoRoot: repo.root,
-            createdAt: now,
-            files: { 'src/app.ts': makeFile() }
+            createdAt: now
           })
         );
         const sweepNow = staleCreatedAt + DEFAULT_SNAPSHOT_BUDGETS.recordTtlMs + 1;
@@ -990,8 +978,7 @@ describe('claude harness snapshot lifecycle', () => {
             sessionId: 'sess-lifecycle-ttl-edit',
             toolUseId: 'tu-edit-anchor',
             repoRoot: repo.root,
-            createdAt: now,
-            files: {}
+            createdAt: now
           })
         );
         // The sweep-read margin skips files written within the last 5s, and
@@ -1030,24 +1017,24 @@ describe('claude harness snapshot lifecycle', () => {
   describe('F. concurrency — the ambiguity table', () => {
     it('decides every row of the table deterministically', () => {
       const PATH = 'src/app.ts';
-      const fileA = makeFile({ hash: 'a'.repeat(64) });
-      const fileB = makeFile({ hash: 'b'.repeat(64) });
-      const mine = makeRecord({ createdAt: 200, files: { [PATH]: fileA } });
+      const fileA = { hash: 'a'.repeat(64) };
+      const fileB = { hash: 'b'.repeat(64) };
+      const mine: AmbiguityBaseline = { createdAt: 200, preHash: fileA.hash };
       // (mine created at T1=200; the table is read top-down per sibling.)
       const rows: { label: string; sibling: SiblingSnapshot; ambiguous: boolean }[] = [
         {
           label: 'unconsumed, created after mine',
-          sibling: siblingFrom(mine, PATH, { createdAt: 300, consumed: false }),
+          sibling: siblingView({ createdAt: 300, consumed: false }),
           ambiguous: true
         },
         {
           label: 'unconsumed, created before mine',
-          sibling: siblingFrom(mine, PATH, { createdAt: 100, consumed: false }),
+          sibling: siblingView({ createdAt: 100, consumed: false }),
           ambiguous: true
         },
         {
           label: 'consumed, created after mine, post(P) != pre(P)',
-          sibling: siblingFrom(mine, PATH, {
+          sibling: siblingView({
             createdAt: 300,
             consumed: true,
             consumedAt: 500,
@@ -1058,7 +1045,7 @@ describe('claude harness snapshot lifecycle', () => {
         },
         {
           label: 'consumed, created after mine, post(P) == pre(P) — it never changed P',
-          sibling: siblingFrom(mine, PATH, {
+          sibling: siblingView({
             createdAt: 300,
             consumed: true,
             consumedAt: 500,
@@ -1069,7 +1056,7 @@ describe('claude harness snapshot lifecycle', () => {
         },
         {
           label: 'consumed, created before mine, pre(P) == post(P)',
-          sibling: siblingFrom(mine, PATH, {
+          sibling: siblingView({
             createdAt: 100,
             consumed: true,
             consumedAt: 250,
@@ -1080,7 +1067,7 @@ describe('claude harness snapshot lifecycle', () => {
         },
         {
           label: 'consumed, created before mine, post(P) == my pre(P)',
-          sibling: siblingFrom(mine, PATH, {
+          sibling: siblingView({
             createdAt: 100,
             consumed: true,
             consumedAt: 250,
@@ -1091,7 +1078,7 @@ describe('claude harness snapshot lifecycle', () => {
         },
         {
           label: 'consumed, created before mine, whole window ended before my baseline',
-          sibling: siblingFrom(mine, PATH, {
+          sibling: siblingView({
             createdAt: 100,
             consumed: true,
             consumedAt: 150,
@@ -1102,7 +1089,7 @@ describe('claude harness snapshot lifecycle', () => {
         },
         {
           label: 'consumed, created before mine, window overlaps my baseline',
-          sibling: siblingFrom(mine, PATH, {
+          sibling: siblingView({
             createdAt: 100,
             consumed: true,
             consumedAt: 350,
@@ -1128,22 +1115,28 @@ describe('claude harness snapshot lifecycle', () => {
 
     it('same-state same-file: both calls fail closed with deterministic diagnostics (older completes first)', () => {
       const PATH = 'src/app.ts';
-      const fileA = makeFile({ hash: 'a'.repeat(64) });
-      const fileB = makeFile({ hash: 'b'.repeat(64) });
+      const fileA = { hash: 'a'.repeat(64) };
+      const fileB = { hash: 'b'.repeat(64) };
       // Two opaque calls on the same file, same pre state; call A starts first.
-      const a = makeRecord({ sessionId: 'sess-a', toolUseId: 'call-a', createdAt: 100, files: { [PATH]: fileA } });
-      const b = makeRecord({ sessionId: 'sess-b', toolUseId: 'call-b', createdAt: 300, files: { [PATH]: fileA } });
+      const a: AmbiguityBaseline = { createdAt: 100, preHash: fileA.hash };
+      const b: AmbiguityBaseline = { createdAt: 300, preHash: fileA.hash };
+      const siblingA = (overrides: Partial<SiblingSnapshot>): SiblingSnapshot =>
+        siblingView({ sessionId: 'sess-a', toolUseId: 'call-a', createdAt: 100, pre: fileA, ...overrides });
       // B evaluates first: A is still live, its write window has not provably
       // ended → B's path is ambiguous and drops with a diagnostic.
-      const bFirst = applyAmbiguityRules(b, [siblingFrom(a, PATH, { consumed: false })], PATH);
+      const bFirst = applyAmbiguityRules(b, [siblingA({ consumed: false })], PATH);
       expect(bFirst.ambiguous).toBe(true);
       // A completes first: its consume writes post(P)=fileB and stamps
       // consumedAt past B's baseline. B re-evaluates: consumed, created before
       // mine, pre(P) != post(P), window overlaps my baseline → still ambiguous.
-      const aConsumed = siblingFrom(a, PATH, { consumed: true, consumedAt: 400, pre: fileA, post: fileB });
+      const aConsumed = siblingA({ consumed: true, consumedAt: 400, post: fileB });
       expect(applyAmbiguityRules(b, [aConsumed], PATH).ambiguous).toBe(true);
       // A, evaluating its own path later, sees B still live → ambiguous too.
-      const aSelf = applyAmbiguityRules(a, [siblingFrom(b, PATH, { consumed: false })], PATH);
+      const aSelf = applyAmbiguityRules(
+        a,
+        [siblingView({ sessionId: 'sess-b', toolUseId: 'call-b', createdAt: 300, consumed: false, pre: fileA })],
+        PATH
+      );
       expect(aSelf.ambiguous).toBe(true);
       // The failure is loud and specific, never silent and never misattributed.
       if (!bFirst.ambiguous) throw new Error('expected ambiguous');
@@ -1151,58 +1144,52 @@ describe('claude harness snapshot lifecycle', () => {
     });
 
     it('disjoint writes completed in reverse order: the earlier-completing call fails closed, the later-completing one attributes its own paths', () => {
-      const fileA = makeFile({ hash: 'a'.repeat(64) });
-      const fileB = makeFile({ hash: 'b'.repeat(64) });
-      const fileC = makeFile({ hash: 'c'.repeat(64) });
-      // Both tier-2 records cover the whole repo, so each call's path is
+      const fileB = { hash: 'b'.repeat(64) };
+      const fileC = { hash: 'c'.repeat(64) };
+      // Both write-tree captures cover the whole repo, so each call's path is
       // covered by the other's record — the ambiguity check sees both paths.
-      const a = makeRecord({
-        sessionId: 'sess-a',
-        toolUseId: 'call-a',
-        createdAt: 100,
-        files: { 'src/a.ts': fileA, 'src/b.ts': fileC }
-      });
-      const b = makeRecord({
-        sessionId: 'sess-b',
-        toolUseId: 'call-b',
-        createdAt: 300,
-        files: { 'src/a.ts': fileC, 'src/b.ts': fileB }
-      });
+      // (A's pre for src/b.ts is fileC; B's pre for src/a.ts is fileC too.)
+      const a: AmbiguityBaseline = { createdAt: 100, preHash: 'a'.repeat(64) };
+      const b: AmbiguityBaseline = { createdAt: 300, preHash: fileB.hash };
       // B completes first, while A is still live. Evaluating src/b.ts, B sees
       // A's unprovably-ended window → ambiguous: B drops its own real change
       // with a diagnostic rather than risk attributing a race.
-      expect(applyAmbiguityRules(b, [siblingFrom(a, 'src/b.ts', { consumed: false })], 'src/b.ts').ambiguous).toBe(
-        true
-      );
+      expect(
+        applyAmbiguityRules(
+          b,
+          [siblingView({ sessionId: 'sess-a', toolUseId: 'call-a', createdAt: 100, consumed: false, pre: fileC })],
+          'src/b.ts'
+        ).ambiguous
+      ).toBe(true);
       // When A completes and evaluates src/a.ts, B is consumed with post(P) =
       // pre(P) for that path — B provably never changed it → not ambiguous,
       // and A attributes its own path.
-      const bConsumed = siblingFrom(b, 'src/a.ts', { consumed: true, consumedAt: 350, pre: fileC, post: fileC });
+      const bConsumed = siblingView({
+        sessionId: 'sess-b',
+        toolUseId: 'call-b',
+        createdAt: 300,
+        consumed: true,
+        consumedAt: 350,
+        pre: fileC,
+        post: fileC
+      });
       expect(applyAmbiguityRules(a, [bConsumed], 'src/a.ts').ambiguous).toBe(false);
     });
 
     it('a sequential third-party writer between two opaque calls never makes the second call ambiguous', async () => {
       await withRepo(async (repo) => {
         const now = Date.now();
-        const fileA = makeFile({ hash: 'a'.repeat(64) });
-        const fileB = makeFile({ hash: 'b'.repeat(64) });
+        const fileA = { hash: 'a'.repeat(64) };
+        const fileB = { hash: 'b'.repeat(64) };
         // Call A ran, an Edit ran, then call B ran — strictly sequential.
-        const a = makeRecord({
-          sessionId: 'sess-a',
-          toolUseId: 'call-a',
-          createdAt: now - 4000,
-          files: { 'src/app.ts': fileA }
-        });
-        const b = makeRecord({
-          sessionId: 'sess-b',
-          toolUseId: 'call-b',
-          createdAt: now - 2000,
-          files: { 'src/app.ts': fileB }
-        });
+        const b: AmbiguityBaseline = { createdAt: now - 2000, preHash: fileB.hash };
         // A is consumed with pre != post, but its whole window ended before
         // B's baseline (consumedAt <= B.createdAt) → B is not ambiguous. A
         // naive post-vs-my-pre test would flag this; the table does not.
-        const aConsumed = siblingFrom(a, 'src/app.ts', {
+        const aConsumed = siblingView({
+          sessionId: 'sess-a',
+          toolUseId: 'call-a',
+          createdAt: now - 4000,
           consumed: true,
           consumedAt: now - 3500,
           pre: fileA,
@@ -1237,8 +1224,8 @@ describe('claude harness snapshot lifecycle', () => {
 
     it('a gapped unconsumed sibling covers every path — truncated records fail closed', () => {
       const PATH = 'src/app.ts';
-      const mine = makeRecord({ createdAt: 200, files: { [PATH]: makeFile({ hash: 'a'.repeat(64) }) } });
-      const gapped = siblingFrom(mine, PATH, { coverageGap: true, consumed: false });
+      const mine: AmbiguityBaseline = { createdAt: 200, preHash: 'a'.repeat(64) };
+      const gapped = siblingView({ toolUseId: 'tu-gapped-sibling', coverageGap: true, consumed: false });
       const verdict = applyAmbiguityRules(mine, [gapped], PATH);
       expect(verdict.ambiguous).toBe(true);
       if (!verdict.ambiguous) throw new Error('expected ambiguous');
@@ -1251,143 +1238,128 @@ describe('claude harness snapshot lifecycle', () => {
 
   describe('G. the activity-log interleaving boundary', () => {
     /**
-     * The shared interleaving scenario: a real repo with a committed file P, a
-     * stored pre record for an opaque Bash call, the post state on disk, and
-     * an activity entry appended by the fixture. Drives the real post handler
-     * with fake executors so the outcome is the boundary check's, not the
-     * CLI's.
+     * The shared interleaving scenario: a real repo with a committed file P at
+     * v1, a REAL pre capture for an opaque Bash call (the write-tree record —
+     * its createdAt is the baseline every entry stamp is computed against),
+     * the post state on disk, and an activity entry appended by the fixture.
+     * Drives the real post handler with fake executors so the outcome is the
+     * boundary check's, not the CLI's. The entry is built from the record's
+     * own createdAt because the capture stamps it with the real clock.
      */
     async function runInterleaved(
       sessionId: string,
       tuId: string,
-      opts: { v1: string; v2: string; entry: ActivityEntry; afterAppend?: (repoRoot: string) => void }
+      opts: {
+        v1: string;
+        v2: string;
+        entry: (recordCreatedAt: number) => ActivityEntry;
+        afterAppend?: (repoRoot: string, recordCreatedAt: number) => void;
+      }
     ): Promise<{ block: string | null; notes: string[] }> {
       const repo = createTestRepo();
       try {
         const { v1, v2, entry, afterAppend } = opts;
-        const now = Date.now();
-        writeFile(repo.root, 'src/app.ts', v2);
-        const store = createSnapshotStore(new Logger());
-        store.write(
-          makeRecord({
-            sessionId,
-            toolUseId: tuId,
-            repoRoot: repo.root,
-            createdAt: now - 1000,
-            files: {
-              'src/app.ts': makeFile({
-                hash: sha256Hex(v1),
-                size: v1.length,
-                mtimeNs: BigInt(BASE_NOW) * 1_000_000n + 3n,
-                capturedAt: now - 2000
-              })
-            }
-          })
-        );
-        appendActivityEntry(repo.root, entry);
-        if (afterAppend) afterAppend(repo.root);
-        const { executors } = makeExecutors({
-          rows: (filePath) =>
-            filePath.endsWith('/src/app.ts') ? [porcelainRow({ path: 'src/app.ts', start: 1, end: 10 })] : [],
-          drift: () => [driftRow({ path: 'src/app.ts', start: 1, end: 10 })]
-        });
-        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
-        const { logger, notes } = noteCapturingLogger();
+        writeFile(repo.root, 'src/app.ts', v1);
+        gitAddCommit(repo.root, 'add app.ts');
+        const logger = new Logger();
         const input = postInput({
           session_id: sessionId,
           cwd: repo.root,
           tool_use_id: tuId,
           tool_input: { command: 'npx prettier --write src/app.ts' }
         });
-        const raw = await handler(input as never, { logger });
+        await createSnapshotPreHook()(input as never, { logger });
+        const found = createSnapshotStore(logger).find(sessionId, tuId);
+        if (found === null || found === 'tombstoned') throw new Error('pre capture failed');
+        writeFile(repo.root, 'src/app.ts', v2);
+        appendActivityEntry(repo.root, entry(found.createdAt));
+        if (afterAppend) afterAppend(repo.root, found.createdAt);
+        // The consult's window top is the handler's own Date.now(): give the
+        // clock a beat so an entry stamped `createdAt + 1` is provably in the
+        // past by the time the handler compares.
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        const { executors } = makeExecutors({
+          rows: (filePath) =>
+            filePath.endsWith('/src/app.ts') ? [porcelainRow({ path: 'src/app.ts', start: 1, end: 10 })] : [],
+          drift: () => [driftRow({ path: 'src/app.ts', start: 1, end: 10 })]
+        });
+        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+        const { logger: capLogger, notes } = noteCapturingLogger();
+        const raw = await handler(input as never, { logger: capLogger });
         return { block: toResult(raw), notes };
       } finally {
         repo.cleanup();
       }
     }
 
-    it("never flags an entry fully stamped before the path's per-file capturedAt — sequential edits keep attributing", async () => {
-      const now = Date.now();
+    it("never flags an entry fully stamped before the record's createdAt — sequential edits keep attributing", async () => {
       const v1 = 'export const a = 1;\n';
       const v2 = 'export const a = 1;\nexport const b = 2;\n';
-      const entry: ActivityEntry = {
-        sessionId: 'sess-interleave-neverflag',
-        toolUseId: 'tu-edit-prior',
-        kind: 'Edit',
-        startedAt: now - 5000,
-        finishedAt: now - 3000,
-        paths: [{ path: 'src/app.ts', preHash: sha256Hex('v0'), postHash: sha256Hex(v1) }]
-      };
-      const consulted: ActivityEntry[][] = [];
       const { block, notes } = await runInterleaved('sess-interleave-neverflag', 'tu-bash-neverflag', {
         v1,
         v2,
-        entry,
-        // The consult's windowStart precedes the pre-read (now-2500 vs
-        // capturedAt now-2000): the entry's mtime is in-window and its
-        // finishedAt (now-3000) precedes the window start, so the consult
-        // returns it — and the stamp comparison then never-flags it. The
-        // `now` param is Date.now() at consult time: the entry file was just
-        // appended (mtime now+ε), and a stale now would drop it as future
-        // clock past the window top.
-        afterAppend: (repoRoot) => {
-          consulted.push(
-            activityEntriesCovering(repoRoot, 'src/app.ts', now - 2500, Date.now(), DEFAULT_SNAPSHOT_BUDGETS)
-          );
-        }
+        // The edit's whole lifecycle ended before my capture wrote the record
+        // (finishedAt ≤ createdAt): its change is baked into my pre tree and
+        // can never contaminate my post-diff — attribute without a note.
+        entry: (createdAt) => ({
+          sessionId: 'sess-interleave-neverflag',
+          toolUseId: 'tu-edit-prior',
+          kind: 'Edit',
+          startedAt: createdAt - 5000,
+          finishedAt: createdAt - 3000,
+          paths: [{ path: 'src/app.ts', preHash: sha256Hex('v0'), postHash: sha256Hex(v1) }]
+        })
       });
-      expect(consulted).toEqual([[entry]]);
-      // The edit wrote and touched before P's baseline — its change is baked
-      // into my pre and can never contaminate my post-diff.
       expect(block).toContain('## billing/checkout-request-flow');
       expect(notes.some((n) => n.includes('interleaved-tool'))).toBe(false);
+      expect(notes.some((n) => n.includes('absorbed-double'))).toBe(false);
     });
 
-    it('judges the walk-tail sub-window against the per-file capturedAt, never the record-wide createdAt — equal baselines skip', async () => {
-      // The edit's write lands after P's pre-read (capturedAt) yet its whole
-      // lifecycle ends before the record is written (createdAt): a check
-      // against the record-wide createdAt would never-flag it (finishedAt <=
-      // createdAt); the per-file capturedAt keeps it evaluated. Its baselines
-      // equal mine (the edit read v1, my pre, and its touch read v2, the
-      // current state) → skip: the edit's change is attributed by the edit's
-      // touch, never silently to me.
-      const now = Date.now();
+    it('an in-window edit whose baselines equal mine skips — covered-by-edit, never silently attributed to me', async () => {
+      // The edit finished after my capture wrote the record, so the boundary
+      // must evaluate it. Its baselines equal mine (the edit read v1, my pre,
+      // and its touch read v2, the current state) → skip: the edit's change
+      // is attributed by the edit's own touch, never silently to me. (v1 of
+      // the mechanism kept a per-file capturedAt sub-window here; the v2
+      // capture is one atomic write-tree, so the record's createdAt is the
+      // only baseline instant.)
       const v1 = 'export const a = 1;\n';
       const v2 = 'export const a = 1;\nexport const b = 2;\n';
-      const entry: ActivityEntry = {
-        sessionId: 'sess-interleave-walktail',
-        toolUseId: 'tu-edit-walktail',
-        kind: 'Edit',
-        startedAt: now - 2500,
-        finishedAt: now - 1500, // between capturedAt (now-2000) and createdAt (now-1000)
-        paths: [{ path: 'src/app.ts', preHash: sha256Hex(v1), postHash: sha256Hex(v2) }]
-      };
-      const { block, notes } = await runInterleaved('sess-interleave-walktail', 'tu-bash-walktail', { v1, v2, entry });
+      const { block, notes } = await runInterleaved('sess-interleave-walktail', 'tu-bash-walktail', {
+        v1,
+        v2,
+        entry: (createdAt) => ({
+          sessionId: 'sess-interleave-walktail',
+          toolUseId: 'tu-edit-walktail',
+          kind: 'Edit',
+          startedAt: createdAt - 500,
+          finishedAt: createdAt + 1,
+          paths: [{ path: 'src/app.ts', preHash: sha256Hex(v1), postHash: sha256Hex(v2) }]
+        })
+      });
       expect(block).toBeNull();
       expect(notes.some((n) => n.includes('covered-by-edit'))).toBe(true);
     });
 
-    it('the walk-tail sub-window with unequal baselines bounded-doubles', async () => {
-      // Same timing as above, but the edit read the state AFTER the Bash call
-      // wrote it: preHash != my pre → skip is impossible, and the call
-      // attributes its own residual with the absorbed-double note — the
-      // edit's segment is absorbed, nothing is dropped.
-      const now = Date.now();
+    it('an in-window edit with unequal baselines bounded-doubles', async () => {
+      // The edit read the state AFTER the Bash call wrote it: preHash != my
+      // pre → skip is impossible, and the call attributes its own residual
+      // with the absorbed-double note — the edit's segment is absorbed,
+      // nothing is dropped.
       const v1 = 'export const a = 1;\n';
       const v2 = 'export const a = 1;\nexport const b = 2;\n';
       const v3 = 'export const a = 1;\nexport const b = 2;\nexport const c = 3;\n';
-      const entry: ActivityEntry = {
-        sessionId: 'sess-interleave-walktail-unequal',
-        toolUseId: 'tu-edit-walktail-u',
-        kind: 'Edit',
-        startedAt: now - 1800,
-        finishedAt: now - 1500,
-        paths: [{ path: 'src/app.ts', preHash: sha256Hex(v2), postHash: sha256Hex(v3) }]
-      };
       const { block, notes } = await runInterleaved('sess-interleave-walktail-unequal', 'tu-bash-walktail-u', {
         v1,
         v2: v3,
-        entry
+        entry: (createdAt) => ({
+          sessionId: 'sess-interleave-walktail-unequal',
+          toolUseId: 'tu-edit-walktail-u',
+          kind: 'Edit',
+          startedAt: createdAt - 300,
+          finishedAt: createdAt + 1,
+          paths: [{ path: 'src/app.ts', preHash: sha256Hex(v2), postHash: sha256Hex(v3) }]
+        })
       });
       expect(block).toContain('## billing/checkout-request-flow');
       expect(notes.some((n) => n.includes('absorbed-double'))).toBe(true);
@@ -1399,27 +1371,25 @@ describe('claude harness snapshot lifecycle', () => {
       // read the post-Bash state, so preHash != my pre. The Bash call's
       // residual (v1 → v3) attributes with the diagnostic; the edit's segment
       // is absorbed; nothing is dropped.
-      const now = Date.now();
       const v1 = 'export const a = 1;\n';
       const v3 = 'export const a = 1;\nexport const b = 2;\nexport const c = 3;\n';
-      const entry: ActivityEntry = {
-        sessionId: 'sess-interleave-bashfirst',
-        toolUseId: 'tu-edit-bashfirst',
-        kind: 'Edit',
-        startedAt: now - 800,
-        finishedAt: now - 500,
-        paths: [
-          {
-            path: 'src/app.ts',
-            preHash: sha256Hex('export const a = 1;\nexport const b = 2;\n'),
-            postHash: sha256Hex(v3)
-          }
-        ]
-      };
       const { block, notes } = await runInterleaved('sess-interleave-bashfirst', 'tu-bash-bashfirst', {
         v1,
         v2: v3,
-        entry
+        entry: (createdAt) => ({
+          sessionId: 'sess-interleave-bashfirst',
+          toolUseId: 'tu-edit-bashfirst',
+          kind: 'Edit',
+          startedAt: createdAt - 100,
+          finishedAt: createdAt + 2,
+          paths: [
+            {
+              path: 'src/app.ts',
+              preHash: sha256Hex('export const a = 1;\nexport const b = 2;\n'),
+              postHash: sha256Hex(v3)
+            }
+          ]
+        })
       });
       expect(block).toContain('## billing/checkout-request-flow');
       expect(notes.some((n) => n.includes('absorbed-double'))).toBe(true);
@@ -1431,18 +1401,20 @@ describe('claude harness snapshot lifecycle', () => {
       // the call attributes its residual with the diagnostic. Failing toward
       // the double is the safe direction: the edit's touch may still have read
       // the state its write started from.
-      const now = Date.now();
       const v1 = 'export const a = 1;\n';
       const v2 = 'export const a = 1;\nexport const b = 2;\n';
-      const entry: ActivityEntry = {
-        sessionId: 'sess-interleave-prefail',
-        toolUseId: 'tu-edit-prefail',
-        kind: 'Edit',
-        startedAt: now - 1800,
-        finishedAt: now - 1500,
-        paths: [{ path: 'src/app.ts', preHash: null, postHash: sha256Hex(v2) }]
-      };
-      const { block, notes } = await runInterleaved('sess-interleave-prefail', 'tu-bash-prefail', { v1, v2, entry });
+      const { block, notes } = await runInterleaved('sess-interleave-prefail', 'tu-bash-prefail', {
+        v1,
+        v2,
+        entry: (createdAt) => ({
+          sessionId: 'sess-interleave-prefail',
+          toolUseId: 'tu-edit-prefail',
+          kind: 'Edit',
+          startedAt: createdAt - 300,
+          finishedAt: createdAt + 1,
+          paths: [{ path: 'src/app.ts', preHash: null, postHash: sha256Hex(v2) }]
+        })
+      });
       expect(block).toContain('## billing/checkout-request-flow');
       expect(notes.some((n) => n.includes('absorbed-double'))).toBe(true);
     });
@@ -1451,21 +1423,19 @@ describe('claude harness snapshot lifecycle', () => {
       // The edit's entry is in flight (finishedAt null): its write may land at
       // any moment, so P drops with the interleaved-tool diagnostic — the
       // attribution that never fires is the attribution that never lies.
-      const now = Date.now();
       const v1 = 'export const a = 1;\n';
       const v2 = 'export const a = 1;\nexport const b = 2;\n';
-      const entry: ActivityEntry = {
-        sessionId: 'sess-interleave-unfinished',
-        toolUseId: 'tu-edit-unfinished',
-        kind: 'Edit',
-        startedAt: now - 500,
-        finishedAt: null,
-        paths: [{ path: 'src/app.ts', preHash: sha256Hex(v1), postHash: null }]
-      };
       const { block, notes } = await runInterleaved('sess-interleave-unfinished', 'tu-bash-unfinished', {
         v1,
         v2,
-        entry
+        entry: (createdAt) => ({
+          sessionId: 'sess-interleave-unfinished',
+          toolUseId: 'tu-edit-unfinished',
+          kind: 'Edit',
+          startedAt: createdAt - 500,
+          finishedAt: null,
+          paths: [{ path: 'src/app.ts', preHash: sha256Hex(v1), postHash: null }]
+        })
       });
       expect(block).toBeNull();
       expect(notes.some((n) => n.includes('interleaved-tool'))).toBe(true);
@@ -1474,23 +1444,22 @@ describe('claude harness snapshot lifecycle', () => {
     it('an unfinished entry older than the short TTL is pruned — a capture after the prune attributes cleanly', async () => {
       // The stale unfinished entry is swept away; the same call re-run after
       // the sweep finds no interleaved edit and attributes normally.
-      const now = Date.now();
       const v1 = 'export const a = 1;\n';
       const v2 = 'export const a = 1;\nexport const b = 2;\n';
-      const entry: ActivityEntry = {
-        sessionId: 'sess-interleave-ttlprune',
-        toolUseId: 'tu-edit-ttlprune',
-        kind: 'Edit',
-        startedAt: now - DEFAULT_SNAPSHOT_BUDGETS.unfinishedEntryTtlMs - 60_000,
-        finishedAt: null,
-        paths: [{ path: 'src/app.ts', preHash: sha256Hex(v1), postHash: null }]
-      };
       const pruned: number[] = [];
       const { block, notes } = await runInterleaved('sess-interleave-ttlprune', 'tu-bash-ttlprune', {
         v1,
         v2,
-        entry,
+        entry: (createdAt) => ({
+          sessionId: 'sess-interleave-ttlprune',
+          toolUseId: 'tu-edit-ttlprune',
+          kind: 'Edit',
+          startedAt: createdAt - DEFAULT_SNAPSHOT_BUDGETS.unfinishedEntryTtlMs - 60_000,
+          finishedAt: null,
+          paths: [{ path: 'src/app.ts', preHash: sha256Hex(v1), postHash: null }]
+        }),
         afterAppend: (repoRoot) => {
+          const now = Date.now();
           // Age the just-appended entry file past the unfinished-entry TTL —
           // the prune is file-mtime-based (utimesSync takes seconds).
           const stale = join(
@@ -1502,7 +1471,7 @@ describe('claude harness snapshot lifecycle', () => {
           utimesSync(stale, oldSeconds, oldSeconds);
           // The sweep-read margin skips files written within the last 5s, and
           // the activity prune only visits repos named by readable records —
-          // age the pre-walk record's file past the margin too, or the repo
+          // age the pre-capture record's file past the margin too, or the repo
           // is invisible to the prune (its createdAt stays in-TTL and live).
           const preFile = join(
             sessionDir('sess-interleave-ttlprune'),
@@ -1523,28 +1492,23 @@ describe('claude harness snapshot lifecycle', () => {
       // one can create the consumption tombstone (O_EXCL) — the winner
       // attributes, the loser finds the tombstone and no-ops. The record is
       // consumed exactly once no matter which delivery wins the race.
-      const now = Date.now();
       const v1 = 'export const a = 1;\n';
       const v2 = 'export const a = 1;\nexport const b = 2;\n';
       const repo = createTestRepo();
       try {
-        writeFile(repo.root, 'src/app.ts', v2);
-        createSnapshotStore(new Logger()).write(
-          makeRecord({
-            sessionId: 'sess-interleave-race',
-            toolUseId: 'tu-bash-race',
-            repoRoot: repo.root,
-            createdAt: now - 1000,
-            files: {
-              'src/app.ts': makeFile({
-                hash: sha256Hex(v1),
-                size: v1.length,
-                mtimeNs: BigInt(BASE_NOW) * 1_000_000n + 4n,
-                capturedAt: now - 2000
-              })
-            }
-          })
+        writeFile(repo.root, 'src/app.ts', v1);
+        gitAddCommit(repo.root, 'add app.ts');
+        const preLogger = new Logger();
+        await createSnapshotPreHook()(
+          preInput({
+            session_id: 'sess-interleave-race',
+            cwd: repo.root,
+            tool_use_id: 'tu-bash-race',
+            tool_input: { command: 'npx prettier --write src/app.ts' }
+          }) as never,
+          { logger: preLogger }
         );
+        writeFile(repo.root, 'src/app.ts', v2);
         const { executors, calls } = makeExecutors({
           rows: (filePath) =>
             filePath.endsWith('/src/app.ts') ? [porcelainRow({ path: 'src/app.ts', start: 1, end: 10 })] : [],
@@ -1570,82 +1534,15 @@ describe('claude harness snapshot lifecycle', () => {
         repo.cleanup();
       }
     });
-
-    it('the mtimeNs filter is sound: a same-size, same-coarse-mtime change is re-hashed and caught', () => {
-      // The (size, mtimeNs) pair is the post-side cheap filter — but only when
-      // the recorded mtime carries a non-zero sub-second part. On a
-      // second-granularity clock a same-second write does not advance mtime,
-      // so a matching pair with a zero sub-second part must re-read the file:
-      // the change is caught, never skipped.
-      const v1 = 'export const a = 1;\n';
-      const v2 = 'export const b = 2;\n';
-      const coarse = BigInt(BASE_NOW) * 1_000_000n; // zero sub-second part — a coarse clock
-      const record = makeRecord({
-        repoRoot: '/repo',
-        files: {
-          'src/app.ts': makeFile({ hash: sha256Hex(v1), size: v1.length, mtimeNs: coarse, capturedAt: BASE_NOW })
-        }
-      });
-      const post = new Map<string, SnapshotFile>([
-        ['src/app.ts', makeFile({ hash: sha256Hex(v2), size: v2.length, mtimeNs: coarse, capturedAt: BASE_NOW })]
-      ]);
-      let reads = 0;
-      const stat: StatFile = () => ({ size: v1.length, mtimeNs: coarse });
-      const read: ReadFile = () => {
-        reads += 1;
-        return Buffer.from(v2, 'utf8');
-      };
-      const result = compareSnapshot({
-        record,
-        post,
-        postGaps: [],
-        budgets: DEFAULT_SNAPSHOT_BUDGETS,
-        stat,
-        read,
-        wallStart: BASE_NOW,
-        wallClock: () => BASE_NOW
-      });
-      expect(result.attributions.get('src/app.ts')?.kind).toBe('changed');
-      expect(reads).toBe(1);
-    });
-
-    it('the mtimeNs skip is sound on a fine clock — no re-read on a true no-op', () => {
-      // With a non-zero sub-second part, a matching (size, mtimeNs) pair
-      // proves non-change: the file is not re-read (the injected read throws
-      // if it is), and the path is not attributed.
-      const v1 = 'export const a = 1;\n';
-      const fine = BigInt(BASE_NOW) * 1_000_000n + 1n; // non-zero sub-second part — a fine clock
-      const record = makeRecord({
-        repoRoot: '/repo',
-        files: { 'src/app.ts': makeFile({ hash: sha256Hex(v1), size: v1.length, mtimeNs: fine, capturedAt: BASE_NOW }) }
-      });
-      let reads = 0;
-      const stat: StatFile = () => ({ size: v1.length, mtimeNs: fine });
-      const read: ReadFile = () => {
-        reads += 1;
-        throw new Error('unexpected read: the cheap filter must have skipped');
-      };
-      const result = compareSnapshot({
-        record,
-        post: new Map<string, SnapshotFile>(),
-        postGaps: [],
-        budgets: DEFAULT_SNAPSHOT_BUDGETS,
-        stat,
-        read,
-        wallStart: BASE_NOW,
-        wallClock: () => BASE_NOW
-      });
-      expect(result.attributions.has('src/app.ts')).toBe(false);
-      expect(reads).toBe(0);
-    });
   });
 
   describe('H. wave-A hardening — cost floor, deferral notes, visible diagnostics', () => {
-    it('a heavily fragmented generation exceeds the diff cost floor: whole-file fallback, record still consumed', async () => {
-      // A full 300-line reorder displaces every line — the exact-regime diff
-      // exceeds its 256-edit cost floor. The compare must not abort with an
-      // unconsumed record: whole-file scope plus a diagnostic, exactly like a
-      // zero-hunk collision, and the window closes normally.
+    it('a heavily fragmented generation attributes through real git hunks, record still consumed', async () => {
+      // A full 300-line reorder displaces every line. The v1 exact-regime
+      // Myers walk needed a cost floor here; git's own diff has no such
+      // cliff — the `-U0` hunks simply cover the whole displaced body, the
+      // observed ranges intersect the span row, and the window closes
+      // normally with the record consumed.
       await withRepo(async (repo) => {
         const sessionId = 'sess-lifecycle-costfloor';
         const tuId = 'tu-costfloor-1';
@@ -1673,11 +1570,11 @@ describe('claude harness snapshot lifecycle', () => {
         const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
         const raw = await handler(input as never, { logger });
         const block = toResult(raw);
-        // Whole-file scope surfaces the span across the whole reordered file.
+        // The hunk-derived ranges cover the reordered body and surface the span.
         expect(block).toContain('## billing/checkout-request-flow');
         expect(calls.fix).toBe(1);
-        // The belt-and-braces contract: the record is consumed with a gap,
-        // never left live to poison a later sibling's ambiguity read.
+        // The belt-and-braces contract: the record is consumed, never left
+        // live to poison a later sibling's ambiguity read.
         expect(createSnapshotStore(logger).find(sessionId, tuId)).toBe('tombstoned');
       });
     });
@@ -1691,28 +1588,24 @@ describe('claude harness snapshot lifecycle', () => {
         writeFile(repo.root, 'src/app.ts', P10);
         gitAddCommit(repo.root, 'add app.ts');
         const logger = new Logger();
-        const store = createSnapshotStore(logger);
+        const pre = createSnapshotPreHook();
         // Both calls captured src/app.ts at the same pre state; the orphan's
         // PostToolUse never arrives, so its write window has not provably
         // ended and mine must fail closed (the existing live-record contract).
-        store.write(
-          makeRecord({
-            sessionId: orphanSession,
-            toolUseId: orphanTu,
-            repoRoot: repo.root,
-            createdAt: BASE_NOW - 1000,
-            files: { 'src/app.ts': makeFile({ hash: sha256Hex(P10), size: P10.length }) }
-          })
-        );
-        store.write(
-          makeRecord({
-            sessionId,
-            toolUseId: tuId,
-            repoRoot: repo.root,
-            createdAt: BASE_NOW,
-            files: { 'src/app.ts': makeFile({ hash: sha256Hex(P10), size: P10.length }) }
-          })
-        );
+        const orphanInput = preInput({
+          session_id: orphanSession,
+          cwd: repo.root,
+          tool_use_id: orphanTu,
+          tool_input: { command: 'npx prettier --write src/app.ts' }
+        });
+        await pre(orphanInput as never, { logger });
+        const myInput = preInput({
+          session_id: sessionId,
+          cwd: repo.root,
+          tool_use_id: tuId,
+          tool_input: { command: 'npx prettier --write src/app.ts' }
+        });
+        await pre(myInput as never, { logger });
         writeFile(repo.root, 'src/app.ts', P10_FORMATTED);
         const { executors, calls } = makeExecutors({
           rows: (filePath) =>
@@ -1741,15 +1634,9 @@ describe('claude harness snapshot lifecycle', () => {
         // same call now attributes cleanly.
         purgeSessions([orphanSession, sessionId]);
         flushPurgedSessions();
-        store.write(
-          makeRecord({
-            sessionId,
-            toolUseId: tuId,
-            repoRoot: repo.root,
-            createdAt: BASE_NOW,
-            files: { 'src/app.ts': makeFile({ hash: sha256Hex(P10), size: P10.length }) }
-          })
-        );
+        writeFile(repo.root, 'src/app.ts', P10);
+        await pre(myInput as never, { logger });
+        writeFile(repo.root, 'src/app.ts', P10_FORMATTED);
         const raw2 = await handler(input as never, { logger });
         const block2 = toResult(raw2);
         expect(block2).toContain('## billing/checkout-request-flow');
@@ -1812,39 +1699,41 @@ describe('claude harness snapshot lifecycle', () => {
       }
     });
 
-    it('post-side wall-budget exhaustion is transcript-visible: the note appears, no git-span block is produced', async () => {
-      // A zero-second wall budget with a post walk that cannot complete in a
-      // single millisecond (40 files of ~800 KiB force real hashing time):
-      // the compare exhausts before the first scope, nothing is attributed,
-      // and the block explains itself instead of silently disappearing.
+    it('a zero post-side wall degrades the post capture under a pre-side tree: the degrade note appears, nothing is attributed', async () => {
+      // A zero-second wall budget clamps every post-side git call to a 1ms
+      // timeout: the post write-tree cannot complete, the capture degrades,
+      // and a stat-only post under a pre-side tree is not comparable
+      // evidence — nothing is attributed, and the block explains itself
+      // instead of silently disappearing.
       const saved = process.env.GIT_SPAN_SNAPSHOT_POST_SIDE_WALL_SECONDS;
       process.env.GIT_SPAN_SNAPSHOT_POST_SIDE_WALL_SECONDS = '0';
       try {
         await withRepo(async (repo) => {
           const sessionId = 'sess-lifecycle-budget';
           const tuId = 'tu-budget-1';
-          const payload = 'x'.repeat(800 * 1024);
-          for (let i = 0; i < 40; i += 1) writeFile(repo.root, `src/gen${i}.ts`, payload);
-          gitAddCommit(repo.root, 'add generated sources');
+          writeFile(repo.root, 'src/app.ts', P10);
+          gitAddCommit(repo.root, 'add app.ts');
           const logger = new Logger();
           const pre = createSnapshotPreHook();
           const input = preInput({
             session_id: sessionId,
             cwd: repo.root,
             tool_use_id: tuId,
-            tool_input: { command: 'python3 scripts/gen.py' }
+            tool_input: { command: 'npx prettier --write src/app.ts' }
           });
           await pre(input as never, { logger });
-          // One byte flips in the first file — a real write to attribute.
-          writeFile(repo.root, 'src/gen0.ts', `${payload}y`);
+          // A real write that would attribute under a normal budget — dropped
+          // here, with the note explaining why.
+          writeFile(repo.root, 'src/app.ts', P10_FORMATTED);
           const { executors, calls } = makeExecutors();
           const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
           const raw = await handler(input as never, { logger });
           const block = toResult(raw);
-          expect(block).toContain('post-side wall budget was exhausted before any file could be attributed');
+          expect(block).toContain('degraded to stat-only under a pre-side tree');
           expect(block).not.toContain('## billing');
           expect(calls.fix).toBe(0);
-          // Fail-closed: the window still closes with the record consumed.
+          // Fail-closed: the window still closes with the record consumed,
+          // and the degrade's path-coverage gap warns later siblings.
           expect(createSnapshotStore(logger).find(sessionId, tuId)).toBe('tombstoned');
         });
       } finally {
@@ -1858,12 +1747,13 @@ describe('claude harness snapshot lifecycle', () => {
     // ---------------------------------------------------------------------
 
     it('a sibling that hits the touched-files cap persists its cut gap — the consumed-after consult fails closed, never clean', async () => {
-      // The phantom-attribution scenario: the sibling's compare cut a changed
-      // path at the touched-files cap, so its consume carried no post entry
-      // for it. Without a persisted gap, my consumed-after consult would read
-      // post(P)=null as "consumed without changing P" and my attribution
-      // would absorb the sibling's write. The handler persists compare-phase
-      // gaps before consuming, so the cap-cut path reads coverage-unknowable.
+      // The sibling's compare cut a changed path at the touched-files cap, so
+      // that path was never attributed. The handler persists the compare-phase
+      // gap onto the record before consuming (coverage-unknowable for any
+      // consumer that cannot derive the path's post state), and the sibling's
+      // post TREE still carries the path's true end state — so my
+      // consumed-after consult reads post!=pre and defers rather than
+      // absorbing the sibling's write as my own.
       const saved = process.env.GIT_SPAN_SNAPSHOT_MAX_TOUCHED_FILES;
       process.env.GIT_SPAN_SNAPSHOT_MAX_TOUCHED_FILES = '1';
       try {

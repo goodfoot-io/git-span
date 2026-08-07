@@ -2,9 +2,11 @@
  * Harness-agnostic snapshot store.
  *
  * One home for snapshot state, per the plan: JSON records in the per-session
- * directory (`sessionDir(sessionId)/snapshots/`), a lightweight per-repo
- * presence index in the repo's git common dir, consumption tombstones, the
- * activity log, and the TTL/session-end sweep. The index exists only so
+ * directory (`sessionDir(sessionId)/snapshots/`), each with a sibling
+ * per-call private git object directory (`<toolUseId>.objects/`) and temp
+ * index file (`<toolUseId>.index`) that the write-tree capture writes into, a
+ * lightweight per-repo presence index in the repo's git common dir,
+ * consumption tombstones, the activity log, and the TTL/session-end sweep. The index exists only so
  * cross-session concurrency detection never has to enumerate other sessions'
  * record dirs — a record is deterministically addressable from its index entry
  * via `sessionDir(sessionId)`, and index entries are removed when the record
@@ -20,10 +22,11 @@
  * record surface the failure through the injected logger rather than silently
  * inventing an absent record.
  *
- * Bigint serialization: `SnapshotFile.mtimeNs` is a bigint in memory but JSON
- * has no bigint, so record writes stringify it via a replacer and record
- * reads revive it via a reviver applied to that key only. Consumers that read
- * record files directly (fixture assertions) see the string form.
+ * Bigint serialization: `StatOnlyEntry.mtimeNs` (the degraded stat-only
+ * sweep's per-path stamp) is a bigint in memory but JSON has no bigint, so
+ * record writes stringify it via a replacer and record reads revive it via a
+ * reviver applied to that key only. Consumers that read record files directly
+ * (fixture assertions) see the string form.
  *
  * The sweep runs opportunistically on every write (the crash-recovery
  * backstop — a silent crash self-heals on the next snapshot). Records expire
@@ -70,13 +73,12 @@ import { queueRoot, SESSION_BASE_DIR, sanitizeSessionId, sessionDir } from './ag
 import {
   DEFAULT_SNAPSHOT_BUDGETS,
   type SnapshotBudgets,
-  type SnapshotFile,
-  type SnapshotRecord,
-  type SnapshotTier
+  type SnapshotPostState,
+  type SnapshotRecord
 } from './snapshot-core.js';
 import type { CoreLogger } from './span-surface.js';
 
-export type { SnapshotFile, SnapshotRecord } from './snapshot-core.js';
+export type { SnapshotPostState, SnapshotRecord } from './snapshot-core.js';
 
 // ---------------------------------------------------------------------------
 // Index, tombstone, activity-log shapes
@@ -93,7 +95,6 @@ export interface SnapshotIndexEntry {
   createdAt: number;
   consumed: boolean;
   consumedAt: number | null;
-  tier: SnapshotTier;
 }
 
 /**
@@ -186,6 +187,30 @@ function snapshotsDir(sessionId: string): string {
 
 function recordFile(sessionId: string, toolUseId: string): string {
   return join(snapshotsDir(sessionId), `${sanitizeSessionId(toolUseId)}.json`);
+}
+
+/**
+ * The record file path for (session, tool use) — exported for the harness's
+ * direct sibling-record reads (the store's own `find` returns 'tombstoned'
+ * once consumed, but the ambiguity table needs consumed siblings too).
+ */
+export function snapshotRecordFile(sessionId: string, toolUseId: string): string {
+  return recordFile(sessionId, toolUseId);
+}
+
+/**
+ * One call's private GIT_OBJECT_DIRECTORY, shared by the call's pre and post
+ * write-trees (the post side's unchanged blobs are already local) and read by
+ * later siblings' on-demand hash derivations. Lives next to the record file so
+ * the sweep and session cleanup remove the pair together.
+ */
+export function snapshotObjectDir(sessionId: string, toolUseId: string): string {
+  return join(snapshotsDir(sessionId), `${sanitizeSessionId(toolUseId)}.objects`);
+}
+
+/** One call's private temp GIT_INDEX_FILE, primed from the real index per capture. */
+export function snapshotTempIndexFile(sessionId: string, toolUseId: string): string {
+  return join(snapshotsDir(sessionId), `${sanitizeSessionId(toolUseId)}.index`);
 }
 
 function tombstoneFile(sessionId: string, toolUseId: string): string {
@@ -293,7 +318,12 @@ function isRecentlyWritten(file: string, now: number): boolean {
   }
 }
 
-/** Unlink trashed state files in `dir` whose mtime aged past TRASH_TTL_MS. */
+/**
+ * Unlink trashed state in `dir` whose mtime aged past TRASH_TTL_MS. Trash
+ * entries can be files (records, tombstones, temp indexes) or whole per-call
+ * object directories — the recursive rm covers both; the rename-then-wait
+ * discipline is identical either way.
+ */
 function emptyTrash(dir: string, now: number): void {
   for (const name of listDir(dir)) {
     if (!isTrashName(name)) continue;
@@ -304,7 +334,7 @@ function emptyTrash(dir: string, now: number): void {
     } catch {
       continue;
     }
-    if (mtimeMs < now - TRASH_TTL_MS) rmSync(file, { force: true });
+    if (mtimeMs < now - TRASH_TTL_MS) rmSync(file, { recursive: true, force: true });
   }
 }
 
@@ -319,7 +349,7 @@ function bigintReplacer(_key: string, value: unknown): unknown {
 
 /**
  * Reviver applied to record files. The mtimeNs field of every
- * SnapshotFile is serialized as a string; revive exactly those values. The
+ * StatOnlyEntry is serialized as a string; revive exactly those values. The
  * reviver runs on every key of the document, so the conversion is keyed on
  * 'mtimeNs' — no other field ever holds a serialized bigint.
  */
@@ -384,6 +414,28 @@ function fileSize(file: string): number {
     return 0;
   }
 }
+
+/** Recursive byte total of a directory tree; 0 when absent. */
+function dirSizeBytes(dir: string): number {
+  let total = 0;
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return 0;
+  }
+  for (const name of names) {
+    const entry = join(dir, name);
+    let st: ReturnType<typeof statSync>;
+    try {
+      st = statSync(entry);
+    } catch {
+      continue;
+    }
+    total += st.isDirectory() ? dirSizeBytes(entry) : st.size;
+  }
+  return total;
+}
 function listDir(dir: string): string[] {
   try {
     return readdirSync(dir);
@@ -404,7 +456,7 @@ function readRecordFile(file: string, logger: CoreLogger): SnapshotRecord | null
     logger.warn(`snapshot store: unreadable record file ${file}, treated as absent`);
     return null;
   }
-  if (typeof data !== 'object' || data === null || (data as { version?: unknown }).version !== 1) {
+  if (typeof data !== 'object' || data === null || (data as { version?: unknown }).version !== 2) {
     logger.warn(`snapshot store: incompatible record version in ${file}, treated as absent`);
     return null;
   }
@@ -508,7 +560,7 @@ export interface SnapshotStore {
    * record on success; null when the tombstone already exists (lost race —
    * the first consumer won).
    */
-  consume(sessionId: string, toolUseId: string, post: Record<string, SnapshotFile>): SnapshotRecord | null;
+  consume(sessionId: string, toolUseId: string, post: SnapshotPostState): SnapshotRecord | null;
 
   /**
    * Create the consumption tombstone O_EXCL (the failure path's consumption
@@ -546,12 +598,17 @@ export function createSnapshotStore(
   logger: CoreLogger,
   budgets: SnapshotBudgets = DEFAULT_SNAPSHOT_BUDGETS
 ): SnapshotStore {
-  /** Total on-disk bytes of the repo's record files (via its index entries). */
+  /**
+   * Total on-disk bytes of the repo's live calls (via its index entries):
+   * the per-call private object dirs — where the mechanism's storage
+   * actually accrues — plus the record files and temp indexes.
+   */
   function repoRecordBytes(repoRoot: string): number {
     let total = 0;
     for (const entry of readIndexEntries(repoRoot, logger)) {
-      const file = recordFile(entry.sessionId, entry.toolUseId);
-      total += fileSize(file);
+      total += fileSize(recordFile(entry.sessionId, entry.toolUseId));
+      total += dirSizeBytes(snapshotObjectDir(entry.sessionId, entry.toolUseId));
+      total += fileSize(snapshotTempIndexFile(entry.sessionId, entry.toolUseId));
     }
     return total;
   }
@@ -714,8 +771,7 @@ export function createSnapshotStore(
         toolUseId: record.toolUseId,
         createdAt: record.createdAt,
         consumed: false,
-        consumedAt: null,
-        tier: record.tier
+        consumedAt: null
       });
       return true;
     },
@@ -725,7 +781,7 @@ export function createSnapshotStore(
       return readRecordFile(recordFile(sessionId, toolUseId), logger);
     },
 
-    consume(sessionId: string, toolUseId: string, post: Record<string, SnapshotFile>): SnapshotRecord | null {
+    consume(sessionId: string, toolUseId: string, post: SnapshotPostState): SnapshotRecord | null {
       if (tombstoneExists(sessionId, toolUseId)) return null;
       const rec = readRecordFile(recordFile(sessionId, toolUseId), logger);
       if (rec === null) return null;
@@ -742,8 +798,7 @@ export function createSnapshotStore(
           toolUseId,
           createdAt: indexData.createdAt,
           consumed: true,
-          consumedAt,
-          tier: indexData.tier
+          consumedAt
         });
       }
       return consumed;
@@ -788,8 +843,11 @@ export function createSnapshotStore(
           if (now - t.consumedAt > budgets.recordTtlMs) {
             const recordPath = recordPathFromTombstoneName(dir, name);
             const rec = isRecentlyWritten(recordPath, now) ? null : readRecordFile(recordPath, logger);
+            const base = name.slice(0, -TOMBSTONE_SUFFIX.length);
             trashFile(recordPath);
             trashFile(file);
+            trashFile(join(dir, `${base}.objects`));
+            trashFile(join(dir, `${base}.index`));
             if (rec !== null) removeIndexEntry(rec.repoRoot, rec.sessionId, rec.toolUseId);
             result.tombstones += 1;
           }
@@ -804,9 +862,34 @@ export function createSnapshotStore(
           if (now - rec.createdAt > budgets.recordTtlMs) {
             trashFile(file);
             trashFile(tombstoneFile(rec.sessionId, rec.toolUseId));
+            trashFile(snapshotObjectDir(rec.sessionId, rec.toolUseId));
+            trashFile(snapshotTempIndexFile(rec.sessionId, rec.toolUseId));
             removeIndexEntry(rec.repoRoot, rec.sessionId, rec.toolUseId);
             result.records += 1;
           }
+        }
+        // Orphaned capture artifacts: a crash between artifact creation and
+        // the record write (or a storage-cap refusal whose own cleanup also
+        // died) leaves an object dir / temp index with no record file to
+        // carry them through the passes above. Reap them on the record TTL by
+        // their own mtime, with the usual margin guard.
+        for (const name of names) {
+          const base = name.endsWith('.objects')
+            ? name.slice(0, -'.objects'.length)
+            : name.endsWith('.index')
+              ? name.slice(0, -'.index'.length)
+              : null;
+          if (base === null) continue;
+          const file = join(dir, name);
+          if (existsSync(join(dir, `${base}.json`))) continue;
+          if (isRecentlyWritten(file, now)) continue;
+          let mtimeMs: number;
+          try {
+            mtimeMs = statSync(file).mtimeMs;
+          } catch {
+            continue;
+          }
+          if (now - mtimeMs > budgets.recordTtlMs) trashFile(file);
         }
         emptyTrash(dir, now);
       }
@@ -841,6 +924,8 @@ export function createSnapshotStore(
         repos.add(rec.repoRoot);
         trashFile(join(dir, name));
         trashFile(tombstoneFile(rec.sessionId, rec.toolUseId));
+        trashFile(snapshotObjectDir(rec.sessionId, rec.toolUseId));
+        trashFile(snapshotTempIndexFile(rec.sessionId, rec.toolUseId));
         removeIndexEntry(rec.repoRoot, rec.sessionId, rec.toolUseId);
         recordsRemoved += 1;
       }

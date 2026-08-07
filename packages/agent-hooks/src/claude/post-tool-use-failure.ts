@@ -10,8 +10,8 @@
  * the concurrency rules, not by trusting the interrupt flag. A failure event
  * with no record discards with a `warn` — the loss is never silent.
  *
- * The comparison is the shared {@link snapshotBashBranch} from the
- * PostToolUse adapter — no classifier gate (the failure policy compares
+ * The comparison is the shared {@link snapshotBashBranch} from the common
+ * snapshot harness — no classifier gate (the failure policy compares
  * whenever a record exists, whatever the command), no static-parse co-run (a
  * failed command's static idioms are not reliable evidence), and the
  * consumption rules are identical: a mutated-nothing failure still closes the
@@ -27,11 +27,10 @@ import {
   postToolUseFailureOutput
 } from '@goodfoot/claude-code-hooks';
 import { resolveRepoRoot } from '../common/agent-hooks-common.js';
+import { resolveSnapshotBudgets, snapshotBashBranch } from '../common/snapshot-harness.js';
 import { createSnapshotStore, type SnapshotStore } from '../common/snapshot-store.js';
 import { type CoreLogger, createDiskMemoStore, type MemoFactory } from '../common/span-surface.js';
 import { createDefaultTouchExecutors, type TouchExecutors } from '../common/touch-core.js';
-import { snapshotBashBranch } from './post-tool-use.js';
-import { resolveSnapshotBudgets } from './snapshot.js';
 
 /** Narrow a failed `Bash` tool_input to its `command` string. */
 function narrowCommand(toolInput: unknown): string | null {
@@ -60,7 +59,6 @@ export function createHandler(
         input.session_id,
         input.tool_use_id,
         input.cwd ?? '',
-        command,
         executors,
         memoFactory(ctx.logger),
         ctx.logger,
