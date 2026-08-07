@@ -29,7 +29,7 @@ import { createHash } from 'node:crypto';
 import { lstatSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import type { LineRange } from './agent-hooks-common.js';
-import { argvOf, splitTopLevel } from './shell-split.js';
+import { argvOf, splitTopLevel, tokenize } from './shell-split.js';
 
 // ---------------------------------------------------------------------------
 // Budgets
@@ -235,7 +235,7 @@ export interface SnapshotPlan {
  * `$`/backtick/command substitution); anything else is opaque.
  */
 /** Tools provably incapable of writing (no redirect, no expansion, no flags). */
-const READ_ONLY_TOOLS = new Set(['ls', 'grep', 'cat', 'head', 'tail', 'echo', 'cd']);
+const READ_ONLY_TOOLS = new Set(['ls', 'grep', 'rg', 'cat', 'head', 'tail', 'echo', 'cd']);
 
 /** Git subcommands with write forms — never read-only. */
 const GIT_WRITE_SUBCOMMANDS = new Set([
@@ -644,10 +644,14 @@ function classifySimple(text: string, argv: string[], currentDir: string, backgr
   };
   if (background) return opaque();
   if (argv.some((w) => w.startsWith('~') || /[*?]/.test(w))) return opaque();
-  if (hasUnquotedExpansion(text)) return opaque(findRedirects(argv, currentDir).targets);
+  // `argvOf` strips redirect operators and their targets from argv (per its
+  // own contract); redirect detection needs the raw token stream instead, so
+  // a literal redirect target is still visible here.
+  const rawTokens = (tokenize(text) ?? []).map((t) => t.text);
+  if (hasUnquotedExpansion(text)) return opaque(findRedirects(rawTokens, currentDir).targets);
   if (EXEC_WRAPPERS.has(argv[0]!)) return opaque();
   if (argv.some((w) => OUTPUT_FLAG.test(w))) return opaque();
-  const redirects = findRedirects(argv, currentDir);
+  const redirects = findRedirects(rawTokens, currentDir);
   if (redirects.present) return opaque(redirects.targets);
   if (argv[0] === 'git') {
     const assignments = (text.match(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/) ?? [''])[0] ?? '';
@@ -1405,6 +1409,16 @@ export interface CompareSnapshotResult {
    */
   attributions: Map<string, PathAttribution>;
   /**
+   * Pre-recorded paths the compare walked on both sides and found byte-for-
+   * byte identical (or chmod/mtime-only noise) — confirmed in scope, nothing
+   * to attribute. Distinct from a path outside the pre/post coverage
+   * intersection (a gap, never confirmed either way): a caller merging this
+   * comparison with a co-parser must exclude both an attributed change and a
+   * confirmed no-op, but must still let the co-parser run over paths this
+   * comparison never actually covered.
+   */
+  unchanged: Set<string>;
+  /**
    * Diagnostics: dropped paths and their reasons (coverage-intersection
    * gaps, interleaved-tool verdicts live in the ambiguity pass), `coarse-scope`
    * notes, zero-hunk collision notes, and budget-stop notes naming exactly
@@ -1464,6 +1478,7 @@ export function compareSnapshot(input: CompareSnapshotInput): CompareSnapshotRes
   const { record, post, postGaps, budgets, stat, read, wallStart } = input;
   const clock = input.wallClock ?? Date.now;
   const attributions = new Map<string, PathAttribution>();
+  const unchanged = new Set<string>();
   const gaps: string[] = [];
   const prePaths = Object.keys(record.files);
   const preMap = new Map<string, SnapshotFile>(Object.entries(record.files));
@@ -1510,7 +1525,8 @@ export function compareSnapshot(input: CompareSnapshotInput): CompareSnapshotRes
       mtimeNs = st.mtimeNs;
     }
     if (size === preEntry.size && mtimeNs === preEntry.mtimeNs && preEntry.mtimeNs % 1_000_000_000n !== 0n) {
-      continue; // (size, mtimeNs) both match with a trustworthy clock — unchanged, no re-read
+      unchanged.add(path); // (size, mtimeNs) both match with a trustworthy clock — unchanged, no re-read
+      continue;
     }
     const content = read(path);
     if (content === null) {
@@ -1518,7 +1534,10 @@ export function compareSnapshot(input: CompareSnapshotInput): CompareSnapshotRes
       continue;
     }
     const hash = createHash('sha256').update(content).digest('hex');
-    if (hash === preEntry.hash) continue; // chmod/mtime-only noise
+    if (hash === preEntry.hash) {
+      unchanged.add(path); // chmod/mtime-only noise
+      continue;
+    }
     if (changedCount >= budgets.maxTouchedFiles) {
       gaps.push(`touched-files cap ${budgets.maxTouchedFiles} exceeded: ${path} not attributed`);
       continue;
@@ -1572,7 +1591,7 @@ export function compareSnapshot(input: CompareSnapshotInput): CompareSnapshotRes
       attributions.set(path, { kind: 'created' });
     }
   }
-  return { attributions, gaps };
+  return { attributions, unchanged, gaps };
 }
 
 // ---------------------------------------------------------------------------
