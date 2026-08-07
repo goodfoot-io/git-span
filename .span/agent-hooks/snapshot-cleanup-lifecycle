@@ -1,10 +1,11 @@
 packages/agent-hooks/src/claude/session-end.ts#L15-L26 rk64:97b4fc1421831461
-packages/agent-hooks/src/codex/snapshot.ts#L7-L15 rk64:3a48b304dd3ae9ef
+packages/agent-hooks/src/codex/snapshot.ts#L7-L15 rk64:f31b7ea0de6d7a0a
 packages/agent-hooks/src/codex/stop.ts#L15-L26 rk64:2f3619d13de2b07a
 packages/agent-hooks/src/codex/subagent-stop.ts#L16-L27 rk64:d363bcf4f119d5dd
 packages/agent-hooks/src/common/snapshot-store.ts#L584-L590 rk64:d76e8664d58c1a80
-packages/agent-hooks/test/claude/snapshot-lifecycle.test.ts#L884-L966 rk64:446ac9b1f0579caf
-packages/agent-hooks/test/codex/snapshot-lifecycle.test.ts#L519-L727 rk64:a633f86c7d0e0bfe
-packages/agent-hooks/test/common/snapshot-store.test.ts#L470-L684 rk64:c0158b9d47e30176
+packages/agent-hooks/test/claude/snapshot-lifecycle.test.ts#L906-L1017 rk64:72c050c1353f4eeb
+packages/agent-hooks/test/codex/snapshot-lifecycle.test.ts#L528-L689 rk64:b90dca2dd43db3b9
+packages/agent-hooks/test/common/snapshot-store.test.ts#L514-L743 rk64:cb040eeffd4d5b84
+packages/agent-hooks/test/common/snapshot-store.test.ts#L898-L928 rk64:867d02511db38f09
 
-SessionEnd, Stop, and SubagentStop drive the store's single removeSession contract, which removes records, tombstones, activity entries, and index entries, and SubagentStop's agentId-scoped removal depends on the Codex snapshot adapter recording agent_id on the record — a session's state never outlives its session and a completed subagent's records never mis-attribute a later sibling's writes. The store's TTL-sweep and removeSession checks and the cleanup/asymmetry harness sections pin that contract as the skipped evidence gate Phase 3 must satisfy.
+SessionEnd, Stop, and SubagentStop drive the store's single removeSession contract, which removes records, tombstones, activity entries, and index entries, and SubagentStop's agentId-scoped removal depends on the Codex snapshot adapter recording agent_id on the record — a session's state never outlives its session and a completed subagent's records never mis-attribute a later sibling's writes. The store's TTL-sweep and removeSession checks and the cleanup/asymmetry harness sections pin that contract.

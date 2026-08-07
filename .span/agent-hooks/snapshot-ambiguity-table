@@ -1,7 +1,7 @@
-packages/agent-hooks/src/common/snapshot-core.ts#L736-L798 rk64:6147178753ce6e55
-packages/agent-hooks/test/claude/snapshot-lifecycle.test.ts#L1008-L1219 rk64:c84b243d3d77fb56
-packages/agent-hooks/test/codex/snapshot-lifecycle.test.ts#L728-L816 rk64:1a6eaa919b2aa9e8
-packages/agent-hooks/test/common/snapshot-core.test.ts#L1121-L1305 rk64:dc537ef483e61712
-packages/agent-hooks/test/common/snapshot-store.test.ts#L420-L473 rk64:a524616d57fc44d7
+packages/agent-hooks/src/common/snapshot-core.ts#L733-L886 rk64:a6ccb6114fb7c82a
+packages/agent-hooks/test/claude/snapshot-lifecycle.test.ts#L1018-L1241 rk64:cae700e5d852d312
+packages/agent-hooks/test/codex/snapshot-lifecycle.test.ts#L690-L781 rk64:fe3cfeaa2a239b64
+packages/agent-hooks/test/common/snapshot-core.test.ts#L705-L940 rk64:80dd6533d1c5af90
+packages/agent-hooks/test/common/snapshot-store.test.ts#L451-L479 rk64:ef93486336c0e638
 
 applyAmbiguityRules is the deterministic eight-row ambiguity table that resolves interleaved-tool orderings from sibling consumption state and path coverage, and the store's index entries are the sibling set it reads (a coverage gap means 'all' paths) — the pure-function matrix, the index-entry checks, and both harness concurrency sections pin the same table, so a change to consumption stamping or coverage reporting silently flips rows.

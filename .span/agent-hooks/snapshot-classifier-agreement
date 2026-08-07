@@ -1,9 +1,9 @@
-packages/agent-hooks/src/claude/snapshot.ts#L30-L58 rk64:366b6051f9494405
-packages/agent-hooks/src/codex/snapshot.ts#L21-L50 rk64:566d4a6b301cbe32
-packages/agent-hooks/src/common/snapshot-core.ts#L92-L142 rk64:be16b0d8962ca044
-packages/agent-hooks/test/claude/snapshot-lifecycle.test.ts#L289-L359 rk64:ae3fbd9e0b44822e
-packages/agent-hooks/test/codex/snapshot-lifecycle.test.ts#L235-L325 rk64:9333a0b40fdb3ea8
-packages/agent-hooks/test/common/snapshot-core.test.ts#L585-L1014 rk64:79166d35e558dc3d
-packages/agent-hooks/test/common/snapshot-core.test.ts#L1638-L1654 rk64:fd178ca16ba73787
+packages/agent-hooks/src/claude/snapshot.ts#L30-L58 rk64:d8b94d53b175000d
+packages/agent-hooks/src/codex/snapshot.ts#L64-L100 rk64:1ee4014bf4bf0376
+packages/agent-hooks/src/common/snapshot-core.ts#L91-L141 rk64:be16b0d8962ca044
+packages/agent-hooks/test/claude/snapshot-lifecycle.test.ts#L290-L364 rk64:e918a755369342ee
+packages/agent-hooks/test/codex/snapshot-lifecycle.test.ts#L228-L321 rk64:a6b4fdb014cf64a2
+packages/agent-hooks/test/common/snapshot-core.test.ts#L169-L704 rk64:69daa43ed8d2e17a
+packages/agent-hooks/test/common/snapshot-core.test.ts#L941-L957 rk64:614be94ff7b255ee
 
-classifyCommandForSnapshot is the single classifier the PreToolUse snapshot adapters call, and the PostToolUse comparison must call the same classifier per the plan, so both sides always agree on whether a snapshot should exist; the adapters branch on the same SnapshotDecision kinds and fail open by returning null, never by classifying differently. The classifier fixture matrix, the Post-side missing-record warn, and both harness PreToolUse sections pin that agreement as the skipped evidence gate Phase 3 must satisfy.
+classifyCommandForSnapshot is the single classifier the PreToolUse snapshot adapters call, and the PostToolUse comparison must call the same classifier per the plan, so both sides always agree on whether a snapshot should exist; the adapters branch on the same SnapshotDecision kinds and fail open by returning null, never by classifying differently. The classifier fixture matrix, the Post-side missing-record warn, and both harness PreToolUse sections pin that agreement.

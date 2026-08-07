@@ -1,13 +1,12 @@
-packages/agent-hooks/src/claude/post-tool-use-failure.ts#L20-L53 rk64:55548ec165886b76
-packages/agent-hooks/src/common/snapshot-core.ts#L1358-L1427 rk64:70ac900379a3ff30
+packages/agent-hooks/src/claude/post-tool-use-failure.ts#L44-L96 rk64:cf071e90425e97fe
+packages/agent-hooks/src/common/snapshot-core.ts#L1227-L1431 rk64:210a33752d0df6a3
 packages/agent-hooks/src/common/touch-core.ts#L199-L207 rk64:462682b525358b83
 packages/agent-hooks/src/common/touch-core.ts#L529-L546 rk64:c9732db73fe54d14
-packages/agent-hooks/test/claude/snapshot-lifecycle.test.ts#L365-L742 rk64:342b66b24aae155d
-packages/agent-hooks/test/codex/snapshot-lifecycle.test.ts#L326-L525 rk64:8e4cf48d97c3ec7a
-packages/agent-hooks/test/common/snapshot-core.test.ts#L311-L474 rk64:29559f56c9986842
-packages/agent-hooks/test/common/snapshot-core.test.ts#L539-L584 rk64:39aeefbf1fc90cce
+packages/agent-hooks/test/claude/snapshot-lifecycle.test.ts#L365-L739 rk64:f3446f0b0d66f3d3
+packages/agent-hooks/test/codex/snapshot-lifecycle.test.ts#L322-L527 rk64:fb9364ab304ccc5f
+packages/agent-hooks/test/common/snapshot-core.test.ts#L110-L168 rk64:952f7fb0a4550ebb
 packages/agent-hooks/test/common/snapshot-core.test.ts#L945-L975 rk64:d4b2e24a05a26b49
-packages/agent-hooks/test/common/snapshot-core.test.ts#L1204-L1476 rk64:d2049f653db52437
+packages/agent-hooks/test/common/snapshot-core.test.ts#L1288-L1532 rk64:4f42aef5d95e6e61
 packages/agent-hooks/test/common/touch-core-observed.test.ts rk64:b91ee14b25dee104
 
-compareSnapshot is the authoritative pre/post comparison whose output touch-core's observed-scope path consumes, and the Claude PostToolUseFailure handler must run the same comparison as PostToolUse whenever a record exists — partial mutations of a failed command are never silently lost and is_interrupt gates nothing. The diff oracle, hunk/rename mapping, compareSnapshot matrix, observed XOR written invariant, and both harness PostToolUse/failure sections pin that contract as the skipped evidence gate Phase 3 must satisfy.
+compareTrees is the authoritative pre/post tree-SHA comparison whose ObservedWriteRanges/PathAttribution output touch-core's observed-scope path consumes (compareStatOnly is its file-granularity degrade), and the Claude PostToolUseFailure handler must run the same shared snapshotBashBranch comparison as PostToolUse whenever a record exists — partial mutations of a failed command are never silently lost and is_interrupt gates nothing. The hunk mapping, the compareTrees matrix, the degrade comparison, the observed XOR written invariant, and both harness PostToolUse/failure sections pin that contract.
