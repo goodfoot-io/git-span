@@ -1017,8 +1017,14 @@ export function createHandler(
         EMPTY_PATHS,
         input.tool_response
       );
-      if (attributionNote !== null) blocks.unshift(attributionNote);
+      // The note is only worth surfacing when the static fallback actually
+      // found something to attribute — that's the signal a write happened
+      // but escaped snapshot tracking (a real degradation). An empty
+      // fallback means nothing was written; unshifting the note in that case
+      // would make it unconditional (blocks.length would never be 0), firing
+      // on every recordless no-op command instead of just the lossy ones.
       if (blocks.length === 0) return undefined;
+      if (attributionNote !== null) blocks.unshift(attributionNote);
       const combined = blocks.join('');
       return postToolUseOutput({ additionalContext: combined, systemMessage: combined });
     }

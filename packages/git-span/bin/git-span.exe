@@ -2,5 +2,11 @@ git-span placeholder. scripts/postinstall.js replaces this file
 with the native binary for your platform. The name ends in .exe and the
 first line intentionally has NO "#!" shebang so npm/yarn/pnpm cmd-shim
 generates a direct-exec wrapper that runs on Windows; Unix ignores the
-.exe suffix and execs by mode bit. If you are seeing this text, the
-postinstall step did not run.
+.exe suffix and execs by mode bit. This file is tracked NON-executable
+(mode 644) on purpose: without a shebang, execvp()'s ENOEXEC fallback
+would otherwise re-exec it via /bin/sh, which parses this very sentence
+as a command line and recurses into itself indefinitely (a fork bomb —
+see the git-span-fork-bomb incident report). Non-executable makes execvp
+fail fast with EACCES instead. postinstall.js re-chmods to 0755 only
+after replacing this text with the real binary. If you are seeing this
+text, the postinstall step did not run.

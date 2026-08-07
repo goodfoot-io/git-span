@@ -23,7 +23,7 @@
  * unfinished ordering outcomes.
  */
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -79,12 +79,10 @@ import {
 // ---------------------------------------------------------------------------
 
 const hasGitSpan = (() => {
-  try {
-    execFileSync('git', ['span', '--version'], { stdio: 'ignore' });
-    return true;
-  } catch {
-    return false;
-  }
+  // Bounded check: a broken/placeholder git-span binary must fail fast here
+  // rather than hang or recurse (see git-span-fork-bomb incident report).
+  const result = spawnSync('git', ['span', '--version'], { stdio: 'ignore', timeout: 5_000 });
+  return result.status === 0;
 })();
 
 // ---------------------------------------------------------------------------

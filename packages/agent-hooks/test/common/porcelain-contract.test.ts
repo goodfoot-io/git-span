@@ -13,7 +13,7 @@
  * with a descriptive message.
  */
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as nodePath from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -31,12 +31,10 @@ import {
 // ---------------------------------------------------------------------------
 
 const hasGitSpan = (() => {
-  try {
-    execFileSync('git', ['span', '--version'], { stdio: 'ignore' });
-    return true;
-  } catch {
-    return false;
-  }
+  // Bounded check: a broken/placeholder git-span binary must fail fast here
+  // rather than hang or recurse (see git-span-fork-bomb incident report).
+  const result = spawnSync('git', ['span', '--version'], { stdio: 'ignore', timeout: 5_000 });
+  return result.status === 0;
 })();
 
 const suite = hasGitSpan ? describe : describe.skip;

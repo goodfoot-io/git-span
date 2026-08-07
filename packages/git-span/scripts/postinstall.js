@@ -71,9 +71,31 @@ function isInsideSourceTree() {
   return false;
 }
 
+function hasUsableBinaryInSourceTree() {
+  const platform = PLATFORM_MAP[process.platform];
+  const arch = ARCH_MAP[process.arch];
+  if (!platform || !arch) {
+    return false;
+  }
+  const sourceBinaryName = process.platform === 'win32' ? 'git-span.exe' : 'git-span';
+  try {
+    const packageDir = path.dirname(require.resolve(`git-span-${platform}-${arch}/package.json`));
+    return fs.existsSync(path.join(packageDir, 'bin', sourceBinaryName));
+  } catch {
+    return false;
+  }
+}
+
 function main() {
   if (isInsideSourceTree()) {
     console.log('git-span: postinstall skipped (running inside source tree).');
+    if (!hasUsableBinaryInSourceTree()) {
+      console.warn(
+        'git-span: warning: bin/git-span.exe is still the tracked placeholder and no ' +
+          'prebuilt platform binary was found either. `git span` will fail (not run) until ' +
+          'you run `yarn build:local` from packages/git-span.'
+      );
+    }
     return;
   }
 

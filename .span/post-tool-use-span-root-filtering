@@ -1,7 +1,7 @@
 packages/agent-hooks/src/claude/post-tool-use.ts#L210-L211 rk64:ae9a3c73bb6a2434
-packages/agent-hooks/src/claude/post-tool-use.ts#L792-L793 rk64:2b230556faaace06
+packages/agent-hooks/src/claude/post-tool-use.ts#L802-L803 rk64:2b230556faaace06
 packages/agent-hooks/src/codex/post-tool-use.ts#L372-L373 rk64:265195b74579b948
-packages/agent-hooks/src/codex/post-tool-use.ts#L1050-L1051 rk64:07e58cca4ae20237
+packages/agent-hooks/src/codex/post-tool-use.ts#L1056-L1057 rk64:07e58cca4ae20237
 packages/agent-hooks/src/common/span-surface.ts#L193-L196 rk64:c4c3d8f27377ba1c
 
 resolveTouchScope drops any touched file inside the resolved span root before the PostToolUse touch hook surfaces overlapping spans, so span documents themselves never trigger a span-surfacing block.

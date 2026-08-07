@@ -22,17 +22,15 @@
  * If `git span` is not available on PATH, this suite is skipped.
  */
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import { collapseByPath, type RangeLabel, renderAnchorTree } from '../../src/common/anchor-tree.js';
 
 const hasGitSpan = (() => {
-  try {
-    execFileSync('git', ['span', '--version'], { stdio: 'ignore' });
-    return true;
-  } catch {
-    return false;
-  }
+  // Bounded check: a broken/placeholder git-span binary must fail fast here
+  // rather than hang or recurse (see git-span-fork-bomb incident report).
+  const result = spawnSync('git', ['span', '--version'], { stdio: 'ignore', timeout: 5_000 });
+  return result.status === 0;
 })();
 
 const suite = hasGitSpan ? describe : describe.skip;
