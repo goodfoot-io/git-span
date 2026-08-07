@@ -66,13 +66,14 @@ import {
 import {
   type AmbiguityBaseline,
   applyAmbiguityRules,
+  captureWriteTree,
   classifyCommandForSnapshot,
   DEFAULT_SNAPSHOT_BUDGETS,
   recordHasPathCoverageGap,
   type SiblingSnapshot,
   type SnapshotRecord
 } from '../../src/common/snapshot-core.js';
-import { resolveSnapshotBudgets } from '../../src/common/snapshot-harness.js';
+import { defaultGitRunner, resolveSnapshotBudgets, statFile } from '../../src/common/snapshot-harness.js';
 import {
   type ActivityEntry,
   activityEntriesCovering,
@@ -1023,13 +1024,15 @@ describe('claude harness snapshot lifecycle', () => {
       // (mine created at T1=200; the table is read top-down per sibling.)
       const rows: { label: string; sibling: SiblingSnapshot; ambiguous: boolean }[] = [
         {
+          // An unconsumed sibling still has its pre tree, so its per-path
+          // view carries pre (that is what makes it cover the path at all).
           label: 'unconsumed, created after mine',
-          sibling: siblingView({ createdAt: 300, consumed: false }),
+          sibling: siblingView({ createdAt: 300, consumed: false, pre: fileA }),
           ambiguous: true
         },
         {
           label: 'unconsumed, created before mine',
-          sibling: siblingView({ createdAt: 100, consumed: false }),
+          sibling: siblingView({ createdAt: 100, consumed: false, pre: fileA }),
           ambiguous: true
         },
         {
@@ -1715,11 +1718,14 @@ describe('claude harness snapshot lifecycle', () => {
           gitAddCommit(repo.root, 'add app.ts');
           const logger = new Logger();
           const pre = createSnapshotPreHook();
+          // An opaque command: the static co-parser has nothing to attribute,
+          // so the block carries ONLY the degrade note — a statically
+          // parseable command would still surface its static spans, by design.
           const input = preInput({
             session_id: sessionId,
             cwd: repo.root,
             tool_use_id: tuId,
-            tool_input: { command: 'npx prettier --write src/app.ts' }
+            tool_input: { command: 'python3 scripts/gen.py' }
           });
           await pre(input as never, { logger });
           // A real write that would attribute under a normal budget — dropped
@@ -1809,10 +1815,11 @@ describe('claude harness snapshot lifecycle', () => {
           const block = toResult(raw);
           // a.ts: the sibling changed it in a window overlapping mine.
           expect(block).toContain('attribution deferred: src/a.ts');
-          // b.ts: cap-cut with a persisted gap — end state unknowable, never
-          // "consumed without changing P". No phantom absorption.
+          // b.ts: cap-cut during the sibling's attribution, but its post TREE
+          // still carries the true end state — the consult reads post!=pre
+          // and defers via the overlapping-window rule. No phantom absorption.
           expect(block).toContain('attribution deferred: src/b.ts');
-          expect(block).toContain('unknowable');
+          expect(block).toContain('in a window overlapping mine');
           expect(calls.fix).toBe(0);
         });
       } finally {
@@ -1821,12 +1828,12 @@ describe('claude harness snapshot lifecycle', () => {
       }
     });
 
-    it('a sibling whose walk excluded a binary file is NOT coverage-gapped — the consult stays clean and attribution proceeds', async () => {
-      // The deferral storm: an ANY-gap consult would make every sibling in a
-      // repo with a binary/oversize file coverage-unknowable, deferring my
-      // edit of a provably-untouched path. The exclusion is consistent
-      // pre/post, so it must not open the family — the consumed-after row
-      // keeps reading post(P)=null as clean.
+    it('a repo with a binary file leaves the sibling record gap-free — the consult stays clean and attribution proceeds', async () => {
+      // The v1 walk excluded binaries with a diagnostic gap, risking a
+      // deferral storm under an ANY-gap consult. v2 write-trees include
+      // binaries like any other blob: a sibling that changes nothing
+      // short-circuits on equal tree SHAs with NO gaps at all, and my
+      // consult reads its per-path tree hashes as clean.
       await withRepo(async (repo) => {
         const sessionId = 'sess-lifecycle-binary';
         const siblingTu = 'tu-binary-sibling';
@@ -1840,8 +1847,7 @@ describe('claude harness snapshot lifecycle', () => {
         // My capture first; the sibling's window comes after.
         const myInput = preInput({ session_id: sessionId, cwd: repo.root, tool_use_id: myTu, tool_input: { command } });
         await pre(myInput as never, { logger });
-        // The sibling changes nothing: its consume carries no post entries
-        // and its record carries ONLY the exclusion diagnostic.
+        // The sibling changes nothing: equal pre/post tree SHAs, no gaps.
         const siblingInput = preInput({
           session_id: sessionId,
           cwd: repo.root,
@@ -1857,12 +1863,12 @@ describe('claude harness snapshot lifecycle', () => {
         );
         const persistedPath = join(sessionDir(sessionId), 'snapshots', `${sanitizeSessionId(siblingTu)}.json`);
         const persisted = JSON.parse(readFileSync(persistedPath, 'utf8')) as SnapshotRecord;
-        expect(persisted.gaps).toEqual(['binary file excluded: assets/logo.bin']);
+        expect(persisted.gaps).toEqual([]);
         expect(recordHasPathCoverageGap(persisted)).toBe(false);
         // My window: I edit the untouched app.ts and create a new file. The
-        // sibling's post(P)=null reads clean, and my own exclusion gap does
-        // not drop the create candidate. (The edit stays inside lines 1-10 so
-        // the default executor row intersects the observed range.)
+        // sibling's equal tree hashes read clean for both paths. (The edit
+        // stays inside lines 1-10 so the default executor row intersects the
+        // observed range.)
         writeFile(repo.root, 'src/app.ts', P10.replace('export const v1 = 1;', 'export const v1 = 1; // touched'));
         writeFile(repo.root, 'src/new.ts', 'export const fresh = 1;\n');
         const { executors, calls } = makeExecutors();
@@ -1877,72 +1883,59 @@ describe('claude harness snapshot lifecycle', () => {
 
     it('a malformed env override does not shadow a valid config key', async () => {
       await withRepo(async (repo) => {
-        execFileSync('git', ['-C', repo.root, 'config', 'git-span.snapshot-max-total-bytes', '4096'], {
+        execFileSync('git', ['-C', repo.root, 'config', 'git-span.snapshot-max-touched-files', '7'], {
           stdio: 'ignore'
         });
-        const saved = process.env.GIT_SPAN_SNAPSHOT_MAX_TOTAL_BYTES;
+        const saved = process.env.GIT_SPAN_SNAPSHOT_MAX_TOUCHED_FILES;
         try {
           // The env value cannot parse, so it must fall through to the config
           // layer — a bad override never silently reverts the budget to the
           // default while a valid git-span.snapshot-* key sits in the repo.
-          process.env.GIT_SPAN_SNAPSHOT_MAX_TOTAL_BYTES = '500MB';
-          expect(resolveSnapshotBudgets(repo.root).maxTotalBytes).toBe(4096);
+          process.env.GIT_SPAN_SNAPSHOT_MAX_TOUCHED_FILES = 'lots';
+          expect(resolveSnapshotBudgets(repo.root).maxTouchedFiles).toBe(7);
         } finally {
-          if (saved === undefined) delete process.env.GIT_SPAN_SNAPSHOT_MAX_TOTAL_BYTES;
-          else process.env.GIT_SPAN_SNAPSHOT_MAX_TOTAL_BYTES = saved;
+          if (saved === undefined) delete process.env.GIT_SPAN_SNAPSHOT_MAX_TOUCHED_FILES;
+          else process.env.GIT_SPAN_SNAPSHOT_MAX_TOUCHED_FILES = saved;
         }
       });
     });
 
     it('partial post-side wall exhaustion is transcript-visible: the partway note appears alongside the block', async () => {
-      // The zero-scope variant is pinned above; this pins the PARTIAL note —
-      // some paths attributed, then the wall struck. The wall clock starts at
-      // handler entry, before the post walk, so a fixed wall could never be
-      // robust across machines. Instead the fixture calibrates against THIS
-      // repo: wall = real walk (walkSnapshotFiles) + 1.5 real per-path costs
-      // (the compare's re-read+hash of one file). The first changed path
-      // always attributes (walk < wall) and the third check always exhausts
-      // (walk + 2 paths > wall) — k ∈ {1, 2} on any machine, never zero
-      // scopes and never all three, with half a path of slack each way
-      // against measurement noise.
+      // The zero-wall variant above degrades the capture; this pins the
+      // PARTIAL note — the capture and some attributions complete, then the
+      // wall strikes mid-loop. The wall clock starts at handler entry, before
+      // the post capture, so a fixed wall could never be robust across
+      // machines, and no external calibration can see the handler's own
+      // pre-loop overhead (record IO, resolveGitPaths, the private capture,
+      // the name-status diff). So the fixture self-calibrates: it times one
+      // full handler run over the identical scenario under an effectively
+      // infinite wall, measures one real per-path compare cost (cat-file both
+      // sides + SHA-256 + `-U0` diff of one changed 32 MiB path), re-arms,
+      // and sets the wall 1.5 per-path costs short of the measured total.
+      // The loop then always exhausts before the third path (total − 1.5p <
+      // total − p) and always clears the first (total − 1.5p > total − 2p) —
+      // k in {1, 2} with half a path of slack each way, and both runs share
+      // page-cache state so the error term is run-to-run noise only.
       const savedWall = process.env.GIT_SPAN_SNAPSHOT_POST_SIDE_WALL_SECONDS;
       const savedPreWall = process.env.GIT_SPAN_SNAPSHOT_PRE_SIDE_MAX_WALL_SECONDS;
-      const savedBytes = process.env.GIT_SPAN_SNAPSHOT_MAX_BYTES_PER_FILE;
-      const savedTotal = process.env.GIT_SPAN_SNAPSHOT_MAX_TOTAL_BYTES;
-      // The 32 MiB payloads would otherwise be excluded as oversize, and the
-      // 96 MiB tree would blow the 64 MiB total-bytes cap — the walk must see
-      // every file, or the fixture's path count changes.
-      process.env.GIT_SPAN_SNAPSHOT_MAX_BYTES_PER_FILE = String(35 * 1024 * 1024);
-      process.env.GIT_SPAN_SNAPSHOT_MAX_TOTAL_BYTES = String(128 * 1024 * 1024);
-      // The pre-side wall must never truncate the pre walk.
+      // The pre-side wall must never truncate the pre capture.
       process.env.GIT_SPAN_SNAPSHOT_PRE_SIDE_MAX_WALL_SECONDS = '30';
+      const scratch = mkdtempSync(join(tmpdir(), 'agent-hooks-cal-'));
       try {
         await withRepo(async (repo) => {
           const sessionId = 'sess-lifecycle-partialbudget';
           const tuId = 'tu-partialbudget-1';
-          const payload = 'x'.repeat(32 * 1024 * 1024);
+          // Multi-line, like real sources: a single-line 32 MiB payload would
+          // make the `-U0` diff echo the whole old+new line (~64 MiB), blowing
+          // the runner's maxBuffer; line-shaped content keeps hunks tiny while
+          // the hashing cost stays real.
+          const payload = `${'x'.repeat(1023)}\n`.repeat(32 * 1024);
           // src/app.ts sorts first, so the first changed path (the one the
           // default executor rows match) is always the one attributed.
           for (let i = 0; i < 3; i += 1) writeFile(repo.root, i === 0 ? 'src/app.ts' : `src/gen${i}.ts`, payload);
           gitAddCommit(repo.root, 'add generated sources');
           const logger = new Logger();
           const pre = createSnapshotPreHook();
-          const budgets = resolveSnapshotBudgets(repo.root);
-          // Calibration: one warm-up pass (JIT + page cache), then the real
-          // walk and one real per-path re-read+hash — the exact work the
-          // compare does per changed path, measured at the steady state the
-          // handler's walk will run at.
-          walkSnapshotFiles(repo.root, [], budgets, Date.now(), logger);
-          const calStart = process.hrtime.bigint();
-          walkSnapshotFiles(repo.root, [], budgets, Date.now(), logger);
-          const walkMs = Number(process.hrtime.bigint() - calStart) / 1_000_000;
-          const warmOne = readFileSync(join(repo.root, 'src/app.ts'));
-          createHash('sha256').update(warmOne).digest();
-          const pathStart = process.hrtime.bigint();
-          const one = readFileSync(join(repo.root, 'src/app.ts'));
-          createHash('sha256').update(one).digest();
-          const pathMs = Number(process.hrtime.bigint() - pathStart) / 1_000_000;
-          process.env.GIT_SPAN_SNAPSHOT_POST_SIDE_WALL_SECONDS = String((walkMs + 1.5 * pathMs) / 1000);
           const input = preInput({
             session_id: sessionId,
             cwd: repo.root,
@@ -1950,23 +1943,107 @@ describe('claude harness snapshot lifecycle', () => {
             tool_input: { command: 'python3 scripts/gen.py' }
           });
           await pre(input as never, { logger });
-          for (let i = 0; i < 3; i += 1) writeFile(repo.root, i === 0 ? 'src/app.ts' : `src/gen${i}.ts`, `${payload}y`);
-          const { executors } = makeExecutors();
-          const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
-          const raw = await handler(input as never, { logger });
-          const block = toResult(raw);
+          // app.ts changes on line 1 (the default executor span row covers
+          // lines 1-10, so the attributed range must intersect it); the gen
+          // files change at the tail.
+          writeFile(repo.root, 'src/app.ts', `${'y'.repeat(1023)}\n${payload.slice(1024)}`);
+          for (let i = 1; i < 3; i += 1) writeFile(repo.root, `src/gen${i}.ts`, `${payload}y`);
+          // The per-path cost probe needs a post tree holding the modified
+          // blobs: a scratch captureWriteTree (warm caches too — the timed
+          // handler run below starts from the same steady state).
+          const gitDir = execFileSync('git', ['-C', repo.root, 'rev-parse', '--absolute-git-dir'])
+            .toString('utf8')
+            .trim();
+          const cal = captureWriteTree({
+            repoRoot: repo.root,
+            objectDir: join(scratch, 'cal', 'objects'),
+            indexFile: join(scratch, 'cal', 'index'),
+            alternates: join(gitDir, 'objects'),
+            realIndexFile: join(gitDir, 'index'),
+            spanRoot: join(repo.root, '.git-span'),
+            wallBudgetMs: 30_000,
+            runGit: defaultGitRunner,
+            stat: statFile
+          });
+          const postTree = cal.treeSha;
+          expect(postTree).not.toBeNull();
+          const preTree = execFileSync('git', ['-C', repo.root, 'rev-parse', 'HEAD^{tree}']).toString('utf8').trim();
+          const calEnv = { ...process.env, GIT_OBJECT_DIRECTORY: join(scratch, 'cal', 'objects') };
+          const gitOpts = { env: calEnv, maxBuffer: 64 * 1024 * 1024 };
+          const perPath = (): void => {
+            const preBlob = execFileSync(
+              'git',
+              ['-C', repo.root, 'cat-file', 'blob', `${preTree}:src/app.ts`],
+              gitOpts
+            );
+            createHash('sha256').update(preBlob).digest();
+            const postBlob = execFileSync(
+              'git',
+              ['-C', repo.root, 'cat-file', 'blob', `${postTree}:src/app.ts`],
+              gitOpts
+            );
+            createHash('sha256').update(postBlob).digest();
+            execFileSync(
+              'git',
+              ['-C', repo.root, 'diff', '--unified=0', '--text', preTree, String(postTree), '--', 'src/app.ts'],
+              gitOpts
+            );
+          };
+          perPath();
+          const pathStart = process.hrtime.bigint();
+          perPath();
+          const pathMs = Number(process.hrtime.bigint() - pathStart) / 1_000_000;
+          // The timing run: the full handler over this exact scenario under
+          // an effectively infinite wall — every cost the real wall competes
+          // with, measured in place.
+          process.env.GIT_SPAN_SNAPSHOT_POST_SIDE_WALL_SECONDS = '30';
+          const timedHandler = createPostToolUseHandler(makeExecutors().executors, () => createMemoryMemoStore());
+          const totalStart = process.hrtime.bigint();
+          const fullRaw = await timedHandler(input as never, { logger });
+          const totalMs = Number(process.hrtime.bigint() - totalStart) / 1_000_000;
+          expect(toResult(fullRaw)).toContain('## billing/checkout-request-flow');
+          // Re-arm the identical scenario for a wall-limited attempt: purge
+          // the consumed record so the run sees no sibling (the consult would
+          // otherwise add hash-derivation work the timing run did not pay),
+          // restore the committed state, capture, modify again.
+          const arm = async (): Promise<void> => {
+            purgeSessions([sessionId]);
+            flushPurgedSessions();
+            writeFile(repo.root, 'src/app.ts', payload);
+            for (let i = 1; i < 3; i += 1) writeFile(repo.root, `src/gen${i}.ts`, payload);
+            await pre(input as never, { logger });
+            writeFile(repo.root, 'src/app.ts', `${'y'.repeat(1023)}\n${payload.slice(1024)}`);
+            for (let i = 1; i < 3; i += 1) writeFile(repo.root, `src/gen${i}.ts`, `${payload}y`);
+          };
+          // Start 1.5 per-path costs short of the measured total, then walk
+          // the wall one per-path cost per attempt toward the partway
+          // window: load variance between the timing run and an attempt can
+          // exceed the half-path slack a single fixed cut leaves, so the
+          // fixture converges instead of betting one cut. The window is two
+          // paths wide, so a one-path step never jumps across it.
+          let wallMs = totalMs - 1.5 * pathMs;
+          let block: string | null = null;
+          for (let attempt = 0; attempt < 5; attempt += 1) {
+            await arm();
+            process.env.GIT_SPAN_SNAPSHOT_POST_SIDE_WALL_SECONDS = String(Math.max(wallMs, 1) / 1000);
+            const handler = createPostToolUseHandler(makeExecutors().executors, () => createMemoryMemoStore());
+            block = toResult(await handler(input as never, { logger }));
+            if (block?.includes('post-side wall budget was exhausted partway')) break;
+            if (block?.includes('## billing/checkout-request-flow')) {
+              wallMs -= pathMs; // every path attributed — tighten the wall
+            } else {
+              wallMs += pathMs; // nothing attributed — widen the wall
+            }
+          }
           expect(block).toContain('post-side wall budget was exhausted partway');
           expect(block).toContain('## billing/checkout-request-flow');
         });
       } finally {
+        rmSync(scratch, { recursive: true, force: true });
         if (savedWall === undefined) delete process.env.GIT_SPAN_SNAPSHOT_POST_SIDE_WALL_SECONDS;
         else process.env.GIT_SPAN_SNAPSHOT_POST_SIDE_WALL_SECONDS = savedWall;
         if (savedPreWall === undefined) delete process.env.GIT_SPAN_SNAPSHOT_PRE_SIDE_MAX_WALL_SECONDS;
         else process.env.GIT_SPAN_SNAPSHOT_PRE_SIDE_MAX_WALL_SECONDS = savedPreWall;
-        if (savedBytes === undefined) delete process.env.GIT_SPAN_SNAPSHOT_MAX_BYTES_PER_FILE;
-        else process.env.GIT_SPAN_SNAPSHOT_MAX_BYTES_PER_FILE = savedBytes;
-        if (savedTotal === undefined) delete process.env.GIT_SPAN_SNAPSHOT_MAX_TOTAL_BYTES;
-        else process.env.GIT_SPAN_SNAPSHOT_MAX_TOTAL_BYTES = savedTotal;
       }
     });
   });

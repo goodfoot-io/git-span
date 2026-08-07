@@ -1283,13 +1283,23 @@ export function compareTrees(input: CompareTreesInput): CompareTreesResult {
 
   let changedCount = 0;
   let attributed = 0;
+  const pushWallGap = (fromIndex: number): void => {
+    const rest = entries.slice(fromIndex).map((e) => (e.status === 'R' ? e.to : e.path));
+    gaps.push(
+      `post-side wall budget exhausted: attributed ${attributed}/${entries.length}, unattributed ${rest.join(', ')}`
+    );
+  };
+  // A git call that overruns its remaining() slice throws ETIMEDOUT
+  // MID-entry — that is the wall striking, not a broken path: it must close
+  // the loop with the same exhaustion gap as the loop-top check, preserving
+  // the attributions already made, never abort the whole compare.
+  const isTimeout = (err: unknown): boolean =>
+    (err !== null && typeof err === 'object' && 'code' in err && (err as { code?: unknown }).code === 'ETIMEDOUT') ||
+    /ETIMEDOUT/.test(String(err));
   for (let i = 0; i < entries.length; i += 1) {
     const entry = entries[i]!;
     if (wallExhausted()) {
-      const rest = entries.slice(i).map((e) => (e.status === 'R' ? e.to : e.path));
-      gaps.push(
-        `post-side wall budget exhausted: attributed ${attributed}/${entries.length}, unattributed ${rest.join(', ')}`
-      );
+      pushWallGap(i);
       break;
     }
     if (entry.status === 'R') {
@@ -1303,7 +1313,11 @@ export function compareTrees(input: CompareTreesInput): CompareTreesResult {
       let hash: string;
       try {
         hash = createHash('sha256').update(catBlob(tree, path)).digest('hex');
-      } catch {
+      } catch (err) {
+        if (isTimeout(err)) {
+          pushWallGap(i);
+          break;
+        }
         gaps.push(`unreadable at compare: ${path} dropped without attribution`);
         continue;
       }
@@ -1322,7 +1336,11 @@ export function compareTrees(input: CompareTreesInput): CompareTreesResult {
     try {
       preBlob = catBlob(preTreeSha, path);
       postBlob = catBlob(postTreeSha, path);
-    } catch {
+    } catch (err) {
+      if (isTimeout(err)) {
+        pushWallGap(i);
+        break;
+      }
       gaps.push(`unreadable at compare: ${path} dropped without attribution`);
       continue;
     }
@@ -1331,11 +1349,20 @@ export function compareTrees(input: CompareTreesInput): CompareTreesResult {
       post: createHash('sha256').update(postBlob).digest('hex')
     });
     if (classifyTextOrBinary(preBlob) && classifyTextOrBinary(postBlob)) {
-      const diffOut = runGit(['diff', '--unified=0', '--text', preTreeSha, postTreeSha, '--', path], {
-        cwd: repoRoot,
-        env,
-        timeoutMs: remaining()
-      }).toString('utf8');
+      let diffOut: string;
+      try {
+        diffOut = runGit(['diff', '--unified=0', '--text', preTreeSha, postTreeSha, '--', path], {
+          cwd: repoRoot,
+          env,
+          timeoutMs: remaining()
+        }).toString('utf8');
+      } catch (err) {
+        if (isTimeout(err)) {
+          pushWallGap(i);
+          break;
+        }
+        throw err;
+      }
       const hunks = parseUnifiedZeroHunks(diffOut);
       // Trees differ per name-status but the hunk parse came back empty —
       // never let that silently shrink attribution: whole-file scope.

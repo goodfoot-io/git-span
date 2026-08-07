@@ -1,9 +1,12 @@
 /**
- * Acceptance checks for the Codex harness snapshot lifecycle (card
- * main-213): the same lifecycle as the Claude harness (card's plan), through
- * the committed codex adapter modules (src/codex/snapshot.ts,
- * src/codex/post-tool-use.ts, src/codex/stop.ts, src/codex/subagent-stop.ts)
- * — plus the platform asymmetry:
+ * Acceptance checks for the Codex harness snapshot lifecycle (card main-213;
+ * mechanism rewritten to tree-SHA snapshots by card main-228): the same
+ * lifecycle as the Claude harness (card's plan), through the committed codex
+ * adapter modules (src/codex/snapshot.ts, src/codex/post-tool-use.ts,
+ * src/codex/stop.ts, src/codex/subagent-stop.ts) — both sides of a
+ * snapshot-decided call take a private `git write-tree` capture and the post
+ * side compares tree SHAs, diffing only on mismatch — plus the platform
+ * asymmetry:
  *
  * - Codex's PreToolUse records `agent_id` when present, so SubagentStop can
  *   remove only the subagent's records.
@@ -32,21 +35,20 @@ import { Logger } from '@goodfoot/codex-hooks';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import activityLogHook from '../../src/codex/activity-log.js';
 import { createHandler as createPostToolUseHandler, SNAPSHOT_POST_MATCHER } from '../../src/codex/post-tool-use.js';
-import {
-  createHandler as createSnapshotPreHook,
-  resolveSnapshotBudgets,
-  SNAPSHOT_PRE_MATCHER,
-  walkSnapshotFiles
-} from '../../src/codex/snapshot.js';
+import { createHandler as createSnapshotPreHook, SNAPSHOT_PRE_MATCHER } from '../../src/codex/snapshot.js';
 import stopHook from '../../src/codex/stop.js';
 import subagentStopHook from '../../src/codex/subagent-stop.js';
 import { queueRoot, sanitizeSessionId, sessionDir } from '../../src/common/agent-hooks-common.js';
 import {
+  type AmbiguityBaseline,
   applyAmbiguityRules,
+  captureWriteTree,
   DEFAULT_SNAPSHOT_BUDGETS,
   recordHasPathCoverageGap,
+  type SiblingSnapshot,
   type SnapshotRecord
 } from '../../src/common/snapshot-core.js';
+import { defaultGitRunner, resolveSnapshotBudgets, statFile } from '../../src/common/snapshot-harness.js';
 import {
   type ActivityEntry,
   activityEntriesCovering,
@@ -55,7 +57,6 @@ import {
 } from '../../src/common/snapshot-store.js';
 import {
   addSpan,
-  BASE_NOW,
   CODEX_SESSION_IDS,
   createMemoryMemoStore,
   createTestRepo,
@@ -63,7 +64,6 @@ import {
   flushPurgedSessions,
   gitAddCommit,
   makeExecutors,
-  makeFile,
   makeRecord,
   porcelainRow,
   purgeSessions,
@@ -167,30 +167,23 @@ function subagentStopInput(sessionId: string, agentId: string): Record<string, u
   };
 }
 
-/** A sibling record view built from the sibling's own record. */
-function siblingFrom(
-  record: SnapshotRecord,
-  path: string
-): {
-  sessionId: string;
-  toolUseId: string;
-  createdAt: number;
-  consumed: boolean;
-  consumedAt: number | null;
-  coverageGap: boolean;
-  pre: import('../../src/common/snapshot-core.js').SnapshotFile | null;
-  post: import('../../src/common/snapshot-core.js').SnapshotFile | null;
-} {
+/**
+ * A sibling's per-path view for the ambiguity table fixtures. In v2 the
+ * harness derives these hashes on demand from the sibling's recorded tree
+ * SHAs (hashTreePath over its private object dir) — the fixtures hand the
+ * table the same derived shape directly.
+ */
+function siblingView(overrides: Partial<SiblingSnapshot> = {}): SiblingSnapshot {
   return {
-    sessionId: record.sessionId,
-    toolUseId: record.toolUseId,
-    createdAt: record.createdAt,
-    consumed: record.consumed,
-    consumedAt: record.consumedAt,
-    // The handler's derivation, mirrored: kind-based, never ANY-gap.
-    coverageGap: recordHasPathCoverageGap(record),
-    pre: record.files[path] ?? null,
-    post: record.post?.[path] ?? null
+    sessionId: 'sess-codex',
+    toolUseId: 'tu-bash-1',
+    createdAt: 200,
+    consumed: false,
+    consumedAt: null,
+    coverageGap: false,
+    pre: null,
+    post: null,
+    ...overrides
   };
 }
 
@@ -256,14 +249,17 @@ describe('codex harness snapshot lifecycle', () => {
         expect(record).not.toBe('tombstoned');
         if (record === null || record === 'tombstoned') throw new Error('record missing');
         expect(record).toMatchObject({
+          version: 2,
           sessionId,
           toolUseId: tuId,
           agentId: 'sub-1',
           repoRoot: repo.root,
-          consumed: false,
-          tier: 'repo'
+          consumed: false
         });
-        expect(record.files['src/app.ts']).toBeDefined();
+        // The v2 record carries a tree SHA, not per-file entries.
+        expect(record.treeSha).toMatch(/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/);
+        expect(record.statOnly).toBeUndefined();
+        expect(record.gaps).toEqual([]);
       });
     });
 
@@ -318,7 +314,7 @@ describe('codex harness snapshot lifecycle', () => {
         expect(record).not.toBeNull();
         expect(record).not.toBe('tombstoned');
         if (record === null || record === 'tombstoned') throw new Error('record missing');
-        expect(record.files['src/app.ts']).toBeDefined();
+        expect(record.treeSha).toMatch(/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/);
       });
     });
   });
@@ -379,16 +375,16 @@ describe('codex harness snapshot lifecycle', () => {
         const sessionId = 'sess-codex-duplicate';
         const tuId = 'tu-codex-dup-1';
         const logger = new Logger();
-        const store = createSnapshotStore(logger);
         writeFile(repo.root, 'src/app.ts', P10);
-        store.write(
-          makeRecord({
-            sessionId,
-            toolUseId: tuId,
-            repoRoot: repo.root,
-            createdAt: BASE_NOW,
-            files: { 'src/app.ts': makeFile({ hash: sha256Hex(P10), size: P10.length }) }
-          })
+        gitAddCommit(repo.root, 'add app.ts');
+        await createSnapshotPreHook()(
+          preInput({
+            session_id: sessionId,
+            cwd: repo.root,
+            tool_use_id: tuId,
+            tool_input: { command: 'npx prettier --write src/app.ts' }
+          }) as never,
+          { logger } as never
         );
         writeFile(repo.root, 'src/app.ts', P10_FORMATTED);
         const { executors, calls } = makeExecutors({
@@ -552,27 +548,24 @@ describe('codex harness snapshot lifecycle', () => {
         const logger = new Logger();
         const store = createSnapshotStore(logger);
         writeFile(repo.root, 'src/app.ts', P10);
-        store.write(
-          makeRecord({
-            sessionId,
-            toolUseId: tuId,
-            repoRoot: repo.root,
-            createdAt: now,
-            files: { 'src/app.ts': makeFile({ hash: sha256Hex(P10), size: P10.length }) }
-          })
-        );
+        store.write(makeRecord({ sessionId, toolUseId: tuId, repoRoot: repo.root, createdAt: now }));
         const found = store.find(sessionId, tuId);
         expect(found).not.toBeNull();
         expect(found).not.toBe('tombstoned');
         if (found === null || found === 'tombstoned') throw new Error('record missing');
         expect(found.consumed).toBe(false);
-        const later = makeRecord({
-          sessionId: 'sess-codex-later',
-          toolUseId: 'tu-codex-later-1',
-          createdAt: now + 1000,
-          files: { 'src/app.ts': makeFile({ hash: 'd'.repeat(64) }) }
+        // A later call's view of the live record: an unconsumed sibling whose
+        // pre tree carries the path — the exact per-path shape the harness
+        // derives from the record's tree SHA.
+        const later: AmbiguityBaseline = { createdAt: now + 1000, preHash: 'd'.repeat(64) };
+        const sibling = siblingView({
+          sessionId,
+          toolUseId: tuId,
+          createdAt: found.createdAt,
+          coverageGap: recordHasPathCoverageGap(found),
+          pre: { hash: sha256Hex(P10) }
         });
-        expect(applyAmbiguityRules(later, [siblingFrom(found, 'src/app.ts')], 'src/app.ts').ambiguous).toBe(true);
+        expect(applyAmbiguityRules(later, [sibling], 'src/app.ts').ambiguous).toBe(true);
       });
     });
 
@@ -582,15 +575,7 @@ describe('codex harness snapshot lifecycle', () => {
         const sessionId = 'sess-codex-stop';
         const logger = new Logger();
         const store = createSnapshotStore(logger);
-        store.write(
-          makeRecord({
-            sessionId,
-            toolUseId: 'tu-codex-failed-1',
-            repoRoot: repo.root,
-            createdAt: now,
-            files: { 'src/app.ts': makeFile() }
-          })
-        );
+        store.write(makeRecord({ sessionId, toolUseId: 'tu-codex-failed-1', repoRoot: repo.root, createdAt: now }));
         expect(store.tombstone(sessionId, 'tu-codex-failed-1', now)).toBe(true);
         appendActivityEntry(repo.root, {
           sessionId,
@@ -621,8 +606,7 @@ describe('codex harness snapshot lifecycle', () => {
             sessionId: 'sess-codex-ttl',
             toolUseId: 'tu-codex-failed-1',
             repoRoot: repo.root,
-            createdAt: now - DEFAULT_SNAPSHOT_BUDGETS.recordTtlMs - 1000,
-            files: { 'src/app.ts': makeFile() }
+            createdAt: now - DEFAULT_SNAPSHOT_BUDGETS.recordTtlMs - 1000
           })
         );
         // The record's createdAt is already TTL-expired, but the sweep-read
@@ -648,34 +632,12 @@ describe('codex harness snapshot lifecycle', () => {
         const logger = new Logger();
         const store = createSnapshotStore(logger);
         store.write(
-          makeRecord({
-            sessionId,
-            toolUseId: 'tu-sub-1',
-            agentId: 'sub-1',
-            repoRoot: repo.root,
-            createdAt: now,
-            files: { 'src/sub.ts': makeFile() }
-          })
+          makeRecord({ sessionId, toolUseId: 'tu-sub-1', agentId: 'sub-1', repoRoot: repo.root, createdAt: now })
         );
         store.write(
-          makeRecord({
-            sessionId,
-            toolUseId: 'tu-sub-2',
-            agentId: 'sub-1',
-            repoRoot: repo.root,
-            createdAt: now,
-            files: { 'src/sub2.ts': makeFile() }
-          })
+          makeRecord({ sessionId, toolUseId: 'tu-sub-2', agentId: 'sub-1', repoRoot: repo.root, createdAt: now })
         );
-        store.write(
-          makeRecord({
-            sessionId,
-            toolUseId: 'tu-main-1',
-            repoRoot: repo.root,
-            createdAt: now,
-            files: { 'src/app.ts': makeFile() }
-          })
-        );
+        store.write(makeRecord({ sessionId, toolUseId: 'tu-main-1', repoRoot: repo.root, createdAt: now }));
         // The activity-log side of the same split (round-3 finding: a subagent
         // stop used to delete the MAIN session's activity entries too — a
         // subagent shares the parent's session_id, so the removeSession
@@ -728,68 +690,71 @@ describe('codex harness snapshot lifecycle', () => {
   describe('E. concurrency — the essential ambiguity mirrors', () => {
     it('same-state same-file: both calls fail closed with deterministic diagnostics (older completes first)', () => {
       const PATH = 'src/app.ts';
-      const fileA = makeFile({ hash: 'a'.repeat(64) });
-      const fileB = makeFile({ hash: 'b'.repeat(64) });
-      const a = makeRecord({ sessionId: 'sess-a', toolUseId: 'call-a', createdAt: 100, files: { [PATH]: fileA } });
-      const b = makeRecord({ sessionId: 'sess-b', toolUseId: 'call-b', createdAt: 300, files: { [PATH]: fileA } });
+      const fileA = { hash: 'a'.repeat(64) };
+      const fileB = { hash: 'b'.repeat(64) };
+      const a: AmbiguityBaseline = { createdAt: 100, preHash: fileA.hash };
+      const b: AmbiguityBaseline = { createdAt: 300, preHash: fileA.hash };
       // B evaluates first: A is still live → ambiguous.
-      const bFirst = applyAmbiguityRules(b, [siblingFrom(a, PATH)], PATH);
+      const liveA = siblingView({ sessionId: 'sess-a', toolUseId: 'call-a', createdAt: 100, pre: fileA });
+      const bFirst = applyAmbiguityRules(b, [liveA], PATH);
       expect(bFirst.ambiguous).toBe(true);
       // A completes first with a real change; B re-evaluates: consumed, created
       // before mine, window overlaps my baseline → still ambiguous.
-      const aConsumed = { ...siblingFrom(a, PATH), consumed: true, consumedAt: 400, pre: fileA, post: fileB };
+      const aConsumed = siblingView({
+        sessionId: 'sess-a',
+        toolUseId: 'call-a',
+        createdAt: 100,
+        consumed: true,
+        consumedAt: 400,
+        pre: fileA,
+        post: fileB
+      });
       expect(applyAmbiguityRules(b, [aConsumed], PATH).ambiguous).toBe(true);
       // A, evaluating its own path later, sees B still live → ambiguous too.
-      expect(applyAmbiguityRules(a, [siblingFrom(b, PATH)], PATH).ambiguous).toBe(true);
+      const liveB = siblingView({ sessionId: 'sess-b', toolUseId: 'call-b', createdAt: 300, pre: fileA });
+      expect(applyAmbiguityRules(a, [liveB], PATH).ambiguous).toBe(true);
       if (!bFirst.ambiguous) throw new Error('expected ambiguous');
       expect(bFirst.siblingToolUseId).toBe('call-a');
     });
 
     it('disjoint writes completed in reverse order: the earlier-completing call fails closed, the later-completing one attributes its own paths', () => {
-      const fileA = makeFile({ hash: 'a'.repeat(64) });
-      const fileB = makeFile({ hash: 'b'.repeat(64) });
-      const fileC = makeFile({ hash: 'c'.repeat(64) });
-      // Both tier-2 records cover the whole repo.
-      const a = makeRecord({
-        sessionId: 'sess-a',
-        toolUseId: 'call-a',
-        createdAt: 100,
-        files: { 'src/a.ts': fileA, 'src/b.ts': fileC }
-      });
-      const b = makeRecord({
+      const fileB = { hash: 'b'.repeat(64) };
+      const fileC = { hash: 'c'.repeat(64) };
+      // Both write-tree records cover the whole repo; the per-path views
+      // below are what the harness derives from each record's trees.
+      const a: AmbiguityBaseline = { createdAt: 100, preHash: 'a'.repeat(64) };
+      const b: AmbiguityBaseline = { createdAt: 300, preHash: fileB.hash };
+      const liveA = siblingView({ sessionId: 'sess-a', toolUseId: 'call-a', createdAt: 100, pre: fileC });
+      expect(applyAmbiguityRules(b, [liveA], 'src/b.ts').ambiguous).toBe(true);
+      const bConsumed = siblingView({
         sessionId: 'sess-b',
         toolUseId: 'call-b',
         createdAt: 300,
-        files: { 'src/a.ts': fileC, 'src/b.ts': fileB }
+        consumed: true,
+        consumedAt: 350,
+        pre: fileC,
+        post: fileC
       });
-      expect(applyAmbiguityRules(b, [siblingFrom(a, 'src/b.ts')], 'src/b.ts').ambiguous).toBe(true);
-      const bConsumed = { ...siblingFrom(b, 'src/a.ts'), consumed: true, consumedAt: 350, pre: fileC, post: fileC };
       expect(applyAmbiguityRules(a, [bConsumed], 'src/a.ts').ambiguous).toBe(false);
     });
 
     it('a duplicate PostToolUse racing the O_EXCL tombstone yields exactly one attribution', async () => {
       await withRepo(async (repo) => {
-        const now = Date.now();
         const sessionId = 'sess-codex-race';
         const tuId = 'tu-codex-race-1';
         const logger = new Logger();
-        writeFile(repo.root, 'src/app.ts', P10_FORMATTED);
-        createSnapshotStore(logger).write(
-          makeRecord({
-            sessionId,
-            toolUseId: tuId,
-            repoRoot: repo.root,
-            createdAt: now - 1000,
-            files: {
-              'src/app.ts': makeFile({
-                hash: sha256Hex(P10),
-                size: P10.length,
-                mtimeNs: BigInt(BASE_NOW) * 1_000_000n + 4n,
-                capturedAt: now - 2000
-              })
-            }
-          })
+        writeFile(repo.root, 'src/app.ts', P10);
+        gitAddCommit(repo.root, 'add app.ts');
+        await createSnapshotPreHook()(
+          preInput({
+            session_id: sessionId,
+            cwd: repo.root,
+            tool_use_id: tuId,
+            tool_input: { command: 'npx prettier --write src/app.ts' }
+          }) as never,
+          { logger } as never
         );
+        writeFile(repo.root, 'src/app.ts', P10_FORMATTED);
         const { executors, calls } = makeExecutors({
           rows: (filePath) =>
             filePath.endsWith('/src/app.ts') ? [porcelainRow({ path: 'src/app.ts', start: 1, end: 10 })] : [],
@@ -816,124 +781,128 @@ describe('codex harness snapshot lifecycle', () => {
 
   describe('F. the activity-log interleaving mirrors', () => {
     /**
-     * The shared interleaving scenario: a real repo with a committed file P, a
-     * stored pre record for an opaque shell call, the post state on disk, and
-     * an activity entry appended by the fixture. Drives the real codex post
-     * handler with fake executors so the outcome is the boundary check's.
+     * The shared interleaving scenario: a real repo with a committed file P at
+     * v1, a REAL pre capture for the shell call (the write-tree record — its
+     * createdAt is the baseline every entry stamp is computed against), the
+     * post state on disk, and an activity entry appended by the fixture.
+     * Drives the real codex post handler with fake executors so the outcome
+     * is the boundary check's. The entry is built from the record's own
+     * createdAt because the capture stamps it with the real clock.
      */
     async function runInterleaved(
       sessionId: string,
       tuId: string,
-      opts: { v1: string; v2: string; entry: ActivityEntry }
+      opts: { v1: string; v2: string; entry: (recordCreatedAt: number) => ActivityEntry }
     ): Promise<{ block: string | null; notes: string[] }> {
       const repo = createTestRepo();
       try {
         const { v1, v2, entry } = opts;
-        const now = Date.now();
-        writeFile(repo.root, 'src/app.ts', v2);
-        createSnapshotStore(new Logger()).write(
-          makeRecord({
-            sessionId,
-            toolUseId: tuId,
-            repoRoot: repo.root,
-            createdAt: now - 1000,
-            files: {
-              'src/app.ts': makeFile({
-                hash: sha256Hex(v1),
-                size: v1.length,
-                mtimeNs: BigInt(BASE_NOW) * 1_000_000n + 5n,
-                capturedAt: now - 2000
-              })
-            }
-          })
+        writeFile(repo.root, 'src/app.ts', v1);
+        gitAddCommit(repo.root, 'add app.ts');
+        const logger = new Logger();
+        await createSnapshotPreHook()(
+          preInput({
+            session_id: sessionId,
+            cwd: repo.root,
+            tool_use_id: tuId,
+            tool_input: { command: 'npx prettier --write src/app.ts' }
+          }) as never,
+          { logger } as never
         );
-        appendActivityEntry(repo.root, entry);
+        const found = createSnapshotStore(logger).find(sessionId, tuId);
+        if (found === null || found === 'tombstoned') throw new Error('pre capture failed');
+        writeFile(repo.root, 'src/app.ts', v2);
+        appendActivityEntry(repo.root, entry(found.createdAt));
+        // The consult's window top is the handler's own Date.now(): give the
+        // clock a beat so an entry stamped `createdAt + 1` is provably in the
+        // past by the time the handler compares.
+        await new Promise((resolve) => setTimeout(resolve, 10));
         const { executors } = makeExecutors({
           rows: (filePath) =>
             filePath.endsWith('/src/app.ts') ? [porcelainRow({ path: 'src/app.ts', start: 1, end: 10 })] : [],
           drift: () => [driftRow({ path: 'src/app.ts', start: 1, end: 10 })]
         });
         const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
-        const { logger, notes } = noteCapturingLogger();
+        const { logger: capLogger, notes } = noteCapturingLogger();
         const input = postInput({
           session_id: sessionId,
           cwd: repo.root,
           tool_use_id: tuId,
           tool_input: { command: 'npx prettier --write src/app.ts' }
         });
-        const raw = await handler(input as never, { logger } as never);
+        const raw = await handler(input as never, { logger: capLogger } as never);
         return { block: toResult(raw), notes };
       } finally {
         repo.cleanup();
       }
     }
 
-    it("never flags an entry fully stamped before the path's per-file capturedAt — sequential edits keep attributing", async () => {
-      const now = Date.now();
+    it("never flags an entry fully stamped before the record's createdAt — sequential edits keep attributing", async () => {
       const v1 = 'export const a = 1;\n';
       const v2 = 'export const a = 1;\nexport const b = 2;\n';
-      const entry: ActivityEntry = {
-        sessionId: 'sess-codex-interleave-neverflag',
-        toolUseId: 'tu-edit-prior',
-        kind: 'Edit',
-        startedAt: now - 5000,
-        finishedAt: now - 3000,
-        paths: [{ path: 'src/app.ts', preHash: sha256Hex('v0'), postHash: sha256Hex(v1) }]
-      };
       const { block, notes } = await runInterleaved('sess-codex-interleave-neverflag', 'tu-bash-neverflag', {
         v1,
         v2,
-        entry
+        // The edit's whole lifecycle ended before my capture wrote the record
+        // (finishedAt ≤ createdAt): its change is baked into my pre tree and
+        // can never contaminate my post-diff — attribute without a note.
+        entry: (createdAt) => ({
+          sessionId: 'sess-codex-interleave-neverflag',
+          toolUseId: 'tu-edit-prior',
+          kind: 'Edit',
+          startedAt: createdAt - 5000,
+          finishedAt: createdAt - 3000,
+          paths: [{ path: 'src/app.ts', preHash: sha256Hex('v0'), postHash: sha256Hex(v1) }]
+        })
       });
-      // The edit wrote and touched before P's baseline — its change is baked
-      // into my pre and can never contaminate my post-diff.
       expect(block).toContain('## billing/checkout-request-flow');
       expect(notes.some((n) => n.includes('interleaved-tool'))).toBe(false);
+      expect(notes.some((n) => n.includes('absorbed-double'))).toBe(false);
     });
 
     it('Bash-first ordering: the Bash residual attributes via bounded-double, the edit segment absorbed', async () => {
-      const now = Date.now();
+      // Bash writes v1 → v3, then an Edit reads the post-Bash state and
+      // completes after my capture: preHash != my pre → skip is impossible,
+      // so the Bash call attributes its residual with the absorbed-double
+      // note — the edit's segment is absorbed, nothing is dropped.
       const v1 = 'export const a = 1;\n';
       const v3 = 'export const a = 1;\nexport const b = 2;\nexport const c = 3;\n';
-      const entry: ActivityEntry = {
-        sessionId: 'sess-codex-interleave-bashfirst',
-        toolUseId: 'tu-edit-bashfirst',
-        kind: 'Edit',
-        startedAt: now - 800,
-        finishedAt: now - 500,
-        paths: [
-          {
-            path: 'src/app.ts',
-            preHash: sha256Hex('export const a = 1;\nexport const b = 2;\n'),
-            postHash: sha256Hex(v3)
-          }
-        ]
-      };
       const { block, notes } = await runInterleaved('sess-codex-interleave-bashfirst', 'tu-bash-bashfirst', {
         v1,
         v2: v3,
-        entry
+        entry: (createdAt) => ({
+          sessionId: 'sess-codex-interleave-bashfirst',
+          toolUseId: 'tu-edit-bashfirst',
+          kind: 'Edit',
+          startedAt: createdAt - 100,
+          finishedAt: createdAt + 2,
+          paths: [
+            {
+              path: 'src/app.ts',
+              preHash: sha256Hex('export const a = 1;\nexport const b = 2;\n'),
+              postHash: sha256Hex(v3)
+            }
+          ]
+        })
       });
       expect(block).toContain('## billing/checkout-request-flow');
       expect(notes.some((n) => n.includes('absorbed-double'))).toBe(true);
     });
 
     it('an unfinished entry fails closed — its write may still land', async () => {
-      const now = Date.now();
       const v1 = 'export const a = 1;\n';
       const v2 = 'export const a = 1;\nexport const b = 2;\n';
-      const entry: ActivityEntry = {
-        sessionId: 'sess-codex-interleave-unfinished',
-        toolUseId: 'tu-edit-unfinished',
-        kind: 'Edit',
-        startedAt: now - 500,
-        finishedAt: null,
-        paths: [{ path: 'src/app.ts', preHash: sha256Hex(v1), postHash: null }]
-      };
       const { block, notes } = await runInterleaved('sess-codex-interleave-unfinished', 'tu-bash-unfinished', {
         v1,
         v2,
-        entry
+        entry: (createdAt) => ({
+          sessionId: 'sess-codex-interleave-unfinished',
+          toolUseId: 'tu-edit-unfinished',
+          kind: 'Edit',
+          startedAt: createdAt - 500,
+          finishedAt: null,
+          paths: [{ path: 'src/app.ts', preHash: sha256Hex(v1), postHash: null }]
+        })
       });
       expect(block).toBeNull();
       expect(notes.some((n) => n.includes('interleaved-tool'))).toBe(true);
@@ -943,7 +912,7 @@ describe('codex harness snapshot lifecycle', () => {
   describe('G. matcher family, config subsection form, exclusion visibility', () => {
     // These fixtures use their own session ids; purge them after each test
     // like the rest of the file so no record outlives the run.
-    const WAVE_C_SESSIONS = ['sess-codex-shell-spelled', 'sess-codex-binary-excluded', 'sess-codex-oversize-excluded'];
+    const WAVE_C_SESSIONS = ['sess-codex-shell-spelled', 'sess-codex-binary-excluded'];
     afterEach(() => purgeSessions(WAVE_C_SESSIONS));
 
     it('every tool name the pre matcher registers is consumable post-side — pre ⊆ post', () => {
@@ -976,7 +945,7 @@ describe('codex harness snapshot lifecycle', () => {
         expect(record).not.toBeNull();
         expect(record).not.toBe('tombstoned');
         if (record === null || record === 'tombstoned') throw new Error('record missing');
-        expect(record.files['src/app.ts']).toBeDefined();
+        expect(record.treeSha).toMatch(/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/);
         // The formatter's effect: lines 3-4 reflowed, nothing else.
         writeFile(repo.root, 'src/app.ts', P10_FORMATTED);
         const { executors } = makeExecutors({
@@ -1002,46 +971,51 @@ describe('codex harness snapshot lifecycle', () => {
       });
     });
 
-    it('git config git-span.snapshot.max-files — the git subsection form resolves like the dash form', async () => {
+    it('git config git-span.snapshot.max-touched-files — the git subsection form resolves like the dash form', async () => {
       await withRepo(async (repo) => {
-        execFileSync('git', ['-C', repo.root, 'config', 'git-span.snapshot.max-files', '2'], { stdio: 'ignore' });
+        execFileSync('git', ['-C', repo.root, 'config', 'git-span.snapshot.max-touched-files', '2'], {
+          stdio: 'ignore'
+        });
         const budgets = resolveSnapshotBudgets(repo.root);
-        expect(budgets.maxFiles).toBe(2);
+        expect(budgets.maxTouchedFiles).toBe(2);
         // The other budgets are untouched — the subsection key maps onto the
         // same key space as the dash form.
-        expect(budgets.maxTotalBytes).toBe(DEFAULT_SNAPSHOT_BUDGETS.maxTotalBytes);
+        expect(budgets.postSideWallSeconds).toBe(DEFAULT_SNAPSHOT_BUDGETS.postSideWallSeconds);
       });
     });
 
-    it('the dash form git-span.snapshot-max-total-bytes keeps resolving', async () => {
+    it('the dash form git-span.snapshot-post-side-wall-seconds keeps resolving', async () => {
       await withRepo(async (repo) => {
-        execFileSync('git', ['-C', repo.root, 'config', 'git-span.snapshot-max-total-bytes', '4096'], {
+        execFileSync('git', ['-C', repo.root, 'config', 'git-span.snapshot-post-side-wall-seconds', '9'], {
           stdio: 'ignore'
         });
-        expect(resolveSnapshotBudgets(repo.root).maxTotalBytes).toBe(4096);
+        expect(resolveSnapshotBudgets(repo.root).postSideWallSeconds).toBe(9);
       });
     });
 
     it('a malformed env override does not shadow a valid config key', async () => {
       await withRepo(async (repo) => {
-        execFileSync('git', ['-C', repo.root, 'config', 'git-span.snapshot-max-total-bytes', '4096'], {
+        execFileSync('git', ['-C', repo.root, 'config', 'git-span.snapshot-max-touched-files', '7'], {
           stdio: 'ignore'
         });
-        const saved = process.env.GIT_SPAN_SNAPSHOT_MAX_TOTAL_BYTES;
+        const saved = process.env.GIT_SPAN_SNAPSHOT_MAX_TOUCHED_FILES;
         try {
           // The env value cannot parse, so it must fall through to the config
           // layer — a bad override never silently reverts the budget to the
           // default while a valid git-span.snapshot-* key sits in the repo.
-          process.env.GIT_SPAN_SNAPSHOT_MAX_TOTAL_BYTES = '500MB';
-          expect(resolveSnapshotBudgets(repo.root).maxTotalBytes).toBe(4096);
+          process.env.GIT_SPAN_SNAPSHOT_MAX_TOUCHED_FILES = 'lots';
+          expect(resolveSnapshotBudgets(repo.root).maxTouchedFiles).toBe(7);
         } finally {
-          if (saved === undefined) delete process.env.GIT_SPAN_SNAPSHOT_MAX_TOTAL_BYTES;
-          else process.env.GIT_SPAN_SNAPSHOT_MAX_TOTAL_BYTES = saved;
+          if (saved === undefined) delete process.env.GIT_SPAN_SNAPSHOT_MAX_TOUCHED_FILES;
+          else process.env.GIT_SPAN_SNAPSHOT_MAX_TOUCHED_FILES = saved;
         }
       });
     });
 
-    it('a binary file excluded from the pre walk is named in the record gaps, never silent', async () => {
+    it('a binary file is captured by the write-tree like any other path — no exclusion, no gap', async () => {
+      // v1 excluded binaries from the per-line pre walk and named them in the
+      // record gaps; the v2 write-tree captures every path uniformly, so the
+      // record carries a tree SHA and an empty gap list.
       await withRepo(async (repo) => {
         const sessionId = 'sess-codex-binary-excluded';
         const tuId = 'tu-codex-binary-1';
@@ -1063,36 +1037,8 @@ describe('codex harness snapshot lifecycle', () => {
         expect(record).not.toBeNull();
         expect(record).not.toBe('tombstoned');
         if (record === null || record === 'tombstoned') throw new Error('record missing');
-        expect(record.files['src/app.ts']).toBeDefined();
-        expect(record.files['src/app.bin']).toBeUndefined();
-        expect(record.gaps).toContain('binary file excluded: src/app.bin');
-      });
-    });
-
-    it('an oversize file excluded from the pre walk is named in the record gaps, never silent', async () => {
-      await withRepo(async (repo) => {
-        const sessionId = 'sess-codex-oversize-excluded';
-        const tuId = 'tu-codex-oversize-1';
-        writeFile(repo.root, 'src/app.ts', P10);
-        writeFile(repo.root, 'src/big.txt', 'x'.repeat(DEFAULT_SNAPSHOT_BUDGETS.maxBytesPerFile + 1));
-        gitAddCommit(repo.root, 'add files');
-        const logger = new Logger();
-        const pre = createSnapshotPreHook();
-        await pre(
-          preInput({
-            session_id: sessionId,
-            cwd: repo.root,
-            tool_use_id: tuId,
-            tool_input: { command: 'npx prettier --write src/app.ts' }
-          }) as never,
-          { logger } as never
-        );
-        const record = createSnapshotStore(logger).find(sessionId, tuId);
-        expect(record).not.toBeNull();
-        expect(record).not.toBe('tombstoned');
-        if (record === null || record === 'tombstoned') throw new Error('record missing');
-        expect(record.files['src/big.txt']).toBeUndefined();
-        expect(record.gaps).toContain('oversize file excluded: src/big.txt');
+        expect(record.treeSha).toMatch(/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/);
+        expect(record.gaps).toEqual([]);
       });
     });
   });
@@ -1107,28 +1053,24 @@ describe('codex harness snapshot lifecycle', () => {
         writeFile(repo.root, 'src/app.ts', P10);
         gitAddCommit(repo.root, 'add app.ts');
         const logger = new Logger();
-        const store = createSnapshotStore(logger);
+        const pre = createSnapshotPreHook();
         // Both calls captured src/app.ts at the same pre state; the orphan's
         // PostToolUse never arrives (Codex has no failure event either), so
         // its write window has not provably ended and mine must fail closed.
-        store.write(
-          makeRecord({
-            sessionId: orphanSession,
-            toolUseId: orphanTu,
-            repoRoot: repo.root,
-            createdAt: BASE_NOW - 1000,
-            files: { 'src/app.ts': makeFile({ hash: sha256Hex(P10), size: P10.length }) }
-          })
-        );
-        store.write(
-          makeRecord({
-            sessionId,
-            toolUseId: tuId,
-            repoRoot: repo.root,
-            createdAt: BASE_NOW,
-            files: { 'src/app.ts': makeFile({ hash: sha256Hex(P10), size: P10.length }) }
-          })
-        );
+        const orphanInput = preInput({
+          session_id: orphanSession,
+          cwd: repo.root,
+          tool_use_id: orphanTu,
+          tool_input: { command: 'npx prettier --write src/app.ts' }
+        });
+        await pre(orphanInput as never, { logger } as never);
+        const myInput = preInput({
+          session_id: sessionId,
+          cwd: repo.root,
+          tool_use_id: tuId,
+          tool_input: { command: 'npx prettier --write src/app.ts' }
+        });
+        await pre(myInput as never, { logger } as never);
         writeFile(repo.root, 'src/app.ts', P10_FORMATTED);
         const { executors, calls } = makeExecutors({
           rows: (filePath) =>
@@ -1157,15 +1099,9 @@ describe('codex harness snapshot lifecycle', () => {
         // same call now attributes cleanly.
         purgeSessions([orphanSession, sessionId]);
         flushPurgedSessions();
-        store.write(
-          makeRecord({
-            sessionId,
-            toolUseId: tuId,
-            repoRoot: repo.root,
-            createdAt: BASE_NOW,
-            files: { 'src/app.ts': makeFile({ hash: sha256Hex(P10), size: P10.length }) }
-          })
-        );
+        writeFile(repo.root, 'src/app.ts', P10);
+        await pre(myInput as never, { logger } as never);
+        writeFile(repo.root, 'src/app.ts', P10_FORMATTED);
         const raw2 = await handler(input as never, { logger } as never);
         const block2 = toResult(raw2);
         expect(block2).toContain('## billing/checkout-request-flow');
@@ -1296,7 +1232,7 @@ describe('codex harness snapshot lifecycle', () => {
           expect(record).not.toBe('tombstoned');
           if (record === null || record === 'tombstoned') throw new Error('record missing');
           expect(record.repoRoot).toBe(secondary.root);
-          expect(record.files['src/app.ts']).toBeDefined();
+          expect(record.treeSha).toMatch(/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/);
           // The formatter's effect lands in the workdir repo; the primary
           // repo is untouched.
           writeFile(secondary.root, 'src/app.ts', P10_FORMATTED);
@@ -1333,12 +1269,13 @@ describe('codex harness snapshot lifecycle — wave-E coverage-gap family', () =
   afterAll(flushPurgedSessions);
 
   it('a sibling that hits the touched-files cap persists its cut gap — the consumed-after consult fails closed, never clean', async () => {
-    // The phantom-attribution scenario: the sibling's compare cut a changed
-    // path at the touched-files cap, so its consume carried no post entry
-    // for it. Without a persisted gap, my consumed-after consult would read
-    // post(P)=null as "consumed without changing P" and my attribution
-    // would absorb the sibling's write. The handler persists compare-phase
-    // gaps before consuming, so the cap-cut path reads coverage-unknowable.
+    // The sibling's compare cut a changed path at the touched-files cap, so
+    // that path was never attributed. The handler persists the compare-phase
+    // gap onto the record before consuming (coverage-unknowable for any
+    // consumer that cannot derive the path's post state), and the sibling's
+    // post TREE still carries the path's true end state — so my
+    // consumed-after consult reads post!=pre and defers rather than
+    // absorbing the sibling's write as my own.
     const saved = process.env.GIT_SPAN_SNAPSHOT_MAX_TOUCHED_FILES;
     process.env.GIT_SPAN_SNAPSHOT_MAX_TOUCHED_FILES = '1';
     try {
@@ -1389,10 +1326,11 @@ describe('codex harness snapshot lifecycle — wave-E coverage-gap family', () =
         const block = toResult(raw);
         // a.ts: the sibling changed it in a window overlapping mine.
         expect(block).toContain('attribution deferred: src/a.ts');
-        // b.ts: cap-cut with a persisted gap — end state unknowable, never
-        // "consumed without changing P". No phantom absorption.
+        // b.ts: cap-cut during the sibling's attribution, but its post TREE
+        // still carries the true end state — the consult reads post!=pre
+        // and defers via the overlapping-window rule. No phantom absorption.
         expect(block).toContain('attribution deferred: src/b.ts');
-        expect(block).toContain('unknowable');
+        expect(block).toContain('in a window overlapping mine');
         expect(calls.fix).toBe(0);
       });
     } finally {
@@ -1401,12 +1339,12 @@ describe('codex harness snapshot lifecycle — wave-E coverage-gap family', () =
     }
   });
 
-  it('a sibling whose walk excluded a binary file is NOT coverage-gapped — the consult stays clean and attribution proceeds', async () => {
-    // The deferral storm: an ANY-gap consult would make every sibling in a
-    // repo with a binary/oversize file coverage-unknowable, deferring my
-    // edit of a provably-untouched path. The exclusion is consistent
-    // pre/post, so it must not open the family — the consumed-after row
-    // keeps reading post(P)=null as clean.
+  it('a repo with a binary file leaves the sibling record gap-free — the consult stays clean and attribution proceeds', async () => {
+    // The v1 walk excluded binaries with a diagnostic gap, risking a
+    // deferral storm under an ANY-gap consult. v2 write-trees include
+    // binaries like any other blob: a sibling that changes nothing
+    // short-circuits on equal tree SHAs with NO gaps at all, and my
+    // consult reads its per-path tree hashes as clean.
     await withRepo(async (repo) => {
       const sessionId = 'sess-codex-binary';
       const siblingTu = 'tu-binary-sibling';
@@ -1420,8 +1358,7 @@ describe('codex harness snapshot lifecycle — wave-E coverage-gap family', () =
       // My capture first; the sibling's window comes after.
       const myInput = preInput({ session_id: sessionId, cwd: repo.root, tool_use_id: myTu, tool_input: { command } });
       await pre(myInput as never, { logger });
-      // The sibling changes nothing: its consume carries no post entries
-      // and its record carries ONLY the exclusion diagnostic.
+      // The sibling changes nothing: equal pre/post tree SHAs, no gaps.
       const siblingInput = preInput({
         session_id: sessionId,
         cwd: repo.root,
@@ -1434,12 +1371,12 @@ describe('codex harness snapshot lifecycle — wave-E coverage-gap family', () =
       });
       const persistedPath = join(sessionDir(sessionId), 'snapshots', `${sanitizeSessionId(siblingTu)}.json`);
       const persisted = JSON.parse(readFileSync(persistedPath, 'utf8')) as SnapshotRecord;
-      expect(persisted.gaps).toEqual(['binary file excluded: assets/logo.bin']);
+      expect(persisted.gaps).toEqual([]);
       expect(recordHasPathCoverageGap(persisted)).toBe(false);
       // My window: I edit the untouched app.ts and create a new file. The
-      // sibling's post(P)=null reads clean, and my own exclusion gap does
-      // not drop the create candidate. (The edit stays inside lines 1-10 so
-      // the default executor row intersects the observed range.)
+      // sibling's equal tree hashes read clean for both paths. (The edit
+      // stays inside lines 1-10 so the default executor row intersects the
+      // observed range.)
       writeFile(repo.root, 'src/app.ts', P10.replace('export const v1 = 1;', 'export const v1 = 1; // touched'));
       writeFile(repo.root, 'src/new.ts', 'export const fresh = 1;\n');
       const { executors, calls } = makeExecutors();
@@ -1453,54 +1390,39 @@ describe('codex harness snapshot lifecycle — wave-E coverage-gap family', () =
   });
 
   it('partial post-side wall exhaustion is transcript-visible: the partway note appears alongside the block', async () => {
-    // The zero-scope variant is pinned above; this pins the PARTIAL note —
-    // some paths attributed, then the wall struck. The wall clock starts at
-    // handler entry, before the post walk, so a fixed wall could never be
-    // robust across machines. Instead the fixture calibrates against THIS
-    // repo: wall = real walk (walkSnapshotFiles) + 1.5 real per-path costs
-    // (the compare's re-read+hash of one file). The first changed path
-    // always attributes (walk < wall) and the third check always exhausts
-    // (walk + 2 paths > wall) — k ∈ {1, 2} on any machine, never zero
-    // scopes and never all three, with half a path of slack each way
-    // against measurement noise.
+    // Mirrors the claude fixture: the wall clock starts at handler entry,
+    // before the post capture, so a fixed wall could never be robust across
+    // machines, and no external calibration can see the handler's own
+    // pre-loop overhead (record IO, resolveGitPaths, the private capture,
+    // the name-status diff). So the fixture self-calibrates: it times one
+    // full handler run over the identical scenario under an effectively
+    // infinite wall, measures one real per-path compare cost (cat-file both
+    // sides + SHA-256 + `-U0` diff of one changed 32 MiB path), re-arms,
+    // and sets the wall 1.5 per-path costs short of the measured total.
+    // The loop then always exhausts before the third path (total − 1.5p <
+    // total − p) and always clears the first (total − 1.5p > total − 2p) —
+    // k in {1, 2} with half a path of slack each way, and both runs share
+    // page-cache state so the error term is run-to-run noise only.
     const savedWall = process.env.GIT_SPAN_SNAPSHOT_POST_SIDE_WALL_SECONDS;
     const savedPreWall = process.env.GIT_SPAN_SNAPSHOT_PRE_SIDE_MAX_WALL_SECONDS;
-    const savedBytes = process.env.GIT_SPAN_SNAPSHOT_MAX_BYTES_PER_FILE;
-    const savedTotal = process.env.GIT_SPAN_SNAPSHOT_MAX_TOTAL_BYTES;
-    // The 32 MiB payloads would otherwise be excluded as oversize, and the
-    // 96 MiB tree would blow the 64 MiB total-bytes cap — the walk must see
-    // every file, or the fixture's path count changes.
-    process.env.GIT_SPAN_SNAPSHOT_MAX_BYTES_PER_FILE = String(35 * 1024 * 1024);
-    process.env.GIT_SPAN_SNAPSHOT_MAX_TOTAL_BYTES = String(128 * 1024 * 1024);
-    // The pre-side wall must never truncate the pre walk.
+    // The pre-side wall must never truncate the pre capture.
     process.env.GIT_SPAN_SNAPSHOT_PRE_SIDE_MAX_WALL_SECONDS = '30';
+    const scratch = mkdtempSync(join(tmpdir(), 'agent-hooks-codex-cal-'));
     try {
       await withRepo(async (repo) => {
         const sessionId = 'sess-codex-partialbudget';
         const tuId = 'tu-partialbudget-1';
-        const payload = 'x'.repeat(32 * 1024 * 1024);
+        // Multi-line, like real sources: a single-line 32 MiB payload would
+        // make the `-U0` diff echo the whole old+new line (~64 MiB), blowing
+        // the runner's maxBuffer; line-shaped content keeps hunks tiny while
+        // the hashing cost stays real.
+        const payload = `${'x'.repeat(1023)}\n`.repeat(32 * 1024);
         // src/app.ts sorts first, so the first changed path (the one the
         // default executor rows match) is always the one attributed.
         for (let i = 0; i < 3; i += 1) writeFile(repo.root, i === 0 ? 'src/app.ts' : `src/gen${i}.ts`, payload);
         gitAddCommit(repo.root, 'add generated sources');
         const logger = new Logger();
         const pre = createSnapshotPreHook();
-        const budgets = resolveSnapshotBudgets(repo.root);
-        // Calibration: one warm-up pass (JIT + page cache), then the real
-        // walk and one real per-path re-read+hash — the exact work the
-        // compare does per changed path, measured at the steady state the
-        // handler's walk will run at.
-        walkSnapshotFiles(repo.root, [], budgets, Date.now(), logger);
-        const calStart = process.hrtime.bigint();
-        walkSnapshotFiles(repo.root, [], budgets, Date.now(), logger);
-        const walkMs = Number(process.hrtime.bigint() - calStart) / 1_000_000;
-        const warmOne = readFileSync(join(repo.root, 'src/app.ts'));
-        createHash('sha256').update(warmOne).digest();
-        const pathStart = process.hrtime.bigint();
-        const one = readFileSync(join(repo.root, 'src/app.ts'));
-        createHash('sha256').update(one).digest();
-        const pathMs = Number(process.hrtime.bigint() - pathStart) / 1_000_000;
-        process.env.GIT_SPAN_SNAPSHOT_POST_SIDE_WALL_SECONDS = String((walkMs + 1.5 * pathMs) / 1000);
         const input = preInput({
           session_id: sessionId,
           cwd: repo.root,
@@ -1508,23 +1430,103 @@ describe('codex harness snapshot lifecycle — wave-E coverage-gap family', () =
           tool_input: { command: 'python3 scripts/gen.py' }
         });
         await pre(input as never, { logger });
-        for (let i = 0; i < 3; i += 1) writeFile(repo.root, i === 0 ? 'src/app.ts' : `src/gen${i}.ts`, `${payload}y`);
-        const { executors } = makeExecutors();
-        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
-        const raw = await handler(input as never, { logger });
-        const block = toResult(raw);
+        // app.ts changes on line 1 (the default executor span row covers
+        // lines 1-10, so the attributed range must intersect it); the gen
+        // files change at the tail.
+        writeFile(repo.root, 'src/app.ts', `${'y'.repeat(1023)}\n${payload.slice(1024)}`);
+        for (let i = 1; i < 3; i += 1) writeFile(repo.root, `src/gen${i}.ts`, `${payload}y`);
+        // The per-path cost probe needs a post tree holding the modified
+        // blobs: a scratch captureWriteTree (warm caches too — the timed
+        // handler run below starts from the same steady state).
+        const gitDir = execFileSync('git', ['-C', repo.root, 'rev-parse', '--absolute-git-dir'])
+          .toString('utf8')
+          .trim();
+        const cal = captureWriteTree({
+          repoRoot: repo.root,
+          objectDir: join(scratch, 'cal', 'objects'),
+          indexFile: join(scratch, 'cal', 'index'),
+          alternates: join(gitDir, 'objects'),
+          realIndexFile: join(gitDir, 'index'),
+          spanRoot: join(repo.root, '.git-span'),
+          wallBudgetMs: 30_000,
+          runGit: defaultGitRunner,
+          stat: statFile
+        });
+        const postTree = cal.treeSha;
+        expect(postTree).not.toBeNull();
+        const preTree = execFileSync('git', ['-C', repo.root, 'rev-parse', 'HEAD^{tree}']).toString('utf8').trim();
+        const calEnv = { ...process.env, GIT_OBJECT_DIRECTORY: join(scratch, 'cal', 'objects') };
+        const gitOpts = { env: calEnv, maxBuffer: 64 * 1024 * 1024 };
+        const perPath = (): void => {
+          const preBlob = execFileSync('git', ['-C', repo.root, 'cat-file', 'blob', `${preTree}:src/app.ts`], gitOpts);
+          createHash('sha256').update(preBlob).digest();
+          const postBlob = execFileSync(
+            'git',
+            ['-C', repo.root, 'cat-file', 'blob', `${postTree}:src/app.ts`],
+            gitOpts
+          );
+          createHash('sha256').update(postBlob).digest();
+          execFileSync(
+            'git',
+            ['-C', repo.root, 'diff', '--unified=0', '--text', preTree, String(postTree), '--', 'src/app.ts'],
+            gitOpts
+          );
+        };
+        perPath();
+        const pathStart = process.hrtime.bigint();
+        perPath();
+        const pathMs = Number(process.hrtime.bigint() - pathStart) / 1_000_000;
+        // The timing run: the full handler over this exact scenario under
+        // an effectively infinite wall — every cost the real wall competes
+        // with, measured in place.
+        process.env.GIT_SPAN_SNAPSHOT_POST_SIDE_WALL_SECONDS = '30';
+        const timedHandler = createPostToolUseHandler(makeExecutors().executors, () => createMemoryMemoStore());
+        const totalStart = process.hrtime.bigint();
+        const fullRaw = await timedHandler(input as never, { logger });
+        const totalMs = Number(process.hrtime.bigint() - totalStart) / 1_000_000;
+        expect(toResult(fullRaw)).toContain('## billing/checkout-request-flow');
+        // Re-arm the identical scenario for a wall-limited attempt: purge
+        // the consumed record so the run sees no sibling (the consult would
+        // otherwise add hash-derivation work the timing run did not pay),
+        // restore the committed state, capture, modify again.
+        const arm = async (): Promise<void> => {
+          purgeSessions([sessionId]);
+          flushPurgedSessions();
+          writeFile(repo.root, 'src/app.ts', payload);
+          for (let i = 1; i < 3; i += 1) writeFile(repo.root, `src/gen${i}.ts`, payload);
+          await pre(input as never, { logger });
+          writeFile(repo.root, 'src/app.ts', `${'y'.repeat(1023)}\n${payload.slice(1024)}`);
+          for (let i = 1; i < 3; i += 1) writeFile(repo.root, `src/gen${i}.ts`, `${payload}y`);
+        };
+        // Start 1.5 per-path costs short of the measured total, then walk
+        // the wall one per-path cost per attempt toward the partway
+        // window: load variance between the timing run and an attempt can
+        // exceed the half-path slack a single fixed cut leaves, so the
+        // fixture converges instead of betting one cut. The window is two
+        // paths wide, so a one-path step never jumps across it.
+        let wallMs = totalMs - 1.5 * pathMs;
+        let block: string | null = null;
+        for (let attempt = 0; attempt < 5; attempt += 1) {
+          await arm();
+          process.env.GIT_SPAN_SNAPSHOT_POST_SIDE_WALL_SECONDS = String(Math.max(wallMs, 1) / 1000);
+          const handler = createPostToolUseHandler(makeExecutors().executors, () => createMemoryMemoStore());
+          block = toResult(await handler(input as never, { logger }));
+          if (block?.includes('post-side wall budget was exhausted partway')) break;
+          if (block?.includes('## billing/checkout-request-flow')) {
+            wallMs -= pathMs; // every path attributed — tighten the wall
+          } else {
+            wallMs += pathMs; // nothing attributed — widen the wall
+          }
+        }
         expect(block).toContain('post-side wall budget was exhausted partway');
         expect(block).toContain('## billing/checkout-request-flow');
       });
     } finally {
+      rmSync(scratch, { recursive: true, force: true });
       if (savedWall === undefined) delete process.env.GIT_SPAN_SNAPSHOT_POST_SIDE_WALL_SECONDS;
       else process.env.GIT_SPAN_SNAPSHOT_POST_SIDE_WALL_SECONDS = savedWall;
       if (savedPreWall === undefined) delete process.env.GIT_SPAN_SNAPSHOT_PRE_SIDE_MAX_WALL_SECONDS;
       else process.env.GIT_SPAN_SNAPSHOT_PRE_SIDE_MAX_WALL_SECONDS = savedPreWall;
-      if (savedBytes === undefined) delete process.env.GIT_SPAN_SNAPSHOT_MAX_BYTES_PER_FILE;
-      else process.env.GIT_SPAN_SNAPSHOT_MAX_BYTES_PER_FILE = savedBytes;
-      if (savedTotal === undefined) delete process.env.GIT_SPAN_SNAPSHOT_MAX_TOTAL_BYTES;
-      else process.env.GIT_SPAN_SNAPSHOT_MAX_TOTAL_BYTES = savedTotal;
     }
   });
 });

@@ -142,7 +142,10 @@ export const defaultGitRunner: GitRunner = (args, opts) =>
   execFileSync('git', args, {
     cwd: opts.cwd,
     env: opts.env === undefined ? process.env : { ...process.env, ...opts.env },
-    timeout: opts.timeoutMs,
+    // execFileSync rejects non-integer timeouts, and a fractional
+    // postSideWallSeconds budget (0.5 is a valid budget value) produces
+    // fractional remaining-milliseconds — ceil, never crash the capture.
+    timeout: opts.timeoutMs === undefined ? undefined : Math.ceil(opts.timeoutMs),
     maxBuffer: 64 * 1024 * 1024,
     stdio: ['ignore', 'pipe', 'ignore']
   });

@@ -58,12 +58,7 @@ import { classifyCommandForSnapshot } from '../common/snapshot-core.js';
 import { resolveSnapshotBudgets, snapshotBashBranch } from '../common/snapshot-harness.js';
 import { createSnapshotStore, finishActivityEntry } from '../common/snapshot-store.js';
 import { createDiskMemoStore, type MemoFactory, type MemoStore, resolveTouchScope } from '../common/span-surface.js';
-import {
-  createDefaultTouchExecutors,
-  runTouchHook,
-  type TouchExecutors,
-  type TouchInput
-} from '../common/touch-core.js';
+import { createDefaultTouchExecutors, runTouchHook, type TouchExecutors } from '../common/touch-core.js';
 import { extractShellCommand } from './advisor.js';
 import { parseApplyPatch } from './apply-patch.js';
 

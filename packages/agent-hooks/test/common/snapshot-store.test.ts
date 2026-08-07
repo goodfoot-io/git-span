@@ -1,11 +1,11 @@
 /**
- * Skipped acceptance checks for snapshot-store.ts (Phase 2 of the card main-213
- * TDD bootstrap described in plans/snapshot-attribute.md). Phase 1 declared the
- * store contract — record/index/tombstone/activity-entry shapes, the store
- * interface, the sweep, and the activity-log helpers — as `Not Implemented`
- * stubs; this file writes the contract's acceptance checks against those
- * stubs. Phase 3 implemented the store and unskipped every case: the checks
- * below are the live acceptance suite.
+ * Acceptance checks for snapshot-store.ts (born in the card main-213 TDD
+ * bootstrap; record shape rewritten to v2 tree-SHA records by card main-228).
+ * The contract under test: record/index/tombstone/activity-entry shapes, the
+ * store interface, the sweep, and the activity-log helpers. A v2 record
+ * carries a tree SHA plus correlation/gap metadata — a few hundred bytes —
+ * and consumption persists a {@link SnapshotPostState} (the post tree SHA),
+ * never per-path file maps.
  *
  * The store is a real on-disk store (per the contract: records under
  * `sessionDir(sessionId)/snapshots/`, the presence index and activity log
@@ -45,7 +45,11 @@ import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, uti
 import { dirname, join } from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { queueRoot, SESSION_BASE_DIR, sessionDir } from '../../src/common/agent-hooks-common.js';
-import { DEFAULT_SNAPSHOT_BUDGETS, type SnapshotFile, type SnapshotRecord } from '../../src/common/snapshot-core.js';
+import {
+  DEFAULT_SNAPSHOT_BUDGETS,
+  type SnapshotPostState,
+  type SnapshotRecord
+} from '../../src/common/snapshot-core.js';
 import {
   type ActivityEntry,
   type ActivityFinishStamp,
@@ -75,14 +79,9 @@ const CLOCK_MARGIN_MS = 60_000;
 // Local helpers
 // ---------------------------------------------------------------------------
 
-/** SHA-256 hex of a byte string — the record's byte/line hash format. */
+/** SHA-256 hex of a byte string — the activity log's path hash format. */
 function sha256Hex(data: string): string {
   return createHash('sha256').update(data).digest('hex');
-}
-
-/** Mirror the store's bigint-to-string JSON replacer: mtimeNs serializes as a string. */
-function bigintToJson(_key: string, value: unknown): unknown {
-  return typeof value === 'bigint' ? value.toString() : value;
 }
 
 const createdSessions = new Set<string>();
@@ -160,23 +159,22 @@ function captureLogger(): { logger: CoreLogger; warns: string[] } {
  */
 function record(overrides: Partial<SnapshotRecord> = {}): SnapshotRecord {
   return {
-    version: 1,
+    version: 2,
     sessionId: newSession(),
     toolUseId: TOOL_USE_ID,
     repoRoot: '/repo',
     createdAt: Date.now(),
     consumed: false,
     consumedAt: null,
-    tier: 'explicit',
+    treeSha: 'a'.repeat(40),
     gaps: [],
-    files: {},
     ...overrides
   };
 }
 
-/** A snapshot file entry with contract-shaped defaults. */
-function fileEntry(overrides: Partial<SnapshotFile> = {}): SnapshotFile {
-  return { hash: 'pre-hash', size: 10, mtimeNs: 1_780_000_000_123_456_789n, capturedAt: 1000, lines: [], ...overrides };
+/** A post-side state with a distinct tree SHA — the consume payload. */
+function postState(overrides: Partial<SnapshotPostState> = {}): SnapshotPostState {
+  return { treeSha: 'b'.repeat(40), ...overrides };
 }
 
 /** Parse a JSON file, or null when absent/unreadable/malformed. */
@@ -266,7 +264,7 @@ function activityEntry(sessionId: string, toolUseId: string, overrides: Partial<
 }
 
 describe('createSnapshotStore — record round-trip', () => {
-  it('write then find returns the record with every field intact (version, tier, gaps, files, agentId)', () => {
+  it('write then find returns the record with every field intact (version, treeSha, gaps, agentId)', () => {
     const { logger, warns } = captureLogger();
     const store = createSnapshotStore(logger, DEFAULT_SNAPSHOT_BUDGETS);
     const r = newRepo();
@@ -275,15 +273,17 @@ describe('createSnapshotStore — record round-trip', () => {
       sessionId: sid,
       repoRoot: r.root,
       agentId: 'agent-a',
-      tier: 'repo',
-      gaps: ['pre-walk truncated at file-count budget'],
-      files: { 'src/a.ts': fileEntry({ hash: 'h1' }), 'src/b.ts': fileEntry({ hash: 'h2', coarse: true }) }
+      gaps: ['write-tree degraded to stat-only: wall budget exhausted']
     });
     expect(store.write(rec)).toBe(true);
     const found = store.find(sid, TOOL_USE_ID);
     expect(found).not.toBeNull();
     expect(found).toEqual(rec);
-    expect(warns).toEqual([]);
+    // The shared session base can hold other LIVE sessions' records in a
+    // format this store rejects (this machine's deployed hooks write into
+    // the same base), and the write-time sweep warns about those foreign
+    // files. Only warns about this fixture's own state fail the round-trip.
+    expect(warns.filter((m) => m.includes(sid) || m.includes(r.root))).toEqual([]);
   });
 
   it('find on a never-written (session, tool use) returns null', () => {
@@ -296,19 +296,17 @@ describe('createSnapshotStore — record round-trip', () => {
     const store = createSnapshotStore(logger, DEFAULT_SNAPSHOT_BUDGETS);
     const r = newRepo();
     const sid = newSession();
-    const rec = record({ sessionId: sid, repoRoot: r.root, files: { 'src/a.ts': fileEntry({ hash: 'pre-hash' }) } });
+    const rec = record({ sessionId: sid, repoRoot: r.root });
     store.write(rec);
-    const post: Record<string, SnapshotFile> = { 'src/a.ts': fileEntry({ hash: 'post-hash', capturedAt: 2000 }) };
+    const post = postState();
     const consumed = store.consume(sid, TOOL_USE_ID, post);
     expect(consumed).not.toBeNull();
     expect(consumed?.consumed).toBe(true);
     expect(consumed?.consumedAt).not.toBeNull();
     expect(consumed?.post).toEqual(post);
     // The record file on disk carries the post state (the evidence survives).
-    // The file holds mtimeNs as a string (the store's bigint replacer), so the
-    // on-disk comparison mirrors that serialization.
     const onDisk = readJson(findRecordFile(sid, TOOL_USE_ID)) as { post?: unknown; consumed?: unknown };
-    expect(onDisk?.post).toEqual(JSON.parse(JSON.stringify(post, bigintToJson)));
+    expect(onDisk?.post).toEqual(post);
     expect(onDisk?.consumed).toBe(true);
     // The index entry reflects the consumption.
     const entry = readJson(findIndexFile(r.root, sid, TOOL_USE_ID)) as {
@@ -324,10 +322,10 @@ describe('createSnapshotStore — record round-trip', () => {
     const r = newRepo();
     const sid = newSession();
     store.write(record({ sessionId: sid, repoRoot: r.root }));
-    const first = store.consume(sid, TOOL_USE_ID, {});
+    const first = store.consume(sid, TOOL_USE_ID, postState());
     expect(first).not.toBeNull();
     // Duplicate delivery (a re-run PostToolUse, a failure-path replay).
-    const second = store.consume(sid, TOOL_USE_ID, {});
+    const second = store.consume(sid, TOOL_USE_ID, postState());
     expect(second).toBeNull();
     expect(store.find(sid, TOOL_USE_ID)).toBe('tombstoned');
   });
@@ -339,7 +337,7 @@ describe('createSnapshotStore — record round-trip', () => {
     store.write(record({ sessionId: sid, repoRoot: r.root }));
     expect(store.tombstone(sid, TOOL_USE_ID, 1500)).toBe(true);
     expect(store.find(sid, TOOL_USE_ID)).toBe('tombstoned');
-    expect(store.consume(sid, TOOL_USE_ID, {})).toBeNull();
+    expect(store.consume(sid, TOOL_USE_ID, postState())).toBeNull();
   });
 
   it('a second tombstone is false — O_EXCL single-winner', () => {
@@ -451,16 +449,15 @@ describe('versioning — fail closed with a diagnostic', () => {
 });
 
 describe('index entries (listRepoRecords)', () => {
-  it('consumption is reflected in the index entry (consumed + consumedAt), tier preserved', () => {
+  it('consumption is reflected in the index entry (consumed + consumedAt)', () => {
     const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
     const r = newRepo();
     const sid = newSession();
-    store.write(record({ sessionId: sid, repoRoot: r.root, tier: 'repo' }));
-    store.consume(sid, TOOL_USE_ID, {});
+    store.write(record({ sessionId: sid, repoRoot: r.root }));
+    store.consume(sid, TOOL_USE_ID, postState());
     const entry = store.listRepoRecords(r.root)[0];
     expect(entry?.consumed).toBe(true);
     expect(entry?.consumedAt).not.toBeNull();
-    expect(entry?.tier).toBe('repo');
   });
 
   it('records from two sessions are both visible — the cross-session concurrency surface', () => {
@@ -483,27 +480,27 @@ describe('index entries (listRepoRecords)', () => {
 describe('storage cap — refuse without dropping evidence', () => {
   it('write refuses when the repo total would exceed maxStorageBytes, logs a diagnostic, and drops nothing', () => {
     const { logger, warns } = captureLogger();
-    const budgets = { ...DEFAULT_SNAPSHOT_BUDGETS, maxStorageBytes: 400 };
+    const budgets = { ...DEFAULT_SNAPSHOT_BUDGETS, maxStorageBytes: 1024 };
     const store = createSnapshotStore(logger, budgets);
     const r = newRepo();
     const sidA = newSession();
     const sidB = newSession();
     // Both records are in-TTL: write() sweeps opportunistically, so the cap
     // refusal must fire on the byte total with the sweep removing nothing —
-    // never on a record the sweep already cleaned.
+    // never on a record the sweep already cleaned. A v2 record is a few
+    // hundred bytes; the big one is inflated through its gap diagnostics.
     const small = record({
       sessionId: sidA,
       repoRoot: r.root,
       toolUseId: 'toolu_01small',
-      createdAt: Date.now(),
-      files: { 'src/a.ts': fileEntry({ hash: 'h1' }) }
+      createdAt: Date.now()
     });
     const big = record({
       sessionId: sidB,
       repoRoot: r.root,
       toolUseId: 'toolu_01big',
       createdAt: Date.now(),
-      files: { 'src/a.ts': fileEntry({ hash: 'x'.repeat(512) }) }
+      gaps: [`stat-only sweep failed: ${'x'.repeat(1024)}`]
     });
     expect(store.write(small)).toBe(true);
     // The second record alone would exceed the cap: refused, never drop-oldest.
@@ -570,7 +567,7 @@ describe('TTL sweep', () => {
     // injected clock, so the margin does not defer the removal.
     const createdAt = Date.now() - DEFAULT_SNAPSHOT_BUDGETS.recordTtlMs + CLOCK_MARGIN_MS;
     store.write(record({ sessionId: sid, repoRoot: r.root, createdAt }));
-    store.consume(sid, TOOL_USE_ID, {});
+    store.consume(sid, TOOL_USE_ID, postState());
     const now = Date.now() + CLOCK_MARGIN_MS + 1;
     store.sweep(now);
     expect(store.find(sid, TOOL_USE_ID)).toBeNull();
