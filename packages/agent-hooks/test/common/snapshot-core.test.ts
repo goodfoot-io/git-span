@@ -33,26 +33,36 @@
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { gzipSync } from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   applyAmbiguityRules,
+  type CaptureWriteTreeInput,
   type CompareSnapshotInput,
+  type CompareTreesInput,
+  captureWriteTree,
   classifyCommandForSnapshot,
+  classifyTextOrBinary,
   compareSnapshot,
+  compareStatOnly,
+  compareTrees,
   DEFAULT_SNAPSHOT_BUDGETS,
   type DiffHunk,
   diffLineHashes,
+  type GitRunner,
   type HashFileInput,
   hashFile,
+  hashTreePath,
   hunksToPostRanges,
   pairRenames,
   recordHasPathCoverageGap,
   type SiblingSnapshot,
   type SnapshotFile,
-  type SnapshotRecord
+  type SnapshotRecord,
+  type StatOnlyEntry
 } from '../../src/common/snapshot-core.js';
 import { createSnapshotStore } from '../../src/common/snapshot-store.js';
 import type { CoreLogger } from '../../src/common/span-surface.js';
@@ -1948,5 +1958,512 @@ describe('recordHasPathCoverageGap — the gap family the guard and the consult 
     ]) {
       expect(recordHasPathCoverageGap(record({ gaps: [gap] })), gap).toBe(false);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tree-SHA snapshot mechanism (card main-228) — Phase 2 acceptance checks.
+//
+// Written against the Phase 1 stubs; each check is the executable form of the
+// v2 contract. The fake GitRunner is scripted per test and logs every call —
+// the "0 new objects" and "-M100% floor" properties are call-log assertions,
+// per the core's injected-I/O convention (never real git here). The hash
+// checks assert VALUES (Node SHA-256 of the fixture bytes), not just equality
+// outcomes, so a regression into git's SHA-1 blob-OID space fails loudly
+// instead of silently breaking the activity-log boundary comparisons.
+// ---------------------------------------------------------------------------
+
+/** One logged fake-runner call. */
+interface GitCall {
+  args: string[];
+  opts: { cwd: string; env?: Record<string, string>; timeoutMs?: number };
+}
+
+/** A scripted fake GitRunner that logs calls; the script may throw to simulate failure/timeout. */
+function scriptedRunner(script: (args: string[]) => Buffer | string): { run: GitRunner; calls: GitCall[] } {
+  const calls: GitCall[] = [];
+  const run: GitRunner = (args, opts) => {
+    calls.push({ args, opts });
+    const out = script(args);
+    return typeof out === 'string' ? Buffer.from(out) : out;
+  };
+  return { run, calls };
+}
+
+/** git's SHA-1 blob OID of `bytes` — the hash space the contract must NOT use. */
+function gitBlobOid(bytes: Buffer): string {
+  return createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex');
+}
+
+const PRE_TREE = 'a'.repeat(40);
+const POST_TREE = 'b'.repeat(40);
+
+/** The three real sources whose NUL-containing literals false-positive git's binary scan. */
+const NUL_FALSE_POSITIVE_SOURCES = [
+  resolve(process.cwd(), '../discover/src/paths.ts'),
+  resolve(process.cwd(), '../discover/src/signals/cochange.ts'),
+  resolve(process.cwd(), '../discover/src/signals/sharedLiterals.ts')
+];
+
+describe('classifyTextOrBinary — the proportional text/binary classifier (main-228 Phase 2)', () => {
+  it('fixture precondition: each pinning source really contains a NUL in its first 8 KiB (the false-positive trigger)', () => {
+    // Not a stub check — this guards the fixtures themselves: if these files
+    // are ever cleaned of their NUL literals, the pinning cases below stop
+    // exercising the false-positive regime and must be re-pointed.
+    for (const file of NUL_FALSE_POSITIVE_SOURCES) {
+      const bytes = readFileSync(file);
+      expect(bytes.subarray(0, 8192).includes(0), file).toBe(true);
+    }
+  });
+
+  it.skip('the real NUL-containing TypeScript sources classify as text', () => {
+    for (const file of NUL_FALSE_POSITIVE_SOURCES) {
+      expect(classifyTextOrBinary(readFileSync(file)), file).toBe(true);
+    }
+  });
+
+  it.skip('genuinely binary content (gzip bytes) classifies as binary', () => {
+    const binary = gzipSync(Buffer.from('some text made genuinely binary by compression\n'.repeat(50)));
+    expect(classifyTextOrBinary(binary)).toBe(false);
+  });
+
+  it.skip('a synthetic full-range byte blob classifies as binary', () => {
+    const bytes = Buffer.alloc(2000);
+    for (let i = 0; i < bytes.length; i += 1) bytes[i] = i % 251;
+    expect(classifyTextOrBinary(bytes)).toBe(false);
+  });
+
+  it.skip('an empty file classifies as text', () => {
+    expect(classifyTextOrBinary(Buffer.alloc(0))).toBe(true);
+  });
+
+  it.skip('ASCII text with a single NUL classifies as text — the rule is proportional, never NUL presence', () => {
+    const oneNul = Buffer.concat([
+      Buffer.from('const marker = "'),
+      Buffer.from([0]),
+      Buffer.from('";\n'),
+      Buffer.from('export const rest = 1;\n'.repeat(40))
+    ]);
+    expect(classifyTextOrBinary(oneNul)).toBe(true);
+  });
+});
+
+describe('captureWriteTree — private index/object-dir capture (main-228 Phase 2)', () => {
+  /** A capture fixture rooted in a fresh temp dir; the caller owns cleanup. */
+  function captureFixture(script: (args: string[]) => Buffer | string) {
+    const root = mkdtempSync(join(tmpdir(), 'capture-write-tree-'));
+    const objectDir = join(root, 'objects');
+    const indexFile = join(root, 'index.tmp');
+    const realIndexFile = join(root, 'real-index');
+    writeFileSync(realIndexFile, 'REAL-INDEX-BYTES');
+    const { run, calls } = scriptedRunner(script);
+    const input: CaptureWriteTreeInput = {
+      repoRoot: REPO_ROOT,
+      objectDir,
+      indexFile,
+      alternates: '/repo/.git/objects',
+      realIndexFile,
+      spanRoot: join(REPO_ROOT, '.span'),
+      wallBudgetMs: 1000,
+      runGit: run,
+      stat: () => ({ size: 7, mtimeNs: TRUSTED_MTIME })
+    };
+    return { root, input, calls, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+  }
+
+  it.skip('an unchanged tree costs exactly add -A + write-tree under the private env — no other calls, no content reads', () => {
+    const fx = captureFixture((args) => (args[0] === 'write-tree' ? `${PRE_TREE}\n` : ''));
+    try {
+      const result = captureWriteTree(fx.input);
+      expect(result).toEqual({ treeSha: PRE_TREE, gaps: [] });
+      // The call log IS the cost assertion: two git calls, nothing else.
+      expect(fx.calls.map((c) => c.args)).toEqual([['add', '-A'], ['write-tree']]);
+      for (const call of fx.calls) {
+        expect(call.opts.cwd).toBe(REPO_ROOT);
+        expect(call.opts.env?.GIT_INDEX_FILE).toBe(fx.input.indexFile);
+        expect(call.opts.env?.GIT_OBJECT_DIRECTORY).toBe(fx.input.objectDir);
+        // The wall budget rides into the subprocess as its timeout.
+        expect(call.opts.timeoutMs).toBeDefined();
+        expect(call.opts.timeoutMs!).toBeLessThanOrEqual(fx.input.wallBudgetMs);
+      }
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  it.skip('the private object dir carries info/alternates pointing at the real object store — the load-bearing setup', () => {
+    const fx = captureFixture((args) => (args[0] === 'write-tree' ? `${PRE_TREE}\n` : ''));
+    try {
+      captureWriteTree(fx.input);
+      expect(readFileSync(join(fx.input.objectDir, 'info', 'alternates'), 'utf8')).toBe('/repo/.git/objects\n');
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  it.skip('the temp index is primed by copying the real index (warm stat cache)', () => {
+    const fx = captureFixture((args) => (args[0] === 'write-tree' ? `${PRE_TREE}\n` : ''));
+    try {
+      captureWriteTree(fx.input);
+      expect(readFileSync(fx.input.indexFile, 'utf8')).toBe('REAL-INDEX-BYTES');
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  it.skip('wall-budget exhaustion degrades to a stat-only sweep with a path-coverage gap, span documents filtered', () => {
+    const fx = captureFixture((args) => {
+      if (args[0] === 'add') throw new Error('timed out');
+      if (args[0] === 'ls-files') return 'src/a.ts\0.span/doc.md\0';
+      return '';
+    });
+    try {
+      const result = captureWriteTree(fx.input);
+      expect(result.treeSha).toBeNull();
+      expect(result.statOnly).toEqual({ 'src/a.ts': { size: 7, mtimeNs: TRUSTED_MTIME } });
+      expect(result.gaps).toHaveLength(1);
+      expect(result.gaps[0]).toMatch(/^write-tree degraded to stat-only:/);
+      // The degrade gap is path-coverage family: content coverage is
+      // unknowable, so a sibling consult must fail closed on this record.
+      expect(recordHasPathCoverageGap(result)).toBe(true);
+    } finally {
+      fx.cleanup();
+    }
+  });
+
+  it.skip('total git failure yields no tree, no statOnly, and a gap — the caller fails open', () => {
+    const fx = captureFixture(() => {
+      throw new Error('git unavailable');
+    });
+    try {
+      const result = captureWriteTree(fx.input);
+      expect(result.treeSha).toBeNull();
+      expect(result.statOnly).toBeUndefined();
+      expect(result.gaps.length).toBeGreaterThan(0);
+    } finally {
+      fx.cleanup();
+    }
+  });
+});
+
+describe('compareTrees — tree-to-tree attribution (main-228 Phase 2)', () => {
+  const FILE_A = 'src/a.ts';
+  const PRE_A = Buffer.from('l1\nl2\nl3\n');
+  const POST_A = Buffer.from('l1\nX\nl3\n');
+
+  /**
+   * Script a compare fixture: `lsTree` answers the pre-tree enumeration,
+   * `nameStatus` the tree-to-tree diff, `blobs` keys `<tree>:<path>` for
+   * cat-file reads, `hunks` keys the per-path -U0 diff output.
+   */
+  function compareFixture(spec: {
+    lsTree?: string[];
+    nameStatus?: string;
+    blobs?: Record<string, Buffer>;
+    hunks?: Record<string, string>;
+    budgets?: CompareTreesInput['budgets'];
+    wallClock?: () => number;
+    preTreeSha?: string;
+    postTreeSha?: string;
+  }) {
+    const { run, calls } = scriptedRunner((args) => {
+      if (args[0] === 'ls-tree') return `${(spec.lsTree ?? []).join('\0')}\0`;
+      if (args[0] === 'cat-file') {
+        const blob = spec.blobs?.[args[2] ?? ''];
+        if (blob === undefined) throw new Error(`missing blob ${args[2]}`);
+        return blob;
+      }
+      if (args.includes('--name-status')) return spec.nameStatus ?? '';
+      if (args.includes('--unified=0')) {
+        const path = args[args.length - 1] ?? '';
+        return spec.hunks?.[path] ?? '';
+      }
+      throw new Error(`unexpected git call ${args.join(' ')}`);
+    });
+    const input: CompareTreesInput = {
+      preTreeSha: spec.preTreeSha ?? PRE_TREE,
+      postTreeSha: spec.postTreeSha ?? POST_TREE,
+      repoRoot: REPO_ROOT,
+      objectDir: '/private/objects',
+      spanRoot: join(REPO_ROOT, '.span'),
+      budgets: spec.budgets ?? DEFAULT_SNAPSHOT_BUDGETS,
+      wallStart: 0,
+      runGit: run,
+      wallClock: spec.wallClock ?? (() => 0)
+    };
+    return { input, calls };
+  }
+
+  it.skip('equal tree SHAs short-circuit: every tree path is unchanged, no diff or content calls at all', () => {
+    const fx = compareFixture({ lsTree: [FILE_A, 'src/b.ts'], preTreeSha: PRE_TREE, postTreeSha: PRE_TREE });
+    const result = compareTrees(fx.input);
+    expect(result.attributions.size).toBe(0);
+    expect(result.unchanged).toEqual(new Set([FILE_A, 'src/b.ts']));
+    expect(result.gaps).toEqual([]);
+    expect(result.contentHashes.size).toBe(0);
+    // One tree enumeration, nothing else — no name-status, no cat-file.
+    expect(fx.calls.map((c) => c.args[0])).toEqual(['ls-tree']);
+  });
+
+  it.skip('a middle edit maps to the exact post range, with SHA-256 content-hash VALUES for both sides', () => {
+    const fx = compareFixture({
+      lsTree: [FILE_A, 'src/b.ts'],
+      nameStatus: `M\0${FILE_A}\0`,
+      blobs: { [`${PRE_TREE}:${FILE_A}`]: PRE_A, [`${POST_TREE}:${FILE_A}`]: POST_A },
+      hunks: { [FILE_A]: `--- a/${FILE_A}\n+++ b/${FILE_A}\n@@ -2 +2 @@\n-l2\n+X\n` }
+    });
+    const result = compareTrees(fx.input);
+    expect(result.attributions.get(FILE_A)).toEqual({
+      kind: 'changed',
+      observed: { changed: [{ start: 2, end: 2 }], wholeFile: false }
+    });
+    expect(result.unchanged).toEqual(new Set(['src/b.ts']));
+    // VALUE assertions in the ActivityPathStamp hash space: Node SHA-256 of
+    // the blob bytes — and provably NOT git's SHA-1 blob OID.
+    const hashes = result.contentHashes.get(FILE_A);
+    expect(hashes).toEqual({ pre: sha256Hex(PRE_A), post: sha256Hex(POST_A) });
+    expect(hashes?.post).not.toBe(gitBlobOid(POST_A));
+  });
+
+  it.skip('an append maps to the exact appended post range', () => {
+    const post = Buffer.from('l1\nl2\nl3\nl4\nl5\n');
+    const fx = compareFixture({
+      lsTree: [FILE_A],
+      nameStatus: `M\0${FILE_A}\0`,
+      blobs: { [`${PRE_TREE}:${FILE_A}`]: PRE_A, [`${POST_TREE}:${FILE_A}`]: post },
+      hunks: { [FILE_A]: `--- a/${FILE_A}\n+++ b/${FILE_A}\n@@ -3,0 +4,2 @@\n+l4\n+l5\n` }
+    });
+    const result = compareTrees(fx.input);
+    expect(result.attributions.get(FILE_A)).toEqual({
+      kind: 'changed',
+      observed: { changed: [{ start: 4, end: 5 }], wholeFile: false }
+    });
+  });
+
+  it.skip('a delete-only hunk forces whole-file scope (no post coordinate for deleted lines)', () => {
+    const post = Buffer.from('l1\n');
+    const fx = compareFixture({
+      lsTree: [FILE_A],
+      nameStatus: `M\0${FILE_A}\0`,
+      blobs: { [`${PRE_TREE}:${FILE_A}`]: PRE_A, [`${POST_TREE}:${FILE_A}`]: post },
+      hunks: { [FILE_A]: `--- a/${FILE_A}\n+++ b/${FILE_A}\n@@ -2,2 +1,0 @@\n-l2\n-l3\n` }
+    });
+    const result = compareTrees(fx.input);
+    expect(result.attributions.get(FILE_A)).toEqual({
+      kind: 'changed',
+      observed: { changed: [], wholeFile: true }
+    });
+  });
+
+  it.skip('creates and deletes attribute as such, with one-sided content hashes', () => {
+    const created = Buffer.from('new\n');
+    const fx = compareFixture({
+      lsTree: [FILE_A],
+      nameStatus: `D\0${FILE_A}\0A\0src/new.ts\0`,
+      blobs: { [`${PRE_TREE}:${FILE_A}`]: PRE_A, [`${POST_TREE}:src/new.ts`]: created }
+    });
+    const result = compareTrees(fx.input);
+    expect(result.attributions.get(FILE_A)).toEqual({ kind: 'deleted' });
+    expect(result.attributions.get('src/new.ts')).toEqual({ kind: 'created' });
+    expect(result.contentHashes.get(FILE_A)).toEqual({ pre: sha256Hex(PRE_A), post: null });
+    expect(result.contentHashes.get('src/new.ts')).toEqual({ pre: null, post: sha256Hex(created) });
+  });
+
+  it.skip('renames pair only at the -M100% byte-identical floor, and the flag itself is pinned in the call log', () => {
+    const fx = compareFixture({
+      lsTree: ['old/name.ts'],
+      nameStatus: `R100\0old/name.ts\0new/name.ts\0`,
+      blobs: {
+        [`${PRE_TREE}:old/name.ts`]: PRE_A,
+        [`${POST_TREE}:new/name.ts`]: PRE_A
+      }
+    });
+    const result = compareTrees(fx.input);
+    expect(result.attributions.get('new/name.ts')).toEqual({ kind: 'rename', from: 'old/name.ts' });
+    // Using git's default -M (~50% similarity) would pair non-identical
+    // renames pairRenames never did — the 100 floor must be explicit.
+    const nameStatusCall = fx.calls.find((c) => c.args.includes('--name-status'));
+    expect(nameStatusCall?.args).toContain('-M100%');
+    expect(nameStatusCall?.args).toContain('--text');
+  });
+
+  it.skip('a binary-classified changed file degrades to whole-file scope with a binary-scope gap — attributed, never excluded', () => {
+    const preBin = gzipSync(Buffer.from('pre binary payload'.repeat(30)));
+    const postBin = gzipSync(Buffer.from('post binary payload'.repeat(30)));
+    const fx = compareFixture({
+      lsTree: ['assets/blob.bin'],
+      nameStatus: `M\0assets/blob.bin\0`,
+      blobs: { [`${PRE_TREE}:assets/blob.bin`]: preBin, [`${POST_TREE}:assets/blob.bin`]: postBin }
+    });
+    const result = compareTrees(fx.input);
+    expect(result.attributions.get('assets/blob.bin')).toEqual({
+      kind: 'changed',
+      observed: { changed: [], wholeFile: true }
+    });
+    expect(result.gaps.some((g) => g.startsWith('binary-scope: assets/blob.bin'))).toBe(true);
+    // Diagnostic-only: precision loss, not a coverage gap — the sibling
+    // consult must not read this record as coverage-unknowable.
+    expect(recordHasPathCoverageGap(result)).toBe(false);
+    // The hashes still land in the SHA-256 space even for binaries.
+    expect(result.contentHashes.get('assets/blob.bin')).toEqual({ pre: sha256Hex(preBin), post: sha256Hex(postBin) });
+  });
+
+  it.skip('span documents are filtered from the diff result — neither attributed nor unchanged', () => {
+    const fx = compareFixture({
+      lsTree: [FILE_A, '.span/agent-hooks/some-span'],
+      nameStatus: `M\0.span/agent-hooks/some-span\0`,
+      blobs: {}
+    });
+    const result = compareTrees(fx.input);
+    expect(result.attributions.size).toBe(0);
+    expect(result.unchanged).toEqual(new Set([FILE_A]));
+  });
+
+  it.skip('the touched-files cap cuts later changed paths with the persisting gap text', () => {
+    const fx = compareFixture({
+      lsTree: [FILE_A, 'src/b.ts'],
+      nameStatus: `M\0${FILE_A}\0M\0src/b.ts\0`,
+      blobs: { [`${PRE_TREE}:${FILE_A}`]: PRE_A, [`${POST_TREE}:${FILE_A}`]: POST_A },
+      hunks: { [FILE_A]: `--- a/${FILE_A}\n+++ b/${FILE_A}\n@@ -2 +2 @@\n-l2\n+X\n` },
+      budgets: { ...DEFAULT_SNAPSHOT_BUDGETS, maxTouchedFiles: 1 }
+    });
+    const result = compareTrees(fx.input);
+    expect(result.attributions.has(FILE_A)).toBe(true);
+    expect(result.attributions.has('src/b.ts')).toBe(false);
+    expect(result.gaps).toContain('touched-files cap 1 exceeded: src/b.ts not attributed');
+    expect(recordHasPathCoverageGap(result)).toBe(true);
+  });
+
+  it.skip('post-side wall exhaustion stops before any content work with the persisting gap text', () => {
+    const fx = compareFixture({
+      lsTree: [FILE_A],
+      nameStatus: `M\0${FILE_A}\0`,
+      blobs: {},
+      wallClock: () => 10_000 // wallStart 0, budget 5 s — already exhausted
+    });
+    const result = compareTrees(fx.input);
+    expect(result.attributions.size).toBe(0);
+    expect(result.gaps.some((g) => g.startsWith('post-side wall budget exhausted:'))).toBe(true);
+    expect(recordHasPathCoverageGap(result)).toBe(true);
+  });
+
+  it.skip('an unreadable blob drops the path with the unreadable-at-compare gap, never a fabricated attribution', () => {
+    const fx = compareFixture({
+      lsTree: [FILE_A],
+      nameStatus: `M\0${FILE_A}\0`,
+      blobs: { [`${PRE_TREE}:${FILE_A}`]: PRE_A } // post blob missing — cat-file throws
+    });
+    const result = compareTrees(fx.input);
+    expect(result.attributions.has(FILE_A)).toBe(false);
+    expect(result.gaps).toContain(`unreadable at compare: ${FILE_A} dropped without attribution`);
+  });
+});
+
+describe('compareStatOnly — the degrade-mode file-granularity comparison (main-228 Phase 2)', () => {
+  it.skip('creates, deletes, and size/mtime changes attribute whole-file; equal stats read unchanged', () => {
+    const pre: Record<string, StatOnlyEntry> = {
+      'src/same.ts': { size: 10, mtimeNs: TRUSTED_MTIME },
+      'src/gone.ts': { size: 5, mtimeNs: TRUSTED_MTIME },
+      'src/grown.ts': { size: 5, mtimeNs: TRUSTED_MTIME },
+      'src/touched.ts': { size: 5, mtimeNs: TRUSTED_MTIME }
+    };
+    const post: Record<string, StatOnlyEntry> = {
+      'src/same.ts': { size: 10, mtimeNs: TRUSTED_MTIME },
+      'src/grown.ts': { size: 9, mtimeNs: TRUSTED_MTIME },
+      'src/touched.ts': { size: 5, mtimeNs: TRUSTED_MTIME + 1n },
+      'src/new.ts': { size: 3, mtimeNs: TRUSTED_MTIME }
+    };
+    const result = compareStatOnly(pre, post);
+    expect(result.unchanged).toEqual(new Set(['src/same.ts']));
+    expect(result.attributions.get('src/gone.ts')).toEqual({ kind: 'deleted' });
+    expect(result.attributions.get('src/new.ts')).toEqual({ kind: 'created' });
+    expect(result.attributions.get('src/grown.ts')).toEqual({
+      kind: 'changed',
+      observed: { changed: [], wholeFile: true }
+    });
+    expect(result.attributions.get('src/touched.ts')).toEqual({
+      kind: 'changed',
+      observed: { changed: [], wholeFile: true }
+    });
+    // Stat-only mode has no content to hash — the consult falls back to its
+    // fail-closed paths on the record's degrade gap.
+    expect(result.contentHashes.size).toBe(0);
+  });
+});
+
+describe('hashTreePath — the on-demand sibling hash read (main-228 Phase 2)', () => {
+  const BLOB = Buffer.from('shared sibling content\n');
+
+  it.skip('hashes a tree path into the SHA-256 value of its blob bytes — never the git SHA-1 OID', () => {
+    const { run, calls } = scriptedRunner((args) => {
+      expect(args).toEqual(['cat-file', 'blob', `${PRE_TREE}:src/a.ts`]);
+      return BLOB;
+    });
+    const hash = hashTreePath({
+      treeSha: PRE_TREE,
+      path: 'src/a.ts',
+      repoRoot: REPO_ROOT,
+      objectDir: '/private/objects',
+      runGit: run
+    });
+    expect(hash).toBe(sha256Hex(BLOB));
+    expect(hash).not.toBe(gitBlobOid(BLOB));
+    expect(calls).toHaveLength(1);
+  });
+
+  it.skip('a path absent from the tree reads null (cat-file failure), never a throw', () => {
+    const { run } = scriptedRunner(() => {
+      throw new Error('fatal: path not in tree');
+    });
+    expect(
+      hashTreePath({ treeSha: PRE_TREE, path: 'src/gone.ts', repoRoot: REPO_ROOT, objectDir: '/o', runGit: run })
+    ).toBeNull();
+  });
+
+  it.skip('the ambiguity table keeps resolving against tree-sourced SHA-256 hashes exactly as against v1 per-path maps', () => {
+    // The interop pin (plan decision 6): sibling pre/post now come from
+    // hashTreePath over the sibling's recorded trees. A consumed-after
+    // sibling whose post blob equals its pre blob stays NOT ambiguous; the
+    // same fixture with differing blobs flips ambiguous — and the hashes
+    // driving both verdicts are asserted BY VALUE in the SHA-256 space.
+    const { run } = scriptedRunner((args) => {
+      const key = args[2] ?? '';
+      if (key.startsWith(PRE_TREE)) return BLOB;
+      if (key.startsWith(POST_TREE)) return BLOB;
+      throw new Error(`missing blob ${key}`);
+    });
+    const sibPre = hashTreePath({
+      treeSha: PRE_TREE,
+      path: 'src/a.ts',
+      repoRoot: REPO_ROOT,
+      objectDir: '/o',
+      runGit: run
+    });
+    const sibPost = hashTreePath({
+      treeSha: POST_TREE,
+      path: 'src/a.ts',
+      repoRoot: REPO_ROOT,
+      objectDir: '/o',
+      runGit: run
+    });
+    expect(sibPre).toBe(sha256Hex(BLOB));
+    expect(sibPost).toBe(sha256Hex(BLOB));
+    const mine = record({ createdAt: 1000, files: { 'src/a.ts': fileEntry({ hash: sha256Hex(BLOB) }) } });
+    const sibling: SiblingSnapshot = {
+      sessionId: 'other-session',
+      toolUseId: 'toolu_sibling',
+      createdAt: 2000,
+      consumed: true,
+      consumedAt: 2500,
+      coverageGap: false,
+      pre: fileEntry({ hash: sibPre! }),
+      post: fileEntry({ hash: sibPost! })
+    };
+    expect(applyAmbiguityRules(mine, [sibling], 'src/a.ts')).toEqual({ ambiguous: false });
+    const changedSibling: SiblingSnapshot = {
+      ...sibling,
+      post: fileEntry({ hash: sha256Hex(Buffer.from('different post content\n')) })
+    };
+    expect(applyAmbiguityRules(mine, [changedSibling], 'src/a.ts').ambiguous).toBe(true);
   });
 });

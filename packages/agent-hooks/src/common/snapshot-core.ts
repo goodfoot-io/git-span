@@ -1843,6 +1843,14 @@ export interface CaptureWriteTreeInput {
   indexFile: string;
   /** Absolute path of the REAL object store the private dir's info/alternates points at. */
   alternates: string;
+  /**
+   * Absolute path of the repo's real index file (worktree-aware — the caller
+   * resolves `git rev-parse --git-path index`), copied into `indexFile` so
+   * git's stat cache stays warm and unchanged files are never read. Null
+   * (index missing/unresolvable) starts the temp index empty — correct but
+   * cold: every file is re-hashed once.
+   */
+  realIndexFile: string | null;
   /** The repo's span root; stat-only degrade filters span documents like the diff filter does. */
   spanRoot: string;
   /** Wall budget for the add+write-tree pair; exhaustion degrades to stat-only. */
