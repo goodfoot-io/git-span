@@ -60,7 +60,9 @@ import {
   sanitizeSessionId,
   sessionDir
 } from '../common/agent-hooks-common.js';
-import { parseCommandDetailed, type ResolvedSpan } from '../common/parse-command.js';
+import { bashSpanToTouch } from '../common/bash-touch.js';
+import { parseCommandDetailed } from '../common/parse-command.js';
+import { parseResponse, type ResponseParseInput } from '../common/parse-response.js';
 import {
   applyAmbiguityRules,
   classifyCommandForSnapshot,
@@ -287,7 +289,13 @@ function normalizeShellResponse(toolResponse: unknown): NormalizedShellResponse 
               : typeof record.exitStatus === 'number'
                 ? record.exitStatus
                 : undefined,
-          truncated: record.rawOutputPath !== undefined,
+          // parse-response.ts's `interrupted` field is not yet load-bearing
+          // (its complete-records regime is undocumented future work) — until
+          // that phase lands, `interrupted`/`timedOutAfterMs` collapse into
+          // `truncated` so the response fails closed today, same as the
+          // Claude adapter's envelope normalization.
+          truncated:
+            record.rawOutputPath !== undefined || record.interrupted === true || record.timedOutAfterMs !== undefined,
           interrupted: record.interrupted === true || record.timedOutAfterMs !== undefined
         };
       }
@@ -349,6 +357,14 @@ const EMPTY_PATHS: ReadonlySet<string> = new Set();
  * runs from. `excludedPaths` (repo-relative) are skipped — paths the snapshot
  * comparison already attributed or dropped must not be surfaced twice. With
  * the empty set this is byte-identical to Phase 1's standalone shell loop.
+ *
+ * `toolResponse` is the second evidence source: response-derivable commands
+ * (grep/ripgrep with numbered output, git diff/show/log -p, git blame -L)
+ * locate their read windows in the output, which the command text alone
+ * cannot. Its spans merge with the command-derived ones and run through the
+ * same excludedPaths filter and shared touch core; the per-session memo
+ * dedupes duplicate surfaces across the two sources. An unrecognized envelope
+ * degrades to command-only parsing.
  */
 async function runStaticParseTouches(
   command: string,
@@ -356,35 +372,44 @@ async function runStaticParseTouches(
   sessionId: string,
   executors: TouchExecutors,
   memo: MemoStore,
-  excludedPaths: ReadonlySet<string> = EMPTY_PATHS
+  excludedPaths: ReadonlySet<string> = EMPTY_PATHS,
+  toolResponse?: unknown
 ): Promise<string[]> {
   const blocks: string[] = [];
   const matches = parseCommandDetailed(command, { cwd });
   for (const match of matches) {
     if (match.status !== 'resolved') continue;
-    const span: ResolvedSpan = match.span;
+    const span = match.span;
     const absPath = abspathAgainst(cwd, span.absolutePath);
     const scope = resolveTouchScope(cwd, absPath);
     if (!scope) continue;
     if (excludedPaths.has(scope.repoRelPath)) continue;
-    let touch: TouchInput;
-    if (match.idiom === 'heredoc-write') {
-      // `>` overwrites: whole-file scope so deleted spans beyond the new
-      // EOF are surfaced. `>>` appends: narrow to the appended lines.
-      const written = span.redirect === '>' ? '' : (span.body ?? '');
-      touch = { kind: 'write', sessionId, cwd, filePath: absPath, written };
-    } else {
-      touch = {
-        kind: 'read',
-        sessionId,
-        cwd,
-        filePath: absPath,
-        offset: span.lineStart,
-        limit: span.lineEnd - span.lineStart + 1
-      };
-    }
+    const touch = bashSpanToTouch(span, sessionId, cwd);
+    if (!touch) continue;
     const output = await runTouchHook(touch, executors, memo);
     if (output.additionalContext) blocks.push(output.additionalContext);
+  }
+  const response = normalizeShellResponse(toolResponse);
+  if (response !== null) {
+    for (const span of parseResponse({ command, cwd, ...response })) {
+      const absPath = abspathAgainst(cwd, span.absolutePath);
+      const scope = resolveTouchScope(cwd, absPath);
+      if (!scope) continue;
+      if (excludedPaths.has(scope.repoRelPath)) continue;
+      const output = await runTouchHook(
+        {
+          kind: 'read',
+          sessionId,
+          cwd,
+          filePath: absPath,
+          offset: span.lineStart,
+          limit: span.lineEnd - span.lineStart + 1
+        },
+        executors,
+        memo
+      );
+      if (output.additionalContext) blocks.push(output.additionalContext);
+    }
   }
   return blocks;
 }
@@ -696,6 +721,11 @@ async function snapshotBashBranch(
       if (postFile !== undefined) postMap[path] = postFile;
     }
 
+    // Confirmed-unchanged paths are a definitive verdict too: the co-parser
+    // must not re-touch a path the snapshot already proved identical
+    // pre/post, even though it produced no attribution entry for it.
+    for (const path of compared.unchanged) excludedPaths.add(path);
+
     // The compare-phase gaps land on the record before the consume (same funnel
     // as the abort catch): a path cut by the touched-files cap or the wall
     // budget leaves no post entry, and without its persisted gap a later
@@ -819,7 +849,7 @@ async function snapshotBashBranch(
       filePath: scopes[0]!.filePath,
       written: ''
     };
-    const output = await runTouchHook(baseInput, executors, memo, scopes);
+    const output = await runTouchHook(baseInput, executors, memo, undefined, scopes);
     additionalContext = output.additionalContext;
   }
   if (notes.length > 0) {
@@ -963,14 +993,30 @@ export function createHandler(
           const blocks: string[] = [];
           if (outcome.additionalContext) blocks.push(outcome.additionalContext);
           blocks.push(
-            ...(await runStaticParseTouches(command, effectiveCwd, sessionId, executors, memo, outcome.excludedPaths))
+            ...(await runStaticParseTouches(
+              command,
+              effectiveCwd,
+              sessionId,
+              executors,
+              memo,
+              outcome.excludedPaths,
+              input.tool_response
+            ))
           );
           if (blocks.length === 0) return undefined;
           const combined = blocks.join('');
           return postToolUseOutput({ additionalContext: combined, systemMessage: combined });
         }
       }
-      const blocks = await runStaticParseTouches(command, effectiveCwd, sessionId, executors, memo);
+      const blocks = await runStaticParseTouches(
+        command,
+        effectiveCwd,
+        sessionId,
+        executors,
+        memo,
+        EMPTY_PATHS,
+        input.tool_response
+      );
       if (attributionNote !== null) blocks.unshift(attributionNote);
       if (blocks.length === 0) return undefined;
       const combined = blocks.join('');
