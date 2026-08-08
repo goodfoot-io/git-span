@@ -1177,6 +1177,23 @@ describe('classifyTextOrBinary — the proportional text/binary classifier (main
     expect(classifyTextOrBinary(Buffer.alloc(0))).toBe(true);
   });
 
+  it('PINNED: latin-1 text above the 0.1 suspect ratio classifies as binary — a conscious threshold tradeoff, not an accident', () => {
+    // High-byte-heavy legacy encodings (latin-1/CP-1252 prose with >10%
+    // accented bytes) fall on the binary side of the proportional rule. The
+    // consequence is bounded: the file still attributes, just with
+    // whole-file scope and a binary-scope gap. Raising the threshold to
+    // admit them would also admit genuinely binary formats with long ASCII
+    // runs, so the ratio stays 0.1 — this fixture exists so any future move
+    // of that line is deliberate.
+    const latin1 = Buffer.from('r\xe9sum\xe9 \xe0 c\xf4t\xe9 na\xefve \xe9l\xe8ve '.repeat(80), 'latin1');
+    expect(classifyTextOrBinary(latin1)).toBe(false);
+  });
+
+  it('PINNED: UTF-16LE text classifies as binary — every other byte is a NUL under the suspect ratio', () => {
+    const utf16 = Buffer.from('plain english text stored as utf-16\n'.repeat(60), 'utf16le');
+    expect(classifyTextOrBinary(utf16)).toBe(false);
+  });
+
   it('ASCII text with a single NUL classifies as text — the rule is proportional, never NUL presence', () => {
     const oneNul = Buffer.concat([
       Buffer.from('const marker = "'),

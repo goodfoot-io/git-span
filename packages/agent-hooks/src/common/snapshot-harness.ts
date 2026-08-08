@@ -134,15 +134,34 @@ function readSnapshotConfig(repoRoot: string): Map<string, string> {
 }
 
 /**
- * The default {@link GitRunner}: one `git` subprocess returning raw stdout
- * bytes (cat-file blob reads must not pass through an encoding). The caller's
- * env entries merge over the ambient environment — the capture's private
- * GIT_INDEX_FILE/GIT_OBJECT_DIRECTORY ride on top of PATH and the rest.
+ * Ambient repo-location overrides that must never leak into snapshot git
+ * calls: the harness locates the repo by cwd and supplies its OWN private
+ * index/object-dir per call, so an inherited GIT_DIR (an agent running
+ * inside `git rebase -x`, a user export) would silently repoint every
+ * capture, compare, and cat-file at a different repository or object store.
  */
-export const defaultGitRunner: GitRunner = (args, opts) =>
-  execFileSync('git', args, {
+const AMBIENT_GIT_LOCATION_VARS = [
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_COMMON_DIR',
+  'GIT_DIR',
+  'GIT_INDEX_FILE',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_WORK_TREE'
+] as const;
+
+/**
+ * The default {@link GitRunner}: one `git` subprocess returning raw stdout
+ * bytes (cat-file blob reads must not pass through an encoding). The ambient
+ * environment rides along (PATH, HOME, and friends) minus the repo-location
+ * GIT_* overrides above; the caller's env entries — the capture's private
+ * GIT_INDEX_FILE/GIT_OBJECT_DIRECTORY — merge on top.
+ */
+export const defaultGitRunner: GitRunner = (args, opts) => {
+  const ambient: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of AMBIENT_GIT_LOCATION_VARS) delete ambient[key];
+  return execFileSync('git', args, {
     cwd: opts.cwd,
-    env: opts.env === undefined ? process.env : { ...process.env, ...opts.env },
+    env: opts.env === undefined ? ambient : { ...ambient, ...opts.env },
     // execFileSync rejects non-integer timeouts, and a fractional
     // postSideWallSeconds budget (0.5 is a valid budget value) produces
     // fractional remaining-milliseconds — ceil, never crash the capture.
@@ -150,6 +169,7 @@ export const defaultGitRunner: GitRunner = (args, opts) =>
     maxBuffer: 64 * 1024 * 1024,
     stdio: ['ignore', 'pipe', 'ignore']
   });
+};
 
 /** Injected stat over an absolute path: null when absent or unstat-able. */
 export const statFile: StatFile = (absPath) => {
