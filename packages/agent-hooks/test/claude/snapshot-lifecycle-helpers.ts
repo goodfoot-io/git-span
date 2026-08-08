@@ -107,6 +107,7 @@ export const CLAUDE_SESSION_IDS: readonly string[] = [
   'sess-interleave-bashfirst',
   'sess-interleave-neverflag',
   'sess-interleave-prefail',
+  'sess-interleave-nulldelete',
   'sess-interleave-race',
   'sess-interleave-ttlprune',
   'sess-interleave-unfinished',

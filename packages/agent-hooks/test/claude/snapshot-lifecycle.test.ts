@@ -1356,6 +1356,34 @@ describe('claude harness snapshot lifecycle', () => {
       expect(notes.some((n) => n.includes('covered-by-edit'))).toBe(true);
     });
 
+    it('a deletion never skips on null-hash equality — absence of evidence on both sides is not a matching boundary', async () => {
+      // The null-equality hole this pins: the skip rule compared
+      // `p.preHash === myPreHash && p.postHash === currentHash` with plain
+      // equality, and a deleted path has currentHash null — so an in-window
+      // edit stamped with postHash null (its touch read the path as absent)
+      // satisfied the rule via null === null and my deletion was silently
+      // dropped. Null sides carry no evidence; the skip must demand real
+      // content hashes on both boundaries and fall through to
+      // bounded-double instead.
+      const v1 = 'export const a = 1;\n';
+      const { block, notes } = await runInterleaved('sess-interleave-nulldelete', 'tu-bash-nulldelete', {
+        v1,
+        v2: v1,
+        entry: (createdAt) => ({
+          sessionId: 'sess-interleave-nulldelete',
+          toolUseId: 'tu-edit-nulldelete',
+          kind: 'Edit',
+          startedAt: createdAt - 500,
+          finishedAt: createdAt + 1,
+          paths: [{ path: 'src/app.ts', preHash: sha256Hex(v1), postHash: null }]
+        }),
+        afterAppend: (repoRoot) => rmSync(join(repoRoot, 'src/app.ts'))
+      });
+      expect(block).toContain('## billing/checkout-request-flow');
+      expect(notes.some((n) => n.includes('absorbed-double'))).toBe(true);
+      expect(notes.some((n) => n.includes('covered-by-edit'))).toBe(false);
+    });
+
     it('an in-window edit with unequal baselines bounded-doubles', async () => {
       // The edit read the state AFTER the Bash call wrote it: preHash != my
       // pre → skip is impossible, and the call attributes its own residual

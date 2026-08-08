@@ -731,6 +731,14 @@ export async function snapshotBashBranch(
       // baked into my pre and can never contaminate my post-diff. Attribute
       // without a note.
     } else if (
+      // Both boundary equalities must be over REAL content hashes: a
+      // created/deleted path (or a stat-only degrade) has a null side, and
+      // null === null is not evidence that the edit's touch covered my
+      // change — it is the absence of evidence on both sides. Without the
+      // non-null guard a deletion interleaved with an edit's deletion of the
+      // same path skipped silently on null-postHash equality.
+      myPreHash !== null &&
+      currentHash !== null &&
       consulted.some((e) =>
         e.paths.some((p) => p.path === path && p.preHash === myPreHash && p.postHash === currentHash)
       )
