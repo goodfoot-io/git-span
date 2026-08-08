@@ -525,6 +525,13 @@ export interface SweepResult {
   tombstones: number;
   activityEntries: number;
   indexEntries: number;
+  /**
+   * Record files reclaimed because the fail-closed read can never use them —
+   * incompatible versions (deployed-v1 leftovers) or unreadable JSON.
+   * Counted apart from `records` so the TTL count stays a pure own-era
+   * observable while upgrade reclamation remains visible.
+   */
+  foreignRecords: number;
 }
 
 /**
@@ -577,7 +584,11 @@ export interface SnapshotStore {
    * TTL sweep (records `recordTtlMs`, unfinished activity entries
    * `unfinishedEntryTtlMs`, finished activity entries `recordTtlMs`,
    * tombstones and orphaned index entries): the crash-recovery backstop, run
-   * opportunistically on each snapshot write.
+   * opportunistically on each snapshot write. Record files that fail the
+   * fail-closed read are also reclaimed here — incompatible versions
+   * (deployed-v1 leftovers) immediately, unreadable JSON on the record TTL
+   * by file mtime — because they count against the storage cap but can
+   * never be consumed, and would otherwise brick the store permanently.
    */
   sweep(now?: number): SweepResult;
 
@@ -629,6 +640,32 @@ export function createSnapshotStore(
     if (trashFile(indexFile(repoRoot, sessionId, toolUseId)) === 'failed') {
       logger.warn(`snapshot store: index entry cleanup failed for ${repoRoot}`);
     }
+  }
+
+  /**
+   * Trash a record file this code cannot use — unreadable JSON or an
+   * incompatible version — together with its sibling artifacts (tombstone,
+   * object dir, temp index), deriving the sibling names from the record's
+   * file name because the payload's own fields are untrustworthy. Index
+   * cleanup is best-effort from whatever string fields the payload does
+   * carry (a v1 record has real sessionId/toolUseId/repoRoot strings);
+   * a payload without them leaves the entry to the orphan-index pass.
+   */
+  function reapForeignRecord(dir: string, name: string, parsed: Record<string, unknown> | null): void {
+    const base = name.slice(0, -'.json'.length);
+    trashFile(join(dir, name));
+    trashFile(join(dir, `${base}${TOMBSTONE_SUFFIX}`));
+    trashFile(join(dir, `${base}.objects`));
+    trashFile(join(dir, `${base}.index`));
+    const repoRoot = parsed?.repoRoot;
+    const sessionId = parsed?.sessionId;
+    const toolUseId = parsed?.toolUseId;
+    if (typeof repoRoot === 'string' && typeof sessionId === 'string' && typeof toolUseId === 'string') {
+      removeIndexEntry(repoRoot, sessionId, toolUseId);
+    }
+    logger.info?.('git-span snapshot sweep reaped an incompatible or unreadable record', {
+      file: join(dir, name)
+    });
   }
 
   function writeRecord(record: SnapshotRecord): void {
@@ -740,10 +777,138 @@ export function createSnapshotStore(
     return removed;
   }
 
+  /**
+   * The sweep body. `extraRepos` seeds the repo-scoped passes (activity
+   * prune, orphan-index sweep, trash) beyond the repos discovered from
+   * readable v2 records — the write path passes its target repo so stale
+   * index entries there (e.g. v1 leftovers whose records are gone or just
+   * reaped) are cleaned on the first v2 write, not only after the repo has
+   * a readable record.
+   */
+  function runSweep(now: number, extraRepos: readonly string[]): SweepResult {
+    const result: SweepResult = { records: 0, tombstones: 0, activityEntries: 0, indexEntries: 0, foreignRecords: 0 };
+    const repos = new Set<string>(extraRepos);
+    for (const sessionName of listDir(SESSION_BASE_DIR)) {
+      const dir = snapshotsDir(sessionName);
+      const names = listDir(dir);
+      // Tombstone files first: a pair expired together counts as a
+      // tombstone removal, so the record branch below must not see a
+      // record whose tombstone already claimed the pair.
+      for (const name of names) {
+        if (!name.endsWith(TOMBSTONE_SUFFIX)) continue;
+        const file = join(dir, name);
+        // Another session's process may be finishing this tombstone (or the
+        // record the pass reads below) right now — the sweep-read margin
+        // skips in-flight files; the sweep only targets stale state.
+        if (isRecentlyWritten(file, now)) continue;
+        const t = readTombstoneFile(file, logger);
+        if (t === null) continue;
+        if (now - t.consumedAt > budgets.recordTtlMs) {
+          const recordPath = recordPathFromTombstoneName(dir, name);
+          const rec = isRecentlyWritten(recordPath, now) ? null : readRecordFile(recordPath, logger);
+          const base = name.slice(0, -TOMBSTONE_SUFFIX.length);
+          trashFile(recordPath);
+          trashFile(file);
+          trashFile(join(dir, `${base}.objects`));
+          trashFile(join(dir, `${base}.index`));
+          if (rec !== null) removeIndexEntry(rec.repoRoot, rec.sessionId, rec.toolUseId);
+          result.tombstones += 1;
+        }
+      }
+      for (const name of names) {
+        if (!name.endsWith('.json') || name.endsWith(TOMBSTONE_SUFFIX)) continue;
+        const file = join(dir, name);
+        if (isRecentlyWritten(file, now)) continue;
+        const data = readJsonFile(file);
+        const parsed = data !== null && typeof data === 'object' ? (data as Record<string, unknown>) : null;
+        if (parsed === null) {
+          // Unreadable record files still count against the storage cap but
+          // can never be consumed (find fails closed), so they get the crash
+          // backstop: reaped on the record TTL by their own mtime — the
+          // parse failure could be a transient read error, so no immediate
+          // removal.
+          let mtimeMs: number;
+          try {
+            mtimeMs = statSync(file).mtimeMs;
+          } catch {
+            continue;
+          }
+          if (now - mtimeMs > budgets.recordTtlMs) {
+            reapForeignRecord(dir, name, parsed);
+            result.foreignRecords += 1;
+          }
+          continue;
+        }
+        if (parsed.version !== 2) {
+          // An incompatible-version record — a deployed-v1 leftover after
+          // the upgrade — is permanently unconsumable here: the fail-closed
+          // read never yields its createdAt, so the TTL pass can't reach
+          // it, yet its multi-MB body still counts against maxStorageBytes.
+          // Left alone it deadlocks the store: the cap refuses every v2
+          // write while the state filling the cap is never swept. Reap it
+          // immediately — hooks deploy as one bundle set, so no v1 consumer
+          // exists once this code runs.
+          reapForeignRecord(dir, name, parsed);
+          result.foreignRecords += 1;
+          continue;
+        }
+        const rec = readRecordFile(file, logger);
+        if (rec === null) continue;
+        repos.add(rec.repoRoot);
+        if (now - rec.createdAt > budgets.recordTtlMs) {
+          trashFile(file);
+          trashFile(tombstoneFile(rec.sessionId, rec.toolUseId));
+          trashFile(snapshotObjectDir(rec.sessionId, rec.toolUseId));
+          trashFile(snapshotTempIndexFile(rec.sessionId, rec.toolUseId));
+          removeIndexEntry(rec.repoRoot, rec.sessionId, rec.toolUseId);
+          result.records += 1;
+        }
+      }
+      // Orphaned capture artifacts: a crash between artifact creation and
+      // the record write (or a storage-cap refusal whose own cleanup also
+      // died) leaves an object dir / temp index with no record file to
+      // carry them through the passes above. Reap them on the record TTL by
+      // their own mtime, with the usual margin guard.
+      for (const name of names) {
+        const base = name.endsWith('.objects')
+          ? name.slice(0, -'.objects'.length)
+          : name.endsWith('.index')
+            ? name.slice(0, -'.index'.length)
+            : null;
+        if (base === null) continue;
+        const file = join(dir, name);
+        if (existsSync(join(dir, `${base}.json`))) continue;
+        if (isRecentlyWritten(file, now)) continue;
+        let mtimeMs: number;
+        try {
+          mtimeMs = statSync(file).mtimeMs;
+        } catch {
+          continue;
+        }
+        if (now - mtimeMs > budgets.recordTtlMs) trashFile(file);
+      }
+      emptyTrash(dir, now);
+    }
+    result.activityEntries = pruneStaleActivity(now, repos);
+    result.indexEntries = sweepOrphanIndexes(now, repos);
+    for (const repo of repos) {
+      // Same git-common-dir subprocess caveat as the activity and index
+      // passes: a gone repo must skip, not abort the sweep.
+      try {
+        emptyTrash(activityDir(repo), now);
+        emptyTrash(indexDir(repo), now);
+      } catch (e) {
+        logger.warn(`snapshot store: trash pass skipped ${repo}: ${String(e)}`);
+      }
+    }
+    return result;
+  }
+
   return {
     write(record: SnapshotRecord): boolean {
-      const swept = this.sweep();
-      const removed = swept.records + swept.tombstones + swept.activityEntries + swept.indexEntries;
+      const swept = runSweep(Date.now(), [record.repoRoot]);
+      const removed =
+        swept.records + swept.tombstones + swept.activityEntries + swept.indexEntries + swept.foreignRecords;
       if (removed > 0) {
         // The TTL sweep is the crash-recovery backstop; report what it removed
         // so cleanup is observable (the plan's sweep-counts report), never the
@@ -752,7 +917,8 @@ export function createSnapshotStore(
           records: swept.records,
           tombstones: swept.tombstones,
           activityEntries: swept.activityEntries,
-          indexEntries: swept.indexEntries
+          indexEntries: swept.indexEntries,
+          foreignRecords: swept.foreignRecords
         });
       }
       const repo = record.repoRoot;
@@ -823,89 +989,7 @@ export function createSnapshotStore(
     },
 
     sweep(now: number = Date.now()): SweepResult {
-      const result: SweepResult = { records: 0, tombstones: 0, activityEntries: 0, indexEntries: 0 };
-      const repos = new Set<string>();
-      for (const sessionName of listDir(SESSION_BASE_DIR)) {
-        const dir = snapshotsDir(sessionName);
-        const names = listDir(dir);
-        // Tombstone files first: a pair expired together counts as a
-        // tombstone removal, so the record branch below must not see a
-        // record whose tombstone already claimed the pair.
-        for (const name of names) {
-          if (!name.endsWith(TOMBSTONE_SUFFIX)) continue;
-          const file = join(dir, name);
-          // Another session's process may be finishing this tombstone (or the
-          // record the pass reads below) right now — the sweep-read margin
-          // skips in-flight files; the sweep only targets stale state.
-          if (isRecentlyWritten(file, now)) continue;
-          const t = readTombstoneFile(file, logger);
-          if (t === null) continue;
-          if (now - t.consumedAt > budgets.recordTtlMs) {
-            const recordPath = recordPathFromTombstoneName(dir, name);
-            const rec = isRecentlyWritten(recordPath, now) ? null : readRecordFile(recordPath, logger);
-            const base = name.slice(0, -TOMBSTONE_SUFFIX.length);
-            trashFile(recordPath);
-            trashFile(file);
-            trashFile(join(dir, `${base}.objects`));
-            trashFile(join(dir, `${base}.index`));
-            if (rec !== null) removeIndexEntry(rec.repoRoot, rec.sessionId, rec.toolUseId);
-            result.tombstones += 1;
-          }
-        }
-        for (const name of names) {
-          if (!name.endsWith('.json') || name.endsWith(TOMBSTONE_SUFFIX)) continue;
-          const file = join(dir, name);
-          if (isRecentlyWritten(file, now)) continue;
-          const rec = readRecordFile(file, logger);
-          if (rec === null) continue;
-          repos.add(rec.repoRoot);
-          if (now - rec.createdAt > budgets.recordTtlMs) {
-            trashFile(file);
-            trashFile(tombstoneFile(rec.sessionId, rec.toolUseId));
-            trashFile(snapshotObjectDir(rec.sessionId, rec.toolUseId));
-            trashFile(snapshotTempIndexFile(rec.sessionId, rec.toolUseId));
-            removeIndexEntry(rec.repoRoot, rec.sessionId, rec.toolUseId);
-            result.records += 1;
-          }
-        }
-        // Orphaned capture artifacts: a crash between artifact creation and
-        // the record write (or a storage-cap refusal whose own cleanup also
-        // died) leaves an object dir / temp index with no record file to
-        // carry them through the passes above. Reap them on the record TTL by
-        // their own mtime, with the usual margin guard.
-        for (const name of names) {
-          const base = name.endsWith('.objects')
-            ? name.slice(0, -'.objects'.length)
-            : name.endsWith('.index')
-              ? name.slice(0, -'.index'.length)
-              : null;
-          if (base === null) continue;
-          const file = join(dir, name);
-          if (existsSync(join(dir, `${base}.json`))) continue;
-          if (isRecentlyWritten(file, now)) continue;
-          let mtimeMs: number;
-          try {
-            mtimeMs = statSync(file).mtimeMs;
-          } catch {
-            continue;
-          }
-          if (now - mtimeMs > budgets.recordTtlMs) trashFile(file);
-        }
-        emptyTrash(dir, now);
-      }
-      result.activityEntries = pruneStaleActivity(now, repos);
-      result.indexEntries = sweepOrphanIndexes(now, repos);
-      for (const repo of repos) {
-        // Same git-common-dir subprocess caveat as the activity and index
-        // passes: a gone repo must skip, not abort the sweep.
-        try {
-          emptyTrash(activityDir(repo), now);
-          emptyTrash(indexDir(repo), now);
-        } catch (e) {
-          logger.warn(`snapshot store: trash pass skipped ${repo}: ${String(e)}`);
-        }
-      }
-      return result;
+      return runSweep(now, []);
     },
 
     removeSession(sessionId: string, agentId?: string): void {
@@ -918,6 +1002,19 @@ export function createSnapshotStore(
       // unlink is what can abort another session's concurrent read.
       for (const name of listDir(dir)) {
         if (!name.endsWith('.json') || name.endsWith(TOMBSTONE_SUFFIX)) continue;
+        const data = readJsonFile(join(dir, name));
+        const parsed = data !== null && typeof data === 'object' ? (data as Record<string, unknown>) : null;
+        if (parsed === null || parsed.version !== 2) {
+          // Unreadable or incompatible-version records (deployed-v1
+          // leftovers) belong to no agent this code can attribute, so only
+          // the whole-session cleanup removes them — a SubagentStop must
+          // not delete the parent session's state.
+          if (agentId === undefined) {
+            reapForeignRecord(dir, name, parsed);
+            recordsRemoved += 1;
+          }
+          continue;
+        }
         const rec = readRecordFile(join(dir, name), logger);
         if (rec === null) continue;
         if (agentId !== undefined && rec.agentId !== agentId) continue;

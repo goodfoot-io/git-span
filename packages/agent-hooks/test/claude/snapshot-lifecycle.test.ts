@@ -960,6 +960,8 @@ describe('claude harness snapshot lifecycle', () => {
           })
         );
         const sweepNow = staleCreatedAt + DEFAULT_SNAPSHOT_BUDGETS.recordTtlMs + 1;
+        // Foreign v1 leftovers in the shared base land in foreignRecords,
+        // never here, so the TTL count stays exact.
         expect(store.sweep(sweepNow).records).toBe(1);
         expect(store.find('sess-lifecycle-ttl-old', 'tu-ttl-old')).toBeNull();
         expect(store.find('sess-lifecycle-ttl-live', 'tu-ttl-live')).not.toBeNull();
@@ -1010,7 +1012,16 @@ describe('claude harness snapshot lifecycle', () => {
         );
         const oldSeconds = (now - DEFAULT_SNAPSHOT_BUDGETS.unfinishedEntryTtlMs - 60_000) / 1000;
         utimesSync(stale, oldSeconds, oldSeconds);
-        expect(store.sweep(now)).toEqual({ records: 0, tombstones: 0, activityEntries: 1, indexEntries: 0 });
+        // foreignRecords is any-number: live deployed hooks on this machine
+        // may drop v1 records into the shared base mid-run; the sweep reaps
+        // them without touching the counts this fixture pins.
+        expect(store.sweep(now)).toEqual({
+          records: 0,
+          tombstones: 0,
+          activityEntries: 1,
+          indexEntries: 0,
+          foreignRecords: expect.any(Number)
+        });
       });
     });
   });

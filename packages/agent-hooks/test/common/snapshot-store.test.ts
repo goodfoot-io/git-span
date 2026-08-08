@@ -511,6 +511,113 @@ describe('storage cap — refuse without dropping evidence', () => {
   });
 });
 
+describe('v1 leftovers — upgrade reclamation', () => {
+  /**
+   * Plant an on-disk v1 record the way the deployed per-line-hash hooks wrote
+   * them: version 1, tier/files fields, a multi-KB body. The file mtimes are
+   * backdated past the sweep-read margin so the very next real-now sweep may
+   * read them (a just-planted file would be skipped as in-flight).
+   */
+  function plantV1Record(sid: string, toolUseId: string, repoRoot: string): { recordPath: string } {
+    const dir = join(sessionDir(sid), 'snapshots');
+    mkdirSync(dir, { recursive: true });
+    const recordPath = join(dir, `${toolUseId}.json`);
+    writeFileSync(
+      recordPath,
+      JSON.stringify({
+        version: 1,
+        sessionId: sid,
+        toolUseId,
+        repoRoot,
+        createdAt: Date.now(),
+        consumed: false,
+        consumedAt: null,
+        tier: 'full',
+        gaps: [],
+        files: [{ path: 'src/app.ts', size: 4096, lineHashes: Array.from({ length: 64 }, () => sha256Hex('line')) }],
+        post: null
+      })
+    );
+    const aged = (Date.now() - SWEEP_READ_MARGIN_MS - 1000) / 1000;
+    utimesSync(recordPath, aged, aged);
+    return { recordPath };
+  }
+
+  /** Plant a v1 index entry under the repo's snapshot-index, mtime past the margin. */
+  function plantV1IndexEntry(repoRoot: string, sid: string, toolUseId: string): string {
+    const dir = join(queueRoot(repoRoot), 'snapshot-index');
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, `${sid}__${toolUseId}.json`);
+    writeFileSync(
+      file,
+      JSON.stringify({
+        version: 1,
+        sessionId: sid,
+        toolUseId,
+        createdAt: Date.now(),
+        consumed: false,
+        consumedAt: null,
+        tier: 'full'
+      })
+    );
+    const aged = (Date.now() - SWEEP_READ_MARGIN_MS - 1000) / 1000;
+    utimesSync(file, aged, aged);
+    return file;
+  }
+
+  it('a v1 record filling the cap is reaped by the write-time sweep and the freed cap admits the first v2 write', () => {
+    // The upgrade deadlock this pins: unconsumed multi-MB v1 records near the
+    // cap mean the first v2 write is refused, the repo is never discovered,
+    // and nothing ever frees the cap — the fail-closed read never yields a
+    // createdAt for the TTL pass. The sweep must reclaim incompatible-version
+    // record files (and their index entries) so the write that triggered the
+    // sweep succeeds.
+    const { logger } = captureLogger();
+    const budgets = { ...DEFAULT_SNAPSHOT_BUDGETS, maxStorageBytes: 1024 };
+    const store = createSnapshotStore(logger, budgets);
+    const r = newRepo();
+    const v1Sid = newSession();
+    const { recordPath } = plantV1Record(v1Sid, 'toolu_01v1leftover', r.root);
+    plantV1IndexEntry(r.root, v1Sid, 'toolu_01v1leftover');
+    // The planted record alone exceeds the 1 KiB cap: without the reap this
+    // write is refused (its own index entry sums the v1 body into the total).
+    const v2Sid = newSession();
+    expect(store.write(record({ sessionId: v2Sid, repoRoot: r.root, createdAt: Date.now() }))).toBe(true);
+    expect(readJson(recordPath)).toBeNull();
+    expect(findIndexFile(r.root, v1Sid, 'toolu_01v1leftover')).toBeNull();
+    expect(store.find(v2Sid, TOOL_USE_ID)).not.toBeNull();
+  });
+
+  it("a stale v1 index entry with no record is cleaned on the repo's first v2 write", () => {
+    // Orphan-index sweeping used to discover repos only from readable v2
+    // records — a repo holding nothing but v1 index entries was never
+    // visited. The write path now seeds the sweep with its own target repo,
+    // so the entries fall to the orphan pass on the first write.
+    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const r = newRepo();
+    const goneSid = newSession();
+    plantV1IndexEntry(r.root, goneSid, 'toolu_01v1orphan');
+    const sid = newSession();
+    expect(store.write(record({ sessionId: sid, repoRoot: r.root, createdAt: Date.now() }))).toBe(true);
+    expect(findIndexFile(r.root, goneSid, 'toolu_01v1orphan')).toBeNull();
+    expect(store.listRepoRecords(r.root).map((e) => e.toolUseId)).toEqual([TOOL_USE_ID]);
+  });
+
+  it('whole-session cleanup removes v1 leftovers; agent-scoped cleanup leaves them', () => {
+    // An unreadable/incompatible record belongs to no agent this code can
+    // attribute, so a SubagentStop (agentId given) must not delete the parent
+    // session's leftovers — only SessionEnd/Stop reaps them.
+    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const r = newRepo();
+    const sid = newSession();
+    const { recordPath } = plantV1Record(sid, 'toolu_01v1session', r.root);
+    store.removeSession(sid, 'agent-1234');
+    expect(readJson(recordPath)).not.toBeNull();
+    store.removeSession(sid);
+    expect(readJson(recordPath)).toBeNull();
+  });
+});
+
 describe('TTL sweep', () => {
   it('a record past recordTtlMs is removed; a live record survives (createdAt is the TTL clock)', () => {
     const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
@@ -527,6 +634,8 @@ describe('TTL sweep', () => {
     store.write(record({ sessionId: stale, repoRoot: r.root, createdAt: staleCreatedAt }));
     const sweepNow = staleCreatedAt + DEFAULT_SNAPSHOT_BUDGETS.recordTtlMs + 1;
     const result = store.sweep(sweepNow);
+    // Foreign v1 leftovers in the shared base land in foreignRecords, never
+    // here, so the TTL count stays exact.
     expect(result.records).toBe(1);
     expect(store.find(stale, TOOL_USE_ID)).toBeNull();
     expect(store.find(live, TOOL_USE_ID)).not.toBeNull();
@@ -680,7 +789,15 @@ describe('TTL sweep', () => {
     store.tombstone(sid, TOOL_USE_ID, Date.now());
     appendActivityEntry(r.root, activityEntry(sid, 'toolu_01activity'));
     const result = store.sweep(Date.now());
-    expect(result).toEqual({ records: 0, tombstones: 0, activityEntries: 0, indexEntries: 0 });
+    // foreignRecords is any-number: live deployed hooks on this machine may
+    // drop v1 records into the shared base mid-run, and the sweep reaps them.
+    expect(result).toEqual({
+      records: 0,
+      tombstones: 0,
+      activityEntries: 0,
+      indexEntries: 0,
+      foreignRecords: expect.any(Number)
+    });
     expect(store.find(sid, TOOL_USE_ID)).toBe('tombstoned');
     expect(findActivityFile(r.root, sid, 'toolu_01activity')).not.toBeNull();
   });
