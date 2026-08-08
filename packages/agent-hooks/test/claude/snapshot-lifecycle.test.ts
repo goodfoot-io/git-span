@@ -46,7 +46,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, renameSync, rmSync, utimesSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Logger } from '@goodfoot/claude-code-hooks';
@@ -78,7 +78,8 @@ import {
   type ActivityEntry,
   activityEntriesCovering,
   appendActivityEntry,
-  createSnapshotStore
+  createSnapshotStore,
+  snapshotObjectDir
 } from '../../src/common/snapshot-store.js';
 import {
   addSpan,
@@ -1655,6 +1656,135 @@ describe('claude harness snapshot lifecycle', () => {
         const block2 = toResult(raw2);
         expect(block2).toContain('## billing/checkout-request-flow');
         expect(createSnapshotStore(logger).find(sessionId, tuId)).toBe('tombstoned');
+      });
+    });
+
+    it('a sibling whose hash read fails (reaped object dir) fails closed — deferred, never attributed over', async () => {
+      // The error/absent conflation this pins: hashTreePath returned the same
+      // null for "the tree lacks the path" and "the read blew up", so an
+      // unconsumed sibling with a destroyed object dir read as not-covering
+      // and the path was attributed over a sibling whose write window is
+      // still open. A failed read must fail closed (coverage-unknowable),
+      // exactly like a persisted coverage gap.
+      await withRepo(async (repo) => {
+        const sessionId = 'sess-lifecycle-hasherr';
+        const tuId = 'tu-hasherr-1';
+        const orphanSession = 'sess-lifecycle-hasherr-orphan';
+        const orphanTu = 'tu-hasherr-orphan-1';
+        writeFile(repo.root, 'src/app.ts', P10);
+        gitAddCommit(repo.root, 'add app.ts');
+        const logger = new Logger();
+        const pre = createSnapshotPreHook();
+        const orphanInput = preInput({
+          session_id: orphanSession,
+          cwd: repo.root,
+          tool_use_id: orphanTu,
+          tool_input: { command: 'npx prettier --write src/app.ts' }
+        });
+        await pre(orphanInput as never, { logger });
+        const myInput = preInput({
+          session_id: sessionId,
+          cwd: repo.root,
+          tool_use_id: tuId,
+          tool_input: { command: 'npx prettier --write src/app.ts' }
+        });
+        await pre(myInput as never, { logger });
+        // Destroy the orphan's private object dir: its index entry and record
+        // survive, but every per-path hash read now errors — the
+        // reaped/corrupted-store class, not proof the tree lacked the path.
+        rmSync(snapshotObjectDir(orphanSession, orphanTu), { recursive: true, force: true });
+        writeFile(repo.root, 'src/app.ts', P10_FORMATTED);
+        const { executors, calls } = makeExecutors({
+          rows: (filePath) =>
+            filePath.endsWith('/src/app.ts')
+              ? [porcelainRow({ name: SPAN_A, path: 'src/app.ts', start: 1, end: 10 })]
+              : [],
+          drift: () => [driftRow({ name: SPAN_A, path: 'src/app.ts', start: 1, end: 10 })]
+        });
+        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+        const raw = await handler(myInput as never, { logger });
+        const block = toResult(raw);
+        expect(block).toContain('attribution deferred: src/app.ts');
+        expect(block).toContain(`unconsumed sibling ${orphanTu}`);
+        expect(block).not.toContain('## billing/checkout-request-flow');
+        expect(calls.fix).toBe(0);
+      });
+    });
+
+    it('a live v1 sibling record fails closed in the ambiguity view — the rollout window never attributes over it', async () => {
+      // The mixed-version invisibility this pins: readIndexEntries accepts v1
+      // index entries but the sibling read required version 2, so a v1 record
+      // written mid-window by a still-deployed old bundle was invisible to
+      // the ambiguity table and every path attributed over it — fail-open
+      // for the whole rollout window. The sweep reaps aged v1 leftovers; a
+      // LIVE one must fail closed here instead.
+      await withRepo(async (repo) => {
+        const sessionId = 'sess-lifecycle-v1sib';
+        const tuId = 'tu-v1sib-1';
+        const v1Session = 'sess-lifecycle-v1sib-old';
+        const v1Tu = 'toolu_01v1sibling';
+        writeFile(repo.root, 'src/app.ts', P10);
+        gitAddCommit(repo.root, 'add app.ts');
+        const logger = new Logger();
+        const pre = createSnapshotPreHook();
+        const myInput = preInput({
+          session_id: sessionId,
+          cwd: repo.root,
+          tool_use_id: tuId,
+          tool_input: { command: 'npx prettier --write src/app.ts' }
+        });
+        await pre(myInput as never, { logger });
+        // Planted AFTER my pre capture: my write-time sweep reaps aged v1
+        // leftovers, but a v1 record landing DURING my window is exactly the
+        // rollout race — indexed, unconsumed, unreadable by the v2 view.
+        const v1Dir = join(sessionDir(v1Session), 'snapshots');
+        mkdirSync(v1Dir, { recursive: true });
+        writeFileSync(
+          join(v1Dir, `${v1Tu}.json`),
+          JSON.stringify({
+            version: 1,
+            sessionId: v1Session,
+            toolUseId: v1Tu,
+            repoRoot: repo.root,
+            createdAt: Date.now(),
+            consumed: false,
+            consumedAt: null,
+            tier: 'full',
+            gaps: [],
+            files: [],
+            post: null
+          })
+        );
+        const idxDir = join(queueRoot(repo.root), 'snapshot-index');
+        mkdirSync(idxDir, { recursive: true });
+        writeFileSync(
+          join(idxDir, `${v1Session}__${v1Tu}.json`),
+          JSON.stringify({
+            version: 1,
+            sessionId: v1Session,
+            toolUseId: v1Tu,
+            createdAt: Date.now(),
+            consumed: false,
+            consumedAt: null,
+            tier: 'full'
+          })
+        );
+        writeFile(repo.root, 'src/app.ts', P10_FORMATTED);
+        const { executors, calls } = makeExecutors({
+          rows: (filePath) =>
+            filePath.endsWith('/src/app.ts')
+              ? [porcelainRow({ name: SPAN_A, path: 'src/app.ts', start: 1, end: 10 })]
+              : [],
+          drift: () => [driftRow({ name: SPAN_A, path: 'src/app.ts', start: 1, end: 10 })]
+        });
+        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+        const raw = await handler(myInput as never, { logger });
+        const block = toResult(raw);
+        expect(block).toContain('attribution deferred: src/app.ts');
+        expect(block).toContain(`unconsumed sibling ${v1Tu}`);
+        expect(block).toContain(`(session ${v1Session})`);
+        expect(block).not.toContain('## billing/checkout-request-flow');
+        expect(calls.fix).toBe(0);
       });
     });
 

@@ -1444,22 +1444,42 @@ export interface HashTreePathInput {
   objectDir: string;
   /** Injected git runner. */
   runGit: GitRunner;
+  /** Per-subprocess timeout; a hang here must never stall the whole branch. */
+  timeoutMs?: number;
 }
 
 /**
- * Node SHA-256 hex of `treeSha:path`'s blob bytes, or null when the path is
- * absent from the tree — the on-demand sibling-hash read the ambiguity table
- * uses now that records persist tree SHAs instead of per-path hash maps.
- * Callers memoize per (treeSha, path) within one branch invocation.
+ * The discriminated outcome of one tree-path hash read. `absent` is proven
+ * (the tree lists no entry at the path); `error` is everything else — a
+ * missing/reaped object dir, a corrupt tree, a subprocess timeout. The two
+ * MUST stay distinguishable: absent means "the sibling's evidence excludes
+ * the path" (not covering), while error means "the sibling's evidence is
+ * unreadable" — the ambiguity view has to fail closed on it, never read it
+ * as not-covering.
  */
-export function hashTreePath(input: HashTreePathInput): string | null {
+export type TreePathHash = { kind: 'hash'; hash: string } | { kind: 'absent' } | { kind: 'error'; reason: string };
+
+/**
+ * Node SHA-256 hex of `treeSha:path`'s blob bytes, as a {@link TreePathHash}
+ * — the on-demand sibling-hash read the ambiguity table uses now that
+ * records persist tree SHAs instead of per-path hash maps. Absence is proven
+ * by an `ls-tree` probe (success with empty output — the one shape a failed
+ * read can never produce) before the blob read; the probe uses `:(literal)`
+ * pathspec magic so a metacharacter filename can never match a sibling
+ * entry. Callers memoize per (treeSha, path) within one branch invocation.
+ */
+export function hashTreePath(input: HashTreePathInput): TreePathHash {
+  const opts = {
+    cwd: input.repoRoot,
+    env: { GIT_OBJECT_DIRECTORY: input.objectDir },
+    ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {})
+  };
   try {
-    const blob = input.runGit(['cat-file', 'blob', `${input.treeSha}:${input.path}`], {
-      cwd: input.repoRoot,
-      env: { GIT_OBJECT_DIRECTORY: input.objectDir }
-    });
-    return createHash('sha256').update(blob).digest('hex');
-  } catch {
-    return null;
+    const listing = input.runGit(['ls-tree', input.treeSha, '--', `:(literal)${input.path}`], opts);
+    if (listing.toString('utf8').trim() === '') return { kind: 'absent' };
+    const blob = input.runGit(['cat-file', 'blob', `${input.treeSha}:${input.path}`], opts);
+    return { kind: 'hash', hash: createHash('sha256').update(blob).digest('hex') };
+  } catch (err) {
+    return { kind: 'error', reason: String(err) };
   }
 }

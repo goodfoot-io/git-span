@@ -40,7 +40,8 @@ import {
   type SnapshotPostState,
   type SnapshotRecord,
   type StatFile,
-  statOnlySweep
+  statOnlySweep,
+  type TreePathHash
 } from './snapshot-core.js';
 import {
   type ActivityEntry,
@@ -297,19 +298,27 @@ export interface SnapshotBashOutcome {
  * Plain JSON.parse, no bigint revival: the ambiguity view reads only the
  * sibling's identity, tree SHAs, and gaps — never its stat-only map, the one
  * field with serialized bigints.
+ *
+ * Three-way outcome: a v2 record, `'incompatible'` for a parseable record of
+ * any other version, or null when the file is absent/unreadable. The
+ * incompatible case matters during a rollout window — a live v1 sibling
+ * mid-write is real concurrency evidence whose coverage the v2 view cannot
+ * read, so the caller must fail closed on it (the sweep reaps such leftovers,
+ * but a record written after this invocation's sweep is still visible here).
  */
 function readSiblingRecord(
   sessionId: string,
   toolUseId: string,
-  cache: Map<string, SnapshotRecord | null>
-): SnapshotRecord | null {
+  cache: Map<string, SnapshotRecord | 'incompatible' | null>
+): SnapshotRecord | 'incompatible' | null {
   const key = `${sessionId}\t${toolUseId}`;
-  if (cache.has(key)) return cache.get(key) ?? null;
-  let record: SnapshotRecord | null = null;
+  const cached = cache.get(key);
+  if (cached !== undefined) return cached;
+  let record: SnapshotRecord | 'incompatible' | null = null;
   try {
     const raw = JSON.parse(readFileSync(snapshotRecordFile(sessionId, toolUseId), 'utf8')) as unknown;
-    if (raw !== null && typeof raw === 'object' && (raw as SnapshotRecord).version === 2) {
-      record = raw as SnapshotRecord;
+    if (raw !== null && typeof raw === 'object') {
+      record = (raw as SnapshotRecord).version === 2 ? (raw as SnapshotRecord) : 'incompatible';
     }
   } catch {
     record = null;
@@ -373,31 +382,63 @@ function siblingsForPath(
   mine: SnapshotRecord,
   index: SnapshotIndexEntry[],
   path: string,
-  recordCache: Map<string, SnapshotRecord | null>,
-  hashCache: Map<string, string | null>,
-  runGit: GitRunner
+  recordCache: Map<string, SnapshotRecord | 'incompatible' | null>,
+  hashCache: Map<string, TreePathHash>,
+  runGit: GitRunner,
+  hashTimeoutMs: number,
+  logger: CoreLogger
 ): SiblingSnapshot[] {
-  const treeHash = (record: SnapshotRecord, treeSha: string | null): string | null => {
-    if (treeSha === null) return null;
+  const treeHash = (record: SnapshotRecord, treeSha: string | null): TreePathHash => {
+    if (treeSha === null) return { kind: 'absent' };
     const key = `${treeSha}\t${path}`;
-    if (hashCache.has(key)) return hashCache.get(key) ?? null;
-    const hash = hashTreePath({
+    const cached = hashCache.get(key);
+    if (cached !== undefined) return cached;
+    const result = hashTreePath({
       treeSha,
       path,
       repoRoot: record.repoRoot,
       objectDir: snapshotObjectDir(record.sessionId, record.toolUseId),
-      runGit
+      runGit,
+      timeoutMs: hashTimeoutMs
     });
-    hashCache.set(key, hash);
-    return hash;
+    hashCache.set(key, result);
+    return result;
   };
   const out: SiblingSnapshot[] = [];
   for (const entry of index) {
     if (entry.sessionId === mine.sessionId && entry.toolUseId === mine.toolUseId) continue;
     const record = readSiblingRecord(entry.sessionId, entry.toolUseId, recordCache);
     if (record === null) continue;
+    if (record === 'incompatible') {
+      // A foreign-version (deployed-v1) record: real concurrency evidence
+      // whose coverage this view cannot read. Fail closed exactly like a
+      // gapped live sibling — it covers every path and reads unconsumed, so
+      // the table defers the path instead of silently attributing over a
+      // sibling whose write window may still be open.
+      out.push({
+        sessionId: entry.sessionId,
+        toolUseId: entry.toolUseId,
+        createdAt: 0,
+        consumed: false,
+        consumedAt: null,
+        coverageGap: true,
+        pre: null,
+        post: null
+      });
+      continue;
+    }
     const preHash = treeHash(record, record.treeSha);
     const postHash = treeHash(record, record.post?.treeSha ?? null);
+    // A failed hash read (reaped object dir, corrupt tree, timeout) is NOT
+    // proof of absence: the sibling's evidence is unreadable, so its coverage
+    // is unknowable for this path — the same fail-closed shape a persisted
+    // path-coverage gap carries. Only a proven-absent probe may read as
+    // not-covering.
+    const hashError = preHash.kind === 'error' || postHash.kind === 'error';
+    if (hashError) {
+      const reason = preHash.kind === 'error' ? preHash.reason : postHash.kind === 'error' ? postHash.reason : '';
+      logger.warn(`git-span sibling hash read failed for ${record.toolUseId} at ${path} — failing closed: ${reason}`);
+    }
     out.push({
       sessionId: record.sessionId,
       toolUseId: record.toolUseId,
@@ -406,10 +447,11 @@ function siblingsForPath(
       consumedAt: record.consumedAt,
       // Kind-based, never ANY-gap: a precision-loss diagnostic (binary-scope)
       // does not make the sibling's coverage unknowable — only the
-      // path-coverage family does (which includes the stat-only degrade).
-      coverageGap: recordHasPathCoverageGap(record),
-      pre: preHash === null ? null : { hash: preHash },
-      post: postHash === null ? null : { hash: postHash }
+      // path-coverage family does (which includes the stat-only degrade),
+      // plus the unreadable-evidence case above.
+      coverageGap: recordHasPathCoverageGap(record) || hashError,
+      pre: preHash.kind === 'hash' ? { hash: preHash.hash } : null,
+      post: postHash.kind === 'hash' ? { hash: postHash.hash } : null
     });
   }
   return out;
@@ -530,8 +572,8 @@ export async function snapshotBashBranch(
   // Transcript-visible notes for the block — deferrals, budget exhaustion,
   // and aborts are all surfaced to the model loop, never logger-only.
   const notes: string[] = [];
-  const siblingCache = new Map<string, SnapshotRecord | null>();
-  const siblingHashCache = new Map<string, string | null>();
+  const siblingCache = new Map<string, SnapshotRecord | 'incompatible' | null>();
+  const siblingHashCache = new Map<string, TreePathHash>();
   // The repo index, read once per branch rather than once per changed path:
   // the sibling set is the same for every path, and the per-path ambiguity
   // pass must not pay a readdir+JSON index read per attribution.
@@ -645,7 +687,16 @@ export async function snapshotBashBranch(
     };
     const verdict = applyAmbiguityRules(
       baseline,
-      siblingsForPath(found, siblingIndex, path, siblingCache, siblingHashCache, runGit),
+      siblingsForPath(
+        found,
+        siblingIndex,
+        path,
+        siblingCache,
+        siblingHashCache,
+        runGit,
+        budgets.postSideWallSeconds * 1000,
+        logger
+      ),
       path
     );
     if (verdict.ambiguous) {

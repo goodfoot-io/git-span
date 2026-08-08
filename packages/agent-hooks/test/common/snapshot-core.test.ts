@@ -1595,30 +1595,66 @@ describe('compareStatOnly — the degrade-mode file-granularity comparison (main
 describe('hashTreePath — the on-demand sibling hash read (main-228 Phase 2)', () => {
   const BLOB = Buffer.from('shared sibling content\n');
 
+  /** Scripted ls-tree + cat-file pair: empty ls-tree output means proven-absent. */
+  const treeScript =
+    (entries: Record<string, Buffer>) =>
+    (args: string[]): Buffer | string => {
+      if (args[0] === 'ls-tree') {
+        const spec = args[3] ?? '';
+        expect(spec.startsWith(':(literal)')).toBe(true);
+        const path = spec.slice(':(literal)'.length);
+        const blob = entries[`${args[1]}:${path}`];
+        return blob === undefined ? '' : `100644 blob ${'c'.repeat(40)}\t${path}\n`;
+      }
+      const blob = entries[args[2] ?? ''];
+      if (blob === undefined) throw new Error(`unexpected cat-file ${args[2]}`);
+      return blob;
+    };
+
   it('hashes a tree path into the SHA-256 value of its blob bytes — never the git SHA-1 OID', () => {
-    const { run, calls } = scriptedRunner((args) => {
-      expect(args).toEqual(['cat-file', 'blob', `${PRE_TREE}:src/a.ts`]);
-      return BLOB;
-    });
-    const hash = hashTreePath({
+    const { run, calls } = scriptedRunner(treeScript({ [`${PRE_TREE}:src/a.ts`]: BLOB }));
+    const result = hashTreePath({
       treeSha: PRE_TREE,
       path: 'src/a.ts',
       repoRoot: REPO_ROOT,
       objectDir: '/private/objects',
-      runGit: run
+      runGit: run,
+      timeoutMs: 5000
     });
-    expect(hash).toBe(sha256Hex(BLOB));
-    expect(hash).not.toBe(gitBlobOid(BLOB));
+    expect(result).toEqual({ kind: 'hash', hash: sha256Hex(BLOB) });
+    expect(result.kind === 'hash' && result.hash === gitBlobOid(BLOB)).toBe(false);
+    // ls-tree probe then cat-file, both under the caller's timeout — a hang
+    // in either subprocess must never stall the whole branch invocation.
+    expect(calls).toHaveLength(2);
+    expect(calls.every((c) => c.opts.timeoutMs === 5000)).toBe(true);
+  });
+
+  it('a path absent from the tree reads proven-absent (empty ls-tree probe), never an error', () => {
+    const { run, calls } = scriptedRunner(treeScript({}));
+    expect(
+      hashTreePath({ treeSha: PRE_TREE, path: 'src/gone.ts', repoRoot: REPO_ROOT, objectDir: '/o', runGit: run })
+    ).toEqual({ kind: 'absent' });
+    // Proven absent by the probe alone — no blob read is attempted.
     expect(calls).toHaveLength(1);
   });
 
-  it('a path absent from the tree reads null (cat-file failure), never a throw', () => {
+  it('a failed read (reaped object dir, corrupt tree, timeout) reads error, never absent', () => {
+    // The pre-fix conflation: a bare catch returned the same null for "the
+    // tree lacks the path" and "the read blew up", so an unconsumed sibling
+    // with a failed read became invisible to the covers check and the path
+    // was attributed instead of dropped.
     const { run } = scriptedRunner(() => {
-      throw new Error('fatal: path not in tree');
+      throw new Error('fatal: not a valid object name');
     });
-    expect(
-      hashTreePath({ treeSha: PRE_TREE, path: 'src/gone.ts', repoRoot: REPO_ROOT, objectDir: '/o', runGit: run })
-    ).toBeNull();
+    const result = hashTreePath({
+      treeSha: PRE_TREE,
+      path: 'src/a.ts',
+      repoRoot: REPO_ROOT,
+      objectDir: '/o',
+      runGit: run
+    });
+    expect(result.kind).toBe('error');
+    expect(result.kind === 'error' && result.reason).toContain('not a valid object name');
   });
 
   it('the ambiguity table keeps resolving against tree-sourced SHA-256 hashes exactly as against v1 per-path maps', () => {
@@ -1627,12 +1663,7 @@ describe('hashTreePath — the on-demand sibling hash read (main-228 Phase 2)', 
     // sibling whose post blob equals its pre blob stays NOT ambiguous; the
     // same fixture with differing blobs flips ambiguous — and the hashes
     // driving both verdicts are asserted BY VALUE in the SHA-256 space.
-    const { run } = scriptedRunner((args) => {
-      const key = args[2] ?? '';
-      if (key.startsWith(PRE_TREE)) return BLOB;
-      if (key.startsWith(POST_TREE)) return BLOB;
-      throw new Error(`missing blob ${key}`);
-    });
+    const { run } = scriptedRunner(treeScript({ [`${PRE_TREE}:src/a.ts`]: BLOB, [`${POST_TREE}:src/a.ts`]: BLOB }));
     const sibPre = hashTreePath({
       treeSha: PRE_TREE,
       path: 'src/a.ts',
@@ -1647,8 +1678,8 @@ describe('hashTreePath — the on-demand sibling hash read (main-228 Phase 2)', 
       objectDir: '/o',
       runGit: run
     });
-    expect(sibPre).toBe(sha256Hex(BLOB));
-    expect(sibPost).toBe(sha256Hex(BLOB));
+    expect(sibPre).toEqual({ kind: 'hash', hash: sha256Hex(BLOB) });
+    expect(sibPost).toEqual({ kind: 'hash', hash: sha256Hex(BLOB) });
     const mine: AmbiguityBaseline = { createdAt: 1000, preHash: sha256Hex(BLOB) };
     const sibling: SiblingSnapshot = {
       sessionId: 'other-session',
@@ -1657,8 +1688,8 @@ describe('hashTreePath — the on-demand sibling hash read (main-228 Phase 2)', 
       consumed: true,
       consumedAt: 2500,
       coverageGap: false,
-      pre: { hash: sibPre! },
-      post: { hash: sibPost! }
+      pre: sibPre.kind === 'hash' ? { hash: sibPre.hash } : null,
+      post: sibPost.kind === 'hash' ? { hash: sibPost.hash } : null
     };
     expect(applyAmbiguityRules(mine, [sibling], 'src/a.ts')).toEqual({ ambiguous: false });
     const changedSibling: SiblingSnapshot = {

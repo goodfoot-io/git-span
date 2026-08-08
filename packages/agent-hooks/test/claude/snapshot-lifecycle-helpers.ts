@@ -141,7 +141,11 @@ export const CLAUDE_SESSION_IDS: readonly string[] = [
   'sess-lifecycle-capcut',
   'sess-lifecycle-binary',
   'sess-lifecycle-partialbudget',
-  'sess-lifecycle-repoless'
+  'sess-lifecycle-repoless',
+  'sess-lifecycle-hasherr',
+  'sess-lifecycle-hasherr-orphan',
+  'sess-lifecycle-v1sib',
+  'sess-lifecycle-v1sib-old'
 ];
 
 /**
