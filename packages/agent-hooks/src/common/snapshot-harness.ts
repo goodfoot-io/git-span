@@ -631,6 +631,11 @@ export async function snapshotBashBranch(
   try {
     const spanRoot = resolveSpanRoot(repoRoot);
     const wallBudgetMs = budgets.postSideWallSeconds * 1000;
+    // ONE wall window for the whole post side: capture and compare both
+    // measure from this instant, so together they spend postSideWallSeconds
+    // once — letting each start its own clock would hand the post side up to
+    // double the documented budget.
+    const postWallStart = Date.now();
     if (found.treeSha === null) {
       // The pre side degraded: mirror it. A post write-tree would have no pre
       // tree to compare against, so the stat sweep is the only comparable
@@ -649,6 +654,7 @@ export async function snapshotBashBranch(
         realIndexFile: gitPaths.indexFile,
         spanRoot,
         wallBudgetMs,
+        wallStart: postWallStart,
         runGit,
         stat: statFile
       });
@@ -667,7 +673,7 @@ export async function snapshotBashBranch(
           objectDir: snapshotObjectDir(sessionId, toolUseId),
           spanRoot,
           budgets,
-          wallStart: now,
+          wallStart: postWallStart,
           runGit
         });
       }

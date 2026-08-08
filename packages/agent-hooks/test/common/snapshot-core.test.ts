@@ -1271,6 +1271,27 @@ describe('captureWriteTree — private index/object-dir capture (main-228 Phase 
     }
   });
 
+  it('a shared wallStart charges the capture for time already spent — its calls get only the remainder, never a fresh budget', () => {
+    const fx = captureFixture((args) => {
+      if (args[0] === 'write-tree') return `${PRE_TREE}\n`;
+      if (args[0] === 'ls-files') return '';
+      return '';
+    });
+    try {
+      // The window opened 10 s ago and the budget is 1 s: a capture that
+      // started its own clock would hand each git call a fresh second, and
+      // the post side (capture + compare against the same window) would run
+      // up to double the documented postSideWallSeconds.
+      const result = captureWriteTree({ ...fx.input, wallStart: Date.now() - 10_000 });
+      expect(result.treeSha).toBe(PRE_TREE);
+      for (const call of fx.calls) {
+        expect(call.opts.timeoutMs).toBe(1);
+      }
+    } finally {
+      fx.cleanup();
+    }
+  });
+
   it('total git failure yields no tree, no statOnly, and a gap — the caller fails open', () => {
     const fx = captureFixture(() => {
       throw new Error('git unavailable');
@@ -1513,6 +1534,62 @@ describe('compareTrees — tree-to-tree attribution (main-228 Phase 2)', () => {
     expect(result.attributions.size).toBe(0);
     expect(result.gaps.some((g) => g.startsWith('post-side wall budget exhausted:'))).toBe(true);
     expect(recordHasPathCoverageGap(result)).toBe(true);
+  });
+
+  /** A compare input over a scripted runner, for the enumeration-timeout cases. */
+  function enumerationInput(script: (args: string[]) => Buffer | string): CompareTreesInput {
+    return {
+      preTreeSha: PRE_TREE,
+      postTreeSha: POST_TREE,
+      repoRoot: REPO_ROOT,
+      objectDir: '/private/objects',
+      spanRoot: join(REPO_ROOT, '.span'),
+      budgets: DEFAULT_SNAPSHOT_BUDGETS,
+      wallStart: 0,
+      runGit: scriptedRunner(script).run,
+      wallClock: () => 0
+    };
+  }
+
+  const etimedout = (): never => {
+    throw Object.assign(new Error('spawnSync /usr/bin/git ETIMEDOUT'), { code: 'ETIMEDOUT' });
+  };
+
+  it('an ETIMEDOUT from the pre-tree enumeration resolves to the graceful exhaustion gap, never an abort', () => {
+    const result = compareTrees(
+      enumerationInput((args) => {
+        if (args[0] === 'ls-tree') etimedout();
+        throw new Error(`unexpected git call ${args.join(' ')}`);
+      })
+    );
+    expect(result.attributions.size).toBe(0);
+    expect(result.unchanged.size).toBe(0);
+    expect(result.gaps.some((g) => g.startsWith('post-side wall budget exhausted:'))).toBe(true);
+    expect(recordHasPathCoverageGap(result)).toBe(true);
+  });
+
+  it('an ETIMEDOUT from the changed-path enumeration yields the exhaustion gap with an EMPTY unchanged set — no path is proven untouched by a diff that never ran', () => {
+    const result = compareTrees(
+      enumerationInput((args) => {
+        if (args[0] === 'ls-tree') return `${FILE_A}\0`;
+        if (args.includes('--name-status')) etimedout();
+        throw new Error(`unexpected git call ${args.join(' ')}`);
+      })
+    );
+    expect(result.attributions.size).toBe(0);
+    expect(result.unchanged.size).toBe(0);
+    expect(result.gaps.some((g) => g.startsWith('post-side wall budget exhausted:'))).toBe(true);
+    expect(recordHasPathCoverageGap(result)).toBe(true);
+  });
+
+  it('a non-timeout enumeration failure still throws — the belt-and-braces abort path owns real breakage', () => {
+    expect(() =>
+      compareTrees(
+        enumerationInput(() => {
+          throw new Error('fatal: not a git repository');
+        })
+      )
+    ).toThrow(/not a git repository/);
   });
 
   it('an unreadable blob drops the path with the unreadable-at-compare gap, never a fabricated attribution', () => {

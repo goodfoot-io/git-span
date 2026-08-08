@@ -1065,6 +1065,13 @@ export interface CaptureWriteTreeInput {
   spanRoot: string;
   /** Wall budget for the add+write-tree pair; exhaustion degrades to stat-only. */
   wallBudgetMs: number;
+  /**
+   * The instant the side's wall window opened, when the capture shares its
+   * budget with other work (the post side spends ONE postSideWallSeconds
+   * across capture + compare, so both measure from the same start). Defaults
+   * to the capture's own entry time when the window is the capture alone.
+   */
+  wallStart?: number;
   /** Injected git runner. */
   runGit: GitRunner;
   /** Injected stat for the stat-only degrade walk: null when absent/unstat-able. */
@@ -1095,7 +1102,7 @@ export interface CaptureWriteTreeResult {
 export function captureWriteTree(input: CaptureWriteTreeInput): CaptureWriteTreeResult {
   const { repoRoot, objectDir, indexFile, alternates, realIndexFile, spanRoot, wallBudgetMs, runGit, stat } = input;
   const gaps: string[] = [];
-  const start = Date.now();
+  const start = input.wallStart ?? Date.now();
   const remaining = (): number => Math.max(1, wallBudgetMs - (Date.now() - start));
   try {
     mkdirSync(join(objectDir, 'info'), { recursive: true, mode: 0o700 });
@@ -1260,24 +1267,57 @@ export function compareTrees(input: CompareTreesInput): CompareTreesResult {
   const catBlob = (tree: string, path: string): Buffer =>
     runGit(['cat-file', 'blob', `${tree}:${path}`], { cwd: repoRoot, env, timeoutMs: remaining() });
 
+  // A git call that overruns its remaining() slice throws ETIMEDOUT — that
+  // is the wall striking, not a broken path. Wherever it strikes (the
+  // enumeration calls below or a per-entry content read), it must resolve to
+  // the graceful exhaustion gap, never abort the whole compare.
+  const isTimeout = (err: unknown): boolean =>
+    (err !== null && typeof err === 'object' && 'code' in err && (err as { code?: unknown }).code === 'ETIMEDOUT') ||
+    /ETIMEDOUT/.test(String(err));
+  // The wall striking during the enumeration itself: nothing was attributed
+  // and — critically — nothing was PROVEN unchanged (the unchanged set is a
+  // definitive verdict the co-parser trusts, so it must stay empty when the
+  // enumeration never completed). The gap is the same path-coverage family
+  // as the per-entry exhaustion, so siblings fail closed on this record.
+  const enumerationExhausted: CompareTreesResult = {
+    attributions,
+    unchanged: new Set(),
+    gaps,
+    contentHashes
+  };
+
   // The co-parser exclusion set starts as the whole pre tree (a tree walk, no
   // content reads); diff entries subtract their pre-side paths below.
-  const preTreePaths = runGit(['ls-tree', '-r', '--name-only', '-z', preTreeSha], {
-    cwd: repoRoot,
-    env,
-    timeoutMs: remaining()
-  })
-    .toString('utf8')
-    .split('\0')
-    .filter((p) => p.length > 0 && !isInsideSpanRoot(p, spanRel));
+  let preTreePaths: string[];
+  try {
+    preTreePaths = runGit(['ls-tree', '-r', '--name-only', '-z', preTreeSha], {
+      cwd: repoRoot,
+      env,
+      timeoutMs: remaining()
+    })
+      .toString('utf8')
+      .split('\0')
+      .filter((p) => p.length > 0 && !isInsideSpanRoot(p, spanRel));
+  } catch (err) {
+    if (!isTimeout(err)) throw err;
+    gaps.push('post-side wall budget exhausted: attributed 0, the pre-tree enumeration timed out');
+    return enumerationExhausted;
+  }
   const unchanged = new Set(preTreePaths);
   if (preTreeSha === postTreeSha) return { attributions, unchanged, gaps, contentHashes };
 
-  const raw = runGit(['diff', '--name-status', '-M100%', '--text', '-z', preTreeSha, postTreeSha], {
-    cwd: repoRoot,
-    env,
-    timeoutMs: remaining()
-  }).toString('utf8');
+  let raw: string;
+  try {
+    raw = runGit(['diff', '--name-status', '-M100%', '--text', '-z', preTreeSha, postTreeSha], {
+      cwd: repoRoot,
+      env,
+      timeoutMs: remaining()
+    }).toString('utf8');
+  } catch (err) {
+    if (!isTimeout(err)) throw err;
+    gaps.push('post-side wall budget exhausted: attributed 0, the changed-path enumeration timed out');
+    return enumerationExhausted;
+  }
   type DiffEntry = { status: 'M' | 'A' | 'D'; path: string } | { status: 'R'; from: string; to: string };
   const entries: DiffEntry[] = [];
   const tokens = raw.split('\0');
@@ -1311,13 +1351,6 @@ export function compareTrees(input: CompareTreesInput): CompareTreesResult {
       `post-side wall budget exhausted: attributed ${attributed}/${entries.length}, unattributed ${rest.join(', ')}`
     );
   };
-  // A git call that overruns its remaining() slice throws ETIMEDOUT
-  // MID-entry — that is the wall striking, not a broken path: it must close
-  // the loop with the same exhaustion gap as the loop-top check, preserving
-  // the attributions already made, never abort the whole compare.
-  const isTimeout = (err: unknown): boolean =>
-    (err !== null && typeof err === 'object' && 'code' in err && (err as { code?: unknown }).code === 'ETIMEDOUT') ||
-    /ETIMEDOUT/.test(String(err));
   for (let i = 0; i < entries.length; i += 1) {
     const entry = entries[i]!;
     if (wallExhausted()) {
