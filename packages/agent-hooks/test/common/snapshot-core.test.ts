@@ -1558,6 +1558,43 @@ describe('compareTrees — tree-to-tree attribution (main-228 Phase 2)', () => {
       repo.cleanup();
     }
   });
+
+  it('wall exhaustion still yields stat-only evidence — the fallback gets its own allowance, never the spent budget (real git)', () => {
+    // The starvation this pins: the degrade sweep ran under `remaining()`,
+    // which is 1ms by construction after the add/write-tree pair times out —
+    // so the exact calls that needed the fallback most got a guaranteed
+    // second ETIMEDOUT and a record with no evidence at all. Real
+    // subprocesses only: a scripted runner consumes no wall clock, so the
+    // fake-runner suite could never see this. A 1ms budget times out real
+    // `git add` deterministically (process spawn alone exceeds it), and the
+    // sweep must still enumerate and stat the tree under its floor allowance.
+    const repo = makeTempRepo();
+    const scratch = mkdtempSync(join(tmpdir(), 'stat-floor-'));
+    try {
+      writeFileSync(join(repo.root, 'src.ts'), 'export const x = 1;\n');
+      const gitDir = execFileSync('git', ['-C', repo.root, 'rev-parse', '--absolute-git-dir']).toString('utf8').trim();
+      const result = captureWriteTree({
+        repoRoot: repo.root,
+        objectDir: join(scratch, 'objects'),
+        indexFile: join(scratch, 'index'),
+        alternates: join(gitDir, 'objects'),
+        realIndexFile: null,
+        spanRoot: join(repo.root, '.git-span'),
+        wallBudgetMs: 1,
+        runGit: defaultGitRunner,
+        stat: statFile
+      });
+      expect(result.treeSha).toBeNull();
+      expect(result.gaps.some((g) => g.startsWith('write-tree degraded to stat-only:'))).toBe(true);
+      // The pre-fix outcome was a SECOND timeout gap and no statOnly at all.
+      expect(result.gaps.some((g) => g.startsWith('stat-only sweep failed:'))).toBe(false);
+      expect(result.statOnly).toBeDefined();
+      expect(Object.keys(result.statOnly ?? {})).toContain('src.ts');
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+      repo.cleanup();
+    }
+  });
 });
 
 describe('compareStatOnly — the degrade-mode file-granularity comparison (main-228 Phase 2)', () => {

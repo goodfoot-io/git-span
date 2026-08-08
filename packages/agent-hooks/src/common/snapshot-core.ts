@@ -1035,6 +1035,14 @@ export function classifyTextOrBinary(content: Buffer): boolean {
  */
 const BINARY_SUSPECT_RATIO = 0.1;
 
+/**
+ * The stat-only degrade sweep's minimum time allowance. When the write-tree
+ * path exhausts the wall budget, the fallback must still get to run — a
+ * fallback fed the exhausted budget can never produce evidence (see
+ * {@link captureWriteTree}'s degrade path).
+ */
+export const STAT_ONLY_SWEEP_FLOOR_MS = 2000;
+
 /** The inputs {@link captureWriteTree} needs; subprocess I/O is injected. */
 export interface CaptureWriteTreeInput {
   /** Absolute repo root (the runner's cwd). */
@@ -1106,10 +1114,24 @@ export function captureWriteTree(input: CaptureWriteTreeInput): CaptureWriteTree
   // index (no private env — the temp index may be partially written) and stat
   // each. File-granularity evidence only; the gap above is path-coverage
   // family, so siblings fail closed on this record.
+  //
+  // The sweep gets its own floor allowance, never the exhausted wall: the
+  // typical degrade cause IS wall exhaustion, so `remaining()` is 1ms by
+  // construction here — handing the fallback the spent budget guaranteed a
+  // second ETIMEDOUT and a record with no evidence at all, on exactly the
+  // calls that need the fallback most. One ls-files subprocess is orders of
+  // magnitude cheaper than the failed add+write-tree pair, so a small fresh
+  // allowance is safe where re-running the primary path would not be.
   try {
     return {
       treeSha: null,
-      statOnly: statOnlySweep({ repoRoot, spanRoot, timeoutMs: remaining(), runGit, stat }),
+      statOnly: statOnlySweep({
+        repoRoot,
+        spanRoot,
+        timeoutMs: Math.max(remaining(), STAT_ONLY_SWEEP_FLOOR_MS),
+        runGit,
+        stat
+      }),
       gaps
     };
   } catch (err) {
