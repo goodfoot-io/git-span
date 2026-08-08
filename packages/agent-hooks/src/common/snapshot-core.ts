@@ -1351,7 +1351,11 @@ export function compareTrees(input: CompareTreesInput): CompareTreesResult {
     if (classifyTextOrBinary(preBlob) && classifyTextOrBinary(postBlob)) {
       let diffOut: string;
       try {
-        diffOut = runGit(['diff', '--unified=0', '--text', preTreeSha, postTreeSha, '--', path], {
+        // :(literal) pathspec magic: a raw path is a wildmatch pattern, so a
+        // filename containing `*`, `?`, or `[...]` (Next.js `[slug].tsx`)
+        // would also match sibling paths and merge their hunks into this
+        // path's ranges — silently corrupting the attribution.
+        diffOut = runGit(['diff', '--unified=0', '--text', preTreeSha, postTreeSha, '--', `:(literal)${path}`], {
           cwd: repoRoot,
           env,
           timeoutMs: remaining()

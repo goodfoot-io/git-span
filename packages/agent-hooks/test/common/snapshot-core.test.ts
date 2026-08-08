@@ -45,6 +45,7 @@ import {
   type SiblingSnapshot,
   type StatOnlyEntry
 } from '../../src/common/snapshot-core.js';
+import { defaultGitRunner, statFile } from '../../src/common/snapshot-harness.js';
 import { createSnapshotStore } from '../../src/common/snapshot-store.js';
 import type { CoreLogger } from '../../src/common/span-surface.js';
 import type { TouchWriteInput } from '../../src/common/touch-core.js';
@@ -1314,8 +1315,11 @@ describe('compareTrees — tree-to-tree attribution (main-228 Phase 2)', () => {
       }
       if (args.includes('--name-status')) return spec.nameStatus ?? '';
       if (args.includes('--unified=0')) {
-        const path = args[args.length - 1] ?? '';
-        return spec.hunks?.[path] ?? '';
+        const last = args[args.length - 1] ?? '';
+        // The per-path diff must ship :(literal) magic — a raw pathspec is a
+        // wildmatch pattern that can match sibling files.
+        if (!last.startsWith(':(literal)')) throw new Error(`per-path diff without :(literal) magic: ${last}`);
+        return spec.hunks?.[last.slice(':(literal)'.length)] ?? '';
       }
       throw new Error(`unexpected git call ${args.join(' ')}`);
     });
@@ -1495,6 +1499,64 @@ describe('compareTrees — tree-to-tree attribution (main-228 Phase 2)', () => {
     const result = compareTrees(fx.input);
     expect(result.attributions.has(FILE_A)).toBe(false);
     expect(result.gaps).toContain(`unreadable at compare: ${FILE_A} dropped without attribution`);
+  });
+
+  it("a wildcard filename diffs only itself — metacharacters never merge a sibling's ranges (real git)", () => {
+    // `file[1].ts` as a raw pathspec is a wildmatch pattern matching
+    // `file1.ts` too, so without :(literal) magic the per-path -U0 diff
+    // emits BOTH files' hunks and the hunk parser (which has no per-file
+    // segmentation) merges the sibling's coordinates into the bracket
+    // file's ranges. Real git end to end: scripted runners can't reproduce
+    // git's pathspec globbing.
+    const repo = makeTempRepo();
+    const scratch = mkdtempSync(join(tmpdir(), 'compare-literal-'));
+    try {
+      writeFileSync(join(repo.root, 'file[1].ts'), 'a1\na2\na3\n');
+      writeFileSync(join(repo.root, 'file1.ts'), 'b1\nb2\nb3\nb4\nb5\n');
+      execFileSync('git', ['-C', repo.root, 'add', '-A'], { stdio: 'ignore' });
+      const gitDir = execFileSync('git', ['-C', repo.root, 'rev-parse', '--absolute-git-dir']).toString('utf8').trim();
+      const capture = (): ReturnType<typeof captureWriteTree> =>
+        captureWriteTree({
+          repoRoot: repo.root,
+          objectDir: join(scratch, 'objects'),
+          indexFile: join(scratch, 'index'),
+          alternates: join(gitDir, 'objects'),
+          realIndexFile: join(gitDir, 'index'),
+          spanRoot: join(repo.root, '.git-span'),
+          wallBudgetMs: 30_000,
+          runGit: defaultGitRunner,
+          stat: statFile
+        });
+      const pre = capture();
+      expect(pre.treeSha).not.toBeNull();
+      // Distinct edits: line 2 of the bracket file, line 5 of the sibling.
+      writeFileSync(join(repo.root, 'file[1].ts'), 'a1\nCHANGED\na3\n');
+      writeFileSync(join(repo.root, 'file1.ts'), 'b1\nb2\nb3\nb4\nCHANGED\n');
+      const post = capture();
+      expect(post.treeSha).not.toBeNull();
+      const result = compareTrees({
+        preTreeSha: pre.treeSha ?? '',
+        postTreeSha: post.treeSha ?? '',
+        repoRoot: repo.root,
+        objectDir: join(scratch, 'objects'),
+        spanRoot: join(repo.root, '.git-span'),
+        budgets: DEFAULT_SNAPSHOT_BUDGETS,
+        wallStart: Date.now(),
+        runGit: defaultGitRunner
+      });
+      expect(result.attributions.get('file[1].ts')).toEqual({
+        kind: 'changed',
+        observed: { changed: [{ start: 2, end: 2 }], wholeFile: false }
+      });
+      expect(result.attributions.get('file1.ts')).toEqual({
+        kind: 'changed',
+        observed: { changed: [{ start: 5, end: 5 }], wholeFile: false }
+      });
+      expect(result.gaps).toEqual([]);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+      repo.cleanup();
+    }
   });
 });
 
