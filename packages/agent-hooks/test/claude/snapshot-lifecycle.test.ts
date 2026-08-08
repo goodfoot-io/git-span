@@ -1462,10 +1462,12 @@ describe('claude harness snapshot lifecycle', () => {
       expect(notes.some((n) => n.includes('absorbed-double'))).toBe(true);
     });
 
-    it('an unfinished entry fails closed — its write may still land', async () => {
+    it('an unfinished entry fails closed with a transcript-visible deferral — its write may still land', async () => {
       // The edit's entry is in flight (finishedAt null): its write may land at
-      // any moment, so P drops with the interleaved-tool diagnostic — the
-      // attribution that never fires is the attribution that never lies.
+      // any moment, so P drops — and the drop must be transcript-visible like
+      // every other deferral (the round-1 shape was logger-only, invisible to
+      // the model loop, violating the contract's "deferrals are
+      // transcript-visible, never logger-only" promise).
       const v1 = 'export const a = 1;\n';
       const v2 = 'export const a = 1;\nexport const b = 2;\n';
       const { block, notes } = await runInterleaved('sess-interleave-unfinished', 'tu-bash-unfinished', {
@@ -1480,7 +1482,9 @@ describe('claude harness snapshot lifecycle', () => {
           paths: [{ path: 'src/app.ts', preHash: sha256Hex(v1), postHash: null }]
         })
       });
-      expect(block).toBeNull();
+      expect(block).toContain('attribution deferred: src/app.ts');
+      expect(block).toContain('an interleaved edit is still in flight');
+      expect(block).not.toContain('## billing/checkout-request-flow');
       expect(notes.some((n) => n.includes('interleaved-tool'))).toBe(true);
     });
 

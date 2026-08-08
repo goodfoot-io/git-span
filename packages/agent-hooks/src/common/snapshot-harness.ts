@@ -572,6 +572,12 @@ export async function snapshotBashBranch(
   // Transcript-visible notes for the block — deferrals, budget exhaustion,
   // and aborts are all surfaced to the model loop, never logger-only.
   const notes: string[] = [];
+  // Paths dropped because an interleaved edit is still in flight, aggregated
+  // into ONE transcript note after the loop — a wide command can drop many
+  // paths against the same unfinished entry, and a per-path note would drown
+  // the block. Logger-only was the round-1 shape and violated the contract's
+  // "deferrals are transcript-visible, never logger-only" promise.
+  const interleavedDrops: string[] = [];
   const siblingCache = new Map<string, SnapshotRecord | 'incompatible' | null>();
   const siblingHashCache = new Map<string, TreePathHash>();
   // The repo index, read once per branch rather than once per changed path:
@@ -715,6 +721,7 @@ export async function snapshotBashBranch(
     if (inFlight !== null) {
       logger.info?.(`git-span interleaved-tool: ${path} dropped (unfinished entry ${inFlight} in flight)`);
       excludedPaths.add(path);
+      interleavedDrops.push(path);
       continue;
     }
 
@@ -766,6 +773,12 @@ export async function snapshotBashBranch(
       scopes.push({ filePath: join(repoRoot, path), observed });
       excludedPaths.add(path);
     }
+  }
+
+  if (interleavedDrops.length > 0) {
+    notes.push(
+      `attribution deferred: ${interleavedDrops.join(', ')} — an interleaved edit is still in flight; not attributed`
+    );
   }
 
   // Wall-budget exhaustion is transcript-visible whether it struck before
