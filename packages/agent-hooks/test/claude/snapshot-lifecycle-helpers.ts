@@ -129,6 +129,7 @@ export const CLAUDE_SESSION_IDS: readonly string[] = [
   'sess-lifecycle-failure-norecord',
   'sess-lifecycle-failure-plain',
   'sess-lifecycle-norecord',
+  'sess-lifecycle-norecord-opaque',
   'sess-lifecycle-orphan',
   'sess-lifecycle-formatter',
   'sess-lifecycle-generated',

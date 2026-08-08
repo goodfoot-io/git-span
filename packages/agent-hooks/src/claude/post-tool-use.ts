@@ -43,7 +43,12 @@ import { bashSpanToTouch } from '../common/bash-touch.js';
 import { parseCommandDetailed } from '../common/parse-command.js';
 import { parseResponse, type ResponseParseInput } from '../common/parse-response.js';
 import { classifyCommandForSnapshot } from '../common/snapshot-core.js';
-import { resolveSnapshotBudgets, snapshotBashBranch } from '../common/snapshot-harness.js';
+import {
+  resolveSnapshotBudgets,
+  SNAPSHOT_RECORDLESS_NOTE,
+  shouldSurfaceRecordlessNote,
+  snapshotBashBranch
+} from '../common/snapshot-harness.js';
 import { createSnapshotStore, finishActivityEntry } from '../common/snapshot-store.js';
 import { createDiskMemoStore, type MemoFactory, type MemoStore, resolveTouchScope } from '../common/span-surface.js';
 import {
@@ -273,8 +278,7 @@ export function createHandler(
             // transcript-visible so the model sees WHY no snapshot attribution
             // happened — a logger-only warn is invisible to it.
             ctx.logger.warn('git-span: snapshot decided but no record exists; falling back to the static path');
-            attributionNote =
-              "git-span: snapshot record unavailable — this command's file writes were not snapshot-attributed; the static spans below are the only attribution";
+            attributionNote = SNAPSHOT_RECORDLESS_NOTE;
           }
         } else {
           const blocks: string[] = [];
@@ -307,8 +311,18 @@ export function createHandler(
         EMPTY_PATHS,
         input.tool_response
       );
-      if (attributionNote !== null) blocks.unshift(attributionNote);
+      // The note is only worth surfacing when the static fallback actually
+      // found something to attribute — that's the signal a write happened
+      // but escaped snapshot tracking (a real degradation). An empty
+      // fallback means nothing was written; unshifting the note in that case
+      // would make it unconditional (blocks.length would never be 0), firing
+      // on every recordless no-op command instead of just the lossy ones —
+      // and it would dangle its "the static spans below" promise. At most
+      // one appearance per session, via the shared disk-marker gate.
       if (blocks.length === 0) return null;
+      if (attributionNote !== null && shouldSurfaceRecordlessNote(sessionId, ctx.logger)) {
+        blocks.unshift(attributionNote);
+      }
       const combined = blocks.join('');
       return postToolUseOutput({
         hookSpecificOutput: { additionalContext: combined },

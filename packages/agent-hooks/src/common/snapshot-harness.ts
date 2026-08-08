@@ -21,9 +21,9 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { queueRoot, resolveSpanRoot } from './agent-hooks-common.js';
+import { queueRoot, resolveSpanRoot, sessionDir } from './agent-hooks-common.js';
 import {
   type AmbiguityBaseline,
   applyAmbiguityRules,
@@ -263,6 +263,41 @@ export function capturePreSnapshot(opts: {
   const wrote = opts.store.write(record);
   if (!wrote) removeArtifacts();
   return { wrote, treeSha: captured.treeSha, gaps: captured.gaps.length };
+}
+
+/**
+ * The decided-but-recordless fallback note, shared by the Claude and Codex
+ * adapters so the wording can never drift between them. Both adapters gate
+ * it on a non-empty static fallback ("the static spans below" must actually
+ * follow) and on {@link shouldSurfaceRecordlessNote} (at most once per
+ * session).
+ */
+export const SNAPSHOT_RECORDLESS_NOTE =
+  "git-span: snapshot record unavailable — this command's file writes were not snapshot-attributed; the static spans below are the only attribution";
+
+/**
+ * Once-per-session gate for {@link SNAPSHOT_RECORDLESS_NOTE}. The note is a
+ * standing-condition diagnostic — when records are chronically unavailable
+ * (an upgrade race, a wedged store) every snapshot-decided Bash call would
+ * repeat it, drowning the transcript with identical noise. The gate is a
+ * disk marker under the session dir because each hook invocation is its own
+ * process: an in-memory flag lives exactly one invocation and can never
+ * dedupe across calls. The O_EXCL create makes the first caller win
+ * atomically; EEXIST means the session has already seen the note. Any other
+ * marker failure fails toward visibility — a repeated note beats a silent
+ * loss.
+ */
+export function shouldSurfaceRecordlessNote(sessionId: string, logger: CoreLogger): boolean {
+  try {
+    const dir = sessionDir(sessionId);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'snapshot-recordless-note'), '', { flag: 'wx' });
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
+    logger.warn(`git-span recordless-note memo failed open: ${String(err)}`);
+    return true;
+  }
 }
 
 /**

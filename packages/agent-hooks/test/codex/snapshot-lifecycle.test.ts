@@ -1132,6 +1132,21 @@ describe('codex harness snapshot lifecycle', () => {
         const block = toResult(raw);
         expect(block).toContain('snapshot record unavailable');
         expect(block).toContain('were not snapshot-attributed');
+        // The note promises "the static spans below are the only
+        // attribution" — static spans must actually follow it in the block.
+        expect(block).toContain('## billing/checkout-request-flow');
+        // Once per session, via the shared disk-marker gate — parity with
+        // the Claude adapter.
+        const input2 = postInput({
+          session_id: sessionId,
+          cwd: repo.root,
+          tool_use_id: 'tu-codex-norecord-2',
+          tool_input: { command: 'npx prettier --write src/app.ts' }
+        });
+        const raw2 = await handler(input2 as never, { logger } as never);
+        const block2 = toResult(raw2);
+        expect(block2).toContain('## billing/checkout-request-flow');
+        expect(block2).not.toContain('snapshot record unavailable');
       });
     });
 

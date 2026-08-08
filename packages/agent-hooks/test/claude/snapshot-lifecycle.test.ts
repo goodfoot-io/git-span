@@ -1842,6 +1842,49 @@ describe('claude harness snapshot lifecycle', () => {
         const block = toResult(raw);
         expect(block).toContain('snapshot record unavailable');
         expect(block).toContain('were not snapshot-attributed');
+        // The note promises "the static spans below are the only
+        // attribution" — static spans must actually follow it in the block.
+        expect(block).toContain('## billing/checkout-request-flow');
+        // Once per session: a second recordless call still surfaces its
+        // static spans, but the note never repeats — a chronic no-record
+        // condition must not drown the transcript with identical noise.
+        const input2 = postInput({
+          session_id: sessionId,
+          cwd: repo.root,
+          tool_use_id: 'tu-norecord-2',
+          tool_input: { command: 'npx prettier --write src/app.ts' }
+        });
+        const raw2 = await handler(input2 as never, { logger });
+        const block2 = toResult(raw2);
+        expect(block2).toContain('## billing/checkout-request-flow');
+        expect(block2).not.toContain('snapshot record unavailable');
+      });
+    });
+
+    it('a decided-but-recordless call with an empty static fallback stays silent — the note never promises spans that are not there', async () => {
+      // Claude/Codex divergence (round-1 finding): Claude unshifted the note
+      // BEFORE the emptiness check, so blocks.length was never 0 and the
+      // note fired alone on every recordless no-op command — with its "the
+      // static spans below" promise dangling over nothing. The gate now
+      // matches Codex: no static fallback, no note.
+      await withRepo(async (repo) => {
+        const sessionId = 'sess-lifecycle-norecord-opaque';
+        const tuId = 'tu-norecord-opaque-1';
+        writeFile(repo.root, 'src/app.ts', P10);
+        gitAddCommit(repo.root, 'add app.ts');
+        const logger = new Logger();
+        // An opaque command: the static co-parser derives no paths, so the
+        // fallback is empty and the note must not fire.
+        const { executors } = makeExecutors({ rows: () => [], drift: () => [] });
+        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+        const input = postInput({
+          session_id: sessionId,
+          cwd: repo.root,
+          tool_use_id: tuId,
+          tool_input: { command: 'python3 scripts/gen.py' }
+        });
+        const raw = await handler(input as never, { logger });
+        expect(toResult(raw)).toBeNull();
       });
     });
 
