@@ -1477,6 +1477,31 @@ describe('compareTrees — tree-to-tree attribution (main-228 Phase 2)', () => {
     expect(recordHasPathCoverageGap(result)).toBe(true);
   });
 
+  it('the touched-files cap gates adds, deletes, and renames too — never unbounded cat-file work past the cap', () => {
+    // No blobs are scripted for the capped A/D paths: reading one would throw
+    // `missing blob`, so the assertion that no such gap appears doubles as
+    // proof compareTrees did zero content work beyond the cap.
+    const fx = compareFixture({
+      lsTree: [FILE_A, 'src/gone.ts', 'src/from.ts'],
+      nameStatus: `M\0${FILE_A}\0A\0src/new.ts\0D\0src/gone.ts\0R100\0src/from.ts\0src/to.ts\0`,
+      blobs: { [`${PRE_TREE}:${FILE_A}`]: PRE_A, [`${POST_TREE}:${FILE_A}`]: POST_A },
+      hunks: { [FILE_A]: `--- a/${FILE_A}\n+++ b/${FILE_A}\n@@ -2 +2 @@\n-l2\n+X\n` },
+      budgets: { ...DEFAULT_SNAPSHOT_BUDGETS, maxTouchedFiles: 1 }
+    });
+    const result = compareTrees(fx.input);
+    expect(result.attributions.size).toBe(1);
+    expect(result.attributions.has(FILE_A)).toBe(true);
+    expect(result.gaps).toContain('touched-files cap 1 exceeded: src/new.ts not attributed');
+    expect(result.gaps).toContain('touched-files cap 1 exceeded: src/gone.ts not attributed');
+    expect(result.gaps).toContain('touched-files cap 1 exceeded: src/to.ts not attributed');
+    expect(result.gaps.some((g) => g.startsWith('unreadable at compare:'))).toBe(false);
+    const cappedReads = fx.calls.filter(
+      (c) => c.args[0] === 'cat-file' && /src\/(new|gone)\.ts$/.test(c.args[2] ?? '')
+    );
+    expect(cappedReads).toHaveLength(0);
+    expect(recordHasPathCoverageGap(result)).toBe(true);
+  });
+
   it('post-side wall exhaustion stops before any content work with the persisting gap text', () => {
     const fx = compareFixture({
       lsTree: [FILE_A],

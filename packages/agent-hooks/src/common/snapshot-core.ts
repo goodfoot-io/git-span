@@ -1303,7 +1303,7 @@ export function compareTrees(input: CompareTreesInput): CompareTreesResult {
     if (status === 'M' || status === 'A' || status === 'D') entries.push({ status, path });
   }
 
-  let changedCount = 0;
+  let touchedCount = 0;
   let attributed = 0;
   const pushWallGap = (fromIndex: number): void => {
     const rest = entries.slice(fromIndex).map((e) => (e.status === 'R' ? e.to : e.path));
@@ -1324,6 +1324,16 @@ export function compareTrees(input: CompareTreesInput): CompareTreesResult {
       pushWallGap(i);
       break;
     }
+    // The touched-files cap gates every status, not just 'M': A and D each
+    // cost a cat-file + sha256 and R rows still grow the attribution map, so
+    // exempting any of them leaves the cap bypassable by an adversarially
+    // shaped diff (e.g. ten thousand created files).
+    if (touchedCount >= budgets.maxTouchedFiles) {
+      const capPath = entry.status === 'R' ? entry.to : entry.path;
+      gaps.push(`touched-files cap ${budgets.maxTouchedFiles} exceeded: ${capPath} not attributed`);
+      continue;
+    }
+    touchedCount += 1;
     if (entry.status === 'R') {
       attributions.set(entry.to, { kind: 'rename', from: entry.from });
       attributed += 1;
@@ -1348,11 +1358,6 @@ export function compareTrees(input: CompareTreesInput): CompareTreesResult {
       attributed += 1;
       continue;
     }
-    if (changedCount >= budgets.maxTouchedFiles) {
-      gaps.push(`touched-files cap ${budgets.maxTouchedFiles} exceeded: ${path} not attributed`);
-      continue;
-    }
-    changedCount += 1;
     let preBlob: Buffer;
     let postBlob: Buffer;
     try {
