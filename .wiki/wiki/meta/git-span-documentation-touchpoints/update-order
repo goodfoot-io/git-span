@@ -4,5 +4,5 @@ packages/git-span/src/cli/mod.rs#L46-L174 rk64:11147c4c7e29f1ec
 packages/git-span/src/cli/mod.rs#L48-L176 rk64:46db06a88418ce52
 packages/git-span/src/main.rs#L49-L100 rk64:2aa836f03ffba1f5
 packages/git-span/src/main.rs#L50-L113 rk64:63c62c9acfa11f23
-wiki/meta/git-span-documentation-touchpoints.md#L33-L41 rk64:054e645ef17a875f
+wiki/meta/git-span-documentation-touchpoints.md#L43-L51 rk64:054e645ef17a875f
 
