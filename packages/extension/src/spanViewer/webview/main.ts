@@ -61,6 +61,7 @@ import '@vscode/codicons/dist/codicon.css';
 import './main.css';
 
 import type { PostedAnchor, PostedDocument, PostedHistoryCommit, UnavailableReason } from '../types.js';
+import { addressStartLine } from './addressStartLine.js';
 import { anchorRangeLabel } from './anchorRangeLabel.js';
 import { hasStatusDot, statusDotLabel } from './anchorStatusDot.js';
 import { anchorCardKey, CardOpenStore, commitCardKey, DECLARATION_CARD_KEY } from './cardState.js';
@@ -821,7 +822,11 @@ function createAnchorCard(anchor: PostedAnchor): HTMLElement {
     case 'relocated':
       // Never a diff editor with identical sides: banner plus plain preview.
       body.appendChild(createRenameBanner(anchor.address, anchor.proposed));
-      body.appendChild(createPreview(anchor.content, resolveLanguage(anchor.path), card, anchor.range?.start));
+      // The content is the block at `proposed`, not at the declared `range`,
+      // so the gutter numbers against the address the banner points to.
+      body.appendChild(
+        createPreview(anchor.content, resolveLanguage(anchor.path), card, addressStartLine(anchor.proposed))
+      );
       break;
     case 'unavailable':
       body.appendChild(createStatusCard(UNAVAILABLE_COPY[anchor.reason]));
