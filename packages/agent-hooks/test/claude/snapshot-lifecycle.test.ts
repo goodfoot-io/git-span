@@ -1464,10 +1464,11 @@ describe('claude harness snapshot lifecycle', () => {
 
     it('an unfinished entry fails closed with a transcript-visible deferral — its write may still land', async () => {
       // The edit's entry is in flight (finishedAt null): its write may land at
-      // any moment, so P drops — and the drop must be transcript-visible like
-      // every other deferral (the round-1 shape was logger-only, invisible to
-      // the model loop, violating the contract's "deferrals are
-      // transcript-visible, never logger-only" promise).
+      // any moment, so P drops. Unlike ambiguity deferrals — logger-only by
+      // design, normal concurrency bookkeeping, nothing actionable for the
+      // model loop — the interleaved drop keeps a transcript note because it
+      // carries a remediation: re-run the command once the overlapping edit
+      // completes to attribute the write.
       const v1 = 'export const a = 1;\n';
       const v2 = 'export const a = 1;\nexport const b = 2;\n';
       const { block, notes } = await runInterleaved('sess-interleave-unfinished', 'tu-bash-unfinished', {
@@ -1484,6 +1485,7 @@ describe('claude harness snapshot lifecycle', () => {
       });
       expect(block).toContain('attribution deferred: src/app.ts');
       expect(block).toContain('an interleaved edit is still in flight');
+      expect(block).toContain('Re-run the command once the overlapping edit completes to attribute the write');
       expect(block).not.toContain('## billing/checkout-request-flow');
       expect(notes.some((n) => n.includes('interleaved-tool'))).toBe(true);
     });
@@ -1634,7 +1636,7 @@ describe('claude harness snapshot lifecycle', () => {
         const orphanTu = 'tu-orphan-1';
         writeFile(repo.root, 'src/app.ts', P10);
         gitAddCommit(repo.root, 'add app.ts');
-        const logger = new Logger();
+        const { logger, notes } = noteCapturingLogger();
         const pre = createSnapshotPreHook();
         // Both calls captured src/app.ts at the same pre state; the orphan's
         // PostToolUse never arrives, so its write window has not provably
@@ -1670,12 +1672,19 @@ describe('claude harness snapshot lifecycle', () => {
         });
         const raw = await handler(input as never, { logger });
         const block = toResult(raw);
-        // The deferral is transcript-visible: the model loop sees WHY the
-        // path produced no attribution — a logger-only warn is invisible to it.
-        expect(block).toContain('attribution deferred: src/app.ts');
-        expect(block).toContain(`unconsumed sibling ${orphanTu}`);
-        expect(block).toContain(`(session ${orphanSession})`);
-        expect(block).not.toContain('## billing/checkout-request-flow');
+        // The deferral is logger-only by design — an ambiguity drop is normal
+        // concurrency bookkeeping, and the block carries only actionable
+        // content: nothing actionable here, so no block at all. The reason
+        // and the conflicting sibling session ride in the warn.
+        expect(block).toBeNull();
+        expect(
+          notes.some(
+            (n) =>
+              n.includes('ambiguity') &&
+              n.includes(`unconsumed sibling ${orphanTu}`) &&
+              n.includes(`session ${orphanSession}`)
+          )
+        ).toBe(true);
         expect(calls.fix).toBe(0);
         // The orphan is removed (session teardown); a fresh capture of the
         // same call now attributes cleanly.
@@ -1705,7 +1714,7 @@ describe('claude harness snapshot lifecycle', () => {
         const orphanTu = 'tu-hasherr-orphan-1';
         writeFile(repo.root, 'src/app.ts', P10);
         gitAddCommit(repo.root, 'add app.ts');
-        const logger = new Logger();
+        const { logger, notes } = noteCapturingLogger();
         const pre = createSnapshotPreHook();
         const orphanInput = preInput({
           session_id: orphanSession,
@@ -1736,9 +1745,17 @@ describe('claude harness snapshot lifecycle', () => {
         const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
         const raw = await handler(myInput as never, { logger });
         const block = toResult(raw);
-        expect(block).toContain('attribution deferred: src/app.ts');
-        expect(block).toContain(`unconsumed sibling ${orphanTu}`);
-        expect(block).not.toContain('## billing/checkout-request-flow');
+        // Logger-only deferral: nothing actionable, so no block at all — the
+        // reason and the conflicting sibling session ride in the warn.
+        expect(block).toBeNull();
+        expect(
+          notes.some(
+            (n) =>
+              n.includes('ambiguity') &&
+              n.includes(`unconsumed sibling ${orphanTu}`) &&
+              n.includes(`session ${orphanSession}`)
+          )
+        ).toBe(true);
         expect(calls.fix).toBe(0);
       });
     });
@@ -1757,7 +1774,7 @@ describe('claude harness snapshot lifecycle', () => {
         const v1Tu = 'toolu_01v1sibling';
         writeFile(repo.root, 'src/app.ts', P10);
         gitAddCommit(repo.root, 'add app.ts');
-        const logger = new Logger();
+        const { logger, notes } = noteCapturingLogger();
         const pre = createSnapshotPreHook();
         const myInput = preInput({
           session_id: sessionId,
@@ -1812,10 +1829,15 @@ describe('claude harness snapshot lifecycle', () => {
         const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
         const raw = await handler(myInput as never, { logger });
         const block = toResult(raw);
-        expect(block).toContain('attribution deferred: src/app.ts');
-        expect(block).toContain(`unconsumed sibling ${v1Tu}`);
-        expect(block).toContain(`(session ${v1Session})`);
-        expect(block).not.toContain('## billing/checkout-request-flow');
+        // Logger-only deferral: nothing actionable, so no block at all — the
+        // reason and the conflicting sibling session ride in the warn.
+        expect(block).toBeNull();
+        expect(
+          notes.some(
+            (n) =>
+              n.includes('ambiguity') && n.includes(`unconsumed sibling ${v1Tu}`) && n.includes(`session ${v1Session}`)
+          )
+        ).toBe(true);
         expect(calls.fix).toBe(0);
       });
     });
@@ -1987,7 +2009,7 @@ describe('claude harness snapshot lifecycle', () => {
           writeFile(repo.root, 'src/a.ts', P10);
           writeFile(repo.root, 'src/b.ts', P10);
           gitAddCommit(repo.root, 'add sources');
-          const logger = new Logger();
+          const { logger, notes } = noteCapturingLogger();
           const pre = createSnapshotPreHook();
           // My capture first: my baseline predates the sibling's window.
           const myInput = preInput({
@@ -2029,13 +2051,15 @@ describe('claude harness snapshot lifecycle', () => {
           const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
           const raw = await handler(myInput as never, { logger });
           const block = toResult(raw);
-          // a.ts: the sibling changed it in a window overlapping mine.
-          expect(block).toContain('attribution deferred: src/a.ts');
+          // a.ts: the sibling changed it in a window overlapping mine — the
+          // drop is logger-only (ambiguity deferrals carry no transcript
+          // note; the block holds only actionable content, so a full-deferral
+          // outcome has no block at all).
+          expect(block).toBeNull();
           // b.ts: cap-cut during the sibling's attribution, but its post TREE
           // still carries the true end state — the consult reads post!=pre
           // and defers via the overlapping-window rule. No phantom absorption.
-          expect(block).toContain('attribution deferred: src/b.ts');
-          expect(block).toContain('in a window overlapping mine');
+          expect(notes.some((n) => n.includes('ambiguity') && n.includes('in a window overlapping mine'))).toBe(true);
           expect(calls.fix).toBe(0);
         });
       } finally {

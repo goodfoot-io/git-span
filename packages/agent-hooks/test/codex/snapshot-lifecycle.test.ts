@@ -904,10 +904,14 @@ describe('codex harness snapshot lifecycle', () => {
           paths: [{ path: 'src/app.ts', preHash: sha256Hex(v1), postHash: null }]
         })
       });
-      // The drop is transcript-visible like every other deferral — the
-      // round-1 logger-only shape was invisible to the model loop.
+      // The drop keeps a transcript note because it carries a remediation —
+      // re-run the command once the overlapping edit completes to attribute
+      // the write. Ambiguity deferrals, by contrast, are logger-only by
+      // design: normal concurrency bookkeeping, nothing actionable for the
+      // model loop.
       expect(block).toContain('attribution deferred: src/app.ts');
       expect(block).toContain('an interleaved edit is still in flight');
+      expect(block).toContain('Re-run the command once the overlapping edit completes to attribute the write');
       expect(block).not.toContain('## billing/checkout-request-flow');
       expect(notes.some((n) => n.includes('interleaved-tool'))).toBe(true);
     });
@@ -1056,7 +1060,7 @@ describe('codex harness snapshot lifecycle', () => {
         const orphanTu = 'tu-codex-orphan-1';
         writeFile(repo.root, 'src/app.ts', P10);
         gitAddCommit(repo.root, 'add app.ts');
-        const logger = new Logger();
+        const { logger, notes } = noteCapturingLogger();
         const pre = createSnapshotPreHook();
         // Both calls captured src/app.ts at the same pre state; the orphan's
         // PostToolUse never arrives (Codex has no failure event either), so
@@ -1092,12 +1096,19 @@ describe('codex harness snapshot lifecycle', () => {
         });
         const raw = await handler(input as never, { logger } as never);
         const block = toResult(raw);
-        // The deferral is transcript-visible — the model loop sees WHY the
-        // path produced no attribution, never a silent drop.
-        expect(block).toContain('attribution deferred: src/app.ts');
-        expect(block).toContain(`unconsumed sibling ${orphanTu}`);
-        expect(block).toContain(`(session ${orphanSession})`);
-        expect(block).not.toContain('## billing/checkout-request-flow');
+        // The deferral is logger-only by design — an ambiguity drop is normal
+        // concurrency bookkeeping, and the block carries only actionable
+        // content: nothing actionable here, so no block at all. The reason
+        // and the conflicting sibling session ride in the warn.
+        expect(block).toBeNull();
+        expect(
+          notes.some(
+            (n) =>
+              n.includes('ambiguity') &&
+              n.includes(`unconsumed sibling ${orphanTu}`) &&
+              n.includes(`session ${orphanSession}`)
+          )
+        ).toBe(true);
         expect(calls.fix).toBe(0);
         // The orphan is removed (session teardown); a fresh capture of the
         // same call now attributes cleanly.
@@ -1306,7 +1317,7 @@ describe('codex harness snapshot lifecycle — wave-E coverage-gap family', () =
         writeFile(repo.root, 'src/a.ts', P10);
         writeFile(repo.root, 'src/b.ts', P10);
         gitAddCommit(repo.root, 'add sources');
-        const logger = new Logger();
+        const { logger, notes } = noteCapturingLogger();
         const pre = createSnapshotPreHook();
         // My capture first: my baseline predates the sibling's window.
         const myInput = preInput({ session_id: sessionId, cwd: repo.root, tool_use_id: myTu, tool_input: { command } });
@@ -1343,13 +1354,15 @@ describe('codex harness snapshot lifecycle — wave-E coverage-gap family', () =
         const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
         const raw = await handler(myInput as never, { logger });
         const block = toResult(raw);
-        // a.ts: the sibling changed it in a window overlapping mine.
-        expect(block).toContain('attribution deferred: src/a.ts');
+        // a.ts: the sibling changed it in a window overlapping mine — the
+        // drop is logger-only (ambiguity deferrals carry no transcript note;
+        // the block holds only actionable content, so a full-deferral outcome
+        // has no block at all).
+        expect(block).toBeNull();
         // b.ts: cap-cut during the sibling's attribution, but its post TREE
         // still carries the true end state — the consult reads post!=pre
         // and defers via the overlapping-window rule. No phantom absorption.
-        expect(block).toContain('attribution deferred: src/b.ts');
-        expect(block).toContain('in a window overlapping mine');
+        expect(notes.some((n) => n.includes('ambiguity') && n.includes('in a window overlapping mine'))).toBe(true);
         expect(calls.fix).toBe(0);
       });
     } finally {

@@ -23,7 +23,7 @@
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { queueRoot, resolveSpanRoot, sessionDir } from './agent-hooks-common.js';
+import { indentBlockBody, queueRoot, resolveSpanRoot, sessionDir } from './agent-hooks-common.js';
 import {
   type AmbiguityBaseline,
   applyAmbiguityRules,
@@ -292,8 +292,9 @@ export function capturePreSnapshot(opts: {
  * follow) and on {@link shouldSurfaceRecordlessNote} (at most once per
  * session).
  */
-export const SNAPSHOT_RECORDLESS_NOTE =
-  "git-span: snapshot record unavailable — this command's file writes were not snapshot-attributed; the static spans below are the only attribution";
+export const SNAPSHOT_RECORDLESS_NOTE = `<git-span-error>\n${indentBlockBody(
+  "git-span: snapshot record unavailable — this command's file writes were not snapshot-attributed; the static spans below are the only attribution"
+)}\n</git-span-error>`;
 
 /**
  * Once-per-session gate for {@link SNAPSHOT_RECORDLESS_NOTE}. The note is a
@@ -601,9 +602,12 @@ function unfinishedEntryCovering(repoRoot: string, path: string, now: number, bu
  *    first scope's file, one repo-wide drift, per-scope surface computation.
  *    Renames surface the OLD path (the span lives on the dead anchor); the
  *    new path is excluded from the static co-parser along with every
- *    attributed and dropped path. Deferrals, budget exhaustion, and aborts
- *    are surfaced as transcript-visible notes in the block, never
- *    logger-only.
+ *    attributed and dropped path. Failures — compare abort, wall-budget
+ *    exhaustion, stat-only degrade, missing snapshot record — surface as
+ *    transcript-visible `<git-span-error>` notes; the interleaved-drop note
+ *    stays transcript-visible because it carries a remediation; ambiguity
+ *    deferrals are logger-only (the warn names the reason and the sibling
+ *    session).
  */
 export async function snapshotBashBranch(
   store: SnapshotStore,
@@ -624,14 +628,17 @@ export async function snapshotBashBranch(
   const now = Date.now();
   const excludedPaths = new Set<string>();
   const scopes: ObservedWriteScope[] = [];
-  // Transcript-visible notes for the block — deferrals, budget exhaustion,
-  // and aborts are all surfaced to the model loop, never logger-only.
+  // Transcript-visible notes for the block — real failures (compare abort,
+  // wall-budget exhaustion, stat-only degrade, missing snapshot record) and
+  // the interleaved-drop note surface to the model loop; ambiguity deferrals
+  // are logger-only (the warn carries the reason and sibling session).
   const notes: string[] = [];
   // Paths dropped because an interleaved edit is still in flight, aggregated
   // into ONE transcript note after the loop — a wide command can drop many
   // paths against the same unfinished entry, and a per-path note would drown
-  // the block. Logger-only was the round-1 shape and violated the contract's
-  // "deferrals are transcript-visible, never logger-only" promise.
+  // the block. Unlike ambiguity deferrals, this note stays transcript-visible
+  // because it carries a remediation: re-run once the in-flight edit
+  // completes.
   const interleavedDrops: string[] = [];
   const siblingCache = new Map<string, SnapshotRecord | 'incompatible' | null>();
   const siblingHashCache = new Map<string, TreePathHash>();
@@ -738,7 +745,9 @@ export async function snapshotBashBranch(
     store.consume(sessionId, toolUseId, post);
     return {
       kind: 'done',
-      additionalContext: `git-span: snapshot comparison aborted before attribution completed (${String(err)}); the record was consumed with a gap`,
+      additionalContext: `<git-span-error>\n${indentBlockBody(
+        `git-span: snapshot comparison aborted before attribution completed (${String(err)}); the record was consumed with a gap`
+      )}\n</git-span-error>`,
       excludedPaths
     };
   }
@@ -767,13 +776,11 @@ export async function snapshotBashBranch(
       path
     );
     if (verdict.ambiguous) {
-      logger.warn(`git-span ambiguity: ${path} dropped (${verdict.reason})`);
+      // Logger-only deferral — a bookkeeping deferral, not a failure, so the
+      // transcript gets no note; the reason and conflicting sibling session
+      // ride in the warn.
+      logger.warn(`git-span ambiguity: ${path} dropped (${verdict.reason}); session ${verdict.siblingSessionId}`);
       excludedPaths.add(path);
-      // Transcript-visible deferral note — the model loop must see why this
-      // path produced no attribution (a logger-only warn is invisible to it).
-      notes.push(
-        `attribution deferred: ${path} — ${verdict.reason} (session ${verdict.siblingSessionId}); not attributed`
-      );
       continue;
     }
 
@@ -838,7 +845,7 @@ export async function snapshotBashBranch(
 
   if (interleavedDrops.length > 0) {
     notes.push(
-      `attribution deferred: ${interleavedDrops.join(', ')} — an interleaved edit is still in flight; not attributed`
+      `attribution deferred: ${interleavedDrops.join(', ')} — an interleaved edit is still in flight; not attributed. Re-run the command once the overlapping edit completes to attribute the write.`
     );
   }
 
@@ -848,15 +855,15 @@ export async function snapshotBashBranch(
   if (compared.gaps.some((g) => g.includes('post-side wall budget exhausted'))) {
     notes.push(
       scopes.length === 0
-        ? 'git-span: the post-side wall budget was exhausted before any file could be attributed — no git-span block was produced'
-        : `git-span: the post-side wall budget was exhausted partway — ${scopes.length} path(s) attributed, the rest dropped`
+        ? `<git-span-error>\n${indentBlockBody('git-span: the post-side wall budget was exhausted before any file could be attributed — no git-span block was produced')}\n</git-span-error>`
+        : `<git-span-error>\n${indentBlockBody(`git-span: the post-side wall budget was exhausted partway — ${scopes.length} path(s) attributed, the rest dropped`)}\n</git-span-error>`
     );
   }
   // A post-side degrade under a pre tree drops ALL attribution — the same
   // transcript-visibility rule applies.
   if (compared.gaps.some((g) => g.startsWith('write-tree degraded to stat-only:'))) {
     notes.push(
-      'git-span: the post-side snapshot degraded to stat-only under a pre-side tree — no comparable evidence, nothing attributed'
+      `<git-span-error>\n${indentBlockBody('git-span: the post-side snapshot degraded to stat-only under a pre-side tree — no comparable evidence, nothing attributed')}\n</git-span-error>`
     );
   }
 

@@ -74,7 +74,7 @@ directory holding a single entry folds onto that entry's line, so a branch
 only ever appears where two or more anchors actually share a prefix. A
 whole-file anchor is a bare path with no range column; where the same file
 also carries line ranges, it takes `(whole file)` in the range column so its
-own drift label can never be read as belonging to a neighbouring range. Only genuine
+own drift label can never be read as belonging to a neighboring range. Only genuine
 (semantic or terminal) drift earns a suffix (` — changed`, ` — deleted`, …); positional
 drift never does — see below. The header scales with what drifted: `<file>
 has implicit dependencies:` (naming the touched file) when nothing did, the
@@ -352,10 +352,18 @@ snapshot decisions and coverage, budget caps hit, coverage gaps, ambiguous
 paths with their reasons, cleanup and sweep counts through the hook logger
 (see "Mechanical churn is suppressed" above for how to enable it; set
 `CLAUDE_CODE_HOOKS_LOG_FILE` to a path to capture the records) — and the
-attribution-shaping events the model loop must see, ambiguity deferrals,
-budget exhaustion with zero attributions, and compare aborts, as
+attribution-shaping events the model loop must see surface as
 transcript-visible notes in the tool block (`additionalContext`), not
-logger-only.
+logger-only: the interleaved-edit deferral — an overlapping Edit/Write
+still in flight — which appends the remediation `Re-run the command once
+the overlapping edit completes to attribute the write.`; and the real
+failures — compare aborts, post-side wall-budget exhaustion in both its
+variants (before any attribution, and partway with a tail dropped), the
+post-side stat-only degrade under a pre tree, and the missing-record note —
+each wrapped in a `<git-span-error>` block. Ambiguity deferrals — a path's
+attribution dropped because a sibling session's write window overlaps — are
+the exception: normal concurrency behavior, not actionable, so they remain
+logger-only with the ambiguous-path reasons above.
 
 ### Snapshot budgets
 
@@ -398,13 +406,14 @@ snapshot degrades that call to the static-parse path, visibly: the
 `PostToolUse` side, when a snapshot should exist but the record is missing,
 emits a transcript-visible note in the tool block — `git-span: snapshot
 record unavailable — this command's file writes were not snapshot-attributed;
-the static spans below are the only attribution` — beside the logger warn, so
-the model loop sees why no snapshot attribution happened. The note fires only
+the static spans below are the only attribution` — wrapped in a
+`<git-span-error>` block beside the logger warn, so the model loop sees why
+no snapshot attribution happened. The note fires only
 when the call's cwd is inside a repo — where the pre-walk could have created
 a record; in a repo-less cwd the fallback is silent, since no record could
 ever have been created there.
 
-## Failure behaviour
+## Failure behavior
 
 Both hooks fail open on everything that decides *whether* there is something
 to say: a missing `git span` binary, a timeout, a failed scan, or a

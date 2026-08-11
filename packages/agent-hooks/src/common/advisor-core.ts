@@ -36,6 +36,7 @@ import {
   advisorMemoDir,
   type DriftPorcelainRow,
   humanStatusLabel,
+  indentBlockBody,
   isDebt,
   isEnvironmentalStatus,
   isInsideSpanRoot,
@@ -1703,19 +1704,6 @@ function renderEnvironmentalReason(conditions: DriftPorcelainRow[], blocksText: 
     '',
     'Fix the checkout/fetch issue if these dependencies need verifying.'
   ].join('\n');
-}
-
-/**
- * Indent every non-empty line of `text` by two spaces, leaving blank lines
- * blank — the body shape the `<git-span-error>` blocks use so a multi-line
- * diagnostic reads as one delimited artifact. Blank lines must stay blank:
- * two-space-only lines would read as trailing whitespace.
- */
-function indentBlockBody(text: string): string {
-  return text
-    .split('\n')
-    .map((line) => (line.length > 0 ? `  ${line}` : line))
-    .join('\n');
 }
 
 /**

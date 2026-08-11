@@ -519,3 +519,20 @@ export function queueRoot(repoRoot: string): string {
 export function advisorMemoDir(repoRoot: string): string {
   return nodePath.join(queueRoot(repoRoot), 'advisor');
 }
+
+// ---------------------------------------------------------------------------
+// Block body formatting
+// ---------------------------------------------------------------------------
+
+/**
+ * Indent every non-empty line of `text` by two spaces, leaving blank lines
+ * blank — the body shape the `<git-span-error>` blocks use so a multi-line
+ * diagnostic reads as one delimited artifact. Blank lines must stay blank:
+ * two-space-only lines would read as trailing whitespace.
+ */
+export function indentBlockBody(text: string): string {
+  return text
+    .split('\n')
+    .map((line) => (line.length > 0 ? `  ${line}` : line))
+    .join('\n');
+}
