@@ -89,17 +89,22 @@ task-specific span content; no `.span/` data or ProgramBench solution knowledge
 belongs in the image.
 
 mini-swe-agent has only a bash tool and cannot invoke a Codex or Claude “load
-skill” capability. Treatment hook output should instead give it a literal,
-valid command, for example:
+skill” capability. When `environment.skill_file` is configured, the bridge
+automatically replaces the unsupported skill-loading prose in hook emissions
+with this actionable instruction:
 
 ```text
-Read /opt/git-span/skills/git-span/SKILL.md before acting on this report. Use
-sed to read any referenced file under /opt/git-span/skills/git-span/references/.
+Read `/opt/git-span/skills/git-span/SKILL.md` with `sed` before acting on this
+report; read any referenced file relative to
+`/opt/git-span/skills/git-span`.
 ```
 
 The path is configured with
 `environment.skill_file: /opt/git-span/skills/git-span/SKILL.md` and must be
-fixed in the experiment manifest.
+fixed in the experiment manifest. In required mode, an omitted or relative
+path, a missing or unreadable `SKILL.md`, or an unreadable containing skill tree
+fails preflight before the first model action. The attestation records both the
+main file's SHA-256 and the deterministic checksum of the complete skill tree.
 
 ## Derive the ProgramBench task images
 
@@ -153,7 +158,7 @@ git span --version
 python3 -c 'from minisweagent_gitspan.bridge import default_hooks_dir; print(default_hooks_dir())'
 test -r /opt/git-span/skills/git-span/SKILL.md
 git -C /workspace status --short
-test ! -e /workspace/.span
+test -z "$(git -C /workspace span list --porcelain)"
 ```
 
 Then run a bridge smoke scenario inside a disposable repository:
@@ -187,16 +192,21 @@ environment:
   require_initial_no_spans: true
   experiment_arm: treatment
   expected_package_version: 1.1.3
-  expected_node_version: v20.x.y
-  expected_git_span_version: git-span 1.1.2
+  # Replace these examples with the exact command output from the frozen image.
+  expected_node_version: v20.11.1
+  expected_git_span_version: git-span 1.1.3
   expected_bundle_sha256:
     snapshot.mjs: <sha256>
     advisor.mjs: <sha256>
     post-tool-use.mjs: <sha256>
     post-tool-use-failure.mjs: <sha256>
     session-end.mjs: <sha256>
-  expected_skill_tree_sha256: <sha256>
+  expected_skill_tree_sha256: <deterministic-tree-sha256>
 ```
+
+Every `expected_*` value is compared exactly; placeholders and approximate
+versions will fail preflight. Derive the bundle and skill-tree values from the
+same installed treatment image recorded in the experiment manifest.
 
 ```yaml
 # control.yaml
@@ -227,27 +237,34 @@ The treatment must fail closed before the first model call if it cannot prove
 that the intended intervention is available. Record the preflight result in the
 trajectory:
 
-- resolved container image digest;
+- configured image name and resolved container image ID (record the immutable
+  registry digest separately in the experiment manifest);
 - Node.js and git-span versions;
 - hook bundle directory and bundle checksums;
 - wheel/package version;
-- skill path and skill-tree checksum;
+- skill path, main-file checksum, and skill-tree checksum;
 - repository root and confirmation that the initial repository has no spans;
 - hook configuration, including timeout and required/fail-closed mode.
 
-Record one structured event per hook invocation, preferably in the trajectory's
-serialized environment data and optionally as host-side JSONL. Each event
-should include:
+The environment serializes one structured event per hook invocation under
+`info.hooks.events`. Join it to the enclosing trajectory for instance and run
+identity. Each event includes:
 
-- instance/run/session/tool-use identifiers and event ordinal;
-- hook name, command class, start/end timestamps, duration, and exit status;
+- tool-use identifier and event ordinal (the session identifier is stored once
+  at `info.hooks.session_id`);
+- hook and tool names, command, start timestamp, duration, and exit status;
 - success, clean no-op, timeout, missing dependency, malformed output, or other
   failure classification;
 - whether the command was held;
-- the exact context delivered to the model, its character count, and its token
-  count under the model tokenizer when available;
-- paths/spans named by the emission;
-- the git-span state before and after agent-authored span mutations.
+- the exact context emitted, its character count, whether it reached a model
+  observation, and a `null` token count because the environment does not own
+  the model tokenizer; and
+- paths and spans named by the emission.
+
+The same `info.hooks` object contains treatment attestation and the final span,
+anchor, why, and drift summary. Reconstruct intermediate git-span mutations by
+joining hook events to the trajectory's ordered commands; the package does not
+claim to snapshot span state before and after every mutation.
 
 Do not store telemetry only inside the disposable container. Avoid writing it
 under `/workspace`, where it would enter `submission.tar.gz` and could affect

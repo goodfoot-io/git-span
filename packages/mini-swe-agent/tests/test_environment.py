@@ -116,6 +116,7 @@ def test_required_treatment_attests_and_serializes(stub_hooks, tmp_path):
     assert serialized["arm"] == "treatment"
     assert serialized["attestation"]["valid"] is True
     assert serialized["attestation"]["initial_span_count"] == 0
+    assert serialized["attestation"]["skill_file_sha256"]
     assert set(serialized["attestation"]["bundle_sha256"]) == {
         "snapshot.mjs",
         "advisor.mjs",
@@ -124,6 +125,23 @@ def test_required_treatment_attests_and_serializes(stub_hooks, tmp_path):
         "session-end.mjs",
     }
     assert [event["ordinal"] for event in serialized["events"]] == [1, 2, 3]
+
+
+def test_required_treatment_rejects_missing_skill_file(stub_hooks, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    skill_dir = tmp_path / "skill"
+    skill_dir.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+
+    with pytest.raises(RequiredHookError, match="skill file"):
+        HookedLocalEnvironment(
+            cwd=str(repo),
+            hooks_dir=str(stub_hooks["dir"]),
+            node_bin="python3",
+            hooks_required=True,
+            skill_file=str(skill_dir / "SKILL.md"),
+        )
 
 
 def test_required_treatment_rejects_version_mismatch(stub_hooks, tmp_path):

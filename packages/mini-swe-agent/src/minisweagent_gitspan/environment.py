@@ -139,6 +139,12 @@ def _build_attestation(config: Any, hooks: HookBridge, cwd: str, probe: Probe, p
         skill_path = Path(config.skill_file)
         if not skill_path.is_absolute():
             errors.append(f"skill_file: path must be absolute ({config.skill_file})")
+        skill_digest = checked(
+            "skill file",
+            [python_bin, "-c", _FILE_HASH_SCRIPT, str(skill_path)],
+        )
+        if skill_digest:
+            attestation["skill_file_sha256"] = skill_digest
         skill_tree = checked(
             "skill tree",
             [python_bin, "-c", _TREE_HASH_SCRIPT, str(skill_path.parent)],

@@ -2,6 +2,6 @@
 packages/mini-swe-agent/README.md#L10-L12 rk64:ed44c1e9c0c4eab0
 packages/mini-swe-agent/pyproject.toml#L16-L16 rk64:0a2263076988a4c9
 packages/mini-swe-agent/src/minisweagent_gitspan/agent.py rk64:5ae756d00a95c4ca
-packages/mini-swe-agent/src/minisweagent_gitspan/environment.py#L183-L524 rk64:4956665161d4e720
+packages/mini-swe-agent/src/minisweagent_gitspan/environment.py#L189-L530 rk64:4956665161d4e720
 
 The hooked environments and agent subclass the upstream mini-swe-agent==2.4.6 classes pinned in pyproject.toml, relying on their constructor signatures, config fields, and execute internals; upgrading that pin can change the subclass contract without any type error, and the gitignored checkout under vendor/third-party/mini-swe-agent (kept out of the tree by the root .gitignore vendor/ entry) is the local reference for that API.
