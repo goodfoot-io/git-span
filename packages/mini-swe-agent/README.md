@@ -140,8 +140,8 @@ into `programbench`). Image sketch:
 ```dockerfile
 FROM python:3.12-slim
 RUN npm install -g git-span   # or COPY a git-span binary onto PATH
-COPY mini_swe_agent_git_span-1.2.1-py3-none-any.whl /tmp/
-RUN pip install /tmp/mini_swe_agent_git_span-1.2.1-py3-none-any.whl
+COPY mini_swe_agent_git_span-1.1.2-py3-none-any.whl /tmp/
+RUN pip install /tmp/mini_swe_agent_git_span-1.1.2-py3-none-any.whl
 ```
 
 Run against a mounted repository with any litellm model — the hooks are
@@ -210,8 +210,8 @@ Then extend the image (sketch; the base image is the instance's):
 FROM <per-instance base image>
 # git-span and node >= 20.11 on the container's PATH
 RUN npm install -g git-span node@20
-COPY mini_swe_agent_git_span-1.2.1-py3-none-any.whl /tmp/
-RUN pip install /tmp/mini_swe_agent_git_span-1.2.1-py3-none-any.whl
+COPY mini_swe_agent_git_span-1.1.2-py3-none-any.whl /tmp/
+RUN pip install /tmp/mini_swe_agent_git_span-1.1.2-py3-none-any.whl
 ```
 
 tag it `{image_name}:task_cleanroom_v6`, and push it to where the runner's
