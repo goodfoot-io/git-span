@@ -10,7 +10,7 @@ use crate::cli::{CliError, NextStep, DriftArgs, DriftFormat, resolver_read_error
 use crate::resolver::{
     SourceLayers, WholeResult, anchor_status_is_drift, resolve_named_spans,
     resolve_named_spans_retaining_source_layers, resolve_named_spans_with_source_layers,
-    sort_spans_by_anchor_path, span_is_reportable_in_drift_discovery, drift_spans,
+    sort_spans_by_anchor_path, span_has_actionable_drift, drift_spans,
     drift_spans_retaining_source_layers, drift_spans_with_trace,
 };
 use crate::types::{
@@ -1120,8 +1120,9 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
 /// back into the pre-fix set, for the **bare-scan** arm (`git span drift --fix`
 /// with no positional paths).
 ///
-/// Bare-scan semantics: drop any rewritten span that resolves fully Fresh
-/// (mirrors `drift_spans` which filters via `span_is_reportable_in_drift_discovery`).
+/// Bare-scan semantics: drop any rewritten span with zero actionable-drift
+/// anchors left (mirrors `drift_spans`, which filters via
+/// `span_has_actionable_drift`).
 fn splice_bare_scan_post_fix(
     repo: &gix::Repository,
     span_root: &str,
@@ -1156,9 +1157,7 @@ fn splice_bare_scan_post_fix(
         .into_iter()
         .filter_map(|m| {
             if rewritten_names.contains(&m.name) {
-                updated
-                    .remove(&m.name)
-                    .filter(span_is_reportable_in_drift_discovery)
+                updated.remove(&m.name).filter(span_has_actionable_drift)
             } else {
                 Some(m)
             }
@@ -1168,7 +1167,7 @@ fn splice_bare_scan_post_fix(
     // Rewritten spans absent from pre_fix_spans (coalesce-only on a
     // synthesized all-Fresh fix_input entry): add if now reportable.
     for (_, resolved) in updated {
-        if span_is_reportable_in_drift_discovery(&resolved) {
+        if span_has_actionable_drift(&resolved) {
             result.push(resolved);
         }
     }

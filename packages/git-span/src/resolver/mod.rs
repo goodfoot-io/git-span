@@ -32,7 +32,7 @@ pub(crate) mod walker;
 pub(crate) use engine::{
     SourceLayers, anchor_status_is_drift, build_source_layers, resolve_named_spans,
     resolve_named_spans_retaining_source_layers, resolve_named_spans_with_source_layers,
-    sort_spans_by_anchor_path, span_is_reportable_in_drift_discovery,
+    sort_spans_by_anchor_path, span_has_actionable_drift, span_is_reportable_in_drift_discovery,
     drift_spans_retaining_source_layers,
 };
 pub use engine::{

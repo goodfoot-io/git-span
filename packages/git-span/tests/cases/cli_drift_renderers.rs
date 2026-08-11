@@ -231,13 +231,22 @@ fn discovery_json_includes_clean_span_with_pending_metadata() -> Result<()> {
 #[test]
 fn json_clean_derives_from_actionable_drift_not_findings() -> Result<()> {
     // A span whose only non-Fresh anchor is `RESOLVED_PENDING_COMMIT` is
-    // shown-but-clean: the finding is informational (display predicate:
-    // any non-Fresh anchor), but the verdict — exit code, human "0 drift",
-    // JSON `clean` — uses the actionable `anchor_status_is_drift` boundary.
-    // `clean` must not be `findings.is_empty()`: a hook gating on
-    // `clean == false` would block a tree the same CLI reports as clean
-    // (exit 0, "0 drift"). This scan is the exact case the fully-clean and
-    // actionable-drift pins cannot see — both agree across predicates.
+    // shown-but-clean under a *scoped* query: the finding is informational
+    // (display predicate: any non-Fresh anchor), but the verdict — exit
+    // code, human "0 drift", JSON `clean` — uses the actionable
+    // `anchor_status_is_drift` boundary. `clean` must not be
+    // `findings.is_empty()`: a hook gating on `clean == false` would block a
+    // tree the same CLI reports as clean (exit 0, "0 drift"). This scoped
+    // scan is the exact case the fully-clean and actionable-drift pins
+    // cannot see — both agree across predicates.
+    //
+    // A *bare* scan of the same span is a different case (card main-229):
+    // a span with zero `ActionableDrift` anchors is omitted from the bare
+    // scan entirely, so `findings` is empty there too — see
+    // `bare_scan_omits_span_with_only_pending_commit_anchor` in
+    // `drift_bare_scan_actionable_drift.rs`. The scoped query below is what
+    // still exercises the clean-vs-findings-emptiness distinction this test
+    // is about.
     let repo = TestRepo::seeded()?;
     // Mirror `drift_resolved_pending_commit.rs::reanchor_unstaged_source`:
     // commit an anchor, prepend two lines (unstaged), re-anchor to the
@@ -256,13 +265,13 @@ fn json_clean_derives_from_actionable_drift_not_findings() -> Result<()> {
     repo.span_stdout(["add", "m", "file1.txt#L3-L7"])?;
     repo.run_git(["add", ".span"])?;
 
-    let out = repo.run_span(["drift", "--format=json"])?;
+    let out = repo.run_span(["drift", "m", "--format=json"])?;
     assert_eq!(out.status.code(), Some(0));
     let v: Value = serde_json::from_slice(&out.stdout)?;
     assert_eq!(v["schema_version"], 3);
     assert_eq!(
         v["clean"], true,
-        "a RESOLVED_PENDING_COMMIT-only scan is clean (exit 0); `clean` must \
+        "a RESOLVED_PENDING_COMMIT-only scoped query is clean (exit 0); `clean` must \
          derive from the actionable-drift boundary, not `findings.is_empty()`; \
          document: {v}"
     );
@@ -276,6 +285,19 @@ fn json_clean_derives_from_actionable_drift_not_findings() -> Result<()> {
             }),
         "the informational finding must still be present (display predicate); \
          document: {v}"
+    );
+
+    // The bare-scan counterpart: the same span is omitted entirely, so
+    // `findings` is empty (still `clean`).
+    let bare_out = repo.run_span(["drift", "--format=json"])?;
+    assert_eq!(bare_out.status.code(), Some(0));
+    let bare_v: Value = serde_json::from_slice(&bare_out.stdout)?;
+    assert_eq!(bare_v["clean"], true);
+    assert_eq!(
+        bare_v["findings"].as_array().map(|a| a.len()),
+        Some(0),
+        "a bare scan must omit a RESOLVED_PENDING_COMMIT-only span entirely (card main-229); \
+         document: {bare_v}"
     );
     Ok(())
 }

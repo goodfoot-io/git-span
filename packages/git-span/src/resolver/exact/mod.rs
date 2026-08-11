@@ -75,7 +75,7 @@ use crate::resolver::core::capture::{
 use crate::resolver::core::project::project_effective;
 use crate::resolver::core::resolution::ResolutionCore;
 use crate::resolver::engine::{
-    capture_resolution_core, sort_spans_by_anchor_path, span_is_reportable_in_drift_discovery,
+    capture_resolution_core, sort_spans_by_anchor_path, span_has_actionable_drift,
 };
 use crate::resolver::store::dto::SpanResolvedDto;
 use crate::resolver::store::lock::{acquire_build_shard, shard_index};
@@ -211,7 +211,7 @@ impl RenderReady {
         let mut spans: Vec<SpanResolved> = self
             .full
             .iter()
-            .filter(|s| span_is_reportable_in_drift_discovery(s))
+            .filter(|s| span_has_actionable_drift(s))
             .cloned()
             .collect();
         if spans.len() > 1 {

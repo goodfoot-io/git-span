@@ -62,6 +62,7 @@ pub mod span_file_format;
 pub mod span_file_reader;
 pub mod span_name_path_traversal_escape;
 pub mod span_root_resolution;
+pub mod drift_bare_scan_actionable_drift;
 pub mod drift_bloom_integration;
 pub mod drift_deleted_moved_states;
 pub mod drift_fix_uncommitted_moved;

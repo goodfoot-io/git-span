@@ -712,6 +712,13 @@ fn drift_reporting_class(status: &AnchorStatus) -> DriftReportingClass {
 /// non-`Fresh` anchor is `ResolvedPendingCommit` is still shown — while
 /// [`anchor_status_is_drift`] excludes them; both boundaries are
 /// spelled over [`drift_reporting_class`].
+///
+/// This is the *scoped* reportability boundary: `replace`'s single-named-span
+/// "drift-free" report (`cli/commit.rs`) is its only remaining caller. The
+/// bare (no-args) `drift` scan's span-inclusion gate is
+/// [`span_has_actionable_drift`] instead (card main-229) — narrower, since a
+/// span that is only pending-commit no longer needs a standing "nothing to do
+/// here" notice on every scan.
 pub(crate) fn span_is_reportable_in_drift_discovery(m: &SpanResolved) -> bool {
     m.anchors.iter().any(|a| {
         !matches!(
@@ -731,6 +738,26 @@ pub(crate) fn anchor_status_is_drift(status: &AnchorStatus) -> bool {
         drift_reporting_class(status),
         DriftReportingClass::ActionableDrift
     )
+}
+
+/// Whether a span has at least one anchor carrying actionable drift.
+///
+/// Span-level counterpart to the per-anchor [`anchor_status_is_drift`]: this
+/// is the bare (no-args) `drift` scan's span-inclusion gate (card main-229). A
+/// span whose anchors are all `Fresh`, all `ResolvedPendingCommit`, or a mix
+/// of the two is omitted from a bare scan entirely — the same way an
+/// all-`Fresh` span already was — since there is nothing actionable left to
+/// report. A span with at least one genuine `ActionableDrift` anchor still
+/// prints in full, including any sibling `ResolvedPendingCommit`/`Fresh`
+/// anchor rows, unchanged.
+///
+/// Deliberately distinct from [`span_is_reportable_in_drift_discovery`],
+/// which keeps its wider (any-non-`Fresh`) meaning for its one remaining
+/// scoped caller (`replace`'s drift-free report). Named/scoped `drift <name>`
+/// queries use neither predicate — see `cli/drift_output.rs`'s inline
+/// `status != Fresh` scoped filter.
+pub(crate) fn span_has_actionable_drift(m: &SpanResolved) -> bool {
+    m.anchors.iter().any(|a| anchor_status_is_drift(&a.status))
 }
 
 /// Resolve a small caller-provided list of span names without scanning all
@@ -1333,7 +1360,7 @@ fn drift_spans_inner(
                 }
             }
             let resolved = resolve_loaded_span_with_state(repo, &mut state, span, options)?;
-            if span_is_reportable_in_drift_discovery(&resolved) {
+            if span_has_actionable_drift(&resolved) {
                 out.push(resolved);
             }
         }
