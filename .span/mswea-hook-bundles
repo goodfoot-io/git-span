@@ -1,0 +1,8 @@
+packages/agent-hooks/src/mswea/advisor.ts rk64:fddbad1c59b62cbf
+packages/agent-hooks/src/mswea/post-tool-use-failure.ts rk64:e683c2fe2aa4a245
+packages/agent-hooks/src/mswea/post-tool-use.ts rk64:bf3ddc3f23a00e3d
+packages/agent-hooks/src/mswea/session-end.ts rk64:4b0f0d4ac4e86f7c
+packages/agent-hooks/src/mswea/snapshot.ts rk64:65a9a215ba266649
+packages/mini-swe-agent/src/minisweagent_gitspan/bridge.py#L25-L27 rk64:4ef0a538aa27060a
+
+The bridge spawns hook bundles by these exact names from hooks/bin, and the claude-code-hooks compiler emits one bundle per src/mswea hook source (the mini-swe-agent adapter set) with that stem; a rename on either side silently drops that hook from the agent loop without failing the build.

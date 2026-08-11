@@ -12,7 +12,8 @@
 import { type HookContext, type SessionEndInput, sessionEndHook } from '@goodfoot/claude-code-hooks';
 import { createSnapshotStore } from '../common/snapshot-store.js';
 
-export default sessionEndHook({ timeout: 10_000 }, async (input: SessionEndInput, ctx: HookContext) => {
+/** The cleanup handler, exported so the mswea adapter registers the same one. */
+export const createHandler = () => async (input: SessionEndInput, ctx: HookContext) => {
   try {
     // Phase 3: removeSession removes the records, tombstones, and activity
     // entries for this session and the index entries for the repos read from
@@ -23,4 +24,6 @@ export default sessionEndHook({ timeout: 10_000 }, async (input: SessionEndInput
     ctx.logger.warn('git-span session-end cleanup failed open on an uncaught error', { err });
     return null;
   }
-});
+};
+
+export default sessionEndHook({ timeout: 10_000 }, createHandler());

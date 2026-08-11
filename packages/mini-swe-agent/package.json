@@ -1,0 +1,18 @@
+{
+  "name": "mini-swe-agent",
+  "version": "1.1.2",
+  "description": "mini-swe-agent extension: subclasses upstream LocalEnvironment/DefaultAgent to bridge the git-span agent hooks (built from packages/agent-hooks into hooks/) into the agent loop",
+  "license": "MIT",
+  "scripts": {
+    "build": "yarn build:hooks",
+    "build:hooks": "yarn workspace agent-hooks run build:hooks:mswea",
+    "test": "uv run --group dev pytest -q",
+    "lint": "uv run ruff check ."
+  },
+  "devDependencies": {
+    "agent-hooks": "workspace:*"
+  },
+  "engines": {
+    "node": ">=20.11.0"
+  }
+}

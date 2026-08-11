@@ -4849,7 +4849,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"agent-hooks@workspace:packages/agent-hooks":
+"agent-hooks@workspace:*, agent-hooks@workspace:packages/agent-hooks":
   version: 0.0.0-use.local
   resolution: "agent-hooks@workspace:packages/agent-hooks"
   dependencies:
@@ -7375,13 +7375,13 @@ __metadata:
   languageName: node
   linkType: hard
 
-"git-span-darwin-arm64@npm:1.1.1, git-span-darwin-arm64@workspace:npm/git-span-darwin-arm64":
+"git-span-darwin-arm64@npm:1.1.2, git-span-darwin-arm64@workspace:npm/git-span-darwin-arm64":
   version: 0.0.0-use.local
   resolution: "git-span-darwin-arm64@workspace:npm/git-span-darwin-arm64"
   languageName: unknown
   linkType: soft
 
-"git-span-darwin-x64@npm:1.1.1, git-span-darwin-x64@workspace:npm/git-span-darwin-x64":
+"git-span-darwin-x64@npm:1.1.2, git-span-darwin-x64@workspace:npm/git-span-darwin-x64":
   version: 0.0.0-use.local
   resolution: "git-span-darwin-x64@workspace:npm/git-span-darwin-x64"
   languageName: unknown
@@ -7410,19 +7410,19 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"git-span-linux-arm64@npm:1.1.1, git-span-linux-arm64@workspace:npm/git-span-linux-arm64":
+"git-span-linux-arm64@npm:1.1.2, git-span-linux-arm64@workspace:npm/git-span-linux-arm64":
   version: 0.0.0-use.local
   resolution: "git-span-linux-arm64@workspace:npm/git-span-linux-arm64"
   languageName: unknown
   linkType: soft
 
-"git-span-linux-x64@npm:1.1.1, git-span-linux-x64@workspace:npm/git-span-linux-x64":
+"git-span-linux-x64@npm:1.1.2, git-span-linux-x64@workspace:npm/git-span-linux-x64":
   version: 0.0.0-use.local
   resolution: "git-span-linux-x64@workspace:npm/git-span-linux-x64"
   languageName: unknown
   linkType: soft
 
-"git-span-win32-x64@npm:1.1.1, git-span-win32-x64@workspace:npm/git-span-win32-x64":
+"git-span-win32-x64@npm:1.1.2, git-span-win32-x64@workspace:npm/git-span-win32-x64":
   version: 0.0.0-use.local
   resolution: "git-span-win32-x64@workspace:npm/git-span-win32-x64"
   languageName: unknown
@@ -7432,11 +7432,11 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "git-span@workspace:packages/git-span"
   dependencies:
-    git-span-darwin-arm64: "npm:1.1.1"
-    git-span-darwin-x64: "npm:1.1.1"
-    git-span-linux-arm64: "npm:1.1.1"
-    git-span-linux-x64: "npm:1.1.1"
-    git-span-win32-x64: "npm:1.1.1"
+    git-span-darwin-arm64: "npm:1.1.2"
+    git-span-darwin-x64: "npm:1.1.2"
+    git-span-linux-arm64: "npm:1.1.2"
+    git-span-linux-x64: "npm:1.1.2"
+    git-span-win32-x64: "npm:1.1.2"
   dependenciesMeta:
     git-span-darwin-arm64:
       optional: true
@@ -9497,6 +9497,14 @@ __metadata:
   checksum: 10c0/0d6f07ce6e03e9e4445bee655202153bdb8a98d67ee8dc965ac140900d7a2688343e6b4c9a72cfc9ef2f7944dfd76eef4ab2482eb7b293a68b84916bac735362
   languageName: node
   linkType: hard
+
+"mini-swe-agent@workspace:packages/mini-swe-agent":
+  version: 0.0.0-use.local
+  resolution: "mini-swe-agent@workspace:packages/mini-swe-agent"
+  dependencies:
+    agent-hooks: "workspace:*"
+  languageName: unknown
+  linkType: soft
 
 "miniflare@npm:4.20260708.1":
   version: 4.20260708.1

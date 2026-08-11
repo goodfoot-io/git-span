@@ -29,6 +29,7 @@
 import { type HookContext, type PreToolUseInput, preToolUseHook, preToolUseOutput } from '@goodfoot/claude-code-hooks';
 import {
   type AdvisorExecutors,
+  type AdvisorHarness,
   type AdvisorMemoState,
   commitStagesAll,
   createDefaultAdvisorExecutors,
@@ -52,7 +53,12 @@ function narrowCommand(toolInput: unknown): string | null {
 export function createHandler(
   git: GitExecutor = createDefaultGitExecutor(),
   executors: AdvisorExecutors = createDefaultAdvisorExecutors(),
-  memoFactory: (cwd: string) => AdvisorMemoState = createDiskAdvisorMemoState
+  memoFactory: (cwd: string) => AdvisorMemoState = createDiskAdvisorMemoState,
+  // Which harness the closing instruction is written for; the mswea adapter
+  // passes `'generic'` (inline instruction) because its agent has only the
+  // bash tool — the forked-subagent tasking of `'claude'` would be dead
+  // guidance there. Claude Code itself keeps the default.
+  harness: AdvisorHarness = 'claude'
 ) {
   return async (input: PreToolUseInput, ctx: HookContext) => {
     try {
@@ -69,7 +75,9 @@ export function createHandler(
       const mode = parsed.kind === 'status' ? 'report-only' : 'may-hold';
       // `'claude'` makes the closing instruction name Claude's forked-subagent
       // vocabulary (`Agent` with `subagent_type: "fork"`); `'generic'` would
-      // keep the pre-harness inline-instruction prose.
+      // keep the pre-harness inline-instruction prose. `createHandler` takes
+      // the harness as a parameter so the mswea adapter can select `'generic'`
+      // without this adapter branching on anything at runtime.
       const result = await evaluateAdvisor(
         changeset.paths,
         cwd,
@@ -83,7 +91,7 @@ export function createHandler(
           // the agent-facing output of a suppression is nothing at all.
           logger: ctx.logger
         },
-        'claude'
+        harness
       );
       if (result.decision === 'hold') {
         // `hold` → the harness's own vocabulary. Claude has no "hold", so the

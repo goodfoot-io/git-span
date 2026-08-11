@@ -1,0 +1,18 @@
+# Node
+node_modules
+dist
+
+# Generated hook bundles (built by `yarn build:hooks` from src/claude/**);
+# shipped inside the Python package so the wheel is self-contained.
+src/minisweagent_gitspan/hooks/
+
+# setuptools build metadata
+*.egg-info/
+
+# Python (uv-managed environment)
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.mypy_cache

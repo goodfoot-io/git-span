@@ -78,6 +78,12 @@ const GENERATED_PATHS = {
     'node_modules/.vite',
     'node_modules/.vite-temp'
   ],
+  // src/minisweagent_gitspan/hooks/ holds the hook bundles built from
+  // packages/agent-hooks sources (`yarn build:hooks:mswea`) — they ship inside
+  // the Python package so the wheel is self-contained; .venv is the package's
+  // uv-managed Python environment. Both are checkout-derived, not
+  // content-addressed caches.
+  'packages/mini-swe-agent': ['src/minisweagent_gitspan/hooks', '.venv'],
   scripts: ['dist'],
   'npm/git-span-linux-arm64': ['bin']
 };

@@ -9,6 +9,10 @@
       "entry": ["src/**/*.ts", "src/**/*.tsx", "test/**/*.{ts,tsx}", "scripts/**/*.{js,ts}"],
       "project": ["src/**/*.ts", "src/**/*.tsx", "test/**/*.{ts,tsx}", "scripts/**/*.{js,ts}"],
       "ignore": ["node_modules/**", "dist/**", "build/**", "test/fixtures/**"]
+    },
+    "packages/mini-swe-agent": {
+      "ignoreDependencies": ["agent-hooks"],
+      "ignoreBinaries": ["uv"]
     }
   }
 }

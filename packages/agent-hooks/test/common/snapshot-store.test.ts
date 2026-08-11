@@ -974,18 +974,28 @@ describe('sweep-read margin and trash removal (fuse-abort hardening)', () => {
     if (file === null) return;
     const old = (Date.now() - 2 * DEFAULT_SNAPSHOT_BUDGETS.recordTtlMs) / 1000;
     utimesSync(file, old, old);
+    // The stamp is compared against the sweep-start timestamp, not the assert
+    // time: on a slow filesystem the readdir/stat between the sweep and the
+    // assertion can take longer than a second, which would race a
+    // wall-clock margin. The stamp lands between sweep start and the
+    // CLOCK_MARGIN window either way; the backdated write mtime sits two
+    // record-TTLs behind sweep start.
+    const sweepStarted = Date.now();
     const now = Date.now() + SWEEP_READ_MARGIN_MS + 1000;
     expect(store.sweep(now).records).toBe(1);
     expect(store.find(sid, TOOL_USE_ID)).toBeNull();
     const dir = join(sessionDir(sid), 'snapshots');
     const trashName = readdirSync(dir).find((n) => n.startsWith('.') && n.includes('.trash-'));
     expect(trashName).toBeDefined();
-    // The trash's mtime is the rename instant (real now, within a second of
-    // this assertion), so the 60s keepalive applies to the sweep's own
-    // removals — the trash survives this pass and the inode stays alive for
-    // any reader that opened the record before the rename.
+    // The trash's mtime is the rename instant (real now from inside the
+    // sweep), so the 60s keepalive applies to the sweep's own removals — the
+    // trash survives this pass and the inode stays alive for any reader that
+    // opened the record before the rename. The sweep-start slack covers
+    // coarse-mtime filesystems (second-granularity stamp truncation).
     if (trashName !== undefined) {
-      expect(Math.abs(Date.now() - statSync(join(dir, trashName)).mtimeMs)).toBeLessThan(1000);
+      const mtimeMs = statSync(join(dir, trashName)).mtimeMs;
+      expect(mtimeMs).toBeGreaterThanOrEqual(sweepStarted - SWEEP_READ_MARGIN_MS);
+      expect(mtimeMs).toBeLessThan(sweepStarted + CLOCK_MARGIN_MS);
     }
     // Once the stamped mtime ages past the trash TTL, a later sweep empties it.
     const later = Date.now() + TRASH_TTL_MS + SWEEP_READ_MARGIN_MS + 1000;

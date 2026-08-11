@@ -95,3 +95,6 @@ reports/*
 
 packages/website/.dev.vars
 .env.*
+
+# Vendored third-party code
+vendor/
