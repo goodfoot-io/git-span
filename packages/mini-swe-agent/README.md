@@ -35,8 +35,9 @@ Python agent loop                    TypeScript hooks (in packages/agent-hooks)
   artifact.
 - The **Python bridge** (`src/minisweagent_gitspan/bridge.py`) synthesizes the
   Claude Code hook wire protocol on stdin for every bash action and spawns the
-  bundles as one-shot subprocesses (fail-open: any hook error or missing
-  bundle degrades to allow-with-warning). It never parses `hooks.json`.
+  bundles as one-shot subprocesses. Requested but missing bundles fail closed.
+  Runtime hook failures remain fail-open for interactive use and fail closed
+  when `hooks_required: true`. It never parses `hooks.json`.
 - **Two environments, one bridge.** `HookedLocalEnvironment` runs commands on
   the host; `HookedDockerEnvironment` (for container-based runners such as
   ProgramBench) runs the commands inside the per-instance container and
@@ -51,8 +52,9 @@ Python agent loop                    TypeScript hooks (in packages/agent-hooks)
   2. **PostToolUse** on exit 0 / **PostToolUseFailure** on non-zero — snapshot
      post-side + the static-parse touch surface; `additionalContext` is
      appended to the action's output so the model sees `<git-span>` blocks.
-  3. **SessionEnd** — per-session snapshot-record cleanup when the run ends
-     (every exit path: submission, limits, interruption, exception).
+  3. **SessionEnd** — per-session snapshot-record cleanup and a non-injected
+     span lifecycle summary when the run ends (every exit path: submission,
+     limits, interruption, exception).
 
 ## Wiring
 
@@ -96,22 +98,45 @@ OpenAI-compatible endpoint). There is no Claude-specific code in the loop.
   resolves `git-span` from `PATH`). The advisor requires >= 1.0.142.
 - The hook bundles built (`yarn build` in this package, or the root
   `yarn build` — agent-hooks builds them into `hooks/` topologically first).
-  Without them the bridge is a silent no-op.
-- Node >= 20.11 (only at build time; the bundles are self-contained).
+  Enabling hooks without all five bundles is an initialization error.
+- Node >= 20.11 at hook runtime. The bundles are self-contained JavaScript but
+  still execute under Node.
 
 ## Configuration
 
 `HookedLocalEnvironmentConfig` (YAML `environment:` section or `-c` specs):
 
-| key              | default     | meaning                                          |
-| ---------------- | ----------- | ------------------------------------------------ |
-| `hooks_enabled`  | `true`      | turn the bridge off entirely                     |
-| `hooks_dir`      | *(built-in)*| hook bundle directory (`<package>/hooks/bin`)    |
-| `node_bin`       | `node`      | Node executable used to spawn the bundles        |
-| `hook_timeout_ms`| `10000`     | per-hook subprocess timeout                      |
+| key                          | default      | meaning                                                   |
+| ---------------------------- | ------------ | --------------------------------------------------------- |
+| `hooks_enabled`              | `true`       | request the bridge; missing bundles fail closed           |
+| `hooks_dir`                  | *(built-in)* | hook bundle directory (`<package>/hooks/bin`)             |
+| `node_bin`                   | `node`       | Node executable used to spawn the bundles                 |
+| `hook_timeout_ms`            | `10000`      | per-hook subprocess timeout                               |
+| `hooks_required`             | `false`      | fail closed on runtime errors and attest the treatment    |
+| `skill_file`                 | `null`       | absolute in-environment git-span `SKILL.md` path          |
+| `require_initial_no_spans`   | `false`      | reject a treatment repository that already contains spans |
+| `experiment_arm`             | `unspecified`| arm label serialized into the trajectory                  |
+| `expected_package_version`   | `null`       | exact extension version required by preflight             |
+| `expected_node_version`      | `null`       | exact `node --version` output required by preflight       |
+| `expected_git_span_version`  | `null`       | exact `git span --version` output required by preflight   |
+| `expected_bundle_sha256`     | `{}`         | expected digest keyed by bundle filename                  |
+| `expected_skill_tree_sha256` | `null`       | expected digest for the installed skill directory        |
 
 `MSWEA_HOOKS_DIR` overrides `hooks_dir`. Hook processes run with the ambient
 environment plus the configured `environment.env`.
+
+When `skill_file` is configured, mini-swe-agent-specific hook output replaces
+the unsupported “load skill” instruction with a concrete instruction to read
+that absolute file and its relative references using bash. Required-mode
+preflight verifies the path, artifact versions/checksums, image identity,
+repository root, and initial span state before the first model action.
+
+Every hook invocation is serialized under `info.hooks.events`, including its
+ordinal, tool-use ID, status, duration, stderr, emitted context, extracted
+entities/spans, character count, and whether the context reached a model
+observation. The exact token count remains `null` because the environment does
+not own the model tokenizer. Attestation and the final span lifecycle summary
+are serialized under the same `info.hooks` object.
 
 ## Distributing
 
@@ -140,8 +165,8 @@ into `programbench`). Image sketch:
 ```dockerfile
 FROM python:3.12-slim
 RUN npm install -g git-span   # or COPY a git-span binary onto PATH
-COPY mini_swe_agent_git_span-1.1.2-py3-none-any.whl /tmp/
-RUN pip install /tmp/mini_swe_agent_git_span-1.1.2-py3-none-any.whl
+COPY mini_swe_agent_git_span-1.1.3-py3-none-any.whl /tmp/
+RUN pip install /tmp/mini_swe_agent_git_span-1.1.3-py3-none-any.whl
 ```
 
 Run against a mounted repository with any litellm model — the hooks are
@@ -155,8 +180,8 @@ docker run -it --rm -e DEEPSEEK_API_KEY \
 
 Notes:
 
-- The advisor only has something to hold when the repo actually has spans;
-  with none, the bridge no-ops (fail-open).
+- A repository may start without spans. Multi-file uncovered-write reports on
+  `git status` and the one-time commit hold guide the agent to create them.
 - Any model mini-swe-agent supports works. For `deepseek-v4-flash`,
   `DEEPSEEK_API_KEY` is required (litellm's `deepseek/` provider), or use a
   custom endpoint with `-c model.model_kwargs.base_url=… -c
@@ -210,8 +235,8 @@ Then extend the image (sketch; the base image is the instance's):
 FROM <per-instance base image>
 # git-span and node >= 20.11 on the container's PATH
 RUN npm install -g git-span node@20
-COPY mini_swe_agent_git_span-1.1.2-py3-none-any.whl /tmp/
-RUN pip install /tmp/mini_swe_agent_git_span-1.1.2-py3-none-any.whl
+COPY mini_swe_agent_git_span-1.1.3-py3-none-any.whl /tmp/
+RUN pip install /tmp/mini_swe_agent_git_span-1.1.3-py3-none-any.whl
 ```
 
 tag it `{image_name}:task_cleanroom_v6`, and push it to where the runner's
@@ -222,17 +247,15 @@ Notes:
 - ProgramBench's default config (`-c programbench.yaml`) already sets
   `environment.cwd: /workspace` and the `agent` container user; the hooks
   inherit the same environment as the commands.
-- The workspace starts with no spans, so the advisor holds nothing; the
-  bridge still runs every action (snapshot capture, touch tracking) and
-  stays fail-open.
-- The runner hardcodes its agent class, so `HookedAgent`'s SessionEnd never
-  fires. Harmless: the per-session git-span state lives inside the container
-  and is discarded with it.
-- If the bundles can't be located inside the image, the hooks disable
-  themselves with a warning and the agent runs unbridged — fail-open.
-  `-c environment.hooks_dir=…` points at an explicit in-container bundles
-  path (skips the probe); `-c environment.hooks_enabled=false` turns the
-  bridge off entirely.
+- The workspace starts with no spans. Multi-file uncovered-write guidance is
+  delivered after `git status`; commit/push can hold once so the agent reads
+  the same guidance before proceeding.
+- `mswea-extra programbench` wraps the upstream ProgramBench agent so
+  SessionEnd cleanup and lifecycle summaries run on every exit path.
+- If requested bundles cannot be located or verified inside the image,
+  environment construction fails. `-c environment.hooks_dir=…` points at an
+  explicit in-container bundle path; `-c environment.hooks_enabled=false`
+  selects the control arm and skips bundle probing.
 - Offline inference: serve the model on a local OpenAI-compatible endpoint
   and point the agent at it (`-c model.model_kwargs.base_url=…`), keeping
   `-c programbench.yaml` first. A model name litellm can't cost out needs

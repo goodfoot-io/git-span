@@ -1,11 +1,10 @@
 """HookedDockerEnvironment: hooks run inside the container, fail-open."""
 
-import logging
-
 import pytest
 from conftest import read_record
 from minisweagent.exceptions import Submitted
 
+from minisweagent_gitspan.bridge import RequiredHookError
 from minisweagent_gitspan.environment import HookedDockerEnvironment
 
 
@@ -23,6 +22,14 @@ def docker_execs(fake_docker):
     return [r for r in read_record(fake_docker["record"]) if r["verb"] == "exec"]
 
 
+def docker_hook_execs(fake_docker):
+    return [
+        record
+        for record in docker_execs(fake_docker)
+        if len(record["command"]) == 2 and record["command"][-1].endswith(".mjs")
+    ]
+
+
 def test_probe_runs_once_and_finds_the_hook_bundles(stub_hooks, fake_docker, tmp_path):
     env = make_environment(stub_hooks, fake_docker, tmp_path)
 
@@ -32,7 +39,7 @@ def test_probe_runs_once_and_finds_the_hook_bundles(stub_hooks, fake_docker, tmp
     # execs used the probed path — not a host-side default.
     probes = [r for r in docker_execs(fake_docker) if any("default_hooks_dir" in a for a in r["command"])]
     assert len(probes) == 1
-    hook_execs = [r for r in docker_execs(fake_docker) if r["command"][0] == "python3"]
+    hook_execs = docker_hook_execs(fake_docker)
     assert hook_execs
     assert str(stub_hooks["dir"]) in hook_execs[0]["command"][1]
 
@@ -88,32 +95,21 @@ def test_hooks_disabled_skips_probe_and_hooks(stub_hooks, fake_docker, tmp_path)
     assert records[1]["command"] == ["bash", "-lc", "echo hi"]
 
 
-def test_probe_failure_disables_hooks_fail_open(stub_hooks, fake_docker, tmp_path, monkeypatch, caplog):
+def test_probe_failure_fails_closed_when_hooks_requested(stub_hooks, fake_docker, tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_DOCKER_FAIL_PROBE", "1")
-    env = make_environment(stub_hooks, fake_docker, tmp_path)
-
-    with caplog.at_level(logging.WARNING, logger="minisweagent.hooks"):
-        output = env.execute({"command": "echo hi"})
-
-    assert output["returncode"] == 0
-    assert output["output"] == "hi\n"
-    assert read_record(stub_hooks["record"]) == []
-    assert "could not locate the hook bundles" in caplog.text
+    with pytest.raises(RequiredHookError, match="could not locate"):
+        make_environment(stub_hooks, fake_docker, tmp_path)
 
 
-def test_missing_bundles_are_a_silent_noop(tmp_path, fake_docker):
-    env = HookedDockerEnvironment(
-        image="test:latest",
-        cwd=str(tmp_path),
-        executable=str(fake_docker["path"]),
-        hooks_dir=str(tmp_path / "nope"),
-        node_bin="python3",
-    )
-
-    output = env.execute({"command": "echo hi"})
-
-    assert output["returncode"] == 0
-    assert output["output"] == "hi\n"
+def test_missing_bundles_fail_environment_construction(tmp_path, fake_docker):
+    with pytest.raises(RequiredHookError, match="missing hook bundles"):
+        HookedDockerEnvironment(
+            image="test:latest",
+            cwd=str(tmp_path),
+            executable=str(fake_docker["path"]),
+            hooks_dir=str(tmp_path / "nope"),
+            node_bin="python3",
+        )
 
 
 def test_hook_env_pairs_forwarded_into_container(stub_hooks, fake_docker, tmp_path):
@@ -121,8 +117,31 @@ def test_hook_env_pairs_forwarded_into_container(stub_hooks, fake_docker, tmp_pa
 
     env.execute({"command": "echo hi"})
 
-    hook_execs = [r for r in docker_execs(fake_docker) if r["command"][0] == "python3"]
+    hook_execs = docker_hook_execs(fake_docker)
     assert hook_execs[0]["envs"]["CUSTOM_VAR"] == "custom-value"
+
+
+def test_required_treatment_records_container_image_id(stub_hooks, fake_docker, tmp_path):
+    import subprocess
+
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    skill = tmp_path / "SKILL.md"
+    skill.write_text("# skill\n")
+
+    env = make_environment(
+        stub_hooks,
+        fake_docker,
+        tmp_path,
+        hooks_required=True,
+        skill_file=str(skill),
+        require_initial_no_spans=True,
+        experiment_arm="treatment",
+    )
+
+    attestation = env.serialize()["info"]["hooks"]["attestation"]
+    assert attestation["valid"] is True
+    assert attestation["configured_image"] == "test:latest"
+    assert attestation["container_image_id"] == "sha256:fake-image-id"
 
 
 def test_finish_session_fires_session_end(stub_hooks, fake_docker, tmp_path):

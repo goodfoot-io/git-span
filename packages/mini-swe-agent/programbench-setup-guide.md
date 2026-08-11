@@ -97,8 +97,9 @@ Read /opt/git-span/skills/git-span/SKILL.md before acting on this report. Use
 sed to read any referenced file under /opt/git-span/skills/git-span/references/.
 ```
 
-The path should be configurable but fixed in the experiment manifest, for
-example with `GIT_SPAN_SKILL_FILE=/opt/git-span/skills/git-span/SKILL.md`.
+The path is configured with
+`environment.skill_file: /opt/git-span/skills/git-span/SKILL.md` and must be
+fixed in the experiment manifest.
 
 ## Derive the ProgramBench task images
 
@@ -125,7 +126,7 @@ FROM ${BASE_IMAGE}
 USER root
 COPY node /usr/local/bin/node
 COPY git-span /usr/local/bin/git-span
-COPY mini_swe_agent_git_span-1.1.2-py3-none-any.whl /tmp/git-span-agent.whl
+COPY mini_swe_agent_git_span-1.1.3-py3-none-any.whl /tmp/git-span-agent.whl
 RUN python3 -m pip install --no-deps /tmp/git-span-agent.whl
 COPY git-span-skill/ /opt/git-span/skills/git-span/
 RUN chmod -R a+rX /opt/git-span \
@@ -183,6 +184,18 @@ environment:
   node_bin: node
   hook_timeout_ms: 10000
   skill_file: /opt/git-span/skills/git-span/SKILL.md
+  require_initial_no_spans: true
+  experiment_arm: treatment
+  expected_package_version: 1.1.3
+  expected_node_version: v20.x.y
+  expected_git_span_version: git-span 1.1.2
+  expected_bundle_sha256:
+    snapshot.mjs: <sha256>
+    advisor.mjs: <sha256>
+    post-tool-use.mjs: <sha256>
+    post-tool-use-failure.mjs: <sha256>
+    session-end.mjs: <sha256>
+  expected_skill_tree_sha256: <sha256>
 ```
 
 ```yaml
@@ -190,6 +203,7 @@ environment:
 environment:
   hooks_enabled: false
   hooks_required: false
+  experiment_arm: control
 ```
 
 Run both through the same `mswea-extra programbench` installation and the same
@@ -267,64 +281,60 @@ mechanical compliance rather than useful coupling documentation. Sample spans
 blind to arm outcome and assess whether each why identifies a real implicit
 dependency and whether its anchors cover the relevant counterparties.
 
-## Changes required before the clean experiment
+## Package safeguards and remaining validation
 
-### Required
+The custom package implements the following safeguards. They must remain
+covered by package tests and enabled in the experiment configuration.
 
-1. **Deliver allowed PreToolUse context.** `HookBridge.pre_tool_use()` currently
-   collects advisor context, but `HookedEnvironmentMixin.execute()` ignores it
-   unless the command is denied. Append allowed advisor context to the command's
-   eventual observation. This is especially important for `git status`, whose
+1. **Deliver allowed PreToolUse context.** `HookedEnvironmentMixin.execute()`
+   appends allowed advisor context to the command's eventual observation. This
+   is especially important for `git status`, whose
    report-only uncovered-writes guidance is the mechanism for creating spans
-   during development rather than only at the final commit. Add local and
-   Docker tests that fail without this behavior.
+   during development rather than only at the final commit.
 
-2. **Replace unsupported skill-loading prose.** For the mini-swe-agent generic
-   harness, replace “Load the `git-span:git-span` skill” with an instruction to
-   read the configured absolute skill file. Validate that the file exists and
-   is readable during treatment preflight. Keep the Claude and Codex wording
-   unchanged for their native hosts.
+2. **Replace unsupported skill-loading prose.** The Python bridge replaces
+   “Load the `git-span:git-span` skill” in mini-swe-agent emissions with an
+   instruction to read the configured absolute skill file. Required-mode
+   preflight validates that file and its containing skill tree.
 
-3. **Add required/fail-closed treatment mode.** Preserve fail-open behavior for
-   ordinary interactive use, but add `hooks_required: true` for experiments.
-   In this mode, missing bundles, Node/git-span incompatibility, unreadable
-   skill files, hook timeouts, non-zero exits, or malformed hook output must
-   mark the run as an infrastructure failure rather than silently converting it
-   into a control run.
+3. **Use fail-closed treatment semantics.** Enabling hooks is an explicit
+   request, so missing bundles always fail environment construction.
+   `hooks_required: true` additionally validates Node, git-span, the skill,
+   versions/checksums, repository state, and image identity, and turns runtime
+   timeouts, non-zero exits, and malformed output into infrastructure failures.
 
-4. **Add structured telemetry and serialization.** Record the attestation and
-   per-hook events described above in `environment.serialize()`, with optional
-   host-side JSONL. Make hook failure distinguishable from a legitimate empty
-   response.
+4. **Serialize structured telemetry.** `environment.serialize()` records the
+   attestation, ordered per-hook events, exact emitted context, delivery state,
+   extracted entities/spans, failures versus clean no-ops, and lifecycle
+   summary. The environment records token count as unavailable because it does
+   not own the model tokenizer.
 
-5. **Add a real-container integration test.** Exercise an actual derived
+5. **Use the same environment class in both arms.** Select treatment with a
+   configuration flag, not a different mini-swe-agent distribution. The arm
+   label, enabled/required state, image ID, and package identity are serialized
+   into every trajectory.
+
+6. **Make artifact versions explicit.** Exact package, Node, git-span, bundle,
+   and skill-tree expectations are supported by required-mode preflight.
+
+7. **Preserve context around output truncation.** Context is appended to the
+   output tail and also stored separately in telemetry, so exposure remains
+   auditable through ProgramBench's 10,000-character observation branch.
+
+8. **Expose clean span lifecycle summaries.** The package records span, anchor,
+   why, and drift summaries without injecting them into the model. The
+   `mswea-extra` ProgramBench wrapper calls `finish_session()` on every agent
+   exit path before the runner's final trajectory save.
+
+### Remaining external validation
+
+9. **Run a real-container integration test outside the development container.** Exercise an actual derived
    ProgramBench image, the `agent` user, bundle discovery, an uncovered
    `git status`, a held commit, span creation, commit retry, and later context
-   surfacing. Fake-Docker tests remain useful but are not sufficient evidence
-   that treatment delivery works.
-
-### Strongly recommended
-
-6. **Use the same environment class in both arms.** Select treatment with a
-   configuration flag, not a different mini-swe-agent distribution. Serialize
-   the flag and arm label into every trajectory.
-
-7. **Make artifact versions explicit.** Reject an unapproved git-span version
-   rather than relying only on a minimum version. Record and check the hook,
-   CLI, wheel, and skill checksums together as one treatment bundle identity.
-
-8. **Preserve all context around output truncation.** Hook context is appended
-   to command output and normally survives in the output tail, but store the
-   exact delivered block separately in telemetry so a long command cannot make
-   exposure ambiguous. Test the ProgramBench 10,000-character observation
-   branch.
-
-9. **Expose clean span lifecycle summaries.** At session end or immediately
-   before submission collection, record span count, why coverage, anchors, and
-   `git span drift --format json` without injecting additional task context.
-   The runner currently uses the upstream ProgramBench agent, so its normal
-   `HookedAgent.finish_session()` path is not called; collect this through the
-   environment/runner integration instead.
+   surfacing. This cannot be executed from the repository development
+   container and must be completed in the actual benchmark host environment.
+   Fake-Docker and local real-bundle tests are necessary but not sufficient
+   evidence that treatment delivery works.
 
 10. **Keep experiment instructions generic.** Do not add ProgramBench-specific
     solution hints, candidate spans, or task-derived examples to the skill or

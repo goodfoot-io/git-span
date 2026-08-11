@@ -2,6 +2,9 @@
 
 import sys
 
+import pytest
+from minisweagent.run.benchmarks import programbench
+
 from minisweagent_gitspan import cli
 
 
@@ -48,6 +51,7 @@ def test_main_extra_injects_docker_environment_for_programbench(monkeypatch):
         "-m",
         "deepseek/deepseek-v4-flash",
     ]
+    assert programbench.ProgramBenchAgent._git_span_session_wrapper is True
 
 
 def test_main_extra_respects_explicit_environment_class(monkeypatch):
@@ -78,3 +82,26 @@ def test_main_extra_leaves_other_subcommands_untouched(monkeypatch):
     cli.main_extra()
 
     assert captured["argv"] == ["mswea-extra", "swebench", "-m", "x"]
+
+
+def test_programbench_session_wrapper_finishes_on_exception(monkeypatch):
+    finished = []
+
+    class Environment:
+        def finish_session(self):
+            finished.append(True)
+
+    class BaseAgent:
+        def __init__(self):
+            self.env = Environment()
+
+        def run(self):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(programbench, "ProgramBenchAgent", BaseAgent)
+    cli._install_programbench_session_wrapper()
+
+    with pytest.raises(RuntimeError, match="boom"):
+        programbench.ProgramBenchAgent().run()
+
+    assert finished == [True]

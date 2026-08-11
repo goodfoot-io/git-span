@@ -24,6 +24,28 @@ from minisweagent.run.utilities.mini_extra import main as mini_extra_main
 _ENVIRONMENT_CLASS = "minisweagent_gitspan.environment.HookedDockerEnvironment"
 
 
+def _install_programbench_session_wrapper() -> None:
+    """Ensure ProgramBench serializes hook cleanup and span summaries on every exit."""
+    from minisweagent.run.benchmarks import programbench
+
+    base = programbench.ProgramBenchAgent
+    if getattr(base, "_git_span_session_wrapper", False):
+        return
+
+    class HookedProgramBenchAgent(base):
+        _git_span_session_wrapper = True
+
+        def run(self, *args, **kwargs):
+            try:
+                return super().run(*args, **kwargs)
+            finally:
+                finish_session = getattr(self.env, "finish_session", None)
+                if callable(finish_session):
+                    finish_session()
+
+    programbench.ProgramBenchAgent = HookedProgramBenchAgent
+
+
 def main() -> None:
     """Run upstream ``mini`` with the hook agent and environment classes."""
     sys.argv = [
@@ -48,5 +70,7 @@ def main_extra() -> None:
     args = sys.argv[1:]
     if args and args[0] == "programbench" and "--environment-class" not in args:
         args = [args[0], "--environment-class", _ENVIRONMENT_CLASS, *args[1:]]
+    if args and args[0] == "programbench":
+        _install_programbench_session_wrapper()
     sys.argv = [sys.argv[0], *args]
     mini_extra_main()

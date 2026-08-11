@@ -107,6 +107,10 @@ if verb == "run":
     record(verb="run", args=args[1:])
     print("fake-container-1")
     sys.exit(0)
+if verb == "inspect":
+    record(verb="inspect", args=args[1:])
+    print("sha256:fake-image-id")
+    sys.exit(0)
 if verb == "exec":
     rest = args[1:]
     cwd = "/"

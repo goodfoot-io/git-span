@@ -3,9 +3,10 @@
 import logging
 import os
 
+import pytest
 from conftest import read_record
 
-from minisweagent_gitspan.bridge import DockerHookBridge, HookBridge, default_hooks_dir
+from minisweagent_gitspan.bridge import DockerHookBridge, HookBridge, RequiredHookError, default_hooks_dir
 
 
 def make_bridge(stub_hooks, **kwargs):
@@ -98,13 +99,11 @@ def test_session_end(stub_hooks):
     assert records[0]["envelope"] == {"session_id": "sess-1", "cwd": "/work"}
 
 
-def test_missing_bundles_are_silent(tmp_path):
+def test_missing_bundles_fail_closed_when_hooks_were_requested(tmp_path):
     bridge = HookBridge(session_id="sess-2", hooks_dir=str(tmp_path / "nope"))
 
-    result = bridge.pre_tool_use("echo hi", "/work", "tu-6")
-
-    assert not result.denied
-    assert result.reason is None
+    with pytest.raises(RequiredHookError, match="missing"):
+        bridge.pre_tool_use("echo hi", "/work", "tu-6")
 
 
 def test_hook_crash_fails_open(stub_hooks, monkeypatch):
@@ -114,6 +113,16 @@ def test_hook_crash_fails_open(stub_hooks, monkeypatch):
     result = bridge.pre_tool_use("echo hi", "/work", "tu-7")
 
     assert not result.denied
+
+
+def test_required_hook_crash_fails_closed(stub_hooks, monkeypatch):
+    monkeypatch.setenv("MSWEA_STUB_EXIT", "2")
+    bridge = make_bridge(stub_hooks, required=True)
+
+    with pytest.raises(RequiredHookError, match="exited 2"):
+        bridge.pre_tool_use("echo hi", "/work", "tu-required")
+
+    assert bridge.events[-1]["status"] == "nonzero-exit"
 
 
 def test_hook_garbage_output_fails_open(stub_hooks, monkeypatch):
@@ -154,6 +163,29 @@ def test_default_hooks_dir_points_at_package_bundles():
     assert hooks_dir.name == "bin"
     assert hooks_dir.parent.name == "hooks"
     assert hooks_dir.parent.parent.name == "minisweagent_gitspan"
+
+
+def test_context_is_rewritten_for_the_mini_agent_and_recorded(stub_hooks, monkeypatch):
+    monkeypatch.setenv(
+        "MSWEA_STUB_CONTEXT_PRE",
+        "<git-span>\n## linked-files\n- src/a.py#L1-L2\n\nLoad the `git-span:git-span` skill for guidance.\n</git-span>",
+    )
+    bridge = make_bridge(stub_hooks, skill_file="/opt/git-span/skills/git-span/SKILL.md")
+
+    result = bridge.pre_tool_use("git status", "/work", "tu-skill")
+    bridge.mark_delivered("tu-skill", result.context)
+
+    assert "Load the" not in result.context
+    assert "`/opt/git-span/skills/git-span/SKILL.md`" in result.context
+    event = bridge.events[0]
+    assert event["context"] == result.context
+    assert event["context_chars"] == len(result.context)
+    assert event["context_tokens"] is None
+    assert event["entities"] == ["src/a.py"]
+    assert event["spans"] == ["linked-files"]
+    assert event["delivered"] is True
+    assert event["ordinal"] == 1
+    assert event["duration_ms"] >= 0
 
 
 def make_docker_bridge(stub_hooks, fake_docker, **kwargs):
