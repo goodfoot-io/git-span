@@ -33,6 +33,11 @@
     }
   },
   "remoteUser": "node",
+  // Docker-outside-of-docker: installs the docker CLI and gives the node user
+  // access to the macOS Docker Desktop daemon (socket mounted via docker-compose.yml).
+  "features": {
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:2": {}
+  },
   "mounts": [
     "source=claude-code-bashhistory,target=/commandhistory,type=volume",
     "source=git-span-cargo-target,target=/var/cache/git-span/cargo-target,type=volume",

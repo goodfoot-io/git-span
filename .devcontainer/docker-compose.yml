@@ -18,6 +18,11 @@ services:
       dockerfile: .devcontainer/Dockerfile
     volumes:
       - ..:/workspace:cached
+      # Docker Desktop host socket (docker-outside-of-docker): drives the macOS
+      # daemon from inside this container. Mounted at docker-host.sock — the
+      # devcontainers docker-outside-of-docker feature symlinks /var/run/docker.sock
+      # to it and fixes permissions at container start.
+      - /var/run/docker.sock:/var/run/docker-host.sock:cached
       - ${HOME}/devcontainer/git-span:/home/node:cached
       - claude-code-bashhistory:/commandhistory
       - git-span-cargo-target:/var/cache/git-span/cargo-target
