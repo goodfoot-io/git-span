@@ -1874,3 +1874,112 @@ their refined purpose
     );
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// --fix conflict resolution: duplicate-collapse sentinel and same-side dupes
+// ---------------------------------------------------------------------------
+
+/// The all-zero rk64 hash a duplicate collapse plants on an unverified
+/// survivor.
+const SENTINEL: &str = "0000000000000000";
+
+/// Resolve a conflicted span where one side carries the sentinel for an
+/// identity the other side has a real hash for, with the source file present
+/// and clean -- the one caller where `rehash()` is reachable at all. The
+/// sentinel must survive it, and be reported, in both directions.
+fn sentinel_survives_conflict_resolution(sentinel_on_ours: bool) -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let h1 = line_slice_hash(ORIGINAL, 1, 5);
+    let (ours_hash, theirs_hash) = if sentinel_on_ours {
+        (SENTINEL.to_string(), h1.clone())
+    } else {
+        (h1.clone(), SENTINEL.to_string())
+    };
+    let span_content = format!(
+        "\
+<<<<<<< ours
+file1.txt#L1-L5 rk64:{ours_hash}
+=======
+file1.txt#L1-L5 rk64:{theirs_hash}
+>>>>>>> theirs
+"
+    );
+    repo.write_file(".span/m", &span_content)?;
+
+    let out = repo.run_span(["drift", "--fix", "--no-exit-code"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("preserved unverified collapse marker: `file1.txt#L1-L5`"),
+        "preservation line expected (sentinel_on_ours={sentinel_on_ours}); stdout=\n{stdout}"
+    );
+
+    let span = read_span(&repo, "m")?;
+    assert!(
+        span.contains(&format!("file1.txt#L1-L5 rk64:{SENTINEL}")),
+        "sentinel survives the merge unresolved (sentinel_on_ours={sentinel_on_ours}); span:\n{span}"
+    );
+    assert!(
+        !span.contains(&format!("file1.txt#L1-L5 rk64:{h1}")),
+        "the real hash must not replace the sentinel; span:\n{span}"
+    );
+    assert!(
+        !span.contains("<<<<<<<"),
+        "conflict markers removed; span:\n{span}"
+    );
+    Ok(())
+}
+
+#[test]
+fn fix_conflict_preserves_sentinel_on_ours_side() -> Result<()> {
+    sentinel_survives_conflict_resolution(true)
+}
+
+#[test]
+fn fix_conflict_preserves_sentinel_on_theirs_side() -> Result<()> {
+    sentinel_survives_conflict_resolution(false)
+}
+
+#[test]
+fn fix_conflict_reports_same_side_duplicate_collapse() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+
+    // The ours side of the conflict carries an unrepaired duplicate for one
+    // identity. The merge kernel used to drop one of the two records before
+    // the sides were ever compared, with no report of any kind.
+    let h1 = line_slice_hash(ORIGINAL, 1, 5);
+    let h2 = line_slice_hash(FILE2, 1, 5);
+    let span_content = format!(
+        "\
+<<<<<<< ours
+file1.txt#L1-L5 rk64:{h1}
+file1.txt#L1-L5 rk64:deadbeefdeadbeef
+=======
+file2.txt#L1-L5 rk64:{h2}
+>>>>>>> theirs
+"
+    );
+    repo.write_file(".span/m", &span_content)?;
+
+    let out = repo.run_span(["drift", "--fix", "--no-exit-code"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("collapsed same-side duplicate (ours): `file1.txt#L1-L5` — 2 records → 1"),
+        "same-side collapse line expected; stdout=\n{stdout}"
+    );
+    assert!(
+        stdout.contains("preserved unverified collapse marker: `file1.txt#L1-L5`"),
+        "the divergent survivor's sentinel is reported too; stdout=\n{stdout}"
+    );
+
+    let span = read_span(&repo, "m")?;
+    assert_eq!(
+        span.matches("file1.txt#L1-L5").count(),
+        1,
+        "exactly one surviving record; span:\n{span}"
+    );
+    assert!(
+        span.contains(&format!("file1.txt#L1-L5 rk64:{SENTINEL}")),
+        "survivor carries the sentinel, not either discarded hash; span:\n{span}"
+    );
+    Ok(())
+}

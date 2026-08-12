@@ -23,6 +23,7 @@
 
 use crate::cli::MergeDriverArgs;
 use crate::cli::drift_fix::format_residue_markers;
+use crate::cli::format::{format_same_side_collapse, format_sentinel_preserved};
 use crate::span_file::{AnchorRecord, SpanFile};
 use anyhow::Result;
 use git_span_core::merge_span_files;
@@ -56,6 +57,17 @@ pub(crate) fn run_merge_driver(args: MergeDriverArgs) -> Result<i32> {
     // Step 3: Structural merge with base (three-way) and NO source files.
     // The merge driver must NOT trust the worktree, which may be mid-merge.
     let result = merge_span_files(Some(&base), &ours, &theirs, &[]);
+
+    // Step 3b: Name every collapse and every preserved sentinel. Neither is
+    // visible in the written file as an event — a same-side collapse would
+    // otherwise drop a record silently, and a preserved sentinel looks like
+    // ordinary drift to anyone who did not watch the merge happen.
+    for (side, collapsed) in &result.same_side_collapsed {
+        println!("{}", format_same_side_collapse(*side, collapsed));
+    }
+    for (path, start_line, end_line) in &result.sentinel_preserved {
+        println!("{}", format_sentinel_preserved(path, *start_line, *end_line));
+    }
 
     // Step 4: Write the merged result to the %A (ours) path.
     if result.unresolved.is_empty() {

@@ -143,3 +143,143 @@ fn merge_driver_exits_non_zero_on_divergence() {
         "their z.txt anchor; output:\n{output}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Duplicate-collapse sentinel and same-side duplicates
+// ---------------------------------------------------------------------------
+
+/// The all-zero rk64 hash `drift --fix`'s collapse plants on a survivor whose
+/// content was never verified.
+const SENTINEL_LINE: &str = "rk64:0000000000000000";
+
+fn run_driver(
+    base: &std::path::Path,
+    ours: &std::path::Path,
+    theirs: &std::path::Path,
+) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_git-span"))
+        .args([
+            "merge-driver",
+            &base.to_string_lossy(),
+            &ours.to_string_lossy(),
+            &theirs.to_string_lossy(),
+            "7",
+        ])
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn merge_driver_reports_preserved_sentinel_with_no_counterpart() {
+    let dir = tempfile::tempdir().unwrap();
+
+    // The driver always passes an empty source list, so this path can never
+    // rehash anything -- but it must still *report* that a sentinel crossed
+    // the merge, not carry it through silently.
+    let base = write_span_file(dir.path(), "base", "x.txt#L1-L5 rk64:111\n\n");
+    let ours = write_span_file(
+        dir.path(),
+        "ours",
+        &format!("x.txt#L1-L5 rk64:111\ns.txt#L2-L4 {SENTINEL_LINE}\n\n"),
+    );
+    let theirs = write_span_file(dir.path(), "theirs", "x.txt#L1-L5 rk64:111\n\n");
+
+    let out = run_driver(&base, &ours, &theirs);
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+
+    assert_eq!(out.status.code(), Some(0), "stdout:\n{stdout}");
+    assert!(
+        stdout.contains("preserved unverified collapse marker: `s.txt#L2-L4`"),
+        "preservation line expected; stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("git span replace <address> <new-address>"),
+        "terminal-residual completion path named; stdout:\n{stdout}"
+    );
+
+    let output = std::fs::read_to_string(&ours).unwrap();
+    assert!(
+        output.contains(&format!("s.txt#L2-L4 {SENTINEL_LINE}")),
+        "sentinel carried through unchanged; output:\n{output}"
+    );
+}
+
+#[test]
+fn merge_driver_reports_preserved_sentinel_on_divergence_without_duplicating_it() {
+    let dir = tempfile::tempdir().unwrap();
+
+    // Sentinel on theirs, a real hash on ours, no source to adjudicate: the
+    // conflict markers remain the correct outcome, and the preservation
+    // report is additive to them -- never a second, clean copy of the same
+    // identity, which a hand-resolved merge would leave duplicated.
+    let base = write_span_file(dir.path(), "base", "x.txt#L1-L5 rk64:111\n\n");
+    let ours = write_span_file(
+        dir.path(),
+        "ours",
+        "x.txt#L1-L5 rk64:111\ns.txt#L2-L4 rk64:222\n\n",
+    );
+    let theirs = write_span_file(
+        dir.path(),
+        "theirs",
+        &format!("x.txt#L1-L5 rk64:111\ns.txt#L2-L4 {SENTINEL_LINE}\n\n"),
+    );
+
+    let out = run_driver(&base, &ours, &theirs);
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+
+    assert_eq!(out.status.code(), Some(1), "stdout:\n{stdout}");
+    assert!(
+        stdout.contains("preserved unverified collapse marker: `s.txt#L2-L4`"),
+        "preservation line expected alongside the conflict; stdout:\n{stdout}"
+    );
+
+    let output = std::fs::read_to_string(&ours).unwrap();
+    assert!(
+        output.contains("<<<<<<<"),
+        "conflict markers expected; output:\n{output}"
+    );
+    // Exactly the two conflict-side records for that identity, and no clean
+    // line outside the markers.
+    let occurrences = output.matches("s.txt#L2-L4").count();
+    assert_eq!(occurrences, 2, "no duplicate clean line; output:\n{output}");
+}
+
+#[test]
+fn merge_driver_reports_same_side_duplicate_collapse() {
+    let dir = tempfile::tempdir().unwrap();
+
+    // Ours carries an unrepaired duplicate. Before this, the index build's
+    // last-write-wins insert dropped one record with no report at all.
+    let base = write_span_file(dir.path(), "base", "x.txt#L1-L5 rk64:111\n\n");
+    let ours = write_span_file(
+        dir.path(),
+        "ours",
+        "x.txt#L1-L5 rk64:111\nd.txt#L1-L3 rk64:222\nd.txt#L1-L3 rk64:333\n\n",
+    );
+    let theirs = write_span_file(dir.path(), "theirs", "x.txt#L1-L5 rk64:111\n\n");
+
+    let out = run_driver(&base, &ours, &theirs);
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+
+    assert!(
+        stdout.contains("collapsed same-side duplicate (ours): `d.txt#L1-L3` — 2 records → 1"),
+        "same-side collapse line expected; stdout:\n{stdout}"
+    );
+    // The divergent group's survivor carries the sentinel, so the same run
+    // also reports the preservation.
+    assert!(
+        stdout.contains("preserved unverified collapse marker: `d.txt#L1-L3`"),
+        "preservation line expected; stdout:\n{stdout}"
+    );
+
+    let output = std::fs::read_to_string(&ours).unwrap();
+    assert_eq!(
+        output.matches("d.txt#L1-L3").count(),
+        1,
+        "one surviving record; output:\n{output}"
+    );
+    assert!(
+        output.contains(&format!("d.txt#L1-L3 {SENTINEL_LINE}")),
+        "survivor carries the sentinel; output:\n{output}"
+    );
+}

@@ -770,12 +770,30 @@ pub fn parse_address(text: &str) -> Option<(String, AnchorExtent)> {
 // Structural span merge
 // ---------------------------------------------------------------------------
 
+/// Which side of a merge a same-side duplicate collapse happened on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MergeSide {
+    Ours,
+    Theirs,
+}
+
 /// Outcome of a structural span merge. Anchors in `merged` are in
 /// canonical (path, start_line, end_line) order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpanMergeResult {
     pub merged: SpanFile,
     pub unresolved: Vec<UnresolvedAnchor>,
+    /// Duplicate identities collapsed *within* one side's own anchors,
+    /// before ours was ever compared against theirs. Reported so the
+    /// collapse is named rather than silently absorbed by the index build.
+    pub same_side_collapsed: Vec<(MergeSide, CollapsedIdentity)>,
+    /// Identities whose record carried the duplicate-collapse sentinel and
+    /// was therefore carried through unchanged instead of re-hashed.
+    ///
+    /// This is a return-value classification, not a third write
+    /// destination: an entry here says nothing about whether the identity
+    /// landed in `merged` or `unresolved`, and never changes which.
+    pub sentinel_preserved: Vec<(String, u32, u32)>,
 }
 
 /// Same path + extent on both sides, divergent content_hash, with no
@@ -819,43 +837,80 @@ pub fn merge_span_files(
         }
     }
 
+    // Collapse each side's own duplicate identities *before* the index maps
+    // are built. `HashMap::insert` would otherwise keep only the last
+    // same-identity record on that side, silently dropping the other before
+    // the two sides are ever compared.
+    let mut ours_anchors = ours.anchors.clone();
+    let mut theirs_anchors = theirs.anchors.clone();
+    let mut same_side_collapsed: Vec<(MergeSide, CollapsedIdentity)> = Vec::new();
+    collapse_side(MergeSide::Ours, &mut ours_anchors, &mut same_side_collapsed);
+    collapse_side(MergeSide::Theirs, &mut theirs_anchors, &mut same_side_collapsed);
+
     // Build index maps keyed by (path, start_line, end_line).
     let mut ours_map: HashMap<(&str, u32, u32), &AnchorRecord> = HashMap::new();
     let mut theirs_map: HashMap<(&str, u32, u32), &AnchorRecord> = HashMap::new();
 
-    for a in &ours.anchors {
+    for a in &ours_anchors {
         ours_map.insert((a.path.as_str(), a.start_line, a.end_line), a);
     }
-    for a in &theirs.anchors {
+    for a in &theirs_anchors {
         theirs_map.insert((a.path.as_str(), a.start_line, a.end_line), a);
     }
 
     let mut merged_anchors: Vec<AnchorRecord> = Vec::new();
     let mut unresolved: Vec<UnresolvedAnchor> = Vec::new();
+    let mut sentinel_preserved: Vec<(String, u32, u32)> = Vec::new();
 
     // Process keys from ours map.
     for (&(path, start_line, end_line), o_anchor) in &ours_map {
         match theirs_map.get(&(path, start_line, end_line)) {
             None => {
-                // Anchor only in ours.
-                let anchor = match find_source(path, source_files) {
-                    Some(src) => rehash(o_anchor, src),
-                    None => (*o_anchor).clone(),
-                };
-                merged_anchors.push(anchor);
+                // Anchor only in ours. The sentinel check gates the whole
+                // branch, not just the source-available arm — otherwise it
+                // never runs for a caller that always passes no sources.
+                if carried_sentinel(o_anchor) {
+                    sentinel_preserved.push((path.to_string(), start_line, end_line));
+                    merged_anchors.push((*o_anchor).clone());
+                } else {
+                    let anchor = match find_source(path, source_files) {
+                        Some(src) => rehash(o_anchor, src),
+                        None => (*o_anchor).clone(),
+                    };
+                    merged_anchors.push(anchor);
+                }
             }
             Some(t_anchor) => {
                 if o_anchor.algorithm == t_anchor.algorithm
                     && o_anchor.content_hash == t_anchor.content_hash
                 {
-                    // Identical in both — keep one copy.
+                    // Identical in both — keep one copy. Two records
+                    // carrying the literal same sentinel land here and are
+                    // preserved by construction; nothing is at risk.
                     merged_anchors.push((*o_anchor).clone());
                 } else {
                     // Same path + extent, divergent hash.
+                    let sentinel_here =
+                        carried_sentinel(o_anchor) || carried_sentinel(t_anchor);
+                    if sentinel_here {
+                        sentinel_preserved.push((path.to_string(), start_line, end_line));
+                    }
                     match find_source(path, source_files) {
                         Some(src) => {
-                            // Re-hash from source → one canonical anchor.
-                            merged_anchors.push(rehash(o_anchor, src));
+                            // A sentinel-bearing record is never resolved by
+                            // rehashing: `rehash` recomputes at the record's
+                            // *stored* coordinates, which the sentinel may be
+                            // marking as stale pending a position update, so
+                            // a fresh hash there would read as confirmation
+                            // of content nobody verified.
+                            if carried_sentinel(o_anchor) {
+                                merged_anchors.push((*o_anchor).clone());
+                            } else if carried_sentinel(t_anchor) {
+                                merged_anchors.push((**t_anchor).clone());
+                            } else {
+                                // Re-hash from source → one canonical anchor.
+                                merged_anchors.push(rehash(o_anchor, src));
+                            }
                         }
                         None => {
                             // No source available — return in unresolved.
@@ -876,11 +931,16 @@ pub fn merge_span_files(
     // Process keys only in theirs map (not already handled above).
     for (&(path, start_line, end_line), t_anchor) in &theirs_map {
         if !ours_map.contains_key(&(path, start_line, end_line)) {
-            let anchor = match find_source(path, source_files) {
-                Some(src) => rehash(t_anchor, src),
-                None => (*t_anchor).clone(),
-            };
-            merged_anchors.push(anchor);
+            if carried_sentinel(t_anchor) {
+                sentinel_preserved.push((path.to_string(), start_line, end_line));
+                merged_anchors.push((*t_anchor).clone());
+            } else {
+                let anchor = match find_source(path, source_files) {
+                    Some(src) => rehash(t_anchor, src),
+                    None => (*t_anchor).clone(),
+                };
+                merged_anchors.push(anchor);
+            }
         }
     }
 
@@ -895,6 +955,11 @@ pub fn merge_span_files(
     // Sort unresolved anchors deterministically by (path, start_line, end_line)
     // so conflict-marker output order is stable across runs.
     unresolved.sort_by_key(|u| (u.path.clone(), u.start_line, u.end_line));
+
+    // The two loops above walk `HashMap`s, so `sentinel_preserved` is built
+    // in iteration order — sort it into the same canonical order everything
+    // else in this result uses, so no map order leaks into the output.
+    sentinel_preserved.sort();
 
     // Resolve why text and config with the same three-way policy.
     let (why_text, why_conflict) = resolve_why_text(base, ours, theirs);
@@ -922,6 +987,8 @@ pub fn merge_span_files(
         });
     }
 
+    debug_assert_merge_disjoint(&merged_anchors, &unresolved);
+
     SpanMergeResult {
         merged: SpanFile {
             anchors: merged_anchors,
@@ -929,6 +996,63 @@ pub fn merge_span_files(
             config,
         },
         unresolved,
+        same_side_collapsed,
+        sentinel_preserved,
+    }
+}
+
+/// Collapse `anchors` in place and apply the merge kernel's hash policy to
+/// each survivor: the sentinel when the group disagreed, the agreed hash
+/// (already on the survivor) when it did not. Appends one entry per
+/// collapsed group to `out`, tagged with the side it happened on.
+fn collapse_side(
+    side: MergeSide,
+    anchors: &mut Vec<AnchorRecord>,
+    out: &mut Vec<(MergeSide, CollapsedIdentity)>,
+) {
+    for c in collapse_duplicate_identities(anchors) {
+        if c.agreed_hash.is_none()
+            && let Some(survivor) = anchors.iter_mut().find(|a| {
+                a.path == c.path && a.start_line == c.start_line && a.end_line == c.end_line
+            })
+        {
+            survivor.algorithm = RK64_ALGORITHM.to_string();
+            survivor.content_hash = crate::rk64_unmatched_sentinel();
+        }
+        out.push((side, c));
+    }
+}
+
+/// Every identity must land in `merged` **or** `unresolved`, never both:
+/// `format_residue_markers` emits the first as a clean line and the second
+/// as conflict markers, so an identity in both prints as a clean line *and*
+/// markers for the same span — and an operator resolving the conflict by
+/// deleting the markers is left with a duplicate at that identity, which is
+/// the precondition state this whole mechanism exists to repair.
+///
+/// Factored out of [`merge_span_files`] so a test can drive the check
+/// against a hand-built violating pair; no branch of the kernel can
+/// construct one.
+fn debug_assert_merge_disjoint(merged: &[AnchorRecord], unresolved: &[UnresolvedAnchor]) {
+    #[cfg(debug_assertions)]
+    {
+        let merged_ids: std::collections::HashSet<(&str, u32, u32)> = merged
+            .iter()
+            .map(|a| (a.path.as_str(), a.start_line, a.end_line))
+            .collect();
+        let unresolved_ids: std::collections::HashSet<(&str, u32, u32)> = unresolved
+            .iter()
+            .map(|u| (u.path.as_str(), u.start_line, u.end_line))
+            .collect();
+        debug_assert!(
+            merged_ids.is_disjoint(&unresolved_ids),
+            "merge_span_files invariant violated: an identity appears in both \
+             `merged` and `unresolved`"
+        );
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = (merged, unresolved);
     }
 }
 
@@ -1439,6 +1563,260 @@ mod tests {
         assert_eq!(result.unresolved[0].end_line, 4);
         assert_eq!(result.unresolved[0].ours, ours_anchor);
         assert_eq!(result.unresolved[0].theirs, theirs_anchor);
+    }
+
+    // -----------------------------------------------------------------------
+    // merge kernel: same-side collapse and sentinel preservation
+    // -----------------------------------------------------------------------
+
+    fn span_of(anchors: Vec<AnchorRecord>) -> SpanFile {
+        SpanFile { anchors, why: String::new(), config: SpanConfig::default() }
+    }
+
+    fn sentinel_anchor(path: &str, start: u32, end: u32) -> AnchorRecord {
+        anchor(path, start, end, RK64_ALGORITHM, &crate::rk64_unmatched_sentinel())
+    }
+
+    fn merged_at<'a>(
+        result: &'a SpanMergeResult,
+        path: &str,
+        start: u32,
+        end: u32,
+    ) -> Vec<&'a AnchorRecord> {
+        result
+            .merged
+            .anchors
+            .iter()
+            .filter(|a| a.path == path && a.start_line == start && a.end_line == end)
+            .collect()
+    }
+
+    #[test]
+    fn merge_collapses_ours_side_duplicate_instead_of_dropping_it() {
+        // Ours carries an unrepaired duplicate for one identity; theirs has
+        // a single, identical-to-neither record for the same identity.
+        let ours = span_of(vec![
+            anchor("a.txt", 1, 2, "rk64", "aaaa"),
+            anchor("a.txt", 1, 2, "rk64", "bbbb"),
+        ]);
+        let theirs = span_of(vec![anchor("a.txt", 1, 2, "rk64", "cccc")]);
+        let result = merge_span_files(None, &ours, &theirs, &[]);
+
+        // The same-side collapse is named, not silently absorbed by the
+        // index build's last-write-wins insert.
+        assert_eq!(result.same_side_collapsed.len(), 1);
+        let (side, collapsed) = &result.same_side_collapsed[0];
+        assert_eq!(*side, MergeSide::Ours);
+        assert_eq!(collapsed.path, "a.txt");
+        assert_eq!(collapsed.records_before, 2);
+        assert_eq!(collapsed.agreed_hash, None);
+
+        // The divergent survivor carries the sentinel, so the cross-side
+        // comparison sees it and reports the preservation.
+        assert_eq!(
+            result.sentinel_preserved,
+            vec![("a.txt".to_string(), 1, 2)]
+        );
+        // No source to adjudicate the cross-side divergence: still unresolved.
+        assert_eq!(result.unresolved.len(), 1);
+        assert_eq!(
+            result.unresolved[0].ours.content_hash,
+            crate::rk64_unmatched_sentinel()
+        );
+        assert!(merged_at(&result, "a.txt", 1, 2).is_empty());
+    }
+
+    #[test]
+    fn merge_collapses_theirs_side_duplicate_with_no_counterpart() {
+        // Theirs carries the duplicate; ours has nothing at that identity.
+        let ours = span_of(vec![anchor("other.txt", 1, 1, "rk64", "zzzz")]);
+        let theirs = span_of(vec![
+            anchor("b.txt", 4, 6, "rk64", "aaaa"),
+            anchor("b.txt", 4, 6, "rk64", "bbbb"),
+        ]);
+        let result = merge_span_files(None, &ours, &theirs, &[]);
+
+        assert_eq!(result.same_side_collapsed.len(), 1);
+        assert_eq!(result.same_side_collapsed[0].0, MergeSide::Theirs);
+        assert_eq!(result.same_side_collapsed[0].1.records_before, 2);
+
+        // Exactly one record survives — the other is not silently dropped
+        // without a report, and not duplicated into the merged output.
+        let survivors = merged_at(&result, "b.txt", 4, 6);
+        assert_eq!(survivors.len(), 1);
+        assert_eq!(survivors[0].content_hash, crate::rk64_unmatched_sentinel());
+        assert_eq!(result.sentinel_preserved, vec![("b.txt".to_string(), 4, 6)]);
+    }
+
+    #[test]
+    fn merge_same_side_identical_duplicate_keeps_agreed_hash() {
+        // A verbatim-repeated line is a same-line duplicate, not a
+        // divergence: it is deduplicated and reported, but never forced to
+        // the sentinel — that would manufacture drift for content that was
+        // never in doubt.
+        let ours = span_of(vec![
+            anchor("c.txt", 2, 3, "rk64", "abcd"),
+            anchor("c.txt", 2, 3, "rk64", "abcd"),
+        ]);
+        let theirs = span_of(vec![]);
+        let result = merge_span_files(None, &ours, &theirs, &[]);
+
+        assert_eq!(result.same_side_collapsed.len(), 1);
+        assert_eq!(
+            result.same_side_collapsed[0].1.agreed_hash,
+            Some(("rk64".to_string(), "abcd".to_string()))
+        );
+        let survivors = merged_at(&result, "c.txt", 2, 3);
+        assert_eq!(survivors.len(), 1);
+        assert_eq!(survivors[0].content_hash, "abcd");
+        assert!(result.sentinel_preserved.is_empty());
+    }
+
+    #[test]
+    fn merge_preserves_sentinel_on_ours_against_real_theirs_hash() {
+        let ours = span_of(vec![sentinel_anchor("a.txt", 1, 2)]);
+        let theirs = span_of(vec![anchor("a.txt", 1, 2, "rk64", "realhash")]);
+        let source = vec![("a.txt".to_string(), b"hello\nworld\n".to_vec())];
+        let result = merge_span_files(None, &ours, &theirs, &source);
+
+        // Source is available, so pre-preserve this would have been
+        // rehashed. It must not be: the survivor still carries the sentinel
+        // at untouched coordinates, and the real hash is discarded.
+        let survivors = merged_at(&result, "a.txt", 1, 2);
+        assert_eq!(survivors.len(), 1);
+        assert_eq!(survivors[0].content_hash, crate::rk64_unmatched_sentinel());
+        assert_eq!(survivors[0].algorithm, RK64_ALGORITHM);
+        assert_eq!(result.sentinel_preserved, vec![("a.txt".to_string(), 1, 2)]);
+        assert!(result.unresolved.is_empty());
+    }
+
+    #[test]
+    fn merge_preserves_sentinel_on_theirs_against_real_ours_hash() {
+        // The discriminating direction: a guard that only inspected
+        // `o_anchor` would rehash this one away.
+        let ours = span_of(vec![anchor("a.txt", 1, 2, "rk64", "realhash")]);
+        let theirs = span_of(vec![sentinel_anchor("a.txt", 1, 2)]);
+        let source = vec![("a.txt".to_string(), b"hello\nworld\n".to_vec())];
+        let result = merge_span_files(None, &ours, &theirs, &source);
+
+        let survivors = merged_at(&result, "a.txt", 1, 2);
+        assert_eq!(survivors.len(), 1);
+        assert_eq!(survivors[0].content_hash, crate::rk64_unmatched_sentinel());
+        assert_eq!(survivors[0].start_line, 1);
+        assert_eq!(survivors[0].end_line, 2);
+        assert_eq!(result.sentinel_preserved, vec![("a.txt".to_string(), 1, 2)]);
+        assert!(result.unresolved.is_empty());
+    }
+
+    #[test]
+    fn merge_reports_sentinel_with_empty_source_files_ours_only() {
+        // `merge_driver.rs` always passes `&[]`, so a sentinel check nested
+        // inside the source-available arm would never run for it.
+        let ours = span_of(vec![sentinel_anchor("a.txt", 1, 2)]);
+        let theirs = span_of(vec![]);
+        let result = merge_span_files(None, &ours, &theirs, &[]);
+
+        assert_eq!(result.sentinel_preserved, vec![("a.txt".to_string(), 1, 2)]);
+        let survivors = merged_at(&result, "a.txt", 1, 2);
+        assert_eq!(survivors.len(), 1);
+        assert_eq!(survivors[0].content_hash, crate::rk64_unmatched_sentinel());
+        assert!(result.unresolved.is_empty());
+    }
+
+    #[test]
+    fn merge_reports_sentinel_with_empty_source_files_theirs_only() {
+        let ours = span_of(vec![]);
+        let theirs = span_of(vec![sentinel_anchor("b.txt", 3, 4)]);
+        let result = merge_span_files(None, &ours, &theirs, &[]);
+
+        assert_eq!(result.sentinel_preserved, vec![("b.txt".to_string(), 3, 4)]);
+        let survivors = merged_at(&result, "b.txt", 3, 4);
+        assert_eq!(survivors.len(), 1);
+        assert_eq!(survivors[0].content_hash, crate::rk64_unmatched_sentinel());
+        assert!(result.unresolved.is_empty());
+    }
+
+    #[test]
+    fn merge_sentinel_divergent_without_source_stays_only_in_unresolved() {
+        // `sentinel_preserved` is a classification, never a second write:
+        // this identity is in `unresolved` and must appear nowhere in
+        // `merged`, or the residue writer would emit both a clean line and
+        // conflict markers for it.
+        let ours = span_of(vec![sentinel_anchor("a.txt", 1, 2)]);
+        let theirs = span_of(vec![anchor("a.txt", 1, 2, "rk64", "realhash")]);
+        let result = merge_span_files(None, &ours, &theirs, &[]);
+
+        assert_eq!(result.unresolved.len(), 1);
+        assert_eq!(result.unresolved[0].path, "a.txt");
+        assert_eq!(result.sentinel_preserved, vec![("a.txt".to_string(), 1, 2)]);
+        assert!(merged_at(&result, "a.txt", 1, 2).is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "merge_span_files invariant violated")]
+    fn merge_disjointness_invariant_fires_on_a_violating_pair() {
+        // No branch of the kernel can construct this, so the guard is driven
+        // directly — proving it actually fires rather than only existing.
+        let record = anchor("a.txt", 1, 2, "rk64", "aaaa");
+        let unresolved = vec![UnresolvedAnchor {
+            path: "a.txt".into(),
+            start_line: 1,
+            end_line: 2,
+            ours: record.clone(),
+            theirs: anchor("a.txt", 1, 2, "rk64", "bbbb"),
+        }];
+        debug_assert_merge_disjoint(std::slice::from_ref(&record), &unresolved);
+    }
+
+    #[test]
+    fn merge_never_rehashes_a_sentinel_at_stale_coordinates() {
+        // §3's re-anchor guard can leave a collapsed survivor's coordinates
+        // stale pending a later position update, marked only by the sentinel
+        // sitting there. Source now holds the true content two lines lower.
+        let stale = sentinel_anchor("a.txt", 1, 2);
+        let ours = span_of(vec![stale.clone()]);
+        let theirs = span_of(vec![]);
+        let new_content = b"// header\n// header\nreal one\nreal two\n".to_vec();
+        let source = vec![("a.txt".to_string(), new_content.clone())];
+        let result = merge_span_files(None, &ours, &theirs, &source);
+
+        let survivors = merged_at(&result, "a.txt", 1, 2);
+        assert_eq!(survivors.len(), 1);
+        // Neither a hash of the new location nor of the stale one: no
+        // rehash of any kind may run while the sentinel is present.
+        assert_eq!(*survivors[0], stale);
+        assert_eq!(result.sentinel_preserved, vec![("a.txt".to_string(), 1, 2)]);
+
+        // The regression guard: what the pre-preserve design would have
+        // written. Hashing the *stale* range against the new source yields a
+        // real hash that matches the content now sitting at those
+        // coordinates — a false `Fresh` reading for an anchor whose owed
+        // relocation nothing in the file would still record.
+        let stale_range = AnchorExtent::LineRange { start: 1, end: 2 };
+        let would_have_written =
+            rk64_to_hex(cheap_fingerprint_with_extent(&new_content, &stale_range));
+        assert_ne!(would_have_written, crate::rk64_unmatched_sentinel());
+        let true_range = AnchorExtent::LineRange { start: 3, end: 4 };
+        let true_content_hash =
+            rk64_to_hex(cheap_fingerprint_with_extent(&new_content, &true_range));
+        assert_ne!(would_have_written, true_content_hash);
+    }
+
+    #[test]
+    fn merge_never_rehashes_a_sentinel_shifted_by_an_edit_above_it() {
+        // The ordinary member of the deferred population: lines inserted
+        // above the anchor shift its range, no relocation involved.
+        let stale = sentinel_anchor("a.txt", 2, 3);
+        let ours = span_of(vec![anchor("keep.txt", 1, 1, "rk64", "kkkk")]);
+        let theirs = span_of(vec![stale.clone()]);
+        let shifted = b"use a;\nuse b;\nuse c;\nbody one\nbody two\n".to_vec();
+        let source = vec![("a.txt".to_string(), shifted)];
+        let result = merge_span_files(None, &ours, &theirs, &source);
+
+        let survivors = merged_at(&result, "a.txt", 2, 3);
+        assert_eq!(survivors.len(), 1);
+        assert_eq!(*survivors[0], stale);
+        assert_eq!(result.sentinel_preserved, vec![("a.txt".to_string(), 2, 3)]);
     }
 
     // -----------------------------------------------------------------------

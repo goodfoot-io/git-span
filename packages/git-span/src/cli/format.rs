@@ -13,6 +13,60 @@ pub fn format_anchor_address(path: &str, start: Option<u32>, end: Option<u32>) -
     }
 }
 
+/// One report line for a duplicate identity the merge kernel collapsed
+/// within a single side's own anchors, before ours and theirs were ever
+/// compared. Shared by both `merge_span_files` callers so the collapse is
+/// named identically wherever it happens.
+pub fn format_same_side_collapse(
+    side: git_span_core::MergeSide,
+    collapsed: &git_span_core::CollapsedIdentity,
+) -> String {
+    let side_name = match side {
+        git_span_core::MergeSide::Ours => "ours",
+        git_span_core::MergeSide::Theirs => "theirs",
+    };
+    let address = merge_report_address(
+        &collapsed.path,
+        collapsed.start_line,
+        collapsed.end_line,
+    );
+    format!(
+        "collapsed same-side duplicate ({side_name}): `{address}` — \
+         {} records → 1",
+        collapsed.records_before
+    )
+}
+
+/// One report line for a duplicate-collapse sentinel the merge kernel
+/// carried through unchanged rather than resolving by re-hashing.
+///
+/// The two completion paths are named against the two populations they
+/// actually apply to: `add` only retires the sentinel record when
+/// `drift --fix` can keep its position current, and silently orphans it
+/// when it cannot — which is where `replace` is the only correct command.
+pub fn format_sentinel_preserved(path: &str, start_line: u32, end_line: u32) -> String {
+    let address = merge_report_address(path, start_line, end_line);
+    format!(
+        "preserved unverified collapse marker: `{address}` — a \
+         duplicate-collapse sentinel survived merge; run `git span drift --fix` \
+         to keep its position current, then `git span add <address>` once the \
+         reported address matches where the content now lives — if \
+         `drift --fix` reports it as a terminal residual instead (deleted \
+         path, or no trackable history), use `git span replace <address> \
+         <new-address>` in place of `add`"
+    )
+}
+
+/// Render a span-file record's stored coordinates as an anchor address.
+/// A whole-file record stores `0`/`0`, which is the bare path.
+fn merge_report_address(path: &str, start_line: u32, end_line: u32) -> String {
+    if start_line == 0 && end_line == 0 {
+        format_anchor_address(path, None, None)
+    } else {
+        format_anchor_address(path, Some(start_line), Some(end_line))
+    }
+}
+
 /// Format a span name in backticks for prose output.
 pub fn format_span_name(name: &str) -> String {
     format!("`{name}`")

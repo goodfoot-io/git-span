@@ -10,6 +10,7 @@
 //! surfacing layer rather than via `current.blob`.
 
 use crate::cli::commit::{hash_anchor_content, span_file_path, write_worktree_span};
+use crate::cli::format::{format_same_side_collapse, format_sentinel_preserved};
 use crate::git::IndexEntrySnapshot;
 use crate::span_file::{AnchorRecord, SpanFile, has_conflict_markers};
 use crate::types::{AnchorExtent, AnchorStatus, DriftSource, SpanResolved};
@@ -748,6 +749,19 @@ fn resolve_conflicted_span(
 
     // Step 4: Structural merge.
     let result = merge_span_files(None, &ours, &theirs, &source_files);
+
+    // Step 4b: Report the merge kernel's own collapses and preserved
+    // sentinels, before the outcome branch below — both are facts about the
+    // merge regardless of whether it resolved cleanly or left residue.
+    for (side, collapsed) in &result.same_side_collapsed {
+        println!("  {}", format_same_side_collapse(*side, collapsed));
+    }
+    for (path, start_line, end_line) in &result.sentinel_preserved {
+        println!(
+            "  {}",
+            format_sentinel_preserved(path, *start_line, *end_line)
+        );
+    }
 
     // Step 5: Determine outcome.
     let why_conflict = result.unresolved.iter().any(|u| u.path.is_empty());
