@@ -17,7 +17,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import type { DriftPorcelainRow, PorcelainRow, SessionLayout } from '../../src/common/agent-hooks-common.js';
@@ -55,10 +55,38 @@ export function createTestRepo(): TestRepo {
   };
 }
 
+/**
+ * Strictly increasing, always-in-the-past mtimes for fixture writes.
+ *
+ * git calls an index entry "racily clean" when the file's mtime is not older
+ * than the index's own, and then falls back to the entry's recorded size to
+ * decide whether the content moved — a fallback that is blind to any rewrite
+ * of identical byte length. Several fixtures here simulate a tool's edit with
+ * exactly that: a reorder or an equal-length substitution. When the baseline
+ * `git add` and the rewrite land in one mtime tick, `write-tree` reuses the
+ * stale blob, so the post tree equals the pre tree and the window closes
+ * having attributed nothing — with no warning to say why, because nothing
+ * failed. Serialized files left enough wall time between the two steps to
+ * hide it; running files in parallel made the collision reachable about one
+ * run in ten.
+ *
+ * Stamping every write an hour back, one second apart, removes the ambiguity
+ * from both directions: each rewrite is strictly newer than the entry git
+ * recorded for it, so the stat cache always reports the change, and every
+ * mtime stays comfortably older than the index, so no entry is ever treated
+ * as racy in the first place. Future stamps would do the opposite — they make
+ * *every* entry look racy and put the size fallback permanently in charge.
+ */
+const WRITE_EPOCH = Date.now() - 3_600_000;
+let writeTick = 0;
+
 export function writeFile(repoRoot: string, relPath: string, content: string): void {
   const full = join(repoRoot, relPath);
   mkdirSync(dirname(full), { recursive: true });
   writeFileSync(full, content, 'utf8');
+  writeTick += 1;
+  const stamp = new Date(WRITE_EPOCH + writeTick * 1000);
+  utimesSync(full, stamp, stamp);
 }
 
 export function gitAddCommit(repoRoot: string, msg: string): void {

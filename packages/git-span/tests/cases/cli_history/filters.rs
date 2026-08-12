@@ -65,9 +65,19 @@ fn a_filter_that_produces_no_content_never_asserts_a_deletion() -> Result<()> {
             // reached the filter and the filter is what stopped it. An exit
             // code alone would also be satisfied by a repository that failed
             // for some unrelated reason.
+            //
+            // The exit code is deliberately not part of the assumption. git
+            // reports the failed `--process` handshake on stderr and then
+            // decides separately whether that failure is fatal to the walk;
+            // under load it has been observed naming the driver, listing
+            // nothing, and still exiting 0. Both readings agree on what this
+            // case needs — git reached the filter, could not run it, and
+            // therefore reported no change — so requiring the failure exit as
+            // well made the case fail about one run in ten for a reason it
+            // was never trying to pin.
             let refusal = String::from_utf8_lossy(&status.stderr);
             assert!(
-                !status.status.success() && refusal.contains("git-crypt-filter"),
+                refusal.contains("git-crypt-filter"),
                 "{label}: fixture assumption — git itself refuses this state, \
                  naming the driver it could not run; got {status:?}"
             );
