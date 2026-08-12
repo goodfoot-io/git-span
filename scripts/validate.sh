@@ -100,6 +100,11 @@ if [ -d "$guardrail_root" ]; then
   fi
 fi
 
+# Log to the per-worktree git dir: unlike a repo-root path, it is never
+# symlink-shared between worktrees, so the log always belongs to this run.
+log_path="$(git rev-parse --absolute-git-dir)/validate-output.log"
+echo "Full validation log: $log_path"
+
 {
   git span drift &&
   yarn typecheck &&
@@ -112,8 +117,25 @@ fi
       exit 1
     fi
   )
-} 2>&1 | tee yarn-validate-output.log
+} 2>&1 | tee "$log_path"
 
 EXIT_CODE=${PIPESTATUS[0]}
-echo "Exit code: $EXIT_CODE" | tee -a yarn-validate-output.log
+echo "Exit code: $EXIT_CODE" | tee -a "$log_path"
+
+# On failure, restate the cause at the very end of the stream. Captured output
+# is often truncated in the middle, so keeping the failing lines in the tail
+# makes one run sufficient — the full log stays at $log_path for anything else.
+if [ "$EXIT_CODE" -ne 0 ]; then
+  summary="$(grep -aiE 'error|fail(ed|ure|ing)?\b|✗|✖' "$log_path" | grep -avE '\bPASS\b|✔|\b0 fail' | tail -40)"
+  {
+    echo ""
+    echo "=== VALIDATION FAILED (exit $EXIT_CODE) — failure summary ==="
+    if [ -n "$summary" ]; then
+      printf '%s\n' "$summary"
+    else
+      echo "(no lines matched the error patterns — read the full log)"
+    fi
+    echo "=== end summary — full log: $log_path ==="
+  } | tee -a "$log_path"
+fi
 exit "$EXIT_CODE"
