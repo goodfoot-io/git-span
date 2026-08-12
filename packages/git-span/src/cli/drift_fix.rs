@@ -77,31 +77,90 @@ enum ConflictRegion {
     Outside,
 }
 
+/// One side (ours or theirs) of a conflict-markered span, accumulated with
+/// its anchor/why boundary tracked as structure rather than reconstructed
+/// from what its lines look like.
+///
+/// A span file's anchor block ends at its first blank line — that is the
+/// separator [`SpanFile::parse`] splits on. Feeding lines through
+/// [`SideBuilder::push`] in file order therefore records which region each
+/// line came from at the moment it is read, and a line that arrived in the
+/// why region can never be re-emitted as an anchor line. No prose can be
+/// promoted to an anchor, whatever it happens to look like.
+#[derive(Default)]
+struct SideBuilder<'a> {
+    /// Lines that arrived before this side's separator.
+    anchors: Vec<&'a str>,
+    /// Lines that arrived after it.
+    why: Vec<&'a str>,
+    /// Whether this side has seen its separator yet.
+    in_why: bool,
+}
+
+impl<'a> SideBuilder<'a> {
+    /// Feed one content line (markers already stripped by the caller).
+    ///
+    /// The first blank line this side sees *is* the anchor/why separator and
+    /// is consumed as such; every later blank line is ordinary why prose (a
+    /// paragraph break) and is kept.
+    fn push(&mut self, line: &'a str) {
+        if line.is_empty() && !self.in_why {
+            self.in_why = true;
+            return;
+        }
+        if self.in_why {
+            self.why.push(line);
+        } else {
+            self.anchors.push(line);
+        }
+    }
+
+    /// Re-emit this side as clean span text, restoring the separator exactly
+    /// where [`SideBuilder::push`] consumed it.
+    ///
+    /// A side that never saw a separator renders as a bare anchor block; a
+    /// side whose separator came before any anchor renders with the leading
+    /// newline [`SpanFile::parse`] reads as "empty anchor block, why only".
+    fn render(&self) -> String {
+        let mut out = String::new();
+        for line in &self.anchors {
+            out.push_str(line);
+            out.push('\n');
+        }
+        if self.in_why {
+            out.push('\n');
+            for line in &self.why {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+        out
+    }
+}
+
 /// Split a Git textual conflict-markered span text into ours/theirs sides.
 ///
 /// Lines outside any conflict block (non-conflicted anchor lines) are
 /// included in both sides. Ours and theirs are separated at conflict
 /// boundaries; diff3 base content (`|||||||`) is discarded.
 ///
+/// Each side keeps its own anchor/why boundary, taken from the blank line
+/// that actually appears in that side's content: a blank line outside every
+/// conflict block belongs to both sides, one inside a block belongs only to
+/// the side it was read in. This is why [`format_residue_markers`] emits its
+/// anchor residue block *before* the separator and its why residue block
+/// *after* it — writer and reader agree on where the boundary is instead of
+/// the reader guessing.
+///
 /// Returns `None` when no conflict markers are found.
 fn split_conflict_markers(input: &str) -> Option<(String, String)> {
-    let mut ours_lines: Vec<&str> = Vec::new();
-    let mut theirs_lines: Vec<&str> = Vec::new();
+    let mut ours = SideBuilder::default();
+    let mut theirs = SideBuilder::default();
     let mut region = ConflictRegion::Outside;
     let mut found_conflict = false;
-    // Blank lines from the Outside section that have not yet been committed
-    // to the output.  They are flushed when a non-blank Outside line follows,
-    // or discarded when a conflict block starts — a blank line right before a
-    // conflict marker is the span-format anchor/why separator, and keeping it
-    // would create a spurious `\n\n` boundary between pre-conflict anchors and
-    // the conflict block's own anchor lines.
-    let mut pending_blanks: usize = 0;
 
     for line in input.lines() {
         if line.starts_with("<<<<<<<") {
-            // Discard pending blank lines — they were the anchor/why separator
-            // which must not separate pre-conflict anchors from inside anchors.
-            pending_blanks = 0;
             region = ConflictRegion::Ours;
             found_conflict = true;
             continue;
@@ -109,7 +168,6 @@ fn split_conflict_markers(input: &str) -> Option<(String, String)> {
         if line.starts_with("|||||||") {
             // diff3 base marker: skip base content, stay in "base" until
             // we hit the `=======` separator or `>>>>>>>` close.
-            pending_blanks = 0;
             region = ConflictRegion::Base;
             continue;
         }
@@ -122,27 +180,16 @@ fn split_conflict_markers(input: &str) -> Option<(String, String)> {
         // A run of `=` longer than 7 is not a conflict separator
         // (e.g. Markdown setext underline). Fall through to collect.
         if line.starts_with(">>>>>>>") {
-            pending_blanks = 0;
             region = ConflictRegion::Outside;
             continue;
         }
         match region {
             ConflictRegion::Outside => {
-                if line.is_empty() {
-                    pending_blanks += 1;
-                } else {
-                    // Flush pending blanks before this non-blank line.
-                    for _ in 0..pending_blanks {
-                        ours_lines.push("");
-                        theirs_lines.push("");
-                    }
-                    pending_blanks = 0;
-                    ours_lines.push(line);
-                    theirs_lines.push(line);
-                }
+                ours.push(line);
+                theirs.push(line);
             }
-            ConflictRegion::Ours => ours_lines.push(line),
-            ConflictRegion::Theirs => theirs_lines.push(line),
+            ConflictRegion::Ours => ours.push(line),
+            ConflictRegion::Theirs => theirs.push(line),
             ConflictRegion::Base => { /* skip diff3 base content */ }
         }
     }
@@ -151,38 +198,7 @@ fn split_conflict_markers(input: &str) -> Option<(String, String)> {
         return None;
     }
 
-    // Post-process: ensure there is a `\n\n` separator between the combined
-    // anchor block (Outside anchors + conflict-block anchors) and the why
-    // text.  Insert a blank line before the first non-anchor-looking line.
-    for lines in [&mut ours_lines, &mut theirs_lines] {
-        let non_anchor_pos = lines.iter().position(|l| !looks_like_anchor_line(l));
-        if let Some(pos) = non_anchor_pos
-            && pos > 0
-            && !lines[pos - 1].is_empty()
-        {
-            lines.insert(pos, "");
-        }
-    }
-
-    Some((ours_lines.join("\n"), theirs_lines.join("\n")))
-}
-
-/// Heuristic: a line looks like a span anchor if it has the form
-/// `<path> <algorithm>:<content_hash>` where `algorithm` is ASCII alphanumeric
-/// and `content_hash` is non-empty.  Used to re-introduce the `\n\n` anchor/why
-/// separator inside `split_conflict_markers`.
-fn looks_like_anchor_line(line: &str) -> bool {
-    if let Some(space_pos) = line.rfind(' ') {
-        let hash_part = &line[space_pos + 1..];
-        if let Some(colon_pos) = hash_part.find(':') {
-            let algo = &hash_part[..colon_pos];
-            let hash = &hash_part[colon_pos + 1..];
-            return !algo.is_empty()
-                && !hash.is_empty()
-                && algo.chars().all(|c| c.is_ascii_alphanumeric());
-        }
-    }
-    false
+    Some((ours.render(), theirs.render()))
 }
 
 /// Read every source file referenced by anchors in `ours` and `theirs`,
@@ -413,9 +429,18 @@ fn plan_orphan_removals(
 
 /// Format the residue marker text for a partially-resolved merge.
 ///
-/// Produces the text portion of a residue span file: resolved anchors in
-/// canonical order, a blank-line separator, and optionally a conflict block
-/// wrapping unresolved anchor residue and/or divergent why text.
+/// Produces the text portion of a residue span file: the anchor block
+/// (resolved anchors in canonical order, then a conflict block wrapping any
+/// divergent anchors), the blank-line separator, then the why text (plain
+/// when both sides agree, or a second conflict block when they diverge).
+///
+/// Anchor residue and why residue get *separate* conflict blocks, on their
+/// own sides of the separator, so that the boundary survives the round trip
+/// through [`split_conflict_markers`]: a residue block sitting after the
+/// separator is why by construction, and one sitting before it is anchors by
+/// construction. Wrapping both in a single block would put the boundary
+/// inside a conflict region with nothing to mark it, which is what forced the
+/// reader to guess from line shape and let prose become anchors.
 ///
 /// The caller supplies full marker strings (including labels and trailing
 /// newlines) so that different callers can customize marker length and label
@@ -444,7 +469,23 @@ pub(crate) fn format_residue_markers(
     let anchor_residue: Vec<&UnresolvedAnchor> =
         unresolved.iter().filter(|u| !u.path.is_empty()).collect();
 
-    // Always insert the blank-line separator before any residue or why.
+    // Divergent anchors: a minimal conflict block that is still part of the
+    // anchor block, so it goes *before* the separator.
+    if !anchor_residue.is_empty() {
+        output.push_str(open_marker);
+        for u in &anchor_residue {
+            output.push_str(&u.ours.to_string());
+            output.push('\n');
+        }
+        output.push_str(sep_marker);
+        for u in &anchor_residue {
+            output.push_str(&u.theirs.to_string());
+            output.push('\n');
+        }
+        output.push_str(close_marker);
+    }
+
+    // Always insert the blank-line separator before any why text.
     if !resolved_anchors.is_empty()
         || !anchor_residue.is_empty()
         || why_conflict
@@ -453,40 +494,33 @@ pub(crate) fn format_residue_markers(
         output.push('\n');
     }
 
-    if !anchor_residue.is_empty() || why_conflict {
-        // Minimal conflict block wrapping only the residue.
+    if why_conflict {
+        // Divergent why: a second minimal conflict block, after the
+        // separator, so every line inside it reads back as why prose.
         output.push_str(open_marker);
-        for u in &anchor_residue {
-            output.push_str(&u.ours.to_string());
-            output.push('\n');
-        }
-        if why_conflict {
-            output.push_str(ours_why);
-            if !ours_why.ends_with('\n') {
-                output.push('\n');
-            }
-        }
+        push_why(&mut output, ours_why);
         output.push_str(sep_marker);
-        for u in &anchor_residue {
-            output.push_str(&u.theirs.to_string());
-            output.push('\n');
-        }
-        if why_conflict {
-            output.push_str(theirs_why);
-            if !theirs_why.ends_with('\n') {
-                output.push('\n');
-            }
-        }
+        push_why(&mut output, theirs_why);
         output.push_str(close_marker);
     } else if !ours_why.is_empty() {
-        // No residue, just write the why text.
-        output.push_str(ours_why);
-        if !ours_why.ends_with('\n') {
-            output.push('\n');
-        }
+        // No divergence, just write the why text.
+        push_why(&mut output, ours_why);
     }
 
     output
+}
+
+/// Append one side's why text, newline-terminated. An empty why appends
+/// nothing, so a one-sided why divergence writes an empty side rather than a
+/// stray blank line inside the conflict block.
+fn push_why(output: &mut String, why: &str) {
+    if why.is_empty() {
+        return;
+    }
+    output.push_str(why);
+    if !why.ends_with('\n') {
+        output.push('\n');
+    }
 }
 
 /// Write a span file with partial resolution: resolved anchors in canonical

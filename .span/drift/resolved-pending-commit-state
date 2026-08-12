@@ -1,5 +1,5 @@
-packages/git-span/src/cli/drift_fix.rs#L796-L810 rk64:b6d76f3da7b1d918
-packages/git-span/src/cli/drift_fix.rs#L980-L1051 rk64:aab31a0fba74f03f
+packages/git-span/src/cli/drift_fix.rs#L830-L844 rk64:b6d76f3da7b1d918
+packages/git-span/src/cli/drift_fix.rs#L1014-L1085 rk64:aab31a0fba74f03f
 packages/git-span/src/cli/drift_label.rs#L91-L92 rk64:dc0da71f5ed4773e
 packages/git-span/src/resolver/engine/anchor.rs#L769-L872 rk64:7a9a860847e3ea46
 packages/git-span/src/resolver/engine/mod.rs#L640-L650 rk64:7295ab71bbfc00c4
