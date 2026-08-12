@@ -148,9 +148,10 @@ fn merge_driver_exits_non_zero_on_divergence() {
 // Duplicate-collapse sentinel and same-side duplicates
 // ---------------------------------------------------------------------------
 
-/// The all-zero rk64 hash `drift --fix`'s collapse plants on a survivor whose
-/// content was never verified.
-const SENTINEL_LINE: &str = "rk64:0000000000000000";
+/// The fixed rk64 hash `drift --fix`'s collapse plants on a survivor whose
+/// content was never verified. Not all-zero: zero is the fingerprint of a
+/// range that does not exist, which a deleted path produces for free.
+const SENTINEL_LINE: &str = "rk64:ffffffffffffffff";
 
 fn run_driver(
     base: &std::path::Path,

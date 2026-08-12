@@ -383,8 +383,8 @@ impl<'a> LineIndex<'a> {
 /// adopt rk64 identity store it under this name.
 pub const RK64_ALGORITHM: &str = "rk64";
 
-/// A fixed, all-zero 16-hex-digit rk64 hash used as a sentinel `content_hash`
-/// for an anchor whose survivor content was never verified (e.g. a
+/// A fixed 16-hex-digit rk64 hash used as a sentinel `content_hash` for an
+/// anchor whose survivor content was never verified (e.g. a
 /// duplicate-identity collapse with no confirmed hash to carry forward).
 /// Callers pair this with [`RK64_ALGORITHM`] so the record round-trips
 /// through [`span_file::SpanFile::parse`]/`serialize` like any other hash,
@@ -392,8 +392,18 @@ pub const RK64_ALGORITHM: &str = "rk64";
 /// (practically, not formally — a real rk64 collision is a 1-in-2^64
 /// possibility, not mathematically excluded) to report the anchor drifted
 /// rather than `Fresh`.
+///
+/// **Not all-zero, deliberately.** Zero is not an unreachable fingerprint:
+/// [`cheap_fingerprint_with_extent`] returns exactly `0` whenever the
+/// requested line range does not exist in the content it is handed — the
+/// ordinary reading of a path that was deleted or renamed away. An all-zero
+/// sentinel therefore *compares equal* to "the anchored range is gone", and
+/// the resolver reads the anchor `Fresh`, silently retiring the one signal
+/// the collapse depends on for exactly the population that most needs it.
+/// The all-`f` value has no such structural preimage; only real content can
+/// reach it, at the disclosed 1-in-2^64 odds.
 pub fn rk64_unmatched_sentinel() -> String {
-    "0".repeat(16)
+    "f".repeat(16)
 }
 
 /// Canonical hex encoding of an rk64 fingerprint for the stored

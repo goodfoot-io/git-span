@@ -206,7 +206,7 @@ pub(crate) fn hash_anchor_content(
 
 /// RAII guard that releases an advisory file lock and removes the lock
 /// file on drop.
-struct SpanLock {
+pub(crate) struct SpanLock {
     _file: File,
     path: std::path::PathBuf,
 }
@@ -232,7 +232,11 @@ impl Drop for SpanLock {
 ///
 /// Blocks until the lock is acquired. A crashed or killed process
 /// releases its locks automatically, so this never blocks forever.
-fn lock_span_file(repo: &gix::Repository, span_root: &str, name: &str) -> Result<SpanLock> {
+pub(crate) fn lock_span_file(
+    repo: &gix::Repository,
+    span_root: &str,
+    name: &str,
+) -> Result<SpanLock> {
     let workdir = repo
         .workdir()
         .ok_or_else(|| anyhow::anyhow!("bare repository is not supported"))?;

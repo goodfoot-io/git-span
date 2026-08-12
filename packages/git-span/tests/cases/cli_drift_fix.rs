@@ -1879,9 +1879,10 @@ their refined purpose
 // --fix conflict resolution: duplicate-collapse sentinel and same-side dupes
 // ---------------------------------------------------------------------------
 
-/// The all-zero rk64 hash a duplicate collapse plants on an unverified
-/// survivor.
-const SENTINEL: &str = "0000000000000000";
+/// The fixed rk64 hash a duplicate collapse plants on an unverified
+/// survivor. Not all-zero: zero is the fingerprint of a range that does not
+/// exist, which a deleted path produces for free.
+const SENTINEL: &str = "ffffffffffffffff";
 
 /// Resolve a conflicted span where one side carries the sentinel for an
 /// identity the other side has a real hash for, with the source file present

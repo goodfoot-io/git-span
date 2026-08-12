@@ -44,6 +44,28 @@ fn anchor_lines(text: &str) -> Vec<&str> {
         .collect()
 }
 
+/// The unmatchable hash `drift --fix` plants on a survivor whose discarded
+/// records disagreed. Spelled out literally here rather than imported: the
+/// tests must pin the on-disk token an unrelated reader sees, not track
+/// whatever the constant happens to return.
+const SENTINEL: &str = "rk64:ffffffffffffffff";
+
+/// Hand-write a span declaration and commit it, so `drift` (which reads the
+/// committed corpus) can see it.
+fn commit_span(repo: &TestRepo, name: &str, body: &str) -> Result<()> {
+    write_span(repo, name, body)?;
+    repo.run_git(["add", ".span"])?;
+    repo.run_git(["commit", "-m", "span commit"])?;
+    Ok(())
+}
+
+/// Stdout of a `git span` invocation, whatever its exit code — `drift`
+/// exits non-zero whenever drift remains, which is the expected state for
+/// most of these fixtures.
+fn stdout_of(out: &std::process::Output) -> String {
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
 // ---------------------------------------------------------------------------
 // `add` collapses every record at the identity it was handed
 // ---------------------------------------------------------------------------
@@ -272,6 +294,415 @@ fn non_collapse_json_rows_omit_records_before_entirely() -> Result<()> {
         !unchanged.contains("records_before"),
         "an UNCHANGED row must not carry the field at all; \
          stdout:\n{unchanged}"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// `drift --fix` sweeps the whole span
+//
+// The sweep has no operator naming content for any identity — that is the
+// whole reason a divergent survivor gets an unmatchable sentinel rather than
+// a borrowed hash. Collapsing restores file *shape*; it never presents
+// itself as having established what the content should be.
+// ---------------------------------------------------------------------------
+
+/// A divergent duplicate collapses to one record carrying the sentinel, the
+/// sweep names the identity, and a *separate*, later `drift` run — one that
+/// never saw the collapse — still reports the anchor drifted.
+#[test]
+fn fix_collapses_divergent_duplicate_to_a_sentinel_survivor() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    commit_span(
+        &repo,
+        "fix-divergent",
+        "file1.txt#L1-L5 rk64:aaaaaaaaaaaaaaaa\n\
+         file1.txt#L1-L5 rk64:bbbbbbbbbbbbbbbb\n\
+         \n\
+         why: two records for one identity.\n",
+    )?;
+
+    let out = repo.run_span(["drift", "--fix"])?;
+    let stdout = stdout_of(&out);
+    assert!(
+        stdout.contains("collapsed duplicate identity: `file1.txt#L1-L5` — 2 records → 1"),
+        "the sweep must name every identity it collapsed; stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("records disagreed") && stdout.contains("git span add"),
+        "a divergent collapse must say the content is unverified and name \
+         the command that resolves it; stdout:\n{stdout}"
+    );
+
+    let text = span_text(&repo, "fix-divergent")?;
+    assert_eq!(
+        anchor_lines(&text).len(),
+        1,
+        "the identity must be left holding one record:\n{text}"
+    );
+    assert!(
+        text.contains(SENTINEL),
+        "the survivor of a divergent collapse carries the sentinel:\n{text}"
+    );
+
+    // A reader who saw neither the collapse nor its output still sees the
+    // anchor drifting — the sentinel is durable in the file, not a one-time
+    // message.
+    let plain = repo.run_span(["drift"])?;
+    assert_ne!(
+        plain.status.code(),
+        Some(0),
+        "the collapsed survivor must never report fresh; stdout:\n{}",
+        stdout_of(&plain)
+    );
+    Ok(())
+}
+
+/// An identical-hash duplicate — the same line repeated verbatim — is
+/// deduplicated to its agreed hash and is *not* forced drifted. Nothing
+/// about its content was ever in doubt, so manufacturing drift for it would
+/// be its own failure.
+#[test]
+fn fix_dedupes_identical_hash_duplicate_without_manufacturing_drift() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.span_stdout(["add", "fix-identical", "file1.txt#L1-L5"])?;
+    let seeded = span_text(&repo, "fix-identical")?;
+    let real_line = anchor_lines(&seeded)[0].to_string();
+    commit_span(
+        &repo,
+        "fix-identical",
+        &format!("{real_line}\n{real_line}\n\nwhy: same line twice.\n"),
+    )?;
+
+    let out = repo.run_span(["drift", "--fix"])?;
+    let stdout = stdout_of(&out);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "an identical-hash duplicate must not be forced drifted; stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("collapsed duplicate identity: `file1.txt#L1-L5` — 2 records → 1")
+            && stdout.contains("records agreed"),
+        "the dedupe is still reported, and reported as agreed; stdout:\n{stdout}"
+    );
+
+    let text = span_text(&repo, "fix-identical")?;
+    assert_eq!(anchor_lines(&text), vec![real_line.as_str()], "\n{text}");
+    assert!(
+        !text.contains(SENTINEL),
+        "an agreed group keeps its agreed hash, never the sentinel:\n{text}"
+    );
+    Ok(())
+}
+
+/// The same-pass guard. The re-anchor loop iterates a resolved set computed
+/// *before* the collapse, so it still holds two entries for the identity the
+/// collapse just reduced to one. Without the guard the loop would overwrite
+/// the sentinel with a freshly computed hash and count the one surviving
+/// record twice.
+///
+/// The test does not stop at the first pass: it runs a second, separate
+/// `--fix` and asserts that pass carries the record's *position* forward
+/// while leaving the hash as the sentinel — the deferral has a completion
+/// step, and the completion step makes no content claim.
+#[test]
+fn fix_defers_reanchor_of_a_collapsed_identity_then_tracks_its_position() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.span_stdout(["add", "fix-guard", "file1.txt#L3-L7"])?;
+    let real_line = anchor_lines(&span_text(&repo, "fix-guard")?)[0].to_string();
+    commit_span(
+        &repo,
+        "fix-guard",
+        &format!("{real_line}\nfile1.txt#L3-L7 rk64:cccccccccccccccc\n\nwhy: guard.\n"),
+    )?;
+
+    // Two edits at once: lines inserted above the anchor (so the tracked
+    // position shifts — the ordinary formatter-plus-import shape) and
+    // trailing whitespace inside it (so the *real* record resolves
+    // `Changed` with `content_equivalent`, i.e. `reanchor` would otherwise
+    // be true on the very pass that collapses).
+    repo.write_file(
+        "file1.txt",
+        "new1\nnew2\nline1\nline2\nline3 \nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+
+    let first = repo.run_span(["drift", "--fix"])?;
+    let first_out = stdout_of(&first);
+    let text = span_text(&repo, "fix-guard")?;
+    assert_eq!(
+        anchor_lines(&text).len(),
+        1,
+        "the duplicate collapses on the first pass:\n{text}"
+    );
+    assert!(
+        text.contains("file1.txt#L3-L7 rk64:ffffffffffffffff"),
+        "the sentinel must survive the same pass that could have \
+         re-anchored the identity, at its unmoved coordinates:\n{text}"
+    );
+    assert!(
+        first_out.contains("(0 updated, 0 removed)"),
+        "a collapsed identity books against `identities_collapsed` alone — \
+         never as a verified re-anchor, and never twice; stdout:\n{first_out}"
+    );
+    assert!(
+        !first_out.contains("position tracked"),
+        "the identity is deferred on the pass that collapsed it; \
+         stdout:\n{first_out}"
+    );
+
+    // Second, separate pass: the record is now single and unambiguous, so
+    // its position tracks forward.
+    let second = repo.run_span(["drift", "--fix"])?;
+    let second_out = stdout_of(&second);
+    assert!(
+        second_out.contains(
+            "position tracked: `file1.txt#L3-L7` — a duplicate-collapse \
+             sentinel's anchor moved to `file1.txt#L5-L9`"
+        ),
+        "the deferred pass completes as a position update; \
+         stdout:\n{second_out}"
+    );
+    assert!(
+        second_out.contains("run `git span add file1.txt#L5-L9` to resolve"),
+        "the line names the command that can actually close the content \
+         question, at the coordinates the record now holds; \
+         stdout:\n{second_out}"
+    );
+
+    let text = span_text(&repo, "fix-guard")?;
+    assert_eq!(
+        anchor_lines(&text),
+        vec!["file1.txt#L5-L9 rk64:ffffffffffffffff"],
+        "position tracked forward, content_hash left as the sentinel:\n{text}"
+    );
+
+    // Still drifted afterward: position is bookkeeping, content is a claim
+    // only an operator makes.
+    let plain = repo.run_span(["drift"])?;
+    assert_ne!(
+        plain.status.code(),
+        Some(0),
+        "a position update must never read as a clean bill of health; \
+         stdout:\n{}",
+        stdout_of(&plain)
+    );
+    Ok(())
+}
+
+/// A rename is *not* a tracked position for a sentinel-bearing anchor, and
+/// the fix must not pretend otherwise.
+///
+/// Following a rename is a content match: the resolver reports `Moved` only
+/// when the content at the destination hashes to the record's stored hash,
+/// which the sentinel is built never to do. So the rename destination is a
+/// suggestion the resolver surfaces (`needs re-anchor to …`) rather than a
+/// tracked position `--fix` may write — and this anchor lands in the
+/// terminal population, whose completion command is `replace`.
+#[test]
+fn fix_does_not_follow_a_rename_for_a_sentinel_it_cannot_confirm() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    commit_span(
+        &repo,
+        "fix-rename",
+        &format!("file1.txt#L1-L5 {SENTINEL}\n\nwhy: sentinel from an earlier collapse.\n"),
+    )?;
+    repo.run_git(["mv", "file1.txt", "renamed.txt"])?;
+    repo.run_git(["commit", "-m", "rename"])?;
+
+    let out = repo.run_span(["drift", "--fix"])?;
+    let stdout = stdout_of(&out);
+    let text = span_text(&repo, "fix-rename")?;
+    assert!(
+        stdout.contains("position untrackable: `file1.txt#L1-L5`")
+            && stdout.contains("git span replace file1.txt#L1-L5 <new-address>"),
+        "an unconfirmable rename is the terminal residual, named as such; \
+         stdout:\n{stdout}\nspan:\n{text}"
+    );
+    assert!(
+        !stdout.contains("position tracked"),
+        "the destination is a suggestion, not evidence — no coordinates may \
+         be written from it; stdout:\n{stdout}"
+    );
+    assert_eq!(
+        anchor_lines(&text),
+        vec![format!("file1.txt#L1-L5 {SENTINEL}").as_str()],
+        "the record is left exactly as it was:\n{text}"
+    );
+    // And the anchor keeps reporting: a sentinel on a vanished path must
+    // not read `Fresh`, which is exactly what an all-zero sentinel would do
+    // (zero is the fingerprint of a range that does not exist).
+    let plain = repo.run_span(["drift"])?;
+    assert_ne!(
+        plain.status.code(),
+        Some(0),
+        "stdout:\n{}",
+        stdout_of(&plain)
+    );
+    Ok(())
+}
+
+/// The no-op guard: an unmoved sentinel is not rewritten and not reported,
+/// on this pass or any later one.
+#[test]
+fn fix_leaves_an_unmoved_sentinel_untouched_and_unreported() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    commit_span(
+        &repo,
+        "fix-noop",
+        &format!("file1.txt#L1-L5 {SENTINEL}\n\nwhy: sentinel, nothing moved.\n"),
+    )?;
+
+    let first = repo.run_span(["drift", "--fix"])?;
+    let before = span_text(&repo, "fix-noop")?;
+    let second = repo.run_span(["drift", "--fix"])?;
+    let after = span_text(&repo, "fix-noop")?;
+
+    assert_eq!(
+        before, after,
+        "an unmoved sentinel is never rewritten:\nbefore:\n{before}\nafter:\n{after}"
+    );
+    for (label, out) in [("first", &first), ("second", &second)] {
+        let stdout = stdout_of(out);
+        assert!(
+            !stdout.contains("position tracked") && !stdout.contains("position untrackable"),
+            "the {label} pass must report nothing for an unmoved sentinel; \
+             stdout:\n{stdout}"
+        );
+    }
+    Ok(())
+}
+
+/// The terminal residual: the anchored path is gone, so there is no
+/// position to track forward. The report names `replace`, and the two
+/// completion attempts are pinned in both directions — `add` at the
+/// content's real new location leaves an orphan behind, `replace` does not.
+#[test]
+fn fix_names_replace_for_an_untrackable_sentinel_and_add_orphans_it() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    commit_span(
+        &repo,
+        "fix-terminal",
+        &format!("file2.txt#L1-L5 {SENTINEL}\n\nwhy: sentinel on a doomed path.\n"),
+    )?;
+    repo.run_git(["rm", "file2.txt"])?;
+    repo.run_git(["commit", "-m", "delete the anchored path"])?;
+
+    let out = repo.run_span(["drift", "--fix"])?;
+    let stdout = stdout_of(&out);
+    assert!(
+        stdout.contains("position untrackable: `file2.txt#L1-L5`"),
+        "a sentinel that cannot be relocated gets its own line, not a \
+         silent fall-through; stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("git span replace file2.txt#L1-L5 <new-address>"),
+        "the terminal residual's completion command is `replace`; \
+         stdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("position tracked"),
+        "no false position update may be manufactured; stdout:\n{stdout}"
+    );
+
+    // The wrong completion, reproduced as a red assertion: `add` at the
+    // content's real new location installs a fresh record and leaves the
+    // sentinel behind forever.
+    repo.run_span(["add", "fix-terminal", "file1.txt#L1-L5"])?;
+    let orphaned = span_text(&repo, "fix-terminal")?;
+    assert!(
+        orphaned.contains(&format!("file2.txt#L1-L5 {SENTINEL}")),
+        "`add` is identity-scoped: the sentinel record at the old address \
+         survives as an orphan:\n{orphaned}"
+    );
+    assert_eq!(
+        anchor_lines(&orphaned).len(),
+        2,
+        "the orphan sits alongside the freshly added record:\n{orphaned}"
+    );
+
+    // The right one: `replace` retires the old identity and installs the new
+    // one atomically, with no existence check on the vanished old path.
+    let repo = TestRepo::seeded()?;
+    commit_span(
+        &repo,
+        "fix-terminal2",
+        &format!("file2.txt#L1-L5 {SENTINEL}\n\nwhy: sentinel on a doomed path.\n"),
+    )?;
+    repo.run_git(["rm", "file2.txt"])?;
+    repo.run_git(["commit", "-m", "delete the anchored path"])?;
+
+    let replaced = repo.run_span([
+        "replace",
+        "fix-terminal2",
+        "file2.txt#L1-L5",
+        "file1.txt#L1-L5",
+    ])?;
+    assert_eq!(
+        replaced.status.code(),
+        Some(0),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&replaced.stderr)
+    );
+    let text = span_text(&repo, "fix-terminal2")?;
+    assert!(
+        !text.contains(SENTINEL) && !text.contains("file2.txt"),
+        "the old identity's sentinel record is gone with no orphan \
+         anywhere in the file:\n{text}"
+    );
+    assert_eq!(
+        anchor_lines(&text).len(),
+        1,
+        "one freshly hashed record at the new identity:\n{text}"
+    );
+    Ok(())
+}
+
+/// The third-party read: a collapse, then an *unrelated* `--fix` pass that
+/// re-anchors a different anchor entirely. A reader who saw neither
+/// invocation still finds the collapse sentinel in the file and still sees
+/// the anchor reported drifted.
+#[test]
+fn a_collapse_survives_an_unrelated_later_fix_pass() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.span_stdout(["add", "fix-third-party", "file2.txt#L10-L14"])?;
+    let neighbor = anchor_lines(&span_text(&repo, "fix-third-party")?)[0].to_string();
+    commit_span(
+        &repo,
+        "fix-third-party",
+        &format!(
+            "file1.txt#L1-L5 rk64:aaaaaaaaaaaaaaaa\n\
+             file1.txt#L1-L5 rk64:bbbbbbbbbbbbbbbb\n\
+             {neighbor}\n\
+             \nwhy: one duplicate, one ordinary neighbor.\n"
+        ),
+    )?;
+
+    repo.run_span(["drift", "--fix"])?;
+
+    // An unrelated edit to the neighbor anchor only: whitespace-equivalent,
+    // so the next pass re-anchors it and nothing else.
+    let mut lines: Vec<String> = std::fs::read_to_string(repo.path().join("file2.txt"))?
+        .lines()
+        .map(str::to_string)
+        .collect();
+    lines[9].push(' ');
+    repo.write_file("file2.txt", &format!("{}\n", lines.join("\n")))?;
+    let out = repo.run_span(["drift", "--fix"])?;
+    let stdout = stdout_of(&out);
+
+    let text = span_text(&repo, "fix-third-party")?;
+    assert!(
+        text.contains(&format!("file1.txt#L1-L5 {SENTINEL}")),
+        "the collapse state survives an intervening, unrelated pass; \
+         stdout:\n{stdout}\nspan:\n{text}"
+    );
+    let plain = repo.run_span(["drift"])?;
+    assert_ne!(
+        plain.status.code(),
+        Some(0),
+        "and a plain drift still reports it; stdout:\n{}",
+        stdout_of(&plain)
     );
     Ok(())
 }

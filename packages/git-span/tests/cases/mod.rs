@@ -30,6 +30,7 @@ pub mod cli_drift_renderers;
 pub mod cli_drift_whole_render;
 pub mod cli_tree;
 pub mod concurrent_add_race;
+pub mod concurrent_fix_race;
 pub mod conflict_split_boundary;
 pub mod config_reuse_invalidation;
 pub mod configured_span_root_integration;

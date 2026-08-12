@@ -9,15 +9,18 @@
 //! `notes/current-blob-unreliable-for-fix.md`), so we read content per
 //! surfacing layer rather than via `current.blob`.
 
-use crate::cli::commit::{hash_anchor_content, span_file_path, write_worktree_span};
-use crate::cli::format::{format_same_side_collapse, format_sentinel_preserved};
+use crate::cli::commit::{hash_anchor_content, lock_span_file, span_file_path, write_worktree_span};
+use crate::cli::format::{format_anchor_address, format_same_side_collapse, format_sentinel_preserved};
 use crate::git::IndexEntrySnapshot;
 use crate::span_file::{AnchorRecord, SpanFile, has_conflict_markers};
 use crate::types::{AnchorExtent, AnchorStatus, DriftSource, SpanResolved};
 use anyhow::Result;
 use git_span_core::UnresolvedAnchor;
 use git_span_core::span_file::merge_span_files;
-use git_span_core::{RK64_ALGORITHM, cheap_fingerprint_with_extent, rk64_to_hex};
+use git_span_core::{
+    CollapsedIdentity, RK64_ALGORITHM, carried_sentinel, cheap_fingerprint_with_extent,
+    collapse_duplicate_identities, rk64_to_hex, rk64_unmatched_sentinel,
+};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// Carries the result of a single `apply_fix` invocation.
@@ -61,6 +64,16 @@ pub(crate) struct FixResult {
     /// a span it had explicitly not finished. This set is the discriminator
     /// the reporting layer was missing.
     pub(crate) residue_span_names: BTreeSet<String>,
+    /// Duplicate `(path, start_line, end_line)` identities this pass
+    /// collapsed to one record, one entry per group actually shrunk.
+    ///
+    /// A collapse books here and nowhere else: it is neither a verified
+    /// re-anchor (`anchors_updated`) nor an interior-anchor excision
+    /// (`anchors_removed`), and it never enters `rewritten_anchor_ids` —
+    /// a divergent survivor carries the unmatchable sentinel precisely so
+    /// the next drift comparison reports it, and counting it as followed
+    /// would subtract it from the very exit code that must surface it.
+    pub(crate) identities_collapsed: Vec<CollapsedIdentity>,
 }
 
 // ---------------------------------------------------------------------------
@@ -867,6 +880,7 @@ pub(crate) fn apply_fix(
         spans_touched: 0,
         anchors_updated: 0,
         anchors_removed: 0,
+        identities_collapsed: Vec::new(),
     };
 
     // Resolve HEAD once for HEAD-layer rewrites. Some test scenarios may
@@ -882,6 +896,22 @@ pub(crate) fn apply_fix(
     let index_snapshot: Option<Vec<IndexEntrySnapshot>> = crate::git::index_entries(repo).ok();
 
     for m in spans {
+        // Serialize this span's whole read-modify-write against the
+        // concurrent `add`/`remove`/`replace`/`why` writers, which have
+        // always taken this same advisory lock. `--fix` never did, and the
+        // duplicate-identity collapse below makes that gap load-bearing: a
+        // lost write would silently undo a collapse the operator was just
+        // told succeeded. The guard covers both branches of the loop body —
+        // conflict resolution and the clean-parse collapse/re-anchor pass —
+        // and releases at the end of this iteration's scope.
+        let _span_lock = match lock_span_file(repo, span_root, &m.name) {
+            Ok(guard) => guard,
+            Err(e) => {
+                eprintln!("warning: cannot lock span `{}`: {}", m.name, e);
+                continue;
+            }
+        };
+
         // --- Conflict detection and resolution ---
         // Read the raw content and check for Git textual conflict markers.
         // When markers are present, attempt structural merge resolution.
@@ -947,7 +977,70 @@ pub(crate) fn apply_fix(
             any_rewritten = true;
         }
 
+        // Sweep every duplicate identity in the span down to one record,
+        // alongside the interior-anchor retain above and for the same
+        // reason: a whole-file structural repair belongs before the
+        // per-anchor loop, so re-anchoring operates on a normalized record
+        // set. Unlike `add`, this sweep has no operator naming content for
+        // any particular identity, so a survivor whose discarded records
+        // actually disagreed gets the unmatchable sentinel — the collapse
+        // restores file *shape* and must not present itself as having
+        // established what the content should be. A group whose records all
+        // agreed (`agreed_hash: Some(_)`) is simply deduplicated: nothing
+        // about its content was ever in doubt, and forcing it drifted would
+        // manufacture a false report.
+        let collapsed = collapse_duplicate_identities(&mut span_file.anchors);
+        let collapsed_ids: HashSet<(String, u32, u32)> = collapsed
+            .iter()
+            .map(|c| (c.path.clone(), c.start_line, c.end_line))
+            .collect();
+        for c in &collapsed {
+            if c.agreed_hash.is_none()
+                && let Some(survivor) = span_file.anchors.iter_mut().find(|a| {
+                    a.path == c.path && a.start_line == c.start_line && a.end_line == c.end_line
+                })
+            {
+                survivor.algorithm = RK64_ALGORITHM.to_string();
+                survivor.content_hash = rk64_unmatched_sentinel();
+            }
+            println!("  {}", format_identity_collapsed(c));
+            fix.identities_collapsed.push(c.clone());
+            any_rewritten = true;
+        }
+
         for resolved in &m.anchors {
+            // The identity of the record this resolved entry speaks for.
+            let (anc_start, anc_end) = match resolved.anchored.extent {
+                AnchorExtent::LineRange { start, end } => (start, end),
+                AnchorExtent::WholeFile => (0, 0),
+            };
+            let anc_path = resolved.anchored.path.to_string_lossy().to_string();
+
+            // Same-pass guard. `m.anchors` was resolved from the pre-fix
+            // file, and both records of a duplicate share one `anchor_id`
+            // (identity-keyed, hash-excluding), so it still holds *two*
+            // entries for the identity the sweep above just reduced to one.
+            // Running the loop body for either would overwrite the sentinel
+            // with a freshly computed hash and double-count the one
+            // surviving record. Re-anchoring a collapsed identity is
+            // deferred to a later pass, against the now-unambiguous record;
+            // the key is the *anchored* identity, the one the collapse
+            // grouped on, never the tracked current position.
+            if collapsed_ids.contains(&(anc_path.clone(), anc_start, anc_end)) {
+                continue;
+            }
+
+            // Does the record at that identity still carry a collapse
+            // sentinel? If so this pass may keep its *position* current but
+            // must never write its `content_hash` — see the sentinel branch
+            // below.
+            let record_carries_sentinel = span_file.anchors.iter().any(|r| {
+                r.path == anc_path
+                    && r.start_line == anc_start
+                    && r.end_line == anc_end
+                    && carried_sentinel(r)
+            });
+
             // Re-anchor `Moved` unconditionally (bytes are identical, only
             // relocated). Re-anchor `Changed` only when the change preserved
             // the anchored content (whitespace/formatting-equivalent); a
@@ -963,10 +1056,34 @@ pub(crate) fn apply_fix(
                         None => true,
                     }
                 }
-                AnchorStatus::Changed => resolved.content_equivalent,
+                AnchorStatus::Changed => resolved.content_equivalent || record_carries_sentinel,
                 AnchorStatus::ResolvedPendingCommit => false, // already synced with worktree
                 _ => false,
             };
+
+            // A sentinel-bearing record never reaches the hash-writing path
+            // below, whichever half of the gate let it through. Its position
+            // is bookkeeping git history already answers — the same
+            // bookkeeping every ordinary `Moved`/`Changed` anchor gets
+            // without an operator — while its content is a claim only an
+            // operator naming real content (`git span add`) can make. So
+            // this branch moves the coordinates and leaves
+            // `algorithm`/`content_hash` as the sentinel, every pass,
+            // indefinitely.
+            if record_carries_sentinel {
+                track_sentinel_position(
+                    &mut span_file,
+                    resolved,
+                    &anc_path,
+                    anc_start,
+                    anc_end,
+                    reanchor,
+                    &mut fix,
+                    &mut any_rewritten,
+                );
+                continue;
+            }
+
             if !reanchor {
                 continue;
             }
@@ -1008,11 +1125,6 @@ pub(crate) fn apply_fix(
                     .as_ref()
                     .is_some_and(|c| c.path == resolved.anchored.path)
             {
-                let (anc_start, anc_end) = match resolved.anchored.extent {
-                    AnchorExtent::LineRange { start, end } => (start, end),
-                    AnchorExtent::WholeFile => (0, 0),
-                };
-                let anc_path = resolved.anchored.path.to_string_lossy().to_string();
                 match span_file
                     .anchors
                     .iter()
@@ -1106,13 +1218,8 @@ pub(crate) fn apply_fix(
                 }
             };
 
-            // Locate the AnchorRecord matching the anchored (path, extent).
-            let (anc_start, anc_end) = match resolved.anchored.extent {
-                AnchorExtent::LineRange { start, end } => (start, end),
-                AnchorExtent::WholeFile => (0, 0),
-            };
-            let anc_path = resolved.anchored.path.to_string_lossy().to_string();
-
+            // Locate the AnchorRecord matching the anchored (path, extent),
+            // whose identity was resolved at the top of this iteration.
             let record = span_file
                 .anchors
                 .iter_mut()
@@ -1393,4 +1500,132 @@ fn coalesce_line_ranges(
     }
     span_file.anchors = new_anchors;
     true
+}
+
+/// One report line for a duplicate identity `--fix`'s span-wide sweep
+/// collapsed, so the operator sees what happened without diffing the file.
+///
+/// A group whose records disagreed is named as unverified and pointed at
+/// `git span add`, the only command that can establish what the content
+/// should be. A group whose records already agreed is named as the plain
+/// deduplication it is — its content was never in doubt.
+fn format_identity_collapsed(c: &CollapsedIdentity) -> String {
+    let address = record_address(&c.path, c.start_line, c.end_line);
+    if c.agreed_hash.is_some() {
+        format!(
+            "collapsed duplicate identity: `{address}` — {} records → 1 \
+             (records agreed; hash kept)",
+            c.records_before
+        )
+    } else {
+        format!(
+            "collapsed duplicate identity: `{address}` — {} records → 1 \
+             (records disagreed; content unverified, reported drifted — run \
+             `git span add <address>` to resolve)",
+            c.records_before
+        )
+    }
+}
+
+/// Keep a sentinel-bearing record's *position* current without ever
+/// touching its content claim.
+///
+/// The tracked position is git-history evidence (`apply_hunks_to_range`),
+/// the same bookkeeping the resolver already performs for every ordinary
+/// anchor with no operator in the loop; the sentinel says nothing about
+/// where the anchor lives, only that nothing adjudicated what its content
+/// should be. So this writes `path`/`start_line`/`end_line` and leaves
+/// `algorithm`/`content_hash` as the sentinel — on this pass and every
+/// later one — because a freshly computed hash at coordinates nobody
+/// vouched for reads as proof that nothing is wrong.
+///
+/// Nothing is written or reported when the position has not moved (the
+/// no-op guard), and a record whose position cannot be tracked at all gets
+/// the terminal line naming `git span replace`, the only command that
+/// retires a record at an address that may no longer exist.
+#[allow(clippy::too_many_arguments)]
+fn track_sentinel_position(
+    span_file: &mut SpanFile,
+    resolved: &crate::types::AnchorResolved,
+    anc_path: &str,
+    anc_start: u32,
+    anc_end: u32,
+    tracking_offered: bool,
+    fix: &mut FixResult,
+    any_rewritten: &mut bool,
+) {
+    let tracked: Option<(String, u32, u32)> = resolved.current.as_ref().map(|c| {
+        let (s, e) = match c.extent {
+            AnchorExtent::LineRange { start, end } => (start, end),
+            AnchorExtent::WholeFile => (0, 0),
+        };
+        (c.path.to_string_lossy().to_string(), s, e)
+    });
+    let unmoved = tracked
+        .as_ref()
+        .is_some_and(|(p, s, e)| p == anc_path && *s == anc_start && *e == anc_end);
+
+    // No-op guard: the record already sits where the tracked position says
+    // it does. Leave it alone entirely — no rewrite, no report, on this or
+    // any later pass.
+    if unmoved {
+        return;
+    }
+
+    if tracking_offered && let Some((new_path, new_start, new_end)) = tracked {
+        let Some(record) = span_file
+            .anchors
+            .iter_mut()
+            .find(|r| r.path == anc_path && r.start_line == anc_start && r.end_line == anc_end)
+        else {
+            return;
+        };
+        record.path = new_path.clone();
+        record.start_line = new_start;
+        record.end_line = new_end;
+        // `algorithm`/`content_hash` are deliberately untouched.
+        fix.anchors_updated += 1;
+        *any_rewritten = true;
+        // Never `rewritten_anchor_ids`: that set is subtracted from the
+        // exit code and gates coalescing, and this anchor is still
+        // unverified — it must keep reporting drifted.
+        println!(
+            "  position tracked: `{}` — a duplicate-collapse sentinel's \
+             anchor moved to `{}`; content is still unverified — run \
+             `git span add {}` to resolve",
+            record_address(anc_path, anc_start, anc_end),
+            record_address(&new_path, new_start, new_end),
+            record_address(&new_path, new_start, new_end),
+        );
+        return;
+    }
+
+    // Terminal residual: nothing to track forward. `add` at this address
+    // cannot retire the record — it fails closed on a deleted path, and at
+    // the content's real new location it installs a fresh record and leaves
+    // this one orphaned forever. `replace` retires the old identity and
+    // installs the new one atomically, with no existence check on the old
+    // path, which is exactly what this state needs.
+    let reason = if matches!(resolved.status, AnchorStatus::Deleted) {
+        "path deleted"
+    } else {
+        "no trackable history"
+    };
+    let address = record_address(anc_path, anc_start, anc_end);
+    println!(
+        "  position untrackable: `{address}` — a duplicate-collapse sentinel \
+         could not be relocated ({reason}); content is still unverified and \
+         `add` at this address will not retire it — run `git span replace \
+         {address} <new-address>` naming where the content now lives"
+    );
+}
+
+/// Render a span-file record's stored coordinates as an anchor address.
+/// A whole-file record stores `0`/`0`, which is the bare path.
+fn record_address(path: &str, start_line: u32, end_line: u32) -> String {
+    if start_line == 0 && end_line == 0 {
+        format_anchor_address(path, None, None)
+    } else {
+        format_anchor_address(path, Some(start_line), Some(end_line))
+    }
 }
