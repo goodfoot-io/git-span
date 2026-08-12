@@ -12,8 +12,8 @@
 //! fixture that stands in for real driver output is produced by running
 //! `git span merge-driver` itself ([`driver_residue`]) rather than
 //! hand-written, because hand-written residue has concealed real defects
-//! before. The two fixtures that are deliberately *not* driver-shaped —
-//! the `[config]`-inside-a-block refusal and the fabricated-anchor witness —
+//! before. The fixtures that are deliberately *not* driver-shaped — the
+//! `[config]`-inside-a-block refusal and the two-blocks-on-one-side refusal —
 //! stay hand-written by design: they test what happens when the input is not
 //! the writer's own output.
 
@@ -93,15 +93,37 @@ fn driver_residue(
     Ok(std::fs::read_to_string(repo.path().join(".merge-ours"))?)
 }
 
-/// The driver-shaped residue both 8b and 8g need: an anchor-only conflict
-/// block on `file1.txt#L1-L5`, with a why that is identical on both sides and
-/// therefore silently omitted by the residue writer.
+/// Driver-shaped residue with a single anchor-residue block on
+/// `file1.txt#L1-L5` and an agreed `why` — which the writer carries into the
+/// text plainly, after the separator, since the why is not the conflicting
+/// field and `ours`' copy of it is non-empty.
 fn anchor_only_residue(repo: &TestRepo, marker_len: &str) -> Result<String> {
     let h1 = line_slice_hash(ORIGINAL, 1, 5);
     let base = format!("file1.txt#L1-L5 rk64:{h1}\n\nshared rationale\n");
     let ours = format!("file1.txt#L1-L5 rk64:{OTHER_HASH}\n\nshared rationale\n");
     let theirs = format!("file1.txt#L1-L5 rk64:{THIRD_HASH}\n\nshared rationale\n");
     driver_residue(repo, &base, &ours, &theirs, marker_len)
+}
+
+/// Driver-shaped residue carrying **two** conflict blocks — an anchor-residue
+/// block before the separator and a why-residue block after it — which is what
+/// [`format_residue_markers`] emits whenever a why diverges alongside anchor
+/// residue, and the shape `resolve` must accept.
+///
+/// [`format_residue_markers`]: git_span::cli::drift_fix
+fn anchor_and_why_residue(repo: &TestRepo, ours_why: &str, theirs_why: &str) -> Result<String> {
+    let h1 = line_slice_hash(ORIGINAL, 1, 5);
+    let base = format!("file1.txt#L1-L5 rk64:{h1}\n\nbase rationale\n");
+    let ours = format!("file1.txt#L1-L5 rk64:{OTHER_HASH}\n\n{ours_why}\n");
+    let theirs = format!("file1.txt#L1-L5 rk64:{THIRD_HASH}\n\n{theirs_why}\n");
+    let residue = driver_residue(repo, &base, &ours, &theirs, "7")?;
+    assert_eq!(
+        residue.matches("<<<<<<<").count(),
+        2,
+        "fixture assumption: a divergent why alongside anchor residue is two blocks; \
+         residue=\n{residue}"
+    );
+    Ok(residue)
 }
 
 // ---------------------------------------------------------------------------
@@ -580,12 +602,21 @@ fn resolve_reports_config_loss_when_no_index_stages() -> Result<()> {
 #[test]
 fn resolve_reports_why_loss_when_no_index_stages() -> Result<()> {
     let repo = TestRepo::seeded()?;
-    // The residue writer omits the why paragraph entirely when the why is not
-    // the conflicting field — so the worktree text carries no why at all.
-    let residue = anchor_only_residue(&repo, "7")?;
+    // The one why the residue writer still leaves out of the text: one that
+    // only `theirs` added, which its non-conflicting branch never writes
+    // because that branch emits `ours_why`. With no stages to read stage 3
+    // from, the prose is simply gone — which is what the ceiling reports.
+    let h1 = line_slice_hash(ORIGINAL, 1, 5);
+    let residue = driver_residue(
+        &repo,
+        &format!("file1.txt#L1-L5 rk64:{h1}\n"),
+        &format!("file1.txt#L1-L5 rk64:{OTHER_HASH}\n"),
+        &format!("file1.txt#L1-L5 rk64:{THIRD_HASH}\n\nrationale Y\n"),
+        "7",
+    )?;
     assert!(
-        !residue.contains("shared rationale"),
-        "this fixture only tests why-loss if the driver really dropped the why; \
+        !residue.contains("rationale Y"),
+        "this fixture only tests why-loss if the driver really left the why out; \
          residue=\n{residue}"
     );
     repo.write_file(".span/m", &residue)?;
@@ -594,14 +625,14 @@ fn resolve_reports_why_loss_when_no_index_stages() -> Result<()> {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(out.status.code(), Some(0));
     assert!(
-        stdout.contains("no why paragraph found in the input")
-            && stdout.contains("No unmerged index stages were available"),
+        stdout.contains("no why text found in the input")
+            && stdout.contains("no unmerged index stages were available"),
         "the why-loss ceiling must be reported loudly; stdout=\n{stdout}"
     );
 
     let span = read_span(&repo, "m")?;
     assert!(
-        !span.contains("shared rationale"),
+        !span.contains("rationale Y"),
         "the why genuinely cannot be recovered from text alone; span:\n{span}"
     );
     Ok(())
@@ -693,14 +724,33 @@ fn mid_merge_repo(base: &str, ours: &str, theirs: &str) -> Result<(TestRepo, Str
     Ok((repo, residue))
 }
 
-/// Base/ours/theirs for the common shape: one anchor conflicting on hash, a
-/// `why` that is identical everywhere and therefore dropped by the residue
-/// writer.
+/// Base/ours/theirs for the common shape: one anchor conflicting on hash and a
+/// `why` that is identical everywhere, which the writer carries into the
+/// residue text plainly.
 fn shared_why_sides() -> (String, String, String) {
     (
         format!("later.txt#L1-L3 rk64:{BASE_HASH}\n\nshared rationale\n"),
         format!("later.txt#L1-L3 rk64:{OTHER_HASH}\n\nshared rationale\n"),
         format!("later.txt#L1-L3 rk64:{THIRD_HASH}\n\nshared rationale\n"),
+    )
+}
+
+/// Base/ours/theirs for the one shape whose `why` the residue writer still
+/// leaves out of the worktree text entirely: `theirs` adds prose that `ours`
+/// does not have.
+///
+/// Three-way arbitration finds no divergence (only one side changed the
+/// field), so [`format_residue_markers`] takes its non-conflicting branch and
+/// writes `ours_why` — which is empty — while the anchor residue keeps the
+/// file unmerged. Stage 3 is then the only surviving copy of the added prose,
+/// and it is the sole remaining trigger for the stage why supplement.
+///
+/// [`format_residue_markers`]: git_span::cli::drift_fix
+fn theirs_only_why_sides() -> (String, String, String) {
+    (
+        format!("later.txt#L1-L3 rk64:{BASE_HASH}\n"),
+        format!("later.txt#L1-L3 rk64:{OTHER_HASH}\n"),
+        format!("later.txt#L1-L3 rk64:{THIRD_HASH}\n\nrationale Y\n"),
     )
 }
 
@@ -800,28 +850,32 @@ fn resolve_preserves_hand_edited_worktree_content() -> Result<()> {
 
 #[test]
 fn resolve_uses_real_base_to_avoid_unnecessary_why_conflict() -> Result<()> {
-    let base = format!("later.txt#L1-L3 rk64:{BASE_HASH}\n\nrationale X\n");
-    let ours = format!("later.txt#L1-L3 rk64:{OTHER_HASH}\n\nrationale X\n");
-    let theirs = format!("later.txt#L1-L3 rk64:{THIRD_HASH}\n\nrationale Y\n");
+    let (base, ours, theirs) = theirs_only_why_sides();
     let (repo, residue) = mid_merge_repo(&base, &ours, &theirs)?;
     assert!(
         !residue.contains("rationale"),
-        "fixture assumption: the residue writer drops the non-conflicting why; \
+        "fixture assumption: the writer leaves theirs' added why out of the text; \
          residue=\n{residue}"
     );
 
-    // Without a real stage-1 base this is a two-way compare — `rationale X`
-    // against `rationale Y` — and `--rehash` would fail closed on it.
+    // After the supplement the two sides' why genuinely differ — ours empty,
+    // theirs `rationale Y`. Without a real stage-1 base that is a two-way
+    // compare and `--rehash` would fail closed on it; with one, base shows
+    // only theirs changed and there is nothing to arbitrate.
     let out = repo.run_span(["resolve", "m", "--rehash"])?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(
         out.status.code(),
         Some(0),
-        "with a base, the unchanged side yields and nothing needs arbitrating; stderr=\n{}",
-        String::from_utf8_lossy(&out.stderr)
+        "with a base, the unchanged side yields and nothing needs arbitrating; stderr=\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("--why"),
+        "a one-sided why change must never be reported as a divergence; stderr=\n{stderr}"
     );
     let span = read_span(&repo, "m")?;
     assert!(
-        span.contains("rationale Y") && !span.contains("rationale X"),
+        span.contains("rationale Y"),
         "three-way resolution must take the side that actually changed; span:\n{span}"
     );
     Ok(())
@@ -829,9 +883,7 @@ fn resolve_uses_real_base_to_avoid_unnecessary_why_conflict() -> Result<()> {
 
 #[test]
 fn resolve_ours_preserves_non_diverged_why_change() -> Result<()> {
-    let base = format!("later.txt#L1-L3 rk64:{BASE_HASH}\n\nrationale X\n");
-    let ours = format!("later.txt#L1-L3 rk64:{OTHER_HASH}\n\nrationale X\n");
-    let theirs = format!("later.txt#L1-L3 rk64:{THIRD_HASH}\n\nrationale Y\n");
+    let (base, ours, theirs) = theirs_only_why_sides();
     let (repo, _) = mid_merge_repo(&base, &ours, &theirs)?;
 
     let out = repo.run_span(["resolve", "m", "--ours"])?;
@@ -844,7 +896,7 @@ fn resolve_ours_preserves_non_diverged_why_change() -> Result<()> {
     );
     let span = read_span(&repo, "m")?;
     assert!(
-        span.contains("rationale Y") && !span.contains("rationale X"),
+        span.contains("rationale Y"),
         "`--ours` must not revert a clean, uncontested change it was never asked to \
          arbitrate; span:\n{span}"
     );
@@ -899,12 +951,12 @@ fn resolve_ours_preserves_non_diverged_config_change() -> Result<()> {
 
 #[test]
 fn resolve_recovers_why_from_index_stages_after_partial_residue() -> Result<()> {
-    let (base, ours, theirs) = shared_why_sides();
+    let (base, ours, theirs) = theirs_only_why_sides();
     let (repo, residue) = mid_merge_repo(&base, &ours, &theirs)?;
     assert!(
-        !residue.contains("shared rationale"),
-        "fixture assumption: the residue writer omits an agreed why entirely; \
-         residue=\n{residue}"
+        !residue.contains("rationale"),
+        "fixture assumption: the writer emits `ours_why` for a non-diverged why, so theirs' \
+         added prose is absent from the text; residue=\n{residue}"
     );
 
     let out = repo.run_span(["resolve", "m", "--rehash"])?;
@@ -917,16 +969,16 @@ fn resolve_recovers_why_from_index_stages_after_partial_residue() -> Result<()> 
     );
     let span = read_span(&repo, "m")?;
     assert!(
-        span.contains("shared rationale"),
-        "the why the writer dropped must be recovered from the stage blobs, not merely \
-         reported as lost; span:\n{span}"
+        span.contains("rationale Y"),
+        "the why the writer left out must be recovered from stage 3, not merely reported \
+         as lost; span:\n{span}"
     );
     assert!(
-        stdout.contains("why: recovered from index stages"),
+        stdout.contains("recovered from index stages"),
         "the report must not present a restored why as agreement; stdout=\n{stdout}"
     );
     assert!(
-        !stdout.contains("no why paragraph found in the input"),
+        !stdout.contains("no why text found in the input"),
         "the loss ceiling must not fire when stages were available; stdout=\n{stdout}"
     );
     Ok(())
@@ -934,15 +986,14 @@ fn resolve_recovers_why_from_index_stages_after_partial_residue() -> Result<()> 
 
 #[test]
 fn resolve_hand_edited_why_is_never_overwritten_from_index_stages() -> Result<()> {
-    let (base, ours, theirs) = shared_why_sides();
+    let (base, ours, theirs) = theirs_only_why_sides();
     let (repo, residue) = mid_merge_repo(&base, &ours, &theirs)?;
 
-    // The operator has since written their own why into the conflict block.
-    // A non-empty text-sourced why is exactly what the supplement must not
-    // touch — the empty-string discriminator is the whole guard.
-    let hand_edited = residue
-        .replace("=======\n", "\noperator rationale\n=======\n")
-        .replace(">>>>>>> theirs\n", "\noperator rationale\n>>>>>>> theirs\n");
+    // The operator has since written their own why into the residue text,
+    // below the anchor block's separator. A non-empty text-sourced why is
+    // exactly what the supplement must not touch — the empty-string
+    // discriminator is the whole guard.
+    let hand_edited = format!("{residue}operator rationale\n");
     repo.write_file(".span/m", &hand_edited)?;
 
     let out = repo.run_span(["resolve", "m", "--rehash"])?;
@@ -959,7 +1010,7 @@ fn resolve_hand_edited_why_is_never_overwritten_from_index_stages() -> Result<()
         "the hand-edited why must survive; span:\n{span}"
     );
     assert!(
-        !span.contains("shared rationale"),
+        !span.contains("rationale Y"),
         "the stage blob must never override a non-empty text-sourced why; span:\n{span}"
     );
     assert!(
@@ -969,20 +1020,24 @@ fn resolve_hand_edited_why_is_never_overwritten_from_index_stages() -> Result<()
     Ok(())
 }
 
+/// The narrowed supplement's two halves, on the ambiguous shape the plan
+/// disclosed: an operator who clears both sides of a contested why produces
+/// exactly the text a dropped why produces. Since only `theirs` can lose a why
+/// to the writer, only `theirs` is restored — `ours`' clear stands, which
+/// removes the false positive the symmetric version carried.
 #[test]
-fn resolve_why_cleared_by_hand_is_restored_from_stages_not_prevented() -> Result<()> {
+fn resolve_why_cleared_by_hand_stands_on_ours_and_is_restored_on_theirs() -> Result<()> {
     let base = format!("later.txt#L1-L3 rk64:{BASE_HASH}\n\nrationale X\n");
     let ours = format!("later.txt#L1-L3 rk64:{OTHER_HASH}\n\nrationale Y\n");
     let theirs = format!("later.txt#L1-L3 rk64:{THIRD_HASH}\n\nrationale Z\n");
     let (repo, residue) = mid_merge_repo(&base, &ours, &theirs)?;
     assert!(
         residue.contains("rationale Y") && residue.contains("rationale Z"),
-        "fixture assumption: a contested why is carried inside the block; residue=\n{residue}"
+        "fixture assumption: a contested why is carried in its own block; residue=\n{residue}"
     );
 
     // The operator decides the span no longer needs a why and deletes both
-    // paragraphs, leaving the anchor residue — indistinguishable, from the
-    // text alone, from the writer having dropped an agreed why.
+    // paragraphs, leaving the anchor residue.
     let cleared: String = residue
         .lines()
         .filter(|l| !l.starts_with("rationale "))
@@ -991,9 +1046,9 @@ fn resolve_why_cleared_by_hand_is_restored_from_stages_not_prevented() -> Result
     repo.write_file(".span/m", &cleared)?;
     let before = read_span_bytes(&repo, "m")?;
 
-    // Restoring both sides makes the divergence real again, so `--rehash`
-    // has something it cannot arbitrate — the ambiguity surfaces rather than
-    // being silently read as agreement on an empty why.
+    // Restoring theirs makes the divergence real again against ours' empty
+    // why, so `--rehash` has something it cannot arbitrate — the ambiguity
+    // surfaces rather than being silently read as agreement on an empty why.
     let out = repo.run_span(["resolve", "m", "--rehash"])?;
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_ne!(out.status.code(), Some(0), "stderr=\n{stderr}");
@@ -1003,8 +1058,30 @@ fn resolve_why_cleared_by_hand_is_restored_from_stages_not_prevented() -> Result
     );
     assert_eq!(before, read_span_bytes(&repo, "m")?, "file must be untouched");
 
-    // Taking a side writes the stage-supplied prose back — this plan's
-    // disclosed choice of restore over preserve-empty — and says so.
+    // `--theirs` writes the stage-supplied prose back — the disclosed choice
+    // of restore over preserve-empty — and says so rather than calling it
+    // agreement.
+    let out = repo.run_span(["resolve", "m", "--theirs"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr=\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let span = read_span(&repo, "m")?;
+    assert!(
+        span.contains("rationale Z") && !span.contains("rationale Y"),
+        "the stage-supplied why for the chosen side must be restored; span:\n{span}"
+    );
+    assert!(
+        stdout.contains("recovered from index stages") && !stdout.contains("why: unchanged"),
+        "the operator must be able to see that something put the why back; stdout=\n{stdout}"
+    );
+
+    // `--ours` honors the clear: the writer can never drop ours' why, so an
+    // empty one is the operator's own edit and the supplement leaves it alone.
+    repo.write_file(".span/m", &cleared)?;
     let out = repo.run_span(["resolve", "m", "--ours"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(
@@ -1015,12 +1092,12 @@ fn resolve_why_cleared_by_hand_is_restored_from_stages_not_prevented() -> Result
     );
     let span = read_span(&repo, "m")?;
     assert!(
-        span.contains("rationale Y") && !span.contains("rationale Z"),
-        "the stage-supplied why for the chosen side must be restored; span:\n{span}"
+        !span.contains("rationale"),
+        "ours' deliberate clear must stand; span:\n{span}"
     );
     assert!(
-        stdout.contains("recovered from index stages") && !stdout.contains("why: unchanged"),
-        "the operator must be able to see that something put the why back; stdout=\n{stdout}"
+        stdout.contains("why: kept ours") && !stdout.contains("recovered from index stages"),
+        "nothing was recovered into what was written; stdout=\n{stdout}"
     );
     Ok(())
 }
@@ -1099,8 +1176,12 @@ ignore_whitespace = false
     Ok(())
 }
 
+/// The corrected input-shape claim's refusal half: the writer coalesces every
+/// divergent anchor into *one* block before the separator, so two blocks on
+/// the same side of it are not its output — this is what Git's default text
+/// merge produces when the span driver is not registered.
 #[test]
-fn resolve_refuses_multiple_conflict_blocks() -> Result<()> {
+fn resolve_refuses_two_conflict_blocks_on_one_side_of_the_separator() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let h1 = line_slice_hash(ORIGINAL, 1, 5);
     let h2 = line_slice_hash(FILE2, 1, 5);
@@ -1125,81 +1206,108 @@ file2.txt#L1-L5 rk64:{THIRD_HASH}
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_ne!(out.status.code(), Some(0), "stderr=\n{stderr}");
     assert!(
-        stderr.contains("2 conflict blocks") && stderr.contains("at most one"),
-        "the refusal must name the count; stderr=\n{stderr}"
+        stderr.contains("2 conflict blocks in its anchor block"),
+        "the refusal must name the count and the region; stderr=\n{stderr}"
     );
     assert_eq!(before, read_span_bytes(&repo, "m")?, "file must be untouched");
     Ok(())
 }
 
+/// The claim's acceptance half, over the writer's own two-block output: a why
+/// that diverges alongside anchor residue gets its own block *after* the
+/// separator, and `resolve` must settle that end to end rather than refuse the
+/// driver's output in the one case the card exists for.
 #[test]
-fn resolve_refuses_fabricated_anchor_from_why_prose() -> Result<()> {
+fn resolve_settles_real_driver_output_with_a_divergent_why() -> Result<()> {
     let repo = TestRepo::seeded()?;
-    let h1 = line_slice_hash(ORIGINAL, 1, 5);
-    // Deliberately NOT driver-shaped: the witness for the anchor/why boundary
-    // heuristic fabricating an anchor out of a URL-ending why line.
-    let fixture = format!(
-        "\
-<<<<<<< ours
-file1.txt#L1-L5 rk64:{h1}
-docs at https://example.com
-=======
-file1.txt#L1-L5 rk64:{OTHER_HASH}
-docs at https://example.com
->>>>>>> theirs
-"
-    );
-    repo.write_file(".span/m", &fixture)?;
+    let residue = anchor_and_why_residue(&repo, "our rationale", "their rationale")?;
+    repo.write_file(".span/m", &residue)?;
+
+    // --rehash settles the anchor from the worktree but cannot arbitrate
+    // prose, so the why divergence is what stops it — and it says so.
     let before = read_span_bytes(&repo, "m")?;
-
-    for side in ["--rehash", "--ours", "--theirs"] {
-        let out = repo.run_span(["resolve", "m", side])?;
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        assert_ne!(out.status.code(), Some(0), "{side} must refuse; stderr=\n{stderr}");
-        assert!(
-            stderr.contains("https") && stderr.contains("rk64"),
-            "{side} must cite the fabricated algorithm token; stderr=\n{stderr}"
-        );
-        assert_eq!(before, read_span_bytes(&repo, "m")?, "file must be untouched");
-    }
-    Ok(())
-}
-
-#[test]
-fn resolve_algorithm_gate_does_not_reject_ordinary_why_with_colon() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    let h1 = line_slice_hash(ORIGINAL, 1, 5);
-    let fixture = format!(
-        "\
-<<<<<<< ours
-file1.txt#L1-L5 rk64:{OTHER_HASH}
-
-Authority: see the schema doc
-=======
-file1.txt#L1-L5 rk64:{THIRD_HASH}
-
-Authority: see the schema doc
->>>>>>> theirs
-"
-    );
-    repo.write_file(".span/m", &fixture)?;
-
     let out = repo.run_span(["resolve", "m", "--rehash"])?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_ne!(out.status.code(), Some(0), "stderr=\n{stderr}");
+    assert!(
+        stderr.contains("--why"),
+        "the divergent why must be named, not the input shape; stderr=\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("conflict blocks"),
+        "the driver's own output must never be refused as unshaped; stderr=\n{stderr}"
+    );
+    assert_eq!(before, read_span_bytes(&repo, "m")?, "file must be untouched");
+
+    let out = repo.run_span(["resolve", "m", "--theirs"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(
         out.status.code(),
         Some(0),
-        "a colon inside prose is not an anchor; stderr=\n{}",
+        "--theirs must settle the driver's two-block output; stderr=\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
     let span = read_span(&repo, "m")?;
     assert!(
-        span.contains("Authority: see the schema doc"),
-        "the why must survive intact; span:\n{span}"
+        span.contains("their rationale") && !span.contains("our rationale"),
+        "the chosen side's prose must be what lands; span:\n{span}"
     );
     assert!(
-        span.contains(&format!("file1.txt#L1-L5 rk64:{h1}")),
-        "the anchor must be re-hashed from the worktree; span:\n{span}"
+        span.contains(&format!(
+            "file1.txt#L1-L5 rk64:{}",
+            line_slice_hash(ORIGINAL, 1, 5)
+        )) || span.contains(&format!("file1.txt#L1-L5 rk64:{THIRD_HASH}")),
+        "the anchor residue must be settled too; span:\n{span}"
     );
+    assert!(!span.contains("<<<<<<<"), "no markers may remain; span:\n{span}");
+    assert!(
+        stdout.contains("why: kept theirs"),
+        "stdout=\n{stdout}"
+    );
+    Ok(())
+}
+
+/// The witness the retired `rk64` gate existed to refuse: a why line whose
+/// last token is `<word>:<word>`. The boundary is structural now — the line
+/// arrives in the why region and can never be re-read as an anchor — so it
+/// must round-trip through `resolve` intact rather than be rejected.
+#[test]
+fn resolve_round_trips_url_ending_why_prose_the_old_gate_refused() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let residue = anchor_and_why_residue(
+        &repo,
+        "docs at https://example.com",
+        "moved, see rfc:1234",
+    )?;
+    repo.write_file(".span/m", &residue)?;
+
+    let out = repo.run_span(["resolve", "m", "--ours"])?;
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "prose that merely looks anchor-shaped is not a refusal; stderr=\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let span = read_span(&repo, "m")?;
+    assert!(
+        span.contains("docs at https://example.com"),
+        "the sentence must survive as prose, not become an anchor at path `docs at`; \
+         span:\n{span}"
+    );
+    assert!(
+        !span.contains("https:") || span.contains("docs at https://example.com"),
+        "span:\n{span}"
+    );
+    assert!(
+        !span.contains("moved, see rfc:1234"),
+        "the unchosen side's prose must be gone; span:\n{span}"
+    );
+    // Re-parsing is the real proof the round trip was lossless: a fabricated
+    // anchor would show up here as an extra record.
+    let parsed = SpanFile::parse(&span)?;
+    assert_eq!(parsed.anchors.len(), 1, "exactly one anchor; span:\n{span}");
+    assert_eq!(parsed.anchors[0].path, "file1.txt");
+    assert_eq!(parsed.why.trim(), "docs at https://example.com");
     Ok(())
 }
 

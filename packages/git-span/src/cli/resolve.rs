@@ -17,14 +17,15 @@
 //!   operator reviews with `git diff` and stages what they agree with.
 //! * **Narrow input claim.** Only the residue shape
 //!   [`crate::cli::drift_fix::format_residue_markers`] produces is claimed —
-//!   at most one conflict block, no `[config]` header inside it. Anything
-//!   else is refused before the marker split is trusted for anything.
+//!   at most one conflict block on each side of the anchor/why separator, no
+//!   `[config]` header inside either. Anything else is refused before the
+//!   marker split is trusted for anything.
 //!
 //! Anchors and why always come from the live worktree text, so progress an
 //! operator already made by hand is read as agreed content rather than
 //! reverted. Unmerged index stages are consulted only for what the residue
-//! writer silently omits from that text — `[config]`, a `why` the writer
-//! dropped because it wasn't the conflicting field, and a `base` for
+//! writer silently omits from that text — `[config]`, theirs' `why` when the
+//! writer left it out because the field had not diverged, and a `base` for
 //! three-way arbitration — never to override an anchor or a non-empty
 //! text-sourced why.
 
@@ -35,8 +36,7 @@ use crate::span_file::{AnchorRecord, SpanFile};
 use anyhow::Result;
 use git_span_core::UnresolvedAnchor;
 use git_span_core::{
-    RK64_ALGORITHM, SpanConfig, has_conflict_markers, merge_span_files, resolve_config,
-    resolve_why_text,
+    SpanConfig, has_conflict_markers, merge_span_files, resolve_config, resolve_why_text,
 };
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -53,9 +53,10 @@ const CONFIG_LOSS_LINE: &str = "config: no `[config]` section found in the input
      settings before this conflict, restore them manually with a follow-up edit if needed.";
 
 /// The `why`-loss ceiling line (step 11), symmetric to [`CONFIG_LOSS_LINE`].
-const WHY_LOSS_LINE: &str = "why: no why paragraph found in the input for an anchor-only conflict \
-     block; written empty. No unmerged index stages were available to recover it from; if the \
-     span had why prose before this conflict, restore it manually if needed.";
+const WHY_LOSS_LINE: &str = "why: no why text found in the input; written empty. The residue \
+     writer carries only the `ours` side's why into the worktree text, so a why only `theirs` \
+     added is absent from it, and no unmerged index stages were available to recover one from; \
+     if the span had why prose before this conflict, restore it manually if needed.";
 
 // ---------------------------------------------------------------------------
 // Sides
@@ -101,8 +102,8 @@ impl Side {
 /// worktree file is live, so they supply only the three things the residue
 /// writer can silently drop from that live text: `base` (stage 1) for
 /// three-way arbitration, `[config]` (stages 2/3, grafted onto the
-/// text-sourced sides), and a `why` that the text carries as empty. Anchors
-/// are never sourced from here under any circumstance.
+/// text-sourced sides), and **theirs'** `why` when the text carries none.
+/// Anchors are never sourced from here under any circumstance.
 #[derive(Debug, Default)]
 struct StageEvidence {
     /// The merge base's span file, when stage 1 exists — the only input to
@@ -112,8 +113,8 @@ struct StageEvidence {
     /// means there is no second evidence source at all, which is what the two
     /// recovery-ceiling report lines are conditional on.
     available: bool,
-    /// True when the supplement genuinely replaced an empty text-sourced why
-    /// with a non-empty stage value, on either side.
+    /// True when the supplement genuinely replaced theirs' empty text-sourced
+    /// why with a non-empty stage value.
     why_recovered: bool,
 }
 
@@ -121,9 +122,21 @@ struct StageEvidence {
 /// text-sourced sides with what the residue writer drops.
 ///
 /// `ours`/`theirs` are mutated only in `.config` (unconditionally, when the
-/// corresponding stage blob exists) and in `.why` (only when the text-sourced
-/// value is empty — the discriminator that keeps this from discarding a
-/// hand-edited why). Their anchors are never touched.
+/// corresponding stage blob exists) and `theirs.why` (only when the
+/// text-sourced value is empty). Their anchors are never touched.
+///
+/// **The why supplement is theirs-only, and that is a claim about the writer,
+/// not a convenience.** `format_residue_markers` carries a non-diverged why
+/// into the text by writing `ours_why` — so `ours`' why is never dropped: a
+/// non-empty one is written (plainly, or into the why block when it diverges),
+/// and an empty one is empty because `ours` genuinely has no why. `theirs`' is
+/// the only side the writer can lose: when the merge driver's three-way
+/// arbitration finds `theirs` added a why `ours` does not have, the field has
+/// not diverged, the writer emits `ours_why` (empty), and the added prose is
+/// absent from the worktree text entirely. Stage 3 is the only surviving copy.
+/// Supplementing `ours` as well would have no true positive left to catch and
+/// exactly one false positive — reverting a why an operator deliberately
+/// cleared out of a divergent why block — so it is not done.
 fn load_stage_evidence(
     repo: &gix::Repository,
     span_root: &str,
@@ -151,22 +164,25 @@ fn load_stage_evidence(
         why_recovered: false,
     };
 
-    for (stage, side) in [
-        (gix::index::entry::Stage::Ours, &mut *ours),
-        (gix::index::entry::Stage::Theirs, &mut *theirs),
-    ] {
-        let Some(staged) = parse_stage(stage) else {
-            continue;
-        };
-        // `[config]` never survives the residue writer, so the stage blob is
-        // strictly better evidence than the text whenever it exists.
-        side.config = staged.config;
-        // A non-empty text-sourced why may be a hand edit. Only an empty one
-        // is supplemented.
-        if side.why.trim().is_empty() && !staged.why.trim().is_empty() {
-            side.why = staged.why.clone();
-            evidence.why_recovered = true;
-        }
+    // `[config]` never survives the residue writer, so a stage blob is
+    // strictly better evidence than the text whenever it exists.
+    let staged_ours = parse_stage(gix::index::entry::Stage::Ours);
+    let staged_theirs = parse_stage(gix::index::entry::Stage::Theirs);
+    if let Some(staged) = &staged_ours {
+        ours.config = staged.config;
+    }
+    if let Some(staged) = &staged_theirs {
+        theirs.config = staged.config;
+    }
+
+    // Theirs-only why supplement, per this function's doc comment. A
+    // non-empty text-sourced why may be a hand edit and is never touched.
+    if let Some(staged) = &staged_theirs
+        && theirs.why.trim().is_empty()
+        && !staged.why.trim().is_empty()
+    {
+        theirs.why = staged.why.clone();
+        evidence.why_recovered = true;
     }
 
     evidence
@@ -292,10 +308,6 @@ pub fn run_resolve(repo: &gix::Repository, args: ResolveArgs, span_root: &str) -
     let mut ours = SpanFile::parse(&ours_text).map_err(|e| parse_error(&name, "ours", e))?;
     let mut theirs = SpanFile::parse(&theirs_text).map_err(|e| parse_error(&name, "theirs", e))?;
 
-    // Step 4b: algorithm sanity gate. Run against the text-sourced anchors,
-    // which the stage supplement below never touches.
-    check_algorithms(&ours, &theirs, &name)?;
-
     let stages = load_stage_evidence(repo, span_root, &name, &mut ours, &mut theirs);
     if !stages.available {
         eprintln!(
@@ -419,16 +431,27 @@ fn marker_run_len(line: &str, c: char) -> Option<usize> {
     if len >= 7 { Some(len) } else { None }
 }
 
-/// Refuse input shapes `split_conflict_markers`'s driver-format heuristic
-/// (single-block assumption, no embedded `[config]`) is not verified against,
-/// and return the text with conflict markers canonicalized to length 7.
+/// Refuse input shapes [`crate::cli::drift_fix::format_residue_markers`] cannot
+/// produce, and return the text with conflict markers canonicalized to length 7.
+///
+/// The claim is derived from the writer, which emits residue in two regions
+/// split by the blank-line separator: **at most one** conflict block before it
+/// (all divergent anchors, coalesced into a single block) and **at most one**
+/// after it (both sides' divergent why). A file with two blocks on the same
+/// side of the separator is therefore not the writer's output — it is what
+/// Git's default text merge produces when the span driver is not registered,
+/// and `resolve`'s settlement is not verified against it. `[config]` is never
+/// serialized into residue at all, so one inside a block is refused too.
 ///
 /// Git writes markers at the configured conflict-marker size (`%L`, which
 /// [`crate::cli::merge_driver`] honors), while the shared split recognizes a
-/// `=======` separator only at exactly seven characters. Canonicalizing the
-/// three marker forms here — and only inside a block, so a Markdown setext
-/// underline in why prose is untouched — keeps a `%L=9` residue file readable
-/// without changing the shared splitter every other caller depends on.
+/// `=======` separator only at exactly seven characters — [`SideBuilder`]'s
+/// structural boundary tracking did not change that. Canonicalizing the three
+/// marker forms here — and only inside a block, so a Markdown setext underline
+/// in why prose is untouched — keeps a `%L=9` residue file readable without
+/// changing the shared splitter every other caller depends on.
+///
+/// [`SideBuilder`]: crate::cli::drift_fix
 fn verify_driver_shape(raw: &str, name: &str) -> std::result::Result<String, CliError> {
     let refusal = |reason: String| CliError {
         subcommand: "resolve",
@@ -450,12 +473,21 @@ fn verify_driver_shape(raw: &str, name: &str) -> std::result::Result<String, Cli
     };
 
     let mut out = String::new();
-    let mut blocks = 0usize;
+    // Blocks are counted per region, split at the first blank line outside
+    // every block — the same separator `SideBuilder` flips on, so the two
+    // counts are exactly "anchor-residue blocks" and "why-residue blocks".
+    let mut anchor_blocks = 0usize;
+    let mut why_blocks = 0usize;
+    let mut in_why_region = false;
     let mut open_len: Option<usize> = None;
 
     for line in raw.lines() {
         if let Some(len) = marker_run_len(line, '<') {
-            blocks += 1;
+            if in_why_region {
+                why_blocks += 1;
+            } else {
+                anchor_blocks += 1;
+            }
             open_len = Some(len);
             out.push_str("<<<<<<<");
             out.push_str(&line[len..]);
@@ -493,14 +525,25 @@ fn verify_driver_shape(raw: &str, name: &str) -> std::result::Result<String, Cli
                     "Span `{name}` has a `[config]` header inside a conflict block."
                 )));
             }
+        } else if line.is_empty() && !in_why_region {
+            // The first blank line outside every block is the anchor/why
+            // separator, exactly as `SideBuilder::push` reads it.
+            in_why_region = true;
         }
         out.push_str(line);
         out.push('\n');
     }
 
-    if blocks > 1 {
+    if anchor_blocks > 1 {
         return Err(refusal(format!(
-            "Span `{name}` has {blocks} conflict blocks; `resolve` claims at most one."
+            "Span `{name}` has {anchor_blocks} conflict blocks in its anchor block; the residue \
+             writer coalesces every divergent anchor into one."
+        )));
+    }
+    if why_blocks > 1 {
+        return Err(refusal(format!(
+            "Span `{name}` has {why_blocks} conflict blocks in its why text; the residue writer \
+             writes at most one."
         )));
     }
 
@@ -522,43 +565,6 @@ fn parse_error(name: &str, side: &str, err: impl std::fmt::Display) -> CliError 
             "Correct the malformed side in the span file by hand, then retry.".into(),
         )],
     }
-}
-
-// ---------------------------------------------------------------------------
-// Step 4b: algorithm sanity gate
-// ---------------------------------------------------------------------------
-
-/// Refuse any anchor whose algorithm token is not `rk64`.
-///
-/// `split_conflict_markers` infers the anchor/why boundary from line shape, so
-/// a why-prose line whose last token is `word:word` (`docs at
-/// https://example.com`) parses as a fabricated anchor. `rk64` is the only
-/// algorithm any writer in this codebase produces, so a mismatch is the
-/// discriminating signal that the split invented a record. This is a
-/// `resolve`-local restriction, not a format rule — a second legitimate
-/// algorithm will need to widen it.
-fn check_algorithms(ours: &SpanFile, theirs: &SpanFile, name: &str) -> std::result::Result<(), CliError> {
-    for anchor in ours.anchors.iter().chain(theirs.anchors.iter()) {
-        if anchor.algorithm != RK64_ALGORITHM {
-            return Err(CliError {
-                subcommand: "resolve",
-                summary: format!("span `{name}` carries an anchor `resolve` cannot trust."),
-                what_happened: format!(
-                    "The line `{anchor}` declares algorithm `{}`, but `rk64` is the only \
-                     algorithm git-span writes. Splitting this file's conflict markers most \
-                     likely fabricated that anchor out of why prose, so `resolve` refuses \
-                     rather than write a hash it invented. The span file was not modified.",
-                    anchor.algorithm
-                ),
-                next_steps: vec![NextStep::Prose(format!(
-                    "Check the conflict block in this span file: a why line whose last token \
-                     looks like `<word>:<word>` is read as an anchor. Move or reword it, then \
-                     retry `git span resolve {name}`."
-                ))],
-            });
-        }
-    }
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -702,13 +708,18 @@ fn evaluate_side(
     });
 
     let entries = build_entries(side, &merged, &ours_map, &theirs_map);
+    // The supplement is only worth reporting when what it recovered is what
+    // actually got written: `--ours` on a why the operator cleared writes the
+    // empty value it was asked for, and calling that "recovered" would be a
+    // second misleading label in place of the one this state exists to fix.
+    let why_recovered = stages.why_recovered && merged.why == theirs.why;
     let why_label = field_label(
         side,
         why_diverged,
         &ours.why,
         &theirs.why,
         &merged.why,
-        stages.why_recovered,
+        why_recovered,
     );
     let config_label = field_label_config(side, config_diverged, ours, theirs, &merged);
 
@@ -862,11 +873,11 @@ fn build_entries(
 ///
 /// `recovered from index stages` replaces `unchanged` rather than ranking
 /// above the other two, because it is exactly the claim of agreement that
-/// cannot be made here: an empty text-sourced why is equally "the residue
-/// writer dropped it" and "the operator deliberately cleared it", so the
-/// report says something restored it instead of asserting both sides agreed.
-/// When a side choice or a three-way answer did the arbitrating, that stays
-/// the headline and the recovery is appended to it.
+/// cannot be made here: an empty text-sourced why on theirs is equally "the
+/// residue writer left theirs' addition out" and "the operator deliberately
+/// cleared a contested why", so the report says something restored it instead
+/// of asserting both sides agreed. When a side choice or a three-way answer
+/// did the arbitrating, that stays the headline and the recovery is appended.
 fn field_label(
     side: Side,
     diverged: bool,
