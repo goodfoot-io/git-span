@@ -1,4 +1,6 @@
+packages/git-span/src/cli/drift_fix.rs#L81-L203 rk64:5fda1d0e20f8b7ad
 packages/git-span/src/cli/drift_fix.rs#L166-L288 rk64:e576914f42cac56f
+packages/git-span/src/cli/drift_fix.rs#L431-L525 rk64:6ecedf52ff640ea8
 packages/git-span/src/cli/drift_fix.rs#L531-L625 rk64:6ecedf52ff640ea8
 packages/git-span/tests/cases/conflict_split_boundary.rs rk64:9e7ac8e17dd74de6
 
