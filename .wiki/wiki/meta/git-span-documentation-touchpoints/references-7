@@ -1,4 +1,4 @@
-packages/git-span/src/cli/mod.rs#L1-L32 rk64:ac84602a8180dd3a
+packages/git-span/src/cli/mod.rs#L1-L32 rk64:45cef73c84601dd5
 packages/git-span/src/main.rs#L49-L100 rk64:2aa836f03ffba1f5
 packages/git-span/src/validation.rs#L7-L28 rk64:21f44d9122bbec2a
 wiki/meta/git-span-documentation-touchpoints.md#L125-L129 rk64:cf103a7065e62180

@@ -1,0 +1,8 @@
+packages/git-span-core/src/span_file.rs#L616-L813 rk64:70a7516d8937ab1d
+packages/git-span/src/cli/drift_fix.rs#L87-L236 rk64:18204682a5d886da
+packages/git-span/src/cli/drift_fix.rs#L267-L294 rk64:30f9ed5debab0258
+packages/git-span/src/cli/resolve.rs rk64:007c9d53921e12fb
+packages/git-span/src/git.rs#L1032-L1057 rk64:83cc73fe05f4945a
+packages/git-span/src/git.rs#L1349-L1371 rk64:405271ca12017c23
+
+resolve sources ours/theirs/base anchors and why unconditionally from the live worktree text via --fix's marker-split and clean-source precondition, and consults unmerged index stages only to supplement config, a non-conflicting why the residue writer silently dropped, and base for three-way arbitration — never to override anchors or a non-empty text-sourced why — so a change to any of the three (marker recognition, what counts as a clean source, index-stage layout) must be checked against resolve's independent all-or-nothing settlement logic, which does not call --fix's partial-write or rename-recovery paths. resolve also recomputes --fix's orphan key-set difference in its own copy rather than sharing a helper, so the two must stay in step on what counts as an orphan.
