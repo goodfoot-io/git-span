@@ -7,8 +7,8 @@
     "build:claude": "yarn build:hooks",
     "build:codex": "yarn build:hooks:codex",
     "build:mswea": "yarn build:hooks:mswea",
-    "build:hooks": "yarn claude-code-hooks -i \"src/claude/**/*.ts\" -o \"../../plugins-claude/git-span/hooks/hooks.json\"",
-    "build:hooks:codex": "yarn codex-hooks -i \"src/codex/**/*.ts\" -o \"../../plugins-codex/git-span/hooks/hooks.json\" --plugin-root",
+    "build:hooks": "yarn claude-code-hooks -i \"src/claude/**/*.ts\" -o \"../../plugins-claude/git-span/hooks/hooks.json\" --no-sourcemap",
+    "build:hooks:codex": "yarn codex-hooks -i \"src/codex/**/*.ts\" -o \"../../plugins-codex/git-span/hooks/hooks.json\" --plugin-root --no-sourcemap",
     "build:hooks:mswea": "yarn claude-code-hooks -i \"src/mswea/**/*.ts\" -o \"../../packages/mini-swe-agent/src/minisweagent_gitspan/hooks/hooks.json\"",
     "claude-code-hooks": "node scripts/hooks-cli-wrapper.js @goodfoot/claude-code-hooks",
     "codex-hooks": "node scripts/hooks-cli-wrapper.js @goodfoot/codex-hooks",
@@ -17,8 +17,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@goodfoot/claude-code-hooks": "^1.7.3",
-    "@goodfoot/codex-hooks": "^1.1.5"
+    "@goodfoot/claude-code-hooks": "^1.8.0",
+    "@goodfoot/codex-hooks": "^1.2.0"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.12",

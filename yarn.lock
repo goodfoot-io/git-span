@@ -1837,29 +1837,29 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@goodfoot/claude-code-hooks@npm:^1.7.3":
-  version: 1.7.3
-  resolution: "@goodfoot/claude-code-hooks@npm:1.7.3"
+"@goodfoot/claude-code-hooks@npm:^1.8.0":
+  version: 1.8.0
+  resolution: "@goodfoot/claude-code-hooks@npm:1.8.0"
   dependencies:
     esbuild: "npm:^0.24.0"
     glob: "npm:^11.0.0"
     typescript: "npm:^5.9.3"
   bin:
     claude-code-hooks: dist/cli.js
-  checksum: 10c0/1ee70d26244440d75bd0735edcc26c7da32a5187b88b1efea431f398778aea8ced890962720215f63a42ab5340619654f9463f6367f1f3192a9dfe597f07bbcd
+  checksum: 10c0/d8cb783ab1e93ef45a678005bbdcaa54f00df53411ed41c797822d6f8efc6d4c1872bb0d4c71e1079c12b7cd9ed8f40da42782c93502dc6e0624bfd2649dd364
   languageName: node
   linkType: hard
 
-"@goodfoot/codex-hooks@npm:^1.1.5":
-  version: 1.1.5
-  resolution: "@goodfoot/codex-hooks@npm:1.1.5"
+"@goodfoot/codex-hooks@npm:^1.2.0":
+  version: 1.2.0
+  resolution: "@goodfoot/codex-hooks@npm:1.2.0"
   dependencies:
     esbuild: "npm:^0.28.0"
     glob: "npm:^13.0.6"
     typescript: "npm:^6.0.3"
   bin:
     codex-hooks: dist/cli.js
-  checksum: 10c0/6102366676f99902368852b5640e6180ea376c0dbed2a4730b3336f10e81c40fdfdaa0a1c2430107e5831bf928830ad7eaab58303d46df1382bd4a29211010a8
+  checksum: 10c0/b41054921ef5e4ceee03d45e23e39fbeee1609260261a42a02478217b97c511e8db1312fb4f610fed8b94fa2e4e3395610fd7b5de457f4bd8e4bdabde1104636
   languageName: node
   linkType: hard
 
@@ -4854,8 +4854,8 @@ __metadata:
   resolution: "agent-hooks@workspace:packages/agent-hooks"
   dependencies:
     "@biomejs/biome": "npm:2.4.12"
-    "@goodfoot/claude-code-hooks": "npm:^1.7.3"
-    "@goodfoot/codex-hooks": "npm:^1.1.5"
+    "@goodfoot/claude-code-hooks": "npm:^1.8.0"
+    "@goodfoot/codex-hooks": "npm:^1.2.0"
     "@types/node": "npm:^22.0.0"
     typescript: "npm:^5.9.3"
     vitest: "npm:^4.0.16"
