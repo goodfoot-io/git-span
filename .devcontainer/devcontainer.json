@@ -36,7 +36,9 @@
   // Docker-outside-of-docker: installs the docker CLI and gives the node user
   // access to the macOS Docker Desktop daemon (socket mounted via docker-compose.yml).
   "features": {
-    "ghcr.io/devcontainers/features/docker-outside-of-docker:2": {}
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
+      "moby": false
+    }
   },
   "mounts": [
     "source=claude-code-bashhistory,target=/commandhistory,type=volume",
@@ -54,5 +56,11 @@
   },
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
   "forwardPorts": [8080],
-  "postCreateCommand": "bash .devcontainer/post-create.sh"
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  // The bind-mounted host socket resets to root:root 0660 on every container
+  // start, which the docker group's static gid doesn't match — chown it to
+  // node so the docker CLI (installed by docker-outside-of-docker) works
+  // without sudo. Runs on every start, not just creation, since the mount
+  // is refreshed each time.
+  "postStartCommand": "sudo chown node:node /var/run/docker-host.sock"
 }
