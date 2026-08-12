@@ -49,19 +49,31 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 /// identified by the top-level `command: "resolve"` key plus this number.
 pub const RESOLVE_JSON_SCHEMA_VERSION: u32 = 1;
 
-/// The `[config]`-loss ceiling line (step 11). Printed whenever `resolve`
-/// writes a span whose final config is the default and no second evidence
-/// source was available to recover a dropped `[config]` from.
-const CONFIG_LOSS_LINE: &str = "config: no `[config]` section found in the input; written with \
-     default settings (copy_detection=same-commit, ignore_whitespace=false, follow_moves=false). \
-     No unmerged index stages were available to recover it from; if the span had non-default \
-     settings before this conflict, restore them manually with a follow-up edit if needed.";
+/// The `[config]`-recovery ceiling line (step 11). Printed whenever `resolve`
+/// writes a span whose final config is the default and no readable second
+/// evidence source existed to recover a dropped `[config]` from.
+///
+/// It states unverifiability, not loss. The run cannot tell a span that
+/// legitimately had default settings from one whose non-default settings the
+/// residue writer dropped — claiming the latter would be a second label
+/// speaking past its evidence, and a warning that asserts loss on the ordinary
+/// case is one the operator learns to skip. It also says "could be read"
+/// rather than "were available", because the gate fires both when no unmerged
+/// stage existed and when every stage that existed failed to parse — the two
+/// cases [`unreadable_stage_line`] tells apart.
+const CONFIG_LOSS_LINE: &str = "`[config]` was not recoverable from this input, so the span was \
+     written with default settings (copy_detection=same-commit, ignore_whitespace=false, \
+     follow_moves=false). The residue writer never serializes `[config]` into the conflict text \
+     and no unmerged index stage could be read to supply one, so whether the span carried \
+     non-default settings before this conflict cannot be determined from here — check \
+     `git log -p` on the span file if it matters, and restore them with a follow-up edit.";
 
-/// The `why`-loss ceiling line (step 11), symmetric to [`CONFIG_LOSS_LINE`].
-const WHY_LOSS_LINE: &str = "why: no why text found in the input; written empty. The residue \
-     writer carries only the `ours` side's why into the worktree text, so a why only `theirs` \
-     added is absent from it, and no unmerged index stages were available to recover one from; \
-     if the span had why prose before this conflict, restore it manually if needed.";
+/// The `why`-recovery ceiling line (step 11), symmetric to [`CONFIG_LOSS_LINE`]
+/// and stating the same unverifiability rather than an unprovable loss.
+const WHY_LOSS_LINE: &str = "The why text was written empty. The residue writer carries only the \
+     `ours` side's why into the conflict text, so a why only `theirs` added is absent from it, \
+     and no unmerged index stage could be read to supply one — whether prose was lost cannot be \
+     determined from here. Restore it by hand if the span had why prose before this conflict.";
 
 // ---------------------------------------------------------------------------
 // Sides
@@ -132,6 +144,28 @@ struct StageEvidence {
     /// True when the supplement genuinely replaced theirs' empty text-sourced
     /// why with a non-empty stage value.
     why_recovered: bool,
+    /// Where each side's `[config]` value came from, as `(ours, theirs)`. Every
+    /// config label is derived from this: `[config]` is the one field no side
+    /// of the conflict *text* can speak about, so a label claiming the two
+    /// sides agreed — or that arbitration chose between them — has to be able
+    /// to point at what said so.
+    config_provenance: (ConfigProvenance, ConfigProvenance),
+}
+
+/// What supplied one side's `[config]`, in report terms.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum ConfigProvenance {
+    /// No stage spoke for this side. Its config is whatever the input text
+    /// parsed to — which the residue writer never populates, so a *default*
+    /// value here is the absence of evidence rather than a stated setting.
+    #[default]
+    Unread,
+    /// A parsed unmerged index stage supplied it.
+    Stage,
+    /// The stage existed but could not be read, so the value was filled in as
+    /// unchanged-from-base. That is `resolve`'s inference, not this side's
+    /// assertion, and no label may credit the side with it.
+    Inferred,
 }
 
 /// What one index stage yielded. `Absent` and `Unreadable` are the two states
@@ -242,6 +276,7 @@ fn load_stage_evidence(
             || staged_theirs.parsed().is_some(),
         unreadable,
         why_recovered: false,
+        config_provenance: (ConfigProvenance::Unread, ConfigProvenance::Unread),
     };
 
     // `[config]` never survives the residue writer, so a stage blob is
@@ -261,24 +296,32 @@ fn load_stage_evidence(
             .or_else(|| other.parsed())
             .map(|f| f.config)
     };
-    match &staged_ours {
-        StageRead::Parsed(staged) => ours.config = staged.config,
+    evidence.config_provenance.0 = match &staged_ours {
+        StageRead::Parsed(staged) => {
+            ours.config = staged.config;
+            ConfigProvenance::Stage
+        }
         StageRead::Unreadable => {
             if let Some(config) = fallback_config(&staged_theirs) {
                 ours.config = config;
             }
+            ConfigProvenance::Inferred
         }
-        StageRead::Absent => {}
-    }
-    match &staged_theirs {
-        StageRead::Parsed(staged) => theirs.config = staged.config,
+        StageRead::Absent => ConfigProvenance::Unread,
+    };
+    evidence.config_provenance.1 = match &staged_theirs {
+        StageRead::Parsed(staged) => {
+            theirs.config = staged.config;
+            ConfigProvenance::Stage
+        }
         StageRead::Unreadable => {
             if let Some(config) = fallback_config(&staged_ours) {
                 theirs.config = config;
             }
+            ConfigProvenance::Inferred
         }
-        StageRead::Absent => {}
-    }
+        StageRead::Absent => ConfigProvenance::Unread,
+    };
 
     // Theirs-only why supplement, per this function's doc comment.
     let text_ours_why = ours.why.clone();
@@ -351,6 +394,10 @@ struct ResolveDocument {
     entries: Vec<ReportEntry>,
     why: String,
     config: String,
+    /// The same claim the human report's structural line makes, so the two
+    /// surfaces cannot tell different stories about whether the chosen side
+    /// was needed at all.
+    structural_only: bool,
     warnings: Vec<String>,
 }
 
@@ -362,6 +409,7 @@ struct SideDocument {
     failures: Vec<String>,
     why: Option<String>,
     config: Option<String>,
+    structural_only: Option<bool>,
     warnings: Vec<String>,
 }
 
@@ -450,7 +498,23 @@ pub fn run_resolve(repo: &gix::Repository, args: ResolveArgs, span_root: &str) -
     // Steps 5–8: compute source evidence, run the pre-kernel checks, merge,
     // and settle why/config.
     match evaluate_side(repo, side, &ours, &theirs, &stages) {
-        SideOutcome::Failed(reasons) => Err(failure_error(&name, side, &reasons).into()),
+        SideOutcome::Failed(reasons) => {
+            // The remediation may not promise what this run has not checked, so
+            // check it: evaluate the sides it is about to recommend against
+            // this same file and recommend only the ones that settle it.
+            let alternatives: Vec<Side> = Side::ALL
+                .iter()
+                .copied()
+                .filter(|&other| other != side)
+                .filter(|&other| {
+                    matches!(
+                        evaluate_side(repo, other, &ours, &theirs, &stages),
+                        SideOutcome::Resolved(_)
+                    )
+                })
+                .collect();
+            Err(failure_error(&name, side, &reasons, &alternatives).into())
+        }
         SideOutcome::Resolved(settlement) => {
             let mut settlement = *settlement;
             // Steps 9 + 10: canonical sort, then the single write. Nothing
@@ -519,6 +583,7 @@ fn run_dry_run(
                             failures: Vec::new(),
                             why: Some(s.why_label.clone()),
                             config: Some(s.config_label.clone()),
+                            structural_only: Some(s.structural_only),
                             warnings: s.warnings.clone(),
                         },
                         SideOutcome::Failed(reasons) => SideDocument {
@@ -528,6 +593,7 @@ fn run_dry_run(
                             failures: reasons.clone(),
                             why: None,
                             config: None,
+                            structural_only: None,
                             warnings: Vec::new(),
                         },
                     })
@@ -920,7 +986,31 @@ fn evaluate_side(
             .then(a.end_line.cmp(&b.end_line))
     });
 
-    let entries = build_entries(side, &merged, &ours_map, &theirs_map);
+    // Whether *any* residue existed at all — the question the report's
+    // structural line answers, asked of the two split sides rather than of the
+    // kernel's leftovers. `result.unresolved` is empty on exactly the
+    // successful `--rehash` runs where residue existed and re-hashing settled
+    // it, so reading it after the merge announces "no residue required the
+    // requested side" directly beneath a per-anchor line saying re-hashing was
+    // what settled one.
+    let contested_anchor = ours.anchors.iter().any(|a| {
+        theirs_map
+            .get(&anchor_key(a))
+            .is_some_and(|t| t.algorithm != a.algorithm || t.content_hash != a.content_hash)
+    });
+    let structural_only = !contested_anchor && !why_diverged && !config_diverged;
+
+    // Anchors whose source cannot be read at all. Under `--rehash` that is a
+    // refusal above and this set is empty by construction; under a side flag it
+    // is the expected input, and the same set drives both the per-anchor label
+    // and the summary warning so the two cannot disagree.
+    let unverified_paths: BTreeSet<String> = if side == Side::Rehash {
+        BTreeSet::new()
+    } else {
+        dead_source_paths(repo, &merged)
+    };
+
+    let entries = build_entries(side, &merged, &ours_map, &theirs_map, &unverified_paths);
     // The supplement is only worth reporting when what it recovered is what
     // actually got written: `--ours` on a why the operator cleared writes the
     // empty value it was asked for, and calling that "recovered" would be a
@@ -934,7 +1024,14 @@ fn evaluate_side(
         &merged.why,
         why_recovered,
     );
-    let config_label = field_label_config(side, config_diverged, ours, theirs, &merged);
+    let config_label = field_label_config(
+        side,
+        config_diverged,
+        ours,
+        theirs,
+        &merged,
+        stages.config_provenance,
+    );
 
     // The two ceiling lines describe what could not be recovered, so they fire
     // only where there genuinely was no second evidence source to recover from.
@@ -942,9 +1039,7 @@ fn evaluate_side(
     if !stages.unreadable.is_empty() {
         warnings.push(unreadable_stage_line(stages));
     }
-    if side != Side::Rehash
-        && let Some(line) = unverified_anchor_warning(repo, &merged)
-    {
+    if let Some(line) = unverified_anchor_warning(&merged, &unverified_paths) {
         warnings.push(line);
     }
     // A stage that exists but cannot be parsed is not a recovery source, so
@@ -965,7 +1060,7 @@ fn evaluate_side(
         why_label,
         config_label,
         warnings,
-        structural_only: result.unresolved.is_empty(),
+        structural_only,
     }))
 }
 
@@ -1036,12 +1131,7 @@ fn unverifiable_anchor_failures(
 /// blocker, so the anchor is written — but the operator is told which anchors
 /// were carried across on the side's recorded hash alone, with nothing in the
 /// worktree to check them against.
-fn unverified_anchor_warning(repo: &gix::Repository, merged: &SpanFile) -> Option<String> {
-    let paths: BTreeSet<&str> = merged.anchors.iter().map(|a| a.path.as_str()).collect();
-    let dead: HashSet<&str> = paths
-        .into_iter()
-        .filter(|path| crate::git::read_worktree_bytes(repo, path).is_err())
-        .collect();
+fn unverified_anchor_warning(merged: &SpanFile, dead: &BTreeSet<String>) -> Option<String> {
     if dead.is_empty() {
         return None;
     }
@@ -1051,6 +1141,9 @@ fn unverified_anchor_warning(repo: &gix::Repository, merged: &SpanFile) -> Optio
         .filter(|a| dead.contains(a.path.as_str()))
         .map(|a| address(&a.path, a.start_line, a.end_line))
         .collect();
+    if listed.is_empty() {
+        return None;
+    }
     Some(format!(
         "unverified: {} anchor(s) were written from the chosen side's recorded hash with no \
          readable source to check them against ({}). That is what taking a side means when a \
@@ -1058,6 +1151,20 @@ fn unverified_anchor_warning(repo: &gix::Repository, merged: &SpanFile) -> Optio
         listed.len(),
         listed.join(", ")
     ))
+}
+
+/// The anchor paths in `merged` with no readable worktree source. One set feeds
+/// both the per-anchor label and the summary warning, so a report can never
+/// call an anchor `unchanged` on the same run it names it unverified.
+fn dead_source_paths(repo: &gix::Repository, merged: &SpanFile) -> BTreeSet<String> {
+    merged
+        .anchors
+        .iter()
+        .map(|a| a.path.clone())
+        .collect::<BTreeSet<String>>()
+        .into_iter()
+        .filter(|path| crate::git::read_worktree_bytes(repo, path).is_err())
+        .collect()
 }
 
 /// The report line naming index stages that exist but could not be read.
@@ -1121,18 +1228,28 @@ fn rehash_validity_failures(
 }
 
 /// Step 11's per-anchor lines.
+///
+/// `unverified` names the anchors written from a recorded hash with no readable
+/// source — the expected input under `--ours`/`--theirs`, empty under
+/// `--rehash` because there it is a refusal. Their labels must not claim
+/// otherwise: `unchanged` asserts the two sides' hashes were compared *and*
+/// that the hash still describes the source, and only the first of those
+/// happened. The suffix is applied to every outcome rather than to one string,
+/// because the property is about the anchor's source, not about which branch
+/// produced its wording.
 fn build_entries(
     side: Side,
     merged: &SpanFile,
     ours_map: &HashMap<(&str, u32, u32), &AnchorRecord>,
     theirs_map: &HashMap<(&str, u32, u32), &AnchorRecord>,
+    unverified: &BTreeSet<String>,
 ) -> Vec<ReportEntry> {
     merged
         .anchors
         .iter()
         .map(|a| {
             let key = anchor_key(a);
-            let outcome = match (ours_map.get(&key), theirs_map.get(&key)) {
+            let settled = match (ours_map.get(&key), theirs_map.get(&key)) {
                 (Some(o), Some(t)) => {
                     if o.algorithm == t.algorithm && o.content_hash == t.content_hash {
                         "unchanged".to_string()
@@ -1155,6 +1272,16 @@ fn build_entries(
                 (Some(_), None) => "kept — only present in ours, not itself residue".to_string(),
                 (None, Some(_)) => "kept — only present in theirs, not itself residue".to_string(),
                 (None, None) => "resolved".to_string(),
+            };
+            let outcome = if unverified.contains(a.path.as_str()) {
+                match settled.as_str() {
+                    "unchanged" => "unverified — both sides carried the same hash, and there is \
+                                    no readable source to check it against"
+                        .to_string(),
+                    other => format!("{other} (unverified — no readable source)"),
+                }
+            } else {
+                settled
             };
             ReportEntry {
                 address: address(&a.path, a.start_line, a.end_line),
@@ -1190,6 +1317,12 @@ fn field_label(
         format!("resolved automatically (matches {which})")
     } else if recovered {
         return "recovered from index stages".to_string();
+    } else if merged.trim().is_empty() {
+        // Nothing was compared into agreement here — there is no why on either
+        // side of the split to agree about. `unchanged` beside the why-recovery
+        // ceiling line read as a summary contradicting it; this states the
+        // outcome the ceiling line then qualifies.
+        "written empty — no why text in this input".to_string()
     } else {
         "unchanged".to_string()
     };
@@ -1200,25 +1333,69 @@ fn field_label(
     }
 }
 
-/// [`field_label`] for `[config]`, which compares by value rather than text.
+/// [`field_label`] for `[config]`, which compares by value rather than text —
+/// and, unlike `why`, has no side of the conflict *text* to compare at all.
+///
+/// [`crate::cli::drift_fix::format_residue_markers`] never serializes
+/// `[config]` into residue, so when no stage supplies one both split sides
+/// parse as `SpanConfig::default()`. They are then equal because nothing was
+/// read, not because the sides agreed, and the old `unchanged` printed that
+/// non-comparison as a summary two lines above [`CONFIG_LOSS_LINE`] saying the
+/// settings were gone. Every branch below therefore asks what *stated* each
+/// side's value before it describes the outcome:
+///
+/// * a value from a parsed stage is stated by that side;
+/// * a value the input text carried is stated only when it is non-default,
+///   since the writer emits no `[config]` and a default is what parsing
+///   nothing produces;
+/// * a value filled in from base because the side's stage could not be read is
+///   [`ConfigProvenance::Inferred`] and is stated by nobody.
+///
+/// Divergence keeps its `kept {side}` wording: two distinct values in play is
+/// itself the evidence that both sides asserted one, and the side flag really
+/// did select between them.
 fn field_label_config(
     side: Side,
     diverged: bool,
     ours: &SpanFile,
     theirs: &SpanFile,
     merged: &SpanFile,
+    provenance: (ConfigProvenance, ConfigProvenance),
 ) -> String {
+    let stated = |prov: ConfigProvenance, config: &SpanConfig| match prov {
+        ConfigProvenance::Stage => true,
+        ConfigProvenance::Inferred => false,
+        ConfigProvenance::Unread => *config != SpanConfig::default(),
+    };
+    let ours_stated = stated(provenance.0, &ours.config);
+    let theirs_stated = stated(provenance.1, &theirs.config);
+
     if diverged && side != Side::Rehash {
         format!("kept {}", side.name())
     } else if ours.config != theirs.config {
-        let which = if merged.config == ours.config {
-            "ours"
+        let (which, loser_stated) = if merged.config == ours.config {
+            ("ours", theirs_stated)
         } else {
-            "theirs"
+            ("theirs", ours_stated)
         };
-        format!("resolved automatically (matches {which})")
+        if loser_stated {
+            format!("resolved automatically (matches {which})")
+        } else {
+            format!(
+                "taken from {which} — the other side's `[config]` was never read, so nothing \
+                 was arbitrated"
+            )
+        }
     } else {
-        "unchanged".to_string()
+        match (ours_stated, theirs_stated) {
+            (true, true) => "unchanged".to_string(),
+            (true, false) => "taken from ours — theirs' `[config]` was never read".to_string(),
+            (false, true) => "taken from theirs — ours' `[config]` was never read".to_string(),
+            (false, false) => {
+                "written with default settings — no `[config]` in this input stated one"
+                    .to_string()
+            }
+        }
     }
 }
 
@@ -1228,12 +1405,64 @@ fn field_label_config(
 
 /// The all-or-nothing failure: nothing was written, so retrying with another
 /// side is always safe — and the remediation says which ones.
-fn failure_error(name: &str, side: Side, reasons: &[String]) -> CliError {
+///
+/// `alternatives` are the other sides the caller **evaluated against this same
+/// file** and found would settle it. That evaluation is the whole point. The
+/// previous text was a constant: it offered `--ours` and `--theirs`
+/// unconditionally and added the reassurance that "both leave every other
+/// anchor exactly as the merge produced it", a claim nothing in the run
+/// checked. A refusal that has just protected a file must not be the thing
+/// that routes the operator into a command that damages it, and a promise of
+/// safety is exactly the sentence that makes the next command feel safe.
+///
+/// Narrowing this had to stop short of dropping the offer after a `--rehash`
+/// failure: a divergent `--why` with no merge base is the card's headline
+/// case, where `--rehash` correctly fails closed and the side flags *are* the
+/// exit. So the offer stands whenever a side really does settle the file, and
+/// vanishes only when none does — in which case the operator is told that, and
+/// pointed at `--dry-run` and a hand edit instead of at a command that will
+/// fail the same way.
+fn failure_error(name: &str, side: Side, reasons: &[String], alternatives: &[Side]) -> CliError {
     let listed = reasons
         .iter()
         .map(|r| format!("- {r}"))
         .collect::<Vec<_>>()
         .join("\n");
+    let next_steps = if alternatives.is_empty() {
+        vec![
+            NextStep::Prose(
+                "The other sides were evaluated against this same file and do not settle it \
+                 either, so no side flag is an exit here. See each side's own reason with:"
+                    .into(),
+            ),
+            NextStep::Bash(format!("git span resolve {name} --dry-run")),
+            NextStep::Prose(
+                "Then clear what the entries above name — restore a deleted source, finish an \
+                 outer conflict — or resolve this span file by hand.".into(),
+            ),
+        ]
+    } else {
+        let flags: Vec<&str> = alternatives.iter().map(|s| s.flag()).collect();
+        let listed_flags = flags.join(" and ");
+        let verb = if flags.len() == 1 { "settles" } else { "settle" };
+        vec![
+            NextStep::Prose(format!(
+                "Take a side explicitly. {listed_flags} {verb} every entry listed above — not as \
+                 a general property of side flags, but as the result of evaluating them against \
+                 this file just now:"
+            )),
+            NextStep::Bash(
+                alternatives
+                    .iter()
+                    .map(|s| format!("git span resolve {name} {}", s.flag()))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+            NextStep::Prose(format!(
+                "Or see what each side would write first with `git span resolve {name} --dry-run`."
+            )),
+        ]
+    };
     CliError {
         subcommand: "resolve",
         summary: format!(
@@ -1244,19 +1473,7 @@ fn failure_error(name: &str, side: Side, reasons: &[String]) -> CliError {
             "Nothing was written — the span file is byte-identical to what it was before this \
              run. These entries stopped it:\n\n{listed}"
         ),
-        next_steps: vec![
-            NextStep::Prose(
-                "Take a side explicitly. Both leave every other anchor exactly as the merge \
-                 produced it:"
-                    .into(),
-            ),
-            NextStep::Bash(format!(
-                "git span resolve {name} --ours\ngit span resolve {name} --theirs"
-            )),
-            NextStep::Prose(format!(
-                "Or compare all three outcomes first with `git span resolve {name} --dry-run`."
-            )),
-        ],
+        next_steps,
     }
 }
 
@@ -1299,6 +1516,7 @@ fn print_json(name: &str, side: Side, settlement: &Settlement) -> Result<()> {
         entries: settlement.entries.clone(),
         why: settlement.why_label.clone(),
         config: settlement.config_label.clone(),
+        structural_only: settlement.structural_only,
         warnings: settlement.warnings.clone(),
     };
     println!("{}", serde_json::to_string_pretty(&doc)?);

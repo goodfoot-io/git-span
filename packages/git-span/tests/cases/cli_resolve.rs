@@ -51,6 +51,20 @@ fn read_span_bytes(repo: &TestRepo, name: &str) -> Result<Vec<u8>> {
     Ok(std::fs::read(span_path(repo, name))?)
 }
 
+/// Every report line keyed on `prefix`, trimmed. Two lines sharing one key is
+/// how the config contradiction presented itself to an operator — a field label
+/// saying `config: unchanged` and a ceiling line saying the settings were gone,
+/// both prefixed `config:` and two lines apart — so the assertion that catches
+/// it has to be about the *set* of such lines, not the presence of either one.
+fn field_lines(stdout: &str, prefix: &str) -> Vec<String> {
+    stdout
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with(prefix))
+        .map(str::to_string)
+        .collect()
+}
+
 fn line_slice_hash(text: &str, start: u32, end: u32) -> String {
     let lines: Vec<&str> = text.lines().collect();
     let lo = (start as usize).saturating_sub(1);
@@ -583,9 +597,27 @@ fn resolve_reports_config_loss_when_no_index_stages() -> Result<()> {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        stdout.contains("no `[config]` section found in the input")
-            && stdout.contains("No unmerged index stages were available"),
-        "the config-loss ceiling must be reported loudly; stdout=\n{stdout}"
+        stdout.contains("`[config]` was not recoverable from this input")
+            && stdout.contains("no unmerged index stage could be read"),
+        "the config-recovery ceiling must be reported loudly; stdout=\n{stdout}"
+    );
+    // The contradiction this pairs with: the field label two lines up used to
+    // say `config: unchanged` — a claim of agreement about a value neither
+    // split side ever carried, since the residue writer serializes no
+    // `[config]` at all. Presence of the warning alone never caught that;
+    // absence of the contradicting label is what does.
+    assert!(
+        !stdout.contains("config: unchanged"),
+        "no `[config]` reached either side, so nothing can be reported as unchanged; \
+         stdout=\n{stdout}"
+    );
+    assert_eq!(
+        field_lines(&stdout, "config:"),
+        vec![
+            "config: written with default settings — no `[config]` in this input stated one"
+                .to_string()
+        ],
+        "exactly one line may key on `config:`; stdout=\n{stdout}"
     );
 
     let span = read_span(&repo, "m")?;
@@ -622,9 +654,18 @@ fn resolve_reports_why_loss_when_no_index_stages() -> Result<()> {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(out.status.code(), Some(0));
     assert!(
-        stdout.contains("no why text found in the input")
-            && stdout.contains("no unmerged index stages were available"),
-        "the why-loss ceiling must be reported loudly; stdout=\n{stdout}"
+        stdout.contains("The why text was written empty")
+            && stdout.contains("no unmerged index stage could be read"),
+        "the why-recovery ceiling must be reported loudly; stdout=\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("why: unchanged"),
+        "there is no why on either side to be unchanged; stdout=\n{stdout}"
+    );
+    assert_eq!(
+        field_lines(&stdout, "why:").len(),
+        1,
+        "exactly one line may key on `why:`; stdout=\n{stdout}"
     );
 
     let span = read_span(&repo, "m")?;
@@ -781,8 +822,8 @@ fn resolve_recovers_config_from_index_stages_after_partial_residue() -> Result<(
         "the non-default config must be recovered from the stage blobs; span:\n{span}"
     );
     assert!(
-        !stdout.contains("no `[config]` section found in the input"),
-        "the loss ceiling must not be reported when stages were available; stdout=\n{stdout}"
+        !stdout.contains("`[config]` was not recoverable from this input"),
+        "the recovery ceiling must not be reported when stages were readable; stdout=\n{stdout}"
     );
     Ok(())
 }
@@ -1816,7 +1857,138 @@ fn resolve_rehash_refuses_an_anchor_whose_source_is_gone() -> Result<()> {
         stderr.contains("--ours") && stderr.contains("--theirs"),
         "the refusal must still point at the sides that can settle it; stderr=\n{stderr}"
     );
+    // The offer is made because both sides were evaluated against this file
+    // and settle it — not as a standing property of side flags. The retired
+    // sentence promised that both "leave every other anchor exactly as the
+    // merge produced it", which nothing in the run checked and which was false
+    // on the inputs where the boundary had been misreconstructed; it was the
+    // specific reassurance that made the damaging next command feel safe.
+    assert!(
+        !stderr.contains("exactly as the merge produced it"),
+        "the remediation must not promise safety it never verified; stderr=\n{stderr}"
+    );
+    assert!(
+        stderr.contains("evaluating them against this file just now"),
+        "it must say the offer was derived from this input; stderr=\n{stderr}"
+    );
     assert_eq!(before, read_span_bytes(&repo, "m")?, "file must be untouched");
+    Ok(())
+}
+
+/// The card's headline path, guarded end to end: a divergent `--why` with no
+/// merge base is a well-formed input that simply needs a side, `--rehash`
+/// refuses it, and the refusal has to route to a side flag that then works.
+/// Narrowing the remediation for finding 4 must not cost this.
+#[test]
+fn resolve_rehash_why_divergence_refuses_then_the_offered_side_works() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let residue = anchor_and_why_residue(&repo, "rationale ours", "rationale theirs")?;
+    repo.write_file(".span/m", &residue)?;
+    let before = read_span_bytes(&repo, "m")?;
+
+    let out = repo.run_span(["resolve", "m", "--rehash"])?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_ne!(out.status.code(), Some(0), "stderr=\n{stderr}");
+    assert!(
+        stderr.contains("--why"),
+        "the blocker must be named; stderr=\n{stderr}"
+    );
+    assert!(
+        stderr.contains("git span resolve m --ours")
+            && stderr.contains("git span resolve m --theirs"),
+        "and both sides must still be offered as the exit; stderr=\n{stderr}"
+    );
+    assert_eq!(before, read_span_bytes(&repo, "m")?, "file must be untouched");
+
+    // The offer is only honest if it holds, so take it.
+    let out = repo.run_span(["resolve", "m", "--theirs"])?;
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the side the refusal offered must settle the file; stderr=\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let span = read_span(&repo, "m")?;
+    assert!(
+        span.contains("rationale theirs") && !span.contains("<<<<<<<"),
+        "span:\n{span}"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// 23. The structural line states what the split showed, not what the kernel
+//     had left over afterwards
+// ---------------------------------------------------------------------------
+
+/// `structural_only` used to be read off `result.unresolved` *after* the kernel
+/// merge, which is empty on exactly the successful `--rehash` runs where
+/// residue existed and re-hashing settled it. The report then printed "no
+/// residue required the requested side" directly beneath a per-anchor line
+/// saying the anchor was re-hashed because the sides disagreed.
+#[test]
+fn resolve_rehash_does_not_call_a_settled_divergence_structural() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let residue = anchor_only_residue(&repo, "7")?;
+    repo.write_file(".span/m", &residue)?;
+
+    let out = repo.run_span(["resolve", "m", "--rehash"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr=\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("re-hashed from the worktree"),
+        "fixture assumption: this run settles real residue by re-hashing; stdout=\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("no residue required the requested side"),
+        "the two lines contradict each other; stdout=\n{stdout}"
+    );
+    Ok(())
+}
+
+/// The other half: the line still fires where it is true. This fixture is
+/// deliberately **not** driver output — the writer emits markers only for a
+/// same-key hash divergence, so residue with nothing contested cannot come from
+/// it. It is hand-built to stand for a conflict-markered file whose two sides
+/// differ only by which anchors they carry, which the kernel unions without
+/// consulting the chosen side at all.
+#[test]
+fn resolve_reports_a_genuinely_structural_merge_as_structural() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let h1 = line_slice_hash(ORIGINAL, 1, 5);
+    let h2 = line_slice_hash(FILE2, 1, 5);
+    let fixture = format!(
+        "\
+<<<<<<< ours
+file1.txt#L1-L5 rk64:{h1}
+=======
+file2.txt#L1-L5 rk64:{h2}
+>>>>>>> theirs
+"
+    );
+    repo.write_file(".span/m", &fixture)?;
+
+    let out = repo.run_span(["resolve", "m", "--ours"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr=\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("no residue required the requested side"),
+        "nothing here was contested, so the line is the honest summary; stdout=\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("kept ours"),
+        "and nothing may be reported as decided by the side flag; stdout=\n{stdout}"
+    );
     Ok(())
 }
 
@@ -1846,6 +2018,26 @@ fn resolve_ours_writes_an_unverifiable_anchor_and_says_so() -> Result<()> {
     assert!(
         stdout.contains("unverified") && stdout.contains("gone.txt#L1-L3"),
         "the report must not present an unverifiable anchor as a settled one; stdout=\n{stdout}"
+    );
+    // The half the warning alone never covered: the per-anchor line for the
+    // same anchor still read `unchanged`, so one report said the anchor was
+    // never checked and, three lines up, that both sides agreed on a hash the
+    // run had verified. `gone.txt` is agreed residue-adjacent content copied
+    // into both split sides, which is exactly the shape that produced
+    // `unchanged`.
+    assert!(
+        !stdout.contains("gone.txt#L1-L3: unchanged"),
+        "the anchor line must not claim a check the run could not perform; stdout=\n{stdout}"
+    );
+    assert!(
+        stdout.contains("gone.txt#L1-L3: unverified"),
+        "and it must say what it actually did instead; stdout=\n{stdout}"
+    );
+    // file1.txt is readable, so its line keeps its ordinary wording — the
+    // suffix must track the source, not smear across the whole report.
+    assert!(
+        stdout.contains("file1.txt#L1-L5: kept ours"),
+        "a verifiable anchor keeps its plain outcome; stdout=\n{stdout}"
     );
     Ok(())
 }
@@ -2102,6 +2294,22 @@ fn unreadable_stage_case(unreadable_stage: u8) -> Result<()> {
     assert!(
         !stdout.contains("config: resolved automatically"),
         "no arbitration happened here — a blob simply failed to parse; stdout=\n{stdout}"
+    );
+    // Nor may the label fall back to claiming agreement: only one side's
+    // `[config]` was ever read, and the other's value is `resolve`'s own
+    // unchanged-from-base inference. The label has to name which side spoke.
+    assert!(
+        !stdout.contains("config: unchanged"),
+        "a side whose blob failed to parse asserted nothing to agree with; stdout=\n{stdout}"
+    );
+    let side_that_spoke = if unreadable_stage == 2 { "theirs" } else { "ours" };
+    assert_eq!(
+        field_lines(&stdout, "config:"),
+        vec![format!(
+            "config: taken from {side_that_spoke} — {}' `[config]` was never read",
+            if unreadable_stage == 2 { "ours" } else { "theirs" }
+        )],
+        "the label must name the side the value actually came from; stdout=\n{stdout}"
     );
     Ok(())
 }
