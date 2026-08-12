@@ -73,6 +73,7 @@ fn project_anchor(
     AnchorResolved {
         anchor_id: core.anchor_id.clone(),
         anchor_sha: core.anchor_sha.clone(),
+        stored_hash: core.stored_hash.clone(),
         anchored: to_anchor_location(&core.anchored),
         current: obs.current.as_ref().map(to_anchor_location),
         status: obs.status.clone(),

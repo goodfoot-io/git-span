@@ -121,6 +121,11 @@ impl LayerObservationCore {
 pub(crate) struct AnchorCore {
     pub(crate) anchor_id: String,
     pub(crate) anchor_sha: String,
+    /// The anchor record's recorded hash (`"<algorithm>:<content_hash>"`),
+    /// carried through from `Anchor::stored_hash`. `serde(default)` so a
+    /// cache written before this field existed still deserializes.
+    #[serde(default)]
+    pub(crate) stored_hash: String,
     pub(crate) anchored: LocationCore,
     pub(crate) head: LayerObservationCore,
     pub(crate) index: LayerObservationCore,

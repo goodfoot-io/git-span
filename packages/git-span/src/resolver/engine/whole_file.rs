@@ -172,6 +172,7 @@ pub(crate) fn resolve_whole_file(
         return Ok(AnchorResolved {
             anchor_id: anchor_id.into(),
             anchor_sha: r.anchor_sha,
+            stored_hash: r.stored_hash,
             anchored,
             current: None,
             status: AnchorStatus::Deleted,
@@ -191,6 +192,7 @@ pub(crate) fn resolve_whole_file(
         return Ok(AnchorResolved {
             anchor_id: anchor_id.into(),
             anchor_sha: r.anchor_sha,
+            stored_hash: r.stored_hash,
             anchored,
             current: Some(AnchorLocation {
                 path: PathBuf::from(&r.path),
@@ -239,6 +241,7 @@ pub(crate) fn resolve_whole_file(
         return Ok(AnchorResolved {
             anchor_id: anchor_id.into(),
             anchor_sha: r.anchor_sha,
+            stored_hash: r.stored_hash,
             anchored,
             current: Some(AnchorLocation {
                 path: PathBuf::from(&current_path),
@@ -441,6 +444,7 @@ pub(crate) fn resolve_whole_file(
                     return Ok(AnchorResolved {
                         anchor_id: anchor_id.into(),
                         anchor_sha: r.anchor_sha,
+                        stored_hash: r.stored_hash,
                         anchored,
                         current: Some(AnchorLocation {
                             path: PathBuf::from(&new_path),
@@ -472,6 +476,7 @@ pub(crate) fn resolve_whole_file(
                     return Ok(AnchorResolved {
                         anchor_id: anchor_id.into(),
                         anchor_sha: r.anchor_sha,
+                        stored_hash: r.stored_hash,
                         anchored,
                         current: None,
                         status,
@@ -496,6 +501,7 @@ pub(crate) fn resolve_whole_file(
                     return Ok(AnchorResolved {
                         anchor_id: anchor_id.into(),
                         anchor_sha: r.anchor_sha,
+                        stored_hash: r.stored_hash,
                         anchored,
                         current: None,
                         status: AnchorStatus::Changed,
@@ -620,6 +626,7 @@ pub(crate) fn resolve_whole_file(
     Ok(AnchorResolved {
         anchor_id: anchor_id.into(),
         anchor_sha: r.anchor_sha,
+        stored_hash: r.stored_hash,
         anchored,
         current: current_loc,
         status,

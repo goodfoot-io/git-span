@@ -40,6 +40,7 @@ pub mod dirty_source_content_key;
 pub mod dirty_store_clean_read_parity;
 pub mod doctor_deletion_tombstone;
 pub mod duplicate_identity;
+pub mod drift_collapsed_sentinel_annotation;
 pub mod drift_label;
 pub mod editmsg_orphan_enumerated;
 pub mod filter_driver_failure;

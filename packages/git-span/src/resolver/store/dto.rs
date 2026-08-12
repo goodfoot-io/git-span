@@ -281,6 +281,10 @@ impl From<&FuzzySuccessorDto> for FuzzySuccessor {
 pub(crate) struct AnchorResolvedDto {
     pub(crate) anchor_id: String,
     pub(crate) anchor_sha: String,
+    /// `serde(default)` so cached data from before this field existed
+    /// deserializes without error.
+    #[serde(default)]
+    pub(crate) stored_hash: String,
     pub(crate) anchored: AnchorLocationDto,
     pub(crate) current: Option<AnchorLocationDto>,
     pub(crate) status: AnchorStatusDto,
@@ -301,6 +305,7 @@ impl From<&AnchorResolved> for AnchorResolvedDto {
         Self {
             anchor_id: a.anchor_id.clone(),
             anchor_sha: a.anchor_sha.clone(),
+            stored_hash: a.stored_hash.clone(),
             anchored: (&a.anchored).into(),
             current: a.current.as_ref().map(Into::into),
             status: (&a.status).into(),
@@ -327,6 +332,7 @@ impl TryFrom<AnchorResolvedDto> for AnchorResolved {
         Ok(AnchorResolved {
             anchor_id: d.anchor_id,
             anchor_sha: d.anchor_sha,
+            stored_hash: d.stored_hash,
             anchored: d.anchored.try_into()?,
             current,
             status: d.status.into(),

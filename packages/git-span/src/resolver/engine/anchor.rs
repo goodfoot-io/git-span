@@ -499,6 +499,7 @@ pub(crate) fn resolve_anchor_inner(
         return Ok(AnchorResolved {
             anchor_id: anchor_id.into(),
             anchor_sha: r.anchor_sha,
+            stored_hash: r.stored_hash,
             anchored,
             current: None,
             status: AnchorStatus::Deleted,
@@ -547,6 +548,7 @@ pub(crate) fn resolve_anchor_inner(
             return Ok(AnchorResolved {
                 anchor_id: anchor_id.into(),
                 anchor_sha: r.anchor_sha,
+                stored_hash: r.stored_hash,
                 anchored,
                 current: Some(AnchorLocation {
                     path: PathBuf::from(p),
@@ -864,6 +866,7 @@ pub(crate) fn resolve_anchor_inner(
             return Ok(AnchorResolved {
                 anchor_id: anchor_id.into(),
                 anchor_sha: r.anchor_sha,
+                stored_hash: r.stored_hash,
                 anchored,
                 current: Some(AnchorLocation {
                     path: PathBuf::from(wt_path.clone()),
@@ -1483,6 +1486,7 @@ pub(crate) fn resolve_anchor_inner(
     Ok(AnchorResolved {
         anchor_id: anchor_id.into(),
         anchor_sha: r.anchor_sha,
+        stored_hash: r.stored_hash,
         anchored,
         current: current_loc,
         status,
@@ -1651,6 +1655,7 @@ pub(crate) fn resolve_anchor_captured(
         return Ok(AnchorCore {
             anchor_id: head_run.anchor_id,
             anchor_sha: head_run.anchor_sha,
+            stored_hash: head_run.stored_hash,
             anchored: anchored.clone(),
             head,
             index: fresh_observation(&anchored),
@@ -1708,6 +1713,7 @@ pub(crate) fn resolve_anchor_captured(
     Ok(AnchorCore {
         anchor_id: full_run.anchor_id,
         anchor_sha: full_run.anchor_sha,
+        stored_hash: full_run.stored_hash,
         anchored,
         head,
         index,
@@ -1829,6 +1835,7 @@ fn unavailable(
     AnchorResolved {
         anchor_id: anchor_id.into(),
         anchor_sha: r.anchor_sha.clone(),
+        stored_hash: r.stored_hash.clone(),
         anchored,
         current: None,
         status: AnchorStatus::ContentUnavailable(reason),
@@ -1889,6 +1896,7 @@ fn clean_head_fast_path(
     Ok(Some(AnchorResolved {
         anchor_id: anchor_id.into(),
         anchor_sha: r.anchor_sha.clone(),
+        stored_hash: r.stored_hash.clone(),
         anchored,
         current: Some(AnchorLocation {
             path: PathBuf::from(t.path.clone()),

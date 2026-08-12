@@ -536,6 +536,7 @@ fn duplicate_definition_ordinal_identity_preserved_through_construction_serializ
     let anchor_a = AnchorCore {
         anchor_id: "demo:src/a.rs:L0-L0".to_string(),
         anchor_sha: "a".repeat(40),
+        stored_hash: String::new(),
         anchored: anchored.clone(),
         head: fresh_observation(&anchored),
         index: fresh_observation(&anchored),
@@ -669,6 +670,7 @@ fn effective_projection_preserves_working_tree_qualifier_for_committed_drift() {
     let anchor = AnchorCore {
         anchor_id: "demo:src/a.rs:L0-L0".to_string(),
         anchor_sha: "c".repeat(40),
+        stored_hash: String::new(),
         anchored,
         head,
         index,

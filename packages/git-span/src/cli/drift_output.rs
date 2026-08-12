@@ -504,6 +504,7 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
                 anchors: vec![crate::types::AnchorResolved {
                     anchor_id: name.clone(),
                     anchor_sha: String::new(),
+                    stored_hash: String::new(),
                     anchored: AnchorLocation {
                         path: span_file_path.clone(),
                         extent: AnchorExtent::WholeFile,
@@ -805,6 +806,7 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
                                 span: m.name.clone(),
                                 anchor_id: r.anchor_id.clone(),
                                 status: r.status.clone(),
+                                stored_hash: r.stored_hash.clone(),
                                 source: r.source,
                                 anchored: r.anchored.clone(),
                                 current: r.current.clone(),
@@ -819,6 +821,7 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
                                     span: m.name.clone(),
                                     anchor_id: r.anchor_id.clone(),
                                     status: r.status.clone(),
+                                    stored_hash: r.stored_hash.clone(),
                                     source: Some(src),
                                     anchored: r.anchored.clone(),
                                     current: r.current.clone(),
@@ -1355,6 +1358,22 @@ fn splice_named_scope_post_fix(
 // Shared formatting helpers.
 // ---------------------------------------------------------------------------
 
+/// Whether `f.stored_hash` is the duplicate-collapse sentinel — the fixed
+/// rk64 marker [`git_span_core::rk64_unmatched_sentinel`] plants on a
+/// survivor whose content was never verified (plan §3e). Compares against
+/// the shared constant, never a hand-written literal, so this stays in sync
+/// with the writers (`drift --fix`'s collapse sweep and the merge kernel's
+/// same-side collapse / cross-side preserve) that plant or carry it forward,
+/// per [`git_span_core::carried_sentinel`].
+fn is_collapsed_duplicate_sentinel(f: &Finding) -> bool {
+    f.stored_hash
+        == format!(
+            "{}:{}",
+            git_span_core::RK64_ALGORITHM,
+            git_span_core::rk64_unmatched_sentinel()
+        )
+}
+
 /// Lowercase prose description for use in the unified block-shape suffix.
 ///
 /// Returns strings like:
@@ -1373,12 +1392,30 @@ fn describe_finding_lower(f: &Finding) -> String {
     };
 
     let base = match &f.status {
-        AnchorStatus::Changed => super::drift_label::format_drift_label(
-            &f.status,
-            f.source,
-            f.locus.as_ref(),
-            f.current.is_some(),
-        ),
+        AnchorStatus::Changed => {
+            if is_collapsed_duplicate_sentinel(f) {
+                // `Changed` (not `Moved`/`Deleted`) means this anchor
+                // resolved at its stored position, so the completion path
+                // is always the "position tracked" one from `drift --fix`
+                // (`drift_fix.rs`) — never `replace`, which only applies
+                // once the position itself is untrackable. Match that
+                // line's vocabulary so the same fact reads the same way
+                // whether an operator sees it during `--fix` or later,
+                // cold, from a plain `drift` run.
+                let addr = render_path_extent_plain(&f.anchored.path, f.anchored.extent);
+                format!(
+                    "collapsed duplicate — content is still unverified — run \
+                     `git span add {addr}` to resolve"
+                )
+            } else {
+                super::drift_label::format_drift_label(
+                    &f.status,
+                    f.source,
+                    f.locus.as_ref(),
+                    f.current.is_some(),
+                )
+            }
+        }
         AnchorStatus::ResolvedPendingCommit => "resolved, pending commit".to_string(),
         AnchorStatus::Moved => {
             // Relocation provenance is the move itself, not a per-layer
@@ -1547,6 +1584,7 @@ fn fresh_anchor_resolved(
     crate::types::AnchorResolved {
         anchor_id: anchor_id.to_string(),
         anchor_sha: a.anchor_sha.clone(),
+        stored_hash: a.stored_hash.clone(),
         anchored: AnchorLocation {
             path: std::path::PathBuf::from(&a.path),
             extent: a.extent,
@@ -1588,6 +1626,7 @@ fn render_human(
                         span: m.name.clone(),
                         anchor_id: r.anchor_id.clone(),
                         status: AnchorStatus::Fresh,
+                        stored_hash: r.stored_hash.clone(),
                         source: None,
                         anchored: r.anchored.clone(),
                         current: r.current.clone(),
@@ -2025,6 +2064,8 @@ fn finding_json(f: &Finding, followed_ids: &HashSet<String>) -> Value {
         None
     };
     let auto_followed = followed_ids.contains(&f.anchor_id);
+    let collapsed_duplicate =
+        f.status == AnchorStatus::Changed && is_collapsed_duplicate_sentinel(f);
     // Surface all fuzzy successors for operator review, regardless of
     // anchor status. Empty when no fuzzy scan ran or no candidates found.
     let fuzzy_successors_json: Vec<Value> = f
@@ -2053,6 +2094,7 @@ fn finding_json(f: &Finding, followed_ids: &HashSet<String>) -> Value {
         "moved_to": moved_to,
         "fuzzy_successors": fuzzy_successors_json,
         "auto_followed": if auto_followed { Value::Bool(true) } else { Value::Null },
+        "collapsed_duplicate": if collapsed_duplicate { Value::Bool(true) } else { Value::Null },
         "locus": match &f.locus {
             Some(DriftLocus::ChangedAt(oid)) => json!({ "changed_in": oid.to_string() }),
             Some(DriftLocus::OrphanedAt(oid)) => json!({ "deleted_in": oid.to_string() }),

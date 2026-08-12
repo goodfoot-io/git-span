@@ -1760,6 +1760,7 @@ fn deleted_placeholder(anchor_id: &str) -> AnchorResolved {
     AnchorResolved {
         anchor_id: anchor_id.into(),
         anchor_sha: String::new(),
+        stored_hash: String::new(),
         anchored: AnchorLocation {
             path: PathBuf::new(),
             extent: AnchorExtent::LineRange { start: 0, end: 0 },
@@ -1789,6 +1790,7 @@ mod tests {
                 .map(|(path, extent)| AnchorResolved {
                     anchor_id: String::new(),
                     anchor_sha: String::new(),
+                    stored_hash: String::new(),
                     anchored: AnchorLocation {
                         path: PathBuf::from(path),
                         extent: *extent,

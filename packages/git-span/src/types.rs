@@ -177,6 +177,12 @@ pub struct AnchorLocation {
 pub struct AnchorResolved {
     pub anchor_id: String,
     pub anchor_sha: String,
+    /// The anchor record's recorded hash (`"<algorithm>:<content_hash>"`),
+    /// carried through unresolved from [`Anchor::stored_hash`] so render-layer
+    /// code can recognize a collapse sentinel without re-reading the span
+    /// file. Not a resolution result — this is always the *stored* value,
+    /// never the freshly-computed one.
+    pub stored_hash: String,
     pub anchored: AnchorLocation,
     pub current: Option<AnchorLocation>,
     pub status: AnchorStatus,
@@ -669,6 +675,11 @@ pub struct Finding {
     pub span: String,
     pub anchor_id: String,
     pub status: AnchorStatus,
+    /// The anchor record's recorded hash (`"<algorithm>:<content_hash>"`),
+    /// threaded through from [`AnchorResolved::stored_hash`]. Used by the
+    /// renderer to recognize a duplicate-collapse sentinel and annotate
+    /// `Changed` findings with why they're drifting, per plan §3e.
+    pub stored_hash: String,
     /// `None` when `Fresh` or when `status` is terminal.
     pub source: Option<DriftSource>,
     /// Always populated from the pinned `Anchor` record.

@@ -187,6 +187,7 @@ pub(crate) fn resolve_lfs_anchor(
         return AnchorResolved {
             anchor_id: anchor_id.into(),
             anchor_sha: r.anchor_sha.clone(),
+        stored_hash: r.stored_hash.clone(),
             anchored,
             current: Some(AnchorLocation {
                 path: PathBuf::from(&tracked.path),
@@ -249,6 +250,7 @@ pub(crate) fn resolve_lfs_anchor(
         return AnchorResolved {
             anchor_id: anchor_id.into(),
             anchor_sha: r.anchor_sha.clone(),
+        stored_hash: r.stored_hash.clone(),
             anchored,
             current: Some(AnchorLocation {
                 path: PathBuf::from(&tracked.path),
@@ -312,6 +314,7 @@ pub(crate) fn resolve_lfs_anchor(
     AnchorResolved {
         anchor_id: anchor_id.into(),
         anchor_sha: r.anchor_sha.clone(),
+        stored_hash: r.stored_hash.clone(),
         anchored,
         current: Some(AnchorLocation {
             path: PathBuf::from(&tracked.path),
@@ -339,6 +342,7 @@ fn lfs_terminal(
     AnchorResolved {
         anchor_id: anchor_id.into(),
         anchor_sha: r.anchor_sha.clone(),
+        stored_hash: r.stored_hash.clone(),
         anchored,
         current: None,
         status: AnchorStatus::ContentUnavailable(reason),

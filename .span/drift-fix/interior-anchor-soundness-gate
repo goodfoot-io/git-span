@@ -1,4 +1,5 @@
-packages/git-span/src/cli/drift_output.rs#L573-L675 rk64:102d9a6a59c7691d
+packages/git-span/src/cli/drift_output.rs#L574-L676 rk64:102d9a6a59c7691d
+packages/git-span/src/cli/drift_output.rs#L574-L676 rk64:102d9a6a59c7691d
 packages/git-span/src/cli/interior_anchor.rs#L95-L130 rk64:137507e0c9bf3663
 
 The interior-anchor fail-closed gate is what drift --fix consults before choosing its post-fix path: when any in-scope span anchors a path under span_root, the scoped splice and pre-fix source-layer reuse are skipped in favor of a full re-resolve that matches the baseline byte-for-byte.
