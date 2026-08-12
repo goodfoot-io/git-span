@@ -17,7 +17,7 @@ import { execFileSync } from 'node:child_process';
 import { rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Logger } from '@goodfoot/codex-hooks';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import hook, {
   classifyApplyPatchResponse,
   createHandler,
@@ -28,6 +28,17 @@ import type { DriftPorcelainRow, PorcelainRow, PorcelainStatus } from '../../src
 import type { MemoFactory, MemoLogger, MemoStore } from '../../src/common/span-surface.js';
 import type { TouchExecutors, TouchFixResult } from '../../src/common/touch-core.js';
 import { makeTempRepo } from '../helpers.js';
+import { makeTempLayout } from '../session-layout-helpers.js';
+
+/**
+ * This file's own session base, on /tmp. The handlers below construct a real
+ * snapshot store and consult the recordless-note gate even where the memo is a
+ * fake, so without a layout they wrote fixture session dirs into the live
+ * `~/.cache/git-span/session` — the `sess-1` / `codex-sess` leak.
+ */
+const temp = makeTempLayout();
+const layout = temp.layout;
+afterAll(() => temp.cleanup());
 
 const logger = new Logger();
 
@@ -252,7 +263,7 @@ describe('codex post-tool-use touch signal', () => {
     const repo = repoWithFoo();
     try {
       const { executors, calls } = makeExecutors({ list: [porcelainRow()], drift: [driftRow('CHANGED')] });
-      const handler = createHandler(executors, inMemoryMemoFactory());
+      const handler = createHandler(executors, inMemoryMemoFactory(), layout);
       const result = toResult(await handler(postInput(repo.root, updateEnvelope()) as never, { logger } as never));
 
       expect(calls.fix).toBe(1);
@@ -268,7 +279,7 @@ describe('codex post-tool-use touch signal', () => {
     try {
       const { executors, calls } = makeExecutors({ list: [porcelainRow()], drift: [driftRow('CHANGED')] });
       const { logger: capture, warnings } = warnCapturingLogger();
-      const handler = createHandler(executors, inMemoryMemoFactory());
+      const handler = createHandler(executors, inMemoryMemoFactory(), layout);
       const result = toResult(
         await handler(postInput(repo.root, updateEnvelope(), FAILURE_RESPONSE) as never, { logger: capture } as never)
       );
@@ -287,7 +298,7 @@ describe('codex post-tool-use touch signal', () => {
     try {
       const { executors, calls } = makeExecutors({ list: [porcelainRow()], drift: [driftRow('CHANGED')] });
       const { logger: capture, warnings } = warnCapturingLogger();
-      const handler = createHandler(executors, inMemoryMemoFactory());
+      const handler = createHandler(executors, inMemoryMemoFactory(), layout);
       await handler(postInput(repo.root, updateEnvelope(), { exitCode: 0 }) as never, { logger: capture } as never);
 
       expect(calls.fix).toBe(1);
@@ -305,7 +316,7 @@ describe('codex post-tool-use touch signal', () => {
     try {
       const { executors, calls } = makeExecutors({ list: [porcelainRow()], drift: [driftRow('CHANGED')] });
       const { logger: capture, warnings } = warnCapturingLogger();
-      const handler = createHandler(executors, inMemoryMemoFactory());
+      const handler = createHandler(executors, inMemoryMemoFactory(), layout);
       // An array is an unrecognized apply_patch shape (the baseline
       // extractResponseText returned null for arrays), so it classifies
       // 'unknown' and proceeds defensively — the joined success header must
@@ -327,7 +338,7 @@ describe('codex post-tool-use touch signal', () => {
     const repo = repoWithFoo();
     try {
       const { executors } = makeExecutors({ reject: true });
-      const handler = createHandler(executors, inMemoryMemoFactory());
+      const handler = createHandler(executors, inMemoryMemoFactory(), layout);
       const result = toResult(await handler(postInput(repo.root, updateEnvelope()) as never, { logger } as never));
       expect(result.stdout.hookSpecificOutput?.additionalContext).toBeUndefined();
       expect(result.stdout.systemMessage).toBeUndefined();
@@ -340,7 +351,7 @@ describe('codex post-tool-use touch signal', () => {
     const repo = makeTempRepo();
     try {
       const { executors, calls } = makeExecutors({ list: [porcelainRow()], drift: [driftRow('CHANGED')] });
-      const handler = createHandler(executors, inMemoryMemoFactory());
+      const handler = createHandler(executors, inMemoryMemoFactory(), layout);
       const result = toResult(await handler(postInput(repo.root, undefined) as never, { logger } as never));
       // narrowApplyPatchCommand rejects a missing command → no touch.
       expect(calls.fix).toBe(0);
@@ -360,7 +371,7 @@ describe('codex post-tool-use touch signal', () => {
       // path as real, so the `targetState: 'absent'` touch fires (plan §3).
       rmSync(filePath);
       const { executors, fixPaths } = makeExecutors();
-      const handler = createHandler(executors, inMemoryMemoFactory());
+      const handler = createHandler(executors, inMemoryMemoFactory(), layout);
       const envelope = ['*** Begin Patch', '*** Delete File: gone.ts', '*** End Patch'].join('\n');
       const result = toResult(await handler(postInput(repo.root, envelope) as never, { logger } as never));
       expect(fixPaths).toEqual([filePath]);
@@ -381,7 +392,7 @@ describe('codex post-tool-use touch signal', () => {
         list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
         drift: [driftRow('CHANGED')]
       });
-      const handler = createHandler(executors, inMemoryMemoFactory());
+      const handler = createHandler(executors, inMemoryMemoFactory(), layout);
       const input = {
         ...postInput(repo.root, null),
         tool_name: 'exec_command',
@@ -405,7 +416,7 @@ describe('codex post-tool-use touch signal', () => {
         list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
         drift: [driftRow('CHANGED')]
       });
-      const handler = createHandler(executors, inMemoryMemoFactory());
+      const handler = createHandler(executors, inMemoryMemoFactory(), layout);
       const input = {
         ...postInput(repo.root, null),
         tool_name: 'exec',
@@ -426,7 +437,7 @@ describe('codex post-tool-use touch signal', () => {
     try {
       const { executors, calls } = makeExecutors({ list: [porcelainRow()] });
       const { logger: capture, warnings } = warnCapturingLogger();
-      const handler = createHandler(executors, inMemoryMemoFactory());
+      const handler = createHandler(executors, inMemoryMemoFactory(), layout);
       const input = {
         ...postInput(repo.root, null),
         tool_name: 'exec',
@@ -451,7 +462,7 @@ describe('codex post-tool-use touch signal', () => {
         list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
         drift: [driftRow('CHANGED')]
       });
-      const handler = createHandler(executors, inMemoryMemoFactory());
+      const handler = createHandler(executors, inMemoryMemoFactory(), layout);
       const input = {
         ...postInput(repo.root, null),
         tool_name: 'Bash',
@@ -470,7 +481,7 @@ describe('codex post-tool-use touch signal', () => {
     const repo = makeTempRepo();
     try {
       const { executors, calls } = makeExecutors({ list: [porcelainRow()], drift: [driftRow('CHANGED')] });
-      const handler = createHandler(executors, inMemoryMemoFactory());
+      const handler = createHandler(executors, inMemoryMemoFactory(), layout);
       const input = {
         ...postInput(repo.root, null),
         tool_name: 'Bash',
@@ -496,7 +507,7 @@ describe('codex post-tool-use touch signal', () => {
         list: [{ name: SPAN, path: 'out.txt', start: 8, end: 10 }],
         drift: [driftRow('DELETED')]
       });
-      const handler = createHandler(executors, inMemoryMemoFactory());
+      const handler = createHandler(executors, inMemoryMemoFactory(), layout);
       const input = {
         ...postInput(repo.root, null),
         tool_name: 'Bash',
@@ -526,7 +537,7 @@ describe('codex post-tool-use touch signal', () => {
         list: [{ name: SPAN, path: 'out.txt', start: 1, end: 2 }],
         drift: [driftRow('CHANGED')]
       });
-      const handler = createHandler(executors, inMemoryMemoFactory());
+      const handler = createHandler(executors, inMemoryMemoFactory(), layout);
       const input = {
         ...postInput(repo.root, null),
         tool_name: 'Bash',
@@ -569,7 +580,7 @@ describe('codex post-tool-use touch signal', () => {
           list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
           drift: [driftRow('CHANGED')]
         });
-        const handler = createHandler(executors, inMemoryMemoFactory());
+        const handler = createHandler(executors, inMemoryMemoFactory(), layout);
         const input = {
           ...postInput(repo.root, null),
           tool_name: 'Bash',
@@ -599,7 +610,7 @@ describe('codex post-tool-use touch signal', () => {
             list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
             drift: [driftRow('CHANGED')]
           });
-          const handler = createHandler(executors, inMemoryMemoFactory());
+          const handler = createHandler(executors, inMemoryMemoFactory(), layout);
           const input = {
             ...postInput(repo.root, null),
             tool_name: 'exec_command',
@@ -624,7 +635,7 @@ describe('codex post-tool-use touch signal', () => {
           list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
           drift: [driftRow('CHANGED')]
         });
-        const handler = createHandler(executors, inMemoryMemoFactory());
+        const handler = createHandler(executors, inMemoryMemoFactory(), layout);
         const input = {
           ...postInput(repo.root, null),
           tool_name: 'Bash',
@@ -664,7 +675,7 @@ describe('codex post-tool-use touch signal', () => {
             list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
             drift: [driftRow('CHANGED')]
           });
-          const handler = createHandler(executors, inMemoryMemoFactory());
+          const handler = createHandler(executors, inMemoryMemoFactory(), layout);
           const input = {
             ...postInput(repo.root, null),
             tool_name: 'Bash',
@@ -710,7 +721,7 @@ describe('codex post-tool-use touch signal', () => {
           list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
           drift: []
         });
-        const handler = createHandler(executors, inMemoryMemoFactory());
+        const handler = createHandler(executors, inMemoryMemoFactory(), layout);
         const input = {
           ...postInput(repo.root, null),
           tool_name: 'Bash',
@@ -763,7 +774,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
     try {
       seed(repo, [['f.txt', 'hello\n']]);
       const { executors, fixPaths } = makeExecutors();
-      const handler = createHandler(executors, inMemoryMemoFactory());
+      const handler = createHandler(executors, inMemoryMemoFactory(), layout);
 
       await handler(bashInput(repo, `echo hello > ${join(repo.root, 'f.txt')}`) as never, { logger } as never);
 
@@ -778,7 +789,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
     try {
       seed(repo, [['f.txt', 'a\nx\n']]);
       const { executors, fixPaths } = makeExecutors();
-      const handler = createHandler(executors, inMemoryMemoFactory());
+      const handler = createHandler(executors, inMemoryMemoFactory(), layout);
 
       await handler(bashInput(repo, `echo x >> ${join(repo.root, 'f.txt')}`) as never, { logger } as never);
 
@@ -794,7 +805,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
       seed(repo, [['h.txt', 'alpha\n']]);
       const command = `cat > ${join(repo.root, 'h.txt')} <<'EOF'\nalpha\nEOF\n`;
       const { executors, fixPaths } = makeExecutors();
-      const handler = createHandler(executors, inMemoryMemoFactory());
+      const handler = createHandler(executors, inMemoryMemoFactory(), layout);
 
       await handler(bashInput(repo, command) as never, { logger } as never);
 
@@ -812,7 +823,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
         ['b.txt', 's1\ns2\n']
       ]);
       const { executors, fixPaths, listPaths } = makeExecutors();
-      const handler = createHandler(executors, inMemoryMemoFactory());
+      const handler = createHandler(executors, inMemoryMemoFactory(), layout);
 
       await handler(
         bashInput(repo, `cp ${join(repo.root, 'a.txt')} ${join(repo.root, 'b.txt')}`) as never,
@@ -840,7 +851,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
         ['a.txt']
       );
       const { executors, fixPaths } = makeExecutors();
-      const handler = createHandler(executors, inMemoryMemoFactory());
+      const handler = createHandler(executors, inMemoryMemoFactory(), layout);
 
       await handler(
         bashInput(repo, `mv ${join(repo.root, 'a.txt')} ${join(repo.root, 'c.txt')}`) as never,
@@ -860,7 +871,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
     try {
       seed(repo, [['d.txt', null]], ['d.txt']);
       const { executors, fixPaths } = makeExecutors();
-      const handler = createHandler(executors, inMemoryMemoFactory());
+      const handler = createHandler(executors, inMemoryMemoFactory(), layout);
 
       await handler(bashInput(repo, `rm ${join(repo.root, 'd.txt')}`) as never, { logger } as never);
 
@@ -875,7 +886,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
     try {
       seed(repo, [['e.txt', '']]);
       const { executors, fixPaths } = makeExecutors();
-      const handler = createHandler(executors, inMemoryMemoFactory());
+      const handler = createHandler(executors, inMemoryMemoFactory(), layout);
 
       await handler(bashInput(repo, `truncate -s 0 ${join(repo.root, 'e.txt')}`) as never, { logger } as never);
 
@@ -890,7 +901,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
     try {
       seed(repo, [['s.txt', 'a\n']]);
       const { executors, fixPaths } = makeExecutors();
-      const handler = createHandler(executors, inMemoryMemoFactory());
+      const handler = createHandler(executors, inMemoryMemoFactory(), layout);
 
       await handler(bashInput(repo, `sed -i 's/a/b/' ${join(repo.root, 's.txt')}`) as never, { logger } as never);
 
@@ -911,7 +922,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
         ['patch.diff', `${diff}\n`]
       ]);
       const { executors, fixPaths } = makeExecutors();
-      const handler = createHandler(executors, inMemoryMemoFactory());
+      const handler = createHandler(executors, inMemoryMemoFactory(), layout);
 
       await handler(bashInput(repo, `git apply ${join(repo.root, 'patch.diff')}`) as never, { logger } as never);
 
@@ -926,7 +937,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
     try {
       seed(repo, [['fmt.ts', 'export const x = 1;\n']]);
       const { executors, fixPaths } = makeExecutors();
-      const handler = createHandler(executors, inMemoryMemoFactory());
+      const handler = createHandler(executors, inMemoryMemoFactory(), layout);
 
       await handler(bashInput(repo, `prettier --write ${join(repo.root, 'fmt.ts')}`) as never, { logger } as never);
 
@@ -941,7 +952,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
     try {
       seed(repo, [['r.txt', 'x\n']]);
       const { executors, fixPaths } = makeExecutors();
-      const handler = createHandler(executors, inMemoryMemoFactory());
+      const handler = createHandler(executors, inMemoryMemoFactory(), layout);
 
       await handler(bashInput(repo, `git restore ${join(repo.root, 'r.txt')}`) as never, { logger } as never);
 
@@ -956,7 +967,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
     try {
       seed(repo, [['k.txt', 'x\n']]);
       const { executors, fixPaths } = makeExecutors();
-      const handler = createHandler(executors, inMemoryMemoFactory());
+      const handler = createHandler(executors, inMemoryMemoFactory(), layout);
 
       await handler(bashInput(repo, `git checkout -- ${join(repo.root, 'k.txt')}`) as never, { logger } as never);
 
@@ -974,7 +985,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
         ['err.txt', '']
       ]);
       const { executors, calls } = makeExecutors();
-      const handler = createHandler(executors, inMemoryMemoFactory());
+      const handler = createHandler(executors, inMemoryMemoFactory(), layout);
 
       await handler(bashInput(repo, `ls > ${join(repo.root, 'f.txt')}`) as never, { logger } as never);
       await handler(bashInput(repo, `echo x 2> ${join(repo.root, 'err.txt')}`) as never, { logger } as never);

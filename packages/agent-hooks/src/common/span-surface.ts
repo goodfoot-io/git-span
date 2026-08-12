@@ -29,7 +29,7 @@ import {
   relativeToRepo,
   resolveRepoRoot,
   resolveSpanRoot,
-  sessionDir,
+  type SessionLayout,
   toPosix
 } from './agent-hooks-common.js';
 import { type HookIgnoreLoader, isSpanSuppressed } from './span-ignore.js';
@@ -103,22 +103,20 @@ export interface MemoStore {
   addSurfaced(sessionId: string, names: string[]): void;
 }
 
-// Lives under the shared per-session state directory (agent-hooks-common.ts's
-// sessionDir) — relocated from os.tmpdir()/agent-hooks-git-span/ so
-// per-session state has one home and is covered by pruneStaleSessions's
-// opportunistic >30-day pruning.
-function memoFilePath(sessionId: string): string {
-  return nodePath.join(sessionDir(sessionId), 'touch-memo.json');
-}
-
 export type MemoLogger = CoreLogger;
 
-export function createDiskMemoStore(logger: MemoLogger): MemoStore {
+/**
+ * The disk-backed memo, under the per-session state directory the caller's
+ * {@link SessionLayout} names (agent-hooks-common.ts) — relocated from
+ * os.tmpdir()/agent-hooks-git-span/ so per-session state has one home and is
+ * covered by pruneStaleSessions's opportunistic >30-day pruning.
+ */
+export function createDiskMemoStore(logger: MemoLogger, layout: SessionLayout): MemoStore {
   return {
     getSurfaced(sessionId) {
-      pruneStaleSessions();
+      pruneStaleSessions(layout);
       try {
-        const raw = fs.readFileSync(memoFilePath(sessionId), 'utf8');
+        const raw = fs.readFileSync(layout.memoFile(sessionId), 'utf8');
         const parsed = JSON.parse(raw) as { surfaced?: unknown };
         if (Array.isArray(parsed.surfaced)) {
           return new Set(parsed.surfaced as string[]);
@@ -129,14 +127,18 @@ export function createDiskMemoStore(logger: MemoLogger): MemoStore {
       return new Set();
     },
     addSurfaced(sessionId, names) {
-      pruneStaleSessions();
+      pruneStaleSessions(layout);
       const existing = this.getSurfaced(sessionId);
       for (const n of names) existing.add(n);
-      const memoDir = sessionDir(sessionId);
-      const memoPath = memoFilePath(sessionId);
+      const memoDir = layout.dir(sessionId);
+      const memoPath = layout.memoFile(sessionId);
       const tmpPath = `${memoPath}.tmp`;
       try {
-        fs.mkdirSync(memoDir, { recursive: true });
+        // 0o700 matches the snapshot store's discipline. The memo store is the
+        // third writer that can create a session dir first; without the mode a
+        // memo-first session sat at 0755 until a later tombstone write healed
+        // it, so the dir's permissions depended on arrival order.
+        fs.mkdirSync(memoDir, { recursive: true, mode: 0o700 });
         fs.writeFileSync(tmpPath, JSON.stringify({ surfaced: [...existing] }), 'utf8');
         fs.renameSync(tmpPath, memoPath);
       } catch (err) {
@@ -146,13 +148,8 @@ export function createDiskMemoStore(logger: MemoLogger): MemoStore {
   };
 }
 
-/** Factory function that creates a MemoStore given a logger. */
-export type MemoFactory = (logger: MemoLogger) => MemoStore;
-
-/** Default disk-backed memo factory used in production. */
-export function diskMemoFactory(logger: MemoLogger): MemoStore {
-  return createDiskMemoStore(logger);
-}
+/** Factory function that creates a MemoStore given a logger and a layout. */
+export type MemoFactory = (logger: MemoLogger, layout: SessionLayout) => MemoStore;
 
 // ---------------------------------------------------------------------------
 // Touch scope resolution (repo-scoping + gitignore + span-root guards)

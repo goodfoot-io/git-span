@@ -50,7 +50,12 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve as resolvePath } from 'node:path';
 import { type HookContext, type PostToolUseInput, postToolUseHook, postToolUseOutput } from '@goodfoot/codex-hooks';
-import { abspathAgainst, resolveRepoRoot } from '../common/agent-hooks-common.js';
+import {
+  abspathAgainst,
+  DEFAULT_SESSION_LAYOUT,
+  resolveRepoRoot,
+  type SessionLayout
+} from '../common/agent-hooks-common.js';
 import { bashSpanToTouch } from '../common/bash-touch.js';
 import { parseCommandDetailed } from '../common/parse-command.js';
 import { parseResponse, type ResponseParseInput } from '../common/parse-response.js';
@@ -381,13 +386,14 @@ async function runStaticParseTouches(
 
 export function createHandler(
   executors: TouchExecutors = createDefaultTouchExecutors(),
-  memoFactory: MemoFactory = createDiskMemoStore
+  memoFactory: MemoFactory = createDiskMemoStore,
+  layout: SessionLayout = DEFAULT_SESSION_LAYOUT
 ) {
   return async (input: PostToolUseInput, ctx: HookContext) => {
     const tool_name = input.tool_name;
     const cwd = input.cwd ?? '';
     const sessionId = input.session_id;
-    const memo = memoFactory(ctx.logger);
+    const memo = memoFactory(ctx.logger, layout);
 
     // Shell touch: extract the command from whichever envelope shape the harness
     // delivers, parse, and run each resolved span through the shared touch core.
@@ -486,7 +492,7 @@ export function createHandler(
         // Same resolution as the pre side (env → repo config → defaults); a
         // repo-less cwd resolves null and skips the config layer only.
         const budgets = resolveSnapshotBudgets(repoRoot);
-        const store = createSnapshotStore(ctx.logger, budgets);
+        const store = createSnapshotStore(ctx.logger, budgets, layout);
         const outcome = await snapshotBashBranch(
           store,
           sessionId,
@@ -543,7 +549,7 @@ export function createHandler(
       // on every recordless no-op command instead of just the lossy ones.
       // At most one appearance per session, via the shared disk-marker gate.
       if (blocks.length === 0) return undefined;
-      if (attributionNote !== null && shouldSurfaceRecordlessNote(sessionId, ctx.logger)) {
+      if (attributionNote !== null && shouldSurfaceRecordlessNote(sessionId, ctx.logger, layout)) {
         blocks.unshift(attributionNote);
       }
       const combined = blocks.join('');

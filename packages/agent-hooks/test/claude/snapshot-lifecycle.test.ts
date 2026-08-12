@@ -53,15 +53,14 @@ import { Logger } from '@goodfoot/claude-code-hooks';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createHandler as createPostToolUseHandler } from '../../src/claude/post-tool-use.js';
 import { createHandler as createFailureHandler } from '../../src/claude/post-tool-use-failure.js';
-import sessionEndHook from '../../src/claude/session-end.js';
+import { createHandler as createSessionEndHandler } from '../../src/claude/session-end.js';
 import { createHandler as createSnapshotPreHook } from '../../src/claude/snapshot.js';
 import {
   isDebt,
   parseDriftPorcelain,
   parsePorcelain,
   queueRoot,
-  sanitizeSessionId,
-  sessionDir
+  sanitizeSessionId
 } from '../../src/common/agent-hooks-common.js';
 import {
   type AmbiguityBaseline,
@@ -78,9 +77,9 @@ import {
   type ActivityEntry,
   activityEntriesCovering,
   appendActivityEntry,
-  createSnapshotStore,
-  snapshotObjectDir
+  createSnapshotStore
 } from '../../src/common/snapshot-store.js';
+import { makeTempLayout } from '../session-layout-helpers.js';
 import {
   addSpan,
   BASE_NOW,
@@ -100,6 +99,23 @@ import {
   type TestRepo,
   writeFile
 } from './snapshot-lifecycle-helpers.js';
+
+// ---------------------------------------------------------------------------
+// Session layout
+// ---------------------------------------------------------------------------
+
+/**
+ * This file's own session base, on /tmp. Every handler and store below is
+ * constructed over it, so nothing here reads or reaps the developer's live
+ * `~/.cache/git-span/session` state — including the cleanup hooks, whose whole
+ * job is removing a session's records. Handlers are constructed through
+ * `createHandler(layout)` rather than imported as default exports for exactly
+ * that reason: a default export binds the production layout at module load,
+ * and its assertions would pass while it swept real state.
+ */
+const temp = makeTempLayout();
+const layout = temp.layout;
+afterAll(() => temp.cleanup());
 
 // ---------------------------------------------------------------------------
 // Git-span availability check
@@ -272,7 +288,7 @@ describe('claude harness snapshot lifecycle', () => {
   // rationale). Only this file's ids: the codex file runs in a parallel fork
   // over the same shared session base, and a union purge would delete its
   // live records mid-test.
-  beforeAll(() => purgeSessions(CLAUDE_SESSION_IDS));
+  beforeAll(() => purgeSessions(layout, CLAUDE_SESSION_IDS));
   // The records/tombstones this run writes must not outlive it either: the
   // core suite's write-time sweep walks every record in the shared session
   // base and warns per repo whose temp dir is already gone, so a fixture
@@ -285,8 +301,8 @@ describe('claude harness snapshot lifecycle', () => {
   // files, and a close-after-unlink crashes Node on this fs (see the
   // helpers' rationale). The renamed dirs sit in a per-worker trash root
   // outside the base and are emptied once, at the end of the file.
-  afterEach(() => purgeSessions(CLAUDE_SESSION_IDS));
-  afterAll(flushPurgedSessions);
+  afterEach(() => purgeSessions(layout, CLAUDE_SESSION_IDS));
+  afterAll(() => flushPurgedSessions(layout));
 
   describe('A. PreToolUse — the write-only pre walk', () => {
     it('writes a pre-walk record for an opaque command, correlated by (session_id, tool_use_id)', async () => {
@@ -295,7 +311,7 @@ describe('claude harness snapshot lifecycle', () => {
         const tuId = 'tu-pre-record-1';
         writeFile(repo.root, 'src/app.ts', P10);
         gitAddCommit(repo.root, 'add app.ts');
-        const pre = createSnapshotPreHook();
+        const pre = createSnapshotPreHook(layout);
         const logger = new Logger();
         const input = preInput({
           session_id: sessionId,
@@ -306,7 +322,7 @@ describe('claude harness snapshot lifecycle', () => {
         const result = await pre(input as never, { logger });
         // The pre hook is write-only: its only observable effect is the record.
         expect(result).toBeNull();
-        const record = createSnapshotStore(logger).find(sessionId, tuId);
+        const record = createSnapshotStore(logger, undefined, layout).find(sessionId, tuId);
         expect(record).not.toBeNull();
         expect(record).not.toBe('tombstoned');
         if (record === null || record === 'tombstoned') throw new Error('record missing');
@@ -333,7 +349,7 @@ describe('claude harness snapshot lifecycle', () => {
         const tuId = 'tu-pre-readonly-1';
         writeFile(repo.root, 'src/app.ts', P10);
         gitAddCommit(repo.root, 'add app.ts');
-        const pre = createSnapshotPreHook();
+        const pre = createSnapshotPreHook(layout);
         const logger = new Logger();
         const input = preInput({
           session_id: sessionId,
@@ -342,7 +358,7 @@ describe('claude harness snapshot lifecycle', () => {
           tool_input: { command: 'git status' }
         });
         expect(await pre(input as never, { logger })).toBeNull();
-        expect(createSnapshotStore(logger).find(sessionId, tuId)).toBeNull();
+        expect(createSnapshotStore(logger, undefined, layout).find(sessionId, tuId)).toBeNull();
         // The SAME classifier runs at PostToolUse: both sides agree that no
         // snapshot should exist, so no missing-record warning can ever fire
         // for a read-only call.
@@ -353,7 +369,7 @@ describe('claude harness snapshot lifecycle', () => {
     });
 
     it('fails open with no record when session_id or tool_use_id is absent — uncorrelatable events are skipped', async () => {
-      const pre = createSnapshotPreHook();
+      const pre = createSnapshotPreHook(layout);
       const logger = new Logger();
       const base = preInput({ cwd: '/tmp', tool_input: { command: 'npx prettier --write /tmp/x.ts' } });
       const noSession = await pre({ ...base, session_id: undefined } as never, { logger });
@@ -371,7 +387,7 @@ describe('claude harness snapshot lifecycle', () => {
         writeFile(repo.root, 'src/app.ts', P10);
         gitAddCommit(repo.root, 'add app.ts');
         const logger = new Logger();
-        const pre = createSnapshotPreHook();
+        const pre = createSnapshotPreHook(layout);
         const input = preInput({
           session_id: sessionId,
           cwd: repo.root,
@@ -394,7 +410,7 @@ describe('claude harness snapshot lifecycle', () => {
             driftRow({ name: SPAN_B, path: 'src/app.ts', start: 8, end: 10 })
           ]
         });
-        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore(), layout);
         const raw = await handler(input as never, { logger });
         const block = toResult(raw);
         // The observed ranges come from the comparison: lines 3-4 changed,
@@ -404,7 +420,7 @@ describe('claude harness snapshot lifecycle', () => {
         expect(block).not.toContain('## billing/payment-created-flow');
         expect(calls.fix).toBe(1);
         // PostToolUse consumes the record — the window closes.
-        expect(createSnapshotStore(logger).find(sessionId, tuId)).toBe('tombstoned');
+        expect(createSnapshotStore(logger, undefined, layout).find(sessionId, tuId)).toBe('tombstoned');
       });
     });
 
@@ -415,7 +431,7 @@ describe('claude harness snapshot lifecycle', () => {
         writeFile(repo.root, 'src/gen.ts', GEN_TS);
         gitAddCommit(repo.root, 'add gen.ts');
         const logger = new Logger();
-        const pre = createSnapshotPreHook();
+        const pre = createSnapshotPreHook(layout);
         const input = preInput({
           session_id: sessionId,
           cwd: repo.root,
@@ -432,10 +448,10 @@ describe('claude harness snapshot lifecycle', () => {
               : [],
           drift: () => [driftRow({ name: SPAN_A, path: 'src/gen.ts', start: 1, end: 5 })]
         });
-        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore(), layout);
         const raw = await handler(input as never, { logger });
         expect(toResult(raw)).toContain('## billing/checkout-request-flow');
-        expect(createSnapshotStore(logger).find(sessionId, tuId)).toBe('tombstoned');
+        expect(createSnapshotStore(logger, undefined, layout).find(sessionId, tuId)).toBe('tombstoned');
       });
     });
 
@@ -446,7 +462,7 @@ describe('claude harness snapshot lifecycle', () => {
         writeFile(repo.root, 'src/a.ts', '// a\n');
         gitAddCommit(repo.root, 'add a.ts');
         const logger = new Logger();
-        const pre = createSnapshotPreHook();
+        const pre = createSnapshotPreHook(layout);
         const input = preInput({
           session_id: sessionId,
           cwd: repo.root,
@@ -467,7 +483,7 @@ describe('claude harness snapshot lifecycle', () => {
             driftRow({ name: SPAN_B, path: 'src/b.ts', start: 1, end: 5 })
           ]
         });
-        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore(), layout);
         const raw = await handler(input as never, { logger });
         const block = toResult(raw);
         // One scoped heal pass per attributed path (each fix scoped to its
@@ -490,7 +506,7 @@ describe('claude harness snapshot lifecycle', () => {
         const sessionId = 'sess-lifecycle-absent';
         const tuId = 'tu-absent-1';
         const logger = new Logger();
-        const store = createSnapshotStore(logger);
+        const store = createSnapshotStore(logger, undefined, layout);
         writeFile(repo.root, 'src/app.ts', P10);
         store.write(makeRecord({ sessionId, toolUseId: tuId, repoRoot: repo.root, createdAt: BASE_NOW }));
         // No PostToolUse ever fires for this call — the record must stay live
@@ -513,7 +529,7 @@ describe('claude harness snapshot lifecycle', () => {
         const logger = new Logger();
         writeFile(repo.root, 'src/app.ts', P10);
         gitAddCommit(repo.root, 'add app.ts');
-        const pre = createSnapshotPreHook();
+        const pre = createSnapshotPreHook(layout);
         await pre(
           preInput({
             session_id: sessionId,
@@ -528,7 +544,7 @@ describe('claude harness snapshot lifecycle', () => {
           rows: () => [porcelainRow({ path: 'src/app.ts', start: 1, end: 10 })],
           drift: () => [driftRow({ path: 'src/app.ts', start: 1, end: 10 })]
         });
-        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore(), layout);
         const input = postInput({
           session_id: sessionId,
           cwd: repo.root,
@@ -555,7 +571,7 @@ describe('claude harness snapshot lifecycle', () => {
         // src/other.ts, an already-formatted file — a no-op formatter run.
         writeFile(repo.root, 'src/app.ts', P10_DIRTY);
         const logger = new Logger();
-        const pre = createSnapshotPreHook();
+        const pre = createSnapshotPreHook(layout);
         const input = preInput({
           session_id: sessionId,
           cwd: repo.root,
@@ -566,7 +582,7 @@ describe('claude harness snapshot lifecycle', () => {
         const { executors, calls } = makeExecutors({
           rows: () => [porcelainRow({ path: 'src/app.ts', start: 1, end: 10 })]
         });
-        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore(), layout);
         const raw = await handler(input as never, { logger });
         // Pre and post agree on every walked path: no changed paths, no scopes,
         // no touch — the dirty src/app.ts is part of the baseline, never a
@@ -587,7 +603,7 @@ describe('claude harness snapshot lifecycle', () => {
         // Lines 1-2 were already dirtied in the working tree before this call.
         writeFile(repo.root, 'src/app.ts', P30_DIRTY);
         const logger = new Logger();
-        const pre = createSnapshotPreHook();
+        const pre = createSnapshotPreHook(layout);
         const input = preInput({
           session_id: sessionId,
           cwd: repo.root,
@@ -607,7 +623,7 @@ describe('claude harness snapshot lifecycle', () => {
             driftRow({ name: SPAN_B, path: 'src/app.ts', start: 1, end: 5 })
           ]
         });
-        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore(), layout);
         const raw = await handler(input as never, { logger });
         const block = toResult(raw);
         // The snapshot's baseline is the dirty state — the comparison sees only
@@ -636,7 +652,7 @@ describe('claude harness snapshot lifecycle', () => {
         gitAddCommit(repo.root, 'add app.ts');
         addSpan(repo.root, SPAN_A, 'src/app.ts#L1-L5');
         const logger = new Logger();
-        const pre = createSnapshotPreHook();
+        const pre = createSnapshotPreHook(layout);
         const input = preInput({
           session_id: sessionId,
           cwd: repo.root,
@@ -648,7 +664,7 @@ describe('claude harness snapshot lifecycle', () => {
         // process died. The failure policy compares and attributes the partial
         // mutation — it is never silently lost.
         writeFile(repo.root, 'src/app.ts', P10_PARTIAL);
-        const failure = createFailureHandler(); // default store — real executors at Phase 3
+        const failure = createFailureHandler(undefined, undefined, layout); // default store — real executors at Phase 3
         const raw = await failure(
           failureInput({
             session_id: sessionId,
@@ -694,7 +710,7 @@ describe('claude harness snapshot lifecycle', () => {
         writeFile(repo.root, 'src/app.ts', P10);
         gitAddCommit(repo.root, 'add app.ts');
         const logger = new Logger();
-        const pre = createSnapshotPreHook();
+        const pre = createSnapshotPreHook(layout);
         const input = preInput({
           session_id: sessionId,
           cwd: repo.root,
@@ -703,7 +719,7 @@ describe('claude harness snapshot lifecycle', () => {
         });
         await pre(input as never, { logger });
         const { logger: capLogger, notes } = noteCapturingLogger();
-        const failure = createFailureHandler();
+        const failure = createFailureHandler(undefined, undefined, layout);
         const raw = await failure(
           failureInput({
             session_id: sessionId,
@@ -716,13 +732,13 @@ describe('claude harness snapshot lifecycle', () => {
         expect(toResult(raw)).toBeNull();
         // The window is closed so a later call's ambiguity check sees the
         // failure; closing a record that existed is not a silent loss.
-        expect(createSnapshotStore(capLogger).find(sessionId, tuId)).toBe('tombstoned');
+        expect(createSnapshotStore(capLogger, undefined, layout).find(sessionId, tuId)).toBe('tombstoned');
         expect(notes.some((n) => n.includes('discard'))).toBe(false);
       });
     });
 
     it('discards a failure with no record, with a warn — the loss is never silent', async () => {
-      const failure = createFailureHandler();
+      const failure = createFailureHandler(undefined, undefined, layout);
       const { logger, notes } = noteCapturingLogger();
       const raw = await failure(
         failureInput({
@@ -842,7 +858,7 @@ describe('claude harness snapshot lifecycle', () => {
           gitAddCommit(repo.root, 'add app.ts');
           addSpan(repo.root, SPAN_A, 'src/app.ts#L1-L5');
           const logger = new Logger();
-          const pre = createSnapshotPreHook();
+          const pre = createSnapshotPreHook(layout);
           const input = preInput({
             session_id: sessionId,
             cwd: repo.root,
@@ -853,7 +869,7 @@ describe('claude harness snapshot lifecycle', () => {
           rmSync(join(repo.root, 'src/app.ts'));
           // Default executors: the real CLI, whose exit codes the touch pipeline
           // ignores because the stdout still carries the useful rows.
-          const handler = createPostToolUseHandler();
+          const handler = createPostToolUseHandler(undefined, undefined, layout);
           const raw = await handler(input as never, { logger });
           const block = toResult(raw);
           // The deletion is invisible to static parsing (rm has no read idiom);
@@ -875,7 +891,7 @@ describe('claude harness snapshot lifecycle', () => {
         gitAddCommit(repo.root, 'add app.ts');
         addSpan(repo.root, SPAN_A, 'src/app.ts#L1-L5');
         const logger = new Logger();
-        const pre = createSnapshotPreHook();
+        const pre = createSnapshotPreHook(layout);
         const input = preInput({
           session_id: sessionId,
           cwd: repo.root,
@@ -884,7 +900,7 @@ describe('claude harness snapshot lifecycle', () => {
         });
         await pre(input as never, { logger });
         renameSync(join(repo.root, 'src/app.ts'), join(repo.root, 'src/app2.ts'));
-        const handler = createPostToolUseHandler();
+        const handler = createPostToolUseHandler(undefined, undefined, layout);
         const raw = await handler(input as never, { logger });
         const block = toResult(raw);
         // The rename pairs as delete+create: the span lives on the old path,
@@ -910,7 +926,7 @@ describe('claude harness snapshot lifecycle', () => {
         const now = Date.now();
         const sessionId = 'sess-lifecycle-end';
         const logger = new Logger();
-        const store = createSnapshotStore(logger);
+        const store = createSnapshotStore(logger, undefined, layout);
         store.write(makeRecord({ sessionId, toolUseId: 'tu-end-1', repoRoot: repo.root, createdAt: now }));
         expect(store.tombstone(sessionId, 'tu-end-1', now)).toBe(true);
         appendActivityEntry(repo.root, {
@@ -921,7 +937,7 @@ describe('claude harness snapshot lifecycle', () => {
           finishedAt: null,
           paths: [{ path: 'src/app.ts', preHash: 'pre-h', postHash: null }]
         });
-        const raw = await sessionEndHook(sessionEndInput(sessionId) as never, { logger });
+        const raw = await createSessionEndHandler(layout)(sessionEndInput(sessionId) as never, { logger });
         expect(raw).toBeNull();
         // find returns null, not 'tombstoned' — the tombstone went with the record.
         expect(store.find(sessionId, 'tu-end-1')).toBeNull();
@@ -936,7 +952,7 @@ describe('claude harness snapshot lifecycle', () => {
       await withRepo(async (repo) => {
         const now = Date.now();
         const logger = new Logger();
-        const store = createSnapshotStore(logger);
+        const store = createSnapshotStore(logger, undefined, layout);
         // The stale record is TTL-minus-margin relative to real now: every
         // store.write runs the TTL sweep first, so a record already past TTL
         // at write time would be cleaned by the write itself and never reach
@@ -973,7 +989,7 @@ describe('claude harness snapshot lifecycle', () => {
       await withRepo(async (repo) => {
         const now = Date.now();
         const logger = new Logger();
-        const store = createSnapshotStore(logger);
+        const store = createSnapshotStore(logger, undefined, layout);
         // pruneStaleActivity only visits repos named by readable records — a
         // repo with no records is invisible to the activity prune, so anchor
         // this repo with a live record before the sweep.
@@ -990,7 +1006,7 @@ describe('claude harness snapshot lifecycle', () => {
         // age the anchor record's file past the margin (its createdAt stays
         // in-TTL and live) or the repo is invisible to the activity prune.
         const anchorFile = join(
-          sessionDir('sess-lifecycle-ttl-edit'),
+          layout.dir('sess-lifecycle-ttl-edit'),
           'snapshots',
           `${sanitizeSessionId('tu-edit-anchor')}.json`
         );
@@ -1283,8 +1299,8 @@ describe('claude harness snapshot lifecycle', () => {
           tool_use_id: tuId,
           tool_input: { command: 'npx prettier --write src/app.ts' }
         });
-        await createSnapshotPreHook()(input as never, { logger });
-        const found = createSnapshotStore(logger).find(sessionId, tuId);
+        await createSnapshotPreHook(layout)(input as never, { logger });
+        const found = createSnapshotStore(logger, undefined, layout).find(sessionId, tuId);
         if (found === null || found === 'tombstoned') throw new Error('pre capture failed');
         writeFile(repo.root, 'src/app.ts', v2);
         appendActivityEntry(repo.root, entry(found.createdAt));
@@ -1298,7 +1314,7 @@ describe('claude harness snapshot lifecycle', () => {
             filePath.endsWith('/src/app.ts') ? [porcelainRow({ path: 'src/app.ts', start: 1, end: 10 })] : [],
           drift: () => [driftRow({ path: 'src/app.ts', start: 1, end: 10 })]
         });
-        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore(), layout);
         const { logger: capLogger, notes } = noteCapturingLogger();
         const raw = await handler(input as never, { logger: capLogger });
         return { block: toResult(raw), notes };
@@ -1523,12 +1539,12 @@ describe('claude harness snapshot lifecycle', () => {
           // age the pre-capture record's file past the margin too, or the repo
           // is invisible to the prune (its createdAt stays in-TTL and live).
           const preFile = join(
-            sessionDir('sess-interleave-ttlprune'),
+            layout.dir('sess-interleave-ttlprune'),
             'snapshots',
             `${sanitizeSessionId('tu-bash-ttlprune')}.json`
           );
           utimesSync(preFile, (now - 60_000) / 1000, (now - 60_000) / 1000);
-          pruned.push(createSnapshotStore(new Logger()).sweep(now).activityEntries);
+          pruned.push(createSnapshotStore(new Logger(), undefined, layout).sweep(now).activityEntries);
         }
       });
       expect(pruned).toEqual([1]);
@@ -1548,7 +1564,7 @@ describe('claude harness snapshot lifecycle', () => {
         writeFile(repo.root, 'src/app.ts', v1);
         gitAddCommit(repo.root, 'add app.ts');
         const preLogger = new Logger();
-        await createSnapshotPreHook()(
+        await createSnapshotPreHook(layout)(
           preInput({
             session_id: 'sess-interleave-race',
             cwd: repo.root,
@@ -1563,7 +1579,7 @@ describe('claude harness snapshot lifecycle', () => {
             filePath.endsWith('/src/app.ts') ? [porcelainRow({ path: 'src/app.ts', start: 1, end: 10 })] : [],
           drift: () => [driftRow({ path: 'src/app.ts', start: 1, end: 10 })]
         });
-        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore(), layout);
         const logger = new Logger();
         const input = postInput({
           session_id: 'sess-interleave-race',
@@ -1600,7 +1616,7 @@ describe('claude harness snapshot lifecycle', () => {
         writeFile(repo.root, 'src/gen.ts', preContent);
         gitAddCommit(repo.root, 'add gen.ts');
         const logger = new Logger();
-        const pre = createSnapshotPreHook();
+        const pre = createSnapshotPreHook(layout);
         const input = preInput({
           session_id: sessionId,
           cwd: repo.root,
@@ -1616,7 +1632,7 @@ describe('claude harness snapshot lifecycle', () => {
               : [],
           drift: () => [driftRow({ name: SPAN_A, path: 'src/gen.ts', start: 1, end: 300 })]
         });
-        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore(), layout);
         const raw = await handler(input as never, { logger });
         const block = toResult(raw);
         // The hunk-derived ranges cover the reordered body and surface the span.
@@ -1624,7 +1640,7 @@ describe('claude harness snapshot lifecycle', () => {
         expect(calls.fix).toBe(1);
         // The belt-and-braces contract: the record is consumed, never left
         // live to poison a later sibling's ambiguity read.
-        expect(createSnapshotStore(logger).find(sessionId, tuId)).toBe('tombstoned');
+        expect(createSnapshotStore(logger, undefined, layout).find(sessionId, tuId)).toBe('tombstoned');
       });
     });
 
@@ -1637,7 +1653,7 @@ describe('claude harness snapshot lifecycle', () => {
         writeFile(repo.root, 'src/app.ts', P10);
         gitAddCommit(repo.root, 'add app.ts');
         const { logger, notes } = noteCapturingLogger();
-        const pre = createSnapshotPreHook();
+        const pre = createSnapshotPreHook(layout);
         // Both calls captured src/app.ts at the same pre state; the orphan's
         // PostToolUse never arrives, so its write window has not provably
         // ended and mine must fail closed (the existing live-record contract).
@@ -1663,7 +1679,7 @@ describe('claude harness snapshot lifecycle', () => {
               : [],
           drift: () => [driftRow({ name: SPAN_A, path: 'src/app.ts', start: 1, end: 10 })]
         });
-        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore(), layout);
         const input = postInput({
           session_id: sessionId,
           cwd: repo.root,
@@ -1688,15 +1704,15 @@ describe('claude harness snapshot lifecycle', () => {
         expect(calls.fix).toBe(0);
         // The orphan is removed (session teardown); a fresh capture of the
         // same call now attributes cleanly.
-        purgeSessions([orphanSession, sessionId]);
-        flushPurgedSessions();
+        purgeSessions(layout, [orphanSession, sessionId]);
+        flushPurgedSessions(layout);
         writeFile(repo.root, 'src/app.ts', P10);
         await pre(myInput as never, { logger });
         writeFile(repo.root, 'src/app.ts', P10_FORMATTED);
         const raw2 = await handler(input as never, { logger });
         const block2 = toResult(raw2);
         expect(block2).toContain('## billing/checkout-request-flow');
-        expect(createSnapshotStore(logger).find(sessionId, tuId)).toBe('tombstoned');
+        expect(createSnapshotStore(logger, undefined, layout).find(sessionId, tuId)).toBe('tombstoned');
       });
     });
 
@@ -1715,7 +1731,7 @@ describe('claude harness snapshot lifecycle', () => {
         writeFile(repo.root, 'src/app.ts', P10);
         gitAddCommit(repo.root, 'add app.ts');
         const { logger, notes } = noteCapturingLogger();
-        const pre = createSnapshotPreHook();
+        const pre = createSnapshotPreHook(layout);
         const orphanInput = preInput({
           session_id: orphanSession,
           cwd: repo.root,
@@ -1733,7 +1749,7 @@ describe('claude harness snapshot lifecycle', () => {
         // Destroy the orphan's private object dir: its index entry and record
         // survive, but every per-path hash read now errors — the
         // reaped/corrupted-store class, not proof the tree lacked the path.
-        rmSync(snapshotObjectDir(orphanSession, orphanTu), { recursive: true, force: true });
+        rmSync(layout.objectDir(orphanSession, orphanTu), { recursive: true, force: true });
         writeFile(repo.root, 'src/app.ts', P10_FORMATTED);
         const { executors, calls } = makeExecutors({
           rows: (filePath) =>
@@ -1742,7 +1758,7 @@ describe('claude harness snapshot lifecycle', () => {
               : [],
           drift: () => [driftRow({ name: SPAN_A, path: 'src/app.ts', start: 1, end: 10 })]
         });
-        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore(), layout);
         const raw = await handler(myInput as never, { logger });
         const block = toResult(raw);
         // Logger-only deferral: nothing actionable, so no block at all — the
@@ -1775,7 +1791,7 @@ describe('claude harness snapshot lifecycle', () => {
         writeFile(repo.root, 'src/app.ts', P10);
         gitAddCommit(repo.root, 'add app.ts');
         const { logger, notes } = noteCapturingLogger();
-        const pre = createSnapshotPreHook();
+        const pre = createSnapshotPreHook(layout);
         const myInput = preInput({
           session_id: sessionId,
           cwd: repo.root,
@@ -1786,7 +1802,7 @@ describe('claude harness snapshot lifecycle', () => {
         // Planted AFTER my pre capture: my write-time sweep reaps aged v1
         // leftovers, but a v1 record landing DURING my window is exactly the
         // rollout race — indexed, unconsumed, unreadable by the v2 view.
-        const v1Dir = join(sessionDir(v1Session), 'snapshots');
+        const v1Dir = layout.snapshotsDir(v1Session);
         mkdirSync(v1Dir, { recursive: true });
         writeFileSync(
           join(v1Dir, `${v1Tu}.json`),
@@ -1826,7 +1842,7 @@ describe('claude harness snapshot lifecycle', () => {
               : [],
           drift: () => [driftRow({ name: SPAN_A, path: 'src/app.ts', start: 1, end: 10 })]
         });
-        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore(), layout);
         const raw = await handler(myInput as never, { logger });
         const block = toResult(raw);
         // Logger-only deferral: nothing actionable, so no block at all — the
@@ -1853,7 +1869,7 @@ describe('claude harness snapshot lifecycle', () => {
         gitAddCommit(repo.root, 'add app.ts');
         const logger = new Logger();
         const { executors } = makeExecutors();
-        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore(), layout);
         const input = postInput({
           session_id: sessionId,
           cwd: repo.root,
@@ -1898,7 +1914,7 @@ describe('claude harness snapshot lifecycle', () => {
         // An opaque command: the static co-parser derives no paths, so the
         // fallback is empty and the note must not fire.
         const { executors } = makeExecutors({ rows: () => [], drift: () => [] });
-        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore(), layout);
         const input = postInput({
           session_id: sessionId,
           cwd: repo.root,
@@ -1925,7 +1941,7 @@ describe('claude harness snapshot lifecycle', () => {
         const tuId = 'tu-repoless-1';
         const { logger, notes } = noteCapturingLogger();
         const { executors } = makeExecutors();
-        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore(), layout);
         const input = postInput({
           session_id: sessionId,
           cwd: repolessCwd,
@@ -1955,7 +1971,7 @@ describe('claude harness snapshot lifecycle', () => {
           writeFile(repo.root, 'src/app.ts', P10);
           gitAddCommit(repo.root, 'add app.ts');
           const logger = new Logger();
-          const pre = createSnapshotPreHook();
+          const pre = createSnapshotPreHook(layout);
           // An opaque command: the static co-parser has nothing to attribute,
           // so the block carries ONLY the degrade note — a statically
           // parseable command would still surface its static spans, by design.
@@ -1970,7 +1986,7 @@ describe('claude harness snapshot lifecycle', () => {
           // here, with the note explaining why.
           writeFile(repo.root, 'src/app.ts', P10_FORMATTED);
           const { executors, calls } = makeExecutors();
-          const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+          const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore(), layout);
           const raw = await handler(input as never, { logger });
           const block = toResult(raw);
           expect(block).toContain('degraded to stat-only under a pre-side tree');
@@ -1978,7 +1994,7 @@ describe('claude harness snapshot lifecycle', () => {
           expect(calls.fix).toBe(0);
           // Fail-closed: the window still closes with the record consumed,
           // and the degrade's path-coverage gap warns later siblings.
-          expect(createSnapshotStore(logger).find(sessionId, tuId)).toBe('tombstoned');
+          expect(createSnapshotStore(logger, undefined, layout).find(sessionId, tuId)).toBe('tombstoned');
         });
       } finally {
         if (saved === undefined) delete process.env.GIT_SPAN_SNAPSHOT_POST_SIDE_WALL_SECONDS;
@@ -2010,7 +2026,7 @@ describe('claude harness snapshot lifecycle', () => {
           writeFile(repo.root, 'src/b.ts', P10);
           gitAddCommit(repo.root, 'add sources');
           const { logger, notes } = noteCapturingLogger();
-          const pre = createSnapshotPreHook();
+          const pre = createSnapshotPreHook(layout);
           // My capture first: my baseline predates the sibling's window.
           const myInput = preInput({
             session_id: sessionId,
@@ -2030,15 +2046,16 @@ describe('claude harness snapshot lifecycle', () => {
           await pre(siblingInput as never, { logger });
           writeFile(repo.root, 'src/a.ts', `${P10}y`);
           writeFile(repo.root, 'src/b.ts', `${P10}z`);
-          await createPostToolUseHandler(makeExecutors().executors, () => createMemoryMemoStore())(
-            siblingInput as never,
-            {
-              logger
-            }
-          );
+          await createPostToolUseHandler(
+            makeExecutors().executors,
+            () => createMemoryMemoStore(),
+            layout
+          )(siblingInput as never, {
+            logger
+          });
           // The cut gap is persisted onto the consumed record — the exact
           // evidence a later consult needs.
-          const persistedPath = join(sessionDir(sessionId), 'snapshots', `${sanitizeSessionId(siblingTu)}.json`);
+          const persistedPath = join(layout.dir(sessionId), 'snapshots', `${sanitizeSessionId(siblingTu)}.json`);
           const persisted = JSON.parse(readFileSync(persistedPath, 'utf8')) as SnapshotRecord;
           expect(persisted.consumed).toBe(true);
           expect(persisted.gaps.some((g) => g.includes('touched-files cap'))).toBe(true);
@@ -2048,7 +2065,7 @@ describe('claude harness snapshot lifecycle', () => {
           process.env.GIT_SPAN_SNAPSHOT_MAX_TOUCHED_FILES = '100';
           writeFile(repo.root, 'src/b.ts', `${P10}z\nmy edit`);
           const { executors, calls } = makeExecutors();
-          const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+          const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore(), layout);
           const raw = await handler(myInput as never, { logger });
           const block = toResult(raw);
           // a.ts: the sibling changed it in a window overlapping mine — the
@@ -2083,7 +2100,7 @@ describe('claude harness snapshot lifecycle', () => {
         writeFile(repo.root, 'assets/logo.bin', 'PNG\x00\x01\x02');
         gitAddCommit(repo.root, 'add sources');
         const logger = new Logger();
-        const pre = createSnapshotPreHook();
+        const pre = createSnapshotPreHook(layout);
         // My capture first; the sibling's window comes after.
         const myInput = preInput({ session_id: sessionId, cwd: repo.root, tool_use_id: myTu, tool_input: { command } });
         await pre(myInput as never, { logger });
@@ -2095,13 +2112,14 @@ describe('claude harness snapshot lifecycle', () => {
           tool_input: { command }
         });
         await pre(siblingInput as never, { logger });
-        await createPostToolUseHandler(makeExecutors().executors, () => createMemoryMemoStore())(
-          siblingInput as never,
-          {
-            logger
-          }
-        );
-        const persistedPath = join(sessionDir(sessionId), 'snapshots', `${sanitizeSessionId(siblingTu)}.json`);
+        await createPostToolUseHandler(
+          makeExecutors().executors,
+          () => createMemoryMemoStore(),
+          layout
+        )(siblingInput as never, {
+          logger
+        });
+        const persistedPath = join(layout.dir(sessionId), 'snapshots', `${sanitizeSessionId(siblingTu)}.json`);
         const persisted = JSON.parse(readFileSync(persistedPath, 'utf8')) as SnapshotRecord;
         expect(persisted.gaps).toEqual([]);
         expect(recordHasPathCoverageGap(persisted)).toBe(false);
@@ -2112,7 +2130,7 @@ describe('claude harness snapshot lifecycle', () => {
         writeFile(repo.root, 'src/app.ts', P10.replace('export const v1 = 1;', 'export const v1 = 1; // touched'));
         writeFile(repo.root, 'src/new.ts', 'export const fresh = 1;\n');
         const { executors, calls } = makeExecutors();
-        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore(), layout);
         const raw = await handler(myInput as never, { logger });
         const block = toResult(raw);
         expect(block).toContain('## billing/checkout-request-flow');
@@ -2175,7 +2193,7 @@ describe('claude harness snapshot lifecycle', () => {
           for (let i = 0; i < 3; i += 1) writeFile(repo.root, i === 0 ? 'src/app.ts' : `src/gen${i}.ts`, payload);
           gitAddCommit(repo.root, 'add generated sources');
           const logger = new Logger();
-          const pre = createSnapshotPreHook();
+          const pre = createSnapshotPreHook(layout);
           const input = preInput({
             session_id: sessionId,
             cwd: repo.root,
@@ -2237,7 +2255,11 @@ describe('claude harness snapshot lifecycle', () => {
           // an effectively infinite wall — every cost the real wall competes
           // with, measured in place.
           process.env.GIT_SPAN_SNAPSHOT_POST_SIDE_WALL_SECONDS = '30';
-          const timedHandler = createPostToolUseHandler(makeExecutors().executors, () => createMemoryMemoStore());
+          const timedHandler = createPostToolUseHandler(
+            makeExecutors().executors,
+            () => createMemoryMemoStore(),
+            layout
+          );
           const totalStart = process.hrtime.bigint();
           const fullRaw = await timedHandler(input as never, { logger });
           const totalMs = Number(process.hrtime.bigint() - totalStart) / 1_000_000;
@@ -2247,8 +2269,8 @@ describe('claude harness snapshot lifecycle', () => {
           // otherwise add hash-derivation work the timing run did not pay),
           // restore the committed state, capture, modify again.
           const arm = async (): Promise<void> => {
-            purgeSessions([sessionId]);
-            flushPurgedSessions();
+            purgeSessions(layout, [sessionId]);
+            flushPurgedSessions(layout);
             writeFile(repo.root, 'src/app.ts', payload);
             for (let i = 1; i < 3; i += 1) writeFile(repo.root, `src/gen${i}.ts`, payload);
             await pre(input as never, { logger });
@@ -2266,7 +2288,7 @@ describe('claude harness snapshot lifecycle', () => {
           for (let attempt = 0; attempt < 5; attempt += 1) {
             await arm();
             process.env.GIT_SPAN_SNAPSHOT_POST_SIDE_WALL_SECONDS = String(Math.max(wallMs, 1) / 1000);
-            const handler = createPostToolUseHandler(makeExecutors().executors, () => createMemoryMemoStore());
+            const handler = createPostToolUseHandler(makeExecutors().executors, () => createMemoryMemoStore(), layout);
             block = toResult(await handler(input as never, { logger }));
             if (block?.includes('post-side wall budget was exhausted partway')) break;
             if (block?.includes('## billing/checkout-request-flow')) {

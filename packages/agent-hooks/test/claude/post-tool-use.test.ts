@@ -18,6 +18,17 @@ import type { DriftPorcelainRow, PorcelainRow, PorcelainStatus } from '../../src
 import type { MemoFactory, MemoLogger, MemoStore } from '../../src/common/span-surface.js';
 import type { TouchExecutors, TouchFixResult } from '../../src/common/touch-core.js';
 import { makeTempRepo } from '../helpers.js';
+import { makeTempLayout } from '../session-layout-helpers.js';
+
+/**
+ * This file's own session base, on /tmp. The handlers below construct a real
+ * snapshot store and consult the recordless-note gate even where the memo is a
+ * fake, so without a layout they wrote fixture session dirs into the live
+ * `~/.cache/git-span/session` — the `sess-1` / `codex-sess` leak.
+ */
+const temp = makeTempLayout();
+const layout = temp.layout;
+afterAll(() => temp.cleanup());
 
 const logger = new Logger();
 
@@ -138,7 +149,7 @@ describe('claude post-tool-use touch signal', () => {
 
   it('heals and folds a semantic directive on an Edit, on both output channels', async () => {
     const { executors, calls } = makeExecutors({ list: [porcelainRow()], drift: [driftRow('CHANGED')] });
-    const handler = createHandler(executors, inMemoryMemoFactory());
+    const handler = createHandler(executors, inMemoryMemoFactory(), layout);
     const input = postInput({
       cwd: repo.root,
       tool_name: 'Edit',
@@ -155,7 +166,7 @@ describe('claude post-tool-use touch signal', () => {
 
   it('never invokes fix on a Read and surfaces nothing for positional-only drift', async () => {
     const { executors, calls } = makeExecutors({ list: [porcelainRow()], drift: [driftRow('MOVED')] });
-    const handler = createHandler(executors, inMemoryMemoFactory());
+    const handler = createHandler(executors, inMemoryMemoFactory(), layout);
     const input = postInput({
       cwd: repo.root,
       tool_name: 'Read',
@@ -172,7 +183,7 @@ describe('claude post-tool-use touch signal', () => {
     const filePath = join(repo.root, 'mod.rs');
     writeFileSync(filePath, Array.from({ length: 500 }, (_, i) => `line ${i + 1}`).join('\n'));
     const { executors } = makeExecutors({ list: [{ name: SPAN, path: 'mod.rs', start: 371, end: 387 }] });
-    const handler = createHandler(executors, inMemoryMemoFactory());
+    const handler = createHandler(executors, inMemoryMemoFactory(), layout);
     const input = postInput({
       cwd: repo.root,
       tool_name: 'Read',
@@ -187,7 +198,7 @@ describe('claude post-tool-use touch signal', () => {
     const filePath = join(repo.root, 'mod.rs');
     writeFileSync(filePath, Array.from({ length: 500 }, (_, i) => `line ${i + 1}`).join('\n'));
     const { executors } = makeExecutors({ list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }] });
-    const handler = createHandler(executors, inMemoryMemoFactory());
+    const handler = createHandler(executors, inMemoryMemoFactory(), layout);
     const input = postInput({
       cwd: repo.root,
       tool_name: 'Read',
@@ -200,7 +211,7 @@ describe('claude post-tool-use touch signal', () => {
 
   it('fails open (empty output, no throw) when every executor rejects', async () => {
     const { executors } = makeExecutors({ reject: true });
-    const handler = createHandler(executors, inMemoryMemoFactory());
+    const handler = createHandler(executors, inMemoryMemoFactory(), layout);
     const input = postInput({
       cwd: repo.root,
       tool_name: 'Write',
@@ -214,7 +225,7 @@ describe('claude post-tool-use touch signal', () => {
 
   it('does not run the touch core for an out-of-repo cwd', async () => {
     const { executors, calls } = makeExecutors({ list: [porcelainRow()], drift: [driftRow('CHANGED')] });
-    const handler = createHandler(executors, inMemoryMemoFactory());
+    const handler = createHandler(executors, inMemoryMemoFactory(), layout);
     const input = postInput({
       cwd: '/',
       tool_name: 'Read',
@@ -234,7 +245,7 @@ describe('claude post-tool-use touch signal', () => {
       list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
       drift: [driftRow('CHANGED')]
     });
-    const handler = createHandler(executors, inMemoryMemoFactory());
+    const handler = createHandler(executors, inMemoryMemoFactory(), layout);
     const input = postInput({
       cwd: repo.root,
       tool_name: 'Bash',
@@ -248,7 +259,7 @@ describe('claude post-tool-use touch signal', () => {
 
   it('returns null for a Bash command with no recognized idiom (no executor calls)', async () => {
     const { executors, calls } = makeExecutors({ list: [porcelainRow()], drift: [driftRow('CHANGED')] });
-    const handler = createHandler(executors, inMemoryMemoFactory());
+    const handler = createHandler(executors, inMemoryMemoFactory(), layout);
     const input = postInput({
       cwd: repo.root,
       tool_name: 'Bash',
@@ -271,7 +282,7 @@ describe('claude post-tool-use touch signal', () => {
       list: [{ name: SPAN, path: 'out.txt', start: 1, end: 2 }],
       drift: [driftRow('CHANGED')]
     });
-    const handler = createHandler(executors, inMemoryMemoFactory());
+    const handler = createHandler(executors, inMemoryMemoFactory(), layout);
     const input = postInput({ cwd: repo.root, tool_name: 'Bash', tool_input: { command } });
 
     const result = toResult(await handler(input as never, { logger }));
@@ -291,7 +302,7 @@ describe('claude post-tool-use touch signal', () => {
       list: [{ name: SPAN, path: 'out2.txt', start: 1, end: 2 }],
       drift: [driftRow('CHANGED')]
     });
-    const handler = createHandler(executors, inMemoryMemoFactory());
+    const handler = createHandler(executors, inMemoryMemoFactory(), layout);
     const input = postInput({ cwd: repo.root, tool_name: 'Bash', tool_input: { command } });
 
     const result = toResult(await handler(input as never, { logger }));
@@ -307,7 +318,7 @@ describe('claude post-tool-use touch signal', () => {
       list: [{ name: SPAN, path: 'out3.txt', start: 8, end: 10 }],
       drift: [driftRow('DELETED')]
     });
-    const handler = createHandler(executors, inMemoryMemoFactory());
+    const handler = createHandler(executors, inMemoryMemoFactory(), layout);
     const input = postInput({ cwd: repo.root, tool_name: 'Bash', tool_input: { command } });
 
     const result = toResult(await handler(input as never, { logger }));
@@ -349,7 +360,7 @@ describe('claude post-tool-use touch signal', () => {
           list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
           drift: [driftRow('CHANGED')]
         });
-        const handler = createHandler(executors, inMemoryMemoFactory());
+        const handler = createHandler(executors, inMemoryMemoFactory(), layout);
         const input = postInput({
           cwd: repo.root,
           tool_name: 'Bash',
@@ -369,7 +380,7 @@ describe('claude post-tool-use touch signal', () => {
         list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
         drift: [driftRow('CHANGED')]
       });
-      const handler = createHandler(executors, inMemoryMemoFactory());
+      const handler = createHandler(executors, inMemoryMemoFactory(), layout);
       const input = postInput({
         cwd: repo.root,
         tool_name: 'Bash',
@@ -390,7 +401,7 @@ describe('claude post-tool-use touch signal', () => {
         list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
         drift: [driftRow('CHANGED')]
       });
-      const handler = createHandler(executors, inMemoryMemoFactory());
+      const handler = createHandler(executors, inMemoryMemoFactory(), layout);
       const stdout = `${filePath}:50:alpha\n`;
 
       // Plan step 6's strict regime: `rawOutputPath` set means the inline
@@ -456,7 +467,7 @@ describe('claude post-tool-use touch signal', () => {
         list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
         drift: []
       });
-      const handler = createHandler(executors, inMemoryMemoFactory());
+      const handler = createHandler(executors, inMemoryMemoFactory(), layout);
       const input = postInput({
         cwd: repo.root,
         tool_name: 'Bash',
@@ -507,7 +518,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
   it('redirection: echo hello > f produces a whole-file write touch on f', async () => {
     seed([['f.txt', 'hello\n']]);
     const { executors, fixPaths } = makeExecutors();
-    const handler = createHandler(executors, inMemoryMemoFactory());
+    const handler = createHandler(executors, inMemoryMemoFactory(), layout);
 
     await handler(bashInput(`echo hello > ${p('f.txt')}`) as never, { logger });
 
@@ -517,7 +528,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
   it('redirection: echo x >> f threads the append body into the write touch', async () => {
     seed([['f.txt', 'a\nx\n']]);
     const { executors, fixPaths } = makeExecutors();
-    const handler = createHandler(executors, inMemoryMemoFactory());
+    const handler = createHandler(executors, inMemoryMemoFactory(), layout);
 
     await handler(bashInput(`echo x >> ${p('f.txt')}`) as never, { logger });
 
@@ -528,7 +539,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
     seed([['h.txt', 'alpha\n']]);
     const command = `cat > ${p('h.txt')} <<'EOF'\nalpha\nEOF\n`;
     const { executors, fixPaths } = makeExecutors();
-    const handler = createHandler(executors, inMemoryMemoFactory());
+    const handler = createHandler(executors, inMemoryMemoFactory(), layout);
 
     await handler(bashInput(command) as never, { logger });
 
@@ -541,7 +552,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
       ['b.txt', 's1\ns2\n']
     ]);
     const { executors, fixPaths, listPaths } = makeExecutors();
-    const handler = createHandler(executors, inMemoryMemoFactory());
+    const handler = createHandler(executors, inMemoryMemoFactory(), layout);
 
     await handler(bashInput(`cp ${p('a.txt')} ${p('b.txt')}`) as never, { logger });
 
@@ -558,7 +569,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
       ['a.txt']
     );
     const { executors, fixPaths } = makeExecutors();
-    const handler = createHandler(executors, inMemoryMemoFactory());
+    const handler = createHandler(executors, inMemoryMemoFactory(), layout);
 
     await handler(bashInput(`mv ${p('a.txt')} ${p('c.txt')}`) as never, { logger });
 
@@ -568,7 +579,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
   it('rm: delete touch on a real (index-tracked, deleted) target', async () => {
     seed([['d.txt', null]], ['d.txt']);
     const { executors, fixPaths } = makeExecutors();
-    const handler = createHandler(executors, inMemoryMemoFactory());
+    const handler = createHandler(executors, inMemoryMemoFactory(), layout);
 
     await handler(bashInput(`rm ${p('d.txt')}`) as never, { logger });
 
@@ -578,7 +589,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
   it('truncate -s 0: truncate touch on an empty post-command file', async () => {
     seed([['e.txt', '']]);
     const { executors, fixPaths } = makeExecutors();
-    const handler = createHandler(executors, inMemoryMemoFactory());
+    const handler = createHandler(executors, inMemoryMemoFactory(), layout);
 
     await handler(bashInput(`truncate -s 0 ${p('e.txt')}`) as never, { logger });
 
@@ -588,7 +599,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
   it('sed -i: modify touch (script-first disambiguation)', async () => {
     seed([['s.txt', 'a\n']]);
     const { executors, fixPaths } = makeExecutors();
-    const handler = createHandler(executors, inMemoryMemoFactory());
+    const handler = createHandler(executors, inMemoryMemoFactory(), layout);
 
     await handler(bashInput(`sed -i 's/a/b/' ${p('s.txt')}`) as never, { logger });
 
@@ -604,7 +615,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
       ['patch.diff', `${diff}\n`]
     ]);
     const { executors, fixPaths } = makeExecutors();
-    const handler = createHandler(executors, inMemoryMemoFactory());
+    const handler = createHandler(executors, inMemoryMemoFactory(), layout);
 
     await handler(bashInput(`git apply ${p('patch.diff')}`) as never, { logger });
 
@@ -614,7 +625,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
   it('formatter: prettier --write produces a modify touch', async () => {
     seed([['fmt.ts', 'export const x = 1;\n']]);
     const { executors, fixPaths } = makeExecutors();
-    const handler = createHandler(executors, inMemoryMemoFactory());
+    const handler = createHandler(executors, inMemoryMemoFactory(), layout);
 
     await handler(bashInput(`prettier --write ${p('fmt.ts')}`) as never, { logger });
 
@@ -624,7 +635,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
   it('git restore f: create-overwrite touch', async () => {
     seed([['r.txt', 'x\n']]);
     const { executors, fixPaths } = makeExecutors();
-    const handler = createHandler(executors, inMemoryMemoFactory());
+    const handler = createHandler(executors, inMemoryMemoFactory(), layout);
 
     await handler(bashInput(`git restore ${p('r.txt')}`) as never, { logger });
 
@@ -634,7 +645,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
   it('git checkout -- f: create-overwrite touch', async () => {
     seed([['k.txt', 'x\n']]);
     const { executors, fixPaths } = makeExecutors();
-    const handler = createHandler(executors, inMemoryMemoFactory());
+    const handler = createHandler(executors, inMemoryMemoFactory(), layout);
 
     await handler(bashInput(`git checkout -- ${p('k.txt')}`) as never, { logger });
 
@@ -647,7 +658,7 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
       ['err.txt', '']
     ]);
     const { executors, calls } = makeExecutors();
-    const handler = createHandler(executors, inMemoryMemoFactory());
+    const handler = createHandler(executors, inMemoryMemoFactory(), layout);
 
     await handler(bashInput(`ls > ${p('f.txt')}`) as never, { logger });
     await handler(bashInput(`echo x 2> ${p('err.txt')}`) as never, { logger });

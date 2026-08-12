@@ -8,8 +8,11 @@
  *
  * Since Phase 3 the store and comparison functions are real, so these helpers
  * also partition the fixture session ids per consuming file: the claude and
- * codex lifecycle files run in parallel forks over the shared session base,
- * and each file must purge only the ids it owns.
+ * codex lifecycle files each purge only the ids they own, between cases that
+ * would otherwise see one another's records through the base-wide sweep. The
+ * two files now hold *separate* per-run layouts on /tmp, so the partition is
+ * no longer what keeps them apart across files — it is what keeps a file's own
+ * cases from leaking into each other.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -17,12 +20,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
-import {
-  type DriftPorcelainRow,
-  type PorcelainRow,
-  SESSION_BASE_DIR,
-  sessionDir
-} from '../../src/common/agent-hooks-common.js';
+import type { DriftPorcelainRow, PorcelainRow, SessionLayout } from '../../src/common/agent-hooks-common.js';
 import type { SnapshotRecord } from '../../src/common/snapshot-core.js';
 import type { MemoStore } from '../../src/common/span-surface.js';
 import type { TouchExecutors, TouchFixResult } from '../../src/common/touch-core.js';
@@ -187,45 +185,43 @@ export const CODEX_SESSION_IDS: readonly string[] = [
   'sess-codex-repoless'
 ];
 
-/**
- * This worker's trash root: a sibling of the shared session base, so no
- * sweep (which only scans the base itself) ever reads what lands here.
- */
-const TRASH_ROOT = join(dirname(SESSION_BASE_DIR), `session-trash-${process.pid}`);
-
 let trashCounter = 0;
 
 /**
  * Remove the given sessions' per-session state dirs (records, tombstones,
- * memos) from the shared base *without unlinking live files*: each existing
- * dir is renamed atomically into this worker's trash root.
+ * memos) from the layout's base *without unlinking live files*: each existing
+ * dir is renamed atomically into the layout's trash root, a sibling of the
+ * base that no sweep (which scans only the base itself) ever reads.
  *
- * A plain recursive rmSync would unlink record files while other workers'
- * write-time sweeps are mid-`readFileSync` on them, and Node aborts
+ * A plain recursive rmSync would unlink record files while a store's
+ * write-time sweep is mid-`readFileSync` on them, and Node aborts
  * (uv_fs_close assertion) on a close-after-unlink on this fs. The rename
  * leaves every inode in place, so a concurrent reader's open/close still
  * succeeds; later opens of the original path fail ENOENT, which the store
  * treats as an ordinary miss.
+ *
+ * The trash root no longer needs a `process.pid` suffix to stay this worker's
+ * own: the layout's base sits inside a per-run mkdtemp'd parent, so the
+ * sibling trash root is per-run by construction.
  */
-export function purgeSessions(ids: readonly string[]): void {
-  mkdirSync(TRASH_ROOT, { recursive: true });
+export function purgeSessions(layout: SessionLayout, ids: readonly string[]): void {
+  mkdirSync(layout.trashDir, { recursive: true });
   for (const sid of ids) {
-    const dir = sessionDir(sid);
+    const dir = layout.dir(sid);
     if (!existsSync(dir)) continue;
-    renameSync(dir, join(TRASH_ROOT, `${basename(dir)}-${trashCounter}`));
+    renameSync(dir, join(layout.trashDir, `${basename(dir)}-${trashCounter}`));
     trashCounter += 1;
   }
 }
 
 /**
- * Empty this worker's trash root. Safe in afterAll: nothing ever reads the
- * trash (it sits outside the base), so unlinking it races no sweep. Stale
- * trash roots from crashed runs belong to other pids and are left alone —
- * deleting another worker's trash mid-run would be the cross-process write
- * this rename scheme exists to avoid.
+ * Empty the layout's trash root. Safe in afterAll: nothing ever reads the
+ * trash (it sits outside the base), so unlinking it races no sweep — and the
+ * path is inside this run's own temp parent, so it can never reach another
+ * run's state.
  */
-export function flushPurgedSessions(): void {
-  rmSync(TRASH_ROOT, { recursive: true, force: true });
+export function flushPurgedSessions(layout: SessionLayout): void {
+  rmSync(layout.trashDir, { recursive: true, force: true });
 }
 
 // ---------------------------------------------------------------------------

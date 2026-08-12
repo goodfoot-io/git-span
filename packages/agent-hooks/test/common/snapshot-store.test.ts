@@ -8,7 +8,7 @@
  * never per-path file maps.
  *
  * The store is a real on-disk store (per the contract: records under
- * `sessionDir(sessionId)/snapshots/`, the presence index and activity log
+ * `layout.snapshotsDir(sessionId)`, the presence index and activity log
  * under the repo's git common dir), so these fixtures exercise the disk layout
  * and permission rules the contract documents — not fakes. File locations are
  * discovered by scanning the contract's directories and matching parsed JSON
@@ -38,13 +38,19 @@
  * Session ids are unique per fixture and cleaned up in `afterEach` (the
  * memo-store.test.ts convention); every record carries a real temp-repo root
  * because `write` persists an index entry into the repo's git common dir.
+ *
+ * Every store here is constructed over a per-run {@link SessionLayout} on
+ * /tmp rather than the live `~/.cache/git-span/session`. The sweep enumerates
+ * its whole base on every write, so against the shared base this file read
+ * and reaped whatever other sessions had accumulated — which is what made its
+ * runtime a function of foreign state and its outcome a function of timing.
  */
 
 import { createHash } from 'node:crypto';
-import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { queueRoot, SESSION_BASE_DIR, sessionDir } from '../../src/common/agent-hooks-common.js';
+import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { afterAll, afterEach, describe, expect, it } from 'vitest';
+import { queueRoot } from '../../src/common/agent-hooks-common.js';
 import {
   DEFAULT_SNAPSHOT_BUDGETS,
   type SnapshotPostState,
@@ -62,16 +68,26 @@ import {
 } from '../../src/common/snapshot-store.js';
 import type { CoreLogger } from '../../src/common/span-surface.js';
 import { makeTempRepo } from '../helpers.js';
+import { makeTempLayout } from '../session-layout-helpers.js';
 
 const TOOL_USE_ID = 'toolu_01snapshotstoretest';
 
 /**
+ * This file's own session base, on /tmp. Every store below is constructed
+ * over it, so the sweep's base-wide enumeration reaches only fixtures this
+ * file wrote.
+ */
+const temp = makeTempLayout();
+const layout = temp.layout;
+afterAll(() => temp.cleanup());
+
+/**
  * Margin between a fixture's real-now writes and the injected sweep/consult
- * clocks. This machine runs other agents' live git-span hooks against the same
- * session base dir; their real-now sweeps expire anything ancient mid-fixture.
- * Records must therefore be in-TTL relative to real now (concurrent sweeps
- * leave them alone) while expired relative to the injected clock (the sweep
- * assertion still fires). 60s is a generous bound on a fixture's wall duration.
+ * clocks. Every `write` runs a real-now sweep of this file's base, so a record
+ * a later assertion depends on must be in-TTL relative to real now (an
+ * intervening write's own sweep leaves it alone) while expired relative to the
+ * injected clock (the sweep assertion still fires). 60s is a generous bound on
+ * a fixture's wall duration.
  */
 const CLOCK_MARGIN_MS = 60_000;
 
@@ -103,46 +119,11 @@ function newRepo(): { root: string; cleanup: () => void } {
 
 afterEach(() => {
   for (const sid of createdSessions) {
-    rmSync(sessionDir(sid), { recursive: true, force: true });
+    rmSync(layout.dir(sid), { recursive: true, force: true });
   }
   for (const r of createdRepos) {
     r.cleanup();
   }
-});
-
-// The write-time sweep walks every session dir in the shared base — including
-// leftovers from test runs killed before their afterEach cleanup. Those dirs
-// hold records whose temp repos no longer exist, and the sweep's gone-repo
-// guards warn — breaking this file's no-warns assertions. Age-thresholded
-// rename purge (never an in-place unlink: a close-after-unlink aborts Node on
-// this fs while another worker reads the file): only dirs untouched for longer
-// than any live run could plausibly be, so a parallel worker's live records
-// are never touched. The trash root sits outside the base, so no sweep ever
-// reads what lands there.
-const STALE_SESSION_AGE_MS = 30 * 60 * 1000;
-const STALE_SESSION_TRASH = join(dirname(SESSION_BASE_DIR), `stale-session-trash-${process.pid}`);
-beforeAll(() => {
-  mkdirSync(STALE_SESSION_TRASH, { recursive: true });
-  for (const name of readdirSync(SESSION_BASE_DIR)) {
-    const dir = join(SESSION_BASE_DIR, name);
-    let st: ReturnType<typeof statSync>;
-    try {
-      st = statSync(dir);
-    } catch {
-      continue; // vanished between readdir and stat — nothing to purge
-    }
-    if (!st.isDirectory() || Date.now() - st.mtimeMs < STALE_SESSION_AGE_MS) continue;
-    try {
-      renameSync(dir, join(STALE_SESSION_TRASH, `${name}-${Date.now()}`));
-    } catch (err) {
-      // Best-effort: another process may have removed the same stale dir
-      // (e.g. the production pruneStaleSessions) between stat and rename.
-      void err;
-    }
-  }
-});
-afterAll(() => {
-  rmSync(STALE_SESSION_TRASH, { recursive: true, force: true });
 });
 
 /** A logger capturing warn calls for diagnostics assertions. */
@@ -189,7 +170,7 @@ function readJson(file: string | null): unknown {
 
 /** Find the record file for (session, tool use) under the contract's layout. */
 function findRecordFile(sessionId: string, toolUseId: string): string | null {
-  const dir = join(sessionDir(sessionId), 'snapshots');
+  const dir = layout.snapshotsDir(sessionId);
   let names: string[];
   try {
     names = readdirSync(dir);
@@ -266,7 +247,7 @@ function activityEntry(sessionId: string, toolUseId: string, overrides: Partial<
 describe('createSnapshotStore — record round-trip', () => {
   it('write then find returns the record with every field intact (version, treeSha, gaps, agentId)', () => {
     const { logger, warns } = captureLogger();
-    const store = createSnapshotStore(logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const store = createSnapshotStore(logger, DEFAULT_SNAPSHOT_BUDGETS, layout);
     const r = newRepo();
     const sid = newSession();
     const rec = record({
@@ -287,13 +268,13 @@ describe('createSnapshotStore — record round-trip', () => {
   });
 
   it('find on a never-written (session, tool use) returns null', () => {
-    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS, layout);
     expect(store.find(newSession(), 'toolu_00neverwritten')).toBeNull();
   });
 
   it('consume persists the post state, marks consumed, stamps consumedAt, and updates the index entry', () => {
     const { logger } = captureLogger();
-    const store = createSnapshotStore(logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const store = createSnapshotStore(logger, DEFAULT_SNAPSHOT_BUDGETS, layout);
     const r = newRepo();
     const sid = newSession();
     const rec = record({ sessionId: sid, repoRoot: r.root });
@@ -318,7 +299,7 @@ describe('createSnapshotStore — record round-trip', () => {
   });
 
   it('a duplicate consume is a no-op — the O_EXCL tombstone means the first consumer wins', () => {
-    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS, layout);
     const r = newRepo();
     const sid = newSession();
     store.write(record({ sessionId: sid, repoRoot: r.root }));
@@ -331,7 +312,7 @@ describe('createSnapshotStore — record round-trip', () => {
   });
 
   it('tombstone then consume — the failure path claims the record first', () => {
-    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS, layout);
     const r = newRepo();
     const sid = newSession();
     store.write(record({ sessionId: sid, repoRoot: r.root }));
@@ -341,7 +322,7 @@ describe('createSnapshotStore — record round-trip', () => {
   });
 
   it('a second tombstone is false — O_EXCL single-winner', () => {
-    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS, layout);
     const r = newRepo();
     const sid = newSession();
     store.write(record({ sessionId: sid, repoRoot: r.root }));
@@ -352,7 +333,7 @@ describe('createSnapshotStore — record round-trip', () => {
 
 describe('file permissions and layout', () => {
   it('record files are 0600 and their directories 0700', () => {
-    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS, layout);
     const r = newRepo();
     const sid = newSession();
     store.write(record({ sessionId: sid, repoRoot: r.root }));
@@ -361,12 +342,12 @@ describe('file permissions and layout', () => {
     if (file !== null) {
       expect(statSync(file).mode & 0o777).toBe(0o600);
     }
-    expect(statSync(join(sessionDir(sid), 'snapshots')).mode & 0o777).toBe(0o700);
-    expect(statSync(sessionDir(sid)).mode & 0o777).toBe(0o700);
+    expect(statSync(layout.snapshotsDir(sid)).mode & 0o777).toBe(0o700);
+    expect(statSync(layout.dir(sid)).mode & 0o777).toBe(0o700);
   });
 
   it('index files are 0600 and their directory 0700', () => {
-    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS, layout);
     const r = newRepo();
     const sid = newSession();
     store.write(record({ sessionId: sid, repoRoot: r.root }));
@@ -394,7 +375,7 @@ describe('file permissions and layout', () => {
 describe('versioning — fail closed with a diagnostic', () => {
   it('a record file with an incompatible version is discarded: find returns null and the logger warns', () => {
     const { logger, warns } = captureLogger();
-    const store = createSnapshotStore(logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const store = createSnapshotStore(logger, DEFAULT_SNAPSHOT_BUDGETS, layout);
     const r = newRepo();
     const sid = newSession();
     store.write(record({ sessionId: sid, repoRoot: r.root }));
@@ -408,7 +389,7 @@ describe('versioning — fail closed with a diagnostic', () => {
 
   it('an index entry with an incompatible version is excluded from listRepoRecords and the logger warns', () => {
     const { logger, warns } = captureLogger();
-    const store = createSnapshotStore(logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const store = createSnapshotStore(logger, DEFAULT_SNAPSHOT_BUDGETS, layout);
     const r = newRepo();
     const sid = newSession();
     store.write(record({ sessionId: sid, repoRoot: r.root }));
@@ -450,7 +431,7 @@ describe('versioning — fail closed with a diagnostic', () => {
 
 describe('index entries (listRepoRecords)', () => {
   it('consumption is reflected in the index entry (consumed + consumedAt)', () => {
-    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS, layout);
     const r = newRepo();
     const sid = newSession();
     store.write(record({ sessionId: sid, repoRoot: r.root }));
@@ -461,7 +442,7 @@ describe('index entries (listRepoRecords)', () => {
   });
 
   it('records from two sessions are both visible — the cross-session concurrency surface', () => {
-    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS, layout);
     const r = newRepo();
     const sidA = newSession();
     const sidB = newSession();
@@ -481,7 +462,7 @@ describe('storage cap — refuse without dropping evidence', () => {
   it('write refuses when the repo total would exceed maxStorageBytes, logs a diagnostic, and drops nothing', () => {
     const { logger, warns } = captureLogger();
     const budgets = { ...DEFAULT_SNAPSHOT_BUDGETS, maxStorageBytes: 1024 };
-    const store = createSnapshotStore(logger, budgets);
+    const store = createSnapshotStore(logger, budgets, layout);
     const r = newRepo();
     const sidA = newSession();
     const sidB = newSession();
@@ -519,7 +500,7 @@ describe('v1 leftovers — upgrade reclamation', () => {
    * read them (a just-planted file would be skipped as in-flight).
    */
   function plantV1Record(sid: string, toolUseId: string, repoRoot: string): { recordPath: string } {
-    const dir = join(sessionDir(sid), 'snapshots');
+    const dir = layout.snapshotsDir(sid);
     mkdirSync(dir, { recursive: true });
     const recordPath = join(dir, `${toolUseId}.json`);
     writeFileSync(
@@ -574,7 +555,7 @@ describe('v1 leftovers — upgrade reclamation', () => {
     // sweep succeeds.
     const { logger } = captureLogger();
     const budgets = { ...DEFAULT_SNAPSHOT_BUDGETS, maxStorageBytes: 1024 };
-    const store = createSnapshotStore(logger, budgets);
+    const store = createSnapshotStore(logger, budgets, layout);
     const r = newRepo();
     const v1Sid = newSession();
     const { recordPath } = plantV1Record(v1Sid, 'toolu_01v1leftover', r.root);
@@ -593,7 +574,7 @@ describe('v1 leftovers — upgrade reclamation', () => {
     // records — a repo holding nothing but v1 index entries was never
     // visited. The write path now seeds the sweep with its own target repo,
     // so the entries fall to the orphan pass on the first write.
-    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS, layout);
     const r = newRepo();
     const goneSid = newSession();
     plantV1IndexEntry(r.root, goneSid, 'toolu_01v1orphan');
@@ -607,7 +588,7 @@ describe('v1 leftovers — upgrade reclamation', () => {
     // An unreadable/incompatible record belongs to no agent this code can
     // attribute, so a SubagentStop (agentId given) must not delete the parent
     // session's leftovers — only SessionEnd/Stop reaps them.
-    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS, layout);
     const r = newRepo();
     const sid = newSession();
     const { recordPath } = plantV1Record(sid, 'toolu_01v1session', r.root);
@@ -620,7 +601,7 @@ describe('v1 leftovers — upgrade reclamation', () => {
 
 describe('TTL sweep', () => {
   it('a record past recordTtlMs is removed; a live record survives (createdAt is the TTL clock)', () => {
-    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS, layout);
     const r = newRepo();
     const stale = newSession();
     const live = newSession();
@@ -642,7 +623,7 @@ describe('TTL sweep', () => {
   });
 
   it('an expired tombstone is removed; a fresh tombstone survives', () => {
-    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS, layout);
     const r = newRepo();
     const stale = newSession();
     const live = newSession();
@@ -664,7 +645,7 @@ describe('TTL sweep', () => {
   });
 
   it('an expired tombstoned record is removed once its own record TTL passes', () => {
-    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS, layout);
     const r = newRepo();
     const sid = newSession();
     // TTL-minus-margin relative to real now: expired only relative to the
@@ -684,7 +665,7 @@ describe('TTL sweep', () => {
 
   it('an unfinished activity entry older than unfinishedEntryTtlMs is pruned; a fresh one survives', () => {
     const { logger } = captureLogger();
-    const store = createSnapshotStore(logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const store = createSnapshotStore(logger, DEFAULT_SNAPSHOT_BUDGETS, layout);
     const r = newRepo();
     // A record anchors the repo so the sweep can discover its activity log.
     const anchor = newSession();
@@ -715,7 +696,7 @@ describe('TTL sweep', () => {
     // remove an entry the consult would still read (the consult window is
     // bounded by the far shorter unfinishedEntryTtlMs).
     const { logger } = captureLogger();
-    const store = createSnapshotStore(logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const store = createSnapshotStore(logger, DEFAULT_SNAPSHOT_BUDGETS, layout);
     const r = newRepo();
     // A record anchors the repo so the sweep can discover its activity log.
     const anchor = newSession();
@@ -744,7 +725,7 @@ describe('TTL sweep', () => {
 
   it('an orphaned index entry (record removed, entry left) is swept', () => {
     const { logger } = captureLogger();
-    const store = createSnapshotStore(logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const store = createSnapshotStore(logger, DEFAULT_SNAPSHOT_BUDGETS, layout);
     const r = newRepo();
     const anchor = newSession();
     const orphan = newSession();
@@ -782,7 +763,7 @@ describe('TTL sweep', () => {
   });
 
   it('a fresh record, tombstone, and activity entry all survive a sweep', () => {
-    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS, layout);
     const r = newRepo();
     const sid = newSession();
     store.write(record({ sessionId: sid, repoRoot: r.root, createdAt: Date.now() }));
@@ -803,7 +784,7 @@ describe('TTL sweep', () => {
   });
 
   it('write runs the TTL sweep first — an expired record is cleaned by the next write', () => {
-    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS, layout);
     const r = newRepo();
     const stale = newSession();
     store.write(
@@ -827,7 +808,7 @@ describe('TTL sweep', () => {
 
   it('a record whose repoRoot is a deleted directory does not make write throw', () => {
     const { logger, warns } = captureLogger();
-    const store = createSnapshotStore(logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const store = createSnapshotStore(logger, DEFAULT_SNAPSHOT_BUDGETS, layout);
     const r = newRepo();
     const s = newRepo();
     const sidA = newSession();
@@ -860,7 +841,7 @@ describe('TTL sweep', () => {
 
 describe('sweep-read margin and trash removal (fuse-abort hardening)', () => {
   it('a record written within the sweep-read margin is skipped even when TTL-expired; it is swept once its mtime ages past the margin', () => {
-    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS, layout);
     const r = newRepo();
     const sid = newSession();
     // TTL-expired relative to real now AND to both injected clocks, but the
@@ -885,7 +866,7 @@ describe('sweep-read margin and trash removal (fuse-abort hardening)', () => {
   });
 
   it('a tombstone written within the sweep-read margin is skipped even when expired; it is swept once its mtime ages past the margin', () => {
-    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS, layout);
     const r = newRepo();
     const sid = newSession();
     const ancient = Date.now() - DEFAULT_SNAPSHOT_BUDGETS.recordTtlMs - SWEEP_READ_MARGIN_MS - 1000;
@@ -907,7 +888,7 @@ describe('sweep-read margin and trash removal (fuse-abort hardening)', () => {
     // read-skip is observable: the entry's mtime is inside the margin while
     // already past the TTL.
     const budgets = { ...DEFAULT_SNAPSHOT_BUDGETS, unfinishedEntryTtlMs: 1000 };
-    const store = createSnapshotStore(captureLogger().logger, budgets);
+    const store = createSnapshotStore(captureLogger().logger, budgets, layout);
     const r = newRepo();
     const anchor = newSession();
     store.write(record({ sessionId: anchor, repoRoot: r.root, createdAt: Date.now(), toolUseId: 'toolu_01anchor' }));
@@ -930,7 +911,7 @@ describe('sweep-read margin and trash removal (fuse-abort hardening)', () => {
   });
 
   it('sweep removals rename to a trash name instead of unlinking in place; the trash is emptied once it ages past the trash TTL', () => {
-    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS, layout);
     const r = newRepo();
     const sid = newSession();
     store.write(
@@ -948,7 +929,7 @@ describe('sweep-read margin and trash removal (fuse-abort hardening)', () => {
     expect(store.find(sid, TOOL_USE_ID)).toBeNull();
     // The record path is gone but a trash file remains — not unlinked under
     // any concurrent reader.
-    const dir = join(sessionDir(sid), 'snapshots');
+    const dir = layout.snapshotsDir(sid);
     expect(readdirSync(dir).some((n) => n.startsWith('.') && n.includes('.trash-'))).toBe(true);
     // The store stamps the trash's mtime to the rename instant at trashFile
     // time (a bare rename would keep this file's backdated write mtime); once
@@ -959,7 +940,7 @@ describe('sweep-read margin and trash removal (fuse-abort hardening)', () => {
   });
 
   it('the trash TTL is measured from the rename instant, not the record write: a 24h-old record is trashed with a fresh mtime, then emptied by a later sweep', () => {
-    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS, layout);
     const r = newRepo();
     const sid = newSession();
     // A record whose createdAt AND file mtime are 24h old — the sweep's
@@ -984,7 +965,7 @@ describe('sweep-read margin and trash removal (fuse-abort hardening)', () => {
     const now = Date.now() + SWEEP_READ_MARGIN_MS + 1000;
     expect(store.sweep(now).records).toBe(1);
     expect(store.find(sid, TOOL_USE_ID)).toBeNull();
-    const dir = join(sessionDir(sid), 'snapshots');
+    const dir = layout.snapshotsDir(sid);
     const trashName = readdirSync(dir).find((n) => n.startsWith('.') && n.includes('.trash-'));
     expect(trashName).toBeDefined();
     // The trash's mtime is the rename instant (real now from inside the
@@ -1004,14 +985,14 @@ describe('sweep-read margin and trash removal (fuse-abort hardening)', () => {
   });
 
   it('removeSession renames removals to trash (never unlinks in place); a later sweep empties it', () => {
-    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const store = createSnapshotStore(captureLogger().logger, DEFAULT_SNAPSHOT_BUDGETS, layout);
     const r = newRepo();
     const sid = newSession();
     store.write(record({ sessionId: sid, repoRoot: r.root }));
     appendActivityEntry(r.root, activityEntry(sid, TOOL_USE_ID));
     store.removeSession(sid);
     expect(store.find(sid, TOOL_USE_ID)).toBeNull();
-    const dir = join(sessionDir(sid), 'snapshots');
+    const dir = layout.snapshotsDir(sid);
     expect(readdirSync(dir).some((n) => n.startsWith('.') && n.includes('.trash-'))).toBe(true);
     // The session-dir trash is emptied by a later sweep; the activity-dir
     // trash waits for the sweep to re-discover the repo from a record (the
@@ -1025,7 +1006,7 @@ describe('sweep-read margin and trash removal (fuse-abort hardening)', () => {
 describe('removeSession', () => {
   it("removes the session's records, tombstones, activity entries, and index entries", () => {
     const { logger } = captureLogger();
-    const store = createSnapshotStore(logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const store = createSnapshotStore(logger, DEFAULT_SNAPSHOT_BUDGETS, layout);
     const r = newRepo();
     const sid = newSession();
     const other = newSession();
@@ -1041,7 +1022,7 @@ describe('removeSession', () => {
 
   it("with agentId, only that agent's records are removed", () => {
     const { logger } = captureLogger();
-    const store = createSnapshotStore(logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const store = createSnapshotStore(logger, DEFAULT_SNAPSHOT_BUDGETS, layout);
     const r = newRepo();
     const sid = newSession();
     store.write(record({ sessionId: sid, repoRoot: r.root, agentId: 'agent-a', toolUseId: 'toolu_01aaa' }));

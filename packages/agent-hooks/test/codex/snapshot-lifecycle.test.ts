@@ -36,9 +36,9 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import activityLogHook from '../../src/codex/activity-log.js';
 import { createHandler as createPostToolUseHandler, SNAPSHOT_POST_MATCHER } from '../../src/codex/post-tool-use.js';
 import { createHandler as createSnapshotPreHook, SNAPSHOT_PRE_MATCHER } from '../../src/codex/snapshot.js';
-import stopHook from '../../src/codex/stop.js';
-import subagentStopHook from '../../src/codex/subagent-stop.js';
-import { queueRoot, sanitizeSessionId, sessionDir } from '../../src/common/agent-hooks-common.js';
+import { createHandler as createStopHandler } from '../../src/codex/stop.js';
+import { createHandler as createSubagentStopHandler } from '../../src/codex/subagent-stop.js';
+import { queueRoot, sanitizeSessionId } from '../../src/common/agent-hooks-common.js';
 import {
   type AmbiguityBaseline,
   applyAmbiguityRules,
@@ -73,6 +73,24 @@ import {
   type TestRepo,
   writeFile
 } from '../claude/snapshot-lifecycle-helpers.js';
+import { makeTempLayout } from '../session-layout-helpers.js';
+
+// ---------------------------------------------------------------------------
+// Session layout
+// ---------------------------------------------------------------------------
+
+/**
+ * This file's own session base, on /tmp. Every handler and store below is
+ * constructed over it, so nothing here reads or reaps the developer's live
+ * `~/.cache/git-span/session` state — including the cleanup hooks, whose whole
+ * job is removing a session's records. Handlers are constructed through
+ * `createHandler(layout)` rather than imported as default exports for exactly
+ * that reason: a default export binds the production layout at module load,
+ * and its assertions would pass while it swept real state.
+ */
+const temp = makeTempLayout();
+const layout = temp.layout;
+afterAll(() => temp.cleanup());
 
 // ---------------------------------------------------------------------------
 // Git-span availability check
@@ -209,7 +227,7 @@ describe('codex harness snapshot lifecycle', () => {
   // rationale). Only this file's ids: the claude file runs in a parallel
   // fork over the same shared session base, and a union purge would delete
   // its live records mid-test.
-  beforeAll(() => purgeSessions(CODEX_SESSION_IDS));
+  beforeAll(() => purgeSessions(layout, CODEX_SESSION_IDS));
   // The records/tombstones this run writes must not outlive it either: the
   // core suite's write-time sweep walks every record in the shared session
   // base and warns per repo whose temp dir is already gone, so a fixture
@@ -222,8 +240,8 @@ describe('codex harness snapshot lifecycle', () => {
   // files, and a close-after-unlink crashes Node on this fs (see the
   // helpers' rationale). The renamed dirs sit in a per-worker trash root
   // outside the base and are emptied once, at the end of the file.
-  afterEach(() => purgeSessions(CODEX_SESSION_IDS));
-  afterAll(flushPurgedSessions);
+  afterEach(() => purgeSessions(layout, CODEX_SESSION_IDS));
+  afterAll(() => flushPurgedSessions(layout));
 
   describe('A. PreToolUse — the write-only pre walk', () => {
     it('writes a pre-walk record carrying agent_id when present, correlated by (session_id, tool_use_id)', async () => {
@@ -232,7 +250,7 @@ describe('codex harness snapshot lifecycle', () => {
         const tuId = 'tu-codex-pre-1';
         writeFile(repo.root, 'src/app.ts', P10);
         gitAddCommit(repo.root, 'add app.ts');
-        const pre = createSnapshotPreHook();
+        const pre = createSnapshotPreHook(layout);
         const logger = new Logger();
         const input = preInput({
           session_id: sessionId,
@@ -244,7 +262,7 @@ describe('codex harness snapshot lifecycle', () => {
         });
         const result = await pre(input as never, { logger } as never);
         expect(result).toBeUndefined(); // the pre hook is write-only
-        const record = createSnapshotStore(logger).find(sessionId, tuId);
+        const record = createSnapshotStore(logger, undefined, layout).find(sessionId, tuId);
         expect(record).not.toBeNull();
         expect(record).not.toBe('tombstoned');
         if (record === null || record === 'tombstoned') throw new Error('record missing');
@@ -269,7 +287,7 @@ describe('codex harness snapshot lifecycle', () => {
         const tuId = 'tu-codex-pre-2';
         writeFile(repo.root, 'src/app.ts', P10);
         gitAddCommit(repo.root, 'add app.ts');
-        const pre = createSnapshotPreHook();
+        const pre = createSnapshotPreHook(layout);
         const logger = new Logger();
         const input = preInput({
           session_id: sessionId,
@@ -278,12 +296,12 @@ describe('codex harness snapshot lifecycle', () => {
           tool_input: { command: 'git status' }
         });
         expect(await pre(input as never, { logger } as never)).toBeUndefined();
-        expect(createSnapshotStore(logger).find(sessionId, tuId)).toBeNull();
+        expect(createSnapshotStore(logger, undefined, layout).find(sessionId, tuId)).toBeNull();
       });
     });
 
     it('fails open with no record when session_id or tool_use_id is absent', async () => {
-      const pre = createSnapshotPreHook();
+      const pre = createSnapshotPreHook(layout);
       const logger = new Logger();
       const base = preInput({ cwd: '/tmp', tool_input: { command: 'npx prettier --write /tmp/x.ts' } });
       const noSession = await pre({ ...base, session_id: undefined } as never, { logger } as never);
@@ -298,7 +316,7 @@ describe('codex harness snapshot lifecycle', () => {
         const tuId = 'tu-codex-pre-3';
         writeFile(repo.root, 'src/app.ts', P10);
         gitAddCommit(repo.root, 'add app.ts');
-        const pre = createSnapshotPreHook();
+        const pre = createSnapshotPreHook(layout);
         const logger = new Logger();
         // Codex ≤0.130 delivers exec_command as tool_input.arguments — a JSON
         // string of { cmd, workdir }.
@@ -310,7 +328,7 @@ describe('codex harness snapshot lifecycle', () => {
           tool_input: { arguments: JSON.stringify({ cmd: 'npx prettier --write src/app.ts', workdir: repo.root }) }
         });
         expect(await pre(input as never, { logger } as never)).toBeUndefined();
-        const record = createSnapshotStore(logger).find(sessionId, tuId);
+        const record = createSnapshotStore(logger, undefined, layout).find(sessionId, tuId);
         expect(record).not.toBeNull();
         expect(record).not.toBe('tombstoned');
         if (record === null || record === 'tombstoned') throw new Error('record missing');
@@ -327,7 +345,7 @@ describe('codex harness snapshot lifecycle', () => {
         writeFile(repo.root, 'src/app.ts', P10);
         gitAddCommit(repo.root, 'add app.ts');
         const logger = new Logger();
-        const pre = createSnapshotPreHook();
+        const pre = createSnapshotPreHook(layout);
         const input = preInput({
           session_id: sessionId,
           cwd: repo.root,
@@ -350,7 +368,7 @@ describe('codex harness snapshot lifecycle', () => {
             driftRow({ name: SPAN_B, path: 'src/app.ts', start: 8, end: 10 })
           ]
         });
-        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore(), layout);
         const raw = await handler(
           postInput({
             session_id: sessionId,
@@ -366,7 +384,7 @@ describe('codex harness snapshot lifecycle', () => {
         // would have surfaced both.
         expect(block).toContain('## billing/checkout-request-flow');
         expect(block).not.toContain('## billing/payment-created-flow');
-        expect(createSnapshotStore(logger).find(sessionId, tuId)).toBe('tombstoned');
+        expect(createSnapshotStore(logger, undefined, layout).find(sessionId, tuId)).toBe('tombstoned');
       });
     });
 
@@ -377,7 +395,7 @@ describe('codex harness snapshot lifecycle', () => {
         const logger = new Logger();
         writeFile(repo.root, 'src/app.ts', P10);
         gitAddCommit(repo.root, 'add app.ts');
-        await createSnapshotPreHook()(
+        await createSnapshotPreHook(layout)(
           preInput({
             session_id: sessionId,
             cwd: repo.root,
@@ -391,7 +409,7 @@ describe('codex harness snapshot lifecycle', () => {
           rows: () => [porcelainRow({ path: 'src/app.ts', start: 1, end: 10 })],
           drift: () => [driftRow({ path: 'src/app.ts', start: 1, end: 10 })]
         });
-        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore(), layout);
         const input = postInput({
           session_id: sessionId,
           cwd: repo.root,
@@ -415,7 +433,7 @@ describe('codex harness snapshot lifecycle', () => {
         gitAddCommit(repo.root, 'add files');
         writeFile(repo.root, 'src/app.ts', P10_DIRTY);
         const logger = new Logger();
-        const pre = createSnapshotPreHook();
+        const pre = createSnapshotPreHook(layout);
         const input = preInput({
           session_id: sessionId,
           cwd: repo.root,
@@ -426,7 +444,7 @@ describe('codex harness snapshot lifecycle', () => {
         const { executors, calls } = makeExecutors({
           rows: () => [porcelainRow({ path: 'src/app.ts', start: 1, end: 10 })]
         });
-        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore(), layout);
         const raw = await handler(
           postInput({
             session_id: sessionId,
@@ -453,7 +471,7 @@ describe('codex harness snapshot lifecycle', () => {
           gitAddCommit(repo.root, 'add app.ts');
           addSpan(repo.root, SPAN_A, 'src/app.ts#L1-L5');
           const logger = new Logger();
-          const pre = createSnapshotPreHook();
+          const pre = createSnapshotPreHook(layout);
           const input = preInput({
             session_id: sessionId,
             cwd: repo.root,
@@ -462,7 +480,7 @@ describe('codex harness snapshot lifecycle', () => {
           });
           await pre(input as never, { logger } as never);
           rmSync(join(repo.root, 'src/app.ts'));
-          const handler = createPostToolUseHandler(); // default executors — the real CLI
+          const handler = createPostToolUseHandler(undefined, undefined, layout); // default executors — the real CLI
           const raw = await handler(
             postInput({
               session_id: sessionId,
@@ -489,7 +507,7 @@ describe('codex harness snapshot lifecycle', () => {
         gitAddCommit(repo.root, 'add app.ts');
         addSpan(repo.root, SPAN_A, 'src/app.ts#L1-L5');
         const logger = new Logger();
-        const pre = createSnapshotPreHook();
+        const pre = createSnapshotPreHook(layout);
         const input = preInput({
           session_id: sessionId,
           cwd: repo.root,
@@ -498,7 +516,7 @@ describe('codex harness snapshot lifecycle', () => {
         });
         await pre(input as never, { logger } as never);
         renameSync(join(repo.root, 'src/app.ts'), join(repo.root, 'src/app2.ts'));
-        const handler = createPostToolUseHandler();
+        const handler = createPostToolUseHandler(undefined, undefined, layout);
         const raw = await handler(
           postInput({
             session_id: sessionId,
@@ -546,7 +564,7 @@ describe('codex harness snapshot lifecycle', () => {
         const sessionId = 'sess-codex-failed';
         const tuId = 'tu-codex-failed-1';
         const logger = new Logger();
-        const store = createSnapshotStore(logger);
+        const store = createSnapshotStore(logger, undefined, layout);
         writeFile(repo.root, 'src/app.ts', P10);
         store.write(makeRecord({ sessionId, toolUseId: tuId, repoRoot: repo.root, createdAt: now }));
         const found = store.find(sessionId, tuId);
@@ -574,7 +592,7 @@ describe('codex harness snapshot lifecycle', () => {
         const now = Date.now();
         const sessionId = 'sess-codex-stop';
         const logger = new Logger();
-        const store = createSnapshotStore(logger);
+        const store = createSnapshotStore(logger, undefined, layout);
         store.write(makeRecord({ sessionId, toolUseId: 'tu-codex-failed-1', repoRoot: repo.root, createdAt: now }));
         expect(store.tombstone(sessionId, 'tu-codex-failed-1', now)).toBe(true);
         appendActivityEntry(repo.root, {
@@ -585,7 +603,7 @@ describe('codex harness snapshot lifecycle', () => {
           finishedAt: null,
           paths: [{ path: 'src/app.ts', preHash: 'pre-h', postHash: null }]
         });
-        const raw = await stopHook(stopInput(sessionId) as never, { logger } as never);
+        const raw = await createStopHandler(layout)(stopInput(sessionId) as never, { logger } as never);
         expect(raw).toBeUndefined();
         // find returns null, not 'tombstoned' — the tombstone went with the record.
         expect(store.find(sessionId, 'tu-codex-failed-1')).toBeNull();
@@ -600,7 +618,7 @@ describe('codex harness snapshot lifecycle', () => {
       await withRepo(async (repo) => {
         const now = Date.now();
         const logger = new Logger();
-        const store = createSnapshotStore(logger);
+        const store = createSnapshotStore(logger, undefined, layout);
         store.write(
           makeRecord({
             sessionId: 'sess-codex-ttl',
@@ -613,7 +631,7 @@ describe('codex harness snapshot lifecycle', () => {
         // margin skips files written within the last 5s — age the file itself
         // past the margin so the TTL pass reads it (utimesSync takes seconds).
         const recFile = join(
-          sessionDir('sess-codex-ttl'),
+          layout.dir('sess-codex-ttl'),
           'snapshots',
           `${sanitizeSessionId('tu-codex-failed-1')}.json`
         );
@@ -630,7 +648,7 @@ describe('codex harness snapshot lifecycle', () => {
         const now = Date.now();
         const sessionId = 'sess-codex-subagent';
         const logger = new Logger();
-        const store = createSnapshotStore(logger);
+        const store = createSnapshotStore(logger, undefined, layout);
         store.write(
           makeRecord({ sessionId, toolUseId: 'tu-sub-1', agentId: 'sub-1', repoRoot: repo.root, createdAt: now })
         );
@@ -672,7 +690,10 @@ describe('codex harness snapshot lifecycle', () => {
           finishedAt: null,
           paths: [{ path: 'src/app.ts', preHash: sha256Hex(P10), postHash: null }]
         });
-        const raw = await subagentStopHook(subagentStopInput(sessionId, 'sub-1') as never, { logger } as never);
+        const raw = await createSubagentStopHandler(layout)(
+          subagentStopInput(sessionId, 'sub-1') as never,
+          { logger } as never
+        );
         expect(raw).toBeUndefined();
         expect(store.find(sessionId, 'tu-sub-1')).toBeNull();
         expect(store.find(sessionId, 'tu-sub-2')).toBeNull();
@@ -745,7 +766,7 @@ describe('codex harness snapshot lifecycle', () => {
         const logger = new Logger();
         writeFile(repo.root, 'src/app.ts', P10);
         gitAddCommit(repo.root, 'add app.ts');
-        await createSnapshotPreHook()(
+        await createSnapshotPreHook(layout)(
           preInput({
             session_id: sessionId,
             cwd: repo.root,
@@ -760,7 +781,7 @@ describe('codex harness snapshot lifecycle', () => {
             filePath.endsWith('/src/app.ts') ? [porcelainRow({ path: 'src/app.ts', start: 1, end: 10 })] : [],
           drift: () => [driftRow({ path: 'src/app.ts', start: 1, end: 10 })]
         });
-        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore(), layout);
         const input = postInput({
           session_id: sessionId,
           cwd: repo.root,
@@ -800,7 +821,7 @@ describe('codex harness snapshot lifecycle', () => {
         writeFile(repo.root, 'src/app.ts', v1);
         gitAddCommit(repo.root, 'add app.ts');
         const logger = new Logger();
-        await createSnapshotPreHook()(
+        await createSnapshotPreHook(layout)(
           preInput({
             session_id: sessionId,
             cwd: repo.root,
@@ -809,7 +830,7 @@ describe('codex harness snapshot lifecycle', () => {
           }) as never,
           { logger } as never
         );
-        const found = createSnapshotStore(logger).find(sessionId, tuId);
+        const found = createSnapshotStore(logger, undefined, layout).find(sessionId, tuId);
         if (found === null || found === 'tombstoned') throw new Error('pre capture failed');
         writeFile(repo.root, 'src/app.ts', v2);
         appendActivityEntry(repo.root, entry(found.createdAt));
@@ -822,7 +843,7 @@ describe('codex harness snapshot lifecycle', () => {
             filePath.endsWith('/src/app.ts') ? [porcelainRow({ path: 'src/app.ts', start: 1, end: 10 })] : [],
           drift: () => [driftRow({ path: 'src/app.ts', start: 1, end: 10 })]
         });
-        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore(), layout);
         const { logger: capLogger, notes } = noteCapturingLogger();
         const input = postInput({
           session_id: sessionId,
@@ -921,7 +942,7 @@ describe('codex harness snapshot lifecycle', () => {
     // These fixtures use their own session ids; purge them after each test
     // like the rest of the file so no record outlives the run.
     const WAVE_C_SESSIONS = ['sess-codex-shell-spelled', 'sess-codex-binary-excluded'];
-    afterEach(() => purgeSessions(WAVE_C_SESSIONS));
+    afterEach(() => purgeSessions(layout, WAVE_C_SESSIONS));
 
     it('every tool name the pre matcher registers is consumable post-side — pre ⊆ post', () => {
       const pre = SNAPSHOT_PRE_MATCHER.split('|');
@@ -938,7 +959,7 @@ describe('codex harness snapshot lifecycle', () => {
         writeFile(repo.root, 'src/app.ts', P10);
         gitAddCommit(repo.root, 'add app.ts');
         const logger = new Logger();
-        const pre = createSnapshotPreHook();
+        const pre = createSnapshotPreHook(layout);
         await pre(
           preInput({
             session_id: sessionId,
@@ -949,7 +970,7 @@ describe('codex harness snapshot lifecycle', () => {
           }) as never,
           { logger } as never
         );
-        const record = createSnapshotStore(logger).find(sessionId, tuId);
+        const record = createSnapshotStore(logger, undefined, layout).find(sessionId, tuId);
         expect(record).not.toBeNull();
         expect(record).not.toBe('tombstoned');
         if (record === null || record === 'tombstoned') throw new Error('record missing');
@@ -963,7 +984,7 @@ describe('codex harness snapshot lifecycle', () => {
               : [],
           drift: () => [driftRow({ name: SPAN_A, path: 'src/app.ts', start: 3, end: 5 })]
         });
-        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore(), layout);
         const raw = await handler(
           postInput({
             session_id: sessionId,
@@ -975,7 +996,7 @@ describe('codex harness snapshot lifecycle', () => {
           { logger } as never
         );
         expect(toResult(raw)).toContain('## billing/checkout-request-flow');
-        expect(createSnapshotStore(logger).find(sessionId, tuId)).toBe('tombstoned');
+        expect(createSnapshotStore(logger, undefined, layout).find(sessionId, tuId)).toBe('tombstoned');
       });
     });
 
@@ -1031,7 +1052,7 @@ describe('codex harness snapshot lifecycle', () => {
         writeFile(repo.root, 'src/app.bin', '\x00\x01\x02binary');
         gitAddCommit(repo.root, 'add files');
         const logger = new Logger();
-        const pre = createSnapshotPreHook();
+        const pre = createSnapshotPreHook(layout);
         await pre(
           preInput({
             session_id: sessionId,
@@ -1041,7 +1062,7 @@ describe('codex harness snapshot lifecycle', () => {
           }) as never,
           { logger } as never
         );
-        const record = createSnapshotStore(logger).find(sessionId, tuId);
+        const record = createSnapshotStore(logger, undefined, layout).find(sessionId, tuId);
         expect(record).not.toBeNull();
         expect(record).not.toBe('tombstoned');
         if (record === null || record === 'tombstoned') throw new Error('record missing');
@@ -1061,7 +1082,7 @@ describe('codex harness snapshot lifecycle', () => {
         writeFile(repo.root, 'src/app.ts', P10);
         gitAddCommit(repo.root, 'add app.ts');
         const { logger, notes } = noteCapturingLogger();
-        const pre = createSnapshotPreHook();
+        const pre = createSnapshotPreHook(layout);
         // Both calls captured src/app.ts at the same pre state; the orphan's
         // PostToolUse never arrives (Codex has no failure event either), so
         // its write window has not provably ended and mine must fail closed.
@@ -1087,7 +1108,7 @@ describe('codex harness snapshot lifecycle', () => {
               : [],
           drift: () => [driftRow({ name: SPAN_A, path: 'src/app.ts', start: 1, end: 10 })]
         });
-        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore(), layout);
         const input = postInput({
           session_id: sessionId,
           cwd: repo.root,
@@ -1112,15 +1133,15 @@ describe('codex harness snapshot lifecycle', () => {
         expect(calls.fix).toBe(0);
         // The orphan is removed (session teardown); a fresh capture of the
         // same call now attributes cleanly.
-        purgeSessions([orphanSession, sessionId]);
-        flushPurgedSessions();
+        purgeSessions(layout, [orphanSession, sessionId]);
+        flushPurgedSessions(layout);
         writeFile(repo.root, 'src/app.ts', P10);
         await pre(myInput as never, { logger } as never);
         writeFile(repo.root, 'src/app.ts', P10_FORMATTED);
         const raw2 = await handler(input as never, { logger } as never);
         const block2 = toResult(raw2);
         expect(block2).toContain('## billing/checkout-request-flow');
-        expect(createSnapshotStore(logger).find(sessionId, tuId)).toBe('tombstoned');
+        expect(createSnapshotStore(logger, undefined, layout).find(sessionId, tuId)).toBe('tombstoned');
       });
     });
 
@@ -1132,7 +1153,7 @@ describe('codex harness snapshot lifecycle', () => {
         gitAddCommit(repo.root, 'add app.ts');
         const logger = new Logger();
         const { executors } = makeExecutors();
-        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore(), layout);
         const input = postInput({
           session_id: sessionId,
           cwd: repo.root,
@@ -1175,7 +1196,7 @@ describe('codex harness snapshot lifecycle', () => {
         const sessionId = 'sess-codex-repoless';
         const tuId = 'tu-codex-repoless-1';
         const { logger, notes } = noteCapturingLogger();
-        const handler = createPostToolUseHandler(makeExecutors().executors, () => createMemoryMemoStore());
+        const handler = createPostToolUseHandler(makeExecutors().executors, () => createMemoryMemoStore(), layout);
         const input = postInput({
           session_id: sessionId,
           cwd: repolessCwd,
@@ -1245,7 +1266,7 @@ describe('codex harness snapshot lifecycle', () => {
           writeFile(secondary.root, 'src/app.ts', P10);
           gitAddCommit(secondary.root, 'add app.ts');
           const logger = new Logger();
-          const pre = createSnapshotPreHook();
+          const pre = createSnapshotPreHook(layout);
           const preInputArgs = {
             session_id: sessionId,
             cwd: primary.root,
@@ -1257,7 +1278,7 @@ describe('codex harness snapshot lifecycle', () => {
           };
           await pre(preInput(preInputArgs) as never, { logger } as never);
           // The record is anchored at the workdir repo, not the hook cwd.
-          const record = createSnapshotStore(logger).find(sessionId, tuId);
+          const record = createSnapshotStore(logger, undefined, layout).find(sessionId, tuId);
           expect(record).not.toBeNull();
           expect(record).not.toBe('tombstoned');
           if (record === null || record === 'tombstoned') throw new Error('record missing');
@@ -1273,12 +1294,12 @@ describe('codex harness snapshot lifecycle', () => {
                 : [],
             drift: () => [driftRow({ name: SPAN_A, path: 'src/app.ts', start: 3, end: 5 })]
           });
-          const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+          const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore(), layout);
           const raw = await handler(postInput(preInputArgs) as never, { logger } as never);
           // The comparison found the change and attributed it — the touch ran
           // with the workdir repo's file and produced the span block.
           expect(toResult(raw)).toContain('## billing/checkout-request-flow');
-          expect(createSnapshotStore(logger).find(sessionId, tuId)).toBe('tombstoned');
+          expect(createSnapshotStore(logger, undefined, layout).find(sessionId, tuId)).toBe('tombstoned');
         } finally {
           secondary.cleanup();
         }
@@ -1294,9 +1315,9 @@ describe('codex harness snapshot lifecycle — wave-E coverage-gap family', () =
   // forever otherwise, tripping the core store suite's no-warns assertions
   // on a later run. Same purge convention as the first block, scoped to the
   // same CODEX_SESSION_IDS list (a superset covers this block's ids too).
-  beforeAll(() => purgeSessions(CODEX_SESSION_IDS));
-  afterEach(() => purgeSessions(CODEX_SESSION_IDS));
-  afterAll(flushPurgedSessions);
+  beforeAll(() => purgeSessions(layout, CODEX_SESSION_IDS));
+  afterEach(() => purgeSessions(layout, CODEX_SESSION_IDS));
+  afterAll(() => flushPurgedSessions(layout));
 
   it('a sibling that hits the touched-files cap persists its cut gap — the consumed-after consult fails closed, never clean', async () => {
     // The sibling's compare cut a changed path at the touched-files cap, so
@@ -1318,7 +1339,7 @@ describe('codex harness snapshot lifecycle — wave-E coverage-gap family', () =
         writeFile(repo.root, 'src/b.ts', P10);
         gitAddCommit(repo.root, 'add sources');
         const { logger, notes } = noteCapturingLogger();
-        const pre = createSnapshotPreHook();
+        const pre = createSnapshotPreHook(layout);
         // My capture first: my baseline predates the sibling's window.
         const myInput = preInput({ session_id: sessionId, cwd: repo.root, tool_use_id: myTu, tool_input: { command } });
         await pre(myInput as never, { logger });
@@ -1333,15 +1354,16 @@ describe('codex harness snapshot lifecycle — wave-E coverage-gap family', () =
         await pre(siblingInput as never, { logger });
         writeFile(repo.root, 'src/a.ts', `${P10}y`);
         writeFile(repo.root, 'src/b.ts', `${P10}z`);
-        await createPostToolUseHandler(makeExecutors().executors, () => createMemoryMemoStore())(
-          siblingInput as never,
-          {
-            logger
-          }
-        );
+        await createPostToolUseHandler(
+          makeExecutors().executors,
+          () => createMemoryMemoStore(),
+          layout
+        )(siblingInput as never, {
+          logger
+        });
         // The cut gap is persisted onto the consumed record — the exact
         // evidence a later consult needs.
-        const persistedPath = join(sessionDir(sessionId), 'snapshots', `${sanitizeSessionId(siblingTu)}.json`);
+        const persistedPath = join(layout.dir(sessionId), 'snapshots', `${sanitizeSessionId(siblingTu)}.json`);
         const persisted = JSON.parse(readFileSync(persistedPath, 'utf8')) as SnapshotRecord;
         expect(persisted.consumed).toBe(true);
         expect(persisted.gaps.some((g) => g.includes('touched-files cap'))).toBe(true);
@@ -1351,7 +1373,7 @@ describe('codex harness snapshot lifecycle — wave-E coverage-gap family', () =
         process.env.GIT_SPAN_SNAPSHOT_MAX_TOUCHED_FILES = '100';
         writeFile(repo.root, 'src/b.ts', `${P10}z\nmy edit`);
         const { executors, calls } = makeExecutors();
-        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+        const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore(), layout);
         const raw = await handler(myInput as never, { logger });
         const block = toResult(raw);
         // a.ts: the sibling changed it in a window overlapping mine — the
@@ -1386,7 +1408,7 @@ describe('codex harness snapshot lifecycle — wave-E coverage-gap family', () =
       writeFile(repo.root, 'assets/logo.bin', 'PNG\x00\x01\x02');
       gitAddCommit(repo.root, 'add sources');
       const logger = new Logger();
-      const pre = createSnapshotPreHook();
+      const pre = createSnapshotPreHook(layout);
       // My capture first; the sibling's window comes after.
       const myInput = preInput({ session_id: sessionId, cwd: repo.root, tool_use_id: myTu, tool_input: { command } });
       await pre(myInput as never, { logger });
@@ -1398,10 +1420,14 @@ describe('codex harness snapshot lifecycle — wave-E coverage-gap family', () =
         tool_input: { command }
       });
       await pre(siblingInput as never, { logger });
-      await createPostToolUseHandler(makeExecutors().executors, () => createMemoryMemoStore())(siblingInput as never, {
+      await createPostToolUseHandler(
+        makeExecutors().executors,
+        () => createMemoryMemoStore(),
+        layout
+      )(siblingInput as never, {
         logger
       });
-      const persistedPath = join(sessionDir(sessionId), 'snapshots', `${sanitizeSessionId(siblingTu)}.json`);
+      const persistedPath = join(layout.dir(sessionId), 'snapshots', `${sanitizeSessionId(siblingTu)}.json`);
       const persisted = JSON.parse(readFileSync(persistedPath, 'utf8')) as SnapshotRecord;
       expect(persisted.gaps).toEqual([]);
       expect(recordHasPathCoverageGap(persisted)).toBe(false);
@@ -1412,7 +1438,7 @@ describe('codex harness snapshot lifecycle — wave-E coverage-gap family', () =
       writeFile(repo.root, 'src/app.ts', P10.replace('export const v1 = 1;', 'export const v1 = 1; // touched'));
       writeFile(repo.root, 'src/new.ts', 'export const fresh = 1;\n');
       const { executors, calls } = makeExecutors();
-      const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore());
+      const handler = createPostToolUseHandler(executors, () => createMemoryMemoStore(), layout);
       const raw = await handler(myInput as never, { logger });
       const block = toResult(raw);
       expect(block).toContain('## billing/checkout-request-flow');
@@ -1454,7 +1480,7 @@ describe('codex harness snapshot lifecycle — wave-E coverage-gap family', () =
         for (let i = 0; i < 3; i += 1) writeFile(repo.root, i === 0 ? 'src/app.ts' : `src/gen${i}.ts`, payload);
         gitAddCommit(repo.root, 'add generated sources');
         const logger = new Logger();
-        const pre = createSnapshotPreHook();
+        const pre = createSnapshotPreHook(layout);
         const input = preInput({
           session_id: sessionId,
           cwd: repo.root,
@@ -1512,7 +1538,7 @@ describe('codex harness snapshot lifecycle — wave-E coverage-gap family', () =
         // an effectively infinite wall — every cost the real wall competes
         // with, measured in place.
         process.env.GIT_SPAN_SNAPSHOT_POST_SIDE_WALL_SECONDS = '30';
-        const timedHandler = createPostToolUseHandler(makeExecutors().executors, () => createMemoryMemoStore());
+        const timedHandler = createPostToolUseHandler(makeExecutors().executors, () => createMemoryMemoStore(), layout);
         const totalStart = process.hrtime.bigint();
         const fullRaw = await timedHandler(input as never, { logger });
         const totalMs = Number(process.hrtime.bigint() - totalStart) / 1_000_000;
@@ -1522,8 +1548,8 @@ describe('codex harness snapshot lifecycle — wave-E coverage-gap family', () =
         // otherwise add hash-derivation work the timing run did not pay),
         // restore the committed state, capture, modify again.
         const arm = async (): Promise<void> => {
-          purgeSessions([sessionId]);
-          flushPurgedSessions();
+          purgeSessions(layout, [sessionId]);
+          flushPurgedSessions(layout);
           writeFile(repo.root, 'src/app.ts', payload);
           for (let i = 1; i < 3; i += 1) writeFile(repo.root, `src/gen${i}.ts`, payload);
           await pre(input as never, { logger });
@@ -1541,7 +1567,7 @@ describe('codex harness snapshot lifecycle — wave-E coverage-gap family', () =
         for (let attempt = 0; attempt < 5; attempt += 1) {
           await arm();
           process.env.GIT_SPAN_SNAPSHOT_POST_SIDE_WALL_SECONDS = String(Math.max(wallMs, 1) / 1000);
-          const handler = createPostToolUseHandler(makeExecutors().executors, () => createMemoryMemoStore());
+          const handler = createPostToolUseHandler(makeExecutors().executors, () => createMemoryMemoStore(), layout);
           block = toResult(await handler(input as never, { logger }));
           if (block?.includes('post-side wall budget was exhausted partway')) break;
           if (block?.includes('## billing/checkout-request-flow')) {

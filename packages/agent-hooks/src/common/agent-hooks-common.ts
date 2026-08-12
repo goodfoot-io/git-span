@@ -340,19 +340,140 @@ export function sanitizeSessionId(sessionId: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Per-session base directory
+// Per-session directory layout
 // ---------------------------------------------------------------------------
 
-// Base dir shared by all per-session state: currently just the touch-hook
-// session memo (span-surface.ts's MemoStore). Each session gets one
-// subdirectory keyed by its sanitized id, so every writer/reader for a given
-// session agrees on its location.
-export const SESSION_BASE_DIR = nodePath.join(os.homedir(), '.cache', 'git-span', 'session');
+/** The `snapshots/` subdirectory of a session dir, holding the store's state. */
+const SNAPSHOTS_DIR = 'snapshots';
 
-/** The per-session state directory for a given session id. */
-export function sessionDir(sessionId: string): string {
-  return nodePath.join(SESSION_BASE_DIR, sanitizeSessionId(sessionId));
+/** Suffix marking a consumed call's tombstone beside its record file. */
+const TOMBSTONE_SUFFIX = '.tombstone.json';
+
+/** Suffix of a call's private GIT_OBJECT_DIRECTORY. */
+const OBJECT_DIR_SUFFIX = '.objects';
+
+/** Suffix of a call's private temp GIT_INDEX_FILE. */
+const TEMP_INDEX_SUFFIX = '.index';
+
+/** Suffix of a record file. Note `.tombstone.json` ends with it too. */
+const RECORD_SUFFIX = '.json';
+
+/** The four artifacts one captured call owns, all named off a shared stem. */
+export interface SessionCallFiles {
+  record: string;
+  tombstone: string;
+  objectDir: string;
+  tempIndexFile: string;
 }
+
+/**
+ * Every session-scoped path, derived from one base directory.
+ *
+ * The base is a value the caller supplies rather than a module constant, so a
+ * test can point a hook at a scratch directory the same way production points
+ * it at `~/.cache/git-span/session` — see {@link DEFAULT_SESSION_LAYOUT}. The
+ * layout is the single owner of the on-disk naming vocabulary: nothing outside
+ * it may concatenate a session path or a file suffix, or the two would drift
+ * apart.
+ */
+export interface SessionLayout {
+  /** Base dir holding one subdirectory per session, keyed by sanitized id. */
+  readonly base: string;
+  /**
+   * Where pruned session dirs wait out their TTL — a *sibling* of the base on
+   * the same filesystem, deliberately outside it so no sweep or session
+   * enumeration ever reads trashed state.
+   */
+  readonly trashDir: string;
+  /** The per-session state directory for a given session id. */
+  dir(sessionId: string): string;
+  /** The session's snapshot-store directory. */
+  snapshotsDir(sessionId: string): string;
+  /** The record file for one captured call. */
+  recordFile(sessionId: string, toolUseId: string): string;
+  /**
+   * One call's private GIT_OBJECT_DIRECTORY, shared by the call's pre and post
+   * write-trees (the post side's unchanged blobs are already local) and read
+   * by later siblings' on-demand hash derivations. Lives next to the record
+   * file so the sweep and session cleanup remove the pair together.
+   */
+  objectDir(sessionId: string, toolUseId: string): string;
+  /** One call's private temp GIT_INDEX_FILE, primed from the real index per capture. */
+  tempIndexFile(sessionId: string, toolUseId: string): string;
+  /** The consumption tombstone beside a call's record. */
+  tombstoneFile(sessionId: string, toolUseId: string): string;
+  /** The touch-hook session memo (span-surface.ts's MemoStore). */
+  memoFile(sessionId: string): string;
+  /** The once-per-session marker gating the recordless fallback note. */
+  recordlessNoteFile(sessionId: string): string;
+  /** Whether a name in a snapshots dir is a tombstone. */
+  isTombstoneName(name: string): boolean;
+  /** Whether a name in a snapshots dir is a record (a tombstone is not one). */
+  isRecordName(name: string): boolean;
+  /**
+   * The shared stem of a call's four artifacts, from any one of their file
+   * names; null when the name belongs to none of them. The sweep and the
+   * foreign-record reap derive sibling paths from a `readdir` name rather than
+   * from a payload's (untrustworthy) fields, and must not re-spell the
+   * suffixes to do it.
+   */
+  callStem(name: string): string | null;
+  /** The four artifact paths for a stem inside an already-resolved snapshots dir. */
+  callFiles(snapshotsDir: string, stem: string): SessionCallFiles;
+}
+
+/**
+ * Build a {@link SessionLayout} over `base`. Creates nothing on disk — every
+ * member is pure path derivation, so the default can be a module constant.
+ */
+export function createSessionLayout(base: string): SessionLayout {
+  const dir = (sessionId: string): string => nodePath.join(base, sanitizeSessionId(sessionId));
+  // NOTE: snapshotsDir sanitizes via dir() even when its caller passes an
+  // already-sanitized directory name back in (reposFromRecords, runSweep).
+  // sanitizeSessionId is *not* idempotent ('%' -> '%25'), so that second pass
+  // is what fixes the set of directories the sweep reaches. Do not "tidy" it:
+  // dropping it would silently widen the sweep's reach.
+  const snapshotsDir = (sessionId: string): string => nodePath.join(dir(sessionId), SNAPSHOTS_DIR);
+  const callFile = (sessionId: string, toolUseId: string, suffix: string): string =>
+    nodePath.join(snapshotsDir(sessionId), `${sanitizeSessionId(toolUseId)}${suffix}`);
+  const isTombstoneName = (name: string): boolean => name.endsWith(TOMBSTONE_SUFFIX);
+  return Object.freeze({
+    base,
+    trashDir: nodePath.join(nodePath.dirname(base), 'session-trash'),
+    dir,
+    snapshotsDir,
+    recordFile: (sessionId, toolUseId) => callFile(sessionId, toolUseId, RECORD_SUFFIX),
+    objectDir: (sessionId, toolUseId) => callFile(sessionId, toolUseId, OBJECT_DIR_SUFFIX),
+    tempIndexFile: (sessionId, toolUseId) => callFile(sessionId, toolUseId, TEMP_INDEX_SUFFIX),
+    tombstoneFile: (sessionId, toolUseId) => callFile(sessionId, toolUseId, TOMBSTONE_SUFFIX),
+    memoFile: (sessionId) => nodePath.join(dir(sessionId), 'touch-memo.json'),
+    recordlessNoteFile: (sessionId) => nodePath.join(dir(sessionId), 'snapshot-recordless-note'),
+    isTombstoneName,
+    isRecordName: (name) => name.endsWith(RECORD_SUFFIX) && !isTombstoneName(name),
+    callStem: (name) => {
+      // Tombstone first: `.tombstone.json` also ends with the record suffix.
+      for (const suffix of [TOMBSTONE_SUFFIX, RECORD_SUFFIX, OBJECT_DIR_SUFFIX, TEMP_INDEX_SUFFIX]) {
+        if (name.endsWith(suffix)) return name.slice(0, -suffix.length);
+      }
+      return null;
+    },
+    callFiles: (snapshots, stem) => ({
+      record: nodePath.join(snapshots, `${stem}${RECORD_SUFFIX}`),
+      tombstone: nodePath.join(snapshots, `${stem}${TOMBSTONE_SUFFIX}`),
+      objectDir: nodePath.join(snapshots, `${stem}${OBJECT_DIR_SUFFIX}`),
+      tempIndexFile: nodePath.join(snapshots, `${stem}${TEMP_INDEX_SUFFIX}`)
+    })
+  } satisfies SessionLayout);
+}
+
+/**
+ * The production layout: `~/.cache/git-span/session`. Every hook entrypoint
+ * defaults to it, so a deployed hook's on-disk behavior is what it was before
+ * the base became injectable.
+ */
+export const DEFAULT_SESSION_LAYOUT: SessionLayout = createSessionLayout(
+  nodePath.join(os.homedir(), '.cache', 'git-span', 'session')
+);
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -369,20 +490,13 @@ const SESSION_TRASH_TTL_MS = 60_000;
 const SESSION_TRASH_MARKER = '.trash-session-';
 
 /**
- * Where pruned session dirs wait out their TTL — outside
- * {@link SESSION_BASE_DIR} (the same filesystem), so no sweep or session
- * enumeration ever reads the trashed state.
- */
-const SESSION_TRASH_DIR = nodePath.join(nodePath.dirname(SESSION_BASE_DIR), 'session-trash');
-
-/**
- * Opportunistically prune per-session state directories under
- * {@link SESSION_BASE_DIR} whose mtime is older than `maxAgeMs` (default 30
+ * Opportunistically prune per-session state directories under `layout.base`
+ * whose mtime is older than `maxAgeMs` (default 30
  * days). A directory's mtime advances whenever an entry inside it is
  * created/renamed/removed, so an active session (memo writes) stays fresh;
  * only genuinely abandoned sessions age out.
  *
- * A pruned directory is renamed to {@link SESSION_TRASH_DIR}, never unlinked
+ * A pruned directory is renamed to `layout.trashDir`, never unlinked
  * in place: an in-place recursive `rmSync` can abort a concurrent reader of
  * the dir's files (the node-on-virtiofs close-after-unlink assertion the
  * snapshot store's removals guard against — the snapshot sweep reads every
@@ -395,13 +509,17 @@ const SESSION_TRASH_DIR = nodePath.join(nodePath.dirname(SESSION_BASE_DIR), 'ses
  * paths, not a separate cron-like mechanism, so a failure here must never
  * block the caller's actual work.
  */
-export function pruneStaleSessions(now: number = Date.now(), maxAgeMs: number = THIRTY_DAYS_MS): void {
+export function pruneStaleSessions(
+  layout: SessionLayout,
+  now: number = Date.now(),
+  maxAgeMs: number = THIRTY_DAYS_MS
+): void {
   // Unlink trashed dirs whose rename mtime aged past the TTL first, so a
   // freshly-renamed dir below is never a candidate in the same call.
   try {
-    for (const entry of fs.readdirSync(SESSION_TRASH_DIR, { withFileTypes: true })) {
+    for (const entry of fs.readdirSync(layout.trashDir, { withFileTypes: true })) {
       if (!entry.isDirectory() || !entry.name.includes(SESSION_TRASH_MARKER)) continue;
-      const trashPath = nodePath.join(SESSION_TRASH_DIR, entry.name);
+      const trashPath = nodePath.join(layout.trashDir, entry.name);
       // Vanished between readdir and stat (a concurrent prune's unlink), or
       // removal failed — skip it. A best-effort prune must never throw into
       // the caller's hot path.
@@ -420,19 +538,19 @@ export function pruneStaleSessions(now: number = Date.now(), maxAgeMs: number = 
   }
   let entries: fs.Dirent[];
   try {
-    entries = fs.readdirSync(SESSION_BASE_DIR, { withFileTypes: true });
+    entries = fs.readdirSync(layout.base, { withFileTypes: true });
   } catch {
     return; // base dir absent or unreadable — nothing to prune
   }
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
-    const dirPath = nodePath.join(SESSION_BASE_DIR, entry.name);
+    const dirPath = nodePath.join(layout.base, entry.name);
     try {
       const stat = fs.statSync(dirPath);
       if (now - stat.mtimeMs > maxAgeMs) {
-        fs.mkdirSync(SESSION_TRASH_DIR, { recursive: true, mode: 0o700 });
+        fs.mkdirSync(layout.trashDir, { recursive: true, mode: 0o700 });
         const trashPath = nodePath.join(
-          SESSION_TRASH_DIR,
+          layout.trashDir,
           `${entry.name}${SESSION_TRASH_MARKER}${process.pid}-${Date.now().toString(36)}`
         );
         fs.renameSync(dirPath, trashPath);

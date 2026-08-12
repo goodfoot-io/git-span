@@ -50,6 +50,16 @@ import { createSnapshotStore } from '../../src/common/snapshot-store.js';
 import type { CoreLogger } from '../../src/common/span-surface.js';
 import type { TouchWriteInput } from '../../src/common/touch-core.js';
 import { makeTempRepo } from '../helpers.js';
+import { makeTempLayout } from '../session-layout-helpers.js';
+
+/**
+ * A per-run session base for the one fixture here that builds a real store.
+ * It only reads (asserting `find` returns null), but a read of the live base
+ * is still a read of it — and the store's construction alone must not point at
+ * a directory other sessions are writing.
+ */
+const temp = makeTempLayout();
+afterAll(() => temp.cleanup());
 
 const SESSION_ID = 'session-snapshot-core';
 const TOOL_USE_ID = 'toolu_01snapshotcoretest';
@@ -949,7 +959,7 @@ describe('post side agreement and the observed/written invariant', () => {
     // fixture pins the agreement surfaces they compose.)
     const warns: string[] = [];
     const logger: CoreLogger = { warn: (m) => warns.push(m), info: () => {} };
-    const store = createSnapshotStore(logger, DEFAULT_SNAPSHOT_BUDGETS);
+    const store = createSnapshotStore(logger, DEFAULT_SNAPSHOT_BUDGETS, temp.layout);
     const plan = classifyCommandForSnapshot('python3 gen.py', REPO_ROOT);
     expect(plan.decision).toEqual({ kind: 'snapshot', reason: 'opaque' });
     expect(store.find(SESSION_ID, TOOL_USE_ID)).toBeNull();

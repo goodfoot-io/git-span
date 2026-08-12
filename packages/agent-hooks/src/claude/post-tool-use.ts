@@ -38,7 +38,12 @@ import {
   postToolUseHook,
   postToolUseOutput
 } from '@goodfoot/claude-code-hooks';
-import { derivePath, resolveRepoRoot } from '../common/agent-hooks-common.js';
+import {
+  DEFAULT_SESSION_LAYOUT,
+  derivePath,
+  resolveRepoRoot,
+  type SessionLayout
+} from '../common/agent-hooks-common.js';
 import { bashSpanToTouch } from '../common/bash-touch.js';
 import { parseCommandDetailed } from '../common/parse-command.js';
 import { parseResponse, type ResponseParseInput } from '../common/parse-response.js';
@@ -220,10 +225,11 @@ async function runStaticParseTouches(
 
 export function createHandler(
   executors: TouchExecutors = createDefaultTouchExecutors(),
-  memoFactory: MemoFactory = createDiskMemoStore
+  memoFactory: MemoFactory = createDiskMemoStore,
+  layout: SessionLayout = DEFAULT_SESSION_LAYOUT
 ) {
   return async (input: PostToolUseInput, ctx: HookContext) => {
-    const memo = memoFactory(ctx.logger);
+    const memo = memoFactory(ctx.logger, layout);
     const sessionId = input.session_id;
     const cwd = input.cwd ?? '';
     const toolName = input.tool_name;
@@ -259,7 +265,7 @@ export function createHandler(
         // Same resolution as the pre side (env → repo config → defaults); a
         // repo-less cwd resolves null and skips the config layer only.
         const budgets = resolveSnapshotBudgets(repoRoot);
-        const store = createSnapshotStore(ctx.logger, budgets);
+        const store = createSnapshotStore(ctx.logger, budgets, layout);
         const outcome = await snapshotBashBranch(
           store,
           sessionId,
@@ -320,7 +326,7 @@ export function createHandler(
       // and it would dangle its "the static spans below" promise. At most
       // one appearance per session, via the shared disk-marker gate.
       if (blocks.length === 0) return null;
-      if (attributionNote !== null && shouldSurfaceRecordlessNote(sessionId, ctx.logger)) {
+      if (attributionNote !== null && shouldSurfaceRecordlessNote(sessionId, ctx.logger, layout)) {
         blocks.unshift(attributionNote);
       }
       const combined = blocks.join('');

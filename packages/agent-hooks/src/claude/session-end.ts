@@ -10,20 +10,27 @@
  */
 
 import { type HookContext, type SessionEndInput, sessionEndHook } from '@goodfoot/claude-code-hooks';
+import { DEFAULT_SESSION_LAYOUT, type SessionLayout } from '../common/agent-hooks-common.js';
 import { createSnapshotStore } from '../common/snapshot-store.js';
 
-/** The cleanup handler, exported so the mswea adapter registers the same one. */
-export const createHandler = () => async (input: SessionEndInput, ctx: HookContext) => {
-  try {
-    // removeSession removes the records, tombstones, and activity
-    // entries for this session and the index entries for the repos read from
-    // the records.
-    createSnapshotStore(ctx.logger).removeSession(input.session_id);
-    return null;
-  } catch (err) {
-    ctx.logger.warn('git-span session-end cleanup failed open on an uncaught error', { err });
-    return null;
-  }
-};
+/**
+ * The cleanup handler, exported so the mswea adapter registers the same one —
+ * and so a test can construct one over a scratch layout instead of importing
+ * the default export, which binds the production base at module load.
+ */
+export const createHandler =
+  (layout: SessionLayout = DEFAULT_SESSION_LAYOUT) =>
+  async (input: SessionEndInput, ctx: HookContext) => {
+    try {
+      // removeSession removes the records, tombstones, and activity
+      // entries for this session and the index entries for the repos read from
+      // the records.
+      createSnapshotStore(ctx.logger, undefined, layout).removeSession(input.session_id);
+      return null;
+    } catch (err) {
+      ctx.logger.warn('git-span session-end cleanup failed open on an uncaught error', { err });
+      return null;
+    }
+  };
 
 export default sessionEndHook({ timeout: 10_000 }, createHandler());

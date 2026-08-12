@@ -26,7 +26,7 @@ import {
   postToolUseFailureHook,
   postToolUseFailureOutput
 } from '@goodfoot/claude-code-hooks';
-import { resolveRepoRoot } from '../common/agent-hooks-common.js';
+import { DEFAULT_SESSION_LAYOUT, resolveRepoRoot, type SessionLayout } from '../common/agent-hooks-common.js';
 import { resolveSnapshotBudgets, snapshotBashBranch } from '../common/snapshot-harness.js';
 import { createSnapshotStore, type SnapshotStore } from '../common/snapshot-store.js';
 import { type CoreLogger, createDiskMemoStore, type MemoFactory } from '../common/span-surface.js';
@@ -44,8 +44,9 @@ function narrowCommand(toolInput: unknown): string | null {
 export function createHandler(
   executors: TouchExecutors = createDefaultTouchExecutors(),
   memoFactory: MemoFactory = createDiskMemoStore,
+  layout: SessionLayout = DEFAULT_SESSION_LAYOUT,
   storeFactory: (logger: CoreLogger, repoRoot: string | null) => SnapshotStore = (logger, repoRoot) =>
-    createSnapshotStore(logger, resolveSnapshotBudgets(repoRoot))
+    createSnapshotStore(logger, resolveSnapshotBudgets(repoRoot), layout)
 ) {
   return async (input: PostToolUseFailureInput, ctx: HookContext) => {
     try {
@@ -60,7 +61,7 @@ export function createHandler(
         input.tool_use_id,
         input.cwd ?? '',
         executors,
-        memoFactory(ctx.logger),
+        memoFactory(ctx.logger, layout),
         ctx.logger,
         resolveSnapshotBudgets(repoRoot)
       );

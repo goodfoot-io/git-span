@@ -23,7 +23,7 @@
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { indentBlockBody, queueRoot, resolveSpanRoot, sessionDir } from './agent-hooks-common.js';
+import { indentBlockBody, queueRoot, resolveSpanRoot, type SessionLayout } from './agent-hooks-common.js';
 import {
   type AmbiguityBaseline,
   applyAmbiguityRules,
@@ -48,9 +48,6 @@ import {
   activityEntriesCovering,
   type SnapshotIndexEntry,
   type SnapshotStore,
-  snapshotObjectDir,
-  snapshotRecordFile,
-  snapshotTempIndexFile,
   writeJsonAtomic
 } from './snapshot-store.js';
 import type { CoreLogger, MemoStore } from './span-surface.js';
@@ -242,8 +239,12 @@ export function capturePreSnapshot(opts: {
   stat?: StatFile;
 }): PreSnapshotResult | null {
   const runGit = opts.runGit ?? defaultGitRunner;
-  const objectDir = snapshotObjectDir(opts.sessionId, opts.toolUseId);
-  const indexFile = snapshotTempIndexFile(opts.sessionId, opts.toolUseId);
+  // The store carries the layout, so the capture's private artifacts land
+  // beside the record the same store is about to write — a caller cannot hand
+  // this function a base that disagrees with the store's.
+  const layout = opts.store.layout;
+  const objectDir = layout.objectDir(opts.sessionId, opts.toolUseId);
+  const indexFile = layout.tempIndexFile(opts.sessionId, opts.toolUseId);
   const removeArtifacts = (): void => {
     rmSync(objectDir, { recursive: true, force: true });
     rmSync(indexFile, { force: true });
@@ -308,11 +309,12 @@ export const SNAPSHOT_RECORDLESS_NOTE = `<git-span-error>\n${indentBlockBody(
  * marker failure fails toward visibility — a repeated note beats a silent
  * loss.
  */
-export function shouldSurfaceRecordlessNote(sessionId: string, logger: CoreLogger): boolean {
+export function shouldSurfaceRecordlessNote(sessionId: string, logger: CoreLogger, layout: SessionLayout): boolean {
   try {
-    const dir = sessionDir(sessionId);
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, 'snapshot-recordless-note'), '', { flag: 'wx' });
+    // 0o700 matches the store's and the memo store's discipline: whichever of
+    // the three writers creates a session dir first, it is created private.
+    mkdirSync(layout.dir(sessionId), { recursive: true, mode: 0o700 });
+    writeFileSync(layout.recordlessNoteFile(sessionId), '', { flag: 'wx' });
     return true;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
@@ -363,6 +365,7 @@ export interface SnapshotBashOutcome {
  * but a record written after this invocation's sweep is still visible here).
  */
 function readSiblingRecord(
+  layout: SessionLayout,
   sessionId: string,
   toolUseId: string,
   cache: Map<string, SnapshotRecord | 'incompatible' | null>
@@ -372,7 +375,7 @@ function readSiblingRecord(
   if (cached !== undefined) return cached;
   let record: SnapshotRecord | 'incompatible' | null = null;
   try {
-    const raw = JSON.parse(readFileSync(snapshotRecordFile(sessionId, toolUseId), 'utf8')) as unknown;
+    const raw = JSON.parse(readFileSync(layout.recordFile(sessionId, toolUseId), 'utf8')) as unknown;
     if (raw !== null && typeof raw === 'object') {
       record = (raw as SnapshotRecord).version === 2 ? (raw as SnapshotRecord) : 'incompatible';
     }
@@ -401,9 +404,15 @@ function readSiblingRecord(
  * the record cannot be re-read or rewritten, the consume below still closes
  * the window and the logger warn carries the diagnostic.
  */
-function appendRecordGap(sessionId: string, toolUseId: string, gaps: string[], logger: CoreLogger): void {
+function appendRecordGap(
+  layout: SessionLayout,
+  sessionId: string,
+  toolUseId: string,
+  gaps: string[],
+  logger: CoreLogger
+): void {
   try {
-    const file = snapshotRecordFile(sessionId, toolUseId);
+    const file = layout.recordFile(sessionId, toolUseId);
     const raw = JSON.parse(readFileSync(file, 'utf8')) as unknown;
     if (raw === null || typeof raw !== 'object' || (raw as SnapshotRecord).version !== 2) return;
     const rec = raw as SnapshotRecord;
@@ -435,6 +444,7 @@ function appendRecordGap(sessionId: string, toolUseId: string, gaps: string[], l
  * record bodies still come through the shared record cache.
  */
 function siblingsForPath(
+  layout: SessionLayout,
   mine: SnapshotRecord,
   index: SnapshotIndexEntry[],
   path: string,
@@ -453,7 +463,7 @@ function siblingsForPath(
       treeSha,
       path,
       repoRoot: record.repoRoot,
-      objectDir: snapshotObjectDir(record.sessionId, record.toolUseId),
+      objectDir: layout.objectDir(record.sessionId, record.toolUseId),
       runGit,
       timeoutMs: hashTimeoutMs
     });
@@ -463,7 +473,7 @@ function siblingsForPath(
   const out: SiblingSnapshot[] = [];
   for (const entry of index) {
     if (entry.sessionId === mine.sessionId && entry.toolUseId === mine.toolUseId) continue;
-    const record = readSiblingRecord(entry.sessionId, entry.toolUseId, recordCache);
+    const record = readSiblingRecord(layout, entry.sessionId, entry.toolUseId, recordCache);
     if (record === null) continue;
     if (record === 'incompatible') {
       // A foreign-version (deployed-v1) record: real concurrency evidence
@@ -620,6 +630,10 @@ export async function snapshotBashBranch(
   budgets: SnapshotBudgets,
   runGit: GitRunner = defaultGitRunner
 ): Promise<SnapshotBashOutcome> {
+  // Same rule as capturePreSnapshot: the layout rides on the store, so this
+  // nine-parameter signature does not grow a tenth and cannot disagree with
+  // the store it was handed.
+  const layout = store.layout;
   const found = store.find(sessionId, toolUseId);
   if (found === 'tombstoned') return { kind: 'tombstoned', additionalContext: null, excludedPaths: new Set() };
   if (found === null) return { kind: 'no-record', additionalContext: null, excludedPaths: new Set() };
@@ -675,8 +689,8 @@ export async function snapshotBashBranch(
       if (gitPaths === null) throw new Error('git paths unresolvable at post time');
       const captured = captureWriteTree({
         repoRoot,
-        objectDir: snapshotObjectDir(sessionId, toolUseId),
-        indexFile: snapshotTempIndexFile(sessionId, toolUseId),
+        objectDir: layout.objectDir(sessionId, toolUseId),
+        indexFile: layout.tempIndexFile(sessionId, toolUseId),
         alternates: gitPaths.objectsDir,
         realIndexFile: gitPaths.indexFile,
         spanRoot,
@@ -697,7 +711,7 @@ export async function snapshotBashBranch(
           preTreeSha: found.treeSha,
           postTreeSha: captured.treeSha,
           repoRoot,
-          objectDir: snapshotObjectDir(sessionId, toolUseId),
+          objectDir: layout.objectDir(sessionId, toolUseId),
           spanRoot,
           budgets,
           wallStart: postWallStart,
@@ -720,7 +734,7 @@ export async function snapshotBashBranch(
     // persisted gap makes it coverage-unknowable instead (fail closed).
     // Diagnostic-only compare gaps (binary-scope) persist too but never match
     // the coverage-gap family the consult reads.
-    if (compared.gaps.length > 0) appendRecordGap(sessionId, toolUseId, compared.gaps, logger);
+    if (compared.gaps.length > 0) appendRecordGap(layout, sessionId, toolUseId, compared.gaps, logger);
 
     // Consume first: the tombstone is the single-winner gate. The loser of a
     // duplicate-delivery race no-ops and never runs the touch. Consuming
@@ -741,7 +755,7 @@ export async function snapshotBashBranch(
     // never as "consumed without changing P".
     const failureGap = `snapshot compare aborted: ${String(err)}`;
     logger.warn(`git-span ${failureGap}`);
-    appendRecordGap(sessionId, toolUseId, [failureGap], logger);
+    appendRecordGap(layout, sessionId, toolUseId, [failureGap], logger);
     store.consume(sessionId, toolUseId, post);
     return {
       kind: 'done',
@@ -764,6 +778,7 @@ export async function snapshotBashBranch(
     const verdict = applyAmbiguityRules(
       baseline,
       siblingsForPath(
+        layout,
         found,
         siblingIndex,
         path,

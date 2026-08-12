@@ -1,11 +1,11 @@
-packages/agent-hooks/src/claude/session-end.ts#L15-L26 rk64:791209a312da46eb
+packages/agent-hooks/src/claude/session-end.ts#L16-L34 rk64:69647b4bb0062390
 packages/agent-hooks/src/codex/snapshot.ts#L7-L15 rk64:f31b7ea0de6d7a0a
-packages/agent-hooks/src/codex/stop.ts#L14-L25 rk64:5da5037a16977767
-packages/agent-hooks/src/codex/subagent-stop.ts#L15-L26 rk64:7749fa1fd6f73ac0
-packages/agent-hooks/src/common/snapshot-store.ts#L595-L601 rk64:d76e8664d58c1a80
-packages/agent-hooks/test/claude/snapshot-lifecycle.test.ts#L907-L1029 rk64:f97ca0049946b86d
-packages/agent-hooks/test/codex/snapshot-lifecycle.test.ts#L528-L689 rk64:b90dca2dd43db3b9
-packages/agent-hooks/test/common/snapshot-store.test.ts#L514-L860 rk64:fbe24af59978710b
-packages/agent-hooks/test/common/snapshot-store.test.ts#L1025-L1055 rk64:867d02511db38f09
+packages/agent-hooks/src/codex/stop.ts#L15-L35 rk64:3c58f1354f410cb2
+packages/agent-hooks/src/codex/subagent-stop.ts#L16-L34 rk64:7bad27db9340d6ec
+packages/agent-hooks/src/common/snapshot-store.ts#L556-L562 rk64:d76e8664d58c1a80
+packages/agent-hooks/test/claude/snapshot-lifecycle.test.ts#L907-L1029 rk64:222af7f8f9ee3f49
+packages/agent-hooks/test/codex/snapshot-lifecycle.test.ts#L528-L689 rk64:4a10828ff6a24fc7
+packages/agent-hooks/test/common/snapshot-store.test.ts#L514-L860 rk64:49fe534129387033
+packages/agent-hooks/test/common/snapshot-store.test.ts#L1025-L1055 rk64:5761670daa8f532c
 
 SessionEnd, Stop, and SubagentStop drive the store's single removeSession contract, which removes records, tombstones, activity entries, and index entries, and SubagentStop's agentId-scoped removal depends on the Codex snapshot adapter recording agent_id on the record — a session's state never outlives its session and a completed subagent's records never mis-attribute a later sibling's writes. The sweep and whole-session removeSession also reap foreign records (v1 leftovers immediately, unreadable files on TTL by mtime) so a v1 upgrade never leaves the store bricked at the storage cap. The store's TTL-sweep, upgrade-reclamation, and removeSession checks and the cleanup/asymmetry harness sections pin that contract.

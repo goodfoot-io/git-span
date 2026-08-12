@@ -16,7 +16,7 @@
  */
 
 import { type HookContext, type PreToolUseInput, preToolUseHook } from '@goodfoot/claude-code-hooks';
-import { resolveRepoRoot } from '../common/agent-hooks-common.js';
+import { DEFAULT_SESSION_LAYOUT, resolveRepoRoot, type SessionLayout } from '../common/agent-hooks-common.js';
 import { classifyCommandForSnapshot } from '../common/snapshot-core.js';
 import { capturePreSnapshot, resolveSnapshotBudgets } from '../common/snapshot-harness.js';
 import { createSnapshotStore } from '../common/snapshot-store.js';
@@ -30,7 +30,7 @@ export function narrowCommand(toolInput: unknown): string | null {
   return null;
 }
 
-export function createHandler() {
+export function createHandler(layout: SessionLayout = DEFAULT_SESSION_LAYOUT) {
   return async (input: PreToolUseInput, ctx: HookContext) => {
     try {
       // A PreToolUse event without session_id or tool_use_id can never be
@@ -49,7 +49,7 @@ export function createHandler() {
       if (repoRoot === null) return null; // no repo, no record — fail open
       const budgets = resolveSnapshotBudgets(repoRoot);
       const result = capturePreSnapshot({
-        store: createSnapshotStore(ctx.logger, budgets),
+        store: createSnapshotStore(ctx.logger, budgets, layout),
         sessionId: input.session_id,
         toolUseId: input.tool_use_id,
         repoRoot,

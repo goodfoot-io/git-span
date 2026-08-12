@@ -19,14 +19,14 @@
 
 import { resolve as resolvePath } from 'node:path';
 import { type HookContext, type PreToolUseInput, preToolUseHook } from '@goodfoot/codex-hooks';
-import { resolveRepoRoot } from '../common/agent-hooks-common.js';
+import { DEFAULT_SESSION_LAYOUT, resolveRepoRoot, type SessionLayout } from '../common/agent-hooks-common.js';
 import { classifyCommandForSnapshot } from '../common/snapshot-core.js';
 import { capturePreSnapshot, resolveSnapshotBudgets } from '../common/snapshot-harness.js';
 import { createSnapshotStore } from '../common/snapshot-store.js';
 import { extractShellCommand } from './advisor.js';
 import { narrowCodeModeExec, narrowExecCommand } from './post-tool-use.js';
 
-export function createHandler() {
+export function createHandler(layout: SessionLayout = DEFAULT_SESSION_LAYOUT) {
   return async (input: PreToolUseInput, ctx: HookContext) => {
     try {
       // A PreToolUse event without session_id or tool_use_id can never be
@@ -72,7 +72,7 @@ export function createHandler() {
       if (repoRoot === null) return undefined; // no repo, no record — fail open
       const budgets = resolveSnapshotBudgets(repoRoot);
       const result = capturePreSnapshot({
-        store: createSnapshotStore(ctx.logger, budgets),
+        store: createSnapshotStore(ctx.logger, budgets, layout),
         sessionId: input.session_id,
         toolUseId: input.tool_use_id,
         ...(input.agent_id !== undefined ? { agentId: input.agent_id } : {}),

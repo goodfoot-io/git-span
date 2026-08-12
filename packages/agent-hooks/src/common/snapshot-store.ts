@@ -2,15 +2,15 @@
  * Harness-agnostic snapshot store.
  *
  * One home for snapshot state, per the plan: JSON records in the per-session
- * directory (`sessionDir(sessionId)/snapshots/`), each with a sibling
+ * directory (`layout.snapshotsDir(sessionId)`), each with a sibling
  * per-call private git object directory (`<toolUseId>.objects/`) and temp
  * index file (`<toolUseId>.index`) that the write-tree capture writes into, a
  * lightweight per-repo presence index in the repo's git common dir,
  * consumption tombstones, the activity log, and the TTL/session-end sweep. The index exists only so
  * cross-session concurrency detection never has to enumerate other sessions'
  * record dirs — a record is deterministically addressable from its index entry
- * via `sessionDir(sessionId)`, and index entries are removed when the record
- * is removed.
+ * via the store's {@link SessionLayout}, and index entries are removed when
+ * the record is removed.
  *
  * All files are written with 0600 permissions (dirs 0700); record and index
  * JSON each carry a `version` field whose mismatch on read fails closed
@@ -69,7 +69,7 @@ import {
   writeFileSync
 } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
-import { queueRoot, SESSION_BASE_DIR, sanitizeSessionId, sessionDir } from './agent-hooks-common.js';
+import { DEFAULT_SESSION_LAYOUT, queueRoot, type SessionLayout, sanitizeSessionId } from './agent-hooks-common.js';
 import {
   DEFAULT_SNAPSHOT_BUDGETS,
   type SnapshotBudgets,
@@ -176,46 +176,14 @@ export interface ActivityEntry {
 // File layout helpers
 // ---------------------------------------------------------------------------
 
-const SNAPSHOTS_DIR = 'snapshots';
 const SNAPSHOT_INDEX_DIR = 'snapshot-index';
 const ACTIVITY_LOG_DIR = 'activity-log';
-const TOMBSTONE_SUFFIX = '.tombstone.json';
 
-function snapshotsDir(sessionId: string): string {
-  return join(sessionDir(sessionId), SNAPSHOTS_DIR);
-}
-
-function recordFile(sessionId: string, toolUseId: string): string {
-  return join(snapshotsDir(sessionId), `${sanitizeSessionId(toolUseId)}.json`);
-}
-
-/**
- * The record file path for (session, tool use) — exported for the harness's
- * direct sibling-record reads (the store's own `find` returns 'tombstoned'
- * once consumed, but the ambiguity table needs consumed siblings too).
- */
-export function snapshotRecordFile(sessionId: string, toolUseId: string): string {
-  return recordFile(sessionId, toolUseId);
-}
-
-/**
- * One call's private GIT_OBJECT_DIRECTORY, shared by the call's pre and post
- * write-trees (the post side's unchanged blobs are already local) and read by
- * later siblings' on-demand hash derivations. Lives next to the record file so
- * the sweep and session cleanup remove the pair together.
- */
-export function snapshotObjectDir(sessionId: string, toolUseId: string): string {
-  return join(snapshotsDir(sessionId), `${sanitizeSessionId(toolUseId)}.objects`);
-}
-
-/** One call's private temp GIT_INDEX_FILE, primed from the real index per capture. */
-export function snapshotTempIndexFile(sessionId: string, toolUseId: string): string {
-  return join(snapshotsDir(sessionId), `${sanitizeSessionId(toolUseId)}.index`);
-}
-
-function tombstoneFile(sessionId: string, toolUseId: string): string {
-  return join(snapshotsDir(sessionId), `${sanitizeSessionId(toolUseId)}${TOMBSTONE_SUFFIX}`);
-}
+// Session-scoped paths (records, tombstones, object dirs, temp indexes) come
+// from the SessionLayout the store is constructed with — see
+// agent-hooks-common.ts. Only the repo-scoped paths below are module-level
+// free functions: they derive from the repo's git common dir via queueRoot,
+// which is already per-repo and needs no injection.
 
 function indexDir(repoRoot: string): string {
   return join(queueRoot(repoRoot), SNAPSHOT_INDEX_DIR);
@@ -463,16 +431,6 @@ function readRecordFile(file: string, logger: CoreLogger): SnapshotRecord | null
   return JSON.parse(JSON.stringify(data, bigintReplacer), recordReviver) as SnapshotRecord;
 }
 
-/** Whether a tombstone exists for (session, tool use) — the consumed marker. */
-function tombstoneExists(sessionId: string, toolUseId: string): boolean {
-  try {
-    statSync(tombstoneFile(sessionId, toolUseId));
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /** Read a tombstone file with the fail-closed rules; null when absent/unreadable/unversioned. */
 function readTombstoneFile(file: string, logger: CoreLogger): SnapshotTombstone | null {
   const data = readJsonFile(file);
@@ -510,11 +468,6 @@ function readActivityEntry(file: string): ActivityEntry | null {
   return data as ActivityEntry;
 }
 
-/** The derived record path for a tool use id, from its on-disk file name. */
-function recordPathFromTombstoneName(dir: string, tombstoneName: string): string {
-  return join(dir, `${tombstoneName.slice(0, -TOMBSTONE_SUFFIX.length)}.json`);
-}
-
 // ---------------------------------------------------------------------------
 // Store
 // ---------------------------------------------------------------------------
@@ -542,6 +495,14 @@ export interface SweepResult {
  * the sweep honors.
  */
 export interface SnapshotStore {
+  /**
+   * Where this store's session-scoped state lives. Exposed so the harness
+   * functions that already receive a `store` derive their paths from the same
+   * layout instead of taking one of their own — a store and its caller
+   * disagreeing about the base is then unrepresentable.
+   */
+  readonly layout: SessionLayout;
+
   /**
    * Persist a new pre-walk record and its index entry (the PreToolUse
    * snapshot hook's only write). Refuses (returns false, logged with a
@@ -607,8 +568,22 @@ export interface SnapshotStore {
  */
 export function createSnapshotStore(
   logger: CoreLogger,
-  budgets: SnapshotBudgets = DEFAULT_SNAPSHOT_BUDGETS
+  budgets: SnapshotBudgets = DEFAULT_SNAPSHOT_BUDGETS,
+  layout: SessionLayout = DEFAULT_SESSION_LAYOUT
 ): SnapshotStore {
+  const recordFile = (sessionId: string, toolUseId: string): string => layout.recordFile(sessionId, toolUseId);
+  const tombstoneFile = (sessionId: string, toolUseId: string): string => layout.tombstoneFile(sessionId, toolUseId);
+
+  /** Whether a tombstone exists for (session, tool use) — the consumed marker. */
+  function tombstoneExists(sessionId: string, toolUseId: string): boolean {
+    try {
+      statSync(tombstoneFile(sessionId, toolUseId));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /**
    * Total on-disk bytes of the repo's live calls (via its index entries):
    * the per-call private object dirs — where the mechanism's storage
@@ -618,8 +593,8 @@ export function createSnapshotStore(
     let total = 0;
     for (const entry of readIndexEntries(repoRoot, logger)) {
       total += fileSize(recordFile(entry.sessionId, entry.toolUseId));
-      total += dirSizeBytes(snapshotObjectDir(entry.sessionId, entry.toolUseId));
-      total += fileSize(snapshotTempIndexFile(entry.sessionId, entry.toolUseId));
+      total += dirSizeBytes(layout.objectDir(entry.sessionId, entry.toolUseId));
+      total += fileSize(layout.tempIndexFile(entry.sessionId, entry.toolUseId));
     }
     return total;
   }
@@ -652,11 +627,12 @@ export function createSnapshotStore(
    * a payload without them leaves the entry to the orphan-index pass.
    */
   function reapForeignRecord(dir: string, name: string, parsed: Record<string, unknown> | null): void {
-    const base = name.slice(0, -'.json'.length);
+    const stem = layout.callStem(name) ?? name;
+    const siblings = layout.callFiles(dir, stem);
     trashFile(join(dir, name));
-    trashFile(join(dir, `${base}${TOMBSTONE_SUFFIX}`));
-    trashFile(join(dir, `${base}.objects`));
-    trashFile(join(dir, `${base}.index`));
+    trashFile(siblings.tombstone);
+    trashFile(siblings.objectDir);
+    trashFile(siblings.tempIndexFile);
     const repoRoot = parsed?.repoRoot;
     const sessionId = parsed?.sessionId;
     const toolUseId = parsed?.toolUseId;
@@ -688,10 +664,10 @@ export function createSnapshotStore(
    */
   function reposFromRecords(): Set<string> {
     const repos = new Set<string>();
-    for (const sessionName of listDir(SESSION_BASE_DIR)) {
-      const dir = snapshotsDir(sessionName);
+    for (const sessionName of listDir(layout.base)) {
+      const dir = layout.snapshotsDir(sessionName);
       for (const name of listDir(dir)) {
-        if (!name.endsWith('.json') || name.endsWith(TOMBSTONE_SUFFIX)) continue;
+        if (!layout.isRecordName(name)) continue;
         const file = join(dir, name);
         if (isRecentlyWritten(file, Date.now())) continue;
         const rec = readRecordFile(file, logger);
@@ -788,14 +764,14 @@ export function createSnapshotStore(
   function runSweep(now: number, extraRepos: readonly string[]): SweepResult {
     const result: SweepResult = { records: 0, tombstones: 0, activityEntries: 0, indexEntries: 0, foreignRecords: 0 };
     const repos = new Set<string>(extraRepos);
-    for (const sessionName of listDir(SESSION_BASE_DIR)) {
-      const dir = snapshotsDir(sessionName);
+    for (const sessionName of listDir(layout.base)) {
+      const dir = layout.snapshotsDir(sessionName);
       const names = listDir(dir);
       // Tombstone files first: a pair expired together counts as a
       // tombstone removal, so the record branch below must not see a
       // record whose tombstone already claimed the pair.
       for (const name of names) {
-        if (!name.endsWith(TOMBSTONE_SUFFIX)) continue;
+        if (!layout.isTombstoneName(name)) continue;
         const file = join(dir, name);
         // Another session's process may be finishing this tombstone (or the
         // record the pass reads below) right now — the sweep-read margin
@@ -804,19 +780,19 @@ export function createSnapshotStore(
         const t = readTombstoneFile(file, logger);
         if (t === null) continue;
         if (now - t.consumedAt > budgets.recordTtlMs) {
-          const recordPath = recordPathFromTombstoneName(dir, name);
+          const siblings = layout.callFiles(dir, layout.callStem(name) ?? name);
+          const recordPath = siblings.record;
           const rec = isRecentlyWritten(recordPath, now) ? null : readRecordFile(recordPath, logger);
-          const base = name.slice(0, -TOMBSTONE_SUFFIX.length);
           trashFile(recordPath);
           trashFile(file);
-          trashFile(join(dir, `${base}.objects`));
-          trashFile(join(dir, `${base}.index`));
+          trashFile(siblings.objectDir);
+          trashFile(siblings.tempIndexFile);
           if (rec !== null) removeIndexEntry(rec.repoRoot, rec.sessionId, rec.toolUseId);
           result.tombstones += 1;
         }
       }
       for (const name of names) {
-        if (!name.endsWith('.json') || name.endsWith(TOMBSTONE_SUFFIX)) continue;
+        if (!layout.isRecordName(name)) continue;
         const file = join(dir, name);
         if (isRecentlyWritten(file, now)) continue;
         const data = readJsonFile(file);
@@ -858,8 +834,8 @@ export function createSnapshotStore(
         if (now - rec.createdAt > budgets.recordTtlMs) {
           trashFile(file);
           trashFile(tombstoneFile(rec.sessionId, rec.toolUseId));
-          trashFile(snapshotObjectDir(rec.sessionId, rec.toolUseId));
-          trashFile(snapshotTempIndexFile(rec.sessionId, rec.toolUseId));
+          trashFile(layout.objectDir(rec.sessionId, rec.toolUseId));
+          trashFile(layout.tempIndexFile(rec.sessionId, rec.toolUseId));
           removeIndexEntry(rec.repoRoot, rec.sessionId, rec.toolUseId);
           result.records += 1;
         }
@@ -870,14 +846,11 @@ export function createSnapshotStore(
       // carry them through the passes above. Reap them on the record TTL by
       // their own mtime, with the usual margin guard.
       for (const name of names) {
-        const base = name.endsWith('.objects')
-          ? name.slice(0, -'.objects'.length)
-          : name.endsWith('.index')
-            ? name.slice(0, -'.index'.length)
-            : null;
-        if (base === null) continue;
+        if (!name.endsWith('.objects') && !name.endsWith('.index')) continue;
+        const stem = layout.callStem(name);
+        if (stem === null) continue;
         const file = join(dir, name);
-        if (existsSync(join(dir, `${base}.json`))) continue;
+        if (existsSync(layout.callFiles(dir, stem).record)) continue;
         if (isRecentlyWritten(file, now)) continue;
         let mtimeMs: number;
         try {
@@ -905,6 +878,8 @@ export function createSnapshotStore(
   }
 
   return {
+    layout,
+
     write(record: SnapshotRecord): boolean {
       const swept = runSweep(Date.now(), [record.repoRoot]);
       const removed =
@@ -993,7 +968,7 @@ export function createSnapshotStore(
     },
 
     removeSession(sessionId: string, agentId?: string): void {
-      const dir = snapshotsDir(sessionId);
+      const dir = layout.snapshotsDir(sessionId);
       const repos = new Set<string>();
       let recordsRemoved = 0;
       // The session's own records are stable during its end (no other process
@@ -1001,7 +976,7 @@ export function createSnapshotStore(
       // removal goes through the trash rename, never an in-place unlink: the
       // unlink is what can abort another session's concurrent read.
       for (const name of listDir(dir)) {
-        if (!name.endsWith('.json') || name.endsWith(TOMBSTONE_SUFFIX)) continue;
+        if (!layout.isRecordName(name)) continue;
         const data = readJsonFile(join(dir, name));
         const parsed = data !== null && typeof data === 'object' ? (data as Record<string, unknown>) : null;
         if (parsed === null || parsed.version !== 2) {
@@ -1021,8 +996,8 @@ export function createSnapshotStore(
         repos.add(rec.repoRoot);
         trashFile(join(dir, name));
         trashFile(tombstoneFile(rec.sessionId, rec.toolUseId));
-        trashFile(snapshotObjectDir(rec.sessionId, rec.toolUseId));
-        trashFile(snapshotTempIndexFile(rec.sessionId, rec.toolUseId));
+        trashFile(layout.objectDir(rec.sessionId, rec.toolUseId));
+        trashFile(layout.tempIndexFile(rec.sessionId, rec.toolUseId));
         removeIndexEntry(rec.repoRoot, rec.sessionId, rec.toolUseId);
         recordsRemoved += 1;
       }

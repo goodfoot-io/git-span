@@ -33,6 +33,17 @@ import { createHandler as createCodexHandler } from '../../src/codex/post-tool-u
 import type { MemoFactory, MemoLogger, MemoStore } from '../../src/common/span-surface.js';
 import type { TouchInput } from '../../src/common/touch-core.js';
 import { makeTempRepo } from '../helpers.js';
+import { makeTempLayout } from '../session-layout-helpers.js';
+
+/**
+ * This file's own session base, on /tmp. The handlers below construct a real
+ * snapshot store and consult the recordless-note gate even where the memo is a
+ * fake, so without a layout they wrote fixture session dirs into the live
+ * `~/.cache/git-span/session` — the `sess-1` / `codex-sess` leak.
+ */
+const temp = makeTempLayout();
+const layout = temp.layout;
+afterAll(() => temp.cleanup());
 
 /** One recorded `runTouchHook` invocation, as the contract compares it. */
 interface RecordedTouch {
@@ -114,7 +125,7 @@ describe('cross-adapter contract — identical touch call sequences (Phase 3)', 
   });
 
   async function runClaudeBash(cwd: string, command: string): Promise<void> {
-    const handler = createClaudeHandler(undefined, inMemoryMemoFactory());
+    const handler = createClaudeHandler(undefined, inMemoryMemoFactory(), layout);
     await handler(
       { session_id: 'sess', cwd, tool_name: 'Bash', tool_input: { command } } as never,
       { logger: claudeLogger } as never
@@ -122,7 +133,7 @@ describe('cross-adapter contract — identical touch call sequences (Phase 3)', 
   }
 
   async function runCodexBash(cwd: string, command: string): Promise<void> {
-    const handler = createCodexHandler(undefined, inMemoryMemoFactory());
+    const handler = createCodexHandler(undefined, inMemoryMemoFactory(), layout);
     await handler(
       { session_id: 'sess', cwd, tool_name: 'Bash', tool_input: { command } } as never,
       { logger: codexLogger } as never
@@ -130,7 +141,7 @@ describe('cross-adapter contract — identical touch call sequences (Phase 3)', 
   }
 
   async function runCodexExecCommand(cwd: string, command: string, workdir: string | null): Promise<void> {
-    const handler = createCodexHandler(undefined, inMemoryMemoFactory());
+    const handler = createCodexHandler(undefined, inMemoryMemoFactory(), layout);
     const argumentsJson = JSON.stringify(workdir === null ? { cmd: command } : { cmd: command, workdir });
     await handler(
       { session_id: 'sess', cwd, tool_name: 'exec_command', tool_input: { arguments: argumentsJson } } as never,
@@ -139,7 +150,7 @@ describe('cross-adapter contract — identical touch call sequences (Phase 3)', 
   }
 
   async function runCodexCodeModeExec(cwd: string, command: string, workdir: string): Promise<void> {
-    const handler = createCodexHandler(undefined, inMemoryMemoFactory());
+    const handler = createCodexHandler(undefined, inMemoryMemoFactory(), layout);
     const input = `const r = await tools.exec_command({cmd:"${command}", shell:"bash", workdir:"${workdir}"});\ntext(JSON.stringify(r));`;
     await handler(
       { session_id: 'sess', cwd, tool_name: 'exec', tool_input: { input } } as never,

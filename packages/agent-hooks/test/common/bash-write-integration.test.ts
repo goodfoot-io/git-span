@@ -59,6 +59,17 @@ import { parseCommandDetailed, type ResolvedSpan, type SpanMatch } from '../../s
 import type { MemoStore } from '../../src/common/span-surface.js';
 import type { TouchExecutors, TouchFixResult } from '../../src/common/touch-core.js';
 import { makeTempRepo } from '../helpers.js';
+import { makeTempLayout } from '../session-layout-helpers.js';
+
+/**
+ * This file's own session base, on /tmp. The handlers below construct a real
+ * snapshot store and consult the recordless-note gate even where the memo is a
+ * fake, so without a layout they wrote fixture session dirs into the live
+ * `~/.cache/git-span/session` — the `sess-1` / `codex-sess` leak.
+ */
+const temp = makeTempLayout();
+const layout = temp.layout;
+afterAll(() => temp.cleanup());
 
 const SESSION_ID = 'session-bash-write-integration';
 
@@ -1544,31 +1555,35 @@ describe('bash-write-integration — cross-adapter envelopes (identical normaliz
     const claudeCap = cap();
     // `as never` matches the existing adapter tests: the SDK types the input
     // strictly, but the handler shape-checks the envelope fields itself.
-    await createClaudeHandler(claudeCap.executors, () => createMemoryMemoStore())(
-      claudeBashInput(cwd, command) as never,
-      claudeCtx
-    );
+    await createClaudeHandler(
+      claudeCap.executors,
+      () => createMemoryMemoStore(),
+      layout
+    )(claudeBashInput(cwd, command) as never, claudeCtx);
     result.claudeBash = claudeCap.fixPaths.map(rel);
 
     const codexCap = cap();
-    await createCodexHandler(codexCap.executors, () => createMemoryMemoStore())(
-      codexBashInput(cwd, command) as never,
-      codexCtx
-    );
+    await createCodexHandler(
+      codexCap.executors,
+      () => createMemoryMemoStore(),
+      layout
+    )(codexBashInput(cwd, command) as never, codexCtx);
     result.codexBash = codexCap.fixPaths.map(rel);
 
     const execCmdCap = cap();
-    await createCodexHandler(execCmdCap.executors, () => createMemoryMemoStore())(
-      codexExecCommandInput(cwd, command) as never,
-      codexCtx
-    );
+    await createCodexHandler(
+      execCmdCap.executors,
+      () => createMemoryMemoStore(),
+      layout
+    )(codexExecCommandInput(cwd, command) as never, codexCtx);
     result.codexExecCommand = execCmdCap.fixPaths.map(rel);
 
     const execCap = cap();
-    await createCodexHandler(execCap.executors, () => createMemoryMemoStore())(
-      codexExecInput(cwd, command) as never,
-      codexCtx
-    );
+    await createCodexHandler(
+      execCap.executors,
+      () => createMemoryMemoStore(),
+      layout
+    )(codexExecInput(cwd, command) as never, codexCtx);
     result.codexExec = execCap.fixPaths.map(rel);
 
     return result;

@@ -10,17 +10,27 @@
  */
 
 import { type HookContext, type SubagentStopInput, subagentStopHook } from '@goodfoot/codex-hooks';
+import { DEFAULT_SESSION_LAYOUT, type SessionLayout } from '../common/agent-hooks-common.js';
 import { createSnapshotStore } from '../common/snapshot-store.js';
 
-export default subagentStopHook({ timeout: 10_000 }, async (input: SubagentStopInput, ctx: HookContext) => {
-  try {
-    // removeSession with agentId removes only the records carrying
-    // this subagent's agent_id (and their index entries); the main session's
-    // records are left for the Stop hook.
-    createSnapshotStore(ctx.logger).removeSession(input.session_id, input.agent_id);
-    return undefined;
-  } catch (err) {
-    ctx.logger.warn('git-span subagent-stop cleanup failed open on an uncaught error', { err });
-    return undefined;
-  }
-});
+/**
+ * The cleanup handler, extracted from the default export for the same reason
+ * as the Stop hook's: a default export binds {@link DEFAULT_SESSION_LAYOUT} at
+ * module load and can never be pointed at a test's scratch directory.
+ */
+export function createHandler(layout: SessionLayout = DEFAULT_SESSION_LAYOUT) {
+  return async (input: SubagentStopInput, ctx: HookContext) => {
+    try {
+      // removeSession with agentId removes only the records carrying
+      // this subagent's agent_id (and their index entries); the main session's
+      // records are left for the Stop hook.
+      createSnapshotStore(ctx.logger, undefined, layout).removeSession(input.session_id, input.agent_id);
+      return undefined;
+    } catch (err) {
+      ctx.logger.warn('git-span subagent-stop cleanup failed open on an uncaught error', { err });
+      return undefined;
+    }
+  };
+}
+
+export default subagentStopHook({ timeout: 10_000 }, createHandler());
