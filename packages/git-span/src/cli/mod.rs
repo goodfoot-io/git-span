@@ -24,6 +24,7 @@ pub mod format;
 pub mod history;
 pub mod interior_anchor;
 pub mod merge_driver;
+pub mod resolve;
 pub mod show;
 pub mod drift_cluster;
 pub mod drift_fix;
@@ -202,6 +203,26 @@ pub enum Commands {
     /// Outputs human-readable text by default; use `--format json` for
     /// `schema_version: 2` JSON carrying the same patches as raw text.
     History(HistoryArgs),
+
+    /// Settle every residue entry in a conflict-markered span file under one
+    /// explicitly chosen side, and write a clean span.
+    ///
+    /// This is the one command whose supported input is a span file carrying
+    /// Git conflict markers — the file `git span merge-driver` leaves behind
+    /// when it cannot resolve an anchor without trusting the worktree. On a
+    /// file without markers it is a no-op that says so.
+    ///
+    /// `--rehash` (the default) re-reads each conflicted anchor's source from
+    /// the worktree and hashes it; `--ours`/`--theirs` keep that side's record
+    /// for every anchor residue and that side's prose for a divergent `--why`,
+    /// which is the path for a source that cannot be re-read at all.
+    ///
+    /// Resolution is all-or-nothing per span: any entry that cannot be settled
+    /// under the chosen side leaves the file byte-identical and names what
+    /// stopped it, so a failed run is always safe to retry with another side.
+    /// The result is written to the worktree and never staged — review it with
+    /// `git diff` and stage what you agree with.
+    Resolve(ResolveArgs),
 }
 
 /// `git span <name>` / `git span show <name>`.
@@ -449,6 +470,50 @@ pub enum ReplaceFormat {
     Json,
 }
 
+/// Output format for `git span resolve`'s settlement report.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+pub enum ResolveFormat {
+    /// Prose report: one line per settled entry, plus the why/config
+    /// settlement and any recovery-ceiling warnings.
+    Human,
+    /// The schema-versioned settlement document.
+    Json,
+}
+
+/// Arguments for `git span resolve <name>`.
+#[derive(Debug, clap::Args)]
+pub struct ResolveArgs {
+    /// Span to resolve. Must currently carry Git conflict markers.
+    pub name: String,
+
+    /// Re-read each conflicted anchor's source file from the worktree and
+    /// compute its hash. Default when no side flag is given.
+    #[arg(long, conflicts_with_all = ["ours", "theirs"])]
+    pub rehash: bool,
+
+    /// Keep this side's anchor record for every anchor residue, and this
+    /// side's prose/settings for a divergent `--why` or `[config]`.
+    #[arg(long, conflicts_with_all = ["rehash", "theirs"])]
+    pub ours: bool,
+
+    /// Keep the other side's anchor record for every anchor residue, and its
+    /// prose/settings for a divergent `--why` or `[config]`.
+    #[arg(long, conflicts_with_all = ["rehash", "ours"])]
+    pub theirs: bool,
+
+    /// Report what EACH of `--rehash`/`--ours`/`--theirs` would produce,
+    /// without writing. Side flags are ignored when this is set — all three
+    /// are always evaluated together so the outcomes can be compared before
+    /// committing to one.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Output format (human or json).
+    #[arg(long, value_enum, default_value_t = ResolveFormat::Human)]
+    pub format: ResolveFormat,
+}
+
 /// Arguments for `git span history <span>`.
 #[derive(Debug, clap::Args)]
 pub struct HistoryArgs {
@@ -566,6 +631,10 @@ pub fn dispatch(
         Commands::History(args) => {
             let _perf = crate::perf::span("command.history");
             history::run_history(repo, args, span_root)
+        }
+        Commands::Resolve(args) => {
+            let _perf = crate::perf::span("command.resolve");
+            resolve::run_resolve(repo, args, span_root)
         }
     }
 }

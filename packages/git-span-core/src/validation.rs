@@ -32,6 +32,7 @@ pub const RESERVED_SPAN_NAMES: &[&str] = &[
     "hooks",
     "merge-driver",
     "history",
+    "resolve",
 ];
 
 /// Tokens that were git-span subcommands in an earlier release, paired with

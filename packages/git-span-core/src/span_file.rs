@@ -755,7 +755,7 @@ pub fn merge_span_files(
 /// Resolve the `[config]` block from three-way merge inputs with the same
 /// policy as [`resolve_why_text`]: an unchanged side yields to the changed
 /// one; divergent changes (or divergence without a base) fail closed.
-fn resolve_config(
+pub fn resolve_config(
     base: Option<&SpanFile>,
     ours: &SpanFile,
     theirs: &SpanFile,
@@ -780,7 +780,7 @@ fn resolve_config(
 /// Returns `(why_text, has_conflict)` where `has_conflict` is `true` when
 /// both sides changed the why differently from base (or diverged without
 /// a base), signaling the caller to fail closed.
-fn resolve_why_text(
+pub fn resolve_why_text(
     base: Option<&SpanFile>,
     ours: &SpanFile,
     theirs: &SpanFile,

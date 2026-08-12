@@ -15,6 +15,7 @@ pub mod cli_ls;
 pub mod cli_merge_driver;
 pub mod cli_perf;
 pub mod cli_reconcile_output;
+pub mod cli_resolve;
 pub mod cli_rev_parse_errors;
 pub mod cli_show;
 pub mod cli_drift_fix;

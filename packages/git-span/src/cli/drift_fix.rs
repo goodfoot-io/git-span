@@ -153,7 +153,7 @@ impl<'a> SideBuilder<'a> {
 /// the reader guessing.
 ///
 /// Returns `None` when no conflict markers are found.
-fn split_conflict_markers(input: &str) -> Option<(String, String)> {
+pub(crate) fn split_conflict_markers(input: &str) -> Option<(String, String)> {
     let mut ours = SideBuilder::default();
     let mut theirs = SideBuilder::default();
     let mut region = ConflictRegion::Outside;
@@ -212,7 +212,7 @@ fn split_conflict_markers(input: &str) -> Option<(String, String)> {
 /// class from a *poisoned* source: if a source file itself contains conflict
 /// markers, that is still fail-closed and aborts the whole span, unchanged
 /// from today.
-fn read_clean_source_files(
+pub(crate) fn read_clean_source_files(
     repo: &gix::Repository,
     ours: &SpanFile,
     theirs: &SpanFile,
