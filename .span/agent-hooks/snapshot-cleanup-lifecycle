@@ -3,9 +3,9 @@ packages/agent-hooks/src/codex/snapshot.ts#L7-L15 rk64:f31b7ea0de6d7a0a
 packages/agent-hooks/src/codex/stop.ts#L15-L35 rk64:3c58f1354f410cb2
 packages/agent-hooks/src/codex/subagent-stop.ts#L16-L34 rk64:7bad27db9340d6ec
 packages/agent-hooks/src/common/snapshot-store.ts#L556-L562 rk64:d76e8664d58c1a80
-packages/agent-hooks/test/claude/snapshot-lifecycle.test.ts#L907-L1029 rk64:222af7f8f9ee3f49
-packages/agent-hooks/test/codex/snapshot-lifecycle.test.ts#L528-L689 rk64:4a10828ff6a24fc7
-packages/agent-hooks/test/common/snapshot-store.test.ts#L514-L860 rk64:49fe534129387033
+packages/agent-hooks/test/claude/snapshot-lifecycle.test.ts#L923-L1040 rk64:2a590e99dcf10372
+packages/agent-hooks/test/codex/snapshot-lifecycle.test.ts#L546-L706 rk64:ed554f98421c6ee5
+packages/agent-hooks/test/common/snapshot-store.test.ts#L491-L837 rk64:0140067140b0d6c7
 packages/agent-hooks/test/common/snapshot-store.test.ts#L1021-L1051 rk64:5761670daa8f532c
 
 SessionEnd, Stop, and SubagentStop drive the store's single removeSession contract, which removes records, tombstones, activity entries, and index entries, and SubagentStop's agentId-scoped removal depends on the Codex snapshot adapter recording agent_id on the record — a session's state never outlives its session and a completed subagent's records never mis-attribute a later sibling's writes. The sweep and whole-session removeSession also reap foreign records (v1 leftovers immediately, unreadable files on TTL by mtime) so a v1 upgrade never leaves the store bricked at the storage cap. The store's TTL-sweep, upgrade-reclamation, and removeSession checks and the cleanup/asymmetry harness sections pin that contract.
