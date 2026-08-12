@@ -5,7 +5,7 @@
 //!
 //! * [`types`]       — data shapes (spec §4).
 //! * [`git`]         — git plumbing helpers.
-//! * [`span`]        — span read/commit/structural (§6).
+//! * [`span`]        — span read/structural (§6).
 //! * [`span_file`]   — file-backed span document parse/serialize.
 //! * [`resolver`]    — layered drift resolver (§5).
 //! * [`validation`]  — name validation (§3.5, §10.2).

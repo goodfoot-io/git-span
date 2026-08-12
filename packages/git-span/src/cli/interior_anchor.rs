@@ -4,7 +4,7 @@
 //! `SpanFile::parse` is a pure text→struct transform and deliberately does
 //! NOT reject interior anchors — that would make a hand-edited / poisoned
 //! span un-loadable, breaking the very repair commands (`remove`, `delete`,
-//! `move`, `drift --fix`) an operator needs to fix it. Instead, the
+//! `drift --fix`) an operator needs to fix it. Instead, the
 //! reporting/validate surfaces (`drift`, `doctor`) load each span
 //! independently and surface interior anchors here as a **loud, actionable,
 //! per-span** report. One poisoned span never blanks the others.

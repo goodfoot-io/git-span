@@ -1,10 +1,10 @@
 packages/git-span/src/cli/drift_fix.rs#L796-L810 rk64:b6d76f3da7b1d918
 packages/git-span/src/cli/drift_fix.rs#L980-L1051 rk64:aab31a0fba74f03f
-packages/git-span/src/cli/drift_label.rs#L87-L88 rk64:dc0da71f5ed4773e
+packages/git-span/src/cli/drift_label.rs#L91-L92 rk64:dc0da71f5ed4773e
 packages/git-span/src/resolver/engine/anchor.rs#L769-L872 rk64:7a9a860847e3ea46
 packages/git-span/src/resolver/engine/mod.rs#L640-L650 rk64:7295ab71bbfc00c4
 packages/git-span/src/resolver/store/dto.rs#L134-L165 rk64:8a039deeb78b5e10
 packages/git-span/src/types.rs#L133-L137 rk64:082445f40723535d
-packages/git-span/tests/cases/drift_resolved_pending_commit.rs rk64:22b6fe261422efcc
+packages/git-span/tests/cases/drift_resolved_pending_commit.rs rk64:4bfb40575b4e0aac
 
 The ResolvedPendingCommit anchor status is a distinct non-drift state that every AnchorStatus consumer classifies as resolved: tallied with Fresh, excluded from the exit code, labeled consistently across renderers, and round-tripped through the cache DTO.

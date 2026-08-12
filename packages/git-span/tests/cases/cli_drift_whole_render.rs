@@ -1,6 +1,6 @@
 //! Whole-file pins render as `(whole)` across all renderers, not as
-//! `#L0-L0` or raw `0   0`. Regression coverage for the rendering bug
-//! called out in `docs/manual-validation-of-git-span-follow-up.md`.
+//! `#L0-L0` or raw `0   0`. Regression coverage for a rendering bug found
+//! during manual validation.
 
 use crate::support;
 

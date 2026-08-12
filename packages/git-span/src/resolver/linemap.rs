@@ -1,8 +1,6 @@
 //! Phase 2: Composed `LineMap` — sorted, non-overlapping old→new line
 //! intervals built from per-commit hunks and composable across commits.
 //!
-//! See `three-phase-plan.md` Phase 2 for the algorithm sketch.
-//!
 //! A `LineMap` represents the line-coordinate transformation a single
 //! commit (or a composition of commits) applies to a file. Each segment
 //! is either an *identity-shifted* segment (unchanged region, where new

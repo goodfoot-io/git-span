@@ -72,7 +72,7 @@ git span drift --perf-trace /tmp/trace.csv          # OK: full scan
 git span drift --perf-trace /tmp/trace.csv some/path  # CliError
 ```
 
-The only other flag conflict `git span drift` enforces is unrelated to `--perf-trace`: `--fix` requires `--format human` and errors on any other format ([`drift_output.rs`](../../packages/git-span/src/cli/drift_output.rs#L114-L121)).
+The only other flag conflict `git span drift` enforces is unrelated to `--perf-trace`: `--fix` requires `--format human` and errors on any other format ([`drift_output.rs`](../../packages/git-span/src/cli/drift_output.rs#L112-L119)).
 
 ### Quick analyses
 

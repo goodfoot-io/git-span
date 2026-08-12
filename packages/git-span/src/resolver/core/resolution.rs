@@ -2,8 +2,9 @@
 //! main-157 Phase 1). One value replaces the need to resolve a span set
 //! twice merely because `current.blob` or the drift label differs by
 //! active layer — see `notes/architecture-and-complexity.md` "Semantic
-//! Model" and `resolver/cache_v2/mod.rs`'s `build_committed_spans` /
-//! `build_clean_whole_result`, which today run the resolver once per view.
+//! Model" and the legacy `resolver/cache_v2/mod.rs`'s `build_committed_spans`
+//! / `build_clean_whole_result`, which ran the resolver once per view (that
+//! module was deleted at cutover in `0a8bf95e`).
 //!
 //! Every anchor keeps one drift observation per layer (Head, Index,
 //! Worktree) rather than the single collapsed view `AnchorResolved` carries

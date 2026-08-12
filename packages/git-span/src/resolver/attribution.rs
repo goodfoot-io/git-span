@@ -290,7 +290,9 @@ fn range_overlaps_memo(
 // ---------------------------------------------------------------------------
 // Deleted-locus walk (card main-168) — a boundary-free backward walk from
 // HEAD that determines whether a `Deleted` anchor's last-known path was
-// renamed (and to where) or genuinely removed.
+// renamed (and to where) or genuinely removed. See
+// `plans/bounded-rename-chain.md`'s "Deleted-locus walk" section for the
+// full design and worked rename-chain trace.
 //
 // `deleted_locus_walk` finds the anchor's own orphaning commit — the nearest
 // commit touching the path itself — and `resolve_terminal_path` follows the

@@ -1,9 +1,10 @@
 //! Deterministic projections from `ResolutionCore` to the committed
 //! (HEAD-only) and effective (active-layer) `SpanResolved` views. Pure
 //! selection/relabeling over already-captured per-layer observations — no
-//! repo access, no re-resolution. See `resolver/cache_v2/mod.rs`'s
-//! `build_committed_spans` / `build_clean_whole_result`, which this
-//! replaces conceptually by resolving once and projecting twice.
+//! repo access, no re-resolution. Replaces, conceptually, the legacy
+//! `resolver/cache_v2/mod.rs`'s `build_committed_spans` /
+//! `build_clean_whole_result` (deleted at cutover in `0a8bf95e`) by
+//! resolving once and projecting twice.
 
 use super::resolution::{AnchorCore, DriftLocusCore, ExtentCore, LayerObservationCore};
 use crate::types::{

@@ -1,7 +1,4 @@
 //! Integration tests for span file format: parse and serialize.
-//!
-//! All tests are `#[ignore]`d during the bootstrap phase.
-//! Remove `#[ignore]` when the implementation is ready.
 
 use git_span::span_file::{AnchorRecord, SpanFile};
 

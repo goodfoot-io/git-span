@@ -26,7 +26,7 @@ export interface LiveAnchor {
  * A status to style, never source to render. `filter-failed` is a
  * `current`-block-only value and must not collapse into `absent`: the two
  * name different repairs (fix the `.gitattributes` filter driver vs.
- * `git span rm` or re-adding).
+ * `git span remove` or re-adding).
  */
 export type TimelineUnavailableReason = 'absent' | 'range-past-eof' | 'binary';
 

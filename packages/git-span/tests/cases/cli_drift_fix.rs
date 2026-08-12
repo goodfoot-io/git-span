@@ -1002,11 +1002,11 @@ file1.txt#L5-L7 rk64:{h_b}
 // ---------------------------------------------------------------------------
 // --fix renamed-orphan pairing (card main-171)
 //
-// `prune_unreadable_renamed_orphans` (packages/git-span/src/cli/drift_fix.rs)
-// is a `todo!()` stub as of this Phase 2 bootstrap step — these tests encode
-// the contract it must satisfy once Phase 3 implements it, and are
-// `#[ignore]`d so the (currently unimplemented) behavior doesn't fail the
-// suite. Do not unskip until Phase 3 lands.
+// These tests encode the contract `prune_unreadable_renamed_orphans`
+// (packages/git-span/src/cli/drift_fix.rs) must satisfy: an orphan anchor
+// whose source is unreadable pairs with the single same-range readable
+// candidate on the other side, and bails closed on zero or ambiguous
+// candidates.
 // ---------------------------------------------------------------------------
 
 #[test]

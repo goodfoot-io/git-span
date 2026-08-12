@@ -1,7 +1,7 @@
 //! Shared drift-label formatter for `drift`, `drift --patch`, and `show`.
 //!
-//! Maps an anchor's resolved status to a human-readable label using the
-//! seven-row vocabulary table from the card spec:
+//! Maps an anchor's resolved status to a human-readable label. The
+//! changed/deleted core vocabulary:
 //!
 //! | State | Label |
 //! |---|---|
@@ -12,6 +12,10 @@
 //! | Changed at sha | `changed in <sha>` |
 //! | Deleted at sha | `deleted in <sha>` |
 //! | Deleted (no sha) | `deleted` |
+//!
+//! Other statuses — `moved`, `resolved, pending commit`, `merge conflict`,
+//! `submodule`, and the content-unavailable reasons — are mapped alongside
+//! these.
 //!
 //! Precedence is enforced by the engine before reaching this formatter:
 //! worktree → index → HEAD history walk.

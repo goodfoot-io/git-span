@@ -1,7 +1,4 @@
 //! Integration tests for span root resolution.
-//!
-//! All tests are `#[ignore]`d during the bootstrap phase.
-//! Remove `#[ignore]` when the implementation is ready.
 
 #![cfg(test)]
 

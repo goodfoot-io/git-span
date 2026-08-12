@@ -1,10 +1,8 @@
 //! Acceptance tests for the layered `git span drift` engine.
 //!
-//! Every test here maps 1:1 to a bullet under
-//! `docs/drift-layers-plan.md` §"Phase 1 — Acceptance tests". They all
-//! call the real public API boundary (`resolve_anchor`, `resolve_span`,
-//! `drift_spans`, `ContentRef::read_normalized`, or the `git-span` CLI)
-//! against realistic fixture state.
+//! Every test here calls the real public API boundary (`resolve_anchor`,
+//! `resolve_span`, `drift_spans`, `ContentRef::read_normalized`, or the
+//! `git-span` CLI) against realistic fixture state.
 
 #![allow(clippy::too_many_lines)]
 
@@ -22,7 +20,7 @@ use support::TestRepo;
 // ---------------------------------------------------------------------------
 // Local helpers. These produce realistic fixture state; they do NOT
 // implement LFS/filter-process logic — they only set up the repo in the
-// shape the eventual Phase 1 implementation will encounter.
+// shape the resolver encounters.
 // ---------------------------------------------------------------------------
 
 /// Seed a span with one line-anchor anchor on `file1.txt#L1-L5` and commit it.
@@ -179,9 +177,8 @@ fn worktree_only_drift_changed_source_worktree_no_blob_exit_one() -> Result<()> 
     let mr = resolve_span(&repo.gix_repo()?, ".span", "m", EngineOptions::full())?;
     let r = &mr.anchors[0];
     assert_eq!(r.status, AnchorStatus::Changed);
-    // Source / current.blob live on the Phase 1 `Finding` shape which
-    // `resolve_span`'s `AnchorResolved` will be widened to carry. The
-    // check below pins the observable result once the widening lands.
+    // `AnchorResolved` carries `source` and `current.blob`; the check
+    // below pins the observable result for a worktree-only read.
     assert!(r.current.is_some());
     assert!(
         r.current.as_ref().unwrap().blob.is_none(),
@@ -1018,10 +1015,9 @@ fn index_sha1_trailer_changes_mid_run_prints_warning() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Type-level smoke: exercises the Phase 1 public boundary in trivial ways
-// so that refactors to the types show up here as compile errors rather
-// than only in the library crate. Kept ignored — runtime would hit
-// `todo!()` on `ContentRef::read_normalized`.
+// Type-level smoke: exercises the public boundary in trivial ways so that
+// refactors to the types show up here as compile errors rather than only
+// in the library crate.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1033,8 +1029,8 @@ fn content_ref_read_normalized_is_the_single_boundary() -> Result<()> {
     let _scope = Scope::All;
     let _src = DriftSource::Worktree;
     let _ref = ContentRef::WorktreeFile(PathBuf::from("file1.txt"));
-    // Actually invoking read_normalized() would hit todo!(); we only
-    // need this to type-check. Keep as a compile-time guard.
+    // This case deliberately does not invoke read_normalized(); it only
+    // needs to type-check. Keep as a compile-time guard.
     Ok(())
 }
 

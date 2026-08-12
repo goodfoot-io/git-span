@@ -4,8 +4,8 @@
 //! specification in CARD.md. All errors use [`CliError`] with structured
 //! remediation context.
 //!
-//! `run_add`, `run_remove`, and `run_why` edit worktree span files
-//! directly; spans are tracked files, so there is no separate staging
+//! `run_add`, `run_remove`, `run_replace`, and `run_why` edit worktree span
+//! files directly; spans are tracked files, so there is no separate staging
 //! area or commit step beyond the worktree write.
 
 use crate::cli::drift_label::format_drift_label;
@@ -1532,7 +1532,6 @@ fn run_why_reader(repo: &gix::Repository, name: &str, span_root: &str) -> Result
 // The surface below is the contract: `ReconcileCheck` carries the three
 // facts, the JSON document family (schema_version 1) is the structured
 // rendering, and `is_superseded` is the provable-supersession predicate.
-// Phase 1 lands the stubs; the resolver plumbing lands in Phase 3.
 
 /// Mutation-family JSON document version. Versioning is per family: the
 /// mutation document starts at 1 while the drift scan document uses its own

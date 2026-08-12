@@ -1,7 +1,6 @@
 //! Span read/write operations. See §6.
 //!
 //! Split by concern:
-//! - [`commit`] — staging resolution + span commit pipeline (§6.1, §6.2).
 //! - [`read`]   — read-only views (§6.5, §6.6, §10.4).
 //! - [`structural`] — delete, mv, restore, revert (§6.8).
 

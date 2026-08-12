@@ -48,10 +48,10 @@
 //! reproduces on the new-store COLD path with an empty store and a clean
 //! worktree, so it is rooted in the shared Phase 3 capture/projection
 //! (`resolver/engine` + `resolver/core`), outside 5B's file ownership — exactly
-//! the shape of Phase 4C's committed-rename defect. The parity assertion is
-//! encoded (demanding the correct, per-layer output) but `#[ignore]`d pending
-//! the upstream fix; `whole_file_multilayer_drift_blocked_upstream` below is the
-//! minimal reproduction. Line-range anchors (used by every non-ignored scenario
+//! the shape of Phase 4C's committed-rename defect. That upstream defect has
+//! since been fixed: `whole_file_multilayer_drift_blocked_upstream` below is
+//! the minimal reproduction, and it now asserts and holds byte-identity with
+//! the cache-off oracle. Line-range anchors (used by every other scenario
 //! here, and by every Phase 3/4 differential test) drift at a single layer and
 //! are byte-identical on both paths, so the dirty tier itself is fully proven.
 //!
@@ -548,8 +548,9 @@ fn changing_index_race_parity() -> Result<()> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// BLOCKED (upstream, Phase 3 shared capture/projection — outside 5B ownership):
-// whole-file anchor drifted at all layers.
+// Whole-file anchor drifted at all layers. Was blocked on an upstream defect
+// in the Phase 3 shared capture/projection (outside 5B ownership); that defect
+// has since been fixed and this case asserts full parity.
 //
 // Minimal reproduction of the divergence described in the module header. A
 // WHOLE-FILE anchor whose content differs from its recorded fingerprint at
@@ -559,8 +560,8 @@ fn changing_index_race_parity() -> Result<()> {
 // HEAD-sourced "changed". It reproduces on the new-store COLD path (empty store,
 // clean worktree — the dirty tier is not even reached), so the fix lives in
 // `resolver/engine` / `resolver/core`, outside 5B's file ownership. Encoded as
-// the correct contract (byte-identity with cache-off) but `#[ignore]`d pending
-// the upstream fix, mirroring Phase 4C's `rename_matches_oracle_*_blocked`.
+// the correct contract (byte-identity with cache-off), which now holds,
+// mirroring Phase 4C's `rename_matches_oracle_*_blocked`.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]

@@ -2,14 +2,11 @@
 //!
 //! Reproduces the Stop-hook incident shape: a span that has been
 //! re-anchored to match the worktree content but whose source file
-//! changes remain uncommitted. The stub detection in Phase 1 returns
-//! `ResolvedPendingCommit` for any file-backed anchor with a resolved
-//! current position. These tests verify that the contract compiles and
-//! the output plumbing is wired correctly.
-//!
-//! Phase 3 replaces the stub with real worktree-vs-HEAD comparison.
-//! When that lands, these tests are un-ignored and the assertions
-//! become the definitive regression check.
+//! changes remain uncommitted. A file-backed anchor whose stored hash
+//! matches the worktree but not HEAD classifies as
+//! `ResolvedPendingCommit` (`resolver/engine/anchor.rs`); these tests
+//! are the regression check on that comparison and on the output
+//! plumbing that renders it.
 
 use crate::support;
 

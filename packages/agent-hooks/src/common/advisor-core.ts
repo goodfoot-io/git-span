@@ -1,8 +1,8 @@
 /**
- * Harness-agnostic advisor core (Phase 3.1 — contract and stubs).
+ * Harness-agnostic advisor core.
  *
  * This module declares the PreToolUse advisor that both the Claude (`Bash`) and
- * Codex (shell/exec) adapters will drive: when the agent runs `git commit` or
+ * Codex (shell/exec) adapters drive: when the agent runs `git commit` or
  * `git push` and the changeset it is about to land carries real span debt, the
  * command is held once with a checklist — a bare retry then proceeds, so the
  * advisor reports rather than enforces; positional drift the touch hook has been
@@ -20,11 +20,7 @@
  * `RESOLVED_PENDING_COMMIT` are never debt), the porcelain status vocabulary
  * (`PorcelainStatus`/`PorcelainRow`/`DriftPorcelainRow`), and `advisorMemoDir()`
  * (the `<git-common-dir>/git-span/advisor/` path the disk-backed
- * {@link AdvisorMemoState} will persist under) — all from agent-hooks-common.ts.
- *
- * Every function whose result depends on real logic is a `Not Implemented` stub
- * in this phase; Phase 3.2 writes skipped checks against these signatures and
- * Phase 3.3 implements them.
+ * {@link AdvisorMemoState} persists under) — all from agent-hooks-common.ts.
  */
 
 import { execFileSync } from 'node:child_process';

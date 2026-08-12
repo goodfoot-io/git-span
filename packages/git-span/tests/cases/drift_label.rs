@@ -1,10 +1,8 @@
 //! Integration tests for the shared drift-label formatter (`cli::drift_label`).
 //!
 //! These tests exercise every row of the seven-row vocabulary table from the
-//! card spec plus precedence and cross-surface consistency rules.
-//!
-//! All tests are marked `` — they are skipped until
-//! Phase 3 implements `format_drift_label` and the supporting engine corrections.
+//! card spec plus precedence and cross-surface consistency rules against
+//! `format_drift_label` and the supporting engine corrections.
 
 use crate::support;
 

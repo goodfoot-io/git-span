@@ -10,8 +10,9 @@
 //! produces the same `Tracked` location as the previous per-anchor delta
 //! replay in `session::resolve_at_head_shared`.
 //!
-//! Phase 2 will replace per-anchor replay with a composed line map. Phase 1
-//! does *not* attempt that — see `three-phase-plan.md`.
+//! Phase 2 replaced per-anchor replay with a composed line map:
+//! `project_by_linemap` projects through `composed_linemap` and falls back to
+//! `project_by_hunk_replay` when the line map cannot place the range.
 
 use crate::git;
 use crate::perf;

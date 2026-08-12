@@ -1216,8 +1216,8 @@ export interface CompareTreesInput {
 
 /**
  * The comparison's outcome — the same attributions/unchanged/gaps contract
- * as {@link CompareSnapshotResult}, plus the per-changed-path content hashes
- * the interleaved-edit consult and the ambiguity table compare against.
+ * as v1's comparison result, plus the per-changed-path content hashes the
+ * interleaved-edit consult and the ambiguity table compare against.
  */
 export interface CompareTreesResult {
   /** Attribution per repo-relative path; unchanged paths are omitted. */

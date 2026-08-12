@@ -1251,8 +1251,8 @@ pub fn log_l_resolve(
     _end: u32,
     _copy_detection: crate::types::CopyDetection,
 ) -> Result<Option<(String, u32, u32, String)>> {
-    // Resolver lives in drift.rs (ported from v1). This hook exists only
-    // to preserve the Slice B signature.
+    // The real resolver is `resolver::resolve_anchor`. This hook has no
+    // callers and exists only to preserve the Slice B signature.
     Err(Error::Git(
         "git::log_l_resolve is not used; call resolver::resolve_anchor".into(),
     ))

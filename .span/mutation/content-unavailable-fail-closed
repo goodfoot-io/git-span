@@ -1,4 +1,4 @@
-packages/git-span/src/cli/commit.rs#L1806-L1814 rk64:30c17cafa4dc00dd
+packages/git-span/src/cli/commit.rs#L1805-L1813 rk64:30c17cafa4dc00dd
 packages/git-span/tests/cases/filter_driver_failure.rs#L43-L101 rk64:c3dd50bed502315b
 
 The post-write reconcile check runs with ignore_unavailable: false, so an anchor behind a declared-but-broken filter is ContentUnavailable — actionable drift that makes add/why land locally but exit 1, while drift --ignore-unavailable (non-default) exits 0 on the same condition; this deliberate divergence (plan reconciliation-output.md) is asserted from both sides so the fail-closed reading cannot be silently relaxed.

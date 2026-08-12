@@ -3,9 +3,8 @@
 //! `EngineOptions::committed_only()` short-circuits the diff-files /
 //! diff-index calls and the staging-dir walk. The bench measures
 //! `drift_spans` on a small synthetic fixture seeded once per run
-//! (criterion handles the iteration loop). See
-//! `docs/drift-layers-plan.md` §"Performance gate" — the >10%
-//! regression policy is a CI-gate concern, not enforced here.
+//! (criterion handles the iteration loop). The >10% regression policy is
+//! a CI-gate concern, not enforced here.
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use git_span::{EngineOptions, drift_spans};

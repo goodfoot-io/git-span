@@ -41,9 +41,9 @@
 //! store reports a duplicate `MOVED W` + `MOVED H` finding where the legacy
 //! oracle collapses the identical move to a single `MOVED W`. That code is
 //! Phase 3 and is outside 4C's file ownership, so the parity assertion is
-//! encoded (demanding the correct, collapsed output) but `#[ignore]`d pending
-//! the Phase 3 fix. See `notes/phase-4-latency-measurement.md` in the card repo
-//! for the full repro and disposition.
+//! encoded demanding the correct, collapsed output. The Phase 3 fix has since
+//! landed and the assertion holds. See `notes/phase-4-latency-measurement.md`
+//! in the card repo for the full repro and disposition.
 
 use crate::support::TestRepo;
 
@@ -367,8 +367,9 @@ fn no_common_ancestor_parity() -> Result<()> {
 // Proven-faithful: the incremental reconstruction is byte-identical to the
 // new-store COLD build (4B is correct relative to its contract).
 //
-// Known divergence vs the cache-off oracle, rooted in Phase 3's projection and
-// therefore outside 4C's file ownership — encoded but `#[ignore]`d (below).
+// Formerly a known divergence vs the cache-off oracle, rooted in Phase 3's
+// projection and therefore outside 4C's file ownership. The Phase 3 fix has
+// landed; the case below asserts parity and holds.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Apply the committed-rename transition to a freshly built, ancestor-published

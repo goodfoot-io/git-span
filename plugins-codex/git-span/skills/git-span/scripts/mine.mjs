@@ -20,7 +20,7 @@
 // per-section detail. The top of the table is the span candidate shortlist.
 //
 // Usage:
-//   node scripts/potential-implicit-semantic-dependencies.mjs [options]
+//   node mine.mjs [options]
 //
 // Options:
 //   --since=<git-date>       Limit history (default: 1.year)

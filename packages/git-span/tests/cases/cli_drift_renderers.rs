@@ -1,11 +1,9 @@
 //! Slice 8 renderer × layer-combination smoke tests.
 //!
-//! Per `docs/drift-layers-slices.md` slice 8: the renderers consume
-//! `Finding` end-to-end. These tests exercise each
+//! The renderers consume `Finding` end-to-end. These tests exercise each
 //! `--format` against representative layer toggles to catch shape
 //! regressions cheaply. `tests/cli_drift_human.rs` and
-//! `tests/cli_drift_machine.rs` continue to host older / phase-pending
-//! snapshot expectations.
+//! `tests/cli_drift_machine.rs` host the fuller snapshot expectations.
 
 use crate::support;
 

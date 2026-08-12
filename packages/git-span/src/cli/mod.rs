@@ -500,18 +500,20 @@ pub fn parse_range_address(text: &str) -> anyhow::Result<(String, u32, u32)> {
 
 /// Dispatch a parsed [`Commands`] to its handler. Called from `main`.
 ///
-/// `span_dir` is the optional `--span-dir` CLI value, passed through to
-/// handlers that need to resolve the span root directory.
+/// `span_dir` is a span-root override threaded into the precedence chain
+/// below. The `--span-dir` flag that once supplied it was removed as unused
+/// in `da2b052d`, so both call sites in `main` pass `None` and this
+/// parameter is currently always `None`.
 pub fn dispatch(
     repo: &gix::Repository,
     command: Commands,
     span_dir: Option<&str>,
 ) -> anyhow::Result<i32> {
     // Resolve the span root once, here, through the single precedence
-    // chain (`--span-dir` > `GIT_SPAN_DIR` > `git config git-span.dir`
-    // > `.span`). Every handler — read, write, management, advice,
-    // doctor — and the resolver engine + cache key derivation operate
-    // on this resolved root, so writer and all readers agree.
+    // chain (`span_dir` > `GIT_SPAN_DIR` > `git config git-span.dir`
+    // > `.span`). Every handler — read, write, management, doctor — and
+    // the resolver engine + cache key derivation operate on this
+    // resolved root, so writer and all readers agree.
     let env_dir = std::env::var("GIT_SPAN_DIR").ok();
     let span_root = crate::span_root::resolve_span_root(repo, span_dir, env_dir.as_deref())
         .map_err(|e| anyhow::anyhow!("{}", e))?;

@@ -1,9 +1,7 @@
 //! `git span drift` output rendering — §10.4.
 //!
-//! Slice 8 of the layered-drift rewrite (see
-//! `docs/drift-layers-plan.md` §"Renderers"). Renderers consume
-//! `Finding` end-to-end via a thin adapter that maps the engine's
-//! `AnchorResolved` into the plan's "Key types" shape.
+//! Renderers consume `Finding` end-to-end via a thin adapter that maps the
+//! engine's `AnchorResolved` into that shape.
 
 use crate::cli::drift_fix::FixResult;
 use crate::cli::{CliError, NextStep, DriftArgs, DriftFormat, resolver_read_error};
