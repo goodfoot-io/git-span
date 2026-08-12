@@ -60,11 +60,15 @@ check("git-span binary sha256", manifest["git_span"]["sha256"], sha256_file(pkg_
 check("node binary sha256", manifest["node"]["staged_binary_sha256"], sha256_file(pkg_dir / manifest["node"]["staged_binary_path"]))
 
 # Hook bundles, on-disk src (source of truth before a rebuild).
-hooks_dir = pkg_dir / "src" / "minisweagent_gitspan" / "hooks" / "bin"
+# The five ALL_HOOKS .mjs live in hooks/bin/; hooks.json sits one level up in
+# hooks/ and is pinned for provenance only (see manifest's _attestation_note).
+hooks_root = pkg_dir / "src" / "minisweagent_gitspan" / "hooks"
+hooks_dir = hooks_root / "bin"
 for filename, expected in manifest["hook_bundles_sha256"].items():
     if filename.startswith("_"):
         continue
-    check(f"hook bundle {filename}", expected, sha256_file(hooks_dir / filename))
+    root = hooks_root if filename == "hooks.json" else hooks_dir
+    check(f"hook bundle {filename}", expected, sha256_file(root / filename))
 
 # Frozen skill tree (staged copy baked into the image).
 skill_root = pkg_dir / "experiment" / "context" / "git-span-skill"

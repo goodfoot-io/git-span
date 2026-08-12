@@ -27,7 +27,8 @@ experiment/
   Dockerfile, build-image.sh    # derive the treatment task image
   vendor-task-data.sh           # PyPI programbench ships no task data
   manifest.json                 # pinned versions/hashes/digests, single source of truth
-  treatment.yaml / control.yaml # arm configs, expected_* copied from manifest.json
+  treatment.yaml / control.yaml # arm configs; treatment carries expected_*, control pins nothing
+  expected.json                 # third pin-carrying file — read by smoke_test.py
   smoke_test.py                 # real-container bridge scenario
   context/                      # build-context: staged node/git-span binaries, wheel, skill copy
 src/minisweagent_gitspan/
@@ -43,6 +44,7 @@ All `bin/`/`references/` paths below are relative to `${CLAUDE_SKILL_DIR}`.
 | Understand the hook bridge / attestation / telemetry shape | `${CLAUDE_SKILL_DIR}/references/architecture.md` |
 | Rebuild the wheel, binaries, skill copy, or derived image | `${CLAUDE_SKILL_DIR}/references/build-and-vendor.md` |
 | Check artifact hashes match `manifest.json` before rebuilding | `${CLAUDE_SKILL_DIR}/bin/verify-artifact-hashes.sh` |
+| Re-pin every hash after a rebuild (all three files at once) | `${CLAUDE_SKILL_DIR}/bin/repin-artifacts.sh --yes` — then re-run with `--image-id sha256:...` after `build-image.sh` |
 | Preflight a real derived container | `${CLAUDE_SKILL_DIR}/bin/preflight-container.sh <image>` |
 | Run the bridge smoke scenario | `uv run python experiment/smoke_test.py --expected experiment/expected.json` (from `packages/mini-swe-agent` — this one's a repo path, not a skill path) |
 | Run a real treatment/control eval | `${CLAUDE_SKILL_DIR}/references/running-and-verifying.md`, then `${CLAUDE_SKILL_DIR}/bin/run-arm.sh` |
@@ -55,10 +57,23 @@ All `bin/`/`references/` paths below are relative to `${CLAUDE_SKILL_DIR}`.
 
 **Attestation/manifest integrity** (violating these fails closed inside the
 container, or silently invalidates a score):
+- **Three files carry pins, and they must move together:**
+  `manifest.json` (the source of truth), `treatment.yaml`, and
+  **`expected.json`** — the easy one to miss, since it isn't mentioned in the
+  setup guide's pinning section but `smoke_test.py` reads it. Re-pinning two
+  of the three leaves the smoke scenario asserting against dead hashes.
+  `control.yaml` pins nothing (hooks are disabled there, so no attestation).
+  `${CLAUDE_SKILL_DIR}/bin/repin-artifacts.sh` writes all three in lockstep.
 - **`hooks.json` is never in `expected_bundle_sha256`.** It's not one of the
   5 `ALL_HOOKS` bundles hashed by `_build_attestation`; any expected entry
   for it compares against nothing and preflight always fails. See
-  `${CLAUDE_SKILL_DIR}/references/troubleshooting.md` finding j.
+  `${CLAUDE_SKILL_DIR}/references/troubleshooting.md` finding j. It *is*
+  pinned in `manifest.json`'s `hook_bundles_sha256`, for provenance only.
+- **`hooks.json` lives one directory above the bundles it lists.** The five
+  `ALL_HOOKS` `.mjs` are in `src/minisweagent_gitspan/hooks/bin/`; `hooks.json`
+  sits in `.../hooks/`. Anything that hashes the manifest's
+  `hook_bundles_sha256` keys against disk must special-case that one path, or
+  it reports a phantom mismatch for a file that is perfectly fine.
 - **Never edit a manifest mid-batch.** Cut a new `manifest_version` and
   re-derive images instead of hand-patching pinned values.
 - **`programbench eval`'s default `--image-tag` scores against the
@@ -113,10 +128,17 @@ prefixed `${CLAUDE_SKILL_DIR}` are this skill's; unprefixed paths are
    `${CLAUDE_SKILL_DIR}/references/build-and-vendor.md` §1-3.
 3. `${CLAUDE_SKILL_DIR}/bin/verify-artifact-hashes.sh` — confirm hashes,
    fix drift, before touching the container.
-4. Update `manifest.json` + `treatment.yaml`'s `expected_*` fields together
-   (never one without the other) — see the attestation-integrity rules above.
+4. `${CLAUDE_SKILL_DIR}/bin/repin-artifacts.sh --yes` — rewrites
+   `manifest.json` + `treatment.yaml` + `expected.json` together from the
+   artifacts just built, bumps `manifest_version`, and refuses to write if the
+   wheel's embedded bundles don't match the on-disk ones (a stale wheel would
+   otherwise get pins attesting to bytes the container never contains). Never
+   hand-patch a subset of the three — see the attestation-integrity rules above.
 5. `./experiment/build-image.sh` — rebuild the derived image; both arms
-   still share it.
+   still share it. Then re-run
+   `${CLAUDE_SKILL_DIR}/bin/repin-artifacts.sh --yes --no-bump --image-id sha256:...`
+   with the `derived_image_id=` it prints, to record the new image in
+   `derived_image` and both arms.
 6. `${CLAUDE_SKILL_DIR}/bin/preflight-container.sh <image>` then
    `uv run python experiment/smoke_test.py --expected experiment/expected.json`
    — both must pass before trusting a real run.

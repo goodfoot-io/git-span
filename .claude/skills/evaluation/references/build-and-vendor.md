@@ -144,15 +144,30 @@ uv run experiment/vendor-task-data.sh   # or: ./experiment/vendor-task-data.sh
 ## 6. Update the manifest and arm configs together
 
 `experiment/manifest.json` is the single pinned source of truth (per setup
-guide "Pin the experiment"); `treatment.yaml`/`control.yaml`'s `expected_*`
-fields must be copied from it exactly. After any artifact rebuild:
+guide "Pin the experiment"). **Two** other files copy `expected_*` fields from
+it and must never diverge: `treatment.yaml` and `expected.json`.
+`control.yaml` pins nothing — hooks are disabled in that arm, so there is no
+attestation to compare against.
+
+`${CLAUDE_SKILL_DIR}/bin/repin-artifacts.sh --yes` does steps 1-4 below in one
+pass, and additionally verifies the wheel's embedded bundles match the on-disk
+ones before writing. Prefer it; the manual sequence is here so you can check
+its work.
 
 1. Recompute every sha256 (`${CLAUDE_SKILL_DIR}/bin/verify-artifact-hashes.sh`).
 2. Update `manifest.json`'s `mini_swe_agent_git_span.wheel_sha256`,
    `hook_bundles_sha256`, `skill.skill_file_sha256`/`skill_tree_sha256`,
-   `derived_image.image_id`.
-3. Copy the non-`hooks.json` bundle hashes and the skill-tree hash into
-   `treatment.yaml`'s `expected_bundle_sha256` / `expected_skill_tree_sha256`.
+   `derived_image.image_id` (and every `arms[].image_id`).
+3. Copy the non-`hooks.json` bundle hashes and the skill-tree hash into **both**
+   `treatment.yaml` *and* `expected.json`'s `expected_bundle_sha256` /
+   `expected_skill_tree_sha256`. `expected.json` is the one that gets
+   forgotten — the setup guide's pinning section never names it, but
+   `smoke_test.py --expected experiment/expected.json` reads it, so skipping it
+   means the smoke scenario asserts against hashes from the previous build.
 4. Bump `manifest_version` — don't edit a manifest mid-batch; cut a new one
    and re-derive images instead (setup guide: "Do not rebuild one arm
    midway through a batch").
+
+Note on layout when hashing by hand: the five `ALL_HOOKS` `.mjs` are in
+`src/minisweagent_gitspan/hooks/bin/`, but `hooks.json` — also a
+`hook_bundles_sha256` key — sits one level up in `.../hooks/`.

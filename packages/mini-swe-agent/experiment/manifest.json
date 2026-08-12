@@ -1,6 +1,7 @@
 {
-  "manifest_version": 1,
-  "created_at": "2026-08-12T02:10:00-04:00",
+  "manifest_version": 2,
+  "created_at": "2026-08-12T20:15:24Z",
+  "_manifest_version_2_note": "Cut from manifest_version 1 after upgrading @goodfoot/claude-code-hooks 1.7.3 -> 1.8.0, which changes the compiled hook bundle bytes. Re-pinned: wheel_sha256, all five hook_bundles_sha256 .mjs entries, and derived_image. Unchanged: hooks.json sha256, git-span binary, node, skill file/tree, base image, dataset.",
   "experiment_name": "git-span-programbench-canary-v1",
   "_purpose": "Pin the experiment per programbench-setup-guide.md 'Pin the experiment'. Every value below is the exact recorded output of the build steps in reports/programbench/{setup-log,artifacts,dataset}.md, re-verified live against the running venv/dist/docker state at write time. Do not edit mid-batch: cut a new manifest_version and re-derive images instead.",
   "programbench": {
@@ -39,9 +40,9 @@
   "derived_image": {
     "instance_id": "xorg62__tty-clock.f2f847c",
     "runner_tag": "programbench/xorg62_1776_tty-clock.f2f847c:task_cleanroom_v6",
-    "image_id": "sha256:238e8700c7b744f1e01d018da3e04c552be07f111be0573cca28101f6f8e827c",
-    "repo_digest": "programbench/xorg62_1776_tty-clock.f2f847c@sha256:238e8700c7b744f1e01d018da3e04c552be07f111be0573cca28101f6f8e827c",
-    "built_at": "2026-08-12T02:00:25Z",
+    "image_id": "sha256:afcb0c4da04e0cc16846e96e4cadcd8d6a875d6497a2d1b90acdbdc4b349db2d",
+    "repo_digest": "programbench/xorg62_1776_tty-clock.f2f847c@sha256:afcb0c4da04e0cc16846e96e4cadcd8d6a875d6497a2d1b90acdbdc4b349db2d",
+    "built_at": "2026-08-12T20:12:00Z",
     "built_from_original_base_id": "sha256:7c070e64a44e0b7dc2a032acf02159da43a0a4993a154b5fd98c4ab997726272",
     "build_platform": "linux/amd64",
     "in_image_checks_passed": [
@@ -57,8 +58,8 @@
   "mini_swe_agent_git_span": {
     "package_version": "1.1.3",
     "wheel_path": "dist/mini_swe_agent_git_span-1.1.3-py3-none-any.whl",
-    "wheel_sha256": "4c1cfc6887bab0ea8e0bec29d9bd3512027e0181e377b1a8416bb8f6b4b641a2",
-    "_wheel_note": "Supersedes an earlier build (sha256 6e5e6bf2...) that used `from datetime import UTC`, incompatible with the task image's Python 3.10.12. Do not use the superseded wheel."
+    "wheel_sha256": "5b86593ef36054552459d41755bc9b83d7e1af13f80b09554f8b56048d096e05",
+    "_wheel_note": "manifest_version 2 wheel. Supersedes 4c1cfc68... (manifest_version 1), which embedded hook bundles built by @goodfoot/claude-code-hooks 1.7.3; this build embeds bundles from 1.8.0. Both supersede an earlier build (sha256 6e5e6bf2...) that used `from datetime import UTC`, incompatible with the task image's Python 3.10.12. Do not use any superseded wheel."
   },
   "git_span": {
     "crate_version": "1.1.3",
@@ -78,11 +79,11 @@
     "verified_version_output": "v22.23.2"
   },
   "hook_bundles_sha256": {
-    "snapshot.mjs": "bfa81eeea4b812ceaac5b6aa67b832acae230b960cd558f72dae3762578cf204",
-    "advisor.mjs": "6ce26fc6c1c277bbcaac733f7bc98afb2c481053a31adab9968bfade942c269c",
-    "post-tool-use.mjs": "1d29d5f38aa4704a6b4f91ccbe805f5bc104b8ec4e8a18336e84bb82dbd2a25e",
-    "post-tool-use-failure.mjs": "7e4be95262b62f1290b216a63ecb7b7df5aa55c1bca880da8b5735c6068bb6cd",
-    "session-end.mjs": "8a486ce1055aa7be21a369796dd5bab1caa20eeeba65f95f6602d5ca5eea41ce",
+    "snapshot.mjs": "ff73bdb6de04b7d76f78f533e2383ace07563f8cfc6070d8d6ba071ae5d6d78d",
+    "advisor.mjs": "f9189bd075620e934c5ae16fac291ff5c46b0f0486406c096d01eb998afab3ca",
+    "post-tool-use.mjs": "00af5f31bb564922099f9fbce3e635d512071bc22481d3541f4bbb67da3d69be",
+    "post-tool-use-failure.mjs": "df518a5f75b6169c18329f9315e980de690fd8236e3e4b066428ed3c0b06dfda",
+    "session-end.mjs": "47f353198497cd1c6755c155e7272f89ced28a633d6c4060cc534367ff000512",
     "hooks.json": "f962dcaa89c4d1a3534c149d535f997d32359855ff88880f62d751de6b6c88e5",
     "_attestation_note": "IMPORTANT: HookedDockerEnvironment's _build_attestation() (src/minisweagent_gitspan/environment.py) only hashes the five .mjs files named in bridge.py's ALL_HOOKS tuple (snapshot, advisor, post-tool-use, post-tool-use-failure, session-end) \u2014 it never hashes hooks.json. treatment.yaml's `expected_bundle_sha256` therefore MUST NOT include a `hooks.json` key: any key in that dict is checked against `bundle_hashes.get(filename)`, and since hooks.json is never added to bundle_hashes, an entry for it always mismatches (expected != None) and fails preflight. hooks.json's sha256 is recorded here for provenance only."
   },
@@ -129,7 +130,7 @@
       ],
       "config_file": "experiment/treatment.yaml",
       "replicates": 1,
-      "image_id": "sha256:238e8700c7b744f1e01d018da3e04c552be07f111be0573cca28101f6f8e827c"
+      "image_id": "sha256:afcb0c4da04e0cc16846e96e4cadcd8d6a875d6497a2d1b90acdbdc4b349db2d"
     },
     "control": {
       "instance_ids": [
@@ -137,7 +138,7 @@
       ],
       "config_file": "experiment/control.yaml",
       "replicates": 1,
-      "image_id": "sha256:238e8700c7b744f1e01d018da3e04c552be07f111be0573cca28101f6f8e827c"
+      "image_id": "sha256:afcb0c4da04e0cc16846e96e4cadcd8d6a875d6497a2d1b90acdbdc4b349db2d"
     },
     "_note": "Canary pilot: 1 instance x 1 replicate per arm, unpaired/unshuffled by construction. A full batch must use shuffled, paired assignment per the setup guide."
   },
