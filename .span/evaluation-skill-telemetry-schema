@@ -1,0 +1,5 @@
+.claude/skills/evaluation/references/architecture.md#L76-L151 rk64:f97794ce506e9eb7
+packages/mini-swe-agent/src/minisweagent_gitspan/environment.py#L98-L186 rk64:e97d52fcc9f32450
+packages/mini-swe-agent/src/minisweagent_gitspan/environment.py#L347-L388 rk64:1c515cb5a4f6b013
+
+The exact schema documents environment.py's serialize()/_build_attestation/_collect_span_summary field names and nesting verbatim; any field added, renamed, or removed there falsifies this schema and must be mirrored here.
