@@ -383,6 +383,19 @@ impl<'a> LineIndex<'a> {
 /// adopt rk64 identity store it under this name.
 pub const RK64_ALGORITHM: &str = "rk64";
 
+/// A fixed, all-zero 16-hex-digit rk64 hash used as a sentinel `content_hash`
+/// for an anchor whose survivor content was never verified (e.g. a
+/// duplicate-identity collapse with no confirmed hash to carry forward).
+/// Callers pair this with [`RK64_ALGORITHM`] so the record round-trips
+/// through [`span_file::SpanFile::parse`]/`serialize` like any other hash,
+/// and a subsequent `drift` comparison against real content is guaranteed
+/// (practically, not formally — a real rk64 collision is a 1-in-2^64
+/// possibility, not mathematically excluded) to report the anchor drifted
+/// rather than `Fresh`.
+pub fn rk64_unmatched_sentinel() -> String {
+    "0".repeat(16)
+}
+
 /// Canonical hex encoding of an rk64 fingerprint for the stored
 /// `rk64:<hex>` token: **lowercase, zero-padded to 16 digits, big-endian**
 /// (most-significant nibble first), i.e. `format!("{fp:016x}")`. Pair with

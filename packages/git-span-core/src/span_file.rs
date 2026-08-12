@@ -297,6 +297,96 @@ impl SpanFile {
     }
 }
 
+/// A duplicate-identity group `collapse_duplicate_identities` reduced to one
+/// record.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CollapsedIdentity {
+    /// Repository-relative, slash-separated file path of the identity.
+    pub path: String,
+    /// 1-based start line of the identity; 0 for whole-file anchors.
+    pub start_line: u32,
+    /// 1-based end line (inclusive) of the identity; 0 for whole-file anchors.
+    pub end_line: u32,
+    /// Record count before the collapse (the count after is always 1).
+    pub records_before: usize,
+    /// `Some((algorithm, content_hash))` when every record in the group
+    /// already agreed on both fields — a same-line duplicate, not a
+    /// divergence — so callers that force a drifted survivor must not do
+    /// so here. `None` when the group actually disagreed.
+    pub agreed_hash: Option<(String, String)>,
+}
+
+/// Collapse every group of records sharing a `(path, start_line, end_line)`
+/// identity down to one survivor, the first record of the group in
+/// canonical order.
+///
+/// Reorders `anchors` into canonical (path, start_line, end_line) order as
+/// a side effect, even when no group collapses. The sort is a stable sort
+/// over a `Vec` — never a `HashMap` — so ties within a group preserve
+/// on-disk order and the same input collapses to the same survivor
+/// regardless of platform or construction order.
+///
+/// Returns one [`CollapsedIdentity`] per group actually shrunk
+/// (`records_before > 1`); single-record groups are untouched and
+/// unreported. This function makes no decision about what hash a
+/// divergent survivor should carry — `agreed_hash` reports whether the
+/// group already agreed, and it is left to the caller to decide what to
+/// do when it did not.
+pub fn collapse_duplicate_identities(anchors: &mut Vec<AnchorRecord>) -> Vec<CollapsedIdentity> {
+    anchors.sort_by(|a, b| {
+        (a.path.as_str(), a.start_line, a.end_line).cmp(&(b.path.as_str(), b.start_line, b.end_line))
+    });
+
+    let mut collapsed = Vec::new();
+    let mut survivors: Vec<AnchorRecord> = Vec::with_capacity(anchors.len());
+    let mut i = 0;
+    while i < anchors.len() {
+        let mut j = i + 1;
+        while j < anchors.len()
+            && anchors[j].path == anchors[i].path
+            && anchors[j].start_line == anchors[i].start_line
+            && anchors[j].end_line == anchors[i].end_line
+        {
+            j += 1;
+        }
+        let group = &anchors[i..j];
+        let records_before = group.len();
+        if records_before > 1 {
+            let first = &group[0];
+            let agreed = group
+                .iter()
+                .all(|a| a.algorithm == first.algorithm && a.content_hash == first.content_hash);
+            let agreed_hash = if agreed {
+                Some((first.algorithm.clone(), first.content_hash.clone()))
+            } else {
+                None
+            };
+            collapsed.push(CollapsedIdentity {
+                path: first.path.clone(),
+                start_line: first.start_line,
+                end_line: first.end_line,
+                records_before,
+                agreed_hash,
+            });
+        }
+        survivors.push(group[0].clone());
+        i = j;
+    }
+
+    *anchors = survivors;
+    collapsed
+}
+
+/// Whether `a` still carries the collapse sentinel — the fixed all-zero
+/// rk64 hash [`crate::rk64_unmatched_sentinel`] plants on a survivor whose
+/// content was never verified. Shared so every writer that can plant or
+/// preserve the sentinel (`drift --fix`'s collapse sweep, the merge
+/// kernel's same-side collapse and cross-side preserve) and every reader
+/// that must recognize it (`drift` output) agree on one detector.
+pub fn carried_sentinel(a: &AnchorRecord) -> bool {
+    a.algorithm == RK64_ALGORITHM && a.content_hash == crate::rk64_unmatched_sentinel()
+}
+
 /// Parse the lines of a `[config]` block (everything after the `[config]`
 /// marker line). Each entry is `(1-based file line number, raw line)`.
 ///
@@ -1349,6 +1439,139 @@ mod tests {
         assert_eq!(result.unresolved[0].end_line, 4);
         assert_eq!(result.unresolved[0].ours, ours_anchor);
         assert_eq!(result.unresolved[0].theirs, theirs_anchor);
+    }
+
+    // -----------------------------------------------------------------------
+    // collapse_duplicate_identities
+    // -----------------------------------------------------------------------
+
+    fn anchor(path: &str, start: u32, end: u32, algorithm: &str, hash: &str) -> AnchorRecord {
+        AnchorRecord {
+            path: path.into(),
+            start_line: start,
+            end_line: end,
+            algorithm: algorithm.into(),
+            content_hash: hash.into(),
+        }
+    }
+
+    #[test]
+    fn collapse_two_divergent_records_to_one() {
+        let mut anchors = vec![
+            anchor("a.rs", 1, 3, "rk64", "1111"),
+            anchor("a.rs", 1, 3, "rk64", "2222"),
+        ];
+        let collapsed = collapse_duplicate_identities(&mut anchors);
+        assert_eq!(anchors.len(), 1);
+        assert_eq!(collapsed.len(), 1);
+        assert_eq!(collapsed[0].path, "a.rs");
+        assert_eq!(collapsed[0].start_line, 1);
+        assert_eq!(collapsed[0].end_line, 3);
+        assert_eq!(collapsed[0].records_before, 2);
+        assert_eq!(collapsed[0].agreed_hash, None);
+    }
+
+    #[test]
+    fn collapse_three_records_to_one() {
+        let mut anchors = vec![
+            anchor("b.rs", 5, 10, "rk64", "1111"),
+            anchor("b.rs", 5, 10, "rk64", "2222"),
+            anchor("b.rs", 5, 10, "rk64", "3333"),
+        ];
+        let collapsed = collapse_duplicate_identities(&mut anchors);
+        assert_eq!(anchors.len(), 1);
+        assert_eq!(collapsed.len(), 1);
+        assert_eq!(collapsed[0].records_before, 3);
+        assert_eq!(collapsed[0].agreed_hash, None);
+    }
+
+    #[test]
+    fn collapse_no_op_without_duplicates() {
+        let mut anchors = vec![
+            anchor("a.rs", 1, 3, "rk64", "1111"),
+            anchor("b.rs", 5, 10, "rk64", "2222"),
+        ];
+        let before = anchors.clone();
+        let collapsed = collapse_duplicate_identities(&mut anchors);
+        assert!(collapsed.is_empty());
+        assert_eq!(anchors.len(), 2);
+        // Order is canonicalized even on a no-op call; both inputs were
+        // already distinct identities in canonical order here.
+        assert_eq!(anchors, before);
+    }
+
+    #[test]
+    fn collapse_survivor_deterministic_regardless_of_input_order() {
+        // Two distinct identities, each with its own duplicate pair, given
+        // to the function in opposite overall (inter-group) order. Within
+        // each group the relative (on-disk) order of its own records is
+        // preserved identically in both constructions, so — per the
+        // documented stable-sort contract, which keeps the first record of
+        // each group in on-disk order — the survivor chosen for each
+        // identity does not depend on which identity's records happened to
+        // be constructed first in the input Vec, only on the fixed,
+        // deterministic (path, start_line, end_line) sort key and each
+        // group's own internal order. This is the property that makes the
+        // primitive safe to call on a Vec sourced from anywhere (never a
+        // HashMap, whose iteration order is randomized per process).
+        let mut order_a_first = vec![
+            anchor("a.rs", 1, 3, "rk64", "a-1111"),
+            anchor("a.rs", 1, 3, "rk64", "a-2222"),
+            anchor("b.rs", 5, 10, "rk64", "b-1111"),
+            anchor("b.rs", 5, 10, "rk64", "b-2222"),
+        ];
+        let mut order_b_first = vec![
+            anchor("b.rs", 5, 10, "rk64", "b-1111"),
+            anchor("b.rs", 5, 10, "rk64", "b-2222"),
+            anchor("a.rs", 1, 3, "rk64", "a-1111"),
+            anchor("a.rs", 1, 3, "rk64", "a-2222"),
+        ];
+        let collapsed_a = collapse_duplicate_identities(&mut order_a_first);
+        let collapsed_b = collapse_duplicate_identities(&mut order_b_first);
+        assert_eq!(order_a_first, order_b_first);
+        assert_eq!(order_a_first[0].content_hash, "a-1111");
+        assert_eq!(order_a_first[1].content_hash, "b-1111");
+        assert_eq!(collapsed_a.len(), 2);
+        assert_eq!(collapsed_b.len(), 2);
+        assert_eq!(collapsed_a, collapsed_b);
+    }
+
+    #[test]
+    fn collapse_agreed_hash_some_on_identical_duplicate() {
+        let mut anchors = vec![
+            anchor("a.rs", 1, 3, "rk64", "1111"),
+            anchor("a.rs", 1, 3, "rk64", "1111"),
+        ];
+        let collapsed = collapse_duplicate_identities(&mut anchors);
+        assert_eq!(collapsed.len(), 1);
+        assert_eq!(
+            collapsed[0].agreed_hash,
+            Some(("rk64".to_string(), "1111".to_string()))
+        );
+    }
+
+    #[test]
+    fn collapse_agreed_hash_none_on_divergent_duplicate() {
+        let mut anchors = vec![
+            anchor("a.rs", 1, 3, "rk64", "1111"),
+            anchor("a.rs", 1, 3, "rk64", "2222"),
+        ];
+        let collapsed = collapse_duplicate_identities(&mut anchors);
+        assert_eq!(collapsed.len(), 1);
+        assert_eq!(collapsed[0].agreed_hash, None);
+    }
+
+    #[test]
+    fn carried_sentinel_detects_sentinel_and_only_sentinel() {
+        let sentinel = crate::rk64_unmatched_sentinel();
+        let sentinel_anchor = anchor("a.rs", 1, 3, RK64_ALGORITHM, &sentinel);
+        assert!(carried_sentinel(&sentinel_anchor));
+
+        let real_hash_anchor = anchor("a.rs", 1, 3, RK64_ALGORITHM, "deadbeef");
+        assert!(!carried_sentinel(&real_hash_anchor));
+
+        let wrong_algorithm_anchor = anchor("a.rs", 1, 3, "sha256", &sentinel);
+        assert!(!carried_sentinel(&wrong_algorithm_anchor));
     }
 
     #[test]
