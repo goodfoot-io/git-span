@@ -110,3 +110,55 @@ fn compact_treated_as_show_exits_one() -> Result<()> {
     );
     Ok(())
 }
+
+/// A collapsing `add` obeys the same three-state contract as every other
+/// `add`: the exit code reports the *span-wide* verdict after the write, not
+/// the fact that a collapse happened. The survivor carries a hash `add` just
+/// computed from the content the operator named, so a span holding nothing
+/// else is clean → 0.
+#[test]
+fn collapsing_add_exits_zero_on_a_clean_span() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let p = repo.path().join(".span").join("collapse-exit-clean");
+    std::fs::create_dir_all(p.parent().unwrap())?;
+    std::fs::write(
+        &p,
+        "file1.txt#L1-L5 rk64:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n\
+         file1.txt#L1-L5 rk64:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n",
+    )?;
+
+    let out = repo.run_span(["add", "collapse-exit-clean", "file1.txt#L1-L5"])?;
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a collapse that leaves the span drift-free exits 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Ok(())
+}
+
+/// …and drift left on an anchor the collapse never touched still reports 1.
+/// The collapse resolves file *shape* at one identity; it makes no claim
+/// about the rest of the span.
+#[test]
+fn collapsing_add_exits_one_when_other_drift_remains() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let p = repo.path().join(".span").join("collapse-exit-drift");
+    std::fs::create_dir_all(p.parent().unwrap())?;
+    std::fs::write(
+        &p,
+        "file1.txt#L1-L5 rk64:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n\
+         file1.txt#L1-L5 rk64:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n\
+         file2.txt#L1-L5 rk64:cccccccccccccccccccccccccccccccc\n",
+    )?;
+
+    let out = repo.run_span(["add", "collapse-exit-drift", "file1.txt#L1-L5"])?;
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "actionable drift on an untouched anchor still reports 1; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Ok(())
+}

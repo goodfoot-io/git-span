@@ -596,3 +596,118 @@ fn reconcile_output_why_read_mode_rejects_json_format() -> Result<()> {
     );
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Matrix row: collapsed duplicate identity
+//
+// `add` on an identity carrying more than one record collapses them to the
+// single freshly-hashed record and reports `COLLAPSED`. The fourth outcome
+// kind must produce the same coherent triple every other outcome does: the
+// local per-address fact, the supersession block, and the one span-wide
+// line. The JSON pins the wire shape as literal text — `outcome` a bare
+// string, `records_before` a sibling field present only on that row.
+// ---------------------------------------------------------------------------
+
+/// Hand-write a span carrying two records at one identity.
+fn write_duplicate_span(repo: &TestRepo, name: &str, body: &str) {
+    let p = repo.path().join(".span").join(name);
+    std::fs::create_dir_all(p.parent().unwrap()).expect("create .span dir");
+    std::fs::write(p, body).expect("write span fixture");
+}
+
+#[test]
+fn reconcile_output_collapsed_outcome_prints_the_full_triple() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    write_duplicate_span(
+        &repo,
+        "collapse-triple",
+        "file1.txt#L1-L5 rk64:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n\
+         file1.txt#L1-L5 rk64:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n",
+    );
+
+    let out = repo.run_span(["add", "collapse-triple", "file1.txt#L1-L5"])?;
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the survivor carries a hash `add` just verified, so the span is \
+         clean; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("Added 0 anchors; 1 collapsed to span `collapse-triple`."),
+        "the summary line must tally the collapse; stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains(
+            "- collapsed: `collapse-triple` `file1.txt#L1-L5` (2 records → 1, hash reverified)"
+        ),
+        "the local fact names the identity and the pre-collapse count; \
+         stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Span `collapse-triple`: 0 drift across 1 span (1 anchor checked)."),
+        "the collapse must still print the one span-wide line; stdout:\n{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn reconcile_output_collapsed_json_shape_is_literal() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    write_duplicate_span(
+        &repo,
+        "collapse-json",
+        "file1.txt#L1-L5 rk64:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n\
+         file1.txt#L1-L5 rk64:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n",
+    );
+
+    let out = repo.run_span([
+        "add",
+        "collapse-json",
+        "file1.txt#L1-L5",
+        "--format",
+        "json",
+    ])?;
+    assert_eq!(out.status.code(), Some(0));
+    let text = String::from_utf8_lossy(&out.stdout);
+
+    // Literal text, not a serde round-trip: a round-trip would accept the
+    // struct-variant shape `"outcome": {"COLLAPSED": {...}}` just as
+    // happily, and that shape is precisely what breaks a consumer with a
+    // string-typed `outcome` field.
+    assert!(
+        text.contains("\"outcome\": \"COLLAPSED\""),
+        "`outcome` must be a bare string on every row; document:\n{text}"
+    );
+    assert!(
+        !text.contains("\"COLLAPSED\": {"),
+        "`outcome` must never nest an object; document:\n{text}"
+    );
+    assert!(
+        text.contains("\"records_before\": 2"),
+        "the count rides on a sibling field of the address row; \
+         document:\n{text}"
+    );
+    assert!(
+        text.contains("\"schema_version\": 1"),
+        "the addition is purely additive — the schema version does not \
+         move; document:\n{text}"
+    );
+
+    let v: Value = serde_json::from_slice(&out.stdout)
+        .map_err(|e| anyhow::anyhow!("stdout is not the mutation document: {e}\n{text}"))?;
+    assert_eq!(v["addresses"][0]["address"], "file1.txt#L1-L5");
+    assert_eq!(v["addresses"][0]["outcome"], "COLLAPSED");
+    assert_eq!(v["addresses"][0]["records_before"], 2);
+    assert_eq!(v["span_health"]["state"], "DRIFT_FREE");
+    assert!(
+        v["superseded"].as_array().is_some_and(|a| a.is_empty()),
+        "a collapse supersedes nothing: {v}"
+    );
+    assert!(
+        v["remaining"].as_array().is_some_and(|a| a.is_empty()),
+        "the reverified survivor leaves no actionable drift: {v}"
+    );
+    Ok(())
+}

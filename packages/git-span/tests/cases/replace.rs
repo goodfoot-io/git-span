@@ -178,10 +178,14 @@ fn replace_missing_old_anchor_fails_closed() -> Result<()> {
     Ok(())
 }
 
-/// Two records sharing the old identity (hand-edited or legacy file) make
-/// the old identity ambiguous; replace refuses rather than picking one.
+/// Two records sharing the old identity (hand-edited or legacy file) are no
+/// longer a dead end: the old identity is being *retired*, not read for
+/// content, so `replace` removes every record at it — however many, whatever
+/// their hashes — and installs the one new record. There is no survivor to
+/// name and no hash to adjudicate, so there is nothing left to be ambiguous
+/// about.
 #[test]
-fn replace_duplicate_old_records_rejected() -> Result<()> {
+fn replace_duplicate_old_records_resolved() -> Result<()> {
     let repo = TestRepo::seeded()?;
     // Hand-write a span with two same-identity records (different hashes).
     let span_p = span_path(&repo, "test/race");
@@ -193,19 +197,35 @@ fn replace_duplicate_old_records_rejected() -> Result<()> {
          \n\
          why: duplicate records from a legacy edit.\n",
     )?;
-    let before = span_bytes(&repo, "test/race")?;
 
     let out = repo.run_span(["replace", "test/race", "file1.txt#L1-L5", "file1.txt#L6-L10"])?;
-    assert_eq!(out.status.code(), Some(1), "ambiguous old identity must fail");
-    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("file1.txt#L1-L5"),
-        "the diagnostic must name the ambiguous identity, got: {stderr}"
+        out.status.success(),
+        "a duplicate old identity must be resolved, not refused (code {:?}): {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let span = String::from_utf8(span_bytes(&repo, "test/race")?.expect("span file"))?;
+    assert!(
+        !span.contains("file1.txt#L1-L5"),
+        "every record at the old identity must be gone, with no stray \
+         survivor:\n{span}"
+    );
+    assert!(
+        !span.contains("aaaaaaaaaaaaaaaa") && !span.contains("bbbbbbbbbbbbbbbb"),
+        "neither duplicate's hash may survive anywhere in the file:\n{span}"
     );
     assert_eq!(
-        span_bytes(&repo, "test/race")?,
-        before,
-        "a rejected replace must not touch the declaration"
+        span.lines()
+            .filter(|l| l.starts_with("file1.txt#L6-L10 "))
+            .count(),
+        1,
+        "the new identity must hold exactly one record:\n{span}"
+    );
+    assert!(
+        span.contains("why: duplicate records from a legacy edit."),
+        "the why block must be preserved:\n{span}"
     );
     Ok(())
 }
@@ -283,9 +303,11 @@ fn replace_nonexistent_new_path_rejected() -> Result<()> {
 }
 
 /// A swap onto an identity the span already tracks is refused: two
-/// same-identity records (the writer sorts but does not dedupe) would
-/// recreate the ambiguity `replace_duplicate_old_records_rejected`
-/// refuses to resolve.
+/// same-identity records (the writer sorts but does not dedupe) would be
+/// *created* by the swap. That is a different concern from resolving a
+/// duplicate that pre-exists at the old identity
+/// (`replace_duplicate_old_records_resolved`) — this check keeps `replace`
+/// from manufacturing the state that one repairs.
 #[test]
 fn replace_new_identity_already_tracked_rejected() -> Result<()> {
     let repo = TestRepo::seeded()?;

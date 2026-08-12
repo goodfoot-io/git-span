@@ -354,6 +354,25 @@ pub(crate) fn write_worktree_span(
     Ok(())
 }
 
+/// Remove every anchor record at `(path, start, end)`, returning how many
+/// were removed.
+///
+/// Makes no hash decision of its own — callers push whatever they want the
+/// identity to hold afterwards, or nothing. It lives here rather than in
+/// `git-span-core` for exactly that reason: it carries no hash policy, and
+/// both callers (`add`'s retain-and-replace, `replace`'s retirement of the
+/// old identity) are CLI-local.
+fn remove_all_at_identity(
+    anchors: &mut Vec<AnchorRecord>,
+    path: &str,
+    start: u32,
+    end: u32,
+) -> usize {
+    let before = anchors.len();
+    anchors.retain(|a| !(a.path == path && a.start_line == start && a.end_line == end));
+    before - anchors.len()
+}
+
 /// Check for prefix collision between a new span name and existing worktree
 /// span files.  The filesystem enforces that two paths cannot coexist when
 /// one is a strict prefix of the other (e.g. `a/b` and `a/b/c`).
@@ -854,6 +873,10 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result
         Added,     // new anchor — record created
         Resolved,  // existing anchor — hash changed, updated
         Unchanged, // anchor already matches stored hash
+        /// The identity carried more than one record; every one of them was
+        /// replaced by the single freshly-hashed record. `records_before` is
+        /// the pre-collapse count (the count after is always 1).
+        Collapsed { records_before: usize },
     }
 
     let mut outcomes: Vec<AddOutcome> = Vec::with_capacity(parsed.len());
@@ -872,30 +895,45 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result
 
             let key = (path.clone(), start_line, end_line);
 
-            let kind = if let Some(existing_hash) = existing.get(&key) {
-                if existing_hash == &content_hash {
-                    // Content matches what is already stored.
-                    AddOutcomeKind::Unchanged
-                } else {
-                    // Update the existing record's hash in place.
-                    if let Some(record) = span_file.anchors.iter_mut().find(|a| {
-                        a.path == *path && a.start_line == start_line && a.end_line == end_line
-                    }) {
-                        record.algorithm = algorithm;
-                        record.content_hash = content_hash;
-                    }
-                    AddOutcomeKind::Resolved
-                }
-            } else {
-                // Brand new anchor.
-                span_file.anchors.push(AnchorRecord {
-                    path: path.clone(),
-                    start_line,
-                    end_line,
-                    algorithm,
-                    content_hash,
-                });
-                AddOutcomeKind::Added
+            // Retain-and-replace, not patch-the-first-match: every record at
+            // this identity is removed and one record carrying the hash just
+            // computed from the content the operator named takes their place.
+            //
+            // The record count comes from a direct scan of `span_file.anchors`
+            // — never from `existing`, whose one slot per identity is filled
+            // last-write-wins and can therefore describe a different record
+            // than the one the mutation actually touches.
+            let mut group: Vec<AnchorRecord> = span_file
+                .anchors
+                .iter()
+                .filter(|a| {
+                    a.path == *path && a.start_line == start_line && a.end_line == end_line
+                })
+                .cloned()
+                .collect();
+            let matching_before = group.len();
+            // Survivor selection routes through the one shared collapse rule
+            // so `add`, `drift --fix`, and the merge kernel cannot drift apart
+            // on it — but on a slice holding only the identity this address
+            // named. `add` acts on the addresses it was given and never sweeps
+            // the rest of the file; that sweep is `drift --fix`'s job.
+            git_span_core::collapse_duplicate_identities(&mut group);
+            remove_all_at_identity(&mut span_file.anchors, path, start_line, end_line);
+            span_file.anchors.push(AnchorRecord {
+                path: path.clone(),
+                start_line,
+                end_line,
+                algorithm,
+                content_hash: content_hash.clone(),
+            });
+
+            let kind = match matching_before {
+                0 => AddOutcomeKind::Added,
+                // The `existing` map is trustworthy as a hash-match oracle
+                // only when the identity is known to hold exactly one record.
+                1 if existing.get(&key) == Some(&content_hash) => AddOutcomeKind::Unchanged,
+                1 => AddOutcomeKind::Resolved,
+                n => AddOutcomeKind::Collapsed { records_before: n },
             };
 
             outcomes.push(AddOutcome { addr, kind });
@@ -937,6 +975,10 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result
                 .iter()
                 .filter(|o| matches!(o.kind, AddOutcomeKind::Unchanged))
                 .count();
+            let collapsed_count = outcomes
+                .iter()
+                .filter(|o| matches!(o.kind, AddOutcomeKind::Collapsed { .. }))
+                .count();
             // Summary line.
             let mut summary = format!(
                 "Added {} anchor{}",
@@ -948,6 +990,9 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result
             }
             if unchanged_count > 0 {
                 write!(&mut summary, "; {unchanged_count} unchanged").unwrap();
+            }
+            if collapsed_count > 0 {
+                write!(&mut summary, "; {collapsed_count} collapsed").unwrap();
             }
             write!(&mut summary, " to span `{}`.", args.name).unwrap();
             println!("{summary}");
@@ -967,6 +1012,12 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result
                     AddOutcomeKind::Unchanged => {
                         format!(
                             "- unchanged: `{}` `{}` (content matches stored hash)",
+                            args.name, o.addr
+                        )
+                    }
+                    AddOutcomeKind::Collapsed { records_before } => {
+                        format!(
+                            "- collapsed: `{}` `{}` ({records_before} records → 1, hash reverified)",
                             args.name, o.addr
                         )
                     }
@@ -991,6 +1042,11 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result
                             AddOutcomeKind::Added => AddressOutcome::Added,
                             AddOutcomeKind::Resolved => AddressOutcome::Resolved,
                             AddOutcomeKind::Unchanged => AddressOutcome::Unchanged,
+                            AddOutcomeKind::Collapsed { .. } => AddressOutcome::Collapsed,
+                        },
+                        records_before: match o.kind {
+                            AddOutcomeKind::Collapsed { records_before } => Some(records_before),
+                            _ => None,
                         },
                     })
                     .collect(),
@@ -1237,52 +1293,32 @@ pub fn run_replace(repo: &gix::Repository, args: ReplaceArgs, span_root: &str) -
         read_worktree_span(repo, span_root, &args.name)?
     };
 
-    // Count records matching the old identity. Zero is a plain
-    // missing-anchor error; more than one is an ambiguity — the writer
-    // sorts but does not dedupe, so a hand-edited or legacy declaration
-    // can hold two same-identity records whose hashes differ, and no
-    // canonical choice exists.
-    let matches: Vec<usize> = span_file
-        .anchors
-        .iter()
-        .enumerate()
-        .filter(|(_, a)| {
-            a.path == old_path && a.start_line == old_start && a.end_line == old_end
-        })
-        .map(|(i, _)| i)
-        .collect();
-    match matches.len() {
-        0 => {
-            return Err(CliError {
-                subcommand: "replace",
-                summary: format!("`{}` is not an anchor on `{}`.", args.old_anchor, args.name),
-                what_happened: format!(
-                    "`{}` does not currently track that anchor, so there is nothing to replace.",
-                    args.name,
-                ),
-                next_steps: vec![NextStep::Bash(format!("git span show {}", args.name))],
-            }
-            .into())
+    // Retire every record at the old identity, however many there are. A
+    // hand-edited or legacy declaration can hold several records sharing
+    // the identity with different hashes, but none of them is being read
+    // for content: the operator named the old identity as the thing to swap
+    // out, so there is no survivor to name and no hash to adjudicate — the
+    // identity disappears wholesale. Zero records is the one remaining
+    // error: a plain missing anchor.
+    let removed = remove_all_at_identity(&mut span_file.anchors, &old_path, old_start, old_end);
+    if removed == 0 {
+        return Err(CliError {
+            subcommand: "replace",
+            summary: format!("`{}` is not an anchor on `{}`.", args.old_anchor, args.name),
+            what_happened: format!(
+                "`{}` does not currently track that anchor, so there is nothing to replace.",
+                args.name,
+            ),
+            next_steps: vec![NextStep::Bash(format!("git span show {}", args.name))],
         }
-        n if n > 1 => {
-            return Err(CliError {
-                subcommand: "replace",
-                summary: format!("`{}` is ambiguous on span `{}`.", args.old_anchor, args.name),
-                what_happened: format!(
-                    "{n} records in the declaration share this identity with different \
-                     content hashes, so no canonical choice exists. Fix the declaration \
-                     by hand, then retry."
-                ),
-                next_steps: vec![NextStep::Bash(format!("git span show {}", args.name))],
-            }
-            .into())
-        }
-        _ => {}
+        .into());
     }
 
     // A swap onto an identity the span already tracks would leave two
-    // same-identity records behind — the exact ambiguity state rejected
-    // above. Retiring the old anchor on its own is the one-command path.
+    // same-identity records behind — *creating* a duplicate identity rather
+    // than resolving one that pre-exists, which is a different concern from
+    // the old identity retired above. Retiring the old anchor on its own is
+    // the one-command path.
     if span_file.anchors.iter().any(|a| {
         a.path == new_path && a.start_line == new_start && a.end_line == new_end
     }) {
@@ -1300,21 +1336,21 @@ pub fn run_replace(repo: &gix::Repository, args: ReplaceArgs, span_root: &str) -
         .into());
     }
 
-    // Hash the new content and mutate exactly one record — the only
-    // mutation in the transaction. `why` and every unrelated anchor are
+    // Hash the new content and install the one new record — the only
+    // addition in the transaction. `why` and every unrelated anchor are
     // preserved.
     let (algorithm, content_hash) = {
         let _perf = crate::perf::span("replace.process");
         hash_anchor_content(repo, &new_path, &new_extent, None, &index_snapshot)?
     };
     {
-        let idx = matches[0];
-        let record = &mut span_file.anchors[idx];
-        record.path = new_path.clone();
-        record.start_line = new_start;
-        record.end_line = new_end;
-        record.algorithm = algorithm;
-        record.content_hash = content_hash;
+        span_file.anchors.push(AnchorRecord {
+            path: new_path.clone(),
+            start_line: new_start,
+            end_line: new_end,
+            algorithm,
+            content_hash,
+        });
     }
 
     // Write the updated span file.
@@ -1577,7 +1613,12 @@ fn run_why_reader(repo: &gix::Repository, name: &str, span_root: &str) -> Result
 pub const MUTATION_JSON_SCHEMA_VERSION: u32 = 1;
 
 /// Stable outcome enum for `addresses[].outcome` in the mutation document:
-/// `ADDED | RESOLVED | UNCHANGED`.
+/// `ADDED | RESOLVED | UNCHANGED | COLLAPSED`.
+///
+/// Every variant is a unit variant on purpose: `outcome` always serializes
+/// as a bare JSON string, so a consumer can type the field as a string and
+/// compare it literally. Per-outcome detail rides on sibling fields of
+/// [`AnchorOutcome`] (see `records_before`), never inside `outcome`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum AddressOutcome {
@@ -1587,6 +1628,10 @@ pub enum AddressOutcome {
     Resolved,
     /// Anchor already matched the stored hash.
     Unchanged,
+    /// The identity carried more than one record; all of them were replaced
+    /// by the single freshly-hashed record. `records_before` carries the
+    /// pre-collapse count.
+    Collapsed,
 }
 
 /// Stable enum for `superseded[].state`: `RETIRED | REMAINS`.
@@ -1625,6 +1670,11 @@ pub enum SpanHealthState {
 pub struct AnchorOutcome {
     pub address: String,
     pub outcome: AddressOutcome,
+    /// Record count at this identity before the mutation, present only on
+    /// `COLLAPSED` rows. Absent — not `null` — everywhere else, so the three
+    /// pre-existing outcome kinds' JSON is byte-for-byte unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub records_before: Option<usize>,
 }
 
 /// One provably superseded old anchor: the covering new address, its state,
@@ -2576,6 +2626,7 @@ mod tests {
             vec![AnchorOutcome {
                 address: "src/read-user.ts#L1-L3".into(),
                 outcome: AddressOutcome::Added,
+                records_before: None,
             }],
             vec![SupersededAnchor {
                 address: "src/read-user.ts#L1-L5".into(),
