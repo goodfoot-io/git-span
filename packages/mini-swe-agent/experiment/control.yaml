@@ -1,0 +1,20 @@
+# Control arm config for the git-span x ProgramBench canary.
+# Same environment class, same derived image (which still has the treatment
+# artifacts baked in — see programbench-setup-guide.md "Experimental arms":
+# this prevents image composition from being an arm-level confound), same
+# model/limits as treatment.yaml. Only the hook flags differ.
+environment:
+  hooks_enabled: false
+  hooks_required: false
+  experiment_arm: control
+
+  # Informational only (see note in treatment.yaml): process_instance()
+  # always overwrites this with the instance's own image tag.
+  image: "programbench/xorg62_1776_tty-clock.f2f847c:task_cleanroom_v6"
+
+# Identical in treatment.yaml and control.yaml (guide: "Add the chosen model
+# and provider configuration identically to both commands"). Requires
+# DEEPSEEK_API_KEY in the runner's environment (export from DEEPSEEK_API_TOKEN
+# in /workspace/.env.deepseek at launch).
+model:
+  model_name: deepseek/deepseek-v4-flash

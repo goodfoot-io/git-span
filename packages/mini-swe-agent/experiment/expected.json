@@ -1,0 +1,13 @@
+{
+  "expected_package_version": "1.1.3",
+  "expected_node_version": "v22.23.2",
+  "expected_git_span_version": "git-span 1.1.3",
+  "expected_bundle_sha256": {
+    "snapshot.mjs": "bfa81eeea4b812ceaac5b6aa67b832acae230b960cd558f72dae3762578cf204",
+    "advisor.mjs": "6ce26fc6c1c277bbcaac733f7bc98afb2c481053a31adab9968bfade942c269c",
+    "post-tool-use.mjs": "1d29d5f38aa4704a6b4f91ccbe805f5bc104b8ec4e8a18336e84bb82dbd2a25e",
+    "post-tool-use-failure.mjs": "7e4be95262b62f1290b216a63ecb7b7df5aa55c1bca880da8b5735c6068bb6cd",
+    "session-end.mjs": "8a486ce1055aa7be21a369796dd5bab1caa20eeeba65f95f6602d5ca5eea41ce"
+  },
+  "expected_skill_tree_sha256": "c58380d15196f7952b2c65abd1488b7f774a2d1c92639cf9a1edfb6413a888dc"
+}

@@ -69,3 +69,6 @@ dev = [
     "pytest>=9.0.2",
     "ruff",
 ]
+experiment = [
+    "programbench==1.2.4",
+]

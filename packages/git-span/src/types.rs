@@ -256,10 +256,13 @@ pub enum Error {
     #[error("span already exists: {0}")]
     SpanAlreadyExists(String),
 
-    // `DuplicateRangeLocation` removed per `docs/drift-layers-plan.md` §D5:
-    // staged `(path, extent)` duplicates are last-write-wins. The three
-    // former raise sites in `span/commit.rs` now call `todo!()` pending
-    // the dedup-pass implementation slice.
+    // No `DuplicateRangeLocation` variant: duplicate `(path, extent)`
+    // anchors are not an error. Duplicates within a single invocation's
+    // arguments are coalesced last-write-wins in `cli/commit.rs`; duplicates
+    // already present in a span file are accepted by `SpanFile::parse` and
+    // preserved by `serialize`, which sorts but does not dedupe.
+    // `run_replace` is the only caller that refuses them, because an atomic
+    // swap has no canonical choice between two records sharing an identity.
     /// `start` is not >= 1, or `end` < `start`, or the line range is
     /// outside the file's line count at the anchor commit (§6.1).
     #[error("invalid anchor: start={start} end={end}")]

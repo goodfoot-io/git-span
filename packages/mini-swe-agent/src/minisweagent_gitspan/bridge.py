@@ -19,7 +19,7 @@ import re
 import subprocess
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -106,7 +106,7 @@ class HookBridge:
             "tool_use_id": envelope.get("tool_use_id"),
             "tool_name": envelope.get("tool_name"),
             "command": (envelope.get("tool_input") or {}).get("command"),
-            "started_at": datetime.now(UTC).isoformat(),
+            "started_at": datetime.now(timezone.utc).isoformat(),
             "status": "running",
             "context": None,
             "context_chars": 0,
