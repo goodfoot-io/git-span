@@ -706,3 +706,132 @@ fn a_collapse_survives_an_unrelated_later_fix_pass() -> Result<()> {
     );
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// `doctor` surfaces the duplicate before an operator trips over it
+//
+// A duplicate is well-formed text, so `parse` accepts it and `validate` has
+// nothing to say. The only way it shows itself unprompted is one identity
+// reported in two drift states — which is a puzzle, not a diagnosis. Doctor
+// names it, counts it, and names the one command that repairs it.
+// ---------------------------------------------------------------------------
+
+/// A duplicate-bearing span produces a loud doctor finding naming the
+/// identity, the record count, and `drift --fix` — and doctor's exit code
+/// reflects it, exactly as it does for an interior anchor.
+#[test]
+fn doctor_reports_a_duplicate_identity_and_exits_non_zero() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    commit_span(
+        &repo,
+        "doc-dup",
+        "file1.txt#L1-L5 rk64:aaaaaaaaaaaaaaaa\n\
+         file1.txt#L1-L5 rk64:bbbbbbbbbbbbbbbb\n\
+         \n\
+         why: two records for one identity.\n",
+    )?;
+
+    let out = repo.run_span(["doctor"])?;
+    let stdout = stdout_of(&out);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "doctor must exit non-zero when a duplicate identity is present;\n\
+         stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("span `doc-dup` carries 2 records for one anchor identity"),
+        "the finding names the span and the count; stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("identity:     file1.txt#L1-L5"),
+        "the finding names the identity; stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains(".span/doc-dup"),
+        "the finding names the span file; stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("fix:          git span drift --fix"),
+        "`drift --fix` is the named repair; stdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("fix:          git span add"),
+        "`add` must never be offered as the fix — its existence probe runs \
+         before the span file is read, so it refuses on a vanished path; \
+         stdout:\n{stdout}"
+    );
+
+    // The named repair actually clears the finding.
+    repo.run_span(["drift", "--fix"])?;
+    let after = repo.run_span(["doctor"])?;
+    let after_out = stdout_of(&after);
+    assert!(
+        !after_out.contains("carries 2 records for one anchor identity"),
+        "the duplicate finding must be gone after the named fix; \
+         stdout:\n{after_out}"
+    );
+    Ok(())
+}
+
+/// The layer caveat, pinned against the behavior it actually describes.
+///
+/// Doctor reads the *effective* span, and a span file absent from the
+/// worktree while present in HEAD reads as a deletion tombstone — so a
+/// duplicate that lives only in HEAD is not reported at all, and
+/// `drift --fix`, which writes the worktree file, would not write it either.
+/// Rather than leave an operator to infer that scope from a silent report,
+/// every finding's text states it: the check and the fix share one layer,
+/// and restoring the worktree copy is the step that brings a HEAD-only
+/// duplicate back into range of both.
+#[test]
+fn doctor_finding_states_the_layer_scope_a_head_only_duplicate_falls_outside() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    commit_span(
+        &repo,
+        "doc-head-only",
+        "file1.txt#L1-L5 rk64:aaaaaaaaaaaaaaaa\n\
+         file1.txt#L1-L5 rk64:bbbbbbbbbbbbbbbb\n\
+         \n\
+         why: two records for one identity.\n",
+    )?;
+    // Take the duplicate out of the worktree, leaving it only in HEAD.
+    std::fs::remove_file(span_path(&repo, "doc-head-only"))?;
+
+    let out = repo.run_span(["doctor"])?;
+    let stdout = stdout_of(&out);
+    assert!(
+        !stdout.contains("doc-head-only"),
+        "a HEAD-only duplicate is a deletion tombstone to the effective \
+         read — reporting it would name a state no command can repair; \
+         stdout:\n{stdout}"
+    );
+
+    // And a reported duplicate's own text says so, so a clean report is not
+    // mistaken for proof that a duplicate seen in another layer is gone.
+    let repo = TestRepo::seeded()?;
+    commit_span(
+        &repo,
+        "doc-caveat",
+        "file1.txt#L1-L5 rk64:aaaaaaaaaaaaaaaa\n\
+         file1.txt#L1-L5 rk64:bbbbbbbbbbbbbbbb\n\
+         \n\
+         why: two records for one identity.\n",
+    )?;
+    let out = repo.run_span(["doctor"])?;
+    let stdout = stdout_of(&out);
+    assert!(
+        stdout.contains("present only in HEAD or the index, with no worktree"),
+        "the finding carries the layer caveat; stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("so it is not reported here and `git span drift --fix` would"),
+        "the caveat says the scan does not see it, rather than sending the \
+         operator to a fix that would silently no-op; stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Restore .span/doc-caveat in the worktree first"),
+        "and names the step that brings it back into range; stdout:\n{stdout}"
+    );
+    Ok(())
+}

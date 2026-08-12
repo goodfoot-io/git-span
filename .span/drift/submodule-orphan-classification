@@ -2,6 +2,7 @@ packages/git-span/src/resolver/engine/anchor.rs#L951-L1132 rk64:7cfb5928d11e8491
 packages/git-span/src/resolver/engine/anchor.rs#L954-L1135 rk64:7cfb5928d11e8491
 packages/git-span/src/types.rs#L891-L909 rk64:1e059d5d546213b1
 packages/git-span/src/types.rs#L897-L915 rk64:1e059d5d546213b1
+packages/git-span/src/types.rs#L902-L920 rk64:1e059d5d546213b1
 packages/git-span/tests/cases/drift_span_integration.rs#L573-L580 rk64:e7fa41bd8da6562b
 packages/git-span/src/resolver/engine/whole_file.rs#L376-L444 rk64:b395d903b984f445
 

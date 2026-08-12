@@ -95,6 +95,15 @@ pub fn run_doctor(repo: &gix::Repository, _args: DoctorArgs, span_root: &str) ->
         findings.push(v.report_block(span_root));
     }
 
+    // Duplicate-identity surfacing, on the same model: a span that parses
+    // cleanly may still carry two records for one `(path, start_line,
+    // end_line)`. Nothing about that is ill-formed, so it slips past parse
+    // and validate alike and only shows itself as one identity drifting in
+    // two states. Name it here, with the one command that repairs it.
+    for d in crate::cli::duplicate_identity::scan_duplicate_identities(repo, span_root)? {
+        findings.push(d.report_block(span_root));
+    }
+
     let exit = if findings.is_empty() {
         println!(
             "span doctor: {n_spans} {} checked, no findings.{IDEMPOTENT_TAG}",

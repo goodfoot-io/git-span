@@ -19,6 +19,7 @@
 pub mod commit;
 pub mod doctor;
 pub mod drift_label;
+pub mod duplicate_identity;
 pub mod error;
 pub mod format;
 pub mod history;

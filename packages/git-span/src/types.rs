@@ -263,12 +263,23 @@ pub enum Error {
     SpanAlreadyExists(String),
 
     // No `DuplicateRangeLocation` variant: duplicate `(path, extent)`
-    // anchors are not an error. Duplicates within a single invocation's
-    // arguments are coalesced last-write-wins in `cli/commit.rs`; duplicates
-    // already present in a span file are accepted by `SpanFile::parse` and
-    // preserved by `serialize`, which sorts but does not dedupe.
-    // `run_replace` is the only caller that refuses them, because an atomic
-    // swap has no canonical choice between two records sharing an identity.
+    // anchors are not an error, they are a repairable state. Duplicates
+    // within a single invocation's arguments are coalesced last-write-wins
+    // in `cli/commit.rs`; duplicates already present in a span file are
+    // accepted by `SpanFile::parse` (a pure text→struct transform, so a
+    // hand-edited or merge-damaged file stays loadable and therefore
+    // repairable) and collapsed by the mutation commands instead:
+    // `add` and `drift --fix` both route through
+    // `git_span_core::collapse_duplicate_identities`, and the merge kernel
+    // collapses each side's internal duplicates the same way, reporting
+    // them as `same_side_collapsed`. `run_replace` does not refuse them —
+    // it retires every record at the old identity itself, so an atomic swap
+    // needs no canonical choice between two records sharing one identity.
+    // The canonical `(path, start_line, end_line)` order duplicates are
+    // sorted into is imposed by exactly three writers — `write_worktree_span`
+    // (`cli/commit.rs`), `merge_span_files` (`git-span-core`'s `span_file`),
+    // and `write_residue_span` (`cli/drift_fix.rs`) — never by `serialize`,
+    // which emits `anchors` verbatim and neither sorts nor dedupes.
     /// `start` is not >= 1, or `end` < `start`, or the line range is
     /// outside the file's line count at the anchor commit (§6.1).
     #[error("invalid anchor: start={start} end={end}")]
