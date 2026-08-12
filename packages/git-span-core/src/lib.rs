@@ -26,8 +26,9 @@ pub mod validation;
 
 pub use error::{Error, Result};
 pub use span_file::{
-    CopyDetection, SpanConfig, SpanMergeResult, UnresolvedAnchor, has_conflict_markers,
-    merge_span_files, resolve_config, resolve_why_text,
+    AnchorLineShape, CopyDetection, SpanConfig, SpanMergeResult, UnresolvedAnchor,
+    classify_anchor_line, has_conflict_markers, merge_span_files, resolve_config,
+    resolve_why_text,
 };
 pub use validation::{
     SPAN_NAME_RULE, RESERVED_SPAN_NAMES, RETIRED_SPAN_NAMES, is_reserved_span_name,

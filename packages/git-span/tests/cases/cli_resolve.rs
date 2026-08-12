@@ -433,26 +433,22 @@ fn resolve_theirs_settles_hash_divergence() -> Result<()> {
 // 6/7. --why divergence: settled by --ours/--theirs, refused by --rehash
 // ---------------------------------------------------------------------------
 
-fn why_divergence_fixture() -> String {
-    let h1 = line_slice_hash(ORIGINAL, 1, 5);
-    format!(
-        "\
-<<<<<<< ours
-file1.txt#L1-L5 rk64:{h1}
-
-our rationale
-=======
-file1.txt#L1-L5 rk64:{h1}
-
-their rationale
->>>>>>> theirs
-"
-    )
+/// A diverged why, in the writer's own shape: the anchor residue and the why
+/// residue get separate blocks on their own sides of the blank-line separator.
+///
+/// This fixture used to be hand-written as a *single* block holding both
+/// sides' anchor line, a blank, and their prose — a shape the writer cannot
+/// emit, and one whose interior blank moves the anchor/why boundary on
+/// whichever side it appears in. `resolve` now refuses it rather than guessing
+/// the boundary back, so the fixture has to be what it always claimed to be.
+fn why_divergence_fixture(repo: &TestRepo) -> Result<String> {
+    anchor_and_why_residue(repo, "our rationale", "their rationale")
 }
 
 fn why_divergence_case(side: &str, kept: &str, dropped: &str) -> Result<()> {
     let repo = TestRepo::seeded()?;
-    repo.write_file(".span/m", &why_divergence_fixture())?;
+    let fixture = why_divergence_fixture(&repo)?;
+    repo.write_file(".span/m", &fixture)?;
 
     let out = repo.run_span(["resolve", "m", side])?;
     assert_eq!(
@@ -486,7 +482,8 @@ fn resolve_theirs_settles_why_divergence() -> Result<()> {
 #[test]
 fn resolve_rehash_fails_on_why_divergence() -> Result<()> {
     let repo = TestRepo::seeded()?;
-    repo.write_file(".span/m", &why_divergence_fixture())?;
+    let fixture = why_divergence_fixture(&repo)?;
+    repo.write_file(".span/m", &fixture)?;
     let before = read_span_bytes(&repo, "m")?;
 
     let out = repo.run_span(["resolve", "m", "--rehash"])?;
@@ -809,6 +806,11 @@ fn resolve_preserves_hand_edited_worktree_content() -> Result<()> {
             && residue.contains(&format!("handed.txt#L1-L2 rk64:{THIRD_HASH}")),
         "fixture assumption: both handed.txt records must be residue; residue=\n{residue}"
     );
+    // `handed.txt` has to exist for `--rehash` to be willing to write an
+    // anchor on it at all: a source it cannot read is a hash it cannot vouch
+    // for, whichever side the record came from. What this test is about is
+    // that the *hand-settled record* survives, not that a dead path does.
+    repo.write_file("handed.txt", "handed one\nhanded two\n")?;
 
     // The operator settles handed.txt by hand — lifting it out of the block
     // as one clean line whose hash matches neither stage blob — and leaves
@@ -1616,4 +1618,500 @@ file2.txt#L1-L5 rk64:{h2}
         "json must not carry the human prose; {stdout}"
     );
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// 20. The anchor/why boundary itself
+//
+// The span format marks the boundary with a blank line and nothing else, so
+// the writer knows where it is and the reader can only reconstruct it. Every
+// fixture below varies the boundary — moving it, making it asymmetric across
+// the two sides, or putting a block on the wrong side of it — because no
+// fixture in this suite varied it before, and that is the single reason a
+// deleted anchor, a fabricated anchor, and a guard wired to the complement of
+// its own condition all shipped green.
+//
+// These fixtures are deliberately **not** driver-generated and cannot be:
+// `format_residue_markers` emits none of these shapes. Each one names its real
+// producer in a comment — old-format residue, or a hand-edited conflicted file,
+// which the card invites by making hand progress authoritative.
+// ---------------------------------------------------------------------------
+
+/// Assert every side refuses `fixture` and leaves it byte-identical.
+fn every_side_refuses(fixture: &str, expected_reason: &str) -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    for side in ["--rehash", "--ours", "--theirs"] {
+        repo.write_file(".span/m", fixture)?;
+        let before = read_span_bytes(&repo, "m")?;
+        let out = repo.run_span(["resolve", "m", side])?;
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_ne!(
+            out.status.code(),
+            Some(0),
+            "{side} must refuse a boundary it cannot establish; stderr=\n{stderr}"
+        );
+        assert!(
+            stderr.contains(expected_reason),
+            "{side}: the refusal must name what it could not establish; stderr=\n{stderr}"
+        );
+        assert_eq!(
+            before,
+            read_span_bytes(&repo, "m")?,
+            "{side} must leave the file byte-identical"
+        );
+    }
+    Ok(())
+}
+
+/// **The asymmetric boundary.** `SideBuilder` flips into the why region on the
+/// first blank line *that side* sees, so a blank inside the conflict block
+/// moves the boundary on one side and not the other. Ours' prose lands in the
+/// why; theirs' lands in the anchors and is written back as a tracked anchor
+/// whose path is a sentence. Producer: a hand-edited conflicted file.
+#[test]
+fn resolve_refuses_a_blank_line_inside_the_anchor_residue_block() -> Result<()> {
+    let h1 = line_slice_hash(ORIGINAL, 1, 5);
+    let fixture = format!(
+        "\
+file1.txt#L1-L5 rk64:{h1}
+<<<<<<< ours
+
+The parser and the lexer agree; docs at https://example.com
+=======
+Divergent prose, docs at https://example.com
+>>>>>>> theirs
+"
+    );
+    every_side_refuses(&fixture, "blank line inside a conflict block")
+}
+
+/// The same fabrication with the boundary left symmetric: no blank anywhere,
+/// so both sides read every line as an anchor and theirs' sentence becomes a
+/// whole-file anchor at path `Divergent prose, docs at`. A whole-file address
+/// whose path holds whitespace is the one anchor shape prose can counterfeit.
+#[test]
+fn resolve_refuses_prose_masquerading_as_a_whole_file_anchor() -> Result<()> {
+    let h1 = line_slice_hash(ORIGINAL, 1, 5);
+    let fixture = format!(
+        "\
+<<<<<<< ours
+file1.txt#L1-L5 rk64:{h1}
+=======
+Divergent prose, docs at https://example.com
+>>>>>>> theirs
+"
+    );
+    every_side_refuses(&fixture, "whole-file anchor path contains whitespace")
+}
+
+/// **The boundary in the other direction.** A conflict block sitting after the
+/// separator is why by position, so a tracked anchor inside it is pushed onto
+/// `.why` and deleted outright — silently, at exit 0, and structurally absent
+/// from the report because the report iterates the merged anchors and a deleted
+/// anchor is in neither side's list. Producer: residue written by a git-span
+/// predating the two-block writer.
+#[test]
+fn resolve_refuses_an_anchor_record_inside_a_why_region_block() -> Result<()> {
+    let h1 = line_slice_hash(ORIGINAL, 1, 5);
+    let fixture = format!(
+        "\
+file1.txt#L1-L5 rk64:{h1}
+
+<<<<<<< ours
+some rationale
+=======
+file2.txt#L1-L5 rk64:{OTHER_HASH}
+>>>>>>> theirs
+"
+    );
+    every_side_refuses(&fixture, "sits *after* the blank-line separator")
+}
+
+/// The over-refusal guard, and the reason the why-side check is narrowed to a
+/// bare line-range address with a whitespace-free path: why prose that *quotes*
+/// an anchor absorbs the surrounding words into the parsed path, so it is still
+/// prose and must still round-trip. Driver-generated, because this is a shape
+/// the writer really does produce.
+#[test]
+fn resolve_accepts_why_prose_that_quotes_an_anchor_address() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let residue = anchor_and_why_residue(
+        &repo,
+        &format!("stale since we moved file2.txt#L1-L5 rk64:{OTHER_HASH}"),
+        "their rationale",
+    )?;
+    repo.write_file(".span/m", &residue)?;
+
+    let out = repo.run_span(["resolve", "m", "--ours"])?;
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a quoted anchor address inside why prose is not a misplaced anchor; stderr=\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let span = read_span(&repo, "m")?;
+    let parsed = SpanFile::parse(&span)?;
+    assert_eq!(
+        parsed.anchors.len(),
+        1,
+        "the quoted address must not become a second anchor; span:\n{span}"
+    );
+    assert!(
+        parsed.why.contains("stale since we moved file2.txt#L1-L5"),
+        "the quote must survive as prose; span:\n{span}"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// 21. An anchor `--rehash` cannot verify
+//
+// The residue writer puts only same-key residue inside the conflict block and
+// copies every other anchor into *both* split sides, so driver-produced input
+// always has identical key sets on ours and theirs. A guard keyed on
+// orphanhood therefore could not fire on the input it was written for.
+// Readability, not orphanhood, is what `--rehash` needs — and only `--rehash`:
+// an unreadable source is the entire reason `--ours`/`--theirs` exist.
+// ---------------------------------------------------------------------------
+
+/// Driver residue carrying one divergent anchor plus an agreed anchor whose
+/// file does not exist in the worktree — the anchor the old guard could never
+/// see, because the writer coalesces it outside the block and onto both sides.
+fn deleted_source_residue(repo: &TestRepo) -> Result<String> {
+    let h1 = line_slice_hash(ORIGINAL, 1, 5);
+    let dead = format!("gone.txt#L1-L3 rk64:{OTHER_HASH}");
+    let base = format!("{dead}\nfile1.txt#L1-L5 rk64:{h1}\n\nshared rationale\n");
+    let ours = format!("{dead}\nfile1.txt#L1-L5 rk64:{OTHER_HASH}\n\nshared rationale\n");
+    let theirs = format!("{dead}\nfile1.txt#L1-L5 rk64:{THIRD_HASH}\n\nshared rationale\n");
+    let residue = driver_residue(repo, &base, &ours, &theirs, "7")?;
+    assert!(
+        residue
+            .lines()
+            .any(|l| l == dead && !residue.starts_with("<<<<<<<")),
+        "fixture assumption: the agreed dead anchor is written outside the block, which is \
+         what put it on both split sides; residue=\n{residue}"
+    );
+    Ok(residue)
+}
+
+#[test]
+fn resolve_rehash_refuses_an_anchor_whose_source_is_gone() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let residue = deleted_source_residue(&repo)?;
+    repo.write_file(".span/m", &residue)?;
+    let before = read_span_bytes(&repo, "m")?;
+
+    let out = repo.run_span(["resolve", "m", "--rehash"])?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "an anchor `--rehash` cannot verify must not pass as `unchanged`; stderr=\n{stderr}"
+    );
+    assert!(
+        stderr.contains("gone.txt#L1-L3") && stderr.contains("source unreadable"),
+        "the refusal must name the anchor it could not verify; stderr=\n{stderr}"
+    );
+    assert!(
+        stderr.contains("--ours") && stderr.contains("--theirs"),
+        "the refusal must still point at the sides that can settle it; stderr=\n{stderr}"
+    );
+    assert_eq!(before, read_span_bytes(&repo, "m")?, "file must be untouched");
+    Ok(())
+}
+
+/// The other half, and the half a uniform refusal would have broken: taking a
+/// side is exactly how an operator gets past a source that is gone, so the
+/// anchor is written — with the report saying it was never verified, instead of
+/// the bare `unchanged` that claimed a check nobody performed.
+#[test]
+fn resolve_ours_writes_an_unverifiable_anchor_and_says_so() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let residue = deleted_source_residue(&repo)?;
+    repo.write_file(".span/m", &residue)?;
+
+    let out = repo.run_span(["resolve", "m", "--ours"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "taking a side is the documented way past an unreadable source; stderr=\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let span = read_span(&repo, "m")?;
+    assert!(
+        span.contains("gone.txt#L1-L3"),
+        "the operator chose this side; the anchor must survive; span:\n{span}"
+    );
+    assert!(
+        stdout.contains("unverified") && stdout.contains("gone.txt#L1-L3"),
+        "the report must not present an unverifiable anchor as a settled one; stdout=\n{stdout}"
+    );
+    Ok(())
+}
+
+/// The regression gate both evaluators asked for, scoped to `--rehash` because
+/// only `--rehash` claims worktree truth: after it succeeds, nothing it wrote
+/// may be drifting. Under `--ours`/`--theirs` a dead anchor legitimately
+/// survives, so the same assertion there would fail on correct behavior.
+#[test]
+fn resolve_rehash_leaves_no_drift_behind() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let residue = anchor_only_residue(&repo, "7")?;
+    repo.write_file(".span/m", &residue)?;
+
+    let out = repo.run_span(["resolve", "m", "--rehash"])?;
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr=\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    repo.run_git(["add", ".span/m"])?;
+    let drift = repo.run_span(["drift"])?;
+    assert_eq!(
+        drift.status.code(),
+        Some(0),
+        "a span `--rehash` settled must be drift-clean; stdout=\n{}\nstderr=\n{}",
+        String::from_utf8_lossy(&drift.stdout),
+        String::from_utf8_lossy(&drift.stderr)
+    );
+    Ok(())
+}
+
+/// The two rename dead ends, from `resolve`'s seat. `resolve` does not run
+/// `drift --fix`'s rename-pruning stage, so a source renamed away — whether it
+/// has one plausible new home or several — reaches `--rehash` as an anchor with
+/// no readable source and is refused by name rather than cloned with a stale
+/// hash. `--ours` then carries it, which is the operator deciding the rename
+/// question themselves.
+fn renamed_away_case(candidates: &[&str]) -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let h1 = line_slice_hash(ORIGINAL, 1, 5);
+    let mut lines = vec![format!("old/name.txt#L1-L5 rk64:{OTHER_HASH}")];
+    for candidate in candidates {
+        repo.write_file(candidate, ORIGINAL)?;
+        lines.push(format!("{candidate}#L1-L5 rk64:{h1}"));
+    }
+    lines.sort();
+    let anchors = lines.join("\n");
+    let base = format!("{anchors}\n\nshared rationale\n");
+    let ours = format!("{anchors}\n\nshared rationale\n");
+    let theirs = format!(
+        "{}\n\nshared rationale\n",
+        anchors.replacen(OTHER_HASH, THIRD_HASH, 1)
+    );
+    let residue = driver_residue(&repo, &base, &ours, &theirs, "7")?;
+    repo.write_file(".span/m", &residue)?;
+    let before = read_span_bytes(&repo, "m")?;
+
+    let out = repo.run_span(["resolve", "m", "--rehash"])?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_ne!(out.status.code(), Some(0), "stderr=\n{stderr}");
+    assert!(
+        stderr.contains("old/name.txt#L1-L5"),
+        "the refusal must name the path that is gone rather than guess its new home; \
+         stderr=\n{stderr}"
+    );
+    assert_eq!(before, read_span_bytes(&repo, "m")?, "file must be untouched");
+
+    let out = repo.run_span(["resolve", "m", "--ours"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the side flags remain the exit; stderr=\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("unverified") && stdout.contains("old/name.txt#L1-L5"),
+        "and they must not claim the carried anchor was verified; stdout=\n{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn resolve_rehash_refuses_a_source_renamed_away_with_one_candidate() -> Result<()> {
+    renamed_away_case(&["new/name.txt"])
+}
+
+#[test]
+fn resolve_rehash_refuses_a_source_renamed_away_with_ambiguous_candidates() -> Result<()> {
+    renamed_away_case(&["new/one.txt", "new/two.txt"])
+}
+
+// ---------------------------------------------------------------------------
+// 22. Stage 3 consulted for absence, not only presence
+// ---------------------------------------------------------------------------
+
+/// The deletion direction of the why supplement. `theirs` deletes prose `ours`
+/// still has; the field has not diverged, so the writer emits `ours_why`
+/// verbatim into the residue text and both split sides read it as an agreed
+/// outside line. Stage 3 is the only record that the deletion happened.
+#[test]
+fn resolve_honors_a_why_the_peer_deleted() -> Result<()> {
+    let base = format!("later.txt#L1-L3 rk64:{BASE_HASH}\n\nours prose\n");
+    let ours = format!("later.txt#L1-L3 rk64:{OTHER_HASH}\n\nours prose\n");
+    let theirs = format!("later.txt#L1-L3 rk64:{THIRD_HASH}\n");
+    let (repo, residue) = mid_merge_repo(&base, &ours, &theirs)?;
+    assert!(
+        residue.contains("ours prose"),
+        "fixture assumption: the writer fabricates agreement by carrying ours' why; \
+         residue=\n{residue}"
+    );
+
+    for side in ["--rehash", "--theirs"] {
+        repo.write_file(".span/m", &residue)?;
+        let out = repo.run_span(["resolve", "m", side])?;
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{side}: stderr=\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let span = read_span(&repo, "m")?;
+        assert!(
+            !span.contains("ours prose"),
+            "{side} must not resurrect a why the peer deliberately deleted; span:\n{span}"
+        );
+    }
+    Ok(())
+}
+
+/// The presence direction must keep working, and a hand-typed why must still
+/// be untouchable — the two properties the deletion fix could most easily have
+/// broken, since it reads the same stage from the same shape of text.
+#[test]
+fn resolve_why_supplement_still_ignores_a_hand_typed_why() -> Result<()> {
+    let (base, ours, theirs) = theirs_only_why_sides();
+    let (repo, residue) = mid_merge_repo(&base, &ours, &theirs)?;
+    let hand_edited = format!("{residue}operator rationale\n");
+    repo.write_file(".span/m", &hand_edited)?;
+
+    let out = repo.run_span(["resolve", "m", "--theirs"])?;
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr=\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let span = read_span(&repo, "m")?;
+    assert!(
+        span.contains("operator rationale") && !span.contains("rationale Y"),
+        "a why that differs from stage 2 is the operator's and is never replaced; span:\n{span}"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// 23. A stage that cannot be read never becomes a value
+//
+// These fixtures are deliberately not driver-generated: the producer is a
+// `.span/` file committed with conflict markers still in it (the `git add`
+// reflex), which stages a blob `SpanFile::parse` fails closed on by design.
+// Building that index state directly is the honest way to reach it.
+// ---------------------------------------------------------------------------
+
+fn hash_blob(repo: &TestRepo, content: &str) -> Result<String> {
+    use std::io::Write;
+    let mut child = std::process::Command::new("git")
+        .current_dir(repo.path())
+        .args(["hash-object", "-w", "--stdin"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()?;
+    child
+        .stdin
+        .take()
+        .expect("stdin is piped")
+        .write_all(content.as_bytes())?;
+    let out = child.wait_with_output()?;
+    assert!(out.status.success(), "git hash-object failed");
+    Ok(String::from_utf8(out.stdout)?.trim().to_string())
+}
+
+/// Put `.span/m` into the index at all three unmerged stages.
+fn stage_all_three(repo: &TestRepo, s1: &str, s2: &str, s3: &str) -> Result<()> {
+    use std::io::Write;
+    let info = format!(
+        "100644 {} 1\t.span/m\n100644 {} 2\t.span/m\n100644 {} 3\t.span/m\n",
+        hash_blob(repo, s1)?,
+        hash_blob(repo, s2)?,
+        hash_blob(repo, s3)?
+    );
+    let mut child = std::process::Command::new("git")
+        .current_dir(repo.path())
+        .args(["update-index", "--index-info"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()?;
+    child
+        .stdin
+        .take()
+        .expect("stdin is piped")
+        .write_all(info.as_bytes())?;
+    assert!(child.wait()?.success(), "git update-index failed");
+    Ok(())
+}
+
+/// One mechanism, two mirror-image witnesses: whichever stage fails to parse,
+/// the swallowed error used to become a `SpanConfig::default()` for that side
+/// that then *won* the three-way merge and was reported as an arbitration
+/// result, with `[config]` absent from the written file and no warning at all.
+fn unreadable_stage_case(unreadable_stage: u8) -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let h1 = line_slice_hash(ORIGINAL, 1, 5);
+    let good = format!(
+        "file1.txt#L1-L5 rk64:{h1}\n\nshared rationale\n\n[config]\nfollow_moves = true\n"
+    );
+    // A span file someone committed mid-conflict: markers intact, so
+    // `SpanFile::parse` fails closed on it exactly as designed.
+    let marked = format!(
+        "<<<<<<< ours\nfile1.txt#L1-L5 rk64:{OTHER_HASH}\n=======\n\
+         file1.txt#L1-L5 rk64:{THIRD_HASH}\n>>>>>>> theirs\n\nshared rationale\n\n\
+         [config]\nfollow_moves = true\n"
+    );
+    let (s2, s3) = if unreadable_stage == 2 {
+        (marked.as_str(), good.as_str())
+    } else {
+        (good.as_str(), marked.as_str())
+    };
+    stage_all_three(&repo, &good, s2, s3)?;
+
+    let residue = format!(
+        "<<<<<<< ours\nfile1.txt#L1-L5 rk64:{OTHER_HASH}\n=======\n\
+         file1.txt#L1-L5 rk64:{THIRD_HASH}\n>>>>>>> theirs\n\nshared rationale\n"
+    );
+    repo.write_file(".span/m", &residue)?;
+
+    let out = repo.run_span(["resolve", "m", "--ours"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "stderr=\n{stderr}");
+
+    let span = read_span(&repo, "m")?;
+    assert!(
+        span.contains("follow_moves = true"),
+        "the setting both readable stages carry must survive a stage that does not parse; \
+         span:\n{span}"
+    );
+    assert!(
+        stderr.contains("could not be read") && stdout.contains("could not be read"),
+        "a failed stage read must be reported, not swallowed; stdout=\n{stdout}\nstderr=\n{stderr}"
+    );
+    assert!(
+        !stdout.contains("config: resolved automatically"),
+        "no arbitration happened here — a blob simply failed to parse; stdout=\n{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn resolve_unreadable_ours_stage_never_becomes_a_config_value() -> Result<()> {
+    unreadable_stage_case(2)
+}
+
+#[test]
+fn resolve_unreadable_theirs_stage_never_becomes_a_config_value() -> Result<()> {
+    unreadable_stage_case(3)
 }

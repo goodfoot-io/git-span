@@ -18,8 +18,12 @@
 //! * **Narrow input claim.** Only the residue shape
 //!   [`crate::cli::drift_fix::format_residue_markers`] produces is claimed —
 //!   at most one conflict block on each side of the anchor/why separator, no
-//!   `[config]` header inside either. Anything else is refused before the
-//!   marker split is trusted for anything.
+//!   `[config]` header inside either, and every line inside a block consistent
+//!   with the region that block sits in. That last one is what makes the
+//!   anchor/why boundary *established* rather than guessed: the format marks it
+//!   with a blank line and nothing else, so a boundary the reader cannot prove
+//!   is a refusal, never a reading. Anything else is refused before the marker
+//!   split is trusted for anything.
 //!
 //! Anchors and why always come from the live worktree text, so progress an
 //! operator already made by hand is read as agreed content rather than
@@ -36,7 +40,8 @@ use crate::span_file::{AnchorRecord, SpanFile};
 use anyhow::Result;
 use git_span_core::UnresolvedAnchor;
 use git_span_core::{
-    SpanConfig, has_conflict_markers, merge_span_files, resolve_config, resolve_why_text,
+    AnchorLineShape, SpanConfig, classify_anchor_line, has_conflict_markers, merge_span_files,
+    resolve_config, resolve_why_text,
 };
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -106,16 +111,46 @@ impl Side {
 /// Anchors are never sourced from here under any circumstance.
 #[derive(Debug, Default)]
 struct StageEvidence {
-    /// The merge base's span file, when stage 1 exists — the only input to
-    /// `resolve_why_text`/`resolve_config`'s three-way arm.
+    /// The merge base's span file, when stage 1 exists **and parsed** — the
+    /// only input to `resolve_why_text`/`resolve_config`'s three-way arm.
     base: Option<SpanFile>,
     /// True when the span path had at least one unmerged index entry. False
     /// means there is no second evidence source at all, which is what the two
     /// recovery-ceiling report lines are conditional on.
     available: bool,
+    /// True when at least one existing stage blob actually parsed. `available`
+    /// alone is not enough to gate the ceiling lines on: a stage that exists
+    /// but cannot be read is *not* a recovery source, and treating it as one
+    /// is how a swallowed parse error suppressed loss reporting.
+    parsed_any: bool,
+    /// Stages that exist in the index but could not be read, decoded, or
+    /// parsed, named for the report. A span file committed with conflict
+    /// markers still in it is the realistic producer: `SpanFile::parse` fails
+    /// closed on markers by design, so the next merge that touches the path
+    /// stages a blob no reader can use.
+    unreadable: Vec<&'static str>,
     /// True when the supplement genuinely replaced theirs' empty text-sourced
     /// why with a non-empty stage value.
     why_recovered: bool,
+}
+
+/// What one index stage yielded. `Absent` and `Unreadable` are the two states
+/// `.ok()?` used to collapse into one — and collapsing them is what let an
+/// unreadable stage become a `SpanConfig::default()` that then *won* the
+/// three-way merge, reported as an affirmative arbitration result.
+enum StageRead {
+    Absent,
+    Unreadable,
+    Parsed(Box<SpanFile>),
+}
+
+impl StageRead {
+    fn parsed(&self) -> Option<&SpanFile> {
+        match self {
+            StageRead::Parsed(f) => Some(f),
+            _ => None,
+        }
+    }
 }
 
 /// Read the unmerged index stages for `{span_root}/{name}` and supplement the
@@ -129,14 +164,29 @@ struct StageEvidence {
 /// not a convenience.** `format_residue_markers` carries a non-diverged why
 /// into the text by writing `ours_why` — so `ours`' why is never dropped: a
 /// non-empty one is written (plainly, or into the why block when it diverges),
-/// and an empty one is empty because `ours` genuinely has no why. `theirs`' is
-/// the only side the writer can lose: when the merge driver's three-way
-/// arbitration finds `theirs` added a why `ours` does not have, the field has
-/// not diverged, the writer emits `ours_why` (empty), and the added prose is
-/// absent from the worktree text entirely. Stage 3 is the only surviving copy.
-/// Supplementing `ours` as well would have no true positive left to catch and
-/// exactly one false positive — reverting a why an operator deliberately
-/// cleared out of a divergent why block — so it is not done.
+/// and an empty one is empty because `ours` genuinely has no why.
+///
+/// `theirs`' why is the only one the writer can lose, and it can lose it in
+/// **both directions**, which is what the earlier presence-only supplement
+/// missed. When the field has not diverged the writer emits `ours_why` for
+/// both sides, so the text says nothing whatsoever about `theirs`:
+///
+/// * *Addition* — `theirs` added prose `ours` lacks. The text carries `ours`'
+///   empty why, and stage 3 is the only surviving copy.
+/// * *Deletion* — `theirs` deleted prose `ours` still has. The text carries
+///   `ours`' prose on both sides, fabricating agreement, and no side flag can
+///   override it because nothing looks divergent. A peer's deliberate deletion
+///   is silently reverted.
+///
+/// So the supplement consults stage 3 for absence as well as presence, under a
+/// discriminator that cannot revert a hand edit: it fires only when the two
+/// text-sourced whys are *identical* (the writer's non-diverged shape, in
+/// which the text is not per-side evidence at all) **and** that text still
+/// equals stage 2's why (so `ours`' copy is the writer's, not the operator's).
+/// A why the operator typed into the file differs from stage 2 and is left
+/// alone, which is the same guarantee the empty-string discriminator gave.
+/// Supplementing `ours` from stage 2 is still not done: the writer cannot lose
+/// ours' why, so it would carry no true positive and one false positive.
 fn load_stage_evidence(
     repo: &gix::Repository,
     span_root: &str,
@@ -151,38 +201,104 @@ fn load_stage_evidence(
         .filter(|e| e.path == rel && e.stage != gix::index::entry::Stage::Unconflicted)
         .collect();
 
-    let parse_stage = |stage: gix::index::entry::Stage| -> Option<SpanFile> {
-        let entry = unmerged.iter().find(|e| e.stage == stage)?;
-        let bytes = crate::git::read_blob_bytes(repo, &entry.oid.to_string()).ok()?;
-        let text = String::from_utf8(bytes).ok()?;
-        SpanFile::parse(&text).ok()
+    // Each failure below is a *distinct* outcome from "the stage is not
+    // there", and the caller needs the difference: an absent stage carries no
+    // claim, while an unreadable one carries a claim nobody can read.
+    let read_stage = |stage: gix::index::entry::Stage| -> StageRead {
+        let Some(entry) = unmerged.iter().find(|e| e.stage == stage) else {
+            return StageRead::Absent;
+        };
+        let Ok(bytes) = crate::git::read_blob_bytes(repo, &entry.oid.to_string()) else {
+            return StageRead::Unreadable;
+        };
+        let Ok(text) = String::from_utf8(bytes) else {
+            return StageRead::Unreadable;
+        };
+        match SpanFile::parse(&text) {
+            Ok(file) => StageRead::Parsed(Box::new(file)),
+            Err(_) => StageRead::Unreadable,
+        }
     };
 
+    let staged_base = read_stage(gix::index::entry::Stage::Base);
+    let staged_ours = read_stage(gix::index::entry::Stage::Ours);
+    let staged_theirs = read_stage(gix::index::entry::Stage::Theirs);
+
+    let unreadable: Vec<&'static str> = [
+        ("base (stage 1)", &staged_base),
+        ("ours (stage 2)", &staged_ours),
+        ("theirs (stage 3)", &staged_theirs),
+    ]
+    .into_iter()
+    .filter(|(_, read)| matches!(read, StageRead::Unreadable))
+    .map(|(label, _)| label)
+    .collect();
+
     let mut evidence = StageEvidence {
-        base: parse_stage(gix::index::entry::Stage::Base),
+        base: staged_base.parsed().cloned(),
         available: !unmerged.is_empty(),
+        parsed_any: staged_base.parsed().is_some()
+            || staged_ours.parsed().is_some()
+            || staged_theirs.parsed().is_some(),
+        unreadable,
         why_recovered: false,
     };
 
     // `[config]` never survives the residue writer, so a stage blob is
     // strictly better evidence than the text whenever it exists.
-    let staged_ours = parse_stage(gix::index::entry::Stage::Ours);
-    let staged_theirs = parse_stage(gix::index::entry::Stage::Theirs);
-    if let Some(staged) = &staged_ours {
-        ours.config = staged.config;
+    //
+    // An **unreadable** stage is the one case that must never become a value.
+    // Leaving that side at `SpanConfig::default()` while the other side is
+    // grafted makes `resolve_config` read a failed read as "this side changed
+    // the config to the defaults", and that fabricated change then wins the
+    // three-way merge and is reported as an arbitration result. Absence of
+    // evidence is instead treated as *unchanged from base* — the base's value
+    // if it parsed, else the other side's, else no graft at all — so the side
+    // that does have evidence decides and nothing is invented.
+    let fallback_config = |other: &StageRead| -> Option<SpanConfig> {
+        staged_base
+            .parsed()
+            .or_else(|| other.parsed())
+            .map(|f| f.config)
+    };
+    match &staged_ours {
+        StageRead::Parsed(staged) => ours.config = staged.config,
+        StageRead::Unreadable => {
+            if let Some(config) = fallback_config(&staged_theirs) {
+                ours.config = config;
+            }
+        }
+        StageRead::Absent => {}
     }
-    if let Some(staged) = &staged_theirs {
-        theirs.config = staged.config;
+    match &staged_theirs {
+        StageRead::Parsed(staged) => theirs.config = staged.config,
+        StageRead::Unreadable => {
+            if let Some(config) = fallback_config(&staged_ours) {
+                theirs.config = config;
+            }
+        }
+        StageRead::Absent => {}
     }
 
-    // Theirs-only why supplement, per this function's doc comment. A
-    // non-empty text-sourced why may be a hand edit and is never touched.
-    if let Some(staged) = &staged_theirs
-        && theirs.why.trim().is_empty()
-        && !staged.why.trim().is_empty()
-    {
-        theirs.why = staged.why.clone();
-        evidence.why_recovered = true;
+    // Theirs-only why supplement, per this function's doc comment.
+    let text_ours_why = ours.why.clone();
+    let text_theirs_why = theirs.why.clone();
+    if let Some(staged) = staged_theirs.parsed() {
+        if text_theirs_why.trim().is_empty() && !staged.why.trim().is_empty() {
+            // Presence: the writer dropped a why only `theirs` had.
+            theirs.why = staged.why.clone();
+            evidence.why_recovered = true;
+        } else if let Some(staged_o) = staged_ours.parsed()
+            && text_ours_why == text_theirs_why
+            && text_ours_why == staged_o.why
+            && staged.why != text_theirs_why
+        {
+            // Absence (and any other one-sided change): the text is the
+            // writer's copy of `ours`' why on both sides, so it is not
+            // evidence about `theirs` at all. `why_recovered` stays false —
+            // restoring a *deletion* is not something to label "recovered".
+            theirs.why = staged.why.clone();
+        }
     }
 
     evidence
@@ -315,6 +431,9 @@ pub fn run_resolve(repo: &gix::Repository, args: ResolveArgs, span_root: &str) -
              partial merge may have already dropped cannot be recovered."
         );
     }
+    if !stages.unreadable.is_empty() {
+        eprintln!("warning: {}", unreadable_stage_line(&stages));
+    }
 
     if args.dry_run {
         return run_dry_run(repo, &name, &ours, &theirs, &stages, args.format);
@@ -443,6 +562,42 @@ fn marker_run_len(line: &str, c: char) -> Option<usize> {
 /// and `resolve`'s settlement is not verified against it. `[config]` is never
 /// serialized into residue at all, so one inside a block is refused too.
 ///
+/// **Counting blocks is not enough, and that is what this function got wrong
+/// before.** The span format marks the anchor/why boundary with a blank line
+/// and nothing else, so the boundary is a fact the writer knows and the reader
+/// can only reconstruct. A block's *position* relative to the first outside
+/// blank is a claim about the boundary, not a check of it: nothing downstream
+/// — not [`SideBuilder`], not `SpanFile::parse`, not either pre-kernel check —
+/// can distinguish a boundary reconstructed correctly from one reconstructed
+/// wrongly, and a wrong one is silently either a deleted anchor or a fabricated
+/// one. So this function now *establishes* the boundary instead of assuming it,
+/// by checking every line inside a conflict block against the region the block
+/// sits in:
+///
+/// * **Anchor-region blocks carry only anchor records.** The writer emits
+///   exactly `UnresolvedAnchor` serializations there — never a blank line. A
+///   blank inside an anchor-region block is the one thing that makes
+///   [`SideBuilder`]'s per-side boundary *asymmetric*, which is how prose
+///   became an anchor on one side and an anchor became prose on the other.
+///   Refusing it is what makes the two sides' boundaries provably the same
+///   outside blank line, and therefore makes the split trustworthy.
+/// * **A whole-file "anchor" whose path contains whitespace is prose.** Real
+///   whole-file anchors are paths; a sentence ending in a colon-bearing token
+///   (a URL, most often) parses as one. Inside an anchor-region block that
+///   ambiguity is unresolvable, so it is refused rather than written back as a
+///   tracked anchor.
+/// * **Why-region blocks carry no bare line-range anchor.** A tracked anchor
+///   that lands after the separator is deleted outright, which is the shape the
+///   pre-`42d28964` residue writer produced. The check is narrowed to a
+///   line-range address with a whitespace-free path so that why prose *quoting*
+///   an anchor still round-trips: the quoted form absorbs the surrounding words
+///   into the path, and a why that is nothing but a bare anchor line is
+///   genuinely indistinguishable from a misplaced anchor.
+///
+/// Every one of these is a refusal with the file left byte-identical — the
+/// fail-closed answer to a boundary that cannot be established, in place of a
+/// guess that silently loses or invents tracked couplings.
+///
 /// Git writes markers at the configured conflict-marker size (`%L`, which
 /// [`crate::cli::merge_driver`] honors), while the shared split recognizes a
 /// `=======` separator only at exactly seven characters — [`SideBuilder`]'s
@@ -480,6 +635,9 @@ fn verify_driver_shape(raw: &str, name: &str) -> std::result::Result<String, Cli
     let mut why_blocks = 0usize;
     let mut in_why_region = false;
     let mut open_len: Option<usize> = None;
+    // Inside the diff3 base region the content is discarded by the split, so
+    // it is neither an anchor nor a why and is not checked.
+    let mut in_base = false;
 
     for line in raw.lines() {
         if let Some(len) = marker_run_len(line, '<') {
@@ -489,6 +647,7 @@ fn verify_driver_shape(raw: &str, name: &str) -> std::result::Result<String, Cli
                 anchor_blocks += 1;
             }
             open_len = Some(len);
+            in_base = false;
             out.push_str("<<<<<<<");
             out.push_str(&line[len..]);
             out.push('\n');
@@ -497,12 +656,14 @@ fn verify_driver_shape(raw: &str, name: &str) -> std::result::Result<String, Cli
         if let Some(len) = open_len {
             if let Some(close_len) = marker_run_len(line, '>') {
                 open_len = None;
+                in_base = false;
                 out.push_str(">>>>>>>");
                 out.push_str(&line[close_len..]);
                 out.push('\n');
                 continue;
             }
             if let Some(base_len) = marker_run_len(line, '|') {
+                in_base = true;
                 out.push_str("|||||||");
                 out.push_str(&line[base_len..]);
                 out.push('\n');
@@ -515,6 +676,7 @@ fn verify_driver_shape(raw: &str, name: &str) -> std::result::Result<String, Cli
                     .next()
                     .is_none_or(char::is_whitespace)
             {
+                in_base = false;
                 out.push_str("=======");
                 out.push_str(&line[sep_len..]);
                 out.push('\n');
@@ -524,6 +686,11 @@ fn verify_driver_shape(raw: &str, name: &str) -> std::result::Result<String, Cli
                 return Err(refusal(format!(
                     "Span `{name}` has a `[config]` header inside a conflict block."
                 )));
+            }
+            if !in_base
+                && let Some(reason) = boundary_violation(line, in_why_region, name)
+            {
+                return Err(refusal(reason));
             }
         } else if line.is_empty() && !in_why_region {
             // The first blank line outside every block is the anchor/why
@@ -548,6 +715,52 @@ fn verify_driver_shape(raw: &str, name: &str) -> std::result::Result<String, Cli
     }
 
     Ok(out)
+}
+
+/// One line inside a conflict block, checked against the region the block sits
+/// in. Returns the refusal reason when the line makes the anchor/why boundary
+/// unestablishable, `None` when it is consistent with its region.
+///
+/// See [`verify_driver_shape`] for why each shape is refused rather than
+/// interpreted.
+fn boundary_violation(line: &str, in_why_region: bool, name: &str) -> Option<String> {
+    let shape = classify_anchor_line(line);
+    if in_why_region {
+        return match shape {
+            AnchorLineShape::LineRange {
+                path_has_whitespace: false,
+            } => Some(format!(
+                "Span `{name}` has a line-range anchor record, `{line}`, inside a conflict block \
+                 that sits *after* the blank-line separator. The residue writer puts anchor \
+                 residue before the separator and never after it, so this line is either a \
+                 tracked anchor that a different writer misplaced — settling it here would \
+                 delete it — or why prose that is indistinguishable from one."
+            )),
+            _ => None,
+        };
+    }
+    match shape {
+        AnchorLineShape::NotAnchor if line.is_empty() => Some(format!(
+            "Span `{name}` has a blank line inside a conflict block that sits *before* the \
+             blank-line separator. A blank inside a block moves the anchor/why boundary on one \
+             side only, so the two sides no longer agree on where it is and `resolve` cannot \
+             establish it."
+        )),
+        AnchorLineShape::NotAnchor => Some(format!(
+            "Span `{name}` has a line inside its anchor-residue conflict block that is not an \
+             anchor record: `{line}`. The residue writer emits nothing but anchor records \
+             before the separator."
+        )),
+        AnchorLineShape::WholeFile {
+            path_has_whitespace: true,
+        } => Some(format!(
+            "Span `{name}` has a line inside its anchor-residue conflict block whose whole-file \
+             anchor path contains whitespace: `{line}`. That is the shape prose takes when it \
+             ends in a colon-bearing token such as a URL, and settling it would write a \
+             fabricated anchor whose path is a sentence."
+        )),
+        _ => None,
+    }
 }
 
 /// Wrap a side's parse failure. Names which side failed and the underlying
@@ -610,7 +823,7 @@ fn evaluate_side(
     // hash `resolve` cannot vouch for.
     let mut failures: Vec<String> = Vec::new();
     if side == Side::Rehash {
-        failures.extend(orphan_readability_failures(ours, theirs, &source_files));
+        failures.extend(unverifiable_anchor_failures(ours, theirs, &source_files));
         failures.extend(rehash_validity_failures(ours, theirs, &source_files));
     }
 
@@ -726,7 +939,18 @@ fn evaluate_side(
     // The two ceiling lines describe what could not be recovered, so they fire
     // only where there genuinely was no second evidence source to recover from.
     let mut warnings = Vec::new();
-    if !stages.available {
+    if !stages.unreadable.is_empty() {
+        warnings.push(unreadable_stage_line(stages));
+    }
+    if side != Side::Rehash
+        && let Some(line) = unverified_anchor_warning(repo, &merged)
+    {
+        warnings.push(line);
+    }
+    // A stage that exists but cannot be parsed is not a recovery source, so
+    // `available` alone cannot gate these: gating on it is what suppressed
+    // loss reporting on exactly the run where a stage blob failed to read.
+    if !stages.available || !stages.parsed_any {
         if merged.config == SpanConfig::default() {
             warnings.push(CONFIG_LOSS_LINE.to_string());
         }
@@ -745,11 +969,35 @@ fn evaluate_side(
     }))
 }
 
-/// Step 6: an orphan anchor (key present on exactly one side) whose source is
-/// absent from the readable set would be silently cloned with its stale hash
-/// by the kernel. Under `--rehash` that is a hash `resolve` cannot vouch for,
-/// so it joins the all-or-nothing failure list instead.
-fn orphan_readability_failures(
+/// Step 6: **every** anchor that would be written must have a readable source,
+/// or `--rehash` cannot vouch for the hash it writes.
+///
+/// The predecessor of this check fired only on an anchor whose
+/// `(path, start, end)` key was present on one side and absent on the other —
+/// a condition well-formed driver residue can never satisfy. The residue
+/// writer puts only same-key `unresolved` entries inside the conflict block and
+/// every other anchor outside it, where the split copies it into *both* sides,
+/// so `ours` and `theirs` always carry identical key sets. The check was
+/// therefore unreachable on exactly the input it existed to protect — a real
+/// orphan whose source is gone was cloned with its stale hash and reported
+/// `unchanged` — while the only way to make key sets diverge was to corrupt the
+/// marker split, on which it fired and described a sentence fragment as an
+/// orphan anchor. It was wired to the complement of its own condition.
+///
+/// Readability, not orphanhood, is the property `--rehash` needs: the kernel
+/// clones an anchor whose source it cannot find, whether that anchor is an
+/// orphan, a same-key divergence, or agreed on both sides. So this iterates the
+/// union of both key sets and fails on any unreadable path. Orphans keep their
+/// own wording because the side an orphan came from is information the operator
+/// needs and no other anchor has.
+///
+/// This is `--rehash`-only by design, and the asymmetry is the point:
+/// `--ours`/`--theirs` exist *because* a source may be deleted, still
+/// conflicted, or ambiguously renamed, and refusing there would make the
+/// card's headline recovery fail on its headline input. Those sides write the
+/// anchor and say so in a warning instead — see
+/// [`unverified_anchor_warning`].
+fn unverifiable_anchor_failures(
     ours: &SpanFile,
     theirs: &SpanFile,
     source_files: &[(String, Vec<u8>)],
@@ -758,24 +1006,68 @@ fn orphan_readability_failures(
     let ours_keys: HashSet<(&str, u32, u32)> = ours.anchors.iter().map(anchor_key).collect();
     let theirs_keys: HashSet<(&str, u32, u32)> = theirs.anchors.iter().map(anchor_key).collect();
 
-    let mut failures = Vec::new();
-    for (side_name, own, other_keys) in [
-        ("ours", &ours.anchors, &theirs_keys),
-        ("theirs", &theirs.anchors, &ours_keys),
-    ] {
-        for anchor in own {
-            if !other_keys.contains(&anchor_key(anchor)) && !readable.contains(anchor.path.as_str())
-            {
-                failures.push(format!(
-                    "{}: orphan anchor referenced only by {side_name}; source unreadable, \
-                     cannot verify under --rehash",
-                    address(&anchor.path, anchor.start_line, anchor.end_line)
-                ));
-            }
+    let mut failures = BTreeSet::new();
+    for anchor in ours.anchors.iter().chain(theirs.anchors.iter()) {
+        let key = anchor_key(anchor);
+        if readable.contains(anchor.path.as_str()) {
+            continue;
         }
+        let addr = address(&anchor.path, anchor.start_line, anchor.end_line);
+        let orphan_side = match (ours_keys.contains(&key), theirs_keys.contains(&key)) {
+            (true, false) => Some("ours"),
+            (false, true) => Some("theirs"),
+            _ => None,
+        };
+        failures.insert(match orphan_side {
+            Some(side_name) => format!(
+                "{addr}: orphan anchor referenced only by {side_name}; source unreadable, \
+                 cannot verify under --rehash"
+            ),
+            None => format!(
+                "{addr}: source unreadable, cannot verify this anchor under --rehash"
+            ),
+        });
     }
-    failures.sort();
-    failures
+    failures.into_iter().collect()
+}
+
+/// The `--ours`/`--theirs` counterpart to [`unverifiable_anchor_failures`]: on
+/// those sides an unreadable source is the expected input rather than a
+/// blocker, so the anchor is written — but the operator is told which anchors
+/// were carried across on the side's recorded hash alone, with nothing in the
+/// worktree to check them against.
+fn unverified_anchor_warning(repo: &gix::Repository, merged: &SpanFile) -> Option<String> {
+    let paths: BTreeSet<&str> = merged.anchors.iter().map(|a| a.path.as_str()).collect();
+    let dead: HashSet<&str> = paths
+        .into_iter()
+        .filter(|path| crate::git::read_worktree_bytes(repo, path).is_err())
+        .collect();
+    if dead.is_empty() {
+        return None;
+    }
+    let listed: Vec<String> = merged
+        .anchors
+        .iter()
+        .filter(|a| dead.contains(a.path.as_str()))
+        .map(|a| address(&a.path, a.start_line, a.end_line))
+        .collect();
+    Some(format!(
+        "unverified: {} anchor(s) were written from the chosen side's recorded hash with no \
+         readable source to check them against ({}). That is what taking a side means when a \
+         source is gone — `git span drift` will surface them, and `--rehash` refuses them.",
+        listed.len(),
+        listed.join(", ")
+    ))
+}
+
+/// The report line naming index stages that exist but could not be read.
+fn unreadable_stage_line(stages: &StageEvidence) -> String {
+    format!(
+        "index stages that could not be read: {}. A span file committed with conflict markers \
+         still in it stages a blob no reader can parse. Nothing was inferred from them — the \
+         readable stages and the worktree text decided this run.",
+        stages.unreadable.join(", ")
+    )
 }
 
 /// Step 6's sibling: a source that reads cleanly but no longer covers the
@@ -800,13 +1092,18 @@ fn rehash_validity_failures(
         if start_line == 0 && end_line == 0 {
             continue;
         }
-        // An anchor identical on both sides is cloned, never re-hashed.
-        if let (Some(o), Some(t)) = (ours_map.get(&key), theirs_map.get(&key))
-            && o.algorithm == t.algorithm
-            && o.content_hash == t.content_hash
-        {
-            continue;
-        }
+        // An anchor identical on both sides is cloned rather than re-hashed,
+        // which used to exempt it from this check — but a cloned hash is
+        // exactly the one `--rehash` has not verified, and an address whose
+        // range no longer fits its file is the case where the clone is
+        // provably stale. The exemption is gone.
+        //
+        // A hash that merely differs from the worktree within a range that
+        // still fits is ordinary drift, not `resolve`'s business: silently
+        // re-hashing it would paper over a coupling the operator needs to see,
+        // and refusing it would make `resolve` unusable on any span with
+        // unrelated drift. `git span drift` owns that case.
+        //
         // An absent source is step 6's business, not this check's.
         let Some((_, bytes)) = source_files.iter().find(|(p, _)| p == path) else {
             continue;

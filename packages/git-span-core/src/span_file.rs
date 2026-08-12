@@ -483,6 +483,53 @@ fn parse_anchor_line(line: &str) -> Result<AnchorRecord> {
     })
 }
 
+/// How one line of a conflict-markered span file reads against the anchor
+/// grammar, for a reader that has to decide whether the line belongs to the
+/// anchor block or the why text.
+///
+/// The span-file format gives the two regions no per-line marking of their
+/// own: they are separated by a blank line and nothing else. A reader that
+/// has lost track of that separator — because a conflict block moved it, or
+/// because the block came from a writer that put anchor residue and why
+/// residue in one block — cannot recover it from a line's appearance alone,
+/// and every shape below is one it must be able to name in order to refuse
+/// rather than guess. See [`classify_anchor_line`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnchorLineShape {
+    /// The line does not parse as an anchor record at all (a blank line,
+    /// ordinary prose, a `[config]` header).
+    NotAnchor,
+    /// `<path> <alg>:<hash>` — a whole-file anchor. `path_has_whitespace`
+    /// is the discriminator between a real whole-file anchor (paths rarely
+    /// contain spaces) and a sentence that happens to end in a colon-bearing
+    /// token, such as prose closing with a URL.
+    WholeFile { path_has_whitespace: bool },
+    /// `<path>#L<start>-L<end> <alg>:<hash>` — a line-range anchor. Prose
+    /// that merely quotes an anchor address mid-sentence lands here with
+    /// `path_has_whitespace` set, because the words before the address are
+    /// absorbed into the path.
+    LineRange { path_has_whitespace: bool },
+}
+
+/// Classify one line against the anchor grammar without committing to it.
+///
+/// This is the shared authority for "could this line be an anchor record?",
+/// used by readers that must establish the anchor/why boundary structurally
+/// and refuse when they cannot. It answers only about shape — it never
+/// decides what the line *is*, because that is precisely what the format
+/// does not record.
+pub fn classify_anchor_line(line: &str) -> AnchorLineShape {
+    let Ok(record) = parse_anchor_line(line) else {
+        return AnchorLineShape::NotAnchor;
+    };
+    let path_has_whitespace = record.path.chars().any(char::is_whitespace);
+    if record.start_line == 0 && record.end_line == 0 {
+        AnchorLineShape::WholeFile { path_has_whitespace }
+    } else {
+        AnchorLineShape::LineRange { path_has_whitespace }
+    }
+}
+
 /// Canonicalize an anchor path to the POSIX, forward-slash, repo-relative
 /// form. A Windows author may type `sub\dir\file.txt`; the git tree/index
 /// is forward-slash on every platform, so a backslash path would fail to
