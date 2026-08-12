@@ -1,9 +1,14 @@
 //! CLI: `git span resolve <name>` — settle a conflict-markered span file
 //! under one explicitly chosen side.
 //!
-//! Every fixture here is built with **no real unmerged index stages**: the
-//! text-sourcing path is the whole of what `resolve` reads today, so a
-//! hand-assembled or driver-generated worktree file is the honest input. Any
+//! Most fixtures here are built with **no real unmerged index stages**: the
+//! text-sourcing path carries anchors and why on its own, so a
+//! hand-assembled or driver-generated worktree file is the honest input, and
+//! it keeps the bulk of the suite cheap. The index-stage supplement — config
+//! recovery, base-aware three-way resolution, hand-edit preservation — gets
+//! its own smaller set of tests ([`mid_merge_repo`]) that leave a real `git
+//! merge` uncommitted, since that is the only way to exercise it honestly.
+//! Any
 //! fixture that stands in for real driver output is produced by running
 //! `git span merge-driver` itself ([`driver_residue`]) rather than
 //! hand-written, because hand-written residue has concealed real defects
@@ -598,6 +603,457 @@ fn resolve_reports_why_loss_when_no_index_stages() -> Result<()> {
     assert!(
         !span.contains("shared rationale"),
         "the why genuinely cannot be recovered from text alone; span:\n{span}"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// 8c–8i + 14. Index-stage supplementation, against real unmerged stages
+//
+// Every test below runs against a genuinely unmerged index: a real `git
+// merge` routed through the real span merge driver, left uncommitted, so
+// stages 1/2/3 hold the pre-driver blobs the worktree residue no longer
+// carries. That is the only honest way to exercise the supplement.
+// ---------------------------------------------------------------------------
+
+/// The anchors' source file. It appears in the worktree only *after* the
+/// merge, so the driver had nothing to re-hash from (which is what leaves the
+/// residue) while `resolve --rehash` afterwards does.
+const LATER: &str = "alpha\nbravo\ncharlie\ndelta\n";
+
+/// A hash for the merge base's record, distinct from both sides'.
+const BASE_HASH: &str = "1111222233334444";
+
+/// A hash an operator wrote by hand — matching no stage blob and no worktree
+/// content, so "preserved exactly" is unambiguous.
+const HAND_HASH: &str = "aaaabbbbccccdddd";
+
+/// Leave the repo mid-merge: real `MERGE_HEAD`, real unmerged stages 1/2/3 on
+/// `.span/m`, and driver-produced residue in the worktree. Returns the repo
+/// and that residue text.
+///
+/// The residue is the driver's own output by construction — this is the
+/// fixture-provenance rule the cheap fixtures satisfy via `driver_residue`.
+fn mid_merge_repo(base: &str, ours: &str, theirs: &str) -> Result<(TestRepo, String)> {
+    let repo = TestRepo::seeded()?;
+    // Route `.span/**` through the real driver; git's default text merge
+    // would produce a shape `resolve` deliberately refuses.
+    repo.write_file(".gitattributes", ".span/** merge=span\n")?;
+    repo.run_git([
+        "config",
+        "merge.span.name",
+        "git-span structural span merge",
+    ])?;
+    repo.run_git([
+        "config",
+        "merge.span.driver",
+        &format!(
+            "{} merge-driver %O %A %B %L",
+            env!("CARGO_BIN_EXE_git-span")
+        ),
+    ])?;
+    repo.write_file(".span/m", base)?;
+    repo.commit_all("declare m")?;
+
+    repo.run_git(["checkout", "-b", "side"])?;
+    repo.write_file(".span/m", theirs)?;
+    repo.commit_all("side edits m")?;
+
+    repo.run_git(["checkout", "main"])?;
+    repo.write_file(".span/m", ours)?;
+    repo.commit_all("main edits m")?;
+
+    let merge = std::process::Command::new("git")
+        .current_dir(repo.path())
+        .args(["merge", "--no-edit", "side"])
+        .output()?;
+    assert!(
+        !merge.status.success(),
+        "the driver must fail closed on this fixture, or there are no stages to read; \
+         stdout=\n{}\nstderr=\n{}",
+        String::from_utf8_lossy(&merge.stdout),
+        String::from_utf8_lossy(&merge.stderr)
+    );
+
+    let staged = repo.git_stdout(["ls-files", "-u", ".span/m"])?;
+    for stage in ["1", "2", "3"] {
+        assert!(
+            staged.contains(&format!(" {stage}\t.span/m")),
+            "fixture assumption: stage {stage} must be present; ls-files -u:\n{staged}"
+        );
+    }
+
+    let residue = read_span(&repo, "m")?;
+    assert!(
+        residue.contains("<<<<<<<"),
+        "fixture assumption: the worktree file must carry driver residue; residue=\n{residue}"
+    );
+
+    repo.write_file("later.txt", LATER)?;
+    Ok((repo, residue))
+}
+
+/// Base/ours/theirs for the common shape: one anchor conflicting on hash, a
+/// `why` that is identical everywhere and therefore dropped by the residue
+/// writer.
+fn shared_why_sides() -> (String, String, String) {
+    (
+        format!("later.txt#L1-L3 rk64:{BASE_HASH}\n\nshared rationale\n"),
+        format!("later.txt#L1-L3 rk64:{OTHER_HASH}\n\nshared rationale\n"),
+        format!("later.txt#L1-L3 rk64:{THIRD_HASH}\n\nshared rationale\n"),
+    )
+}
+
+#[test]
+fn resolve_recovers_config_from_index_stages_after_partial_residue() -> Result<()> {
+    let base = format!("later.txt#L1-L3 rk64:{BASE_HASH}\n\nshared rationale\n");
+    let ours = format!("later.txt#L1-L3 rk64:{OTHER_HASH}\n\nshared rationale\n");
+    let theirs = format!(
+        "later.txt#L1-L3 rk64:{THIRD_HASH}\n\nshared rationale\n\n[config]\n\
+         copy_detection = \"same-commit\"\nignore_whitespace = true\nfollow_moves = false\n"
+    );
+    let (repo, residue) = mid_merge_repo(&base, &ours, &theirs)?;
+    assert!(
+        !residue.contains("[config]"),
+        "fixture assumption: the residue writer drops [config] from the worktree text; \
+         residue=\n{residue}"
+    );
+
+    let out = repo.run_span(["resolve", "m", "--rehash"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the residue is rehashable once later.txt exists; stderr=\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let span = read_span(&repo, "m")?;
+    assert!(
+        span.contains("[config]") && span.contains("ignore_whitespace = true"),
+        "the non-default config must be recovered from the stage blobs; span:\n{span}"
+    );
+    assert!(
+        !stdout.contains("no `[config]` section found in the input"),
+        "the loss ceiling must not be reported when stages were available; stdout=\n{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn resolve_preserves_hand_edited_worktree_content() -> Result<()> {
+    let base = format!(
+        "handed.txt#L1-L2 rk64:{BASE_HASH}\nlater.txt#L1-L3 rk64:{BASE_HASH}\n\nshared rationale\n"
+    );
+    let ours = format!(
+        "handed.txt#L1-L2 rk64:{OTHER_HASH}\nlater.txt#L1-L3 rk64:{OTHER_HASH}\n\n\
+         shared rationale\n"
+    );
+    let theirs = format!(
+        "handed.txt#L1-L2 rk64:{THIRD_HASH}\nlater.txt#L1-L3 rk64:{THIRD_HASH}\n\n\
+         shared rationale\n"
+    );
+    let (repo, residue) = mid_merge_repo(&base, &ours, &theirs)?;
+    assert!(
+        residue.contains(&format!("handed.txt#L1-L2 rk64:{OTHER_HASH}"))
+            && residue.contains(&format!("handed.txt#L1-L2 rk64:{THIRD_HASH}")),
+        "fixture assumption: both handed.txt records must be residue; residue=\n{residue}"
+    );
+
+    // The operator settles handed.txt by hand — lifting it out of the block
+    // as one clean line whose hash matches neither stage blob — and leaves
+    // later.txt marked, which is what they are still running `resolve` for.
+    let hand_edited: String = std::iter::once(format!("handed.txt#L1-L2 rk64:{HAND_HASH}\n"))
+        .chain(
+            residue
+                .lines()
+                .filter(|l| !l.contains("handed.txt"))
+                .map(|l| format!("{l}\n")),
+        )
+        .collect();
+    repo.write_file(".span/m", &hand_edited)?;
+
+    let out = repo.run_span(["resolve", "m", "--rehash"])?;
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the remaining residue is rehashable; stderr=\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let span = read_span(&repo, "m")?;
+    assert!(
+        span.contains(&format!("handed.txt#L1-L2 rk64:{HAND_HASH}")),
+        "the hand-resolved anchor must survive exactly — anchors are never sourced from \
+         the frozen stage blobs; span:\n{span}"
+    );
+    assert!(
+        !span.contains(OTHER_HASH) && !span.contains(THIRD_HASH),
+        "neither stage record may reappear; span:\n{span}"
+    );
+    assert!(
+        span.contains(&format!("later.txt#L1-L3 rk64:{}", line_slice_hash(LATER, 1, 3))),
+        "the still-marked anchor must be re-hashed from the worktree; span:\n{span}"
+    );
+    Ok(())
+}
+
+#[test]
+fn resolve_uses_real_base_to_avoid_unnecessary_why_conflict() -> Result<()> {
+    let base = format!("later.txt#L1-L3 rk64:{BASE_HASH}\n\nrationale X\n");
+    let ours = format!("later.txt#L1-L3 rk64:{OTHER_HASH}\n\nrationale X\n");
+    let theirs = format!("later.txt#L1-L3 rk64:{THIRD_HASH}\n\nrationale Y\n");
+    let (repo, residue) = mid_merge_repo(&base, &ours, &theirs)?;
+    assert!(
+        !residue.contains("rationale"),
+        "fixture assumption: the residue writer drops the non-conflicting why; \
+         residue=\n{residue}"
+    );
+
+    // Without a real stage-1 base this is a two-way compare — `rationale X`
+    // against `rationale Y` — and `--rehash` would fail closed on it.
+    let out = repo.run_span(["resolve", "m", "--rehash"])?;
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "with a base, the unchanged side yields and nothing needs arbitrating; stderr=\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let span = read_span(&repo, "m")?;
+    assert!(
+        span.contains("rationale Y") && !span.contains("rationale X"),
+        "three-way resolution must take the side that actually changed; span:\n{span}"
+    );
+    Ok(())
+}
+
+#[test]
+fn resolve_ours_preserves_non_diverged_why_change() -> Result<()> {
+    let base = format!("later.txt#L1-L3 rk64:{BASE_HASH}\n\nrationale X\n");
+    let ours = format!("later.txt#L1-L3 rk64:{OTHER_HASH}\n\nrationale X\n");
+    let theirs = format!("later.txt#L1-L3 rk64:{THIRD_HASH}\n\nrationale Y\n");
+    let (repo, _) = mid_merge_repo(&base, &ours, &theirs)?;
+
+    let out = repo.run_span(["resolve", "m", "--ours"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr=\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let span = read_span(&repo, "m")?;
+    assert!(
+        span.contains("rationale Y") && !span.contains("rationale X"),
+        "`--ours` must not revert a clean, uncontested change it was never asked to \
+         arbitrate; span:\n{span}"
+    );
+    assert!(
+        span.contains(&format!("later.txt#L1-L3 rk64:{OTHER_HASH}")),
+        "the genuinely divergent anchor still takes ours' record; span:\n{span}"
+    );
+    assert!(
+        stdout.contains("why: resolved automatically (matches theirs)"),
+        "the report must not claim the side choice fired; stdout=\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("why: kept ours") && !stdout.contains("why: unchanged"),
+        "stdout=\n{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn resolve_ours_preserves_non_diverged_config_change() -> Result<()> {
+    let base = format!("later.txt#L1-L3 rk64:{BASE_HASH}\n\nshared rationale\n");
+    let ours = format!("later.txt#L1-L3 rk64:{OTHER_HASH}\n\nshared rationale\n");
+    let theirs = format!(
+        "later.txt#L1-L3 rk64:{THIRD_HASH}\n\nshared rationale\n\n[config]\n\
+         copy_detection = \"same-commit\"\nignore_whitespace = false\nfollow_moves = true\n"
+    );
+    let (repo, _) = mid_merge_repo(&base, &ours, &theirs)?;
+
+    let out = repo.run_span(["resolve", "m", "--ours"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr=\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let span = read_span(&repo, "m")?;
+    assert!(
+        span.contains("follow_moves = true"),
+        "`--ours` must not revert theirs' uncontested setting to ours' default; span:\n{span}"
+    );
+    assert!(
+        stdout.contains("config: resolved automatically (matches theirs)"),
+        "stdout=\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("config: kept ours"),
+        "stdout=\n{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn resolve_recovers_why_from_index_stages_after_partial_residue() -> Result<()> {
+    let (base, ours, theirs) = shared_why_sides();
+    let (repo, residue) = mid_merge_repo(&base, &ours, &theirs)?;
+    assert!(
+        !residue.contains("shared rationale"),
+        "fixture assumption: the residue writer omits an agreed why entirely; \
+         residue=\n{residue}"
+    );
+
+    let out = repo.run_span(["resolve", "m", "--rehash"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr=\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let span = read_span(&repo, "m")?;
+    assert!(
+        span.contains("shared rationale"),
+        "the why the writer dropped must be recovered from the stage blobs, not merely \
+         reported as lost; span:\n{span}"
+    );
+    assert!(
+        stdout.contains("why: recovered from index stages"),
+        "the report must not present a restored why as agreement; stdout=\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("no why paragraph found in the input"),
+        "the loss ceiling must not fire when stages were available; stdout=\n{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn resolve_hand_edited_why_is_never_overwritten_from_index_stages() -> Result<()> {
+    let (base, ours, theirs) = shared_why_sides();
+    let (repo, residue) = mid_merge_repo(&base, &ours, &theirs)?;
+
+    // The operator has since written their own why into the conflict block.
+    // A non-empty text-sourced why is exactly what the supplement must not
+    // touch — the empty-string discriminator is the whole guard.
+    let hand_edited = residue
+        .replace("=======\n", "\noperator rationale\n=======\n")
+        .replace(">>>>>>> theirs\n", "\noperator rationale\n>>>>>>> theirs\n");
+    repo.write_file(".span/m", &hand_edited)?;
+
+    let out = repo.run_span(["resolve", "m", "--rehash"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr=\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let span = read_span(&repo, "m")?;
+    assert!(
+        span.contains("operator rationale"),
+        "the hand-edited why must survive; span:\n{span}"
+    );
+    assert!(
+        !span.contains("shared rationale"),
+        "the stage blob must never override a non-empty text-sourced why; span:\n{span}"
+    );
+    assert!(
+        !stdout.contains("recovered from index stages"),
+        "nothing was recovered here; stdout=\n{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn resolve_why_cleared_by_hand_is_restored_from_stages_not_prevented() -> Result<()> {
+    let base = format!("later.txt#L1-L3 rk64:{BASE_HASH}\n\nrationale X\n");
+    let ours = format!("later.txt#L1-L3 rk64:{OTHER_HASH}\n\nrationale Y\n");
+    let theirs = format!("later.txt#L1-L3 rk64:{THIRD_HASH}\n\nrationale Z\n");
+    let (repo, residue) = mid_merge_repo(&base, &ours, &theirs)?;
+    assert!(
+        residue.contains("rationale Y") && residue.contains("rationale Z"),
+        "fixture assumption: a contested why is carried inside the block; residue=\n{residue}"
+    );
+
+    // The operator decides the span no longer needs a why and deletes both
+    // paragraphs, leaving the anchor residue — indistinguishable, from the
+    // text alone, from the writer having dropped an agreed why.
+    let cleared: String = residue
+        .lines()
+        .filter(|l| !l.starts_with("rationale "))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    repo.write_file(".span/m", &cleared)?;
+    let before = read_span_bytes(&repo, "m")?;
+
+    // Restoring both sides makes the divergence real again, so `--rehash`
+    // has something it cannot arbitrate — the ambiguity surfaces rather than
+    // being silently read as agreement on an empty why.
+    let out = repo.run_span(["resolve", "m", "--rehash"])?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_ne!(out.status.code(), Some(0), "stderr=\n{stderr}");
+    assert!(
+        stderr.contains("--why"),
+        "the restored divergence must be named; stderr=\n{stderr}"
+    );
+    assert_eq!(before, read_span_bytes(&repo, "m")?, "file must be untouched");
+
+    // Taking a side writes the stage-supplied prose back — this plan's
+    // disclosed choice of restore over preserve-empty — and says so.
+    let out = repo.run_span(["resolve", "m", "--ours"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr=\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let span = read_span(&repo, "m")?;
+    assert!(
+        span.contains("rationale Y") && !span.contains("rationale Z"),
+        "the stage-supplied why for the chosen side must be restored; span:\n{span}"
+    );
+    assert!(
+        stdout.contains("recovered from index stages") && !stdout.contains("why: unchanged"),
+        "the operator must be able to see that something put the why back; stdout=\n{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn resolve_never_stages() -> Result<()> {
+    let (base, ours, theirs) = shared_why_sides();
+    let (repo, _) = mid_merge_repo(&base, &ours, &theirs)?;
+
+    let out = repo.run_span(["resolve", "m", "--rehash"])?;
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr=\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let span = read_span(&repo, "m")?;
+    assert!(
+        !span.contains("<<<<<<<"),
+        "the span must be fully resolved in the worktree; span:\n{span}"
+    );
+
+    let staged = repo.git_stdout(["ls-files", "-u", ".span/m"])?;
+    for stage in ["1", "2", "3"] {
+        assert!(
+            staged.contains(&format!(" {stage}\t.span/m")),
+            "resolve must never stage: stage {stage} must still be unmerged; \
+             ls-files -u:\n{staged}"
+        );
+    }
+    assert!(
+        repo.path().join(".git").join("MERGE_HEAD").exists(),
+        "resolve must not touch the merge state"
     );
     Ok(())
 }

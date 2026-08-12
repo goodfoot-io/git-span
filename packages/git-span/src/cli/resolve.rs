@@ -22,7 +22,11 @@
 //!
 //! Anchors and why always come from the live worktree text, so progress an
 //! operator already made by hand is read as agreed content rather than
-//! reverted.
+//! reverted. Unmerged index stages are consulted only for what the residue
+//! writer silently omits from that text — `[config]`, a `why` the writer
+//! dropped because it wasn't the conflicting field, and a `base` for
+//! three-way arbitration — never to override an anchor or a non-empty
+//! text-sourced why.
 
 use crate::cli::commit::{span_file_path, write_worktree_span};
 use crate::cli::drift_fix::{read_clean_source_files, split_conflict_markers};
@@ -85,6 +89,87 @@ impl Side {
             Side::Theirs => "theirs",
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Index-stage evidence (step 4, second half)
+// ---------------------------------------------------------------------------
+
+/// What the unmerged index stages contributed, and what they could not.
+///
+/// The stage blobs are frozen at the moment the conflict was created while the
+/// worktree file is live, so they supply only the three things the residue
+/// writer can silently drop from that live text: `base` (stage 1) for
+/// three-way arbitration, `[config]` (stages 2/3, grafted onto the
+/// text-sourced sides), and a `why` that the text carries as empty. Anchors
+/// are never sourced from here under any circumstance.
+#[derive(Debug, Default)]
+struct StageEvidence {
+    /// The merge base's span file, when stage 1 exists — the only input to
+    /// `resolve_why_text`/`resolve_config`'s three-way arm.
+    base: Option<SpanFile>,
+    /// True when the span path had at least one unmerged index entry. False
+    /// means there is no second evidence source at all, which is what the two
+    /// recovery-ceiling report lines are conditional on.
+    available: bool,
+    /// True when the supplement genuinely replaced an empty text-sourced why
+    /// with a non-empty stage value, on either side.
+    why_recovered: bool,
+}
+
+/// Read the unmerged index stages for `{span_root}/{name}` and supplement the
+/// text-sourced sides with what the residue writer drops.
+///
+/// `ours`/`theirs` are mutated only in `.config` (unconditionally, when the
+/// corresponding stage blob exists) and in `.why` (only when the text-sourced
+/// value is empty — the discriminator that keeps this from discarding a
+/// hand-edited why). Their anchors are never touched.
+fn load_stage_evidence(
+    repo: &gix::Repository,
+    span_root: &str,
+    name: &str,
+    ours: &mut SpanFile,
+    theirs: &mut SpanFile,
+) -> StageEvidence {
+    let rel = format!("{span_root}/{name}");
+    let entries = crate::git::index_entries(repo).unwrap_or_default();
+    let unmerged: Vec<&crate::git::IndexEntrySnapshot> = entries
+        .iter()
+        .filter(|e| e.path == rel && e.stage != gix::index::entry::Stage::Unconflicted)
+        .collect();
+
+    let parse_stage = |stage: gix::index::entry::Stage| -> Option<SpanFile> {
+        let entry = unmerged.iter().find(|e| e.stage == stage)?;
+        let bytes = crate::git::read_blob_bytes(repo, &entry.oid.to_string()).ok()?;
+        let text = String::from_utf8(bytes).ok()?;
+        SpanFile::parse(&text).ok()
+    };
+
+    let mut evidence = StageEvidence {
+        base: parse_stage(gix::index::entry::Stage::Base),
+        available: !unmerged.is_empty(),
+        why_recovered: false,
+    };
+
+    for (stage, side) in [
+        (gix::index::entry::Stage::Ours, &mut *ours),
+        (gix::index::entry::Stage::Theirs, &mut *theirs),
+    ] {
+        let Some(staged) = parse_stage(stage) else {
+            continue;
+        };
+        // `[config]` never survives the residue writer, so the stage blob is
+        // strictly better evidence than the text whenever it exists.
+        side.config = staged.config;
+        // A non-empty text-sourced why may be a hand edit. Only an empty one
+        // is supplemented.
+        if side.why.trim().is_empty() && !staged.why.trim().is_empty() {
+            side.why = staged.why.clone();
+            evidence.why_recovered = true;
+        }
+    }
+
+    evidence
 }
 
 // ---------------------------------------------------------------------------
@@ -199,19 +284,28 @@ pub fn run_resolve(repo: &gix::Repository, args: ResolveArgs, span_root: &str) -
     // canonicalized text the split is verified against.
     let shaped = verify_driver_shape(&raw, &name)?;
 
-    // Step 4: split and parse. `base` stays `None`: anchors and why come
-    // solely from the worktree text.
+    // Step 4: split and parse. Anchors and why come solely from the worktree
+    // text; the index stages supplement config, an empty why, and base.
     let (ours_text, theirs_text) = split_conflict_markers(&shaped).ok_or_else(|| {
         anyhow::anyhow!("internal error: span `{name}` reported as conflicted but no markers found")
     })?;
-    let ours = SpanFile::parse(&ours_text).map_err(|e| parse_error(&name, "ours", e))?;
-    let theirs = SpanFile::parse(&theirs_text).map_err(|e| parse_error(&name, "theirs", e))?;
+    let mut ours = SpanFile::parse(&ours_text).map_err(|e| parse_error(&name, "ours", e))?;
+    let mut theirs = SpanFile::parse(&theirs_text).map_err(|e| parse_error(&name, "theirs", e))?;
 
-    // Step 4b: algorithm sanity gate.
+    // Step 4b: algorithm sanity gate. Run against the text-sourced anchors,
+    // which the stage supplement below never touches.
     check_algorithms(&ours, &theirs, &name)?;
 
+    let stages = load_stage_evidence(repo, span_root, &name, &mut ours, &mut theirs);
+    if !stages.available {
+        eprintln!(
+            "warning: no unmerged index stages found for `{name}`; [config] divergence a prior \
+             partial merge may have already dropped cannot be recovered."
+        );
+    }
+
     if args.dry_run {
-        return run_dry_run(repo, &name, &ours, &theirs, args.format);
+        return run_dry_run(repo, &name, &ours, &theirs, &stages, args.format);
     }
 
     let side = if args.ours {
@@ -224,7 +318,7 @@ pub fn run_resolve(repo: &gix::Repository, args: ResolveArgs, span_root: &str) -
 
     // Steps 5–8: compute source evidence, run the pre-kernel checks, merge,
     // and settle why/config.
-    match evaluate_side(repo, side, &ours, &theirs) {
+    match evaluate_side(repo, side, &ours, &theirs, &stages) {
         SideOutcome::Failed(reasons) => Err(failure_error(&name, side, &reasons).into()),
         SideOutcome::Resolved(settlement) => {
             let mut settlement = *settlement;
@@ -249,11 +343,12 @@ fn run_dry_run(
     name: &str,
     ours: &SpanFile,
     theirs: &SpanFile,
+    stages: &StageEvidence,
     format: ResolveFormat,
 ) -> Result<i32> {
     let outcomes: Vec<(Side, SideOutcome)> = Side::ALL
         .iter()
-        .map(|&side| (side, evaluate_side(repo, side, ours, theirs)))
+        .map(|&side| (side, evaluate_side(repo, side, ours, theirs, stages)))
         .collect();
 
     match format {
@@ -492,6 +587,7 @@ fn evaluate_side(
     side: Side,
     ours: &SpanFile,
     theirs: &SpanFile,
+    stages: &StageEvidence,
 ) -> SideOutcome {
     // Step 5: source evidence. `--ours`/`--theirs` never read a source at
     // all — routing around an unreadable source is the entire point of them.
@@ -527,8 +623,8 @@ fn evaluate_side(
 
     // Step 8: why/config, computed independently of the kernel's collapsed
     // synthetic marker so each divergence is reported for what it is.
-    let (why, why_diverged) = resolve_why_text(None, ours, theirs);
-    let (config, config_diverged) = resolve_config(None, ours, theirs);
+    let (why, why_diverged) = resolve_why_text(stages.base.as_ref(), ours, theirs);
+    let (config, config_diverged) = resolve_config(stages.base.as_ref(), ours, theirs);
 
     let mut merged = result.merged.clone();
 
@@ -606,15 +702,26 @@ fn evaluate_side(
     });
 
     let entries = build_entries(side, &merged, &ours_map, &theirs_map);
-    let why_label = field_label(side, why_diverged, &ours.why, &theirs.why, &merged.why);
+    let why_label = field_label(
+        side,
+        why_diverged,
+        &ours.why,
+        &theirs.why,
+        &merged.why,
+        stages.why_recovered,
+    );
     let config_label = field_label_config(side, config_diverged, ours, theirs, &merged);
 
+    // The two ceiling lines describe what could not be recovered, so they fire
+    // only where there genuinely was no second evidence source to recover from.
     let mut warnings = Vec::new();
-    if merged.config == SpanConfig::default() {
-        warnings.push(CONFIG_LOSS_LINE.to_string());
-    }
-    if merged.why.trim().is_empty() {
-        warnings.push(WHY_LOSS_LINE.to_string());
+    if !stages.available {
+        if merged.config == SpanConfig::default() {
+            warnings.push(CONFIG_LOSS_LINE.to_string());
+        }
+        if merged.why.trim().is_empty() {
+            warnings.push(WHY_LOSS_LINE.to_string());
+        }
     }
 
     SideOutcome::Resolved(Box::new(Settlement {
@@ -749,16 +856,39 @@ fn build_entries(
         .collect()
 }
 
-/// The three-state `why` label: an explicit side choice that fired, a
-/// three-way answer taken without operator input, or trivial agreement.
-fn field_label(side: Side, diverged: bool, ours: &str, theirs: &str, merged: &str) -> String {
-    if diverged && side != Side::Rehash {
+/// The four-state `why` label: an explicit side choice that fired, a
+/// three-way answer taken without operator input, a value the index-stage
+/// supplement put back, or trivial agreement.
+///
+/// `recovered from index stages` replaces `unchanged` rather than ranking
+/// above the other two, because it is exactly the claim of agreement that
+/// cannot be made here: an empty text-sourced why is equally "the residue
+/// writer dropped it" and "the operator deliberately cleared it", so the
+/// report says something restored it instead of asserting both sides agreed.
+/// When a side choice or a three-way answer did the arbitrating, that stays
+/// the headline and the recovery is appended to it.
+fn field_label(
+    side: Side,
+    diverged: bool,
+    ours: &str,
+    theirs: &str,
+    merged: &str,
+    recovered: bool,
+) -> String {
+    let arbitrated = if diverged && side != Side::Rehash {
         format!("kept {}", side.name())
     } else if ours != theirs {
         let which = if merged == ours { "ours" } else { "theirs" };
         format!("resolved automatically (matches {which})")
+    } else if recovered {
+        return "recovered from index stages".to_string();
     } else {
         "unchanged".to_string()
+    };
+    if recovered {
+        format!("{arbitrated}, recovered from index stages")
+    } else {
+        arbitrated
     }
 }
 
@@ -888,7 +1018,7 @@ pub fn settle_for_test(
         "theirs" => Side::Theirs,
         _ => Side::Rehash,
     };
-    match evaluate_side(repo, side, ours, theirs) {
+    match evaluate_side(repo, side, ours, theirs, &StageEvidence::default()) {
         SideOutcome::Resolved(s) => Ok((s.merged.clone(), s.why_label.clone(), s.config_label.clone())),
         SideOutcome::Failed(reasons) => Err(reasons),
     }
