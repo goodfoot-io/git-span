@@ -224,22 +224,22 @@ describe('codex harness snapshot lifecycle', () => {
   // previously consumed (session, tool_use_id) would fail every call closed
   // on a re-run. The fixture's ids are fixed and unique per test, so purge
   // the codex file's own session dirs before the run (see the helpers'
-  // rationale). Only this file's ids: the claude file runs in a parallel
-  // fork over the same shared session base, and a union purge would delete
-  // its live records mid-test.
+  // rationale). Only this file's ids: the id partition is what keeps this
+  // file's own cases from seeing one another's records through the
+  // base-wide sweep, and naming ids this file never writes would purge
+  // nothing while inviting the list to drift.
   beforeAll(() => purgeSessions(layout, CODEX_SESSION_IDS));
-  // The records/tombstones this run writes must not outlive it either: the
-  // core suite's write-time sweep walks every record in the shared session
-  // base and warns per repo whose temp dir is already gone, so a fixture
-  // record left behind (repo cleaned at test end, record persisting until
-  // the next run's beforeAll) fails the core file's no-warns assertions
-  // when the files run in parallel. Purge after every test — again scoped
-  // to this file's ids, mirroring snapshot-store.test.ts's afterEach
-  // cleanup convention. The purge *renames* the dirs out of the base rather
-  // than unlinking them: other workers' sweeps read shared-base record
-  // files, and a close-after-unlink crashes Node on this fs (see the
-  // helpers' rationale). The renamed dirs sit in a per-worker trash root
-  // outside the base and are emptied once, at the end of the file.
+  // The records/tombstones a case writes must not outlive it either: this
+  // file's write-time sweep walks every record in the run's session base and
+  // warns per repo whose temp dir is already gone, so a record left behind by
+  // an earlier case (its repo cleaned at case end) makes a later case's
+  // no-warns assertion fail. Purge after every test — again scoped to this
+  // file's ids, mirroring snapshot-store.test.ts's afterEach cleanup
+  // convention. The purge *renames* the dirs out of the base rather than
+  // unlinking them: a store's sweep may be mid-read on a record file, and a
+  // close-after-unlink crashes Node on this fs (see the helpers' rationale).
+  // The renamed dirs sit in a trash root outside the base and are emptied
+  // once, at the end of the file.
   afterEach(() => purgeSessions(layout, CODEX_SESSION_IDS));
   afterAll(() => flushPurgedSessions(layout));
 
@@ -630,11 +630,7 @@ describe('codex harness snapshot lifecycle', () => {
         // The record's createdAt is already TTL-expired, but the sweep-read
         // margin skips files written within the last 5s — age the file itself
         // past the margin so the TTL pass reads it (utimesSync takes seconds).
-        const recFile = join(
-          layout.dir('sess-codex-ttl'),
-          'snapshots',
-          `${sanitizeSessionId('tu-codex-failed-1')}.json`
-        );
+        const recFile = layout.recordFile('sess-codex-ttl', 'tu-codex-failed-1');
         utimesSync(recFile, (now - 60_000) / 1000, (now - 60_000) / 1000);
         expect(store.sweep(now).records).toBe(1);
         expect(store.find('sess-codex-ttl', 'tu-codex-failed-1')).toBeNull();
@@ -1311,10 +1307,11 @@ describe('codex harness snapshot lifecycle', () => {
 describe('codex harness snapshot lifecycle — wave-E coverage-gap family', () => {
   // This describe is a sibling of the file's first block, not nested inside
   // it, so it does not inherit that block's purge hooks — its fixed session
-  // ids (capcut/binary/partialbudget) leaked into the shared session base
-  // forever otherwise, tripping the core store suite's no-warns assertions
-  // on a later run. Same purge convention as the first block, scoped to the
-  // same CODEX_SESSION_IDS list (a superset covers this block's ids too).
+  // ids (capcut/binary/partialbudget) would otherwise accumulate in the run's
+  // session base across this block's own cases, and a later case's no-warns
+  // assertion would trip on an earlier one's leftovers. Same purge convention
+  // as the first block, scoped to the same CODEX_SESSION_IDS list (a superset
+  // covers this block's ids too).
   beforeAll(() => purgeSessions(layout, CODEX_SESSION_IDS));
   afterEach(() => purgeSessions(layout, CODEX_SESSION_IDS));
   afterAll(() => flushPurgedSessions(layout));
@@ -1363,7 +1360,7 @@ describe('codex harness snapshot lifecycle — wave-E coverage-gap family', () =
         });
         // The cut gap is persisted onto the consumed record — the exact
         // evidence a later consult needs.
-        const persistedPath = join(layout.dir(sessionId), 'snapshots', `${sanitizeSessionId(siblingTu)}.json`);
+        const persistedPath = layout.recordFile(sessionId, siblingTu);
         const persisted = JSON.parse(readFileSync(persistedPath, 'utf8')) as SnapshotRecord;
         expect(persisted.consumed).toBe(true);
         expect(persisted.gaps.some((g) => g.includes('touched-files cap'))).toBe(true);
@@ -1427,7 +1424,7 @@ describe('codex harness snapshot lifecycle — wave-E coverage-gap family', () =
       )(siblingInput as never, {
         logger
       });
-      const persistedPath = join(layout.dir(sessionId), 'snapshots', `${sanitizeSessionId(siblingTu)}.json`);
+      const persistedPath = layout.recordFile(sessionId, siblingTu);
       const persisted = JSON.parse(readFileSync(persistedPath, 'utf8')) as SnapshotRecord;
       expect(persisted.gaps).toEqual([]);
       expect(recordHasPathCoverageGap(persisted)).toBe(false);

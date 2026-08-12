@@ -285,22 +285,22 @@ describe('claude harness snapshot lifecycle', () => {
   // previously consumed (session, tool_use_id) would fail every call closed
   // on a re-run. The fixture's ids are fixed and unique per test, so purge
   // the claude file's own session dirs before the run (see the helpers'
-  // rationale). Only this file's ids: the codex file runs in a parallel fork
-  // over the same shared session base, and a union purge would delete its
-  // live records mid-test.
+  // rationale). Only this file's ids: the id partition is what keeps this
+  // file's own cases from seeing one another's records through the
+  // base-wide sweep, and naming ids this file never writes would purge
+  // nothing while inviting the list to drift.
   beforeAll(() => purgeSessions(layout, CLAUDE_SESSION_IDS));
-  // The records/tombstones this run writes must not outlive it either: the
-  // core suite's write-time sweep walks every record in the shared session
-  // base and warns per repo whose temp dir is already gone, so a fixture
-  // record left behind (repo cleaned at test end, record persisting until
-  // the next run's beforeAll) fails the core file's no-warns assertions
-  // when the files run in parallel. Purge after every test — again scoped
-  // to this file's ids, mirroring snapshot-store.test.ts's afterEach
-  // cleanup convention. The purge *renames* the dirs out of the base rather
-  // than unlinking them: other workers' sweeps read shared-base record
-  // files, and a close-after-unlink crashes Node on this fs (see the
-  // helpers' rationale). The renamed dirs sit in a per-worker trash root
-  // outside the base and are emptied once, at the end of the file.
+  // The records/tombstones a case writes must not outlive it either: this
+  // file's write-time sweep walks every record in the run's session base and
+  // warns per repo whose temp dir is already gone, so a record left behind by
+  // an earlier case (its repo cleaned at case end) makes a later case's
+  // no-warns assertion fail. Purge after every test — again scoped to this
+  // file's ids, mirroring snapshot-store.test.ts's afterEach cleanup
+  // convention. The purge *renames* the dirs out of the base rather than
+  // unlinking them: a store's sweep may be mid-read on a record file, and a
+  // close-after-unlink crashes Node on this fs (see the helpers' rationale).
+  // The renamed dirs sit in a trash root outside the base and are emptied
+  // once, at the end of the file.
   afterEach(() => purgeSessions(layout, CLAUDE_SESSION_IDS));
   afterAll(() => flushPurgedSessions(layout));
 
@@ -977,8 +977,8 @@ describe('claude harness snapshot lifecycle', () => {
           })
         );
         const sweepNow = staleCreatedAt + DEFAULT_SNAPSHOT_BUDGETS.recordTtlMs + 1;
-        // Foreign v1 leftovers in the shared base land in foreignRecords,
-        // never here, so the TTL count stays exact.
+        // The per-run base holds only this fixture's two records, so the TTL
+        // count is exact.
         expect(store.sweep(sweepNow).records).toBe(1);
         expect(store.find('sess-lifecycle-ttl-old', 'tu-ttl-old')).toBeNull();
         expect(store.find('sess-lifecycle-ttl-live', 'tu-ttl-live')).not.toBeNull();
@@ -1005,11 +1005,7 @@ describe('claude harness snapshot lifecycle', () => {
         // pruneStaleActivity only visits repos named by readable records — so
         // age the anchor record's file past the margin (its createdAt stays
         // in-TTL and live) or the repo is invisible to the activity prune.
-        const anchorFile = join(
-          layout.dir('sess-lifecycle-ttl-edit'),
-          'snapshots',
-          `${sanitizeSessionId('tu-edit-anchor')}.json`
-        );
+        const anchorFile = layout.recordFile('sess-lifecycle-ttl-edit', 'tu-edit-anchor');
         utimesSync(anchorFile, (now - 60_000) / 1000, (now - 60_000) / 1000);
         appendActivityEntry(repo.root, {
           sessionId: 'sess-lifecycle-ttl-edit',
@@ -1029,15 +1025,14 @@ describe('claude harness snapshot lifecycle', () => {
         );
         const oldSeconds = (now - DEFAULT_SNAPSHOT_BUDGETS.unfinishedEntryTtlMs - 60_000) / 1000;
         utimesSync(stale, oldSeconds, oldSeconds);
-        // foreignRecords is any-number: live deployed hooks on this machine
-        // may drop v1 records into the shared base mid-run; the sweep reaps
-        // them without touching the counts this fixture pins.
+        // The per-run base holds only what this file writes, so every count —
+        // foreignRecords included — is exact.
         expect(store.sweep(now)).toEqual({
           records: 0,
           tombstones: 0,
           activityEntries: 1,
           indexEntries: 0,
-          foreignRecords: expect.any(Number)
+          foreignRecords: 0
         });
       });
     });
@@ -1538,11 +1533,7 @@ describe('claude harness snapshot lifecycle', () => {
           // the activity prune only visits repos named by readable records —
           // age the pre-capture record's file past the margin too, or the repo
           // is invisible to the prune (its createdAt stays in-TTL and live).
-          const preFile = join(
-            layout.dir('sess-interleave-ttlprune'),
-            'snapshots',
-            `${sanitizeSessionId('tu-bash-ttlprune')}.json`
-          );
+          const preFile = layout.recordFile('sess-interleave-ttlprune', 'tu-bash-ttlprune');
           utimesSync(preFile, (now - 60_000) / 1000, (now - 60_000) / 1000);
           pruned.push(createSnapshotStore(new Logger(), undefined, layout).sweep(now).activityEntries);
         }
@@ -2055,7 +2046,7 @@ describe('claude harness snapshot lifecycle', () => {
           });
           // The cut gap is persisted onto the consumed record — the exact
           // evidence a later consult needs.
-          const persistedPath = join(layout.dir(sessionId), 'snapshots', `${sanitizeSessionId(siblingTu)}.json`);
+          const persistedPath = layout.recordFile(sessionId, siblingTu);
           const persisted = JSON.parse(readFileSync(persistedPath, 'utf8')) as SnapshotRecord;
           expect(persisted.consumed).toBe(true);
           expect(persisted.gaps.some((g) => g.includes('touched-files cap'))).toBe(true);
@@ -2119,7 +2110,7 @@ describe('claude harness snapshot lifecycle', () => {
         )(siblingInput as never, {
           logger
         });
-        const persistedPath = join(layout.dir(sessionId), 'snapshots', `${sanitizeSessionId(siblingTu)}.json`);
+        const persistedPath = layout.recordFile(sessionId, siblingTu);
         const persisted = JSON.parse(readFileSync(persistedPath, 'utf8')) as SnapshotRecord;
         expect(persisted.gaps).toEqual([]);
         expect(recordHasPathCoverageGap(persisted)).toBe(false);

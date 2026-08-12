@@ -260,11 +260,7 @@ describe('createSnapshotStore — record round-trip', () => {
     const found = store.find(sid, TOOL_USE_ID);
     expect(found).not.toBeNull();
     expect(found).toEqual(rec);
-    // The shared session base can hold other LIVE sessions' records in a
-    // format this store rejects (this machine's deployed hooks write into
-    // the same base), and the write-time sweep warns about those foreign
-    // files. Only warns about this fixture's own state fail the round-trip.
-    expect(warns.filter((m) => m.includes(sid) || m.includes(r.root))).toEqual([]);
+    expect(warns).toEqual([]);
   });
 
   it('find on a never-written (session, tool use) returns null', () => {
@@ -606,17 +602,17 @@ describe('TTL sweep', () => {
     const stale = newSession();
     const live = newSession();
     // The stale record's createdAt is TTL-minus-margin relative to real now:
-    // expired only relative to the injected sweep clock below, so concurrent
-    // real-now sweeps (this machine's live hooks share the session base) leave
-    // it alone until the explicit sweep. It is written last so the explicit
-    // sweep is the first in-process pass that sees it.
+    // expired only relative to the injected sweep clock below, so the
+    // real-now write-time sweeps this test itself triggers leave it alone
+    // until the explicit sweep. It is written last so the explicit sweep is
+    // the first pass that sees it.
     const staleCreatedAt = Date.now() - DEFAULT_SNAPSHOT_BUDGETS.recordTtlMs + CLOCK_MARGIN_MS;
     store.write(record({ sessionId: live, repoRoot: r.root, createdAt: Date.now() }));
     store.write(record({ sessionId: stale, repoRoot: r.root, createdAt: staleCreatedAt }));
     const sweepNow = staleCreatedAt + DEFAULT_SNAPSHOT_BUDGETS.recordTtlMs + 1;
     const result = store.sweep(sweepNow);
-    // Foreign v1 leftovers in the shared base land in foreignRecords, never
-    // here, so the TTL count stays exact.
+    // The per-run base holds only this fixture's two records, so the TTL
+    // count is exact.
     expect(result.records).toBe(1);
     expect(store.find(stale, TOOL_USE_ID)).toBeNull();
     expect(store.find(live, TOOL_USE_ID)).not.toBeNull();
@@ -628,10 +624,10 @@ describe('TTL sweep', () => {
     const stale = newSession();
     const live = newSession();
     // The stale pair's timestamps are TTL-minus-margin relative to real now:
-    // expired only relative to the injected sweep clock below, so concurrent
-    // real-now sweeps (this machine's live hooks share the session base) leave
-    // it alone until the explicit sweep. The fresh pair is written first so
-    // the explicit sweep is the first in-process pass that sees the stale pair.
+    // expired only relative to the injected sweep clock below, so the
+    // real-now write-time sweeps this test itself triggers leave it alone
+    // until the explicit sweep. The fresh pair is written first so the
+    // explicit sweep is the first pass that sees the stale pair.
     const staleAt = Date.now() - DEFAULT_SNAPSHOT_BUDGETS.recordTtlMs + CLOCK_MARGIN_MS;
     store.write(record({ sessionId: live, repoRoot: r.root, createdAt: Date.now() }));
     store.tombstone(live, TOOL_USE_ID, Date.now());
@@ -770,14 +766,14 @@ describe('TTL sweep', () => {
     store.tombstone(sid, TOOL_USE_ID, Date.now());
     appendActivityEntry(r.root, activityEntry(sid, 'toolu_01activity'));
     const result = store.sweep(Date.now());
-    // foreignRecords is any-number: live deployed hooks on this machine may
-    // drop v1 records into the shared base mid-run, and the sweep reaps them.
+    // The per-run base holds only what this file writes, so every count —
+    // foreignRecords included — is exact.
     expect(result).toEqual({
       records: 0,
       tombstones: 0,
       activityEntries: 0,
       indexEntries: 0,
-      foreignRecords: expect.any(Number)
+      foreignRecords: 0
     });
     expect(store.find(sid, TOOL_USE_ID)).toBe('tombstoned');
     expect(findActivityFile(r.root, sid, 'toolu_01activity')).not.toBeNull();

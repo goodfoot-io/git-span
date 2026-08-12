@@ -4,8 +4,8 @@ packages/agent-hooks/src/codex/activity-log.ts#L19-L43 rk64:f7e9801368d44bd4
 packages/agent-hooks/src/codex/post-tool-use.ts#L603-L614 rk64:3ddb7db894cc0c86
 packages/agent-hooks/src/common/snapshot-store.ts#L114-L173 rk64:19f143d08c078e41
 packages/agent-hooks/src/common/snapshot-store.ts#L1054-L1126 rk64:2e3addd686997bea
-packages/agent-hooks/test/claude/snapshot-lifecycle.test.ts#L1254-L1585 rk64:812f4466bb1cc5dc
-packages/agent-hooks/test/codex/snapshot-lifecycle.test.ts#L782-L915 rk64:0d188ef262192dfc
-packages/agent-hooks/test/common/snapshot-store.test.ts#L807-L1068 rk64:9e9c50dde45f86bb
+packages/agent-hooks/test/claude/snapshot-lifecycle.test.ts#L1249-L1580 rk64:812f4466bb1cc5dc
+packages/agent-hooks/test/codex/snapshot-lifecycle.test.ts#L778-L911 rk64:0d188ef262192dfc
+packages/agent-hooks/test/common/snapshot-store.test.ts#L803-L1064 rk64:9e9c50dde45f86bb
 
 the PreToolUse activity adapters create the (session, tool_use_id)-keyed entry with each path's preHash before the edit's write lands, and the PostToolUse hooks stamp postHash/finishedAt at the end of that same edit's own touch, keyed identically through snapshot-store's append/finish contract — a change to the entry keying or the stamp's path derivation silently breaks the interleaved-edit boundary resolution. The store's activity-log checks and both harness interleaving sections pin that boundary.

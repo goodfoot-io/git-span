@@ -4,6 +4,6 @@ packages/agent-hooks/src/common/snapshot-store.ts#L73-L81 rk64:2557f7b6899f272b
 packages/agent-hooks/test/claude/snapshot-lifecycle-helpers.ts rk64:e2960ecddabc06b4
 packages/agent-hooks/test/common/snapshot-core.test.ts#L1000-L1012 rk64:bae045ac326b4b39
 packages/agent-hooks/test/common/snapshot-store.test.ts#L266-L450 rk64:ff2b24aa7e298c86
-packages/agent-hooks/test/common/snapshot-store.test.ts#L480-L513 rk64:854d40dd9aa32f20
+packages/agent-hooks/test/common/snapshot-store.test.ts#L476-L509 rk64:854d40dd9aa32f20
 
 snapshot-core.ts is the canonical home of the v2 snapshot record shape (version 2, tree SHA plus gaps and post state, stat-only degrade entries) and the budget defaults per the plan, and snapshot-store.ts re-exports SnapshotRecord/SnapshotPostState, persists records under the version field failing closed on mismatch, and fixes the budgets at store creation — a shape, version, or budget-default change must cross both. The store round-trip, permissions, version fail-closed, and storage-cap refusal checks, the budget-defaults check, and the shared lifecycle fixtures pin that contract.
