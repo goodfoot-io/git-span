@@ -34,9 +34,9 @@ RUN chmod 0755 /usr/local/bin/node /usr/local/bin/git-span
 # pip validates the wheel filename against the wheel naming convention, so
 # the canonical name must be preserved (the setup guide's schematic rename
 # to git-span-agent.whl is rejected by pip).
-COPY mini_swe_agent_git_span-1.1.3-py3-none-any.whl /tmp/mini_swe_agent_git_span-1.1.3-py3-none-any.whl
-RUN python3 -m pip install --no-deps /tmp/mini_swe_agent_git_span-1.1.3-py3-none-any.whl \
-    && rm /tmp/mini_swe_agent_git_span-1.1.3-py3-none-any.whl
+COPY mini_swe_agent_git_span-1.1.4-py3-none-any.whl /tmp/mini_swe_agent_git_span-1.1.4-py3-none-any.whl
+RUN python3 -m pip install --no-deps /tmp/mini_swe_agent_git_span-1.1.4-py3-none-any.whl \
+    && rm /tmp/mini_swe_agent_git_span-1.1.4-py3-none-any.whl
 
 # Frozen skill tree.
 COPY git-span-skill/ /opt/git-span/skills/git-span/

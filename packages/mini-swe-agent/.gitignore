@@ -16,3 +16,8 @@ __pycache__
 .pytest_cache
 .ruff_cache
 .mypy_cache
+
+# ProgramBench run outputs (trajectories, logs, submissions) -- not pinned
+# artifacts, regenerated per run. TODO: revisit once we decide what run
+# output (if any) should be committed for reproducibility.
+results/

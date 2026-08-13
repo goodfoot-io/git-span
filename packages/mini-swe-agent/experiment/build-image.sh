@@ -17,7 +17,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONTEXT_DIR="${SCRIPT_DIR}/context"
 DOCKERFILE="${SCRIPT_DIR}/Dockerfile"
-WHEEL_NAME="mini_swe_agent_git_span-1.1.3-py3-none-any.whl"
+WHEEL_NAME="mini_swe_agent_git_span-1.1.4-py3-none-any.whl"
 DIST_DIR="${SCRIPT_DIR}/../dist"
 
 IMAGE_REPO="programbench/xorg62_1776_tty-clock.f2f847c"

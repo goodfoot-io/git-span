@@ -1,6 +1,6 @@
 {
-  "manifest_version": 2,
-  "created_at": "2026-08-12T20:15:24Z",
+  "manifest_version": 4,
+  "created_at": "2026-08-13T18:15:14Z",
   "_manifest_version_2_note": "Cut from manifest_version 1 after upgrading @goodfoot/claude-code-hooks 1.7.3 -> 1.8.0, which changes the compiled hook bundle bytes. Re-pinned: wheel_sha256, all five hook_bundles_sha256 .mjs entries, and derived_image. Unchanged: hooks.json sha256, git-span binary, node, skill file/tree, base image, dataset.",
   "experiment_name": "git-span-programbench-canary-v1",
   "_purpose": "Pin the experiment per programbench-setup-guide.md 'Pin the experiment'. Every value below is the exact recorded output of the build steps in reports/programbench/{setup-log,artifacts,dataset}.md, re-verified live against the running venv/dist/docker state at write time. Do not edit mid-batch: cut a new manifest_version and re-derive images instead.",
@@ -40,14 +40,14 @@
   "derived_image": {
     "instance_id": "xorg62__tty-clock.f2f847c",
     "runner_tag": "programbench/xorg62_1776_tty-clock.f2f847c:task_cleanroom_v6",
-    "image_id": "sha256:afcb0c4da04e0cc16846e96e4cadcd8d6a875d6497a2d1b90acdbdc4b349db2d",
-    "repo_digest": "programbench/xorg62_1776_tty-clock.f2f847c@sha256:afcb0c4da04e0cc16846e96e4cadcd8d6a875d6497a2d1b90acdbdc4b349db2d",
-    "built_at": "2026-08-12T20:12:00Z",
+    "image_id": "sha256:969b51b482043607bcf097fdcb833cd5fd119f74228219f6725e6b641c0b872e",
+    "repo_digest": "programbench/xorg62_1776_tty-clock.f2f847c@sha256:969b51b482043607bcf097fdcb833cd5fd119f74228219f6725e6b641c0b872e",
+    "built_at": "2026-08-13T18:15:14Z",
     "built_from_original_base_id": "sha256:7c070e64a44e0b7dc2a032acf02159da43a0a4993a154b5fd98c4ab997726272",
     "build_platform": "linux/amd64",
     "in_image_checks_passed": [
-      "node --version -> v22.23.2",
-      "git span --version -> git-span 1.1.3",
+      "node --version -> v24.19.0",
+      "git span --version -> git-span 1.1.4",
       "python3 -c 'from minisweagent_gitspan.bridge import default_hooks_dir; print(default_hooks_dir())' -> succeeded"
     ],
     "_arm_note": "Both the treatment and control arm use this SAME derived image (per programbench-setup-guide.md 'Experimental arms': keeping treatment artifacts present in the control image prevents image composition from becoming an arm-level confound; control simply runs with hooks_enabled: false)."
@@ -56,27 +56,27 @@
     "upstream_version": "2.4.6"
   },
   "mini_swe_agent_git_span": {
-    "package_version": "1.1.3",
-    "wheel_path": "dist/mini_swe_agent_git_span-1.1.3-py3-none-any.whl",
-    "wheel_sha256": "5b86593ef36054552459d41755bc9b83d7e1af13f80b09554f8b56048d096e05",
+    "package_version": "1.1.4",
+    "wheel_path": "dist/mini_swe_agent_git_span-1.1.4-py3-none-any.whl",
+    "wheel_sha256": "d44bb848ee409e89ad7c24c0fd25535f4c974291188c3ea81bd0ebfe90acafbc",
     "_wheel_note": "manifest_version 2 wheel. Supersedes 4c1cfc68... (manifest_version 1), which embedded hook bundles built by @goodfoot/claude-code-hooks 1.7.3; this build embeds bundles from 1.8.0. Both supersede an earlier build (sha256 6e5e6bf2...) that used `from datetime import UTC`, incompatible with the task image's Python 3.10.12. Do not use any superseded wheel."
   },
   "git_span": {
-    "crate_version": "1.1.3",
+    "crate_version": "1.1.4",
     "target_triple": "x86_64-unknown-linux-musl",
     "build_method": "cargo zigbuild --release --target x86_64-unknown-linux-musl --locked",
     "file_type": "ELF 64-bit LSB executable, x86-64, statically linked, stripped",
     "staged_path": "experiment/context/git-span",
-    "sha256": "eb2822336625c959a686d80c3414c70bc9eef6355f46f489a4785196d673bbd4",
-    "verified_version_output": "git-span 1.1.3"
+    "sha256": "988d1379c6dafd1ba5b9cb9020b8bee207209bdddcd34a1c30f84186ceebf201",
+    "verified_version_output": "git-span 1.1.4"
   },
   "node": {
-    "version": "v22.23.2",
-    "tarball_url": "https://nodejs.org/dist/v22.23.2/node-v22.23.2-linux-x64.tar.xz",
-    "tarball_sha256": "d60acfe00a2932254bb0ad20e01b0d74397a0875595de719654b214f4b03f307",
+    "version": "v24.19.0",
+    "tarball_url": "https://nodejs.org/dist/v24.19.0/node-v24.19.0-linux-x64.tar.xz",
+    "tarball_sha256": "14b342e71204f811bde6153be8e04b62aef63c236fef92b55f9c83154b409647",
     "staged_binary_path": "experiment/context/node",
-    "staged_binary_sha256": "3517c2df0b2f8cd7f422b4b8450ef81c6889f08eb03e281d6de9079b15e6a327",
-    "verified_version_output": "v22.23.2"
+    "staged_binary_sha256": "bc17c508ffeed0ec622934f9b7fa72f8e78da65350e63c3eceb56fa688aa5e12",
+    "verified_version_output": "v24.19.0"
   },
   "hook_bundles_sha256": {
     "snapshot.mjs": "ff73bdb6de04b7d76f78f533e2383ace07563f8cfc6070d8d6ba071ae5d6d78d",
@@ -130,7 +130,7 @@
       ],
       "config_file": "experiment/treatment.yaml",
       "replicates": 1,
-      "image_id": "sha256:afcb0c4da04e0cc16846e96e4cadcd8d6a875d6497a2d1b90acdbdc4b349db2d"
+      "image_id": "sha256:969b51b482043607bcf097fdcb833cd5fd119f74228219f6725e6b641c0b872e"
     },
     "control": {
       "instance_ids": [
@@ -138,7 +138,7 @@
       ],
       "config_file": "experiment/control.yaml",
       "replicates": 1,
-      "image_id": "sha256:afcb0c4da04e0cc16846e96e4cadcd8d6a875d6497a2d1b90acdbdc4b349db2d"
+      "image_id": "sha256:969b51b482043607bcf097fdcb833cd5fd119f74228219f6725e6b641c0b872e"
     },
     "_note": "Canary pilot: 1 instance x 1 replicate per arm, unpaired/unshuffled by construction. A full batch must use shuffled, paired assignment per the setup guide."
   },
