@@ -171,3 +171,28 @@ its work.
 Note on layout when hashing by hand: the five `ALL_HOOKS` `.mjs` are in
 `src/minisweagent_gitspan/hooks/bin/`, but `hooks.json` — also a
 `hook_bundles_sha256` key — sits one level up in `.../hooks/`.
+
+## 7. Bumping git-span / node / package version — what `repin-artifacts.sh` does NOT cover
+
+Confirmed by exercise, not just theory: `repin-artifacts.sh` only rewrites
+`wheel_sha256`, `hook_bundles_sha256`, and skill hashes. After a git-span
+crate bump, a node bump, or a `minisweagent_gitspan.__version__` bump, also
+hand-edit, together, before running it:
+
+- `manifest.json`: `git_span.{crate_version,sha256,verified_version_output}`,
+  `node.{version,tarball_url,tarball_sha256,staged_binary_sha256,verified_version_output}`,
+  `mini_swe_agent_git_span.{package_version,wheel_path}` (wheel filename embeds
+  the version — stale `wheel_path` makes `verify-artifact-hashes.sh` and
+  `build-image.sh` fail to find the file), `derived_image.in_image_checks_passed`.
+- `treatment.yaml` and `expected.json`:
+  `expected_package_version`/`expected_node_version`/`expected_git_span_version`.
+- `experiment/build-image.sh`'s `WHEEL_NAME=` and `experiment/Dockerfile`'s two
+  `COPY`/`pip install` lines hardcode the wheel filename (incl. version) —
+  grep both for the old version string after any package-version bump, or
+  `build-image.sh` fails with "wheel not found".
+- Source can drift from the built wheel silently: `__init__.py.__version__`
+  can be bumped in a commit with no matching `uv build`, so
+  `verify-artifact-hashes.sh` still reports the (stale) wheel as matching
+  manifest — it only diffs the manifest against the wheel on disk, not the
+  wheel against current source. Before trusting a green verify, diff
+  `__init__.py.__version__` against `manifest.json`'s `package_version`.

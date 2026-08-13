@@ -48,7 +48,7 @@ All `bin/`/`references/` paths below are relative to `${CLAUDE_SKILL_DIR}`.
 | Preflight a real derived container | `${CLAUDE_SKILL_DIR}/bin/preflight-container.sh <image>` |
 | Run the bridge smoke scenario | `uv run python experiment/smoke_test.py --expected experiment/expected.json` (from `packages/mini-swe-agent` — this one's a repo path, not a skill path) |
 | Run a real treatment/control eval | `${CLAUDE_SKILL_DIR}/references/running-and-verifying.md`, then `${CLAUDE_SKILL_DIR}/bin/run-arm.sh` |
-| Score a completed run (`programbench eval`) | `${CLAUDE_SKILL_DIR}/references/evaluation-and-scoring.md` **first** — the default `--image-tag` is a known unresolved gap, see below |
+| Score a completed run (`programbench eval`) | `${CLAUDE_SKILL_DIR}/references/evaluation-and-scoring.md` **first** — has the confirmed working invocation, `--image-tag` gotcha, and `eval.json` schema |
 | Something failed and looks like a known gotcha | `${CLAUDE_SKILL_DIR}/references/troubleshooting.md` — check before re-diagnosing |
 | Working from inside a devcontainer / unsure Docker even works here | `${CLAUDE_SKILL_DIR}/references/troubleshooting.md` finding m — this is a sibling Docker socket (host's daemon), not nested Docker; verify before assuming |
 | Need the exact `attestation`/`span_summary`/`events` trajectory field names | `${CLAUDE_SKILL_DIR}/references/architecture.md` "Telemetry — exact schema" — don't infer field names from prose, they're listed verbatim there |
@@ -63,7 +63,10 @@ container, or silently invalidates a score):
   setup guide's pinning section but `smoke_test.py` reads it. Re-pinning two
   of the three leaves the smoke scenario asserting against dead hashes.
   `control.yaml` pins nothing (hooks are disabled there, so no attestation).
-  `${CLAUDE_SKILL_DIR}/bin/repin-artifacts.sh` writes all three in lockstep.
+  `${CLAUDE_SKILL_DIR}/bin/repin-artifacts.sh` writes all three in lockstep —
+  but only for wheel/hook-bundle/skill hashes. A git-span/node/package
+  **version** bump needs more hand-edits first —
+  `${CLAUDE_SKILL_DIR}/references/build-and-vendor.md` §7.
 - **`hooks.json` is never in `expected_bundle_sha256`.** It's not one of the
   5 `ALL_HOOKS` bundles hashed by `_build_attestation`; any expected entry
   for it compares against nothing and preflight always fails. See
@@ -77,9 +80,10 @@ container, or silently invalidates a score):
 - **Never edit a manifest mid-batch.** Cut a new `manifest_version` and
   re-derive images instead of hand-patching pinned values.
 - **`programbench eval`'s default `--image-tag` scores against the
-  git-span-contaminated image, not the clean-room one it claims to be** —
-  `${CLAUDE_SKILL_DIR}/references/evaluation-and-scoring.md`. Get this
-  confirmed before trusting any score.
+  git-span-contaminated image, not the clean-room one it claims to be.**
+  Use `--image-tag task_cleanroom_v6_original-base` (confirmed working) —
+  `${CLAUDE_SKILL_DIR}/references/evaluation-and-scoring.md`. Get the tag
+  choice confirmed before trusting any score.
 
 **Experiment design integrity**:
 - **Never pre-seed spans.** The experiment is greenfield by design — every
@@ -96,6 +100,12 @@ container, or silently invalidates a score):
   (`'^instance_id$'`) or you run every vendored instance, not one.
 
 **Cost/safety**:
+- **`programbench.yaml`'s default `--cpus 20 --memory 60g` can exceed this
+  host's Docker Desktop VM capacity and fail the container outright** (not
+  silent throttling) — `${CLAUDE_SKILL_DIR}/references/troubleshooting.md`
+  finding m. Check `docker info | grep -i cpu` first; if short, add an
+  identical `environment.run_args` override to both `treatment.yaml` and
+  `control.yaml`.
 - **Real runs cost money and can occupy a container for hours.** Use
   `${CLAUDE_SKILL_DIR}/bin/run-arm.sh`, which refuses to run without an
   explicit `--yes` and an anchored `--filter`. `cost_limit: 0` means
@@ -144,6 +154,11 @@ prefixed `${CLAUDE_SKILL_DIR}` are this skill's; unprefixed paths are
    — both must pass before trusting a real run.
 7. Repo golden rule still applies: lint/typecheck/test the changed package
    (`packages/agent-hooks` at minimum), then `yarn validate` from the root.
+
+Bumping git-span/node/package **versions** instead of hook source follows
+this same pipeline but needs the extra manual edits in
+`${CLAUDE_SKILL_DIR}/references/build-and-vendor.md` §7 before step 3, and
+`build-image.sh`/`Dockerfile`'s hardcoded wheel filename fixed before step 5.
 
 When adding a new smoke/test scenario, remember finding d in
 `${CLAUDE_SKILL_DIR}/references/troubleshooting.md`: uncovered-writes

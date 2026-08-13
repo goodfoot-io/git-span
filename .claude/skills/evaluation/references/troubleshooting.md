@@ -146,10 +146,24 @@ confirm it prints `x86_64`.
 
 Resource caps (`--cpus 20 --memory 60g` etc. in `programbench.yaml`) are
 requests to a Docker Desktop VM shared with the host and possibly other
-containers — check `docker system df` / the Desktop VM's configured memory
-ceiling before assuming a run gets the full amount; nothing in this
-pipeline verifies the caps were actually honored rather than silently
-throttled.
+containers. Confirmed failure mode (not just silent throttling): a VM with
+fewer than 20 CPUs rejects the `docker run` outright — `range of CPUs is
+from 0.01 to 10.00, as there are only 10 CPUs available` — the container
+never starts and `mswea-extra` logs a bare `CalledProcessError` with no
+CPU-related text, so the real cause only shows by re-running the printed
+`docker run ...` command by hand. Check `docker info | grep -i cpu` /
+`docker run --rm --platform linux/amd64 debian:stable-slim nproc` before a
+real run. Fix: add an `environment.run_args` override to **both**
+`treatment.yaml` and `control.yaml` (identical values — an arm-level
+mismatch would confound the comparison) sized to the host, e.g. `--cpus 8
+--memory 20g --memory-swap 20g`; `recursive_merge` (mini-swe-agent's config
+merger) replaces the whole list wholesale, so the override doesn't need to
+repeat anything from the base config beyond what you want kept.
+
+**Verifying a staged amd64 binary works under emulation** (git-span, node)
+also can't use `-v` (finding m above) — `docker create --platform
+linux/amd64 <image> sleep 60`, `docker cp <binary> <cid>:/x`, `docker start
+<cid>`, `docker exec <cid> /x --version`, `docker rm -f <cid>`.
 
 ## n. `/workspace/.env.deepseek` is world-readable
 
