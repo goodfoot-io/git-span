@@ -713,13 +713,35 @@ fn marker_run_len(line: &str, c: char) -> Option<usize> {
 ///   (a URL, most often) parses as one. Inside an anchor-region block that
 ///   ambiguity is unresolvable, so it is refused rather than written back as a
 ///   tracked anchor.
-/// * **Why-region blocks carry no bare line-range anchor.** A tracked anchor
-///   that lands after the separator is deleted outright, which is the shape the
-///   pre-`42d28964` residue writer produced. The check is narrowed to a
-///   line-range address with a whitespace-free path so that why prose *quoting*
-///   an anchor still round-trips: the quoted form absorbs the surrounding words
-///   into the path, and a why that is nothing but a bare anchor line is
-///   genuinely indistinguishable from a misplaced anchor.
+/// * **Why-region blocks carry no bare anchor record, in either address form.**
+///   A tracked anchor that lands after the separator is deleted outright, and
+///   the deletion cannot even be reported, because `build_entries` iterates the
+///   anchors that survived. The producer is not hypothetical: the
+///   `format_residue_markers` that predates `42d28964` pushes the blank
+///   separator first and *then* opens a block holding the anchor residue, so
+///   every anchor it wrote sits after the separator. Whole-file anchors render
+///   through the same `Display` without a `#L` range, which is why the check
+///   names both `WholeFile` and `LineRange` — covering only the line-range form
+///   left the whole-file form, a fifth of this repository's own anchors, to be
+///   eaten silently.
+///
+///   Both are keyed on two things at once, and the pair is what makes the
+///   refusal land on records rather than on prose. First, a *whitespace-free*
+///   address: `parse_anchor_line` splits at the last space, so words around a
+///   quoted address are absorbed into the path, and `docs at
+///   https://example.com` or a why quoting an anchor mid-sentence arrives with
+///   whitespace in it. Second, a *writer-shaped* content hash — sixteen
+///   lowercase hex, the only thing `rk64_to_hex` can produce — which catches
+///   the one-word prose the first test misses: `See https://example.com` has a
+///   whitespace-free address and a hash of `//example.com`, and `Ref rfc:1234`
+///   a hash of `1234`. Neither is a hash any writer emitted.
+///
+///   The remaining ambiguity is irreducible and is the case that *must* stay
+///   refused: a why line quoting a genuine anchor verbatim,
+///   `src/b.txt rk64:1111111111111111`, is byte-identical to a misplaced
+///   record. So is a real anchor whose own path contains a space, which goes
+///   the other way and is still lost to the why. See the card's
+///   `notes/boundary-provenance-limit.md`.
 ///
 /// Every one of these is a refusal with the file left byte-identical — the
 /// fail-closed answer to a boundary that cannot be established, in place of a
@@ -853,18 +875,58 @@ fn verify_driver_shape(raw: &str, name: &str) -> std::result::Result<String, Cli
 fn boundary_violation(line: &str, in_why_region: bool, name: &str) -> Option<String> {
     let shape = classify_anchor_line(line);
     if in_why_region {
-        return match shape {
+        // The discriminator after the separator is **bare record versus
+        // embedded text**, not which address form the line uses. An address
+        // with no whitespace in it means the line is the whole record and
+        // nothing else — what a writer emits, and what prose reaches only by
+        // being nothing but an address. An address that *does* carry
+        // whitespace means the words around it were absorbed into the path by
+        // `parse_anchor_line`'s split-at-the-last-space, which is ordinary why
+        // prose: `docs at https://example.com` is a `WholeFile` with a spacey
+        // path, and a why quoting an anchor mid-sentence is a `LineRange` with
+        // one. Refusing those would hard-stop the prose `42d28964` exists to
+        // protect.
+        //
+        // Both address forms are named rather than left to a wildcard: the
+        // whole-file form was the hole — the pre-`42d28964` writer emitted
+        // tracked anchors after the separator, `Display` renders a whole-file
+        // anchor without `#L`, and the arm covered only the line-range form.
+        let described = match shape {
+            AnchorLineShape::NotAnchor => return None,
+            // Prose. An address that absorbed whitespace is text with an
+            // address in it, not a record.
             AnchorLineShape::LineRange {
-                path_has_whitespace: false,
-            } => Some(format!(
-                "Span `{name}` has a line-range anchor record, `{line}`, inside a conflict block \
-                 that sits *after* the blank-line separator. The residue writer puts anchor \
-                 residue before the separator and never after it, so this line is either a \
-                 tracked anchor that a different writer misplaced — settling it here would \
-                 delete it — or why prose that is indistinguishable from one."
-            )),
-            _ => None,
+                path_has_whitespace: true,
+                ..
+            }
+            | AnchorLineShape::WholeFile {
+                path_has_whitespace: true,
+                ..
+            } => return None,
+            // Prose too, on the second half of the test: no writer here emits a
+            // content hash that is not sixteen lowercase hex, so a line whose
+            // hash is `//example.com` or `1234` is a sentence ending in a
+            // colon-bearing token, not a record that was misplaced. This is a
+            // precondition on the refusal, never a trigger for one — see
+            // `hash_is_writer_shaped`'s note on why the polarity matters.
+            AnchorLineShape::LineRange {
+                hash_is_writer_shaped: false,
+                ..
+            }
+            | AnchorLineShape::WholeFile {
+                hash_is_writer_shaped: false,
+                ..
+            } => return None,
+            AnchorLineShape::LineRange { .. } => "line-range anchor record",
+            AnchorLineShape::WholeFile { .. } => "whole-file anchor record",
         };
+        return Some(format!(
+            "Span `{name}` has a {described}, `{line}`, inside a conflict block that sits *after* \
+             the blank-line separator. The residue writer puts anchor residue before the separator \
+             and never after it, so this line is either a tracked anchor that a different writer \
+             misplaced — settling it here would delete it — or why prose that is indistinguishable \
+             from one."
+        ));
     }
     match shape {
         AnchorLineShape::NotAnchor if line.is_empty() => Some(format!(
@@ -880,13 +942,28 @@ fn boundary_violation(line: &str, in_why_region: bool, name: &str) -> Option<Str
         )),
         AnchorLineShape::WholeFile {
             path_has_whitespace: true,
+            ..
         } => Some(format!(
             "Span `{name}` has a line inside its anchor-residue conflict block whose whole-file \
              anchor path contains whitespace: `{line}`. That is the shape prose takes when it \
              ends in a colon-bearing token such as a URL, and settling it would write a \
              fabricated anchor whose path is a sentence."
         )),
-        _ => None,
+        // What is left is what a real anchor record looks like, which is
+        // exactly what belongs before the separator. Named rather than left to
+        // a wildcard so a new `AnchorLineShape` has to be decided here too.
+        //
+        // `hash_is_writer_shaped` is deliberately *not* consulted here. It
+        // would also close the pre-separator fabrication (`See
+        // https://example.com` written back as an anchor at path `See`), but
+        // that half is disclosed by the `unverified:` report rather than
+        // silent, and this wave buys the silent half. See the card's
+        // `notes/boundary-provenance-limit.md`.
+        AnchorLineShape::WholeFile {
+            path_has_whitespace: false,
+            ..
+        }
+        | AnchorLineShape::LineRange { .. } => None,
     }
 }
 

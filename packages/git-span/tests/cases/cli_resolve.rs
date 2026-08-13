@@ -1314,6 +1314,12 @@ fn resolve_settles_real_driver_output_with_a_divergent_why() -> Result<()> {
 /// last token is `<word>:<word>`. The boundary is structural now — the line
 /// arrives in the why region and can never be re-read as an anchor — so it
 /// must round-trip through `resolve` intact rather than be rejected.
+///
+/// This is also the guard on the *shape* of the why-region check. The sentence
+/// parses as `WholeFile { path_has_whitespace: true }`, because
+/// `parse_anchor_line` splits at the last space and absorbs `docs at` into the
+/// path. Any widening of that check to whole-file addresses generally — rather
+/// than to whitespace-free ones — hard-stops this span.
 #[test]
 fn resolve_round_trips_url_ending_why_prose_the_old_gate_refused() -> Result<()> {
     let repo = TestRepo::seeded()?;
@@ -1691,8 +1697,12 @@ fn every_side_refuses(fixture: &str, expected_reason: &str) -> Result<()> {
             Some(0),
             "{side} must refuse a boundary it cannot establish; stderr=\n{stderr}"
         );
+        // The refusal reason is one long sentence that the error renderer wraps
+        // to the terminal, so match against a whitespace-normalized copy: the
+        // assertion is about the words, not where the renderer broke the line.
+        let flattened = stderr.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(
-            stderr.contains(expected_reason),
+            flattened.contains(expected_reason),
             "{side}: the refusal must name what it could not establish; stderr=\n{stderr}"
         );
         assert_eq!(
@@ -1768,11 +1778,236 @@ file2.txt#L1-L5 rk64:{OTHER_HASH}
     every_side_refuses(&fixture, "sits *after* the blank-line separator")
 }
 
-/// The over-refusal guard, and the reason the why-side check is narrowed to a
-/// bare line-range address with a whitespace-free path: why prose that *quotes*
-/// an anchor absorbs the surrounding words into the parsed path, so it is still
-/// prose and must still round-trip. Driver-generated, because this is a shape
-/// the writer really does produce.
+/// Reproduce the residue layout of `format_residue_markers` **as it stood
+/// before `42d28964`**, which is the writer that puts a tracked anchor after
+/// the separator. Read it at
+/// `git show 42d28964^:packages/git-span/src/cli/drift_fix.rs` (body at line
+/// 424): it writes the resolved anchors, then pushes the blank separator —
+/// guarded only by "there is any residue or why at all" — and only *then* opens
+/// one conflict block whose sides begin with `u.ours` / `u.theirs`, the
+/// `AnchorRecord` serializations of the divergent anchors. `42d28964`'s own
+/// message names the defect: that writer "wrapped anchor residue and why
+/// residue in a single conflict block".
+///
+/// The fixtures below cannot be driver-generated — that writer no longer exists
+/// in the tree, and the current one emits a post-separator block only for why
+/// text, which is why exercising a live merge never reaches this class. This
+/// helper is the next best thing to generating them: it mirrors the old
+/// writer's emission order line for line, so the shape under test is derived
+/// from the writer rather than guessed at. Hand-written residue fixtures have
+/// concealed defects three times on this card; that is what this helper exists
+/// to avoid.
+fn pre_42d28964_residue(resolved: &[String], ours: &[String], theirs: &[String]) -> String {
+    let mut out = String::new();
+    for line in resolved {
+        out.push_str(line);
+        out.push('\n');
+    }
+    // The separator, emitted *before* the block — this single `push('\n')` is
+    // the whole defect.
+    out.push('\n');
+    out.push_str("<<<<<<< ours\n");
+    for line in ours {
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.push_str("=======\n");
+    for line in theirs {
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.push_str(">>>>>>> theirs\n");
+    out
+}
+
+/// Assert an anchor line's hash is the shape a production writer emits:
+/// sixteen lowercase hex, the only output `rk64_to_hex`'s `{fp:016x}` has. A
+/// fixture that fails this no longer reaches the post-separator refusal, which
+/// is narrowed on exactly this property.
+fn assert_writer_shaped_hash(line: &str) {
+    let hash = line
+        .rsplit_once(':')
+        .unwrap_or_else(|| panic!("fixture line has no hash token: `{line}`"))
+        .1;
+    assert!(
+        hash.len() == 16
+            && hash
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+        "fixture assumption: `{line}` must carry a writer-shaped (16 lowercase hex) hash, or it \
+         is permitted as prose and this test silently stops exercising the refusal"
+    );
+}
+
+/// The same silent deletion for the **whole-file** address form, which the
+/// check missed. `Display` renders a whole-file anchor as `<path> <alg>:<hash>`
+/// with no `#L` range, so it classifies as `WholeFile` where the check named
+/// only `LineRange` and fell through to permit. This is not a corner case:
+/// `git span add <name> <path>` with no range writes one, and this repository's
+/// own `.span/` tree is 61 whole-file anchors out of 322.
+///
+/// Both address forms are exercised here against the writer-derived layout, so
+/// the fixture that already passed and the one that did not are settled by the
+/// same input shape.
+#[test]
+fn resolve_refuses_a_bare_anchor_record_of_either_address_form_after_the_separator() -> Result<()> {
+    let h1 = line_slice_hash(ORIGINAL, 1, 5);
+    let resolved = vec![format!("file1.txt#L1-L5 rk64:{h1}")];
+    let cases = [
+        (
+            "WholeFile { path_has_whitespace: false }",
+            format!("src/b.txt rk64:{OTHER_HASH}"),
+            format!("src/b.txt rk64:{THIRD_HASH}"),
+            "whole-file anchor record",
+        ),
+        (
+            "LineRange { path_has_whitespace: false }",
+            format!("file2.txt#L1-L5 rk64:{OTHER_HASH}"),
+            format!("file2.txt#L1-L5 rk64:{THIRD_HASH}"),
+            "line-range anchor record",
+        ),
+    ];
+
+    for (shape, ours, theirs, described) in cases {
+        // The refusal is narrowed to a writer-shaped hash — sixteen lowercase
+        // hex — so a fixture carrying a short hash like `1111` or `deadbeef`
+        // (the style used throughout the `span_file` unit tests) would still
+        // *pass* this test while no longer exercising the refusal at all. Pin
+        // the assumption rather than trusting the constants to stay put.
+        assert_writer_shaped_hash(&ours);
+        assert_writer_shaped_hash(&theirs);
+        let fixture = pre_42d28964_residue(
+            &resolved,
+            std::slice::from_ref(&ours),
+            std::slice::from_ref(&theirs),
+        );
+        // Match the phrase *with* the quoted line after it, so a message about
+        // some other line in the block cannot satisfy the assertion.
+        let expected = format!("{described}, `{ours}`");
+        every_side_refuses(&fixture, &expected).map_err(|e| e.context(format!("shape {shape}")))?;
+    }
+    Ok(())
+}
+
+/// The over-refusal the whitespace test alone could not avoid, closed by the
+/// second half of the check. `See https://example.com` splits at the last space
+/// to address `See` and hash part `https://example.com`, so it has a
+/// whitespace-free whole-file address — indistinguishable, on that test alone,
+/// from `src/b.txt rk64:…`. The number of words before the colon-bearing token
+/// was deciding whether a why line read as a bare record: one word a record,
+/// two prose.
+///
+/// What separates them is the content hash. Every production write site is
+/// `content_hash: rk64_to_hex(fp)`, and `rk64_to_hex` is `format!("{fp:016x}")`
+/// — sixteen lowercase hex, always. `//example.com` and `1234` are not hashes
+/// this codebase emitted, so those lines cannot be misplaced records.
+///
+/// These fixtures use the pre-`42d28964` layout, so each line sits in exactly
+/// the position that gets a record refused. They pass because of the hash, not
+/// because of where they are.
+#[test]
+fn resolve_accepts_one_word_why_prose_whose_last_token_merely_holds_a_colon() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let h1 = line_slice_hash(ORIGINAL, 1, 5);
+    for line in ["See https://example.com", "Ref rfc:1234", "Docs docs:v2"] {
+        let owned = line.to_string();
+        let fixture = pre_42d28964_residue(
+            &[format!("file1.txt#L1-L5 rk64:{h1}")],
+            std::slice::from_ref(&owned),
+            std::slice::from_ref(&owned),
+        );
+        repo.write_file(".span/m", &fixture)?;
+        let out = repo.run_span(["resolve", "m", "--ours"])?;
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "`{line}` is prose, not a misplaced record; stderr=\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let span = read_span(&repo, "m")?;
+        let parsed = SpanFile::parse(&span)?;
+        assert!(
+            parsed.why.contains(line),
+            "`{line}` must survive as prose; span:\n{span}"
+        );
+    }
+    Ok(())
+}
+
+/// The ceiling, and the case that must *stay* refused: a why line quoting a
+/// genuine anchor verbatim is byte-identical to a misplaced record — same
+/// address, same sixteen-hex hash — so no predicate can separate them. Refusing
+/// is the right side to fail on, since the alternative is deleting a tracked
+/// coupling at exit 0. Named here so it reads as an irreducible limit rather
+/// than an oversight.
+#[test]
+fn resolve_still_refuses_a_why_that_is_nothing_but_a_verbatim_anchor() -> Result<()> {
+    let h1 = line_slice_hash(ORIGINAL, 1, 5);
+    let quoted = format!("file2.txt#L1-L5 rk64:{OTHER_HASH}");
+    let fixture = pre_42d28964_residue(
+        &[format!("file1.txt#L1-L5 rk64:{h1}")],
+        std::slice::from_ref(&quoted),
+        std::slice::from_ref(&quoted),
+    );
+    every_side_refuses(&fixture, &format!("line-range anchor record, `{quoted}`"))
+}
+
+/// The residual, pinned rather than left implicit. An anchor whose **own path
+/// contains a space** is byte-identical to why prose that quotes an address:
+/// `parse_anchor_line` splits at the last space, so `my file.txt#L1-L3 rk64:…`
+/// and `stale since we moved file2.txt#L1-L5 rk64:…` are the same shape to the
+/// reader. The check is keyed on a whitespace-free address precisely so the
+/// second round-trips, and the price is that the first is still swallowed into
+/// the why by the pre-`42d28964` layout.
+///
+/// This test asserts the loss on purpose. Refusing here instead would hard-stop
+/// every why ending in a URL — see
+/// [`resolve_round_trips_url_ending_why_prose_the_old_gate_refused`] — which is
+/// a far larger and far commoner class than an anchor on a path with a space in
+/// it. If the residue format ever carries the boundary explicitly, this is the
+/// assertion that should flip.
+#[test]
+fn resolve_still_loses_a_post_separator_anchor_whose_path_contains_a_space() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let h1 = line_slice_hash(ORIGINAL, 1, 5);
+    for line in [
+        format!("my file.txt#L1-L3 rk64:{OTHER_HASH}"),
+        format!("my file.txt rk64:{OTHER_HASH}"),
+    ] {
+        let fixture = pre_42d28964_residue(
+            &[format!("file1.txt#L1-L5 rk64:{h1}")],
+            std::slice::from_ref(&line),
+            std::slice::from_ref(&line),
+        );
+        repo.write_file(".span/m", &fixture)?;
+        let out = repo.run_span(["resolve", "m", "--ours"])?;
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "a whitespace-bearing address is read as prose, not refused; stderr=\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let span = read_span(&repo, "m")?;
+        let parsed = SpanFile::parse(&span)?;
+        assert_eq!(
+            parsed.anchors.len(),
+            1,
+            "known residual: the anchor is not tracked, it landed in the why; span:\n{span}"
+        );
+        assert!(
+            parsed.why.contains(&line),
+            "known residual: it survives as prose rather than being deleted outright; \
+             span:\n{span}"
+        );
+    }
+    Ok(())
+}
+
+/// The over-refusal guard, and the reason the why-side check is keyed on a
+/// *whitespace-free* address rather than on the address form: why prose that
+/// *quotes* an anchor absorbs the surrounding words into the parsed path, so it
+/// is still prose and must still round-trip. Driver-generated, because this is a
+/// shape the writer really does produce.
 #[test]
 fn resolve_accepts_why_prose_that_quotes_an_anchor_address() -> Result<()> {
     let repo = TestRepo::seeded()?;

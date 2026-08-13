@@ -503,12 +503,44 @@ pub enum AnchorLineShape {
     /// is the discriminator between a real whole-file anchor (paths rarely
     /// contain spaces) and a sentence that happens to end in a colon-bearing
     /// token, such as prose closing with a URL.
-    WholeFile { path_has_whitespace: bool },
+    WholeFile {
+        path_has_whitespace: bool,
+        hash_is_writer_shaped: bool,
+    },
     /// `<path>#L<start>-L<end> <alg>:<hash>` — a line-range anchor. Prose
     /// that merely quotes an anchor address mid-sentence lands here with
     /// `path_has_whitespace` set, because the words before the address are
     /// absorbed into the path.
-    LineRange { path_has_whitespace: bool },
+    LineRange {
+        path_has_whitespace: bool,
+        hash_is_writer_shaped: bool,
+    },
+}
+
+/// True when `hash` has the exact shape every production write site emits:
+/// **sixteen lowercase hex digits**.
+///
+/// This is derived from the writers, not assumed. The only place an anchor's
+/// content hash is produced is `content_hash: rk64_to_hex(fp)`, and
+/// [`crate::rk64_to_hex`] is `format!("{fp:016x}")` — always sixteen, always
+/// lowercase, zero-padded. The only other production write is `String::new()`
+/// for the synthetic empty-path `UnresolvedAnchor` that signals why/config
+/// divergence, which is not an anchor record at all.
+///
+/// It deliberately names **no algorithm**. The retired `rk64` whitelist keyed
+/// on the token before the colon and so would have to be revisited the day a
+/// second algorithm lands; a future `blake3:<16 hex>` satisfies this predicate
+/// unchanged. What it separates is a hash from an arbitrary colon-bearing
+/// token: `https://example.com` (hash `//example.com`) and `rfc:1234` (hash
+/// `1234`) are not hashes any writer here produced.
+///
+/// Use it only to *narrow* a refusal — as a precondition, never as a trigger.
+/// A reader that refuses because this returns true is a strict subset of one
+/// that refuses without consulting it, so consulting it can only permit more.
+/// Reversing that polarity would rebuild the gate whose failure was refusing
+/// valid spans on the strength of a shape.
+fn hash_is_writer_shaped(hash: &str) -> bool {
+    hash.len() == 16 && hash.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// Classify one line against the anchor grammar without committing to it.
@@ -523,10 +555,17 @@ pub fn classify_anchor_line(line: &str) -> AnchorLineShape {
         return AnchorLineShape::NotAnchor;
     };
     let path_has_whitespace = record.path.chars().any(char::is_whitespace);
+    let hash_is_writer_shaped = hash_is_writer_shaped(&record.content_hash);
     if record.start_line == 0 && record.end_line == 0 {
-        AnchorLineShape::WholeFile { path_has_whitespace }
+        AnchorLineShape::WholeFile {
+            path_has_whitespace,
+            hash_is_writer_shaped,
+        }
     } else {
-        AnchorLineShape::LineRange { path_has_whitespace }
+        AnchorLineShape::LineRange {
+            path_has_whitespace,
+            hash_is_writer_shaped,
+        }
     }
 }
 
@@ -1364,7 +1403,7 @@ mod tests {
         let theirs = SpanFile { anchors: vec![a.clone()], why: "theirs why".into(), config: SpanConfig::default() };
         let result = merge_span_files(Some(&base), &ours, &theirs, &[]);
         // Both sides changed why differently from base — fail closed.
-        assert!(result.unresolved.len() > 0);
+        assert!(!result.unresolved.is_empty());
     }
 
     #[test]
@@ -1392,7 +1431,7 @@ mod tests {
         let theirs = SpanFile { anchors: vec![a.clone()], why: "theirs why".into(), config: SpanConfig::default() };
         let result = merge_span_files(None, &ours, &theirs, &[]);
         // No base span and divergent why — fail closed.
-        assert!(result.unresolved.len() > 0);
+        assert!(!result.unresolved.is_empty());
     }
 
     #[test]
