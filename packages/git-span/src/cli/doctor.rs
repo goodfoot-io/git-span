@@ -98,8 +98,11 @@ pub fn run_doctor(repo: &gix::Repository, _args: DoctorArgs, span_root: &str) ->
     // Duplicate-identity surfacing, on the same model: a span that parses
     // cleanly may still carry two records for one `(path, start_line,
     // end_line)`. Nothing about that is ill-formed, so it slips past parse
-    // and validate alike and only shows itself as one identity drifting in
-    // two states. Name it here, with the one command that repairs it.
+    // and validate alike, and only shows itself later — as one identity
+    // drifting in two states when the records disagree, or as a silently
+    // doubled record when they agree. Name it here, with the command that
+    // repairs *that* finding: `add` when the anchored path is still there,
+    // `drift --fix` when it is not.
     for d in crate::cli::duplicate_identity::scan_duplicate_identities(repo, span_root)? {
         findings.push(d.report_block(span_root));
     }

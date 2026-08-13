@@ -5,10 +5,12 @@
 //! text→struct transform, so a hand-edited or merge-damaged span stays
 //! loadable and therefore repairable. Nothing about a duplicate is
 //! ill-formed, so `validate` has nothing to say about it either; the state
-//! only shows itself as one identity reported in two different drift states.
-//! `doctor` is the audit surface that names it before an operator trips over
-//! it, as a **loud, actionable, per-identity** report. This mirrors the
-//! interior-anchor surfacing in [`crate::cli::interior_anchor`] exactly.
+//! only shows itself later — as one identity reported in two drift states
+//! when the records disagree, or as a silently doubled record when they
+//! agree. `doctor` is the audit surface that names it before an operator
+//! trips over it, as a **loud, actionable, per-identity** report. This
+//! mirrors the interior-anchor surfacing in [`crate::cli::interior_anchor`]
+//! exactly.
 
 use crate::span_file::AnchorRecord;
 use crate::span_file_reader::SpanFileReader;
@@ -18,10 +20,27 @@ use crate::span_file_reader::SpanFileReader;
 pub struct DuplicateIdentity {
     /// Span name (its path under the span root).
     pub span_name: String,
+    /// The anchored path, without the line range.
+    pub path: String,
     /// The duplicated anchor address as stored (path plus optional line range).
     pub address: String,
     /// How many records share that identity (always >= 2).
     pub records: usize,
+    /// Whether every record at the identity carries the same
+    /// `(algorithm, content_hash)`.
+    ///
+    /// This is the common case and not the alarming one: `drift --fix`
+    /// re-anchoring two ranges onto one destination produces exactly it, and
+    /// the records agree completely about what the identity tracks. The
+    /// divergent case is the one where the identity genuinely reports in two
+    /// states at once. The finding's `why:` line branches on this, because a
+    /// sentence that is true of one is false of the other.
+    pub hashes_agree: bool,
+    /// Whether the anchored path is tracked in the index or present in the
+    /// worktree — the same probe `git span add` runs before it reads the span
+    /// file, and therefore the exact condition under which `add` is available
+    /// as the one-step repair.
+    pub path_exists: bool,
 }
 
 impl DuplicateIdentity {
@@ -31,17 +50,29 @@ impl DuplicateIdentity {
     }
 
     /// A loud, actionable multi-line report block naming the span file, the
-    /// duplicated identity, the record count, and the one command that
-    /// actually repairs it.
+    /// duplicated identity, the record count, and the command that actually
+    /// repairs it *for this finding*.
     ///
-    /// The fix is `git span drift --fix` and nothing else. `git span add`
-    /// looks like an alternative — it collapses every record at the identity
-    /// it is handed — but its existence probe and `validate_add_target` both
-    /// run *before* the span file is read, so it refuses outright on a path
-    /// that no longer exists in the worktree. Naming it here as an
-    /// interchangeable option would send an operator down a path that
-    /// fail-closes for exactly the population most likely to have collected a
-    /// duplicate.
+    /// Both the `why:` and the `fix:` line branch, because the unconditional
+    /// forms of each were wrong for one of the two populations they served.
+    ///
+    /// `fix:` branches on [`Self::path_exists`]. `git span add` is the
+    /// one-step repair — it removes every record at the identity it is handed
+    /// and installs one hashed from the named content — but its existence
+    /// probe and `validate_add_target` both run *before* the span file is
+    /// read, so it refuses outright on a path that is neither tracked nor in
+    /// the worktree. That refusal is the whole reason `add` cannot be named
+    /// unconditionally; it is not a reason to withhold it from the operators
+    /// for whom it works, which is what naming only the two-step
+    /// `drift --fix` did. When the path is there, say `add`; when it is not,
+    /// say `drift --fix` and say why `add` is unavailable.
+    ///
+    /// `why:` branches on [`Self::hashes_agree`]. "the identity reports in
+    /// two states at once" is a true and useful sentence about a divergent
+    /// pair and a false one about an agreed pair, whose records agree
+    /// completely — so for the agreed case the clause is dropped rather than
+    /// qualified. A hedge would leave the reader holding a claim plus a
+    /// retraction of it.
     ///
     /// The block also carries the layer caveat, for the same reason
     /// `drift --fix`'s interior-anchor repair carries one: this scan reads the
@@ -54,17 +85,43 @@ impl DuplicateIdentity {
     /// proof that a duplicate they saw elsewhere is gone.
     pub fn report_block(&self, span_root: &str) -> String {
         let file = self.span_file_path(span_root);
+        let why = if self.hashes_agree {
+            "records sharing one (path, start line, end line) are one identity\n                \
+             stored more than once; these records carry the same content hash"
+                .to_string()
+        } else {
+            "records sharing one (path, start line, end line) can carry\n                \
+             different content hashes, and these do, so the identity reports in\n                \
+             two states at once"
+                .to_string()
+        };
+        let fix = if self.path_exists {
+            format!(
+                "git span add {name} {address}\n                \
+                 (one step: `add` retires every record at the identity and installs\n                 \
+                 one hashed from the named content. `git span drift --fix` also\n                 \
+                 collapses it, over a whole-repository sweep rather than this anchor)",
+                name = self.span_name,
+                address = self.address,
+            )
+        } else {
+            format!(
+                "git span drift --fix\n                \
+                 (`git span add {name} {address}` cannot repair this one: its existence\n                 \
+                 probe runs before the span file is read, and `{path}` is neither\n                 \
+                 tracked nor present in the worktree, so `add` refuses outright)",
+                name = self.span_name,
+                address = self.address,
+                path = self.path,
+            )
+        };
         format!(
             "span `{name}` carries {records} records for one anchor identity:\n  \
              span file:    {file}\n  \
              identity:     {address}\n  \
              records:      {records}\n  \
-             why:          records sharing one (path, start line, end line) can carry\n                \
-             different content hashes, so the identity reports in two states at once\n  \
-             fix:          git span drift --fix\n                \
-             (`git span add` cannot repair this: its existence probe runs before\n                 \
-             the span file is read, so it refuses on a path that no longer exists\n                 \
-             in the worktree)\n  \
+             why:          {why}\n  \
+             fix:          {fix}\n  \
              caveat:       this check reads the effective span — the worktree file\n                \
              whenever one exists — and every mutation writes that same worktree\n                \
              file. A duplicate present only in HEAD or the index, with no worktree\n                \
@@ -75,6 +132,8 @@ impl DuplicateIdentity {
             file = file,
             address = self.address,
             records = self.records,
+            why = why,
+            fix = fix,
         )
     }
 }
@@ -91,13 +150,25 @@ pub fn scan_duplicate_identities(
     repo: &gix::Repository,
     span_root: &str,
 ) -> crate::Result<Vec<DuplicateIdentity>> {
+    // The same existence probe `git span add` runs — tracked in the index, or
+    // present in the worktree — so the `fix:` line offers `add` exactly when
+    // `add` will not refuse. Reading the index is best-effort: without one,
+    // fall back to the worktree test alone, which errs toward the two-step
+    // advice rather than toward advice that fail-closes.
+    let index_snapshot = crate::git::index_entries(repo).unwrap_or_default();
+    let workdir = repo.workdir().map(std::path::Path::to_path_buf);
+    let path_exists = |path: &str| -> bool {
+        index_snapshot.iter().any(|en| en.path == path)
+            || workdir.as_ref().is_some_and(|w| w.join(path).exists())
+    };
+
     let reader = SpanFileReader::new(repo, span_root.to_string());
     let mut findings = Vec::new();
     for name in reader.list_span_names()? {
         let Ok(Some(file)) = reader.read_effective(&name) else {
             continue;
         };
-        findings.extend(duplicates_in(&name, &file.anchors));
+        findings.extend(duplicates_in(&name, &file.anchors, &path_exists));
     }
     Ok(findings)
 }
@@ -105,21 +176,38 @@ pub fn scan_duplicate_identities(
 /// Group `anchors` by identity and emit one finding per group holding more
 /// than one record, in canonical `(path, start_line, end_line)` order so the
 /// report is independent of the file's record order.
-fn duplicates_in(span_name: &str, anchors: &[AnchorRecord]) -> Vec<DuplicateIdentity> {
-    let mut counts: std::collections::BTreeMap<(&str, u32, u32), usize> =
+fn duplicates_in(
+    span_name: &str,
+    anchors: &[AnchorRecord],
+    path_exists: &impl Fn(&str) -> bool,
+) -> Vec<DuplicateIdentity> {
+    // Group the records themselves rather than counting them: whether the
+    // group's hashes agree decides which `why:` sentence is true of it, and
+    // that cannot be recovered from a tally.
+    let mut groups: std::collections::BTreeMap<(&str, u32, u32), Vec<&AnchorRecord>> =
         std::collections::BTreeMap::new();
     for a in anchors {
-        *counts
+        groups
             .entry((a.path.as_str(), a.start_line, a.end_line))
-            .or_insert(0) += 1;
+            .or_default()
+            .push(a);
     }
-    counts
+    groups
         .into_iter()
-        .filter(|(_, n)| *n > 1)
-        .map(|((path, start, end), records)| DuplicateIdentity {
-            span_name: span_name.to_string(),
-            address: address_for(path, start, end),
-            records,
+        .filter(|(_, group)| group.len() > 1)
+        .map(|((path, start, end), group)| {
+            let first = group[0];
+            let hashes_agree = group
+                .iter()
+                .all(|a| a.algorithm == first.algorithm && a.content_hash == first.content_hash);
+            DuplicateIdentity {
+                span_name: span_name.to_string(),
+                path: path.to_string(),
+                address: address_for(path, start, end),
+                records: group.len(),
+                hashes_agree,
+                path_exists: path_exists(path),
+            }
         })
         .collect()
 }
@@ -149,6 +237,17 @@ mod tests {
         }
     }
 
+    fn finding(hashes_agree: bool, path_exists: bool) -> DuplicateIdentity {
+        DuplicateIdentity {
+            span_name: "billing/flow".to_string(),
+            path: "src/a.rs".to_string(),
+            address: "src/a.rs#L1-L5".to_string(),
+            records: 2,
+            hashes_agree,
+            path_exists,
+        }
+    }
+
     #[test]
     fn duplicates_are_grouped_by_identity_not_by_hash() {
         let anchors = vec![
@@ -157,10 +256,11 @@ mod tests {
             record("src/a.rs", 1, 5, "bbbbbbbbbbbbbbbb"),
             record("src/a.rs", 1, 5, "dddddddddddddddd"),
         ];
-        let found = duplicates_in("billing/flow", &anchors);
+        let found = duplicates_in("billing/flow", &anchors, &|_| true);
         assert_eq!(found.len(), 1, "one finding per identity: {found:?}");
         assert_eq!(found[0].address, "src/a.rs#L1-L5");
         assert_eq!(found[0].records, 3, "the true N, not a pairwise count");
+        assert!(!found[0].hashes_agree, "three distinct hashes diverge");
     }
 
     #[test]
@@ -170,17 +270,43 @@ mod tests {
             record("src/a.rs", 6, 9, "bbbbbbbbbbbbbbbb"),
             record("src/b.rs", 1, 5, "cccccccccccccccc"),
         ];
-        assert!(duplicates_in("billing/flow", &anchors).is_empty());
+        assert!(duplicates_in("billing/flow", &anchors, &|_| true).is_empty());
     }
 
     #[test]
-    fn report_block_names_file_identity_count_and_the_only_working_fix() {
-        let f = DuplicateIdentity {
-            span_name: "billing/flow".to_string(),
-            address: "src/a.rs#L1-L5".to_string(),
-            records: 2,
-        };
-        let block = f.report_block(".span");
+    fn identical_hash_duplicates_are_reported_as_agreeing() {
+        let anchors = vec![
+            record("src/a.rs", 1, 5, "aaaaaaaaaaaaaaaa"),
+            record("src/a.rs", 1, 5, "aaaaaaaaaaaaaaaa"),
+            record("src/a.rs", 9, 9, "bbbbbbbbbbbbbbbb"),
+        ];
+        let found = duplicates_in("billing/flow", &anchors, &|_| true);
+        assert_eq!(found.len(), 1, "the neighbour is not a duplicate: {found:?}");
+        assert!(
+            found[0].hashes_agree,
+            "two records with one hash agree: {found:?}"
+        );
+    }
+
+    #[test]
+    fn the_existence_probe_decides_path_exists_per_finding() {
+        let anchors = vec![
+            record("src/present.rs", 1, 5, "aaaaaaaaaaaaaaaa"),
+            record("src/present.rs", 1, 5, "bbbbbbbbbbbbbbbb"),
+            record("src/gone.rs", 1, 5, "cccccccccccccccc"),
+            record("src/gone.rs", 1, 5, "dddddddddddddddd"),
+        ];
+        let found = duplicates_in("billing/flow", &anchors, &|p| p == "src/present.rs");
+        assert_eq!(found.len(), 2, "{found:?}");
+        let present = found.iter().find(|f| f.path == "src/present.rs").unwrap();
+        let gone = found.iter().find(|f| f.path == "src/gone.rs").unwrap();
+        assert!(present.path_exists);
+        assert!(!gone.path_exists);
+    }
+
+    #[test]
+    fn report_block_names_file_identity_count_and_the_layer_caveat() {
+        let block = finding(false, true).report_block(".span");
         assert!(
             block.contains(".span/billing/flow"),
             "names span file: {block}"
@@ -188,26 +314,60 @@ mod tests {
         assert!(block.contains("src/a.rs#L1-L5"), "names identity: {block}");
         assert!(block.contains("records:      2"), "names count: {block}");
         assert!(
-            block.contains("fix:          git span drift --fix"),
-            "names the working repair command: {block}"
+            block.contains("present only in HEAD or the index, with no worktree"),
+            "states the non-worktree-layer caveat: {block}"
         );
     }
 
     #[test]
-    fn report_block_does_not_offer_add_as_the_fix_and_states_the_layer_caveat() {
-        let f = DuplicateIdentity {
-            span_name: "billing/flow".to_string(),
-            address: "src/a.rs#L1-L5".to_string(),
-            records: 2,
-        };
-        let block = f.report_block(".span");
+    fn an_existing_path_gets_the_one_step_add_repair() {
+        let block = finding(false, true).report_block(".span");
         assert!(
-            !block.contains("fix:          git span add"),
-            "`add` must never be named as the fix: {block}"
+            block.contains("fix:          git span add billing/flow src/a.rs#L1-L5"),
+            "names `add`, with the span and the address filled in: {block}"
         );
         assert!(
-            block.contains("present only in HEAD or the index, with no worktree"),
-            "states the non-worktree-layer caveat: {block}"
+            !block.contains("cannot repair this one"),
+            "does not tell an operator `add` is unavailable when it is: {block}"
+        );
+    }
+
+    #[test]
+    fn a_missing_path_gets_drift_fix_and_the_reason_add_would_refuse() {
+        let block = finding(false, false).report_block(".span");
+        assert!(
+            block.contains("fix:          git span drift --fix"),
+            "names the command that still works: {block}"
+        );
+        assert!(
+            !block.contains("fix:          git span add"),
+            "`add` is not offered as the fix when its probe would refuse: {block}"
+        );
+        assert!(
+            block.contains("neither\n                 tracked nor present in the worktree"),
+            "names why `add` would refuse: {block}"
+        );
+    }
+
+    #[test]
+    fn agreed_hashes_drop_the_two_state_clause_rather_than_qualifying_it() {
+        let block = finding(true, true).report_block(".span");
+        assert!(
+            !block.contains("two states at once"),
+            "records that agree never report in two states: {block}"
+        );
+        assert!(
+            block.contains("carry the same content hash"),
+            "says what is actually true of them: {block}"
+        );
+    }
+
+    #[test]
+    fn divergent_hashes_keep_the_two_state_clause() {
+        let block = finding(false, true).report_block(".span");
+        assert!(
+            block.contains("two states at once"),
+            "divergent records do report in two states: {block}"
         );
     }
 }

@@ -711,66 +711,254 @@ fn a_collapse_survives_an_unrelated_later_fix_pass() -> Result<()> {
 // `doctor` surfaces the duplicate before an operator trips over it
 //
 // A duplicate is well-formed text, so `parse` accepts it and `validate` has
-// nothing to say. The only way it shows itself unprompted is one identity
-// reported in two drift states — which is a puzzle, not a diagnosis. Doctor
-// names it, counts it, and names the one command that repairs it.
+// nothing to say. Unprompted, it shows itself only later — as one identity
+// reported in two drift states when the records disagree, or as a silently
+// doubled record when they agree. Doctor names it, counts it, and names the
+// command that repairs *that* finding.
+//
+// Both halves of the finding branch, and each branch is driven separately
+// below, because the unconditional form of each was wrong for one of the two
+// populations it served: `fix:` on whether the anchored path is still there
+// (`add` is the one-step repair when it is, and refuses outright when it is
+// not), and `why:` on whether the records' hashes agree (an agreed pair does
+// not report in two states, so that clause is dropped rather than hedged).
+// Every fixture carries a neighbour anchor, in both orientations, so a
+// finding that swept up its neighbour or lost it could not pass.
 // ---------------------------------------------------------------------------
 
-/// A duplicate-bearing span produces a loud doctor finding naming the
-/// identity, the record count, and `drift --fix` — and doctor's exit code
-/// reflects it, exactly as it does for an interior anchor.
-#[test]
-fn doctor_reports_a_duplicate_identity_and_exits_non_zero() -> Result<()> {
+/// Hand-write a span carrying two records at `dup` (with the two hashes
+/// given) plus one ordinary, worktree-fresh record at `neighbour`, commit
+/// it, and run `doctor`. `neighbour_first` chooses the file order.
+///
+/// The neighbour's hash is the real one — seeded through `add` and copied
+/// out — so it resolves `Fresh`. That is what lets a repair run afterward be
+/// judged on its exit code as well as its record set: a neighbour carrying a
+/// made-up hash would drift and drag every following exit code to 1 for a
+/// reason that has nothing to do with the duplicate.
+///
+/// Returns the repo, doctor's stdout, and its exit code.
+fn doctor_over_duplicate(
+    name: &str,
+    dup: &str,
+    hashes: (&str, &str),
+    neighbour: &str,
+    neighbour_first: bool,
+) -> Result<(TestRepo, String, Option<i32>)> {
     let repo = TestRepo::seeded()?;
-    commit_span(
-        &repo,
-        "doc-dup",
-        "file1.txt#L1-L5 rk64:aaaaaaaaaaaaaaaa\n\
-         file1.txt#L1-L5 rk64:bbbbbbbbbbbbbbbb\n\
-         \n\
-         why: two records for one identity.\n",
-    )?;
+    repo.span_stdout(["add", "seed", neighbour])?;
+    let seed = span_text(&repo, "seed")?;
+    let neighbour_line = format!("{}\n", anchor_lines(&seed)[0]);
+    let dup_lines = format!("{dup} rk64:{}\n{dup} rk64:{}\n", hashes.0, hashes.1);
+    let body = if neighbour_first {
+        format!("{neighbour_line}{dup_lines}\nwhy: a duplicate beside a neighbour.\n")
+    } else {
+        format!("{dup_lines}{neighbour_line}\nwhy: a duplicate beside a neighbour.\n")
+    };
+    commit_span(&repo, name, &body)?;
 
     let out = repo.run_span(["doctor"])?;
-    let stdout = stdout_of(&out);
-    assert_eq!(
-        out.status.code(),
-        Some(1),
-        "doctor must exit non-zero when a duplicate identity is present;\n\
-         stdout:\n{stdout}"
-    );
-    assert!(
-        stdout.contains("span `doc-dup` carries 2 records for one anchor identity"),
-        "the finding names the span and the count; stdout:\n{stdout}"
-    );
-    assert!(
-        stdout.contains("identity:     file1.txt#L1-L5"),
-        "the finding names the identity; stdout:\n{stdout}"
-    );
-    assert!(
-        stdout.contains(".span/doc-dup"),
-        "the finding names the span file; stdout:\n{stdout}"
-    );
-    assert!(
-        stdout.contains("fix:          git span drift --fix"),
-        "`drift --fix` is the named repair; stdout:\n{stdout}"
-    );
-    assert!(
-        !stdout.contains("fix:          git span add"),
-        "`add` must never be offered as the fix — its existence probe runs \
-         before the span file is read, so it refuses on a vanished path; \
-         stdout:\n{stdout}"
-    );
+    let code = out.status.code();
+    Ok((repo, stdout_of(&out), code))
+}
 
-    // The named repair actually clears the finding.
-    repo.run_span(["drift", "--fix"])?;
-    let after = repo.run_span(["doctor"])?;
-    let after_out = stdout_of(&after);
-    assert!(
-        !after_out.contains("carries 2 records for one anchor identity"),
-        "the duplicate finding must be gone after the named fix; \
-         stdout:\n{after_out}"
-    );
+/// The anchored path still exists, so `git span add` — one command, acting
+/// on this identity alone — is the repair, and the finding says so with the
+/// span and address already filled in.
+///
+/// The previous text named only `git span drift --fix`, a two-step
+/// whole-repository sweep, on the reasoning that `add` fail-closes on a
+/// vanished path. That reasoning is sound and it is conditional; applied
+/// unconditionally it withheld the one-step fix from every operator for whom
+/// it works. This runs the command the finding actually printed and asserts
+/// the record set it leaves: had the finding named a command that refuses,
+/// or one that swept the neighbour into the repair, the record set would say
+/// so where a string match would not.
+#[test]
+fn doctor_names_add_for_an_existing_path_and_running_it_collapses_only_that_identity() -> Result<()>
+{
+    for (name, neighbour_first) in [("doc-add-after", false), ("doc-add-before", true)] {
+        let (repo, stdout, code) = doctor_over_duplicate(
+            name,
+            "file1.txt#L1-L5",
+            ("aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb"),
+            "file2.txt#L1-L3",
+            neighbour_first,
+        )?;
+        assert_eq!(
+            code,
+            Some(1),
+            "doctor must exit non-zero when a duplicate identity is present; \
+             stdout:\n{stdout}"
+        );
+        assert!(
+            stdout.contains(&format!(
+                "span `{name}` carries 2 records for one anchor identity"
+            )),
+            "the finding names the span and the count; stdout:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("identity:     file1.txt#L1-L5"),
+            "the finding names the identity; stdout:\n{stdout}"
+        );
+        assert!(
+            stdout.contains(&format!("fix:          git span add {name} file1.txt#L1-L5")),
+            "the one-step repair is named, ready to run; stdout:\n{stdout}"
+        );
+
+        // Type what the tool printed.
+        let out = repo.run_span(["add", name, "file1.txt#L1-L5"])?;
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "the named repair must not refuse; stderr:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let text = span_text(&repo, name)?;
+        let lines = anchor_lines(&text);
+        assert_eq!(
+            lines.len(),
+            2,
+            "one survivor at the identity, and the neighbour still its own \
+             record:\n{text}"
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| l.starts_with("file1.txt#L1-L5 "))
+                .count(),
+            1,
+            "the duplicate is collapsed, not halved:\n{text}"
+        );
+        let seed = span_text(&repo, "seed")?;
+        let neighbour_line = anchor_lines(&seed)[0].to_string();
+        assert!(
+            lines.iter().any(|l| *l == neighbour_line),
+            "the neighbour is untouched, hash included — the repair is scoped \
+             to the identity it was handed:\n{text}"
+        );
+
+        let after = repo.run_span(["doctor"])?;
+        assert!(
+            !stdout_of(&after).contains("carries 2 records for one anchor identity"),
+            "and the finding is gone; stdout:\n{}",
+            stdout_of(&after)
+        );
+    }
+    Ok(())
+}
+
+/// The anchored path is gone, so `add` would refuse before it ever read the
+/// span file. Here the two-step `drift --fix` is the repair, and the finding
+/// says why the one-step one is unavailable rather than leaving the operator
+/// to discover it by being refused.
+///
+/// The refusal is asserted by running `add`, not described: a finding that
+/// steers around a command has to be right about that command.
+#[test]
+fn doctor_names_drift_fix_for_a_vanished_path_and_add_really_would_refuse() -> Result<()> {
+    for (name, neighbour_first) in [("doc-gone-after", false), ("doc-gone-before", true)] {
+        let (repo, stdout, code) = doctor_over_duplicate(
+            name,
+            "vanished.txt#L1-L5",
+            ("aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb"),
+            "file2.txt#L1-L3",
+            neighbour_first,
+        )?;
+        assert_eq!(code, Some(1), "stdout:\n{stdout}");
+        assert!(
+            stdout.contains("fix:          git span drift --fix"),
+            "the command that still works is named; stdout:\n{stdout}"
+        );
+        assert!(
+            !stdout.contains("fix:          git span add"),
+            "`add` is not offered when its existence probe would refuse; \
+             stdout:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("`vanished.txt` is neither"),
+            "the finding names the reason `add` is unavailable, against the \
+             actual path; stdout:\n{stdout}"
+        );
+
+        // The steering is only honest if the refusal is real.
+        let refused = repo.run_span(["add", name, "vanished.txt#L1-L5"])?;
+        assert_ne!(
+            refused.status.code(),
+            Some(0),
+            "`add` must in fact refuse the vanished path; stdout:\n{}",
+            stdout_of(&refused)
+        );
+
+        // And the named repair leaves one record at the identity.
+        repo.run_span(["drift", "--fix"])?;
+        let text = span_text(&repo, name)?;
+        let lines = anchor_lines(&text);
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| l.starts_with("vanished.txt#L1-L5 "))
+                .count(),
+            1,
+            "the duplicate is collapsed to one record:\n{text}"
+        );
+        assert!(
+            lines.iter().any(|l| l.starts_with("file2.txt#L1-L3 ")),
+            "the neighbour survives the sweep:\n{text}"
+        );
+    }
+    Ok(())
+}
+
+/// Two records, one hash: they agree completely about what the identity
+/// tracks, so the finding must not tell the operator the identity "reports
+/// in two states at once". This is the common case — `drift --fix`
+/// re-anchoring two ranges onto one destination produces it — which is
+/// exactly why asserting something false of it matters.
+///
+/// The clause is dropped, not qualified: a claim followed by its own
+/// retraction reads worse than the claim never being made.
+#[test]
+fn doctor_agreed_hash_duplicate_is_never_described_as_two_states() -> Result<()> {
+    for (name, neighbour_first) in [("doc-agree-after", false), ("doc-agree-before", true)] {
+        let (_repo, stdout, code) = doctor_over_duplicate(
+            name,
+            "file1.txt#L1-L5",
+            ("aaaaaaaaaaaaaaaa", "aaaaaaaaaaaaaaaa"),
+            "file2.txt#L1-L3",
+            neighbour_first,
+        )?;
+        assert_eq!(code, Some(1), "it is still a finding; stdout:\n{stdout}");
+        assert!(
+            !stdout.contains("two states at once"),
+            "records carrying one hash never report in two states; \
+             stdout:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("carry the same content hash"),
+            "the finding says what is actually true of them; stdout:\n{stdout}"
+        );
+    }
+    Ok(())
+}
+
+/// The other side of the same branch: when the hashes really do diverge, the
+/// two-state sentence is the accurate description and stays.
+#[test]
+fn doctor_divergent_hash_duplicate_keeps_the_two_state_description() -> Result<()> {
+    for (name, neighbour_first) in [("doc-diverge-after", false), ("doc-diverge-before", true)] {
+        let (_repo, stdout, _code) = doctor_over_duplicate(
+            name,
+            "file1.txt#L1-L5",
+            ("aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb"),
+            "file2.txt#L1-L3",
+            neighbour_first,
+        )?;
+        assert!(
+            stdout.contains("two states at once"),
+            "divergent records do report in two states; stdout:\n{stdout}"
+        );
+    }
     Ok(())
 }
 
@@ -1563,6 +1751,254 @@ fn a_collapse_never_presents_its_recorded_address_as_confirmed() -> Result<()> {
         stdout.contains("only if the coupled content still lives there"),
         "with the condition that separates them stated, not implied; \
          stdout:\n{stdout}"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// `replace` says what it did to the records it retired
+//
+// `replace` is the exit the collapse annotation itself now recommends, and
+// it is the only command that can resolve an unverified collapse whose path
+// has vanished. Both of those are correct and must keep working. What was
+// wrong is that it worked mutely: it retired N records at the old identity
+// and reported neither N nor the fact that one of them was a survivor
+// nothing had verified, then printed `Span is drift-free.` over the result.
+// An operator who ran it on the tool's own advice was told the span was
+// healthy and never told what had been destroyed to make it so.
+//
+// The resolution itself stays: naming a new address *is* the verification
+// the sentinel was waiting for. Carrying the marker onto the new record
+// would make it unfalsifiable and reopen the instruction loop the previous
+// phase closed; demanding an acknowledgement flag would refuse the command
+// the tool had just printed. So `replace` resolves, and now narrates.
+// ---------------------------------------------------------------------------
+
+/// Seed a span holding a real record at `neighbour` plus `dup_lines` written
+/// verbatim, in the orientation `neighbour_first` chooses, and commit it.
+fn commit_span_beside_neighbour(
+    repo: &TestRepo,
+    name: &str,
+    dup_lines: &str,
+    neighbour: &str,
+    neighbour_first: bool,
+) -> Result<String> {
+    repo.span_stdout(["add", "seed", neighbour])?;
+    let neighbour_line = format!("{}\n", anchor_lines(&span_text(repo, "seed")?)[0]);
+    let body = if neighbour_first {
+        format!("{neighbour_line}{dup_lines}\nwhy: a record beside a neighbour.\n")
+    } else {
+        format!("{dup_lines}{neighbour_line}\nwhy: a record beside a neighbour.\n")
+    };
+    commit_span(repo, name, &body)?;
+    Ok(neighbour_line.trim_end().to_string())
+}
+
+/// A `replace` over a collapsed, unverified survivor resolves the state —
+/// and says so.
+///
+/// The record set is the assertion that matters: the sentinel must be gone
+/// from the file entirely (not carried onto the new record, which would
+/// leave the operator with no exit at all), the new identity must hold one
+/// record with a real hash over real content, and the neighbour must be
+/// untouched byte for byte. The message is checked too, because silence
+/// over a destroyed unverified record is the defect itself.
+#[test]
+fn replace_narrates_the_unverified_collapse_it_resolves() -> Result<()> {
+    for (name, neighbour_first) in [("rep-sent-after", false), ("rep-sent-before", true)] {
+        let repo = TestRepo::seeded()?;
+        let neighbour_line = commit_span_beside_neighbour(
+            &repo,
+            name,
+            &format!("file1.txt#L2-L3 {SENTINEL}\n"),
+            "file2.txt#L10-L12",
+            neighbour_first,
+        )?;
+
+        let out = repo.run_span(["replace", name, "file1.txt#L2-L3", "file1.txt#L4-L5"])?;
+        let stdout = stdout_of(&out);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "naming a new address is a legitimate resolution; stderr:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            stdout.contains("Resolved an unverified collapse: 1 retired record carried the \
+                             collapsed-duplicate marker"),
+            "the destruction of an unverified record is never silent; \
+             stdout:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("Naming `file1.txt#L4-L5` is that confirmation"),
+            "and the message says why resolving it is legitimate, naming the \
+             address that did the confirming; stdout:\n{stdout}"
+        );
+
+        let text = span_text(&repo, name)?;
+        let lines = anchor_lines(&text);
+        assert!(
+            !text.contains(SENTINEL),
+            "the marker is not carried onto the new record — an unfalsifiable \
+             sentinel would leave the operator no exit at all:\n{text}"
+        );
+        assert!(
+            !text.contains("file1.txt#L2-L3"),
+            "the old identity is gone with no orphan:\n{text}"
+        );
+        assert_eq!(
+            lines.len(),
+            2,
+            "one new record, plus the neighbour:\n{text}"
+        );
+        assert!(
+            lines.iter().any(|l| *l == neighbour_line),
+            "the neighbour is untouched, hash included:\n{text}"
+        );
+        let installed = lines
+            .iter()
+            .find(|l| l.starts_with("file1.txt#L4-L5 "))
+            .unwrap_or_else(|| panic!("the new identity must be present:\n{text}"));
+        assert!(
+            !installed.contains("ffffffffffffffff"),
+            "the installed record carries a real hash over real content, not \
+             the marker:\n{text}"
+        );
+
+        let plain = repo.run_span(["drift"])?;
+        assert_eq!(
+            plain.status.code(),
+            Some(0),
+            "and the span really is drift-free afterward, so the verdict the \
+             command prints is earned; stdout:\n{}",
+            stdout_of(&plain)
+        );
+    }
+    Ok(())
+}
+
+/// `replace` destroys every record at the old identity, however many there
+/// are — that is deliberate, and it is why `replace` can resolve a duplicate
+/// that `add` refuses to touch. The count was a dead write: assigned and
+/// never printed, so an operator who retired two records saw no evidence the
+/// second had ever existed.
+///
+/// Asserted on the record set as well as the count: both records leave, one
+/// arrives, the neighbour stays.
+#[test]
+fn replace_reports_every_record_it_retired_at_one_identity() -> Result<()> {
+    for (name, neighbour_first) in [("rep-two-after", false), ("rep-two-before", true)] {
+        let repo = TestRepo::seeded()?;
+        let neighbour_line = commit_span_beside_neighbour(
+            &repo,
+            name,
+            "file1.txt#L2-L3 rk64:aaaaaaaaaaaaaaaa\n\
+             file1.txt#L2-L3 rk64:bbbbbbbbbbbbbbbb\n",
+            "file2.txt#L10-L12",
+            neighbour_first,
+        )?;
+
+        let out = repo.run_span(["replace", name, "file1.txt#L2-L3", "file1.txt#L4-L5"])?;
+        let stdout = stdout_of(&out);
+        assert!(
+            stdout.contains(&format!(
+                "Replaced anchor on span `{name}`: retired 2 records at \
+                 `file1.txt#L2-L3`, installed `file1.txt#L4-L5`."
+            )),
+            "the true number of destroyed records is surfaced; stdout:\n{stdout}"
+        );
+        assert!(
+            !stdout.contains("unverified collapse"),
+            "neither record carried the marker, so nothing is claimed about \
+             one; stdout:\n{stdout}"
+        );
+
+        let text = span_text(&repo, name)?;
+        let lines = anchor_lines(&text);
+        assert_eq!(lines.len(), 2, "both old records left, one arrived:\n{text}");
+        assert!(
+            !text.contains("file1.txt#L2-L3"),
+            "no record survives at the retired identity:\n{text}"
+        );
+        assert!(
+            lines.iter().any(|l| *l == neighbour_line),
+            "the neighbour is untouched:\n{text}"
+        );
+    }
+    Ok(())
+}
+
+/// The ordinary single-record swap keeps its singular phrasing and stays
+/// quiet about collapses, so the collapse sentence means something when it
+/// does appear.
+#[test]
+fn replace_of_one_ordinary_record_claims_no_collapse() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    commit_span_beside_neighbour(
+        &repo,
+        "rep-plain",
+        "file1.txt#L2-L3 rk64:aaaaaaaaaaaaaaaa\n",
+        "file2.txt#L10-L12",
+        false,
+    )?;
+
+    let out = repo.run_span(["replace", "rep-plain", "file1.txt#L2-L3", "file1.txt#L4-L5"])?;
+    let stdout = stdout_of(&out);
+    assert!(
+        stdout.contains(
+            "Replaced anchor on span `rep-plain`: retired 1 record at \
+             `file1.txt#L2-L3`, installed `file1.txt#L4-L5`."
+        ),
+        "singular, and still explicit about the count; stdout:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("unverified collapse"),
+        "an ordinary record is not a collapse; stdout:\n{stdout}"
+    );
+    Ok(())
+}
+
+/// The machine-readable form carries the same two facts, so a hook is not
+/// left to parse prose for them.
+#[test]
+fn replace_json_carries_the_retired_and_collapsed_counts() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    commit_span_beside_neighbour(
+        &repo,
+        "rep-json",
+        &format!(
+            "file1.txt#L2-L3 {SENTINEL}\n\
+             file1.txt#L2-L3 rk64:aaaaaaaaaaaaaaaa\n"
+        ),
+        "file2.txt#L10-L12",
+        true,
+    )?;
+
+    let out = repo.run_span([
+        "replace",
+        "rep-json",
+        "file1.txt#L2-L3",
+        "file1.txt#L4-L5",
+        "--format",
+        "json",
+    ])?;
+    let stdout = stdout_of(&out);
+    let doc: serde_json::Value = serde_json::from_str(&stdout)?;
+    assert_eq!(
+        doc["retired_records"], 2,
+        "both records at the old identity are counted; stdout:\n{stdout}"
+    );
+    assert_eq!(
+        doc["retired_collapsed_duplicates"], 1,
+        "and the unverified one among them is named as such; stdout:\n{stdout}"
+    );
+    assert_eq!(doc["retired"], "file1.txt#L2-L3");
+    assert_eq!(doc["installed"], "file1.txt#L4-L5");
+
+    let text = span_text(&repo, "rep-json")?;
+    assert!(
+        !text.contains(SENTINEL),
+        "and the state really is resolved on disk:\n{text}"
     );
     Ok(())
 }

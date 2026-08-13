@@ -25,7 +25,9 @@ use crate::types::{
 };
 use anyhow::{Context, Result};
 use fs4::fs_std::FileExt;
-use git_span_core::{RK64_ALGORITHM, cheap_fingerprint_with_extent, rk64_to_hex};
+use git_span_core::{
+    RK64_ALGORITHM, carried_sentinel, cheap_fingerprint_with_extent, rk64_to_hex,
+};
 use std::fmt::Write as FmtWrite;
 use std::fs::File;
 use std::io::IsTerminal;
@@ -475,23 +477,35 @@ pub(crate) fn write_worktree_span(
     Ok(())
 }
 
-/// Remove every anchor record at `(path, start, end)`, returning how many
-/// were removed.
+/// Remove every anchor record at `(path, start, end)`, returning the records
+/// that were removed, in file order.
 ///
 /// Makes no hash decision of its own — callers push whatever they want the
 /// identity to hold afterwards, or nothing. It lives here rather than in
 /// `git-span-core` for exactly that reason: it carries no hash policy, and
 /// both callers (`add`'s retain-and-replace, `replace`'s retirement of the
 /// old identity) are CLI-local.
+///
+/// It returns the records rather than a count because what was destroyed is
+/// reportable: `replace` has to tell the operator how many records vanished
+/// at the old identity, and whether any of them carried the collapse
+/// sentinel — neither question can be answered from a bare number.
 fn remove_all_at_identity(
     anchors: &mut Vec<AnchorRecord>,
     path: &str,
     start: u32,
     end: u32,
-) -> usize {
-    let before = anchors.len();
-    anchors.retain(|a| !(a.path == path && a.start_line == start && a.end_line == end));
-    before - anchors.len()
+) -> Vec<AnchorRecord> {
+    let mut removed = Vec::new();
+    anchors.retain(|a| {
+        if a.path == path && a.start_line == start && a.end_line == end {
+            removed.push(a.clone());
+            false
+        } else {
+            true
+        }
+    });
+    removed
 }
 
 /// Check for prefix collision between a new span name and existing worktree
@@ -1422,8 +1436,23 @@ pub fn run_replace(repo: &gix::Repository, args: ReplaceArgs, span_root: &str) -
     // out, so there is no survivor to name and no hash to adjudicate — the
     // identity disappears wholesale. Zero records is the one remaining
     // error: a plain missing anchor.
-    let removed = remove_all_at_identity(&mut span_file.anchors, &old_path, old_start, old_end);
-    if removed == 0 {
+    let retired = remove_all_at_identity(&mut span_file.anchors, &old_path, old_start, old_end);
+    let retired_records = retired.len();
+    // How many of the retired records were survivors of a collapse that
+    // nothing had verified. `replace` resolves that state rather than
+    // carrying it forward, and the resolution is legitimate: the sentinel
+    // means "no hash here is trustworthy because two records disagreed",
+    // and an operator naming a new address is precisely the act of deciding
+    // where the coupled content actually lives. Carrying the sentinel onto
+    // the new record would make it unfalsifiable — `replace` is the exit the
+    // collapse annotation itself recommends, so a `replace` that preserved
+    // the marker would leave the operator in a loop with no way out.
+    // Demanding an explicit acknowledgement flag fails the same test from
+    // the other side: the tool would refuse the command it just told the
+    // operator to run, over a state they cannot see until they are refused.
+    // So it resolves — and says so, which is the part that was missing.
+    let retired_sentinels = retired.iter().filter(|r| carried_sentinel(r)).count();
+    if retired_records == 0 {
         return Err(CliError {
             subcommand: "replace",
             summary: format!("`{}` is not an anchor on `{}`.", args.old_anchor, args.name),
@@ -1520,9 +1549,24 @@ pub fn run_replace(repo: &gix::Repository, args: ReplaceArgs, span_root: &str) -
     match args.format {
         ReplaceFormat::Human => {
             println!(
-                "Replaced anchor on span `{}`: retired `{}`, installed `{}`.",
-                args.name, args.old_anchor, args.new_anchor
+                "Replaced anchor on span `{}`: retired {} record{} at `{}`, installed `{}`.",
+                args.name,
+                retired_records,
+                if retired_records == 1 { "" } else { "s" },
+                args.old_anchor,
+                args.new_anchor
             );
+            if retired_sentinels > 0 {
+                println!(
+                    "Resolved an unverified collapse: {} retired record{} carried the \
+                     collapsed-duplicate marker, so nothing had confirmed what that identity \
+                     tracked. Naming `{}` is that confirmation — the installed record is hashed \
+                     from the content there, and the marker is gone.",
+                    retired_sentinels,
+                    if retired_sentinels == 1 { "" } else { "s" },
+                    args.new_anchor
+                );
+            }
             if drift_free {
                 println!("Span is drift-free.");
             } else {
@@ -1536,6 +1580,8 @@ pub fn run_replace(repo: &gix::Repository, args: ReplaceArgs, span_root: &str) -
             let obj = serde_json::json!({
                 "span": args.name,
                 "retired": args.old_anchor,
+                "retired_records": retired_records,
+                "retired_collapsed_duplicates": retired_sentinels,
                 "installed": args.new_anchor,
                 "drift_free": drift_free,
                 "drifted": drifted_addrs,
