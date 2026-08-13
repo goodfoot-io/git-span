@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mini-swe-agent-git-span"
 dynamic = ["version"]
-description = "git-span agent hooks for mini-swe-agent: snapshot capture, span-debt advisory holds, and touch tracking, bridged from the Python agent loop over the Claude hook wire protocol"
+description = "git-span agent hooks for mini-swe-agent: static touch planning, span-debt advisory holds, and touch tracking, bridged from the Python agent loop over the Claude hook wire protocol"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"

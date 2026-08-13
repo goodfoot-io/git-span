@@ -57,7 +57,7 @@ def test_advisor_deny_short_circuits_command_in_container(stub_hooks, fake_docke
     assert not any("git commit" in " ".join(r["command"]) for r in docker_execs(fake_docker))
     # Only the PreToolUse hooks ran; no post hook for a command that never ran.
     hooks = [r["hook"] for r in read_record(stub_hooks["record"])]
-    assert hooks == ["snapshot.mjs", "advisor.mjs"]
+    assert hooks == ["static-plan.mjs", "advisor.mjs"]
 
 
 def test_additional_context_appended_to_output(stub_hooks, fake_docker, tmp_path, monkeypatch):
@@ -78,7 +78,7 @@ def test_failure_hook_fires_for_nonzero_exit(stub_hooks, fake_docker, tmp_path, 
 
     assert output["returncode"] == 1
     hooks = [r["hook"] for r in read_record(stub_hooks["record"])]
-    assert hooks == ["snapshot.mjs", "advisor.mjs", "post-tool-use-failure.mjs"]
+    assert hooks == ["static-plan.mjs", "advisor.mjs", "post-tool-use-failure.mjs"]
 
 
 def test_hooks_disabled_skips_probe_and_hooks(stub_hooks, fake_docker, tmp_path):

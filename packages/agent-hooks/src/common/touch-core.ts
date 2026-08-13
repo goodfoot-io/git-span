@@ -176,6 +176,8 @@ export interface TouchWriteInput extends TouchInputBase {
     content?: TouchPostContent;
     /** delete-only: the path must also be index-tracked or spanned (probes cached per command). */
     realDelete?: boolean;
+    /** PreToolUse index-membership proof for deletes such as `git rm`. */
+    preTrackedDelete?: true;
   };
   /**
    * cp/install destination-vs-source verification (plan §3 step 1b): a
@@ -485,6 +487,7 @@ export function workingTreeChanged(probeCache: RealityProbeCache, cwd: string, a
 export function evaluateWriteGate(input: TouchWriteInput, probeCache: RealityProbeCache): WriteGateOutcome {
   if (input.targetState === 'absent') {
     if (fileExists(input.filePath)) return 'decisiveFail';
+    if (input.postState?.preTrackedDelete === true) return 'decisivePass';
     return realPaths(probeCache, input.cwd).has(input.filePath) ? 'decisivePass' : 'inconclusive';
   }
 

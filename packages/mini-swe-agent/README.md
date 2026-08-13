@@ -3,8 +3,8 @@
 An extension package for [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent):
 it subclasses the upstream `LocalEnvironment`/`DockerEnvironment` and
 `DefaultAgent` so the agent loop carries functional equivalents of the
-[`agent-hooks`](../agent-hooks) package — snapshot capture, span-debt
-advisory holds, and post-action touch tracking — all driven by the
+[`agent-hooks`](../agent-hooks) package — bounded static touch planning,
+span-debt advisory holds, and post-action touch tracking — all driven by the
 `git-span` executable found on `PATH`.
 
 Nothing here is a fork: the upstream `mini-swe-agent==2.4.6` is pulled from
@@ -16,7 +16,7 @@ CLI's `--agent-class` / `--environment-class` import-path resolution.
 ```
 Python agent loop                    TypeScript hooks (in packages/agent-hooks)
 ┌──────────────────────┐  spawn     ┌──────────────────────────────────────────┐
-│ HookedLocalEnvironment│  node …   │ src/mswea/snapshot.mjs (PreToolUse)      │
+│ HookedLocalEnvironment│  node …   │ src/mswea/static-plan.mjs (PreToolUse)   │
 │  execute(action)     │ ─────────▶ │ src/mswea/advisor.mjs   (PreToolUse)     │
 │   ├─ pre_tool_use    │            │ src/mswea/post-tool-use.mjs (PostToolUse │
 │   ├─ _run(…)         │ ◀───────── │   ├── PostToolUseFailure)                │
@@ -44,15 +44,16 @@ Python agent loop                    TypeScript hooks (in packages/agent-hooks)
   `docker exec`s each hook bundle there too, so the advisor sees the same
   repo the command touches. Both share `HookedEnvironmentMixin`.
 - Events per bash action:
-  1. **PreToolUse** — `snapshot.mjs` (write-tree capture when the command can
-     mutate the tree) then `advisor.mjs` (span-debt hold before
+  1. **PreToolUse** — `static-plan.mjs` (bounded tracked ranges and evidence
+     needed after the command) then `advisor.mjs` (span-debt hold before
      `git commit`/`git push`/`git status`). A `permissionDecision: "deny"`
      short-circuits the command: it never runs, and the deny reason becomes
      the action's output with exit status 1.
-  2. **PostToolUse** on exit 0 / **PostToolUseFailure** on non-zero — snapshot
-     post-side + the static-parse touch surface; `additionalContext` is
+  2. **PostToolUse** on exit 0 / **PostToolUseFailure** on non-zero — the
+     static parser verifies planned evidence and execution state;
+     `additionalContext` is
      appended to the action's output so the model sees `<git-span>` blocks.
-  3. **SessionEnd** — per-session snapshot-record cleanup and a non-injected
+  3. **SessionEnd** — per-session hook-state cleanup and a non-injected
      span lifecycle summary when the run ends (every exit path: submission,
      limits, interruption, exception).
 
@@ -68,7 +69,7 @@ mini \
 ```
 
 `HookedAgent` is a thin `DefaultAgent` override that fires `SessionEnd` from a
-`finally` block, so the per-session snapshot records are cleaned up on every
+`finally` block, so per-session hook state is cleaned up on every
 exit path — including exceptions, which upstream re-raises out of `run()`.
 
 For container-based runners the environment class is the docker one, wired

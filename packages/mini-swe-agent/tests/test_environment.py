@@ -30,7 +30,7 @@ def test_advisor_deny_short_circuits_command(stub_hooks, tmp_path, monkeypatch):
     assert not (tmp_path / "should-not-exist").exists()
     # Only the PreToolUse hooks ran; no post hook for a command that never ran.
     hooks = [r["hook"] for r in read_record(stub_hooks["record"])]
-    assert hooks == ["snapshot.mjs", "advisor.mjs"]
+    assert hooks == ["static-plan.mjs", "advisor.mjs"]
 
 
 def test_additional_context_appended_to_output(stub_hooks, tmp_path, monkeypatch):
@@ -50,9 +50,9 @@ def test_allowed_pre_context_is_appended_to_output(stub_hooks, tmp_path, monkeyp
     output = env.execute({"command": "git status"})
 
     assert output["output"].endswith("<git-span> uncovered writes\n")
-    snapshot_event = env.hooks.events[0]
-    assert snapshot_event["context"] == "<git-span> uncovered writes"
-    assert snapshot_event["delivered"] is True
+    plan_event = env.hooks.events[0]
+    assert plan_event["context"] == "<git-span> uncovered writes"
+    assert plan_event["delivered"] is True
 
 
 def test_failure_hook_fires_for_nonzero_exit(stub_hooks, tmp_path, monkeypatch):
@@ -63,7 +63,7 @@ def test_failure_hook_fires_for_nonzero_exit(stub_hooks, tmp_path, monkeypatch):
 
     assert output["returncode"] == 1
     hooks = [r["hook"] for r in read_record(stub_hooks["record"])]
-    assert hooks == ["snapshot.mjs", "advisor.mjs", "post-tool-use-failure.mjs"]
+    assert hooks == ["static-plan.mjs", "advisor.mjs", "post-tool-use-failure.mjs"]
 
 
 def test_finish_session_fires_session_end(stub_hooks, tmp_path):
@@ -118,7 +118,7 @@ def test_required_treatment_attests_and_serializes(stub_hooks, tmp_path):
     assert serialized["attestation"]["initial_span_count"] == 0
     assert serialized["attestation"]["skill_file_sha256"]
     assert set(serialized["attestation"]["bundle_sha256"]) == {
-        "snapshot.mjs",
+        "static-plan.mjs",
         "advisor.mjs",
         "post-tool-use.mjs",
         "post-tool-use-failure.mjs",

@@ -10,4 +10,6 @@
 import { postToolUseHook } from '@goodfoot/claude-code-hooks';
 import { createHandler } from '../claude/post-tool-use.js';
 
+export { createHandler };
+
 export default postToolUseHook({ matcher: 'Read|Edit|Write|Bash', timeout: 10_000 }, createHandler());

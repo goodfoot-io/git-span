@@ -91,8 +91,15 @@ export function bashSpanToTouch(span: ResolvedSpan, sessionId: string, cwd: stri
         cwd,
         filePath: span.absolutePath,
         written: span.written ?? '',
+        range:
+          span.lineStart !== undefined ? { start: span.lineStart, end: span.lineEnd ?? span.lineStart } : undefined,
         targetState: 'exists',
-        postState: span.written !== undefined ? { content: { suffix: span.written } } : undefined
+        postState:
+          span.expectedContent !== undefined
+            ? { content: { exact: span.expectedContent } }
+            : span.written !== undefined
+              ? { content: { suffix: span.written } }
+              : undefined
       };
     case 'modify':
       return {
@@ -114,7 +121,10 @@ export function bashSpanToTouch(span: ResolvedSpan, sessionId: string, cwd: stri
         filePath: span.absolutePath,
         written: '',
         targetState: 'absent',
-        postState: { realDelete: true }
+        postState: {
+          realDelete: true,
+          ...(span.preTrackedDelete === true ? { preTrackedDelete: true as const } : {})
+        }
       };
   }
 }
@@ -132,7 +142,12 @@ export function bashSpanToTouch(span: ResolvedSpan, sessionId: string, cwd: stri
 export function bashResponseInterrupted(toolResponse: unknown): boolean {
   if (toolResponse !== null && typeof toolResponse === 'object') {
     const record = toolResponse as Record<string, unknown>;
-    return record.interrupted === true || record.timedOutAfterMs !== undefined;
+    const timedOutAfterMs = record.timedOutAfterMs;
+    return (
+      record.interrupted === true ||
+      record.is_interrupt === true ||
+      (typeof timedOutAfterMs === 'number' && Number.isFinite(timedOutAfterMs) && timedOutAfterMs >= 0)
+    );
   }
   return false;
 }
@@ -162,8 +177,11 @@ export function bashResponseInterrupted(toolResponse: unknown): boolean {
  */
 export function bashResponseExitCode(toolResponse: unknown): number | undefined {
   if (toolResponse !== null && typeof toolResponse === 'object') {
-    const code = (toolResponse as Record<string, unknown>).exit_code;
-    if (typeof code === 'number' && Number.isInteger(code)) return code;
+    const record = toolResponse as Record<string, unknown>;
+    for (const field of ['exit_code', 'exitCode', 'exitStatus'] as const) {
+      const code = record[field];
+      if (typeof code === 'number' && Number.isInteger(code)) return code;
+    }
   }
   return undefined;
 }
@@ -172,8 +190,14 @@ export function bashResponseExitCode(toolResponse: unknown): number | undefined 
 // The per-command verdict driver (plan §3 step 2)
 // ---------------------------------------------------------------------------
 
-type ResolvedMatch = Extract<SpanMatch, { status: 'resolved' }>;
-type GuardMatch = Extract<SpanMatch, { status: 'builtin-guard' }>;
+/** The shared driver accepts layered recognizer ids in addition to the legacy parser's closed idiom union. */
+export type BashTouchMatch =
+  | { status: 'resolved'; idiom: string; span: ResolvedSpan; note?: string }
+  | Extract<SpanMatch, { status: 'unresolved' }>
+  | Extract<SpanMatch, { status: 'builtin-guard' }>;
+
+type ResolvedMatch = Extract<BashTouchMatch, { status: 'resolved' }>;
+type GuardMatch = Extract<BashTouchMatch, { status: 'builtin-guard' }>;
 
 type Verdict = 'failed' | 'succeeded' | 'unknown';
 
@@ -246,7 +270,7 @@ function joinOfCommand(
  * the session memo dedups repeated targets.
  */
 export async function runBashTouches(
-  matches: SpanMatch[],
+  matches: readonly BashTouchMatch[],
   sessionId: string,
   cwd: string,
   toolResponse: unknown,

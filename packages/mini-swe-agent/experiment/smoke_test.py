@@ -75,7 +75,7 @@ API facts relied on
   command was actually held (vs. a legitimate failure) is
   ``hooks.events[-1]["denied"] is True`` on the advisor event
   (bridge.py ``HookBridge._deny_and_context``).
-- ``ALL_HOOKS = ("snapshot", "advisor", "post-tool-use",
+- ``ALL_HOOKS = ("static-plan", "advisor", "post-tool-use",
   "post-tool-use-failure", "session-end")``; every hook invocation appends
   one dict to ``env.hooks.events`` with ``ordinal`` (monotonic, 1-based),
   ``hook``, ``status``, ``denied``, ``context``, ``delivered``

@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import { Logger } from '@goodfoot/claude-code-hooks';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import hook, { createHandler } from '../../src/claude/post-tool-use.js';
+import { createHandler as createStaticPlanHandler } from '../../src/claude/static-plan.js';
 import type { DriftPorcelainRow, PorcelainRow, PorcelainStatus } from '../../src/common/agent-hooks-common.js';
 import type { MemoFactory, MemoLogger, MemoStore } from '../../src/common/span-surface.js';
 import type { TouchExecutors, TouchFixResult } from '../../src/common/touch-core.js';
@@ -21,16 +22,18 @@ import { makeTempRepo } from '../helpers.js';
 import { makeTempLayout } from '../session-layout-helpers.js';
 
 /**
- * This file's own session base, on /tmp. The handlers below construct a real
- * snapshot store and consult the recordless-note gate even where the memo is a
- * fake, so without a layout they wrote fixture session dirs into the live
- * `~/.cache/git-span/session` — the `sess-1` / `codex-sess` leak.
+ * This file's own session base, on /tmp. Static plans and memo state must not
+ * leak fixture session ids into the live `~/.cache/git-span/session` tree.
  */
 const temp = makeTempLayout();
 const layout = temp.layout;
 afterAll(() => temp.cleanup());
 
 const logger = new Logger();
+
+function trackAll(root: string): void {
+  execFileSync('git', ['add', '-A'], { cwd: root });
+}
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -144,6 +147,7 @@ describe('claude post-tool-use touch signal', () => {
     // gate (plan §3 step 1) fails closed when the target is not on disk — the
     // hook runs post-tool, so the file exists by then.
     writeFileSync(join(repo.root, 'app.ts'), 'export const app = 1;\n');
+    trackAll(repo.root);
   });
   afterAll(() => repo.cleanup());
 
@@ -182,6 +186,7 @@ describe('claude post-tool-use touch signal', () => {
   it('scopes a Read to its offset/limit window, not surfacing a span anchored outside it', async () => {
     const filePath = join(repo.root, 'mod.rs');
     writeFileSync(filePath, Array.from({ length: 500 }, (_, i) => `line ${i + 1}`).join('\n'));
+    trackAll(repo.root);
     const { executors } = makeExecutors({ list: [{ name: SPAN, path: 'mod.rs', start: 371, end: 387 }] });
     const handler = createHandler(executors, inMemoryMemoFactory(), layout);
     const input = postInput({
@@ -197,6 +202,7 @@ describe('claude post-tool-use touch signal', () => {
   it('surfaces a span anchored inside a Read offset/limit window', async () => {
     const filePath = join(repo.root, 'mod.rs');
     writeFileSync(filePath, Array.from({ length: 500 }, (_, i) => `line ${i + 1}`).join('\n'));
+    trackAll(repo.root);
     const { executors } = makeExecutors({ list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }] });
     const handler = createHandler(executors, inMemoryMemoFactory(), layout);
     const input = postInput({
@@ -241,6 +247,7 @@ describe('claude post-tool-use touch signal', () => {
   it('surfaces a span covered by a Bash read idiom, without healing', async () => {
     const filePath = join(repo.root, 'mod.rs');
     writeFileSync(filePath, Array.from({ length: 500 }, (_, i) => `line ${i + 1}`).join('\n'));
+    trackAll(repo.root);
     const { executors, calls } = makeExecutors({
       list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
       drift: [driftRow('CHANGED')]
@@ -277,6 +284,7 @@ describe('claude post-tool-use touch signal', () => {
     const filePath = join(repo.root, 'out.txt');
     // Post-edit state: original two lines + appended three lines.
     writeFileSync(filePath, `${['orig1', 'orig2', 'alpha', 'beta', 'gamma'].join('\n')}\n`);
+    trackAll(repo.root);
     const command = `cat >> ${filePath} <<'EOF'\nalpha\nbeta\ngamma\nEOF\n`;
     const { executors, calls } = makeExecutors({
       list: [{ name: SPAN, path: 'out.txt', start: 1, end: 2 }],
@@ -297,6 +305,7 @@ describe('claude post-tool-use touch signal', () => {
   it('a Bash heredoc write with the body present surfaces a span inside the written lines', async () => {
     const filePath = join(repo.root, 'out2.txt');
     writeFileSync(filePath, `${['alpha', 'beta', 'gamma'].join('\n')}\n`);
+    trackAll(repo.root);
     const command = `cat > ${filePath} <<'EOF'\nalpha\nbeta\ngamma\nEOF\n`;
     const { executors } = makeExecutors({
       list: [{ name: SPAN, path: 'out2.txt', start: 1, end: 2 }],
@@ -313,6 +322,7 @@ describe('claude post-tool-use touch signal', () => {
     const filePath = join(repo.root, 'out3.txt');
     // Post-edit state: the heredoc wrote only 3 lines, down from 10.
     writeFileSync(filePath, `${['alpha', 'beta', 'gamma'].join('\n')}\n`);
+    trackAll(repo.root);
     const command = `cat > ${filePath} <<'EOF'\nalpha\nbeta\ngamma\nEOF\n`;
     const { executors, calls } = makeExecutors({
       list: [{ name: SPAN, path: 'out3.txt', start: 8, end: 10 }],
@@ -344,6 +354,7 @@ describe('claude post-tool-use touch signal', () => {
     function writeModRs(): string {
       const filePath = join(repo.root, 'mod.rs');
       writeFileSync(filePath, Array.from({ length: 500 }, (_, i) => `line ${i + 1}`).join('\n'));
+      trackAll(repo.root);
       return filePath;
     }
 
@@ -501,11 +512,11 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
    * placeholder written so it can be tracked), git-add the tracked ones, then
    * delete the `null`-content ones. Index entries survive `rm`.
    */
-  function seed(files: Array<[string, string | null]>, tracked: string[] = []): void {
+  function seed(files: Array<[string, string | null]>, _tracked: string[] = []): void {
     for (const [rel, content] of files) {
       writeFileSync(p(rel), content ?? 'placeholder\n');
     }
-    if (tracked.length > 0) execFileSync('git', ['add', ...tracked], { cwd: repo.root });
+    trackAll(repo.root);
     for (const [rel, content] of files) {
       if (content === null) rmSync(p(rel), { force: true });
     }
@@ -600,8 +611,20 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
     seed([['s.txt', 'a\n']]);
     const { executors, fixPaths } = makeExecutors();
     const handler = createHandler(executors, inMemoryMemoFactory(), layout);
+    const command = `sed -i 's/a/b/' ${p('s.txt')}`;
+    await createStaticPlanHandler(layout)(
+      {
+        session_id: 'sess-1',
+        tool_use_id: 'tu-sed-plan',
+        cwd: repo.root,
+        tool_name: 'Bash',
+        tool_input: { command }
+      } as never,
+      { logger } as never
+    );
+    writeFileSync(p('s.txt'), 'b\n');
 
-    await handler(bashInput(`sed -i 's/a/b/' ${p('s.txt')}`) as never, { logger });
+    await handler({ ...bashInput(command), tool_use_id: 'tu-sed-plan' } as never, { logger });
 
     expect(fixPaths).toEqual([p('s.txt')]);
   });

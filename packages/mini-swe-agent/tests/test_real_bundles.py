@@ -16,7 +16,7 @@ from minisweagent_gitspan.bridge import default_hooks_dir
 from minisweagent_gitspan.environment import HookedLocalEnvironment
 
 pytestmark = pytest.mark.skipif(
-    not (default_hooks_dir() / "snapshot.mjs").is_file() or shutil.which("git-span") is None,
+    not (default_hooks_dir() / "static-plan.mjs").is_file() or shutil.which("git-span") is None,
     reason="hook bundles not built (yarn build:hooks) or git-span not on PATH",
 )
 
@@ -59,7 +59,7 @@ def test_advisor_hold_and_allow_through_real_bundles(tmp_path):
         allowed = env.execute({"command": "echo hi"})
     finally:
         env.finish_session()
-        # Clean up the per-session snapshot state this run created.
+        # Clean up the per-session planned-touch and memo state this run created.
         shutil.rmtree(Path.home() / ".cache" / "git-span" / "session" / env.session_id, ignore_errors=True)
 
     assert denied["returncode"] == 1

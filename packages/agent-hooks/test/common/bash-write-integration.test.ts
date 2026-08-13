@@ -52,7 +52,9 @@ import { Logger as ClaudeLogger } from '@goodfoot/claude-code-hooks';
 import { Logger as CodexLogger } from '@goodfoot/codex-hooks';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createHandler as createClaudeHandler } from '../../src/claude/post-tool-use.js';
+import { createHandler as createClaudePlanHandler } from '../../src/claude/static-plan.js';
 import { createHandler as createCodexHandler } from '../../src/codex/post-tool-use.js';
+import { createHandler as createCodexPlanHandler } from '../../src/codex/static-plan.js';
 import type { DriftPorcelainRow, PorcelainRow } from '../../src/common/agent-hooks-common.js';
 import { runBashTouches } from '../../src/common/bash-touch.js';
 import { parseCommandDetailed, type ResolvedSpan, type SpanMatch } from '../../src/common/parse-command.js';
@@ -68,10 +70,8 @@ import { makeTempRepo } from '../helpers.js';
 import { makeTempLayout } from '../session-layout-helpers.js';
 
 /**
- * This file's own session base, on /tmp. The handlers below construct a real
- * snapshot store and consult the recordless-note gate even where the memo is a
- * fake, so without a layout they wrote fixture session dirs into the live
- * `~/.cache/git-span/session` — the `sess-1` / `codex-sess` leak.
+ * This file's own session base, on /tmp. Static plans and memo state must not
+ * leak fixture session ids into the live `~/.cache/git-span/session` tree.
  */
 const temp = makeTempLayout();
 const layout = temp.layout;
@@ -1638,6 +1638,7 @@ describe('bash-write-integration — formatter read-only forms write nothing (PA
 });
 
 describe('bash-write-integration — cross-adapter envelopes (identical normalized operations)', () => {
+  let toolSequence = 0;
   const repos: Array<{ root: string; cleanup: () => void }> = [];
   afterEach(() => {
     for (const repo of repos.splice(0)) repo.cleanup();
@@ -1651,52 +1652,52 @@ describe('bash-write-integration — cross-adapter envelopes (identical normaliz
   const claudeCtx = { logger: new ClaudeLogger() };
   const codexCtx = { logger: new CodexLogger() };
 
-  function claudeBashInput(cwd: string, command: string): Record<string, unknown> {
+  function claudeBashInput(cwd: string, command: string, toolUseId: string): Record<string, unknown> {
     return {
       hook_event_name: 'PostToolUse',
       session_id: SESSION_ID,
       transcript_path: '/tmp/t',
       cwd,
-      tool_use_id: 'tu-1',
+      tool_use_id: toolUseId,
       tool_name: 'Bash',
       tool_input: { command },
       tool_response: {}
     };
   }
 
-  function codexBashInput(cwd: string, command: string): Record<string, unknown> {
+  function codexBashInput(cwd: string, command: string, toolUseId: string): Record<string, unknown> {
     return {
       hook_event_name: 'PostToolUse',
       session_id: SESSION_ID,
       transcript_path: '/tmp/t',
       cwd,
-      tool_use_id: 'tu-1',
+      tool_use_id: toolUseId,
       tool_name: 'Bash',
       tool_input: { command },
       tool_response: 'ok'
     };
   }
 
-  function codexExecCommandInput(cwd: string, command: string): Record<string, unknown> {
+  function codexExecCommandInput(cwd: string, command: string, toolUseId: string): Record<string, unknown> {
     return {
       hook_event_name: 'PostToolUse',
       session_id: SESSION_ID,
       transcript_path: '/tmp/t',
       cwd,
-      tool_use_id: 'tu-1',
+      tool_use_id: toolUseId,
       tool_name: 'exec_command',
       tool_input: { arguments: JSON.stringify({ cmd: command, workdir: cwd }) },
       tool_response: 'ok'
     };
   }
 
-  function codexExecInput(cwd: string, command: string): Record<string, unknown> {
+  function codexExecInput(cwd: string, command: string, toolUseId: string): Record<string, unknown> {
     return {
       hook_event_name: 'PostToolUse',
       session_id: SESSION_ID,
       transcript_path: '/tmp/t',
       cwd,
-      tool_use_id: 'tu-1',
+      tool_use_id: toolUseId,
       tool_name: 'exec',
       tool_input: {
         input: `const r = await tools.exec_command({cmd:"${command}", shell:"bash", workdir:"${cwd}"});\ntext(JSON.stringify(r));`
@@ -1714,6 +1715,24 @@ describe('bash-write-integration — cross-adapter envelopes (identical normaliz
     const cap = (): { executors: TouchExecutors; fixPaths: string[] } => makeCaptureExecutors();
     const result: Record<string, string[]> = {};
     const rel = (p: string): string => p.slice(cwd.length + 1);
+    const sequence = toolSequence++;
+    const ids = {
+      claude: `cross-${sequence}-claude`,
+      codex: `cross-${sequence}-codex`,
+      classic: `cross-${sequence}-classic`,
+      codeMode: `cross-${sequence}-code-mode`
+    };
+    const claudeInput = claudeBashInput(cwd, command, ids.claude);
+    const codexInput = codexBashInput(cwd, command, ids.codex);
+    const classicInput = codexExecCommandInput(cwd, command, ids.classic);
+    const codeModeInput = codexExecInput(cwd, command, ids.codeMode);
+
+    await createClaudePlanHandler(layout)(claudeInput as never, claudeCtx);
+    const codexPlan = createCodexPlanHandler(layout);
+    await codexPlan(codexInput as never, codexCtx);
+    await codexPlan(classicInput as never, codexCtx);
+    await codexPlan(codeModeInput as never, codexCtx);
+    expect(bashRun(command, cwd)).toBe(0);
 
     const claudeCap = cap();
     // `as never` matches the existing adapter tests: the SDK types the input
@@ -1722,15 +1741,11 @@ describe('bash-write-integration — cross-adapter envelopes (identical normaliz
       claudeCap.executors,
       () => createMemoryMemoStore(),
       layout
-    )(claudeBashInput(cwd, command) as never, claudeCtx);
+    )(claudeInput as never, claudeCtx);
     result.claudeBash = claudeCap.fixPaths.map(rel);
 
     const codexCap = cap();
-    await createCodexHandler(
-      codexCap.executors,
-      () => createMemoryMemoStore(),
-      layout
-    )(codexBashInput(cwd, command) as never, codexCtx);
+    await createCodexHandler(codexCap.executors, () => createMemoryMemoStore(), layout)(codexInput as never, codexCtx);
     result.codexBash = codexCap.fixPaths.map(rel);
 
     const execCmdCap = cap();
@@ -1738,7 +1753,7 @@ describe('bash-write-integration — cross-adapter envelopes (identical normaliz
       execCmdCap.executors,
       () => createMemoryMemoStore(),
       layout
-    )(codexExecCommandInput(cwd, command) as never, codexCtx);
+    )(classicInput as never, codexCtx);
     result.codexExecCommand = execCmdCap.fixPaths.map(rel);
 
     const execCap = cap();
@@ -1746,7 +1761,7 @@ describe('bash-write-integration — cross-adapter envelopes (identical normaliz
       execCap.executors,
       () => createMemoryMemoStore(),
       layout
-    )(codexExecInput(cwd, command) as never, codexCtx);
+    )(codeModeInput as never, codexCtx);
     result.codexExec = execCap.fixPaths.map(rel);
 
     return result;
@@ -1755,7 +1770,6 @@ describe('bash-write-integration — cross-adapter envelopes (identical normaliz
   it('a literal overwrite fires the same touch through Claude Bash, Codex Bash, exec_command, and exec', async () => {
     const r = repo();
     seedTrackedSpan(r.root, 'f.txt', 'old\n', 'xadapter-ov-span');
-    expect(bashRun('echo hello > f.txt', r.root)).toBe(0);
     const result = await runAllEnvelopes(r.root, 'echo hello > f.txt');
     expect(result).toEqual({
       claudeBash: ['f.txt'],
@@ -1768,7 +1782,6 @@ describe('bash-write-integration — cross-adapter envelopes (identical normaliz
   it('a real delete fires the same touch through all four envelopes', async () => {
     const r = repo();
     seedTrackedSpan(r.root, 'd.txt', 'x\n', 'xadapter-rm-span');
-    expect(bashRun('rm d.txt', r.root)).toBe(0);
     const result = await runAllEnvelopes(r.root, 'rm d.txt');
     expect(result).toEqual({
       claudeBash: ['d.txt'],
@@ -1781,7 +1794,6 @@ describe('bash-write-integration — cross-adapter envelopes (identical normaliz
   it('an in-place sed edit fires the same touch through all four envelopes', async () => {
     const r = repo();
     seedTrackedSpan(r.root, 'sf.txt', 'a1\nx1\n', 'xadapter-sed-span');
-    expect(bashRun("sed -i 's/a1/b1/' sf.txt", r.root)).toBe(0);
     const result = await runAllEnvelopes(r.root, "sed -i 's/a1/b1/' sf.txt");
     expect(result).toEqual({
       claudeBash: ['sf.txt'],

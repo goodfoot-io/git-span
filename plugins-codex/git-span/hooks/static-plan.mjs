@@ -1,569 +1,287 @@
 #!/usr/bin/env -S node --enable-source-maps
-import { createRequire as __createRequire } from "node:module";
-import { fileURLToPath as __fileURLToPath } from "node:url";
-import { dirname as __pathDirname } from "node:path";
-const require = __createRequire(import.meta.url);
-const __filename = __fileURLToPath(import.meta.url);
-const __dirname = __pathDirname(__filename);
+// src/codex/static-plan.ts
+import { resolve as resolvePath4 } from "node:path";
 
-// ../../node_modules/@goodfoot/claude-code-hooks/dist/env.js
-import * as fs from "node:fs";
-var CLAUDE_ENV_VARS = {
-  /**
-   * Absolute path to the project root directory where Claude Code was started.
-   * Available in all hooks.
-   */
-  PROJECT_DIR: "CLAUDE_PROJECT_DIR",
-  /**
-   * Path to a file where SessionStart hooks can persist environment variables.
-   * Variables written to this file will be available in all subsequent bash commands.
-   * Only available in SessionStart hooks.
-   */
-  ENV_FILE: "CLAUDE_ENV_FILE",
-  /**
-   * Set to "true" when running in a remote (web) environment.
-   * Not set or empty when running in local CLI environment.
-   */
-  REMOTE: "CLAUDE_CODE_REMOTE"
-};
-function getEnvFilePath() {
-  return process.env[CLAUDE_ENV_VARS.ENV_FILE];
-}
-function persistEnvVar(name, value) {
-  const envFile = getEnvFilePath();
-  if (envFile === void 0) {
-    throw new Error("persistEnvVar can only be used in SessionStart hooks. CLAUDE_ENV_FILE environment variable is not set.");
-  }
-  const escapedValue = escapeShellValue(value);
-  const exportStatement = `export ${name}=${escapedValue}
-`;
-  fs.appendFileSync(envFile, exportStatement, "utf-8");
-}
-function persistEnvVars(vars) {
-  for (const [name, value] of Object.entries(vars)) {
-    persistEnvVar(name, value);
-  }
-}
-function escapeShellValue(value) {
-  const escaped = value.replace(/'/g, "'\\''");
-  return `'${escaped}'`;
-}
+// ../../node_modules/@goodfoot/codex-hooks/dist/constants.js
+var EVENTS_WITH_TEXT_OUTPUT = /* @__PURE__ */ new Set(["SessionStart", "UserPromptSubmit", "SubagentStart"]);
 
-// ../../node_modules/@goodfoot/claude-code-hooks/dist/hooks.js
-function createHookFunction(hookEventName, config, handler) {
-  const hookFn = async (input, context) => {
-    return await handler(input, context);
-  };
-  hookFn.hookEventName = hookEventName;
-  hookFn.matcher = config.matcher;
-  hookFn.timeout = config.timeout;
-  return hookFn;
+// ../../node_modules/@goodfoot/codex-hooks/dist/hooks.js
+function attachMetadata(hookEventName, config, handler) {
+  const hook = handler;
+  hook.hookEventName = hookEventName;
+  hook.timeout = config.timeout;
+  hook.statusMessage = config.statusMessage;
+  if ("matcher" in config && typeof config.matcher === "string") {
+    hook.matcher = config.matcher;
+  }
+  return hook;
 }
 function preToolUseHook(config, handler) {
-  return createHookFunction("PreToolUse", config, handler);
+  return attachMetadata("PreToolUse", config, handler);
 }
 function postToolUseHook(config, handler) {
-  return createHookFunction("PostToolUse", config, handler);
+  return attachMetadata("PostToolUse", config, handler);
 }
 
-// ../../node_modules/@goodfoot/claude-code-hooks/dist/logger.js
+// ../../node_modules/@goodfoot/codex-hooks/dist/logger.js
 import { closeSync, existsSync, mkdirSync, openSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
-var LOG_LEVELS = ["debug", "info", "warn", "error"];
+var DEFAULT_LOG_ENV_VAR = "CODEX_HOOKS_LOG_FILE";
 var Logger = class {
-  /**
-   * Registered event handlers by log level.
-   */
   handlers = /* @__PURE__ */ new Map();
-  /**
-   * File descriptor for log file output.
-   * Lazily initialized on first write.
-   */
-  logFileFd = null;
-  /**
-   * Path to the log file, if configured.
-   */
-  logFilePath = null;
-  /**
-   * Whether file initialization has been attempted.
-   */
   fileInitialized = false;
-  /**
-   * Current hook context for enriching log events.
-   */
+  logFileFd = null;
+  logFilePath = null;
   currentHookType;
-  /**
-   * Current hook input for enriching log events.
-   */
   currentInput;
-  /**
-   * Creates a new Logger instance.
-   *
-   * Typically you should use the exported `logger` singleton rather than
-   * creating new instances.
-   * @param config - Optional configuration
-   * @example
-   * ```typescript
-   * // Use singleton (recommended)
-   * import { logger } from '@goodfoot/claude-code-hooks';
-   *
-   * // Or create custom instance
-   * const customLogger = new Logger({ logFilePath: '/var/log/hooks.log' });
-   * ```
-   */
   constructor(config = {}) {
-    for (const level of LOG_LEVELS) {
-      this.handlers.set(level, /* @__PURE__ */ new Set());
-    }
-    this.logFilePath = config.logFilePath ?? (config.logEnvVar ? process.env[config.logEnvVar] : void 0) ?? null;
+    this.logFilePath = config.logFilePath ?? process.env[config.logEnvVar ?? DEFAULT_LOG_ENV_VAR] ?? null;
   }
-  /**
-   * Logs a debug message.
-   *
-   * Use for detailed debugging information that is typically only useful
-   * during development or troubleshooting.
-   * @param message - The debug message
-   * @param context - Optional additional context
-   * @example
-   * ```typescript
-   * logger.debug('Processing tool input', { toolName: 'Bash', inputSize: 256 });
-   * ```
-   */
-  debug(message, context) {
-    this.emit("debug", message, context);
-  }
-  /**
-   * Logs an info message.
-   *
-   * Use for general operational events like hook invocations, successful
-   * completions, or state changes.
-   * @param message - The info message
-   * @param context - Optional additional context
-   * @example
-   * ```typescript
-   * logger.info('Session started', { source: 'startup', sessionId: 'abc123' });
-   * ```
-   */
-  info(message, context) {
-    this.emit("info", message, context);
-  }
-  /**
-   * Logs a warning message.
-   *
-   * Use for conditions that may indicate issues but don't prevent
-   * operation, such as deprecated patterns or performance concerns.
-   * @param message - The warning message
-   * @param context - Optional additional context
-   * @example
-   * ```typescript
-   * logger.warn('Deprecated hook pattern detected', { pattern: 'legacyMatcher' });
-   * ```
-   */
-  warn(message, context) {
-    this.emit("warn", message, context);
-  }
-  /**
-   * Logs an error message.
-   *
-   * Use for error conditions that require attention but were handled
-   * gracefully. For exceptions, prefer {@link logError}.
-   * @param message - The error message
-   * @param context - Optional additional context
-   * @example
-   * ```typescript
-   * logger.error('Failed to validate tool input', { toolName: 'Bash', reason: 'empty command' });
-   * ```
-   */
-  error(message, context) {
-    this.emit("error", message, context);
-  }
-  /**
-   * Logs a structured error with full error details.
-   *
-   * Use this method when logging caught exceptions to capture the full
-   * error context including name, message, stack trace, and cause chain.
-   * @param error - The error to log
-   * @param message - Human-readable description of what failed
-   * @param context - Optional additional context
-   * @example
-   * ```typescript
-   * try {
-   *   await dangerousOperation();
-   * } catch (err) {
-   *   logger.logError(err, 'Failed to execute dangerous operation', {
-   *     operation: 'delete',
-   *     target: '/important/file.txt'
-   *   });
-   * }
-   * ```
-   */
-  logError(error, message, context) {
-    const errorInfo = this.extractErrorInfo(error);
-    const event = {
-      timestamp: (/* @__PURE__ */ new Date()).toISOString(),
-      level: "error",
-      hookType: this.currentHookType,
-      message,
-      input: this.currentInput,
-      error: errorInfo,
-      context
-    };
-    this.deliverEvent(event);
-  }
-  /**
-   * Subscribes a handler to log events at the specified level.
-   *
-   * The handler will be called for every log event at the specified level.
-   * Returns an unsubscribe function that should be called when the handler
-   * is no longer needed.
-   * @param level - The log level to subscribe to
-   * @param handler - The handler function to call for each event
-   * @returns A function to unsubscribe the handler
-   * @example
-   * ```typescript
-   * // Subscribe to error events
-   * const unsubscribe = logger.on('error', (event) => {
-   *   console.error(`[${event.hookType}] ${event.message}`);
-   *   if (event.error) {
-   *     console.error(event.error.stack);
-   *   }
-   * });
-   *
-   * // Later, clean up
-   * unsubscribe();
-   * ```
-   * @example
-   * ```typescript
-   * // Forward to external logging library
-   * import pino from 'pino';
-   * const pinoLogger = pino();
-   *
-   * logger.on('info', (event) => pinoLogger.info(event, event.message));
-   * logger.on('warn', (event) => pinoLogger.warn(event, event.message));
-   * logger.on('error', (event) => pinoLogger.error(event, event.message));
-   * ```
-   */
-  on(level, handler) {
-    const levelHandlers = this.handlers.get(level);
-    if (levelHandlers) {
-      levelHandlers.add(handler);
-    }
-    return () => {
-      levelHandlers?.delete(handler);
-    };
-  }
-  /**
-   * Sets the current hook context for enriching log events.
-   *
-   * This is called internally by the runtime before invoking hook handlers.
-   * You typically don't need to call this directly.
-   * @param hookType - The type of hook being executed
-   * @param input - The hook input data
-   * @internal
-   */
   setContext(hookType, input) {
     this.currentHookType = hookType;
     this.currentInput = input;
   }
-  /**
-   * Clears the current hook context.
-   *
-   * Called internally by the runtime after hook execution completes.
-   * @internal
-   */
   clearContext() {
     this.currentHookType = void 0;
     this.currentInput = void 0;
   }
-  /**
-   * Configures the log file path at runtime.
-   *
-   * Call this to enable or change file logging. Setting to `null` disables
-   * file logging (but doesn't close existing file handle immediately).
-   * @param filePath - Path to the log file, or null to disable
-   * @example
-   * ```typescript
-   * // Enable file logging at runtime
-   * logger.setLogFile('/var/log/claude-hooks.log');
-   *
-   * // Disable file logging
-   * logger.setLogFile(null);
-   * ```
-   */
-  setLogFile(filePath) {
-    if (this.logFileFd !== null) {
-      try {
-        closeSync(this.logFileFd);
-      } catch (closeError) {
-        process.stderr.write(`[claude-code-hooks] Failed to close log file: ${String(closeError)}
-`);
+  on(level, handler) {
+    const existing = this.handlers.get(level) ?? /* @__PURE__ */ new Set();
+    existing.add(handler);
+    this.handlers.set(level, existing);
+    return () => {
+      existing.delete(handler);
+      if (existing.size === 0) {
+        this.handlers.delete(level);
       }
-      this.logFileFd = null;
-    }
-    this.logFilePath = filePath;
-    this.fileInitialized = false;
+    };
   }
-  /**
-   * Closes all resources held by the logger.
-   *
-   * Call this during graceful shutdown to ensure all log data is flushed.
-   * @example
-   * ```typescript
-   * process.on('exit', () => {
-   *   logger.close();
-   * });
-   * ```
-   */
+  debug(message, context) {
+    this.emit("debug", message, context);
+  }
+  info(message, context) {
+    this.emit("info", message, context);
+  }
+  warn(message, context) {
+    this.emit("warn", message, context);
+  }
+  error(message, context) {
+    this.emit("error", message, context);
+  }
+  logError(error, message, context) {
+    this.emit("error", `${message}: ${error instanceof Error ? error.message : String(error)}`, context);
+  }
   close() {
     if (this.logFileFd !== null) {
-      try {
-        closeSync(this.logFileFd);
-      } catch (closeError) {
-        process.stderr.write(`[claude-code-hooks] Failed to close log file: ${String(closeError)}
-`);
-      }
+      closeSync(this.logFileFd);
       this.logFileFd = null;
     }
-    this.fileInitialized = false;
   }
-  /**
-   * Checks if there are any active handlers or destinations.
-   *
-   * Returns true if any handlers are registered or file logging is enabled.
-   * @returns Whether the logger has any active output destinations
-   */
-  hasDestinations() {
-    for (const handlers of this.handlers.values()) {
-      if (handlers.size > 0)
-        return true;
-    }
-    return this.logFilePath !== null;
-  }
-  // ============================================================================
-  // Private Methods
-  // ============================================================================
-  /**
-   * Emits a log event.
-   * @param level - The severity level of the event
-   * @param message - The log message
-   * @param context - Optional additional context data
-   */
   emit(level, message, context) {
     const event = {
       timestamp: (/* @__PURE__ */ new Date()).toISOString(),
       level,
       hookType: this.currentHookType,
       message,
-      input: this.currentInput,
-      context
+      ...this.currentInput !== void 0 ? { input: this.currentInput } : {},
+      ...context !== void 0 ? { context } : {}
     };
-    this.deliverEvent(event);
-  }
-  /**
-   * Delivers an event to all registered destinations.
-   * @param event - The log event to deliver
-   */
-  deliverEvent(event) {
-    const levelHandlers = this.handlers.get(event.level);
-    if (levelHandlers) {
-      for (const handler of levelHandlers) {
-        try {
-          handler(event);
-        } catch (handlerError) {
-          process.stderr.write(`[claude-code-hooks] Log handler error: ${String(handlerError)}
-`);
-        }
-      }
-    }
     this.writeToFile(event);
+    this.handlers.get(level)?.forEach((handler) => {
+      handler(event);
+    });
   }
-  /**
-   * Writes an event to the log file.
-   * @param event - The log event to write
-   */
   writeToFile(event) {
-    if (!this.logFilePath)
+    if (this.logFilePath === null) {
       return;
+    }
     if (!this.fileInitialized) {
-      this.initializeFile();
-    }
-    if (this.logFileFd === null)
-      return;
-    try {
-      const line = `${JSON.stringify(event)}
-`;
-      writeSync(this.logFileFd, line);
-    } catch (writeError) {
-      this.logFileFd = null;
-      this.fileInitialized = false;
-      process.stderr.write(`[claude-code-hooks] Log file write failed: ${String(writeError)}
-`);
-    }
-  }
-  /**
-   * Initializes the log file for writing.
-   */
-  initializeFile() {
-    this.fileInitialized = true;
-    if (!this.logFilePath)
-      return;
-    try {
-      const dir = dirname(this.logFilePath);
-      if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
+      this.fileInitialized = true;
+      const logDir = dirname(this.logFilePath);
+      if (!existsSync(logDir)) {
+        mkdirSync(logDir, { recursive: true });
       }
       this.logFileFd = openSync(this.logFilePath, "a");
-    } catch {
-      this.logFileFd = null;
     }
-  }
-  /**
-   * Extracts structured error information from an unknown error.
-   * @param error - The error to extract information from
-   * @returns Structured error information
-   */
-  extractErrorInfo(error) {
-    if (error instanceof Error) {
-      const info = {
-        name: error.name,
-        message: error.message,
-        stack: error.stack
-      };
-      if (error.cause !== void 0) {
-        info.cause = this.extractErrorInfo(error.cause);
-      }
-      return info;
+    if (this.logFileFd !== null) {
+      writeSync(this.logFileFd, `${JSON.stringify(event)}
+`);
     }
-    return {
-      name: "UnknownError",
-      message: String(error)
-    };
   }
 };
-var logger = new Logger({
-  logEnvVar: process.env.CLAUDE_CODE_HOOKS_LOG_ENV_VAR ?? "CLAUDE_CODE_HOOKS_LOG_FILE"
-});
+var logger = new Logger();
 
-// ../../node_modules/@goodfoot/claude-code-hooks/dist/outputs.js
+// ../../node_modules/@goodfoot/codex-hooks/dist/outputs.js
 var EXIT_CODES = {
-  /** Handler completed successfully. Claude Code parses stdout as JSON. */
   SUCCESS: 0,
-  /** Non-blocking error occurred (e.g., invalid input). stderr shown to user only. */
   ERROR: 1,
-  /** Handler threw exception OR blocking action requested. stderr shown to Claude. */
   BLOCK: 2
 };
-function createHookSpecificOutputBuilder(hookType) {
-  return (options = {}) => {
-    const { hookSpecificOutput, ...rest } = options;
-    const stdout = hookSpecificOutput !== void 0 ? { ...rest, hookSpecificOutput: { hookEventName: hookType, ...hookSpecificOutput } } : rest;
-    return { _type: hookType, stdout };
+var BlockError = class extends Error {
+  reason;
+  constructor(reason) {
+    super(reason);
+    this.name = "BlockError";
+    this.reason = reason;
+  }
+};
+function omitUndefined(value) {
+  return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== void 0));
+}
+function buildOutput(type, stdout, stderr) {
+  return {
+    _type: type,
+    stdout: omitUndefined(stdout),
+    ...stderr !== void 0 ? { stderr } : {}
   };
 }
-var postToolUseOutput = /* @__PURE__ */ createHookSpecificOutputBuilder("PostToolUse");
+function preToolUseOutput(options = {}) {
+  const hasSpecific = options.additionalContext !== void 0 || options.permissionDecision !== void 0 || options.permissionDecisionReason !== void 0 || options.updatedInput !== void 0;
+  const hookSpecificOutput = hasSpecific ? omitUndefined({
+    hookEventName: "PreToolUse",
+    additionalContext: options.additionalContext,
+    permissionDecision: options.permissionDecision,
+    permissionDecisionReason: options.permissionDecisionReason,
+    updatedInput: options.updatedInput
+  }) : void 0;
+  return buildOutput("PreToolUse", {
+    continue: options.continue,
+    stopReason: options.stopReason,
+    suppressOutput: options.suppressOutput,
+    systemMessage: options.systemMessage,
+    decision: options.decision,
+    reason: options.reason,
+    hookSpecificOutput
+  });
+}
+function postToolUseOutput(options = {}) {
+  const hasSpecific = options.additionalContext !== void 0 || options.updatedMCPToolOutput !== void 0;
+  const hookSpecificOutput = hasSpecific ? omitUndefined({
+    hookEventName: "PostToolUse",
+    additionalContext: options.additionalContext,
+    updatedMCPToolOutput: options.updatedMCPToolOutput
+  }) : void 0;
+  return buildOutput("PostToolUse", {
+    continue: options.continue,
+    stopReason: options.stopReason,
+    suppressOutput: options.suppressOutput,
+    systemMessage: options.systemMessage,
+    decision: options.decision,
+    reason: options.reason,
+    hookSpecificOutput
+  });
+}
+function userPromptSubmitOutput(options = {}) {
+  const hookSpecificOutput = options.additionalContext !== void 0 ? {
+    hookEventName: "UserPromptSubmit",
+    additionalContext: options.additionalContext
+  } : void 0;
+  return buildOutput("UserPromptSubmit", {
+    continue: options.continue,
+    stopReason: options.stopReason,
+    suppressOutput: options.suppressOutput,
+    systemMessage: options.systemMessage,
+    decision: options.decision,
+    reason: options.reason,
+    hookSpecificOutput
+  });
+}
+function sessionStartOutput(options = {}) {
+  const hookSpecificOutput = options.additionalContext !== void 0 ? {
+    hookEventName: "SessionStart",
+    additionalContext: options.additionalContext
+  } : void 0;
+  return buildOutput("SessionStart", {
+    continue: options.continue,
+    stopReason: options.stopReason,
+    suppressOutput: options.suppressOutput,
+    systemMessage: options.systemMessage,
+    hookSpecificOutput
+  });
+}
+function subagentStartOutput(options = {}) {
+  const hookSpecificOutput = options.additionalContext !== void 0 ? {
+    hookEventName: "SubagentStart",
+    additionalContext: options.additionalContext
+  } : void 0;
+  return buildOutput("SubagentStart", {
+    continue: options.continue,
+    stopReason: options.stopReason,
+    suppressOutput: options.suppressOutput,
+    systemMessage: options.systemMessage,
+    hookSpecificOutput
+  });
+}
 
-// ../../node_modules/@goodfoot/claude-code-hooks/dist/runtime.js
+// ../../node_modules/@goodfoot/codex-hooks/dist/runtime.js
 async function readStdin() {
   return new Promise((resolve3, reject) => {
     const chunks = [];
     process.stdin.setEncoding("utf-8");
-    process.stdin.on("data", (chunk) => {
-      chunks.push(chunk);
-    });
-    process.stdin.on("end", () => {
-      resolve3(chunks.join(""));
-    });
-    process.stdin.on("error", (error) => {
-      reject(error);
-    });
+    process.stdin.on("data", (chunk) => chunks.push(chunk));
+    process.stdin.on("end", () => resolve3(chunks.join("")));
+    process.stdin.on("error", reject);
   });
 }
 function parseStdinInput(stdinContent) {
-  const rawInput = JSON.parse(stdinContent);
-  return rawInput;
+  return JSON.parse(stdinContent);
 }
 function writeStdout(output) {
-  process.stdout.write(JSON.stringify(output));
+  process.stdout.write(JSON.stringify(output.stdout));
 }
-function createMalformedInputOutput(error) {
-  logger.error(`Invalid JSON input: ${error instanceof Error ? error.message : String(error)}`);
-  return { stdout: {} };
+function normalizeStringOutput(hookEventName, result) {
+  if (!EVENTS_WITH_TEXT_OUTPUT.has(hookEventName)) {
+    throw new Error(`${hookEventName} hooks cannot return plain text`);
+  }
+  if (hookEventName === "SessionStart") {
+    return sessionStartOutput({ additionalContext: result });
+  }
+  if (hookEventName === "SubagentStart") {
+    return subagentStartOutput({ additionalContext: result });
+  }
+  return userPromptSubmitOutput({ additionalContext: result });
 }
-function handleHandlerError(error) {
-  if (error instanceof Error) {
-    process.stderr.write(`${error.stack ?? error.message}
-`);
-  } else {
-    process.stderr.write(`${String(error)}
-`);
-  }
-  logger.error(`Hook handler error: ${error instanceof Error ? error.message : String(error)}`);
-  logger.clearContext();
-  logger.close();
-  process.exit(EXIT_CODES.BLOCK);
-}
-function convertToHookOutput(specificOutput) {
-  const { stdout, stderr, rawStdout } = specificOutput;
-  const result = { stdout };
-  if (stderr !== void 0) {
-    result.stderr = stderr;
-  }
-  if (rawStdout !== void 0) {
-    result.rawStdout = rawStdout;
-  }
-  return result;
+function convertToHookOutput(output) {
+  return output.stderr !== void 0 ? { stdout: output.stdout, stderr: output.stderr } : { stdout: output.stdout };
 }
 async function execute(hookFn) {
-  let output;
   try {
-    let stdinContent;
-    try {
-      stdinContent = await readStdin();
-    } catch (error) {
-      logger.logError(error, "Failed to read stdin");
-      output = createMalformedInputOutput(error);
-      return;
+    const stdinContent = await readStdin();
+    const input = parseStdinInput(stdinContent);
+    logger.setContext(hookFn.hookEventName, input);
+    const context = { logger };
+    const result = await hookFn(input, context);
+    let output = { stdout: {} };
+    if (typeof result === "string") {
+      output = convertToHookOutput(normalizeStringOutput(hookFn.hookEventName, result));
+    } else if (result !== void 0) {
+      output = convertToHookOutput(result);
     }
-    let input;
-    try {
-      input = parseStdinInput(stdinContent);
-    } catch (error) {
-      logger.logError(error, "Failed to parse stdin JSON");
-      output = createMalformedInputOutput(error);
-      return;
-    }
-    const hookEventName = hookFn.hookEventName;
-    logger.setContext(hookEventName, input);
-    const context = hookEventName === "SessionStart" ? { logger, persistEnvVar, persistEnvVars } : { logger };
-    try {
-      const specificOutput = await hookFn(input, context);
-      if (specificOutput !== null) {
-        output = convertToHookOutput(specificOutput);
-      }
-    } catch (error) {
-      handleHandlerError(error);
-    }
-  } finally {
-    if (output !== void 0) {
-      if (output.rawStdout !== void 0) {
-        process.stdout.write(output.rawStdout);
-      } else {
-        writeStdout(output.stdout);
-      }
-    }
-    logger.clearContext();
-    logger.close();
-    if (output?.stderr !== void 0) {
-      process.stderr.write(output.stderr);
+    writeStdout(output);
+    process.exit(EXIT_CODES.SUCCESS);
+  } catch (error) {
+    if (error instanceof BlockError) {
+      process.stderr.write(`${error.reason}
+`);
       process.exit(EXIT_CODES.BLOCK);
     }
-    process.exit(EXIT_CODES.SUCCESS);
+    if (error instanceof Error) {
+      process.stderr.write(`${error.stack ?? error.message}
+`);
+    } else {
+      process.stderr.write(`${String(error)}
+`);
+    }
+    process.exit(EXIT_CODES.ERROR);
+  } finally {
+    logger.clearContext();
+    logger.close();
   }
 }
 
 // src/common/agent-hooks-common.ts
 import { execFileSync } from "node:child_process";
-import * as fs2 from "node:fs";
+import * as fs from "node:fs";
 import * as os from "node:os";
 import * as nodePath from "node:path";
 function toPosix(p) {
@@ -605,6 +323,7 @@ function resolveSpanRoot(repoRoot) {
     const trimmed = toPosix(out.trim()).replace(/\/+$/, "");
     if (trimmed.length > 0) return trimmed;
   } catch (err) {
+    void err;
   }
   return SPAN_ROOT;
 }
@@ -619,6 +338,7 @@ function isGitIgnored(repoRoot, repoRelPath) {
     });
     return true;
   } catch (err) {
+    void err;
     return false;
   }
 }
@@ -627,24 +347,6 @@ function relativeToRepo(repoRoot, absPath) {
   const abs = toPosix(absPath);
   const prefix = root.endsWith("/") ? root : `${root}/`;
   return abs.startsWith(prefix) ? abs.slice(prefix.length) : abs;
-}
-function canonicalizePath(absPath) {
-  try {
-    return toPosix(fs2.realpathSync.native(absPath));
-  } catch {
-    try {
-      const dir = toPosix(fs2.realpathSync.native(nodePath.dirname(absPath)));
-      return `${dir}/${nodePath.basename(absPath)}`;
-    } catch {
-      return absPath;
-    }
-  }
-}
-function derivePath(toolInput, cwd) {
-  const fp = toolInput.file_path;
-  if (typeof fp !== "string" || fp.length === 0) return null;
-  const abs = abspathAgainst(cwd, fp);
-  return canonicalizePath(abs);
 }
 function rangesIntersect(a, b) {
   return a.start <= b.end && a.end >= b.start;
@@ -697,6 +399,21 @@ function isDebt(status) {
 }
 function humanStatusLabel(status) {
   return status.toLowerCase().replace(/_/g, " ");
+}
+function isEnvironmentalStatus(status) {
+  switch (status) {
+    case "CONFLICT":
+    case "SUBMODULE":
+    case "LFS_NOT_FETCHED":
+    case "LFS_NOT_INSTALLED":
+    case "PROMISOR_MISSING":
+    case "SPARSE_EXCLUDED":
+    case "FILTER_FAILED":
+    case "IO_ERROR":
+      return true;
+    default:
+      return false;
+  }
 }
 function parseDriftPorcelain(stdout) {
   const rows = [];
@@ -765,22 +482,24 @@ var SESSION_TRASH_TTL_MS = 6e4;
 var SESSION_TRASH_MARKER = ".trash-session-";
 function pruneStaleSessions(layout, now = Date.now(), maxAgeMs = THIRTY_DAYS_MS) {
   try {
-    for (const entry of fs2.readdirSync(layout.trashDir, { withFileTypes: true })) {
+    for (const entry of fs.readdirSync(layout.trashDir, { withFileTypes: true })) {
       if (!entry.isDirectory() || !entry.name.includes(SESSION_TRASH_MARKER)) continue;
       const trashPath = nodePath.join(layout.trashDir, entry.name);
       try {
-        const stat = fs2.statSync(trashPath);
+        const stat = fs.statSync(trashPath);
         if (now - stat.mtimeMs > SESSION_TRASH_TTL_MS) {
-          fs2.rmSync(trashPath, { recursive: true, force: true });
+          fs.rmSync(trashPath, { recursive: true, force: true });
         }
       } catch (err) {
+        void err;
       }
     }
   } catch (err) {
+    void err;
   }
   let entries;
   try {
-    entries = fs2.readdirSync(layout.base, { withFileTypes: true });
+    entries = fs.readdirSync(layout.base, { withFileTypes: true });
   } catch {
     return;
   }
@@ -788,35 +507,108 @@ function pruneStaleSessions(layout, now = Date.now(), maxAgeMs = THIRTY_DAYS_MS)
     if (!entry.isDirectory()) continue;
     const dirPath = nodePath.join(layout.base, entry.name);
     try {
-      const stat = fs2.statSync(dirPath);
+      const stat = fs.statSync(dirPath);
       if (now - stat.mtimeMs > maxAgeMs) {
-        fs2.mkdirSync(layout.trashDir, { recursive: true, mode: 448 });
+        fs.mkdirSync(layout.trashDir, { recursive: true, mode: 448 });
         const trashPath = nodePath.join(
           layout.trashDir,
           `${entry.name}${SESSION_TRASH_MARKER}${process.pid}-${Date.now().toString(36)}`
         );
-        fs2.renameSync(dirPath, trashPath);
-        fs2.utimesSync(trashPath, now / 1e3, now / 1e3);
+        fs.renameSync(dirPath, trashPath);
+        fs.utimesSync(trashPath, now / 1e3, now / 1e3);
       }
     } catch (err) {
+      void err;
     }
   }
+}
+function resolveGitCommonDir(repoRoot) {
+  const out = execFileSync("git", ["-C", repoRoot, "rev-parse", "--git-common-dir"], {
+    stdio: ["ignore", "pipe", "ignore"],
+    encoding: "utf8"
+  });
+  const trimmed = toPosix(out.trim());
+  if (!nodePath.isAbsolute(trimmed)) {
+    return toPosix(nodePath.resolve(repoRoot, trimmed));
+  }
+  return trimmed;
+}
+function queueRoot(repoRoot) {
+  return nodePath.join(resolveGitCommonDir(repoRoot), "git-span");
+}
+function advisorMemoDir(repoRoot) {
+  return nodePath.join(queueRoot(repoRoot), "advisor");
+}
+function indentBlockBody(text) {
+  return text.split("\n").map((line) => line.length > 0 ? `  ${line}` : line).join("\n");
 }
 
 // src/common/bash-attribution.ts
 import { createHash } from "node:crypto";
-import * as fs7 from "node:fs";
+import * as fs6 from "node:fs";
 import * as nodePath5 from "node:path";
 
 // src/common/span-surface.ts
 import { execFileSync as execFileSync2 } from "node:child_process";
-import * as fs4 from "node:fs";
+import * as fs3 from "node:fs";
 import * as nodePath3 from "node:path";
 
 // src/common/span-ignore.ts
-import * as fs3 from "node:fs";
+import * as fs2 from "node:fs";
 import * as nodePath2 from "node:path";
 var HOOK_IGNORE_REL = nodePath2.join(".span", ".hookignore");
+function globToRegExp(glob) {
+  let re = "";
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === "*") {
+      if (glob[i + 1] === "*") {
+        re += ".*";
+        i++;
+        if (glob[i + 1] === "/") i++;
+      } else {
+        re += "[^/]*";
+      }
+    } else if (c === "?") {
+      re += "[^/]";
+    } else {
+      re += c.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+    }
+  }
+  return new RegExp(`^${re}$`);
+}
+function ancestorPaths(path) {
+  const parts = path.split("/");
+  const out = [];
+  for (let i = 0; i < parts.length; i++) {
+    out.push(parts.slice(0, i + 1).join("/"));
+  }
+  return out;
+}
+function compilePattern(pattern) {
+  let pat = pattern;
+  let dirOnly = false;
+  if (pat.endsWith("/")) {
+    dirOnly = true;
+    pat = pat.slice(0, -1);
+  }
+  let anchored = pat.includes("/");
+  if (pat.startsWith("/")) {
+    anchored = true;
+    pat = pat.slice(1);
+  }
+  const re = globToRegExp(pat);
+  return (repoRelPath) => {
+    if (anchored) {
+      const segs = ancestorPaths(repoRelPath);
+      const candidates2 = dirOnly ? segs.slice(0, -1) : segs;
+      return candidates2.some((s) => re.test(s));
+    }
+    const components = repoRelPath.split("/");
+    const candidates = dirOnly ? components.slice(0, -1) : components;
+    return candidates.some((c) => re.test(c));
+  };
+}
 
 // src/common/span-surface.ts
 function createDiskMemoStore(logger2, layout) {
@@ -824,7 +616,7 @@ function createDiskMemoStore(logger2, layout) {
     getSurfaced(sessionId) {
       pruneStaleSessions(layout);
       try {
-        const raw = fs4.readFileSync(layout.memoFile(sessionId), "utf8");
+        const raw = fs3.readFileSync(layout.memoFile(sessionId), "utf8");
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed.surfaced)) {
           return new Set(parsed.surfaced);
@@ -842,9 +634,9 @@ function createDiskMemoStore(logger2, layout) {
       const memoPath = layout.memoFile(sessionId);
       const tmpPath = `${memoPath}.tmp`;
       try {
-        fs4.mkdirSync(memoDir, { recursive: true, mode: 448 });
-        fs4.writeFileSync(tmpPath, JSON.stringify({ surfaced: [...existing] }), "utf8");
-        fs4.renameSync(tmpPath, memoPath);
+        fs3.mkdirSync(memoDir, { recursive: true, mode: 448 });
+        fs3.writeFileSync(tmpPath, JSON.stringify({ surfaced: [...existing] }), "utf8");
+        fs3.renameSync(tmpPath, memoPath);
       } catch (err) {
         logger2.warn("memo write failed", { err });
       }
@@ -867,7 +659,7 @@ function resolveTouchScope(cwd, absPath) {
 
 // src/common/static-attribution.ts
 import { execFileSync as execFileSync4 } from "node:child_process";
-import * as fs5 from "node:fs";
+import * as fs4 from "node:fs";
 import * as nodePath4 from "node:path";
 
 // src/common/parse-command.ts
@@ -2272,7 +2064,7 @@ function teeOperandParts(argv) {
   }
   return { append, operands };
 }
-function matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join7, results) {
+function matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join9, results) {
   const parts = teeOperandParts(argv);
   if (parts === null) return;
   for (const operand of parts.operands) {
@@ -2285,23 +2077,23 @@ function matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex,
         operation: "create-overwrite",
         absolutePath,
         simpleCommandIndex,
-        join: join7,
+        join: join9,
         ...pipeEchoContent !== null ? { written: pipeEchoContent } : {}
       } : {
         operation: "append",
         absolutePath,
         simpleCommandIndex,
-        join: join7,
+        join: join9,
         ...pipeEchoContent !== null ? { written: pipeEchoContent } : {}
       }
     });
   }
 }
-function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpleCommandIndex, join7, results) {
+function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpleCommandIndex, join9, results) {
   const contentRedirects = redirects.filter(isContentRedirect);
   const host = argv[0];
   if (contentRedirects.length === 0) {
-    if (host === "tee") matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join7, results);
+    if (host === "tee") matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join9, results);
     return;
   }
   if (host === void 0 || host === ":" || host === "exec") {
@@ -2312,7 +2104,7 @@ function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpl
       results.push({
         status: "resolved",
         idiom: "truncate-write",
-        span: { operation: "truncate", absolutePath, simpleCommandIndex, join: join7 }
+        span: { operation: "truncate", absolutePath, simpleCommandIndex, join: join9 }
       });
     }
     return;
@@ -2334,7 +2126,7 @@ function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpl
           operation: "append",
           absolutePath,
           simpleCommandIndex,
-          join: join7,
+          join: join9,
           ...threadedAppend !== void 0 ? { written: threadedAppend } : {}
         }
       });
@@ -2346,13 +2138,13 @@ function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpl
           operation: "create-overwrite",
           absolutePath,
           simpleCommandIndex,
-          join: join7,
+          join: join9,
           ...threadedOverwrite !== void 0 ? { written: threadedOverwrite } : {}
         }
       });
     }
   }
-  if (host === "tee") matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join7, results);
+  if (host === "tee") matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join9, results);
 }
 var FOREIGN_WRAPPERS = /* @__PURE__ */ new Set(["sudo", "xargs", "nohup", "time", "nice", "doas"]);
 var ASSIGNMENT_TOKEN = /^[A-Za-z_][A-Za-z0-9_]*=/;
@@ -2461,12 +2253,12 @@ function copyMoveParts(args, spec) {
   }
   return { operands, targetDir };
 }
-function emitSourceSpan(results, spec, absolutePath, simpleCommandIndex, join7) {
+function emitSourceSpan(results, spec, absolutePath, simpleCommandIndex, join9) {
   if (spec.sourceOperation === "delete") {
     results.push({
       status: "resolved",
       idiom: spec.idiom,
-      span: { operation: "delete", absolutePath, simpleCommandIndex, join: join7 }
+      span: { operation: "delete", absolutePath, simpleCommandIndex, join: join9 }
     });
     return;
   }
@@ -2474,17 +2266,17 @@ function emitSourceSpan(results, spec, absolutePath, simpleCommandIndex, join7) 
   results.push({
     status: "resolved",
     idiom: spec.idiom,
-    span: range === null ? { operation: "read", absolutePath, simpleCommandIndex, join: join7 } : {
+    span: range === null ? { operation: "read", absolutePath, simpleCommandIndex, join: join9 } : {
       operation: "read",
       lineStart: range.lineStart,
       lineEnd: range.lineEnd,
       absolutePath,
       simpleCommandIndex,
-      join: join7
+      join: join9
     }
   });
 }
-function matchCopyMoveFamily(argv, dirForResolution, simpleCommandIndex, join7, results) {
+function matchCopyMoveFamily(argv, dirForResolution, simpleCommandIndex, join9, results) {
   const rest = stripTransparentWrapper(argv);
   if (rest.length === 0) return;
   const command = rest[0];
@@ -2552,20 +2344,20 @@ function matchCopyMoveFamily(argv, dirForResolution, simpleCommandIndex, join7, 
     destPaths = destIsDir ? sourcePaths.map((p) => joinPath(destAbs, basename2(p))) : [destAbs];
   }
   for (let k = 0; k < sourcePaths.length; k++) {
-    emitSourceSpan(results, spec, sourcePaths[k], simpleCommandIndex, join7);
+    emitSourceSpan(results, spec, sourcePaths[k], simpleCommandIndex, join9);
   }
   for (let k = 0; k < sourcePaths.length; k++) {
     results.push({
       status: "resolved",
       idiom: spec.idiom,
-      span: { operation: spec.destOperation, absolutePath: destPaths[k], simpleCommandIndex, join: join7 }
+      span: { operation: spec.destOperation, absolutePath: destPaths[k], simpleCommandIndex, join: join9 }
     });
   }
 }
 var RM_NO_VALUE = /* @__PURE__ */ new Set(["-f", "-i", "-v"]);
 var RM_EXCLUDED = /* @__PURE__ */ new Set(["-r", "-R", "--recursive", "-d"]);
 var GIT_RM_EXCLUDED = /* @__PURE__ */ new Set(["-r", "-R", "--recursive", "-d", "-n", "--dry-run"]);
-function matchRmOperands(args, excluded, excludeCached, dir, simpleCommandIndex, join7, results) {
+function matchRmOperands(args, excluded, excludeCached, dir, simpleCommandIndex, join9, results) {
   let afterDashDash = false;
   const operands = [];
   for (const a of args) {
@@ -2591,7 +2383,7 @@ function matchRmOperands(args, excluded, excludeCached, dir, simpleCommandIndex,
     results.push({
       status: "resolved",
       idiom: "rm-write",
-      span: { operation: "delete", absolutePath: resolvePath(dir, operand), simpleCommandIndex, join: join7 }
+      span: { operation: "delete", absolutePath: resolvePath(dir, operand), simpleCommandIndex, join: join9 }
     });
   }
 }
@@ -2603,7 +2395,7 @@ function evaluateStaticSize(value) {
   const mult = m[2] === "K" ? 1024 : m[2] === "M" ? 1024 ** 2 : m[2] === "G" ? 1024 ** 3 : 1;
   return base * mult;
 }
-function matchTruncateOperands(args, dir, simpleCommandIndex, join7, results) {
+function matchTruncateOperands(args, dir, simpleCommandIndex, join9, results) {
   let sawSizeFlag = false;
   let afterDashDash = false;
   let staticSize;
@@ -2648,22 +2440,22 @@ function matchTruncateOperands(args, dir, simpleCommandIndex, join7, results) {
         operation: "truncate",
         absolutePath: resolvePath(dir, operand.path),
         simpleCommandIndex,
-        join: join7,
+        join: join9,
         ...operand.size !== void 0 ? { size: operand.size } : {}
       }
     });
   }
 }
-function matchRmTruncate(argv, dirForResolution, simpleCommandIndex, join7, results) {
+function matchRmTruncate(argv, dirForResolution, simpleCommandIndex, join9, results) {
   const rest = stripTransparentWrapper(argv);
   if (rest.length === 0) return;
   const command = rest[0];
   if (command === "rm") {
-    matchRmOperands(rest.slice(1), RM_EXCLUDED, false, dirForResolution, simpleCommandIndex, join7, results);
+    matchRmOperands(rest.slice(1), RM_EXCLUDED, false, dirForResolution, simpleCommandIndex, join9, results);
     return;
   }
   if (command === "truncate") {
-    matchTruncateOperands(rest.slice(1), dirForResolution, simpleCommandIndex, join7, results);
+    matchTruncateOperands(rest.slice(1), dirForResolution, simpleCommandIndex, join9, results);
     return;
   }
   if (command === "git") {
@@ -2679,7 +2471,7 @@ function matchRmTruncate(argv, dirForResolution, simpleCommandIndex, join7, resu
         true,
         sub.cDir ?? dirForResolution,
         simpleCommandIndex,
-        join7,
+        join9,
         results
       );
     }
@@ -2707,7 +2499,7 @@ function heredocBodyIsLiteral(body) {
   }
   return true;
 }
-function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleCommandIndex, join7, results) {
+function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleCommandIndex, join9, results) {
   const bodyLiteral = quotedDelim || heredocBodyIsLiteral(body);
   const tokens = tokenize(stripLeadingAssignments(opener).trim());
   if (tokens === null) return;
@@ -2730,7 +2522,7 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
             operation: "append",
             absolutePath,
             simpleCommandIndex,
-            join: join7,
+            join: join9,
             ...singlePlainAppend && r.op === ">>" && bodyLiteral ? { written: body } : {}
           }
         });
@@ -2738,11 +2530,11 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
         results.push({
           status: "resolved",
           idiom: "heredoc-write",
-          span: body.length === 0 ? { operation: "truncate", absolutePath, simpleCommandIndex, join: join7 } : {
+          span: body.length === 0 ? { operation: "truncate", absolutePath, simpleCommandIndex, join: join9 } : {
             operation: "create-overwrite",
             absolutePath,
             simpleCommandIndex,
-            join: join7,
+            join: join9,
             // The exact gate compares full file bytes, so the trailing
             // `\n` the extraction stripped comes back on the overwrite.
             ...singlePlainOverwrite && bodyLiteral ? { written: `${body}
@@ -2771,7 +2563,7 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
               operation: "append",
               absolutePath,
               simpleCommandIndex,
-              join: join7,
+              join: join9,
               ...contentRedirects.length === 0 && bodyLiteral ? { written: body } : {}
             }
           });
@@ -2779,11 +2571,11 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
           results.push({
             status: "resolved",
             idiom: "heredoc-write",
-            span: body.length === 0 ? { operation: "truncate", absolutePath, simpleCommandIndex, join: join7 } : {
+            span: body.length === 0 ? { operation: "truncate", absolutePath, simpleCommandIndex, join: join9 } : {
               operation: "create-overwrite",
               absolutePath,
               simpleCommandIndex,
-              join: join7,
+              join: join9,
               // Same restored-`\n` exact body as the redirect branch; a
               // tee operand with a content redirect present keeps the
               // redirect's threading only (mirror of the append branch).
@@ -2798,18 +2590,18 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
     return;
   }
   if (host === "patch" || host === "git") {
-    classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join7, results);
+    classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join9, results);
     return;
   }
 }
 var NUMERIC_SUBSTITUTION = /^(\d+)(?:,(\d+))?[sy]/;
 var UNRESTRICTED_SUBSTITUTION = /^[sy]/;
-function matchSedInplace(argv, dirForResolution, simpleCommandIndex, join7, results) {
+function matchSedInplace(argv, dirForResolution, simpleCommandIndex, join9, results) {
   const rest = stripTransparentWrapper(argv);
   if (rest.length === 0) return;
   const command = rest[0];
   if (command === "sed") {
-    matchSedInplaceArgs(rest.slice(1), dirForResolution, simpleCommandIndex, join7, results);
+    matchSedInplaceArgs(rest.slice(1), dirForResolution, simpleCommandIndex, join9, results);
     return;
   }
   if (FOREIGN_WRAPPERS.has(command)) {
@@ -2820,7 +2612,7 @@ function matchSedInplace(argv, dirForResolution, simpleCommandIndex, join7, resu
   }
 }
 var SED_SCRIPT_SHAPE = /^(?:[A-Za-z]|\d|\/|\\|\$|~)/;
-function matchSedInplaceArgs(args, dir, simpleCommandIndex, join7, results) {
+function matchSedInplaceArgs(args, dir, simpleCommandIndex, join9, results) {
   let suffix = null;
   let sawInplace = false;
   let i = 0;
@@ -2943,20 +2735,20 @@ function matchSedInplaceArgs(args, dir, simpleCommandIndex, join7, results) {
       results.push({
         status: "resolved",
         idiom: "sed-inplace",
-        span: { operation: "modify", lineStart: start, lineEnd: end, absolutePath, simpleCommandIndex, join: join7 }
+        span: { operation: "modify", lineStart: start, lineEnd: end, absolutePath, simpleCommandIndex, join: join9 }
       });
     } else {
       results.push({
         status: "resolved",
         idiom: "sed-inplace",
-        span: { operation: "modify", absolutePath, simpleCommandIndex, join: join7 }
+        span: { operation: "modify", absolutePath, simpleCommandIndex, join: join9 }
       });
     }
     if (suffix !== null && suffix !== "") {
       results.push({
         status: "resolved",
         idiom: "sed-inplace",
-        span: { operation: "create-overwrite", absolutePath: `${absolutePath}${suffix}`, simpleCommandIndex, join: join7 }
+        span: { operation: "create-overwrite", absolutePath: `${absolutePath}${suffix}`, simpleCommandIndex, join: join9 }
       });
     }
   }
@@ -3041,7 +2833,7 @@ function readPatchFile(absolutePath) {
     return null;
   }
 }
-function emitPatchTargets(args, isGitApply, host, targetDir, shellDir, redirects, simpleCommandIndex, join7, results) {
+function emitPatchTargets(args, isGitApply, host, targetDir, shellDir, redirects, simpleCommandIndex, join9, results) {
   const parts = patchApplyParts(args, isGitApply);
   if (parts.readOnly || parts.cachedOnly) return;
   if (parts.directory) {
@@ -3099,13 +2891,13 @@ function emitPatchTargets(args, isGitApply, host, targetDir, shellDir, redirects
         operation: t.operation,
         absolutePath,
         simpleCommandIndex,
-        join: join7,
+        join: join9,
         ...t.lineStart !== void 0 ? { lineStart: t.lineStart, lineEnd: t.lineEnd } : {}
       }
     });
   }
 }
-function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, join7, results) {
+function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, join9, results) {
   const rest = stripTransparentWrapper(argv);
   if (rest.length === 0) return;
   const command = rest[0];
@@ -3118,7 +2910,7 @@ function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, 
       dirForResolution,
       redirects,
       simpleCommandIndex,
-      join7,
+      join9,
       results
     );
     return;
@@ -3138,7 +2930,7 @@ function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, 
       dirForResolution,
       redirects,
       simpleCommandIndex,
-      join7,
+      join9,
       results
     );
     return;
@@ -3150,7 +2942,7 @@ function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, 
     }
   }
 }
-function classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join7, results) {
+function classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join9, results) {
   const rest = stripTransparentWrapper(argv);
   if (rest.length === 0) return;
   const command = rest[0];
@@ -3193,7 +2985,7 @@ function classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join7,
         operation: t.operation,
         absolutePath,
         simpleCommandIndex,
-        join: join7,
+        join: join9,
         ...t.lineStart !== void 0 ? { lineStart: t.lineStart, lineEnd: t.lineEnd } : {}
       }
     });
@@ -3264,7 +3056,7 @@ function stripPackageRunner(argv) {
   if (wrapped.startsWith("-") || wrapped.startsWith(".") || /\s/.test(wrapped)) return { kind: "obscured" };
   return { kind: "stripped", stripped: rest };
 }
-function matchFormatter(argv, dirForResolution, simpleCommandIndex, join7, results) {
+function matchFormatter(argv, dirForResolution, simpleCommandIndex, join9, results) {
   const rest = stripTransparentWrapper(argv);
   if (rest.length === 0) return;
   let words = rest;
@@ -3326,12 +3118,12 @@ function matchFormatter(argv, dirForResolution, simpleCommandIndex, join7, resul
     results.push({
       status: "resolved",
       idiom: "formatter-write",
-      span: { operation: "modify", absolutePath: resolvePath(dirForResolution, operand), simpleCommandIndex, join: join7 }
+      span: { operation: "modify", absolutePath: resolvePath(dirForResolution, operand), simpleCommandIndex, join: join9 }
     });
   }
 }
 var RESTORE_NO_VALUE = /* @__PURE__ */ new Set(["-q", "-f", "-u"]);
-function emitRestoreCheckoutPathspec(results, idiom, operand, dir, simpleCommandIndex, join7) {
+function emitRestoreCheckoutPathspec(results, idiom, operand, dir, simpleCommandIndex, join9) {
   if (looksUnresolvable(operand)) {
     pushUnresolved(results, idiom, operand, "path contains an unexpanded shell variable or glob");
     return;
@@ -3349,10 +3141,10 @@ function emitRestoreCheckoutPathspec(results, idiom, operand, dir, simpleCommand
   results.push({
     status: "resolved",
     idiom,
-    span: { operation: "create-overwrite", absolutePath, simpleCommandIndex, join: join7 }
+    span: { operation: "create-overwrite", absolutePath, simpleCommandIndex, join: join9 }
   });
 }
-function matchRestoreOperands(args, dir, simpleCommandIndex, join7, results) {
+function matchRestoreOperands(args, dir, simpleCommandIndex, join9, results) {
   let staged = false;
   let worktree = false;
   let afterDashDash = false;
@@ -3396,10 +3188,10 @@ function matchRestoreOperands(args, dir, simpleCommandIndex, join7, results) {
   }
   if (staged && !worktree) return;
   for (const operand of operands) {
-    emitRestoreCheckoutPathspec(results, "git-restore-write", operand, dir, simpleCommandIndex, join7);
+    emitRestoreCheckoutPathspec(results, "git-restore-write", operand, dir, simpleCommandIndex, join9);
   }
 }
-function matchCheckoutOperands(args, dir, simpleCommandIndex, join7, results) {
+function matchCheckoutOperands(args, dir, simpleCommandIndex, join9, results) {
   let afterDashDash = false;
   const operands = [];
   for (let i = 0; i < args.length; i++) {
@@ -3429,10 +3221,10 @@ function matchCheckoutOperands(args, dir, simpleCommandIndex, join7, results) {
     if (a.startsWith("-")) continue;
   }
   for (const operand of operands) {
-    emitRestoreCheckoutPathspec(results, "git-checkout-write", operand, dir, simpleCommandIndex, join7);
+    emitRestoreCheckoutPathspec(results, "git-checkout-write", operand, dir, simpleCommandIndex, join9);
   }
 }
-function matchGitRestoreCheckout(argv, dirForResolution, simpleCommandIndex, join7, results) {
+function matchGitRestoreCheckout(argv, dirForResolution, simpleCommandIndex, join9, results) {
   const rest = stripTransparentWrapper(argv);
   if (rest.length === 0) return;
   const command = rest[0];
@@ -3450,8 +3242,8 @@ function matchGitRestoreCheckout(argv, dirForResolution, simpleCommandIndex, joi
     }
     const dir = sub.cDir ?? dirForResolution;
     const args = rest.slice(1).slice(sub.subIdx + 1);
-    if (sub.subcommand === "restore") matchRestoreOperands(args, dir, simpleCommandIndex, join7, results);
-    else matchCheckoutOperands(args, dir, simpleCommandIndex, join7, results);
+    if (sub.subcommand === "restore") matchRestoreOperands(args, dir, simpleCommandIndex, join9, results);
+    else matchCheckoutOperands(args, dir, simpleCommandIndex, join9, results);
     return;
   }
   if (FOREIGN_WRAPPERS.has(command)) {
@@ -3476,6 +3268,7 @@ function parseCommandDetailed(command, opts = {}) {
   const cwd = typeof opts === "string" ? opts : opts.cwd ?? process.cwd();
   const { writes: heredocWrites, masked } = extractHeredocWrites(command);
   const { stages: simpleCommands, malformed } = splitTopLevel(masked);
+  void malformed;
   const results = [];
   const fsLineCache = /* @__PURE__ */ new Map();
   const gitLineCache = /* @__PURE__ */ new Map();
@@ -3501,7 +3294,7 @@ function parseCommandDetailed(command, opts = {}) {
     if (isAbsolute2(c.dirOverride)) return c.dirOverride;
     return frame.certain ? resolvePath(frame.dir, c.dirOverride) : void 0;
   };
-  const emitCandidate = (c, frame, simpleCommandIndex, join7) => {
+  const emitCandidate = (c, frame, simpleCommandIndex, join9) => {
     if (looksUnresolvable(c.fileArg)) {
       results.push({
         status: "unresolved",
@@ -3552,7 +3345,7 @@ function parseCommandDetailed(command, opts = {}) {
         lineEnd: range.lineEnd,
         absolutePath,
         simpleCommandIndex,
-        join: join7
+        join: join9
       }
     });
   };
@@ -5171,11 +4964,11 @@ function parseCommandLayered(command, options = {}) {
     for (let index = 0; index < split.stages.length; index += 1) {
       const stage = split.stages[index];
       const child = parseCommandLayered(stage.text, options);
-      const join7 = stage.precededBy === "and" ? "&&" : stage.precededBy === "or" ? "||" : void 0;
+      const join9 = stage.precededBy === "and" ? "&&" : stage.precededBy === "or" ? "||" : void 0;
       resolved2.push(
         ...child.resolved.map((match) => ({
           ...match,
-          span: { ...match.span, simpleCommandIndex: index, join: join7 }
+          span: { ...match.span, simpleCommandIndex: index, join: join9 }
         }))
       );
       unresolvedMatches2.push(...child.unresolved.map((match) => ({ ...match, simpleCommandIndex: index })));
@@ -5510,14 +5303,14 @@ function createPlannedTouchStore(baseDir, budgets) {
     };
   };
   const makeRestrictiveDir = (dir) => {
-    fs5.mkdirSync(dir, { recursive: true, mode: 448 });
-    fs5.chmodSync(baseDir, 448);
-    fs5.chmodSync(nodePath4.dirname(dir), 448);
-    fs5.chmodSync(dir, 448);
+    fs4.mkdirSync(dir, { recursive: true, mode: 448 });
+    fs4.chmodSync(baseDir, 448);
+    fs4.chmodSync(nodePath4.dirname(dir), 448);
+    fs4.chmodSync(dir, 448);
   };
   const claim = (consumed) => {
     try {
-      fs5.writeFileSync(consumed, "", { encoding: "utf8", flag: "wx", mode: 384 });
+      fs4.writeFileSync(consumed, "", { encoding: "utf8", flag: "wx", mode: 384 });
       return true;
     } catch (error) {
       if (error.code === "EEXIST") return false;
@@ -5530,12 +5323,12 @@ function createPlannedTouchStore(baseDir, budgets) {
     if (!claim(paths.consumed)) return { status: "consumed" };
     let raw;
     try {
-      raw = fs5.readFileSync(paths.record, "utf8");
+      raw = fs4.readFileSync(paths.record, "utf8");
     } catch (error) {
       if (error.code === "ENOENT") return { status: "missing" };
       throw error;
     } finally {
-      fs5.rmSync(paths.record, { force: true });
+      fs4.rmSync(paths.record, { force: true });
     }
     try {
       const record = normalizePlannedTouchRecord(JSON.parse(raw), budgets);
@@ -5549,7 +5342,7 @@ function createPlannedTouchStore(baseDir, budgets) {
       const normalized = normalizePlannedTouchRecord(record, budgets);
       const paths = recordPaths(normalized.sessionId, normalized.toolUseId);
       makeRestrictiveDir(paths.dir);
-      if (fs5.existsSync(paths.consumed)) {
+      if (fs4.existsSync(paths.consumed)) {
         throw new Error("planned-touch record has already been consumed or discarded");
       }
       const encoded = JSON.stringify(normalized);
@@ -5558,11 +5351,11 @@ function createPlannedTouchStore(baseDir, budgets) {
         `.${nodePath4.basename(paths.record)}.${process.pid}.${Date.now().toString(36)}.${Math.random().toString(36).slice(2)}.tmp`
       );
       try {
-        fs5.writeFileSync(tmp, encoded, { encoding: "utf8", mode: 384 });
-        fs5.chmodSync(tmp, 384);
-        fs5.renameSync(tmp, paths.record);
+        fs4.writeFileSync(tmp, encoded, { encoding: "utf8", mode: 384 });
+        fs4.chmodSync(tmp, 384);
+        fs4.renameSync(tmp, paths.record);
       } catch (error) {
-        fs5.rmSync(tmp, { force: true });
+        fs4.rmSync(tmp, { force: true });
         throw error;
       }
     },
@@ -5575,7 +5368,7 @@ function createPlannedTouchStore(baseDir, budgets) {
       const paths = recordPaths(sessionId, toolUseId);
       makeRestrictiveDir(paths.dir);
       claim(paths.consumed);
-      fs5.rmSync(paths.record, { force: true });
+      fs4.rmSync(paths.record, { force: true });
     }
   };
 }
@@ -5771,7 +5564,7 @@ function filterTrackedEligibility(candidates, options) {
 
 // src/common/touch-core.ts
 import { execFileSync as execFileSync5 } from "node:child_process";
-import * as fs6 from "node:fs";
+import * as fs5 from "node:fs";
 import { basename as basename4, join as join4 } from "node:path";
 
 // src/common/anchor-tree.ts
@@ -6014,7 +5807,7 @@ function createRealityProbeCache(paths, changedCandidates = []) {
 }
 function fileExists(absPath) {
   try {
-    fs6.statSync(absPath);
+    fs5.statSync(absPath);
     return true;
   } catch {
     return false;
@@ -6022,21 +5815,21 @@ function fileExists(absPath) {
 }
 function isFileOnDisk(absPath) {
   try {
-    return fs6.statSync(absPath).isFile();
+    return fs5.statSync(absPath).isFile();
   } catch {
     return false;
   }
 }
 function contentMatches(post, filePath) {
   try {
-    if ("exact" in post) return fs6.readFileSync(filePath, "utf8") === post.exact;
+    if ("exact" in post) return fs5.readFileSync(filePath, "utf8") === post.exact;
     if ("suffix" in post) {
-      const content = fs6.readFileSync(filePath, "utf8");
+      const content = fs5.readFileSync(filePath, "utf8");
       return content.endsWith(post.suffix) || content.endsWith(`${post.suffix}
 `);
     }
-    if ("empty" in post) return fs6.statSync(filePath).size === 0;
-    return fs6.statSync(filePath).size === post.size;
+    if ("empty" in post) return fs5.statSync(filePath).size === 0;
+    return fs5.statSync(filePath).size === post.size;
   } catch {
     return false;
   }
@@ -6102,6 +5895,7 @@ function changedOnDisk(cache, cwd) {
           changed.add(join4(repoRoot, entry.slice(3)));
         }
       } catch (err) {
+        void err;
       }
     }
   }
@@ -6127,8 +5921,8 @@ function evaluateWriteGate(input, probeCache) {
       let src;
       let dst;
       try {
-        src = fs6.readFileSync(input.sourcePath, "utf8");
-        dst = fs6.readFileSync(input.filePath, "utf8");
+        src = fs5.readFileSync(input.sourcePath, "utf8");
+        dst = fs5.readFileSync(input.filePath, "utf8");
       } catch {
         return "decisiveFail";
       }
@@ -6219,7 +6013,7 @@ function recoverRangeFromDisk(written, filePath) {
   if (written.length === 0) return "whole-file";
   let content;
   try {
-    content = fs6.readFileSync(filePath, "utf8");
+    content = fs5.readFileSync(filePath, "utf8");
   } catch {
     return "whole-file";
   }
@@ -6231,7 +6025,7 @@ function recoverReadRange(offset, limit, filePath) {
   const start = offset ?? 1;
   let lineCount2;
   try {
-    const content = fs6.readFileSync(filePath, "utf8");
+    const content = fs5.readFileSync(filePath, "utf8");
     lineCount2 = content.length === 0 ? 0 : content.split("\n").length;
   } catch {
     return "whole-file";
@@ -6386,6 +6180,7 @@ function createDefaultTouchExecutors(timeoutMs = DEFAULT_TIMEOUT_MS) {
           timeout: timeoutMs
         });
       } catch (err) {
+        void err;
       }
       const after = spanStatusSnapshot(resolved.repoRoot);
       return { modified: before !== after };
@@ -6719,11 +6514,11 @@ async function runBashTouches(matches, sessionId, cwd, toolResponse, executors, 
   const skipped = /* @__PURE__ */ new Set();
   let prevIndex = null;
   for (const idx of commandOrder) {
-    const join7 = joinOfCommand(idx, groups, guardByIndex);
+    const join9 = joinOfCommand(idx, groups, guardByIndex);
     const prevVerdict = prevIndex !== null ? effective.get(prevIndex) : void 0;
-    if (prevVerdict !== void 0 && join7 !== void 0) {
-      if (join7 === "&&" && prevVerdict === "failed" || join7 === "||" && prevVerdict === "succeeded") {
-        effective.set(idx, join7 === "&&" ? "failed" : "succeeded");
+    if (prevVerdict !== void 0 && join9 !== void 0) {
+      if (join9 === "&&" && prevVerdict === "failed" || join9 === "||" && prevVerdict === "succeeded") {
+        effective.set(idx, join9 === "&&" ? "failed" : "succeeded");
         skipped.add(idx);
         prevIndex = idx;
         continue;
@@ -7517,7 +7312,7 @@ function createDefaultPlannedTouchStore(layout) {
 }
 function readText(path) {
   try {
-    return fs7.readFileSync(path, "utf8");
+    return fs6.readFileSync(path, "utf8");
   } catch {
     return null;
   }
@@ -7792,81 +7587,1640 @@ async function runLayeredBashTouches(command, cwd, sessionId, toolUseId, toolRes
   });
   return blocks;
 }
-function postTrackedValue(absolutePath, value, cwd) {
-  return filterTrackedEligibility([{ absolutePath, value }], { cwd }).eligible[0]?.value ?? null;
+
+// src/common/advisor-core.ts
+import { execFileSync as execFileSync6 } from "node:child_process";
+import { createHash as createHash2 } from "node:crypto";
+import * as fs8 from "node:fs";
+import * as nodePath7 from "node:path";
+
+// src/common/advisor-ignore.ts
+import * as fs7 from "node:fs";
+import * as nodePath6 from "node:path";
+var ADVISOR_IGNORE_REL = nodePath6.join(".span", ".advisorignore");
+function parseAdvisorIgnore(content) {
+  const rules = [];
+  for (const rawLine of content.split("\n")) {
+    const pattern = rawLine.trim();
+    if (!pattern || pattern.startsWith("#")) continue;
+    rules.push({ pattern, matches: compilePattern(pattern) });
+  }
+  return rules;
+}
+function loadAdvisorIgnore(repoRoot) {
+  try {
+    const content = fs7.readFileSync(nodePath6.join(repoRoot, ADVISOR_IGNORE_REL), "utf8");
+    return parseAdvisorIgnore(content);
+  } catch {
+    return [];
+  }
+}
+function isAdvisorIgnored(rules, repoRelPath) {
+  return rules.some((rule) => rule.matches(repoRelPath));
 }
 
-// src/claude/static-plan.ts
-function narrowCommand(toolInput) {
-  if (toolInput !== null && typeof toolInput === "object" && "command" in toolInput) {
-    const command = toolInput.command;
-    if (typeof command === "string" && command.length > 0) return command;
+// src/common/mechanical-change.ts
+function parseUnifiedDiff(text) {
+  const files = [];
+  let current = null;
+  let hunk = null;
+  const flushHunk = () => {
+    if (current && hunk) current.hunks.push(hunk);
+    hunk = null;
+  };
+  for (const line of text.split("\n")) {
+    if (line.startsWith("diff --git ")) {
+      flushHunk();
+      if (current) files.push(current);
+      const m = /^diff --git a\/(.+) b\/(.+)$/.exec(line);
+      const path = m ? m[2] : line.slice(11);
+      current = { path, hunks: [], binary: false, structural: false };
+      continue;
+    }
+    if (!current) continue;
+    if (line.startsWith("Binary files ") || line.startsWith("GIT binary patch")) {
+      current.binary = true;
+      continue;
+    }
+    if (line.startsWith("new file mode") || line.startsWith("deleted file mode") || line.startsWith("rename from") || line.startsWith("rename to") || line.startsWith("old mode") || line.startsWith("new mode")) {
+      current.structural = true;
+      continue;
+    }
+    if (line.startsWith("index ")) continue;
+    if (line.startsWith("@@")) {
+      flushHunk();
+      hunk = { removed: [], added: [] };
+      continue;
+    }
+    if (!hunk) continue;
+    if (line.startsWith("-")) hunk.removed.push(line.slice(1));
+    else if (line.startsWith("+")) hunk.added.push(line.slice(1));
   }
-  return null;
+  flushHunk();
+  if (current) files.push(current);
+  return files;
 }
-function createHandler(layout = DEFAULT_SESSION_LAYOUT) {
-  return async (input, ctx) => {
-    try {
-      if (!input.session_id || !input.tool_use_id) return null;
-      const command = narrowCommand(input.tool_input);
-      if (command === null) return null;
-      planBashTouches(
-        command,
-        input.cwd ?? "",
-        input.session_id,
-        input.tool_use_id,
-        ctx.logger,
-        createDefaultPlannedTouchStore(layout)
+var NOISE_BASENAMES = /* @__PURE__ */ new Set([
+  "yarn.lock",
+  "package-lock.json",
+  "pnpm-lock.yaml",
+  "npm-shrinkwrap.json",
+  "Cargo.lock",
+  "poetry.lock",
+  "Pipfile.lock",
+  "go.sum",
+  "composer.lock",
+  "Gemfile.lock",
+  "flake.lock",
+  ".DS_Store"
+]);
+var NOISE_SUFFIXES = [
+  ".tsbuildinfo",
+  ".min.js",
+  ".min.css",
+  ".js.map",
+  ".mjs.map",
+  ".cjs.map",
+  ".css.map",
+  ".d.ts.map"
+];
+var NOISE_SEGMENTS = /* @__PURE__ */ new Set(["node_modules", "__pycache__"]);
+function isNeverSpannedPath(repoRelPath) {
+  const parts = repoRelPath.split("/");
+  const base = parts[parts.length - 1] ?? "";
+  if (NOISE_BASENAMES.has(base)) return true;
+  if (NOISE_SUFFIXES.some((s) => repoRelPath.endsWith(s))) return true;
+  if (parts.some((p) => NOISE_SEGMENTS.has(p))) return true;
+  return false;
+}
+var SEMVER_RE = /\bv?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?\b(?!\.\d)/g;
+var HEXISH_RE = /\b[0-9a-f]{32,}\b|\bsha(?:256|512)-[A-Za-z0-9+/=]{20,}\b|\b[0-9a-f]{7,40}\/[0-9a-f]{7,40}\b/g;
+var CHECKSUM_FIELD_RE = /\b(checksum|integrity|resolution|hash|digest|sha\d*)\b/i;
+var DOTTED_QUAD_RE = /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/;
+var VERSION_CONTEXT_RES = [
+  /version/i,
+  /(?<![=!<>+\-*/&|])[:=](?!=)\s*["'`]?v?\d+\.\d+\.\d+/,
+  /^\s*v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?\s*$/,
+  /^\.[A-Za-z]{1,3}\s/
+];
+var MANIFEST_BASENAMES = /* @__PURE__ */ new Set([
+  "package.json",
+  "Cargo.toml",
+  "marketplace.json",
+  "plugin.json",
+  "pyproject.toml",
+  "composer.json",
+  "go.mod"
+]);
+var TIMESTAMP_FIELD_RE = /\b(timestamps?|generated|generated_?at|built|built_?at|build_?time|date|datetime|time|created_?at|updated_?at|modified|last_?modified|expires|expires_?at|expiry|epoch|mtime|ctime|iat|exp|nbf)(?:Ms|MS|_ms)?\b/i;
+var TIMESTAMP_RE = /\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?\b|\b\d{4}-\d{2}-\d{2}\b|\b\d{10,13}\b/g;
+function normalize(line, re) {
+  return line.replace(re, " ");
+}
+function isVersionContext(line) {
+  return VERSION_CONTEXT_RES.some((re) => re.test(line));
+}
+function isManifestPath(repoRelPath) {
+  const parts = repoRelPath.split("/");
+  return MANIFEST_BASENAMES.has(parts[parts.length - 1] ?? "");
+}
+function pairIsMechanical(removed, added, manifestPath) {
+  if (removed === added) return false;
+  if (!DOTTED_QUAD_RE.test(removed) && !DOTTED_QUAD_RE.test(added) && (manifestPath || isVersionContext(removed)) && normalize(removed, SEMVER_RE) === normalize(added, SEMVER_RE)) {
+    return true;
+  }
+  if (CHECKSUM_FIELD_RE.test(removed) && normalize(removed, HEXISH_RE) === normalize(added, HEXISH_RE)) {
+    return true;
+  }
+  if (TIMESTAMP_FIELD_RE.test(removed) && normalize(removed, TIMESTAMP_RE) === normalize(added, TIMESTAMP_RE)) {
+    return true;
+  }
+  return false;
+}
+function isMechanicalDiff(file) {
+  if (file.binary) return { mechanical: false, reason: "binary file" };
+  if (file.structural) return { mechanical: false, reason: "structural change (rename/add/delete)" };
+  if (file.hunks.length === 0) return { mechanical: false, reason: "no hunks" };
+  const manifestPath = isManifestPath(file.path);
+  for (let h = 0; h < file.hunks.length; h++) {
+    const hunk = file.hunks[h];
+    if (hunk.removed.length !== hunk.added.length || hunk.removed.length === 0) {
+      return { mechanical: false, reason: `hunk ${h + 1}: unbalanced removed/added counts` };
+    }
+    for (let i = 0; i < hunk.removed.length; i++) {
+      if (!pairIsMechanical(hunk.removed[i], hunk.added[i], manifestPath)) {
+        return { mechanical: false, reason: `hunk ${h + 1}: no rule matched` };
+      }
+    }
+  }
+  return { mechanical: true };
+}
+var CLASSIFIABLE_BASENAMES = /* @__PURE__ */ new Set([
+  "package.json",
+  "package-lock.json",
+  "npm-shrinkwrap.json",
+  "Cargo.toml",
+  "Cargo.lock",
+  "yarn.lock",
+  "pnpm-lock.yaml",
+  "pnpm-workspace.yaml",
+  "plugin.json",
+  "marketplace.json",
+  "pyproject.toml",
+  "composer.json",
+  "composer.lock",
+  "Gemfile.lock",
+  "poetry.lock",
+  "Pipfile.lock",
+  "flake.lock",
+  "go.mod",
+  "go.sum"
+]);
+var MAN_PAGE_RE = /\.[1-9]$/;
+function isClassifiablePath(repoRelPath) {
+  const parts = repoRelPath.split("/");
+  const base = parts[parts.length - 1] ?? "";
+  if (CLASSIFIABLE_BASENAMES.has(base)) return true;
+  if (base === "Dockerfile" || base.startsWith("Dockerfile.")) return true;
+  return MAN_PAGE_RE.test(base);
+}
+function classifyMechanical(file) {
+  if (isNeverSpannedPath(file.path)) return { mechanical: true };
+  if (!isClassifiablePath(file.path)) {
+    return { mechanical: false, reason: "not a manifest-shaped path: the classifier does not apply" };
+  }
+  return isMechanicalDiff(file);
+}
+
+// src/common/advisor-core.ts
+var AdvisorScanError = class extends Error {
+  detail;
+  constructor(detail) {
+    super(`git span drift could not complete its scan: ${detail}`);
+    this.name = "AdvisorScanError";
+    this.detail = detail;
+  }
+};
+var AdvisorIncompatibleCliError = class extends Error {
+  detail;
+  installedVersion;
+  constructor(detail, installedVersion) {
+    super(`the installed git-span binary does not support this command: ${detail}`);
+    this.name = "AdvisorIncompatibleCliError";
+    this.detail = detail;
+    this.installedVersion = installedVersion;
+  }
+};
+function parseGitCommand(command) {
+  for (const segment of splitSegments2(command)) {
+    const inv = matchGitInvocation(tokenize2(segment));
+    if (!inv) continue;
+    if (inv.subcommand === "commit") {
+      const dashDash = inv.args.indexOf("--");
+      const paths = dashDash >= 0 ? inv.args.slice(dashDash + 1).filter((p) => p.length > 0) : [];
+      return paths.length > 0 ? { kind: "commit", paths } : { kind: "commit" };
+    }
+    if (inv.subcommand === "push") {
+      return { kind: "push" };
+    }
+    if (inv.subcommand === "status") {
+      return { kind: "status" };
+    }
+  }
+  return { kind: "none" };
+}
+var COMMIT_VALUE_OPTIONS = /* @__PURE__ */ new Set([
+  "-m",
+  "--message",
+  "-F",
+  "--file",
+  "-C",
+  "--reuse-message",
+  "-c",
+  "--reedit-message",
+  "--author",
+  "--date",
+  "-t",
+  "--template",
+  "--fixup",
+  "--squash",
+  "--trailer",
+  "--cleanup",
+  "--gpg-sign"
+]);
+function commitStagesAll(command) {
+  for (const segment of splitSegments2(command)) {
+    const inv = matchGitInvocation(tokenize2(segment));
+    if (!inv || inv.subcommand !== "commit") continue;
+    const dashDash = inv.args.indexOf("--");
+    const flagArgs = dashDash >= 0 ? inv.args.slice(0, dashDash) : inv.args;
+    for (let i = 0; i < flagArgs.length; i++) {
+      const arg = flagArgs[i];
+      if (arg === "--all") return true;
+      if (COMMIT_VALUE_OPTIONS.has(arg)) {
+        i++;
+        continue;
+      }
+      if (!arg.startsWith("--") && /^-[A-Za-z]*a[A-Za-z]*$/.test(arg)) return true;
+    }
+    return false;
+  }
+  return false;
+}
+var TWO_CHAR_OPERATORS = /* @__PURE__ */ new Set(["&&", "||"]);
+var ONE_CHAR_SEPARATORS = /* @__PURE__ */ new Set([";", "|", "\n", "&", "(", ")"]);
+function splitSegments2(command) {
+  const segments = [];
+  let current = "";
+  let quote = null;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (quote) {
+      current += ch;
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if (TWO_CHAR_OPERATORS.has(command.slice(i, i + 2))) {
+      segments.push(current);
+      current = "";
+      i++;
+      continue;
+    }
+    if (ONE_CHAR_SEPARATORS.has(ch)) {
+      segments.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  segments.push(current);
+  return segments;
+}
+function tokenize2(segment) {
+  const tokens = [];
+  let current = "";
+  let has = false;
+  let quote = null;
+  for (let i = 0; i < segment.length; i++) {
+    const ch = segment[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+      else current += ch;
+      has = true;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      has = true;
+      continue;
+    }
+    if (ch === " " || ch === "	") {
+      if (has) {
+        tokens.push(current);
+        current = "";
+        has = false;
+      }
+      continue;
+    }
+    current += ch;
+    has = true;
+  }
+  if (has) tokens.push(current);
+  return tokens;
+}
+var GIT_VALUE_OPTIONS = /* @__PURE__ */ new Set([
+  "-C",
+  "-c",
+  "--git-dir",
+  "--work-tree",
+  "--namespace",
+  "--super-prefix",
+  "--exec-path",
+  "--attr-source",
+  "--config-env"
+]);
+function matchGitInvocation(tokens) {
+  let i = 0;
+  while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])) i++;
+  if (i >= tokens.length || tokens[i] !== "git") return null;
+  i++;
+  while (i < tokens.length) {
+    const t = tokens[i];
+    if (t === "--") return null;
+    if (!t.startsWith("-")) break;
+    i += GIT_VALUE_OPTIONS.has(t) ? 2 : 1;
+  }
+  if (i >= tokens.length) return null;
+  return { subcommand: tokens[i], args: tokens.slice(i + 1) };
+}
+async function resolveChangesetUnfiltered(kind, all, cwd, git, paths) {
+  if (kind === "push") {
+    const { paths: outgoing, base } = await git.outgoingPaths(cwd);
+    return { paths: outgoing, range: base === null ? { kind: "unresolvable" } : { kind: "commits", base } };
+  }
+  if (kind === "status") {
+    const [staged2, tracked2] = await Promise.all([git.stagedPaths(cwd), git.trackedModifiedPaths(cwd)]);
+    return { paths: mergeUniquePaths(staged2, tracked2), range: { kind: "worktree" } };
+  }
+  if (paths && paths.length > 0) {
+    return { paths: await git.pathspecPaths(paths, cwd), range: { kind: "worktree" } };
+  }
+  const staged = await git.stagedPaths(cwd);
+  if (!all) return { paths: staged, range: { kind: "staged" } };
+  const tracked = await git.trackedModifiedPaths(cwd);
+  return { paths: mergeUniquePaths(staged, tracked), range: { kind: "worktree" } };
+}
+async function resolveChangeset(kind, all, cwd, git, paths) {
+  const changeset = await resolveChangesetUnfiltered(kind, all, cwd, git, paths);
+  const repoRoot = resolveRepoRoot(cwd);
+  if (!repoRoot || changeset.paths.length === 0) return changeset;
+  return { ...changeset, paths: changeset.paths.filter((p) => fs8.existsSync(nodePath7.join(repoRoot, p))) };
+}
+function mergeUniquePaths(...groups) {
+  const seen = /* @__PURE__ */ new Set();
+  const merged = [];
+  for (const group of groups) {
+    for (const path of group) {
+      if (seen.has(path)) continue;
+      seen.add(path);
+      merged.push(path);
+    }
+  }
+  return merged;
+}
+async function evaluateAdvisor(paths, cwd, executors, memoState, mode = "may-hold", churn, harness = "generic") {
+  if (paths.length === 0) return { decision: "allow", kind: "silent" };
+  try {
+    await executors.fix(paths, cwd);
+    const driftRows = await executors.drift(paths, cwd);
+    const debtRows = driftRows.filter((row) => isDebt(row.status));
+    const semantic = debtRows.filter((row) => !isEnvironmentalStatus(row.status));
+    const environmental = debtRows.filter((row) => isEnvironmentalStatus(row.status));
+    if (mode === "report-only") {
+      if (semantic.length > 0) {
+        memoState.record(`seen-${advisorStateDigest(semantic, [])}`);
+        const newSemantic = filterNewReportItems(semantic, memoState, semanticReportIdentity);
+        if (newSemantic.length === 0) return { decision: "allow", kind: "silent" };
+        return {
+          decision: "allow",
+          kind: "semantic-drift-report",
+          findings: newSemantic,
+          reason: renderDriftReason(
+            newSemantic,
+            await fetchSpanBlocks(executors, newSemantic, cwd),
+            "report-only",
+            harness
+          )
+        };
+      }
+      if (environmental.length > 0) {
+        return {
+          decision: "allow",
+          kind: "environmental",
+          conditions: environmental,
+          reason: renderEnvironmentalReason(environmental, await fetchSpanBlocks(executors, environmental, cwd))
+        };
+      }
+      const { uncovered: uncovered2, covering: covering2 } = await computeUncoveredPaths(paths, cwd, executors, churn);
+      if (uncovered2.length === 0) return { decision: "allow", kind: "silent" };
+      memoState.record(`seen-${advisorStateDigest([], uncovered2)}`);
+      const newUncovered = filterNewReportItems(uncovered2, memoState, uncoveredReportIdentity);
+      if (newUncovered.length === 0) return { decision: "allow", kind: "silent" };
+      return {
+        decision: "allow",
+        kind: "uncovered-writes-report",
+        uncovered: newUncovered,
+        reason: renderUncoveredReason(
+          newUncovered,
+          covering2,
+          await fetchSpanBlocks(executors, covering2, cwd),
+          "report-only",
+          harness
+        )
+      };
+    }
+    let semanticAlreadyPresented = false;
+    if (semantic.length > 0) {
+      const semanticDigest = advisorStateDigest(semantic, []);
+      if (memoState.has(semanticDigest)) {
+        semanticAlreadyPresented = true;
+      } else if (memoState.has(`seen-${semanticDigest}`)) {
+        memoState.record(semanticDigest);
+        semanticAlreadyPresented = true;
+      } else {
+        if (!memoState.record(semanticDigest)) return { decision: "allow", kind: "silent" };
+        memoState.record(`seen-${semanticDigest}`);
+        return {
+          decision: "hold",
+          kind: "semantic-drift",
+          findings: semantic,
+          reason: renderDriftReason(semantic, await fetchSpanBlocks(executors, semantic, cwd), "may-hold", harness)
+        };
+      }
+    }
+    if (environmental.length > 0) {
+      return {
+        decision: "allow",
+        kind: "environmental",
+        conditions: environmental,
+        reason: renderEnvironmentalReason(environmental, await fetchSpanBlocks(executors, environmental, cwd))
+      };
+    }
+    const { uncovered, covering } = await computeUncoveredPaths(paths, cwd, executors, churn);
+    if (uncovered.length === 0) {
+      return semanticAlreadyPresented ? { decision: "allow", kind: "already-presented" } : { decision: "allow", kind: "silent" };
+    }
+    const digest = advisorStateDigest([], uncovered);
+    if (memoState.has(digest)) return { decision: "allow", kind: "already-presented" };
+    if (memoState.has(`seen-${digest}`)) {
+      memoState.record(digest);
+      return { decision: "allow", kind: "already-presented" };
+    }
+    if (!memoState.record(digest)) return { decision: "allow", kind: "silent" };
+    memoState.record(`seen-${digest}`);
+    return {
+      decision: "hold",
+      kind: "uncovered-writes",
+      uncovered,
+      reason: renderUncoveredReason(
+        uncovered,
+        covering,
+        await fetchSpanBlocks(executors, covering, cwd),
+        "may-hold",
+        harness
+      )
+    };
+  } catch (err) {
+    if (err instanceof AdvisorIncompatibleCliError) {
+      return {
+        decision: "allow",
+        kind: "scan-failed",
+        cause: "incompatible-cli",
+        reason: renderIncompatibleCliReason(err)
+      };
+    }
+    if (err instanceof AdvisorScanError) {
+      return {
+        decision: "allow",
+        kind: "scan-failed",
+        cause: "aborted",
+        reason: renderScanFailedReason(err.detail)
+      };
+    }
+    return { decision: "allow", kind: "silent" };
+  }
+}
+async function computeUncoveredPaths(paths, cwd, executors, churn) {
+  if (paths.length < 2) return { uncovered: [], covering: [] };
+  const changeset = new Set(paths);
+  const covering = (await executors.list(paths, cwd)).filter((row) => changeset.has(row.path));
+  const covered = new Set(covering.map((row) => row.path));
+  const repoRoot = resolveRepoRoot(cwd);
+  const advisorIgnoreRules = repoRoot ? loadAdvisorIgnore(repoRoot) : [];
+  let uncovered = paths.filter(
+    (path) => !covered.has(path) && !isInsideSpanRoot(path) && !isAdvisorIgnored(advisorIgnoreRules, path)
+  );
+  if (churn && uncovered.length > 0) {
+    const before = uncovered.length;
+    uncovered = uncovered.filter((path) => !isNeverSpannedPath(path));
+    const suppressedByPath = before - uncovered.length;
+    const needsContent = uncovered.filter(isClassifiablePath);
+    const byPath = /* @__PURE__ */ new Map();
+    let readOutcome = needsContent.length > 0 ? "clean" : "skipped";
+    if (needsContent.length > 0) {
+      try {
+        for (const file of await churn.git.changedHunks(needsContent, churn.range, cwd)) byPath.set(file.path, file);
+      } catch {
+        readOutcome = "failed";
+      }
+      const missing = needsContent.filter((path) => !byPath.has(path));
+      if (missing.length > 0) {
+        if (readOutcome === "clean") readOutcome = "per-file-fallback";
+        for (const path of missing) {
+          try {
+            for (const file of await churn.git.changedHunks([path], churn.range, cwd)) byPath.set(file.path, file);
+          } catch {
+            readOutcome = "failed";
+          }
+        }
+      }
+      uncovered = uncovered.filter((path) => {
+        const file = byPath.get(path);
+        if (!file) return true;
+        return !classifyMechanical(file).mechanical;
+      });
+    }
+    churn.logger?.info?.("git-span advisor churn suppression", {
+      candidates: before,
+      suppressedByPath,
+      suppressedByContent: before - suppressedByPath - uncovered.length,
+      reported: uncovered.length,
+      read: readOutcome
+    });
+  }
+  return { uncovered, covering };
+}
+function anchorText2(row) {
+  if (row.start === 0 && row.end === 0) return row.path;
+  return `${row.path}#L${row.start}-L${row.end}`;
+}
+function advisorStateDigest(findings, uncovered) {
+  const findingKeys = findings.map((row) => `${row.status}	${row.name}	${row.path}	${row.start}	${row.end}`).sort();
+  const payload = JSON.stringify({ findings: findingKeys, uncovered: [...uncovered].sort() });
+  return createHash2("sha256").update(payload).digest("hex");
+}
+function reportItemKey(identity) {
+  return `report-${createHash2("sha256").update(identity).digest("hex")}`;
+}
+function semanticReportIdentity(row) {
+  return JSON.stringify({ kind: "semantic", path: row.path, name: row.name });
+}
+function uncoveredReportIdentity(path) {
+  return JSON.stringify({ kind: "uncovered", path });
+}
+function filterNewReportItems(items, memoState, identityOf) {
+  const unseen = /* @__PURE__ */ new Set();
+  for (const item of items) {
+    const identity = identityOf(item);
+    if (!memoState.has(reportItemKey(identity))) unseen.add(identity);
+  }
+  for (const identity of unseen) memoState.record(reportItemKey(identity));
+  return items.filter((item) => unseen.has(identityOf(item)));
+}
+async function fetchSpanBlocks(executors, rows, cwd) {
+  const names = [...new Set(rows.map((row) => row.name))].sort();
+  if (names.length === 0) return "";
+  try {
+    return await executors.listBlocks(names, cwd);
+  } catch {
+    return "";
+  }
+}
+function extractWhy(blocksText, name) {
+  const trimmed = blocksText.trim();
+  if (trimmed.length === 0) return "";
+  for (const block of trimmed.split("\n\n---\n\n")) {
+    const lines = block.split("\n");
+    if (lines[0] !== `## ${name}`) continue;
+    let i = 1;
+    while (i < lines.length && (lines[i].startsWith("- ") || lines[i] === "*Span has no anchors*")) i++;
+    if (lines[i] === "") i++;
+    return lines.slice(i).join("\n").trim();
+  }
+  return "";
+}
+function dedupeByAnchor(rows) {
+  const order = [];
+  const byAddr = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    const addr = anchorText2(row);
+    let statuses = byAddr.get(addr);
+    if (!statuses) {
+      statuses = /* @__PURE__ */ new Set();
+      byAddr.set(addr, statuses);
+      order.push(addr);
+    }
+    statuses.add(row.status);
+  }
+  return order.map((addr) => ({ addr, statuses: [...byAddr.get(addr) ?? []].sort() }));
+}
+function rangeLabel2(row) {
+  if (row.start === 0 && row.end === 0) return { kind: "whole-file" };
+  return { kind: "range", start: row.start, end: row.end };
+}
+var BULLET_RANGE = /^(.+)#L(\d+)-L(\d+)$/;
+function parseAnchorAddr(addr, suffix) {
+  const matched = BULLET_RANGE.exec(addr);
+  if (matched) {
+    return { path: matched[1], range: { kind: "range", start: Number(matched[2]), end: Number(matched[3]) }, suffix };
+  }
+  const fragment = addr.indexOf("#L");
+  if (fragment === -1) return { path: addr, range: { kind: "whole-file" }, suffix };
+  return { path: addr.slice(0, fragment), range: { kind: "truncated" }, suffix };
+}
+function renderAnchorRun(rows, flat) {
+  try {
+    return renderAnchorTree(collapseByPath(rows));
+  } catch {
+    return flat;
+  }
+}
+function annotateBulletRun(bulletLines, pending) {
+  const addrs = bulletLines.map((line) => line.slice(2));
+  const paths = addrs.map((addr) => addr.split("#")[0]);
+  const claimed = addrs.map(() => []);
+  const used = /* @__PURE__ */ new Set();
+  const claim = (index, matches) => {
+    for (const row of pending) {
+      if (used.has(row) || !matches(row)) continue;
+      claimed[index].push(row);
+      used.add(row);
+    }
+  };
+  for (const [i, addr] of addrs.entries()) {
+    claim(i, (row) => anchorText2(row) === addr);
+  }
+  for (const [i, addr] of addrs.entries()) {
+    if (paths.filter((path) => path === paths[i]).length !== 1) continue;
+    claim(i, (row) => addr === row.path || addr.startsWith(`${row.path}#`));
+  }
+  const entries = addrs.map((addr, i) => {
+    const rows = claimed[i];
+    if (rows.length === 0) return { addr, suffix: "" };
+    const statuses = [...new Set(rows.map((row) => row.status))].sort();
+    return { addr, suffix: ` \u2014 ${statuses.map(humanStatusLabel).join(", ")}` };
+  });
+  for (const { addr, statuses } of dedupeByAnchor(pending.filter((row) => !used.has(row)))) {
+    entries.push({ addr, suffix: ` \u2014 ${statuses.map(humanStatusLabel).join(", ")}` });
+  }
+  return entries;
+}
+function annotateBlocks(blocksText, rows) {
+  const remaining = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    const group = remaining.get(row.name);
+    if (group) group.push(row);
+    else remaining.set(row.name, [row]);
+  }
+  const out = [];
+  let pending = [];
+  let bullets = [];
+  let inBullets = false;
+  let runRows = [];
+  let runFlat = [];
+  const collect = (addr, suffix) => {
+    runFlat.push(`- ${addr}${suffix}`);
+    runRows.push(parseAnchorAddr(addr, suffix));
+  };
+  const closeBullets = () => {
+    for (const { addr, suffix } of annotateBulletRun(bullets, pending)) {
+      collect(addr, suffix);
+    }
+    if (runRows.length > 0) out.push(...renderAnchorRun(runRows, runFlat));
+    bullets = [];
+    pending = [];
+    runRows = [];
+    runFlat = [];
+    inBullets = false;
+  };
+  const trimmed = blocksText.trim();
+  if (trimmed.length > 0) {
+    for (const line of trimmed.split("\n")) {
+      const header = /^## (.+)$/.exec(line);
+      if (header) {
+        closeBullets();
+        out.push(line);
+        pending = remaining.get(header[1]) ?? [];
+        remaining.delete(header[1]);
+        inBullets = true;
+        continue;
+      }
+      if (inBullets && line.startsWith("- ")) {
+        bullets.push(line);
+        continue;
+      }
+      if (inBullets) closeBullets();
+      out.push(line);
+    }
+    closeBullets();
+  }
+  for (const [name, group] of remaining) {
+    if (out.length > 0) out.push("", "---", "");
+    out.push(`## ${name}`);
+    const rows2 = [];
+    const flat = [];
+    for (const { addr, statuses } of dedupeByAnchor(group)) {
+      const suffix = ` \u2014 ${statuses.map(humanStatusLabel).join(", ")}`;
+      flat.push(`- ${addr}${suffix}`);
+      rows2.push(parseAnchorAddr(addr, suffix));
+    }
+    out.push(...renderAnchorRun(rows2, flat));
+  }
+  return out.join("\n");
+}
+function renderDriftReason(findings, blocksText, mode = "may-hold", harness = "generic") {
+  const names = [...new Set(findings.map((row) => row.name))];
+  const subject = names.length === 1 ? "an implicit dependency" : "implicit dependencies";
+  const name = names.length === 1 ? names[0] : "<name>";
+  const action = `preserve anchor shape; if an address changed, swap the old anchor for the new one with \`git span replace\`; update or retire the why only if its meaning changed; require \`git span drift ${name}\` to report zero`;
+  const lead = harness === "claude" ? "Dispatch a forked subagent to bring the coupled files back into agreement (follow confirmed authority)" : harness === "codex" ? 'Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to bring the coupled files back into agreement (follow confirmed authority)' : "Bring the coupled files back into agreement (follow confirmed authority)";
+  const tail = harness === "generic" ? mode === "may-hold" ? `then reconcile: ${action}. Retry the command; the hold will not fire again for the same debt state. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.` : `then reconcile: ${action}. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.` : mode === "may-hold" ? `\u2014 ${action}. Then retry. Load the \`git-span:reconcile\` skill in the fork. The hold will not fire again for the same debt state. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.` : `\u2014 ${action}. Load the \`git-span:reconcile\` skill in the fork. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.`;
+  const closing = `${lead}${harness === "generic" ? "," : ""} ${tail}`;
+  return [
+    `This change leaves ${subject} out of date:`,
+    "",
+    annotateBlocks(blocksText, findings),
+    "",
+    "---",
+    "",
+    closing
+  ].join("\n");
+}
+function wrapGitSpanContext(text) {
+  if (text.includes("<git-span>")) return text;
+  return `<git-span>
+${text}
+</git-span>`;
+}
+function renderEnvironmentalReason(conditions, blocksText) {
+  return [
+    "Could not check these implicit dependencies (unfetched LFS, sparse checkout, or similar) \u2014 not blocking:",
+    "",
+    annotateBlocks(blocksText, conditions),
+    "",
+    "---",
+    "",
+    "Fix the checkout/fetch issue if these dependencies need verifying."
+  ].join("\n");
+}
+function renderScanFailedReason(detail) {
+  return [
+    "The implicit-dependency check could not run, so this change was NOT verified:",
+    "<git-span-error>",
+    indentBlockBody(detail),
+    "</git-span-error>",
+    "",
+    "The command proceeds anyway. Fix the scan error if verification matters for this change."
+  ].join("\n");
+}
+function renderIncompatibleCliReason(err) {
+  const installed = err.installedVersion;
+  const lagging = installed !== null && !isOlderThan(installed, REQUIRED_GIT_SPAN_VERSION) ? (
+    // Binary is at or past what this plugin was built against, yet it
+    // rejected the command — the plugin is the stale artifact.
+    "the git-span plugin is older than the binary and is still issuing a retired command"
+  ) : "the git-span binary is older than the plugin and does not know this command yet";
+  return [
+    "The implicit-dependency check could not run, so this change was NOT verified.",
+    "",
+    `The installed git-span binary reports ${installed ?? "no readable version"}; this plugin`,
+    `expects ${REQUIRED_GIT_SPAN_VERSION} or compatible. They install through separate channels, so`,
+    `they can drift apart \u2014 here, ${lagging}.`,
+    "",
+    "Bring them back in line, then retry:",
+    "",
+    "    npm install -g git-span@latest    # upgrade the binary",
+    "    # and update the git-span plugin from the marketplace",
+    "",
+    "The command proceeds anyway. Nothing is wrong with this repository \u2014 but until",
+    "the two are aligned, span drift is not being checked and spans are not being",
+    "auto-reanchored on edit.",
+    "",
+    "<git-span-error>",
+    indentBlockBody(`git-span reported: ${err.detail}`),
+    "</git-span-error>"
+  ].join("\n");
+}
+var RELATED_SPANS_CAP = 8;
+function dirParts(path) {
+  const parts = path.split("/");
+  parts.pop();
+  return parts;
+}
+function pathProximity(a, b) {
+  const x = dirParts(a);
+  const y = dirParts(b);
+  let shared = 0;
+  while (shared < x.length && shared < y.length && x[shared] === y[shared]) shared++;
+  const deepest = Math.max(x.length, y.length);
+  if (deepest === 0) return 0;
+  return shared / deepest;
+}
+function groupCoveringByName(covering, uncovered) {
+  const byName = /* @__PURE__ */ new Map();
+  for (const row of covering) {
+    const group = byName.get(row.name) ?? { anchors: /* @__PURE__ */ new Map(), paths: /* @__PURE__ */ new Set() };
+    const addr = anchorText2(row);
+    if (!group.anchors.has(addr)) group.anchors.set(addr, row);
+    group.paths.add(row.path);
+    byName.set(row.name, group);
+  }
+  return [...byName.entries()].map(([name, group]) => {
+    let proximity = 0;
+    for (const path of group.paths) {
+      for (const target of uncovered) proximity = Math.max(proximity, pathProximity(path, target));
+    }
+    return {
+      name,
+      // The determinism tie-break this section has always had, preserved
+      // exactly: codepoint order over the anchor's `path#Lstart-Lend`
+      // address, matching the plain `[...set].sort()` this replaced. The
+      // tree renderer never re-sorts sibling paths, so it lays out whatever
+      // order arrives here — which is why this sort must stay.
+      anchors: [...group.anchors.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([, row]) => row),
+      coOccurrence: group.paths.size,
+      proximity
+    };
+  }).sort(
+    (a, b) => b.coOccurrence - a.coOccurrence || b.proximity - a.proximity || // Codepoint order, matching the plain `.sort()` this key replaced —
+    // `localeCompare` would make the tie-break locale-dependent, and the
+    // whole point of this key is that it is not.
+    (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
+  ).map(({ name, anchors }) => ({ name, anchors }));
+}
+function renderRelatedSpansSection(covering, uncovered, coveringBlocksText) {
+  if (covering.length === 0) return [];
+  const lines = [
+    "",
+    "---",
+    "",
+    "Other files in this change already belong to spans \u2014 an uncovered file above might belong with one of these instead of a new one:"
+  ];
+  const groups = groupCoveringByName(covering, uncovered);
+  for (const { name, anchors } of groups.slice(0, RELATED_SPANS_CAP)) {
+    const rows = anchors.map((anchor) => ({ path: anchor.path, range: rangeLabel2(anchor), suffix: "" }));
+    lines.push(
+      "",
+      `## ${name}`,
+      ...renderAnchorRun(
+        rows,
+        anchors.map((anchor) => `- ${anchorText2(anchor)}`)
+      )
+    );
+    const why = extractWhy(coveringBlocksText, name);
+    if (why.length > 0) lines.push("", why);
+  }
+  const hidden = groups.length - RELATED_SPANS_CAP;
+  if (hidden > 0) {
+    lines.push(
+      "",
+      hidden === 1 ? (
+        // The hidden spans cover *covered* paths, which this message never
+        // names — so a `<path>` placeholder would leave the reader with
+        // nothing to substitute. Bare `git span list` needs no argument and
+        // is guaranteed to include them.
+        "1 more span covers files in this change and is not shown \u2014 `git span list` lists every span in the repository."
+      ) : `${hidden} more spans cover files in this change and are not shown \u2014 \`git span list\` lists every span in the repository.`
+    );
+  }
+  return lines;
+}
+function renderUncoveredReason(uncovered, covering, coveringBlocksText, mode = "may-hold", harness = "generic") {
+  const lines = uncovered.map((path) => `- ${path}`);
+  const subject = uncovered.length === 1 ? "this file carries" : "these files carry";
+  const actionLine = harness === "generic" ? `Determine if ${subject} implicit dependencies, then use \`git span\` to document them:` : harness === "claude" ? `Dispatch a forked subagent to determine if ${subject} implicit dependencies and to then use \`git span\` to document them:` : `Spawn a forked subagent with \`spawn_agent\`, setting \`fork_turns: "all"\`, to determine if ${subject} implicit dependencies and to then use \`git span\` to document them:`;
+  const body = [
+    "<git-span>",
+    ...lines,
+    "",
+    actionLine,
+    "",
+    "`git span add <name> <anchor> [<anchor>] ...`  \u2014 an anchor is a path or a `path#Lstart-Lend` range",
+    '`git span why <name> "<why>"`',
+    "",
+    'The "<why>" is one or two complete present-tense clauses stating the relationship and any decisive nonlocal authority, invariant, permitted difference, lifecycle state, evidence gate, or focused conditional verification. Labels are optional but must introduce complete clauses. Omit generic work orders and CLI procedure.'
+  ];
+  body.push(...renderRelatedSpansSection(covering, uncovered, coveringBlocksText));
+  if (mode === "may-hold") {
+    body.push("", "If none exist, retry the command to proceed (one-time check).");
+  }
+  body.push(
+    "",
+    harness === "generic" ? "Load the `git-span:git-span` skill for guidance." : "Load the `git-span:git-span` skill in the fork.",
+    "</git-span>"
+  );
+  return body.join("\n");
+}
+var DEFAULT_TIMEOUT_MS2 = 1e4;
+var MAX_STDOUT_BYTES = 64 * 1024 * 1024;
+var GIT_READ_OPTS = ["-c", "core.quotepath=false"];
+var GIT_DIFF_SHAPE_OPTS = ["--no-ext-diff", "--no-color", "--src-prefix=a/", "--dst-prefix=b/"];
+function buildHunkReadArgs(repoRoot, range, paths) {
+  const rangeArgs = range.kind === "staged" ? ["--cached"] : range.kind === "worktree" ? ["HEAD"] : [`${range.base}..HEAD`];
+  return ["-C", repoRoot, ...GIT_READ_OPTS, "diff", "-U0", ...GIT_DIFF_SHAPE_OPTS, ...rangeArgs, "--", ...paths];
+}
+function gitText(args, cwd, timeoutMs) {
+  try {
+    return execFileSync6("git", args, {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: timeoutMs,
+      maxBuffer: MAX_STDOUT_BYTES
+    });
+  } catch {
+    return "";
+  }
+}
+function gitLines(args, cwd, timeoutMs) {
+  try {
+    const out = execFileSync6("git", args, {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: timeoutMs,
+      maxBuffer: MAX_STDOUT_BYTES
+    });
+    return out.split("\n").map((line) => line.trim()).filter((line) => line.length > 0).map(toPosix);
+  } catch {
+    return [];
+  }
+}
+function gitLinesOrNull(args, cwd, timeoutMs) {
+  try {
+    const out = execFileSync6("git", args, {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: timeoutMs,
+      maxBuffer: MAX_STDOUT_BYTES
+    });
+    return out.split("\n").map((line) => line.trim()).filter((line) => line.length > 0).map(toPosix);
+  } catch {
+    return null;
+  }
+}
+function createDefaultGitExecutor(timeoutMs = DEFAULT_TIMEOUT_MS2) {
+  return {
+    stagedPaths: async (cwd) => {
+      const repoRoot = resolveRepoRoot(cwd);
+      if (!repoRoot) return [];
+      return gitLines(["-C", repoRoot, ...GIT_READ_OPTS, "diff", "--cached", "--name-only"], repoRoot, timeoutMs);
+    },
+    trackedModifiedPaths: async (cwd) => {
+      const repoRoot = resolveRepoRoot(cwd);
+      if (!repoRoot) return [];
+      return gitLines(["-C", repoRoot, ...GIT_READ_OPTS, "diff", "--name-only"], repoRoot, timeoutMs);
+    },
+    outgoingPaths: async (cwd) => {
+      const repoRoot = resolveRepoRoot(cwd);
+      if (!repoRoot) return { paths: [], base: null };
+      const upstream = gitLinesOrNull(
+        ["-C", repoRoot, ...GIT_READ_OPTS, "diff", "--name-only", "@{u}..HEAD"],
+        repoRoot,
+        timeoutMs
       );
-      return null;
-    } catch (err) {
-      ctx.logger.warn("git-span static Bash pre-plan failed closed for attribution", { err });
-      return null;
+      if (upstream !== null) return { paths: upstream, base: "@{u}" };
+      const base = gitLines(["-C", repoRoot, "merge-base", "HEAD", "origin/HEAD"], repoRoot, timeoutMs)[0];
+      if (!base) return { paths: [], base: null };
+      return {
+        paths: gitLines(
+          ["-C", repoRoot, ...GIT_READ_OPTS, "diff", "--name-only", `${base}..HEAD`],
+          repoRoot,
+          timeoutMs
+        ),
+        base
+      };
+    },
+    pathspecPaths: async (paths, cwd) => {
+      const repoRoot = resolveRepoRoot(cwd);
+      if (!repoRoot || paths.length === 0) return [];
+      return gitLines(
+        ["-C", repoRoot, ...GIT_READ_OPTS, "diff", "HEAD", "--name-only", "--", ...paths],
+        repoRoot,
+        timeoutMs
+      );
+    },
+    changedHunks: async (paths, range, cwd) => {
+      if (range.kind === "unresolvable" || paths.length === 0) return [];
+      const repoRoot = resolveRepoRoot(cwd);
+      if (!repoRoot) return [];
+      const text = gitText(buildHunkReadArgs(repoRoot, range, paths), repoRoot, timeoutMs);
+      if (text.trim().length === 0) return [];
+      try {
+        return parseUnifiedDiff(text);
+      } catch {
+        return [];
+      }
     }
   };
 }
-var static_plan_default = preToolUseHook({ matcher: "Bash", timeout: 1e4 }, createHandler());
-
-// src/claude/post-tool-use.ts
-function positiveIntField(toolInput, field) {
-  const raw = toolInput[field];
-  return typeof raw === "number" && Number.isInteger(raw) && raw > 0 ? raw : void 0;
+var REQUIRED_GIT_SPAN_VERSION = "1.0.142";
+function isArgumentParseFailure(stderr) {
+  if (!/^\s*(usage|Usage):/m.test(stderr)) return false;
+  return /error:\s+(unexpected argument|unrecognized subcommand|invalid subcommand|unknown (?:argument|subcommand)|the subcommand .* wasn't recognized|unexpected value)/i.test(
+    stderr
+  );
 }
-function toTouchInput(toolName, toolInput, sessionId, cwd, filePath) {
-  if (toolName === "Read") {
-    return {
-      kind: "read",
-      sessionId,
-      cwd,
-      filePath,
-      offset: positiveIntField(toolInput, "offset"),
-      limit: positiveIntField(toolInput, "limit")
-    };
+function parseSemverTriple(text) {
+  const match = /(\d+)\.(\d+)\.(\d+)/.exec(text);
+  if (!match) return null;
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+function isOlderThan(version, floor) {
+  const a = parseSemverTriple(version);
+  const b = parseSemverTriple(floor);
+  if (!a || !b) return false;
+  for (let i = 0; i < 3; i++) {
+    if (a[i] !== b[i]) return a[i] < b[i];
   }
-  if (toolName === "Edit" || toolName === "Write") {
-    const raw = toolName === "Edit" ? toolInput.new_string : toolInput.content;
-    return {
-      kind: "write",
-      sessionId,
-      cwd,
-      filePath,
-      written: typeof raw === "string" ? raw : "",
-      targetState: "exists"
-    };
+  return false;
+}
+function probeGitSpanVersion(repoRoot, timeoutMs) {
+  try {
+    const out = execFileSync6("git", ["span", "--version"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: timeoutMs,
+      maxBuffer: MAX_STDOUT_BYTES
+    });
+    const triple = parseSemverTriple(out);
+    return triple ? triple.join(".") : null;
+  } catch {
+    return null;
+  }
+}
+function classifyCliFailure(detail, repoRoot, timeoutMs) {
+  if (!isArgumentParseFailure(detail)) return new AdvisorScanError(detail);
+  return new AdvisorIncompatibleCliError(detail, probeGitSpanVersion(repoRoot, timeoutMs));
+}
+function createDefaultAdvisorExecutors(timeoutMs = DEFAULT_TIMEOUT_MS2) {
+  return {
+    fix: async (paths, cwd) => {
+      const repoRoot = resolveRepoRoot(cwd);
+      if (!repoRoot || paths.length === 0) return;
+      try {
+        execFileSync6("git", ["span", "drift", ...paths, "--fix"], {
+          cwd: repoRoot,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+          timeout: timeoutMs,
+          maxBuffer: MAX_STDOUT_BYTES
+        });
+      } catch (err) {
+        const stderr = err.stderr;
+        const stderrText = typeof stderr === "string" ? stderr.trim() : "";
+        if (stderrText.length > 0) {
+          const classified = classifyCliFailure(stderrText, repoRoot, timeoutMs);
+          if (classified instanceof AdvisorIncompatibleCliError) throw classified;
+        }
+      }
+    },
+    drift: async (paths, cwd) => {
+      const repoRoot = resolveRepoRoot(cwd);
+      if (!repoRoot || paths.length === 0) return [];
+      let out;
+      try {
+        out = execFileSync6("git", ["span", "drift", "--format", "porcelain", ...paths], {
+          cwd: repoRoot,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+          timeout: timeoutMs,
+          maxBuffer: MAX_STDOUT_BYTES
+        });
+      } catch (err) {
+        const stdout = err.stdout;
+        const stderr = err.stderr;
+        const stdoutText = typeof stdout === "string" ? stdout : "";
+        const stderrText = typeof stderr === "string" ? stderr : "";
+        if (stdoutText.trim().length === 0 && stderrText.trim().length > 0) {
+          throw classifyCliFailure(stderrText.trim(), repoRoot, timeoutMs);
+        }
+        out = stdoutText;
+      }
+      return parseDriftPorcelain(out);
+    },
+    list: async (paths, cwd) => {
+      const repoRoot = resolveRepoRoot(cwd);
+      if (!repoRoot || paths.length === 0) return [];
+      let out;
+      try {
+        out = execFileSync6("git", ["span", "list", "--porcelain", ...paths], {
+          cwd: repoRoot,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+          timeout: timeoutMs,
+          maxBuffer: MAX_STDOUT_BYTES
+        });
+      } catch (err) {
+        const stdout = err.stdout;
+        const stderr = err.stderr;
+        const stdoutText = typeof stdout === "string" ? stdout : "";
+        const stderrText = typeof stderr === "string" ? stderr : "";
+        if (stdoutText.trim().length === 0 && stderrText.trim().length > 0) {
+          throw new AdvisorScanError(stderrText.trim());
+        }
+        out = stdoutText;
+      }
+      return parsePorcelain(out);
+    },
+    listBlocks: async (names, cwd) => {
+      const repoRoot = resolveRepoRoot(cwd);
+      if (!repoRoot || names.length === 0) return "";
+      try {
+        return execFileSync6("git", ["span", "list", ...names], {
+          cwd: repoRoot,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+          timeout: timeoutMs,
+          maxBuffer: MAX_STDOUT_BYTES
+        });
+      } catch {
+        return "";
+      }
+    }
+  };
+}
+function createDiskAdvisorMemoState(cwd) {
+  const repoRoot = resolveRepoRoot(cwd);
+  if (!repoRoot) {
+    return { has: () => false, record: () => false };
+  }
+  const dir = advisorMemoDir(repoRoot);
+  return {
+    has: (digest) => {
+      try {
+        return fs8.existsSync(nodePath7.join(dir, digest));
+      } catch {
+        return false;
+      }
+    },
+    record: (digest) => {
+      try {
+        fs8.mkdirSync(dir, { recursive: true });
+        fs8.writeFileSync(nodePath7.join(dir, digest), "");
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  };
+}
+
+// src/codex/advisor.ts
+var CODEX_ADVISOR_HARD_DENY = true;
+function extractShellCommand(toolInput) {
+  if (toolInput === null || typeof toolInput !== "object" || !("command" in toolInput)) return null;
+  const command = toolInput.command;
+  if (typeof command === "string") return command.length > 0 ? command : null;
+  if (Array.isArray(command)) {
+    const parts = command.filter((p) => typeof p === "string");
+    if (parts.length === 0) return null;
+    const flagIdx = parts.findIndex((p) => p === "-c" || p === "-lc" || p === "-ic");
+    if (flagIdx >= 0 && parts[flagIdx + 1] !== void 0) return parts[flagIdx + 1];
+    return parts.join(" ");
   }
   return null;
 }
+function createHandler(git = createDefaultGitExecutor(), executors = createDefaultAdvisorExecutors(), memoFactory = createDiskAdvisorMemoState, hardDeny = CODEX_ADVISOR_HARD_DENY) {
+  return async (input, ctx) => {
+    try {
+      ctx.logger.info("git-span advisor observed shell tool", { tool_name: input.tool_name });
+      const command = extractShellCommand(input.tool_input);
+      if (command === null) return void 0;
+      const parsed = parseGitCommand(command);
+      if (parsed.kind === "none") return void 0;
+      const cwd = input.cwd ?? "";
+      const all = parsed.kind === "commit" ? commitStagesAll(command) : false;
+      const changeset = await resolveChangeset(parsed.kind, all, cwd, git, parsed.paths);
+      const mode = parsed.kind === "status" ? "report-only" : "may-hold";
+      const result = await evaluateAdvisor(
+        changeset.paths,
+        cwd,
+        executors,
+        memoFactory(cwd),
+        mode,
+        {
+          git,
+          range: changeset.range,
+          // The hook logger is the only place a suppressed file leaves a trace —
+          // the agent-facing output of a suppression is nothing at all.
+          logger: ctx.logger
+        },
+        "codex"
+      );
+      if (result.decision !== "hold") {
+        if (result.kind === "environmental" || result.kind === "scan-failed") {
+          ctx.logger.warn("git-span advisor allowed with an unresolved condition", { reason: result.reason });
+          return preToolUseOutput({
+            additionalContext: wrapGitSpanContext(result.reason),
+            systemMessage: result.reason
+          });
+        }
+        if (result.kind === "semantic-drift-report" || result.kind === "uncovered-writes-report") {
+          return preToolUseOutput({
+            additionalContext: wrapGitSpanContext(result.reason),
+            systemMessage: result.reason
+          });
+        }
+        return void 0;
+      }
+      if (hardDeny) {
+        return preToolUseOutput({
+          permissionDecision: "deny",
+          permissionDecisionReason: result.reason,
+          systemMessage: result.reason
+        });
+      }
+      const warning = `Could not block this command \u2014 the issue below still needs resolving:
+${result.reason}`;
+      return preToolUseOutput({ additionalContext: wrapGitSpanContext(warning), systemMessage: warning });
+    } catch (err) {
+      ctx.logger.warn("git-span advisor failed open on an uncaught error", { err });
+      return void 0;
+    }
+  };
+}
+var advisor_default = preToolUseHook({ matcher: "Bash|shell|exec|local_shell", timeout: 1e4 }, createHandler());
+
+// src/codex/post-tool-use.ts
+import { resolve as resolvePath3 } from "node:path";
+
+// src/codex/apply-patch.ts
+import * as fs9 from "node:fs";
+var END_PATCH_MARKER = "*** End Patch";
+var ADD_FILE_MARKER = "*** Add File: ";
+var DELETE_FILE_MARKER = "*** Delete File: ";
+var UPDATE_FILE_MARKER = "*** Update File: ";
+var MOVE_TO_MARKER = "*** Move to: ";
+var EOF_MARKER = "*** End of File";
+var CHANGE_CONTEXT_MARKER = "@@ ";
+var EMPTY_CHANGE_CONTEXT_MARKER = "@@";
+function defaultReadPreEditFile(path) {
+  try {
+    return fs9.readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+}
+function toPosix2(p) {
+  return p.replace(/\\/g, "/");
+}
+function scanHunks(command) {
+  const hunks = [];
+  let openUpdate = null;
+  for (const raw of command.split("\n")) {
+    const headerLine = openUpdate ? raw.replace(/[ \t\r]+$/, "") : raw.trim();
+    if (headerLine === END_PATCH_MARKER) {
+      openUpdate = null;
+      continue;
+    }
+    if (headerLine.startsWith(ADD_FILE_MARKER)) {
+      hunks.push({ kind: "add", path: headerLine.slice(ADD_FILE_MARKER.length) });
+      openUpdate = null;
+      continue;
+    }
+    if (headerLine.startsWith(DELETE_FILE_MARKER)) {
+      hunks.push({ kind: "delete", path: headerLine.slice(DELETE_FILE_MARKER.length) });
+      openUpdate = null;
+      continue;
+    }
+    if (headerLine.startsWith(UPDATE_FILE_MARKER)) {
+      const hunk = {
+        kind: "update",
+        path: headerLine.slice(UPDATE_FILE_MARKER.length),
+        movePath: null,
+        chunks: []
+      };
+      hunks.push(hunk);
+      openUpdate = hunk;
+      continue;
+    }
+    if (openUpdate) {
+      processUpdateLine(openUpdate, raw);
+    }
+  }
+  return hunks;
+}
+function ensureChunk(hunk) {
+  const last = hunk.chunks[hunk.chunks.length - 1];
+  if (last) return last;
+  const chunk = { changeContext: null, oldLines: [], newLines: [] };
+  hunk.chunks.push(chunk);
+  return chunk;
+}
+function processUpdateLine(hunk, raw) {
+  const trimmedEnd = raw.replace(/[ \t\r]+$/, "");
+  if (trimmedEnd === EOF_MARKER) return;
+  if (hunk.chunks.length === 0 && hunk.movePath === null && trimmedEnd.startsWith(MOVE_TO_MARKER)) {
+    hunk.movePath = trimmedEnd.slice(MOVE_TO_MARKER.length);
+    return;
+  }
+  if (trimmedEnd === EMPTY_CHANGE_CONTEXT_MARKER) {
+    hunk.chunks.push({ changeContext: null, oldLines: [], newLines: [] });
+    return;
+  }
+  if (trimmedEnd.startsWith(CHANGE_CONTEXT_MARKER)) {
+    hunk.chunks.push({ changeContext: trimmedEnd.slice(CHANGE_CONTEXT_MARKER.length), oldLines: [], newLines: [] });
+    return;
+  }
+  if (raw === "") {
+    const chunk = ensureChunk(hunk);
+    chunk.oldLines.push("");
+    chunk.newLines.push("");
+    return;
+  }
+  const first = raw[0];
+  if (first === " ") {
+    const chunk = ensureChunk(hunk);
+    const content = raw.slice(1);
+    chunk.oldLines.push(content);
+    chunk.newLines.push(content);
+    return;
+  }
+  if (first === "+") {
+    const chunk = ensureChunk(hunk);
+    chunk.newLines.push(raw.slice(1));
+    return;
+  }
+  if (first === "-") {
+    const chunk = ensureChunk(hunk);
+    chunk.oldLines.push(raw.slice(1));
+    return;
+  }
+}
+function splitLines(content) {
+  return content.split("\n");
+}
+function lineIndices(lines, value) {
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i] === value) out.push(i);
+  }
+  return out;
+}
+function contiguousMatches(haystack, needle) {
+  const out = [];
+  if (needle.length === 0 || needle.length > haystack.length) return out;
+  const last = haystack.length - needle.length;
+  for (let i = 0; i <= last; i++) {
+    let ok = true;
+    for (let j = 0; j < needle.length; j++) {
+      if (haystack[i + j] !== needle[j]) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) out.push(i);
+  }
+  return out;
+}
+function locateChunk(preLines, chunk) {
+  const block = chunk.oldLines;
+  if (block.length === 0) {
+    const ctx2 = chunk.changeContext;
+    if (ctx2 !== null && ctx2 !== "") {
+      const ctxIdxs = lineIndices(preLines, ctx2);
+      if (ctxIdxs.length === 1) {
+        const line = ctxIdxs[0] + 1;
+        return { start: line, end: line };
+      }
+    }
+    return null;
+  }
+  const starts = contiguousMatches(preLines, block);
+  if (starts.length === 1) {
+    const s = starts[0];
+    return { start: s + 1, end: s + block.length };
+  }
+  if (starts.length === 0) return null;
+  const ctx = chunk.changeContext;
+  if (ctx !== null && ctx !== "") {
+    for (const c of lineIndices(preLines, ctx)) {
+      const after = starts.find((s) => s >= c);
+      if (after !== void 0) {
+        return { start: after + 1, end: after + block.length };
+      }
+    }
+  }
+  return null;
+}
+function recoverRange2(preLines, chunks) {
+  let union = null;
+  for (const chunk of chunks) {
+    const r = locateChunk(preLines, chunk);
+    if (r === null) return null;
+    union = union === null ? r : { start: Math.min(union.start, r.start), end: Math.max(union.end, r.end) };
+  }
+  return union;
+}
+function parseApplyPatch(command, readPreEditFile = defaultReadPreEditFile) {
+  const anchors = [];
+  for (const hunk of scanHunks(command)) {
+    if (hunk.kind === "add") {
+      anchors.push({ path: toPosix2(hunk.path), kind: "create" });
+      continue;
+    }
+    if (hunk.kind === "delete") {
+      anchors.push({ path: toPosix2(hunk.path), kind: "whole-write", absent: true });
+      continue;
+    }
+    const targetPath = toPosix2(hunk.movePath ?? hunk.path);
+    if (hunk.movePath !== null) {
+      anchors.push({ path: targetPath, kind: "whole-write" });
+      continue;
+    }
+    const content = readPreEditFile(hunk.path);
+    const range = content === null ? null : recoverRange2(splitLines(content), hunk.chunks);
+    if (range !== null) {
+      anchors.push({ path: targetPath, kind: "write", range });
+    } else {
+      anchors.push({ path: targetPath, kind: "whole-write" });
+    }
+  }
+  return anchors;
+}
+
+// src/codex/post-tool-use.ts
+var APPLY_PATCH_SUCCESS_PREFIX = "Success. Updated the following files:";
+function narrowApplyPatchCommand(toolInput) {
+  if (toolInput !== null && typeof toolInput === "object" && "command" in toolInput) {
+    const command = toolInput.command;
+    if (typeof command === "string") return command;
+  }
+  return null;
+}
+function narrowExecCommand(toolInput) {
+  if (toolInput !== null && typeof toolInput === "object" && "arguments" in toolInput) {
+    const args = toolInput.arguments;
+    if (typeof args === "string") {
+      try {
+        const parsed = JSON.parse(args);
+        if (parsed !== null && typeof parsed === "object" && typeof parsed.cmd === "string") {
+          return { cmd: parsed.cmd, workdir: typeof parsed.workdir === "string" ? parsed.workdir : null };
+        }
+      } catch {
+        return null;
+      }
+    }
+  }
+  return null;
+}
+function quoteObjectKeys(literal) {
+  let out = "";
+  let index = 0;
+  while (index < literal.length) {
+    const character = literal[index];
+    if (character === '"' || character === "'") {
+      const quote = character;
+      const start = index;
+      index += 1;
+      while (index < literal.length) {
+        if (literal[index] === "\\" && index + 1 < literal.length) index += 2;
+        else if (literal[index] === quote) {
+          index += 1;
+          break;
+        } else index += 1;
+      }
+      out += literal.slice(start, index);
+      continue;
+    }
+    const key = literal.slice(index).match(/^(\{|,)\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*:/);
+    if (key !== null) {
+      out += `${key[1]}"${key[2]}":`;
+      index += key[0].length;
+      continue;
+    }
+    out += character;
+    index += 1;
+  }
+  return out;
+}
+function narrowCodeModeExec(toolInput) {
+  if (toolInput !== null && typeof toolInput === "object" && "input" in toolInput) {
+    const input = toolInput.input;
+    if (typeof input === "string") {
+      const match = input.match(/tools\.exec_command\(\s*(\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\})\s*\)/);
+      if (match !== null) {
+        try {
+          const parsed = JSON.parse(quoteObjectKeys(match[1]));
+          if (parsed !== null && typeof parsed === "object" && typeof parsed.cmd === "string") {
+            return {
+              matched: true,
+              cmd: parsed.cmd,
+              workdir: typeof parsed.workdir === "string" ? parsed.workdir : null
+            };
+          }
+        } catch {
+          return { matched: true, cmd: null, workdir: null };
+        }
+        return { matched: true, cmd: null, workdir: null };
+      }
+    }
+  }
+  return { matched: false, cmd: null, workdir: null };
+}
+function classifyApplyPatchResponse(toolResponse) {
+  if (Array.isArray(toolResponse)) return "unknown";
+  const normalized = normalizeBashResponse(toolResponse);
+  if (normalized === null) return "unknown";
+  return normalized.stdout.startsWith(APPLY_PATCH_SUCCESS_PREFIX) ? "success" : "failure";
+}
+var noRangeRecovery = () => null;
+function plannedPatchCandidates(record, cwd) {
+  const repoRoot = resolveRepoRoot(cwd);
+  if (record === null || repoRoot === null || toPosix(record.repoRoot) !== toPosix(repoRoot)) return [];
+  return record.touches.map((touch) => ({
+    absolutePath: resolvePath3(record.repoRoot, touch.repoRelativePath),
+    operation: touch.operation === "delete" ? "delete" : touch.operation === "create-overwrite" ? "create-overwrite" : "modify",
+    ranges: touch.ranges,
+    preTrackedDelete: touch.operation === "delete" && touch.evidence?.kind === "tracked"
+  }));
+}
+async function runApplyPatchTouches(command, cwd, sessionId, record, executors, memo) {
+  const planned = plannedPatchCandidates(record, cwd);
+  const plannedPaths = new Set(planned.map(({ absolutePath }) => absolutePath));
+  const fallback = parseApplyPatch(command, noRangeRecovery).map(
+    (anchor) => ({
+      absolutePath: abspathAgainst(cwd, anchor.path),
+      operation: anchor.absent ? "delete" : anchor.kind === "create" ? "create-overwrite" : "modify",
+      ranges: anchor.range === void 0 ? [] : [anchor.range],
+      preTrackedDelete: false
+    })
+  ).filter(({ absolutePath }) => !plannedPaths.has(absolutePath));
+  const candidates = [...planned, ...fallback];
+  const tracked = filterTrackedEligibility(
+    candidates.map((value) => ({ absolutePath: value.absolutePath, value })),
+    { cwd }
+  );
+  const eligible = new Set(tracked.eligible.map(({ value }) => value));
+  for (const candidate of candidates) if (candidate.preTrackedDelete) eligible.add(candidate);
+  const blocks = [];
+  for (const candidate of candidates) {
+    if (!eligible.has(candidate)) continue;
+    const ranges = candidate.ranges.length === 0 ? [void 0] : candidate.ranges;
+    for (const range of ranges) {
+      const output = await runTouchHook(
+        {
+          kind: "write",
+          sessionId,
+          cwd,
+          filePath: candidate.absolutePath,
+          written: "",
+          range,
+          targetState: candidate.operation === "delete" ? "absent" : "exists",
+          ...candidate.operation === "delete" ? { postState: { realDelete: true } } : {}
+        },
+        executors,
+        memo
+      );
+      if (output.additionalContext) blocks.push(output.additionalContext);
+    }
+  }
+  return blocks;
+}
 function createHandler2(executors = createDefaultTouchExecutors(), memoFactory = createDiskMemoStore, layout = DEFAULT_SESSION_LAYOUT) {
   return async (input, ctx) => {
-    const sessionId = input.session_id;
     const cwd = input.cwd ?? "";
+    const sessionId = input.session_id;
     const memo = memoFactory(ctx.logger, layout);
-    if (input.tool_name === "Bash") {
-      const command = narrowCommand(input.tool_input);
-      if (command === null) return null;
-      const blocks = await runLayeredBashTouches(
-        command,
-        cwd,
+    if (["Bash", "shell", "local_shell", "exec_command", "exec"].includes(input.tool_name)) {
+      let command2 = extractShellCommand(input.tool_input);
+      let workdir = null;
+      if (command2 === null) {
+        const classic = narrowExecCommand(input.tool_input);
+        command2 = classic?.cmd ?? null;
+        workdir = classic?.workdir ?? null;
+      }
+      if (command2 === null && input.tool_name === "exec") {
+        const codeMode = narrowCodeModeExec(input.tool_input);
+        if (codeMode.matched && codeMode.cmd === null) {
+          ctx.logger.warn("Codex code-mode exec envelope matched but its command is not statically recoverable");
+        }
+        command2 = codeMode.cmd;
+        workdir = codeMode.workdir;
+      }
+      if (command2 === null || command2.length === 0) return void 0;
+      const effectiveCwd = workdir !== null && !/[`$]/.test(workdir) ? resolvePath3(cwd, workdir) : cwd;
+      const blocks2 = await runLayeredBashTouches(
+        command2,
+        effectiveCwd,
         sessionId,
         input.tool_use_id,
         input.tool_response,
@@ -7875,27 +9229,68 @@ function createHandler2(executors = createDefaultTouchExecutors(), memoFactory =
         ctx.logger,
         createDefaultPlannedTouchStore(layout)
       );
-      if (blocks.length === 0) return null;
-      const combined = blocks.join("");
-      return postToolUseOutput({
-        hookSpecificOutput: { additionalContext: combined },
-        systemMessage: combined
-      });
+      if (blocks2.length === 0) return void 0;
+      const combined2 = blocks2.join("");
+      return postToolUseOutput({ additionalContext: combined2, systemMessage: combined2 });
     }
-    const toolInput = input.tool_input ?? {};
-    const absolutePath = derivePath(toolInput, cwd);
-    if (absolutePath === null) return null;
-    const touch = toTouchInput(input.tool_name, toolInput, sessionId, cwd, absolutePath);
-    if (touch === null || postTrackedValue(absolutePath, touch, cwd) === null) return null;
-    const output = await runTouchHook(touch, executors, memo);
-    if (!output.additionalContext) return null;
-    return postToolUseOutput({
-      hookSpecificOutput: { additionalContext: output.additionalContext },
-      systemMessage: output.additionalContext
-    });
+    const command = narrowApplyPatchCommand(input.tool_input);
+    if (command === null) return void 0;
+    const store = createDefaultPlannedTouchStore(layout);
+    const planned = input.tool_use_id === void 0 ? { status: "missing" } : store.take(sessionId, input.tool_use_id);
+    if (planned.status === "consumed") return void 0;
+    const record = planned.status === "record" ? planned.record : null;
+    const classification = classifyApplyPatchResponse(input.tool_response);
+    if (classification === "failure") return void 0;
+    if (classification === "unknown") {
+      ctx.logger.warn("Codex apply_patch tool_response shape unrecognized; running touch defensively");
+    }
+    const blocks = await runApplyPatchTouches(command, cwd, sessionId, record, executors, memo);
+    if (blocks.length === 0) return void 0;
+    const combined = blocks.join("");
+    return postToolUseOutput({ additionalContext: combined, systemMessage: combined });
   };
 }
-var post_tool_use_default = postToolUseHook({ matcher: "Read|Edit|Write|Bash", timeout: 1e4 }, createHandler2());
+var post_tool_use_default = postToolUseHook(
+  { matcher: "apply_patch|exec_command|exec|shell|local_shell|Bash", timeout: 1e4 },
+  createHandler2()
+);
 
-// src/claude/post-tool-use-entry.ts
-execute(post_tool_use_default);
+// src/codex/static-plan.ts
+function narrowShellPlanInput(toolInput) {
+  const direct = extractShellCommand(toolInput);
+  if (direct !== null) return { command: direct, workdir: null };
+  const classic = narrowExecCommand(toolInput);
+  if (classic !== null) return { command: classic.cmd, workdir: classic.workdir };
+  const codeMode = narrowCodeModeExec(toolInput);
+  return codeMode.cmd === null ? null : { command: codeMode.cmd, workdir: codeMode.workdir };
+}
+function createHandler3(layout = DEFAULT_SESSION_LAYOUT) {
+  return async (input, ctx) => {
+    try {
+      if (!input.session_id || !input.tool_use_id) return void 0;
+      const narrowed = narrowShellPlanInput(input.tool_input);
+      if (narrowed === null) return void 0;
+      const cwd = input.cwd ?? "";
+      const effectiveCwd = narrowed.workdir !== null && !/[`$]/.test(narrowed.workdir) ? resolvePath4(cwd, narrowed.workdir) : cwd;
+      planBashTouches(
+        narrowed.command,
+        effectiveCwd,
+        input.session_id,
+        input.tool_use_id,
+        ctx.logger,
+        createDefaultPlannedTouchStore(layout)
+      );
+      return void 0;
+    } catch (err) {
+      ctx.logger.warn("git-span static Bash pre-plan failed closed for attribution", { err });
+      return void 0;
+    }
+  };
+}
+var static_plan_default = preToolUseHook(
+  { matcher: "Bash|shell|exec|local_shell|exec_command", timeout: 1e4 },
+  createHandler3()
+);
+
+// src/codex/static-plan-entry.ts
+execute(static_plan_default);

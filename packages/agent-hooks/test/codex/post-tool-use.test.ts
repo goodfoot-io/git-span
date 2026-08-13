@@ -3,8 +3,9 @@
  * (packages/agent-hooks/src/codex/post-tool-use.ts).
  *
  * The adapter narrows the confirmed apply_patch envelope into per-file anchors
- * and drives the shared runTouchHook core (whole-file scoped — Codex never
- * recovers a post-edit range) with injected executors and an in-memory memo. It
+ * and drives the shared runTouchHook core. A PreToolUse plan preserves
+ * pre-edit hunk ranges; a genuinely missing plan retains the patch parser's
+ * whole-file fallback. The tests use injected executors and an in-memory memo. It
  * preserves the success-classification belt: a confirmed rejection suppresses
  * the touch, an unrecognized shape proceeds with a warning.
  *
@@ -18,12 +19,14 @@ import { rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Logger } from '@goodfoot/codex-hooks';
 import { afterAll, describe, expect, it } from 'vitest';
+import { createHandler as createApplyPatchPlanHandler } from '../../src/codex/apply-patch-plan.js';
 import hook, {
   classifyApplyPatchResponse,
   createHandler,
   narrowCodeModeExec,
   narrowExecCommand
 } from '../../src/codex/post-tool-use.js';
+import { createHandler as createStaticPlanHandler } from '../../src/codex/static-plan.js';
 import type { DriftPorcelainRow, PorcelainRow, PorcelainStatus } from '../../src/common/agent-hooks-common.js';
 import type { MemoFactory, MemoLogger, MemoStore } from '../../src/common/span-surface.js';
 import type { TouchExecutors, TouchFixResult } from '../../src/common/touch-core.js';
@@ -31,16 +34,18 @@ import { makeTempRepo } from '../helpers.js';
 import { makeTempLayout } from '../session-layout-helpers.js';
 
 /**
- * This file's own session base, on /tmp. The handlers below construct a real
- * snapshot store and consult the recordless-note gate even where the memo is a
- * fake, so without a layout they wrote fixture session dirs into the live
- * `~/.cache/git-span/session` — the `sess-1` / `codex-sess` leak.
+ * This file's own session base, on /tmp. Static plans and memo state must not
+ * leak fixture session ids into the live `~/.cache/git-span/session` tree.
  */
 const temp = makeTempLayout();
 const layout = temp.layout;
 afterAll(() => temp.cleanup());
 
 const logger = new Logger();
+
+function trackAll(root: string): void {
+  execFileSync('git', ['add', '-A'], { cwd: root });
+}
 
 function printSummary(paths: { added?: string[]; modified?: string[]; deleted?: string[] }): string {
   const lines = ['Success. Updated the following files:'];
@@ -52,6 +57,7 @@ function printSummary(paths: { added?: string[]; modified?: string[]; deleted?: 
 
 const SUCCESS_RESPONSE = printSummary({ modified: ['foo.ts'] });
 const FAILURE_RESPONSE = 'apply_patch verification failed: context not found in foo.ts';
+let postSequence = 0;
 
 /** Update `foo.ts` (block beta/gamma/delta). */
 function updateEnvelope(path = 'foo.ts'): string {
@@ -142,7 +148,12 @@ function warnCapturingLogger(): { logger: Logger; warnings: string[] } {
   return { logger: capture, warnings };
 }
 
-function postInput(cwd: string, command: unknown, toolResponse: unknown = SUCCESS_RESPONSE): Record<string, unknown> {
+function postInput(
+  cwd: string,
+  command: unknown,
+  toolResponse: unknown = SUCCESS_RESPONSE,
+  toolUseId = `tu-${postSequence++}`
+): Record<string, unknown> {
   return {
     hook_event_name: 'PostToolUse' as const,
     session_id: 'codex-sess',
@@ -153,7 +164,7 @@ function postInput(cwd: string, command: unknown, toolResponse: unknown = SUCCES
     tool_name: 'apply_patch',
     tool_input: { command },
     tool_response: toolResponse,
-    tool_use_id: 'tu-1',
+    tool_use_id: toolUseId,
     turn_id: 'turn-1'
   };
 }
@@ -256,6 +267,7 @@ describe('codex post-tool-use touch signal', () => {
   function repoWithFoo(): { root: string; cleanup: () => void } {
     const r = makeTempRepo();
     writeFileSync(join(r.root, 'foo.ts'), `${['alpha', 'beta', 'gamma', 'delta'].join('\n')}\n`);
+    trackAll(r.root);
     return r;
   }
 
@@ -269,6 +281,46 @@ describe('codex post-tool-use touch signal', () => {
       expect(calls.fix).toBe(1);
       expect(result.stdout.hookSpecificOutput?.additionalContext).toContain(SPAN);
       expect(result.stdout.systemMessage).toContain(SPAN);
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it('consumes the pre-edit apply_patch plan and preserves its recovered hunk range', async () => {
+    const repo = repoWithFoo();
+    try {
+      const command = updateEnvelope();
+      const input = postInput(repo.root, command, SUCCESS_RESPONSE, 'tu-apply-range');
+      await createApplyPatchPlanHandler(layout)(input as never, { logger } as never);
+      writeFileSync(join(repo.root, 'foo.ts'), `${['alpha', 'beta', 'GAMMA', 'delta'].join('\n')}\n`);
+      const target = 'billing/target-range';
+      const outside = 'billing/outside-range';
+      const { executors } = makeExecutors({
+        list: [
+          { name: target, path: 'foo.ts', start: 2, end: 4 },
+          { name: outside, path: 'foo.ts', start: 8, end: 10 }
+        ],
+        drift: [
+          { name: target, path: 'foo.ts', start: 2, end: 4, status: 'CHANGED' },
+          { name: outside, path: 'foo.ts', start: 8, end: 10, status: 'CHANGED' }
+        ]
+      });
+      const handler = createHandler(executors, inMemoryMemoFactory(), layout);
+      const result = toResult(await handler(input as never, { logger } as never));
+      const context = result.stdout.hookSpecificOutput?.additionalContext ?? '';
+
+      expect(context).toContain(target);
+      expect(context).not.toContain(outside);
+
+      const duplicate = makeExecutors({
+        list: [{ name: outside, path: 'foo.ts', start: 8, end: 10 }],
+        drift: [{ name: outside, path: 'foo.ts', start: 8, end: 10, status: 'CHANGED' }]
+      });
+      const duplicateResult = toResult(
+        await createHandler(duplicate.executors, inMemoryMemoFactory(), layout)(input as never, { logger } as never)
+      );
+      expect(duplicate.calls.fix).toBe(0);
+      expect(duplicateResult.stdout.hookSpecificOutput?.additionalContext).toBeUndefined();
     } finally {
       repo.cleanup();
     }
@@ -388,6 +440,7 @@ describe('codex post-tool-use touch signal', () => {
     try {
       const filePath = join(repo.root, 'mod.rs');
       writeFileSync(filePath, Array.from({ length: 500 }, (_, i) => `line ${i + 1}`).join('\n'));
+      trackAll(repo.root);
       const { executors, calls } = makeExecutors({
         list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
         drift: [driftRow('CHANGED')]
@@ -412,6 +465,7 @@ describe('codex post-tool-use touch signal', () => {
     try {
       const filePath = join(repo.root, 'mod.rs');
       writeFileSync(filePath, Array.from({ length: 500 }, (_, i) => `line ${i + 1}`).join('\n'));
+      trackAll(repo.root);
       const { executors } = makeExecutors({
         list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
         drift: [driftRow('CHANGED')]
@@ -458,6 +512,7 @@ describe('codex post-tool-use touch signal', () => {
     try {
       const filePath = join(repo.root, 'mod.rs');
       writeFileSync(filePath, Array.from({ length: 500 }, (_, i) => `line ${i + 1}`).join('\n'));
+      trackAll(repo.root);
       const { executors, calls } = makeExecutors({
         list: [{ name: SPAN, path: 'mod.rs', start: 39, end: 189 }],
         drift: [driftRow('CHANGED')]
@@ -502,6 +557,7 @@ describe('codex post-tool-use touch signal', () => {
       const filePath = join(repo.root, 'out.txt');
       // Post-edit state: the heredoc wrote only 3 lines, down from 10.
       writeFileSync(filePath, `${['alpha', 'beta', 'gamma'].join('\n')}\n`);
+      trackAll(repo.root);
       const command = `cat > ${filePath} <<'EOF'\nalpha\nbeta\ngamma\nEOF\n`;
       const { executors, calls } = makeExecutors({
         list: [{ name: SPAN, path: 'out.txt', start: 8, end: 10 }],
@@ -532,6 +588,7 @@ describe('codex post-tool-use touch signal', () => {
       const filePath = join(repo.root, 'out.txt');
       // Post-edit state: original two lines + appended three lines.
       writeFileSync(filePath, `${['orig1', 'orig2', 'alpha', 'beta', 'gamma'].join('\n')}\n`);
+      trackAll(repo.root);
       const command = `cat >> ${filePath} <<'EOF'\nalpha\nbeta\ngamma\nEOF\n`;
       const { executors, calls } = makeExecutors({
         list: [{ name: SPAN, path: 'out.txt', start: 1, end: 2 }],
@@ -569,6 +626,7 @@ describe('codex post-tool-use touch signal', () => {
     function writeModRs(root: string): string {
       const filePath = join(root, 'mod.rs');
       writeFileSync(filePath, Array.from({ length: 500 }, (_, i) => `line ${i + 1}`).join('\n'));
+      trackAll(root);
       return filePath;
     }
 
@@ -751,11 +809,11 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
    * then delete the `null`-content ones. Index entries survive `rm` — the
    * delete-reality probe (`git ls-files --error-unmatch`) sees them.
    */
-  function seed(repo: { root: string }, files: Array<[string, string | null]>, tracked: string[] = []): void {
+  function seed(repo: { root: string }, files: Array<[string, string | null]>, _tracked: string[] = []): void {
     for (const [rel, content] of files) {
       writeFileSync(join(repo.root, rel), content ?? 'placeholder\n');
     }
-    if (tracked.length > 0) execFileSync('git', ['add', ...tracked], { cwd: repo.root });
+    trackAll(repo.root);
     for (const [rel, content] of files) {
       if (content === null) rmSync(join(repo.root, rel), { force: true });
     }
@@ -902,8 +960,20 @@ describe('Bash write touches per family (Phase 2 — skipped acceptance checks)'
       seed(repo, [['s.txt', 'a\n']]);
       const { executors, fixPaths } = makeExecutors();
       const handler = createHandler(executors, inMemoryMemoFactory(), layout);
+      const command = `sed -i 's/a/b/' ${join(repo.root, 's.txt')}`;
+      await createStaticPlanHandler(layout)(
+        {
+          session_id: 'codex-sess',
+          tool_use_id: 'tu-sed-plan',
+          cwd: repo.root,
+          tool_name: 'Bash',
+          tool_input: { command }
+        } as never,
+        { logger } as never
+      );
+      writeFileSync(join(repo.root, 's.txt'), 'b\n');
 
-      await handler(bashInput(repo, `sed -i 's/a/b/' ${join(repo.root, 's.txt')}`) as never, { logger } as never);
+      await handler({ ...bashInput(repo, command), tool_use_id: 'tu-sed-plan' } as never, { logger } as never);
 
       expect(fixPaths).toEqual([join(repo.root, 's.txt')]);
     } finally {

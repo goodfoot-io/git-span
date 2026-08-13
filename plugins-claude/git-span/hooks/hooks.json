@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PLUGIN_ROOT\"/hooks/bin/snapshot.mjs",
+            "command": "node \"$CLAUDE_PLUGIN_ROOT\"/hooks/bin/static-plan.mjs",
             "timeout": 10000
           },
           {
@@ -15,27 +15,6 @@
           }
         ],
         "matcher": "Bash"
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PLUGIN_ROOT\"/hooks/bin/activity-log.mjs",
-            "timeout": 10000
-          }
-        ],
-        "matcher": "Edit|Write|apply_patch"
-      }
-    ],
-    "SessionEnd": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PLUGIN_ROOT\"/hooks/bin/session-end.mjs",
-            "timeout": 10000
-          }
-        ]
       }
     ],
     "PostToolUse": [
@@ -48,6 +27,17 @@
           }
         ],
         "matcher": "Read|Edit|Write|Bash"
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PLUGIN_ROOT\"/hooks/bin/session-end.mjs",
+            "timeout": 10000
+          }
+        ]
       }
     ],
     "PostToolUseFailure": [
@@ -65,13 +55,12 @@
   },
   "__generated": {
     "files": [
-      "snapshot.mjs",
-      "session-end.mjs",
-      "post-tool-use.mjs",
-      "post-tool-use-failure.mjs",
+      "static-plan.mjs",
       "advisor.mjs",
-      "activity-log.mjs"
+      "post-tool-use.mjs",
+      "session-end.mjs",
+      "post-tool-use-failure.mjs"
     ],
-    "timestamp": "2026-08-05T08:38:09.282Z"
+    "timestamp": "2026-08-13T22:29:13.356Z"
   }
 }

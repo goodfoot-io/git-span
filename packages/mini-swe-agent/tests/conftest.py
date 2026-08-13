@@ -33,7 +33,7 @@ if name == "advisor.mjs" and os.environ.get("MSWEA_STUB_DENY") and os.environ["M
             "permissionDecisionReason": "span debt: " + cmd,
         }
     }
-elif name == "snapshot.mjs" and os.environ.get("MSWEA_STUB_CONTEXT_PRE"):
+elif name == "static-plan.mjs" and os.environ.get("MSWEA_STUB_CONTEXT_PRE"):
     out = {"hookSpecificOutput": {"additionalContext": os.environ["MSWEA_STUB_CONTEXT_PRE"]}}
 elif name in ("post-tool-use.mjs", "post-tool-use-failure.mjs") and os.environ.get("MSWEA_STUB_CONTEXT_POST"):
     out = {"hookSpecificOutput": {"additionalContext": os.environ["MSWEA_STUB_CONTEXT_POST"]}}
@@ -47,7 +47,7 @@ sys.exit(int(os.environ.get("MSWEA_STUB_EXIT", "0")))
 """
 
 HOOK_NAMES = (
-    "snapshot.mjs",
+    "static-plan.mjs",
     "advisor.mjs",
     "post-tool-use.mjs",
     "post-tool-use-failure.mjs",

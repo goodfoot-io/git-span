@@ -23,23 +23,27 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Logger as ClaudeLogger } from '@goodfoot/claude-code-hooks';
 import { Logger as CodexLogger } from '@goodfoot/codex-hooks';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createHandler as createClaudeHandler } from '../../src/claude/post-tool-use.js';
+import { createHandler as createClaudeFailureHandler } from '../../src/claude/post-tool-use-failure.js';
+import { createHandler as createClaudePlanHandler } from '../../src/claude/static-plan.js';
 import { createHandler as createCodexHandler } from '../../src/codex/post-tool-use.js';
+import { createHandler as createCodexPlanHandler } from '../../src/codex/static-plan.js';
 import type { MemoFactory, MemoLogger, MemoStore } from '../../src/common/span-surface.js';
 import type { TouchInput } from '../../src/common/touch-core.js';
+import { createHandler as createMiniHandler } from '../../src/mswea/post-tool-use.js';
+import { createHandler as createMiniFailureHandler } from '../../src/mswea/post-tool-use-failure.js';
+import { createHandler as createMiniPlanHandler } from '../../src/mswea/static-plan.js';
 import { makeTempRepo } from '../helpers.js';
 import { makeTempLayout } from '../session-layout-helpers.js';
 
 /**
- * This file's own session base, on /tmp. The handlers below construct a real
- * snapshot store and consult the recordless-note gate even where the memo is a
- * fake, so without a layout they wrote fixture session dirs into the live
- * `~/.cache/git-span/session` — the `sess-1` / `codex-sess` leak.
+ * This file's own session base, on /tmp. Static plans and memo state must not
+ * leak fixture session ids into the live `~/.cache/git-span/session` tree.
  */
 const temp = makeTempLayout();
 const layout = temp.layout;
@@ -124,18 +128,32 @@ describe('cross-adapter contract — identical touch call sequences (Phase 3)', 
     repoB.cleanup();
   });
 
-  async function runClaudeBash(cwd: string, command: string): Promise<void> {
+  async function runClaudeBash(cwd: string, command: string, toolResponse: unknown = undefined): Promise<void> {
     const handler = createClaudeHandler(undefined, inMemoryMemoFactory(), layout);
     await handler(
-      { session_id: 'sess', cwd, tool_name: 'Bash', tool_input: { command } } as never,
+      { session_id: 'sess', cwd, tool_name: 'Bash', tool_input: { command }, tool_response: toolResponse } as never,
       { logger: claudeLogger } as never
     );
   }
 
-  async function runCodexBash(cwd: string, command: string): Promise<void> {
+  async function runMiniBash(cwd: string, command: string, toolResponse: unknown = undefined): Promise<void> {
+    const handler = createMiniHandler(undefined, inMemoryMemoFactory(), layout);
+    await handler(
+      {
+        session_id: 'mini-sess',
+        cwd,
+        tool_name: 'Bash',
+        tool_input: { command },
+        tool_response: toolResponse
+      } as never,
+      { logger: claudeLogger } as never
+    );
+  }
+
+  async function runCodexBash(cwd: string, command: string, toolResponse: unknown = undefined): Promise<void> {
     const handler = createCodexHandler(undefined, inMemoryMemoFactory(), layout);
     await handler(
-      { session_id: 'sess', cwd, tool_name: 'Bash', tool_input: { command } } as never,
+      { session_id: 'sess', cwd, tool_name: 'Bash', tool_input: { command }, tool_response: toolResponse } as never,
       { logger: codexLogger } as never
     );
   }
@@ -217,6 +235,7 @@ describe('cross-adapter contract — identical touch call sequences (Phase 3)', 
     }));
     const runners = [
       () => runClaudeBash(repoA.root, fixture.cmd),
+      () => runMiniBash(repoA.root, fixture.cmd),
       () => runCodexBash(repoA.root, fixture.cmd),
       () => runCodexExecCommand(repoA.root, fixture.cmd, repoA.root),
       () => runCodexCodeModeExec(repoA.root, fixture.cmd, repoA.root)
@@ -283,5 +302,132 @@ describe('cross-adapter contract — identical touch call sequences (Phase 3)', 
     recorded.calls.length = 0;
     await runCodexCodeModeExec(repoB.root, "sed -n '2,4p' f", repoA.root);
     expect(recorded.calls).toEqual(expected);
+  });
+
+  it.each([
+    {
+      name: 'short-circuited &&',
+      command: 'false && cat f',
+      response: { output: '', exitStatus: 1 },
+      expected: []
+    },
+    {
+      name: 'taken || branch',
+      command: 'false || cat f',
+      response: { output: '', exitStatus: 0 },
+      expected: [{ filePath: '', cwd: '', offset: 1, limit: TOTAL }]
+    },
+    {
+      name: 'interrupted',
+      command: 'cat f',
+      response: { output: '', interrupted: true },
+      expected: []
+    },
+    {
+      name: 'nullable timeout',
+      command: 'cat f',
+      response: { output: '', exitStatus: 0, timedOutAfterMs: null },
+      expected: [{ filePath: '', cwd: '', offset: 1, limit: TOTAL }]
+    },
+    { name: 'untracked read', command: 'cat untracked', response: { output: '', exitStatus: 0 }, expected: [] }
+  ])('$name has the same join/interruption/tracking result in Claude, mini-swe, and Codex', async (fixture) => {
+    writeFileSync(join(repoA.root, 'untracked'), 'not in the index\n');
+    const expected = fixture.expected.map((call) => ({
+      ...call,
+      filePath: join(repoA.root, 'f'),
+      cwd: repoA.root
+    }));
+    for (const run of [runClaudeBash, runMiniBash, runCodexBash]) {
+      recorded.calls.length = 0;
+      await run(repoA.root, fixture.command, fixture.response);
+      expect(recorded.calls).toEqual(expected);
+    }
+  });
+
+  it('keeps response-derived reads as a distinct, cross-host pass', async () => {
+    const response = { output: 'f:2:needle\n', exitStatus: 0 };
+    const expected = [{ filePath: join(repoA.root, 'f'), cwd: repoA.root, offset: 2, limit: 1 }];
+    for (const run of [runClaudeBash, runMiniBash, runCodexBash]) {
+      recorded.calls.length = 0;
+      await run(repoA.root, 'rg -n needle .', response);
+      expect(recorded.calls).toEqual(expected);
+    }
+  });
+
+  it('attributes a verified failed substitution identically through Claude, mini-swe, and Codex events', async () => {
+    const command = "sed -i 's/line 7/changed/' f; false";
+    const cases = [
+      {
+        sessionId: 'failed-claude',
+        toolUseId: 'failed-claude-tool',
+        plan: createClaudePlanHandler(layout),
+        post: createClaudeFailureHandler(undefined, inMemoryMemoFactory(), layout)
+      },
+      {
+        sessionId: 'failed-mini',
+        toolUseId: 'failed-mini-tool',
+        plan: createMiniPlanHandler(layout),
+        post: createMiniFailureHandler(undefined, inMemoryMemoFactory(), layout)
+      }
+    ];
+    for (const fixture of cases) {
+      writeFileSync(join(repoA.root, 'f'), `${Array.from({ length: TOTAL }, (_, i) => `line ${i + 1}`).join('\n')}\n`);
+      const input = {
+        session_id: fixture.sessionId,
+        tool_use_id: fixture.toolUseId,
+        cwd: repoA.root,
+        tool_name: 'Bash',
+        tool_input: { command }
+      };
+      const warnings: string[] = [];
+      const testLogger = {
+        warn: (message: string) => warnings.push(message),
+        info: () => undefined
+      };
+      await fixture.plan(input as never, { logger: testLogger } as never);
+      expect(
+        existsSync(join(layout.base, fixture.sessionId, 'planned-touches', `${fixture.toolUseId}.json`)),
+        fixture.sessionId
+      ).toBe(true);
+      writeFileSync(
+        join(repoA.root, 'f'),
+        `${Array.from({ length: TOTAL }, (_, i) => (i === 6 ? 'changed' : `line ${i + 1}`)).join('\n')}\n`
+      );
+      recorded.calls.length = 0;
+      await fixture.post(input as never, { logger: testLogger } as never);
+      expect(warnings, fixture.sessionId).toEqual([]);
+      expect(recorded.calls, fixture.sessionId).toEqual([
+        { filePath: join(repoA.root, 'f'), cwd: repoA.root, offset: undefined, limit: undefined }
+      ]);
+    }
+
+    writeFileSync(join(repoA.root, 'f'), `${Array.from({ length: TOTAL }, (_, i) => `line ${i + 1}`).join('\n')}\n`);
+    const codexInput = {
+      session_id: 'failed-codex',
+      tool_use_id: 'failed-codex-tool',
+      cwd: repoA.root,
+      tool_name: 'Bash',
+      tool_input: { command },
+      tool_response: { output: '', exitStatus: 1 }
+    };
+    await createCodexPlanHandler(layout)(codexInput as never, { logger: codexLogger } as never);
+    writeFileSync(
+      join(repoA.root, 'f'),
+      `${Array.from({ length: TOTAL }, (_, i) => (i === 6 ? 'changed' : `line ${i + 1}`)).join('\n')}\n`
+    );
+    recorded.calls.length = 0;
+    await createCodexHandler(
+      undefined,
+      inMemoryMemoFactory(),
+      layout
+    )(
+      codexInput as never,
+      {
+        logger: codexLogger
+      } as never
+    );
+    expect(recorded.calls).toEqual([
+      { filePath: join(repoA.root, 'f'), cwd: repoA.root, offset: undefined, limit: undefined }
+    ]);
   });
 });

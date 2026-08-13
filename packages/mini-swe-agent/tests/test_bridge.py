@@ -26,7 +26,7 @@ def test_pre_tool_use_envelope(stub_hooks):
     assert not result.denied
     assert result.context is None
     records = read_record(stub_hooks["record"])
-    assert [r["hook"] for r in records] == ["snapshot.mjs", "advisor.mjs"]
+    assert [r["hook"] for r in records] == ["static-plan.mjs", "advisor.mjs"]
     for r in records:
         assert r["envelope"] == {
             "session_id": "sess-1",
@@ -210,7 +210,7 @@ def test_docker_bridge_exec_command_shape(stub_hooks, fake_docker):
         "container_id": "fake-container-1",
         "cwd": "/work",
         "envs": {"FOO": "bar"},
-        "command": ["python3", f"{stub_hooks['dir']}/snapshot.mjs"],
+        "command": ["python3", f"{stub_hooks['dir']}/static-plan.mjs"],
     }
 
 

@@ -59,6 +59,9 @@ function createHookFunction(hookEventName, config, handler) {
   hookFn.timeout = config.timeout;
   return hookFn;
 }
+function preToolUseHook(config, handler) {
+  return createHookFunction("PreToolUse", config, handler);
+}
 function postToolUseFailureHook(config, handler) {
   return createHookFunction("PostToolUseFailure", config, handler);
 }
@@ -600,6 +603,16 @@ function isInsideSpanRoot(repoRelPath, spanRoot = SPAN_ROOT) {
   const root = spanRoot.replace(/\/+$/, "");
   return repoRelPath === root || repoRelPath.startsWith(`${root}/`);
 }
+function isGitIgnored(repoRoot, repoRelPath) {
+  try {
+    execFileSync("git", ["-C", repoRoot, "check-ignore", "-q", "--", repoRelPath], {
+      stdio: ["ignore", "ignore", "ignore"]
+    });
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
 function relativeToRepo(repoRoot, absPath) {
   const root = toPosix(repoRoot);
   const abs = toPosix(absPath);
@@ -762,934 +775,4977 @@ function pruneStaleSessions(layout, now = Date.now(), maxAgeMs = THIRTY_DAYS_MS)
     }
   }
 }
-function resolveGitCommonDir(repoRoot) {
-  const out = execFileSync("git", ["-C", repoRoot, "rev-parse", "--git-common-dir"], {
-    stdio: ["ignore", "pipe", "ignore"],
-    encoding: "utf8"
-  });
-  const trimmed = toPosix(out.trim());
-  if (!nodePath.isAbsolute(trimmed)) {
-    return toPosix(nodePath.resolve(repoRoot, trimmed));
-  }
-  return trimmed;
-}
-function queueRoot(repoRoot) {
-  return nodePath.join(resolveGitCommonDir(repoRoot), "git-span");
-}
-function indentBlockBody(text) {
-  return text.split("\n").map((line) => line.length > 0 ? `  ${line}` : line).join("\n");
-}
 
-// src/common/snapshot-harness.ts
-import { execFileSync as execFileSync4 } from "node:child_process";
-import { mkdirSync as mkdirSync5, readdirSync as readdirSync3, readFileSync as readFileSync3, rmSync as rmSync3, statSync as statSync4, writeFileSync as writeFileSync3 } from "node:fs";
-import { join as join5 } from "node:path";
-
-// src/common/snapshot-core.ts
-import { execFileSync as execFileSync2 } from "node:child_process";
+// src/common/bash-attribution.ts
 import { createHash } from "node:crypto";
-import { copyFileSync, lstatSync, mkdirSync as mkdirSync3, writeFileSync } from "node:fs";
-import { isAbsolute as isAbsolute2, join as join2, relative, resolve as resolve2, sep } from "node:path";
-var DEFAULT_SNAPSHOT_BUDGETS = {
-  preSideMaxWallSeconds: 1,
-  maxStorageBytes: 64 * 1024 * 1024,
-  maxTouchedFiles: 100,
-  postSideWallSeconds: 5,
-  recordTtlMs: 24 * 60 * 60 * 1e3,
-  unfinishedEntryTtlMs: 15 * 60 * 1e3
-};
-function hunksToPostRanges(hunks) {
-  if (hunks.some((h) => h.postLines === 0)) return { changed: [], wholeFile: true };
-  const changed = hunks.map((h) => ({
-    start: h.postStart,
-    end: h.postStart + h.postLines - 1
-  }));
-  return { changed, wholeFile: false };
-}
-var PATH_COVERAGE_GAP = /^(?:post-side wall budget exhausted:|touched-files cap \d+ exceeded:|unreadable at compare:|snapshot compare aborted:|write-tree degraded to stat-only:)/;
-function recordHasPathCoverageGap(record) {
-  return record.gaps.some((g) => PATH_COVERAGE_GAP.test(g));
-}
-function applyAmbiguityRules(mine, siblings, path) {
-  const myPreHash = mine.preHash;
-  const ordered = [...siblings].sort((a, b) => {
-    if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
-    return a.toolUseId < b.toolUseId ? -1 : a.toolUseId > b.toolUseId ? 1 : 0;
-  });
-  for (const sib of ordered) {
-    const covers = sib.coverageGap || sib.pre !== null || sib.post !== null;
-    if (!covers) continue;
-    if (!sib.consumed) {
-      return {
-        ambiguous: true,
-        reason: `unconsumed sibling ${sib.toolUseId} may still write ${path}`,
-        siblingToolUseId: sib.toolUseId,
-        siblingSessionId: sib.sessionId
-      };
-    }
-    const preHash = sib.pre?.hash ?? null;
-    const postHash = sib.post?.hash ?? null;
-    if (sib.createdAt > mine.createdAt) {
-      if (postHash === null) {
-        if (sib.coverageGap) {
-          return {
-            ambiguous: true,
-            reason: `sibling ${sib.toolUseId} consumed with a coverage gap and no post state for ${path} \u2014 its end state is unknowable`,
-            siblingToolUseId: sib.toolUseId,
-            siblingSessionId: sib.sessionId
-          };
-        }
-        continue;
-      }
-      if (postHash === preHash) continue;
-      return {
-        ambiguous: true,
-        reason: `sibling ${sib.toolUseId} changed ${path} in a window overlapping mine`,
-        siblingToolUseId: sib.toolUseId,
-        siblingSessionId: sib.sessionId
-      };
-    }
-    if (preHash !== null && preHash === postHash) continue;
-    if (postHash !== null && postHash === myPreHash) continue;
-    if (sib.consumedAt !== null && sib.consumedAt <= mine.createdAt) continue;
-    return {
-      ambiguous: true,
-      reason: `sibling ${sib.toolUseId} changed ${path} in a window extending past my baseline`,
-      siblingToolUseId: sib.toolUseId,
-      siblingSessionId: sib.sessionId
-    };
-  }
-  return { ambiguous: false };
-}
-function classifyTextOrBinary(content) {
-  if (content.length === 0) return true;
-  let suspect = 0;
-  let i = 0;
-  while (i < content.length) {
-    const b = content[i];
-    if (b < 128) {
-      if (b < 32 && (b < 8 || b > 13) && b !== 27 || b === 127) suspect += 1;
-      i += 1;
-      continue;
-    }
-    const len = b >= 240 && b <= 244 ? 4 : b >= 224 && b <= 239 ? 3 : b >= 194 && b <= 223 ? 2 : 0;
-    if (len === 0) {
-      suspect += 1;
-      i += 1;
-      continue;
-    }
-    let wellFormed = i + len <= content.length;
-    for (let j = 1; wellFormed && j < len; j += 1) {
-      const c = content[i + j];
-      if (c < 128 || c > 191) wellFormed = false;
-    }
-    if (wellFormed) {
-      i += len;
-    } else {
-      suspect += 1;
-      i += 1;
-    }
-  }
-  return suspect / content.length <= BINARY_SUSPECT_RATIO;
-}
-var BINARY_SUSPECT_RATIO = 0.1;
-var STAT_ONLY_SWEEP_FLOOR_MS = 2e3;
-function captureWriteTree(input) {
-  const { repoRoot, objectDir, indexFile: indexFile2, alternates, realIndexFile, spanRoot, wallBudgetMs, runGit, stat } = input;
-  const gaps = [];
-  const start = input.wallStart ?? Date.now();
-  const remaining = () => Math.max(1, wallBudgetMs - (Date.now() - start));
-  try {
-    mkdirSync3(join2(objectDir, "info"), { recursive: true, mode: 448 });
-    writeFileSync(join2(objectDir, "info", "alternates"), `${alternates}
-`, { mode: 384 });
-    if (realIndexFile !== null) copyFileSync(realIndexFile, indexFile2);
-    const env = { GIT_INDEX_FILE: indexFile2, GIT_OBJECT_DIRECTORY: objectDir };
-    runGit(["add", "-A"], { cwd: repoRoot, env, timeoutMs: remaining() });
-    const out = runGit(["write-tree"], { cwd: repoRoot, env, timeoutMs: remaining() });
-    const treeSha = out.toString("utf8").trim();
-    if (/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(treeSha)) return { treeSha, gaps };
-    gaps.push(`write-tree degraded to stat-only: unexpected write-tree output ${JSON.stringify(treeSha)}`);
-  } catch (err) {
-    gaps.push(`write-tree degraded to stat-only: ${err instanceof Error ? err.message : String(err)}`);
-  }
-  try {
-    return {
-      treeSha: null,
-      statOnly: statOnlySweep({
-        repoRoot,
-        spanRoot,
-        timeoutMs: Math.max(remaining(), STAT_ONLY_SWEEP_FLOOR_MS),
-        runGit,
-        stat
-      }),
-      gaps
-    };
-  } catch (err) {
-    gaps.push(`stat-only sweep failed: ${err instanceof Error ? err.message : String(err)}`);
-    return { treeSha: null, gaps };
-  }
-}
-function statOnlySweep(input) {
-  const raw = input.runGit(["ls-files", "-z", "--cached", "--others", "--exclude-standard"], {
-    cwd: input.repoRoot,
-    timeoutMs: input.timeoutMs
-  }).toString("utf8");
-  const spanRel = spanRootRelative(input.repoRoot, input.spanRoot);
-  const statOnly = {};
-  for (const rel of raw.split("\0")) {
-    if (rel.length === 0 || isInsideSpanRoot(rel, spanRel)) continue;
-    const st = input.stat(join2(input.repoRoot, rel));
-    if (st !== null) statOnly[rel] = { size: st.size, mtimeNs: st.mtimeNs };
-  }
-  return statOnly;
-}
-function spanRootRelative(repoRoot, spanRoot) {
-  return isAbsolute2(spanRoot) ? relative(repoRoot, spanRoot).split(sep).join("/") : spanRoot;
-}
-function compareTrees(input) {
-  const { preTreeSha, postTreeSha, repoRoot, objectDir, spanRoot, budgets, wallStart, runGit } = input;
-  const clock = input.wallClock ?? Date.now;
-  const wallMs = budgets.postSideWallSeconds * 1e3;
-  const wallExhausted = () => clock() - wallStart > wallMs;
-  const remaining = () => Math.max(1, wallMs - (clock() - wallStart));
-  const env = { GIT_OBJECT_DIRECTORY: objectDir };
-  const spanRel = spanRootRelative(repoRoot, spanRoot);
-  const attributions = /* @__PURE__ */ new Map();
-  const gaps = [];
-  const contentHashes = /* @__PURE__ */ new Map();
-  const catBlob = (tree, path) => runGit(["cat-file", "blob", `${tree}:${path}`], { cwd: repoRoot, env, timeoutMs: remaining() });
-  const isTimeout = (err) => err !== null && typeof err === "object" && "code" in err && err.code === "ETIMEDOUT" || /ETIMEDOUT/.test(String(err));
-  const enumerationExhausted = {
-    attributions,
-    unchanged: /* @__PURE__ */ new Set(),
-    gaps,
-    contentHashes
-  };
-  let preTreePaths;
-  try {
-    preTreePaths = runGit(["ls-tree", "-r", "--name-only", "-z", preTreeSha], {
-      cwd: repoRoot,
-      env,
-      timeoutMs: remaining()
-    }).toString("utf8").split("\0").filter((p) => p.length > 0 && !isInsideSpanRoot(p, spanRel));
-  } catch (err) {
-    if (!isTimeout(err)) throw err;
-    gaps.push("post-side wall budget exhausted: attributed 0, the pre-tree enumeration timed out");
-    return enumerationExhausted;
-  }
-  const unchanged = new Set(preTreePaths);
-  if (preTreeSha === postTreeSha) return { attributions, unchanged, gaps, contentHashes };
-  let raw;
-  try {
-    raw = runGit(["diff", "--name-status", "-M100%", "--text", "-z", preTreeSha, postTreeSha], {
-      cwd: repoRoot,
-      env,
-      timeoutMs: remaining()
-    }).toString("utf8");
-  } catch (err) {
-    if (!isTimeout(err)) throw err;
-    gaps.push("post-side wall budget exhausted: attributed 0, the changed-path enumeration timed out");
-    return enumerationExhausted;
-  }
-  const entries = [];
-  const tokens = raw.split("\0");
-  for (let i = 0; i < tokens.length; ) {
-    const status = tokens[i];
-    if (status.length === 0) {
-      i += 1;
-      continue;
-    }
-    if (status.startsWith("R") || status.startsWith("C")) {
-      const from = tokens[i + 1] ?? "";
-      const to = tokens[i + 2] ?? "";
-      i += 3;
-      if (isInsideSpanRoot(from, spanRel) || isInsideSpanRoot(to, spanRel)) continue;
-      unchanged.delete(from);
-      entries.push({ status: "R", from, to });
-      continue;
-    }
-    const path = tokens[i + 1] ?? "";
-    i += 2;
-    if (isInsideSpanRoot(path, spanRel)) continue;
-    if (status === "M" || status === "D") unchanged.delete(path);
-    if (status === "M" || status === "A" || status === "D") entries.push({ status, path });
-  }
-  let touchedCount = 0;
-  let attributed = 0;
-  const pushWallGap = (fromIndex) => {
-    const rest = entries.slice(fromIndex).map((e) => e.status === "R" ? e.to : e.path);
-    gaps.push(
-      `post-side wall budget exhausted: attributed ${attributed}/${entries.length}, unattributed ${rest.join(", ")}`
-    );
-  };
-  for (let i = 0; i < entries.length; i += 1) {
-    const entry = entries[i];
-    if (wallExhausted()) {
-      pushWallGap(i);
-      break;
-    }
-    if (touchedCount >= budgets.maxTouchedFiles) {
-      const capPath = entry.status === "R" ? entry.to : entry.path;
-      gaps.push(`touched-files cap ${budgets.maxTouchedFiles} exceeded: ${capPath} not attributed`);
-      continue;
-    }
-    touchedCount += 1;
-    if (entry.status === "R") {
-      attributions.set(entry.to, { kind: "rename", from: entry.from });
-      attributed += 1;
-      continue;
-    }
-    const path = entry.path;
-    if (entry.status === "A" || entry.status === "D") {
-      const tree = entry.status === "A" ? postTreeSha : preTreeSha;
-      let hash;
+import * as fs7 from "node:fs";
+import * as nodePath5 from "node:path";
+
+// src/common/span-surface.ts
+import { execFileSync as execFileSync2 } from "node:child_process";
+import * as fs4 from "node:fs";
+import * as nodePath3 from "node:path";
+
+// src/common/span-ignore.ts
+import * as fs3 from "node:fs";
+import * as nodePath2 from "node:path";
+var HOOK_IGNORE_REL = nodePath2.join(".span", ".hookignore");
+
+// src/common/span-surface.ts
+function createDiskMemoStore(logger2, layout) {
+  return {
+    getSurfaced(sessionId) {
+      pruneStaleSessions(layout);
       try {
-        hash = createHash("sha256").update(catBlob(tree, path)).digest("hex");
-      } catch (err) {
-        if (isTimeout(err)) {
-          pushWallGap(i);
-          break;
+        const raw = fs4.readFileSync(layout.memoFile(sessionId), "utf8");
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed.surfaced)) {
+          return new Set(parsed.surfaced);
         }
-        gaps.push(`unreadable at compare: ${path} dropped without attribution`);
-        continue;
+      } catch (err) {
+        logger2.warn("memo read failed (treating as empty)", { err });
       }
-      contentHashes.set(path, entry.status === "A" ? { pre: null, post: hash } : { pre: hash, post: null });
-      attributions.set(path, { kind: entry.status === "A" ? "created" : "deleted" });
-      attributed += 1;
+      return /* @__PURE__ */ new Set();
+    },
+    addSurfaced(sessionId, names) {
+      pruneStaleSessions(layout);
+      const existing = this.getSurfaced(sessionId);
+      for (const n of names) existing.add(n);
+      const memoDir = layout.dir(sessionId);
+      const memoPath = layout.memoFile(sessionId);
+      const tmpPath = `${memoPath}.tmp`;
+      try {
+        fs4.mkdirSync(memoDir, { recursive: true, mode: 448 });
+        fs4.writeFileSync(tmpPath, JSON.stringify({ surfaced: [...existing] }), "utf8");
+        fs4.renameSync(tmpPath, memoPath);
+      } catch (err) {
+        logger2.warn("memo write failed", { err });
+      }
+    }
+  };
+}
+function resolveTouchScope(cwd, absPath) {
+  const cwdRepoRoot = cwd ? resolveRepoRoot(cwd) : null;
+  if (!cwdRepoRoot) return null;
+  const absDir = toPosix(nodePath3.dirname(absPath));
+  const fileRepoRoot = resolveRepoRoot(absDir);
+  if (fileRepoRoot !== cwdRepoRoot) return null;
+  const repoRoot = cwdRepoRoot;
+  const repoRelPath = relativeToRepo(repoRoot, absPath);
+  if (isGitIgnored(repoRoot, repoRelPath)) return null;
+  const spanRoot = resolveSpanRoot(repoRoot);
+  if (isInsideSpanRoot(repoRelPath, spanRoot)) return null;
+  return { repoRoot, repoRelPath };
+}
+
+// src/common/static-attribution.ts
+import { execFileSync as execFileSync4 } from "node:child_process";
+import * as fs5 from "node:fs";
+import * as nodePath4 from "node:path";
+
+// src/common/parse-command.ts
+import { readFileSync as readFileSync4, statSync as statSync3 } from "node:fs";
+import { basename as basename2, isAbsolute as isAbsolute2, join as joinPath, resolve as resolvePath } from "node:path";
+
+// src/common/command-resolve.ts
+import { execFileSync as execFileSync3 } from "node:child_process";
+import { readFileSync as readFileSync3, statSync as statSync2 } from "node:fs";
+function countFileLines(absolutePath) {
+  try {
+    if (!statSync2(absolutePath).isFile()) return null;
+    const content = readFileSync3(absolutePath, "utf8");
+    if (content.length === 0) return 0;
+    const withoutTrailingNewline = content.endsWith("\n") ? content.slice(0, -1) : content;
+    return withoutTrailingNewline.split("\n").length;
+  } catch {
+    return null;
+  }
+}
+function countGitBlobLines(cwd, rev, path) {
+  try {
+    const out = execFileSync3("git", ["show", `${rev}:${path}`], {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"]
+    });
+    if (out.length === 0) return 0;
+    const withoutTrailingNewline = out.endsWith("\n") ? out.slice(0, -1) : out;
+    return withoutTrailingNewline.split("\n").length;
+  } catch {
+    return null;
+  }
+}
+
+// src/common/shell-split.ts
+var COMMAND_OPENER_WORDS = /* @__PURE__ */ new Set(["do", "then", "else", "elif", "if", "while", "until", "!", "time", "{", "("]);
+var WORD_END = /[\s;&|()<>]/;
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function splitTopLevel(cmd) {
+  const parts = [];
+  let buf = "";
+  let i = 0;
+  const n = cmd.length;
+  let depth = 0;
+  let braceDepth = 0;
+  let inSquote = false;
+  let inDquote = false;
+  let pendingOp = "start";
+  let malformed;
+  let listStart = 0;
+  const reject = (v) => {
+    malformed = v;
+    parts.length = listStart;
+    i = n;
+  };
+  const isUnconsumedOperator = () => (pendingOp === "pipe" || pendingOp === "and" || pendingOp === "or") && buf.trim() === "";
+  const lastWord = () => buf.trimEnd().match(/\S+$/)?.[0] ?? "";
+  const DANGLING_REDIRECT_WORD = /^(?:>|>>|&>|&>>|>\||<|<>|<<|<<-|<<<|>&|\d+(?:>|>>|>\||<|<>|<<|<<-|<<<|>&|<&))$/;
+  const lastWordIsDanglingRedirect = () => DANGLING_REDIRECT_WORD.test(lastWord());
+  const isWordStart = () => buf === "" || /\s$/.test(buf);
+  const startsRedirectAt = (i2) => {
+    const c = cmd[i2];
+    if (c === ">" || c === "<") return true;
+    if (c === "&") return cmd[i2 + 1] === ">";
+    if (c >= "0" && c <= "9") {
+      let j = i2;
+      while (j < n && cmd[j] >= "0" && cmd[j] <= "9") j += 1;
+      return cmd[j] === ">" || cmd[j] === "<";
+    }
+    return false;
+  };
+  const isCommandPosition = () => buf.trim() === "" || /\n$/.test(buf) || /[;&|()]$/.test(buf.trimEnd()) || COMMAND_OPENER_WORDS.has(lastWord());
+  const flush = (nextOp) => {
+    const s = buf.trim();
+    if (s) {
+      if (pendingOp === "pipe" && (s === "!" || /^!\s/.test(s))) {
+        reject("pipe-bang");
+        return;
+      }
+      parts.push({ text: s, precededBy: pendingOp, ...bufHeredoc ? { heredoc: true } : {} });
+    }
+    buf = "";
+    bufHeredoc = false;
+    pendingOp = nextOp;
+  };
+  const levels = [[]];
+  const top = () => {
+    const lv = levels[levels.length - 1];
+    return lv.length > 0 ? lv[lv.length - 1] : void 0;
+  };
+  let afterKeyword = false;
+  let functionSeen = false;
+  let nameSeen = false;
+  let caseRegion = null;
+  const heredocs = [];
+  let inBody = false;
+  let bufHeredoc = false;
+  while (i < n) {
+    const c = cmd[i];
+    if (inSquote) {
+      buf += c;
+      if (c === "'") inSquote = false;
+      i += 1;
       continue;
     }
-    let preBlob;
-    let postBlob;
-    try {
-      preBlob = catBlob(preTreeSha, path);
-      postBlob = catBlob(postTreeSha, path);
-    } catch (err) {
-      if (isTimeout(err)) {
-        pushWallGap(i);
+    if (inDquote) {
+      buf += c;
+      if (c === "\\" && i + 1 < n) {
+        buf += cmd[i + 1];
+        i += 2;
+        continue;
+      }
+      if (c === '"') inDquote = false;
+      i += 1;
+      continue;
+    }
+    if (c === "'") {
+      inSquote = true;
+      buf += c;
+      i += 1;
+      continue;
+    }
+    if (c === '"') {
+      inDquote = true;
+      buf += c;
+      i += 1;
+      continue;
+    }
+    if (c === "\\" && i + 1 < n) {
+      buf += c + cmd[i + 1];
+      i += 2;
+      continue;
+    }
+    if (braceDepth > 0) {
+      if (c === "}") braceDepth -= 1;
+      buf += c;
+      i += 1;
+      continue;
+    }
+    if (inBody) {
+      const lineEnd = cmd.indexOf("\n", i);
+      const line = lineEnd === -1 ? cmd.slice(i) : cmd.slice(i, lineEnd);
+      if (heredocs[0].close.test(line)) {
+        heredocs.shift();
+        if (heredocs.length === 0) inBody = false;
+      }
+      if (levels[levels.length - 1].length > 0 || caseRegion !== null) {
+        buf += line;
+        if (lineEnd !== -1) buf += "\n";
+      }
+      i = lineEnd === -1 ? n : lineEnd + 1;
+      continue;
+    }
+    if (c === "\n" && heredocs.length > 0) {
+      if (levels[levels.length - 1].length > 0 || caseRegion !== null) {
+        buf += c;
+        inBody = true;
+        i += 1;
+        continue;
+      }
+      if (isUnconsumedOperator() || lastWordIsDanglingRedirect()) {
+        reject("dangling-operator");
         break;
       }
-      gaps.push(`unreadable at compare: ${path} dropped without attribution`);
+      flush("newline");
+      inBody = true;
+      i += 1;
       continue;
     }
-    contentHashes.set(path, {
-      pre: createHash("sha256").update(preBlob).digest("hex"),
-      post: createHash("sha256").update(postBlob).digest("hex")
-    });
-    if (classifyTextOrBinary(preBlob) && classifyTextOrBinary(postBlob)) {
-      let diffOut;
-      try {
-        diffOut = runGit(["diff", "--unified=0", "--text", preTreeSha, postTreeSha, "--", `:(literal)${path}`], {
-          cwd: repoRoot,
-          env,
-          timeoutMs: remaining()
-        }).toString("utf8");
-      } catch (err) {
-        if (isTimeout(err)) {
-          pushWallGap(i);
+    if (c === "#" && depth === 0 && isWordStart()) {
+      while (i < n && cmd[i] !== "\n") i += 1;
+      continue;
+    }
+    if (caseRegion) {
+      const r = caseRegion;
+      if (r.localDepth === 0) {
+        const s2 = cmd.slice(i, i + 2);
+        const s3 = cmd.slice(i, i + 3);
+        if (s3 === ";;&" || s2 === ";;" || s2 === ";&") {
+          r.pos = "pattern-start";
+          buf += s3 === ";;&" ? s3 : s2;
+          i += s3 === ";;&" ? 3 : 2;
+          continue;
+        }
+        if (c === ";") {
+          r.pos = "command";
+          r.cmdEmpty = true;
+          buf += c;
+          i += 1;
+          continue;
+        }
+        const last = buf[buf.length - 1];
+        if (c === "&" && cmd[i + 1] !== ">" && cmd[i + 1] !== "&" && last !== ">" && last !== "<") {
+          r.pos = "command";
+          r.cmdEmpty = true;
+          buf += c;
+          i += 1;
+          continue;
+        }
+        if (c === "\n") {
+          if (r.pos === "pattern") {
+            reject("unclosed-case");
+            break;
+          }
+          if (r.pos === "command") r.cmdEmpty = true;
+          buf += c;
+          i += 1;
+          continue;
+        }
+        if (c === "#" && isWordStart()) {
+          while (i < n && cmd[i] !== "\n") i += 1;
+          continue;
+        }
+        if (isWordStart() && !WORD_END.test(c)) {
+          let j = i;
+          while (j < n && !WORD_END.test(cmd[j])) j += 1;
+          const w = cmd.slice(i, j);
+          if (w === "esac" && (r.pos === "pattern-start" || r.pos === "command" && r.cmdEmpty)) {
+            caseRegion = null;
+            afterKeyword = false;
+          } else if (w === "in" && r.pos === "subject") {
+            r.pos = "pattern-start";
+          } else if (r.pos === "pattern-start") {
+            r.pos = "pattern";
+          } else if (r.pos === "command") {
+            r.cmdEmpty = false;
+          }
+          buf += w;
+          i = j;
+          continue;
+        }
+      }
+    }
+    if (c === "(") {
+      if (caseRegion) {
+        caseRegion.localDepth += 1;
+      } else {
+        const t = top();
+        if (t?.kind === "brace") t.body = true;
+        depth += 1;
+        levels.push([]);
+      }
+      afterKeyword = false;
+      buf += c;
+      i += 1;
+      continue;
+    }
+    if (c === ")") {
+      if (caseRegion) {
+        if (caseRegion.localDepth === 0) {
+          caseRegion.pos = "command";
+          caseRegion.cmdEmpty = true;
+        } else {
+          caseRegion.localDepth -= 1;
+        }
+      } else {
+        if (depth === 0) {
+          reject("unbalanced-paren");
           break;
         }
-        throw err;
+        if (levels[levels.length - 1].length > 0) {
+          reject("unclosed-construct");
+          break;
+        }
+        depth -= 1;
+        levels.pop();
       }
-      const hunks = parseUnifiedZeroHunks(diffOut);
-      attributions.set(path, {
-        kind: "changed",
-        observed: hunks.length > 0 ? hunksToPostRanges(hunks) : { changed: [], wholeFile: true }
-      });
-    } else {
-      gaps.push(`binary-scope: ${path} classified binary, whole-file scope`);
-      attributions.set(path, { kind: "changed", observed: { changed: [], wholeFile: true } });
+      buf += c;
+      i += 1;
+      continue;
     }
-    attributed += 1;
-  }
-  return { attributions, unchanged, gaps, contentHashes };
-}
-function parseUnifiedZeroHunks(diffText) {
-  const hunks = [];
-  for (const m of diffText.matchAll(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm)) {
-    hunks.push({
-      preStart: Number(m[1]),
-      preLines: m[2] === void 0 ? 1 : Number(m[2]),
-      postStart: Number(m[3]),
-      postLines: m[4] === void 0 ? 1 : Number(m[4])
-    });
-  }
-  return hunks;
-}
-function compareStatOnly(pre, post) {
-  const attributions = /* @__PURE__ */ new Map();
-  const unchanged = /* @__PURE__ */ new Set();
-  for (const [path, preEntry] of Object.entries(pre)) {
-    const postEntry = post[path];
-    if (postEntry === void 0) {
-      attributions.set(path, { kind: "deleted" });
-    } else if (postEntry.size === preEntry.size && postEntry.mtimeNs === preEntry.mtimeNs) {
-      unchanged.add(path);
-    } else {
-      attributions.set(path, { kind: "changed", observed: { changed: [], wholeFile: true } });
+    if (!caseRegion && !WORD_END.test(c) && (isWordStart() || /[()]$/.test(buf)) && !(c === "$" && cmd[i + 1] === "{")) {
+      let j = i;
+      while (j < n && !WORD_END.test(cmd[j])) j += 1;
+      const w = cmd.slice(i, j);
+      const isFnShape = () => /^[A-Za-z_][A-Za-z0-9_]*\(\)$/.test(lastWord()) || lastWord() === "()";
+      if (w === "in" && top() !== void 0 && ["for", "select"].includes(top().kind)) {
+      } else if (w === "{" && (isCommandPosition() || isFnShape() || functionSeen && nameSeen)) {
+        if (functionSeen && nameSeen) {
+          functionSeen = false;
+          nameSeen = false;
+        }
+        if (top()?.kind === "brace") top().body = true;
+        levels[levels.length - 1].push({ kind: "brace", body: false });
+        afterKeyword = true;
+      } else if (w === "}" && isCommandPosition()) {
+        const t = top();
+        if (afterKeyword || t === void 0 || t.kind !== "brace" || !t.body) {
+          reject("unclosed-construct");
+          break;
+        }
+        levels[levels.length - 1].pop();
+        afterKeyword = false;
+      } else if (isCommandPosition()) {
+        if (w === "case") {
+          caseRegion = { pos: "subject", cmdEmpty: false, localDepth: 0 };
+          afterKeyword = false;
+        } else if (w === "function") {
+          functionSeen = true;
+          nameSeen = false;
+          afterKeyword = false;
+        } else if (w === "if") {
+          if (top()?.kind === "brace") top().body = true;
+          levels[levels.length - 1].push({ kind: "if", body: false });
+          afterKeyword = true;
+        } else if (w === "while" || w === "until") {
+          if (top()?.kind === "brace") top().body = true;
+          levels[levels.length - 1].push({ kind: "loop", body: false });
+          afterKeyword = true;
+        } else if (w === "for") {
+          if (top()?.kind === "brace") top().body = true;
+          levels[levels.length - 1].push({ kind: "for", body: false });
+          afterKeyword = true;
+        } else if (w === "select") {
+          if (top()?.kind === "brace") top().body = true;
+          levels[levels.length - 1].push({ kind: "select", body: false });
+          afterKeyword = true;
+        } else if (w === "do") {
+          const t = top();
+          if (t === void 0 || !["for", "loop", "select"].includes(t.kind)) {
+            reject("unclosed-construct");
+            break;
+          }
+          t.body = true;
+          afterKeyword = true;
+        } else if (w === "then") {
+          const t = top();
+          if (t === void 0 || t.kind !== "if") {
+            reject("unclosed-construct");
+            break;
+          }
+          t.body = true;
+          afterKeyword = true;
+        } else if (w === "else" || w === "elif") {
+          const t = top();
+          if (t === void 0 || t.kind !== "if" || !t.body) {
+            reject("unclosed-construct");
+            break;
+          }
+          afterKeyword = true;
+        } else if (w === "in") {
+          const t = top();
+          if (t === void 0 || !["for", "select"].includes(t.kind)) {
+            reject("unclosed-construct");
+            break;
+          }
+        } else if (w === "fi") {
+          const t = top();
+          if (t === void 0 || t.kind !== "if" || !t.body) {
+            reject("unclosed-construct");
+            break;
+          }
+          levels[levels.length - 1].pop();
+          afterKeyword = false;
+        } else if (w === "done") {
+          const t = top();
+          if (t === void 0 || !["for", "loop", "select"].includes(t.kind) || !t.body) {
+            reject("unclosed-construct");
+            break;
+          }
+          levels[levels.length - 1].pop();
+          afterKeyword = false;
+        } else if (w === "esac") {
+          reject("unclosed-construct");
+          break;
+        } else {
+          afterKeyword = false;
+          if (top()?.kind === "brace") top().body = true;
+          if (functionSeen) {
+            if (nameSeen) {
+              functionSeen = false;
+              nameSeen = false;
+            } else {
+              nameSeen = true;
+            }
+          }
+        }
+      } else {
+        afterKeyword = false;
+        if (functionSeen) {
+          if (nameSeen) {
+            functionSeen = false;
+            nameSeen = false;
+          } else {
+            nameSeen = true;
+          }
+        }
+      }
+      buf += w;
+      i = j;
+      continue;
     }
+    if (caseRegion === null && levels[levels.length - 1].length > 0 && (c === ";" || c === "&") && afterKeyword) {
+      reject("unclosed-construct");
+      break;
+    }
+    if (depth === 0) {
+      if (isWordStart() && lastWordIsDanglingRedirect() && startsRedirectAt(i)) {
+        reject("dangling-operator");
+        break;
+      }
+      if (c === "$" && cmd[i + 1] === "{") {
+        braceDepth += 1;
+        buf += c;
+        i += 1;
+        continue;
+      }
+      if (c === "<" && cmd[i + 1] === "<" && cmd[i + 2] === "<" && cmd[i + 3] !== "<" && cmd[i - 1] !== "<") {
+        buf += "<<<";
+        i += 3;
+        continue;
+      }
+      if (c === "<" && cmd[i + 1] === "<" && cmd[i + 2] !== "<") {
+        let j = i + 2;
+        let allowTabs = false;
+        if (cmd[j] === "-") {
+          allowTabs = true;
+          j += 1;
+        }
+        while (cmd[j] === " " || cmd[j] === "	") j += 1;
+        let delim = "";
+        if (cmd[j] === "'" || cmd[j] === '"') {
+          const q = cmd.indexOf(cmd[j], j + 1);
+          if (q === -1) {
+            delim = cmd.slice(j + 1);
+            j = n;
+          } else {
+            delim = cmd.slice(j + 1, q);
+            j = q + 1;
+          }
+        } else {
+          const wordStart = j;
+          while (j < n && !WORD_END.test(cmd[j])) j += 1;
+          delim = cmd.slice(wordStart, j);
+        }
+        if (delim !== "") {
+          heredocs.push({
+            close: new RegExp(`^${allowTabs ? "	*" : ""}${escapeRegExp(delim)}[ \\t]*$`)
+          });
+          bufHeredoc = true;
+          if (levels[levels.length - 1].length > 0 || caseRegion !== null) {
+            buf += cmd.slice(i, j);
+          }
+          i = j;
+          continue;
+        }
+      }
+      if (caseRegion === null && levels[levels.length - 1].length === 0) {
+        if (cmd.slice(i, i + 2) === "&&") {
+          if (isUnconsumedOperator() || lastWordIsDanglingRedirect()) {
+            reject("dangling-operator");
+            break;
+          }
+          flush("and");
+          i += 2;
+          continue;
+        }
+        if (cmd.slice(i, i + 2) === "||") {
+          if (isUnconsumedOperator() || lastWordIsDanglingRedirect()) {
+            reject("dangling-operator");
+            break;
+          }
+          flush("or");
+          i += 2;
+          continue;
+        }
+        if (cmd.slice(i, i + 2) === "|&") {
+          if (isUnconsumedOperator() || lastWordIsDanglingRedirect()) {
+            reject("dangling-operator");
+            break;
+          }
+          flush("pipe");
+          i += 2;
+          continue;
+        }
+        if (c === ";") {
+          if (isUnconsumedOperator() || lastWordIsDanglingRedirect()) {
+            reject("dangling-operator");
+            break;
+          }
+          flush("semicolon");
+          i += 1;
+          continue;
+        }
+        if (c === "|") {
+          if (isUnconsumedOperator() || lastWordIsDanglingRedirect()) {
+            reject("dangling-operator");
+            break;
+          }
+          flush("pipe");
+          i += 1;
+          continue;
+        }
+        if (c === "\n") {
+          if (isUnconsumedOperator()) {
+            i += 1;
+            continue;
+          }
+          if (lastWordIsDanglingRedirect()) {
+            reject("dangling-operator");
+            break;
+          }
+          flush("newline");
+          listStart = parts.length;
+          i += 1;
+          continue;
+        }
+        if (c === "&") {
+          const next = cmd[i + 1];
+          const last = buf[buf.length - 1];
+          const trimmed = buf.trimEnd();
+          let dupRedirect = false;
+          if (trimmed.endsWith(">")) {
+            const before = trimmed.length >= 2 ? trimmed[trimmed.length - 2] : "";
+            dupRedirect = trimmed.length === 1 || /\s|\d/.test(before);
+          }
+          if (next === ">" || dupRedirect || last === "<") {
+            buf += c;
+            i += 1;
+            continue;
+          }
+          if (isUnconsumedOperator() || lastWordIsDanglingRedirect()) {
+            reject("dangling-operator");
+            break;
+          }
+          flush("background");
+          i += 1;
+          continue;
+        }
+      }
+    }
+    buf += c;
+    i += 1;
   }
-  for (const path of Object.keys(post)) {
-    if (!(path in pre)) attributions.set(path, { kind: "created" });
+  if (malformed) return { stages: parts, malformed };
+  if (inSquote || inDquote) {
+    reject("unclosed-quote");
+  } else if (braceDepth > 0) {
+    reject("unclosed-brace");
+  } else if (caseRegion !== null) {
+    reject("unclosed-case");
+  } else if (depth > 0) {
+    reject("unbalanced-paren");
+  } else if (levels[levels.length - 1].length > 0) {
+    reject("unclosed-construct");
+  } else if (isUnconsumedOperator() || lastWordIsDanglingRedirect()) {
+    reject("dangling-operator");
+  } else if (inBody || heredocs.length > 0) {
+    flush("newline");
+    malformed = "unterminated-heredoc";
+  } else {
+    flush("newline");
   }
-  return { attributions, unchanged, gaps: [], contentHashes: /* @__PURE__ */ new Map() };
+  return { stages: parts, malformed };
 }
-function hashTreePath(input) {
-  const opts = {
-    cwd: input.repoRoot,
-    env: { GIT_OBJECT_DIRECTORY: input.objectDir },
-    ...input.timeoutMs !== void 0 ? { timeoutMs: input.timeoutMs } : {}
+var LEADING_ASSIGNMENT = /^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/;
+function stripLeadingAssignments(simpleCmd) {
+  return simpleCmd.replace(LEADING_ASSIGNMENT, "");
+}
+function tokenize(s) {
+  const tokens = [];
+  let buf = "";
+  let quoted = false;
+  let i = 0;
+  const n = s.length;
+  const flushWord = () => {
+    if (buf.length === 0) return;
+    tokens.push({ text: buf, quoted, isRedirect: false });
+    buf = "";
+    quoted = false;
   };
-  try {
-    const listing = input.runGit(["ls-tree", input.treeSha, "--", `:(literal)${input.path}`], opts);
-    if (listing.toString("utf8").trim() === "") return { kind: "absent" };
-    const blob = input.runGit(["cat-file", "blob", `${input.treeSha}:${input.path}`], opts);
-    return { kind: "hash", hash: createHash("sha256").update(blob).digest("hex") };
-  } catch (err) {
-    return { kind: "error", reason: String(err) };
+  const appendQuotedContent = (out, start) => {
+    const quote = s[start];
+    let j = start + 1;
+    while (j < n) {
+      const c = s[j];
+      if (quote === "'") {
+        if (c === "'") return { out, next: j + 1 };
+        out += c;
+        j += 1;
+        continue;
+      }
+      if (c === "\\" && j + 1 < n && '"\\$`'.includes(s[j + 1])) {
+        out += s[j + 1];
+        j += 2;
+        continue;
+      }
+      if (c === '"') return { out, next: j + 1 };
+      out += c;
+      j += 1;
+    }
+    return null;
+  };
+  const appendAttachedTarget = (out, start) => {
+    let j = start;
+    while (j < n) {
+      const c = s[j];
+      if (/\s/.test(c) || c === "<" || c === ">") return { out, next: j };
+      if (c === "'" || c === '"') {
+        const section = appendQuotedContent("", j);
+        if (section === null) return null;
+        out += s.slice(j, section.next);
+        j = section.next;
+        continue;
+      }
+      if (c === "\\" && j + 1 < n) {
+        out += c + s[j + 1];
+        j += 2;
+        continue;
+      }
+      out += c;
+      j += 1;
+    }
+    return { out, next: j };
+  };
+  const emitRedirect = (operator, attachedStart) => {
+    const attached = appendAttachedTarget("", attachedStart);
+    if (attached === null) return false;
+    tokens.push({ text: buf + operator + attached.out, quoted: false, isRedirect: true });
+    buf = "";
+    quoted = false;
+    i = attached.next;
+    return true;
+  };
+  while (i < n) {
+    const c = s[i];
+    if (/\s/.test(c)) {
+      flushWord();
+      i += 1;
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      quoted = true;
+      const section = appendQuotedContent(buf, i);
+      if (section === null) return null;
+      buf = section.out;
+      i = section.next;
+      continue;
+    }
+    if (c === "\\" && i + 1 < n) {
+      quoted = true;
+      buf += s[i + 1];
+      i += 2;
+      continue;
+    }
+    if (c === "<" || c === ">") {
+      if (buf !== "" && !/^\d+$/.test(buf)) flushWord();
+      let operator;
+      if (c === "<") {
+        if (s.slice(i, i + 3) === "<<<") operator = "<<<";
+        else if (s.slice(i, i + 3) === "<<-") operator = "<<-";
+        else if (s.slice(i, i + 2) === "<<") operator = "<<";
+        else operator = "<";
+      } else {
+        operator = s.slice(i, i + 2) === ">>" ? ">>" : ">";
+      }
+      if (!emitRedirect(operator, i + operator.length)) return null;
+      continue;
+    }
+    if (c === "&") {
+      if (s[i + 1] === ">") {
+        flushWord();
+        const operator = s.slice(i, i + 3) === "&>>" ? "&>>" : "&>";
+        if (!emitRedirect(operator, i + operator.length)) return null;
+        continue;
+      }
+      buf += c;
+      i += 1;
+      continue;
+    }
+    buf += c;
+    i += 1;
   }
+  flushWord();
+  return tokens;
+}
+function redirectAttachedTarget(text) {
+  const match = text.match(/^(\d*)(<<<|<<-|&>>|<<|>>|&>|>&|<|>)(.*)$/);
+  if (match === null) return null;
+  const [, , , rest] = match;
+  return rest.length > 0 ? rest : null;
+}
+function argvOf(simpleCmd) {
+  const tokens = tokenize(stripLeadingAssignments(simpleCmd).trim());
+  if (tokens === null) return null;
+  const argv = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (!token.isRedirect) {
+      argv.push(token.text);
+      continue;
+    }
+    if (redirectAttachedTarget(token.text) === null) i += 1;
+  }
+  return argv;
+}
+function hasUnquotedRedirect(simpleCmd) {
+  let inSquote = false;
+  let inDquote = false;
+  for (let i = 0; i < simpleCmd.length; i++) {
+    const c = simpleCmd[i];
+    if (inSquote) {
+      if (c === "'") inSquote = false;
+      continue;
+    }
+    if (inDquote) {
+      if (c === "\\" && i + 1 < simpleCmd.length && '"\\$`'.includes(simpleCmd[i + 1])) {
+        i += 1;
+      } else if (c === '"') {
+        inDquote = false;
+      }
+      continue;
+    }
+    if (c === "'") {
+      inSquote = true;
+      continue;
+    }
+    if (c === '"') {
+      inDquote = true;
+      continue;
+    }
+    if (c === "\\" && i + 1 < simpleCmd.length) {
+      i += 1;
+      continue;
+    }
+    if (c === "<") return true;
+  }
+  return false;
 }
 
-// src/common/snapshot-store.ts
-import {
-  chmodSync,
-  existsSync as existsSync2,
-  mkdirSync as mkdirSync4,
-  readdirSync as readdirSync2,
-  readFileSync,
-  renameSync as renameSync2,
-  rmSync as rmSync2,
-  statSync as statSync2,
-  utimesSync as utimesSync2,
-  writeFileSync as writeFileSync2
-} from "node:fs";
-import { basename as basename2, dirname as dirname3, join as join3 } from "node:path";
-var SNAPSHOT_INDEX_DIR = "snapshot-index";
-var ACTIVITY_LOG_DIR = "activity-log";
-function indexDir(repoRoot) {
-  return join3(queueRoot(repoRoot), SNAPSHOT_INDEX_DIR);
+// src/common/unified-diff.ts
+var HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
+function stripPathComponents(p, n) {
+  let s = p;
+  for (let i = 0; i < n; i++) {
+    const slash = s.indexOf("/");
+    if (slash === -1) return s;
+    s = s.slice(slash + 1);
+  }
+  return s;
 }
-function indexFile(repoRoot, sessionId, toolUseId) {
-  return join3(indexDir(repoRoot), `${sanitizeSessionId(sessionId)}__${sanitizeSessionId(toolUseId)}.json`);
+function stripLevelFor(raw, strip) {
+  return strip === "auto" ? raw.startsWith("a/") || raw.startsWith("b/") ? 1 : 0 : strip;
 }
-function activityDir(repoRoot) {
-  return join3(queueRoot(repoRoot), ACTIVITY_LOG_DIR);
+function headerPathText(raw) {
+  const tab = raw.indexOf("	");
+  return tab === -1 ? raw : raw.slice(0, tab);
 }
-var SWEEP_READ_MARGIN_MS = 5e3;
-var TRASH_TTL_MS = 6e4;
-var TRASH_MARKER = ".trash-";
-function isTrashName(name) {
-  return name.startsWith(".") && name.includes(TRASH_MARKER);
-}
-function trashFile(file) {
-  try {
-    const trashPath = join3(dirname3(file), `.${basename2(file)}${TRASH_MARKER}${process.pid}-${Date.now().toString(36)}`);
-    renameSync2(file, trashPath);
-    try {
-      const now = Date.now() / 1e3;
-      utimesSync2(trashPath, now, now);
-    } catch (err) {
+function parseUnifiedDiffRange(patchText, strip) {
+  const results = [];
+  let sawBlock = false;
+  let current = null;
+  let pendingKind = null;
+  let renameFrom = null;
+  let renameTo = null;
+  let binary = false;
+  const stripped = (raw) => {
+    const text = headerPathText(raw);
+    if (text === "/dev/null") return text;
+    return stripPathComponents(text, stripLevelFor(text, strip));
+  };
+  const finish = () => {
+    if (current !== null) {
+      if (current.kind === "new") results.push({ path: current.path, operation: "create-overwrite" });
+      else if (current.kind === "deleted") results.push({ path: current.path, operation: "delete" });
+      else if (binary) results.push({ path: current.path, operation: "modify" });
+      else if (current.hunks.length === 0) {
+      } else if (current.countChanging) results.push({ path: current.path, operation: "modify" });
+      else {
+        const start = Math.min(...current.hunks.map((h) => h.start));
+        const end = Math.max(...current.hunks.map((h) => h.end));
+        results.push({ path: current.path, operation: "modify", lineStart: start, lineEnd: end });
+      }
+      current = null;
     }
-    return "trashed";
-  } catch (err) {
-    return err.code === "ENOENT" ? "absent" : "failed";
+    if (renameFrom !== null) results.push({ path: renameFrom, operation: "delete" });
+    if (renameTo !== null) results.push({ path: renameTo, operation: "rename-copy" });
+    renameFrom = null;
+    renameTo = null;
+    binary = false;
+  };
+  for (const rawLine of patchText.split("\n")) {
+    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+    if (line.startsWith("--- ")) {
+      sawBlock = true;
+      if (current !== null) finish();
+      current = {
+        path: stripped(line.slice(4)),
+        kind: pendingKind ?? "modify",
+        hunks: [],
+        countChanging: false
+      };
+      pendingKind = null;
+      continue;
+    }
+    if (line.startsWith("+++ ")) {
+      sawBlock = true;
+      const path = stripped(line.slice(4));
+      if (current === null) current = { path, kind: pendingKind ?? "modify", hunks: [], countChanging: false };
+      else if (path === "/dev/null") current.kind = "deleted";
+      else if (current.path === "/dev/null") {
+        current.path = path;
+        current.kind = "new";
+      }
+      pendingKind = null;
+      continue;
+    }
+    if (line.startsWith("new file mode")) {
+      pendingKind = "new";
+      continue;
+    }
+    if (line.startsWith("deleted file mode")) {
+      pendingKind = "deleted";
+      continue;
+    }
+    if (line.startsWith("rename from ")) {
+      sawBlock = true;
+      if (current !== null) finish();
+      renameFrom = stripped(line.slice("rename from ".length));
+      continue;
+    }
+    if (line.startsWith("rename to ")) {
+      sawBlock = true;
+      renameTo = stripped(line.slice("rename to ".length));
+      continue;
+    }
+    if (line.startsWith("Binary files ") || line.startsWith("GIT binary patch")) {
+      sawBlock = true;
+      binary = true;
+      continue;
+    }
+    const hunk = line.match(HUNK_HEADER);
+    if (hunk) {
+      sawBlock = true;
+      const preStart = Number.parseInt(hunk[1], 10);
+      const preCount = hunk[2] === void 0 ? 1 : Number.parseInt(hunk[2], 10);
+      const postCount = hunk[4] === void 0 ? 1 : Number.parseInt(hunk[4], 10);
+      if (current === null) return null;
+      if (preCount !== postCount) current.countChanging = true;
+      if (preCount > 0) current.hunks.push({ start: preStart, end: preStart + preCount - 1 });
+    }
+  }
+  finish();
+  return sawBlock ? results : null;
+}
+
+// src/common/parse-command.ts
+function resolveSpec(spec, totalLines) {
+  switch (spec.kind) {
+    case "literal":
+      return { lineStart: spec.start, lineEnd: spec.end };
+    case "upperBoundFromStart": {
+      const total = totalLines();
+      return { lineStart: 1, lineEnd: total !== null ? Math.min(spec.end, total) : spec.end };
+    }
+    case "toEof": {
+      const total = totalLines();
+      if (total === null || total === 0) return null;
+      return { lineStart: spec.start, lineEnd: Math.max(spec.start, total) };
+    }
+    case "lastNLines": {
+      const total = totalLines();
+      if (total === null || total === 0) return null;
+      return { lineStart: Math.max(1, total - spec.count + 1), lineEnd: total };
+    }
+    case "appendLines": {
+      const total = totalLines() ?? 0;
+      return { lineStart: total + 1, lineEnd: total + spec.count };
+    }
   }
 }
-function isRecentlyWritten(file, now) {
+function hasShellExpansion(s) {
+  return /[$`]/.test(s);
+}
+function looksUnresolvable(s) {
+  return hasShellExpansion(s) || /[*?]/.test(s);
+}
+var SED_RANGE = /^(\d+)(?:,(\d+|\$))?p$/;
+function sedScriptSegments(script) {
+  return script.split(";");
+}
+function matchSed(argv) {
+  if (argv[0] !== "sed") return [];
+  const rest = argv.slice(1);
+  if (!rest.includes("-n")) return [];
+  let scriptIdx = -1;
+  for (let i = 0; i < rest.length; i++) {
+    if (rest[i] === "-n") continue;
+    if (sedScriptSegments(rest[i]).some((seg) => SED_RANGE.test(seg))) {
+      scriptIdx = i;
+      break;
+    }
+  }
+  if (scriptIdx === -1) return [];
+  const fileCandidates = rest.filter((a, i) => i !== scriptIdx && a !== "-n" && !a.startsWith("-"));
+  if (fileCandidates.length !== 1) return [];
+  const fileArg = fileCandidates[0];
+  const results = [];
+  for (const segment of sedScriptSegments(rest[scriptIdx])) {
+    const match = segment.match(SED_RANGE);
+    if (!match) continue;
+    const start = Number.parseInt(match[1], 10);
+    const endToken = match[2];
+    const spec = endToken === void 0 ? { kind: "literal", start, end: start } : endToken === "$" ? { kind: "toEof", start } : { kind: "literal", start, end: Number.parseInt(endToken, 10) };
+    results.push({ kind: "candidate", idiom: "sed-n-range", fileArg, spec, resolverKind: "fs" });
+  }
+  return results;
+}
+function parseHeadTailFlags(rest, barePlusIsCount) {
+  const files = [];
+  let count = null;
+  let fromStart = false;
+  let disqualified = false;
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i];
+    if (a === "-f" || a === "-F" || a === "--follow" || a.startsWith("--follow=")) {
+      disqualified = true;
+      continue;
+    }
+    if (a === "-z" || a === "--zero-terminated") {
+      disqualified = true;
+      continue;
+    }
+    if (a === "-c" || a === "--bytes") {
+      disqualified = true;
+      i += 1;
+      continue;
+    }
+    if (/^(-c|--bytes=)/.test(a)) {
+      disqualified = true;
+      continue;
+    }
+    if (a === "-q" || a === "-v" || a === "--quiet" || a === "--silent" || a === "--verbose") continue;
+    if (a === "-n") {
+      const v = rest[i + 1];
+      if (v !== void 0 && /^\+?\d+$/.test(v)) {
+        fromStart = v.startsWith("+");
+        count = Number.parseInt(v.replace("+", ""), 10);
+        i += 1;
+      }
+      continue;
+    }
+    if (a.startsWith("--lines=")) {
+      const v = a.slice("--lines=".length);
+      if (/^\+?\d+$/.test(v)) {
+        fromStart = v.startsWith("+");
+        count = Number.parseInt(v.replace("+", ""), 10);
+      }
+      continue;
+    }
+    if (/^-n\+?\d+$/.test(a)) {
+      const v = a.slice(2);
+      fromStart = v.startsWith("+");
+      count = Number.parseInt(v.replace("+", ""), 10);
+      continue;
+    }
+    if (/^\+\d+$/.test(a)) {
+      if (barePlusIsCount) {
+        fromStart = true;
+        count = Number.parseInt(a.slice(1), 10);
+      } else {
+        files.push(a);
+      }
+      continue;
+    }
+    if (/^-\d+$/.test(a)) {
+      count = Number.parseInt(a.slice(1), 10);
+      continue;
+    }
+    if (a === "-") {
+      files.push(a);
+      continue;
+    }
+    if (a.startsWith("-")) continue;
+    files.push(a);
+  }
+  return { count, fromStart, disqualified, files };
+}
+function matchHead(argv) {
+  if (argv[0] !== "head") return [];
+  const { count, disqualified, files } = parseHeadTailFlags(argv.slice(1), false);
+  if (disqualified) return [];
+  const realFiles = files.filter((f) => f !== "-" && !/^\+\d+$/.test(f));
+  if (realFiles.length === 0) return [];
+  const n = count ?? 10;
+  return realFiles.map((fileArg) => ({
+    kind: "candidate",
+    idiom: "head-file",
+    fileArg,
+    spec: { kind: "upperBoundFromStart", end: n },
+    resolverKind: "fs"
+  }));
+}
+function matchTail(argv) {
+  if (argv[0] !== "tail") return [];
+  const { count, fromStart, disqualified, files } = parseHeadTailFlags(argv.slice(1), true);
+  if (disqualified) return [];
+  const realFiles = files.filter((f) => f !== "-");
+  if (realFiles.length === 0) return [];
+  const n = count ?? 10;
+  const spec = fromStart ? { kind: "toEof", start: n } : { kind: "lastNLines", count: n };
+  return realFiles.map((fileArg) => ({
+    kind: "candidate",
+    idiom: "tail-file",
+    fileArg,
+    spec,
+    resolverKind: "fs"
+  }));
+}
+function findGitSubcommand(rest) {
+  let cDir = null;
+  let cDirUnresolvable = false;
+  let i = 0;
+  while (i < rest.length) {
+    const a = rest[i];
+    if (a === "-C") {
+      const v = rest[i + 1];
+      if (v === void 0) return null;
+      if (hasShellExpansion(v)) cDirUnresolvable = true;
+      else cDir = v;
+      i += 2;
+      continue;
+    }
+    if (a === "-c") {
+      i += 2;
+      continue;
+    }
+    if (a.startsWith("-")) {
+      i += 1;
+      continue;
+    }
+    return { subIdx: i, subcommand: a, cDir, cDirUnresolvable };
+  }
+  return null;
+}
+var REV_PATH = /^([^\s:]+):(.+)$/;
+function matchGitShow(argv) {
+  if (argv[0] !== "git") return [];
+  const sub = findGitSubcommand(argv.slice(1));
+  if (!sub || sub.subcommand !== "show") return [];
+  const after = argv.slice(1).slice(sub.subIdx + 1).filter((a) => !a.startsWith("-"));
+  const revPathArg = after.find((a) => REV_PATH.test(a));
+  if (!revPathArg) return [];
+  const m = revPathArg.match(REV_PATH);
+  if (!m) return [];
+  const [, rev, path] = m;
+  if (sub.cDirUnresolvable || hasShellExpansion(rev)) {
+    return [
+      {
+        kind: "unresolved",
+        idiom: "git-show-rev-path",
+        fileArg: path,
+        reason: "git -C target or revision contains an unresolved shell variable"
+      }
+    ];
+  }
+  return [
+    {
+      kind: "candidate",
+      idiom: "git-show-rev-path",
+      fileArg: path,
+      spec: { kind: "toEof", start: 1 },
+      resolverKind: { kind: "git", rev },
+      dirOverride: sub.cDir ?? void 0
+    }
+  ];
+}
+function matchGitLogL(argv) {
+  if (argv[0] !== "git") return [];
+  const sub = findGitSubcommand(argv.slice(1));
+  if (!sub || sub.subcommand !== "log") return [];
+  const after = argv.slice(1).slice(sub.subIdx + 1);
+  for (let i = 0; i < after.length; i++) {
+    const a = after[i];
+    let spec = null;
+    if (a === "-L") spec = after[i + 1] ?? null;
+    else if (a.startsWith("-L")) spec = a.slice(2);
+    if (!spec) continue;
+    const m = spec.match(/^(\d+),(\d+):(.+)$/);
+    if (!m) continue;
+    const [, s, e, path] = m;
+    if (sub.cDirUnresolvable) {
+      return [
+        {
+          kind: "unresolved",
+          idiom: "git-log-L",
+          fileArg: path,
+          reason: "git -C target contains an unresolved shell variable"
+        }
+      ];
+    }
+    return [
+      {
+        kind: "candidate",
+        idiom: "git-log-L",
+        fileArg: path,
+        spec: { kind: "literal", start: Number.parseInt(s, 10), end: Number.parseInt(e, 10) },
+        resolverKind: "fs",
+        dirOverride: sub.cDir ?? void 0
+      }
+    ];
+  }
+  return [];
+}
+var BARE_DELIM = /^[A-Za-z_][A-Za-z0-9_]*$/;
+function findHeredocOpener(raw, from) {
+  const n = raw.length;
+  let inSquote = false;
+  let inDquote = false;
+  let depth = 0;
+  let cmdStart = from;
+  let pendingPipe = false;
+  let i = from;
+  const readDelimWord = (start) => {
+    let d = "";
+    let sawQuote = false;
+    let k = start;
+    while (k < n && !/\s/.test(raw[k]) && raw[k] !== "<" && raw[k] !== ">") {
+      const c = raw[k];
+      if (c === "'" || c === '"') {
+        const quote = c;
+        let m = k + 1;
+        while (m < n && raw[m] !== quote) {
+          d += raw[m];
+          m += 1;
+        }
+        if (m >= n) return null;
+        sawQuote = true;
+        k = m + 1;
+        continue;
+      }
+      if (c === "\\" && k + 1 < n) {
+        d += raw[k + 1];
+        sawQuote = true;
+        k += 2;
+        continue;
+      }
+      d += c;
+      k += 1;
+    }
+    return { delim: d, sawQuote, next: k };
+  };
+  while (i < n) {
+    const c = raw[i];
+    if (inSquote) {
+      if (c === "'") inSquote = false;
+      i += 1;
+      continue;
+    }
+    if (inDquote) {
+      if (c === "\\" && i + 1 < n) {
+        i += 2;
+        continue;
+      }
+      if (c === '"') inDquote = false;
+      i += 1;
+      continue;
+    }
+    if (c === "'") {
+      inSquote = true;
+      i += 1;
+      continue;
+    }
+    if (c === '"') {
+      inDquote = true;
+      i += 1;
+      continue;
+    }
+    if (c === "\\" && i + 1 < n) {
+      i += 2;
+      continue;
+    }
+    if (c === "(") {
+      depth += 1;
+      i += 1;
+      continue;
+    }
+    if (c === ")") {
+      depth = Math.max(0, depth - 1);
+      i += 1;
+      continue;
+    }
+    if (depth > 0) {
+      i += 1;
+      continue;
+    }
+    if (raw.startsWith("&&", i) || raw.startsWith("||", i)) {
+      cmdStart = i + 2;
+      pendingPipe = false;
+      i += 2;
+      continue;
+    }
+    if (raw.startsWith("|&", i)) {
+      cmdStart = i + 1;
+      pendingPipe = true;
+      i += 2;
+      continue;
+    }
+    if (c === ";") {
+      cmdStart = i + 1;
+      pendingPipe = false;
+      i += 1;
+      continue;
+    }
+    if (c === "|") {
+      cmdStart = i + 1;
+      pendingPipe = true;
+      i += 1;
+      continue;
+    }
+    if (c === "\n") {
+      if (!pendingPipe) cmdStart = i + 1;
+      i += 1;
+      continue;
+    }
+    if (c === "&") {
+      const trimmed = raw.slice(cmdStart, i).trimEnd();
+      const dupRedirect = trimmed.endsWith(">") && (trimmed.length === 1 || /\s|\d/.test(trimmed[trimmed.length - 2] ?? ""));
+      if (raw[i + 1] === ">" || dupRedirect) {
+        i += 1;
+        continue;
+      }
+      cmdStart = i + 1;
+      pendingPipe = false;
+      i += 1;
+      continue;
+    }
+    if (c === "<" && raw[i + 1] === "<") {
+      if (raw[i + 2] === "<") {
+        i += 3;
+        continue;
+      }
+      let j = i - 1;
+      while (j >= from && /\d/.test(raw[j])) j -= 1;
+      const ioNumber = j < i - 1 && (j < from || /\s|[;|&(]/.test(raw[j]));
+      if (ioNumber) {
+        i += 2;
+        continue;
+      }
+      const tabStrip = raw[i + 2] === "-";
+      const opLen = tabStrip ? 3 : 2;
+      const lineEnd = raw.indexOf("\n", i);
+      const openerLineEnd = lineEnd === -1 ? n : lineEnd;
+      const attached = readDelimWord(i + opLen);
+      let delim = attached === null ? "" : attached.delim;
+      let sawQuote = attached === null ? false : attached.sawQuote;
+      if (delim === "" && attached !== null) {
+        let k = attached.next;
+        while (k < openerLineEnd && /\s/.test(raw[k])) k += 1;
+        const word = readDelimWord(k);
+        if (word === null) delim = "";
+        else {
+          delim = word.delim;
+          sawQuote = word.sawQuote;
+        }
+      }
+      if (delim === "" || !sawQuote && !BARE_DELIM.test(delim)) {
+        i += opLen;
+        continue;
+      }
+      return { cmdStart, openerLineEnd, delim, tabStrip, quotedDelim: sawQuote };
+    }
+    i += 1;
+  }
+  return null;
+}
+function heredocCloser(raw, open) {
+  const n = raw.length;
+  const bodyStart = open.openerLineEnd < n ? open.openerLineEnd + 1 : n;
+  let linePos = bodyStart;
+  while (linePos < n) {
+    const nl = raw.indexOf("\n", linePos);
+    const lineEnd = nl === -1 ? n : nl;
+    const candidate = open.tabStrip ? raw.slice(linePos, lineEnd).replace(/^\t+/, "") : raw.slice(linePos, lineEnd);
+    if (candidate === open.delim || candidate.startsWith(open.delim) && /^[ \t]*$/.test(candidate.slice(open.delim.length))) {
+      return { lineStart: linePos, lineEnd };
+    }
+    if (nl === -1) return null;
+    linePos = nl + 1;
+  }
+  return null;
+}
+function extractHeredocWrites(raw) {
+  const writes = [];
+  let masked = "";
+  let cursor = 0;
+  for (; ; ) {
+    const open = findHeredocOpener(raw, cursor);
+    if (open === null) break;
+    const close = heredocCloser(raw, open);
+    if (close === null) {
+      cursor = open.openerLineEnd < raw.length ? open.openerLineEnd + 1 : raw.length;
+      continue;
+    }
+    const bodyStart = open.openerLineEnd < raw.length ? open.openerLineEnd + 1 : raw.length;
+    let body = raw.slice(bodyStart, close.lineStart).replace(/\n$/, "");
+    if (open.tabStrip) body = body.replace(/^\t+/gm, "");
+    masked += raw.slice(cursor, open.cmdStart);
+    masked += `__heredoc_${writes.length}__`;
+    writes.push({ opener: raw.slice(open.cmdStart, open.openerLineEnd), body, quotedDelim: open.quotedDelim });
+    cursor = close.lineEnd;
+  }
+  masked += raw.slice(cursor);
+  return { writes, masked };
+}
+var REDIRECT_TOKEN = /^(\d*)(<<<|<<-|&>>|<<|>>|&>|>&|<|>)(.*)$/;
+function classifyRedirectToken(text) {
+  const m = text.match(REDIRECT_TOKEN);
+  if (m === null) return null;
+  const [, fdText, op, target] = m;
+  return {
+    fd: fdText === "" ? null : Number.parseInt(fdText, 10),
+    op,
+    target: target === "" ? null : target
+  };
+}
+function isContentRedirect(r) {
+  if (r.op === ">" || r.op === ">>") {
+    if (r.fd !== null && r.fd !== 1) return false;
+    if (r.target?.startsWith("&")) return false;
+    return true;
+  }
+  return r.op === "&>" || r.op === "&>>";
+}
+function analyzeTokens(tokens) {
+  const argv = [];
+  const redirects = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (!token.isRedirect) {
+      argv.push(token.text);
+      continue;
+    }
+    const info = classifyRedirectToken(token.text);
+    if (info === null) {
+      argv.push(token.text);
+      continue;
+    }
+    if (info.target === null) {
+      const next = tokens[i + 1];
+      if (next !== void 0 && !next.isRedirect) {
+        redirects.push({ ...info, target: next.text });
+        i += 1;
+        continue;
+      }
+    }
+    redirects.push(info);
+  }
+  return { argv, redirects };
+}
+function literalContent(argv) {
+  const host = argv[0];
+  if (host !== "echo" && host !== "printf") return void 0;
+  const args = argv.slice(1);
+  if (args.length === 0) return void 0;
+  for (const a of args) {
+    if (a.startsWith("-") || hasShellExpansion(a) || /[*?]/.test(a)) return void 0;
+  }
+  if (host === "printf") {
+    if (args.length !== 1) return void 0;
+    const fmt = args[0];
+    if (fmt.includes("%") || fmt.includes("\\")) return void 0;
+    return fmt;
+  }
+  return `${args.join(" ")}
+`;
+}
+function resolveTarget(results, idiom, target, currentDir) {
+  if (looksUnresolvable(target)) {
+    results.push({
+      status: "unresolved",
+      idiom,
+      fileArg: target,
+      reason: "path contains an unexpanded shell variable or glob"
+    });
+    return null;
+  }
+  return resolvePath(currentDir, target);
+}
+function teeOperandParts(argv) {
+  let append = false;
+  let afterDashDash = false;
+  const operands = [];
+  for (const a of argv.slice(1)) {
+    if (afterDashDash) {
+      operands.push(a);
+      continue;
+    }
+    if (a === "--") {
+      afterDashDash = true;
+      continue;
+    }
+    if (a === "-a" || a === "--append") {
+      append = true;
+      continue;
+    }
+    if (a.startsWith("-")) return null;
+    operands.push(a);
+  }
+  return { append, operands };
+}
+function matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join7, results) {
+  const parts = teeOperandParts(argv);
+  if (parts === null) return;
+  for (const operand of parts.operands) {
+    const absolutePath = resolveTarget(results, "redirect-write", operand, currentDir);
+    if (absolutePath === null) continue;
+    results.push({
+      status: "resolved",
+      idiom: "redirect-write",
+      span: !parts.append ? {
+        operation: "create-overwrite",
+        absolutePath,
+        simpleCommandIndex,
+        join: join7,
+        ...pipeEchoContent !== null ? { written: pipeEchoContent } : {}
+      } : {
+        operation: "append",
+        absolutePath,
+        simpleCommandIndex,
+        join: join7,
+        ...pipeEchoContent !== null ? { written: pipeEchoContent } : {}
+      }
+    });
+  }
+}
+function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpleCommandIndex, join7, results) {
+  const contentRedirects = redirects.filter(isContentRedirect);
+  const host = argv[0];
+  if (contentRedirects.length === 0) {
+    if (host === "tee") matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join7, results);
+    return;
+  }
+  if (host === void 0 || host === ":" || host === "exec") {
+    for (const r of contentRedirects) {
+      if (r.op === ">>" || r.op === "&>>" || r.target === null) continue;
+      const absolutePath = resolveTarget(results, "truncate-write", r.target, currentDir);
+      if (absolutePath === null) continue;
+      results.push({
+        status: "resolved",
+        idiom: "truncate-write",
+        span: { operation: "truncate", absolutePath, simpleCommandIndex, join: join7 }
+      });
+    }
+    return;
+  }
+  if (host !== "echo" && host !== "printf" && host !== "tee") return;
+  const singlePlainAppend = contentRedirects.length === 1 && contentRedirects[0].op === ">>";
+  const singlePlainOverwrite = contentRedirects.length === 1 && contentRedirects[0].op === ">";
+  const threadedAppend = singlePlainAppend && host !== "tee" ? literalContent(argv) : void 0;
+  const threadedOverwrite = singlePlainOverwrite && host !== "tee" ? literalContent(argv) : void 0;
+  for (const r of contentRedirects) {
+    if (r.target === null) continue;
+    const absolutePath = resolveTarget(results, "redirect-write", r.target, currentDir);
+    if (absolutePath === null) continue;
+    if (r.op === ">>" || r.op === "&>>") {
+      results.push({
+        status: "resolved",
+        idiom: "redirect-write",
+        span: {
+          operation: "append",
+          absolutePath,
+          simpleCommandIndex,
+          join: join7,
+          ...threadedAppend !== void 0 ? { written: threadedAppend } : {}
+        }
+      });
+    } else {
+      results.push({
+        status: "resolved",
+        idiom: "redirect-write",
+        span: {
+          operation: "create-overwrite",
+          absolutePath,
+          simpleCommandIndex,
+          join: join7,
+          ...threadedOverwrite !== void 0 ? { written: threadedOverwrite } : {}
+        }
+      });
+    }
+  }
+  if (host === "tee") matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join7, results);
+}
+var FOREIGN_WRAPPERS = /* @__PURE__ */ new Set(["sudo", "xargs", "nohup", "time", "nice", "doas"]);
+var ASSIGNMENT_TOKEN = /^[A-Za-z_][A-Za-z0-9_]*=/;
+function stripTransparentWrapper(argv) {
+  const unwrapped = argv[0] === "command" || argv[0] === "env" ? argv.slice(1) : argv;
+  let i = 0;
+  while (i < unwrapped.length && ASSIGNMENT_TOKEN.test(unwrapped[i])) i += 1;
+  return i > 0 ? unwrapped.slice(i) : unwrapped;
+}
+function pushUnresolved(results, idiom, fileArg, reason) {
+  results.push({ status: "unresolved", idiom, fileArg, reason });
+}
+function isExistingDirectory(absolutePath) {
   try {
-    return statSync2(file).mtimeMs > now - SWEEP_READ_MARGIN_MS;
+    return statSync3(absolutePath).isDirectory();
   } catch {
     return false;
   }
 }
-function emptyTrash(dir, now) {
-  for (const name of listDir(dir)) {
-    if (!isTrashName(name)) continue;
-    const file = join3(dir, name);
-    let mtimeMs;
-    try {
-      mtimeMs = statSync2(file).mtimeMs;
-    } catch {
+var CP_SPEC = {
+  idiom: "cp-write",
+  noValue: /* @__PURE__ */ new Set(["-r", "-R", "-p", "-f", "-v", "-i", "-u", "-a", "-d", "-L", "-P"]),
+  noClobber: /* @__PURE__ */ new Set(["-n", "--no-clobber"]),
+  valueTaking: /* @__PURE__ */ new Set(["-t", "--target-directory"]),
+  excluded: /* @__PURE__ */ new Set(["-b", "--backup"]),
+  sourceOperation: "read",
+  destOperation: "create-overwrite"
+};
+var INSTALL_SPEC = {
+  idiom: "install-write",
+  noValue: /* @__PURE__ */ new Set(["-D", "-s", "-v"]),
+  noClobber: /* @__PURE__ */ new Set(),
+  valueTaking: /* @__PURE__ */ new Set(["-t", "--target-directory", "-m", "-o", "-g"]),
+  excluded: /* @__PURE__ */ new Set(["-d"]),
+  sourceOperation: "read",
+  destOperation: "create-overwrite"
+};
+var MV_SPEC = {
+  idiom: "mv-write",
+  // `mv -n` stays in noValue, not noClobber: an mv skip leaves the source in
+  // place, and the delete's own absence gate then fails the touch — the
+  // no-clobber blind spot is cp's byte-compare, not mv's.
+  noValue: /* @__PURE__ */ new Set(["-f", "-i", "-n", "-v", "-u"]),
+  noClobber: /* @__PURE__ */ new Set(),
+  valueTaking: /* @__PURE__ */ new Set(["-t", "--target-directory"]),
+  excluded: /* @__PURE__ */ new Set(),
+  sourceOperation: "delete",
+  destOperation: "rename-copy"
+};
+var GIT_MV_SPEC = {
+  idiom: "mv-write",
+  noValue: /* @__PURE__ */ new Set(["-f", "-k", "-v"]),
+  noClobber: /* @__PURE__ */ new Set(),
+  valueTaking: /* @__PURE__ */ new Set(),
+  // `git mv -n`/`--dry-run` is a trial run that moves nothing (the same
+  // read-only class as `patch --dry-run`, plan §5.7) — fail closed.
+  excluded: /* @__PURE__ */ new Set(["-n", "--dry-run"]),
+  sourceOperation: "delete",
+  destOperation: "rename-copy"
+};
+function copyMoveParts(args, spec) {
+  const operands = [];
+  let targetDir = null;
+  let i = 0;
+  let afterDashDash = false;
+  while (i < args.length) {
+    const a = args[i];
+    if (afterDashDash) {
+      operands.push(a);
+      i += 1;
       continue;
     }
-    if (mtimeMs < now - TRASH_TTL_MS) rmSync2(file, { recursive: true, force: true });
-  }
-}
-function bigintReplacer(_key, value) {
-  return typeof value === "bigint" ? value.toString() : value;
-}
-function recordReviver(key, value) {
-  if (key === "mtimeNs" && typeof value === "string") {
-    try {
-      return BigInt(value);
-    } catch {
-      return value;
-    }
-  }
-  return value;
-}
-function readJsonFile(file) {
-  try {
-    return JSON.parse(readFileSync(file, "utf8"));
-  } catch {
-    return null;
-  }
-}
-function writeJsonAtomic(file, data, replacer) {
-  const dir = dirname3(file);
-  mkdirSync4(dir, { recursive: true, mode: 448 });
-  chmodSync(dir, 448);
-  chmodSync(dirname3(dir), 448);
-  const tmp = join3(
-    dir,
-    `.${basename2(file)}.${process.pid}.${Date.now().toString(36)}.${Math.random().toString(36).slice(2)}.tmp`
-  );
-  try {
-    writeFileSync2(tmp, JSON.stringify(data, replacer), { mode: 384 });
-    chmodSync(tmp, 384);
-    renameSync2(tmp, file);
-  } catch (err) {
-    rmSync2(tmp, { force: true });
-    throw err;
-  }
-}
-function fileSize(file) {
-  try {
-    return statSync2(file).size;
-  } catch {
-    return 0;
-  }
-}
-function dirSizeBytes(dir) {
-  let total = 0;
-  let names;
-  try {
-    names = readdirSync2(dir);
-  } catch {
-    return 0;
-  }
-  for (const name of names) {
-    const entry = join3(dir, name);
-    let st;
-    try {
-      st = statSync2(entry);
-    } catch {
+    if (a === "--") {
+      afterDashDash = true;
+      i += 1;
       continue;
     }
-    total += st.isDirectory() ? dirSizeBytes(entry) : st.size;
-  }
-  return total;
-}
-function listDir(dir) {
-  try {
-    return readdirSync2(dir);
-  } catch {
-    return [];
-  }
-}
-function readRecordFile(file, logger2) {
-  if (!existsSync2(file)) return null;
-  const data = readJsonFile(file);
-  if (data === null) {
-    logger2.warn(`snapshot store: unreadable record file ${file}, treated as absent`);
-    return null;
-  }
-  if (typeof data !== "object" || data === null || data.version !== 2) {
-    logger2.warn(`snapshot store: incompatible record version in ${file}, treated as absent`);
-    return null;
-  }
-  return JSON.parse(JSON.stringify(data, bigintReplacer), recordReviver);
-}
-function readTombstoneFile(file, logger2) {
-  const data = readJsonFile(file);
-  if (data === null) return null;
-  if (typeof data !== "object" || data === null || data.version !== 1) {
-    logger2.warn(`snapshot store: incompatible tombstone version in ${file}, treated as absent`);
-    return null;
-  }
-  return data;
-}
-function readIndexEntries(repoRoot, logger2) {
-  const out = [];
-  for (const name of listDir(indexDir(repoRoot))) {
-    if (!name.endsWith(".json")) continue;
-    const data = readJsonFile(join3(indexDir(repoRoot), name));
-    if (data === null || typeof data !== "object" || data === null) continue;
-    const version = data.version;
-    if (version !== void 0 && version !== 1) {
-      logger2.warn(`snapshot store: incompatible index version in ${name}, excluded`);
+    if (a === "-t" || a === "--target-directory") {
+      const v = args[i + 1];
+      if (v === void 0) return null;
+      targetDir = v;
+      i += 2;
       continue;
     }
-    out.push(data);
+    if (a.startsWith("--target-directory=")) {
+      targetDir = a.slice("--target-directory=".length);
+      i += 1;
+      continue;
+    }
+    if (spec.excluded.has(a)) return null;
+    if (spec.valueTaking.has(a)) {
+      if (args[i + 1] === void 0) return null;
+      i += 2;
+      continue;
+    }
+    if (spec.noValue.has(a) || spec.noClobber.has(a)) {
+      i += 1;
+      continue;
+    }
+    if (a.startsWith("-")) {
+      i += 1;
+      continue;
+    }
+    operands.push(a);
+    i += 1;
   }
-  return out;
+  return { operands, targetDir };
 }
-function readActivityEntry(file) {
-  const data = readJsonFile(file);
-  if (data === null || typeof data !== "object" || data === null) return null;
-  const version = data.version;
-  if (version !== void 0 && version !== 1) return null;
-  return data;
+function emitSourceSpan(results, spec, absolutePath, simpleCommandIndex, join7) {
+  if (spec.sourceOperation === "delete") {
+    results.push({
+      status: "resolved",
+      idiom: spec.idiom,
+      span: { operation: "delete", absolutePath, simpleCommandIndex, join: join7 }
+    });
+    return;
+  }
+  const range = resolveSpec({ kind: "toEof", start: 1 }, () => countFileLines(absolutePath));
+  results.push({
+    status: "resolved",
+    idiom: spec.idiom,
+    span: range === null ? { operation: "read", absolutePath, simpleCommandIndex, join: join7 } : {
+      operation: "read",
+      lineStart: range.lineStart,
+      lineEnd: range.lineEnd,
+      absolutePath,
+      simpleCommandIndex,
+      join: join7
+    }
+  });
 }
-function createSnapshotStore(logger2, budgets = DEFAULT_SNAPSHOT_BUDGETS, layout = DEFAULT_SESSION_LAYOUT) {
-  const recordFile = (sessionId, toolUseId) => layout.recordFile(sessionId, toolUseId);
-  const tombstoneFile = (sessionId, toolUseId) => layout.tombstoneFile(sessionId, toolUseId);
-  function tombstoneExists(sessionId, toolUseId) {
-    try {
-      statSync2(tombstoneFile(sessionId, toolUseId));
-      return true;
-    } catch {
-      return false;
+function matchCopyMoveFamily(argv, dirForResolution, simpleCommandIndex, join7, results) {
+  const rest = stripTransparentWrapper(argv);
+  if (rest.length === 0) return;
+  const command = rest[0];
+  let spec = null;
+  let args = [];
+  let dir = dirForResolution;
+  if (command === "cp" || command === "install" || command === "mv") {
+    spec = command === "cp" ? CP_SPEC : command === "install" ? INSTALL_SPEC : MV_SPEC;
+    args = rest.slice(1);
+  } else if (command === "git") {
+    const sub = findGitSubcommand(rest.slice(1));
+    if (sub !== null && sub.subcommand === "mv") {
+      if (sub.cDirUnresolvable) {
+        pushUnresolved(results, "mv-write", "mv", "git -C target contains an unresolved shell variable");
+        return;
+      }
+      spec = GIT_MV_SPEC;
+      args = rest.slice(1).slice(sub.subIdx + 1);
+      dir = sub.cDir ?? dirForResolution;
     }
-  }
-  function repoRecordBytes(repoRoot) {
-    let total = 0;
-    for (const entry of readIndexEntries(repoRoot, logger2)) {
-      total += fileSize(recordFile(entry.sessionId, entry.toolUseId));
-      total += dirSizeBytes(layout.objectDir(entry.sessionId, entry.toolUseId));
-      total += fileSize(layout.tempIndexFile(entry.sessionId, entry.toolUseId));
+  } else if (FOREIGN_WRAPPERS.has(command)) {
+    const wrapped = rest[1];
+    const wrappedSpec = wrapped === "cp" ? CP_SPEC : wrapped === "install" ? INSTALL_SPEC : wrapped === "mv" ? MV_SPEC : null;
+    if (wrappedSpec !== null) {
+      pushUnresolved(results, wrappedSpec.idiom, wrapped, `the ${command} wrapper obscures the ${wrapped} argv`);
     }
-    return total;
+    return;
   }
-  function writeIndexEntry(repoRoot, entry) {
-    writeJsonAtomic(indexFile(repoRoot, entry.sessionId, entry.toolUseId), { ...entry, version: 1 });
+  if (spec === null) return;
+  const parts = copyMoveParts(args, spec);
+  if (parts === null || parts.operands.length === 0) return;
+  const sourcePaths = [];
+  for (const source of parts.operands.slice(0, parts.targetDir === null ? -1 : void 0)) {
+    if (source.endsWith("/")) return;
+    const absolutePath = resolveTarget(results, spec.idiom, source, dir);
+    if (absolutePath === null) return;
+    if (isExistingDirectory(absolutePath)) return;
+    sourcePaths.push(absolutePath);
   }
-  function removeIndexEntry(repoRoot, sessionId, toolUseId) {
-    if (trashFile(indexFile(repoRoot, sessionId, toolUseId)) === "failed") {
-      logger2.warn(`snapshot store: index entry cleanup failed for ${repoRoot}`);
+  if (sourcePaths.length === 0) return;
+  let destPaths;
+  if (parts.targetDir !== null) {
+    if (looksUnresolvable(parts.targetDir)) {
+      pushUnresolved(results, spec.idiom, parts.targetDir, "path contains an unexpanded shell variable or glob");
+      return;
     }
-  }
-  function reapForeignRecord(dir, name, parsed) {
-    const stem = layout.callStem(name) ?? name;
-    const siblings = layout.callFiles(dir, stem);
-    trashFile(join3(dir, name));
-    trashFile(siblings.tombstone);
-    trashFile(siblings.objectDir);
-    trashFile(siblings.tempIndexFile);
-    const repoRoot = parsed?.repoRoot;
-    const sessionId = parsed?.sessionId;
-    const toolUseId = parsed?.toolUseId;
-    if (typeof repoRoot === "string" && typeof sessionId === "string" && typeof toolUseId === "string") {
-      removeIndexEntry(repoRoot, sessionId, toolUseId);
+    if (!parts.targetDir.endsWith("/") && !isExistingDirectory(resolvePath(dir, parts.targetDir))) {
+      pushUnresolved(results, spec.idiom, parts.targetDir, "the -t target is not an existing directory");
+      return;
     }
-    logger2.info?.("git-span snapshot sweep reaped an incompatible or unreadable record", {
-      file: join3(dir, name)
+    const targetAbs = resolvePath(dir, parts.targetDir);
+    destPaths = sourcePaths.map((p) => joinPath(targetAbs, basename2(p)));
+  } else {
+    const dest = parts.operands[parts.operands.length - 1];
+    if (looksUnresolvable(dest)) {
+      pushUnresolved(results, spec.idiom, dest, "path contains an unexpanded shell variable or glob");
+      return;
+    }
+    const destAbs = resolvePath(dir, dest);
+    const destIsDir = dest.endsWith("/") || isExistingDirectory(destAbs);
+    if (sourcePaths.length > 1 && !destIsDir) {
+      pushUnresolved(results, spec.idiom, dest, "a multi-source copy/move needs a directory destination");
+      return;
+    }
+    destPaths = destIsDir ? sourcePaths.map((p) => joinPath(destAbs, basename2(p))) : [destAbs];
+  }
+  for (let k = 0; k < sourcePaths.length; k++) {
+    emitSourceSpan(results, spec, sourcePaths[k], simpleCommandIndex, join7);
+  }
+  for (let k = 0; k < sourcePaths.length; k++) {
+    results.push({
+      status: "resolved",
+      idiom: spec.idiom,
+      span: { operation: spec.destOperation, absolutePath: destPaths[k], simpleCommandIndex, join: join7 }
     });
   }
-  function writeRecord(record) {
-    writeJsonAtomic(recordFile(record.sessionId, record.toolUseId), record, bigintReplacer);
-  }
-  function reposFromRecords() {
-    const repos = /* @__PURE__ */ new Set();
-    for (const sessionName of listDir(layout.base)) {
-      const dir = layout.snapshotsDir(sessionName);
-      for (const name of listDir(dir)) {
-        if (!layout.isRecordName(name)) continue;
-        const file = join3(dir, name);
-        if (isRecentlyWritten(file, Date.now())) continue;
-        const rec = readRecordFile(file, logger2);
-        if (rec !== null) repos.add(rec.repoRoot);
-      }
+}
+var RM_NO_VALUE = /* @__PURE__ */ new Set(["-f", "-i", "-v"]);
+var RM_EXCLUDED = /* @__PURE__ */ new Set(["-r", "-R", "--recursive", "-d"]);
+var GIT_RM_EXCLUDED = /* @__PURE__ */ new Set(["-r", "-R", "--recursive", "-d", "-n", "--dry-run"]);
+function matchRmOperands(args, excluded, excludeCached, dir, simpleCommandIndex, join7, results) {
+  let afterDashDash = false;
+  const operands = [];
+  for (const a of args) {
+    if (afterDashDash) {
+      operands.push(a);
+      continue;
     }
-    return repos;
-  }
-  function pruneStaleActivity(now, repos) {
-    let removed = 0;
-    for (const repo of repos) {
-      try {
-        for (const name of listDir(activityDir(repo))) {
-          if (!name.endsWith(".json")) continue;
-          const file = join3(activityDir(repo), name);
-          if (isRecentlyWritten(file, now)) continue;
-          const entry = readActivityEntry(file);
-          if (entry === null) continue;
-          let mtimeMs;
-          try {
-            mtimeMs = statSync2(file).mtimeMs;
-          } catch {
-            continue;
-          }
-          const ttlMs = entry.finishedAt !== null ? budgets.recordTtlMs : budgets.unfinishedEntryTtlMs;
-          if (mtimeMs < now - ttlMs) {
-            trashFile(file);
-            removed += 1;
-          }
-        }
-      } catch (e) {
-        logger2.warn(`snapshot store: activity prune skipped ${repo}: ${String(e)}`);
-      }
+    if (a === "--") {
+      afterDashDash = true;
+      continue;
     }
-    return removed;
+    if (excluded.has(a) || excludeCached && a === "--cached") return;
+    if (RM_NO_VALUE.has(a)) continue;
+    if (a.startsWith("-")) continue;
+    operands.push(a);
   }
-  function sweepOrphanIndexes(_now, repos) {
-    let removed = 0;
-    for (const repo of repos) {
-      try {
-        for (const name of listDir(indexDir(repo))) {
-          if (!name.endsWith(".json")) continue;
-          const file = join3(indexDir(repo), name);
-          if (isRecentlyWritten(file, _now)) continue;
-          const data = readJsonFile(file);
-          if (data === null || typeof data !== "object" || data === null) continue;
-          const version = data.version;
-          if (version !== void 0 && version !== 1) continue;
-          const entry = data;
-          const recFile = recordFile(entry.sessionId, entry.toolUseId);
-          if (!isRecentlyWritten(recFile, _now) && readRecordFile(recFile, logger2) === null) {
-            trashFile(file);
-            removed += 1;
-          }
-        }
-      } catch (e) {
-        logger2.warn(`snapshot store: orphan-index sweep skipped ${repo}: ${String(e)}`);
-      }
+  for (const operand of operands) {
+    if (looksUnresolvable(operand)) {
+      pushUnresolved(results, "rm-write", operand, "path contains an unexpanded shell variable or glob");
+      continue;
     }
-    return removed;
+    if (operand.endsWith("/") || isExistingDirectory(resolvePath(dir, operand))) continue;
+    results.push({
+      status: "resolved",
+      idiom: "rm-write",
+      span: { operation: "delete", absolutePath: resolvePath(dir, operand), simpleCommandIndex, join: join7 }
+    });
   }
-  function runSweep(now, extraRepos) {
-    const result = { records: 0, tombstones: 0, activityEntries: 0, indexEntries: 0, foreignRecords: 0 };
-    const repos = new Set(extraRepos);
-    for (const sessionName of listDir(layout.base)) {
-      const dir = layout.snapshotsDir(sessionName);
-      const names = listDir(dir);
-      for (const name of names) {
-        if (!layout.isTombstoneName(name)) continue;
-        const file = join3(dir, name);
-        if (isRecentlyWritten(file, now)) continue;
-        const t = readTombstoneFile(file, logger2);
-        if (t === null) continue;
-        if (now - t.consumedAt > budgets.recordTtlMs) {
-          const siblings = layout.callFiles(dir, layout.callStem(name) ?? name);
-          const recordPath = siblings.record;
-          const rec = isRecentlyWritten(recordPath, now) ? null : readRecordFile(recordPath, logger2);
-          trashFile(recordPath);
-          trashFile(file);
-          trashFile(siblings.objectDir);
-          trashFile(siblings.tempIndexFile);
-          if (rec !== null) removeIndexEntry(rec.repoRoot, rec.sessionId, rec.toolUseId);
-          result.tombstones += 1;
-        }
-      }
-      for (const name of names) {
-        if (!layout.isRecordName(name)) continue;
-        const file = join3(dir, name);
-        if (isRecentlyWritten(file, now)) continue;
-        const data = readJsonFile(file);
-        const parsed = data !== null && typeof data === "object" ? data : null;
-        if (parsed === null) {
-          let mtimeMs;
-          try {
-            mtimeMs = statSync2(file).mtimeMs;
-          } catch {
-            continue;
-          }
-          if (now - mtimeMs > budgets.recordTtlMs) {
-            reapForeignRecord(dir, name, parsed);
-            result.foreignRecords += 1;
-          }
-          continue;
-        }
-        if (parsed.version !== 2) {
-          reapForeignRecord(dir, name, parsed);
-          result.foreignRecords += 1;
-          continue;
-        }
-        const rec = readRecordFile(file, logger2);
-        if (rec === null) continue;
-        repos.add(rec.repoRoot);
-        if (now - rec.createdAt > budgets.recordTtlMs) {
-          trashFile(file);
-          trashFile(tombstoneFile(rec.sessionId, rec.toolUseId));
-          trashFile(layout.objectDir(rec.sessionId, rec.toolUseId));
-          trashFile(layout.tempIndexFile(rec.sessionId, rec.toolUseId));
-          removeIndexEntry(rec.repoRoot, rec.sessionId, rec.toolUseId);
-          result.records += 1;
-        }
-      }
-      for (const name of names) {
-        if (!name.endsWith(".objects") && !name.endsWith(".index")) continue;
-        const stem = layout.callStem(name);
-        if (stem === null) continue;
-        const file = join3(dir, name);
-        if (existsSync2(layout.callFiles(dir, stem).record)) continue;
-        if (isRecentlyWritten(file, now)) continue;
-        let mtimeMs;
-        try {
-          mtimeMs = statSync2(file).mtimeMs;
-        } catch {
-          continue;
-        }
-        if (now - mtimeMs > budgets.recordTtlMs) trashFile(file);
-      }
-      emptyTrash(dir, now);
+}
+function evaluateStaticSize(value) {
+  if (value === void 0) return void 0;
+  const m = value.match(/^(\d+)([KMG])?$/);
+  if (m === null) return void 0;
+  const base = Number.parseInt(m[1], 10);
+  const mult = m[2] === "K" ? 1024 : m[2] === "M" ? 1024 ** 2 : m[2] === "G" ? 1024 ** 3 : 1;
+  return base * mult;
+}
+function matchTruncateOperands(args, dir, simpleCommandIndex, join7, results) {
+  let sawSizeFlag = false;
+  let afterDashDash = false;
+  let staticSize;
+  const operands = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (afterDashDash) {
+      operands.push({ path: a, size: staticSize });
+      continue;
     }
-    result.activityEntries = pruneStaleActivity(now, repos);
-    result.indexEntries = sweepOrphanIndexes(now, repos);
-    for (const repo of repos) {
-      try {
-        emptyTrash(activityDir(repo), now);
-        emptyTrash(indexDir(repo), now);
-      } catch (e) {
-        logger2.warn(`snapshot store: trash pass skipped ${repo}: ${String(e)}`);
-      }
+    if (a === "--") {
+      afterDashDash = true;
+      continue;
     }
-    return result;
+    if (a === "-s") {
+      sawSizeFlag = true;
+      staticSize = evaluateStaticSize(args[i + 1]);
+      i += 1;
+      continue;
+    }
+    if (a === "-r") {
+      sawSizeFlag = true;
+      staticSize = void 0;
+      i += 1;
+      continue;
+    }
+    if (a === "-c") continue;
+    if (a.startsWith("-")) continue;
+    operands.push({ path: a, size: staticSize });
   }
-  return {
-    layout,
-    write(record) {
-      const swept = runSweep(Date.now(), [record.repoRoot]);
-      const removed = swept.records + swept.tombstones + swept.activityEntries + swept.indexEntries + swept.foreignRecords;
-      if (removed > 0) {
-        logger2.info?.("git-span snapshot sweep removed expired state", {
-          records: swept.records,
-          tombstones: swept.tombstones,
-          activityEntries: swept.activityEntries,
-          indexEntries: swept.indexEntries,
-          foreignRecords: swept.foreignRecords
+  if (!sawSizeFlag) return;
+  for (const operand of operands) {
+    if (looksUnresolvable(operand.path)) {
+      pushUnresolved(results, "truncate-command", operand.path, "path contains an unexpanded shell variable or glob");
+      continue;
+    }
+    if (operand.path.endsWith("/") || isExistingDirectory(resolvePath(dir, operand.path))) continue;
+    results.push({
+      status: "resolved",
+      idiom: "truncate-command",
+      span: {
+        operation: "truncate",
+        absolutePath: resolvePath(dir, operand.path),
+        simpleCommandIndex,
+        join: join7,
+        ...operand.size !== void 0 ? { size: operand.size } : {}
+      }
+    });
+  }
+}
+function matchRmTruncate(argv, dirForResolution, simpleCommandIndex, join7, results) {
+  const rest = stripTransparentWrapper(argv);
+  if (rest.length === 0) return;
+  const command = rest[0];
+  if (command === "rm") {
+    matchRmOperands(rest.slice(1), RM_EXCLUDED, false, dirForResolution, simpleCommandIndex, join7, results);
+    return;
+  }
+  if (command === "truncate") {
+    matchTruncateOperands(rest.slice(1), dirForResolution, simpleCommandIndex, join7, results);
+    return;
+  }
+  if (command === "git") {
+    const sub = findGitSubcommand(rest.slice(1));
+    if (sub !== null && sub.subcommand === "rm") {
+      if (sub.cDirUnresolvable) {
+        pushUnresolved(results, "rm-write", "rm", "git -C target contains an unresolved shell variable");
+        return;
+      }
+      matchRmOperands(
+        rest.slice(1).slice(sub.subIdx + 1),
+        GIT_RM_EXCLUDED,
+        true,
+        sub.cDir ?? dirForResolution,
+        simpleCommandIndex,
+        join7,
+        results
+      );
+    }
+    return;
+  }
+  if (FOREIGN_WRAPPERS.has(command)) {
+    const wrapped = rest[1];
+    if (wrapped === "rm" || wrapped === "truncate") {
+      pushUnresolved(
+        results,
+        wrapped === "rm" ? "rm-write" : "truncate-command",
+        wrapped,
+        `the ${command} wrapper obscures the ${wrapped} argv`
+      );
+    }
+  }
+}
+function heredocBodyIsLiteral(body) {
+  if (body.includes("$") || body.includes("`")) return false;
+  for (let i = 0; i < body.length; i++) {
+    if (body[i] !== "\\") continue;
+    const next = body[i + 1];
+    if (next === void 0 || next === "$" || next === "`" || next === "\\" || next === "\n") return false;
+    i += 1;
+  }
+  return true;
+}
+function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleCommandIndex, join7, results) {
+  const bodyLiteral = quotedDelim || heredocBodyIsLiteral(body);
+  const tokens = tokenize(stripLeadingAssignments(opener).trim());
+  if (tokens === null) return;
+  const { argv, redirects } = analyzeTokens(tokens);
+  const host = argv[0];
+  const contentRedirects = redirects.filter(isContentRedirect);
+  const singlePlainAppend = contentRedirects.length === 1 && contentRedirects[0].op === ">>";
+  const singlePlainOverwrite = contentRedirects.length === 1 && contentRedirects[0].op === ">";
+  const emitContentRedirects = () => {
+    for (const r of contentRedirects) {
+      if (r.target === null) continue;
+      const absolutePath = resolveTarget(results, "heredoc-write", r.target, currentDir);
+      if (absolutePath === null) continue;
+      if (r.op === ">>" || r.op === "&>>") {
+        if (body.length === 0) continue;
+        results.push({
+          status: "resolved",
+          idiom: "heredoc-write",
+          span: {
+            operation: "append",
+            absolutePath,
+            simpleCommandIndex,
+            join: join7,
+            ...singlePlainAppend && r.op === ">>" && bodyLiteral ? { written: body } : {}
+          }
         });
-      }
-      const repo = record.repoRoot;
-      const json = JSON.stringify(record, bigintReplacer);
-      const total = repoRecordBytes(repo) + Buffer.byteLength(json, "utf8");
-      if (total > budgets.maxStorageBytes) {
-        logger2.warn(
-          `snapshot store: refusing to persist ${record.toolUseId}: repo storage ${total} bytes exceeds maxStorageBytes ${budgets.maxStorageBytes}; nothing was dropped`
-        );
-        return false;
-      }
-      writeRecord(record);
-      writeIndexEntry(repo, {
-        sessionId: record.sessionId,
-        toolUseId: record.toolUseId,
-        createdAt: record.createdAt,
-        consumed: false,
-        consumedAt: null
-      });
-      return true;
-    },
-    find(sessionId, toolUseId) {
-      if (tombstoneExists(sessionId, toolUseId)) return "tombstoned";
-      return readRecordFile(recordFile(sessionId, toolUseId), logger2);
-    },
-    consume(sessionId, toolUseId, post) {
-      if (tombstoneExists(sessionId, toolUseId)) return null;
-      const rec = readRecordFile(recordFile(sessionId, toolUseId), logger2);
-      if (rec === null) return null;
-      const consumedAt = Date.now();
-      if (!this.tombstone(sessionId, toolUseId, consumedAt)) return null;
-      const consumed = { ...rec, post, consumed: true, consumedAt };
-      writeRecord(consumed);
-      const indexData = readJsonFile(indexFile(rec.repoRoot, sessionId, toolUseId));
-      if (indexData !== null && typeof indexData === "object") {
-        writeIndexEntry(rec.repoRoot, {
-          sessionId,
-          toolUseId,
-          createdAt: indexData.createdAt,
-          consumed: true,
-          consumedAt
-        });
-      }
-      return consumed;
-    },
-    tombstone(sessionId, toolUseId, consumedAt) {
-      const file = tombstoneFile(sessionId, toolUseId);
-      const dir = dirname3(file);
-      mkdirSync4(dir, { recursive: true, mode: 448 });
-      chmodSync(dir, 448);
-      chmodSync(dirname3(dir), 448);
-      try {
-        writeFileSync2(file, JSON.stringify({ version: 1, toolUseId, consumedAt }), { flag: "wx", mode: 384 });
-        return true;
-      } catch {
-        return false;
-      }
-    },
-    listRepoRecords(repoRoot) {
-      return readIndexEntries(repoRoot, logger2);
-    },
-    sweep(now = Date.now()) {
-      return runSweep(now, []);
-    },
-    removeSession(sessionId, agentId) {
-      const dir = layout.snapshotsDir(sessionId);
-      const repos = /* @__PURE__ */ new Set();
-      let recordsRemoved = 0;
-      for (const name of listDir(dir)) {
-        if (!layout.isRecordName(name)) continue;
-        const data = readJsonFile(join3(dir, name));
-        const parsed = data !== null && typeof data === "object" ? data : null;
-        if (parsed === null || parsed.version !== 2) {
-          if (agentId === void 0) {
-            reapForeignRecord(dir, name, parsed);
-            recordsRemoved += 1;
+      } else {
+        results.push({
+          status: "resolved",
+          idiom: "heredoc-write",
+          span: body.length === 0 ? { operation: "truncate", absolutePath, simpleCommandIndex, join: join7 } : {
+            operation: "create-overwrite",
+            absolutePath,
+            simpleCommandIndex,
+            join: join7,
+            // The exact gate compares full file bytes, so the trailing
+            // `\n` the extraction stripped comes back on the overwrite.
+            ...singlePlainOverwrite && bodyLiteral ? { written: `${body}
+` } : {}
           }
-          continue;
-        }
-        const rec = readRecordFile(join3(dir, name), logger2);
-        if (rec === null) continue;
-        if (agentId !== void 0 && rec.agentId !== agentId) continue;
-        repos.add(rec.repoRoot);
-        trashFile(join3(dir, name));
-        trashFile(tombstoneFile(rec.sessionId, rec.toolUseId));
-        trashFile(layout.objectDir(rec.sessionId, rec.toolUseId));
-        trashFile(layout.tempIndexFile(rec.sessionId, rec.toolUseId));
-        removeIndexEntry(rec.repoRoot, rec.sessionId, rec.toolUseId);
-        recordsRemoved += 1;
-      }
-      for (const repo of reposFromRecords()) repos.add(repo);
-      let activityRemoved = 0;
-      for (const repo of repos) {
-        try {
-          for (const name of listDir(activityDir(repo))) {
-            if (!name.endsWith(".json")) continue;
-            const entry = readActivityEntry(join3(activityDir(repo), name));
-            if (entry !== null && entry.sessionId === sessionId && (agentId === void 0 || entry.agentId === agentId)) {
-              trashFile(join3(activityDir(repo), name));
-              activityRemoved += 1;
-            }
-          }
-        } catch (e) {
-          logger2.warn(`snapshot store: activity cleanup skipped ${repo}: ${String(e)}`);
-        }
-      }
-      if (recordsRemoved + activityRemoved > 0) {
-        logger2.info?.("git-span session cleanup removed snapshot state", {
-          sessionId,
-          agentId: agentId ?? null,
-          records: recordsRemoved,
-          activityEntries: activityRemoved
         });
       }
     }
   };
+  if (host === "cat") {
+    emitContentRedirects();
+    return;
+  }
+  if (host === "tee") {
+    const parts = teeOperandParts(argv);
+    if (parts !== null) {
+      for (const operand of parts.operands) {
+        const absolutePath = resolveTarget(results, "heredoc-write", operand, currentDir);
+        if (absolutePath === null) continue;
+        if (parts.append) {
+          if (body.length === 0) continue;
+          results.push({
+            status: "resolved",
+            idiom: "heredoc-write",
+            span: {
+              operation: "append",
+              absolutePath,
+              simpleCommandIndex,
+              join: join7,
+              ...contentRedirects.length === 0 && bodyLiteral ? { written: body } : {}
+            }
+          });
+        } else {
+          results.push({
+            status: "resolved",
+            idiom: "heredoc-write",
+            span: body.length === 0 ? { operation: "truncate", absolutePath, simpleCommandIndex, join: join7 } : {
+              operation: "create-overwrite",
+              absolutePath,
+              simpleCommandIndex,
+              join: join7,
+              // Same restored-`\n` exact body as the redirect branch; a
+              // tee operand with a content redirect present keeps the
+              // redirect's threading only (mirror of the append branch).
+              ...contentRedirects.length === 0 && bodyLiteral ? { written: `${body}
+` } : {}
+            }
+          });
+        }
+      }
+    }
+    emitContentRedirects();
+    return;
+  }
+  if (host === "patch" || host === "git") {
+    classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join7, results);
+    return;
+  }
 }
-function activityEntriesCovering(repoRoot, path, windowStart, now, budgets) {
-  const earliest = windowStart - budgets.unfinishedEntryTtlMs;
-  const out = [];
-  for (const name of listDir(activityDir(repoRoot))) {
-    if (!name.endsWith(".json")) continue;
-    const file = join3(activityDir(repoRoot), name);
-    let mtimeMs;
-    try {
-      mtimeMs = statSync2(file).mtimeMs;
-    } catch {
+var NUMERIC_SUBSTITUTION = /^(\d+)(?:,(\d+))?[sy]/;
+var UNRESTRICTED_SUBSTITUTION = /^[sy]/;
+function matchSedInplace(argv, dirForResolution, simpleCommandIndex, join7, results) {
+  const rest = stripTransparentWrapper(argv);
+  if (rest.length === 0) return;
+  const command = rest[0];
+  if (command === "sed") {
+    matchSedInplaceArgs(rest.slice(1), dirForResolution, simpleCommandIndex, join7, results);
+    return;
+  }
+  if (FOREIGN_WRAPPERS.has(command)) {
+    const wrapped = rest[1];
+    if (wrapped === "sed") {
+      pushUnresolved(results, "sed-inplace", wrapped, `the ${command} wrapper obscures the ${wrapped} argv`);
+    }
+  }
+}
+var SED_SCRIPT_SHAPE = /^(?:[A-Za-z]|\d|\/|\\|\$|~)/;
+function matchSedInplaceArgs(args, dir, simpleCommandIndex, join7, results) {
+  let suffix = null;
+  let sawInplace = false;
+  let i = 0;
+  const eScripts = [];
+  const positionals = [];
+  const files = [];
+  let afterDashDash = false;
+  while (i < args.length) {
+    const a = args[i];
+    if (afterDashDash) {
+      positionals.push(a);
+      i += 1;
       continue;
     }
-    if (mtimeMs < earliest || mtimeMs > now + 1) continue;
-    const entry = readActivityEntry(file);
-    if (entry === null || entry.finishedAt === null || entry.finishedAt > windowStart) continue;
-    if (!entry.paths.some((p) => p.path === path)) continue;
-    out.push(entry);
+    if (a === "--") {
+      afterDashDash = true;
+      i += 1;
+      continue;
+    }
+    if (a === "-n") {
+      i += 1;
+      continue;
+    }
+    if (a === "-e") {
+      const v = args[i + 1];
+      if (v === void 0) {
+        pushUnresolved(results, "sed-inplace", a, "the -e flag is left valueless");
+        return;
+      }
+      eScripts.push(v);
+      i += 2;
+      continue;
+    }
+    if (a === "-i") {
+      sawInplace = true;
+      const w = args[i + 1];
+      if (w === void 0) {
+        i += 1;
+        continue;
+      }
+      if (w.startsWith("-")) {
+        i += 1;
+        continue;
+      }
+      const restAfter = args.slice(i + 2);
+      if (restAfter.length >= 2 && !SED_SCRIPT_SHAPE.test(w)) {
+        suffix = w;
+        i += 2;
+        continue;
+      }
+      if (restAfter.length === 0) {
+        files.push(w);
+        i += 2;
+        continue;
+      }
+      positionals.push(w, restAfter[0]);
+      i += 3;
+      continue;
+    }
+    if (a.startsWith("-i") && a.length > 2) {
+      sawInplace = true;
+      suffix = a.slice(2);
+      i += 1;
+      continue;
+    }
+    if (a.startsWith("-")) {
+      i += 1;
+      continue;
+    }
+    positionals.push(a);
+    i += 1;
   }
-  out.sort((a, b) => a.startedAt - b.startedAt || (a.toolUseId < b.toolUseId ? -1 : a.toolUseId > b.toolUseId ? 1 : 0));
-  return out;
+  if (!sawInplace) return;
+  const scriptArg = eScripts.length === 0 ? positionals[0] ?? null : null;
+  if (scriptArg !== null) files.push(...positionals.slice(1));
+  else files.push(...positionals);
+  const segments = [];
+  if (scriptArg !== null) segments.push(...scriptArg.split(";"));
+  for (const s of eScripts) segments.push(...s.split(";"));
+  if (segments.length === 0) {
+    pushUnresolved(results, "sed-inplace", files[0] ?? "sed", "no script (absent or empty script argument)");
+    return;
+  }
+  let allNumeric = true;
+  let allSubstitution = true;
+  let minStart = Infinity;
+  let maxEnd = 0;
+  for (const segment of segments) {
+    const m = segment.match(NUMERIC_SUBSTITUTION);
+    if (m === null) {
+      allNumeric = false;
+      if (!UNRESTRICTED_SUBSTITUTION.test(segment)) allSubstitution = false;
+      continue;
+    }
+    const s = Number.parseInt(m[1], 10);
+    const e = m[2] === void 0 ? s : Number.parseInt(m[2], 10);
+    minStart = Math.min(minStart, s);
+    maxEnd = Math.max(maxEnd, e);
+  }
+  for (const f of files) {
+    if (looksUnresolvable(f)) {
+      pushUnresolved(results, "sed-inplace", f, "path contains an unexpanded shell variable or glob");
+      continue;
+    }
+    const absolutePath = resolvePath(dir, f);
+    if (allNumeric || allSubstitution) {
+      const total = countFileLines(absolutePath);
+      if (total === null) {
+        pushUnresolved(
+          results,
+          "sed-inplace",
+          absolutePath,
+          "could not determine end-of-file line count (file unreadable, empty, or missing)"
+        );
+        continue;
+      }
+      const start = allNumeric ? minStart : 1;
+      const end = allNumeric ? Math.min(maxEnd, total) : total;
+      if (start > end) continue;
+      results.push({
+        status: "resolved",
+        idiom: "sed-inplace",
+        span: { operation: "modify", lineStart: start, lineEnd: end, absolutePath, simpleCommandIndex, join: join7 }
+      });
+    } else {
+      results.push({
+        status: "resolved",
+        idiom: "sed-inplace",
+        span: { operation: "modify", absolutePath, simpleCommandIndex, join: join7 }
+      });
+    }
+    if (suffix !== null && suffix !== "") {
+      results.push({
+        status: "resolved",
+        idiom: "sed-inplace",
+        span: { operation: "create-overwrite", absolutePath: `${absolutePath}${suffix}`, simpleCommandIndex, join: join7 }
+      });
+    }
+  }
+}
+function patchApplyParts(args, isGitApply) {
+  let strip = isGitApply ? 1 : "auto";
+  let readOnly = false;
+  let cachedOnly = false;
+  let directory = false;
+  const operands = [];
+  let afterDashDash = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (afterDashDash) {
+      operands.push(a);
+      continue;
+    }
+    if (a === "--") {
+      afterDashDash = true;
+      continue;
+    }
+    if (isGitApply) {
+      if (a === "--check" || a === "--stat" || a === "--numstat" || a === "--summary") {
+        readOnly = true;
+        continue;
+      }
+      if (a === "--cached") {
+        cachedOnly = true;
+        continue;
+      }
+      if (a === "--index" || a === "-R" || a === "--reverse" || a === "--unsafe-paths" || a === "--reject") continue;
+      if (a === "--directory") {
+        directory = true;
+        continue;
+      }
+      if (a.startsWith("--directory=")) {
+        directory = true;
+        continue;
+      }
+      if (a === "-p") {
+        const v = args[i + 1];
+        if (v !== void 0 && /^\d+$/.test(v)) {
+          strip = Number.parseInt(v, 10);
+          i += 1;
+        }
+        continue;
+      }
+      if (/^-p\d+$/.test(a)) {
+        strip = Number.parseInt(a.slice(2), 10);
+        continue;
+      }
+      if (a.startsWith("-")) continue;
+      operands.push(a);
+      continue;
+    }
+    if (a === "--dry-run") {
+      readOnly = true;
+      continue;
+    }
+    if (a === "-N" || a === "--forward") continue;
+    if (a === "-p") {
+      const v = args[i + 1];
+      if (v !== void 0 && /^\d+$/.test(v)) {
+        strip = Number.parseInt(v, 10);
+        i += 1;
+      }
+      continue;
+    }
+    if (/^-p\d+$/.test(a)) {
+      strip = Number.parseInt(a.slice(2), 10);
+      continue;
+    }
+    if (a.startsWith("-")) continue;
+    operands.push(a);
+  }
+  return { strip, readOnly, cachedOnly, directory, operands };
+}
+function readPatchFile(absolutePath) {
+  try {
+    return readFileSync4(absolutePath, "utf8");
+  } catch {
+    return null;
+  }
+}
+function emitPatchTargets(args, isGitApply, host, targetDir, shellDir, redirects, simpleCommandIndex, join7, results) {
+  const parts = patchApplyParts(args, isGitApply);
+  if (parts.readOnly || parts.cachedOnly) return;
+  if (parts.directory) {
+    pushUnresolved(results, "patch-write", "--directory", "--directory rewrites patch paths");
+    return;
+  }
+  let patchText = null;
+  let source = null;
+  if (isGitApply) {
+    const operand = parts.operands.find((o) => o !== "-");
+    if (operand !== void 0) {
+      if (looksUnresolvable(operand)) {
+        pushUnresolved(results, "patch-write", operand, "path contains an unexpanded shell variable or glob");
+        return;
+      }
+      source = resolvePath(targetDir, operand);
+      patchText = readPatchFile(source);
+      if (patchText === null) {
+        pushUnresolved(results, "patch-write", source, "patch file unreadable or missing");
+        return;
+      }
+    }
+  }
+  if (patchText === null) {
+    const stdin = redirects.find((r) => r.op === "<");
+    if (stdin !== void 0 && stdin.target !== null) {
+      if (looksUnresolvable(stdin.target)) {
+        pushUnresolved(results, "patch-write", stdin.target, "path contains an unexpanded shell variable or glob");
+        return;
+      }
+      source = resolvePath(shellDir, stdin.target);
+      patchText = readPatchFile(source);
+      if (patchText === null) {
+        pushUnresolved(results, "patch-write", source, "patch text unreadable or missing");
+        return;
+      }
+    }
+  }
+  if (patchText === null) {
+    pushUnresolved(results, "patch-write", host, "no statically known patch text source (stdin is dynamic)");
+    return;
+  }
+  const targets = parseUnifiedDiffRange(patchText, parts.strip);
+  if (targets === null) {
+    pushUnresolved(results, "patch-write", source ?? host, "malformed or empty patch text");
+    return;
+  }
+  for (const t of targets) {
+    const absolutePath = resolveTarget(results, "patch-write", t.path, targetDir);
+    if (absolutePath === null) continue;
+    results.push({
+      status: "resolved",
+      idiom: "patch-write",
+      span: {
+        operation: t.operation,
+        absolutePath,
+        simpleCommandIndex,
+        join: join7,
+        ...t.lineStart !== void 0 ? { lineStart: t.lineStart, lineEnd: t.lineEnd } : {}
+      }
+    });
+  }
+}
+function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, join7, results) {
+  const rest = stripTransparentWrapper(argv);
+  if (rest.length === 0) return;
+  const command = rest[0];
+  if (command === "patch") {
+    emitPatchTargets(
+      rest.slice(1),
+      false,
+      "patch",
+      dirForResolution,
+      dirForResolution,
+      redirects,
+      simpleCommandIndex,
+      join7,
+      results
+    );
+    return;
+  }
+  if (command === "git") {
+    const sub = findGitSubcommand(rest.slice(1));
+    if (sub === null || sub.subcommand !== "apply") return;
+    if (sub.cDirUnresolvable) {
+      pushUnresolved(results, "patch-write", "apply", "git -C target contains an unresolved shell variable");
+      return;
+    }
+    emitPatchTargets(
+      rest.slice(1).slice(sub.subIdx + 1),
+      true,
+      "apply",
+      sub.cDir ?? dirForResolution,
+      dirForResolution,
+      redirects,
+      simpleCommandIndex,
+      join7,
+      results
+    );
+    return;
+  }
+  if (FOREIGN_WRAPPERS.has(command)) {
+    const wrapped = rest[1];
+    if (wrapped === "patch" || wrapped === "apply") {
+      pushUnresolved(results, "patch-write", wrapped, `the ${command} wrapper obscures the ${wrapped} argv`);
+    }
+  }
+}
+function classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join7, results) {
+  const rest = stripTransparentWrapper(argv);
+  if (rest.length === 0) return;
+  const command = rest[0];
+  let isGitApply = false;
+  let args;
+  let dir = currentDir;
+  if (command === "patch") {
+    args = rest.slice(1);
+  } else if (command === "git") {
+    const sub = findGitSubcommand(rest.slice(1));
+    if (sub === null || sub.subcommand !== "apply") return;
+    if (sub.cDirUnresolvable) {
+      pushUnresolved(results, "patch-write", "apply", "git -C target contains an unresolved shell variable");
+      return;
+    }
+    isGitApply = true;
+    args = rest.slice(1).slice(sub.subIdx + 1);
+    dir = sub.cDir ?? currentDir;
+  } else {
+    return;
+  }
+  const parts = patchApplyParts(args, isGitApply);
+  if (parts.readOnly || parts.cachedOnly) return;
+  if (parts.directory) {
+    pushUnresolved(results, "patch-write", "--directory", "--directory rewrites patch paths");
+    return;
+  }
+  const targets = parseUnifiedDiffRange(body, parts.strip);
+  if (targets === null) {
+    pushUnresolved(results, "patch-write", "heredoc", "malformed or empty patch text");
+    return;
+  }
+  for (const t of targets) {
+    const absolutePath = resolveTarget(results, "patch-write", t.path, dir);
+    if (absolutePath === null) continue;
+    results.push({
+      status: "resolved",
+      idiom: "patch-write",
+      span: {
+        operation: t.operation,
+        absolutePath,
+        simpleCommandIndex,
+        join: join7,
+        ...t.lineStart !== void 0 ? { lineStart: t.lineStart, lineEnd: t.lineEnd } : {}
+      }
+    });
+  }
+}
+var FORMATTER_TABLE = [
+  {
+    command: "prettier",
+    writeForms: [["--write"], ["-w"]],
+    readOnlyForms: [["--check"], ["--list-different"], ["--debug-check"]]
+  },
+  { command: "eslint", writeForms: [["--fix"]], readOnlyForms: [["--fix-dry-run"]] },
+  {
+    command: "biome",
+    writeForms: [
+      ["check", "--write"],
+      ["check", "--fix"],
+      ["format", "--write"]
+    ],
+    readOnlyForms: []
+  },
+  { command: "gofmt", writeForms: [["-w"]], readOnlyForms: [["-l"]] },
+  { command: "goimports", writeForms: [["-w"]], readOnlyForms: [] },
+  { command: "clang-format", writeForms: [["-i"]], readOnlyForms: [["--dry-run"]] },
+  { command: "shfmt", writeForms: [["-w"]], readOnlyForms: [["-d"]] },
+  { command: "yapf", writeForms: [["-i"]], readOnlyForms: [["--diff"]] },
+  { command: "autopep8", writeForms: [["-i"]], readOnlyForms: [["-d"], ["--diff"]] },
+  { command: "black", writeForms: [[]], readOnlyForms: [["--check"], ["--diff"]] },
+  { command: "isort", writeForms: [[]], readOnlyForms: [["--check-only"], ["--diff"]] },
+  {
+    command: "ruff",
+    writeForms: [["format"], ["check", "--fix"]],
+    readOnlyForms: [
+      ["check", "--no-fix"],
+      ["format", "--check"]
+    ]
+  },
+  { command: "deno", writeForms: [["fmt"]], readOnlyForms: [["fmt", "--check"]] },
+  { command: "dprint", writeForms: [["fmt"]], readOnlyForms: [["check"]] },
+  { command: "rustfmt", writeForms: [[]], readOnlyForms: [["--check"], ["--emit", "stdout"]] },
+  {
+    command: "terraform",
+    writeForms: [["fmt"]],
+    readOnlyForms: [
+      ["fmt", "-check"],
+      ["fmt", "-diff"]
+    ]
+  }
+];
+var RUNNER_NO_ARG_FLAGS = /* @__PURE__ */ new Set(["-y", "--yes", "--no-install"]);
+function stripPackageRunner(argv) {
+  const runner = argv[0];
+  let rest = argv.slice(1);
+  if (runner === "npx" || runner === "yarn" || runner === "bunx") {
+  } else if (runner === "pnpm") {
+    if (rest[0] !== "exec" && rest[0] !== "dlx") return "not-runner";
+    rest = rest.slice(1);
+  } else if (runner === "npm") {
+    if (rest[0] !== "exec") return "not-runner";
+    rest = rest.slice(1);
+  } else {
+    return "not-runner";
+  }
+  while (RUNNER_NO_ARG_FLAGS.has(rest[0])) rest = rest.slice(1);
+  if (runner === "npm" && rest[0] === "--") rest = rest.slice(1);
+  if (rest.length === 0) return "not-runner";
+  const wrapped = rest[0];
+  if (wrapped.startsWith("-") || wrapped.startsWith(".") || /\s/.test(wrapped)) return { kind: "obscured" };
+  return { kind: "stripped", stripped: rest };
+}
+function matchFormatter(argv, dirForResolution, simpleCommandIndex, join7, results) {
+  const rest = stripTransparentWrapper(argv);
+  if (rest.length === 0) return;
+  let words = rest;
+  const strip = stripPackageRunner(rest);
+  if (strip === "not-runner") {
+  } else if (strip.kind === "obscured") {
+    pushUnresolved(results, "formatter-write", rest[0], `the ${rest[0]} wrapper obscures the wrapped argv`);
+    return;
+  } else {
+    words = strip.stripped;
+  }
+  if (FOREIGN_WRAPPERS.has(words[0])) {
+    const wrapped = words[1];
+    if (wrapped !== void 0 && FORMATTER_TABLE.some((r) => r.command === wrapped)) {
+      pushUnresolved(results, "formatter-write", wrapped, `the ${words[0]} wrapper obscures the ${wrapped} argv`);
+    }
+    return;
+  }
+  const row = FORMATTER_TABLE.find((r) => r.command === words[0]);
+  if (row === void 0) return;
+  const args = words.slice(1);
+  const formPresent = (form) => {
+    const first = form[0];
+    if (first !== void 0 && !first.startsWith("-") && args[0] !== first) return false;
+    return form.every((token) => args.includes(token));
+  };
+  if (row.readOnlyForms.some(formPresent)) return;
+  if (!row.writeForms.some(formPresent)) return;
+  const subcommandWords = /* @__PURE__ */ new Set();
+  for (const form of row.writeForms) {
+    for (const token of form) {
+      if (!token.startsWith("-")) subcommandWords.add(token);
+    }
+  }
+  const afterSubcommand = subcommandWords.has(args[0]) ? args.slice(1) : args;
+  let afterDashDash = false;
+  const operands = [];
+  for (const a of afterSubcommand) {
+    if (afterDashDash) {
+      operands.push(a);
+      continue;
+    }
+    if (a === "--") {
+      afterDashDash = true;
+      continue;
+    }
+    if (a.startsWith("-")) continue;
+    operands.push(a);
+  }
+  if (operands.length === 0) return;
+  for (const operand of operands) {
+    if (looksUnresolvable(operand)) {
+      pushUnresolved(results, "formatter-write", operand, "path contains an unexpanded shell variable or glob");
+      return;
+    }
+    if (operand.endsWith("/") || isExistingDirectory(resolvePath(dirForResolution, operand))) return;
+  }
+  for (const operand of operands) {
+    results.push({
+      status: "resolved",
+      idiom: "formatter-write",
+      span: { operation: "modify", absolutePath: resolvePath(dirForResolution, operand), simpleCommandIndex, join: join7 }
+    });
+  }
+}
+var RESTORE_NO_VALUE = /* @__PURE__ */ new Set(["-q", "-f", "-u"]);
+function emitRestoreCheckoutPathspec(results, idiom, operand, dir, simpleCommandIndex, join7) {
+  if (looksUnresolvable(operand)) {
+    pushUnresolved(results, idiom, operand, "path contains an unexpanded shell variable or glob");
+    return;
+  }
+  const absolutePath = resolvePath(dir, operand);
+  if (operand === "." || operand === ".." || operand.endsWith("/") || isExistingDirectory(absolutePath)) {
+    pushUnresolved(
+      results,
+      idiom,
+      operand,
+      "directory-shaped pathspec rewrites arbitrary files beneath it \u2014 not attributable to a file write"
+    );
+    return;
+  }
+  results.push({
+    status: "resolved",
+    idiom,
+    span: { operation: "create-overwrite", absolutePath, simpleCommandIndex, join: join7 }
+  });
+}
+function matchRestoreOperands(args, dir, simpleCommandIndex, join7, results) {
+  let staged = false;
+  let worktree = false;
+  let afterDashDash = false;
+  const operands = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (afterDashDash) {
+      operands.push(a);
+      continue;
+    }
+    if (a === "--") {
+      afterDashDash = true;
+      continue;
+    }
+    if (a === "-p" || a === "--patch") {
+      pushUnresolved(
+        results,
+        "git-restore-write",
+        a,
+        "interactive patch mode applies user-chosen hunks \u2014 no static span"
+      );
+      return;
+    }
+    if (a === "-s" || a === "--source") {
+      i += 1;
+      continue;
+    }
+    if (a.startsWith("--source=")) continue;
+    if (a === "-m" || a === "--merge") return;
+    if (a === "--staged") {
+      staged = true;
+      continue;
+    }
+    if (a === "-W" || a === "--worktree") {
+      worktree = true;
+      continue;
+    }
+    if (RESTORE_NO_VALUE.has(a)) continue;
+    if (a.startsWith("-")) continue;
+    operands.push(a);
+  }
+  if (staged && !worktree) return;
+  for (const operand of operands) {
+    emitRestoreCheckoutPathspec(results, "git-restore-write", operand, dir, simpleCommandIndex, join7);
+  }
+}
+function matchCheckoutOperands(args, dir, simpleCommandIndex, join7, results) {
+  let afterDashDash = false;
+  const operands = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (afterDashDash) {
+      operands.push(a);
+      continue;
+    }
+    if (a === "--") {
+      afterDashDash = true;
+      continue;
+    }
+    if (a === "-p" || a === "--patch") {
+      pushUnresolved(
+        results,
+        "git-checkout-write",
+        a,
+        "interactive patch mode applies user-chosen hunks \u2014 no static span"
+      );
+      return;
+    }
+    if (a === "-b" || a === "-B" || a === "--orphan") {
+      i += 1;
+      continue;
+    }
+    if (a === "-f" || a === "-q" || a === "-m" || a === "-t") continue;
+    if (a.startsWith("-")) continue;
+  }
+  for (const operand of operands) {
+    emitRestoreCheckoutPathspec(results, "git-checkout-write", operand, dir, simpleCommandIndex, join7);
+  }
+}
+function matchGitRestoreCheckout(argv, dirForResolution, simpleCommandIndex, join7, results) {
+  const rest = stripTransparentWrapper(argv);
+  if (rest.length === 0) return;
+  const command = rest[0];
+  if (command === "git") {
+    const sub = findGitSubcommand(rest.slice(1));
+    if (sub === null || sub.subcommand !== "restore" && sub.subcommand !== "checkout") return;
+    if (sub.cDirUnresolvable) {
+      pushUnresolved(
+        results,
+        sub.subcommand === "restore" ? "git-restore-write" : "git-checkout-write",
+        sub.subcommand,
+        "git -C target contains an unresolved shell variable"
+      );
+      return;
+    }
+    const dir = sub.cDir ?? dirForResolution;
+    const args = rest.slice(1).slice(sub.subIdx + 1);
+    if (sub.subcommand === "restore") matchRestoreOperands(args, dir, simpleCommandIndex, join7, results);
+    else matchCheckoutOperands(args, dir, simpleCommandIndex, join7, results);
+    return;
+  }
+  if (FOREIGN_WRAPPERS.has(command)) {
+    const wrapped = rest[1];
+    if (wrapped === "restore" || wrapped === "checkout") {
+      pushUnresolved(
+        results,
+        wrapped === "restore" ? "git-restore-write" : "git-checkout-write",
+        wrapped,
+        `the ${command} wrapper obscures the ${wrapped} argv`
+      );
+    }
+  }
+}
+var LINE_SELECTORS = [matchSed, matchHead, matchTail];
+var BUILTIN_GUARD_STATUS = /* @__PURE__ */ new Map([
+  ["false", 1],
+  ["true", 0],
+  [":", 0]
+]);
+function parseCommandDetailed(command, opts = {}) {
+  const cwd = typeof opts === "string" ? opts : opts.cwd ?? process.cwd();
+  const { writes: heredocWrites, masked } = extractHeredocWrites(command);
+  const { stages: simpleCommands, malformed } = splitTopLevel(masked);
+  const results = [];
+  const fsLineCache = /* @__PURE__ */ new Map();
+  const gitLineCache = /* @__PURE__ */ new Map();
+  const cachedFsTotalLines = (absPath) => () => {
+    if (!fsLineCache.has(absPath)) fsLineCache.set(absPath, countFileLines(absPath));
+    return fsLineCache.get(absPath) ?? null;
+  };
+  const cachedGitTotalLines = (gitCwd, rev, path) => () => {
+    const key = `${gitCwd}\0${rev}\0${path}`;
+    if (!gitLineCache.has(key)) gitLineCache.set(key, countGitBlobLines(gitCwd, rev, path));
+    return gitLineCache.get(key) ?? null;
+  };
+  let currentDir = cwd;
+  let lastPlainFileSource = null;
+  let pipeEchoContent = null;
+  const joinOf = (simple) => {
+    if (simple.precededBy === "and") return "&&";
+    if (simple.precededBy === "or") return "||";
+    return void 0;
+  };
+  const gitDirOf = (c, frame) => {
+    if (c.dirOverride === void 0) return frame.certain ? frame.dir : void 0;
+    if (isAbsolute2(c.dirOverride)) return c.dirOverride;
+    return frame.certain ? resolvePath(frame.dir, c.dirOverride) : void 0;
+  };
+  const emitCandidate = (c, frame, simpleCommandIndex, join7) => {
+    if (looksUnresolvable(c.fileArg)) {
+      results.push({
+        status: "unresolved",
+        idiom: c.idiom,
+        fileArg: c.fileArg,
+        reason: "path contains an unexpanded shell variable or glob"
+      });
+      return;
+    }
+    if (c.resolverKind === "fs") {
+      if (!frame.certain && !isAbsolute2(c.fileArg)) {
+        results.push({
+          status: "unresolved",
+          idiom: c.idiom,
+          fileArg: c.fileArg,
+          reason: "the working directory is uncertain \u2014 the relative path cannot be resolved"
+        });
+        return;
+      }
+    } else if (gitDirOf(c, frame) === void 0) {
+      results.push({
+        status: "unresolved",
+        idiom: c.idiom,
+        fileArg: c.fileArg,
+        reason: "the git -C target cannot be resolved against the tracked directory"
+      });
+      return;
+    }
+    const resolutionDir = c.resolverKind === "fs" ? c.dirOverride === void 0 ? frame.dir : isAbsolute2(c.dirOverride) ? c.dirOverride : resolvePath(frame.dir, c.dirOverride) : gitDirOf(c, frame);
+    const absolutePath = resolvePath(resolutionDir, c.fileArg);
+    const totalLines = c.resolverKind === "fs" ? cachedFsTotalLines(absolutePath) : cachedGitTotalLines(resolutionDir, c.resolverKind.rev, c.fileArg);
+    const range = resolveSpec(c.spec, totalLines);
+    if (range === null) {
+      results.push({
+        status: "unresolved",
+        idiom: c.idiom,
+        fileArg: absolutePath,
+        reason: "could not determine end-of-file line count (file unreadable, empty, or git rev/path not found)"
+      });
+      return;
+    }
+    results.push({
+      status: "resolved",
+      idiom: c.idiom,
+      span: {
+        operation: "read",
+        lineStart: range.lineStart,
+        lineEnd: range.lineEnd,
+        absolutePath,
+        simpleCommandIndex,
+        join: join7
+      }
+    });
+  };
+  const matchReads = (simple, argv, i) => {
+    let isPlainSource = false;
+    let plainFileArg = null;
+    if (argv[0] === "cat" && argv.length === 2 && !argv[1].startsWith("-")) {
+      isPlainSource = true;
+      plainFileArg = argv[1];
+      lastPlainFileSource = hasShellExpansion(argv[1]) ? null : resolvePath(currentDir, argv[1]);
+    } else if (argv[0] === "nl" && argv.length >= 2 && !argv[argv.length - 1].startsWith("-")) {
+      isPlainSource = true;
+      const f = argv[argv.length - 1];
+      plainFileArg = f;
+      lastPlainFileSource = hasShellExpansion(f) ? null : resolvePath(currentDir, f);
+    }
+    if (plainFileArg !== null) {
+      const next = simpleCommands[i + 1];
+      if (next === void 0 || next.precededBy !== "pipe") {
+        emitCandidate(
+          {
+            kind: "candidate",
+            idiom: argv[0] === "cat" ? "cat-file" : "nl-file",
+            fileArg: plainFileArg,
+            spec: { kind: "toEof", start: 1 },
+            resolverKind: "fs"
+          },
+          { dir: currentDir, certain: true },
+          i,
+          joinOf(simple)
+        );
+      }
+    }
+    let matched = false;
+    for (const matcher of [...LINE_SELECTORS, matchGitShow, matchGitLogL]) {
+      for (const outcome of matcher(argv)) {
+        matched = true;
+        if (outcome.kind === "unresolved") {
+          results.push({
+            status: "unresolved",
+            idiom: outcome.idiom,
+            fileArg: outcome.fileArg,
+            reason: outcome.reason
+          });
+        } else {
+          emitCandidate(outcome, { dir: currentDir, certain: true }, i, joinOf(simple));
+          if (outcome.idiom === "git-show-rev-path" && !looksUnresolvable(outcome.fileArg)) {
+            isPlainSource = true;
+            lastPlainFileSource = resolvePath(outcome.dirOverride ?? currentDir, outcome.fileArg);
+          }
+        }
+      }
+    }
+    if (!matched && simple.precededBy === "pipe" && lastPlainFileSource) {
+      const withFile = [...argv, lastPlainFileSource];
+      for (const matcher of LINE_SELECTORS) {
+        for (const outcome of matcher(withFile)) {
+          if (outcome.kind === "candidate")
+            emitCandidate(outcome, { dir: currentDir, certain: true }, i, joinOf(simple));
+          else
+            results.push({
+              status: "unresolved",
+              idiom: outcome.idiom,
+              fileArg: outcome.fileArg,
+              reason: outcome.reason
+            });
+        }
+      }
+    }
+    if (!isPlainSource) lastPlainFileSource = null;
+  };
+  for (let i = 0; i < simpleCommands.length; i++) {
+    const simple = simpleCommands[i];
+    if (simple.precededBy !== "pipe") pipeEchoContent = null;
+    const heredocRef = simple.text.match(/^__heredoc_(\d+)__$/);
+    if (heredocRef) {
+      const w = heredocWrites[Number.parseInt(heredocRef[1], 10)];
+      const tokens2 = tokenize(stripLeadingAssignments(w.opener).trim());
+      if (tokens2 === null) {
+        lastPlainFileSource = null;
+        continue;
+      }
+      const openerArgv = analyzeTokens(tokens2).argv;
+      matchReads(simple, openerArgv, i);
+      classifyHeredocOpener(w.opener, w.body, w.quotedDelim, currentDir, i, joinOf(simple), results);
+      pipeEchoContent = literalContent(openerArgv) ?? null;
+      continue;
+    }
+    const tokens = tokenize(stripLeadingAssignments(simple.text).trim());
+    if (tokens === null) {
+      lastPlainFileSource = null;
+      continue;
+    }
+    const { argv, redirects } = analyzeTokens(tokens);
+    if (argv.length === 0) {
+      matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, i, joinOf(simple), results);
+      lastPlainFileSource = null;
+      continue;
+    }
+    if (argv[0] === "cd") {
+      lastPlainFileSource = null;
+      const target = argv[1];
+      if (target !== void 0 && target !== "-" && !hasShellExpansion(target)) {
+        currentDir = resolvePath(currentDir, target);
+      }
+      continue;
+    }
+    const before = results.length;
+    matchReads(simple, argv, i);
+    matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, i, joinOf(simple), results);
+    matchCopyMoveFamily(argv, currentDir, i, joinOf(simple), results);
+    matchRmTruncate(argv, currentDir, i, joinOf(simple), results);
+    matchSedInplace(argv, currentDir, i, joinOf(simple), results);
+    matchPatchApply(argv, redirects, currentDir, i, joinOf(simple), results);
+    matchFormatter(argv, currentDir, i, joinOf(simple), results);
+    matchGitRestoreCheckout(argv, currentDir, i, joinOf(simple), results);
+    if (results.length === before) {
+      const status = BUILTIN_GUARD_STATUS.get(argv[0]);
+      if (status !== void 0) {
+        results.push({
+          status: "builtin-guard",
+          simpleCommandIndex: i,
+          join: joinOf(simple),
+          exitStatus: status
+        });
+      }
+    }
+    pipeEchoContent = literalContent(argv) ?? null;
+  }
+  return results;
+}
+
+// src/common/static-attribution.ts
+var DEFAULT_MAX_ATTRIBUTION_CANDIDATES = 32;
+var SHELL_EXPANSION = /(?:\$|`)/;
+var GLOB_META = /[*?[\]]/;
+var REGEX_META = /[.^$*+?()[\]{}|]/;
+function unresolved(layer, idiom, reasonCode, detail, fileArg, simpleCommandIndex = 0) {
+  return { status: "unresolved", layer, idiom, reasonCode, detail, fileArg, simpleCommandIndex };
+}
+function classifyDynamicWord(word) {
+  if (word.includes("$(") || word.includes("`")) return "command-substitution";
+  if (SHELL_EXPANSION.test(word)) return "dynamic-path";
+  if (GLOB_META.test(word)) return "glob-path";
+  return null;
+}
+function decodeLiteralField(raw, delimiter, replacement) {
+  let value = "";
+  for (let index = 0; index < raw.length; index += 1) {
+    const character = raw[index];
+    if (character === "\\") {
+      const next = raw[index + 1];
+      if (next === void 0) return null;
+      if (next === "n") value += "\n";
+      else if (next === delimiter || next === "\\" || !replacement && REGEX_META.test(next)) value += next;
+      else return null;
+      index += 1;
+      continue;
+    }
+    if (!replacement && REGEX_META.test(character) || replacement && character === "&") return null;
+    value += character;
+  }
+  return value;
+}
+function readDelimitedField(source, start, delimiter) {
+  let raw = "";
+  for (let index = start; index < source.length; index += 1) {
+    const character = source[index];
+    if (character === "\\") {
+      const next = source[index + 1];
+      if (next === void 0) return null;
+      raw += `${character}${next}`;
+      index += 1;
+      continue;
+    }
+    if (character === delimiter) return { raw, next: index + 1 };
+    raw += character;
+  }
+  return null;
+}
+function parseLiteralSubstitution(script) {
+  if (script.length < 4 || script[0] !== "s") return null;
+  const delimiter = script[1];
+  if (/\w|\s/.test(delimiter)) return null;
+  const patternField = readDelimitedField(script, 2, delimiter);
+  if (patternField === null) return null;
+  const replacementField = readDelimitedField(script, patternField.next, delimiter);
+  if (replacementField === null) return null;
+  const flags = script.slice(replacementField.next);
+  if (flags !== "" && flags !== "g") return null;
+  const pattern = decodeLiteralField(patternField.raw, delimiter, false);
+  const replacement = decodeLiteralField(replacementField.raw, delimiter, true);
+  if (pattern === null || pattern.length === 0 || replacement === null) return null;
+  return { pattern, replacement, global: flags === "g" };
+}
+function literalOccurrenceRanges(content, literal) {
+  if (literal.length === 0) return [];
+  const ranges = [];
+  let cursor = 0;
+  let scannedTo = 0;
+  let currentLine = 1;
+  while (cursor <= content.length - literal.length) {
+    const offset = content.indexOf(literal, cursor);
+    if (offset < 0) break;
+    for (let index = scannedTo; index < offset; index += 1) {
+      if (content.charCodeAt(index) === 10) currentLine += 1;
+    }
+    const embeddedNewlines = literal.match(/\n/g)?.length ?? 0;
+    const range = { start: currentLine, end: currentLine + embeddedNewlines };
+    const previous = ranges[ranges.length - 1];
+    if (previous === void 0 || previous.start !== range.start || previous.end !== range.end) ranges.push(range);
+    cursor = offset + Math.max(1, literal.length);
+    scannedTo = offset;
+  }
+  return ranges;
+}
+function replaceLiteral(source, pattern, replacement, global) {
+  if (global) return source.split(pattern).join(replacement);
+  const offset = source.indexOf(pattern);
+  if (offset < 0) return source;
+  return `${source.slice(0, offset)}${replacement}${source.slice(offset + pattern.length)}`;
+}
+function expectedSubstitutionContent(content, substitution, kind, addressLiteral) {
+  if (kind === "perl-zero") {
+    return replaceLiteral(content, substitution.pattern, substitution.replacement, substitution.global);
+  }
+  return content.split(/(?<=\n)/).map((line) => {
+    if (addressLiteral !== null && !line.includes(addressLiteral)) return line;
+    return replaceLiteral(line, substitution.pattern, substitution.replacement, substitution.global);
+  }).join("");
+}
+function parsePatternCommand(command) {
+  const argv = argvOf(command.trim());
+  if (argv === null || argv.length < 2) return null;
+  if (argv[0] === "sed") {
+    let inplace2 = false;
+    let backupSuffix;
+    let script2 = null;
+    const files2 = [];
+    for (let index = 1; index < argv.length; index += 1) {
+      const argument = argv[index];
+      if (argument === "-i") {
+        inplace2 = true;
+        continue;
+      }
+      if (argument.startsWith("-i")) {
+        inplace2 = true;
+        backupSuffix = argument.slice(2);
+        continue;
+      }
+      if (argument === "-e") {
+        script2 = argv[index + 1] ?? null;
+        index += 1;
+        continue;
+      }
+      if (argument.startsWith("-"))
+        return inplace2 ? { kind: "sed", script: "", files: [], backupSuffix, simpleCommandIndex: 0 } : null;
+      if (script2 === null) script2 = argument;
+      else files2.push(argument);
+    }
+    return inplace2 && script2 !== null ? { kind: "sed", script: script2, files: files2, backupSuffix, simpleCommandIndex: 0 } : null;
+  }
+  if (argv[0] !== "perl") return null;
+  let inplace = false;
+  let zero = false;
+  let script = null;
+  const files = [];
+  let unsupportedOption = false;
+  for (let index = 1; index < argv.length; index += 1) {
+    const argument = argv[index];
+    if (argument === "-e") {
+      script = argv[index + 1] ?? null;
+      index += 1;
+      continue;
+    }
+    if (argument.startsWith("-")) {
+      const attachedScript = argument.match(/^-e(.+)$/)?.[1];
+      if (attachedScript !== void 0) {
+        script = attachedScript;
+        continue;
+      }
+      if (argument === "-pi") inplace = true;
+      else if (argument === "-0pi") {
+        inplace = true;
+        zero = true;
+      } else {
+        if (argument.includes("p") && argument.includes("i")) inplace = true;
+        unsupportedOption = true;
+      }
+      continue;
+    }
+    files.push(argument);
+  }
+  if (unsupportedOption && inplace)
+    return { kind: zero ? "perl-zero" : "perl", script: "", files: [], simpleCommandIndex: 0 };
+  return inplace && script !== null ? { kind: zero ? "perl-zero" : "perl", script, files, simpleCommandIndex: 0 } : null;
+}
+function shellQuote(value) {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+function stableReason(match) {
+  if (match.fileArg.includes("$(") || match.fileArg.includes("`")) return "command-substitution";
+  if (SHELL_EXPANSION.test(match.fileArg)) return "dynamic-path";
+  if (GLOB_META.test(match.fileArg)) return "glob-path";
+  if (match.reason.includes("working directory")) return "dynamic-path";
+  return "unsupported-expression";
+}
+var PYTHON_INTERPRETER = /^(?:python|python3(?:\.\d+)?)$/;
+var PYTHON_STRING_SOURCE = String.raw`(?:'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")`;
+var PYTHON_NAME_SOURCE = `[A-Za-z_][A-Za-z0-9_]*`;
+function decodePythonString(raw) {
+  if (raw.length < 2 || raw[0] !== "'" && raw[0] !== '"' || raw.at(-1) !== raw[0]) return null;
+  let value = "";
+  for (let index = 1; index < raw.length - 1; index += 1) {
+    const character = raw[index];
+    if (character !== "\\") {
+      if (character === raw[0]) return null;
+      value += character;
+      continue;
+    }
+    const escaped = raw[index + 1];
+    if (escaped === void 0 || index + 1 >= raw.length - 1) return null;
+    if (escaped === "n") value += "\n";
+    else if (escaped === "r") value += "\r";
+    else if (escaped === "t") value += "	";
+    else if (escaped === "\\" || escaped === "'" || escaped === '"') value += escaped;
+    else return null;
+    index += 1;
+  }
+  return value;
+}
+function extractPythonProgram(command) {
+  const trimmed = command.trim();
+  const interpreter = trimmed.match(/^(python(?:3(?:\.\d+)?)?)\b/)?.[1];
+  if (interpreter === void 0 || !PYTHON_INTERPRETER.test(interpreter)) return null;
+  if (trimmed.includes("<<")) {
+    const heredoc = trimmed.match(
+      /^(?:python|python3(?:\.\d+)?)\s+-\s+<<(['"])([A-Za-z_][A-Za-z0-9_]*)\1[ \t]*\r?\n([\s\S]*?)\r?\n\2[ \t]*$/
+    );
+    if (heredoc === null) {
+      return {
+        reason: "unsupported-syntax",
+        detail: "Python heredocs require a quoted literal delimiter and a complete body"
+      };
+    }
+    return { program: heredoc[3] };
+  }
+  const argv = argvOf(trimmed);
+  if (argv === null || argv[0] !== interpreter || argv[1] !== "-c" || argv[2] === void 0) {
+    return {
+      reason: "unsupported-syntax",
+      detail: "only literal Python -c programs and quoted heredocs are supported"
+    };
+  }
+  if (argv[2].includes("$(") || argv[2].includes("`") || /^\$\{?[A-Za-z_]/.test(argv[2])) {
+    return { reason: "unsupported-syntax", detail: "the Python program is shell-derived rather than literal" };
+  }
+  return { program: argv[2] };
+}
+function splitPythonStatements(program) {
+  const statements = [];
+  let statement = "";
+  let quote = null;
+  let escaped = false;
+  let depth = 0;
+  let comment = false;
+  for (const character of program) {
+    if (comment) {
+      if (character === "\n") {
+        comment = false;
+        if (depth === 0 && statement.trim() !== "") {
+          statements.push(statement.trim());
+          statement = "";
+        }
+      }
+      continue;
+    }
+    if (quote !== null) {
+      statement += character;
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === quote) quote = null;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      statement += character;
+      continue;
+    }
+    if (character === "#") {
+      comment = true;
+      continue;
+    }
+    if (character === "(" || character === "[" || character === "{") depth += 1;
+    else if (character === ")" || character === "]" || character === "}") {
+      depth -= 1;
+      if (depth < 0) return null;
+    }
+    if ((character === "\n" || character === ";") && depth === 0) {
+      if (statement.trim() !== "") statements.push(statement.trim());
+      statement = "";
+      continue;
+    }
+    statement += character;
+  }
+  if (quote !== null || escaped || depth !== 0) return null;
+  if (statement.trim() !== "") statements.push(statement.trim());
+  return statements;
+}
+function pythonLineAtOffset(content, offset) {
+  let line = 1;
+  for (let index = 0; index < offset; index += 1) if (content.charCodeAt(index) === 10) line += 1;
+  return line;
+}
+function countLiteralOccurrences(content, literal) {
+  if (literal.length === 0) return 0;
+  let count = 0;
+  let cursor = 0;
+  while (cursor <= content.length - literal.length) {
+    const offset = content.indexOf(literal, cursor);
+    if (offset < 0) break;
+    count += 1;
+    cursor = offset + literal.length;
+  }
+  return count;
+}
+function structuredKeyRanges(content, format, key) {
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = format === "json" ? new RegExp(`^[ \\t]*["']${escaped}["'][ \\t]*:`, "m") : format === "toml" ? new RegExp(`^[ \\t]*(?:["']${escaped}["']|${escaped})[ \\t]*=`, "m") : new RegExp(`^[ \\t]*(?:["']${escaped}["']|${escaped})[ \\t]*:`, "m");
+  const ranges = [];
+  let offset = 0;
+  for (const line of content.split(/(?<=\n)/)) {
+    if (pattern.test(line)) {
+      const number = pythonLineAtOffset(content, offset);
+      ranges.push({ start: number, end: number });
+    }
+    offset += line.length;
+  }
+  return ranges;
+}
+function parsePythonAttribution(command, options) {
+  const extracted = extractPythonProgram(command);
+  if (extracted === null) return null;
+  const reject = (reasonCode, detail, fileArg, preStateRequests2 = []) => ({
+    resolved: [],
+    unresolved: [unresolved("python", "python-edit", reasonCode, detail, fileArg)],
+    preStateRequests: preStateRequests2
+  });
+  if (extracted.program === void 0) {
+    return reject(extracted.reason ?? "unsupported-syntax", extracted.detail ?? "unsupported Python invocation");
+  }
+  const statements = splitPythonStatements(extracted.program);
+  if (statements === null || statements.length === 0) {
+    return reject("unsupported-syntax", "the Python program is incomplete or cannot be tokenized");
+  }
+  if (statements.length > 64)
+    return reject("candidate-budget-exceeded", "the Python program exceeds the statement budget");
+  const cwd = options.cwd ?? process.cwd();
+  const paths = /* @__PURE__ */ new Map();
+  const texts = /* @__PURE__ */ new Map();
+  const replacements = /* @__PURE__ */ new Map();
+  const anchors = /* @__PURE__ */ new Map();
+  const lines = /* @__PURE__ */ new Map();
+  const structured = /* @__PURE__ */ new Map();
+  const countAssertions = /* @__PURE__ */ new Map();
+  const resolved = [];
+  const preStateRequests = [];
+  const request = (absolutePath, operation, requirement) => {
+    if (!preStateRequests.some(
+      (entry) => entry.absolutePath === absolutePath && entry.operation === operation && entry.requirement === requirement
+    )) {
+      preStateRequests.push({ absolutePath, operation, requirement, simpleCommandIndex: 0 });
+    }
+  };
+  const readPreState = (absolutePath, requirements) => {
+    for (const requirement of requirements) request(absolutePath, "modify", requirement);
+    const content = options.readPreState?.(absolutePath) ?? null;
+    if (content === null)
+      return reject(
+        "missing-pre-state",
+        "Python range recovery requires pre-command text",
+        absolutePath,
+        preStateRequests
+      );
+    if (content.includes("\0"))
+      return reject(
+        "binary-content",
+        "Python range recovery does not accept binary content",
+        absolutePath,
+        preStateRequests
+      );
+    return content;
+  };
+  const emitReplace = (absolutePath, transformation) => {
+    const read = texts.get(transformation.source);
+    if (read === void 0 || nodePath4.resolve(cwd, read.path) !== absolutePath) {
+      return reject("unsupported-dataflow", "Python read and write paths are not provably identical", absolutePath);
+    }
+    const requirements = ["match-locations"];
+    if (transformation.replacement.length === 0 || (transformation.pattern.match(/\n/g)?.length ?? 0) !== (transformation.replacement.match(/\n/g)?.length ?? 0)) {
+      requirements.push("deleted-text");
+    }
+    const content = readPreState(absolutePath, requirements);
+    if (typeof content !== "string") return content;
+    const assertion = countAssertions.get(`${transformation.source}\0${transformation.pattern}`);
+    const occurrences = countLiteralOccurrences(content, transformation.pattern);
+    if (assertion !== void 0 && occurrences !== assertion) {
+      return reject(
+        "evidence-mismatch",
+        "Python count assertion does not match pre-state",
+        absolutePath,
+        preStateRequests
+      );
+    }
+    const count = transformation.count ?? occurrences;
+    const ranges = literalOccurrenceRanges(content, transformation.pattern).slice(0, count);
+    if (ranges.length === 0) {
+      return reject(
+        "evidence-mismatch",
+        "Python replacement literal is absent from pre-state",
+        absolutePath,
+        preStateRequests
+      );
+    }
+    let expected = content;
+    if (transformation.count === void 0)
+      expected = content.split(transformation.pattern).join(transformation.replacement);
+    else {
+      for (let index = 0; index < Math.min(transformation.count, occurrences); index += 1) {
+        expected = replaceLiteral(expected, transformation.pattern, transformation.replacement, false);
+      }
+    }
+    for (const range of ranges) {
+      resolved.push({
+        status: "resolved",
+        layer: "python",
+        idiom: "python-replace",
+        span: {
+          operation: "modify",
+          absolutePath,
+          lineStart: range.start,
+          lineEnd: range.end,
+          expectedContent: expected,
+          simpleCommandIndex: 0
+        }
+      });
+    }
+    return null;
+  };
+  for (const statement of statements) {
+    if (/^(?:from\s+pathlib\s+import\s+Path|import\s+(?:pathlib|json|tomllib|tomli_w|toml|yaml|sys)(?:\s*,\s*(?:pathlib|json|tomllib|tomli_w|toml|yaml|sys))*)$/.test(
+      statement
+    )) {
+      continue;
+    }
+    if (/^(?:for|while|if|def|class|with|try)\b/.test(statement)) {
+      return reject("unsupported-dataflow", "control flow is outside the bounded Python recognizer");
+    }
+    let match = statement.match(
+      new RegExp(`^(${PYTHON_NAME_SOURCE})\\s*=\\s*(?:Path|pathlib\\.Path)\\((${PYTHON_STRING_SOURCE})\\)$`)
+    );
+    if (match !== null) {
+      const path = decodePythonString(match[2]);
+      if (path === null) return reject("unsupported-syntax", "Python path literal uses an unsupported escape");
+      paths.set(match[1], { path, depth: 0 });
+      continue;
+    }
+    match = statement.match(new RegExp(`^(${PYTHON_NAME_SOURCE})\\s*=\\s*(${PYTHON_STRING_SOURCE})$`));
+    if (match !== null) {
+      const path = decodePythonString(match[2]);
+      if (path === null) return reject("unsupported-syntax", "Python string literal uses an unsupported escape");
+      paths.set(match[1], { path, depth: 0 });
+      continue;
+    }
+    match = statement.match(new RegExp(`^(${PYTHON_NAME_SOURCE})\\s*=\\s*(${PYTHON_NAME_SOURCE})$`));
+    if (match !== null) {
+      const source = paths.get(match[2]);
+      if (source === void 0 || source.depth !== 0) {
+        return reject("unsupported-dataflow", "Python path aliases are limited to one literal hop");
+      }
+      paths.set(match[1], { path: source.path, depth: 1 });
+      continue;
+    }
+    match = statement.match(
+      new RegExp(`^(${PYTHON_NAME_SOURCE})\\s*=\\s*(${PYTHON_NAME_SOURCE})\\.read_text\\(([^)]*)\\)$`)
+    );
+    if (match !== null) {
+      const binding = paths.get(match[2]);
+      if (binding === void 0) return reject("dynamic-path", "Python read target is not a literal path binding");
+      if (match[3].trim() !== "" && !/^encoding\s*=\s*['"]utf-?8['"]$/.test(match[3].trim())) {
+        return reject("unsupported-encoding", "only default or UTF-8 Python text reads are supported", binding.path);
+      }
+      texts.set(match[1], { path: binding.path });
+      continue;
+    }
+    match = statement.match(
+      new RegExp(
+        `^(${PYTHON_NAME_SOURCE})\\s*=\\s*(${PYTHON_NAME_SOURCE})\\.replace\\((${PYTHON_STRING_SOURCE})\\s*,\\s*(${PYTHON_STRING_SOURCE})(?:\\s*,\\s*(\\d+))?\\)$`
+      )
+    );
+    if (match !== null) {
+      if (!texts.has(match[2]))
+        return reject("unsupported-dataflow", "Python replace source is not a direct text read");
+      const pattern = decodePythonString(match[3]);
+      const replacement = decodePythonString(match[4]);
+      const count = match[5] === void 0 ? void 0 : Number.parseInt(match[5], 10);
+      if (pattern === null || pattern.length === 0 || replacement === null || count === 0) {
+        return reject("unsupported-expression", "Python replace requires non-empty literal input and a positive count");
+      }
+      replacements.set(match[1], { source: match[2], pattern, replacement, count });
+      continue;
+    }
+    match = statement.match(
+      new RegExp(`^assert\\s+(${PYTHON_NAME_SOURCE})\\.count\\((${PYTHON_STRING_SOURCE})\\)\\s*==\\s*(\\d+)$`)
+    );
+    if (match !== null) {
+      const literal = decodePythonString(match[2]);
+      if (literal === null || literal.length === 0 || !texts.has(match[1])) {
+        return reject("unsupported-dataflow", "Python count assertion is not tied to a direct text read");
+      }
+      countAssertions.set(`${match[1]}\0${literal}`, Number.parseInt(match[3], 10));
+      continue;
+    }
+    match = statement.match(
+      new RegExp(`^(${PYTHON_NAME_SOURCE})\\s*=\\s*(${PYTHON_NAME_SOURCE})\\.index\\((${PYTHON_STRING_SOURCE})\\)$`)
+    );
+    if (match !== null) {
+      const literal = decodePythonString(match[3]);
+      if (literal === null || literal.length === 0 || !texts.has(match[2])) {
+        return reject("unsupported-dataflow", "Python index anchor is not tied to a direct text read");
+      }
+      anchors.set(match[1], { source: match[2], literal });
+      continue;
+    }
+    match = statement.match(
+      new RegExp(`^(${PYTHON_NAME_SOURCE})\\s*=\\s*(${PYTHON_NAME_SOURCE})\\.read_text\\(\\)\\.splitlines\\(\\)$`)
+    );
+    if (match !== null) {
+      const binding = paths.get(match[2]);
+      if (binding === void 0) return reject("dynamic-path", "Python line-array target is not literal");
+      lines.set(match[1], { path: binding.path, edits: /* @__PURE__ */ new Map() });
+      continue;
+    }
+    match = statement.match(new RegExp(`^(${PYTHON_NAME_SOURCE})\\[(\\d+)\\]\\s*=\\s*(${PYTHON_STRING_SOURCE})$`));
+    if (match !== null) {
+      const array = lines.get(match[1]);
+      const value = decodePythonString(match[3]);
+      if (array === void 0 || value === null)
+        return reject("unsupported-dataflow", "line edit is not a bounded literal array edit");
+      array.edits.set(Number.parseInt(match[2], 10), value);
+      continue;
+    }
+    match = statement.match(
+      new RegExp(
+        `^(${PYTHON_NAME_SOURCE})\\s*=\\s*(json|tomllib|yaml)\\.(?:loads|safe_load)\\((${PYTHON_NAME_SOURCE})\\.read_text\\(\\)\\)$`
+      )
+    );
+    if (match !== null) {
+      const binding = paths.get(match[3]);
+      if (binding === void 0) return reject("dynamic-path", "structured Python load target is not literal");
+      const format = match[2] === "tomllib" ? "toml" : match[2];
+      structured.set(match[1], { format, path: binding.path, keys: [] });
+      continue;
+    }
+    match = statement.match(
+      new RegExp(
+        `^(${PYTHON_NAME_SOURCE})((?:\\[${PYTHON_STRING_SOURCE}\\])+?)\\s*=\\s*(?:True|False|None|-?\\d+(?:\\.\\d+)?|${PYTHON_STRING_SOURCE})$`
+      )
+    );
+    if (match !== null && structured.has(match[1])) {
+      const keys = [...match[2].matchAll(new RegExp(`\\[(${PYTHON_STRING_SOURCE})\\]`, "g"))].map(
+        (key) => decodePythonString(key[1])
+      );
+      if (keys.length === 0 || keys.some((key) => key === null)) {
+        return reject("unsupported-expression", "structured Python mutation requires literal string keys");
+      }
+      structured.get(match[1]).keys.push(keys);
+      continue;
+    }
+    match = statement.match(
+      new RegExp(
+        `^(${PYTHON_NAME_SOURCE})\\.open\\((${PYTHON_STRING_SOURCE})\\)\\.write\\((${PYTHON_STRING_SOURCE})\\)$`
+      )
+    );
+    if (match !== null) {
+      const binding = paths.get(match[1]);
+      const mode = decodePythonString(match[2]);
+      const written = decodePythonString(match[3]);
+      if (binding === void 0) return reject("dynamic-path", "Python append target is not literal");
+      if (mode !== "a" || written === null)
+        return reject("unsupported-expression", "only literal text append mode is supported");
+      const absolutePath = nodePath4.resolve(cwd, binding.path);
+      request(absolutePath, "append", "pre-command-eof");
+      const content = options.readPreState?.(absolutePath) ?? null;
+      if (content === null)
+        return reject(
+          "missing-pre-state",
+          "Python append range requires pre-command text",
+          absolutePath,
+          preStateRequests
+        );
+      if (content.includes("\0"))
+        return reject("binary-content", "Python append does not accept binary content", absolutePath, preStateRequests);
+      const line = pythonLineAtOffset(content, content.length);
+      resolved.push({
+        status: "resolved",
+        layer: "python",
+        idiom: "python-append",
+        span: {
+          operation: "append",
+          absolutePath,
+          lineStart: line,
+          lineEnd: line,
+          written,
+          expectedContent: `${content}${written}`,
+          simpleCommandIndex: 0
+        }
+      });
+      continue;
+    }
+    match = statement.match(new RegExp(`^(${PYTHON_NAME_SOURCE})\\.write_text\\((.+)\\)$`));
+    if (match !== null) {
+      const binding = paths.get(match[1]);
+      if (binding === void 0) return reject("dynamic-path", "Python write target is not literal");
+      const absolutePath = nodePath4.resolve(cwd, binding.path);
+      const expression = match[2].trim();
+      const literal = decodePythonString(expression);
+      if (literal !== null) {
+        resolved.push({
+          status: "resolved",
+          layer: "python",
+          idiom: "python-write",
+          span: {
+            operation: "create-overwrite",
+            absolutePath,
+            written: literal,
+            expectedContent: literal,
+            simpleCommandIndex: 0
+          }
+        });
+        continue;
+      }
+      const directReplace = expression.match(
+        new RegExp(
+          `^(${PYTHON_NAME_SOURCE})\\.replace\\((${PYTHON_STRING_SOURCE})\\s*,\\s*(${PYTHON_STRING_SOURCE})(?:\\s*,\\s*(\\d+))?\\)$`
+        )
+      );
+      const replacement = directReplace === null ? replacements.get(expression) : {
+        source: directReplace[1],
+        pattern: decodePythonString(directReplace[2]) ?? "",
+        replacement: decodePythonString(directReplace[3]) ?? "",
+        count: directReplace[4] === void 0 ? void 0 : Number.parseInt(directReplace[4], 10)
+      };
+      if (replacement !== void 0) {
+        const rejected = emitReplace(absolutePath, replacement);
+        if (rejected !== null) return rejected;
+        continue;
+      }
+      const slice = expression.match(
+        new RegExp(
+          `^(${PYTHON_NAME_SOURCE})\\[:(${PYTHON_NAME_SOURCE})\\]\\s*\\+\\s*(${PYTHON_STRING_SOURCE})\\s*\\+\\s*\\1\\[\\2\\s*\\+\\s*(\\d+):\\]$`
+        )
+      );
+      if (slice !== null) {
+        const anchor = anchors.get(slice[2]);
+        const read = texts.get(slice[1]);
+        const replacementText = decodePythonString(slice[3]);
+        if (anchor === void 0 || read === void 0 || anchor.source !== slice[1] || replacementText === null || Number.parseInt(slice[4], 10) !== anchor.literal.length || nodePath4.resolve(cwd, read.path) !== absolutePath) {
+          return reject(
+            "unsupported-dataflow",
+            "Python slice reconstruction is not tied to one literal anchor",
+            absolutePath
+          );
+        }
+        const content = readPreState(absolutePath, ["match-locations", "deleted-text"]);
+        if (typeof content !== "string") return content;
+        const offset = content.indexOf(anchor.literal);
+        if (offset < 0)
+          return reject(
+            "evidence-mismatch",
+            "Python slice anchor is absent from pre-state",
+            absolutePath,
+            preStateRequests
+          );
+        const range = literalOccurrenceRanges(content, anchor.literal)[0];
+        resolved.push({
+          status: "resolved",
+          layer: "python",
+          idiom: "python-anchor-slice",
+          span: {
+            operation: "modify",
+            absolutePath,
+            lineStart: range.start,
+            lineEnd: range.end,
+            expectedContent: `${content.slice(0, offset)}${replacementText}${content.slice(offset + anchor.literal.length)}`,
+            simpleCommandIndex: 0
+          }
+        });
+        continue;
+      }
+      const lineJoin = expression.match(
+        new RegExp(
+          `^(${PYTHON_STRING_SOURCE})\\.join\\((${PYTHON_NAME_SOURCE})\\)(?:\\s*\\+\\s*(${PYTHON_STRING_SOURCE}))?$`
+        )
+      );
+      if (lineJoin !== null) {
+        const delimiter = decodePythonString(lineJoin[1]);
+        const array = lines.get(lineJoin[2]);
+        const suffix = lineJoin[3] === void 0 ? "" : decodePythonString(lineJoin[3]);
+        if (delimiter !== "\n" || array === void 0 || suffix === null || suffix !== "" && suffix !== "\n") {
+          return reject("unsupported-expression", "line-array writes require a literal newline join", absolutePath);
+        }
+        if (nodePath4.resolve(cwd, array.path) !== absolutePath || array.edits.size === 0) {
+          return reject(
+            "unsupported-dataflow",
+            "line-array read and write paths are not provably identical",
+            absolutePath
+          );
+        }
+        const content = readPreState(absolutePath, ["deleted-text"]);
+        if (typeof content !== "string") return content;
+        if (content.includes("\r"))
+          return reject("unsupported-encoding", "line-array edits require LF text", absolutePath, preStateRequests);
+        const sourceLines = content.split("\n");
+        if (sourceLines.at(-1) === "") sourceLines.pop();
+        for (const [index, value] of array.edits) {
+          if (index >= sourceLines.length)
+            return reject("evidence-mismatch", "line-array index is outside pre-state", absolutePath, preStateRequests);
+          sourceLines[index] = value;
+        }
+        const expectedContent = `${sourceLines.join("\n")}${suffix}`;
+        for (const index of array.edits.keys()) {
+          resolved.push({
+            status: "resolved",
+            layer: "python",
+            idiom: "python-line-array",
+            span: {
+              operation: "modify",
+              absolutePath,
+              lineStart: index + 1,
+              lineEnd: index + 1,
+              expectedContent,
+              simpleCommandIndex: 0
+            }
+          });
+        }
+        continue;
+      }
+      const structuredSink = expression.match(
+        /^(json|tomli_w|toml|yaml)\.(dumps|safe_dump)\(([A-Za-z_][A-Za-z0-9_]*)\)$/
+      );
+      if (structuredSink !== null) {
+        const value = structured.get(structuredSink[3]);
+        const sinkFormat = structuredSink[1] === "json" ? "json" : structuredSink[1] === "yaml" ? "yaml" : "toml";
+        if (value === void 0 || value.format !== sinkFormat || nodePath4.resolve(cwd, value.path) !== absolutePath || value.keys.length === 0) {
+          return reject(
+            "unsupported-dataflow",
+            "structured read, literal-key mutation, and write are not linked",
+            absolutePath
+          );
+        }
+        const content = readPreState(absolutePath, ["match-locations"]);
+        if (typeof content !== "string") return content;
+        for (const keyPath of value.keys) {
+          const key = keyPath.at(-1);
+          const ranges = structuredKeyRanges(content, value.format, key);
+          if (ranges.length !== 1) {
+            return reject(
+              "unsupported-expression",
+              "structured literal key is absent or ambiguous in pre-state",
+              absolutePath,
+              preStateRequests
+            );
+          }
+          resolved.push({
+            status: "resolved",
+            layer: "python",
+            idiom: `python-${value.format}`,
+            span: {
+              operation: "modify",
+              absolutePath,
+              lineStart: ranges[0].start,
+              lineEnd: ranges[0].end,
+              simpleCommandIndex: 0
+            }
+          });
+        }
+        continue;
+      }
+      return reject("unsupported-dataflow", "Python write expression is outside the bounded allowlist", absolutePath);
+    }
+    if (/sys\.argv|os\.(?:environ|getenv)|input\s*\(/.test(statement)) {
+      return reject("dynamic-path", "Python target depends on runtime input");
+    }
+    return reject(
+      /(?:\.write|open\s*\(|Path\s*\()/.test(statement) ? "unsupported-dataflow" : "unsupported-syntax",
+      "Python statement is outside the bounded lexical/dataflow allowlist"
+    );
+  }
+  if (resolved.length === 0) return reject("unsupported-dataflow", "Python program has no supported authoring sink");
+  const maxCandidates = options.maxCandidates ?? DEFAULT_MAX_ATTRIBUTION_CANDIDATES;
+  if (resolved.length > maxCandidates) {
+    return reject(
+      "candidate-budget-exceeded",
+      `Python program produced ${resolved.length} candidates; the limit is ${maxCandidates}`
+    );
+  }
+  return { resolved, unresolved: [], preStateRequests };
+}
+var NODE_STRING_SOURCE = String.raw`(?:'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")`;
+var NODE_NAME_SOURCE = `[A-Za-z_$][A-Za-z0-9_$]*`;
+function decodeNodeString(raw) {
+  if (raw.length < 2 || raw[0] !== "'" && raw[0] !== '"' || raw.at(-1) !== raw[0]) return null;
+  let value = "";
+  for (let index = 1; index < raw.length - 1; index += 1) {
+    const character = raw[index];
+    if (character !== "\\") {
+      if (character === raw[0] || character === "\n" || character === "\r") return null;
+      value += character;
+      continue;
+    }
+    const escaped = raw[index + 1];
+    if (escaped === void 0 || index + 1 >= raw.length - 1) return null;
+    if (escaped === "n") value += "\n";
+    else if (escaped === "r") value += "\r";
+    else if (escaped === "t") value += "	";
+    else if (escaped === "b") value += "\b";
+    else if (escaped === "f") value += "\f";
+    else if (escaped === "v") value += "\v";
+    else if (escaped === "0") value += "\0";
+    else if (escaped === "\\" || escaped === "'" || escaped === '"') value += escaped;
+    else return null;
+    index += 1;
+  }
+  return value;
+}
+function extractNodeProgram(command) {
+  const trimmed = command.trim();
+  if (!/^node\b/.test(trimmed)) return null;
+  if (trimmed.includes("<<")) {
+    const heredoc = trimmed.match(
+      /^node(?:\s+-)?\s+<<(['"])([A-Za-z_][A-Za-z0-9_]*)\1[ \t]*\r?\n([\s\S]*?)\r?\n\2[ \t]*$/
+    );
+    if (heredoc === null) {
+      return {
+        reason: "unsupported-syntax",
+        detail: "Node heredocs require a quoted literal delimiter and a complete body"
+      };
+    }
+    return { program: heredoc[3] };
+  }
+  const argv = argvOf(trimmed);
+  if (argv === null) {
+    return /^node\s+-e(?:\s|$)/.test(trimmed) ? { reason: "unsupported-syntax", detail: "the literal Node -e program cannot be tokenized" } : null;
+  }
+  if (argv[0] !== "node" || argv[1] !== "-e") return null;
+  if (argv[2] === void 0) return { reason: "unsupported-syntax", detail: "Node -e requires a literal program" };
+  if (argv[2].includes("$(") || argv[2].includes("`") || /^\$\{?[A-Za-z_]/.test(argv[2])) {
+    return { reason: "unsupported-syntax", detail: "the Node program is shell-derived rather than literal" };
+  }
+  return { program: argv[2] };
+}
+function splitNodeStatements(program) {
+  if (program.includes("`")) return null;
+  const statements = [];
+  let statement = "";
+  let quote = null;
+  let escaped = false;
+  let depth = 0;
+  let lineComment = false;
+  let blockComment = false;
+  for (let index = 0; index < program.length; index += 1) {
+    const character = program[index];
+    const next = program[index + 1];
+    if (lineComment) {
+      if (character === "\n") {
+        lineComment = false;
+        if (depth === 0 && statement.trim() !== "") {
+          statements.push(statement.trim());
+          statement = "";
+        }
+      }
+      continue;
+    }
+    if (blockComment) {
+      if (character === "*" && next === "/") {
+        blockComment = false;
+        index += 1;
+      }
+      continue;
+    }
+    if (quote !== null) {
+      statement += character;
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === quote) quote = null;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      statement += character;
+      continue;
+    }
+    if (character === "/" && next === "/") {
+      lineComment = true;
+      index += 1;
+      continue;
+    }
+    if (character === "/" && next === "*") {
+      blockComment = true;
+      index += 1;
+      continue;
+    }
+    if (character === "(" || character === "[" || character === "{") depth += 1;
+    else if (character === ")" || character === "]" || character === "}") {
+      depth -= 1;
+      if (depth < 0) return null;
+    }
+    if ((character === ";" || character === "\n") && depth === 0) {
+      if (statement.trim() !== "") statements.push(statement.trim());
+      statement = "";
+      continue;
+    }
+    statement += character;
+  }
+  if (quote !== null || escaped || depth !== 0 || blockComment) return null;
+  if (statement.trim() !== "") statements.push(statement.trim());
+  return statements;
+}
+function splitNodeArguments(source) {
+  const arguments_ = [];
+  let argument = "";
+  let quote = null;
+  let escaped = false;
+  let depth = 0;
+  for (const character of source) {
+    if (quote !== null) {
+      argument += character;
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === quote) quote = null;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      argument += character;
+      continue;
+    }
+    if (character === "(" || character === "[" || character === "{") depth += 1;
+    else if (character === ")" || character === "]" || character === "}") {
+      depth -= 1;
+      if (depth < 0) return null;
+    }
+    if (character === "," && depth === 0) {
+      arguments_.push(argument.trim());
+      argument = "";
+      continue;
+    }
+    argument += character;
+  }
+  if (quote !== null || escaped || depth !== 0) return null;
+  if (argument.trim() !== "" || arguments_.length > 0) arguments_.push(argument.trim());
+  return arguments_;
+}
+function parseNodeAttribution(command, options) {
+  const extracted = extractNodeProgram(command);
+  if (extracted === null) return null;
+  const reject = (reasonCode, detail, fileArg, preStateRequests2 = []) => ({
+    resolved: [],
+    unresolved: [unresolved("node", "node-edit", reasonCode, detail, fileArg)],
+    preStateRequests: preStateRequests2
+  });
+  if (extracted.program === void 0) {
+    return reject(extracted.reason ?? "unsupported-syntax", extracted.detail ?? "unsupported Node invocation");
+  }
+  if (/\b(?:process\.(?:argv|env)|require\s*\(\s*[^'"]|import\s*\()/.test(extracted.program)) {
+    return reject("dynamic-path", "Node target depends on runtime input or a computed import");
+  }
+  const statements = splitNodeStatements(extracted.program);
+  if (statements === null || statements.length === 0) {
+    return reject("unsupported-syntax", "the Node program is incomplete or cannot be tokenized");
+  }
+  if (statements.length > 64)
+    return reject("candidate-budget-exceeded", "the Node program exceeds the statement budget");
+  const cwd = options.cwd ?? process.cwd();
+  const fsNamespaces = /* @__PURE__ */ new Set();
+  const fsFunctions = /* @__PURE__ */ new Map();
+  const paths = /* @__PURE__ */ new Map();
+  const texts = /* @__PURE__ */ new Map();
+  const replacements = /* @__PURE__ */ new Map();
+  const structured = /* @__PURE__ */ new Map();
+  const countAssertions = /* @__PURE__ */ new Map();
+  const resolved = [];
+  const preStateRequests = [];
+  const request = (absolutePath, operation, requirement) => {
+    if (!preStateRequests.some(
+      (entry) => entry.absolutePath === absolutePath && entry.operation === operation && entry.requirement === requirement
+    )) {
+      preStateRequests.push({ absolutePath, operation, requirement, simpleCommandIndex: 0 });
+    }
+  };
+  const readPreState = (absolutePath, operation, requirements) => {
+    for (const requirement of requirements) request(absolutePath, operation, requirement);
+    const content = options.readPreState?.(absolutePath) ?? null;
+    if (content === null)
+      return reject(
+        "missing-pre-state",
+        "Node range recovery requires pre-command text",
+        absolutePath,
+        preStateRequests
+      );
+    if (content.includes("\0"))
+      return reject(
+        "binary-content",
+        "Node range recovery does not accept binary content",
+        absolutePath,
+        preStateRequests
+      );
+    return content;
+  };
+  const resolvePathExpression = (expression) => {
+    const literal = decodeNodeString(expression.trim());
+    if (literal !== null) return { path: literal, depth: 0 };
+    return paths.get(expression.trim()) ?? null;
+  };
+  const fsMethod = (callee) => {
+    const bare = fsFunctions.get(callee);
+    if (bare !== void 0) return bare;
+    const member = callee.match(new RegExp(`^(${NODE_NAME_SOURCE})\\.(readFileSync|writeFileSync|appendFileSync)$`));
+    if (member !== null && fsNamespaces.has(member[1])) {
+      return member[2];
+    }
+    const required = callee.match(/^require\((['"])(?:node:)?fs\1\)\.(readFileSync|writeFileSync|appendFileSync)$/);
+    return required?.[2] ?? null;
+  };
+  const parseCall = (expression) => {
+    const call = expression.trim().match(/^(require\((['"])(?:node:)?fs\2\)\.(?:readFileSync|writeFileSync|appendFileSync))\(([\s\S]*)\)$/) ?? expression.trim().match(/^([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)?)\(([\s\S]*)\)$/);
+    if (call === null) return null;
+    const method = fsMethod(call[1].trim());
+    if (method === null) return null;
+    const args = splitNodeArguments(call.length === 4 ? call[3] : call[2]);
+    return args === null ? null : { method, args };
+  };
+  const emitReplacement = (absolutePath, replacement) => {
+    const read = texts.get(replacement.source);
+    if (read === void 0 || nodePath4.resolve(cwd, read.path) !== absolutePath) {
+      return reject(
+        "unsupported-dataflow",
+        "Node replacement read and write paths are not provably identical",
+        absolutePath
+      );
+    }
+    const content = readPreState(absolutePath, "modify", ["match-locations"]);
+    if (typeof content !== "string") return content;
+    const occurrences = countLiteralOccurrences(content, replacement.pattern);
+    const assertion = countAssertions.get(`${replacement.source}\0${replacement.pattern}`);
+    if (assertion !== void 0 && occurrences !== assertion) {
+      return reject(
+        "evidence-mismatch",
+        "Node count assertion does not match pre-state",
+        absolutePath,
+        preStateRequests
+      );
+    }
+    const ranges = literalOccurrenceRanges(content, replacement.pattern);
+    if (ranges.length === 0) {
+      return reject(
+        "evidence-mismatch",
+        "Node replacement literal is absent from pre-state",
+        absolutePath,
+        preStateRequests
+      );
+    }
+    const affected = replacement.global ? ranges : ranges.slice(0, 1);
+    const expectedContent = replaceLiteral(content, replacement.pattern, replacement.replacement, replacement.global);
+    for (const range of affected) {
+      resolved.push({
+        status: "resolved",
+        layer: "node",
+        idiom: "node-replace",
+        span: {
+          operation: "modify",
+          absolutePath,
+          lineStart: range.start,
+          lineEnd: range.end,
+          expectedContent,
+          simpleCommandIndex: 0
+        }
+      });
+    }
+    return null;
+  };
+  for (const statement of statements) {
+    if (/^['"]use strict['"]$/.test(statement)) continue;
+    if (/^(?:for|while|do|switch|function|class|async|await|try|with|import)\b/.test(statement)) {
+      return reject(
+        "unsupported-dataflow",
+        "control flow, asynchronous code, and imports are outside the Node recognizer"
+      );
+    }
+    let match = statement.match(
+      new RegExp(`^(?:const|let|var)\\s+(${NODE_NAME_SOURCE})\\s*=\\s*require\\((['"])(?:node:)?fs\\2\\)$`)
+    );
+    if (match !== null) {
+      fsNamespaces.add(match[1]);
+      continue;
+    }
+    match = statement.match(/^const\s+\{([^}]+)\}\s*=\s*require\((['"])(?:node:)?fs\2\)$/);
+    if (match !== null) {
+      for (const entry of match[1].split(",")) {
+        const binding = entry.trim().match(/^(readFileSync|writeFileSync|appendFileSync)(?:\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*))?$/);
+        if (binding === null)
+          return reject("unsupported-syntax", "Node fs destructuring contains an unsupported binding");
+        fsFunctions.set(binding[2] ?? binding[1], binding[1]);
+      }
+      continue;
+    }
+    match = statement.match(new RegExp(`^(?:const|let|var)\\s+(${NODE_NAME_SOURCE})\\s*=\\s*(${NODE_STRING_SOURCE})$`));
+    if (match !== null) {
+      const path = decodeNodeString(match[2]);
+      if (path === null) return reject("unsupported-syntax", "Node string literal uses an unsupported escape");
+      paths.set(match[1], { path, depth: 0 });
+      continue;
+    }
+    match = statement.match(new RegExp(`^(?:const|let|var)\\s+(${NODE_NAME_SOURCE})\\s*=\\s*(${NODE_NAME_SOURCE})$`));
+    if (match !== null) {
+      const source = paths.get(match[2]);
+      if (source === void 0 || source.depth !== 0) {
+        return reject("unsupported-dataflow", "Node path aliases are limited to one literal hop");
+      }
+      paths.set(match[1], { path: source.path, depth: 1 });
+      continue;
+    }
+    match = statement.match(new RegExp(`^(?:const|let|var)\\s+(${NODE_NAME_SOURCE})\\s*=\\s*(.+)$`));
+    if (match !== null) {
+      const name = match[1];
+      const expression = match[2].trim();
+      const call2 = parseCall(expression);
+      if (call2?.method === "readFileSync") {
+        const binding = call2.args[0] === void 0 ? null : resolvePathExpression(call2.args[0]);
+        if (binding === null) return reject("dynamic-path", "Node read target is not a literal path binding");
+        const encoding = call2.args[1] === void 0 ? null : decodeNodeString(call2.args[1]);
+        if (encoding !== "utf8" && encoding !== "utf-8") {
+          return reject("unsupported-encoding", "Node text reads require an explicit UTF-8 encoding", binding.path);
+        }
+        if (call2.args.length !== 2)
+          return reject("unsupported-syntax", "Node readFileSync call has unsupported arguments");
+        texts.set(name, { path: binding.path });
+        continue;
+      }
+      const replacement = expression.match(
+        new RegExp(
+          `^(${NODE_NAME_SOURCE})\\.(replace|replaceAll)\\((${NODE_STRING_SOURCE})\\s*,\\s*(${NODE_STRING_SOURCE})\\)$`
+        )
+      );
+      if (replacement !== null) {
+        if (!texts.has(replacement[1]))
+          return reject("unsupported-dataflow", "Node replace source is not a direct text read");
+        const pattern = decodeNodeString(replacement[3]);
+        const replacementText = decodeNodeString(replacement[4]);
+        if (pattern === null || pattern.length === 0 || replacementText === null || replacementText.includes("$")) {
+          return reject("unsupported-expression", "Node replace requires non-empty literal input");
+        }
+        replacements.set(name, {
+          source: replacement[1],
+          pattern,
+          replacement: replacementText,
+          global: replacement[2] === "replaceAll"
+        });
+        continue;
+      }
+      const parsedJson = expression.match(new RegExp(`^JSON\\.parse\\((${NODE_NAME_SOURCE})\\)$`));
+      if (parsedJson !== null) {
+        const text = texts.get(parsedJson[1]);
+        if (text === void 0) return reject("unsupported-dataflow", "JSON.parse source is not a direct text read");
+        structured.set(name, { path: text.path, keys: [] });
+        continue;
+      }
+      const directJson = expression.match(/^JSON\.parse\((.+)\)$/);
+      if (directJson !== null) {
+        const read = parseCall(directJson[1]);
+        if (read?.method !== "readFileSync" || read.args[0] === void 0) {
+          return reject("unsupported-dataflow", "JSON.parse source is not a direct Node text read");
+        }
+        const binding = resolvePathExpression(read.args[0]);
+        const encoding = read.args[1] === void 0 ? null : decodeNodeString(read.args[1]);
+        if (binding === null) return reject("dynamic-path", "Node JSON target is not a literal path binding");
+        if (encoding !== "utf8" && encoding !== "utf-8") {
+          return reject("unsupported-encoding", "Node JSON reads require an explicit UTF-8 encoding", binding.path);
+        }
+        structured.set(name, { path: binding.path, keys: [] });
+        continue;
+      }
+      return reject("unsupported-dataflow", "Node variable initializer is outside the bounded allowlist");
+    }
+    match = statement.match(
+      new RegExp(
+        `^(${NODE_NAME_SOURCE})((?:(?:\\.${NODE_NAME_SOURCE})|(?:\\[${NODE_STRING_SOURCE}\\]))+)\\s*=\\s*(.+)$`
+      )
+    );
+    if (match !== null && structured.has(match[1])) {
+      const keySegments = [
+        ...match[2].matchAll(new RegExp(`\\.(${NODE_NAME_SOURCE})|\\[(${NODE_STRING_SOURCE})\\]`, "g"))
+      ];
+      const keys = keySegments.map((segment) => segment[1] ?? decodeNodeString(segment[2]));
+      if (keys.length === 0 || keys.some((key) => key === null)) {
+        return reject("unsupported-expression", "structured Node mutation requires literal property keys");
+      }
+      if (!/^(?:true|false|null|-?\d+(?:\.\d+)?|(?:'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"))$/.test(match[3].trim())) {
+        return reject("unsupported-expression", "structured Node mutation requires a literal value");
+      }
+      structured.get(match[1]).keys.push(keys);
+      continue;
+    }
+    match = statement.match(
+      new RegExp(
+        `^if\\s*\\(\\s*(${NODE_NAME_SOURCE})\\.split\\((${NODE_STRING_SOURCE})\\)\\.length\\s*-\\s*1\\s*!==?\\s*(\\d+)\\s*\\)\\s*throw\\b.+$`
+      )
+    );
+    if (match !== null) {
+      const literal = decodeNodeString(match[2]);
+      if (literal === null || literal.length === 0 || !texts.has(match[1])) {
+        return reject("unsupported-dataflow", "Node count guard is not tied to a direct text read");
+      }
+      countAssertions.set(`${match[1]}\0${literal}`, Number.parseInt(match[3], 10));
+      continue;
+    }
+    const call = parseCall(statement);
+    if (call?.method === "appendFileSync") {
+      const binding = call.args[0] === void 0 ? null : resolvePathExpression(call.args[0]);
+      if (binding === null) return reject("dynamic-path", "Node append target is not a literal path binding");
+      const written = call.args[1] === void 0 ? null : decodeNodeString(call.args[1]);
+      const encoding = call.args[2] === void 0 ? "utf8" : decodeNodeString(call.args[2]);
+      if (written === null)
+        return reject("unsupported-expression", "Node append content must be literal", binding.path);
+      if (encoding !== "utf8" && encoding !== "utf-8") {
+        return reject("unsupported-encoding", "Node append requires default or UTF-8 encoding", binding.path);
+      }
+      if (call.args.length < 2 || call.args.length > 3)
+        return reject("unsupported-syntax", "Node appendFileSync call has unsupported arguments", binding.path);
+      const absolutePath = nodePath4.resolve(cwd, binding.path);
+      const content = readPreState(absolutePath, "append", ["pre-command-eof"]);
+      if (typeof content !== "string") return content;
+      const line = pythonLineAtOffset(content, content.length);
+      resolved.push({
+        status: "resolved",
+        layer: "node",
+        idiom: "node-append",
+        span: {
+          operation: "append",
+          absolutePath,
+          lineStart: line,
+          lineEnd: line,
+          written,
+          expectedContent: `${content}${written}`,
+          simpleCommandIndex: 0
+        }
+      });
+      continue;
+    }
+    if (call?.method === "writeFileSync") {
+      const binding = call.args[0] === void 0 ? null : resolvePathExpression(call.args[0]);
+      if (binding === null) return reject("dynamic-path", "Node write target is not a literal path binding");
+      if (call.args.length < 2 || call.args.length > 3)
+        return reject("unsupported-syntax", "Node writeFileSync call has unsupported arguments", binding.path);
+      const encoding = call.args[2] === void 0 ? "utf8" : decodeNodeString(call.args[2]);
+      if (encoding !== "utf8" && encoding !== "utf-8") {
+        return reject("unsupported-encoding", "Node write requires default or UTF-8 encoding", binding.path);
+      }
+      const absolutePath = nodePath4.resolve(cwd, binding.path);
+      const expression = call.args[1];
+      const literal = decodeNodeString(expression);
+      if (literal !== null) {
+        resolved.push({
+          status: "resolved",
+          layer: "node",
+          idiom: "node-write",
+          span: {
+            operation: "create-overwrite",
+            absolutePath,
+            written: literal,
+            expectedContent: literal,
+            simpleCommandIndex: 0
+          }
+        });
+        continue;
+      }
+      const directReplacement = expression.match(
+        new RegExp(
+          `^(${NODE_NAME_SOURCE})\\.(replace|replaceAll)\\((${NODE_STRING_SOURCE})\\s*,\\s*(${NODE_STRING_SOURCE})\\)$`
+        )
+      );
+      const replacement = directReplacement === null ? replacements.get(expression) : {
+        source: directReplacement[1],
+        pattern: decodeNodeString(directReplacement[3]) ?? "",
+        replacement: decodeNodeString(directReplacement[4]) ?? "",
+        global: directReplacement[2] === "replaceAll"
+      };
+      if (replacement !== void 0) {
+        if (replacement.pattern.length === 0 || replacement.replacement.includes("$")) {
+          return reject("unsupported-expression", "Node replace requires non-empty literal input", absolutePath);
+        }
+        const rejected = emitReplacement(absolutePath, replacement);
+        if (rejected !== null) return rejected;
+        continue;
+      }
+      const serialized = expression.match(/^JSON\.stringify\(([A-Za-z_$][A-Za-z0-9_$]*)(?:\s*,\s*null\s*,\s*\d+)?\)$/);
+      if (serialized !== null) {
+        const value = structured.get(serialized[1]);
+        if (value === void 0 || nodePath4.resolve(cwd, value.path) !== absolutePath || value.keys.length === 0) {
+          return reject(
+            "unsupported-dataflow",
+            "JSON read, literal-key mutation, and write are not linked",
+            absolutePath
+          );
+        }
+        const content = readPreState(absolutePath, "modify", ["match-locations"]);
+        if (typeof content !== "string") return content;
+        for (const keyPath of value.keys) {
+          const key = keyPath.at(-1);
+          const ranges = structuredKeyRanges(content, "json", key);
+          if (ranges.length !== 1) {
+            return reject(
+              "unsupported-expression",
+              "structured literal key is absent or ambiguous in pre-state",
+              absolutePath,
+              preStateRequests
+            );
+          }
+          resolved.push({
+            status: "resolved",
+            layer: "node",
+            idiom: "node-json",
+            span: {
+              operation: "modify",
+              absolutePath,
+              lineStart: ranges[0].start,
+              lineEnd: ranges[0].end,
+              simpleCommandIndex: 0
+            }
+          });
+        }
+        continue;
+      }
+      return reject("unsupported-dataflow", "Node write expression is outside the bounded allowlist", absolutePath);
+    }
+    if (/\b(?:readFile|writeFile|appendFile)\s*\(/.test(statement) || /\bPromise\b|\.then\s*\(/.test(statement)) {
+      return reject("unsupported-dataflow", "asynchronous Node filesystem APIs are outside the bounded recognizer");
+    }
+    return reject(
+      /(?:writeFile|appendFile|readFile|require\s*\()/.test(statement) ? "unsupported-dataflow" : "unsupported-syntax",
+      "Node statement is outside the bounded lexical/dataflow allowlist"
+    );
+  }
+  if (resolved.length === 0) return reject("unsupported-dataflow", "Node program has no supported authoring sink");
+  const maxCandidates = options.maxCandidates ?? DEFAULT_MAX_ATTRIBUTION_CANDIDATES;
+  if (resolved.length > maxCandidates) {
+    return reject(
+      "candidate-budget-exceeded",
+      `Node program produced ${resolved.length} candidates; the limit is ${maxCandidates}`
+    );
+  }
+  return { resolved, unresolved: [], preStateRequests };
+}
+function parseCommandLayered(command, options = {}) {
+  const cwd = options.cwd ?? process.cwd();
+  const maxCandidates = options.maxCandidates ?? DEFAULT_MAX_ATTRIBUTION_CANDIDATES;
+  if (!Number.isSafeInteger(maxCandidates) || maxCandidates < 1) {
+    throw new Error("maxCandidates must be a positive safe integer");
+  }
+  const python = parsePythonAttribution(command, options);
+  if (python !== null) return python;
+  const node = parseNodeAttribution(command, options);
+  if (node !== null) return node;
+  const loop = command.trim().match(/^for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+([\s\S]*?)\s*;\s*do\s+([\s\S]*?)\s*;\s*done\s*$/);
+  if (loop !== null) {
+    const [, variable, listSource, body] = loop;
+    if (body.includes("for ") || body.includes("while ") || body.includes("until ")) {
+      return {
+        resolved: [],
+        unresolved: [
+          unresolved("literal-loop", "literal-list-loop", "unsupported-syntax", "nested loop bodies are not supported")
+        ],
+        preStateRequests: []
+      };
+    }
+    if (listSource.includes("$(") || listSource.includes("`")) {
+      return {
+        resolved: [],
+        unresolved: [
+          unresolved("literal-loop", "literal-list-loop", "command-substitution", "loop list uses command substitution")
+        ],
+        preStateRequests: []
+      };
+    }
+    if (GLOB_META.test(listSource)) {
+      return {
+        resolved: [],
+        unresolved: [unresolved("literal-loop", "literal-list-loop", "glob-path", "loop list uses glob expansion")],
+        preStateRequests: []
+      };
+    }
+    if (SHELL_EXPANSION.test(listSource)) {
+      return {
+        resolved: [],
+        unresolved: [
+          unresolved("literal-loop", "literal-list-loop", "dynamic-list", "loop list is not a literal list")
+        ],
+        preStateRequests: []
+      };
+    }
+    const bindings = argvOf(listSource);
+    if (bindings === null || bindings.length === 0) {
+      return {
+        resolved: [],
+        unresolved: [
+          unresolved("literal-loop", "literal-list-loop", "unsupported-syntax", "loop list cannot be tokenized")
+        ],
+        preStateRequests: []
+      };
+    }
+    if (bindings.length > maxCandidates) {
+      return {
+        resolved: [],
+        unresolved: [
+          unresolved(
+            "literal-loop",
+            "literal-list-loop",
+            "candidate-budget-exceeded",
+            `literal list has ${bindings.length} bindings; the limit is ${maxCandidates}`
+          )
+        ],
+        preStateRequests: []
+      };
+    }
+    const variablePattern = new RegExp(`\\$\\{${variable}\\}|\\$${variable}(?![A-Za-z0-9_])`, "g");
+    if (!variablePattern.test(body)) {
+      return {
+        resolved: [],
+        unresolved: [
+          unresolved("literal-loop", "literal-list-loop", "unsupported-dataflow", "loop variable is not used directly")
+        ],
+        preStateRequests: []
+      };
+    }
+    const resolved2 = [];
+    const unresolvedMatches2 = [];
+    const preStateRequests = [];
+    for (const binding of bindings) {
+      const dynamic = classifyDynamicWord(binding);
+      if (dynamic !== null) {
+        return {
+          resolved: [],
+          unresolved: [
+            unresolved("literal-loop", "literal-list-loop", dynamic, "loop binding is not literal", binding)
+          ],
+          preStateRequests: []
+        };
+      }
+      const braced = `\\$\\{${variable}\\}`;
+      const plain = `\\$${variable}(?![A-Za-z0-9_])`;
+      const expanded = body.replace(new RegExp(`"(?:${braced}|${plain})"`, "g"), shellQuote(binding)).replace(variablePattern, shellQuote(binding));
+      const result = parseCommandLayered(expanded, { ...options, maxCandidates });
+      resolved2.push(...result.resolved.map((match) => ({ ...match, layer: "literal-loop" })));
+      unresolvedMatches2.push(...result.unresolved.map((match) => ({ ...match, layer: "literal-loop" })));
+      preStateRequests.push(...result.preStateRequests);
+    }
+    if (unresolvedMatches2.length > 0) return { resolved: [], unresolved: unresolvedMatches2, preStateRequests: [] };
+    if (resolved2.length > maxCandidates) {
+      return {
+        resolved: [],
+        unresolved: [
+          unresolved(
+            "literal-loop",
+            "literal-list-loop",
+            "candidate-budget-exceeded",
+            `literal expansion produced ${resolved2.length} candidates; the limit is ${maxCandidates}`
+          )
+        ],
+        preStateRequests: []
+      };
+    }
+    for (const match of resolved2) {
+      if (match.span.operation !== "modify") continue;
+      if (preStateRequests.some((request) => request.absolutePath === match.span.absolutePath)) continue;
+      preStateRequests.push({
+        absolutePath: match.span.absolutePath,
+        operation: match.span.operation,
+        requirement: "match-locations",
+        simpleCommandIndex: match.span.simpleCommandIndex
+      });
+    }
+    return { resolved: resolved2, unresolved: [], preStateRequests };
+  }
+  const split = splitTopLevel(command);
+  const hasPatternStage = split.stages.some((stage) => parsePatternCommand(stage.text) !== null);
+  const hasPipeline = split.stages.some((stage) => stage.precededBy === "pipe");
+  if (split.malformed === void 0 && split.stages.length > 1 && hasPatternStage && !hasPipeline) {
+    if (split.stages.some((stage) => argvOf(stage.text)?.[0] === "cd")) {
+      return {
+        resolved: [],
+        unresolved: [
+          unresolved(
+            "pattern-substitution",
+            "compound-command",
+            "dynamic-path",
+            "a directory-changing compound cannot safely resolve substitution targets"
+          )
+        ],
+        preStateRequests: []
+      };
+    }
+    const resolved2 = [];
+    const unresolvedMatches2 = [];
+    const preStateRequests = [];
+    for (let index = 0; index < split.stages.length; index += 1) {
+      const stage = split.stages[index];
+      const child = parseCommandLayered(stage.text, options);
+      const join7 = stage.precededBy === "and" ? "&&" : stage.precededBy === "or" ? "||" : void 0;
+      resolved2.push(
+        ...child.resolved.map((match) => ({
+          ...match,
+          span: { ...match.span, simpleCommandIndex: index, join: join7 }
+        }))
+      );
+      unresolvedMatches2.push(...child.unresolved.map((match) => ({ ...match, simpleCommandIndex: index })));
+      preStateRequests.push(...child.preStateRequests.map((request) => ({ ...request, simpleCommandIndex: index })));
+    }
+    if (resolved2.length > maxCandidates) {
+      return {
+        resolved: [],
+        unresolved: [
+          unresolved(
+            "shell",
+            "compound-command",
+            "candidate-budget-exceeded",
+            `compound produced ${resolved2.length} candidates; the limit is ${maxCandidates}`
+          )
+        ],
+        preStateRequests: []
+      };
+    }
+    return { resolved: resolved2, unresolved: unresolvedMatches2, preStateRequests };
+  }
+  const patternCommand = split.malformed === void 0 && split.stages.length === 1 ? parsePatternCommand(split.stages[0].text) : null;
+  if (patternCommand !== null) {
+    const numericMatch = patternCommand.kind === "sed" ? patternCommand.script.match(/^(\d+)(?:,(\d+))?s\W/) : null;
+    const numericSed = numericMatch !== null;
+    if (numericMatch !== null) {
+      if (patternCommand.files.length === 0) {
+        return {
+          resolved: [],
+          unresolved: [
+            unresolved(
+              "shell",
+              "sed-inplace",
+              "unsupported-syntax",
+              "numeric in-place substitution has no file operand"
+            )
+          ],
+          preStateRequests: []
+        };
+      }
+      const start = Number.parseInt(numericMatch[1], 10);
+      const end = Number.parseInt(numericMatch[2] ?? numericMatch[1], 10);
+      const resolved2 = [];
+      const unresolvedMatches2 = [];
+      for (const file of patternCommand.files) {
+        const reason = classifyDynamicWord(file);
+        if (reason !== null) {
+          unresolvedMatches2.push(unresolved("shell", "sed-inplace", reason, "target path is dynamic", file));
+          continue;
+        }
+        resolved2.push({
+          status: "resolved",
+          layer: "shell",
+          idiom: "sed-inplace",
+          span: {
+            operation: "modify",
+            absolutePath: nodePath4.resolve(cwd, file),
+            lineStart: start,
+            lineEnd: end,
+            simpleCommandIndex: patternCommand.simpleCommandIndex
+          }
+        });
+        if (patternCommand.backupSuffix !== void 0 && patternCommand.backupSuffix !== "") {
+          resolved2.push({
+            status: "resolved",
+            layer: "shell",
+            idiom: "sed-inplace",
+            span: {
+              operation: "create-overwrite",
+              absolutePath: `${nodePath4.resolve(cwd, file)}${patternCommand.backupSuffix}`,
+              simpleCommandIndex: patternCommand.simpleCommandIndex
+            }
+          });
+        }
+      }
+      if (unresolvedMatches2.length > 0) return { resolved: [], unresolved: unresolvedMatches2, preStateRequests: [] };
+      if (resolved2.length > maxCandidates) {
+        return {
+          resolved: [],
+          unresolved: [
+            unresolved(
+              "shell",
+              "sed-inplace",
+              "candidate-budget-exceeded",
+              `numeric substitution produced ${resolved2.length} candidates; the limit is ${maxCandidates}`
+            )
+          ],
+          preStateRequests: []
+        };
+      }
+      return { resolved: resolved2, unresolved: [], preStateRequests: [] };
+    }
+    if (!numericSed) {
+      let addressLiteral = null;
+      let substitutionSource = patternCommand.script;
+      if (patternCommand.kind === "sed" && substitutionSource.startsWith("/")) {
+        const address = readDelimitedField(substitutionSource, 1, "/");
+        if (address === null) substitutionSource = "";
+        else {
+          addressLiteral = decodeLiteralField(address.raw, "/", false);
+          if (addressLiteral === "") addressLiteral = null;
+          substitutionSource = substitutionSource.slice(address.next);
+        }
+      }
+      const substitution = parseLiteralSubstitution(substitutionSource);
+      const patternNewlines = substitution?.pattern.match(/\n/g)?.length ?? 0;
+      const replacementNewlines = substitution?.replacement.match(/\n/g)?.length ?? 0;
+      if (substitution === null || patternNewlines !== replacementNewlines || patternCommand.kind !== "perl-zero" && patternNewlines > 0) {
+        return {
+          resolved: [],
+          unresolved: [
+            unresolved(
+              "pattern-substitution",
+              patternCommand.kind === "sed" ? "sed-inplace" : "perl-inplace",
+              "unsupported-expression",
+              "only literal line-count-preserving substitutions are supported"
+            )
+          ],
+          preStateRequests: []
+        };
+      }
+      if (patternCommand.files.length === 0) {
+        return {
+          resolved: [],
+          unresolved: [
+            unresolved(
+              "pattern-substitution",
+              patternCommand.kind === "sed" ? "sed-inplace" : "perl-inplace",
+              "unsupported-syntax",
+              "in-place substitution has no literal file operand"
+            )
+          ],
+          preStateRequests: []
+        };
+      }
+      if (addressLiteral === null && patternCommand.kind === "sed" && patternCommand.script.startsWith("/")) {
+        return {
+          resolved: [],
+          unresolved: [
+            unresolved(
+              "pattern-substitution",
+              "sed-inplace",
+              "unsupported-expression",
+              "sed address is not a literal pattern"
+            )
+          ],
+          preStateRequests: []
+        };
+      }
+      const resolved2 = [];
+      const unresolvedMatches2 = [];
+      const preStateRequests = [];
+      for (const file of patternCommand.files) {
+        const reason = classifyDynamicWord(file);
+        if (reason !== null) {
+          unresolvedMatches2.push(
+            unresolved(
+              "pattern-substitution",
+              patternCommand.kind === "sed" ? "sed-inplace" : "perl-inplace",
+              reason,
+              "target path is dynamic",
+              file
+            )
+          );
+          continue;
+        }
+        const absolutePath = nodePath4.resolve(cwd, file);
+        preStateRequests.push({
+          absolutePath,
+          operation: "modify",
+          requirement: "match-locations",
+          simpleCommandIndex: patternCommand.simpleCommandIndex
+        });
+        if (patternCommand.kind === "perl-zero") {
+          preStateRequests.push({
+            absolutePath,
+            operation: "modify",
+            requirement: "deleted-text",
+            simpleCommandIndex: patternCommand.simpleCommandIndex
+          });
+        }
+        const content = options.readPreState?.(absolutePath) ?? null;
+        if (content === null) {
+          unresolvedMatches2.push(
+            unresolved(
+              "pattern-substitution",
+              patternCommand.kind === "sed" ? "sed-inplace" : "perl-inplace",
+              "missing-pre-state",
+              "literal substitution range requires pre-command text",
+              absolutePath
+            )
+          );
+          continue;
+        }
+        if (content.includes("\0")) {
+          unresolvedMatches2.push(
+            unresolved(
+              "pattern-substitution",
+              patternCommand.kind === "sed" ? "sed-inplace" : "perl-inplace",
+              "binary-content",
+              "substitution range recovery does not accept NUL-delimited content",
+              absolutePath
+            )
+          );
+          continue;
+        }
+        let ranges = literalOccurrenceRanges(content, substitution.pattern);
+        if (addressLiteral !== null) {
+          const addressedLines = new Set(literalOccurrenceRanges(content, addressLiteral).map(({ start }) => start));
+          ranges = ranges.filter(({ start, end }) => start === end && addressedLines.has(start));
+        }
+        if (patternCommand.kind === "perl" && ranges.length > 1) {
+          ranges = [{ start: ranges[0].start, end: ranges[ranges.length - 1].end }];
+        } else if (patternCommand.kind === "perl-zero" && !substitution.global) {
+          ranges = ranges.slice(0, 1);
+        }
+        const expectedContent = expectedSubstitutionContent(content, substitution, patternCommand.kind, addressLiteral);
+        for (const range of ranges) {
+          resolved2.push({
+            status: "resolved",
+            layer: "pattern-substitution",
+            idiom: patternCommand.kind === "sed" ? "sed-inplace" : "perl-inplace",
+            span: {
+              operation: "modify",
+              absolutePath,
+              lineStart: range.start,
+              lineEnd: range.end,
+              expectedContent,
+              simpleCommandIndex: patternCommand.simpleCommandIndex
+            }
+          });
+        }
+        if (patternCommand.backupSuffix !== void 0 && patternCommand.backupSuffix !== "") {
+          resolved2.push({
+            status: "resolved",
+            layer: "pattern-substitution",
+            idiom: "sed-inplace",
+            span: {
+              operation: "create-overwrite",
+              absolutePath: `${absolutePath}${patternCommand.backupSuffix}`,
+              simpleCommandIndex: patternCommand.simpleCommandIndex
+            }
+          });
+        }
+      }
+      if (unresolvedMatches2.length > 0) return { resolved: [], unresolved: unresolvedMatches2, preStateRequests };
+      if (resolved2.length > maxCandidates) {
+        return {
+          resolved: [],
+          unresolved: [
+            unresolved(
+              "pattern-substitution",
+              patternCommand.kind === "sed" ? "sed-inplace" : "perl-inplace",
+              "candidate-budget-exceeded",
+              `substitution produced ${resolved2.length} candidates; the limit is ${maxCandidates}`
+            )
+          ],
+          preStateRequests: []
+        };
+      }
+      return { resolved: resolved2, unresolved: [], preStateRequests };
+    }
+  }
+  const argv = argvOf(command.trim());
+  if (argv !== null) {
+    if (argv[0] === "git" && ["rebase", "merge", "cherry-pick", "reset"].includes(argv[1] ?? "")) {
+      return {
+        resolved: [],
+        unresolved: [
+          unresolved("shell", "history-operation", "history-operation", "history-changing commands have no file intent")
+        ],
+        preStateRequests: []
+      };
+    }
+    if (["yarn", "npm", "pnpm", "make"].includes(argv[0]) && /(?:generate|build|install)/.test(argv.slice(1).join(" "))) {
+      return {
+        resolved: [],
+        unresolved: [
+          unresolved(
+            "shell",
+            "generator-operation",
+            "generator-operation",
+            "generators have no bounded static output set"
+          )
+        ],
+        preStateRequests: []
+      };
+    }
+  }
+  const detailed = parseCommandDetailed(command, options);
+  const resolved = detailed.flatMap(
+    (match) => match.status === "resolved" ? [{ status: "resolved", layer: "shell", idiom: match.idiom, span: match.span }] : []
+  );
+  const unresolvedMatches = detailed.flatMap(
+    (match) => match.status === "unresolved" ? [unresolved("shell", match.idiom, stableReason(match), match.reason, match.fileArg)] : []
+  );
+  if (resolved.length > maxCandidates) {
+    return {
+      resolved: [],
+      unresolved: [
+        unresolved(
+          "shell",
+          "deterministic-shell",
+          "candidate-budget-exceeded",
+          `command produced ${resolved.length} candidates; the limit is ${maxCandidates}`
+        )
+      ],
+      preStateRequests: []
+    };
+  }
+  return { resolved, unresolved: unresolvedMatches, preStateRequests: [] };
+}
+var DEFAULT_PLANNED_TOUCH_BUDGETS = Object.freeze({
+  maxTouchesPerRecord: DEFAULT_MAX_ATTRIBUTION_CANDIDATES,
+  maxRangesPerTouch: DEFAULT_MAX_ATTRIBUTION_CANDIDATES,
+  maxEvidenceBytes: 16 * 1024,
+  maxRecordBytes: 64 * 1024
+});
+function createPlannedTouchStore(baseDir, budgets) {
+  validateBudgets(budgets);
+  if (baseDir.length === 0) throw new Error("planned-touch base directory must not be empty");
+  const recordPaths = (sessionId, toolUseId) => {
+    if (sessionId.length === 0 || toolUseId.length === 0) {
+      throw new Error("planned-touch session and tool-use ids must not be empty");
+    }
+    const dir = nodePath4.join(baseDir, sanitizeSessionId(sessionId), "planned-touches");
+    const stem = sanitizeSessionId(toolUseId);
+    return {
+      dir,
+      record: nodePath4.join(dir, `${stem}.json`),
+      consumed: nodePath4.join(dir, `${stem}.consumed`)
+    };
+  };
+  const makeRestrictiveDir = (dir) => {
+    fs5.mkdirSync(dir, { recursive: true, mode: 448 });
+    fs5.chmodSync(baseDir, 448);
+    fs5.chmodSync(nodePath4.dirname(dir), 448);
+    fs5.chmodSync(dir, 448);
+  };
+  const claim = (consumed) => {
+    try {
+      fs5.writeFileSync(consumed, "", { encoding: "utf8", flag: "wx", mode: 384 });
+      return true;
+    } catch (error) {
+      if (error.code === "EEXIST") return false;
+      throw error;
+    }
+  };
+  const take = (sessionId, toolUseId) => {
+    const paths = recordPaths(sessionId, toolUseId);
+    makeRestrictiveDir(paths.dir);
+    if (!claim(paths.consumed)) return { status: "consumed" };
+    let raw;
+    try {
+      raw = fs5.readFileSync(paths.record, "utf8");
+    } catch (error) {
+      if (error.code === "ENOENT") return { status: "missing" };
+      throw error;
+    } finally {
+      fs5.rmSync(paths.record, { force: true });
+    }
+    try {
+      const record = normalizePlannedTouchRecord(JSON.parse(raw), budgets);
+      return { status: "record", record };
+    } catch {
+      return { status: "missing" };
+    }
+  };
+  return {
+    put(record) {
+      const normalized = normalizePlannedTouchRecord(record, budgets);
+      const paths = recordPaths(normalized.sessionId, normalized.toolUseId);
+      makeRestrictiveDir(paths.dir);
+      if (fs5.existsSync(paths.consumed)) {
+        throw new Error("planned-touch record has already been consumed or discarded");
+      }
+      const encoded = JSON.stringify(normalized);
+      const tmp = nodePath4.join(
+        paths.dir,
+        `.${nodePath4.basename(paths.record)}.${process.pid}.${Date.now().toString(36)}.${Math.random().toString(36).slice(2)}.tmp`
+      );
+      try {
+        fs5.writeFileSync(tmp, encoded, { encoding: "utf8", mode: 384 });
+        fs5.chmodSync(tmp, 384);
+        fs5.renameSync(tmp, paths.record);
+      } catch (error) {
+        fs5.rmSync(tmp, { force: true });
+        throw error;
+      }
+    },
+    consume(sessionId, toolUseId) {
+      const result = take(sessionId, toolUseId);
+      return result.status === "record" ? result.record : null;
+    },
+    take,
+    discard(sessionId, toolUseId) {
+      const paths = recordPaths(sessionId, toolUseId);
+      makeRestrictiveDir(paths.dir);
+      claim(paths.consumed);
+      fs5.rmSync(paths.record, { force: true });
+    }
+  };
+}
+var OPERATIONS = /* @__PURE__ */ new Set([
+  "read",
+  "create-overwrite",
+  "append",
+  "modify",
+  "rename-copy",
+  "truncate",
+  "delete"
+]);
+function validateBudgets(budgets) {
+  for (const [name, value] of [
+    ["maxTouchesPerRecord", budgets.maxTouchesPerRecord],
+    ["maxRangesPerTouch", budgets.maxRangesPerTouch],
+    ["maxEvidenceBytes", budgets.maxEvidenceBytes],
+    ["maxRecordBytes", budgets.maxRecordBytes]
+  ]) {
+    if (!Number.isSafeInteger(value) || value < 0)
+      throw new Error(`planned-touch ${name} must be a non-negative integer`);
+  }
+}
+function validRange(value) {
+  if (typeof value !== "object" || value === null) return false;
+  const range = value;
+  return Number.isSafeInteger(range.start) && Number.isSafeInteger(range.end) && range.start >= 1 && range.end >= range.start;
+}
+function normalizeEvidence(value) {
+  if (value === void 0) return void 0;
+  switch (value.kind) {
+    case "literal-occurrences":
+      if (typeof value.literal !== "string" || !Array.isArray(value.ranges) || !value.ranges.every(validRange) || !Number.isSafeInteger(value.expectedCount) || value.expectedCount < 0) {
+        throw new Error("invalid literal-occurrences evidence");
+      }
+      return {
+        kind: value.kind,
+        literal: value.literal,
+        ranges: value.ranges.map(({ start, end }) => ({ start, end })),
+        expectedCount: value.expectedCount
+      };
+    case "anchor":
+      if (typeof value.literal !== "string" || !Number.isSafeInteger(value.line) || value.line < 1) {
+        throw new Error("invalid anchor evidence");
+      }
+      return { kind: value.kind, literal: value.literal, line: value.line };
+    case "eof":
+      if (!Number.isSafeInteger(value.line) || value.line < 0 || !Number.isSafeInteger(value.byteLength) || value.byteLength < 0) {
+        throw new Error("invalid eof evidence");
+      }
+      return { kind: value.kind, line: value.line, byteLength: value.byteLength };
+    case "content-digest":
+      if (value.algorithm !== "sha256" || !/^[a-f0-9]{64}$/.test(value.digest) || !validRange(value.range)) {
+        throw new Error("invalid content-digest evidence");
+      }
+      return {
+        kind: value.kind,
+        algorithm: value.algorithm,
+        digest: value.digest,
+        range: { start: value.range.start, end: value.range.end }
+      };
+    case "tracked":
+      if (value.tracked !== true) throw new Error("invalid tracked evidence");
+      return { kind: value.kind, tracked: true };
+    default:
+      throw new Error("invalid planned-touch evidence kind");
+  }
+}
+function normalizePlannedTouchRecord(record, budgets) {
+  if (typeof record !== "object" || record === null || record.version !== 1 || typeof record.sessionId !== "string" || record.sessionId.length === 0 || typeof record.toolUseId !== "string" || record.toolUseId.length === 0 || typeof record.repoRoot !== "string" || record.repoRoot.length === 0 || !Number.isFinite(record.createdAtMs) || record.createdAtMs < 0 || !Array.isArray(record.touches)) {
+    throw new Error("invalid planned-touch record");
+  }
+  const repoRoot = toPosix(record.repoRoot);
+  if (!nodePath4.isAbsolute(record.repoRoot) && !/^[A-Za-z]:\//.test(repoRoot)) {
+    throw new Error("planned-touch repository root must be absolute");
+  }
+  if (record.touches.length > budgets.maxTouchesPerRecord) {
+    throw new Error("planned-touch record exceeds touch budget");
+  }
+  let evidenceBytes = 0;
+  const touches = record.touches.map((touch) => {
+    if (typeof touch !== "object" || touch === null) throw new Error("invalid planned touch");
+    const repoRelativePath = toPosix(touch.repoRelativePath);
+    if (repoRelativePath.length === 0 || repoRelativePath.startsWith("/") || /^[A-Za-z]:\//.test(repoRelativePath) || repoRelativePath.split("/").some((part) => part === "..")) {
+      throw new Error("planned-touch path must be repository-relative");
+    }
+    if (!OPERATIONS.has(touch.operation)) throw new Error("invalid planned-touch operation");
+    if (!Array.isArray(touch.ranges) || touch.ranges.length > budgets.maxRangesPerTouch) {
+      throw new Error("planned touch exceeds range budget");
+    }
+    if (!touch.ranges.every(validRange)) throw new Error("invalid planned-touch range");
+    if (!Number.isSafeInteger(touch.simpleCommandIndex) || touch.simpleCommandIndex < 0) {
+      throw new Error("invalid planned-touch command index");
+    }
+    const evidence = normalizeEvidence(touch.evidence);
+    if (evidence !== void 0) evidenceBytes += Buffer.byteLength(JSON.stringify(evidence));
+    return {
+      repoRelativePath,
+      operation: touch.operation,
+      ranges: touch.ranges.map((range) => ({ start: range.start, end: range.end })),
+      simpleCommandIndex: touch.simpleCommandIndex,
+      ...evidence === void 0 ? {} : { evidence }
+    };
+  });
+  if (evidenceBytes > budgets.maxEvidenceBytes) throw new Error("planned-touch record exceeds evidence budget");
+  const normalized = {
+    version: 1,
+    sessionId: record.sessionId,
+    toolUseId: record.toolUseId,
+    repoRoot,
+    createdAtMs: record.createdAtMs,
+    touches
+  };
+  if (Buffer.byteLength(JSON.stringify(normalized)) > budgets.maxRecordBytes) {
+    throw new Error("planned-touch record exceeds byte budget");
+  }
+  return normalized;
+}
+var queryTrackedFiles = (repoRoot, repoRelativePaths) => {
+  if (repoRelativePaths.length === 0) return /* @__PURE__ */ new Set();
+  const stdout = execFileSync4("git", ["-C", repoRoot, "ls-files", "-z", "--cached", "--", ...repoRelativePaths], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"]
+  });
+  return new Set(
+    stdout.split("\0").filter((path) => path.length > 0).map(toPosix)
+  );
+};
+function filterTrackedEligibility(candidates, options) {
+  const eligible = [];
+  const dropped = [];
+  const cwdRepoRoot = resolveRepoRoot(options.cwd);
+  if (cwdRepoRoot === null) {
+    return {
+      eligible,
+      dropped: candidates.map((candidate) => ({ candidate, reason: "outside-repository" })),
+      subprocessCount: 0
+    };
+  }
+  const repoByDirectory = /* @__PURE__ */ new Map();
+  const inScope = [];
+  const spanRoot = resolveSpanRoot(cwdRepoRoot);
+  for (const candidate of candidates) {
+    const directory = toPosix(nodePath4.dirname(candidate.absolutePath));
+    let fileRepoRoot = repoByDirectory.get(directory);
+    if (fileRepoRoot === void 0) {
+      fileRepoRoot = resolveRepoRoot(directory);
+      repoByDirectory.set(directory, fileRepoRoot);
+    }
+    if (fileRepoRoot !== cwdRepoRoot) {
+      dropped.push({ candidate, reason: "outside-repository" });
+      continue;
+    }
+    const repoRelativePath = relativeToRepo(cwdRepoRoot, candidate.absolutePath);
+    if (isGitIgnored(cwdRepoRoot, repoRelativePath)) {
+      dropped.push({ candidate, reason: "ignored-path" });
+      continue;
+    }
+    if (isInsideSpanRoot(repoRelativePath, spanRoot)) {
+      dropped.push({ candidate, reason: "span-metadata-path" });
+      continue;
+    }
+    inScope.push({ candidate, repoRoot: cwdRepoRoot, repoRelativePath });
+  }
+  const byRepo = /* @__PURE__ */ new Map();
+  for (const scoped of inScope) {
+    const group = byRepo.get(scoped.repoRoot) ?? [];
+    group.push(scoped);
+    byRepo.set(scoped.repoRoot, group);
+  }
+  let subprocessCount = 0;
+  const query = options.queryTrackedFiles ?? queryTrackedFiles;
+  for (const [repoRoot, group] of byRepo) {
+    const paths = [...new Set(group.map(({ repoRelativePath }) => repoRelativePath))];
+    let tracked;
+    subprocessCount += 1;
+    try {
+      tracked = query(repoRoot, paths);
+    } catch {
+      tracked = /* @__PURE__ */ new Set();
+    }
+    const normalizedTracked = new Set([...tracked].map(toPosix));
+    for (const scoped of group) {
+      if (normalizedTracked.has(scoped.repoRelativePath)) eligible.push(scoped.candidate);
+      else dropped.push({ candidate: scoped.candidate, reason: "untracked-path" });
+    }
+  }
+  const candidateOrder = new Map(candidates.map((candidate, index) => [candidate, index]));
+  eligible.sort((left, right) => (candidateOrder.get(left) ?? 0) - (candidateOrder.get(right) ?? 0));
+  dropped.sort((left, right) => (candidateOrder.get(left.candidate) ?? 0) - (candidateOrder.get(right.candidate) ?? 0));
+  return { eligible, dropped, subprocessCount };
 }
 
 // src/common/touch-core.ts
-import { execFileSync as execFileSync3 } from "node:child_process";
-import * as fs3 from "node:fs";
-import { basename as basename3, join as join4 } from "node:path";
+import { execFileSync as execFileSync5 } from "node:child_process";
+import * as fs6 from "node:fs";
+import { basename as basename4, join as join4 } from "node:path";
 
 // src/common/anchor-tree.ts
 function collapseByPath(rows) {
@@ -1931,7 +5987,7 @@ function createRealityProbeCache(paths, changedCandidates = []) {
 }
 function fileExists(absPath) {
   try {
-    fs3.statSync(absPath);
+    fs6.statSync(absPath);
     return true;
   } catch {
     return false;
@@ -1939,21 +5995,21 @@ function fileExists(absPath) {
 }
 function isFileOnDisk(absPath) {
   try {
-    return fs3.statSync(absPath).isFile();
+    return fs6.statSync(absPath).isFile();
   } catch {
     return false;
   }
 }
 function contentMatches(post, filePath) {
   try {
-    if ("exact" in post) return fs3.readFileSync(filePath, "utf8") === post.exact;
+    if ("exact" in post) return fs6.readFileSync(filePath, "utf8") === post.exact;
     if ("suffix" in post) {
-      const content = fs3.readFileSync(filePath, "utf8");
+      const content = fs6.readFileSync(filePath, "utf8");
       return content.endsWith(post.suffix) || content.endsWith(`${post.suffix}
 `);
     }
-    if ("empty" in post) return fs3.statSync(filePath).size === 0;
-    return fs3.statSync(filePath).size === post.size;
+    if ("empty" in post) return fs6.statSync(filePath).size === 0;
+    return fs6.statSync(filePath).size === post.size;
   } catch {
     return false;
   }
@@ -1967,7 +6023,7 @@ function realPaths(cache, cwd) {
       const rels = cache.paths.map((p) => relativeToRepo(repoRoot, p));
       const capture = (args) => {
         try {
-          return execFileSync3("git", args, {
+          return execFileSync5("git", args, {
             cwd: repoRoot,
             encoding: "utf8",
             stdio: ["ignore", "pipe", "pipe"],
@@ -1994,9 +6050,44 @@ function realPaths(cache, cwd) {
   cache.realPaths = real;
   return real;
 }
+function changedOnDisk(cache, cwd) {
+  if (cache.changedPaths !== null) return cache.changedPaths;
+  const changed = /* @__PURE__ */ new Set();
+  if (cache.changedCandidates.length > 0) {
+    const repoRoot = resolveRepoRoot(cwd);
+    if (repoRoot !== null) {
+      const rels = cache.changedCandidates.map((p) => relativeToRepo(repoRoot, p));
+      try {
+        const out = execFileSync5("git", ["status", "--porcelain", "-z", "--untracked-files=no", "--", ...rels], {
+          cwd: repoRoot,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+          timeout: DEFAULT_TIMEOUT_MS
+        });
+        for (const entry of out.split("\0")) {
+          if (entry.length < 4) continue;
+          const indexStatus = entry.charAt(0);
+          const worktreeStatus = entry.charAt(1);
+          if (indexStatus === " " && worktreeStatus === " ") continue;
+          if (indexStatus === "?" || indexStatus === "!" || worktreeStatus === "?" || worktreeStatus === "!") {
+            continue;
+          }
+          changed.add(join4(repoRoot, entry.slice(3)));
+        }
+      } catch (err) {
+      }
+    }
+  }
+  cache.changedPaths = changed;
+  return changed;
+}
+function workingTreeChanged(probeCache, cwd, absPath) {
+  return changedOnDisk(probeCache, cwd).has(absPath);
+}
 function evaluateWriteGate(input, probeCache) {
   if (input.targetState === "absent") {
     if (fileExists(input.filePath)) return "decisiveFail";
+    if (input.postState?.preTrackedDelete === true) return "decisivePass";
     return realPaths(probeCache, input.cwd).has(input.filePath) ? "decisivePass" : "inconclusive";
   }
   if (!isFileOnDisk(input.filePath)) return "decisiveFail";
@@ -2009,8 +6100,8 @@ function evaluateWriteGate(input, probeCache) {
       let src;
       let dst;
       try {
-        src = fs3.readFileSync(input.sourcePath, "utf8");
-        dst = fs3.readFileSync(input.filePath, "utf8");
+        src = fs6.readFileSync(input.sourcePath, "utf8");
+        dst = fs6.readFileSync(input.filePath, "utf8");
       } catch {
         return "decisiveFail";
       }
@@ -2101,7 +6192,7 @@ function recoverRangeFromDisk(written, filePath) {
   if (written.length === 0) return "whole-file";
   let content;
   try {
-    content = fs3.readFileSync(filePath, "utf8");
+    content = fs6.readFileSync(filePath, "utf8");
   } catch {
     return "whole-file";
   }
@@ -2111,14 +6202,14 @@ var DEFAULT_READ_LIMIT = 2e3;
 function recoverReadRange(offset, limit, filePath) {
   if (offset === void 0 && limit === void 0) return "whole-file";
   const start = offset ?? 1;
-  let lineCount;
+  let lineCount2;
   try {
-    const content = fs3.readFileSync(filePath, "utf8");
-    lineCount = content.length === 0 ? 0 : content.split("\n").length;
+    const content = fs6.readFileSync(filePath, "utf8");
+    lineCount2 = content.length === 0 ? 0 : content.split("\n").length;
   } catch {
     return "whole-file";
   }
-  const end = Math.min(start + (limit ?? DEFAULT_READ_LIMIT) - 1, Math.max(lineCount, start));
+  const end = Math.min(start + (limit ?? DEFAULT_READ_LIMIT) - 1, Math.max(lineCount2, start));
   return { start, end };
 }
 function onTouchedFile(row, filePath) {
@@ -2163,7 +6254,7 @@ async function computeSurfaceParts(input, executors, memo, range, driftRows) {
   }
   if (sections.length === 0) return null;
   memo.addSurfaced(input.sessionId, toRecord);
-  const fileName = basename3(input.filePath);
+  const fileName = basename4(input.filePath);
   const header = driftedNames.length > 0 ? driftHeader(driftedNames.length, input.kind) : cleanHeader(fileName);
   const footer = driftedNames.length > 0 ? driftFooter(driftedNames) : cleanFooter(fileName);
   return { sections, header, footer, toRecord };
@@ -2245,7 +6336,7 @@ function repoRelArg(filePath, cwd) {
 function spanStatusSnapshot(repoRoot) {
   const spanRoot = resolveSpanRoot(repoRoot);
   try {
-    return execFileSync3("git", ["-C", repoRoot, "status", "--porcelain", "--", spanRoot], {
+    return execFileSync5("git", ["-C", repoRoot, "status", "--porcelain", "--", spanRoot], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: DEFAULT_TIMEOUT_MS
@@ -2261,7 +6352,7 @@ function createDefaultTouchExecutors(timeoutMs = DEFAULT_TIMEOUT_MS) {
       if (!resolved) return { modified: false };
       const before = spanStatusSnapshot(resolved.repoRoot);
       try {
-        execFileSync3("git", ["span", "drift", resolved.relPath, "--fix"], {
+        execFileSync5("git", ["span", "drift", resolved.relPath, "--fix"], {
           cwd: resolved.repoRoot,
           encoding: "utf8",
           stdio: ["ignore", "pipe", "pipe"],
@@ -2276,7 +6367,7 @@ function createDefaultTouchExecutors(timeoutMs = DEFAULT_TIMEOUT_MS) {
       const resolved = repoRelArg(filePath, cwd);
       if (!resolved) return [];
       try {
-        const out = execFileSync3("git", ["span", "list", "--porcelain", resolved.relPath], {
+        const out = execFileSync5("git", ["span", "list", "--porcelain", resolved.relPath], {
           cwd: resolved.repoRoot,
           encoding: "utf8",
           stdio: ["ignore", "pipe", "pipe"],
@@ -2293,7 +6384,7 @@ function createDefaultTouchExecutors(timeoutMs = DEFAULT_TIMEOUT_MS) {
       const scoped = repoRoot ? args.map((a) => relativeToRepo(repoRoot, a)) : args;
       let out;
       try {
-        out = execFileSync3("git", ["span", "drift", "--format", "porcelain", ...scoped], {
+        out = execFileSync5("git", ["span", "drift", "--format", "porcelain", ...scoped], {
           cwd: runCwd,
           encoding: "utf8",
           stdio: ["ignore", "pipe", "pipe"],
@@ -2312,7 +6403,7 @@ function createDefaultTouchExecutors(timeoutMs = DEFAULT_TIMEOUT_MS) {
     why: async (name, cwd) => {
       const repoRoot = resolveRepoRoot(cwd);
       try {
-        const out = execFileSync3("git", ["span", "why", name], {
+        const out = execFileSync5("git", ["span", "why", name], {
           cwd: repoRoot ?? cwd,
           encoding: "utf8",
           stdio: ["ignore", "pipe", "pipe"],
@@ -2328,452 +6419,1361 @@ function createDefaultTouchExecutors(timeoutMs = DEFAULT_TIMEOUT_MS) {
   };
 }
 
-// src/common/snapshot-harness.ts
-function resolveSnapshotBudgets(repoRoot) {
-  const budgets = { ...DEFAULT_SNAPSHOT_BUDGETS };
-  const overrides = [
-    ["preSideMaxWallSeconds", "GIT_SPAN_SNAPSHOT_PRE_SIDE_MAX_WALL_SECONDS"],
-    ["maxStorageBytes", "GIT_SPAN_SNAPSHOT_MAX_STORAGE_BYTES"],
-    ["maxTouchedFiles", "GIT_SPAN_SNAPSHOT_MAX_TOUCHED_FILES"],
-    ["postSideWallSeconds", "GIT_SPAN_SNAPSHOT_POST_SIDE_WALL_SECONDS"],
-    ["recordTtlMs", "GIT_SPAN_SNAPSHOT_RECORD_TTL_MS"],
-    ["unfinishedEntryTtlMs", "GIT_SPAN_SNAPSHOT_UNFINISHED_ENTRY_TTL_MS"]
-  ];
-  const config = repoRoot === null ? null : readSnapshotConfig(repoRoot);
-  for (const [key, envName] of overrides) {
-    const raw = process.env[envName];
-    if (raw !== void 0 && raw.trim() !== "") {
-      const value = Number(raw.trim());
-      if (Number.isFinite(value) && value >= 0) {
-        budgets[key] = value;
+// src/common/bash-touch.ts
+function bashSpanToTouch(span, sessionId, cwd) {
+  if (!resolveTouchScope(cwd, span.absolutePath)) return null;
+  switch (span.operation) {
+    case "read":
+      return {
+        kind: "read",
+        sessionId,
+        cwd,
+        filePath: span.absolutePath,
+        offset: span.lineStart,
+        limit: span.lineStart !== void 0 && span.lineEnd !== void 0 ? span.lineEnd - span.lineStart + 1 : void 0
+      };
+    case "create-overwrite":
+    case "rename-copy":
+      return {
+        kind: "write",
+        sessionId,
+        cwd,
+        filePath: span.absolutePath,
+        written: "",
+        targetState: "exists",
+        postState: span.written !== void 0 ? { content: { exact: span.written } } : void 0
+      };
+    case "truncate":
+      return {
+        kind: "write",
+        sessionId,
+        cwd,
+        filePath: span.absolutePath,
+        written: "",
+        targetState: "exists",
+        postState: span.size === 0 ? { content: { empty: true } } : span.size !== void 0 ? { content: { size: span.size } } : void 0
+      };
+    case "append":
+      return {
+        kind: "write",
+        sessionId,
+        cwd,
+        filePath: span.absolutePath,
+        written: span.written ?? "",
+        range: span.lineStart !== void 0 ? { start: span.lineStart, end: span.lineEnd ?? span.lineStart } : void 0,
+        targetState: "exists",
+        postState: span.expectedContent !== void 0 ? { content: { exact: span.expectedContent } } : span.written !== void 0 ? { content: { suffix: span.written } } : void 0
+      };
+    case "modify":
+      return {
+        kind: "write",
+        sessionId,
+        cwd,
+        filePath: span.absolutePath,
+        written: "",
+        targetState: "exists",
+        range: span.lineStart !== void 0 ? { start: span.lineStart, end: span.lineEnd ?? span.lineStart } : void 0,
+        postState: span.expectedContent !== void 0 ? { content: { exact: span.expectedContent } } : void 0
+      };
+    case "delete":
+      return {
+        kind: "write",
+        sessionId,
+        cwd,
+        filePath: span.absolutePath,
+        written: "",
+        targetState: "absent",
+        postState: {
+          realDelete: true,
+          ...span.preTrackedDelete === true ? { preTrackedDelete: true } : {}
+        }
+      };
+  }
+}
+function bashResponseInterrupted(toolResponse) {
+  if (toolResponse !== null && typeof toolResponse === "object") {
+    const record = toolResponse;
+    const timedOutAfterMs = record.timedOutAfterMs;
+    return record.interrupted === true || record.is_interrupt === true || typeof timedOutAfterMs === "number" && Number.isFinite(timedOutAfterMs) && timedOutAfterMs >= 0;
+  }
+  return false;
+}
+function bashResponseExitCode(toolResponse) {
+  if (toolResponse !== null && typeof toolResponse === "object") {
+    const record = toolResponse;
+    for (const field of ["exit_code", "exitCode", "exitStatus"]) {
+      const code = record[field];
+      if (typeof code === "number" && Number.isInteger(code)) return code;
+    }
+  }
+  return void 0;
+}
+var FILE_PRODUCING_OPS = /* @__PURE__ */ new Set(["create-overwrite", "rename-copy", "truncate", "append"]);
+function evalSpanGate(match, touch, probeCache) {
+  if (touch === null) return "inconclusive";
+  if (touch.kind === "read") {
+    if ((match.idiom === "cp-write" || match.idiom === "install-write") && match.span.operation === "read") {
+      return fileExists(match.span.absolutePath) ? "inconclusive" : "decisiveFail";
+    }
+    return "inconclusive";
+  }
+  return evaluateWriteGate(touch, probeCache);
+}
+function joinOfCommand(idx, groups, guardByIndex) {
+  const spans = groups.get(idx);
+  if (spans !== void 0) {
+    for (const m of spans) {
+      if (m.span.join !== void 0) return m.span.join;
+    }
+    return void 0;
+  }
+  return guardByIndex.get(idx)?.join;
+}
+async function runBashTouches(matches, sessionId, cwd, toolResponse, executors, memo, warn = console.warn) {
+  if (bashResponseInterrupted(toolResponse)) return [];
+  const exitCode = bashResponseExitCode(toolResponse);
+  const resolved = matches.filter((m) => m.status === "resolved");
+  const guards = matches.filter((m) => m.status === "builtin-guard");
+  if (resolved.length === 0) return [];
+  if (resolved.length > DEFAULT_MAX_ATTRIBUTION_CANDIDATES) {
+    warn(
+      `Bash candidate budget exceeded: ${resolved.length} candidates (limit ${DEFAULT_MAX_ATTRIBUTION_CANDIDATES}); rejecting the complete touch set`
+    );
+    return [];
+  }
+  const probePaths = [];
+  const fileProducingByPath = /* @__PURE__ */ new Map();
+  for (const m of resolved) {
+    if (m.span.operation === "delete") probePaths.push(m.span.absolutePath);
+    else if ((m.idiom === "cp-write" || m.idiom === "install-write") && m.span.operation === "read") {
+      probePaths.push(m.span.absolutePath);
+    } else if (FILE_PRODUCING_OPS.has(m.span.operation)) {
+      const list = fileProducingByPath.get(m.span.absolutePath);
+      if (list !== void 0) list.push(m.span.simpleCommandIndex);
+      else fileProducingByPath.set(m.span.absolutePath, [m.span.simpleCommandIndex]);
+    }
+  }
+  const recreateProbePaths = [];
+  for (const m of resolved) {
+    if (m.span.operation !== "delete") continue;
+    const later = (fileProducingByPath.get(m.span.absolutePath) ?? []).some((i) => i > m.span.simpleCommandIndex);
+    if (later) recreateProbePaths.push(m.span.absolutePath);
+  }
+  const probeCache = createRealityProbeCache(probePaths, recreateProbePaths);
+  const groups = /* @__PURE__ */ new Map();
+  const guardByIndex = /* @__PURE__ */ new Map();
+  const commandOrder = [];
+  for (const m of resolved) {
+    const idx = m.span.simpleCommandIndex;
+    const list = groups.get(idx);
+    if (list !== void 0) {
+      list.push(m);
+    } else {
+      groups.set(idx, [m]);
+      commandOrder.push(idx);
+    }
+  }
+  for (const g of guards) {
+    if (groups.has(g.simpleCommandIndex) || guardByIndex.has(g.simpleCommandIndex)) continue;
+    guardByIndex.set(g.simpleCommandIndex, g);
+    commandOrder.push(g.simpleCommandIndex);
+  }
+  commandOrder.sort((a, b) => a - b);
+  const evals = /* @__PURE__ */ new Map();
+  for (const idx of commandOrder) {
+    const spans = groups.get(idx);
+    if (spans === void 0) continue;
+    const readPaths = spans.filter((m) => (m.idiom === "cp-write" || m.idiom === "install-write") && m.span.operation === "read").map((m) => m.span.absolutePath);
+    const deletePaths = spans.filter((m) => m.span.operation === "delete").map((m) => m.span.absolutePath);
+    let readCursor = 0;
+    let deleteCursor = 0;
+    const list = [];
+    for (const m of spans) {
+      const touch = bashSpanToTouch(m.span, sessionId, cwd);
+      const entry = {
+        match: m,
+        touch,
+        outcome: "inconclusive",
+        explained: false,
+        commandIndex: idx,
+        path: m.span.absolutePath,
+        sourceKey: null
+      };
+      if (touch !== null && touch.kind === "write") {
+        if (m.span.operation === "create-overwrite" && (m.idiom === "cp-write" || m.idiom === "install-write")) {
+          const source = readPaths[readCursor];
+          if (source !== void 0) {
+            readCursor += 1;
+            if (m.idiom === "cp-write") {
+              touch.sourcePath = source;
+              entry.sourceKey = source;
+            }
+          }
+        } else if (m.span.operation === "rename-copy") {
+          const source = deletePaths[deleteCursor];
+          if (source !== void 0) {
+            deleteCursor += 1;
+            touch.renameSourcePath = source;
+          }
+        }
+      }
+      entry.outcome = evalSpanGate(m, touch, probeCache);
+      list.push(entry);
+    }
+    evals.set(idx, list);
+  }
+  const passByPath = /* @__PURE__ */ new Map();
+  for (const idx of commandOrder) {
+    const list = evals.get(idx);
+    if (list === void 0) continue;
+    for (const e of list) {
+      if (e.outcome === "decisivePass") {
+        const prev = passByPath.get(e.path);
+        if (prev === void 0 || idx > prev) passByPath.set(e.path, idx);
+      }
+    }
+  }
+  for (const idx of commandOrder) {
+    const list = evals.get(idx);
+    if (list === void 0) continue;
+    for (const e of list) {
+      if (e.outcome === "pending") {
+        const passIdx = e.sourceKey !== null ? passByPath.get(e.sourceKey) : void 0;
+        e.outcome = passIdx !== void 0 && passIdx > e.commandIndex ? "decisivePass" : "decisiveFail";
+      } else if (e.outcome === "decisiveFail") {
+        const passIdx = passByPath.get(e.path);
+        if (passIdx !== void 0 && passIdx > e.commandIndex) e.explained = true;
+      }
+    }
+  }
+  const recreateByPath = /* @__PURE__ */ new Map();
+  for (const idx of commandOrder) {
+    const list = evals.get(idx);
+    if (list === void 0) continue;
+    for (const e of list) {
+      if (e.outcome === "decisiveFail") continue;
+      if (e.touch === null || e.touch.kind !== "write" || e.touch.targetState !== "exists") continue;
+      if (!FILE_PRODUCING_OPS.has(e.match.span.operation)) continue;
+      const prev = recreateByPath.get(e.path);
+      if (prev === void 0 || idx > prev) recreateByPath.set(e.path, idx);
+    }
+  }
+  if (recreateByPath.size > 0) {
+    for (const idx of commandOrder) {
+      const list = evals.get(idx);
+      if (list === void 0) continue;
+      for (const e of list) {
+        if (e.outcome !== "decisiveFail" || e.explained) continue;
+        if (e.touch === null || e.touch.kind !== "write" || e.touch.targetState !== "absent") continue;
+        const recreateIdx = recreateByPath.get(e.path);
+        if (recreateIdx !== void 0 && recreateIdx > e.commandIndex && workingTreeChanged(probeCache, cwd, e.path)) {
+          e.explained = true;
+        }
+      }
+    }
+  }
+  const computed = /* @__PURE__ */ new Map();
+  for (const idx of commandOrder) {
+    const list = evals.get(idx);
+    if (list === void 0) {
+      const guard = guardByIndex.get(idx);
+      computed.set(idx, guard !== void 0 ? guard.exitStatus === 0 ? "succeeded" : "failed" : "unknown");
+      continue;
+    }
+    let failed = false;
+    let passed = false;
+    for (const e of list) {
+      if (e.outcome === "decisiveFail" && !e.explained) failed = true;
+      if (e.outcome === "decisivePass") passed = true;
+    }
+    computed.set(idx, failed ? "failed" : passed ? "succeeded" : "unknown");
+  }
+  const effective = /* @__PURE__ */ new Map();
+  const skipped = /* @__PURE__ */ new Set();
+  let prevIndex = null;
+  for (const idx of commandOrder) {
+    const join7 = joinOfCommand(idx, groups, guardByIndex);
+    const prevVerdict = prevIndex !== null ? effective.get(prevIndex) : void 0;
+    if (prevVerdict !== void 0 && join7 !== void 0) {
+      if (join7 === "&&" && prevVerdict === "failed" || join7 === "||" && prevVerdict === "succeeded") {
+        effective.set(idx, join7 === "&&" ? "failed" : "succeeded");
+        skipped.add(idx);
+        prevIndex = idx;
         continue;
       }
     }
-    const configKey = `git-span.${envName.slice("GIT_SPAN_".length).toLowerCase().replaceAll("_", "-")}`;
-    const configValue = config?.get(configKey);
-    if (configValue !== void 0 && configValue !== "") {
-      const value = Number(configValue);
-      if (Number.isFinite(value) && value >= 0) budgets[key] = value;
+    effective.set(idx, computed.get(idx));
+    prevIndex = idx;
+  }
+  const blocks = [];
+  for (const idx of commandOrder) {
+    if (skipped.has(idx)) continue;
+    const list = evals.get(idx);
+    if (list === void 0) continue;
+    for (const e of list) {
+      if (e.touch === null || e.explained) continue;
+      if (e.outcome === "decisiveFail") continue;
+      if (e.outcome === "inconclusive" && e.touch.kind === "write" && e.touch.targetState === "absent") continue;
+      if (e.outcome === "inconclusive" && e.touch.kind === "write" && exitCode !== void 0 && exitCode !== 0)
+        continue;
+      const output = await runTouchHook(e.touch, executors, memo, probeCache);
+      if (output.additionalContext) blocks.push(output.additionalContext);
     }
   }
-  return budgets;
+  return blocks;
 }
-function readSnapshotConfig(repoRoot) {
-  const values = /* @__PURE__ */ new Map();
-  try {
-    const out = execFileSync4("git", ["-C", repoRoot, "config", "--get-regexp", "^git-span\\.snapshot[-.]"], {
-      stdio: ["ignore", "pipe", "ignore"],
-      encoding: "utf8"
-    });
-    for (const line of out.split("\n")) {
-      const sep2 = line.indexOf(" ");
-      if (sep2 <= 0) continue;
-      const key = line.slice(0, sep2);
-      values.set(key.replace(/^git-span\.snapshot\./, "git-span.snapshot-"), line.slice(sep2 + 1).trim());
+
+// src/common/parse-response.ts
+import { existsSync as existsSync3, statSync as statSync5 } from "node:fs";
+import { dirname as dirname5, join as join5, resolve as resolvePath2, sep } from "node:path";
+var MAX_RESPONSE_SPANS = 50;
+var SEARCH_BINS = /* @__PURE__ */ new Set(["rg", "grep", "egrep", "fgrep"]);
+var VALUE_SHORT_FLAGS = /* @__PURE__ */ new Set(["A", "B", "C", "e", "f", "m", "g", "t", "T"]);
+var VALUE_LONG_FLAGS = /* @__PURE__ */ new Set([
+  "after-context",
+  "before-context",
+  "context",
+  "max-count",
+  "regexp",
+  "file",
+  "glob",
+  "iglob",
+  "type",
+  "type-not",
+  "include",
+  "exclude",
+  "exclude-dir",
+  "exclude-from"
+]);
+function hasShellExpansion2(s) {
+  return /[$`]/.test(s);
+}
+function isPathspecMagic(p) {
+  return /^:[/!^.(]/.test(p);
+}
+function analyzeSearchArgv(argv, start) {
+  const positionals = [];
+  let contextFlags = false;
+  let numbered = false;
+  let withFilename = false;
+  let patternFromFlag = false;
+  let stdinRedirect = false;
+  let i = start;
+  while (i < argv.length) {
+    const a = argv[i];
+    if (a === "--") {
+      positionals.push(...argv.slice(i + 1));
+      break;
     }
-  } catch (err) {
-  }
-  return values;
-}
-var AMBIENT_GIT_LOCATION_VARS = [
-  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-  "GIT_COMMON_DIR",
-  "GIT_DIR",
-  "GIT_INDEX_FILE",
-  "GIT_OBJECT_DIRECTORY",
-  "GIT_WORK_TREE"
-];
-var defaultGitRunner = (args, opts) => {
-  const ambient = { ...process.env };
-  for (const key of AMBIENT_GIT_LOCATION_VARS) delete ambient[key];
-  return execFileSync4("git", args, {
-    cwd: opts.cwd,
-    env: opts.env === void 0 ? ambient : { ...ambient, ...opts.env },
-    // execFileSync rejects non-integer timeouts, and a fractional
-    // postSideWallSeconds budget (0.5 is a valid budget value) produces
-    // fractional remaining-milliseconds — ceil, never crash the capture.
-    timeout: opts.timeoutMs === void 0 ? void 0 : Math.ceil(opts.timeoutMs),
-    maxBuffer: 64 * 1024 * 1024,
-    stdio: ["ignore", "pipe", "ignore"]
-  });
-};
-var statFile = (absPath) => {
-  try {
-    const st = statSync4(absPath);
-    return { size: st.size, mtimeNs: BigInt(Math.trunc(st.mtimeMs)) * 1000000n };
-  } catch {
-    return null;
-  }
-};
-function resolveGitPaths(repoRoot, runGit = defaultGitRunner) {
-  try {
-    const out = runGit(["rev-parse", "--path-format=absolute", "--git-path", "objects", "--git-path", "index"], {
-      cwd: repoRoot
-    }).toString("utf8").split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
-    if (out.length < 2) return null;
-    return { objectsDir: out[0], indexFile: out[1] };
-  } catch {
-    return null;
-  }
-}
-var SNAPSHOT_RECORDLESS_NOTE = `<git-span-error>
-${indentBlockBody(
-  "git-span: snapshot record unavailable \u2014 this command's file writes were not snapshot-attributed; the static spans below are the only attribution"
-)}
-</git-span-error>`;
-function readSiblingRecord(layout, sessionId, toolUseId, cache) {
-  const key = `${sessionId}	${toolUseId}`;
-  const cached = cache.get(key);
-  if (cached !== void 0) return cached;
-  let record = null;
-  try {
-    const raw = JSON.parse(readFileSync3(layout.recordFile(sessionId, toolUseId), "utf8"));
-    if (raw !== null && typeof raw === "object") {
-      record = raw.version === 2 ? raw : "incompatible";
+    if (a.startsWith("<")) {
+      stdinRedirect = true;
+      break;
     }
-  } catch {
-    record = null;
-  }
-  cache.set(key, record);
-  return record;
-}
-function appendRecordGap(layout, sessionId, toolUseId, gaps, logger2) {
-  try {
-    const file = layout.recordFile(sessionId, toolUseId);
-    const raw = JSON.parse(readFileSync3(file, "utf8"));
-    if (raw === null || typeof raw !== "object" || raw.version !== 2) return;
-    const rec = raw;
-    let changed = false;
-    for (const gap of gaps) {
-      if (rec.gaps.includes(gap)) continue;
-      rec.gaps.push(gap);
-      changed = true;
-    }
-    if (changed) writeJsonAtomic(file, rec);
-  } catch (err) {
-    logger2.warn(`git-span record-gap append failed open: ${String(err)}`);
-  }
-}
-function siblingsForPath(layout, mine, index, path, recordCache, hashCache, runGit, hashTimeoutMs, logger2) {
-  const treeHash = (record, treeSha) => {
-    if (treeSha === null) return { kind: "absent" };
-    const key = `${treeSha}	${path}`;
-    const cached = hashCache.get(key);
-    if (cached !== void 0) return cached;
-    const result = hashTreePath({
-      treeSha,
-      path,
-      repoRoot: record.repoRoot,
-      objectDir: layout.objectDir(record.sessionId, record.toolUseId),
-      runGit,
-      timeoutMs: hashTimeoutMs
-    });
-    hashCache.set(key, result);
-    return result;
-  };
-  const out = [];
-  for (const entry of index) {
-    if (entry.sessionId === mine.sessionId && entry.toolUseId === mine.toolUseId) continue;
-    const record = readSiblingRecord(layout, entry.sessionId, entry.toolUseId, recordCache);
-    if (record === null) continue;
-    if (record === "incompatible") {
-      out.push({
-        sessionId: entry.sessionId,
-        toolUseId: entry.toolUseId,
-        createdAt: 0,
-        consumed: false,
-        consumedAt: null,
-        coverageGap: true,
-        pre: null,
-        post: null
-      });
+    if (a.startsWith("--")) {
+      const eq = a.indexOf("=");
+      const name = eq === -1 ? a.slice(2) : a.slice(2, eq);
+      if (name === "after-context" || name === "before-context" || name === "context") contextFlags = true;
+      if (name === "line-number") numbered = true;
+      if (name === "with-filename") withFilename = true;
+      if (name === "regexp" || name === "file") patternFromFlag = true;
+      if (eq === -1 && VALUE_LONG_FLAGS.has(name)) {
+        i += 2;
+        continue;
+      }
+      i += 1;
       continue;
     }
-    const preHash = treeHash(record, record.treeSha);
-    const postHash = treeHash(record, record.post?.treeSha ?? null);
-    const hashError = preHash.kind === "error" || postHash.kind === "error";
-    if (hashError) {
-      const reason = preHash.kind === "error" ? preHash.reason : postHash.kind === "error" ? postHash.reason : "";
-      logger2.warn(`git-span sibling hash read failed for ${record.toolUseId} at ${path} \u2014 failing closed: ${reason}`);
+    if (a.startsWith("-") && a !== "-" && a.length > 1) {
+      let consumesNext = false;
+      for (let j = 1; j < a.length; j++) {
+        const c = a[j];
+        if (c === "A" || c === "B" || c === "C") contextFlags = true;
+        if (c === "n") numbered = true;
+        if (c === "H") withFilename = true;
+        if (c === "e" || c === "f") patternFromFlag = true;
+        if (VALUE_SHORT_FLAGS.has(c)) {
+          consumesNext = j === a.length - 1;
+          break;
+        }
+      }
+      i += consumesNext ? 2 : 1;
+      continue;
     }
-    out.push({
-      sessionId: record.sessionId,
-      toolUseId: record.toolUseId,
-      createdAt: record.createdAt,
-      consumed: record.consumed,
-      consumedAt: record.consumedAt,
-      // Kind-based, never ANY-gap: a precision-loss diagnostic (binary-scope)
-      // does not make the sibling's coverage unknowable — only the
-      // path-coverage family does (which includes the stat-only degrade),
-      // plus the unreadable-evidence case above.
-      coverageGap: recordHasPathCoverageGap(record) || hashError,
-      pre: preHash.kind === "hash" ? { hash: preHash.hash } : null,
-      post: postHash.kind === "hash" ? { hash: postHash.hash } : null
-    });
+    positionals.push(a);
+    i += 1;
   }
-  return out;
+  const firstPositional = patternFromFlag ? 0 : 1;
+  const pathArgs = positionals.length > firstPositional ? positionals.slice(firstPositional).filter((p) => !isPathspecMagic(p)) : [];
+  const pathspecMagic = positionals.length > firstPositional && positionals.slice(firstPositional).some((p) => isPathspecMagic(p));
+  return { pathArgs, contextFlags, numbered, withFilename, pathspecMagic, stdinRedirect };
 }
-function unfinishedEntryCovering(repoRoot, path, now, budgets) {
-  const earliest = now - budgets.unfinishedEntryTtlMs;
-  let dir;
-  try {
-    dir = join5(queueRoot(repoRoot), "activity-log");
-  } catch {
-    return null;
-  }
-  let names;
-  try {
-    names = readdirSync3(dir);
-  } catch {
-    return null;
-  }
-  for (const name of names) {
-    if (!name.endsWith(".json")) continue;
-    const file = join5(dir, name);
-    let mtimeMs;
-    try {
-      mtimeMs = statSync4(file).mtimeMs;
-    } catch {
+function findGitSubcommand2(argv) {
+  let dir = null;
+  let dirUnresolvable = false;
+  let i = 1;
+  while (i < argv.length) {
+    const a = argv[i];
+    if (a === "-C") {
+      const v = argv[i + 1];
+      if (v === void 0) return null;
+      if (hasShellExpansion2(v)) dirUnresolvable = true;
+      else dir = v;
+      i += 2;
       continue;
     }
-    if (mtimeMs < earliest || mtimeMs > now + 1) continue;
-    let entry;
-    try {
-      entry = JSON.parse(readFileSync3(file, "utf8"));
-    } catch {
+    if (a === "-c") {
+      i += 2;
       continue;
     }
-    if (entry.finishedAt !== null) continue;
-    if (typeof entry.startedAt !== "number" || entry.startedAt >= now) continue;
-    if (entry.paths.some((p) => p.path === path)) return entry.toolUseId;
+    if (a.startsWith("-")) {
+      i += 1;
+      continue;
+    }
+    return { dir, dirUnresolvable, subcommand: a, start: i + 1 };
   }
   return null;
 }
-async function snapshotBashBranch(store, sessionId, toolUseId, cwd, executors, memo, logger2, budgets, runGit = defaultGitRunner) {
-  const layout = store.layout;
-  const found = store.find(sessionId, toolUseId);
-  if (found === "tombstoned") return { kind: "tombstoned", additionalContext: null, excludedPaths: /* @__PURE__ */ new Set() };
-  if (found === null) return { kind: "no-record", additionalContext: null, excludedPaths: /* @__PURE__ */ new Set() };
-  const repoRoot = found.repoRoot;
-  const now = Date.now();
-  const excludedPaths = /* @__PURE__ */ new Set();
-  const scopes = [];
-  const notes = [];
-  const interleavedDrops = [];
-  const siblingCache = /* @__PURE__ */ new Map();
-  const siblingHashCache = /* @__PURE__ */ new Map();
-  const siblingIndex = store.listRepoRecords(repoRoot);
-  let post = { treeSha: null };
-  let compared;
-  try {
-    const spanRoot = resolveSpanRoot(repoRoot);
-    const wallBudgetMs = budgets.postSideWallSeconds * 1e3;
-    const postWallStart = Date.now();
-    if (found.treeSha === null) {
-      const sweep = statOnlySweep({ repoRoot, spanRoot, timeoutMs: wallBudgetMs, runGit, stat: statFile });
-      post = { treeSha: null, statOnly: sweep };
-      compared = compareStatOnly(found.statOnly ?? {}, sweep);
-    } else {
-      const gitPaths = resolveGitPaths(repoRoot, runGit);
-      if (gitPaths === null) throw new Error("git paths unresolvable at post time");
-      const captured = captureWriteTree({
-        repoRoot,
-        objectDir: layout.objectDir(sessionId, toolUseId),
-        indexFile: layout.tempIndexFile(sessionId, toolUseId),
-        alternates: gitPaths.objectsDir,
-        realIndexFile: gitPaths.indexFile,
-        spanRoot,
-        wallBudgetMs,
-        wallStart: postWallStart,
-        runGit,
-        stat: statFile
-      });
-      if (captured.treeSha === null) {
-        post = { treeSha: null, ...captured.statOnly !== void 0 ? { statOnly: captured.statOnly } : {} };
-        compared = { attributions: /* @__PURE__ */ new Map(), unchanged: /* @__PURE__ */ new Set(), gaps: captured.gaps, contentHashes: /* @__PURE__ */ new Map() };
-      } else {
-        post = { treeSha: captured.treeSha };
-        compared = compareTrees({
-          preTreeSha: found.treeSha,
-          postTreeSha: captured.treeSha,
-          repoRoot,
-          objectDir: layout.objectDir(sessionId, toolUseId),
-          spanRoot,
-          budgets,
-          wallStart: postWallStart,
-          runGit
-        });
-      }
-    }
-    for (const gap of compared.gaps) logger2.info?.(`git-span snapshot compare: ${gap}`);
-    for (const path of compared.unchanged) excludedPaths.add(path);
-    if (compared.gaps.length > 0) appendRecordGap(layout, sessionId, toolUseId, compared.gaps, logger2);
-    const consumed = store.consume(sessionId, toolUseId, post);
-    if (consumed === null) return { kind: "done", additionalContext: null, excludedPaths };
-  } catch (err) {
-    const failureGap = `snapshot compare aborted: ${String(err)}`;
-    logger2.warn(`git-span ${failureGap}`);
-    appendRecordGap(layout, sessionId, toolUseId, [failureGap], logger2);
-    store.consume(sessionId, toolUseId, post);
-    return {
-      kind: "done",
-      additionalContext: `<git-span-error>
-${indentBlockBody(
-        `git-span: snapshot comparison aborted before attribution completed (${String(err)}); the record was consumed with a gap`
-      )}
-</git-span-error>`,
-      excludedPaths
-    };
+function hasDiffPatchFlag(argv, start) {
+  for (let i = start; i < argv.length; i++) {
+    if (argv[i] === "-p" || argv[i] === "--patch") return true;
   }
-  for (const [path, attribution] of compared.attributions) {
-    const baseline = {
-      createdAt: found.createdAt,
-      preHash: compared.contentHashes.get(path)?.pre ?? null
-    };
-    const verdict = applyAmbiguityRules(
-      baseline,
-      siblingsForPath(
-        layout,
-        found,
-        siblingIndex,
-        path,
-        siblingCache,
-        siblingHashCache,
-        runGit,
-        budgets.postSideWallSeconds * 1e3,
-        logger2
-      ),
-      path
-    );
-    if (verdict.ambiguous) {
-      logger2.warn(`git-span ambiguity: ${path} dropped (${verdict.reason}); session ${verdict.siblingSessionId}`);
-      excludedPaths.add(path);
-      continue;
-    }
-    const inFlight = unfinishedEntryCovering(repoRoot, path, now, budgets);
-    if (inFlight !== null) {
-      logger2.info?.(`git-span interleaved-tool: ${path} dropped (unfinished entry ${inFlight} in flight)`);
-      excludedPaths.add(path);
-      interleavedDrops.push(path);
-      continue;
-    }
-    const consulted = activityEntriesCovering(repoRoot, path, now, now, budgets);
-    const myPreHash = compared.contentHashes.get(path)?.pre ?? null;
-    const currentHash = compared.contentHashes.get(path)?.post ?? null;
-    if (consulted.some((e) => e.finishedAt !== null && e.finishedAt <= found.createdAt)) {
-    } else if (
-      // Both boundary equalities must be over REAL content hashes: a
-      // created/deleted path (or a stat-only degrade) has a null side, and
-      // null === null is not evidence that the edit's touch covered my
-      // change — it is the absence of evidence on both sides. Without the
-      // non-null guard a deletion interleaved with an edit's deletion of the
-      // same path skipped silently on null-postHash equality.
-      myPreHash !== null && currentHash !== null && consulted.some(
-        (e) => e.paths.some((p) => p.path === path && p.preHash === myPreHash && p.postHash === currentHash)
-      )
-    ) {
-      logger2.info?.(`git-span covered-by-edit: ${path} skipped (equal baselines)`);
-      excludedPaths.add(path);
-      continue;
-    } else if (consulted.length > 0) {
-      logger2.info?.(`git-span absorbed-double: ${path} attributed (interleaved edit absorbed)`);
-    }
-    if (attribution.kind === "rename") {
-      scopes.push({ filePath: join5(repoRoot, attribution.from), observed: { changed: [], wholeFile: true } });
-      excludedPaths.add(attribution.from);
-      excludedPaths.add(path);
-    } else {
-      const observed = attribution.kind === "changed" ? attribution.observed : { changed: [], wholeFile: true };
-      scopes.push({ filePath: join5(repoRoot, path), observed });
-      excludedPaths.add(path);
-    }
-  }
-  if (interleavedDrops.length > 0) {
-    notes.push(
-      `attribution deferred: ${interleavedDrops.join(", ")} \u2014 an interleaved edit is still in flight; not attributed. Re-run the command once the overlapping edit completes to attribute the write.`
-    );
-  }
-  if (compared.gaps.some((g) => g.includes("post-side wall budget exhausted"))) {
-    notes.push(
-      scopes.length === 0 ? `<git-span-error>
-${indentBlockBody("git-span: the post-side wall budget was exhausted before any file could be attributed \u2014 no git-span block was produced")}
-</git-span-error>` : `<git-span-error>
-${indentBlockBody(`git-span: the post-side wall budget was exhausted partway \u2014 ${scopes.length} path(s) attributed, the rest dropped`)}
-</git-span-error>`
-    );
-  }
-  if (compared.gaps.some((g) => g.startsWith("write-tree degraded to stat-only:"))) {
-    notes.push(
-      `<git-span-error>
-${indentBlockBody("git-span: the post-side snapshot degraded to stat-only under a pre-side tree \u2014 no comparable evidence, nothing attributed")}
-</git-span-error>`
-    );
-  }
-  let additionalContext = null;
-  if (scopes.length > 0) {
-    const baseInput = {
-      kind: "write",
-      sessionId,
-      cwd,
-      filePath: scopes[0].filePath,
-      written: ""
-    };
-    const output = await runTouchHook(baseInput, executors, memo, void 0, scopes);
-    additionalContext = output.additionalContext;
-  }
-  if (notes.length > 0) {
-    const noteText = notes.join("\n");
-    additionalContext = additionalContext === null ? noteText : `${additionalContext}
-${noteText}`;
-  }
-  return { kind: "done", additionalContext, excludedPaths };
+  return false;
 }
-
-// src/common/span-surface.ts
-import { execFileSync as execFileSync5 } from "node:child_process";
-import * as fs5 from "node:fs";
-import * as nodePath3 from "node:path";
-
-// src/common/span-ignore.ts
-import * as fs4 from "node:fs";
-import * as nodePath2 from "node:path";
-var HOOK_IGNORE_REL = nodePath2.join(".span", ".hookignore");
-
-// src/common/span-surface.ts
-function createDiskMemoStore(logger2, layout) {
-  return {
-    getSurfaced(sessionId) {
-      pruneStaleSessions(layout);
-      try {
-        const raw = fs5.readFileSync(layout.memoFile(sessionId), "utf8");
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed.surfaced)) {
-          return new Set(parsed.surfaced);
-        }
-      } catch (err) {
-        logger2.warn("memo read failed (treating as empty)", { err });
+function hasRevPathArg(argv, start) {
+  const valueFlags = /* @__PURE__ */ new Set(["--format", "--pretty", "--output", "--word-diff-regex"]);
+  for (let i = start; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--") return false;
+    if (a.startsWith("-") && a !== "-") {
+      if (!a.includes("=") && valueFlags.has(a)) i += 1;
+      continue;
+    }
+    if (a.includes(":")) return true;
+  }
+  return false;
+}
+function hasFlag(argv, start, flag) {
+  for (let i = start; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--") return false;
+    if (a === flag) return true;
+  }
+  return false;
+}
+function hasDiffRevPathArg(argv, start, cwd) {
+  const valueFlags = /* @__PURE__ */ new Set([
+    "--output",
+    "--src-prefix",
+    "--dst-prefix",
+    "-L",
+    "-S",
+    "-G",
+    "--grep",
+    "--author",
+    "--committer",
+    "--since",
+    "--until",
+    "--before",
+    "--after"
+  ]);
+  for (let i = start; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--") return false;
+    if (a.startsWith("-") && a !== "-") {
+      if (!a.includes("=") && valueFlags.has(a)) i += 1;
+      continue;
+    }
+    if (a.includes(":") && !existsSync3(resolvePath2(cwd, a))) return true;
+  }
+  return false;
+}
+function diffRelativeBase(argv, start, effectiveDir, repoRoot) {
+  for (let i = start; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--") return null;
+    if (a === "--relative") return { base: effectiveDir, root: effectiveDir };
+    if (a.startsWith("--relative=")) {
+      const value = a.slice("--relative=".length);
+      if (repoRoot === null || hasShellExpansion2(value) || value === "") return "unresolvable";
+      const base = resolvePath2(repoRoot, value);
+      return { base, root: base };
+    }
+  }
+  return null;
+}
+var VERBATIM_PASS_BINS = /* @__PURE__ */ new Set(["head", "tail", "wc", "sort", "uniq", "cut"]);
+function isRenumberingFilter(argv) {
+  const bin = argv[0];
+  if (bin === "nl") return true;
+  if (bin === "sed") return !isVerbatimSedStage(argv);
+  if (bin === "awk") return !isVerbatimAwkStage(argv);
+  if (bin === "perl") return !isVerbatimPerlStage(argv);
+  if (bin === "tr") return !isVerbatimTrStage(argv);
+  if (bin === "cat") {
+    if (argv.some((a) => a === "--number" || a.startsWith("-") && !a.startsWith("--") && a.includes("n")))
+      return true;
+    return hasFileOperand(argv);
+  }
+  if (SEARCH_BINS.has(bin)) {
+    if (argv.some((a) => a === "--line-number" || a.startsWith("-") && !a.startsWith("--") && a.includes("n")))
+      return true;
+    return hasGrepFileOperand(argv);
+  }
+  if (VERBATIM_PASS_BINS.has(bin)) return hasFileOperand(argv);
+  return true;
+}
+function hasFileOperand(argv) {
+  let afterTerminator = false;
+  for (let i = 1; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--") {
+      afterTerminator = true;
+      continue;
+    }
+    if (a === "-") continue;
+    if (afterTerminator || !a.startsWith("-")) return true;
+  }
+  return false;
+}
+function hasGrepFileOperand(argv) {
+  let patternFromFlag = false;
+  let seenPattern = false;
+  for (let i = 1; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--") {
+      for (let j = i + 1; j < argv.length; j++) {
+        if (!patternFromFlag && !seenPattern) seenPattern = true;
+        else return true;
       }
-      return /* @__PURE__ */ new Set();
-    },
-    addSurfaced(sessionId, names) {
-      pruneStaleSessions(layout);
-      const existing = this.getSurfaced(sessionId);
-      for (const n of names) existing.add(n);
-      const memoDir = layout.dir(sessionId);
-      const memoPath = layout.memoFile(sessionId);
-      const tmpPath = `${memoPath}.tmp`;
-      try {
-        fs5.mkdirSync(memoDir, { recursive: true, mode: 448 });
-        fs5.writeFileSync(tmpPath, JSON.stringify({ surfaced: [...existing] }), "utf8");
-        fs5.renameSync(tmpPath, memoPath);
-      } catch (err) {
-        logger2.warn("memo write failed", { err });
+      return false;
+    }
+    if (a === "-e" || a === "-f" || a === "--regexp" || a === "--file") {
+      patternFromFlag = true;
+      i++;
+      continue;
+    }
+    if (a.startsWith("-")) {
+      if (a.startsWith("--")) {
+        if (a.startsWith("--regexp=") || a.startsWith("--file=")) patternFromFlag = true;
+      } else if (a.length > 2 && (a[1] === "e" || a[1] === "f")) {
+        patternFromFlag = true;
+      }
+      continue;
+    }
+    if (!patternFromFlag && !seenPattern) seenPattern = true;
+    else return true;
+  }
+  return false;
+}
+function isVerbatimSedScript(script, suppressAutoPrint) {
+  if (suppressAutoPrint) {
+    return /^\d+p$/.test(script) || /^\d+,\d+p$/.test(script) || /^\d+,\$p$/.test(script);
+  }
+  return /^\d+q$/.test(script) || /^\d+d$/.test(script);
+}
+function isVerbatimSedStage(argv) {
+  let script = null;
+  let suppressAutoPrint = false;
+  for (let i = 1; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "-n") {
+      suppressAutoPrint = true;
+      continue;
+    }
+    if (a.startsWith("-") && a !== "-") return false;
+    if (script !== null) return false;
+    script = a;
+  }
+  return script !== null && isVerbatimSedScript(script, suppressAutoPrint);
+}
+function isVerbatimAwkStage(argv) {
+  if (argv.length !== 2) return false;
+  const program = argv[1];
+  return /^NR\s*(<=|>=|==|!=|<|>)\s*\d+$/.test(program) || /^NR\s*%\s*\d+\s*(==|!=)\s*\d+$/.test(program);
+}
+function verbatimPerlScript(argv) {
+  if (argv.length === 3 && argv[1] === "-ne") return argv[2];
+  if (argv.length === 4 && argv[1] === "-n" && argv[2] === "-e") return argv[3];
+  return null;
+}
+function isVerbatimPerlStage(argv) {
+  const script = verbatimPerlScript(argv);
+  if (script === null) return false;
+  return /^\s*print\s+(?:if|unless)\s+\$\.\s*(<=|>=|==|!=|<|>)\s*\d+\s*;?\s*$/.test(script);
+}
+function isVerbatimTrStage(argv) {
+  if (argv.length !== 3 || argv[1] !== "-d") return false;
+  const set = argv[2];
+  return !/[0-9:]/.test(set) && !set.includes("\\n");
+}
+function completeLines(stdout) {
+  const lines = stdout.split("\n");
+  lines.pop();
+  return lines;
+}
+function recordsAreOneFile(stdout) {
+  const lines = completeLines(stdout);
+  if (lines.length === 0) return false;
+  return lines.every((line) => line === "" || line === "--" || parseOneFileRecord(line) !== null);
+}
+function detectLayout(stdout, info, oneFileEligible) {
+  if (stdout.includes("\0")) return "null-separated";
+  const lines = completeLines(stdout);
+  const first = lines.find((line) => line !== "");
+  if (first === void 0) return null;
+  if (/^\d+[-:]/.test(first)) {
+    if (oneFileEligible && recordsAreOneFile(stdout)) return "one-file";
+  }
+  if (/^[^:]+:\d+/.test(first)) return info.contextFlags ? "context" : "recursive";
+  if (info.contextFlags && lines.some((line) => line !== "" && /^[^:]+:\d+/.test(line))) return "context";
+  if (/^[^-:]+-\d+-/.test(first)) return info.contextFlags ? "context" : null;
+  if (info.numbered && /^[^:]+$/.test(first)) return "heading";
+  return null;
+}
+function parseRecord(line, sep2) {
+  const first = line.indexOf(sep2);
+  if (first === -1) return null;
+  const second = line.indexOf(sep2, first + 1);
+  if (second === -1) return null;
+  const path = line.slice(0, first);
+  const lineToken = line.slice(first + 1, second);
+  const text = line.slice(second + 1);
+  if (path === "" || path.includes(":")) return null;
+  if (!/^\d+$/.test(lineToken)) return null;
+  const lineNumber = Number.parseInt(lineToken, 10);
+  if (lineNumber <= 0) return null;
+  return { path, line: lineNumber, text };
+}
+function parseOneFileRecord(line) {
+  const m = /^(\d+)([:-])/.exec(line);
+  if (m === null) return null;
+  const lineNumber = Number.parseInt(m[1], 10);
+  if (lineNumber <= 0) return null;
+  return { line: lineNumber, text: line.slice(m[0].length) };
+}
+function parseContextRecord(line, knownPaths) {
+  for (const path of knownPaths) {
+    if (!line.startsWith(`${path}-`)) continue;
+    const tail = line.slice(path.length + 1);
+    const m = /^(\d+)-/.exec(tail);
+    if (m === null) continue;
+    const lineNumber = Number.parseInt(m[1], 10);
+    if (lineNumber <= 0) continue;
+    return { path, line: lineNumber, text: tail.slice(m[0].length) };
+  }
+  return null;
+}
+function lineCount(text) {
+  if (text === "") return 0;
+  const withoutTrailingNewline = text.endsWith("\n") ? text.slice(0, -1) : text;
+  return withoutTrailingNewline.split("\n").length;
+}
+function decodeSearchLayout(layout, stdout, singleFileArg) {
+  const records = [];
+  switch (layout) {
+    case "recursive":
+      for (const line of completeLines(stdout)) {
+        const rec = parseRecord(line, ":");
+        if (rec !== null) records.push(rec);
+      }
+      break;
+    case "context": {
+      const lines = completeLines(stdout);
+      const known = /* @__PURE__ */ new Set();
+      for (const line of lines) {
+        if (line === "--") continue;
+        const rec = parseRecord(line, ":");
+        if (rec !== null) known.add(rec.path);
+      }
+      const knownSorted = [...known].sort((a, b) => b.length - a.length);
+      for (const line of lines) {
+        if (line === "--") continue;
+        const rec = parseRecord(line, ":") ?? parseContextRecord(line, knownSorted) ?? parseRecord(line, "-");
+        if (rec !== null) records.push(rec);
+      }
+      break;
+    }
+    case "heading":
+      {
+        let current = null;
+        for (const line of completeLines(stdout)) {
+          if (line === "") continue;
+          const rec = parseOneFileRecord(line);
+          if (rec === null) {
+            current = line;
+          } else if (current !== null) {
+            records.push({ path: current, line: rec.line, text: rec.text });
+          }
+        }
+      }
+      break;
+    case "one-file":
+      if (singleFileArg !== null) {
+        for (const line of completeLines(stdout)) {
+          const rec = parseOneFileRecord(line);
+          if (rec !== null) records.push({ path: singleFileArg, line: rec.line, text: rec.text });
+        }
+      }
+      break;
+    case "null-separated":
+      {
+        const parts = stdout.split("\0");
+        if (!stdout.endsWith("\0")) parts.pop();
+        for (const part of parts) {
+          if (part === "") continue;
+          const rec = parseRecord(part, ":");
+          if (rec === null || rec.line !== 1) continue;
+          records.push({ path: rec.path, line: null, text: rec.text });
+        }
+      }
+      break;
+  }
+  return records;
+}
+function insideRoot(abs, roots) {
+  for (const root of roots) {
+    if (abs === root || abs.startsWith(root + sep)) return true;
+  }
+  return false;
+}
+function isFile(abs) {
+  try {
+    return statSync5(abs).isFile();
+  } catch {
+    return false;
+  }
+}
+function findGitRoot(startDir) {
+  let dir = startDir;
+  for (; ; ) {
+    if (existsSync3(join5(dir, ".git"))) return dir;
+    const parent = dirname5(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+function capSpans(spans) {
+  if (spans.length <= MAX_RESPONSE_SPANS) return spans;
+  const ordered = [...spans].sort(
+    (a, b) => a.absolutePath.localeCompare(b.absolutePath) || a.lineStart - b.lineStart || a.lineEnd - b.lineEnd
+  );
+  return ordered.slice(0, MAX_RESPONSE_SPANS);
+}
+function coalesce(lines) {
+  if (lines.length === 0) return [];
+  const sorted = [...lines].sort((a, b) => a - b);
+  const ranges = [];
+  let start = sorted[0];
+  let end = sorted[0];
+  for (const n of sorted.slice(1)) {
+    if (n <= end + 1) {
+      if (n > end) end = n;
+    } else {
+      ranges.push([start, end]);
+      start = n;
+      end = n;
+    }
+  }
+  ranges.push([start, end]);
+  return ranges;
+}
+function spansFor(perFile, baseDir, roots) {
+  const spans = [];
+  for (const [path, lines] of perFile) {
+    const abs = resolvePath2(baseDir, path);
+    if (!insideRoot(abs, roots)) continue;
+    for (const [lineStart, lineEnd] of coalesce([...lines])) {
+      spans.push({ lineStart, lineEnd, absolutePath: abs });
+    }
+  }
+  return spans;
+}
+var HUNK_HEADER2 = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
+function stripDiffPrefix(p) {
+  return p.startsWith("a/") || p.startsWith("b/") ? p.slice(2) : p;
+}
+function parseDiffHeader(line) {
+  if (line.startsWith("diff --cc ") || line.startsWith("diff --combined ")) return { kind: "combined" };
+  if (!line.startsWith("diff --git ")) return null;
+  const tokens = line.slice("diff --git ".length).trim().split(/\s+/);
+  if (tokens.length !== 2 || tokens[0].startsWith('"') || tokens[1].startsWith('"')) return { kind: "unparseable" };
+  return { kind: "file", oldPath: stripDiffPrefix(tokens[0]), newPath: stripDiffPrefix(tokens[1]) };
+}
+function parseDiffSide(line, marker) {
+  if (!line.startsWith(`${marker} `)) return null;
+  const p = line.slice(marker.length + 1);
+  if (p.startsWith('"')) return { kind: "unparseable" };
+  return { kind: "side", path: p === "/dev/null" ? null : stripDiffPrefix(p) };
+}
+function decodeUnifiedDiff(stdout) {
+  const perFile = /* @__PURE__ */ new Map();
+  let current = null;
+  for (const line of completeLines(stdout)) {
+    const header = parseDiffHeader(line);
+    if (header !== null) {
+      current = {
+        oldPath: header.kind === "file" ? header.oldPath : null,
+        newPath: header.kind === "file" ? header.newPath : null,
+        rename: false,
+        binary: false,
+        combined: header.kind === "combined",
+        submodule: false,
+        unusable: header.kind === "unparseable",
+        sawHunk: false
+      };
+      continue;
+    }
+    if (current === null) continue;
+    if (line.startsWith("Binary files ")) {
+      current.binary = true;
+      continue;
+    }
+    const isBodyLine = line.startsWith(" ") || line.startsWith("+") || line.startsWith("-") || line.startsWith("\\");
+    if (!isBodyLine && line.includes("mode 160000")) {
+      current.submodule = true;
+      continue;
+    }
+    if (line.includes("Subproject commit")) {
+      current.submodule = true;
+      continue;
+    }
+    if (line.startsWith("rename from ") || line.startsWith("rename to ") || line.startsWith("copy from ") || line.startsWith("copy to ")) {
+      current.rename = true;
+      continue;
+    }
+    if (!current.sawHunk) {
+      const oldSide = parseDiffSide(line, "---");
+      if (oldSide !== null) {
+        if (oldSide.kind === "unparseable") current.unusable = true;
+        else current.oldPath = oldSide.path;
+        continue;
+      }
+      const newSide = parseDiffSide(line, "+++");
+      if (newSide !== null) {
+        if (newSide.kind === "unparseable") current.unusable = true;
+        else current.newPath = newSide.path;
+        continue;
       }
     }
+    const hunk = HUNK_HEADER2.exec(line);
+    if (hunk !== null) {
+      current.sawHunk = true;
+      emitHunkRange(perFile, current, hunk);
+    }
+  }
+  return perFile;
+}
+function emitHunkRange(perFile, record, hunk) {
+  if (record.binary || record.combined || record.submodule || record.unusable) return;
+  const oldStart = Number.parseInt(hunk[1], 10);
+  const oldCount = hunk[2] === void 0 ? 1 : Number.parseInt(hunk[2], 10);
+  const newStart = Number.parseInt(hunk[3], 10);
+  const newCount = hunk[4] === void 0 ? 1 : Number.parseInt(hunk[4], 10);
+  if (record.rename) {
+    if (record.newPath !== null) addLines(perFile, record.newPath, newStart, newCount);
+    return;
+  }
+  if (record.oldPath !== null) addLines(perFile, record.oldPath, oldStart, oldCount);
+  if (record.newPath !== null) addLines(perFile, record.newPath, newStart, newCount);
+}
+function addLines(perFile, path, start, count) {
+  if (start < 1 || count <= 0) return;
+  let lines = perFile.get(path);
+  if (lines === void 0) {
+    lines = /* @__PURE__ */ new Set();
+    perFile.set(path, lines);
+  }
+  for (let n = start; n < start + count; n++) lines.add(n);
+}
+function matchBlameRange(argv, start) {
+  let spec = null;
+  let specIdx = -1;
+  const positionals = [];
+  for (let i = start; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--") {
+      for (let j = i + 1; j < argv.length; j++) positionals.push({ arg: argv[j], idx: j });
+      break;
+    }
+    if (a === "-L") {
+      spec = argv[i + 1] ?? null;
+      specIdx = i;
+      i += 1;
+      continue;
+    }
+    if (a.startsWith("-L")) {
+      spec = a.slice(2);
+      specIdx = i;
+      continue;
+    }
+    if (a.startsWith("-")) continue;
+    positionals.push({ arg: a, idx: i });
+  }
+  if (spec === null) return null;
+  const m = /^(\d+),(\d+)$/.exec(spec);
+  if (m === null) return null;
+  const files = positionals.filter((p) => p.idx > specIdx);
+  if (files.length !== 1) return null;
+  return {
+    lineStart: Number.parseInt(m[1], 10),
+    lineEnd: Number.parseInt(m[2], 10),
+    fileArg: files[0].arg
   };
 }
+function parseResponse(input) {
+  const { command, cwd, stdout } = input;
+  let currentDir = cwd;
+  let gated = null;
+  let gatedPrecededBy = "start";
+  let gatedRedirect = false;
+  let gatedHeredoc = false;
+  const split = splitTopLevel(command);
+  if (split.malformed !== void 0) return [];
+  const parts = split.stages;
+  for (let i = 0; i < parts.length; i++) {
+    const simple = parts[i];
+    const argv = argvOf(simple.text);
+    if (argv === null || argv.length === 0) continue;
+    if (argv[0] === "cd") {
+      if (gated === null) {
+        const target = argv[1];
+        if (target !== void 0 && target !== "-" && !hasShellExpansion2(target)) {
+          currentDir = resolvePath2(currentDir, target);
+        }
+      }
+      continue;
+    }
+    if (gated !== null) continue;
+    if (SEARCH_BINS.has(argv[0])) {
+      gated = { kind: "search", argv, start: 1, dir: null, dirUnresolvable: false };
+    } else if (argv[0] === "git") {
+      const sub = findGitSubcommand2(argv);
+      if (sub !== null) {
+        const base2 = { argv, start: sub.start, dir: sub.dir, dirUnresolvable: sub.dirUnresolvable };
+        if (sub.subcommand === "grep") gated = { kind: "search", ...base2 };
+        else if (sub.subcommand === "show" && !hasRevPathArg(argv, sub.start)) gated = { kind: "diff", ...base2 };
+        else if (sub.subcommand === "diff") gated = { kind: "diff", ...base2 };
+        else if (sub.subcommand === "log" && hasDiffPatchFlag(argv, sub.start)) gated = { kind: "diff", ...base2 };
+        else if (sub.subcommand === "blame") gated = { kind: "blame", ...base2 };
+      }
+    }
+    if (gated === null) continue;
+    gatedPrecededBy = simple.precededBy;
+    gatedRedirect = hasUnquotedRedirect(simple.text);
+    gatedHeredoc = simple.heredoc ?? false;
+    for (let j = 0; j < parts.length; j++) {
+      if (j === i) continue;
+      if (j < i) {
+        let consumed = true;
+        for (let k = j + 1; k <= i && consumed; k++) {
+          if (parts[k].precededBy !== "pipe") consumed = false;
+        }
+        if (consumed) continue;
+      }
+      const siblingText = parts[j].text;
+      const siblingArgv = argvOf(siblingText);
+      if (siblingArgv === null || siblingArgv.length === 0 || siblingArgv[0] === "cd") continue;
+      if (hasUnquotedRedirect(siblingText)) return [];
+      if (parts[j].heredoc) return [];
+      if (isRenumberingFilter(siblingArgv)) return [];
+    }
+  }
+  if (gated === null || gated.dirUnresolvable) return [];
+  const effectiveDir = gated.dir !== null ? resolvePath2(currentDir, gated.dir) : currentDir;
+  if (gated.kind === "blame") {
+    const m = matchBlameRange(gated.argv, gated.start);
+    if (m === null || hasShellExpansion2(m.fileArg) || /[*?]/.test(m.fileArg)) return [];
+    return [{ lineStart: m.lineStart, lineEnd: m.lineEnd, absolutePath: resolvePath2(effectiveDir, m.fileArg) }];
+  }
+  if (stdout.includes("\x1B")) return [];
+  if (input.truncated) return [];
+  if (gated.kind === "diff") {
+    if (hasDiffRevPathArg(gated.argv, gated.start, effectiveDir)) return [];
+    const repoRoot = findGitRoot(effectiveDir);
+    if (repoRoot === null) return [];
+    const relative = diffRelativeBase(gated.argv, gated.start, effectiveDir, repoRoot);
+    if (relative === "unresolvable") return [];
+    const base2 = relative !== null ? relative.base : repoRoot;
+    const roots2 = relative !== null ? [relative.root] : [repoRoot];
+    return capSpans(spansFor(decodeUnifiedDiff(stdout), base2, roots2));
+  }
+  const info = analyzeSearchArgv(gated.argv, gated.start);
+  const stdinFed = gated.kind === "search" && gated.argv[0] !== "git" && info.pathArgs.length === 0 && (gatedPrecededBy === "pipe" || info.stdinRedirect || gatedRedirect || gatedHeredoc);
+  if (stdinFed) return [];
+  const isGitGrep = gated.kind === "search" && gated.argv[0] === "git";
+  const fullName = isGitGrep && hasFlag(gated.argv, gated.start, "--full-name");
+  const magic = isGitGrep && info.pathspecMagic;
+  const worktreeRoot = magic || fullName ? findGitRoot(effectiveDir) : null;
+  if ((magic || fullName) && worktreeRoot === null) return [];
+  const base = fullName && worktreeRoot !== null ? worktreeRoot : effectiveDir;
+  const roots = magic && worktreeRoot !== null ? [worktreeRoot] : info.pathArgs.length > 0 ? info.pathArgs.map((p) => resolvePath2(effectiveDir, p)) : [effectiveDir];
+  const singleFileArg = info.pathArgs.length === 1 ? info.pathArgs[0] : null;
+  const oneFileEligible = info.numbered && !info.withFilename && singleFileArg !== null && isFile(resolvePath2(effectiveDir, singleFileArg));
+  const layout = detectLayout(stdout, info, oneFileEligible);
+  const perFile = /* @__PURE__ */ new Map();
+  if (layout !== null) {
+    for (const rec of decodeSearchLayout(layout, stdout, singleFileArg)) {
+      if (layout === "recursive" && !isFile(resolvePath2(base, rec.path))) continue;
+      if (rec.line === null) {
+        const total = lineCount(rec.text);
+        let lines = perFile.get(rec.path);
+        if (lines === void 0) {
+          lines = /* @__PURE__ */ new Set();
+          perFile.set(rec.path, lines);
+        }
+        for (let n = 1; n <= total; n++) lines.add(n);
+      } else {
+        let lines = perFile.get(rec.path);
+        if (lines === void 0) {
+          lines = /* @__PURE__ */ new Set();
+          perFile.set(rec.path, lines);
+        }
+        lines.add(rec.line);
+      }
+    }
+  }
+  const spans = spansFor(perFile, base, roots);
+  if (perFile.size === 0 && !info.numbered && stdout !== "" && stdout.endsWith("\n") && singleFileArg !== null) {
+    const abs = resolvePath2(effectiveDir, singleFileArg);
+    const total = countFileLines(abs);
+    if (total !== null && total > 0) {
+      spans.push({ lineStart: 1, lineEnd: total, absolutePath: abs });
+    }
+  }
+  return capSpans(spans);
+}
 
-// src/claude/post-tool-use-failure.ts
+// src/common/bash-attribution.ts
+var RESPONSE_TEXT_FIELDS = ["output", "stdout", "content", "text"];
+function finiteTimeout(record) {
+  const value = record.timedOutAfterMs;
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+function integerExitStatus(record) {
+  for (const field of ["exit_code", "exitCode", "exitStatus"]) {
+    const value = record[field];
+    if (typeof value === "number" && Number.isInteger(value)) return value;
+  }
+  return void 0;
+}
+function normalizeBashResponse(toolResponse) {
+  if (typeof toolResponse === "string") return { stdout: toolResponse };
+  if (Array.isArray(toolResponse)) {
+    const text = [];
+    for (const block of toolResponse) {
+      if (block !== null && typeof block === "object") {
+        const value = block.text;
+        if (typeof value === "string") text.push(value);
+      }
+    }
+    return { stdout: text.join("") };
+  }
+  if (toolResponse === null || typeof toolResponse !== "object") return null;
+  const record = toolResponse;
+  for (const field of RESPONSE_TEXT_FIELDS) {
+    const value = record[field];
+    if (typeof value !== "string") continue;
+    const interrupted = record.interrupted === true || record.is_interrupt === true || finiteTimeout(record);
+    const rawOutputPath = record.rawOutputPath;
+    return {
+      stdout: value,
+      stderr: typeof record.stderr === "string" ? record.stderr : void 0,
+      exitStatus: integerExitStatus(record),
+      truncated: typeof rawOutputPath === "string" && rawOutputPath.length > 0 || rawOutputPath === true || interrupted,
+      interrupted
+    };
+  }
+  return null;
+}
+function createDefaultPlannedTouchStore(layout) {
+  return createPlannedTouchStore(layout.base, DEFAULT_PLANNED_TOUCH_BUDGETS);
+}
+function readText(path) {
+  try {
+    return fs7.readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+}
+function unionRange(ranges) {
+  return ranges.reduce(
+    (union, range) => ({ start: Math.min(union.start, range.start), end: Math.max(union.end, range.end) }),
+    { start: ranges[0]?.start ?? 1, end: ranges[0]?.end ?? 1 }
+  );
+}
+function planEvidence(matches, requirements) {
+  if (matches.some(({ span }) => span.operation === "delete")) return { kind: "tracked", tracked: true };
+  const expectedContent = matches.find(({ span }) => span.expectedContent !== void 0)?.span.expectedContent;
+  const ranges = matches.flatMap(
+    ({ span }) => span.lineStart === void 0 ? [] : [{ start: span.lineStart, end: span.lineEnd ?? span.lineStart }]
+  );
+  if (expectedContent !== void 0) {
+    return {
+      kind: "content-digest",
+      algorithm: "sha256",
+      digest: createHash("sha256").update(expectedContent).digest("hex"),
+      range: unionRange(ranges)
+    };
+  }
+  if (requirements.has("pre-command-eof")) {
+    const content = readText(matches[0].span.absolutePath);
+    if (content !== null) {
+      return {
+        kind: "eof",
+        line: content.length === 0 ? 0 : content.split("\n").length,
+        byteLength: Buffer.byteLength(content)
+      };
+    }
+  }
+  return void 0;
+}
+function planGroupKey(span) {
+  return `${span.absolutePath}\0${span.operation}\0${span.simpleCommandIndex}`;
+}
+function planBashTouches(command, cwd, sessionId, toolUseId, logger2, store) {
+  const started = performance.now();
+  const parsed = parseCommandLayered(command, { cwd, readPreState: readText });
+  const requested = /* @__PURE__ */ new Map();
+  for (const request of parsed.preStateRequests) {
+    const key = `${request.absolutePath}\0${request.operation}\0${request.simpleCommandIndex}`;
+    const requirements = requested.get(key) ?? /* @__PURE__ */ new Set();
+    requirements.add(request.requirement);
+    requested.set(key, requirements);
+  }
+  const candidates = parsed.resolved.filter(
+    ({ span }) => span.operation === "delete" || requested.has(planGroupKey(span))
+  );
+  const tracked = filterTrackedEligibility(
+    candidates.map((value) => ({ absolutePath: value.span.absolutePath, value })),
+    { cwd }
+  );
+  const repoRoot = resolveRepoRoot(cwd);
+  if (repoRoot === null || tracked.eligible.length === 0) {
+    logger2.info?.("git-span static attribution pre-plan", {
+      resolved: parsed.resolved.length,
+      unresolved: parsed.unresolved.length,
+      planned: 0,
+      trackedDrops: tracked.dropped.length,
+      parserLatencyMs: performance.now() - started,
+      subprocessCount: tracked.subprocessCount
+    });
+    return;
+  }
+  const groups = /* @__PURE__ */ new Map();
+  for (const { value } of tracked.eligible) {
+    const key = planGroupKey(value.span);
+    const group = groups.get(key) ?? [];
+    group.push(value);
+    groups.set(key, group);
+  }
+  const touches = [];
+  for (const [key, matches] of groups) {
+    const span = matches[0].span;
+    const requirements = requested.get(key) ?? /* @__PURE__ */ new Set();
+    const evidence = planEvidence(matches, requirements);
+    touches.push({
+      repoRelativePath: toPosix(relativeToRepo(repoRoot, span.absolutePath)),
+      operation: span.operation,
+      ranges: matches.flatMap(
+        ({ span: item }) => item.lineStart === void 0 ? [] : [{ start: item.lineStart, end: item.lineEnd ?? item.lineStart }]
+      ),
+      simpleCommandIndex: span.simpleCommandIndex,
+      ...evidence === void 0 ? {} : { evidence }
+    });
+  }
+  store.put({ version: 1, sessionId, toolUseId, repoRoot, createdAtMs: Date.now(), touches });
+  logger2.info?.("git-span static attribution pre-plan", {
+    resolved: parsed.resolved.length,
+    unresolved: parsed.unresolved.length,
+    unresolvedReasons: parsed.unresolved.map(({ reasonCode }) => reasonCode),
+    planned: touches.length,
+    trackedDrops: tracked.dropped.length,
+    parserLatencyMs: performance.now() - started,
+    subprocessCount: tracked.subprocessCount
+  });
+}
+function plannedSpans(record, cwd, logger2) {
+  if (record === null) return [];
+  const repoRoot = resolveRepoRoot(cwd);
+  if (repoRoot === null || toPosix(repoRoot) !== toPosix(record.repoRoot)) {
+    logger2.warn("git-span static attribution ignored an incompatible planned-touch record", {
+      plannedRepoRoot: record.repoRoot,
+      currentRepoRoot: repoRoot
+    });
+    return [];
+  }
+  const matches = [];
+  for (const touch of record.touches) {
+    const absolutePath = nodePath5.join(record.repoRoot, touch.repoRelativePath);
+    let expectedContent;
+    if (touch.evidence?.kind === "content-digest") {
+      const content = readText(absolutePath);
+      const digest = content === null ? null : createHash("sha256").update(content).digest("hex");
+      if (digest !== touch.evidence.digest) {
+        logger2.warn("git-span static attribution discarded unverifiable planned evidence", {
+          path: touch.repoRelativePath,
+          reasonCode: "evidence-mismatch"
+        });
+        continue;
+      }
+      expectedContent = content ?? void 0;
+    }
+    const ranges = touch.ranges.length === 0 ? [void 0] : touch.ranges;
+    for (const range of ranges) {
+      matches.push({
+        status: "resolved",
+        idiom: "planned-static",
+        span: {
+          operation: touch.operation,
+          absolutePath,
+          lineStart: range?.start,
+          lineEnd: range?.end,
+          expectedContent,
+          ...touch.operation === "delete" && touch.evidence?.kind === "tracked" ? { preTrackedDelete: true } : {},
+          simpleCommandIndex: touch.simpleCommandIndex
+        }
+      });
+    }
+  }
+  return matches;
+}
+function matchKey(match) {
+  const span = match.span;
+  return [span.absolutePath, span.operation, span.simpleCommandIndex, span.lineStart ?? "", span.lineEnd ?? ""].join(
+    "\0"
+  );
+}
+function filterPostTracked(matches, responseSpans, cwd, preTrackedDeletes) {
+  const guards = matches.filter(
+    (match) => match.status === "builtin-guard"
+  );
+  const resolved = matches.filter(
+    (match) => match.status === "resolved"
+  );
+  const candidates = [
+    ...resolved.map((match) => ({ source: "command", match })),
+    ...responseSpans.map((span) => ({ source: "response", span }))
+  ];
+  const filtered = filterTrackedEligibility(
+    candidates.map((value) => ({
+      absolutePath: value.source === "command" ? value.match.span.absolutePath : value.span.absolutePath,
+      value
+    })),
+    { cwd }
+  );
+  const eligibleCommands = new Set(
+    filtered.eligible.flatMap(({ value }) => value.source === "command" ? [value.match] : [])
+  );
+  const eligibleResponses = filtered.eligible.flatMap(({ value }) => value.source === "response" ? [value.span] : []);
+  for (const match of resolved) {
+    if (match.span.operation === "delete" && preTrackedDeletes.has(match.span.absolutePath))
+      eligibleCommands.add(match);
+  }
+  const kept = resolved.filter((match) => eligibleCommands.has(match));
+  return {
+    matches: [...kept, ...guards],
+    responseSpans: eligibleResponses,
+    trackedDrops: filtered.dropped.filter(({ reason }) => reason === "untracked-path").length,
+    scopeDrops: filtered.dropped.filter(({ reason }) => reason !== "untracked-path").length,
+    subprocessCount: filtered.subprocessCount
+  };
+}
+async function runResponseReadTouches(spans, cwd, sessionId, executors, memo) {
+  const blocks = [];
+  for (const span of spans) {
+    const output = await runTouchHook(
+      {
+        kind: "read",
+        sessionId,
+        cwd,
+        filePath: span.absolutePath,
+        offset: span.lineStart,
+        limit: span.lineEnd - span.lineStart + 1
+      },
+      executors,
+      memo
+    );
+    if (output.additionalContext) blocks.push(output.additionalContext);
+  }
+  return blocks;
+}
+async function runLayeredBashTouches(command, cwd, sessionId, toolUseId, toolResponse, executors, memo, logger2, store) {
+  const parserStarted = performance.now();
+  const record = toolUseId === void 0 ? null : store.consume(sessionId, toolUseId);
+  const planned = plannedSpans(record, cwd, logger2);
+  const parsed = parseCommandLayered(command, { cwd, readPreState: readText });
+  const plannedKeys = new Set(
+    planned.filter((match) => match.status === "resolved").map(({ span }) => planGroupKey(span))
+  );
+  const preStateKeys = new Set(parsed.preStateRequests.map((request) => planGroupKey(request)));
+  const ordinary = parsed.resolved.filter(({ span }) => !preStateKeys.has(planGroupKey(span)) || plannedKeys.has(planGroupKey(span))).map(({ idiom, span }) => ({ status: "resolved", idiom, span }));
+  const detailed = parseCommandDetailed(command, { cwd });
+  const joinByIndex = new Map(
+    detailed.flatMap(
+      (match) => match.status === "resolved" && match.span.join !== void 0 ? [[match.span.simpleCommandIndex, match.span.join]] : []
+    )
+  );
+  for (const match of planned) {
+    if (match.status === "resolved") match.span.join = joinByIndex.get(match.span.simpleCommandIndex);
+  }
+  const guards = detailed.filter(
+    (match) => match.status === "builtin-guard"
+  );
+  const seen = new Set(planned.filter((match) => match.status === "resolved").map(matchKey));
+  const combined = [
+    ...planned,
+    ...ordinary.filter((match) => {
+      const key = matchKey(match);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }),
+    ...guards
+  ];
+  const preTrackedDeletes = new Set(
+    (record?.touches ?? []).filter(({ operation, evidence }) => operation === "delete" && evidence?.kind === "tracked").map(({ repoRelativePath }) => nodePath5.join(record.repoRoot, repoRelativePath))
+  );
+  const response = bashResponseInterrupted(toolResponse) ? null : normalizeBashResponse(toolResponse);
+  const responseSpans = response === null ? [] : parseResponse({ command, cwd, ...response });
+  const filtered = filterPostTracked(combined, responseSpans, cwd, preTrackedDeletes);
+  const parserLatencyMs = performance.now() - parserStarted;
+  const touchStarted = performance.now();
+  const commandBlocks = await runBashTouches(
+    filtered.matches,
+    sessionId,
+    cwd,
+    toolResponse,
+    executors,
+    memo,
+    (message) => logger2.warn(message)
+  );
+  const responseBlocks = await runResponseReadTouches(filtered.responseSpans, cwd, sessionId, executors, memo);
+  const blocks = [...commandBlocks, ...responseBlocks];
+  logger2.info?.("git-span static attribution post", {
+    resolvedReads: filtered.matches.filter((match) => match.status === "resolved" && match.span.operation === "read").length,
+    resolvedWrites: filtered.matches.filter((match) => match.status === "resolved" && match.span.operation !== "read").length,
+    unresolvedByReason: parsed.unresolved.reduce((counts, item) => {
+      counts[item.reasonCode] = (counts[item.reasonCode] ?? 0) + 1;
+      return counts;
+    }, {}),
+    scopeDrops: filtered.scopeDrops,
+    trackedDrops: filtered.trackedDrops,
+    parserLatencyMs,
+    touchLatencyMs: performance.now() - touchStarted,
+    subprocessCount: filtered.subprocessCount,
+    dependencyContextSurfaced: blocks.length > 0
+  });
+  return blocks;
+}
+function failureBashResponse(input) {
+  const record = input !== null && typeof input === "object" ? input : {};
+  const response = record.tool_response !== null && typeof record.tool_response === "object" ? { ...record.tool_response } : {};
+  if (integerExitStatus(response) === void 0) response.exitStatus = 1;
+  if (record.is_interrupt === true) response.is_interrupt = true;
+  return response;
+}
+
+// src/claude/static-plan.ts
 function narrowCommand(toolInput) {
   if (toolInput !== null && typeof toolInput === "object" && "command" in toolInput) {
     const command = toolInput.command;
@@ -2781,42 +7781,57 @@ function narrowCommand(toolInput) {
   }
   return null;
 }
-function createHandler(executors = createDefaultTouchExecutors(), memoFactory = createDiskMemoStore, layout = DEFAULT_SESSION_LAYOUT, storeFactory = (logger2, repoRoot) => createSnapshotStore(logger2, resolveSnapshotBudgets(repoRoot), layout)) {
+function createHandler(layout = DEFAULT_SESSION_LAYOUT) {
   return async (input, ctx) => {
     try {
+      if (!input.session_id || !input.tool_use_id) return null;
       const command = narrowCommand(input.tool_input);
       if (command === null) return null;
-      const repoRoot = resolveRepoRoot(input.cwd ?? "");
-      const outcome = await snapshotBashBranch(
-        storeFactory(ctx.logger, repoRoot),
+      planBashTouches(
+        command,
+        input.cwd ?? "",
         input.session_id,
         input.tool_use_id,
-        input.cwd ?? "",
-        executors,
-        memoFactory(ctx.logger, layout),
         ctx.logger,
-        resolveSnapshotBudgets(repoRoot)
+        createDefaultPlannedTouchStore(layout)
       );
-      if (outcome.kind === "no-record") {
-        ctx.logger.warn("git-span: failed Bash call has no snapshot record; discarding", {
-          toolUseId: input.tool_use_id
-        });
-        return null;
-      }
-      if (outcome.kind === "tombstoned") {
-        return null;
-      }
-      if (outcome.additionalContext === null) return null;
-      return postToolUseFailureOutput({
-        hookSpecificOutput: { additionalContext: outcome.additionalContext }
-      });
+      return null;
     } catch (err) {
-      ctx.logger.warn("git-span post-tool-use-failure failed open on an uncaught error", { err });
+      ctx.logger.warn("git-span static Bash pre-plan failed closed for attribution", { err });
       return null;
     }
   };
 }
-var post_tool_use_failure_default = postToolUseFailureHook({ matcher: "Bash", timeout: 1e4 }, createHandler());
+var static_plan_default = preToolUseHook({ matcher: "Bash", timeout: 1e4 }, createHandler());
+
+// src/claude/post-tool-use-failure.ts
+function createHandler2(executors = createDefaultTouchExecutors(), memoFactory = createDiskMemoStore, layout = DEFAULT_SESSION_LAYOUT) {
+  return async (input, ctx) => {
+    try {
+      const command = narrowCommand(input.tool_input);
+      if (command === null) return null;
+      const blocks = await runLayeredBashTouches(
+        command,
+        input.cwd ?? "",
+        input.session_id,
+        input.tool_use_id,
+        failureBashResponse(input),
+        executors,
+        memoFactory(ctx.logger, layout),
+        ctx.logger,
+        createDefaultPlannedTouchStore(layout)
+      );
+      if (blocks.length === 0) return null;
+      return postToolUseFailureOutput({
+        hookSpecificOutput: { additionalContext: blocks.join("") }
+      });
+    } catch (err) {
+      ctx.logger.warn("git-span failed Bash attribution failed open", { err });
+      return null;
+    }
+  };
+}
+var post_tool_use_failure_default = postToolUseFailureHook({ matcher: "Bash", timeout: 1e4 }, createHandler2());
 
 // src/claude/post-tool-use-failure-entry.ts
 execute(post_tool_use_failure_default);

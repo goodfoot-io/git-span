@@ -196,7 +196,7 @@ environment:
   expected_node_version: v20.11.1
   expected_git_span_version: git-span 1.1.3
   expected_bundle_sha256:
-    snapshot.mjs: <sha256>
+    static-plan.mjs: <sha256>
     advisor.mjs: <sha256>
     post-tool-use.mjs: <sha256>
     post-tool-use-failure.mjs: <sha256>
@@ -264,7 +264,7 @@ identity. Each event includes:
 The same `info.hooks` object contains treatment attestation and the final span,
 anchor, why, and drift summary. Reconstruct intermediate git-span mutations by
 joining hook events to the trajectory's ordered commands; the package does not
-claim to snapshot span state before and after every mutation.
+claim to retain complete span state before and after every mutation.
 
 Do not store telemetry only inside the disposable container. Avoid writing it
 under `/workspace`, where it would enter `submission.tar.gz` and could affect

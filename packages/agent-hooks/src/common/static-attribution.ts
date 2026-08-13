@@ -2247,11 +2247,27 @@ export interface PlannedTouchBudgets {
   readonly maxRecordBytes: number;
 }
 
+/** Production limits for one content-minimal pre-tool attribution plan. */
+export const DEFAULT_PLANNED_TOUCH_BUDGETS: PlannedTouchBudgets = Object.freeze({
+  maxTouchesPerRecord: DEFAULT_MAX_ATTRIBUTION_CANDIDATES,
+  maxRangesPerTouch: DEFAULT_MAX_ATTRIBUTION_CANDIDATES,
+  maxEvidenceBytes: 16 * 1024,
+  maxRecordBytes: 64 * 1024
+});
+
 export interface PlannedTouchStore {
   /** Atomically replace the record for its session/tool-use key. */
   put(record: PlannedTouchRecord): void;
   /** Atomically consume the record; repeated consumption returns null. */
   consume(sessionId: string, toolUseId: string): PlannedTouchRecord | null;
+  /** Claim a key while distinguishing a first delivery with no plan from a duplicate delivery. */
+  take(
+    sessionId: string,
+    toolUseId: string
+  ):
+    | { readonly status: 'record'; readonly record: PlannedTouchRecord }
+    | { readonly status: 'missing' }
+    | { readonly status: 'consumed' };
   /** Idempotently discard any pending record for failure or interruption cleanup. */
   discard(sessionId: string, toolUseId: string): void;
 }
@@ -2291,6 +2307,35 @@ export function createPlannedTouchStore(baseDir: string, budgets: PlannedTouchBu
     }
   };
 
+  const take = (
+    sessionId: string,
+    toolUseId: string
+  ):
+    | { readonly status: 'record'; readonly record: PlannedTouchRecord }
+    | { readonly status: 'missing' }
+    | { readonly status: 'consumed' } => {
+    const paths = recordPaths(sessionId, toolUseId);
+    makeRestrictiveDir(paths.dir);
+    if (!claim(paths.consumed)) return { status: 'consumed' };
+
+    let raw: string;
+    try {
+      raw = fs.readFileSync(paths.record, 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { status: 'missing' };
+      throw error;
+    } finally {
+      fs.rmSync(paths.record, { force: true });
+    }
+
+    try {
+      const record = normalizePlannedTouchRecord(JSON.parse(raw) as PlannedTouchRecord, budgets);
+      return { status: 'record', record };
+    } catch {
+      return { status: 'missing' };
+    }
+  };
+
   return {
     put(record) {
       const normalized = normalizePlannedTouchRecord(record, budgets);
@@ -2315,26 +2360,10 @@ export function createPlannedTouchStore(baseDir: string, budgets: PlannedTouchBu
       }
     },
     consume(sessionId, toolUseId) {
-      const paths = recordPaths(sessionId, toolUseId);
-      makeRestrictiveDir(paths.dir);
-      if (!claim(paths.consumed)) return null;
-
-      let raw: string;
-      try {
-        raw = fs.readFileSync(paths.record, 'utf8');
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-        throw error;
-      } finally {
-        fs.rmSync(paths.record, { force: true });
-      }
-
-      try {
-        return normalizePlannedTouchRecord(JSON.parse(raw) as PlannedTouchRecord, budgets);
-      } catch {
-        return null;
-      }
+      const result = take(sessionId, toolUseId);
+      return result.status === 'record' ? result.record : null;
     },
+    take,
     discard(sessionId, toolUseId) {
       const paths = recordPaths(sessionId, toolUseId);
       makeRestrictiveDir(paths.dir);

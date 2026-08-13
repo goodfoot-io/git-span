@@ -86,6 +86,12 @@ export interface ResolvedSpan {
    */
   expectedContent?: string;
   /**
+   * PreToolUse proved that a delete target was index-tracked before an
+   * index-changing command removed it. PostToolUse carries only this boolean
+   * proof; it never reconstructs eligibility from a missing post-state path.
+   */
+  preTrackedDelete?: true;
+  /**
    * The statically evaluated absolute `truncate -s N` size (plan §5.5): the
    * §3 `size` gate's post-command byte count (`-s 0` → the empty gate).
    * Absent for relative sizes (`-s +N`/`-s -N`), `-r ref`, and every other

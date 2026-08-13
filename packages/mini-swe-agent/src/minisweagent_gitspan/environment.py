@@ -280,7 +280,7 @@ class HookedEnvironmentMixin:
     def execute(self, action: dict, cwd: str = "", *, timeout: int | None = None) -> dict[str, Any]:
         """Execute a command, bridged through the git-span hooks.
 
-        Before the command the PreToolUse hooks run (snapshot capture, then
+        Before the command the PreToolUse hooks run (static planning, then
         the advisor). A span-debt hold short-circuits the command: it never
         executes, and the deny reason becomes the action's output with exit
         status 1, so the model sees the hold as a failed command carrying the

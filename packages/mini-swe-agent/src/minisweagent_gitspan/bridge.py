@@ -27,7 +27,7 @@ logger = logging.getLogger("minisweagent.hooks")
 
 # Hook bundles that exist for every host that builds packages/agent-hooks'
 # Claude adapters; the order matches the hooks.json registration order.
-PRE_TOOL_USE_HOOKS = ("snapshot", "advisor")
+PRE_TOOL_USE_HOOKS = ("static-plan", "advisor")
 ALL_HOOKS = (*PRE_TOOL_USE_HOOKS, "post-tool-use", "post-tool-use-failure", "session-end")
 _ANCHOR_LINE = re.compile(r"^(?:[│ ]*[├└]──|[-*])\s+([^\s`]+?)(?:#L\d+(?:-L\d+)?)?(?:\s+—.*)?$")
 _SPAN_HEADING = re.compile(r"^##\s+([a-z0-9][a-z0-9/-]*)$")
@@ -55,7 +55,7 @@ class PreToolUseResult:
     reason: str | None = None
     """The deny reason to show the model, when denied."""
     context: str | None = None
-    """Additional context collected from either hook (snapshot/advisor notes)."""
+    """Additional context collected from either PreToolUse hook."""
 
 
 class HookBridge:
@@ -242,7 +242,7 @@ class HookBridge:
         }
 
     def pre_tool_use(self, command: str, cwd: str, tool_use_id: str) -> PreToolUseResult:
-        """Run the PreToolUse hooks (snapshot capture, then the advisor)."""
+        """Run the PreToolUse hooks (static planning, then the advisor)."""
         envelope = self._bash_envelope(cwd, tool_use_id, command)
         denied = False
         reason = None
@@ -276,7 +276,7 @@ class HookBridge:
         return context
 
     def session_end(self, cwd: str) -> None:
-        """Run the SessionEnd hook (per-session snapshot-record cleanup)."""
+        """Run the SessionEnd hook (per-session hook-state cleanup)."""
         self._run_hook("session-end", {"session_id": self.session_id, "cwd": cwd})
 
 

@@ -20,8 +20,10 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { SNAPSHOT_POST_MATCHER } from '../../src/codex/post-tool-use.js';
-import { SNAPSHOT_PRE_MATCHER } from '../../src/codex/snapshot.js';
+import { STATIC_PLAN_PRE_MATCHER as CLAUDE_STATIC_PLAN_PRE_MATCHER } from '../../src/claude/static-plan.js';
+import { APPLY_PATCH_PLAN_MATCHER } from '../../src/codex/apply-patch-plan.js';
+import { STATIC_POST_MATCHER } from '../../src/codex/post-tool-use.js';
+import { STATIC_PLAN_PRE_MATCHER as CODEX_STATIC_PLAN_PRE_MATCHER } from '../../src/codex/static-plan.js';
 
 function nodeModulesComments(generated: string): string[] {
   return [...generated.matchAll(/^\/\/ .*node_modules.*$/gm)].map((match) => match[0]);
@@ -96,35 +98,44 @@ describe('generated hook bin portability', () => {
     }
   });
 
-  it('emits the codex snapshot hooks with their matcher literals — the matcher is never dropped at build', {
+  it('emits only the authoritative Codex static planners with their matcher literals', {
     timeout: BUILD_TEST_TIMEOUT_MS
   }, () => {
     // main-213 round-3: the codex-hooks CLI extracts a hook's matcher only
     // from a STRING LITERAL initializer and silently leaves it undefined
-    // otherwise. Both snapshot hooks used to register identifier references,
-    // so the emitted hooks.json carried NO matcher and every tool occurrence
-    // ran them. The registration must stay a literal textually identical to
-    // the exported constants — this test rebuilds the full codex bundle set
-    // (the same CLI invocation as build:hooks:codex) and fails loudly if the
-    // emitted matcher is missing or diverges from the constants.
+    // otherwise. The registration must stay a literal textually identical to
+    // the exported constants. Build the production entrypoint set so retained
+    // snapshot/activity source cannot accidentally return to the manifest.
     const outDir = mkdtempSync(join(tmpdir(), 'agent-hooks-build-codex-matchers-'));
     try {
       execFileSync(
         'yarn',
-        ['codex-hooks', '-i', 'src/codex/**/*.ts', '-o', join(outDir, 'hooks.json'), '--plugin-root'],
+        [
+          'codex-hooks',
+          '-i',
+          'src/codex/{advisor,static-plan,apply-patch-plan,post-tool-use,stop,subagent-stop}.ts',
+          '-o',
+          join(outDir, 'hooks.json'),
+          '--plugin-root'
+        ],
         { stdio: 'pipe' }
       );
       const out = readHooksJson(outDir);
-      const pre = groupFor(out, 'PreToolUse', 'snapshot.mjs');
-      expect(pre, 'PreToolUse snapshot.mjs group must exist').not.toBeNull();
-      expect(pre!.matcher, 'PreToolUse snapshot.mjs matcher must equal SNAPSHOT_PRE_MATCHER').toBe(
-        SNAPSHOT_PRE_MATCHER
+      const pre = groupFor(out, 'PreToolUse', 'static-plan.mjs');
+      expect(pre, 'PreToolUse static-plan.mjs group must exist').not.toBeNull();
+      expect(pre!.matcher, 'PreToolUse static-plan.mjs matcher must equal CODEX_STATIC_PLAN_PRE_MATCHER').toBe(
+        CODEX_STATIC_PLAN_PRE_MATCHER
       );
+      const applyPatch = groupFor(out, 'PreToolUse', 'apply-patch-plan.mjs');
+      expect(applyPatch, 'PreToolUse apply-patch-plan.mjs group must exist').not.toBeNull();
+      expect(applyPatch!.matcher).toBe(APPLY_PATCH_PLAN_MATCHER);
       const post = groupFor(out, 'PostToolUse', 'post-tool-use.mjs');
       expect(post, 'PostToolUse post-tool-use.mjs group must exist').not.toBeNull();
-      expect(post!.matcher, 'PostToolUse post-tool-use.mjs matcher must equal SNAPSHOT_POST_MATCHER').toBe(
-        SNAPSHOT_POST_MATCHER
+      expect(post!.matcher, 'PostToolUse post-tool-use.mjs matcher must equal STATIC_POST_MATCHER').toBe(
+        STATIC_POST_MATCHER
       );
+      expect(groupFor(out, 'PreToolUse', 'snapshot.mjs')).toBeNull();
+      expect(groupFor(out, 'PreToolUse', 'activity-log.mjs')).toBeNull();
     } finally {
       rmSync(outDir, { recursive: true, force: true });
     }
@@ -145,14 +156,21 @@ describe('generated hook bin portability', () => {
     // the hooks.
     const outDir = mkdtempSync(join(tmpdir(), 'agent-hooks-build-claude-matchers-'));
     try {
-      execFileSync('yarn', ['claude-code-hooks', '-i', 'src/claude/**/*.ts', '-o', join(outDir, 'hooks.json')], {
-        stdio: 'pipe'
-      });
+      execFileSync(
+        'yarn',
+        [
+          'claude-code-hooks',
+          '-i',
+          'src/claude/{advisor,static-plan,post-tool-use,post-tool-use-failure,session-end}.ts',
+          '-o',
+          join(outDir, 'hooks.json')
+        ],
+        { stdio: 'pipe' }
+      );
       const out = readHooksJson(outDir);
       const expected: [string, string, string][] = [
-        ['PreToolUse', 'snapshot.mjs', 'Bash'],
+        ['PreToolUse', 'static-plan.mjs', CLAUDE_STATIC_PLAN_PRE_MATCHER],
         ['PreToolUse', 'advisor.mjs', 'Bash'],
-        ['PreToolUse', 'activity-log.mjs', 'Edit|Write|apply_patch'],
         ['PostToolUse', 'post-tool-use.mjs', 'Read|Edit|Write|Bash'],
         ['PostToolUseFailure', 'post-tool-use-failure.mjs', 'Bash']
       ];
@@ -161,6 +179,34 @@ describe('generated hook bin portability', () => {
         expect(group, `${event} ${bundle} group must exist`).not.toBeNull();
         expect(group!.matcher, `${event} ${bundle} matcher must be '${matcher}'`).toBe(matcher);
       }
+      expect(groupFor(out, 'PreToolUse', 'snapshot.mjs')).toBeNull();
+      expect(groupFor(out, 'PreToolUse', 'activity-log.mjs')).toBeNull();
+    } finally {
+      rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
+  it('builds mini-swe with the inherited static planner and no snapshot entrypoint', {
+    timeout: BUILD_TEST_TIMEOUT_MS
+  }, () => {
+    const outDir = mkdtempSync(join(tmpdir(), 'agent-hooks-build-mswea-matchers-'));
+    try {
+      execFileSync(
+        'yarn',
+        [
+          'claude-code-hooks',
+          '-i',
+          'src/mswea/{advisor,static-plan,post-tool-use,post-tool-use-failure,session-end}.ts',
+          '-o',
+          join(outDir, 'hooks.json')
+        ],
+        { stdio: 'pipe' }
+      );
+      const out = readHooksJson(outDir);
+      expect(groupFor(out, 'PreToolUse', 'static-plan.mjs')?.matcher).toBe('Bash');
+      expect(groupFor(out, 'PostToolUse', 'post-tool-use.mjs')?.matcher).toBe('Read|Edit|Write|Bash');
+      expect(groupFor(out, 'PostToolUseFailure', 'post-tool-use-failure.mjs')?.matcher).toBe('Bash');
+      expect(groupFor(out, 'PreToolUse', 'snapshot.mjs')).toBeNull();
     } finally {
       rmSync(outDir, { recursive: true, force: true });
     }
