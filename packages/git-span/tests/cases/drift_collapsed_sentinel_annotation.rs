@@ -83,18 +83,32 @@ fn two_pass_collapse_annotation_survives_a_separate_plain_drift_run() -> Result<
     let human_stdout = stdout_of(&human);
     assert!(
         human_stdout.contains(
-            "collapsed duplicate — content is still unverified — run \
-             `git span add file1.txt#L1-L5` to resolve"
+            "collapsed duplicate — content is still unverified, and this \
+             address is where the records were, not a location anything has \
+             confirmed — run `git span add file1.txt#L1-L5` only if the \
+             coupled content still lives there, otherwise `git span replace \
+             file1.txt#L1-L5 <new-address>` naming where it lives now"
         ),
         "a reader who never ran the collapsing command must be told why the \
-         anchor is drifting, and which command retires the sentinel, not \
-         shown the generic label; stdout:\n{human_stdout}"
+         anchor is drifting, and which command retires the sentinel under \
+         which condition, not shown the generic label; stdout:\n{human_stdout}"
     );
+    let lower = human_stdout.to_lowercase();
     assert!(
-        !human_stdout.to_lowercase().contains("re-verified")
-            && !human_stdout.to_lowercase().contains("confirmed"),
-        "the annotation must never claim the content was re-verified or \
-         confirmed — that would misstate what happened; stdout:\n{human_stdout}"
+        !lower.contains("re-verified"),
+        "the annotation must never claim the content was re-verified — that \
+         would misstate what happened; stdout:\n{human_stdout}"
+    );
+    // "confirmed" may appear, but only under a negation: the annotation now
+    // says the address is *not* a location anything has confirmed. Every
+    // occurrence must be that one — an affirmative "confirmed" would be the
+    // same misstatement in a different word.
+    assert_eq!(
+        lower.matches("confirmed").count(),
+        lower.matches("not a location anything has confirmed").count(),
+        "every occurrence of `confirmed` must be the negated one; the \
+         annotation must not assert that anything was confirmed; \
+         stdout:\n{human_stdout}"
     );
 
     let json = repo.run_span(["drift", "--format", "json", "--no-exit-code"])?;
@@ -128,8 +142,11 @@ fn hand_written_sentinel_fixture_reports_the_annotation_without_any_collapse_run
     let human_stdout = stdout_of(&human);
     assert!(
         human_stdout.contains(
-            "collapsed duplicate — content is still unverified — run \
-             `git span add file1.txt#L1-L5` to resolve"
+            "collapsed duplicate — content is still unverified, and this \
+             address is where the records were, not a location anything has \
+             confirmed — run `git span add file1.txt#L1-L5` only if the \
+             coupled content still lives there, otherwise `git span replace \
+             file1.txt#L1-L5 <new-address>` naming where it lives now"
         ),
         "the annotation, including the retiring command, must be durable in \
          the file itself, independent of any command that ran in this test; \

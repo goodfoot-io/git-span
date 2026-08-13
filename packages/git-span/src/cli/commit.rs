@@ -191,6 +191,29 @@ pub(crate) fn hash_anchor_content(
             }
         }
         if *end > line_count {
+            // A path that is intact in HEAD but not materialized in this
+            // checkout — sparse-excluded, an unfetched promisor or LFS blob —
+            // reads as zero bytes here. "exceeds file line count (0)" is then
+            // a false statement about the repository: the file has content,
+            // this working copy just does not have it, and the operator is
+            // sent looking for a truncation that never happened. Name the
+            // real condition and the step that clears it.
+            if line_count == 0
+                && anchor_oid.is_none()
+                && !repo
+                    .workdir()
+                    .map(|w| w.join(path).is_file())
+                    .unwrap_or(false)
+                && head_has_path(repo, path)
+            {
+                anyhow::bail!(
+                    "`{path}` is not materialized in this checkout: it exists in HEAD but \
+                     has no worktree file (excluded by sparse-checkout, or an unfetched \
+                     promisor/LFS blob), so `{path}#L{start}-L{end}` cannot be verified \
+                     here. Materialize it — e.g. `git sparse-checkout add {path}` or \
+                     `git lfs pull` — and re-run."
+                );
+            }
             anyhow::bail!("invalid anchor: end={end} exceeds file line count ({line_count})");
         }
         // Also verify that the content is valid UTF-8 (no binary content
@@ -202,6 +225,20 @@ pub(crate) fn hash_anchor_content(
 
     let fp = cheap_fingerprint_with_extent(&bytes, extent);
     Ok((RK64_ALGORITHM.to_string(), rk64_to_hex(fp)))
+}
+
+/// Whether HEAD's tree carries a blob at `path`. Used to separate "this file
+/// is empty or truncated" from "this file has content the working copy has
+/// not materialized", which read identically from the worktree.
+///
+/// Best-effort: an unborn HEAD or an unreadable tree answers `false`, which
+/// falls back to the plain line-count message rather than asserting
+/// something about the repository that was not established.
+fn head_has_path(repo: &gix::Repository, path: &str) -> bool {
+    let Ok(head) = repo.rev_parse_single("HEAD") else {
+        return false;
+    };
+    crate::git::path_blob_at(repo, &head.detach().to_string(), path).is_ok()
 }
 
 /// RAII guard that releases an advisory file lock and removes the lock
@@ -230,8 +267,16 @@ impl Drop for SpanLock {
 /// [`SpanFileReader`] enumeration paths — the same convention
 /// [`write_worktree_span`] uses for its temp file.
 ///
-/// Blocks until the lock is acquired. A crashed or killed process
-/// releases its locks automatically, so this never blocks forever.
+/// Acquisition is attempted without blocking first. When another process
+/// holds the lock, this names the span it is waiting on and then waits a
+/// bounded [`lock_wait`] before giving up with an error. An unbounded,
+/// silent block was the wrong shape here: `git span drift --fix` sweeps
+/// every span in one invocation and prints as it goes, so contention on
+/// span three of ten stalled the process mid-report with no output at all,
+/// and a CI harness could only kill it — leaving `.span/` half-reconciled
+/// with no diagnostic naming which span was stuck. A caller that would
+/// rather wait longer can re-run; a caller that cannot wait now gets told
+/// what to do about it.
 pub(crate) fn lock_span_file(
     repo: &gix::Repository,
     span_root: &str,
@@ -264,16 +309,88 @@ pub(crate) fn lock_span_file(
 
     let file = File::create(&lock_path)
         .with_context(|| format!("failed to create lock file `{}`", lock_path.display()))?;
-    file.lock_exclusive().with_context(|| {
-        format!(
-            "failed to acquire exclusive lock on `{}`",
-            lock_path.display()
-        )
-    })?;
-    Ok(SpanLock {
-        _file: file,
-        path: lock_path,
-    })
+
+    // Fast path: uncontended, which is every ordinary invocation.
+    match file.try_lock_exclusive() {
+        Ok(true) => {
+            return Ok(SpanLock {
+                _file: file,
+                path: lock_path,
+            });
+        }
+        Ok(false) => {}
+        Err(e) => {
+            return Err(anyhow::Error::from(e).context(format!(
+                "failed to acquire exclusive lock on `{}`",
+                lock_path.display()
+            )));
+        }
+    }
+
+    // Contended. Say so before waiting — a silent wait is indistinguishable
+    // from a hang, and the operator cannot tell which span is blocked.
+    let budget = lock_wait();
+    eprintln!(
+        "waiting for another `git span` process to release span `{name}` \
+         (up to {}s)",
+        budget.as_secs()
+    );
+
+    let deadline = std::time::Instant::now() + budget;
+    loop {
+        match file.try_lock_exclusive() {
+            Ok(true) => {
+                return Ok(SpanLock {
+                    _file: file,
+                    path: lock_path,
+                });
+            }
+            Ok(false) => {}
+            Err(e) => {
+                return Err(anyhow::Error::from(e).context(format!(
+                    "failed to acquire exclusive lock on `{}`",
+                    lock_path.display()
+                )));
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            anyhow::bail!(
+                "timed out after {}s waiting for the lock on span `{name}` \
+                 (`{}`). Another `git span` process is still holding it — \
+                 wait for it to finish and re-run. If no such process exists, \
+                 the lock file is stale and can be deleted.",
+                budget.as_secs(),
+                lock_path.display(),
+            );
+        }
+        std::thread::sleep(LOCK_POLL);
+    }
+}
+
+/// How long [`lock_span_file`] waits for a contended span lock before
+/// failing with a diagnostic. Long enough to ride out a concurrent `add` or
+/// `--fix` on a large corpus, short enough that a CI job fails with a
+/// message rather than being killed on a job timeout.
+const LOCK_WAIT_DEFAULT_SECS: u64 = 30;
+
+/// Poll interval while waiting. `flock` has no timed variant, so the wait is
+/// a try-loop; the interval is short enough to be imperceptible and long
+/// enough not to spin.
+const LOCK_POLL: std::time::Duration = std::time::Duration::from_millis(25);
+
+/// The contended-lock wait budget, overridable by `GIT_SPAN_LOCK_WAIT_SECS`.
+///
+/// A harness that would rather fail fast than hold a job open — and the
+/// tests that exercise the timeout path — set it low; an operator on a slow
+/// filesystem sets it high. An unparseable or absent value takes the
+/// default rather than failing, since a bad knob must not break a command
+/// that would otherwise have acquired the lock immediately.
+fn lock_wait() -> std::time::Duration {
+    let secs = std::env::var("GIT_SPAN_LOCK_WAIT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(LOCK_WAIT_DEFAULT_SECS);
+    std::time::Duration::from_secs(secs)
 }
 
 /// Build the absolute worktree path for a span file: `<workdir>/<span_root>/<name>`.
@@ -907,21 +1024,22 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result
             // — never from `existing`, whose one slot per identity is filled
             // last-write-wins and can therefore describe a different record
             // than the one the mutation actually touches.
-            let mut group: Vec<AnchorRecord> = span_file
+            let matching_before = span_file
                 .anchors
                 .iter()
                 .filter(|a| {
                     a.path == *path && a.start_line == start_line && a.end_line == end_line
                 })
-                .cloned()
-                .collect();
-            let matching_before = group.len();
-            // Survivor selection routes through the one shared collapse rule
-            // so `add`, `drift --fix`, and the merge kernel cannot drift apart
-            // on it — but on a slice holding only the identity this address
-            // named. `add` acts on the addresses it was given and never sweeps
-            // the rest of the file; that sweep is `drift --fix`'s job.
-            git_span_core::collapse_duplicate_identities(&mut group);
+                .count();
+            // `add` does not run the shared collapse primitive, and does not
+            // need to: that primitive answers "which of these records
+            // survives", a question `add` never has to ask. Every record at
+            // the identity is removed and one record carrying the hash just
+            // computed from the named content takes their place, so no
+            // surviving record's fields are inherited from any of them. The
+            // scope is deliberately one identity — `add` acts on the
+            // addresses it was given and never sweeps the rest of the file;
+            // that sweep is `drift --fix`'s job.
             remove_all_at_identity(&mut span_file.anchors, path, start_line, end_line);
             span_file.anchors.push(AnchorRecord {
                 path: path.clone(),

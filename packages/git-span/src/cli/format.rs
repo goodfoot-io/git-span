@@ -40,20 +40,30 @@ pub fn format_same_side_collapse(
 /// One report line for a duplicate-collapse sentinel the merge kernel
 /// carried through unchanged rather than resolving by re-hashing.
 ///
-/// The two completion paths are named against the two populations they
-/// actually apply to: `add` only retires the sentinel record when
-/// `drift --fix` can keep its position current, and silently orphans it
-/// when it cannot — which is where `replace` is the only correct command.
+/// The line does not send the operator through `drift --fix` first. A
+/// sentinel arriving by merge is always in committed state, and `--fix`
+/// tracks a position from worktree hunks — so for this population the
+/// "run `--fix` to keep its position current, then `add` once the reported
+/// address matches" instruction the round-6 text carried could never
+/// complete: the first clause does nothing and the second clause's
+/// condition can never become true.
+///
+/// What is left is the honest statement. A sentinel means nothing
+/// established what this anchor's content is; with no content to match on,
+/// nothing can establish where that content went either. The recorded
+/// address is the last place the records agreed it was, not a location the
+/// merge confirmed — so the two completion commands are offered against the
+/// question only the operator can answer, and neither is presented as the
+/// default.
 pub fn format_sentinel_preserved(path: &str, start_line: u32, end_line: u32) -> String {
     let address = merge_report_address(path, start_line, end_line);
     format!(
         "preserved unverified collapse marker: `{address}` — a \
-         duplicate-collapse sentinel survived merge; run `git span drift --fix` \
-         to keep its position current, then `git span add <address>` once the \
-         reported address matches where the content now lives — if \
-         `drift --fix` reports it as a terminal residual instead (deleted \
-         path, or no trackable history), use `git span replace <address> \
-         <new-address>` in place of `add`"
+         duplicate-collapse sentinel survived merge; its content was never \
+         verified and this merge confirmed nothing about where that content \
+         now lives. Check the address yourself, then run `git span add \
+         {address}` if the coupled content still lives there, or `git span \
+         replace {address} <new-address>` if it has moved"
     )
 }
 

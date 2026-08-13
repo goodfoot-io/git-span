@@ -93,24 +93,27 @@ pub fn format_drift_label(
         AnchorStatus::MergeConflict => "merge conflict".to_string(),
         AnchorStatus::Submodule => "submodule".to_string(),
         AnchorStatus::ContentUnavailable(reason) => {
-            // The filter arm names the driver. Every other reason is
-            // self-locating — the reader already knows what LFS or a sparse
-            // checkout is — but "filter failed" leaves the one actionable fact
-            // (which program to install) only in the machine formats, so the
-            // human reading the table has nothing to act on.
-            let detail: String = match reason {
-                UnavailableReason::LfsNotFetched => "LFS not fetched".into(),
-                UnavailableReason::LfsNotInstalled => "LFS not installed".into(),
-                UnavailableReason::PromisorMissing => "promisor missing".into(),
-                UnavailableReason::SparseExcluded => "sparse excluded".into(),
-                UnavailableReason::FilterFailed { filter } => {
-                    format!("filter `{filter}` failed")
-                }
-                UnavailableReason::IoError { .. } => "I/O error".into(),
-            };
-            format!("content unavailable ({detail})")
+            format!("content unavailable ({})", unavailable_detail(reason))
         }
         AnchorStatus::Fresh => String::new(),
+    }
+}
+
+/// Name why content that should exist is not readable here, in the prose
+/// vocabulary the drift table uses.
+///
+/// The filter arm names the driver. Every other reason is self-locating —
+/// the reader already knows what LFS or a sparse checkout is — but "filter
+/// failed" leaves the one actionable fact (which program to install) only in
+/// the machine formats, so the human reading the table has nothing to act on.
+pub(crate) fn unavailable_detail(reason: &UnavailableReason) -> String {
+    match reason {
+        UnavailableReason::LfsNotFetched => "LFS not fetched".into(),
+        UnavailableReason::LfsNotInstalled => "LFS not installed".into(),
+        UnavailableReason::PromisorMissing => "promisor missing".into(),
+        UnavailableReason::SparseExcluded => "sparse excluded".into(),
+        UnavailableReason::FilterFailed { filter } => format!("filter `{filter}` failed"),
+        UnavailableReason::IoError { .. } => "I/O error".into(),
     }
 }
 

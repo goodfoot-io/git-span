@@ -193,9 +193,28 @@ fn merge_driver_reports_preserved_sentinel_with_no_counterpart() {
         stdout.contains("preserved unverified collapse marker: `s.txt#L2-L4`"),
         "preservation line expected; stdout:\n{stdout}"
     );
+    // A sentinel arriving by merge is always in committed state, and
+    // `drift --fix` tracks a position from worktree hunks -- so the old
+    // "run `drift --fix` to keep its position current, then `add` once the
+    // reported address matches" instruction could never complete for this
+    // population: the first clause does nothing and the second clause's
+    // condition can never become true. What is left is to say the location
+    // is unconfirmed and hand the operator both completions.
     assert!(
-        stdout.contains("git span replace <address> <new-address>"),
-        "terminal-residual completion path named; stdout:\n{stdout}"
+        !stdout.contains("git span drift --fix"),
+        "the line must not send this population through a command that \
+         cannot help it; stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("this merge confirmed nothing about where that content now lives"),
+        "the line states plainly that the address is unconfirmed; \
+         stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("git span add s.txt#L2-L4")
+            && stdout.contains("git span replace s.txt#L2-L4 <new-address>"),
+        "both completion paths are named against the recorded address; \
+         stdout:\n{stdout}"
     );
 
     let output = std::fs::read_to_string(&ours).unwrap();

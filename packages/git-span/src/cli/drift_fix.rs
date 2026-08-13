@@ -854,8 +854,21 @@ fn resolve_conflicted_span(
 /// set of span names whose files were written to disk.
 ///
 /// Terminal statuses (`Deleted`, `ContentUnavailable`, `MergeConflict`,
-/// `Submodule`, `Orphaned`) are left untouched. `Fresh` anchors are not
-/// candidates either.
+/// `Submodule`) are left untouched. `Fresh` anchors are not candidates
+/// either.
+///
+/// **The collapse sentinel is an invariant of this function, not a value
+/// passing through it.** The duplicate-identity sweep plants it and then
+/// several more writers run: the re-anchor loop, `track_sentinel_position`,
+/// and `coalesce_line_ranges`. Each one asks [`carried_sentinel`] about the
+/// record in front of it rather than consulting a set of identities
+/// collapsed this pass — a set-keyed guard is reachable around, because a
+/// sentinel planted by an *earlier* pass is still a sentinel and its
+/// identity will again be certified by whatever sibling data the
+/// pre-collapse resolution happened to carry. The count of sentinel-bearing
+/// records is captured after the sweep and re-checked before the write, so a
+/// writer added here later fails the pass loudly instead of quietly
+/// certifying a record nothing verified.
 ///
 /// **Conflict resolution**: When on-disk span content carries Git textual
 /// conflict markers, `--fix` splits the file into ours/theirs, enforces
@@ -904,6 +917,13 @@ pub(crate) fn apply_fix(
         // told succeeded. The guard covers both branches of the loop body —
         // conflict resolution and the clean-parse collapse/re-anchor pass —
         // and releases at the end of this iteration's scope.
+        //
+        // This arm covers contention as well as failure to create the lock
+        // file: `lock_span_file` tries without blocking, announces the span
+        // it is waiting on, and gives up with an error rather than blocking
+        // forever. `--fix` prints as it sweeps, so an unbounded wait here
+        // stalled the run mid-report with no output naming the cause. The
+        // span is left untouched and the sweep continues to the next one.
         let _span_lock = match lock_span_file(repo, span_root, &m.name) {
             Ok(guard) => guard,
             Err(e) => {
@@ -1008,6 +1028,16 @@ pub(crate) fn apply_fix(
             any_rewritten = true;
         }
 
+        // How many records carry an unverified collapse marker at the moment
+        // every later writer in this pass starts running. Nothing after this
+        // point may reduce it: the re-anchor loop skips sentinel-bearing
+        // records, `track_sentinel_position` never touches `content_hash`,
+        // and `coalesce_line_ranges` treats a sentinel as a barrier. The
+        // count is re-checked below, before the file is written, so a writer
+        // added to this function later fails the pass loudly instead of
+        // quietly certifying a record nothing verified.
+        let sentinels_before = span_file.anchors.iter().filter(|r| carried_sentinel(r)).count();
+
         for resolved in &m.anchors {
             // The identity of the record this resolved entry speaks for.
             let (anc_start, anc_end) = match resolved.anchored.extent {
@@ -1072,11 +1102,9 @@ pub(crate) fn apply_fix(
             // indefinitely.
             if record_carries_sentinel {
                 track_sentinel_position(
+                    repo,
                     &mut span_file,
                     resolved,
-                    &anc_path,
-                    anc_start,
-                    anc_end,
                     reanchor,
                     &mut fix,
                     &mut any_rewritten,
@@ -1318,6 +1346,23 @@ pub(crate) fn apply_fix(
         let coalesced_count = fix.rewritten_anchor_ids.len() - before_coalesce;
         fix.anchors_updated += coalesced_count;
 
+        // Fail closed rather than write a laundered record. A drop here means
+        // some writer in this pass overwrote or dropped a record that was
+        // carrying the sentinel, which turns "content unverified, reported
+        // drifted" into a clean bill of health permanently and silently —
+        // the exact outcome the sentinel exists to prevent. Refusing the
+        // write leaves the span exactly as the operator last saw it.
+        let sentinels_after = span_file.anchors.iter().filter(|r| carried_sentinel(r)).count();
+        if sentinels_after < sentinels_before {
+            anyhow::bail!(
+                "internal error: `--fix` dropped {} unverified collapse marker(s) while \
+                 rewriting span `{}` ({sentinels_before} before the rewrite pass, \
+                 {sentinels_after} after). Refusing to write — the span file is unchanged.",
+                sentinels_before - sentinels_after,
+                m.name,
+            );
+        }
+
         if any_rewritten || coalesced {
             write_worktree_span(repo, span_root, &m.name, &mut span_file)?;
             fix.rewritten_span_names.insert(m.name.clone());
@@ -1340,7 +1385,14 @@ pub(crate) fn apply_fix(
 /// worktree-fresh after the rewrite pass (`Fresh` anchors, or `Moved`/
 /// `Changed` anchors rewritten this pass whose deepest drift layer is the
 /// worktree). A record NOT in `mergeable_keys` is a barrier: it breaks any
-/// run and is passed through unchanged. This restriction is what makes
+/// run and is passed through unchanged. A record carrying the collapse
+/// sentinel ([`carried_sentinel`]) is a barrier too, checked here on the
+/// record rather than upstream on the key: `mergeable_keys` is identity-keyed
+/// and built from the pre-collapse resolution, so a collapsed survivor's
+/// identity can be in it on the strength of a sibling record that no longer
+/// exists. Merging such a record would recompute a union hash over an
+/// unverified one and silently retire the very marker that keeps it
+/// reporting drifted. This restriction is what makes
 /// hashing the merged union from the worktree always correct — every merged
 /// run is worktree-fresh, so its recomputed worktree union hash matches the
 /// layer the per-anchor pass resolved, and the merged anchor re-resolves
@@ -1431,11 +1483,22 @@ fn coalesce_line_ranges(
 
         for &i in &idxs {
             let r = &span_file.anchors[i];
-            let is_mergeable = mergeable_keys.contains(&(r.path.clone(), r.start_line, r.end_line));
+            // The sentinel test is on the *record*, not on `mergeable_keys`,
+            // and it comes first. `mergeable_keys` is keyed on identity and
+            // built from the pre-collapse resolution, so a duplicate group
+            // whose other record resolved `Fresh` puts the survivor's
+            // identity in that set even though the survivor now carries the
+            // sentinel — merging it would compute a union hash over the
+            // sentinel and launder an unverified record into a verified one.
+            // Asking the record itself closes that for every orientation and
+            // every future way an identity might reach `mergeable_keys`.
+            let is_mergeable = !carried_sentinel(r)
+                && mergeable_keys.contains(&(r.path.clone(), r.start_line, r.end_line));
 
             if !is_mergeable {
                 // Barrier: a record that is not worktree-fresh (terminal or
-                // non-worktree-layer drift) breaks any run and never merges.
+                // non-worktree-layer drift), or that carries an unverified
+                // collapse sentinel, breaks any run and never merges.
                 flush(run.take(), &mut replacement, &mut dropped, merged_ids);
                 continue;
             }
@@ -1505,10 +1568,19 @@ fn coalesce_line_ranges(
 /// One report line for a duplicate identity `--fix`'s span-wide sweep
 /// collapsed, so the operator sees what happened without diffing the file.
 ///
-/// A group whose records disagreed is named as unverified and pointed at
-/// `git span add`, the only command that can establish what the content
-/// should be. A group whose records already agreed is named as the plain
+/// A group whose records disagreed is named as unverified, and both
+/// completion commands are offered against the question only the operator
+/// can answer. A group whose records already agreed is named as the plain
 /// deduplication it is — its content was never in doubt.
+///
+/// The divergent line deliberately does **not** hand over a bare
+/// `git span add <recorded-address>`. A sentinel means nothing established
+/// what this anchor's content is; with no content to match on, no
+/// hash-keyed path can establish where that content now lives either, so
+/// the recorded address is the last place it was known to be, not a place
+/// the tool has confirmed. Running `add` there hashes whatever happens to
+/// occupy those lines and records it as verified. Only the operator can
+/// tell the two cases apart, so the line asks them to.
 fn format_identity_collapsed(c: &CollapsedIdentity) -> String {
     let address = record_address(&c.path, c.start_line, c.end_line);
     if c.agreed_hash.is_some() {
@@ -1520,8 +1592,11 @@ fn format_identity_collapsed(c: &CollapsedIdentity) -> String {
     } else {
         format!(
             "collapsed duplicate identity: `{address}` — {} records → 1 \
-             (records disagreed; content unverified, reported drifted — run \
-             `git span add <address>` to resolve)",
+             (records disagreed; content unverified, reported drifted). This \
+             address is where the records were, not a location this collapse \
+             confirmed — run `git span add {address}` only if the coupled \
+             content still lives there, otherwise `git span replace \
+             {address} <new-address>` naming where it lives now",
             c.records_before
         )
     }
@@ -1540,20 +1615,28 @@ fn format_identity_collapsed(c: &CollapsedIdentity) -> String {
 /// vouched for reads as proof that nothing is wrong.
 ///
 /// Nothing is written or reported when the position has not moved (the
-/// no-op guard), and a record whose position cannot be tracked at all gets
-/// the terminal line naming `git span replace`, the only command that
-/// retires a record at an address that may no longer exist.
-#[allow(clippy::too_many_arguments)]
+/// no-op guard). When tracking genuinely failed, the line names the reason
+/// this anchor's *own* status gives — never a default swept up from
+/// everything that is not `Deleted` — and only offers `git span replace`
+/// where re-addressing is actually the right next move. A path that is
+/// merely not materialized in this checkout is not mis-addressed, and a
+/// path mid-merge is not yet readable; telling either operator to
+/// re-address the anchor would talk them into destroying a correct one.
 fn track_sentinel_position(
+    repo: &gix::Repository,
     span_file: &mut SpanFile,
     resolved: &crate::types::AnchorResolved,
-    anc_path: &str,
-    anc_start: u32,
-    anc_end: u32,
     tracking_offered: bool,
     fix: &mut FixResult,
     any_rewritten: &mut bool,
 ) {
+    let (anc_start, anc_end) = match resolved.anchored.extent {
+        AnchorExtent::LineRange { start, end } => (start, end),
+        AnchorExtent::WholeFile => (0, 0),
+    };
+    let anc_path = resolved.anchored.path.to_string_lossy().to_string();
+    let anc_path = anc_path.as_str();
+
     let tracked: Option<(String, u32, u32)> = resolved.current.as_ref().map(|c| {
         let (s, e) = match c.extent {
             AnchorExtent::LineRange { start, end } => (start, end),
@@ -1600,18 +1683,78 @@ fn track_sentinel_position(
         return;
     }
 
-    // Terminal residual: nothing to track forward. `add` at this address
-    // cannot retire the record — it fails closed on a deleted path, and at
-    // the content's real new location it installs a fresh record and leaves
-    // this one orphaned forever. `replace` retires the old identity and
-    // installs the new one atomically, with no existence check on the old
-    // path, which is exactly what this state needs.
-    let reason = if matches!(resolved.status, AnchorStatus::Deleted) {
-        "path deleted"
-    } else {
-        "no trackable history"
-    };
+    // Tracking did not produce a new position. *Why* it did not decides
+    // what — if anything — to tell the operator, so each status answers for
+    // itself instead of sharing one default.
     let address = record_address(anc_path, anc_start, anc_end);
+    match &resolved.status {
+        // Mid-merge: the file has no readable stage-0 content yet, so no
+        // position could have been established and none was attempted.
+        // `drift` and `--fix` both already exit 1 against an accurate
+        // `conflict` label. Saying anything more here would be inventing a
+        // verdict about an anchor whose file is simply not resolvable yet.
+        AnchorStatus::MergeConflict => {}
+        // The content exists in the repository and is intact; it is only
+        // absent from *this* checkout. The anchor is not mis-addressed, so
+        // re-addressing it is the wrong move — `replace` would overwrite a
+        // correct address with a guess. The next step is to fetch the
+        // content and run again.
+        AnchorStatus::ContentUnavailable(reason) => {
+            let detail = crate::cli::drift_label::unavailable_detail(reason);
+            println!(
+                "  position not checked: `{address}` — a duplicate-collapse \
+                 sentinel's content is unavailable in this checkout \
+                 ({detail}), so whether its position is still current could \
+                 not be established. This is not a wrong address: materialize \
+                 the file in this checkout and re-run `git span drift --fix`"
+            );
+        }
+        // A gitlink's content identity is the recorded commit OID, not
+        // lines, so there is no range to carry forward and no basis for
+        // naming a new address. State only that, and issue no instruction:
+        // neither evaluator exercised a sentinel on a submodule, so the
+        // completion path for it is genuinely unknown, and guessing one
+        // here would be the same defect as the reason text this pass is
+        // correcting — a verdict asserted past the evidence.
+        AnchorStatus::Submodule => {
+            println!(
+                "  position not checked: `{address}` — a duplicate-collapse \
+                 sentinel is recorded against a submodule gitlink, whose \
+                 content identity is a commit OID rather than lines, so \
+                 there is no range to relocate. Content is still unverified"
+            );
+        }
+        // The anchored range no longer resolves. Distinguish the two ways
+        // that happens — §3f's own text names only "path deleted", which is
+        // a false statement about a file that is present and readable and
+        // has merely been truncated above the anchored end.
+        AnchorStatus::Deleted => {
+            let path_present = repo
+                .workdir()
+                .map(|w| w.join(anc_path).is_file())
+                .unwrap_or(false);
+            let reason = if path_present {
+                "the file no longer reaches the anchored range"
+            } else {
+                "path deleted"
+            };
+            print_untrackable(&address, reason);
+        }
+        // Everything else reached the tracking attempt and it came back with
+        // nothing to follow.
+        _ => print_untrackable(&address, "no trackable history"),
+    }
+}
+
+/// The terminal line for a sentinel whose address genuinely no longer names
+/// where anything lives.
+///
+/// `add` cannot retire the record here: it fails closed on a deleted path,
+/// and at the content's real new location it installs a fresh record and
+/// leaves this one orphaned forever. `replace` retires the old identity and
+/// installs the new one atomically, with no existence check on the old path,
+/// which is exactly what this state needs.
+fn print_untrackable(address: &str, reason: &str) {
     println!(
         "  position untrackable: `{address}` — a duplicate-collapse sentinel \
          could not be relocated ({reason}); content is still unverified and \

@@ -377,12 +377,20 @@ pub fn collapse_duplicate_identities(anchors: &mut Vec<AnchorRecord>) -> Vec<Col
     collapsed
 }
 
-/// Whether `a` still carries the collapse sentinel — the fixed all-zero
+/// Whether `a` still carries the collapse sentinel — the fixed all-`f`
 /// rk64 hash [`crate::rk64_unmatched_sentinel`] plants on a survivor whose
-/// content was never verified. Shared so every writer that can plant or
-/// preserve the sentinel (`drift --fix`'s collapse sweep, the merge
-/// kernel's same-side collapse and cross-side preserve) and every reader
-/// that must recognize it (`drift` output) agree on one detector.
+/// content was never verified.
+///
+/// The value is all-`f`, **not** all-zero, and that is load-bearing rather
+/// than arbitrary: `cheap_fingerprint_with_extent` returns exactly `0` for a
+/// range that does not exist in the content it is handed, so an all-zero
+/// sentinel would compare equal to "the anchored range is gone" and read
+/// `Fresh`. [`crate::rk64_unmatched_sentinel`]'s own doc carries the full
+/// argument. Ask this predicate rather than rebuilding the comparison —
+/// every writer that can plant or preserve the sentinel (`drift --fix`'s
+/// collapse sweep and coalescing barrier, the merge kernel's same-side
+/// collapse and cross-side preserve) and every reader that must recognize
+/// it (`drift` output) goes through it, so there is one place to be right.
 pub fn carried_sentinel(a: &AnchorRecord) -> bool {
     a.algorithm == RK64_ALGORITHM && a.content_hash == crate::rk64_unmatched_sentinel()
 }

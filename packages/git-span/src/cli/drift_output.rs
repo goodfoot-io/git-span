@@ -1394,18 +1394,33 @@ fn describe_finding_lower(f: &Finding) -> String {
     let base = match &f.status {
         AnchorStatus::Changed => {
             if is_collapsed_duplicate_sentinel(f) {
-                // `Changed` (not `Moved`/`Deleted`) means this anchor
-                // resolved at its stored position, so the completion path
-                // is always the "position tracked" one from `drift --fix`
-                // (`drift_fix.rs`) — never `replace`, which only applies
-                // once the position itself is untrackable. Match that
-                // line's vocabulary so the same fact reads the same way
-                // whether an operator sees it during `--fix` or later,
-                // cold, from a plain `drift` run.
+                // `Changed` does **not** mean this anchor resolved at its
+                // stored position. For a sentinel, `current == anchored` is
+                // what the resolver reports when it has nothing to track by:
+                // every relocation path is keyed on the stored hash, and the
+                // sentinel is chosen precisely so no content matches it. So
+                // the recorded address is the last place the records agreed
+                // the content was, not a location anything has confirmed —
+                // and a bare `add` there hashes whatever now occupies those
+                // lines and records it as verified, replacing the coupling
+                // with a different one.
+                //
+                // Both completions are correct, for different situations,
+                // and the operator is the one who can tell which: `add` when
+                // the content is still there, `replace` when it moved. Name
+                // the condition that selects each rather than implying the
+                // tool knows. Matches the vocabulary of `drift --fix`'s own
+                // collapse line (`drift_fix.rs`) so the same fact reads the
+                // same way whether an operator sees it during the collapse
+                // or later, cold, from a plain `drift` run.
                 let addr = render_path_extent_plain(&f.anchored.path, f.anchored.extent);
                 format!(
-                    "collapsed duplicate — content is still unverified — run \
-                     `git span add {addr}` to resolve"
+                    "collapsed duplicate — content is still unverified, and \
+                     this address is where the records were, not a location \
+                     anything has confirmed — run `git span add {addr}` only \
+                     if the coupled content still lives there, otherwise \
+                     `git span replace {addr} <new-address>` naming where it \
+                     lives now"
                 )
             } else {
                 super::drift_label::format_drift_label(
