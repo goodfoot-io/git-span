@@ -57,6 +57,11 @@ import type { DriftPorcelainRow, PorcelainRow } from '../../src/common/agent-hoo
 import { runBashTouches } from '../../src/common/bash-touch.js';
 import { parseCommandDetailed, type ResolvedSpan, type SpanMatch } from '../../src/common/parse-command.js';
 import type { MemoStore } from '../../src/common/span-surface.js';
+import {
+  createPlannedTouchStore,
+  type PlannedTouchBudgets,
+  type PlannedTouchRecord
+} from '../../src/common/static-attribution.js';
 import type { TouchExecutors, TouchFixResult } from '../../src/common/touch-core.js';
 import { makeTempRepo } from '../helpers.js';
 import { makeTempLayout } from '../session-layout-helpers.js';
@@ -1670,6 +1675,78 @@ describe('bash-write-integration — strace oracle (skipped where strace is abse
     } finally {
       if (traceDir !== null) rmSync(traceDir, { recursive: true, force: true });
       r.cleanup();
+    }
+  });
+});
+
+describe('bounded planned-touch store contract (bootstrap)', () => {
+  const budgets: PlannedTouchBudgets = {
+    maxTouchesPerRecord: 16,
+    maxRangesPerTouch: 16,
+    maxEvidenceBytes: 4096,
+    maxRecordBytes: 16_384
+  };
+
+  function plannedRecord(repoRoot: string): PlannedTouchRecord {
+    return {
+      version: 1,
+      sessionId: SESSION_ID,
+      toolUseId: 'tool-static-plan',
+      repoRoot,
+      createdAtMs: 1,
+      touches: [
+        {
+          repoRelativePath: 'src/a.txt',
+          operation: 'modify',
+          ranges: [{ start: 3, end: 3 }],
+          simpleCommandIndex: 0,
+          evidence: { kind: 'anchor', literal: 'beta', line: 3 }
+        }
+      ]
+    };
+  }
+
+  it.skip('atomically stores a content-minimal record and consumes it once', () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'planned-touch-'));
+    try {
+      const store = createPlannedTouchStore(baseDir, budgets);
+      const record = plannedRecord('/repo');
+      store.put(record);
+
+      expect(store.consume(record.sessionId, record.toolUseId)).toEqual(record);
+      expect(store.consume(record.sessionId, record.toolUseId)).toBeNull();
+    } finally {
+      rmSync(baseDir, { recursive: true, force: true });
+    }
+  });
+
+  it.skip('discard is idempotent for failure and interruption cleanup', () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'planned-touch-'));
+    try {
+      const store = createPlannedTouchStore(baseDir, budgets);
+      const record = plannedRecord('/repo');
+      store.put(record);
+      store.discard(record.sessionId, record.toolUseId);
+      store.discard(record.sessionId, record.toolUseId);
+
+      expect(store.consume(record.sessionId, record.toolUseId)).toBeNull();
+    } finally {
+      rmSync(baseDir, { recursive: true, force: true });
+    }
+  });
+
+  it.skip('rejects an over-budget record without replacing a valid pending plan', () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'planned-touch-'));
+    try {
+      const store = createPlannedTouchStore(baseDir, { ...budgets, maxTouchesPerRecord: 1 });
+      const record = plannedRecord('/repo');
+      store.put(record);
+      const oversized: PlannedTouchRecord = { ...record, touches: [...record.touches, ...record.touches] };
+
+      expect(() => store.put(oversized)).toThrow();
+      expect(store.consume(record.sessionId, record.toolUseId)).toEqual(record);
+    } finally {
+      rmSync(baseDir, { recursive: true, force: true });
     }
   });
 });

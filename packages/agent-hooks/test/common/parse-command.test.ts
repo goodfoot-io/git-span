@@ -24,7 +24,7 @@
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   type Idiom,
@@ -34,7 +34,13 @@ import {
   type SpanMatch
 } from '../../src/common/parse-command.js';
 import { splitTopLevel } from '../../src/common/shell-split.js';
+import {
+  createAttributionDiagnostics,
+  parseCommandLayered,
+  UNRESOLVED_REASON_CODES
+} from '../../src/common/static-attribution.js';
 import { makeTempRepo } from '../helpers.js';
+import { STATIC_ATTRIBUTION_CORPUS } from './fixtures/static-attribution-corpus.js';
 
 // ---------------------------------------------------------------------------
 // Patch-text fixtures (plan §5.7). `PATCH_NOTES_DIFF` is also written to disk
@@ -1621,6 +1627,58 @@ describe('span-less builtin guards (§3 step 2)', () => {
         }
       }
     ]);
+  });
+});
+
+describe('layered static attribution contract (bootstrap)', () => {
+  it.skip.each(STATIC_ATTRIBUTION_CORPUS)('$name', (fixture) => {
+    const preState = new Map(fixture.files.map((file) => [join(dir, file.path), file.content]));
+    const result = parseCommandLayered(fixture.command, {
+      cwd: dir,
+      readPreState: (absolutePath) => preState.get(absolutePath) ?? null
+    });
+
+    expect(
+      result.resolved.map(({ layer, span }) => ({
+        layer,
+        operation: span.operation,
+        path: relative(dir, span.absolutePath),
+        range:
+          span.lineStart === undefined || span.lineEnd === undefined
+            ? undefined
+            : { start: span.lineStart, end: span.lineEnd }
+      }))
+    ).toEqual(
+      (fixture.expectedOperations ?? []).flatMap(({ operation, path, ranges }) =>
+        (ranges ?? [undefined]).map((range) => ({ layer: fixture.layer, operation, path, range }))
+      )
+    );
+    expect(result.unresolved.map(({ reasonCode }) => reasonCode)).toEqual(
+      fixture.unresolvedReason === undefined ? [] : [fixture.unresolvedReason]
+    );
+    expect(result.preStateRequests.map(({ requirement }) => requirement)).toEqual(fixture.preStateRequirements ?? []);
+  });
+
+  it.skip('exposes a closed, stable unresolved-reason vocabulary', () => {
+    expect(new Set(UNRESOLVED_REASON_CODES).size).toBe(UNRESOLVED_REASON_CODES.length);
+    expect(UNRESOLVED_REASON_CODES).toContain('unsupported-dataflow');
+    expect(UNRESOLVED_REASON_CODES).toContain('untracked-path');
+  });
+
+  it.skip('starts each per-call diagnostic with explicit zero values', () => {
+    expect(createAttributionDiagnostics()).toEqual({
+      resolvedReads: 0,
+      resolvedWrites: 0,
+      unresolvedByIdiom: {},
+      unresolvedByReason: {},
+      scopeDrops: 0,
+      trackedDrops: 0,
+      executionGateDrops: 0,
+      parserLatencyMs: 0,
+      touchLatencyMs: 0,
+      subprocessCount: 0,
+      dependencyContextSurfaced: false
+    });
   });
 });
 

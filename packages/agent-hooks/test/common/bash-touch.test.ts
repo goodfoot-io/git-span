@@ -24,6 +24,7 @@ import type { DriftPorcelainRow, PorcelainRow } from '../../src/common/agent-hoo
 import { bashSpanToTouch, runBashTouches } from '../../src/common/bash-touch.js';
 import type { ResolvedSpan, SpanMatch } from '../../src/common/parse-command.js';
 import type { MemoStore } from '../../src/common/span-surface.js';
+import { filterTrackedEligibility } from '../../src/common/static-attribution.js';
 import type { TouchExecutors, TouchFixResult } from '../../src/common/touch-core.js';
 import { makeTempRepo } from '../helpers.js';
 
@@ -268,6 +269,53 @@ describe('bashSpanToTouch — operation→touch translation (plan §2)', () => {
         repo.root
       )
     ).toBeNull();
+  });
+});
+
+describe('batched tracked eligibility contract (bootstrap)', () => {
+  it.skip('queries each repository once and preserves eligible producer payloads', () => {
+    const repo = makeTempRepo();
+    const root = repo.root;
+    writeFileSync(join(root, 'tracked.txt'), 'x\n');
+    execFileSync('git', ['add', 'tracked.txt'], { cwd: root });
+    writeFileSync(join(root, 'untracked.txt'), 'x\n');
+    const calls: Array<{ repoRoot: string; paths: readonly string[] }> = [];
+
+    const result = filterTrackedEligibility(
+      [
+        { absolutePath: join(root, 'tracked.txt'), value: { producer: 'bash' as const } },
+        { absolutePath: join(root, 'untracked.txt'), value: { producer: 'response-read' as const } }
+      ],
+      {
+        cwd: root,
+        queryTrackedFiles: (repoRoot, paths) => {
+          calls.push({ repoRoot, paths });
+          return new Set(['tracked.txt']);
+        }
+      }
+    );
+
+    expect(calls).toEqual([{ repoRoot: root, paths: ['tracked.txt', 'untracked.txt'] }]);
+    expect(result.subprocessCount).toBe(1);
+    expect(result.eligible.map(({ value }) => value.producer)).toEqual(['bash']);
+    expect(result.dropped.map(({ reason }) => reason)).toEqual(['untracked-path']);
+    repo.cleanup();
+  });
+
+  it.skip('drops out-of-scope paths before tracked membership without querying their repositories', () => {
+    const repo = makeTempRepo();
+    const root = repo.root;
+    const result = filterTrackedEligibility([{ absolutePath: '/tmp/outside.txt', value: 'structured-write' }], {
+      cwd: root,
+      queryTrackedFiles: () => {
+        throw new Error('out-of-scope candidates must not reach git');
+      }
+    });
+
+    expect(result.eligible).toEqual([]);
+    expect(result.dropped.map(({ reason }) => reason)).toEqual(['outside-repository']);
+    expect(result.subprocessCount).toBe(0);
+    repo.cleanup();
   });
 });
 
