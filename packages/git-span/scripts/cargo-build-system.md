@@ -142,6 +142,46 @@ Within a single group directory, cargo's own `.cargo-lock` serializes the build
 phase across processes, so two worktrees compiling the same group build serially
 then run in parallel. That brief serialization is expected, not a hang.
 
+## Cross-worktree cache warmth: commit-time mtimes
+
+The shared root is warm only if cargo's fingerprints say the sources are
+unchanged. Cargo 1.97's default (mtime-mode) fingerprinting records each
+compiled file's mtime at build time; when a worktree checks out a commit, git
+writes the files with "now" mtimes, so every new worktree looked *newer* than
+every recorded mtime and paid a full cold rebuild of both crates even though
+the cache already held identical artifacts (a fresh worktree's first
+`yarn validate` came in around 147s vs ~92-102s warm).
+
+[`post-checkout.mtime-normalize.sh`](../../../.githooks/post-checkout.mtime-normalize.sh)
+(dispatched from `.githooks/post-checkout`, wired via `core.hooksPath`)
+fixes this: after any checkout it pins the mtimes of tracked files under the
+crate roots (the directories of every tracked `packages/*/Cargo.toml` /
+`npm/*/Cargo.toml`) to the commit time of the last commit that touched each
+file, taken from a single `git log HEAD --format=%ct --name-only -z` walk over
+those directories. "Same commit" then means "same mtimes" in every worktree,
+and a fresh `git worktree add` at a commit already built in the shared root
+starts warm instead of rebuilding. The hook costs well under a second (one
+walk, ~0.2s, plus one `touch -h` per file).
+
+Two properties keep it safe:
+
+- **Pinning is newer-only.** Cargo 1.97's mtime check marks a unit stale only
+  when a source file is *newer* than the recorded mtime; older is never stale.
+  Commit times are always in the past, so pinning can never make anything
+  dirty: the shared cache needs no re-recording, and a dirty edit in one
+  worktree (which makes the file newer only there) cannot flip sibling
+  worktrees at the same commit into rebuilding.
+- **Only clean files are pinned.** Files with uncommitted edits (staged or
+  unstaged, per `git diff --name-only HEAD`) keep their own mtimes: cargo must
+  rebuild them in the worktree that owns the edit, and pinning them would push
+  every sibling at the same commit into rebuilding against them too.
+
+The hook is advisory and fails open: a file with no pin (e.g. a parse drift, or
+a checkout at an old commit) is skipped with a stderr warning — skipping is
+correct there, since that worktree must rebuild anyway. Checkout at a
+*changed* commit lands the same way: newer files are simply newer than the
+cache's records, so cargo rebuilds only what the commit actually touched.
+
 ## Linker wrapper: bare name, worktree-invariant fingerprints
 
 Linux links run through the mold cc wrapper

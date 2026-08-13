@@ -55,6 +55,24 @@ pre-commit hook can stage those freshly-created `.span/` files into the commit
 being made and abort the commit when coverage cannot be created, so the gate
 is fail-closed there rather than advisory.
 
+## post-checkout (advisory)
+
+`post-checkout` is the dispatcher. It forwards the hook's arguments
+(`$1` old-head, `$2` new-head, `$3` branch-checkout flag) to each
+sub-script.
+
+| Sub-script                          | Purpose                                                                   | Blocks checkout? |
+| ----------------------------------- | ------------------------------------------------------------------------- | ---------------- |
+| `post-checkout.mtime-normalize.sh`  | Pin tracked-file mtimes under the cargo crate roots to the time of the last commit that touched each file, so the shared Cargo target root stays warm across worktrees | No (advisory)    |
+
+`post-checkout.mtime-normalize.sh` is what makes "same commit" mean "same
+mtimes" in a new worktree, so a fresh `git worktree add` finds the shared
+Cargo target cache already warm instead of paying a full cold rebuild.
+Only clean files are pinned; files with uncommitted edits keep their own
+mtimes (cargo must rebuild them, and pinning would push sibling worktrees
+at the same commit into rebuilding against them). See
+`packages/git-span/scripts/cargo-build-system.md` for the full rationale.
+
 ## post-commit / post-rewrite (advisory)
 
 Same dispatcher model as `pre-commit`, but a sub-script failure is reported
