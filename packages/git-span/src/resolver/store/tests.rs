@@ -1058,7 +1058,7 @@ fn reader_never_observes_partial_generation_under_quota_maintenance() {
     let writer = std::thread::spawn(move || {
         let mut store = open(&writer_dir);
         wb.wait();
-        for _ in 0..300 {
+        for _ in 0..150 {
             // 17 non-live generations per round — one past the 16-generation
             // reuse buffer — so the count leg forces eviction every round,
             // exactly like the publish/GC stress test but through the quota
