@@ -79,6 +79,13 @@ export interface ResolvedSpan {
    */
   written?: string;
   /**
+   * Exact expected post-command bytes for a range-scoped in-place edit.
+   * Layered static recognizers populate this from ephemeral pre-state so a
+   * completed substitution remains decisive even when a later command makes
+   * the compound exit nonzero.
+   */
+  expectedContent?: string;
+  /**
    * The statically evaluated absolute `truncate -s N` size (plan §5.5): the
    * §3 `size` gate's post-command byte count (`-s 0` → the empty gate).
    * Absent for relative sizes (`-s +N`/`-s -N`), `-r ref`, and every other

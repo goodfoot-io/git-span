@@ -9,6 +9,7 @@
 
 import type { ResolvedSpan, SpanMatch } from './parse-command.js';
 import { type MemoStore, resolveTouchScope } from './span-surface.js';
+import { DEFAULT_MAX_ATTRIBUTION_CANDIDATES } from './static-attribution.js';
 import {
   createRealityProbeCache,
   evaluateWriteGate,
@@ -101,7 +102,9 @@ export function bashSpanToTouch(span: ResolvedSpan, sessionId: string, cwd: stri
         filePath: span.absolutePath,
         written: '',
         targetState: 'exists',
-        range: span.lineStart !== undefined ? { start: span.lineStart, end: span.lineEnd ?? span.lineStart } : undefined
+        range:
+          span.lineStart !== undefined ? { start: span.lineStart, end: span.lineEnd ?? span.lineStart } : undefined,
+        postState: span.expectedContent !== undefined ? { content: { exact: span.expectedContent } } : undefined
       };
     case 'delete':
       return {
@@ -257,6 +260,17 @@ export async function runBashTouches(
   const resolved = matches.filter((m): m is ResolvedMatch => m.status === 'resolved');
   const guards = matches.filter((m): m is GuardMatch => m.status === 'builtin-guard');
   if (resolved.length === 0) return [];
+
+  // Candidate sets are atomic at the safety boundary. The previous driver
+  // executed the first 32 touches and silently discarded the rest, which
+  // made attribution depend on operand order. Reject the invocation before
+  // any probes, gates, or touch executors run instead.
+  if (resolved.length > DEFAULT_MAX_ATTRIBUTION_CANDIDATES) {
+    warn(
+      `Bash candidate budget exceeded: ${resolved.length} candidates (limit ${DEFAULT_MAX_ATTRIBUTION_CANDIDATES}); rejecting the complete touch set`
+    );
+    return [];
+  }
 
   // Seed the per-command probe cache (plan §3 step 1c) with every absent
   // target and cp/install source of the compound; the first gate that needs
@@ -512,20 +526,12 @@ export async function runBashTouches(
     if (skipped.has(idx)) continue;
     const list = evals.get(idx);
     if (list === undefined) continue;
-    let touches = 0;
     for (const e of list) {
       if (e.touch === null || e.explained) continue;
       if (e.outcome === 'decisiveFail') continue;
       if (e.outcome === 'inconclusive' && e.touch.kind === 'write' && e.touch.targetState === 'absent') continue;
       if (e.outcome === 'inconclusive' && e.touch.kind === 'write' && exitCode !== undefined && exitCode !== 0)
         continue;
-      if (touches >= 32) {
-        // Hard per-command volume cap (plan §3 step 2): drop the surplus with
-        // a warning rather than blow the hook timeout on a 50-copy chain.
-        warn(`Bash touch cap (32) reached for simple command ${idx}; dropping the remaining touches`);
-        break;
-      }
-      touches += 1;
       const output = await runTouchHook(e.touch, executors, memo, probeCache);
       if (output.additionalContext) blocks.push(output.additionalContext);
     }

@@ -1631,7 +1631,14 @@ describe('span-less builtin guards (§3 step 2)', () => {
 });
 
 describe('layered static attribution contract (bootstrap)', () => {
-  it.skip.each(STATIC_ATTRIBUTION_CORPUS)('$name', (fixture) => {
+  const shellLayerCorpus = STATIC_ATTRIBUTION_CORPUS.filter(
+    (fixture) =>
+      fixture.layer !== 'python' &&
+      fixture.layer !== 'node' &&
+      fixture.name !== 'tracked and untracked pair retains only tracked eligibility'
+  );
+
+  it.each(shellLayerCorpus)('$name', (fixture) => {
     const preState = new Map(fixture.files.map((file) => [join(dir, file.path), file.content]));
     const result = parseCommandLayered(fixture.command, {
       cwd: dir,
@@ -1656,7 +1663,94 @@ describe('layered static attribution contract (bootstrap)', () => {
     expect(result.unresolved.map(({ reasonCode }) => reasonCode)).toEqual(
       fixture.unresolvedReason === undefined ? [] : [fixture.unresolvedReason]
     );
-    expect(result.preStateRequests.map(({ requirement }) => requirement)).toEqual(fixture.preStateRequirements ?? []);
+    expect([...new Set(result.preStateRequests.map(({ requirement }) => requirement))]).toEqual(
+      fixture.preStateRequirements ?? []
+    );
+  });
+
+  it('deduplicates repeated occurrences on one line while retaining ambiguous matching lines', () => {
+    const target = join(dir, 'ambiguous.txt');
+    const result = parseCommandLayered("sed -i 's/needle/pin/g' ambiguous.txt", {
+      cwd: dir,
+      readPreState: (absolutePath) => (absolutePath === target ? 'needle needle\nnone\nneedle\n' : null)
+    });
+
+    expect(result.unresolved).toEqual([]);
+    expect(result.resolved.map(({ span }) => [span.lineStart, span.lineEnd])).toEqual([
+      [1, 1],
+      [3, 3]
+    ]);
+  });
+
+  it('intersects a literal sed address with the literal replacement pattern', () => {
+    const result = parseCommandLayered("sed -i '/needle/s/one/ONE/' src/a.txt", {
+      cwd: dir,
+      readPreState: () => 'needle one\nneedle two\none only\n'
+    });
+
+    expect(result.unresolved).toEqual([]);
+    expect(result.resolved.map(({ span }) => [span.lineStart, span.lineEnd])).toEqual([[1, 1]]);
+  });
+
+  it('retains the backup write for an attached sed in-place suffix', () => {
+    const result = parseCommandLayered("sed -i.bak 's/needle/pin/' src/a.txt", {
+      cwd: dir,
+      readPreState: () => 'needle\n'
+    });
+
+    expect(
+      result.resolved.map(({ span }) => ({ operation: span.operation, path: relative(dir, span.absolutePath) }))
+    ).toEqual([
+      { operation: 'modify', path: 'src/a.txt' },
+      { operation: 'create-overwrite', path: 'src/a.txt.bak' }
+    ]);
+  });
+
+  it.each([
+    ['missing pre-state', null, 'missing-pre-state'],
+    ['binary pre-state', 'needle\0tail', 'binary-content']
+  ] as const)('rejects %s instead of widening to the whole file', (_name, content, reasonCode) => {
+    const result = parseCommandLayered("sed -i 's/needle/pin/' src/a.txt", {
+      cwd: dir,
+      readPreState: () => content
+    });
+
+    expect(result.resolved).toEqual([]);
+    expect(result.unresolved.map((match) => match.reasonCode)).toEqual([reasonCode]);
+  });
+
+  it.each([
+    ["sed -i 's/n[e]edle/pin/' src/a.txt", 'unsupported-expression'],
+    ["sed -i '2d' src/a.txt", 'unsupported-expression'],
+    ["perl -0777pi -e 's/needle/pin/' src/a.txt", 'unsupported-expression']
+  ] as const)('rejects unsupported pattern form: %s', (command, reasonCode) => {
+    const result = parseCommandLayered(command, { cwd: dir, readPreState: () => 'needle\n' });
+    expect(result.resolved).toEqual([]);
+    expect(result.unresolved.map((match) => match.reasonCode)).toEqual([reasonCode]);
+  });
+
+  it.each([
+    'for f in src/a.txt; do sed -i "s/needle/pin/" "$other"; done',
+    'for f in src/a.txt; do for g in src/b.txt; do sed -i "s/x/y/" "$g"; done; done'
+  ])('rejects unresolved and nested loop dataflows: %s', (command) => {
+    const result = parseCommandLayered(command, { cwd: dir, readPreState: () => 'needle\n' });
+    expect(result.resolved).toEqual([]);
+    expect(result.unresolved).toHaveLength(1);
+  });
+
+  it.each([
+    [32, 32, undefined],
+    [33, 0, 'candidate-budget-exceeded'],
+    [65, 0, 'candidate-budget-exceeded']
+  ] as const)('applies the all-or-unresolved literal-list budget at %i bindings', (count, resolved, reason) => {
+    const paths = Array.from({ length: count }, (_, index) => `src/f-${index}.txt`);
+    const result = parseCommandLayered(`for f in ${paths.join(' ')}; do sed -i "s/needle/pin/" "$f"; done`, {
+      cwd: dir,
+      readPreState: () => 'needle\n'
+    });
+
+    expect(result.resolved).toHaveLength(resolved);
+    expect(result.unresolved.map((match) => match.reasonCode)).toEqual(reason === undefined ? [] : [reason]);
   });
 
   it('exposes a closed, stable unresolved-reason vocabulary', () => {

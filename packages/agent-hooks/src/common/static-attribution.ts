@@ -18,7 +18,14 @@ import {
   sanitizeSessionId,
   toPosix
 } from './agent-hooks-common.js';
-import type { Operation, ParseOptions, ResolvedSpan } from './parse-command.js';
+import {
+  type Operation,
+  type ParseOptions,
+  parseCommandDetailed,
+  type ResolvedSpan,
+  type SpanMatch
+} from './parse-command.js';
+import { argvOf, splitTopLevel } from './shell-split.js';
 
 /** Stable machine-readable classifications for candidates the parser refuses. */
 export const UNRESOLVED_REASON_CODES = [
@@ -92,9 +99,717 @@ export interface LayeredParseOptions extends ParseOptions {
   readonly readPreState?: (absolutePath: string) => string | null;
 }
 
+/** Default all-or-unresolved volume bound shared by parsing and execution. */
+export const DEFAULT_MAX_ATTRIBUTION_CANDIDATES = 32;
+
+interface LiteralSubstitution {
+  readonly pattern: string;
+  readonly replacement: string;
+  readonly global: boolean;
+}
+
+interface PatternCommand {
+  readonly kind: 'sed' | 'perl' | 'perl-zero';
+  readonly script: string;
+  readonly files: readonly string[];
+  readonly backupSuffix?: string;
+  readonly simpleCommandIndex: number;
+}
+
+const SHELL_EXPANSION = /(?:\$|`)/;
+const GLOB_META = /[*?[\]]/;
+const REGEX_META = /[.^$*+?()[\]{}|]/;
+
+function unresolved(
+  layer: AttributionLayer,
+  idiom: string,
+  reasonCode: UnresolvedReasonCode,
+  detail: string,
+  fileArg?: string,
+  simpleCommandIndex = 0
+): UnresolvedAttribution {
+  return { status: 'unresolved', layer, idiom, reasonCode, detail, fileArg, simpleCommandIndex };
+}
+
+function classifyDynamicWord(word: string): UnresolvedReasonCode | null {
+  if (word.includes('$(') || word.includes('`')) return 'command-substitution';
+  if (SHELL_EXPANSION.test(word)) return 'dynamic-path';
+  if (GLOB_META.test(word)) return 'glob-path';
+  return null;
+}
+
+function decodeLiteralField(raw: string, delimiter: string, replacement: boolean): string | null {
+  let value = '';
+  for (let index = 0; index < raw.length; index += 1) {
+    const character = raw[index];
+    if (character === '\\') {
+      const next = raw[index + 1];
+      if (next === undefined) return null;
+      if (next === 'n') value += '\n';
+      else if (next === delimiter || next === '\\' || (!replacement && REGEX_META.test(next))) value += next;
+      else return null;
+      index += 1;
+      continue;
+    }
+    if ((!replacement && REGEX_META.test(character)) || (replacement && character === '&')) return null;
+    value += character;
+  }
+  return value;
+}
+
+function readDelimitedField(
+  source: string,
+  start: number,
+  delimiter: string
+): { readonly raw: string; readonly next: number } | null {
+  let raw = '';
+  for (let index = start; index < source.length; index += 1) {
+    const character = source[index];
+    if (character === '\\') {
+      const next = source[index + 1];
+      if (next === undefined) return null;
+      raw += `${character}${next}`;
+      index += 1;
+      continue;
+    }
+    if (character === delimiter) return { raw, next: index + 1 };
+    raw += character;
+  }
+  return null;
+}
+
+/** Parse only literal, line-count-preserving substitutions. */
+function parseLiteralSubstitution(script: string): LiteralSubstitution | null {
+  if (script.length < 4 || script[0] !== 's') return null;
+  const delimiter = script[1];
+  if (/\w|\s/.test(delimiter)) return null;
+  const patternField = readDelimitedField(script, 2, delimiter);
+  if (patternField === null) return null;
+  const replacementField = readDelimitedField(script, patternField.next, delimiter);
+  if (replacementField === null) return null;
+  const flags = script.slice(replacementField.next);
+  if (flags !== '' && flags !== 'g') return null;
+  const pattern = decodeLiteralField(patternField.raw, delimiter, false);
+  const replacement = decodeLiteralField(replacementField.raw, delimiter, true);
+  if (pattern === null || pattern.length === 0 || replacement === null) return null;
+  return { pattern, replacement, global: flags === 'g' };
+}
+
+/** Shared pre-state occurrence analysis for sed, Perl, and later embedded recognizers. */
+export function literalOccurrenceRanges(content: string, literal: string): LineRange[] {
+  if (literal.length === 0) return [];
+  const ranges: LineRange[] = [];
+  let cursor = 0;
+  let scannedTo = 0;
+  let currentLine = 1;
+  while (cursor <= content.length - literal.length) {
+    const offset = content.indexOf(literal, cursor);
+    if (offset < 0) break;
+    for (let index = scannedTo; index < offset; index += 1) {
+      if (content.charCodeAt(index) === 10) currentLine += 1;
+    }
+    const embeddedNewlines = literal.match(/\n/g)?.length ?? 0;
+    const range = { start: currentLine, end: currentLine + embeddedNewlines };
+    const previous = ranges[ranges.length - 1];
+    if (previous === undefined || previous.start !== range.start || previous.end !== range.end) ranges.push(range);
+    cursor = offset + Math.max(1, literal.length);
+    scannedTo = offset;
+  }
+  return ranges;
+}
+
+function replaceLiteral(source: string, pattern: string, replacement: string, global: boolean): string {
+  if (global) return source.split(pattern).join(replacement);
+  const offset = source.indexOf(pattern);
+  if (offset < 0) return source;
+  return `${source.slice(0, offset)}${replacement}${source.slice(offset + pattern.length)}`;
+}
+
+function expectedSubstitutionContent(
+  content: string,
+  substitution: LiteralSubstitution,
+  kind: PatternCommand['kind'],
+  addressLiteral: string | null
+): string {
+  if (kind === 'perl-zero') {
+    return replaceLiteral(content, substitution.pattern, substitution.replacement, substitution.global);
+  }
+  return content
+    .split(/(?<=\n)/)
+    .map((line) => {
+      if (addressLiteral !== null && !line.includes(addressLiteral)) return line;
+      return replaceLiteral(line, substitution.pattern, substitution.replacement, substitution.global);
+    })
+    .join('');
+}
+
+function parsePatternCommand(command: string): PatternCommand | null {
+  const argv = argvOf(command.trim());
+  if (argv === null || argv.length < 2) return null;
+  if (argv[0] === 'sed') {
+    let inplace = false;
+    let backupSuffix: string | undefined;
+    let script: string | null = null;
+    const files: string[] = [];
+    for (let index = 1; index < argv.length; index += 1) {
+      const argument = argv[index];
+      if (argument === '-i') {
+        inplace = true;
+        continue;
+      }
+      if (argument.startsWith('-i')) {
+        inplace = true;
+        backupSuffix = argument.slice(2);
+        continue;
+      }
+      if (argument === '-e') {
+        script = argv[index + 1] ?? null;
+        index += 1;
+        continue;
+      }
+      if (argument.startsWith('-'))
+        return inplace ? { kind: 'sed', script: '', files: [], backupSuffix, simpleCommandIndex: 0 } : null;
+      if (script === null) script = argument;
+      else files.push(argument);
+    }
+    return inplace && script !== null ? { kind: 'sed', script, files, backupSuffix, simpleCommandIndex: 0 } : null;
+  }
+  if (argv[0] !== 'perl') return null;
+  let inplace = false;
+  let zero = false;
+  let script: string | null = null;
+  const files: string[] = [];
+  let unsupportedOption = false;
+  for (let index = 1; index < argv.length; index += 1) {
+    const argument = argv[index];
+    if (argument === '-e') {
+      script = argv[index + 1] ?? null;
+      index += 1;
+      continue;
+    }
+    if (argument.startsWith('-')) {
+      const attachedScript = argument.match(/^-e(.+)$/)?.[1];
+      if (attachedScript !== undefined) {
+        script = attachedScript;
+        continue;
+      }
+      if (argument === '-pi') inplace = true;
+      else if (argument === '-0pi') {
+        inplace = true;
+        zero = true;
+      } else {
+        if (argument.includes('p') && argument.includes('i')) inplace = true;
+        unsupportedOption = true;
+      }
+      continue;
+    }
+    files.push(argument);
+  }
+  if (unsupportedOption && inplace)
+    return { kind: zero ? 'perl-zero' : 'perl', script: '', files: [], simpleCommandIndex: 0 };
+  return inplace && script !== null
+    ? { kind: zero ? 'perl-zero' : 'perl', script, files, simpleCommandIndex: 0 }
+    : null;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+function stableReason(match: Extract<SpanMatch, { status: 'unresolved' }>): UnresolvedReasonCode {
+  if (match.fileArg.includes('$(') || match.fileArg.includes('`')) return 'command-substitution';
+  if (SHELL_EXPANSION.test(match.fileArg)) return 'dynamic-path';
+  if (GLOB_META.test(match.fileArg)) return 'glob-path';
+  if (match.reason.includes('working directory')) return 'dynamic-path';
+  return 'unsupported-expression';
+}
+
 /** Parse explicit authoring intent through deterministic and bounded recognizers. */
-export function parseCommandLayered(_command: string, _options: LayeredParseOptions = {}): LayeredParseResult {
-  throw new Error('Not Implemented');
+export function parseCommandLayered(command: string, options: LayeredParseOptions = {}): LayeredParseResult {
+  const cwd = options.cwd ?? process.cwd();
+  const maxCandidates = options.maxCandidates ?? DEFAULT_MAX_ATTRIBUTION_CANDIDATES;
+  if (!Number.isSafeInteger(maxCandidates) || maxCandidates < 1) {
+    throw new Error('maxCandidates must be a positive safe integer');
+  }
+
+  const loop = command
+    .trim()
+    .match(/^for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+([\s\S]*?)\s*;\s*do\s+([\s\S]*?)\s*;\s*done\s*$/);
+  if (loop !== null) {
+    const [, variable, listSource, body] = loop;
+    if (body.includes('for ') || body.includes('while ') || body.includes('until ')) {
+      return {
+        resolved: [],
+        unresolved: [
+          unresolved('literal-loop', 'literal-list-loop', 'unsupported-syntax', 'nested loop bodies are not supported')
+        ],
+        preStateRequests: []
+      };
+    }
+    if (listSource.includes('$(') || listSource.includes('`')) {
+      return {
+        resolved: [],
+        unresolved: [
+          unresolved('literal-loop', 'literal-list-loop', 'command-substitution', 'loop list uses command substitution')
+        ],
+        preStateRequests: []
+      };
+    }
+    if (GLOB_META.test(listSource)) {
+      return {
+        resolved: [],
+        unresolved: [unresolved('literal-loop', 'literal-list-loop', 'glob-path', 'loop list uses glob expansion')],
+        preStateRequests: []
+      };
+    }
+    if (SHELL_EXPANSION.test(listSource)) {
+      return {
+        resolved: [],
+        unresolved: [
+          unresolved('literal-loop', 'literal-list-loop', 'dynamic-list', 'loop list is not a literal list')
+        ],
+        preStateRequests: []
+      };
+    }
+    const bindings = argvOf(listSource);
+    if (bindings === null || bindings.length === 0) {
+      return {
+        resolved: [],
+        unresolved: [
+          unresolved('literal-loop', 'literal-list-loop', 'unsupported-syntax', 'loop list cannot be tokenized')
+        ],
+        preStateRequests: []
+      };
+    }
+    if (bindings.length > maxCandidates) {
+      return {
+        resolved: [],
+        unresolved: [
+          unresolved(
+            'literal-loop',
+            'literal-list-loop',
+            'candidate-budget-exceeded',
+            `literal list has ${bindings.length} bindings; the limit is ${maxCandidates}`
+          )
+        ],
+        preStateRequests: []
+      };
+    }
+    const variablePattern = new RegExp(`\\$\\{${variable}\\}|\\$${variable}(?![A-Za-z0-9_])`, 'g');
+    if (!variablePattern.test(body)) {
+      return {
+        resolved: [],
+        unresolved: [
+          unresolved('literal-loop', 'literal-list-loop', 'unsupported-dataflow', 'loop variable is not used directly')
+        ],
+        preStateRequests: []
+      };
+    }
+    const resolved: LayeredResolvedMatch[] = [];
+    const unresolvedMatches: UnresolvedAttribution[] = [];
+    const preStateRequests: PreStateRequest[] = [];
+    for (const binding of bindings) {
+      const dynamic = classifyDynamicWord(binding);
+      if (dynamic !== null) {
+        return {
+          resolved: [],
+          unresolved: [
+            unresolved('literal-loop', 'literal-list-loop', dynamic, 'loop binding is not literal', binding)
+          ],
+          preStateRequests: []
+        };
+      }
+      const braced = `\\$\\{${variable}\\}`;
+      const plain = `\\$${variable}(?![A-Za-z0-9_])`;
+      const expanded = body
+        .replace(new RegExp(`"(?:${braced}|${plain})"`, 'g'), shellQuote(binding))
+        .replace(variablePattern, shellQuote(binding));
+      const result = parseCommandLayered(expanded, { ...options, maxCandidates });
+      resolved.push(...result.resolved.map((match) => ({ ...match, layer: 'literal-loop' as const })));
+      unresolvedMatches.push(...result.unresolved.map((match) => ({ ...match, layer: 'literal-loop' as const })));
+      preStateRequests.push(...result.preStateRequests);
+    }
+    if (unresolvedMatches.length > 0) return { resolved: [], unresolved: unresolvedMatches, preStateRequests: [] };
+    if (resolved.length > maxCandidates) {
+      return {
+        resolved: [],
+        unresolved: [
+          unresolved(
+            'literal-loop',
+            'literal-list-loop',
+            'candidate-budget-exceeded',
+            `literal expansion produced ${resolved.length} candidates; the limit is ${maxCandidates}`
+          )
+        ],
+        preStateRequests: []
+      };
+    }
+    for (const match of resolved) {
+      if (match.span.operation !== 'modify') continue;
+      if (preStateRequests.some((request) => request.absolutePath === match.span.absolutePath)) continue;
+      preStateRequests.push({
+        absolutePath: match.span.absolutePath,
+        operation: match.span.operation,
+        requirement: 'match-locations',
+        simpleCommandIndex: match.span.simpleCommandIndex
+      });
+    }
+    return { resolved, unresolved: [], preStateRequests };
+  }
+
+  const split = splitTopLevel(command);
+  const hasPatternStage = split.stages.some((stage) => parsePatternCommand(stage.text) !== null);
+  const hasPipeline = split.stages.some((stage) => stage.precededBy === 'pipe');
+  if (split.malformed === undefined && split.stages.length > 1 && hasPatternStage && !hasPipeline) {
+    if (split.stages.some((stage) => argvOf(stage.text)?.[0] === 'cd')) {
+      return {
+        resolved: [],
+        unresolved: [
+          unresolved(
+            'pattern-substitution',
+            'compound-command',
+            'dynamic-path',
+            'a directory-changing compound cannot safely resolve substitution targets'
+          )
+        ],
+        preStateRequests: []
+      };
+    }
+    const resolved: LayeredResolvedMatch[] = [];
+    const unresolvedMatches: UnresolvedAttribution[] = [];
+    const preStateRequests: PreStateRequest[] = [];
+    for (let index = 0; index < split.stages.length; index += 1) {
+      const stage = split.stages[index];
+      const child = parseCommandLayered(stage.text, options);
+      const join: ResolvedSpan['join'] =
+        stage.precededBy === 'and' ? '&&' : stage.precededBy === 'or' ? '||' : undefined;
+      resolved.push(
+        ...child.resolved.map((match) => ({
+          ...match,
+          span: { ...match.span, simpleCommandIndex: index, join }
+        }))
+      );
+      unresolvedMatches.push(...child.unresolved.map((match) => ({ ...match, simpleCommandIndex: index })));
+      preStateRequests.push(...child.preStateRequests.map((request) => ({ ...request, simpleCommandIndex: index })));
+    }
+    if (resolved.length > maxCandidates) {
+      return {
+        resolved: [],
+        unresolved: [
+          unresolved(
+            'shell',
+            'compound-command',
+            'candidate-budget-exceeded',
+            `compound produced ${resolved.length} candidates; the limit is ${maxCandidates}`
+          )
+        ],
+        preStateRequests: []
+      };
+    }
+    return { resolved, unresolved: unresolvedMatches, preStateRequests };
+  }
+  const patternCommand =
+    split.malformed === undefined && split.stages.length === 1 ? parsePatternCommand(split.stages[0].text) : null;
+  if (patternCommand !== null) {
+    const numericMatch = patternCommand.kind === 'sed' ? patternCommand.script.match(/^(\d+)(?:,(\d+))?s\W/) : null;
+    const numericSed = numericMatch !== null;
+    if (numericMatch !== null) {
+      if (patternCommand.files.length === 0) {
+        return {
+          resolved: [],
+          unresolved: [
+            unresolved(
+              'shell',
+              'sed-inplace',
+              'unsupported-syntax',
+              'numeric in-place substitution has no file operand'
+            )
+          ],
+          preStateRequests: []
+        };
+      }
+      const start = Number.parseInt(numericMatch[1], 10);
+      const end = Number.parseInt(numericMatch[2] ?? numericMatch[1], 10);
+      const resolved: LayeredResolvedMatch[] = [];
+      const unresolvedMatches: UnresolvedAttribution[] = [];
+      for (const file of patternCommand.files) {
+        const reason = classifyDynamicWord(file);
+        if (reason !== null) {
+          unresolvedMatches.push(unresolved('shell', 'sed-inplace', reason, 'target path is dynamic', file));
+          continue;
+        }
+        resolved.push({
+          status: 'resolved',
+          layer: 'shell',
+          idiom: 'sed-inplace',
+          span: {
+            operation: 'modify',
+            absolutePath: nodePath.resolve(cwd, file),
+            lineStart: start,
+            lineEnd: end,
+            simpleCommandIndex: patternCommand.simpleCommandIndex
+          }
+        });
+        if (patternCommand.backupSuffix !== undefined && patternCommand.backupSuffix !== '') {
+          resolved.push({
+            status: 'resolved',
+            layer: 'shell',
+            idiom: 'sed-inplace',
+            span: {
+              operation: 'create-overwrite',
+              absolutePath: `${nodePath.resolve(cwd, file)}${patternCommand.backupSuffix}`,
+              simpleCommandIndex: patternCommand.simpleCommandIndex
+            }
+          });
+        }
+      }
+      if (unresolvedMatches.length > 0) return { resolved: [], unresolved: unresolvedMatches, preStateRequests: [] };
+      if (resolved.length > maxCandidates) {
+        return {
+          resolved: [],
+          unresolved: [
+            unresolved(
+              'shell',
+              'sed-inplace',
+              'candidate-budget-exceeded',
+              `numeric substitution produced ${resolved.length} candidates; the limit is ${maxCandidates}`
+            )
+          ],
+          preStateRequests: []
+        };
+      }
+      return { resolved, unresolved: [], preStateRequests: [] };
+    }
+    if (!numericSed) {
+      let addressLiteral: string | null = null;
+      let substitutionSource = patternCommand.script;
+      if (patternCommand.kind === 'sed' && substitutionSource.startsWith('/')) {
+        const address = readDelimitedField(substitutionSource, 1, '/');
+        if (address === null) substitutionSource = '';
+        else {
+          addressLiteral = decodeLiteralField(address.raw, '/', false);
+          if (addressLiteral === '') addressLiteral = null;
+          substitutionSource = substitutionSource.slice(address.next);
+        }
+      }
+      const substitution = parseLiteralSubstitution(substitutionSource);
+      const patternNewlines = substitution?.pattern.match(/\n/g)?.length ?? 0;
+      const replacementNewlines = substitution?.replacement.match(/\n/g)?.length ?? 0;
+      if (
+        substitution === null ||
+        patternNewlines !== replacementNewlines ||
+        (patternCommand.kind !== 'perl-zero' && patternNewlines > 0)
+      ) {
+        return {
+          resolved: [],
+          unresolved: [
+            unresolved(
+              'pattern-substitution',
+              patternCommand.kind === 'sed' ? 'sed-inplace' : 'perl-inplace',
+              'unsupported-expression',
+              'only literal line-count-preserving substitutions are supported'
+            )
+          ],
+          preStateRequests: []
+        };
+      }
+      if (patternCommand.files.length === 0) {
+        return {
+          resolved: [],
+          unresolved: [
+            unresolved(
+              'pattern-substitution',
+              patternCommand.kind === 'sed' ? 'sed-inplace' : 'perl-inplace',
+              'unsupported-syntax',
+              'in-place substitution has no literal file operand'
+            )
+          ],
+          preStateRequests: []
+        };
+      }
+      if (addressLiteral === null && patternCommand.kind === 'sed' && patternCommand.script.startsWith('/')) {
+        return {
+          resolved: [],
+          unresolved: [
+            unresolved(
+              'pattern-substitution',
+              'sed-inplace',
+              'unsupported-expression',
+              'sed address is not a literal pattern'
+            )
+          ],
+          preStateRequests: []
+        };
+      }
+      const resolved: LayeredResolvedMatch[] = [];
+      const unresolvedMatches: UnresolvedAttribution[] = [];
+      const preStateRequests: PreStateRequest[] = [];
+      for (const file of patternCommand.files) {
+        const reason = classifyDynamicWord(file);
+        if (reason !== null) {
+          unresolvedMatches.push(
+            unresolved(
+              'pattern-substitution',
+              patternCommand.kind === 'sed' ? 'sed-inplace' : 'perl-inplace',
+              reason,
+              'target path is dynamic',
+              file
+            )
+          );
+          continue;
+        }
+        const absolutePath = nodePath.resolve(cwd, file);
+        preStateRequests.push({
+          absolutePath,
+          operation: 'modify',
+          requirement: 'match-locations',
+          simpleCommandIndex: patternCommand.simpleCommandIndex
+        });
+        if (patternCommand.kind === 'perl-zero') {
+          preStateRequests.push({
+            absolutePath,
+            operation: 'modify',
+            requirement: 'deleted-text',
+            simpleCommandIndex: patternCommand.simpleCommandIndex
+          });
+        }
+        const content = options.readPreState?.(absolutePath) ?? null;
+        if (content === null) {
+          unresolvedMatches.push(
+            unresolved(
+              'pattern-substitution',
+              patternCommand.kind === 'sed' ? 'sed-inplace' : 'perl-inplace',
+              'missing-pre-state',
+              'literal substitution range requires pre-command text',
+              absolutePath
+            )
+          );
+          continue;
+        }
+        if (content.includes('\0')) {
+          unresolvedMatches.push(
+            unresolved(
+              'pattern-substitution',
+              patternCommand.kind === 'sed' ? 'sed-inplace' : 'perl-inplace',
+              'binary-content',
+              'substitution range recovery does not accept NUL-delimited content',
+              absolutePath
+            )
+          );
+          continue;
+        }
+        let ranges = literalOccurrenceRanges(content, substitution.pattern);
+        if (addressLiteral !== null) {
+          const addressedLines = new Set(literalOccurrenceRanges(content, addressLiteral).map(({ start }) => start));
+          ranges = ranges.filter(({ start, end }) => start === end && addressedLines.has(start));
+        }
+        if (patternCommand.kind === 'perl' && ranges.length > 1) {
+          ranges = [{ start: ranges[0].start, end: ranges[ranges.length - 1].end }];
+        } else if (patternCommand.kind === 'perl-zero' && !substitution.global) {
+          ranges = ranges.slice(0, 1);
+        }
+        const expectedContent = expectedSubstitutionContent(content, substitution, patternCommand.kind, addressLiteral);
+        for (const range of ranges) {
+          resolved.push({
+            status: 'resolved',
+            layer: 'pattern-substitution',
+            idiom: patternCommand.kind === 'sed' ? 'sed-inplace' : 'perl-inplace',
+            span: {
+              operation: 'modify',
+              absolutePath,
+              lineStart: range.start,
+              lineEnd: range.end,
+              expectedContent,
+              simpleCommandIndex: patternCommand.simpleCommandIndex
+            }
+          });
+        }
+        if (patternCommand.backupSuffix !== undefined && patternCommand.backupSuffix !== '') {
+          resolved.push({
+            status: 'resolved',
+            layer: 'pattern-substitution',
+            idiom: 'sed-inplace',
+            span: {
+              operation: 'create-overwrite',
+              absolutePath: `${absolutePath}${patternCommand.backupSuffix}`,
+              simpleCommandIndex: patternCommand.simpleCommandIndex
+            }
+          });
+        }
+      }
+      if (unresolvedMatches.length > 0) return { resolved: [], unresolved: unresolvedMatches, preStateRequests };
+      if (resolved.length > maxCandidates) {
+        return {
+          resolved: [],
+          unresolved: [
+            unresolved(
+              'pattern-substitution',
+              patternCommand.kind === 'sed' ? 'sed-inplace' : 'perl-inplace',
+              'candidate-budget-exceeded',
+              `substitution produced ${resolved.length} candidates; the limit is ${maxCandidates}`
+            )
+          ],
+          preStateRequests: []
+        };
+      }
+      return { resolved, unresolved: [], preStateRequests };
+    }
+  }
+
+  const argv = argvOf(command.trim());
+  if (argv !== null) {
+    if (argv[0] === 'git' && ['rebase', 'merge', 'cherry-pick', 'reset'].includes(argv[1] ?? '')) {
+      return {
+        resolved: [],
+        unresolved: [
+          unresolved('shell', 'history-operation', 'history-operation', 'history-changing commands have no file intent')
+        ],
+        preStateRequests: []
+      };
+    }
+    if (
+      ['yarn', 'npm', 'pnpm', 'make'].includes(argv[0]) &&
+      /(?:generate|build|install)/.test(argv.slice(1).join(' '))
+    ) {
+      return {
+        resolved: [],
+        unresolved: [
+          unresolved(
+            'shell',
+            'generator-operation',
+            'generator-operation',
+            'generators have no bounded static output set'
+          )
+        ],
+        preStateRequests: []
+      };
+    }
+  }
+
+  const detailed = parseCommandDetailed(command, options);
+  const resolved = detailed.flatMap<LayeredResolvedMatch>((match) =>
+    match.status === 'resolved' ? [{ status: 'resolved', layer: 'shell', idiom: match.idiom, span: match.span }] : []
+  );
+  const unresolvedMatches = detailed.flatMap<UnresolvedAttribution>((match) =>
+    match.status === 'unresolved'
+      ? [unresolved('shell', match.idiom, stableReason(match), match.reason, match.fileArg)]
+      : []
+  );
+  if (resolved.length > maxCandidates) {
+    return {
+      resolved: [],
+      unresolved: [
+        unresolved(
+          'shell',
+          'deterministic-shell',
+          'candidate-budget-exceeded',
+          `command produced ${resolved.length} candidates; the limit is ${maxCandidates}`
+        )
+      ],
+      preStateRequests: []
+    };
+  }
+  return { resolved, unresolved: unresolvedMatches, preStateRequests: [] };
 }
 
 /** Aggregate counters emitted once per tool invocation and never sent to the model. */

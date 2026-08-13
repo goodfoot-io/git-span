@@ -239,6 +239,25 @@ describe('bashSpanToTouch — operation→touch translation (plan §2)', () => {
     });
   });
 
+  it('range-scoped modify carries decisive exact post-state evidence', () => {
+    expect(
+      bashSpanToTouch(
+        span({ operation: 'modify', lineStart: 2, lineEnd: 2, expectedContent: 'before\nafter\n' }),
+        SESSION_ID,
+        repo.root
+      )
+    ).toEqual({
+      kind: 'write',
+      sessionId: SESSION_ID,
+      cwd: repo.root,
+      filePath: appPath(),
+      written: '',
+      targetState: 'exists',
+      range: { start: 2, end: 2 },
+      postState: { content: { exact: 'before\nafter\n' } }
+    });
+  });
+
   it('delete → whole-file write touch, targetState "absent", realDelete post-state', () => {
     expect(bashSpanToTouch(span({ operation: 'delete' }), SESSION_ID, repo.root)).toEqual({
       kind: 'write',
@@ -1016,6 +1035,54 @@ describe('runBashTouches — per-command verdicts, explanations, and the join fi
     );
 
     expect(calls).toEqual({ fix: 0, list: 0, drift: 0, why: 0 });
+  });
+
+  it('executes every candidate when a simple command produces exactly 32 touches', async () => {
+    const root = freshRepo();
+    const files = Array.from({ length: 32 }, (_, index) => [`f-${index}.txt`, 'x\n'] as [string, string]);
+    seedState(
+      root,
+      files,
+      files.map(([path]) => path)
+    );
+    const { executors, fixPaths } = makeCountingExecutors();
+
+    await runBashTouches(
+      files.map(([path]) => resolved('redirect-write', createOn(root, path, 0, undefined, 'x\n'))),
+      SESSION_ID,
+      root,
+      {},
+      executors,
+      createMemoryMemoStore()
+    );
+
+    expect(fixPaths).toHaveLength(32);
+  });
+
+  it.each([33, 65])('rejects all %i candidates before any executor runs', async (count) => {
+    const root = freshRepo();
+    const files = Array.from({ length: count }, (_, index) => [`f-${index}.txt`, 'x\n'] as [string, string]);
+    seedState(
+      root,
+      files,
+      files.map(([path]) => path)
+    );
+    const { executors, calls } = makeCountingExecutors();
+    const warnings: string[] = [];
+
+    await runBashTouches(
+      files.map(([path]) => resolved('redirect-write', createOn(root, path, 0, undefined, 'x\n'))),
+      SESSION_ID,
+      root,
+      {},
+      executors,
+      createMemoryMemoStore(),
+      (warning) => warnings.push(warning)
+    );
+
+    expect(calls).toEqual({ fix: 0, list: 0, drift: 0, why: 0 });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('candidate budget exceeded');
   });
 
   it('guard-only input: no spans, no touches, nothing fires', async () => {

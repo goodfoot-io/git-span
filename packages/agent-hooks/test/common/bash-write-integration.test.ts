@@ -60,7 +60,8 @@ import type { MemoStore } from '../../src/common/span-surface.js';
 import {
   createPlannedTouchStore,
   type PlannedTouchBudgets,
-  type PlannedTouchRecord
+  type PlannedTouchRecord,
+  parseCommandLayered
 } from '../../src/common/static-attribution.js';
 import type { TouchExecutors, TouchFixResult } from '../../src/common/touch-core.js';
 import { makeTempRepo } from '../helpers.js';
@@ -254,6 +255,107 @@ function parsedOps(matches: SpanMatch[], repoRoot: string): ParsedOp[] {
 function unresolvedReasons(matches: SpanMatch[]): string[] {
   return matches.filter((m) => m.status !== 'resolved').map((m) => (m as { reason?: string }).reason ?? 'unresolved');
 }
+
+describe('layered substitution range integration', () => {
+  let repo: { root: string; cleanup: () => void } | undefined;
+
+  afterEach(() => repo?.cleanup());
+
+  it('recovers every changed sed line from pre-state and drives both range touches', async () => {
+    repo = freshRepo();
+    const before = 'alpha\nneedle one\nbeta\nneedle two\nomega\n';
+    seedTrackedSpan(repo.root, 'f.txt', before, 'f-lines');
+    const fullPath = join(repo.root, 'f.txt');
+    const parsed = parseCommandLayered("sed -i 's/needle/pin/' f.txt", {
+      cwd: repo.root,
+      readPreState: (absolutePath) => (absolutePath === fullPath ? before : null)
+    });
+
+    expect(bashRun("sed -i 's/needle/pin/' f.txt", repo.root)).toBe(0);
+    const cap = makeCaptureExecutors();
+    await runBashTouches(
+      parsed.resolved.map(({ span }): SpanMatch => ({ status: 'resolved', idiom: 'sed-inplace', span })),
+      SESSION_ID,
+      repo.root,
+      { exit_code: 0 },
+      cap.executors,
+      createMemoryMemoStore()
+    );
+
+    expect(parsed.resolved.map(({ span }) => [span.lineStart, span.lineEnd])).toEqual([
+      [2, 2],
+      [4, 4]
+    ]);
+    expect(lineDiff(splitLines(before), splitLines(readRel(repo.root, 'f.txt'))).changed).toEqual([2, 4]);
+    expect(cap.fixPaths).toEqual([fullPath, fullPath]);
+  });
+
+  it('recovers a multiline Perl -0pi substitution without widening to the file', () => {
+    repo = freshRepo();
+    const before = 'alpha\nneedle\nbeta\n';
+    seedTrackedSpan(repo.root, 'f.txt', before, 'f-lines');
+    const fullPath = join(repo.root, 'f.txt');
+    const command = "perl -0pi -e 's/alpha\\nneedle/first\\npin/' f.txt";
+    const parsed = parseCommandLayered(command, {
+      cwd: repo.root,
+      readPreState: (absolutePath) => (absolutePath === fullPath ? before : null)
+    });
+
+    expect(bashRun(command, repo.root)).toBe(0);
+    expect(parsed.unresolved).toEqual([]);
+    expect(parsed.resolved.map(({ span }) => [span.lineStart, span.lineEnd])).toEqual([[1, 2]]);
+    expect(lineDiff(splitLines(before), splitLines(readRel(repo.root, 'f.txt'))).changed).toEqual([1, 2]);
+  });
+
+  it('attributes a completed substitution when a later command makes the compound fail', async () => {
+    repo = freshRepo();
+    const before = 'alpha\nneedle\nomega\n';
+    seedTrackedSpan(repo.root, 'f.txt', before, 'f-lines');
+    const fullPath = join(repo.root, 'f.txt');
+    const command = "sed -i 's/needle/pin/' f.txt; false";
+    const parsed = parseCommandLayered(command, {
+      cwd: repo.root,
+      readPreState: (absolutePath) => (absolutePath === fullPath ? before : null)
+    });
+
+    expect(bashRun(command, repo.root)).toBe(1);
+    const cap = makeCaptureExecutors();
+    await runBashTouches(
+      parsed.resolved.map(({ span }): SpanMatch => ({ status: 'resolved', idiom: 'sed-inplace', span })),
+      SESSION_ID,
+      repo.root,
+      { exit_code: 1 },
+      cap.executors,
+      createMemoryMemoStore()
+    );
+
+    expect(cap.fixPaths).toEqual([fullPath]);
+  });
+
+  it('suppresses a failed substitution when its decisive post-state evidence mismatches', async () => {
+    repo = freshRepo();
+    const before = 'alpha\nneedle\nomega\n';
+    seedTrackedSpan(repo.root, 'f.txt', before, 'f-lines');
+    const fullPath = join(repo.root, 'f.txt');
+    const parsed = parseCommandLayered("sed -i 's/needle/pin/' f.txt", {
+      cwd: repo.root,
+      readPreState: (absolutePath) => (absolutePath === fullPath ? before : null)
+    });
+    writeRel(repo.root, 'f.txt', 'unexpected\n');
+    const cap = makeCaptureExecutors();
+
+    await runBashTouches(
+      parsed.resolved.map(({ span }): SpanMatch => ({ status: 'resolved', idiom: 'sed-inplace', span })),
+      SESSION_ID,
+      repo.root,
+      { exit_code: 1 },
+      cap.executors,
+      createMemoryMemoStore()
+    );
+
+    expect(cap.fixPaths).toEqual([]);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // The byte-diff oracle — independent of the parser
