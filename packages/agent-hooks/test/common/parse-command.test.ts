@@ -22,7 +22,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -1631,12 +1631,11 @@ describe('span-less builtin guards (§3 step 2)', () => {
 });
 
 describe('layered static attribution contract (bootstrap)', () => {
-  const shellLayerCorpus = STATIC_ATTRIBUTION_CORPUS.filter(
-    (fixture) =>
-      fixture.layer !== 'node' && fixture.name !== 'tracked and untracked pair retains only tracked eligibility'
+  const attributionCorpus = STATIC_ATTRIBUTION_CORPUS.filter(
+    (fixture) => fixture.name !== 'tracked and untracked pair retains only tracked eligibility'
   );
 
-  it.each(shellLayerCorpus)('$name', (fixture) => {
+  it.each(attributionCorpus)('$name', (fixture) => {
     const preState = new Map(fixture.files.map((file) => [join(dir, file.path), file.content]));
     const result = parseCommandLayered(fixture.command, {
       cwd: dir,
@@ -1753,6 +1752,139 @@ describe('layered static attribution contract (bootstrap)', () => {
     const result = parseCommandLayered(command, { cwd: dir, readPreState: () => content });
     expect(result.unresolved).toEqual([]);
     expect(result.resolved.map(({ span }) => [span.lineStart, span.lineEnd])).toEqual([[2, 2]]);
+  });
+
+  it('recognizes a quoted Node heredoc, one-hop path alias, destructured fs calls, and replaceAll evidence', () => {
+    const target = join(dir, 'node-heredoc.txt');
+    const command = `node - <<'NODE'
+const { readFileSync, writeFileSync } = require('node:fs')
+const p = 'node-heredoc.txt'
+const q = p
+const source = readFileSync(q, 'utf8')
+const output = source.replaceAll('needle', 'pin')
+writeFileSync(q, output)
+NODE`;
+    const result = parseCommandLayered(command, {
+      cwd: dir,
+      readPreState: (absolutePath) => (absolutePath === target ? 'needle one\nnone\nneedle two\n' : null)
+    });
+
+    expect(result.unresolved).toEqual([]);
+    expect(result.resolved.map(({ layer, idiom, span }) => [layer, idiom, span.lineStart, span.lineEnd])).toEqual([
+      ['node', 'node-replace', 1, 1],
+      ['node', 'node-replace', 3, 3]
+    ]);
+    expect(result.resolved.every(({ span }) => span.expectedContent === 'pin one\nnone\npin two\n')).toBe(true);
+  });
+
+  it('locates a stable literal key in bounded Node JSON dataflow', () => {
+    const command = `node -e "const fs=require('node:fs');const p='config.json';const source=fs.readFileSync(p,'utf8');const data=JSON.parse(source);data.settings['enabled']=true;fs.writeFileSync(p,JSON.stringify(data,null,2))"`;
+    const result = parseCommandLayered(command, {
+      cwd: dir,
+      readPreState: () => '{\n  "name": "demo",\n  "settings": {\n    "enabled": false\n  }\n}\n'
+    });
+
+    expect(result.unresolved).toEqual([]);
+    expect(result.resolved.map(({ layer, idiom, span }) => [layer, idiom, span.lineStart, span.lineEnd])).toEqual([
+      ['node', 'node-json', 4, 4]
+    ]);
+  });
+
+  it('recognizes a literal Node overwrite through a one-hop target', () => {
+    const command = `node -e "const fs=require('node:fs');const p='created.txt';const q=p;fs.writeFileSync(q,'created\\n','utf8')"`;
+    const result = parseCommandLayered(command, { cwd: dir });
+
+    expect(result.unresolved).toEqual([]);
+    expect(
+      result.resolved.map(({ layer, idiom, span }) => ({
+        layer,
+        idiom,
+        operation: span.operation,
+        path: relative(dir, span.absolutePath),
+        written: span.written,
+        expectedContent: span.expectedContent
+      }))
+    ).toEqual([
+      {
+        layer: 'node',
+        idiom: 'node-write',
+        operation: 'create-overwrite',
+        path: 'created.txt',
+        written: 'created\n',
+        expectedContent: 'created\n'
+      }
+    ]);
+  });
+
+  it('uses a literal Node count guard as pre-state evidence', () => {
+    const command = `node -e "const fs=require('node:fs');const p='count.txt';const source=fs.readFileSync(p,'utf8');if(source.split('needle').length-1!==1)throw new Error('count');fs.writeFileSync(p,source.replace('needle','pin'))"`;
+    const mismatch = parseCommandLayered(command, { cwd: dir, readPreState: () => 'needle\nneedle\n' });
+    const matched = parseCommandLayered(command, { cwd: dir, readPreState: () => 'needle\n' });
+
+    expect(mismatch.resolved).toEqual([]);
+    expect(mismatch.unresolved.map(({ reasonCode }) => reasonCode)).toEqual(['evidence-mismatch']);
+    expect(matched.unresolved).toEqual([]);
+    expect(matched.resolved[0]?.span.expectedContent).toBe('pin\n');
+  });
+
+  it('matches static Node evidence to the output of the real command', () => {
+    const target = join(dir, 'node-real.txt');
+    const before = 'alpha\nneedle\nomega\n';
+    writeFileSync(target, before);
+    const command = `node -e "const fs=require('node:fs');const p='node-real.txt';const source=fs.readFileSync(p,'utf8');fs.writeFileSync(p,source.replace('needle','pin'))"`;
+    const result = parseCommandLayered(command, {
+      cwd: dir,
+      readPreState: (absolutePath) => (absolutePath === target ? before : null)
+    });
+
+    execFileSync('bash', ['-c', command], { cwd: dir });
+    expect(result.unresolved).toEqual([]);
+    expect(result.resolved[0]?.span.expectedContent).toBe(readFileSync(target, 'utf8'));
+    expect(result.resolved.map(({ span }) => [span.lineStart, span.lineEnd])).toEqual([[2, 2]]);
+  });
+
+  it('never executes a rejected Node program while inspecting it', () => {
+    const sentinel = join(dir, 'node-parser-must-not-run.txt');
+    const command = `node -e "const fs=require('node:fs');fs.writeFileSync('node-parser-must-not-run.txt','ran');throw new Error('stop')"`;
+
+    const result = parseCommandLayered(command, { cwd: dir });
+    expect(result.resolved).toEqual([]);
+    expect(result.unresolved.map(({ reasonCode }) => reasonCode)).toEqual(['unsupported-syntax']);
+    expect(() => readFileSync(sentinel)).toThrow();
+  });
+
+  it('accepts one literal Node path alias but rejects aliases beyond one hop', () => {
+    const preState = (absolutePath: string) => (absolutePath === join(dir, 'src/a.txt') ? 'beta\n' : null);
+    const oneHop = `node -e "const fs=require('node:fs');const p='src/a.txt';const q=p;const source=fs.readFileSync(q,'utf8');fs.writeFileSync(q,source.replace('beta','BETA'))"`;
+    const twoHops = `node -e "const fs=require('node:fs');const p='src/a.txt';const q=p;const r=q;const source=fs.readFileSync(r,'utf8');fs.writeFileSync(r,source.replace('beta','BETA'))"`;
+
+    expect(parseCommandLayered(oneHop, { cwd: dir, readPreState: preState }).resolved).toHaveLength(1);
+    expect(
+      parseCommandLayered(twoHops, { cwd: dir, readPreState: preState }).unresolved.map(({ reasonCode }) => reasonCode)
+    ).toEqual(['unsupported-dataflow']);
+  });
+
+  it.each([
+    ["node - <<NODE\nrequire('node:fs').writeFileSync('src/a.txt','x')\nNODE", 'unsupported-syntax'],
+    ["node -e \"require('node:fs').writeFileSync(process.argv[1],'x')\" src/a.txt", 'dynamic-path'],
+    [
+      `node -e "const fs=require('node:fs');const p='src/a.txt';const source=fs.readFileSync(p,'utf8');fs.writeFileSync(p,render(source))"`,
+      'unsupported-dataflow'
+    ],
+    [`node -e "const fs=require('node:fs');fs.promises.writeFile('src/a.txt','x')"`, 'unsupported-dataflow'],
+    [
+      `node -e "const fs=require('node:fs');const p='src/a.txt';const source=fs.readFileSync(p);fs.writeFileSync(p,source)"`,
+      'unsupported-encoding'
+    ],
+    [
+      `node -e "const fs=require('node:fs');const p='src/a.txt';const source=fs.readFileSync(p,'utf8');fs.writeFileSync(p,source.replace('beta','$&!'))"`,
+      'unsupported-expression'
+    ],
+    [`node -e "const p='src/a.txt'`, 'unsupported-syntax']
+  ] as const)('rejects unsupported Node without executing it: %s', (command, reason) => {
+    const result = parseCommandLayered(command, { cwd: dir, readPreState: () => 'beta\n' });
+    expect(result.resolved).toEqual([]);
+    expect(result.unresolved.map(({ reasonCode }) => reasonCode)).toEqual([reason]);
   });
 
   it('intersects a literal sed address with the literal replacement pattern', () => {

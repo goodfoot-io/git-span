@@ -3703,6 +3703,7 @@ function parseCommandDetailed(command, opts = {}) {
 
 // src/common/static-attribution.ts
 var PYTHON_STRING_SOURCE = String.raw`(?:'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")`;
+var NODE_STRING_SOURCE = String.raw`(?:'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")`;
 
 // src/common/touch-core.ts
 import { execFileSync as execFileSync5 } from "node:child_process";

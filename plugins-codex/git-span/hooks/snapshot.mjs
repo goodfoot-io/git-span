@@ -7146,6 +7146,7 @@ function parseCommandDetailed(command, opts = {}) {
 
 // src/common/static-attribution.ts
 var PYTHON_STRING_SOURCE = String.raw`(?:'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")`;
+var NODE_STRING_SOURCE = String.raw`(?:'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")`;
 
 // src/common/bash-touch.ts
 function bashSpanToTouch(span, sessionId, cwd) {
