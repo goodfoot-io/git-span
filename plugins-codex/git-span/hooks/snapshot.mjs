@@ -215,11 +215,11 @@ function subagentStartOutput(options = {}) {
 
 // ../../node_modules/@goodfoot/codex-hooks/dist/runtime.js
 async function readStdin() {
-  return new Promise((resolve3, reject) => {
+  return new Promise((resolve4, reject) => {
     const chunks = [];
     process.stdin.setEncoding("utf-8");
     process.stdin.on("data", (chunk) => chunks.push(chunk));
-    process.stdin.on("end", () => resolve3(chunks.join("")));
+    process.stdin.on("end", () => resolve4(chunks.join("")));
     process.stdin.on("error", reject);
   });
 }
@@ -4968,7 +4968,7 @@ var advisor_default = preToolUseHook({ matcher: "Bash|shell|exec|local_shell", t
 
 // src/codex/post-tool-use.ts
 import { createHash as createHash3 } from "node:crypto";
-import { readFileSync as readFileSync10 } from "node:fs";
+import { readFileSync as readFileSync11 } from "node:fs";
 import { resolve as resolvePath3 } from "node:path";
 
 // src/common/span-surface.ts
@@ -5021,72 +5021,10 @@ function resolveTouchScope(cwd, absPath) {
   return { repoRoot, repoRelPath };
 }
 
-// src/common/bash-touch.ts
-function bashSpanToTouch(span, sessionId, cwd) {
-  if (!resolveTouchScope(cwd, span.absolutePath)) return null;
-  switch (span.operation) {
-    case "read":
-      return {
-        kind: "read",
-        sessionId,
-        cwd,
-        filePath: span.absolutePath,
-        offset: span.lineStart,
-        limit: span.lineStart !== void 0 && span.lineEnd !== void 0 ? span.lineEnd - span.lineStart + 1 : void 0
-      };
-    case "create-overwrite":
-    case "rename-copy":
-      return {
-        kind: "write",
-        sessionId,
-        cwd,
-        filePath: span.absolutePath,
-        written: "",
-        targetState: "exists",
-        postState: span.written !== void 0 ? { content: { exact: span.written } } : void 0
-      };
-    case "truncate":
-      return {
-        kind: "write",
-        sessionId,
-        cwd,
-        filePath: span.absolutePath,
-        written: "",
-        targetState: "exists",
-        postState: span.size === 0 ? { content: { empty: true } } : span.size !== void 0 ? { content: { size: span.size } } : void 0
-      };
-    case "append":
-      return {
-        kind: "write",
-        sessionId,
-        cwd,
-        filePath: span.absolutePath,
-        written: span.written ?? "",
-        targetState: "exists",
-        postState: span.written !== void 0 ? { content: { suffix: span.written } } : void 0
-      };
-    case "modify":
-      return {
-        kind: "write",
-        sessionId,
-        cwd,
-        filePath: span.absolutePath,
-        written: "",
-        targetState: "exists",
-        range: span.lineStart !== void 0 ? { start: span.lineStart, end: span.lineEnd ?? span.lineStart } : void 0
-      };
-    case "delete":
-      return {
-        kind: "write",
-        sessionId,
-        cwd,
-        filePath: span.absolutePath,
-        written: "",
-        targetState: "absent",
-        postState: { realDelete: true }
-      };
-  }
-}
+// src/common/static-attribution.ts
+import { execFileSync as execFileSync8 } from "node:child_process";
+import * as fs7 from "node:fs";
+import * as nodePath6 from "node:path";
 
 // src/common/parse-command.ts
 import { readFileSync as readFileSync8, statSync as statSync6 } from "node:fs";
@@ -5792,7 +5730,7 @@ function teeOperandParts(argv) {
   }
   return { append, operands };
 }
-function matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join10, results) {
+function matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join11, results) {
   const parts = teeOperandParts(argv);
   if (parts === null) return;
   for (const operand of parts.operands) {
@@ -5805,23 +5743,23 @@ function matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex,
         operation: "create-overwrite",
         absolutePath,
         simpleCommandIndex,
-        join: join10,
+        join: join11,
         ...pipeEchoContent !== null ? { written: pipeEchoContent } : {}
       } : {
         operation: "append",
         absolutePath,
         simpleCommandIndex,
-        join: join10,
+        join: join11,
         ...pipeEchoContent !== null ? { written: pipeEchoContent } : {}
       }
     });
   }
 }
-function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpleCommandIndex, join10, results) {
+function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpleCommandIndex, join11, results) {
   const contentRedirects = redirects.filter(isContentRedirect);
   const host = argv[0];
   if (contentRedirects.length === 0) {
-    if (host === "tee") matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join10, results);
+    if (host === "tee") matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join11, results);
     return;
   }
   if (host === void 0 || host === ":" || host === "exec") {
@@ -5832,7 +5770,7 @@ function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpl
       results.push({
         status: "resolved",
         idiom: "truncate-write",
-        span: { operation: "truncate", absolutePath, simpleCommandIndex, join: join10 }
+        span: { operation: "truncate", absolutePath, simpleCommandIndex, join: join11 }
       });
     }
     return;
@@ -5854,7 +5792,7 @@ function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpl
           operation: "append",
           absolutePath,
           simpleCommandIndex,
-          join: join10,
+          join: join11,
           ...threadedAppend !== void 0 ? { written: threadedAppend } : {}
         }
       });
@@ -5866,13 +5804,13 @@ function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpl
           operation: "create-overwrite",
           absolutePath,
           simpleCommandIndex,
-          join: join10,
+          join: join11,
           ...threadedOverwrite !== void 0 ? { written: threadedOverwrite } : {}
         }
       });
     }
   }
-  if (host === "tee") matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join10, results);
+  if (host === "tee") matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join11, results);
 }
 var FOREIGN_WRAPPERS = /* @__PURE__ */ new Set(["sudo", "xargs", "nohup", "time", "nice", "doas"]);
 var ASSIGNMENT_TOKEN = /^[A-Za-z_][A-Za-z0-9_]*=/;
@@ -5981,12 +5919,12 @@ function copyMoveParts(args, spec) {
   }
   return { operands, targetDir };
 }
-function emitSourceSpan(results, spec, absolutePath, simpleCommandIndex, join10) {
+function emitSourceSpan(results, spec, absolutePath, simpleCommandIndex, join11) {
   if (spec.sourceOperation === "delete") {
     results.push({
       status: "resolved",
       idiom: spec.idiom,
-      span: { operation: "delete", absolutePath, simpleCommandIndex, join: join10 }
+      span: { operation: "delete", absolutePath, simpleCommandIndex, join: join11 }
     });
     return;
   }
@@ -5994,17 +5932,17 @@ function emitSourceSpan(results, spec, absolutePath, simpleCommandIndex, join10)
   results.push({
     status: "resolved",
     idiom: spec.idiom,
-    span: range === null ? { operation: "read", absolutePath, simpleCommandIndex, join: join10 } : {
+    span: range === null ? { operation: "read", absolutePath, simpleCommandIndex, join: join11 } : {
       operation: "read",
       lineStart: range.lineStart,
       lineEnd: range.lineEnd,
       absolutePath,
       simpleCommandIndex,
-      join: join10
+      join: join11
     }
   });
 }
-function matchCopyMoveFamily(argv, dirForResolution, simpleCommandIndex, join10, results) {
+function matchCopyMoveFamily(argv, dirForResolution, simpleCommandIndex, join11, results) {
   const rest = stripTransparentWrapper(argv);
   if (rest.length === 0) return;
   const command = rest[0];
@@ -6072,20 +6010,20 @@ function matchCopyMoveFamily(argv, dirForResolution, simpleCommandIndex, join10,
     destPaths = destIsDir ? sourcePaths.map((p) => joinPath(destAbs, basename4(p))) : [destAbs];
   }
   for (let k = 0; k < sourcePaths.length; k++) {
-    emitSourceSpan(results, spec, sourcePaths[k], simpleCommandIndex, join10);
+    emitSourceSpan(results, spec, sourcePaths[k], simpleCommandIndex, join11);
   }
   for (let k = 0; k < sourcePaths.length; k++) {
     results.push({
       status: "resolved",
       idiom: spec.idiom,
-      span: { operation: spec.destOperation, absolutePath: destPaths[k], simpleCommandIndex, join: join10 }
+      span: { operation: spec.destOperation, absolutePath: destPaths[k], simpleCommandIndex, join: join11 }
     });
   }
 }
 var RM_NO_VALUE = /* @__PURE__ */ new Set(["-f", "-i", "-v"]);
 var RM_EXCLUDED = /* @__PURE__ */ new Set(["-r", "-R", "--recursive", "-d"]);
 var GIT_RM_EXCLUDED = /* @__PURE__ */ new Set(["-r", "-R", "--recursive", "-d", "-n", "--dry-run"]);
-function matchRmOperands(args, excluded, excludeCached, dir, simpleCommandIndex, join10, results) {
+function matchRmOperands(args, excluded, excludeCached, dir, simpleCommandIndex, join11, results) {
   let afterDashDash = false;
   const operands = [];
   for (const a of args) {
@@ -6111,7 +6049,7 @@ function matchRmOperands(args, excluded, excludeCached, dir, simpleCommandIndex,
     results.push({
       status: "resolved",
       idiom: "rm-write",
-      span: { operation: "delete", absolutePath: resolvePath(dir, operand), simpleCommandIndex, join: join10 }
+      span: { operation: "delete", absolutePath: resolvePath(dir, operand), simpleCommandIndex, join: join11 }
     });
   }
 }
@@ -6123,7 +6061,7 @@ function evaluateStaticSize(value) {
   const mult = m[2] === "K" ? 1024 : m[2] === "M" ? 1024 ** 2 : m[2] === "G" ? 1024 ** 3 : 1;
   return base * mult;
 }
-function matchTruncateOperands(args, dir, simpleCommandIndex, join10, results) {
+function matchTruncateOperands(args, dir, simpleCommandIndex, join11, results) {
   let sawSizeFlag = false;
   let afterDashDash = false;
   let staticSize;
@@ -6168,22 +6106,22 @@ function matchTruncateOperands(args, dir, simpleCommandIndex, join10, results) {
         operation: "truncate",
         absolutePath: resolvePath(dir, operand.path),
         simpleCommandIndex,
-        join: join10,
+        join: join11,
         ...operand.size !== void 0 ? { size: operand.size } : {}
       }
     });
   }
 }
-function matchRmTruncate(argv, dirForResolution, simpleCommandIndex, join10, results) {
+function matchRmTruncate(argv, dirForResolution, simpleCommandIndex, join11, results) {
   const rest = stripTransparentWrapper(argv);
   if (rest.length === 0) return;
   const command = rest[0];
   if (command === "rm") {
-    matchRmOperands(rest.slice(1), RM_EXCLUDED, false, dirForResolution, simpleCommandIndex, join10, results);
+    matchRmOperands(rest.slice(1), RM_EXCLUDED, false, dirForResolution, simpleCommandIndex, join11, results);
     return;
   }
   if (command === "truncate") {
-    matchTruncateOperands(rest.slice(1), dirForResolution, simpleCommandIndex, join10, results);
+    matchTruncateOperands(rest.slice(1), dirForResolution, simpleCommandIndex, join11, results);
     return;
   }
   if (command === "git") {
@@ -6199,7 +6137,7 @@ function matchRmTruncate(argv, dirForResolution, simpleCommandIndex, join10, res
         true,
         sub.cDir ?? dirForResolution,
         simpleCommandIndex,
-        join10,
+        join11,
         results
       );
     }
@@ -6227,7 +6165,7 @@ function heredocBodyIsLiteral(body) {
   }
   return true;
 }
-function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleCommandIndex, join10, results) {
+function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleCommandIndex, join11, results) {
   const bodyLiteral = quotedDelim || heredocBodyIsLiteral(body);
   const tokens = tokenize(stripLeadingAssignments(opener).trim());
   if (tokens === null) return;
@@ -6250,7 +6188,7 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
             operation: "append",
             absolutePath,
             simpleCommandIndex,
-            join: join10,
+            join: join11,
             ...singlePlainAppend && r.op === ">>" && bodyLiteral ? { written: body } : {}
           }
         });
@@ -6258,11 +6196,11 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
         results.push({
           status: "resolved",
           idiom: "heredoc-write",
-          span: body.length === 0 ? { operation: "truncate", absolutePath, simpleCommandIndex, join: join10 } : {
+          span: body.length === 0 ? { operation: "truncate", absolutePath, simpleCommandIndex, join: join11 } : {
             operation: "create-overwrite",
             absolutePath,
             simpleCommandIndex,
-            join: join10,
+            join: join11,
             // The exact gate compares full file bytes, so the trailing
             // `\n` the extraction stripped comes back on the overwrite.
             ...singlePlainOverwrite && bodyLiteral ? { written: `${body}
@@ -6291,7 +6229,7 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
               operation: "append",
               absolutePath,
               simpleCommandIndex,
-              join: join10,
+              join: join11,
               ...contentRedirects.length === 0 && bodyLiteral ? { written: body } : {}
             }
           });
@@ -6299,11 +6237,11 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
           results.push({
             status: "resolved",
             idiom: "heredoc-write",
-            span: body.length === 0 ? { operation: "truncate", absolutePath, simpleCommandIndex, join: join10 } : {
+            span: body.length === 0 ? { operation: "truncate", absolutePath, simpleCommandIndex, join: join11 } : {
               operation: "create-overwrite",
               absolutePath,
               simpleCommandIndex,
-              join: join10,
+              join: join11,
               // Same restored-`\n` exact body as the redirect branch; a
               // tee operand with a content redirect present keeps the
               // redirect's threading only (mirror of the append branch).
@@ -6318,18 +6256,18 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
     return;
   }
   if (host === "patch" || host === "git") {
-    classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join10, results);
+    classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join11, results);
     return;
   }
 }
 var NUMERIC_SUBSTITUTION = /^(\d+)(?:,(\d+))?[sy]/;
 var UNRESTRICTED_SUBSTITUTION = /^[sy]/;
-function matchSedInplace(argv, dirForResolution, simpleCommandIndex, join10, results) {
+function matchSedInplace(argv, dirForResolution, simpleCommandIndex, join11, results) {
   const rest = stripTransparentWrapper(argv);
   if (rest.length === 0) return;
   const command = rest[0];
   if (command === "sed") {
-    matchSedInplaceArgs(rest.slice(1), dirForResolution, simpleCommandIndex, join10, results);
+    matchSedInplaceArgs(rest.slice(1), dirForResolution, simpleCommandIndex, join11, results);
     return;
   }
   if (FOREIGN_WRAPPERS.has(command)) {
@@ -6340,7 +6278,7 @@ function matchSedInplace(argv, dirForResolution, simpleCommandIndex, join10, res
   }
 }
 var SED_SCRIPT_SHAPE = /^(?:[A-Za-z]|\d|\/|\\|\$|~)/;
-function matchSedInplaceArgs(args, dir, simpleCommandIndex, join10, results) {
+function matchSedInplaceArgs(args, dir, simpleCommandIndex, join11, results) {
   let suffix = null;
   let sawInplace = false;
   let i = 0;
@@ -6463,20 +6401,20 @@ function matchSedInplaceArgs(args, dir, simpleCommandIndex, join10, results) {
       results.push({
         status: "resolved",
         idiom: "sed-inplace",
-        span: { operation: "modify", lineStart: start, lineEnd: end, absolutePath, simpleCommandIndex, join: join10 }
+        span: { operation: "modify", lineStart: start, lineEnd: end, absolutePath, simpleCommandIndex, join: join11 }
       });
     } else {
       results.push({
         status: "resolved",
         idiom: "sed-inplace",
-        span: { operation: "modify", absolutePath, simpleCommandIndex, join: join10 }
+        span: { operation: "modify", absolutePath, simpleCommandIndex, join: join11 }
       });
     }
     if (suffix !== null && suffix !== "") {
       results.push({
         status: "resolved",
         idiom: "sed-inplace",
-        span: { operation: "create-overwrite", absolutePath: `${absolutePath}${suffix}`, simpleCommandIndex, join: join10 }
+        span: { operation: "create-overwrite", absolutePath: `${absolutePath}${suffix}`, simpleCommandIndex, join: join11 }
       });
     }
   }
@@ -6561,7 +6499,7 @@ function readPatchFile(absolutePath) {
     return null;
   }
 }
-function emitPatchTargets(args, isGitApply, host, targetDir, shellDir, redirects, simpleCommandIndex, join10, results) {
+function emitPatchTargets(args, isGitApply, host, targetDir, shellDir, redirects, simpleCommandIndex, join11, results) {
   const parts = patchApplyParts(args, isGitApply);
   if (parts.readOnly || parts.cachedOnly) return;
   if (parts.directory) {
@@ -6619,13 +6557,13 @@ function emitPatchTargets(args, isGitApply, host, targetDir, shellDir, redirects
         operation: t.operation,
         absolutePath,
         simpleCommandIndex,
-        join: join10,
+        join: join11,
         ...t.lineStart !== void 0 ? { lineStart: t.lineStart, lineEnd: t.lineEnd } : {}
       }
     });
   }
 }
-function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, join10, results) {
+function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, join11, results) {
   const rest = stripTransparentWrapper(argv);
   if (rest.length === 0) return;
   const command = rest[0];
@@ -6638,7 +6576,7 @@ function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, 
       dirForResolution,
       redirects,
       simpleCommandIndex,
-      join10,
+      join11,
       results
     );
     return;
@@ -6658,7 +6596,7 @@ function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, 
       dirForResolution,
       redirects,
       simpleCommandIndex,
-      join10,
+      join11,
       results
     );
     return;
@@ -6670,7 +6608,7 @@ function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, 
     }
   }
 }
-function classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join10, results) {
+function classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join11, results) {
   const rest = stripTransparentWrapper(argv);
   if (rest.length === 0) return;
   const command = rest[0];
@@ -6713,7 +6651,7 @@ function classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join10
         operation: t.operation,
         absolutePath,
         simpleCommandIndex,
-        join: join10,
+        join: join11,
         ...t.lineStart !== void 0 ? { lineStart: t.lineStart, lineEnd: t.lineEnd } : {}
       }
     });
@@ -6784,7 +6722,7 @@ function stripPackageRunner(argv) {
   if (wrapped.startsWith("-") || wrapped.startsWith(".") || /\s/.test(wrapped)) return { kind: "obscured" };
   return { kind: "stripped", stripped: rest };
 }
-function matchFormatter(argv, dirForResolution, simpleCommandIndex, join10, results) {
+function matchFormatter(argv, dirForResolution, simpleCommandIndex, join11, results) {
   const rest = stripTransparentWrapper(argv);
   if (rest.length === 0) return;
   let words = rest;
@@ -6846,12 +6784,12 @@ function matchFormatter(argv, dirForResolution, simpleCommandIndex, join10, resu
     results.push({
       status: "resolved",
       idiom: "formatter-write",
-      span: { operation: "modify", absolutePath: resolvePath(dirForResolution, operand), simpleCommandIndex, join: join10 }
+      span: { operation: "modify", absolutePath: resolvePath(dirForResolution, operand), simpleCommandIndex, join: join11 }
     });
   }
 }
 var RESTORE_NO_VALUE = /* @__PURE__ */ new Set(["-q", "-f", "-u"]);
-function emitRestoreCheckoutPathspec(results, idiom, operand, dir, simpleCommandIndex, join10) {
+function emitRestoreCheckoutPathspec(results, idiom, operand, dir, simpleCommandIndex, join11) {
   if (looksUnresolvable(operand)) {
     pushUnresolved(results, idiom, operand, "path contains an unexpanded shell variable or glob");
     return;
@@ -6869,10 +6807,10 @@ function emitRestoreCheckoutPathspec(results, idiom, operand, dir, simpleCommand
   results.push({
     status: "resolved",
     idiom,
-    span: { operation: "create-overwrite", absolutePath, simpleCommandIndex, join: join10 }
+    span: { operation: "create-overwrite", absolutePath, simpleCommandIndex, join: join11 }
   });
 }
-function matchRestoreOperands(args, dir, simpleCommandIndex, join10, results) {
+function matchRestoreOperands(args, dir, simpleCommandIndex, join11, results) {
   let staged = false;
   let worktree = false;
   let afterDashDash = false;
@@ -6916,10 +6854,10 @@ function matchRestoreOperands(args, dir, simpleCommandIndex, join10, results) {
   }
   if (staged && !worktree) return;
   for (const operand of operands) {
-    emitRestoreCheckoutPathspec(results, "git-restore-write", operand, dir, simpleCommandIndex, join10);
+    emitRestoreCheckoutPathspec(results, "git-restore-write", operand, dir, simpleCommandIndex, join11);
   }
 }
-function matchCheckoutOperands(args, dir, simpleCommandIndex, join10, results) {
+function matchCheckoutOperands(args, dir, simpleCommandIndex, join11, results) {
   let afterDashDash = false;
   const operands = [];
   for (let i = 0; i < args.length; i++) {
@@ -6949,10 +6887,10 @@ function matchCheckoutOperands(args, dir, simpleCommandIndex, join10, results) {
     if (a.startsWith("-")) continue;
   }
   for (const operand of operands) {
-    emitRestoreCheckoutPathspec(results, "git-checkout-write", operand, dir, simpleCommandIndex, join10);
+    emitRestoreCheckoutPathspec(results, "git-checkout-write", operand, dir, simpleCommandIndex, join11);
   }
 }
-function matchGitRestoreCheckout(argv, dirForResolution, simpleCommandIndex, join10, results) {
+function matchGitRestoreCheckout(argv, dirForResolution, simpleCommandIndex, join11, results) {
   const rest = stripTransparentWrapper(argv);
   if (rest.length === 0) return;
   const command = rest[0];
@@ -6970,8 +6908,8 @@ function matchGitRestoreCheckout(argv, dirForResolution, simpleCommandIndex, joi
     }
     const dir = sub.cDir ?? dirForResolution;
     const args = rest.slice(1).slice(sub.subIdx + 1);
-    if (sub.subcommand === "restore") matchRestoreOperands(args, dir, simpleCommandIndex, join10, results);
-    else matchCheckoutOperands(args, dir, simpleCommandIndex, join10, results);
+    if (sub.subcommand === "restore") matchRestoreOperands(args, dir, simpleCommandIndex, join11, results);
+    else matchCheckoutOperands(args, dir, simpleCommandIndex, join11, results);
     return;
   }
   if (FOREIGN_WRAPPERS.has(command)) {
@@ -7022,7 +6960,7 @@ function parseCommandDetailed(command, opts = {}) {
     if (isAbsolute3(c.dirOverride)) return c.dirOverride;
     return frame.certain ? resolvePath(frame.dir, c.dirOverride) : void 0;
   };
-  const emitCandidate = (c, frame, simpleCommandIndex, join10) => {
+  const emitCandidate = (c, frame, simpleCommandIndex, join11) => {
     if (looksUnresolvable(c.fileArg)) {
       results.push({
         status: "unresolved",
@@ -7073,7 +7011,7 @@ function parseCommandDetailed(command, opts = {}) {
         lineEnd: range.lineEnd,
         absolutePath,
         simpleCommandIndex,
-        join: join10
+        join: join11
       }
     });
   };
@@ -7206,9 +7144,80 @@ function parseCommandDetailed(command, opts = {}) {
   return results;
 }
 
+// src/common/static-attribution.ts
+var PYTHON_STRING_SOURCE = String.raw`(?:'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")`;
+
+// src/common/bash-touch.ts
+function bashSpanToTouch(span, sessionId, cwd) {
+  if (!resolveTouchScope(cwd, span.absolutePath)) return null;
+  switch (span.operation) {
+    case "read":
+      return {
+        kind: "read",
+        sessionId,
+        cwd,
+        filePath: span.absolutePath,
+        offset: span.lineStart,
+        limit: span.lineStart !== void 0 && span.lineEnd !== void 0 ? span.lineEnd - span.lineStart + 1 : void 0
+      };
+    case "create-overwrite":
+    case "rename-copy":
+      return {
+        kind: "write",
+        sessionId,
+        cwd,
+        filePath: span.absolutePath,
+        written: "",
+        targetState: "exists",
+        postState: span.written !== void 0 ? { content: { exact: span.written } } : void 0
+      };
+    case "truncate":
+      return {
+        kind: "write",
+        sessionId,
+        cwd,
+        filePath: span.absolutePath,
+        written: "",
+        targetState: "exists",
+        postState: span.size === 0 ? { content: { empty: true } } : span.size !== void 0 ? { content: { size: span.size } } : void 0
+      };
+    case "append":
+      return {
+        kind: "write",
+        sessionId,
+        cwd,
+        filePath: span.absolutePath,
+        written: span.written ?? "",
+        targetState: "exists",
+        postState: span.written !== void 0 ? { content: { suffix: span.written } } : void 0
+      };
+    case "modify":
+      return {
+        kind: "write",
+        sessionId,
+        cwd,
+        filePath: span.absolutePath,
+        written: "",
+        targetState: "exists",
+        range: span.lineStart !== void 0 ? { start: span.lineStart, end: span.lineEnd ?? span.lineStart } : void 0,
+        postState: span.expectedContent !== void 0 ? { content: { exact: span.expectedContent } } : void 0
+      };
+    case "delete":
+      return {
+        kind: "write",
+        sessionId,
+        cwd,
+        filePath: span.absolutePath,
+        written: "",
+        targetState: "absent",
+        postState: { realDelete: true }
+      };
+  }
+}
+
 // src/common/parse-response.ts
-import { existsSync as existsSync4, statSync as statSync7 } from "node:fs";
-import { dirname as dirname5, join as join9, resolve as resolvePath2, sep as sep2 } from "node:path";
+import { existsSync as existsSync5, statSync as statSync7 } from "node:fs";
+import { dirname as dirname6, join as join10, resolve as resolvePath2, sep as sep2 } from "node:path";
 var MAX_RESPONSE_SPANS = 50;
 var SEARCH_BINS = /* @__PURE__ */ new Set(["rg", "grep", "egrep", "fgrep"]);
 var VALUE_SHORT_FLAGS = /* @__PURE__ */ new Set(["A", "B", "C", "e", "f", "m", "g", "t", "T"]);
@@ -7366,7 +7375,7 @@ function hasDiffRevPathArg(argv, start, cwd) {
       if (!a.includes("=") && valueFlags.has(a)) i += 1;
       continue;
     }
-    if (a.includes(":") && !existsSync4(resolvePath2(cwd, a))) return true;
+    if (a.includes(":") && !existsSync5(resolvePath2(cwd, a))) return true;
   }
   return false;
 }
@@ -7629,8 +7638,8 @@ function isFile(abs) {
 function findGitRoot(startDir) {
   let dir = startDir;
   for (; ; ) {
-    if (existsSync4(join9(dir, ".git"))) return dir;
-    const parent = dirname5(dir);
+    if (existsSync5(join10(dir, ".git"))) return dir;
+    const parent = dirname6(dir);
     if (parent === dir) return null;
     dir = parent;
   }
@@ -7927,7 +7936,7 @@ function parseResponse(input) {
 }
 
 // src/codex/apply-patch.ts
-import * as fs7 from "node:fs";
+import * as fs8 from "node:fs";
 var END_PATCH_MARKER = "*** End Patch";
 var ADD_FILE_MARKER = "*** Add File: ";
 var DELETE_FILE_MARKER = "*** Delete File: ";
@@ -7938,7 +7947,7 @@ var CHANGE_CONTEXT_MARKER = "@@ ";
 var EMPTY_CHANGE_CONTEXT_MARKER = "@@";
 function defaultReadPreEditFile(path) {
   try {
-    return fs7.readFileSync(path, "utf8");
+    return fs8.readFileSync(path, "utf8");
   } catch {
     return null;
   }
@@ -8245,7 +8254,7 @@ function classifyApplyPatchResponse(toolResponse) {
 var noRangeRecovery = () => null;
 function hashOfFile(absPath) {
   try {
-    return createHash3("sha256").update(readFileSync10(absPath)).digest("hex");
+    return createHash3("sha256").update(readFileSync11(absPath)).digest("hex");
   } catch {
     return null;
   }

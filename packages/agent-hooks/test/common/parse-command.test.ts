@@ -1633,9 +1633,7 @@ describe('span-less builtin guards (§3 step 2)', () => {
 describe('layered static attribution contract (bootstrap)', () => {
   const shellLayerCorpus = STATIC_ATTRIBUTION_CORPUS.filter(
     (fixture) =>
-      fixture.layer !== 'python' &&
-      fixture.layer !== 'node' &&
-      fixture.name !== 'tracked and untracked pair retains only tracked eligibility'
+      fixture.layer !== 'node' && fixture.name !== 'tracked and untracked pair retains only tracked eligibility'
   );
 
   it.each(shellLayerCorpus)('$name', (fixture) => {
@@ -1680,6 +1678,81 @@ describe('layered static attribution contract (bootstrap)', () => {
       [1, 1],
       [3, 3]
     ]);
+  });
+
+  it('widens a Python replace across every ambiguous literal occurrence and honors a literal count', () => {
+    const target = join(dir, 'ambiguous.txt');
+    const command = (count = '') =>
+      `python3 -c "from pathlib import Path; p=Path('ambiguous.txt'); s=p.read_text(); p.write_text(s.replace('needle','pin'${count}))"`;
+    const options = {
+      cwd: dir,
+      readPreState: (absolutePath: string) => (absolutePath === target ? 'needle needle\nnone\nneedle\n' : null)
+    };
+
+    expect(parseCommandLayered(command(), options).resolved.map(({ span }) => [span.lineStart, span.lineEnd])).toEqual([
+      [1, 1],
+      [3, 3]
+    ]);
+    expect(
+      parseCommandLayered(command(',1'), options).resolved.map(({ span }) => [span.lineStart, span.lineEnd])
+    ).toEqual([[1, 1]]);
+  });
+
+  it('accepts one literal path alias but rejects aliases beyond one hop', () => {
+    const preState = (absolutePath: string) => (absolutePath === join(dir, 'src/a.txt') ? 'beta\n' : null);
+    const oneHop =
+      "python3 -c \"from pathlib import Path; p=Path('src/a.txt'); q=p; s=q.read_text(); q.write_text(s.replace('beta','BETA'))\"";
+    const twoHops =
+      "python3 -c \"from pathlib import Path; p=Path('src/a.txt'); q=p; r=q; s=r.read_text(); r.write_text(s.replace('beta','BETA'))\"";
+
+    expect(parseCommandLayered(oneHop, { cwd: dir, readPreState: preState }).resolved).toHaveLength(1);
+    expect(
+      parseCommandLayered(twoHops, { cwd: dir, readPreState: preState }).unresolved.map(({ reasonCode }) => reasonCode)
+    ).toEqual(['unsupported-dataflow']);
+  });
+
+  it('fails closed when a Python count guard disagrees with pre-state evidence', () => {
+    const command =
+      "python3 -c \"from pathlib import Path; p=Path('src/a.txt'); s=p.read_text(); assert s.count('beta') == 1; p.write_text(s.replace('beta','BETA'))\"";
+    const result = parseCommandLayered(command, { cwd: dir, readPreState: () => 'beta\nbeta\n' });
+
+    expect(result.resolved).toEqual([]);
+    expect(result.unresolved.map(({ reasonCode }) => reasonCode)).toEqual(['evidence-mismatch']);
+  });
+
+  it.each([
+    ["python3 - <<PY\nfrom pathlib import Path\np=Path('src/a.txt')\np.write_text('x')\nPY", 'unsupported-syntax'],
+    ['python3 -c "from pathlib import Path; p=Path(sys.argv[1]); p.write_text(\'x\')" src/a.txt', 'dynamic-path'],
+    [
+      'python3 -c "from pathlib import Path; p=Path(\'src/a.txt\'); s=p.read_text(); p.write_text(generate(s))"',
+      'unsupported-dataflow'
+    ],
+    [
+      'python3 -c "from pathlib import Path; p=Path(\'src/a.txt\'); [p.write_text(str(i)) for i in range(2)]"',
+      'unsupported-dataflow'
+    ],
+    ['python3 -c "from pathlib import Path; p=Path(\'src/a.txt\'"', 'unsupported-syntax']
+  ] as const)('rejects unsupported Python without executing it: %s', (command, reason) => {
+    const result = parseCommandLayered(command, { cwd: dir, readPreState: () => 'beta\n' });
+    expect(result.resolved).toEqual([]);
+    expect(result.unresolved.map(({ reasonCode }) => reasonCode)).toEqual([reason]);
+  });
+
+  it.each([
+    [
+      'toml',
+      "python3 -c \"import tomllib,tomli_w; from pathlib import Path; p=Path('config.toml'); d=tomllib.loads(p.read_text()); d['enabled']=True; p.write_text(tomli_w.dumps(d))\"",
+      "name = 'demo'\nenabled = false\n"
+    ],
+    [
+      'yaml',
+      "python3 -c \"import yaml; from pathlib import Path; p=Path('config.yaml'); d=yaml.safe_load(p.read_text()); d['enabled']=True; p.write_text(yaml.safe_dump(d))\"",
+      'name: demo\nenabled: false\n'
+    ]
+  ] as const)('locates a stable literal key in bounded Python %s dataflow', (_format, command, content) => {
+    const result = parseCommandLayered(command, { cwd: dir, readPreState: () => content });
+    expect(result.unresolved).toEqual([]);
+    expect(result.resolved.map(({ span }) => [span.lineStart, span.lineEnd])).toEqual([[2, 2]]);
   });
 
   it('intersects a literal sed address with the literal replacement pattern', () => {

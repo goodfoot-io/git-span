@@ -324,6 +324,711 @@ function stableReason(match: Extract<SpanMatch, { status: 'unresolved' }>): Unre
   return 'unsupported-expression';
 }
 
+interface PythonProgram {
+  readonly program?: string;
+  readonly reason?: UnresolvedReasonCode;
+  readonly detail?: string;
+}
+
+interface PythonPathBinding {
+  readonly path: string;
+  readonly depth: 0 | 1;
+}
+
+interface PythonTextBinding {
+  readonly path: string;
+}
+
+interface PythonReplacement {
+  readonly source: string;
+  readonly pattern: string;
+  readonly replacement: string;
+  readonly count?: number;
+}
+
+interface PythonLineArray {
+  readonly path: string;
+  readonly edits: Map<number, string>;
+}
+
+interface PythonStructuredValue {
+  readonly format: 'json' | 'toml' | 'yaml';
+  readonly path: string;
+  readonly keys: string[][];
+}
+
+const PYTHON_INTERPRETER = /^(?:python|python3(?:\.\d+)?)$/;
+const PYTHON_STRING_SOURCE = String.raw`(?:'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")`;
+const PYTHON_NAME_SOURCE = `[A-Za-z_][A-Za-z0-9_]*`;
+
+/** Decode the deliberately small common subset of Python string literals used by authoring commands. */
+function decodePythonString(raw: string): string | null {
+  if (raw.length < 2 || (raw[0] !== "'" && raw[0] !== '"') || raw.at(-1) !== raw[0]) return null;
+  let value = '';
+  for (let index = 1; index < raw.length - 1; index += 1) {
+    const character = raw[index];
+    if (character !== '\\') {
+      if (character === raw[0]) return null;
+      value += character;
+      continue;
+    }
+    const escaped = raw[index + 1];
+    if (escaped === undefined || index + 1 >= raw.length - 1) return null;
+    if (escaped === 'n') value += '\n';
+    else if (escaped === 'r') value += '\r';
+    else if (escaped === 't') value += '\t';
+    else if (escaped === '\\' || escaped === "'" || escaped === '"') value += escaped;
+    else return null;
+    index += 1;
+  }
+  return value;
+}
+
+/**
+ * Recognize only a literal `-c` payload or a quoted heredoc. The shell parser
+ * is intentionally not asked to interpret an embedded program and no program
+ * is ever imported or executed.
+ */
+function extractPythonProgram(command: string): PythonProgram | null {
+  const trimmed = command.trim();
+  const interpreter = trimmed.match(/^(python(?:3(?:\.\d+)?)?)\b/)?.[1];
+  if (interpreter === undefined || !PYTHON_INTERPRETER.test(interpreter)) return null;
+
+  if (trimmed.includes('<<')) {
+    const heredoc = trimmed.match(
+      /^(?:python|python3(?:\.\d+)?)\s+-\s+<<(['"])([A-Za-z_][A-Za-z0-9_]*)\1[ \t]*\r?\n([\s\S]*?)\r?\n\2[ \t]*$/
+    );
+    if (heredoc === null) {
+      return {
+        reason: 'unsupported-syntax',
+        detail: 'Python heredocs require a quoted literal delimiter and a complete body'
+      };
+    }
+    return { program: heredoc[3] };
+  }
+
+  const argv = argvOf(trimmed);
+  if (argv === null || argv[0] !== interpreter || argv[1] !== '-c' || argv[2] === undefined) {
+    return {
+      reason: 'unsupported-syntax',
+      detail: 'only literal Python -c programs and quoted heredocs are supported'
+    };
+  }
+  if (argv[2].includes('$(') || argv[2].includes('`') || /^\$\{?[A-Za-z_]/.test(argv[2])) {
+    return { reason: 'unsupported-syntax', detail: 'the Python program is shell-derived rather than literal' };
+  }
+  return { program: argv[2] };
+}
+
+/** Split Python's allowlisted flat statement form without interpreting strings or nested expressions. */
+function splitPythonStatements(program: string): readonly string[] | null {
+  const statements: string[] = [];
+  let statement = '';
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  let depth = 0;
+  let comment = false;
+  for (const character of program) {
+    if (comment) {
+      if (character === '\n') {
+        comment = false;
+        if (depth === 0 && statement.trim() !== '') {
+          statements.push(statement.trim());
+          statement = '';
+        }
+      }
+      continue;
+    }
+    if (quote !== null) {
+      statement += character;
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === quote) quote = null;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      statement += character;
+      continue;
+    }
+    if (character === '#') {
+      comment = true;
+      continue;
+    }
+    if (character === '(' || character === '[' || character === '{') depth += 1;
+    else if (character === ')' || character === ']' || character === '}') {
+      depth -= 1;
+      if (depth < 0) return null;
+    }
+    if ((character === '\n' || character === ';') && depth === 0) {
+      if (statement.trim() !== '') statements.push(statement.trim());
+      statement = '';
+      continue;
+    }
+    statement += character;
+  }
+  if (quote !== null || escaped || depth !== 0) return null;
+  if (statement.trim() !== '') statements.push(statement.trim());
+  return statements;
+}
+
+function pythonLineAtOffset(content: string, offset: number): number {
+  let line = 1;
+  for (let index = 0; index < offset; index += 1) if (content.charCodeAt(index) === 10) line += 1;
+  return line;
+}
+
+function countLiteralOccurrences(content: string, literal: string): number {
+  if (literal.length === 0) return 0;
+  let count = 0;
+  let cursor = 0;
+  while (cursor <= content.length - literal.length) {
+    const offset = content.indexOf(literal, cursor);
+    if (offset < 0) break;
+    count += 1;
+    cursor = offset + literal.length;
+  }
+  return count;
+}
+
+function pythonStructuredKeyRanges(content: string, format: PythonStructuredValue['format'], key: string): LineRange[] {
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern =
+    format === 'json'
+      ? new RegExp(`^[ \\t]*["']${escaped}["'][ \\t]*:`, 'm')
+      : format === 'toml'
+        ? new RegExp(`^[ \\t]*(?:["']${escaped}["']|${escaped})[ \\t]*=`, 'm')
+        : new RegExp(`^[ \\t]*(?:["']${escaped}["']|${escaped})[ \\t]*:`, 'm');
+  const ranges: LineRange[] = [];
+  let offset = 0;
+  for (const line of content.split(/(?<=\n)/)) {
+    if (pattern.test(line)) {
+      const number = pythonLineAtOffset(content, offset);
+      ranges.push({ start: number, end: number });
+    }
+    offset += line.length;
+  }
+  return ranges;
+}
+
+function parsePythonAttribution(command: string, options: LayeredParseOptions): LayeredParseResult | null {
+  const extracted = extractPythonProgram(command);
+  if (extracted === null) return null;
+  const reject = (
+    reasonCode: UnresolvedReasonCode,
+    detail: string,
+    fileArg?: string,
+    preStateRequests: readonly PreStateRequest[] = []
+  ): LayeredParseResult => ({
+    resolved: [],
+    unresolved: [unresolved('python', 'python-edit', reasonCode, detail, fileArg)],
+    preStateRequests
+  });
+  if (extracted.program === undefined) {
+    return reject(extracted.reason ?? 'unsupported-syntax', extracted.detail ?? 'unsupported Python invocation');
+  }
+  const statements = splitPythonStatements(extracted.program);
+  if (statements === null || statements.length === 0) {
+    return reject('unsupported-syntax', 'the Python program is incomplete or cannot be tokenized');
+  }
+  if (statements.length > 64)
+    return reject('candidate-budget-exceeded', 'the Python program exceeds the statement budget');
+
+  const cwd = options.cwd ?? process.cwd();
+  const paths = new Map<string, PythonPathBinding>();
+  const texts = new Map<string, PythonTextBinding>();
+  const replacements = new Map<string, PythonReplacement>();
+  const anchors = new Map<string, { source: string; literal: string }>();
+  const lines = new Map<string, PythonLineArray>();
+  const structured = new Map<string, PythonStructuredValue>();
+  const countAssertions = new Map<string, number>();
+  const resolved: LayeredResolvedMatch[] = [];
+  const preStateRequests: PreStateRequest[] = [];
+
+  const request = (absolutePath: string, operation: Operation, requirement: PreStateRequirement): void => {
+    if (
+      !preStateRequests.some(
+        (entry) =>
+          entry.absolutePath === absolutePath && entry.operation === operation && entry.requirement === requirement
+      )
+    ) {
+      preStateRequests.push({ absolutePath, operation, requirement, simpleCommandIndex: 0 });
+    }
+  };
+  const readPreState = (
+    absolutePath: string,
+    requirements: readonly PreStateRequirement[]
+  ): string | LayeredParseResult => {
+    for (const requirement of requirements) request(absolutePath, 'modify', requirement);
+    const content = options.readPreState?.(absolutePath) ?? null;
+    if (content === null)
+      return reject(
+        'missing-pre-state',
+        'Python range recovery requires pre-command text',
+        absolutePath,
+        preStateRequests
+      );
+    if (content.includes('\0'))
+      return reject(
+        'binary-content',
+        'Python range recovery does not accept binary content',
+        absolutePath,
+        preStateRequests
+      );
+    return content;
+  };
+  const emitReplace = (absolutePath: string, transformation: PythonReplacement): LayeredParseResult | null => {
+    const read = texts.get(transformation.source);
+    if (read === undefined || nodePath.resolve(cwd, read.path) !== absolutePath) {
+      return reject('unsupported-dataflow', 'Python read and write paths are not provably identical', absolutePath);
+    }
+    const requirements: PreStateRequirement[] = ['match-locations'];
+    if (
+      transformation.replacement.length === 0 ||
+      (transformation.pattern.match(/\n/g)?.length ?? 0) !== (transformation.replacement.match(/\n/g)?.length ?? 0)
+    ) {
+      requirements.push('deleted-text');
+    }
+    const content = readPreState(absolutePath, requirements);
+    if (typeof content !== 'string') return content;
+    const assertion = countAssertions.get(`${transformation.source}\0${transformation.pattern}`);
+    const occurrences = countLiteralOccurrences(content, transformation.pattern);
+    if (assertion !== undefined && occurrences !== assertion) {
+      return reject(
+        'evidence-mismatch',
+        'Python count assertion does not match pre-state',
+        absolutePath,
+        preStateRequests
+      );
+    }
+    const count = transformation.count ?? occurrences;
+    const ranges = literalOccurrenceRanges(content, transformation.pattern).slice(0, count);
+    if (ranges.length === 0) {
+      return reject(
+        'evidence-mismatch',
+        'Python replacement literal is absent from pre-state',
+        absolutePath,
+        preStateRequests
+      );
+    }
+    let expected = content;
+    if (transformation.count === undefined)
+      expected = content.split(transformation.pattern).join(transformation.replacement);
+    else {
+      for (let index = 0; index < Math.min(transformation.count, occurrences); index += 1) {
+        expected = replaceLiteral(expected, transformation.pattern, transformation.replacement, false);
+      }
+    }
+    for (const range of ranges) {
+      resolved.push({
+        status: 'resolved',
+        layer: 'python',
+        idiom: 'python-replace',
+        span: {
+          operation: 'modify',
+          absolutePath,
+          lineStart: range.start,
+          lineEnd: range.end,
+          expectedContent: expected,
+          simpleCommandIndex: 0
+        }
+      });
+    }
+    return null;
+  };
+
+  for (const statement of statements) {
+    if (
+      /^(?:from\s+pathlib\s+import\s+Path|import\s+(?:pathlib|json|tomllib|tomli_w|toml|yaml|sys)(?:\s*,\s*(?:pathlib|json|tomllib|tomli_w|toml|yaml|sys))*)$/.test(
+        statement
+      )
+    ) {
+      continue;
+    }
+    if (/^(?:for|while|if|def|class|with|try)\b/.test(statement)) {
+      return reject('unsupported-dataflow', 'control flow is outside the bounded Python recognizer');
+    }
+
+    let match = statement.match(
+      new RegExp(`^(${PYTHON_NAME_SOURCE})\\s*=\\s*(?:Path|pathlib\\.Path)\\((${PYTHON_STRING_SOURCE})\\)$`)
+    );
+    if (match !== null) {
+      const path = decodePythonString(match[2]);
+      if (path === null) return reject('unsupported-syntax', 'Python path literal uses an unsupported escape');
+      paths.set(match[1], { path, depth: 0 });
+      continue;
+    }
+    match = statement.match(new RegExp(`^(${PYTHON_NAME_SOURCE})\\s*=\\s*(${PYTHON_STRING_SOURCE})$`));
+    if (match !== null) {
+      const path = decodePythonString(match[2]);
+      if (path === null) return reject('unsupported-syntax', 'Python string literal uses an unsupported escape');
+      paths.set(match[1], { path, depth: 0 });
+      continue;
+    }
+    match = statement.match(new RegExp(`^(${PYTHON_NAME_SOURCE})\\s*=\\s*(${PYTHON_NAME_SOURCE})$`));
+    if (match !== null) {
+      const source = paths.get(match[2]);
+      if (source === undefined || source.depth !== 0) {
+        return reject('unsupported-dataflow', 'Python path aliases are limited to one literal hop');
+      }
+      paths.set(match[1], { path: source.path, depth: 1 });
+      continue;
+    }
+
+    match = statement.match(
+      new RegExp(`^(${PYTHON_NAME_SOURCE})\\s*=\\s*(${PYTHON_NAME_SOURCE})\\.read_text\\(([^)]*)\\)$`)
+    );
+    if (match !== null) {
+      const binding = paths.get(match[2]);
+      if (binding === undefined) return reject('dynamic-path', 'Python read target is not a literal path binding');
+      if (match[3].trim() !== '' && !/^encoding\s*=\s*['"]utf-?8['"]$/.test(match[3].trim())) {
+        return reject('unsupported-encoding', 'only default or UTF-8 Python text reads are supported', binding.path);
+      }
+      texts.set(match[1], { path: binding.path });
+      continue;
+    }
+
+    match = statement.match(
+      new RegExp(
+        `^(${PYTHON_NAME_SOURCE})\\s*=\\s*(${PYTHON_NAME_SOURCE})\\.replace\\((${PYTHON_STRING_SOURCE})\\s*,\\s*(${PYTHON_STRING_SOURCE})(?:\\s*,\\s*(\\d+))?\\)$`
+      )
+    );
+    if (match !== null) {
+      if (!texts.has(match[2]))
+        return reject('unsupported-dataflow', 'Python replace source is not a direct text read');
+      const pattern = decodePythonString(match[3]);
+      const replacement = decodePythonString(match[4]);
+      const count = match[5] === undefined ? undefined : Number.parseInt(match[5], 10);
+      if (pattern === null || pattern.length === 0 || replacement === null || count === 0) {
+        return reject('unsupported-expression', 'Python replace requires non-empty literal input and a positive count');
+      }
+      replacements.set(match[1], { source: match[2], pattern, replacement, count });
+      continue;
+    }
+
+    match = statement.match(
+      new RegExp(`^assert\\s+(${PYTHON_NAME_SOURCE})\\.count\\((${PYTHON_STRING_SOURCE})\\)\\s*==\\s*(\\d+)$`)
+    );
+    if (match !== null) {
+      const literal = decodePythonString(match[2]);
+      if (literal === null || literal.length === 0 || !texts.has(match[1])) {
+        return reject('unsupported-dataflow', 'Python count assertion is not tied to a direct text read');
+      }
+      countAssertions.set(`${match[1]}\0${literal}`, Number.parseInt(match[3], 10));
+      continue;
+    }
+
+    match = statement.match(
+      new RegExp(`^(${PYTHON_NAME_SOURCE})\\s*=\\s*(${PYTHON_NAME_SOURCE})\\.index\\((${PYTHON_STRING_SOURCE})\\)$`)
+    );
+    if (match !== null) {
+      const literal = decodePythonString(match[3]);
+      if (literal === null || literal.length === 0 || !texts.has(match[2])) {
+        return reject('unsupported-dataflow', 'Python index anchor is not tied to a direct text read');
+      }
+      anchors.set(match[1], { source: match[2], literal });
+      continue;
+    }
+
+    match = statement.match(
+      new RegExp(`^(${PYTHON_NAME_SOURCE})\\s*=\\s*(${PYTHON_NAME_SOURCE})\\.read_text\\(\\)\\.splitlines\\(\\)$`)
+    );
+    if (match !== null) {
+      const binding = paths.get(match[2]);
+      if (binding === undefined) return reject('dynamic-path', 'Python line-array target is not literal');
+      lines.set(match[1], { path: binding.path, edits: new Map() });
+      continue;
+    }
+    match = statement.match(new RegExp(`^(${PYTHON_NAME_SOURCE})\\[(\\d+)\\]\\s*=\\s*(${PYTHON_STRING_SOURCE})$`));
+    if (match !== null) {
+      const array = lines.get(match[1]);
+      const value = decodePythonString(match[3]);
+      if (array === undefined || value === null)
+        return reject('unsupported-dataflow', 'line edit is not a bounded literal array edit');
+      array.edits.set(Number.parseInt(match[2], 10), value);
+      continue;
+    }
+
+    match = statement.match(
+      new RegExp(
+        `^(${PYTHON_NAME_SOURCE})\\s*=\\s*(json|tomllib|yaml)\\.(?:loads|safe_load)\\((${PYTHON_NAME_SOURCE})\\.read_text\\(\\)\\)$`
+      )
+    );
+    if (match !== null) {
+      const binding = paths.get(match[3]);
+      if (binding === undefined) return reject('dynamic-path', 'structured Python load target is not literal');
+      const format = match[2] === 'tomllib' ? 'toml' : (match[2] as 'json' | 'yaml');
+      structured.set(match[1], { format, path: binding.path, keys: [] });
+      continue;
+    }
+    match = statement.match(
+      new RegExp(
+        `^(${PYTHON_NAME_SOURCE})((?:\\[${PYTHON_STRING_SOURCE}\\])+?)\\s*=\\s*(?:True|False|None|-?\\d+(?:\\.\\d+)?|${PYTHON_STRING_SOURCE})$`
+      )
+    );
+    if (match !== null && structured.has(match[1])) {
+      const keys = [...match[2].matchAll(new RegExp(`\\[(${PYTHON_STRING_SOURCE})\\]`, 'g'))].map((key) =>
+        decodePythonString(key[1])
+      );
+      if (keys.length === 0 || keys.some((key) => key === null)) {
+        return reject('unsupported-expression', 'structured Python mutation requires literal string keys');
+      }
+      structured.get(match[1])!.keys.push(keys as string[]);
+      continue;
+    }
+
+    match = statement.match(
+      new RegExp(
+        `^(${PYTHON_NAME_SOURCE})\\.open\\((${PYTHON_STRING_SOURCE})\\)\\.write\\((${PYTHON_STRING_SOURCE})\\)$`
+      )
+    );
+    if (match !== null) {
+      const binding = paths.get(match[1]);
+      const mode = decodePythonString(match[2]);
+      const written = decodePythonString(match[3]);
+      if (binding === undefined) return reject('dynamic-path', 'Python append target is not literal');
+      if (mode !== 'a' || written === null)
+        return reject('unsupported-expression', 'only literal text append mode is supported');
+      const absolutePath = nodePath.resolve(cwd, binding.path);
+      request(absolutePath, 'append', 'pre-command-eof');
+      const content = options.readPreState?.(absolutePath) ?? null;
+      if (content === null)
+        return reject(
+          'missing-pre-state',
+          'Python append range requires pre-command text',
+          absolutePath,
+          preStateRequests
+        );
+      if (content.includes('\0'))
+        return reject('binary-content', 'Python append does not accept binary content', absolutePath, preStateRequests);
+      const line = pythonLineAtOffset(content, content.length);
+      resolved.push({
+        status: 'resolved',
+        layer: 'python',
+        idiom: 'python-append',
+        span: {
+          operation: 'append',
+          absolutePath,
+          lineStart: line,
+          lineEnd: line,
+          written,
+          expectedContent: `${content}${written}`,
+          simpleCommandIndex: 0
+        }
+      });
+      continue;
+    }
+
+    match = statement.match(new RegExp(`^(${PYTHON_NAME_SOURCE})\\.write_text\\((.+)\\)$`));
+    if (match !== null) {
+      const binding = paths.get(match[1]);
+      if (binding === undefined) return reject('dynamic-path', 'Python write target is not literal');
+      const absolutePath = nodePath.resolve(cwd, binding.path);
+      const expression = match[2].trim();
+      const literal = decodePythonString(expression);
+      if (literal !== null) {
+        resolved.push({
+          status: 'resolved',
+          layer: 'python',
+          idiom: 'python-write',
+          span: {
+            operation: 'create-overwrite',
+            absolutePath,
+            written: literal,
+            expectedContent: literal,
+            simpleCommandIndex: 0
+          }
+        });
+        continue;
+      }
+      const directReplace = expression.match(
+        new RegExp(
+          `^(${PYTHON_NAME_SOURCE})\\.replace\\((${PYTHON_STRING_SOURCE})\\s*,\\s*(${PYTHON_STRING_SOURCE})(?:\\s*,\\s*(\\d+))?\\)$`
+        )
+      );
+      const replacement =
+        directReplace === null
+          ? replacements.get(expression)
+          : {
+              source: directReplace[1],
+              pattern: decodePythonString(directReplace[2]) ?? '',
+              replacement: decodePythonString(directReplace[3]) ?? '',
+              count: directReplace[4] === undefined ? undefined : Number.parseInt(directReplace[4], 10)
+            };
+      if (replacement !== undefined) {
+        const rejected = emitReplace(absolutePath, replacement);
+        if (rejected !== null) return rejected;
+        continue;
+      }
+
+      const slice = expression.match(
+        new RegExp(
+          `^(${PYTHON_NAME_SOURCE})\\[:(${PYTHON_NAME_SOURCE})\\]\\s*\\+\\s*(${PYTHON_STRING_SOURCE})\\s*\\+\\s*\\1\\[\\2\\s*\\+\\s*(\\d+):\\]$`
+        )
+      );
+      if (slice !== null) {
+        const anchor = anchors.get(slice[2]);
+        const read = texts.get(slice[1]);
+        const replacementText = decodePythonString(slice[3]);
+        if (
+          anchor === undefined ||
+          read === undefined ||
+          anchor.source !== slice[1] ||
+          replacementText === null ||
+          Number.parseInt(slice[4], 10) !== anchor.literal.length ||
+          nodePath.resolve(cwd, read.path) !== absolutePath
+        ) {
+          return reject(
+            'unsupported-dataflow',
+            'Python slice reconstruction is not tied to one literal anchor',
+            absolutePath
+          );
+        }
+        const content = readPreState(absolutePath, ['match-locations', 'deleted-text']);
+        if (typeof content !== 'string') return content;
+        const offset = content.indexOf(anchor.literal);
+        if (offset < 0)
+          return reject(
+            'evidence-mismatch',
+            'Python slice anchor is absent from pre-state',
+            absolutePath,
+            preStateRequests
+          );
+        const range = literalOccurrenceRanges(content, anchor.literal)[0];
+        resolved.push({
+          status: 'resolved',
+          layer: 'python',
+          idiom: 'python-anchor-slice',
+          span: {
+            operation: 'modify',
+            absolutePath,
+            lineStart: range.start,
+            lineEnd: range.end,
+            expectedContent: `${content.slice(0, offset)}${replacementText}${content.slice(offset + anchor.literal.length)}`,
+            simpleCommandIndex: 0
+          }
+        });
+        continue;
+      }
+
+      const lineJoin = expression.match(
+        new RegExp(
+          `^(${PYTHON_STRING_SOURCE})\\.join\\((${PYTHON_NAME_SOURCE})\\)(?:\\s*\\+\\s*(${PYTHON_STRING_SOURCE}))?$`
+        )
+      );
+      if (lineJoin !== null) {
+        const delimiter = decodePythonString(lineJoin[1]);
+        const array = lines.get(lineJoin[2]);
+        const suffix = lineJoin[3] === undefined ? '' : decodePythonString(lineJoin[3]);
+        if (delimiter !== '\n' || array === undefined || suffix === null || (suffix !== '' && suffix !== '\n')) {
+          return reject('unsupported-expression', 'line-array writes require a literal newline join', absolutePath);
+        }
+        if (nodePath.resolve(cwd, array.path) !== absolutePath || array.edits.size === 0) {
+          return reject(
+            'unsupported-dataflow',
+            'line-array read and write paths are not provably identical',
+            absolutePath
+          );
+        }
+        const content = readPreState(absolutePath, ['deleted-text']);
+        if (typeof content !== 'string') return content;
+        if (content.includes('\r'))
+          return reject('unsupported-encoding', 'line-array edits require LF text', absolutePath, preStateRequests);
+        const sourceLines = content.split('\n');
+        if (sourceLines.at(-1) === '') sourceLines.pop();
+        for (const [index, value] of array.edits) {
+          if (index >= sourceLines.length)
+            return reject('evidence-mismatch', 'line-array index is outside pre-state', absolutePath, preStateRequests);
+          sourceLines[index] = value;
+        }
+        const expectedContent = `${sourceLines.join('\n')}${suffix}`;
+        for (const index of array.edits.keys()) {
+          resolved.push({
+            status: 'resolved',
+            layer: 'python',
+            idiom: 'python-line-array',
+            span: {
+              operation: 'modify',
+              absolutePath,
+              lineStart: index + 1,
+              lineEnd: index + 1,
+              expectedContent,
+              simpleCommandIndex: 0
+            }
+          });
+        }
+        continue;
+      }
+
+      const structuredSink = expression.match(
+        /^(json|tomli_w|toml|yaml)\.(dumps|safe_dump)\(([A-Za-z_][A-Za-z0-9_]*)\)$/
+      );
+      if (structuredSink !== null) {
+        const value = structured.get(structuredSink[3]);
+        const sinkFormat = structuredSink[1] === 'json' ? 'json' : structuredSink[1] === 'yaml' ? 'yaml' : 'toml';
+        if (
+          value === undefined ||
+          value.format !== sinkFormat ||
+          nodePath.resolve(cwd, value.path) !== absolutePath ||
+          value.keys.length === 0
+        ) {
+          return reject(
+            'unsupported-dataflow',
+            'structured read, literal-key mutation, and write are not linked',
+            absolutePath
+          );
+        }
+        const content = readPreState(absolutePath, ['match-locations']);
+        if (typeof content !== 'string') return content;
+        for (const keyPath of value.keys) {
+          const key = keyPath.at(-1)!;
+          const ranges = pythonStructuredKeyRanges(content, value.format, key);
+          if (ranges.length !== 1) {
+            return reject(
+              'unsupported-expression',
+              'structured literal key is absent or ambiguous in pre-state',
+              absolutePath,
+              preStateRequests
+            );
+          }
+          resolved.push({
+            status: 'resolved',
+            layer: 'python',
+            idiom: `python-${value.format}`,
+            span: {
+              operation: 'modify',
+              absolutePath,
+              lineStart: ranges[0].start,
+              lineEnd: ranges[0].end,
+              simpleCommandIndex: 0
+            }
+          });
+        }
+        continue;
+      }
+      return reject('unsupported-dataflow', 'Python write expression is outside the bounded allowlist', absolutePath);
+    }
+
+    if (/sys\.argv|os\.(?:environ|getenv)|input\s*\(/.test(statement)) {
+      return reject('dynamic-path', 'Python target depends on runtime input');
+    }
+    return reject(
+      /(?:\.write|open\s*\(|Path\s*\()/.test(statement) ? 'unsupported-dataflow' : 'unsupported-syntax',
+      'Python statement is outside the bounded lexical/dataflow allowlist'
+    );
+  }
+
+  if (resolved.length === 0) return reject('unsupported-dataflow', 'Python program has no supported authoring sink');
+  const maxCandidates = options.maxCandidates ?? DEFAULT_MAX_ATTRIBUTION_CANDIDATES;
+  if (resolved.length > maxCandidates) {
+    return reject(
+      'candidate-budget-exceeded',
+      `Python program produced ${resolved.length} candidates; the limit is ${maxCandidates}`
+    );
+  }
+  return { resolved, unresolved: [], preStateRequests };
+}
+
 /** Parse explicit authoring intent through deterministic and bounded recognizers. */
 export function parseCommandLayered(command: string, options: LayeredParseOptions = {}): LayeredParseResult {
   const cwd = options.cwd ?? process.cwd();
@@ -331,6 +1036,11 @@ export function parseCommandLayered(command: string, options: LayeredParseOption
   if (!Number.isSafeInteger(maxCandidates) || maxCandidates < 1) {
     throw new Error('maxCandidates must be a positive safe integer');
   }
+
+  // Cheap interpreter sentinel precedes the bounded Python lexical/dataflow
+  // recognizer, keeping ordinary Bash commands on the existing fast path.
+  const python = parsePythonAttribution(command, options);
+  if (python !== null) return python;
 
   const loop = command
     .trim()

@@ -1,7 +1,7 @@
 #!/usr/bin/env -S node --enable-source-maps
 // src/codex/activity-log.ts
 import { createHash as createHash4 } from "node:crypto";
-import { readFileSync as readFileSync11 } from "node:fs";
+import { readFileSync as readFileSync12 } from "node:fs";
 
 // ../../node_modules/@goodfoot/codex-hooks/dist/constants.js
 var EVENTS_WITH_TEXT_OUTPUT = /* @__PURE__ */ new Set(["SessionStart", "UserPromptSubmit", "SubagentStart"]);
@@ -216,11 +216,11 @@ function subagentStartOutput(options = {}) {
 
 // ../../node_modules/@goodfoot/codex-hooks/dist/runtime.js
 async function readStdin() {
-  return new Promise((resolve3, reject) => {
+  return new Promise((resolve4, reject) => {
     const chunks = [];
     process.stdin.setEncoding("utf-8");
     process.stdin.on("data", (chunk) => chunks.push(chunk));
-    process.stdin.on("end", () => resolve3(chunks.join("")));
+    process.stdin.on("end", () => resolve4(chunks.join("")));
     process.stdin.on("error", reject);
   });
 }
@@ -2843,730 +2843,25 @@ function parseApplyPatch(command, readPreEditFile = defaultReadPreEditFile) {
 
 // src/codex/post-tool-use.ts
 import { createHash as createHash3 } from "node:crypto";
-import { readFileSync as readFileSync10 } from "node:fs";
+import { readFileSync as readFileSync11 } from "node:fs";
 import { resolve as resolvePath3 } from "node:path";
 
-// src/common/touch-core.ts
-import { execFileSync as execFileSync4 } from "node:child_process";
+// src/common/static-attribution.ts
+import { execFileSync as execFileSync5 } from "node:child_process";
 import * as fs5 from "node:fs";
-import { basename as basename3, join as join5 } from "node:path";
-
-// src/common/anchor-tree.ts
-function collapseByPath(rows) {
-  const order = [];
-  const byPath = /* @__PURE__ */ new Map();
-  for (const row of rows) {
-    let anchor = byPath.get(row.path);
-    if (!anchor) {
-      anchor = { path: row.path, ranges: [] };
-      byPath.set(row.path, anchor);
-      order.push(row.path);
-    }
-    anchor.ranges.push({ range: row.range, suffix: row.suffix });
-  }
-  return order.map((path) => byPath.get(path));
-}
-function splitSegments(path) {
-  if (path.length === 0) return null;
-  const segments = path.split("/");
-  if (segments.some((segment) => segment.length === 0)) return null;
-  return segments;
-}
-function findOrCreateDir(parent, name) {
-  for (const child of parent.children) {
-    if (child.kind === "dir" && child.name === name) return child;
-  }
-  const node = { kind: "dir", name, children: [] };
-  parent.children.push(node);
-  return node;
-}
-function insertAnchor(root, segments, anchor) {
-  let cur = root;
-  for (let i = 0; i < segments.length - 1; i++) {
-    cur = findOrCreateDir(cur, segments[i]);
-  }
-  cur.children.push({ kind: "leaf", name: segments[segments.length - 1], anchor });
-}
-function buildForest(anchors) {
-  const root = { kind: "dir", name: "", children: [] };
-  for (const anchor of anchors) {
-    const segments = splitSegments(anchor.path);
-    if (segments === null) {
-      root.children.push({ kind: "leaf", name: anchor.path, anchor });
-      continue;
-    }
-    insertAnchor(root, segments, anchor);
-  }
-  return root.children;
-}
-function foldChain(node) {
-  let name = node.name;
-  let cur = node;
-  while (cur.kind === "dir" && cur.children.length === 1) {
-    const child = cur.children[0];
-    name = `${name}/${child.name}`;
-    cur = child;
-  }
-  return { name, node: cur };
-}
-function rangeRank(range) {
-  switch (range.kind) {
-    case "whole-file":
-      return 0;
-    case "range":
-      return 1;
-    case "truncated":
-      return 2;
-  }
-}
-function compareRangeEntries(a, b) {
-  const rank = rangeRank(a.range) - rangeRank(b.range);
-  if (rank !== 0) return rank;
-  if (a.range.kind === "range" && b.range.kind === "range") {
-    return a.range.start - b.range.start || a.range.end - b.range.end;
-  }
-  return 0;
-}
-function labelFor(range, sole) {
-  switch (range.kind) {
-    case "range":
-      return `#L${range.start}-L${range.end}`;
-    case "whole-file":
-      return sole ? null : "(whole file)";
-    case "truncated":
-      return "(truncated in source \u2014 anchor incomplete)";
-  }
-}
-var cachedSegmenter;
-function graphemeSegmenter() {
-  if (cachedSegmenter === void 0) {
-    try {
-      cachedSegmenter = { value: new Intl.Segmenter("en", { granularity: "grapheme" }) };
-    } catch {
-      cachedSegmenter = { value: null };
-    }
-  }
-  return cachedSegmenter.value;
-}
-var WIDE_RANGES = [
-  [4352, 4447],
-  [9001, 9002],
-  [9728, 10175],
-  [11904, 12350],
-  [12353, 13311],
-  [13312, 19903],
-  [19968, 40959],
-  [40960, 42191],
-  [43360, 43391],
-  [44032, 55203],
-  [63744, 64255],
-  [65040, 65049],
-  [65072, 65135],
-  [65280, 65376],
-  [65504, 65510],
-  [94208, 101119],
-  [127462, 127487],
-  [127744, 128591],
-  [128640, 128767],
-  [129280, 129535],
-  [129648, 129791],
-  [131072, 196605],
-  [196608, 262141]
-];
-function isWideCodePoint(cp) {
-  for (const [lo, hi] of WIDE_RANGES) {
-    if (cp < lo) return false;
-    if (cp <= hi) return true;
-  }
-  return false;
-}
-function displayWidth(name) {
-  const segmenter = graphemeSegmenter();
-  let width = 0;
-  if (segmenter === null) {
-    for (const codePoint of name) {
-      width += isWideCodePoint(codePoint.codePointAt(0) ?? 0) ? 2 : 1;
-    }
-    return width;
-  }
-  for (const { segment } of segmenter.segment(name)) {
-    width += isWideCodePoint(segment.codePointAt(0) ?? 0) ? 2 : 1;
-  }
-  return width;
-}
-var MAX_ALIGN_COLUMN = 48;
-function computeGroupTarget(items) {
-  let max = 0;
-  for (const item of items) {
-    if (item.node.kind === "leaf" && printsRangeColumn(item.node.anchor)) {
-      max = Math.max(max, displayWidth(item.name));
-    }
-  }
-  return max > MAX_ALIGN_COLUMN ? 0 : max;
-}
-function printsRangeColumn(anchor) {
-  const { ranges } = anchor;
-  if (ranges.length === 0) return false;
-  return ranges.some((entry) => labelFor(entry.range, ranges.length === 1) !== null);
-}
-function computePad(nameWidth, target) {
-  if (nameWidth >= target) return " ";
-  return " ".repeat(target - nameWidth + 1);
-}
-function renderLeafLines(name, anchor, ownPrefix, childPrefix, groupTarget) {
-  const { ranges } = anchor;
-  if (ranges.length === 0) return [`${ownPrefix}${name}`];
-  const sorted = [...ranges].sort(compareRangeEntries);
-  const sole = sorted.length === 1;
-  const nameWidth = displayWidth(name);
-  const pad = computePad(nameWidth, groupTarget);
-  const blank = " ".repeat(nameWidth + pad.length);
-  return sorted.map((entry, i) => {
-    const label = labelFor(entry.range, sole);
-    if (label === null) return `${ownPrefix}${name}${entry.suffix}`;
-    const base = i === 0 ? `${ownPrefix}${name}${pad}` : `${childPrefix}${blank}`;
-    return `${base}${label}${entry.suffix}`;
-  });
-}
-function renderNodes(nodes, prefix) {
-  const lines = [];
-  const items = nodes.map(foldChain);
-  const groupTarget = computeGroupTarget(items);
-  items.forEach((item, i) => {
-    const isLast = i === items.length - 1;
-    const ownPrefix = `${prefix}${isLast ? "\u2514\u2500 " : "\u251C\u2500 "}`;
-    const childPrefix = `${prefix}${isLast ? "   " : "\u2502  "}`;
-    if (item.node.kind === "leaf") {
-      lines.push(...renderLeafLines(item.name, item.node.anchor, ownPrefix, childPrefix, groupTarget));
-    } else {
-      lines.push(`${ownPrefix}${item.name}/`);
-      lines.push(...renderNodes(item.node.children, childPrefix));
-    }
-  });
-  return lines;
-}
-function renderAnchorTree(anchors) {
-  const forest = buildForest(anchors);
-  return renderNodes(forest, "");
-}
-
-// src/common/touch-core.ts
-function toNeedleLines(written) {
-  if (written.length === 0) return [];
-  const trimmed = written.endsWith("\n") ? written.slice(0, -1) : written;
-  if (trimmed.length === 0) return [];
-  return trimmed.split("\n");
-}
-function recoverRange2(written, onDiskContent) {
-  const needle = toNeedleLines(written);
-  if (needle.length === 0) return "whole-file";
-  const haystack = onDiskContent.split("\n");
-  const last = haystack.length - needle.length;
-  const starts = [];
-  for (let i = 0; i <= last; i++) {
-    let ok = true;
-    for (let j = 0; j < needle.length; j++) {
-      if (haystack[i + j] !== needle[j]) {
-        ok = false;
-        break;
-      }
-    }
-    if (ok) {
-      starts.push(i);
-      if (starts.length > 1) break;
-    }
-  }
-  if (starts.length === 1) {
-    return { start: starts[0] + 1, end: starts[0] + needle.length };
-  }
-  return "whole-file";
-}
-function createRealityProbeCache(paths, changedCandidates = []) {
-  return {
-    paths: [...new Set(paths)],
-    realPaths: null,
-    changedCandidates: [...new Set(changedCandidates)],
-    changedPaths: null
-  };
-}
-function fileExists(absPath) {
-  try {
-    fs5.statSync(absPath);
-    return true;
-  } catch {
-    return false;
-  }
-}
-function isFileOnDisk(absPath) {
-  try {
-    return fs5.statSync(absPath).isFile();
-  } catch {
-    return false;
-  }
-}
-function contentMatches(post, filePath) {
-  try {
-    if ("exact" in post) return fs5.readFileSync(filePath, "utf8") === post.exact;
-    if ("suffix" in post) {
-      const content = fs5.readFileSync(filePath, "utf8");
-      return content.endsWith(post.suffix) || content.endsWith(`${post.suffix}
-`);
-    }
-    if ("empty" in post) return fs5.statSync(filePath).size === 0;
-    return fs5.statSync(filePath).size === post.size;
-  } catch {
-    return false;
-  }
-}
-function realPaths(cache, cwd) {
-  if (cache.realPaths !== null) return cache.realPaths;
-  const real = /* @__PURE__ */ new Set();
-  if (cache.paths.length > 0) {
-    const repoRoot = resolveRepoRoot(cwd);
-    if (repoRoot !== null) {
-      const rels = cache.paths.map((p) => relativeToRepo(repoRoot, p));
-      const capture = (args) => {
-        try {
-          return execFileSync4("git", args, {
-            cwd: repoRoot,
-            encoding: "utf8",
-            stdio: ["ignore", "pipe", "pipe"],
-            timeout: DEFAULT_TIMEOUT_MS
-          });
-        } catch (err) {
-          const stdout = err.stdout;
-          return typeof stdout === "string" ? stdout : null;
-        }
-      };
-      const lsFiles = capture(["ls-files", "--error-unmatch", "--", ...rels]);
-      if (lsFiles !== null) {
-        for (const line of lsFiles.split("\n")) {
-          const rel = line.trim();
-          if (rel.length > 0) real.add(join5(repoRoot, rel));
-        }
-      }
-      const spanList = capture(["span", "list", "--porcelain", ...rels]);
-      if (spanList !== null) {
-        for (const row of parsePorcelain(spanList)) real.add(join5(repoRoot, row.path));
-      }
-    }
-  }
-  cache.realPaths = real;
-  return real;
-}
-function evaluateWriteGate(input, probeCache) {
-  if (input.targetState === "absent") {
-    if (fileExists(input.filePath)) return "decisiveFail";
-    return realPaths(probeCache, input.cwd).has(input.filePath) ? "decisivePass" : "inconclusive";
-  }
-  if (!isFileOnDisk(input.filePath)) return "decisiveFail";
-  const content = input.postState?.content;
-  if (content !== void 0) {
-    return contentMatches(content, input.filePath) ? "decisivePass" : "decisiveFail";
-  }
-  if (input.sourcePath !== void 0) {
-    if (fileExists(input.sourcePath)) {
-      let src;
-      let dst;
-      try {
-        src = fs5.readFileSync(input.sourcePath, "utf8");
-        dst = fs5.readFileSync(input.filePath, "utf8");
-      } catch {
-        return "decisiveFail";
-      }
-      return src === dst ? "decisivePass" : "decisiveFail";
-    }
-    return realPaths(probeCache, input.cwd).has(input.sourcePath) ? "pending" : "decisiveFail";
-  }
-  if (input.renameSourcePath !== void 0) {
-    return realPaths(probeCache, input.cwd).has(input.renameSourcePath) ? "decisivePass" : "decisiveFail";
-  }
-  return "inconclusive";
-}
-function driftKey(name, status) {
-  return `${name}	${status}`;
-}
-function anchorText(row) {
-  if (row.start === 0 && row.end === 0) return row.path;
-  return `${row.path}#L${row.start}-L${row.end}`;
-}
-function cleanHeader(fileName) {
-  return `${fileName} has implicit dependencies:`;
-}
-function cleanFooter(fileName) {
-  return `If you change ${fileName} check the other files to confirm they still work together.`;
-}
-function driftHeader(driftedCount, kind) {
-  if (kind === "write") {
-    return driftedCount === 1 ? "This edit put an implicit dependency out of date:" : "This edit put implicit dependencies out of date:";
-  }
-  return driftedCount === 1 ? "This file has an implicit dependency out of date:" : "This file has implicit dependencies out of date:";
-}
-function driftFooter(driftedNames) {
-  if (driftedNames.length === 1) {
-    const name = driftedNames[0];
-    return `Restore agreement before committing. Follow confirmed authority. Preserve anchor shape; if an address changed, swap the old anchor for the new one with \`git span replace\`. Update or retire the why only if its meaning changed. Require \`git span drift ${name}\` to report zero, then check the other anchors. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete coupling.`;
-  }
-  return "For each out-of-date span: restore agreement before committing. Follow confirmed authority. Preserve anchor shape; if an address changed, swap the old anchor for the new one with `git span replace`. Update or retire the why only if its meaning changed. Require `git span drift <name>` to report zero, then check the other anchors. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete coupling.";
-}
-function rangeLabel(row) {
-  if (row.start === 0 && row.end === 0) return { kind: "whole-file" };
-  return { kind: "range", start: row.start, end: row.end };
-}
-function anchorBullets(anchors, debtRows) {
-  const rows = anchors.map((anchor) => {
-    const soleOnPath = anchors.filter((a) => a.path === anchor.path).length === 1;
-    const statuses = /* @__PURE__ */ new Set();
-    for (const row of debtRows) {
-      if (row.path !== anchor.path) continue;
-      if (soleOnPath || row.start === anchor.start && row.end === anchor.end) {
-        statuses.add(row.status);
-      }
-    }
-    const sorted = [...statuses].sort();
-    const suffix = sorted.length > 0 ? ` \u2014 ${sorted.map(humanStatusLabel).join(", ")}` : "";
-    return { path: anchor.path, range: rangeLabel(anchor), suffix };
-  });
-  try {
-    return renderAnchorTree(collapseByPath(rows));
-  } catch {
-    return anchors.map((anchor, i) => `- ${anchorText(anchor)}${rows[i].suffix}`);
-  }
-}
-function renderSpanSection(name, anchors, debtRows, why) {
-  const lines = [`## ${name}`, ...anchorBullets(anchors, debtRows)];
-  if (why) lines.push("", why);
-  return lines.join("\n");
-}
-function buildBlock(sections, header, footer) {
-  const body = `${header}
-
-${sections.join("\n\n---\n\n")}
-
----
-
-${footer}`;
-  return `
-<git-span>
-${body}
-</git-span>
-`;
-}
-function intersectsAny(row, ranges) {
-  if (ranges === "whole-file") return true;
-  if (row.start === 0 && row.end === 0) return true;
-  return ranges.some((range) => rangesIntersect(range, { start: row.start, end: row.end }));
-}
-function recoverRangeFromDisk(written, filePath) {
-  if (written.length === 0) return "whole-file";
-  let content;
-  try {
-    content = fs5.readFileSync(filePath, "utf8");
-  } catch {
-    return "whole-file";
-  }
-  return recoverRange2(written, content);
-}
-var DEFAULT_READ_LIMIT = 2e3;
-function recoverReadRange(offset, limit, filePath) {
-  if (offset === void 0 && limit === void 0) return "whole-file";
-  const start = offset ?? 1;
-  let lineCount2;
-  try {
-    const content = fs5.readFileSync(filePath, "utf8");
-    lineCount2 = content.length === 0 ? 0 : content.split("\n").length;
-  } catch {
-    return "whole-file";
-  }
-  const end = Math.min(start + (limit ?? DEFAULT_READ_LIMIT) - 1, Math.max(lineCount2, start));
-  return { start, end };
-}
-function onTouchedFile(row, filePath) {
-  return filePath === row.path || filePath.endsWith(`/${row.path}`);
-}
-async function computeSurfaceParts(input, executors, memo, range, driftRows) {
-  const covering = await executors.list(input.filePath, input.cwd);
-  if (covering.length === 0) return null;
-  const anchorsByName = /* @__PURE__ */ new Map();
-  for (const row of covering) {
-    const rows = anchorsByName.get(row.name) ?? [];
-    rows.push(row);
-    anchorsByName.set(row.name, rows);
-  }
-  const touchedNames = [...anchorsByName.keys()].filter(
-    (name) => (anchorsByName.get(name) ?? []).some((row) => onTouchedFile(row, input.filePath) && intersectsAny(row, range))
-  );
-  if (touchedNames.length === 0) return null;
-  const driftByName = /* @__PURE__ */ new Map();
-  for (const row of driftRows ?? await executors.drift([input.filePath], input.cwd)) {
-    const rows = driftByName.get(row.name) ?? [];
-    rows.push(row);
-    driftByName.set(row.name, rows);
-  }
-  const surfaced = memo.getSurfaced(input.sessionId);
-  const toRecord = [];
-  const sections = [];
-  const driftedNames = [];
-  for (const name of touchedNames) {
-    const spanDrift = driftByName.get(name) ?? [];
-    const debtRows = spanDrift.filter((row) => isDebt(row.status));
-    if (spanDrift.length > 0 && debtRows.length === 0) continue;
-    const debtStatuses = [...new Set(debtRows.map((row) => row.status))].sort();
-    const unsurfacedDebt = debtStatuses.filter((status) => !surfaced.has(driftKey(name, status)));
-    const isNewName = !surfaced.has(name);
-    if (!isNewName && unsurfacedDebt.length === 0) continue;
-    const why = await executors.why(name, input.cwd);
-    sections.push(renderSpanSection(name, anchorsByName.get(name) ?? [], debtRows, why));
-    if (debtStatuses.length > 0) driftedNames.push(name);
-    if (isNewName) toRecord.push(name);
-    for (const status of unsurfacedDebt) toRecord.push(driftKey(name, status));
-  }
-  if (sections.length === 0) return null;
-  memo.addSurfaced(input.sessionId, toRecord);
-  const fileName = basename3(input.filePath);
-  const header = driftedNames.length > 0 ? driftHeader(driftedNames.length, input.kind) : cleanHeader(fileName);
-  const footer = driftedNames.length > 0 ? driftFooter(driftedNames) : cleanFooter(fileName);
-  return { sections, header, footer, toRecord };
-}
-async function computeSurface(input, executors, memo, range) {
-  const parts = await computeSurfaceParts(input, executors, memo, range);
-  if (parts === null) return null;
-  return buildBlock(parts.sections, parts.header, parts.footer);
-}
-async function runTouchHook(input, executors, memo, probeCache, scopes) {
-  if (input.kind === "write" && input.observed !== void 0 && input.written.length > 0) {
-    throw new Error("touch write carries both written and observed: exactly one must be set");
-  }
-  if (scopes !== void 0 && scopes.length > 0) {
-    let treeModified2 = false;
-    try {
-      for (const scope of scopes) {
-        const fix = await executors.fix(scope.filePath, input.cwd);
-        treeModified2 = treeModified2 || fix.modified;
-      }
-      const driftRows = await executors.drift([], input.cwd);
-      const sections = [];
-      let header = null;
-      let footer = null;
-      for (const scope of scopes) {
-        const scopeInput = { ...input, filePath: scope.filePath };
-        const range = scope.observed.wholeFile ? "whole-file" : scope.observed.changed;
-        const parts = await computeSurfaceParts(scopeInput, executors, memo, range, driftRows);
-        if (parts === null) continue;
-        if (header === null) {
-          header = parts.header;
-          footer = parts.footer;
-        }
-        sections.push(...parts.sections);
-      }
-      if (sections.length === 0) return { additionalContext: null, treeModified: treeModified2 };
-      return { additionalContext: buildBlock(sections, header, footer), treeModified: treeModified2 };
-    } catch {
-      return { additionalContext: null, treeModified: treeModified2 };
-    }
-  }
-  let treeModified = false;
-  try {
-    let range = "whole-file";
-    if (input.kind === "write") {
-      if (input.observed === void 0 && input.targetState !== void 0) {
-        const probe = probeCache ?? createRealityProbeCache(input.targetState === "absent" ? [input.filePath] : []);
-        const outcome = evaluateWriteGate(input, probe);
-        if (outcome === "decisiveFail" || outcome === "inconclusive" && input.targetState === "absent") {
-          return { additionalContext: null, treeModified: false };
-        }
-      }
-      const fix = await executors.fix(input.filePath, input.cwd);
-      treeModified = fix.modified;
-      if (input.range !== void 0) {
-        range = [input.range];
-      } else if (input.observed !== void 0) {
-        range = input.observed.wholeFile ? "whole-file" : input.observed.changed;
-      } else {
-        const recovered = recoverRangeFromDisk(input.written, input.filePath);
-        range = recovered === "whole-file" ? "whole-file" : [recovered];
-      }
-    } else {
-      const recovered = recoverReadRange(input.offset, input.limit, input.filePath);
-      range = recovered === "whole-file" ? "whole-file" : [recovered];
-    }
-    const additionalContext = await computeSurface(input, executors, memo, range);
-    return { additionalContext, treeModified };
-  } catch {
-    return { additionalContext: null, treeModified };
-  }
-}
-var DEFAULT_TIMEOUT_MS = 1e4;
-function repoRelArg(filePath, cwd) {
-  const repoRoot = resolveRepoRoot(cwd);
-  if (!repoRoot) return null;
-  return { repoRoot, relPath: relativeToRepo(repoRoot, filePath) };
-}
-function spanStatusSnapshot(repoRoot) {
-  const spanRoot = resolveSpanRoot(repoRoot);
-  try {
-    return execFileSync4("git", ["-C", repoRoot, "status", "--porcelain", "--", spanRoot], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: DEFAULT_TIMEOUT_MS
-    });
-  } catch {
-    return "";
-  }
-}
-function createDefaultTouchExecutors(timeoutMs = DEFAULT_TIMEOUT_MS) {
-  return {
-    fix: async (filePath, cwd) => {
-      const resolved = repoRelArg(filePath, cwd);
-      if (!resolved) return { modified: false };
-      const before = spanStatusSnapshot(resolved.repoRoot);
-      try {
-        execFileSync4("git", ["span", "drift", resolved.relPath, "--fix"], {
-          cwd: resolved.repoRoot,
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "pipe"],
-          timeout: timeoutMs
-        });
-      } catch (err) {
-        void err;
-      }
-      const after = spanStatusSnapshot(resolved.repoRoot);
-      return { modified: before !== after };
-    },
-    list: async (filePath, cwd) => {
-      const resolved = repoRelArg(filePath, cwd);
-      if (!resolved) return [];
-      try {
-        const out = execFileSync4("git", ["span", "list", "--porcelain", resolved.relPath], {
-          cwd: resolved.repoRoot,
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "pipe"],
-          timeout: timeoutMs
-        });
-        return parsePorcelain(out);
-      } catch {
-        return [];
-      }
-    },
-    drift: async (args, cwd) => {
-      const repoRoot = resolveRepoRoot(cwd);
-      const runCwd = repoRoot ?? cwd;
-      const scoped = repoRoot ? args.map((a) => relativeToRepo(repoRoot, a)) : args;
-      let out;
-      try {
-        out = execFileSync4("git", ["span", "drift", "--format", "porcelain", ...scoped], {
-          cwd: runCwd,
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "pipe"],
-          timeout: timeoutMs
-        });
-      } catch (err) {
-        const captured = err.stdout;
-        if (typeof captured === "string") {
-          out = captured;
-        } else {
-          return [];
-        }
-      }
-      return parseDriftPorcelain(out);
-    },
-    why: async (name, cwd) => {
-      const repoRoot = resolveRepoRoot(cwd);
-      try {
-        const out = execFileSync4("git", ["span", "why", name], {
-          cwd: repoRoot ?? cwd,
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "pipe"],
-          timeout: timeoutMs
-        });
-        const text = out.trimEnd();
-        if (text.length === 0 || text === `\`${name}\` has no why recorded.`) return null;
-        return text;
-      } catch {
-        return null;
-      }
-    }
-  };
-}
-
-// src/common/bash-touch.ts
-function bashSpanToTouch(span, sessionId, cwd) {
-  if (!resolveTouchScope(cwd, span.absolutePath)) return null;
-  switch (span.operation) {
-    case "read":
-      return {
-        kind: "read",
-        sessionId,
-        cwd,
-        filePath: span.absolutePath,
-        offset: span.lineStart,
-        limit: span.lineStart !== void 0 && span.lineEnd !== void 0 ? span.lineEnd - span.lineStart + 1 : void 0
-      };
-    case "create-overwrite":
-    case "rename-copy":
-      return {
-        kind: "write",
-        sessionId,
-        cwd,
-        filePath: span.absolutePath,
-        written: "",
-        targetState: "exists",
-        postState: span.written !== void 0 ? { content: { exact: span.written } } : void 0
-      };
-    case "truncate":
-      return {
-        kind: "write",
-        sessionId,
-        cwd,
-        filePath: span.absolutePath,
-        written: "",
-        targetState: "exists",
-        postState: span.size === 0 ? { content: { empty: true } } : span.size !== void 0 ? { content: { size: span.size } } : void 0
-      };
-    case "append":
-      return {
-        kind: "write",
-        sessionId,
-        cwd,
-        filePath: span.absolutePath,
-        written: span.written ?? "",
-        targetState: "exists",
-        postState: span.written !== void 0 ? { content: { suffix: span.written } } : void 0
-      };
-    case "modify":
-      return {
-        kind: "write",
-        sessionId,
-        cwd,
-        filePath: span.absolutePath,
-        written: "",
-        targetState: "exists",
-        range: span.lineStart !== void 0 ? { start: span.lineStart, end: span.lineEnd ?? span.lineStart } : void 0
-      };
-    case "delete":
-      return {
-        kind: "write",
-        sessionId,
-        cwd,
-        filePath: span.absolutePath,
-        written: "",
-        targetState: "absent",
-        postState: { realDelete: true }
-      };
-  }
-}
+import * as nodePath4 from "node:path";
 
 // src/common/parse-command.ts
-import { readFileSync as readFileSync7, statSync as statSync5 } from "node:fs";
-import { basename as basename4, isAbsolute as isAbsolute3, join as joinPath, resolve as resolvePath } from "node:path";
+import { readFileSync as readFileSync6, statSync as statSync4 } from "node:fs";
+import { basename as basename3, isAbsolute as isAbsolute3, join as joinPath, resolve as resolvePath } from "node:path";
 
 // src/common/command-resolve.ts
-import { execFileSync as execFileSync5 } from "node:child_process";
-import { readFileSync as readFileSync6, statSync as statSync4 } from "node:fs";
+import { execFileSync as execFileSync4 } from "node:child_process";
+import { readFileSync as readFileSync5, statSync as statSync3 } from "node:fs";
 function countFileLines(absolutePath) {
   try {
-    if (!statSync4(absolutePath).isFile()) return null;
-    const content = readFileSync6(absolutePath, "utf8");
+    if (!statSync3(absolutePath).isFile()) return null;
+    const content = readFileSync5(absolutePath, "utf8");
     if (content.length === 0) return 0;
     const withoutTrailingNewline = content.endsWith("\n") ? content.slice(0, -1) : content;
     return withoutTrailingNewline.split("\n").length;
@@ -3576,7 +2871,7 @@ function countFileLines(absolutePath) {
 }
 function countGitBlobLines(cwd, rev, path) {
   try {
-    const out = execFileSync5("git", ["show", `${rev}:${path}`], {
+    const out = execFileSync4("git", ["show", `${rev}:${path}`], {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"]
@@ -4260,7 +3555,7 @@ function teeOperandParts(argv) {
   }
   return { append, operands };
 }
-function matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join10, results) {
+function matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join11, results) {
   const parts = teeOperandParts(argv);
   if (parts === null) return;
   for (const operand of parts.operands) {
@@ -4273,23 +3568,23 @@ function matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex,
         operation: "create-overwrite",
         absolutePath,
         simpleCommandIndex,
-        join: join10,
+        join: join11,
         ...pipeEchoContent !== null ? { written: pipeEchoContent } : {}
       } : {
         operation: "append",
         absolutePath,
         simpleCommandIndex,
-        join: join10,
+        join: join11,
         ...pipeEchoContent !== null ? { written: pipeEchoContent } : {}
       }
     });
   }
 }
-function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpleCommandIndex, join10, results) {
+function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpleCommandIndex, join11, results) {
   const contentRedirects = redirects.filter(isContentRedirect);
   const host = argv[0];
   if (contentRedirects.length === 0) {
-    if (host === "tee") matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join10, results);
+    if (host === "tee") matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join11, results);
     return;
   }
   if (host === void 0 || host === ":" || host === "exec") {
@@ -4300,7 +3595,7 @@ function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpl
       results.push({
         status: "resolved",
         idiom: "truncate-write",
-        span: { operation: "truncate", absolutePath, simpleCommandIndex, join: join10 }
+        span: { operation: "truncate", absolutePath, simpleCommandIndex, join: join11 }
       });
     }
     return;
@@ -4322,7 +3617,7 @@ function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpl
           operation: "append",
           absolutePath,
           simpleCommandIndex,
-          join: join10,
+          join: join11,
           ...threadedAppend !== void 0 ? { written: threadedAppend } : {}
         }
       });
@@ -4334,13 +3629,13 @@ function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpl
           operation: "create-overwrite",
           absolutePath,
           simpleCommandIndex,
-          join: join10,
+          join: join11,
           ...threadedOverwrite !== void 0 ? { written: threadedOverwrite } : {}
         }
       });
     }
   }
-  if (host === "tee") matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join10, results);
+  if (host === "tee") matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join11, results);
 }
 var FOREIGN_WRAPPERS = /* @__PURE__ */ new Set(["sudo", "xargs", "nohup", "time", "nice", "doas"]);
 var ASSIGNMENT_TOKEN = /^[A-Za-z_][A-Za-z0-9_]*=/;
@@ -4355,7 +3650,7 @@ function pushUnresolved(results, idiom, fileArg, reason) {
 }
 function isExistingDirectory(absolutePath) {
   try {
-    return statSync5(absolutePath).isDirectory();
+    return statSync4(absolutePath).isDirectory();
   } catch {
     return false;
   }
@@ -4449,12 +3744,12 @@ function copyMoveParts(args, spec) {
   }
   return { operands, targetDir };
 }
-function emitSourceSpan(results, spec, absolutePath, simpleCommandIndex, join10) {
+function emitSourceSpan(results, spec, absolutePath, simpleCommandIndex, join11) {
   if (spec.sourceOperation === "delete") {
     results.push({
       status: "resolved",
       idiom: spec.idiom,
-      span: { operation: "delete", absolutePath, simpleCommandIndex, join: join10 }
+      span: { operation: "delete", absolutePath, simpleCommandIndex, join: join11 }
     });
     return;
   }
@@ -4462,17 +3757,17 @@ function emitSourceSpan(results, spec, absolutePath, simpleCommandIndex, join10)
   results.push({
     status: "resolved",
     idiom: spec.idiom,
-    span: range === null ? { operation: "read", absolutePath, simpleCommandIndex, join: join10 } : {
+    span: range === null ? { operation: "read", absolutePath, simpleCommandIndex, join: join11 } : {
       operation: "read",
       lineStart: range.lineStart,
       lineEnd: range.lineEnd,
       absolutePath,
       simpleCommandIndex,
-      join: join10
+      join: join11
     }
   });
 }
-function matchCopyMoveFamily(argv, dirForResolution, simpleCommandIndex, join10, results) {
+function matchCopyMoveFamily(argv, dirForResolution, simpleCommandIndex, join11, results) {
   const rest = stripTransparentWrapper(argv);
   if (rest.length === 0) return;
   const command = rest[0];
@@ -4524,7 +3819,7 @@ function matchCopyMoveFamily(argv, dirForResolution, simpleCommandIndex, join10,
       return;
     }
     const targetAbs = resolvePath(dir, parts.targetDir);
-    destPaths = sourcePaths.map((p) => joinPath(targetAbs, basename4(p)));
+    destPaths = sourcePaths.map((p) => joinPath(targetAbs, basename3(p)));
   } else {
     const dest = parts.operands[parts.operands.length - 1];
     if (looksUnresolvable(dest)) {
@@ -4537,23 +3832,23 @@ function matchCopyMoveFamily(argv, dirForResolution, simpleCommandIndex, join10,
       pushUnresolved(results, spec.idiom, dest, "a multi-source copy/move needs a directory destination");
       return;
     }
-    destPaths = destIsDir ? sourcePaths.map((p) => joinPath(destAbs, basename4(p))) : [destAbs];
+    destPaths = destIsDir ? sourcePaths.map((p) => joinPath(destAbs, basename3(p))) : [destAbs];
   }
   for (let k = 0; k < sourcePaths.length; k++) {
-    emitSourceSpan(results, spec, sourcePaths[k], simpleCommandIndex, join10);
+    emitSourceSpan(results, spec, sourcePaths[k], simpleCommandIndex, join11);
   }
   for (let k = 0; k < sourcePaths.length; k++) {
     results.push({
       status: "resolved",
       idiom: spec.idiom,
-      span: { operation: spec.destOperation, absolutePath: destPaths[k], simpleCommandIndex, join: join10 }
+      span: { operation: spec.destOperation, absolutePath: destPaths[k], simpleCommandIndex, join: join11 }
     });
   }
 }
 var RM_NO_VALUE = /* @__PURE__ */ new Set(["-f", "-i", "-v"]);
 var RM_EXCLUDED = /* @__PURE__ */ new Set(["-r", "-R", "--recursive", "-d"]);
 var GIT_RM_EXCLUDED = /* @__PURE__ */ new Set(["-r", "-R", "--recursive", "-d", "-n", "--dry-run"]);
-function matchRmOperands(args, excluded, excludeCached, dir, simpleCommandIndex, join10, results) {
+function matchRmOperands(args, excluded, excludeCached, dir, simpleCommandIndex, join11, results) {
   let afterDashDash = false;
   const operands = [];
   for (const a of args) {
@@ -4579,7 +3874,7 @@ function matchRmOperands(args, excluded, excludeCached, dir, simpleCommandIndex,
     results.push({
       status: "resolved",
       idiom: "rm-write",
-      span: { operation: "delete", absolutePath: resolvePath(dir, operand), simpleCommandIndex, join: join10 }
+      span: { operation: "delete", absolutePath: resolvePath(dir, operand), simpleCommandIndex, join: join11 }
     });
   }
 }
@@ -4591,7 +3886,7 @@ function evaluateStaticSize(value) {
   const mult = m[2] === "K" ? 1024 : m[2] === "M" ? 1024 ** 2 : m[2] === "G" ? 1024 ** 3 : 1;
   return base * mult;
 }
-function matchTruncateOperands(args, dir, simpleCommandIndex, join10, results) {
+function matchTruncateOperands(args, dir, simpleCommandIndex, join11, results) {
   let sawSizeFlag = false;
   let afterDashDash = false;
   let staticSize;
@@ -4636,22 +3931,22 @@ function matchTruncateOperands(args, dir, simpleCommandIndex, join10, results) {
         operation: "truncate",
         absolutePath: resolvePath(dir, operand.path),
         simpleCommandIndex,
-        join: join10,
+        join: join11,
         ...operand.size !== void 0 ? { size: operand.size } : {}
       }
     });
   }
 }
-function matchRmTruncate(argv, dirForResolution, simpleCommandIndex, join10, results) {
+function matchRmTruncate(argv, dirForResolution, simpleCommandIndex, join11, results) {
   const rest = stripTransparentWrapper(argv);
   if (rest.length === 0) return;
   const command = rest[0];
   if (command === "rm") {
-    matchRmOperands(rest.slice(1), RM_EXCLUDED, false, dirForResolution, simpleCommandIndex, join10, results);
+    matchRmOperands(rest.slice(1), RM_EXCLUDED, false, dirForResolution, simpleCommandIndex, join11, results);
     return;
   }
   if (command === "truncate") {
-    matchTruncateOperands(rest.slice(1), dirForResolution, simpleCommandIndex, join10, results);
+    matchTruncateOperands(rest.slice(1), dirForResolution, simpleCommandIndex, join11, results);
     return;
   }
   if (command === "git") {
@@ -4667,7 +3962,7 @@ function matchRmTruncate(argv, dirForResolution, simpleCommandIndex, join10, res
         true,
         sub.cDir ?? dirForResolution,
         simpleCommandIndex,
-        join10,
+        join11,
         results
       );
     }
@@ -4695,7 +3990,7 @@ function heredocBodyIsLiteral(body) {
   }
   return true;
 }
-function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleCommandIndex, join10, results) {
+function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleCommandIndex, join11, results) {
   const bodyLiteral = quotedDelim || heredocBodyIsLiteral(body);
   const tokens = tokenize(stripLeadingAssignments(opener).trim());
   if (tokens === null) return;
@@ -4718,7 +4013,7 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
             operation: "append",
             absolutePath,
             simpleCommandIndex,
-            join: join10,
+            join: join11,
             ...singlePlainAppend && r.op === ">>" && bodyLiteral ? { written: body } : {}
           }
         });
@@ -4726,11 +4021,11 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
         results.push({
           status: "resolved",
           idiom: "heredoc-write",
-          span: body.length === 0 ? { operation: "truncate", absolutePath, simpleCommandIndex, join: join10 } : {
+          span: body.length === 0 ? { operation: "truncate", absolutePath, simpleCommandIndex, join: join11 } : {
             operation: "create-overwrite",
             absolutePath,
             simpleCommandIndex,
-            join: join10,
+            join: join11,
             // The exact gate compares full file bytes, so the trailing
             // `\n` the extraction stripped comes back on the overwrite.
             ...singlePlainOverwrite && bodyLiteral ? { written: `${body}
@@ -4759,7 +4054,7 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
               operation: "append",
               absolutePath,
               simpleCommandIndex,
-              join: join10,
+              join: join11,
               ...contentRedirects.length === 0 && bodyLiteral ? { written: body } : {}
             }
           });
@@ -4767,11 +4062,11 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
           results.push({
             status: "resolved",
             idiom: "heredoc-write",
-            span: body.length === 0 ? { operation: "truncate", absolutePath, simpleCommandIndex, join: join10 } : {
+            span: body.length === 0 ? { operation: "truncate", absolutePath, simpleCommandIndex, join: join11 } : {
               operation: "create-overwrite",
               absolutePath,
               simpleCommandIndex,
-              join: join10,
+              join: join11,
               // Same restored-`\n` exact body as the redirect branch; a
               // tee operand with a content redirect present keeps the
               // redirect's threading only (mirror of the append branch).
@@ -4786,18 +4081,18 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
     return;
   }
   if (host === "patch" || host === "git") {
-    classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join10, results);
+    classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join11, results);
     return;
   }
 }
 var NUMERIC_SUBSTITUTION = /^(\d+)(?:,(\d+))?[sy]/;
 var UNRESTRICTED_SUBSTITUTION = /^[sy]/;
-function matchSedInplace(argv, dirForResolution, simpleCommandIndex, join10, results) {
+function matchSedInplace(argv, dirForResolution, simpleCommandIndex, join11, results) {
   const rest = stripTransparentWrapper(argv);
   if (rest.length === 0) return;
   const command = rest[0];
   if (command === "sed") {
-    matchSedInplaceArgs(rest.slice(1), dirForResolution, simpleCommandIndex, join10, results);
+    matchSedInplaceArgs(rest.slice(1), dirForResolution, simpleCommandIndex, join11, results);
     return;
   }
   if (FOREIGN_WRAPPERS.has(command)) {
@@ -4808,7 +4103,7 @@ function matchSedInplace(argv, dirForResolution, simpleCommandIndex, join10, res
   }
 }
 var SED_SCRIPT_SHAPE = /^(?:[A-Za-z]|\d|\/|\\|\$|~)/;
-function matchSedInplaceArgs(args, dir, simpleCommandIndex, join10, results) {
+function matchSedInplaceArgs(args, dir, simpleCommandIndex, join11, results) {
   let suffix = null;
   let sawInplace = false;
   let i = 0;
@@ -4931,20 +4226,20 @@ function matchSedInplaceArgs(args, dir, simpleCommandIndex, join10, results) {
       results.push({
         status: "resolved",
         idiom: "sed-inplace",
-        span: { operation: "modify", lineStart: start, lineEnd: end, absolutePath, simpleCommandIndex, join: join10 }
+        span: { operation: "modify", lineStart: start, lineEnd: end, absolutePath, simpleCommandIndex, join: join11 }
       });
     } else {
       results.push({
         status: "resolved",
         idiom: "sed-inplace",
-        span: { operation: "modify", absolutePath, simpleCommandIndex, join: join10 }
+        span: { operation: "modify", absolutePath, simpleCommandIndex, join: join11 }
       });
     }
     if (suffix !== null && suffix !== "") {
       results.push({
         status: "resolved",
         idiom: "sed-inplace",
-        span: { operation: "create-overwrite", absolutePath: `${absolutePath}${suffix}`, simpleCommandIndex, join: join10 }
+        span: { operation: "create-overwrite", absolutePath: `${absolutePath}${suffix}`, simpleCommandIndex, join: join11 }
       });
     }
   }
@@ -5024,12 +4319,12 @@ function patchApplyParts(args, isGitApply) {
 }
 function readPatchFile(absolutePath) {
   try {
-    return readFileSync7(absolutePath, "utf8");
+    return readFileSync6(absolutePath, "utf8");
   } catch {
     return null;
   }
 }
-function emitPatchTargets(args, isGitApply, host, targetDir, shellDir, redirects, simpleCommandIndex, join10, results) {
+function emitPatchTargets(args, isGitApply, host, targetDir, shellDir, redirects, simpleCommandIndex, join11, results) {
   const parts = patchApplyParts(args, isGitApply);
   if (parts.readOnly || parts.cachedOnly) return;
   if (parts.directory) {
@@ -5087,13 +4382,13 @@ function emitPatchTargets(args, isGitApply, host, targetDir, shellDir, redirects
         operation: t.operation,
         absolutePath,
         simpleCommandIndex,
-        join: join10,
+        join: join11,
         ...t.lineStart !== void 0 ? { lineStart: t.lineStart, lineEnd: t.lineEnd } : {}
       }
     });
   }
 }
-function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, join10, results) {
+function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, join11, results) {
   const rest = stripTransparentWrapper(argv);
   if (rest.length === 0) return;
   const command = rest[0];
@@ -5106,7 +4401,7 @@ function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, 
       dirForResolution,
       redirects,
       simpleCommandIndex,
-      join10,
+      join11,
       results
     );
     return;
@@ -5126,7 +4421,7 @@ function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, 
       dirForResolution,
       redirects,
       simpleCommandIndex,
-      join10,
+      join11,
       results
     );
     return;
@@ -5138,7 +4433,7 @@ function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, 
     }
   }
 }
-function classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join10, results) {
+function classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join11, results) {
   const rest = stripTransparentWrapper(argv);
   if (rest.length === 0) return;
   const command = rest[0];
@@ -5181,7 +4476,7 @@ function classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join10
         operation: t.operation,
         absolutePath,
         simpleCommandIndex,
-        join: join10,
+        join: join11,
         ...t.lineStart !== void 0 ? { lineStart: t.lineStart, lineEnd: t.lineEnd } : {}
       }
     });
@@ -5252,7 +4547,7 @@ function stripPackageRunner(argv) {
   if (wrapped.startsWith("-") || wrapped.startsWith(".") || /\s/.test(wrapped)) return { kind: "obscured" };
   return { kind: "stripped", stripped: rest };
 }
-function matchFormatter(argv, dirForResolution, simpleCommandIndex, join10, results) {
+function matchFormatter(argv, dirForResolution, simpleCommandIndex, join11, results) {
   const rest = stripTransparentWrapper(argv);
   if (rest.length === 0) return;
   let words = rest;
@@ -5314,12 +4609,12 @@ function matchFormatter(argv, dirForResolution, simpleCommandIndex, join10, resu
     results.push({
       status: "resolved",
       idiom: "formatter-write",
-      span: { operation: "modify", absolutePath: resolvePath(dirForResolution, operand), simpleCommandIndex, join: join10 }
+      span: { operation: "modify", absolutePath: resolvePath(dirForResolution, operand), simpleCommandIndex, join: join11 }
     });
   }
 }
 var RESTORE_NO_VALUE = /* @__PURE__ */ new Set(["-q", "-f", "-u"]);
-function emitRestoreCheckoutPathspec(results, idiom, operand, dir, simpleCommandIndex, join10) {
+function emitRestoreCheckoutPathspec(results, idiom, operand, dir, simpleCommandIndex, join11) {
   if (looksUnresolvable(operand)) {
     pushUnresolved(results, idiom, operand, "path contains an unexpanded shell variable or glob");
     return;
@@ -5337,10 +4632,10 @@ function emitRestoreCheckoutPathspec(results, idiom, operand, dir, simpleCommand
   results.push({
     status: "resolved",
     idiom,
-    span: { operation: "create-overwrite", absolutePath, simpleCommandIndex, join: join10 }
+    span: { operation: "create-overwrite", absolutePath, simpleCommandIndex, join: join11 }
   });
 }
-function matchRestoreOperands(args, dir, simpleCommandIndex, join10, results) {
+function matchRestoreOperands(args, dir, simpleCommandIndex, join11, results) {
   let staged = false;
   let worktree = false;
   let afterDashDash = false;
@@ -5384,10 +4679,10 @@ function matchRestoreOperands(args, dir, simpleCommandIndex, join10, results) {
   }
   if (staged && !worktree) return;
   for (const operand of operands) {
-    emitRestoreCheckoutPathspec(results, "git-restore-write", operand, dir, simpleCommandIndex, join10);
+    emitRestoreCheckoutPathspec(results, "git-restore-write", operand, dir, simpleCommandIndex, join11);
   }
 }
-function matchCheckoutOperands(args, dir, simpleCommandIndex, join10, results) {
+function matchCheckoutOperands(args, dir, simpleCommandIndex, join11, results) {
   let afterDashDash = false;
   const operands = [];
   for (let i = 0; i < args.length; i++) {
@@ -5417,10 +4712,10 @@ function matchCheckoutOperands(args, dir, simpleCommandIndex, join10, results) {
     if (a.startsWith("-")) continue;
   }
   for (const operand of operands) {
-    emitRestoreCheckoutPathspec(results, "git-checkout-write", operand, dir, simpleCommandIndex, join10);
+    emitRestoreCheckoutPathspec(results, "git-checkout-write", operand, dir, simpleCommandIndex, join11);
   }
 }
-function matchGitRestoreCheckout(argv, dirForResolution, simpleCommandIndex, join10, results) {
+function matchGitRestoreCheckout(argv, dirForResolution, simpleCommandIndex, join11, results) {
   const rest = stripTransparentWrapper(argv);
   if (rest.length === 0) return;
   const command = rest[0];
@@ -5438,8 +4733,8 @@ function matchGitRestoreCheckout(argv, dirForResolution, simpleCommandIndex, joi
     }
     const dir = sub.cDir ?? dirForResolution;
     const args = rest.slice(1).slice(sub.subIdx + 1);
-    if (sub.subcommand === "restore") matchRestoreOperands(args, dir, simpleCommandIndex, join10, results);
-    else matchCheckoutOperands(args, dir, simpleCommandIndex, join10, results);
+    if (sub.subcommand === "restore") matchRestoreOperands(args, dir, simpleCommandIndex, join11, results);
+    else matchCheckoutOperands(args, dir, simpleCommandIndex, join11, results);
     return;
   }
   if (FOREIGN_WRAPPERS.has(command)) {
@@ -5490,7 +4785,7 @@ function parseCommandDetailed(command, opts = {}) {
     if (isAbsolute3(c.dirOverride)) return c.dirOverride;
     return frame.certain ? resolvePath(frame.dir, c.dirOverride) : void 0;
   };
-  const emitCandidate = (c, frame, simpleCommandIndex, join10) => {
+  const emitCandidate = (c, frame, simpleCommandIndex, join11) => {
     if (looksUnresolvable(c.fileArg)) {
       results.push({
         status: "unresolved",
@@ -5541,7 +4836,7 @@ function parseCommandDetailed(command, opts = {}) {
         lineEnd: range.lineEnd,
         absolutePath,
         simpleCommandIndex,
-        join: join10
+        join: join11
       }
     });
   };
@@ -5674,9 +4969,723 @@ function parseCommandDetailed(command, opts = {}) {
   return results;
 }
 
+// src/common/static-attribution.ts
+var PYTHON_STRING_SOURCE = String.raw`(?:'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")`;
+
+// src/common/touch-core.ts
+import { execFileSync as execFileSync6 } from "node:child_process";
+import * as fs6 from "node:fs";
+import { basename as basename5, join as join6 } from "node:path";
+
+// src/common/anchor-tree.ts
+function collapseByPath(rows) {
+  const order = [];
+  const byPath = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    let anchor = byPath.get(row.path);
+    if (!anchor) {
+      anchor = { path: row.path, ranges: [] };
+      byPath.set(row.path, anchor);
+      order.push(row.path);
+    }
+    anchor.ranges.push({ range: row.range, suffix: row.suffix });
+  }
+  return order.map((path) => byPath.get(path));
+}
+function splitSegments(path) {
+  if (path.length === 0) return null;
+  const segments = path.split("/");
+  if (segments.some((segment) => segment.length === 0)) return null;
+  return segments;
+}
+function findOrCreateDir(parent, name) {
+  for (const child of parent.children) {
+    if (child.kind === "dir" && child.name === name) return child;
+  }
+  const node = { kind: "dir", name, children: [] };
+  parent.children.push(node);
+  return node;
+}
+function insertAnchor(root, segments, anchor) {
+  let cur = root;
+  for (let i = 0; i < segments.length - 1; i++) {
+    cur = findOrCreateDir(cur, segments[i]);
+  }
+  cur.children.push({ kind: "leaf", name: segments[segments.length - 1], anchor });
+}
+function buildForest(anchors) {
+  const root = { kind: "dir", name: "", children: [] };
+  for (const anchor of anchors) {
+    const segments = splitSegments(anchor.path);
+    if (segments === null) {
+      root.children.push({ kind: "leaf", name: anchor.path, anchor });
+      continue;
+    }
+    insertAnchor(root, segments, anchor);
+  }
+  return root.children;
+}
+function foldChain(node) {
+  let name = node.name;
+  let cur = node;
+  while (cur.kind === "dir" && cur.children.length === 1) {
+    const child = cur.children[0];
+    name = `${name}/${child.name}`;
+    cur = child;
+  }
+  return { name, node: cur };
+}
+function rangeRank(range) {
+  switch (range.kind) {
+    case "whole-file":
+      return 0;
+    case "range":
+      return 1;
+    case "truncated":
+      return 2;
+  }
+}
+function compareRangeEntries(a, b) {
+  const rank = rangeRank(a.range) - rangeRank(b.range);
+  if (rank !== 0) return rank;
+  if (a.range.kind === "range" && b.range.kind === "range") {
+    return a.range.start - b.range.start || a.range.end - b.range.end;
+  }
+  return 0;
+}
+function labelFor(range, sole) {
+  switch (range.kind) {
+    case "range":
+      return `#L${range.start}-L${range.end}`;
+    case "whole-file":
+      return sole ? null : "(whole file)";
+    case "truncated":
+      return "(truncated in source \u2014 anchor incomplete)";
+  }
+}
+var cachedSegmenter;
+function graphemeSegmenter() {
+  if (cachedSegmenter === void 0) {
+    try {
+      cachedSegmenter = { value: new Intl.Segmenter("en", { granularity: "grapheme" }) };
+    } catch {
+      cachedSegmenter = { value: null };
+    }
+  }
+  return cachedSegmenter.value;
+}
+var WIDE_RANGES = [
+  [4352, 4447],
+  [9001, 9002],
+  [9728, 10175],
+  [11904, 12350],
+  [12353, 13311],
+  [13312, 19903],
+  [19968, 40959],
+  [40960, 42191],
+  [43360, 43391],
+  [44032, 55203],
+  [63744, 64255],
+  [65040, 65049],
+  [65072, 65135],
+  [65280, 65376],
+  [65504, 65510],
+  [94208, 101119],
+  [127462, 127487],
+  [127744, 128591],
+  [128640, 128767],
+  [129280, 129535],
+  [129648, 129791],
+  [131072, 196605],
+  [196608, 262141]
+];
+function isWideCodePoint(cp) {
+  for (const [lo, hi] of WIDE_RANGES) {
+    if (cp < lo) return false;
+    if (cp <= hi) return true;
+  }
+  return false;
+}
+function displayWidth(name) {
+  const segmenter = graphemeSegmenter();
+  let width = 0;
+  if (segmenter === null) {
+    for (const codePoint of name) {
+      width += isWideCodePoint(codePoint.codePointAt(0) ?? 0) ? 2 : 1;
+    }
+    return width;
+  }
+  for (const { segment } of segmenter.segment(name)) {
+    width += isWideCodePoint(segment.codePointAt(0) ?? 0) ? 2 : 1;
+  }
+  return width;
+}
+var MAX_ALIGN_COLUMN = 48;
+function computeGroupTarget(items) {
+  let max = 0;
+  for (const item of items) {
+    if (item.node.kind === "leaf" && printsRangeColumn(item.node.anchor)) {
+      max = Math.max(max, displayWidth(item.name));
+    }
+  }
+  return max > MAX_ALIGN_COLUMN ? 0 : max;
+}
+function printsRangeColumn(anchor) {
+  const { ranges } = anchor;
+  if (ranges.length === 0) return false;
+  return ranges.some((entry) => labelFor(entry.range, ranges.length === 1) !== null);
+}
+function computePad(nameWidth, target) {
+  if (nameWidth >= target) return " ";
+  return " ".repeat(target - nameWidth + 1);
+}
+function renderLeafLines(name, anchor, ownPrefix, childPrefix, groupTarget) {
+  const { ranges } = anchor;
+  if (ranges.length === 0) return [`${ownPrefix}${name}`];
+  const sorted = [...ranges].sort(compareRangeEntries);
+  const sole = sorted.length === 1;
+  const nameWidth = displayWidth(name);
+  const pad = computePad(nameWidth, groupTarget);
+  const blank = " ".repeat(nameWidth + pad.length);
+  return sorted.map((entry, i) => {
+    const label = labelFor(entry.range, sole);
+    if (label === null) return `${ownPrefix}${name}${entry.suffix}`;
+    const base = i === 0 ? `${ownPrefix}${name}${pad}` : `${childPrefix}${blank}`;
+    return `${base}${label}${entry.suffix}`;
+  });
+}
+function renderNodes(nodes, prefix) {
+  const lines = [];
+  const items = nodes.map(foldChain);
+  const groupTarget = computeGroupTarget(items);
+  items.forEach((item, i) => {
+    const isLast = i === items.length - 1;
+    const ownPrefix = `${prefix}${isLast ? "\u2514\u2500 " : "\u251C\u2500 "}`;
+    const childPrefix = `${prefix}${isLast ? "   " : "\u2502  "}`;
+    if (item.node.kind === "leaf") {
+      lines.push(...renderLeafLines(item.name, item.node.anchor, ownPrefix, childPrefix, groupTarget));
+    } else {
+      lines.push(`${ownPrefix}${item.name}/`);
+      lines.push(...renderNodes(item.node.children, childPrefix));
+    }
+  });
+  return lines;
+}
+function renderAnchorTree(anchors) {
+  const forest = buildForest(anchors);
+  return renderNodes(forest, "");
+}
+
+// src/common/touch-core.ts
+function toNeedleLines(written) {
+  if (written.length === 0) return [];
+  const trimmed = written.endsWith("\n") ? written.slice(0, -1) : written;
+  if (trimmed.length === 0) return [];
+  return trimmed.split("\n");
+}
+function recoverRange2(written, onDiskContent) {
+  const needle = toNeedleLines(written);
+  if (needle.length === 0) return "whole-file";
+  const haystack = onDiskContent.split("\n");
+  const last = haystack.length - needle.length;
+  const starts = [];
+  for (let i = 0; i <= last; i++) {
+    let ok = true;
+    for (let j = 0; j < needle.length; j++) {
+      if (haystack[i + j] !== needle[j]) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) {
+      starts.push(i);
+      if (starts.length > 1) break;
+    }
+  }
+  if (starts.length === 1) {
+    return { start: starts[0] + 1, end: starts[0] + needle.length };
+  }
+  return "whole-file";
+}
+function createRealityProbeCache(paths, changedCandidates = []) {
+  return {
+    paths: [...new Set(paths)],
+    realPaths: null,
+    changedCandidates: [...new Set(changedCandidates)],
+    changedPaths: null
+  };
+}
+function fileExists(absPath) {
+  try {
+    fs6.statSync(absPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function isFileOnDisk(absPath) {
+  try {
+    return fs6.statSync(absPath).isFile();
+  } catch {
+    return false;
+  }
+}
+function contentMatches(post, filePath) {
+  try {
+    if ("exact" in post) return fs6.readFileSync(filePath, "utf8") === post.exact;
+    if ("suffix" in post) {
+      const content = fs6.readFileSync(filePath, "utf8");
+      return content.endsWith(post.suffix) || content.endsWith(`${post.suffix}
+`);
+    }
+    if ("empty" in post) return fs6.statSync(filePath).size === 0;
+    return fs6.statSync(filePath).size === post.size;
+  } catch {
+    return false;
+  }
+}
+function realPaths(cache, cwd) {
+  if (cache.realPaths !== null) return cache.realPaths;
+  const real = /* @__PURE__ */ new Set();
+  if (cache.paths.length > 0) {
+    const repoRoot = resolveRepoRoot(cwd);
+    if (repoRoot !== null) {
+      const rels = cache.paths.map((p) => relativeToRepo(repoRoot, p));
+      const capture = (args) => {
+        try {
+          return execFileSync6("git", args, {
+            cwd: repoRoot,
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "pipe"],
+            timeout: DEFAULT_TIMEOUT_MS
+          });
+        } catch (err) {
+          const stdout = err.stdout;
+          return typeof stdout === "string" ? stdout : null;
+        }
+      };
+      const lsFiles = capture(["ls-files", "--error-unmatch", "--", ...rels]);
+      if (lsFiles !== null) {
+        for (const line of lsFiles.split("\n")) {
+          const rel = line.trim();
+          if (rel.length > 0) real.add(join6(repoRoot, rel));
+        }
+      }
+      const spanList = capture(["span", "list", "--porcelain", ...rels]);
+      if (spanList !== null) {
+        for (const row of parsePorcelain(spanList)) real.add(join6(repoRoot, row.path));
+      }
+    }
+  }
+  cache.realPaths = real;
+  return real;
+}
+function evaluateWriteGate(input, probeCache) {
+  if (input.targetState === "absent") {
+    if (fileExists(input.filePath)) return "decisiveFail";
+    return realPaths(probeCache, input.cwd).has(input.filePath) ? "decisivePass" : "inconclusive";
+  }
+  if (!isFileOnDisk(input.filePath)) return "decisiveFail";
+  const content = input.postState?.content;
+  if (content !== void 0) {
+    return contentMatches(content, input.filePath) ? "decisivePass" : "decisiveFail";
+  }
+  if (input.sourcePath !== void 0) {
+    if (fileExists(input.sourcePath)) {
+      let src;
+      let dst;
+      try {
+        src = fs6.readFileSync(input.sourcePath, "utf8");
+        dst = fs6.readFileSync(input.filePath, "utf8");
+      } catch {
+        return "decisiveFail";
+      }
+      return src === dst ? "decisivePass" : "decisiveFail";
+    }
+    return realPaths(probeCache, input.cwd).has(input.sourcePath) ? "pending" : "decisiveFail";
+  }
+  if (input.renameSourcePath !== void 0) {
+    return realPaths(probeCache, input.cwd).has(input.renameSourcePath) ? "decisivePass" : "decisiveFail";
+  }
+  return "inconclusive";
+}
+function driftKey(name, status) {
+  return `${name}	${status}`;
+}
+function anchorText(row) {
+  if (row.start === 0 && row.end === 0) return row.path;
+  return `${row.path}#L${row.start}-L${row.end}`;
+}
+function cleanHeader(fileName) {
+  return `${fileName} has implicit dependencies:`;
+}
+function cleanFooter(fileName) {
+  return `If you change ${fileName} check the other files to confirm they still work together.`;
+}
+function driftHeader(driftedCount, kind) {
+  if (kind === "write") {
+    return driftedCount === 1 ? "This edit put an implicit dependency out of date:" : "This edit put implicit dependencies out of date:";
+  }
+  return driftedCount === 1 ? "This file has an implicit dependency out of date:" : "This file has implicit dependencies out of date:";
+}
+function driftFooter(driftedNames) {
+  if (driftedNames.length === 1) {
+    const name = driftedNames[0];
+    return `Restore agreement before committing. Follow confirmed authority. Preserve anchor shape; if an address changed, swap the old anchor for the new one with \`git span replace\`. Update or retire the why only if its meaning changed. Require \`git span drift ${name}\` to report zero, then check the other anchors. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete coupling.`;
+  }
+  return "For each out-of-date span: restore agreement before committing. Follow confirmed authority. Preserve anchor shape; if an address changed, swap the old anchor for the new one with `git span replace`. Update or retire the why only if its meaning changed. Require `git span drift <name>` to report zero, then check the other anchors. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete coupling.";
+}
+function rangeLabel(row) {
+  if (row.start === 0 && row.end === 0) return { kind: "whole-file" };
+  return { kind: "range", start: row.start, end: row.end };
+}
+function anchorBullets(anchors, debtRows) {
+  const rows = anchors.map((anchor) => {
+    const soleOnPath = anchors.filter((a) => a.path === anchor.path).length === 1;
+    const statuses = /* @__PURE__ */ new Set();
+    for (const row of debtRows) {
+      if (row.path !== anchor.path) continue;
+      if (soleOnPath || row.start === anchor.start && row.end === anchor.end) {
+        statuses.add(row.status);
+      }
+    }
+    const sorted = [...statuses].sort();
+    const suffix = sorted.length > 0 ? ` \u2014 ${sorted.map(humanStatusLabel).join(", ")}` : "";
+    return { path: anchor.path, range: rangeLabel(anchor), suffix };
+  });
+  try {
+    return renderAnchorTree(collapseByPath(rows));
+  } catch {
+    return anchors.map((anchor, i) => `- ${anchorText(anchor)}${rows[i].suffix}`);
+  }
+}
+function renderSpanSection(name, anchors, debtRows, why) {
+  const lines = [`## ${name}`, ...anchorBullets(anchors, debtRows)];
+  if (why) lines.push("", why);
+  return lines.join("\n");
+}
+function buildBlock(sections, header, footer) {
+  const body = `${header}
+
+${sections.join("\n\n---\n\n")}
+
+---
+
+${footer}`;
+  return `
+<git-span>
+${body}
+</git-span>
+`;
+}
+function intersectsAny(row, ranges) {
+  if (ranges === "whole-file") return true;
+  if (row.start === 0 && row.end === 0) return true;
+  return ranges.some((range) => rangesIntersect(range, { start: row.start, end: row.end }));
+}
+function recoverRangeFromDisk(written, filePath) {
+  if (written.length === 0) return "whole-file";
+  let content;
+  try {
+    content = fs6.readFileSync(filePath, "utf8");
+  } catch {
+    return "whole-file";
+  }
+  return recoverRange2(written, content);
+}
+var DEFAULT_READ_LIMIT = 2e3;
+function recoverReadRange(offset, limit, filePath) {
+  if (offset === void 0 && limit === void 0) return "whole-file";
+  const start = offset ?? 1;
+  let lineCount2;
+  try {
+    const content = fs6.readFileSync(filePath, "utf8");
+    lineCount2 = content.length === 0 ? 0 : content.split("\n").length;
+  } catch {
+    return "whole-file";
+  }
+  const end = Math.min(start + (limit ?? DEFAULT_READ_LIMIT) - 1, Math.max(lineCount2, start));
+  return { start, end };
+}
+function onTouchedFile(row, filePath) {
+  return filePath === row.path || filePath.endsWith(`/${row.path}`);
+}
+async function computeSurfaceParts(input, executors, memo, range, driftRows) {
+  const covering = await executors.list(input.filePath, input.cwd);
+  if (covering.length === 0) return null;
+  const anchorsByName = /* @__PURE__ */ new Map();
+  for (const row of covering) {
+    const rows = anchorsByName.get(row.name) ?? [];
+    rows.push(row);
+    anchorsByName.set(row.name, rows);
+  }
+  const touchedNames = [...anchorsByName.keys()].filter(
+    (name) => (anchorsByName.get(name) ?? []).some((row) => onTouchedFile(row, input.filePath) && intersectsAny(row, range))
+  );
+  if (touchedNames.length === 0) return null;
+  const driftByName = /* @__PURE__ */ new Map();
+  for (const row of driftRows ?? await executors.drift([input.filePath], input.cwd)) {
+    const rows = driftByName.get(row.name) ?? [];
+    rows.push(row);
+    driftByName.set(row.name, rows);
+  }
+  const surfaced = memo.getSurfaced(input.sessionId);
+  const toRecord = [];
+  const sections = [];
+  const driftedNames = [];
+  for (const name of touchedNames) {
+    const spanDrift = driftByName.get(name) ?? [];
+    const debtRows = spanDrift.filter((row) => isDebt(row.status));
+    if (spanDrift.length > 0 && debtRows.length === 0) continue;
+    const debtStatuses = [...new Set(debtRows.map((row) => row.status))].sort();
+    const unsurfacedDebt = debtStatuses.filter((status) => !surfaced.has(driftKey(name, status)));
+    const isNewName = !surfaced.has(name);
+    if (!isNewName && unsurfacedDebt.length === 0) continue;
+    const why = await executors.why(name, input.cwd);
+    sections.push(renderSpanSection(name, anchorsByName.get(name) ?? [], debtRows, why));
+    if (debtStatuses.length > 0) driftedNames.push(name);
+    if (isNewName) toRecord.push(name);
+    for (const status of unsurfacedDebt) toRecord.push(driftKey(name, status));
+  }
+  if (sections.length === 0) return null;
+  memo.addSurfaced(input.sessionId, toRecord);
+  const fileName = basename5(input.filePath);
+  const header = driftedNames.length > 0 ? driftHeader(driftedNames.length, input.kind) : cleanHeader(fileName);
+  const footer = driftedNames.length > 0 ? driftFooter(driftedNames) : cleanFooter(fileName);
+  return { sections, header, footer, toRecord };
+}
+async function computeSurface(input, executors, memo, range) {
+  const parts = await computeSurfaceParts(input, executors, memo, range);
+  if (parts === null) return null;
+  return buildBlock(parts.sections, parts.header, parts.footer);
+}
+async function runTouchHook(input, executors, memo, probeCache, scopes) {
+  if (input.kind === "write" && input.observed !== void 0 && input.written.length > 0) {
+    throw new Error("touch write carries both written and observed: exactly one must be set");
+  }
+  if (scopes !== void 0 && scopes.length > 0) {
+    let treeModified2 = false;
+    try {
+      for (const scope of scopes) {
+        const fix = await executors.fix(scope.filePath, input.cwd);
+        treeModified2 = treeModified2 || fix.modified;
+      }
+      const driftRows = await executors.drift([], input.cwd);
+      const sections = [];
+      let header = null;
+      let footer = null;
+      for (const scope of scopes) {
+        const scopeInput = { ...input, filePath: scope.filePath };
+        const range = scope.observed.wholeFile ? "whole-file" : scope.observed.changed;
+        const parts = await computeSurfaceParts(scopeInput, executors, memo, range, driftRows);
+        if (parts === null) continue;
+        if (header === null) {
+          header = parts.header;
+          footer = parts.footer;
+        }
+        sections.push(...parts.sections);
+      }
+      if (sections.length === 0) return { additionalContext: null, treeModified: treeModified2 };
+      return { additionalContext: buildBlock(sections, header, footer), treeModified: treeModified2 };
+    } catch {
+      return { additionalContext: null, treeModified: treeModified2 };
+    }
+  }
+  let treeModified = false;
+  try {
+    let range = "whole-file";
+    if (input.kind === "write") {
+      if (input.observed === void 0 && input.targetState !== void 0) {
+        const probe = probeCache ?? createRealityProbeCache(input.targetState === "absent" ? [input.filePath] : []);
+        const outcome = evaluateWriteGate(input, probe);
+        if (outcome === "decisiveFail" || outcome === "inconclusive" && input.targetState === "absent") {
+          return { additionalContext: null, treeModified: false };
+        }
+      }
+      const fix = await executors.fix(input.filePath, input.cwd);
+      treeModified = fix.modified;
+      if (input.range !== void 0) {
+        range = [input.range];
+      } else if (input.observed !== void 0) {
+        range = input.observed.wholeFile ? "whole-file" : input.observed.changed;
+      } else {
+        const recovered = recoverRangeFromDisk(input.written, input.filePath);
+        range = recovered === "whole-file" ? "whole-file" : [recovered];
+      }
+    } else {
+      const recovered = recoverReadRange(input.offset, input.limit, input.filePath);
+      range = recovered === "whole-file" ? "whole-file" : [recovered];
+    }
+    const additionalContext = await computeSurface(input, executors, memo, range);
+    return { additionalContext, treeModified };
+  } catch {
+    return { additionalContext: null, treeModified };
+  }
+}
+var DEFAULT_TIMEOUT_MS = 1e4;
+function repoRelArg(filePath, cwd) {
+  const repoRoot = resolveRepoRoot(cwd);
+  if (!repoRoot) return null;
+  return { repoRoot, relPath: relativeToRepo(repoRoot, filePath) };
+}
+function spanStatusSnapshot(repoRoot) {
+  const spanRoot = resolveSpanRoot(repoRoot);
+  try {
+    return execFileSync6("git", ["-C", repoRoot, "status", "--porcelain", "--", spanRoot], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: DEFAULT_TIMEOUT_MS
+    });
+  } catch {
+    return "";
+  }
+}
+function createDefaultTouchExecutors(timeoutMs = DEFAULT_TIMEOUT_MS) {
+  return {
+    fix: async (filePath, cwd) => {
+      const resolved = repoRelArg(filePath, cwd);
+      if (!resolved) return { modified: false };
+      const before = spanStatusSnapshot(resolved.repoRoot);
+      try {
+        execFileSync6("git", ["span", "drift", resolved.relPath, "--fix"], {
+          cwd: resolved.repoRoot,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+          timeout: timeoutMs
+        });
+      } catch (err) {
+        void err;
+      }
+      const after = spanStatusSnapshot(resolved.repoRoot);
+      return { modified: before !== after };
+    },
+    list: async (filePath, cwd) => {
+      const resolved = repoRelArg(filePath, cwd);
+      if (!resolved) return [];
+      try {
+        const out = execFileSync6("git", ["span", "list", "--porcelain", resolved.relPath], {
+          cwd: resolved.repoRoot,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+          timeout: timeoutMs
+        });
+        return parsePorcelain(out);
+      } catch {
+        return [];
+      }
+    },
+    drift: async (args, cwd) => {
+      const repoRoot = resolveRepoRoot(cwd);
+      const runCwd = repoRoot ?? cwd;
+      const scoped = repoRoot ? args.map((a) => relativeToRepo(repoRoot, a)) : args;
+      let out;
+      try {
+        out = execFileSync6("git", ["span", "drift", "--format", "porcelain", ...scoped], {
+          cwd: runCwd,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+          timeout: timeoutMs
+        });
+      } catch (err) {
+        const captured = err.stdout;
+        if (typeof captured === "string") {
+          out = captured;
+        } else {
+          return [];
+        }
+      }
+      return parseDriftPorcelain(out);
+    },
+    why: async (name, cwd) => {
+      const repoRoot = resolveRepoRoot(cwd);
+      try {
+        const out = execFileSync6("git", ["span", "why", name], {
+          cwd: repoRoot ?? cwd,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+          timeout: timeoutMs
+        });
+        const text = out.trimEnd();
+        if (text.length === 0 || text === `\`${name}\` has no why recorded.`) return null;
+        return text;
+      } catch {
+        return null;
+      }
+    }
+  };
+}
+
+// src/common/bash-touch.ts
+function bashSpanToTouch(span, sessionId, cwd) {
+  if (!resolveTouchScope(cwd, span.absolutePath)) return null;
+  switch (span.operation) {
+    case "read":
+      return {
+        kind: "read",
+        sessionId,
+        cwd,
+        filePath: span.absolutePath,
+        offset: span.lineStart,
+        limit: span.lineStart !== void 0 && span.lineEnd !== void 0 ? span.lineEnd - span.lineStart + 1 : void 0
+      };
+    case "create-overwrite":
+    case "rename-copy":
+      return {
+        kind: "write",
+        sessionId,
+        cwd,
+        filePath: span.absolutePath,
+        written: "",
+        targetState: "exists",
+        postState: span.written !== void 0 ? { content: { exact: span.written } } : void 0
+      };
+    case "truncate":
+      return {
+        kind: "write",
+        sessionId,
+        cwd,
+        filePath: span.absolutePath,
+        written: "",
+        targetState: "exists",
+        postState: span.size === 0 ? { content: { empty: true } } : span.size !== void 0 ? { content: { size: span.size } } : void 0
+      };
+    case "append":
+      return {
+        kind: "write",
+        sessionId,
+        cwd,
+        filePath: span.absolutePath,
+        written: span.written ?? "",
+        targetState: "exists",
+        postState: span.written !== void 0 ? { content: { suffix: span.written } } : void 0
+      };
+    case "modify":
+      return {
+        kind: "write",
+        sessionId,
+        cwd,
+        filePath: span.absolutePath,
+        written: "",
+        targetState: "exists",
+        range: span.lineStart !== void 0 ? { start: span.lineStart, end: span.lineEnd ?? span.lineStart } : void 0,
+        postState: span.expectedContent !== void 0 ? { content: { exact: span.expectedContent } } : void 0
+      };
+    case "delete":
+      return {
+        kind: "write",
+        sessionId,
+        cwd,
+        filePath: span.absolutePath,
+        written: "",
+        targetState: "absent",
+        postState: { realDelete: true }
+      };
+  }
+}
+
 // src/common/parse-response.ts
-import { existsSync as existsSync3, statSync as statSync6 } from "node:fs";
-import { dirname as dirname5, join as join6, resolve as resolvePath2, sep as sep2 } from "node:path";
+import { existsSync as existsSync4, statSync as statSync6 } from "node:fs";
+import { dirname as dirname6, join as join7, resolve as resolvePath2, sep as sep2 } from "node:path";
 var MAX_RESPONSE_SPANS = 50;
 var SEARCH_BINS = /* @__PURE__ */ new Set(["rg", "grep", "egrep", "fgrep"]);
 var VALUE_SHORT_FLAGS = /* @__PURE__ */ new Set(["A", "B", "C", "e", "f", "m", "g", "t", "T"]);
@@ -5834,7 +5843,7 @@ function hasDiffRevPathArg(argv, start, cwd) {
       if (!a.includes("=") && valueFlags.has(a)) i += 1;
       continue;
     }
-    if (a.includes(":") && !existsSync3(resolvePath2(cwd, a))) return true;
+    if (a.includes(":") && !existsSync4(resolvePath2(cwd, a))) return true;
   }
   return false;
 }
@@ -6097,8 +6106,8 @@ function isFile(abs) {
 function findGitRoot(startDir) {
   let dir = startDir;
   for (; ; ) {
-    if (existsSync3(join6(dir, ".git"))) return dir;
-    const parent = dirname5(dir);
+    if (existsSync4(join7(dir, ".git"))) return dir;
+    const parent = dirname6(dir);
     if (parent === dir) return null;
     dir = parent;
   }
@@ -6395,9 +6404,9 @@ function parseResponse(input) {
 }
 
 // src/common/snapshot-harness.ts
-import { execFileSync as execFileSync6 } from "node:child_process";
-import { mkdirSync as mkdirSync6, readdirSync as readdirSync3, readFileSync as readFileSync8, rmSync as rmSync3, statSync as statSync7, writeFileSync as writeFileSync4 } from "node:fs";
-import { join as join7 } from "node:path";
+import { execFileSync as execFileSync7 } from "node:child_process";
+import { mkdirSync as mkdirSync7, readdirSync as readdirSync3, readFileSync as readFileSync9, rmSync as rmSync4, statSync as statSync7, writeFileSync as writeFileSync5 } from "node:fs";
+import { join as join8 } from "node:path";
 function resolveSnapshotBudgets(repoRoot) {
   const budgets = { ...DEFAULT_SNAPSHOT_BUDGETS };
   const overrides = [
@@ -6430,7 +6439,7 @@ function resolveSnapshotBudgets(repoRoot) {
 function readSnapshotConfig(repoRoot) {
   const values = /* @__PURE__ */ new Map();
   try {
-    const out = execFileSync6("git", ["-C", repoRoot, "config", "--get-regexp", "^git-span\\.snapshot[-.]"], {
+    const out = execFileSync7("git", ["-C", repoRoot, "config", "--get-regexp", "^git-span\\.snapshot[-.]"], {
       stdio: ["ignore", "pipe", "ignore"],
       encoding: "utf8"
     });
@@ -6456,7 +6465,7 @@ var AMBIENT_GIT_LOCATION_VARS = [
 var defaultGitRunner = (args, opts) => {
   const ambient = { ...process.env };
   for (const key of AMBIENT_GIT_LOCATION_VARS) delete ambient[key];
-  return execFileSync6("git", args, {
+  return execFileSync7("git", args, {
     cwd: opts.cwd,
     env: opts.env === void 0 ? ambient : { ...ambient, ...opts.env },
     // execFileSync rejects non-integer timeouts, and a fractional
@@ -6493,8 +6502,8 @@ ${indentBlockBody(
 </git-span-error>`;
 function shouldSurfaceRecordlessNote(sessionId, logger2, layout) {
   try {
-    mkdirSync6(layout.dir(sessionId), { recursive: true, mode: 448 });
-    writeFileSync4(layout.recordlessNoteFile(sessionId), "", { flag: "wx" });
+    mkdirSync7(layout.dir(sessionId), { recursive: true, mode: 448 });
+    writeFileSync5(layout.recordlessNoteFile(sessionId), "", { flag: "wx" });
     return true;
   } catch (err) {
     if (err.code === "EEXIST") return false;
@@ -6508,7 +6517,7 @@ function readSiblingRecord(layout, sessionId, toolUseId, cache) {
   if (cached !== void 0) return cached;
   let record = null;
   try {
-    const raw = JSON.parse(readFileSync8(layout.recordFile(sessionId, toolUseId), "utf8"));
+    const raw = JSON.parse(readFileSync9(layout.recordFile(sessionId, toolUseId), "utf8"));
     if (raw !== null && typeof raw === "object") {
       record = raw.version === 2 ? raw : "incompatible";
     }
@@ -6521,7 +6530,7 @@ function readSiblingRecord(layout, sessionId, toolUseId, cache) {
 function appendRecordGap(layout, sessionId, toolUseId, gaps, logger2) {
   try {
     const file = layout.recordFile(sessionId, toolUseId);
-    const raw = JSON.parse(readFileSync8(file, "utf8"));
+    const raw = JSON.parse(readFileSync9(file, "utf8"));
     if (raw === null || typeof raw !== "object" || raw.version !== 2) return;
     const rec = raw;
     let changed = false;
@@ -6598,7 +6607,7 @@ function unfinishedEntryCovering(repoRoot, path, now, budgets) {
   const earliest = now - budgets.unfinishedEntryTtlMs;
   let dir;
   try {
-    dir = join7(queueRoot(repoRoot), "activity-log");
+    dir = join8(queueRoot(repoRoot), "activity-log");
   } catch {
     return null;
   }
@@ -6610,7 +6619,7 @@ function unfinishedEntryCovering(repoRoot, path, now, budgets) {
   }
   for (const name of names) {
     if (!name.endsWith(".json")) continue;
-    const file = join7(dir, name);
+    const file = join8(dir, name);
     let mtimeMs;
     try {
       mtimeMs = statSync7(file).mtimeMs;
@@ -6620,7 +6629,7 @@ function unfinishedEntryCovering(repoRoot, path, now, budgets) {
     if (mtimeMs < earliest || mtimeMs > now + 1) continue;
     let entry;
     try {
-      entry = JSON.parse(readFileSync8(file, "utf8"));
+      entry = JSON.parse(readFileSync9(file, "utf8"));
     } catch {
       continue;
     }
@@ -6760,12 +6769,12 @@ ${indentBlockBody(
       logger2.info?.(`git-span absorbed-double: ${path} attributed (interleaved edit absorbed)`);
     }
     if (attribution.kind === "rename") {
-      scopes.push({ filePath: join7(repoRoot, attribution.from), observed: { changed: [], wholeFile: true } });
+      scopes.push({ filePath: join8(repoRoot, attribution.from), observed: { changed: [], wholeFile: true } });
       excludedPaths.add(attribution.from);
       excludedPaths.add(path);
     } else {
       const observed = attribution.kind === "changed" ? attribution.observed : { changed: [], wholeFile: true };
-      scopes.push({ filePath: join7(repoRoot, path), observed });
+      scopes.push({ filePath: join8(repoRoot, path), observed });
       excludedPaths.add(path);
     }
   }
@@ -6811,15 +6820,15 @@ ${noteText}`;
 }
 
 // src/common/advisor-core.ts
-import { execFileSync as execFileSync7 } from "node:child_process";
+import { execFileSync as execFileSync8 } from "node:child_process";
 import { createHash as createHash2 } from "node:crypto";
-import * as fs7 from "node:fs";
-import * as nodePath5 from "node:path";
+import * as fs8 from "node:fs";
+import * as nodePath6 from "node:path";
 
 // src/common/advisor-ignore.ts
-import * as fs6 from "node:fs";
-import * as nodePath4 from "node:path";
-var ADVISOR_IGNORE_REL = nodePath4.join(".span", ".advisorignore");
+import * as fs7 from "node:fs";
+import * as nodePath5 from "node:path";
+var ADVISOR_IGNORE_REL = nodePath5.join(".span", ".advisorignore");
 function parseAdvisorIgnore(content) {
   const rules = [];
   for (const rawLine of content.split("\n")) {
@@ -6831,7 +6840,7 @@ function parseAdvisorIgnore(content) {
 }
 function loadAdvisorIgnore(repoRoot) {
   try {
-    const content = fs6.readFileSync(nodePath4.join(repoRoot, ADVISOR_IGNORE_REL), "utf8");
+    const content = fs7.readFileSync(nodePath5.join(repoRoot, ADVISOR_IGNORE_REL), "utf8");
     return parseAdvisorIgnore(content);
   } catch {
     return [];
@@ -7201,7 +7210,7 @@ async function resolveChangeset(kind, all, cwd, git, paths) {
   const changeset = await resolveChangesetUnfiltered(kind, all, cwd, git, paths);
   const repoRoot = resolveRepoRoot(cwd);
   if (!repoRoot || changeset.paths.length === 0) return changeset;
-  return { ...changeset, paths: changeset.paths.filter((p) => fs7.existsSync(nodePath5.join(repoRoot, p))) };
+  return { ...changeset, paths: changeset.paths.filter((p) => fs8.existsSync(nodePath6.join(repoRoot, p))) };
 }
 function mergeUniquePaths(...groups) {
   const seen = /* @__PURE__ */ new Set();
@@ -7758,7 +7767,7 @@ function buildHunkReadArgs(repoRoot, range, paths) {
 }
 function gitText(args, cwd, timeoutMs) {
   try {
-    return execFileSync7("git", args, {
+    return execFileSync8("git", args, {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
@@ -7771,7 +7780,7 @@ function gitText(args, cwd, timeoutMs) {
 }
 function gitLines(args, cwd, timeoutMs) {
   try {
-    const out = execFileSync7("git", args, {
+    const out = execFileSync8("git", args, {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
@@ -7785,7 +7794,7 @@ function gitLines(args, cwd, timeoutMs) {
 }
 function gitLinesOrNull(args, cwd, timeoutMs) {
   try {
-    const out = execFileSync7("git", args, {
+    const out = execFileSync8("git", args, {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
@@ -7875,7 +7884,7 @@ function isOlderThan(version, floor) {
 }
 function probeGitSpanVersion(repoRoot, timeoutMs) {
   try {
-    const out = execFileSync7("git", ["span", "--version"], {
+    const out = execFileSync8("git", ["span", "--version"], {
       cwd: repoRoot,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
@@ -7898,7 +7907,7 @@ function createDefaultAdvisorExecutors(timeoutMs = DEFAULT_TIMEOUT_MS2) {
       const repoRoot = resolveRepoRoot(cwd);
       if (!repoRoot || paths.length === 0) return;
       try {
-        execFileSync7("git", ["span", "drift", ...paths, "--fix"], {
+        execFileSync8("git", ["span", "drift", ...paths, "--fix"], {
           cwd: repoRoot,
           encoding: "utf8",
           stdio: ["ignore", "pipe", "pipe"],
@@ -7919,7 +7928,7 @@ function createDefaultAdvisorExecutors(timeoutMs = DEFAULT_TIMEOUT_MS2) {
       if (!repoRoot || paths.length === 0) return [];
       let out;
       try {
-        out = execFileSync7("git", ["span", "drift", "--format", "porcelain", ...paths], {
+        out = execFileSync8("git", ["span", "drift", "--format", "porcelain", ...paths], {
           cwd: repoRoot,
           encoding: "utf8",
           stdio: ["ignore", "pipe", "pipe"],
@@ -7943,7 +7952,7 @@ function createDefaultAdvisorExecutors(timeoutMs = DEFAULT_TIMEOUT_MS2) {
       if (!repoRoot || paths.length === 0) return [];
       let out;
       try {
-        out = execFileSync7("git", ["span", "list", "--porcelain", ...paths], {
+        out = execFileSync8("git", ["span", "list", "--porcelain", ...paths], {
           cwd: repoRoot,
           encoding: "utf8",
           stdio: ["ignore", "pipe", "pipe"],
@@ -7966,7 +7975,7 @@ function createDefaultAdvisorExecutors(timeoutMs = DEFAULT_TIMEOUT_MS2) {
       const repoRoot = resolveRepoRoot(cwd);
       if (!repoRoot || names.length === 0) return "";
       try {
-        return execFileSync7("git", ["span", "list", ...names], {
+        return execFileSync8("git", ["span", "list", ...names], {
           cwd: repoRoot,
           encoding: "utf8",
           stdio: ["ignore", "pipe", "pipe"],
@@ -7988,15 +7997,15 @@ function createDiskAdvisorMemoState(cwd) {
   return {
     has: (digest) => {
       try {
-        return fs7.existsSync(nodePath5.join(dir, digest));
+        return fs8.existsSync(nodePath6.join(dir, digest));
       } catch {
         return false;
       }
     },
     record: (digest) => {
       try {
-        fs7.mkdirSync(dir, { recursive: true });
-        fs7.writeFileSync(nodePath5.join(dir, digest), "");
+        fs8.mkdirSync(dir, { recursive: true });
+        fs8.writeFileSync(nodePath6.join(dir, digest), "");
         return true;
       } catch {
         return false;
@@ -8205,7 +8214,7 @@ function classifyApplyPatchResponse(toolResponse) {
 var noRangeRecovery = () => null;
 function hashOfFile(absPath) {
   try {
-    return createHash3("sha256").update(readFileSync10(absPath)).digest("hex");
+    return createHash3("sha256").update(readFileSync11(absPath)).digest("hex");
   } catch {
     return null;
   }
@@ -8388,7 +8397,7 @@ var post_tool_use_default = postToolUseHook(
 var noRangeRecovery2 = () => null;
 function preHashOf(absPath) {
   try {
-    return createHash4("sha256").update(readFileSync11(absPath)).digest("hex");
+    return createHash4("sha256").update(readFileSync12(absPath)).digest("hex");
   } catch {
     return null;
   }

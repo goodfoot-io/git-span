@@ -8,7 +8,7 @@ const __dirname = __pathDirname(__filename);
 
 // src/claude/post-tool-use.ts
 import { createHash as createHash2 } from "node:crypto";
-import { readFileSync as readFileSync8 } from "node:fs";
+import { readFileSync as readFileSync9 } from "node:fs";
 
 // ../../node_modules/@goodfoot/claude-code-hooks/dist/env.js
 import * as fs from "node:fs";
@@ -468,14 +468,14 @@ var postToolUseOutput = /* @__PURE__ */ createHookSpecificOutputBuilder("PostToo
 
 // ../../node_modules/@goodfoot/claude-code-hooks/dist/runtime.js
 async function readStdin() {
-  return new Promise((resolve3, reject) => {
+  return new Promise((resolve4, reject) => {
     const chunks = [];
     process.stdin.setEncoding("utf-8");
     process.stdin.on("data", (chunk) => {
       chunks.push(chunk);
     });
     process.stdin.on("end", () => {
-      resolve3(chunks.join(""));
+      resolve4(chunks.join(""));
     });
     process.stdin.on("error", (error) => {
       reject(error);
@@ -881,726 +881,22 @@ function resolveTouchScope(cwd, absPath) {
   return { repoRoot, repoRelPath };
 }
 
-// src/common/touch-core.ts
-import { execFileSync as execFileSync3 } from "node:child_process";
+// src/common/static-attribution.ts
+import { execFileSync as execFileSync4 } from "node:child_process";
 import * as fs5 from "node:fs";
-import { basename as basename2, join as join3 } from "node:path";
-
-// src/common/anchor-tree.ts
-function collapseByPath(rows) {
-  const order = [];
-  const byPath = /* @__PURE__ */ new Map();
-  for (const row of rows) {
-    let anchor = byPath.get(row.path);
-    if (!anchor) {
-      anchor = { path: row.path, ranges: [] };
-      byPath.set(row.path, anchor);
-      order.push(row.path);
-    }
-    anchor.ranges.push({ range: row.range, suffix: row.suffix });
-  }
-  return order.map((path) => byPath.get(path));
-}
-function splitSegments(path) {
-  if (path.length === 0) return null;
-  const segments = path.split("/");
-  if (segments.some((segment) => segment.length === 0)) return null;
-  return segments;
-}
-function findOrCreateDir(parent, name) {
-  for (const child of parent.children) {
-    if (child.kind === "dir" && child.name === name) return child;
-  }
-  const node = { kind: "dir", name, children: [] };
-  parent.children.push(node);
-  return node;
-}
-function insertAnchor(root, segments, anchor) {
-  let cur = root;
-  for (let i = 0; i < segments.length - 1; i++) {
-    cur = findOrCreateDir(cur, segments[i]);
-  }
-  cur.children.push({ kind: "leaf", name: segments[segments.length - 1], anchor });
-}
-function buildForest(anchors) {
-  const root = { kind: "dir", name: "", children: [] };
-  for (const anchor of anchors) {
-    const segments = splitSegments(anchor.path);
-    if (segments === null) {
-      root.children.push({ kind: "leaf", name: anchor.path, anchor });
-      continue;
-    }
-    insertAnchor(root, segments, anchor);
-  }
-  return root.children;
-}
-function foldChain(node) {
-  let name = node.name;
-  let cur = node;
-  while (cur.kind === "dir" && cur.children.length === 1) {
-    const child = cur.children[0];
-    name = `${name}/${child.name}`;
-    cur = child;
-  }
-  return { name, node: cur };
-}
-function rangeRank(range) {
-  switch (range.kind) {
-    case "whole-file":
-      return 0;
-    case "range":
-      return 1;
-    case "truncated":
-      return 2;
-  }
-}
-function compareRangeEntries(a, b) {
-  const rank = rangeRank(a.range) - rangeRank(b.range);
-  if (rank !== 0) return rank;
-  if (a.range.kind === "range" && b.range.kind === "range") {
-    return a.range.start - b.range.start || a.range.end - b.range.end;
-  }
-  return 0;
-}
-function labelFor(range, sole) {
-  switch (range.kind) {
-    case "range":
-      return `#L${range.start}-L${range.end}`;
-    case "whole-file":
-      return sole ? null : "(whole file)";
-    case "truncated":
-      return "(truncated in source \u2014 anchor incomplete)";
-  }
-}
-var cachedSegmenter;
-function graphemeSegmenter() {
-  if (cachedSegmenter === void 0) {
-    try {
-      cachedSegmenter = { value: new Intl.Segmenter("en", { granularity: "grapheme" }) };
-    } catch {
-      cachedSegmenter = { value: null };
-    }
-  }
-  return cachedSegmenter.value;
-}
-var WIDE_RANGES = [
-  [4352, 4447],
-  [9001, 9002],
-  [9728, 10175],
-  [11904, 12350],
-  [12353, 13311],
-  [13312, 19903],
-  [19968, 40959],
-  [40960, 42191],
-  [43360, 43391],
-  [44032, 55203],
-  [63744, 64255],
-  [65040, 65049],
-  [65072, 65135],
-  [65280, 65376],
-  [65504, 65510],
-  [94208, 101119],
-  [127462, 127487],
-  [127744, 128591],
-  [128640, 128767],
-  [129280, 129535],
-  [129648, 129791],
-  [131072, 196605],
-  [196608, 262141]
-];
-function isWideCodePoint(cp) {
-  for (const [lo, hi] of WIDE_RANGES) {
-    if (cp < lo) return false;
-    if (cp <= hi) return true;
-  }
-  return false;
-}
-function displayWidth(name) {
-  const segmenter = graphemeSegmenter();
-  let width = 0;
-  if (segmenter === null) {
-    for (const codePoint of name) {
-      width += isWideCodePoint(codePoint.codePointAt(0) ?? 0) ? 2 : 1;
-    }
-    return width;
-  }
-  for (const { segment } of segmenter.segment(name)) {
-    width += isWideCodePoint(segment.codePointAt(0) ?? 0) ? 2 : 1;
-  }
-  return width;
-}
-var MAX_ALIGN_COLUMN = 48;
-function computeGroupTarget(items) {
-  let max = 0;
-  for (const item of items) {
-    if (item.node.kind === "leaf" && printsRangeColumn(item.node.anchor)) {
-      max = Math.max(max, displayWidth(item.name));
-    }
-  }
-  return max > MAX_ALIGN_COLUMN ? 0 : max;
-}
-function printsRangeColumn(anchor) {
-  const { ranges } = anchor;
-  if (ranges.length === 0) return false;
-  return ranges.some((entry) => labelFor(entry.range, ranges.length === 1) !== null);
-}
-function computePad(nameWidth, target) {
-  if (nameWidth >= target) return " ";
-  return " ".repeat(target - nameWidth + 1);
-}
-function renderLeafLines(name, anchor, ownPrefix, childPrefix, groupTarget) {
-  const { ranges } = anchor;
-  if (ranges.length === 0) return [`${ownPrefix}${name}`];
-  const sorted = [...ranges].sort(compareRangeEntries);
-  const sole = sorted.length === 1;
-  const nameWidth = displayWidth(name);
-  const pad = computePad(nameWidth, groupTarget);
-  const blank = " ".repeat(nameWidth + pad.length);
-  return sorted.map((entry, i) => {
-    const label = labelFor(entry.range, sole);
-    if (label === null) return `${ownPrefix}${name}${entry.suffix}`;
-    const base = i === 0 ? `${ownPrefix}${name}${pad}` : `${childPrefix}${blank}`;
-    return `${base}${label}${entry.suffix}`;
-  });
-}
-function renderNodes(nodes, prefix) {
-  const lines = [];
-  const items = nodes.map(foldChain);
-  const groupTarget = computeGroupTarget(items);
-  items.forEach((item, i) => {
-    const isLast = i === items.length - 1;
-    const ownPrefix = `${prefix}${isLast ? "\u2514\u2500 " : "\u251C\u2500 "}`;
-    const childPrefix = `${prefix}${isLast ? "   " : "\u2502  "}`;
-    if (item.node.kind === "leaf") {
-      lines.push(...renderLeafLines(item.name, item.node.anchor, ownPrefix, childPrefix, groupTarget));
-    } else {
-      lines.push(`${ownPrefix}${item.name}/`);
-      lines.push(...renderNodes(item.node.children, childPrefix));
-    }
-  });
-  return lines;
-}
-function renderAnchorTree(anchors) {
-  const forest = buildForest(anchors);
-  return renderNodes(forest, "");
-}
-
-// src/common/touch-core.ts
-function toNeedleLines(written) {
-  if (written.length === 0) return [];
-  const trimmed = written.endsWith("\n") ? written.slice(0, -1) : written;
-  if (trimmed.length === 0) return [];
-  return trimmed.split("\n");
-}
-function recoverRange(written, onDiskContent) {
-  const needle = toNeedleLines(written);
-  if (needle.length === 0) return "whole-file";
-  const haystack = onDiskContent.split("\n");
-  const last = haystack.length - needle.length;
-  const starts = [];
-  for (let i = 0; i <= last; i++) {
-    let ok = true;
-    for (let j = 0; j < needle.length; j++) {
-      if (haystack[i + j] !== needle[j]) {
-        ok = false;
-        break;
-      }
-    }
-    if (ok) {
-      starts.push(i);
-      if (starts.length > 1) break;
-    }
-  }
-  if (starts.length === 1) {
-    return { start: starts[0] + 1, end: starts[0] + needle.length };
-  }
-  return "whole-file";
-}
-function createRealityProbeCache(paths, changedCandidates = []) {
-  return {
-    paths: [...new Set(paths)],
-    realPaths: null,
-    changedCandidates: [...new Set(changedCandidates)],
-    changedPaths: null
-  };
-}
-function fileExists(absPath) {
-  try {
-    fs5.statSync(absPath);
-    return true;
-  } catch {
-    return false;
-  }
-}
-function isFileOnDisk(absPath) {
-  try {
-    return fs5.statSync(absPath).isFile();
-  } catch {
-    return false;
-  }
-}
-function contentMatches(post, filePath) {
-  try {
-    if ("exact" in post) return fs5.readFileSync(filePath, "utf8") === post.exact;
-    if ("suffix" in post) {
-      const content = fs5.readFileSync(filePath, "utf8");
-      return content.endsWith(post.suffix) || content.endsWith(`${post.suffix}
-`);
-    }
-    if ("empty" in post) return fs5.statSync(filePath).size === 0;
-    return fs5.statSync(filePath).size === post.size;
-  } catch {
-    return false;
-  }
-}
-function realPaths(cache, cwd) {
-  if (cache.realPaths !== null) return cache.realPaths;
-  const real = /* @__PURE__ */ new Set();
-  if (cache.paths.length > 0) {
-    const repoRoot = resolveRepoRoot(cwd);
-    if (repoRoot !== null) {
-      const rels = cache.paths.map((p) => relativeToRepo(repoRoot, p));
-      const capture = (args) => {
-        try {
-          return execFileSync3("git", args, {
-            cwd: repoRoot,
-            encoding: "utf8",
-            stdio: ["ignore", "pipe", "pipe"],
-            timeout: DEFAULT_TIMEOUT_MS
-          });
-        } catch (err) {
-          const stdout = err.stdout;
-          return typeof stdout === "string" ? stdout : null;
-        }
-      };
-      const lsFiles = capture(["ls-files", "--error-unmatch", "--", ...rels]);
-      if (lsFiles !== null) {
-        for (const line of lsFiles.split("\n")) {
-          const rel = line.trim();
-          if (rel.length > 0) real.add(join3(repoRoot, rel));
-        }
-      }
-      const spanList = capture(["span", "list", "--porcelain", ...rels]);
-      if (spanList !== null) {
-        for (const row of parsePorcelain(spanList)) real.add(join3(repoRoot, row.path));
-      }
-    }
-  }
-  cache.realPaths = real;
-  return real;
-}
-function evaluateWriteGate(input, probeCache) {
-  if (input.targetState === "absent") {
-    if (fileExists(input.filePath)) return "decisiveFail";
-    return realPaths(probeCache, input.cwd).has(input.filePath) ? "decisivePass" : "inconclusive";
-  }
-  if (!isFileOnDisk(input.filePath)) return "decisiveFail";
-  const content = input.postState?.content;
-  if (content !== void 0) {
-    return contentMatches(content, input.filePath) ? "decisivePass" : "decisiveFail";
-  }
-  if (input.sourcePath !== void 0) {
-    if (fileExists(input.sourcePath)) {
-      let src;
-      let dst;
-      try {
-        src = fs5.readFileSync(input.sourcePath, "utf8");
-        dst = fs5.readFileSync(input.filePath, "utf8");
-      } catch {
-        return "decisiveFail";
-      }
-      return src === dst ? "decisivePass" : "decisiveFail";
-    }
-    return realPaths(probeCache, input.cwd).has(input.sourcePath) ? "pending" : "decisiveFail";
-  }
-  if (input.renameSourcePath !== void 0) {
-    return realPaths(probeCache, input.cwd).has(input.renameSourcePath) ? "decisivePass" : "decisiveFail";
-  }
-  return "inconclusive";
-}
-function driftKey(name, status) {
-  return `${name}	${status}`;
-}
-function anchorText(row) {
-  if (row.start === 0 && row.end === 0) return row.path;
-  return `${row.path}#L${row.start}-L${row.end}`;
-}
-function cleanHeader(fileName) {
-  return `${fileName} has implicit dependencies:`;
-}
-function cleanFooter(fileName) {
-  return `If you change ${fileName} check the other files to confirm they still work together.`;
-}
-function driftHeader(driftedCount, kind) {
-  if (kind === "write") {
-    return driftedCount === 1 ? "This edit put an implicit dependency out of date:" : "This edit put implicit dependencies out of date:";
-  }
-  return driftedCount === 1 ? "This file has an implicit dependency out of date:" : "This file has implicit dependencies out of date:";
-}
-function driftFooter(driftedNames) {
-  if (driftedNames.length === 1) {
-    const name = driftedNames[0];
-    return `Restore agreement before committing. Follow confirmed authority. Preserve anchor shape; if an address changed, swap the old anchor for the new one with \`git span replace\`. Update or retire the why only if its meaning changed. Require \`git span drift ${name}\` to report zero, then check the other anchors. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete coupling.`;
-  }
-  return "For each out-of-date span: restore agreement before committing. Follow confirmed authority. Preserve anchor shape; if an address changed, swap the old anchor for the new one with `git span replace`. Update or retire the why only if its meaning changed. Require `git span drift <name>` to report zero, then check the other anchors. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete coupling.";
-}
-function rangeLabel(row) {
-  if (row.start === 0 && row.end === 0) return { kind: "whole-file" };
-  return { kind: "range", start: row.start, end: row.end };
-}
-function anchorBullets(anchors, debtRows) {
-  const rows = anchors.map((anchor) => {
-    const soleOnPath = anchors.filter((a) => a.path === anchor.path).length === 1;
-    const statuses = /* @__PURE__ */ new Set();
-    for (const row of debtRows) {
-      if (row.path !== anchor.path) continue;
-      if (soleOnPath || row.start === anchor.start && row.end === anchor.end) {
-        statuses.add(row.status);
-      }
-    }
-    const sorted = [...statuses].sort();
-    const suffix = sorted.length > 0 ? ` \u2014 ${sorted.map(humanStatusLabel).join(", ")}` : "";
-    return { path: anchor.path, range: rangeLabel(anchor), suffix };
-  });
-  try {
-    return renderAnchorTree(collapseByPath(rows));
-  } catch {
-    return anchors.map((anchor, i) => `- ${anchorText(anchor)}${rows[i].suffix}`);
-  }
-}
-function renderSpanSection(name, anchors, debtRows, why) {
-  const lines = [`## ${name}`, ...anchorBullets(anchors, debtRows)];
-  if (why) lines.push("", why);
-  return lines.join("\n");
-}
-function buildBlock(sections, header, footer) {
-  const body = `${header}
-
-${sections.join("\n\n---\n\n")}
-
----
-
-${footer}`;
-  return `
-<git-span>
-${body}
-</git-span>
-`;
-}
-function intersectsAny(row, ranges) {
-  if (ranges === "whole-file") return true;
-  if (row.start === 0 && row.end === 0) return true;
-  return ranges.some((range) => rangesIntersect(range, { start: row.start, end: row.end }));
-}
-function recoverRangeFromDisk(written, filePath) {
-  if (written.length === 0) return "whole-file";
-  let content;
-  try {
-    content = fs5.readFileSync(filePath, "utf8");
-  } catch {
-    return "whole-file";
-  }
-  return recoverRange(written, content);
-}
-var DEFAULT_READ_LIMIT = 2e3;
-function recoverReadRange(offset, limit, filePath) {
-  if (offset === void 0 && limit === void 0) return "whole-file";
-  const start = offset ?? 1;
-  let lineCount2;
-  try {
-    const content = fs5.readFileSync(filePath, "utf8");
-    lineCount2 = content.length === 0 ? 0 : content.split("\n").length;
-  } catch {
-    return "whole-file";
-  }
-  const end = Math.min(start + (limit ?? DEFAULT_READ_LIMIT) - 1, Math.max(lineCount2, start));
-  return { start, end };
-}
-function onTouchedFile(row, filePath) {
-  return filePath === row.path || filePath.endsWith(`/${row.path}`);
-}
-async function computeSurfaceParts(input, executors, memo, range, driftRows) {
-  const covering = await executors.list(input.filePath, input.cwd);
-  if (covering.length === 0) return null;
-  const anchorsByName = /* @__PURE__ */ new Map();
-  for (const row of covering) {
-    const rows = anchorsByName.get(row.name) ?? [];
-    rows.push(row);
-    anchorsByName.set(row.name, rows);
-  }
-  const touchedNames = [...anchorsByName.keys()].filter(
-    (name) => (anchorsByName.get(name) ?? []).some((row) => onTouchedFile(row, input.filePath) && intersectsAny(row, range))
-  );
-  if (touchedNames.length === 0) return null;
-  const driftByName = /* @__PURE__ */ new Map();
-  for (const row of driftRows ?? await executors.drift([input.filePath], input.cwd)) {
-    const rows = driftByName.get(row.name) ?? [];
-    rows.push(row);
-    driftByName.set(row.name, rows);
-  }
-  const surfaced = memo.getSurfaced(input.sessionId);
-  const toRecord = [];
-  const sections = [];
-  const driftedNames = [];
-  for (const name of touchedNames) {
-    const spanDrift = driftByName.get(name) ?? [];
-    const debtRows = spanDrift.filter((row) => isDebt(row.status));
-    if (spanDrift.length > 0 && debtRows.length === 0) continue;
-    const debtStatuses = [...new Set(debtRows.map((row) => row.status))].sort();
-    const unsurfacedDebt = debtStatuses.filter((status) => !surfaced.has(driftKey(name, status)));
-    const isNewName = !surfaced.has(name);
-    if (!isNewName && unsurfacedDebt.length === 0) continue;
-    const why = await executors.why(name, input.cwd);
-    sections.push(renderSpanSection(name, anchorsByName.get(name) ?? [], debtRows, why));
-    if (debtStatuses.length > 0) driftedNames.push(name);
-    if (isNewName) toRecord.push(name);
-    for (const status of unsurfacedDebt) toRecord.push(driftKey(name, status));
-  }
-  if (sections.length === 0) return null;
-  memo.addSurfaced(input.sessionId, toRecord);
-  const fileName = basename2(input.filePath);
-  const header = driftedNames.length > 0 ? driftHeader(driftedNames.length, input.kind) : cleanHeader(fileName);
-  const footer = driftedNames.length > 0 ? driftFooter(driftedNames) : cleanFooter(fileName);
-  return { sections, header, footer, toRecord };
-}
-async function computeSurface(input, executors, memo, range) {
-  const parts = await computeSurfaceParts(input, executors, memo, range);
-  if (parts === null) return null;
-  return buildBlock(parts.sections, parts.header, parts.footer);
-}
-async function runTouchHook(input, executors, memo, probeCache, scopes) {
-  if (input.kind === "write" && input.observed !== void 0 && input.written.length > 0) {
-    throw new Error("touch write carries both written and observed: exactly one must be set");
-  }
-  if (scopes !== void 0 && scopes.length > 0) {
-    let treeModified2 = false;
-    try {
-      for (const scope of scopes) {
-        const fix = await executors.fix(scope.filePath, input.cwd);
-        treeModified2 = treeModified2 || fix.modified;
-      }
-      const driftRows = await executors.drift([], input.cwd);
-      const sections = [];
-      let header = null;
-      let footer = null;
-      for (const scope of scopes) {
-        const scopeInput = { ...input, filePath: scope.filePath };
-        const range = scope.observed.wholeFile ? "whole-file" : scope.observed.changed;
-        const parts = await computeSurfaceParts(scopeInput, executors, memo, range, driftRows);
-        if (parts === null) continue;
-        if (header === null) {
-          header = parts.header;
-          footer = parts.footer;
-        }
-        sections.push(...parts.sections);
-      }
-      if (sections.length === 0) return { additionalContext: null, treeModified: treeModified2 };
-      return { additionalContext: buildBlock(sections, header, footer), treeModified: treeModified2 };
-    } catch {
-      return { additionalContext: null, treeModified: treeModified2 };
-    }
-  }
-  let treeModified = false;
-  try {
-    let range = "whole-file";
-    if (input.kind === "write") {
-      if (input.observed === void 0 && input.targetState !== void 0) {
-        const probe = probeCache ?? createRealityProbeCache(input.targetState === "absent" ? [input.filePath] : []);
-        const outcome = evaluateWriteGate(input, probe);
-        if (outcome === "decisiveFail" || outcome === "inconclusive" && input.targetState === "absent") {
-          return { additionalContext: null, treeModified: false };
-        }
-      }
-      const fix = await executors.fix(input.filePath, input.cwd);
-      treeModified = fix.modified;
-      if (input.range !== void 0) {
-        range = [input.range];
-      } else if (input.observed !== void 0) {
-        range = input.observed.wholeFile ? "whole-file" : input.observed.changed;
-      } else {
-        const recovered = recoverRangeFromDisk(input.written, input.filePath);
-        range = recovered === "whole-file" ? "whole-file" : [recovered];
-      }
-    } else {
-      const recovered = recoverReadRange(input.offset, input.limit, input.filePath);
-      range = recovered === "whole-file" ? "whole-file" : [recovered];
-    }
-    const additionalContext = await computeSurface(input, executors, memo, range);
-    return { additionalContext, treeModified };
-  } catch {
-    return { additionalContext: null, treeModified };
-  }
-}
-var DEFAULT_TIMEOUT_MS = 1e4;
-function repoRelArg(filePath, cwd) {
-  const repoRoot = resolveRepoRoot(cwd);
-  if (!repoRoot) return null;
-  return { repoRoot, relPath: relativeToRepo(repoRoot, filePath) };
-}
-function spanStatusSnapshot(repoRoot) {
-  const spanRoot = resolveSpanRoot(repoRoot);
-  try {
-    return execFileSync3("git", ["-C", repoRoot, "status", "--porcelain", "--", spanRoot], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: DEFAULT_TIMEOUT_MS
-    });
-  } catch {
-    return "";
-  }
-}
-function createDefaultTouchExecutors(timeoutMs = DEFAULT_TIMEOUT_MS) {
-  return {
-    fix: async (filePath, cwd) => {
-      const resolved = repoRelArg(filePath, cwd);
-      if (!resolved) return { modified: false };
-      const before = spanStatusSnapshot(resolved.repoRoot);
-      try {
-        execFileSync3("git", ["span", "drift", resolved.relPath, "--fix"], {
-          cwd: resolved.repoRoot,
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "pipe"],
-          timeout: timeoutMs
-        });
-      } catch (err) {
-      }
-      const after = spanStatusSnapshot(resolved.repoRoot);
-      return { modified: before !== after };
-    },
-    list: async (filePath, cwd) => {
-      const resolved = repoRelArg(filePath, cwd);
-      if (!resolved) return [];
-      try {
-        const out = execFileSync3("git", ["span", "list", "--porcelain", resolved.relPath], {
-          cwd: resolved.repoRoot,
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "pipe"],
-          timeout: timeoutMs
-        });
-        return parsePorcelain(out);
-      } catch {
-        return [];
-      }
-    },
-    drift: async (args, cwd) => {
-      const repoRoot = resolveRepoRoot(cwd);
-      const runCwd = repoRoot ?? cwd;
-      const scoped = repoRoot ? args.map((a) => relativeToRepo(repoRoot, a)) : args;
-      let out;
-      try {
-        out = execFileSync3("git", ["span", "drift", "--format", "porcelain", ...scoped], {
-          cwd: runCwd,
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "pipe"],
-          timeout: timeoutMs
-        });
-      } catch (err) {
-        const captured = err.stdout;
-        if (typeof captured === "string") {
-          out = captured;
-        } else {
-          return [];
-        }
-      }
-      return parseDriftPorcelain(out);
-    },
-    why: async (name, cwd) => {
-      const repoRoot = resolveRepoRoot(cwd);
-      try {
-        const out = execFileSync3("git", ["span", "why", name], {
-          cwd: repoRoot ?? cwd,
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "pipe"],
-          timeout: timeoutMs
-        });
-        const text = out.trimEnd();
-        if (text.length === 0 || text === `\`${name}\` has no why recorded.`) return null;
-        return text;
-      } catch {
-        return null;
-      }
-    }
-  };
-}
-
-// src/common/bash-touch.ts
-function bashSpanToTouch(span, sessionId, cwd) {
-  if (!resolveTouchScope(cwd, span.absolutePath)) return null;
-  switch (span.operation) {
-    case "read":
-      return {
-        kind: "read",
-        sessionId,
-        cwd,
-        filePath: span.absolutePath,
-        offset: span.lineStart,
-        limit: span.lineStart !== void 0 && span.lineEnd !== void 0 ? span.lineEnd - span.lineStart + 1 : void 0
-      };
-    case "create-overwrite":
-    case "rename-copy":
-      return {
-        kind: "write",
-        sessionId,
-        cwd,
-        filePath: span.absolutePath,
-        written: "",
-        targetState: "exists",
-        postState: span.written !== void 0 ? { content: { exact: span.written } } : void 0
-      };
-    case "truncate":
-      return {
-        kind: "write",
-        sessionId,
-        cwd,
-        filePath: span.absolutePath,
-        written: "",
-        targetState: "exists",
-        postState: span.size === 0 ? { content: { empty: true } } : span.size !== void 0 ? { content: { size: span.size } } : void 0
-      };
-    case "append":
-      return {
-        kind: "write",
-        sessionId,
-        cwd,
-        filePath: span.absolutePath,
-        written: span.written ?? "",
-        targetState: "exists",
-        postState: span.written !== void 0 ? { content: { suffix: span.written } } : void 0
-      };
-    case "modify":
-      return {
-        kind: "write",
-        sessionId,
-        cwd,
-        filePath: span.absolutePath,
-        written: "",
-        targetState: "exists",
-        range: span.lineStart !== void 0 ? { start: span.lineStart, end: span.lineEnd ?? span.lineStart } : void 0
-      };
-    case "delete":
-      return {
-        kind: "write",
-        sessionId,
-        cwd,
-        filePath: span.absolutePath,
-        written: "",
-        targetState: "absent",
-        postState: { realDelete: true }
-      };
-  }
-}
+import * as nodePath4 from "node:path";
 
 // src/common/parse-command.ts
-import { readFileSync as readFileSync5, statSync as statSync4 } from "node:fs";
-import { basename as basename3, isAbsolute as isAbsolute2, join as joinPath, resolve as resolvePath } from "node:path";
+import { readFileSync as readFileSync4, statSync as statSync3 } from "node:fs";
+import { basename as basename2, isAbsolute as isAbsolute2, join as joinPath, resolve as resolvePath } from "node:path";
 
 // src/common/command-resolve.ts
-import { execFileSync as execFileSync4 } from "node:child_process";
-import { readFileSync as readFileSync4, statSync as statSync3 } from "node:fs";
+import { execFileSync as execFileSync3 } from "node:child_process";
+import { readFileSync as readFileSync3, statSync as statSync2 } from "node:fs";
 function countFileLines(absolutePath) {
   try {
-    if (!statSync3(absolutePath).isFile()) return null;
-    const content = readFileSync4(absolutePath, "utf8");
+    if (!statSync2(absolutePath).isFile()) return null;
+    const content = readFileSync3(absolutePath, "utf8");
     if (content.length === 0) return 0;
     const withoutTrailingNewline = content.endsWith("\n") ? content.slice(0, -1) : content;
     return withoutTrailingNewline.split("\n").length;
@@ -1610,7 +906,7 @@ function countFileLines(absolutePath) {
 }
 function countGitBlobLines(cwd, rev, path) {
   try {
-    const out = execFileSync4("git", ["show", `${rev}:${path}`], {
+    const out = execFileSync3("git", ["show", `${rev}:${path}`], {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"]
@@ -2992,7 +2288,7 @@ function teeOperandParts(argv) {
   }
   return { append, operands };
 }
-function matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join8, results) {
+function matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join9, results) {
   const parts = teeOperandParts(argv);
   if (parts === null) return;
   for (const operand of parts.operands) {
@@ -3005,23 +2301,23 @@ function matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex,
         operation: "create-overwrite",
         absolutePath,
         simpleCommandIndex,
-        join: join8,
+        join: join9,
         ...pipeEchoContent !== null ? { written: pipeEchoContent } : {}
       } : {
         operation: "append",
         absolutePath,
         simpleCommandIndex,
-        join: join8,
+        join: join9,
         ...pipeEchoContent !== null ? { written: pipeEchoContent } : {}
       }
     });
   }
 }
-function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpleCommandIndex, join8, results) {
+function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpleCommandIndex, join9, results) {
   const contentRedirects = redirects.filter(isContentRedirect);
   const host = argv[0];
   if (contentRedirects.length === 0) {
-    if (host === "tee") matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join8, results);
+    if (host === "tee") matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join9, results);
     return;
   }
   if (host === void 0 || host === ":" || host === "exec") {
@@ -3032,7 +2328,7 @@ function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpl
       results.push({
         status: "resolved",
         idiom: "truncate-write",
-        span: { operation: "truncate", absolutePath, simpleCommandIndex, join: join8 }
+        span: { operation: "truncate", absolutePath, simpleCommandIndex, join: join9 }
       });
     }
     return;
@@ -3054,7 +2350,7 @@ function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpl
           operation: "append",
           absolutePath,
           simpleCommandIndex,
-          join: join8,
+          join: join9,
           ...threadedAppend !== void 0 ? { written: threadedAppend } : {}
         }
       });
@@ -3066,13 +2362,13 @@ function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpl
           operation: "create-overwrite",
           absolutePath,
           simpleCommandIndex,
-          join: join8,
+          join: join9,
           ...threadedOverwrite !== void 0 ? { written: threadedOverwrite } : {}
         }
       });
     }
   }
-  if (host === "tee") matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join8, results);
+  if (host === "tee") matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join9, results);
 }
 var FOREIGN_WRAPPERS = /* @__PURE__ */ new Set(["sudo", "xargs", "nohup", "time", "nice", "doas"]);
 var ASSIGNMENT_TOKEN = /^[A-Za-z_][A-Za-z0-9_]*=/;
@@ -3087,7 +2383,7 @@ function pushUnresolved(results, idiom, fileArg, reason) {
 }
 function isExistingDirectory(absolutePath) {
   try {
-    return statSync4(absolutePath).isDirectory();
+    return statSync3(absolutePath).isDirectory();
   } catch {
     return false;
   }
@@ -3181,12 +2477,12 @@ function copyMoveParts(args, spec) {
   }
   return { operands, targetDir };
 }
-function emitSourceSpan(results, spec, absolutePath, simpleCommandIndex, join8) {
+function emitSourceSpan(results, spec, absolutePath, simpleCommandIndex, join9) {
   if (spec.sourceOperation === "delete") {
     results.push({
       status: "resolved",
       idiom: spec.idiom,
-      span: { operation: "delete", absolutePath, simpleCommandIndex, join: join8 }
+      span: { operation: "delete", absolutePath, simpleCommandIndex, join: join9 }
     });
     return;
   }
@@ -3194,17 +2490,17 @@ function emitSourceSpan(results, spec, absolutePath, simpleCommandIndex, join8) 
   results.push({
     status: "resolved",
     idiom: spec.idiom,
-    span: range === null ? { operation: "read", absolutePath, simpleCommandIndex, join: join8 } : {
+    span: range === null ? { operation: "read", absolutePath, simpleCommandIndex, join: join9 } : {
       operation: "read",
       lineStart: range.lineStart,
       lineEnd: range.lineEnd,
       absolutePath,
       simpleCommandIndex,
-      join: join8
+      join: join9
     }
   });
 }
-function matchCopyMoveFamily(argv, dirForResolution, simpleCommandIndex, join8, results) {
+function matchCopyMoveFamily(argv, dirForResolution, simpleCommandIndex, join9, results) {
   const rest = stripTransparentWrapper(argv);
   if (rest.length === 0) return;
   const command = rest[0];
@@ -3256,7 +2552,7 @@ function matchCopyMoveFamily(argv, dirForResolution, simpleCommandIndex, join8, 
       return;
     }
     const targetAbs = resolvePath(dir, parts.targetDir);
-    destPaths = sourcePaths.map((p) => joinPath(targetAbs, basename3(p)));
+    destPaths = sourcePaths.map((p) => joinPath(targetAbs, basename2(p)));
   } else {
     const dest = parts.operands[parts.operands.length - 1];
     if (looksUnresolvable(dest)) {
@@ -3269,23 +2565,23 @@ function matchCopyMoveFamily(argv, dirForResolution, simpleCommandIndex, join8, 
       pushUnresolved(results, spec.idiom, dest, "a multi-source copy/move needs a directory destination");
       return;
     }
-    destPaths = destIsDir ? sourcePaths.map((p) => joinPath(destAbs, basename3(p))) : [destAbs];
+    destPaths = destIsDir ? sourcePaths.map((p) => joinPath(destAbs, basename2(p))) : [destAbs];
   }
   for (let k = 0; k < sourcePaths.length; k++) {
-    emitSourceSpan(results, spec, sourcePaths[k], simpleCommandIndex, join8);
+    emitSourceSpan(results, spec, sourcePaths[k], simpleCommandIndex, join9);
   }
   for (let k = 0; k < sourcePaths.length; k++) {
     results.push({
       status: "resolved",
       idiom: spec.idiom,
-      span: { operation: spec.destOperation, absolutePath: destPaths[k], simpleCommandIndex, join: join8 }
+      span: { operation: spec.destOperation, absolutePath: destPaths[k], simpleCommandIndex, join: join9 }
     });
   }
 }
 var RM_NO_VALUE = /* @__PURE__ */ new Set(["-f", "-i", "-v"]);
 var RM_EXCLUDED = /* @__PURE__ */ new Set(["-r", "-R", "--recursive", "-d"]);
 var GIT_RM_EXCLUDED = /* @__PURE__ */ new Set(["-r", "-R", "--recursive", "-d", "-n", "--dry-run"]);
-function matchRmOperands(args, excluded, excludeCached, dir, simpleCommandIndex, join8, results) {
+function matchRmOperands(args, excluded, excludeCached, dir, simpleCommandIndex, join9, results) {
   let afterDashDash = false;
   const operands = [];
   for (const a of args) {
@@ -3311,7 +2607,7 @@ function matchRmOperands(args, excluded, excludeCached, dir, simpleCommandIndex,
     results.push({
       status: "resolved",
       idiom: "rm-write",
-      span: { operation: "delete", absolutePath: resolvePath(dir, operand), simpleCommandIndex, join: join8 }
+      span: { operation: "delete", absolutePath: resolvePath(dir, operand), simpleCommandIndex, join: join9 }
     });
   }
 }
@@ -3323,7 +2619,7 @@ function evaluateStaticSize(value) {
   const mult = m[2] === "K" ? 1024 : m[2] === "M" ? 1024 ** 2 : m[2] === "G" ? 1024 ** 3 : 1;
   return base * mult;
 }
-function matchTruncateOperands(args, dir, simpleCommandIndex, join8, results) {
+function matchTruncateOperands(args, dir, simpleCommandIndex, join9, results) {
   let sawSizeFlag = false;
   let afterDashDash = false;
   let staticSize;
@@ -3368,22 +2664,22 @@ function matchTruncateOperands(args, dir, simpleCommandIndex, join8, results) {
         operation: "truncate",
         absolutePath: resolvePath(dir, operand.path),
         simpleCommandIndex,
-        join: join8,
+        join: join9,
         ...operand.size !== void 0 ? { size: operand.size } : {}
       }
     });
   }
 }
-function matchRmTruncate(argv, dirForResolution, simpleCommandIndex, join8, results) {
+function matchRmTruncate(argv, dirForResolution, simpleCommandIndex, join9, results) {
   const rest = stripTransparentWrapper(argv);
   if (rest.length === 0) return;
   const command = rest[0];
   if (command === "rm") {
-    matchRmOperands(rest.slice(1), RM_EXCLUDED, false, dirForResolution, simpleCommandIndex, join8, results);
+    matchRmOperands(rest.slice(1), RM_EXCLUDED, false, dirForResolution, simpleCommandIndex, join9, results);
     return;
   }
   if (command === "truncate") {
-    matchTruncateOperands(rest.slice(1), dirForResolution, simpleCommandIndex, join8, results);
+    matchTruncateOperands(rest.slice(1), dirForResolution, simpleCommandIndex, join9, results);
     return;
   }
   if (command === "git") {
@@ -3399,7 +2695,7 @@ function matchRmTruncate(argv, dirForResolution, simpleCommandIndex, join8, resu
         true,
         sub.cDir ?? dirForResolution,
         simpleCommandIndex,
-        join8,
+        join9,
         results
       );
     }
@@ -3427,7 +2723,7 @@ function heredocBodyIsLiteral(body) {
   }
   return true;
 }
-function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleCommandIndex, join8, results) {
+function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleCommandIndex, join9, results) {
   const bodyLiteral = quotedDelim || heredocBodyIsLiteral(body);
   const tokens = tokenize(stripLeadingAssignments(opener).trim());
   if (tokens === null) return;
@@ -3450,7 +2746,7 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
             operation: "append",
             absolutePath,
             simpleCommandIndex,
-            join: join8,
+            join: join9,
             ...singlePlainAppend && r.op === ">>" && bodyLiteral ? { written: body } : {}
           }
         });
@@ -3458,11 +2754,11 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
         results.push({
           status: "resolved",
           idiom: "heredoc-write",
-          span: body.length === 0 ? { operation: "truncate", absolutePath, simpleCommandIndex, join: join8 } : {
+          span: body.length === 0 ? { operation: "truncate", absolutePath, simpleCommandIndex, join: join9 } : {
             operation: "create-overwrite",
             absolutePath,
             simpleCommandIndex,
-            join: join8,
+            join: join9,
             // The exact gate compares full file bytes, so the trailing
             // `\n` the extraction stripped comes back on the overwrite.
             ...singlePlainOverwrite && bodyLiteral ? { written: `${body}
@@ -3491,7 +2787,7 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
               operation: "append",
               absolutePath,
               simpleCommandIndex,
-              join: join8,
+              join: join9,
               ...contentRedirects.length === 0 && bodyLiteral ? { written: body } : {}
             }
           });
@@ -3499,11 +2795,11 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
           results.push({
             status: "resolved",
             idiom: "heredoc-write",
-            span: body.length === 0 ? { operation: "truncate", absolutePath, simpleCommandIndex, join: join8 } : {
+            span: body.length === 0 ? { operation: "truncate", absolutePath, simpleCommandIndex, join: join9 } : {
               operation: "create-overwrite",
               absolutePath,
               simpleCommandIndex,
-              join: join8,
+              join: join9,
               // Same restored-`\n` exact body as the redirect branch; a
               // tee operand with a content redirect present keeps the
               // redirect's threading only (mirror of the append branch).
@@ -3518,18 +2814,18 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
     return;
   }
   if (host === "patch" || host === "git") {
-    classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join8, results);
+    classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join9, results);
     return;
   }
 }
 var NUMERIC_SUBSTITUTION = /^(\d+)(?:,(\d+))?[sy]/;
 var UNRESTRICTED_SUBSTITUTION = /^[sy]/;
-function matchSedInplace(argv, dirForResolution, simpleCommandIndex, join8, results) {
+function matchSedInplace(argv, dirForResolution, simpleCommandIndex, join9, results) {
   const rest = stripTransparentWrapper(argv);
   if (rest.length === 0) return;
   const command = rest[0];
   if (command === "sed") {
-    matchSedInplaceArgs(rest.slice(1), dirForResolution, simpleCommandIndex, join8, results);
+    matchSedInplaceArgs(rest.slice(1), dirForResolution, simpleCommandIndex, join9, results);
     return;
   }
   if (FOREIGN_WRAPPERS.has(command)) {
@@ -3540,7 +2836,7 @@ function matchSedInplace(argv, dirForResolution, simpleCommandIndex, join8, resu
   }
 }
 var SED_SCRIPT_SHAPE = /^(?:[A-Za-z]|\d|\/|\\|\$|~)/;
-function matchSedInplaceArgs(args, dir, simpleCommandIndex, join8, results) {
+function matchSedInplaceArgs(args, dir, simpleCommandIndex, join9, results) {
   let suffix = null;
   let sawInplace = false;
   let i = 0;
@@ -3663,20 +2959,20 @@ function matchSedInplaceArgs(args, dir, simpleCommandIndex, join8, results) {
       results.push({
         status: "resolved",
         idiom: "sed-inplace",
-        span: { operation: "modify", lineStart: start, lineEnd: end, absolutePath, simpleCommandIndex, join: join8 }
+        span: { operation: "modify", lineStart: start, lineEnd: end, absolutePath, simpleCommandIndex, join: join9 }
       });
     } else {
       results.push({
         status: "resolved",
         idiom: "sed-inplace",
-        span: { operation: "modify", absolutePath, simpleCommandIndex, join: join8 }
+        span: { operation: "modify", absolutePath, simpleCommandIndex, join: join9 }
       });
     }
     if (suffix !== null && suffix !== "") {
       results.push({
         status: "resolved",
         idiom: "sed-inplace",
-        span: { operation: "create-overwrite", absolutePath: `${absolutePath}${suffix}`, simpleCommandIndex, join: join8 }
+        span: { operation: "create-overwrite", absolutePath: `${absolutePath}${suffix}`, simpleCommandIndex, join: join9 }
       });
     }
   }
@@ -3756,12 +3052,12 @@ function patchApplyParts(args, isGitApply) {
 }
 function readPatchFile(absolutePath) {
   try {
-    return readFileSync5(absolutePath, "utf8");
+    return readFileSync4(absolutePath, "utf8");
   } catch {
     return null;
   }
 }
-function emitPatchTargets(args, isGitApply, host, targetDir, shellDir, redirects, simpleCommandIndex, join8, results) {
+function emitPatchTargets(args, isGitApply, host, targetDir, shellDir, redirects, simpleCommandIndex, join9, results) {
   const parts = patchApplyParts(args, isGitApply);
   if (parts.readOnly || parts.cachedOnly) return;
   if (parts.directory) {
@@ -3819,13 +3115,13 @@ function emitPatchTargets(args, isGitApply, host, targetDir, shellDir, redirects
         operation: t.operation,
         absolutePath,
         simpleCommandIndex,
-        join: join8,
+        join: join9,
         ...t.lineStart !== void 0 ? { lineStart: t.lineStart, lineEnd: t.lineEnd } : {}
       }
     });
   }
 }
-function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, join8, results) {
+function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, join9, results) {
   const rest = stripTransparentWrapper(argv);
   if (rest.length === 0) return;
   const command = rest[0];
@@ -3838,7 +3134,7 @@ function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, 
       dirForResolution,
       redirects,
       simpleCommandIndex,
-      join8,
+      join9,
       results
     );
     return;
@@ -3858,7 +3154,7 @@ function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, 
       dirForResolution,
       redirects,
       simpleCommandIndex,
-      join8,
+      join9,
       results
     );
     return;
@@ -3870,7 +3166,7 @@ function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, 
     }
   }
 }
-function classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join8, results) {
+function classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join9, results) {
   const rest = stripTransparentWrapper(argv);
   if (rest.length === 0) return;
   const command = rest[0];
@@ -3913,7 +3209,7 @@ function classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join8,
         operation: t.operation,
         absolutePath,
         simpleCommandIndex,
-        join: join8,
+        join: join9,
         ...t.lineStart !== void 0 ? { lineStart: t.lineStart, lineEnd: t.lineEnd } : {}
       }
     });
@@ -3984,7 +3280,7 @@ function stripPackageRunner(argv) {
   if (wrapped.startsWith("-") || wrapped.startsWith(".") || /\s/.test(wrapped)) return { kind: "obscured" };
   return { kind: "stripped", stripped: rest };
 }
-function matchFormatter(argv, dirForResolution, simpleCommandIndex, join8, results) {
+function matchFormatter(argv, dirForResolution, simpleCommandIndex, join9, results) {
   const rest = stripTransparentWrapper(argv);
   if (rest.length === 0) return;
   let words = rest;
@@ -4046,12 +3342,12 @@ function matchFormatter(argv, dirForResolution, simpleCommandIndex, join8, resul
     results.push({
       status: "resolved",
       idiom: "formatter-write",
-      span: { operation: "modify", absolutePath: resolvePath(dirForResolution, operand), simpleCommandIndex, join: join8 }
+      span: { operation: "modify", absolutePath: resolvePath(dirForResolution, operand), simpleCommandIndex, join: join9 }
     });
   }
 }
 var RESTORE_NO_VALUE = /* @__PURE__ */ new Set(["-q", "-f", "-u"]);
-function emitRestoreCheckoutPathspec(results, idiom, operand, dir, simpleCommandIndex, join8) {
+function emitRestoreCheckoutPathspec(results, idiom, operand, dir, simpleCommandIndex, join9) {
   if (looksUnresolvable(operand)) {
     pushUnresolved(results, idiom, operand, "path contains an unexpanded shell variable or glob");
     return;
@@ -4069,10 +3365,10 @@ function emitRestoreCheckoutPathspec(results, idiom, operand, dir, simpleCommand
   results.push({
     status: "resolved",
     idiom,
-    span: { operation: "create-overwrite", absolutePath, simpleCommandIndex, join: join8 }
+    span: { operation: "create-overwrite", absolutePath, simpleCommandIndex, join: join9 }
   });
 }
-function matchRestoreOperands(args, dir, simpleCommandIndex, join8, results) {
+function matchRestoreOperands(args, dir, simpleCommandIndex, join9, results) {
   let staged = false;
   let worktree = false;
   let afterDashDash = false;
@@ -4116,10 +3412,10 @@ function matchRestoreOperands(args, dir, simpleCommandIndex, join8, results) {
   }
   if (staged && !worktree) return;
   for (const operand of operands) {
-    emitRestoreCheckoutPathspec(results, "git-restore-write", operand, dir, simpleCommandIndex, join8);
+    emitRestoreCheckoutPathspec(results, "git-restore-write", operand, dir, simpleCommandIndex, join9);
   }
 }
-function matchCheckoutOperands(args, dir, simpleCommandIndex, join8, results) {
+function matchCheckoutOperands(args, dir, simpleCommandIndex, join9, results) {
   let afterDashDash = false;
   const operands = [];
   for (let i = 0; i < args.length; i++) {
@@ -4149,10 +3445,10 @@ function matchCheckoutOperands(args, dir, simpleCommandIndex, join8, results) {
     if (a.startsWith("-")) continue;
   }
   for (const operand of operands) {
-    emitRestoreCheckoutPathspec(results, "git-checkout-write", operand, dir, simpleCommandIndex, join8);
+    emitRestoreCheckoutPathspec(results, "git-checkout-write", operand, dir, simpleCommandIndex, join9);
   }
 }
-function matchGitRestoreCheckout(argv, dirForResolution, simpleCommandIndex, join8, results) {
+function matchGitRestoreCheckout(argv, dirForResolution, simpleCommandIndex, join9, results) {
   const rest = stripTransparentWrapper(argv);
   if (rest.length === 0) return;
   const command = rest[0];
@@ -4170,8 +3466,8 @@ function matchGitRestoreCheckout(argv, dirForResolution, simpleCommandIndex, joi
     }
     const dir = sub.cDir ?? dirForResolution;
     const args = rest.slice(1).slice(sub.subIdx + 1);
-    if (sub.subcommand === "restore") matchRestoreOperands(args, dir, simpleCommandIndex, join8, results);
-    else matchCheckoutOperands(args, dir, simpleCommandIndex, join8, results);
+    if (sub.subcommand === "restore") matchRestoreOperands(args, dir, simpleCommandIndex, join9, results);
+    else matchCheckoutOperands(args, dir, simpleCommandIndex, join9, results);
     return;
   }
   if (FOREIGN_WRAPPERS.has(command)) {
@@ -4221,7 +3517,7 @@ function parseCommandDetailed(command, opts = {}) {
     if (isAbsolute2(c.dirOverride)) return c.dirOverride;
     return frame.certain ? resolvePath(frame.dir, c.dirOverride) : void 0;
   };
-  const emitCandidate = (c, frame, simpleCommandIndex, join8) => {
+  const emitCandidate = (c, frame, simpleCommandIndex, join9) => {
     if (looksUnresolvable(c.fileArg)) {
       results.push({
         status: "unresolved",
@@ -4272,7 +3568,7 @@ function parseCommandDetailed(command, opts = {}) {
         lineEnd: range.lineEnd,
         absolutePath,
         simpleCommandIndex,
-        join: join8
+        join: join9
       }
     });
   };
@@ -4405,9 +3701,722 @@ function parseCommandDetailed(command, opts = {}) {
   return results;
 }
 
+// src/common/static-attribution.ts
+var PYTHON_STRING_SOURCE = String.raw`(?:'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")`;
+
+// src/common/touch-core.ts
+import { execFileSync as execFileSync5 } from "node:child_process";
+import * as fs6 from "node:fs";
+import { basename as basename4, join as join4 } from "node:path";
+
+// src/common/anchor-tree.ts
+function collapseByPath(rows) {
+  const order = [];
+  const byPath = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    let anchor = byPath.get(row.path);
+    if (!anchor) {
+      anchor = { path: row.path, ranges: [] };
+      byPath.set(row.path, anchor);
+      order.push(row.path);
+    }
+    anchor.ranges.push({ range: row.range, suffix: row.suffix });
+  }
+  return order.map((path) => byPath.get(path));
+}
+function splitSegments(path) {
+  if (path.length === 0) return null;
+  const segments = path.split("/");
+  if (segments.some((segment) => segment.length === 0)) return null;
+  return segments;
+}
+function findOrCreateDir(parent, name) {
+  for (const child of parent.children) {
+    if (child.kind === "dir" && child.name === name) return child;
+  }
+  const node = { kind: "dir", name, children: [] };
+  parent.children.push(node);
+  return node;
+}
+function insertAnchor(root, segments, anchor) {
+  let cur = root;
+  for (let i = 0; i < segments.length - 1; i++) {
+    cur = findOrCreateDir(cur, segments[i]);
+  }
+  cur.children.push({ kind: "leaf", name: segments[segments.length - 1], anchor });
+}
+function buildForest(anchors) {
+  const root = { kind: "dir", name: "", children: [] };
+  for (const anchor of anchors) {
+    const segments = splitSegments(anchor.path);
+    if (segments === null) {
+      root.children.push({ kind: "leaf", name: anchor.path, anchor });
+      continue;
+    }
+    insertAnchor(root, segments, anchor);
+  }
+  return root.children;
+}
+function foldChain(node) {
+  let name = node.name;
+  let cur = node;
+  while (cur.kind === "dir" && cur.children.length === 1) {
+    const child = cur.children[0];
+    name = `${name}/${child.name}`;
+    cur = child;
+  }
+  return { name, node: cur };
+}
+function rangeRank(range) {
+  switch (range.kind) {
+    case "whole-file":
+      return 0;
+    case "range":
+      return 1;
+    case "truncated":
+      return 2;
+  }
+}
+function compareRangeEntries(a, b) {
+  const rank = rangeRank(a.range) - rangeRank(b.range);
+  if (rank !== 0) return rank;
+  if (a.range.kind === "range" && b.range.kind === "range") {
+    return a.range.start - b.range.start || a.range.end - b.range.end;
+  }
+  return 0;
+}
+function labelFor(range, sole) {
+  switch (range.kind) {
+    case "range":
+      return `#L${range.start}-L${range.end}`;
+    case "whole-file":
+      return sole ? null : "(whole file)";
+    case "truncated":
+      return "(truncated in source \u2014 anchor incomplete)";
+  }
+}
+var cachedSegmenter;
+function graphemeSegmenter() {
+  if (cachedSegmenter === void 0) {
+    try {
+      cachedSegmenter = { value: new Intl.Segmenter("en", { granularity: "grapheme" }) };
+    } catch {
+      cachedSegmenter = { value: null };
+    }
+  }
+  return cachedSegmenter.value;
+}
+var WIDE_RANGES = [
+  [4352, 4447],
+  [9001, 9002],
+  [9728, 10175],
+  [11904, 12350],
+  [12353, 13311],
+  [13312, 19903],
+  [19968, 40959],
+  [40960, 42191],
+  [43360, 43391],
+  [44032, 55203],
+  [63744, 64255],
+  [65040, 65049],
+  [65072, 65135],
+  [65280, 65376],
+  [65504, 65510],
+  [94208, 101119],
+  [127462, 127487],
+  [127744, 128591],
+  [128640, 128767],
+  [129280, 129535],
+  [129648, 129791],
+  [131072, 196605],
+  [196608, 262141]
+];
+function isWideCodePoint(cp) {
+  for (const [lo, hi] of WIDE_RANGES) {
+    if (cp < lo) return false;
+    if (cp <= hi) return true;
+  }
+  return false;
+}
+function displayWidth(name) {
+  const segmenter = graphemeSegmenter();
+  let width = 0;
+  if (segmenter === null) {
+    for (const codePoint of name) {
+      width += isWideCodePoint(codePoint.codePointAt(0) ?? 0) ? 2 : 1;
+    }
+    return width;
+  }
+  for (const { segment } of segmenter.segment(name)) {
+    width += isWideCodePoint(segment.codePointAt(0) ?? 0) ? 2 : 1;
+  }
+  return width;
+}
+var MAX_ALIGN_COLUMN = 48;
+function computeGroupTarget(items) {
+  let max = 0;
+  for (const item of items) {
+    if (item.node.kind === "leaf" && printsRangeColumn(item.node.anchor)) {
+      max = Math.max(max, displayWidth(item.name));
+    }
+  }
+  return max > MAX_ALIGN_COLUMN ? 0 : max;
+}
+function printsRangeColumn(anchor) {
+  const { ranges } = anchor;
+  if (ranges.length === 0) return false;
+  return ranges.some((entry) => labelFor(entry.range, ranges.length === 1) !== null);
+}
+function computePad(nameWidth, target) {
+  if (nameWidth >= target) return " ";
+  return " ".repeat(target - nameWidth + 1);
+}
+function renderLeafLines(name, anchor, ownPrefix, childPrefix, groupTarget) {
+  const { ranges } = anchor;
+  if (ranges.length === 0) return [`${ownPrefix}${name}`];
+  const sorted = [...ranges].sort(compareRangeEntries);
+  const sole = sorted.length === 1;
+  const nameWidth = displayWidth(name);
+  const pad = computePad(nameWidth, groupTarget);
+  const blank = " ".repeat(nameWidth + pad.length);
+  return sorted.map((entry, i) => {
+    const label = labelFor(entry.range, sole);
+    if (label === null) return `${ownPrefix}${name}${entry.suffix}`;
+    const base = i === 0 ? `${ownPrefix}${name}${pad}` : `${childPrefix}${blank}`;
+    return `${base}${label}${entry.suffix}`;
+  });
+}
+function renderNodes(nodes, prefix) {
+  const lines = [];
+  const items = nodes.map(foldChain);
+  const groupTarget = computeGroupTarget(items);
+  items.forEach((item, i) => {
+    const isLast = i === items.length - 1;
+    const ownPrefix = `${prefix}${isLast ? "\u2514\u2500 " : "\u251C\u2500 "}`;
+    const childPrefix = `${prefix}${isLast ? "   " : "\u2502  "}`;
+    if (item.node.kind === "leaf") {
+      lines.push(...renderLeafLines(item.name, item.node.anchor, ownPrefix, childPrefix, groupTarget));
+    } else {
+      lines.push(`${ownPrefix}${item.name}/`);
+      lines.push(...renderNodes(item.node.children, childPrefix));
+    }
+  });
+  return lines;
+}
+function renderAnchorTree(anchors) {
+  const forest = buildForest(anchors);
+  return renderNodes(forest, "");
+}
+
+// src/common/touch-core.ts
+function toNeedleLines(written) {
+  if (written.length === 0) return [];
+  const trimmed = written.endsWith("\n") ? written.slice(0, -1) : written;
+  if (trimmed.length === 0) return [];
+  return trimmed.split("\n");
+}
+function recoverRange(written, onDiskContent) {
+  const needle = toNeedleLines(written);
+  if (needle.length === 0) return "whole-file";
+  const haystack = onDiskContent.split("\n");
+  const last = haystack.length - needle.length;
+  const starts = [];
+  for (let i = 0; i <= last; i++) {
+    let ok = true;
+    for (let j = 0; j < needle.length; j++) {
+      if (haystack[i + j] !== needle[j]) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) {
+      starts.push(i);
+      if (starts.length > 1) break;
+    }
+  }
+  if (starts.length === 1) {
+    return { start: starts[0] + 1, end: starts[0] + needle.length };
+  }
+  return "whole-file";
+}
+function createRealityProbeCache(paths, changedCandidates = []) {
+  return {
+    paths: [...new Set(paths)],
+    realPaths: null,
+    changedCandidates: [...new Set(changedCandidates)],
+    changedPaths: null
+  };
+}
+function fileExists(absPath) {
+  try {
+    fs6.statSync(absPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function isFileOnDisk(absPath) {
+  try {
+    return fs6.statSync(absPath).isFile();
+  } catch {
+    return false;
+  }
+}
+function contentMatches(post, filePath) {
+  try {
+    if ("exact" in post) return fs6.readFileSync(filePath, "utf8") === post.exact;
+    if ("suffix" in post) {
+      const content = fs6.readFileSync(filePath, "utf8");
+      return content.endsWith(post.suffix) || content.endsWith(`${post.suffix}
+`);
+    }
+    if ("empty" in post) return fs6.statSync(filePath).size === 0;
+    return fs6.statSync(filePath).size === post.size;
+  } catch {
+    return false;
+  }
+}
+function realPaths(cache, cwd) {
+  if (cache.realPaths !== null) return cache.realPaths;
+  const real = /* @__PURE__ */ new Set();
+  if (cache.paths.length > 0) {
+    const repoRoot = resolveRepoRoot(cwd);
+    if (repoRoot !== null) {
+      const rels = cache.paths.map((p) => relativeToRepo(repoRoot, p));
+      const capture = (args) => {
+        try {
+          return execFileSync5("git", args, {
+            cwd: repoRoot,
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "pipe"],
+            timeout: DEFAULT_TIMEOUT_MS
+          });
+        } catch (err) {
+          const stdout = err.stdout;
+          return typeof stdout === "string" ? stdout : null;
+        }
+      };
+      const lsFiles = capture(["ls-files", "--error-unmatch", "--", ...rels]);
+      if (lsFiles !== null) {
+        for (const line of lsFiles.split("\n")) {
+          const rel = line.trim();
+          if (rel.length > 0) real.add(join4(repoRoot, rel));
+        }
+      }
+      const spanList = capture(["span", "list", "--porcelain", ...rels]);
+      if (spanList !== null) {
+        for (const row of parsePorcelain(spanList)) real.add(join4(repoRoot, row.path));
+      }
+    }
+  }
+  cache.realPaths = real;
+  return real;
+}
+function evaluateWriteGate(input, probeCache) {
+  if (input.targetState === "absent") {
+    if (fileExists(input.filePath)) return "decisiveFail";
+    return realPaths(probeCache, input.cwd).has(input.filePath) ? "decisivePass" : "inconclusive";
+  }
+  if (!isFileOnDisk(input.filePath)) return "decisiveFail";
+  const content = input.postState?.content;
+  if (content !== void 0) {
+    return contentMatches(content, input.filePath) ? "decisivePass" : "decisiveFail";
+  }
+  if (input.sourcePath !== void 0) {
+    if (fileExists(input.sourcePath)) {
+      let src;
+      let dst;
+      try {
+        src = fs6.readFileSync(input.sourcePath, "utf8");
+        dst = fs6.readFileSync(input.filePath, "utf8");
+      } catch {
+        return "decisiveFail";
+      }
+      return src === dst ? "decisivePass" : "decisiveFail";
+    }
+    return realPaths(probeCache, input.cwd).has(input.sourcePath) ? "pending" : "decisiveFail";
+  }
+  if (input.renameSourcePath !== void 0) {
+    return realPaths(probeCache, input.cwd).has(input.renameSourcePath) ? "decisivePass" : "decisiveFail";
+  }
+  return "inconclusive";
+}
+function driftKey(name, status) {
+  return `${name}	${status}`;
+}
+function anchorText(row) {
+  if (row.start === 0 && row.end === 0) return row.path;
+  return `${row.path}#L${row.start}-L${row.end}`;
+}
+function cleanHeader(fileName) {
+  return `${fileName} has implicit dependencies:`;
+}
+function cleanFooter(fileName) {
+  return `If you change ${fileName} check the other files to confirm they still work together.`;
+}
+function driftHeader(driftedCount, kind) {
+  if (kind === "write") {
+    return driftedCount === 1 ? "This edit put an implicit dependency out of date:" : "This edit put implicit dependencies out of date:";
+  }
+  return driftedCount === 1 ? "This file has an implicit dependency out of date:" : "This file has implicit dependencies out of date:";
+}
+function driftFooter(driftedNames) {
+  if (driftedNames.length === 1) {
+    const name = driftedNames[0];
+    return `Restore agreement before committing. Follow confirmed authority. Preserve anchor shape; if an address changed, swap the old anchor for the new one with \`git span replace\`. Update or retire the why only if its meaning changed. Require \`git span drift ${name}\` to report zero, then check the other anchors. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete coupling.`;
+  }
+  return "For each out-of-date span: restore agreement before committing. Follow confirmed authority. Preserve anchor shape; if an address changed, swap the old anchor for the new one with `git span replace`. Update or retire the why only if its meaning changed. Require `git span drift <name>` to report zero, then check the other anchors. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete coupling.";
+}
+function rangeLabel(row) {
+  if (row.start === 0 && row.end === 0) return { kind: "whole-file" };
+  return { kind: "range", start: row.start, end: row.end };
+}
+function anchorBullets(anchors, debtRows) {
+  const rows = anchors.map((anchor) => {
+    const soleOnPath = anchors.filter((a) => a.path === anchor.path).length === 1;
+    const statuses = /* @__PURE__ */ new Set();
+    for (const row of debtRows) {
+      if (row.path !== anchor.path) continue;
+      if (soleOnPath || row.start === anchor.start && row.end === anchor.end) {
+        statuses.add(row.status);
+      }
+    }
+    const sorted = [...statuses].sort();
+    const suffix = sorted.length > 0 ? ` \u2014 ${sorted.map(humanStatusLabel).join(", ")}` : "";
+    return { path: anchor.path, range: rangeLabel(anchor), suffix };
+  });
+  try {
+    return renderAnchorTree(collapseByPath(rows));
+  } catch {
+    return anchors.map((anchor, i) => `- ${anchorText(anchor)}${rows[i].suffix}`);
+  }
+}
+function renderSpanSection(name, anchors, debtRows, why) {
+  const lines = [`## ${name}`, ...anchorBullets(anchors, debtRows)];
+  if (why) lines.push("", why);
+  return lines.join("\n");
+}
+function buildBlock(sections, header, footer) {
+  const body = `${header}
+
+${sections.join("\n\n---\n\n")}
+
+---
+
+${footer}`;
+  return `
+<git-span>
+${body}
+</git-span>
+`;
+}
+function intersectsAny(row, ranges) {
+  if (ranges === "whole-file") return true;
+  if (row.start === 0 && row.end === 0) return true;
+  return ranges.some((range) => rangesIntersect(range, { start: row.start, end: row.end }));
+}
+function recoverRangeFromDisk(written, filePath) {
+  if (written.length === 0) return "whole-file";
+  let content;
+  try {
+    content = fs6.readFileSync(filePath, "utf8");
+  } catch {
+    return "whole-file";
+  }
+  return recoverRange(written, content);
+}
+var DEFAULT_READ_LIMIT = 2e3;
+function recoverReadRange(offset, limit, filePath) {
+  if (offset === void 0 && limit === void 0) return "whole-file";
+  const start = offset ?? 1;
+  let lineCount2;
+  try {
+    const content = fs6.readFileSync(filePath, "utf8");
+    lineCount2 = content.length === 0 ? 0 : content.split("\n").length;
+  } catch {
+    return "whole-file";
+  }
+  const end = Math.min(start + (limit ?? DEFAULT_READ_LIMIT) - 1, Math.max(lineCount2, start));
+  return { start, end };
+}
+function onTouchedFile(row, filePath) {
+  return filePath === row.path || filePath.endsWith(`/${row.path}`);
+}
+async function computeSurfaceParts(input, executors, memo, range, driftRows) {
+  const covering = await executors.list(input.filePath, input.cwd);
+  if (covering.length === 0) return null;
+  const anchorsByName = /* @__PURE__ */ new Map();
+  for (const row of covering) {
+    const rows = anchorsByName.get(row.name) ?? [];
+    rows.push(row);
+    anchorsByName.set(row.name, rows);
+  }
+  const touchedNames = [...anchorsByName.keys()].filter(
+    (name) => (anchorsByName.get(name) ?? []).some((row) => onTouchedFile(row, input.filePath) && intersectsAny(row, range))
+  );
+  if (touchedNames.length === 0) return null;
+  const driftByName = /* @__PURE__ */ new Map();
+  for (const row of driftRows ?? await executors.drift([input.filePath], input.cwd)) {
+    const rows = driftByName.get(row.name) ?? [];
+    rows.push(row);
+    driftByName.set(row.name, rows);
+  }
+  const surfaced = memo.getSurfaced(input.sessionId);
+  const toRecord = [];
+  const sections = [];
+  const driftedNames = [];
+  for (const name of touchedNames) {
+    const spanDrift = driftByName.get(name) ?? [];
+    const debtRows = spanDrift.filter((row) => isDebt(row.status));
+    if (spanDrift.length > 0 && debtRows.length === 0) continue;
+    const debtStatuses = [...new Set(debtRows.map((row) => row.status))].sort();
+    const unsurfacedDebt = debtStatuses.filter((status) => !surfaced.has(driftKey(name, status)));
+    const isNewName = !surfaced.has(name);
+    if (!isNewName && unsurfacedDebt.length === 0) continue;
+    const why = await executors.why(name, input.cwd);
+    sections.push(renderSpanSection(name, anchorsByName.get(name) ?? [], debtRows, why));
+    if (debtStatuses.length > 0) driftedNames.push(name);
+    if (isNewName) toRecord.push(name);
+    for (const status of unsurfacedDebt) toRecord.push(driftKey(name, status));
+  }
+  if (sections.length === 0) return null;
+  memo.addSurfaced(input.sessionId, toRecord);
+  const fileName = basename4(input.filePath);
+  const header = driftedNames.length > 0 ? driftHeader(driftedNames.length, input.kind) : cleanHeader(fileName);
+  const footer = driftedNames.length > 0 ? driftFooter(driftedNames) : cleanFooter(fileName);
+  return { sections, header, footer, toRecord };
+}
+async function computeSurface(input, executors, memo, range) {
+  const parts = await computeSurfaceParts(input, executors, memo, range);
+  if (parts === null) return null;
+  return buildBlock(parts.sections, parts.header, parts.footer);
+}
+async function runTouchHook(input, executors, memo, probeCache, scopes) {
+  if (input.kind === "write" && input.observed !== void 0 && input.written.length > 0) {
+    throw new Error("touch write carries both written and observed: exactly one must be set");
+  }
+  if (scopes !== void 0 && scopes.length > 0) {
+    let treeModified2 = false;
+    try {
+      for (const scope of scopes) {
+        const fix = await executors.fix(scope.filePath, input.cwd);
+        treeModified2 = treeModified2 || fix.modified;
+      }
+      const driftRows = await executors.drift([], input.cwd);
+      const sections = [];
+      let header = null;
+      let footer = null;
+      for (const scope of scopes) {
+        const scopeInput = { ...input, filePath: scope.filePath };
+        const range = scope.observed.wholeFile ? "whole-file" : scope.observed.changed;
+        const parts = await computeSurfaceParts(scopeInput, executors, memo, range, driftRows);
+        if (parts === null) continue;
+        if (header === null) {
+          header = parts.header;
+          footer = parts.footer;
+        }
+        sections.push(...parts.sections);
+      }
+      if (sections.length === 0) return { additionalContext: null, treeModified: treeModified2 };
+      return { additionalContext: buildBlock(sections, header, footer), treeModified: treeModified2 };
+    } catch {
+      return { additionalContext: null, treeModified: treeModified2 };
+    }
+  }
+  let treeModified = false;
+  try {
+    let range = "whole-file";
+    if (input.kind === "write") {
+      if (input.observed === void 0 && input.targetState !== void 0) {
+        const probe = probeCache ?? createRealityProbeCache(input.targetState === "absent" ? [input.filePath] : []);
+        const outcome = evaluateWriteGate(input, probe);
+        if (outcome === "decisiveFail" || outcome === "inconclusive" && input.targetState === "absent") {
+          return { additionalContext: null, treeModified: false };
+        }
+      }
+      const fix = await executors.fix(input.filePath, input.cwd);
+      treeModified = fix.modified;
+      if (input.range !== void 0) {
+        range = [input.range];
+      } else if (input.observed !== void 0) {
+        range = input.observed.wholeFile ? "whole-file" : input.observed.changed;
+      } else {
+        const recovered = recoverRangeFromDisk(input.written, input.filePath);
+        range = recovered === "whole-file" ? "whole-file" : [recovered];
+      }
+    } else {
+      const recovered = recoverReadRange(input.offset, input.limit, input.filePath);
+      range = recovered === "whole-file" ? "whole-file" : [recovered];
+    }
+    const additionalContext = await computeSurface(input, executors, memo, range);
+    return { additionalContext, treeModified };
+  } catch {
+    return { additionalContext: null, treeModified };
+  }
+}
+var DEFAULT_TIMEOUT_MS = 1e4;
+function repoRelArg(filePath, cwd) {
+  const repoRoot = resolveRepoRoot(cwd);
+  if (!repoRoot) return null;
+  return { repoRoot, relPath: relativeToRepo(repoRoot, filePath) };
+}
+function spanStatusSnapshot(repoRoot) {
+  const spanRoot = resolveSpanRoot(repoRoot);
+  try {
+    return execFileSync5("git", ["-C", repoRoot, "status", "--porcelain", "--", spanRoot], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: DEFAULT_TIMEOUT_MS
+    });
+  } catch {
+    return "";
+  }
+}
+function createDefaultTouchExecutors(timeoutMs = DEFAULT_TIMEOUT_MS) {
+  return {
+    fix: async (filePath, cwd) => {
+      const resolved = repoRelArg(filePath, cwd);
+      if (!resolved) return { modified: false };
+      const before = spanStatusSnapshot(resolved.repoRoot);
+      try {
+        execFileSync5("git", ["span", "drift", resolved.relPath, "--fix"], {
+          cwd: resolved.repoRoot,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+          timeout: timeoutMs
+        });
+      } catch (err) {
+      }
+      const after = spanStatusSnapshot(resolved.repoRoot);
+      return { modified: before !== after };
+    },
+    list: async (filePath, cwd) => {
+      const resolved = repoRelArg(filePath, cwd);
+      if (!resolved) return [];
+      try {
+        const out = execFileSync5("git", ["span", "list", "--porcelain", resolved.relPath], {
+          cwd: resolved.repoRoot,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+          timeout: timeoutMs
+        });
+        return parsePorcelain(out);
+      } catch {
+        return [];
+      }
+    },
+    drift: async (args, cwd) => {
+      const repoRoot = resolveRepoRoot(cwd);
+      const runCwd = repoRoot ?? cwd;
+      const scoped = repoRoot ? args.map((a) => relativeToRepo(repoRoot, a)) : args;
+      let out;
+      try {
+        out = execFileSync5("git", ["span", "drift", "--format", "porcelain", ...scoped], {
+          cwd: runCwd,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+          timeout: timeoutMs
+        });
+      } catch (err) {
+        const captured = err.stdout;
+        if (typeof captured === "string") {
+          out = captured;
+        } else {
+          return [];
+        }
+      }
+      return parseDriftPorcelain(out);
+    },
+    why: async (name, cwd) => {
+      const repoRoot = resolveRepoRoot(cwd);
+      try {
+        const out = execFileSync5("git", ["span", "why", name], {
+          cwd: repoRoot ?? cwd,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+          timeout: timeoutMs
+        });
+        const text = out.trimEnd();
+        if (text.length === 0 || text === `\`${name}\` has no why recorded.`) return null;
+        return text;
+      } catch {
+        return null;
+      }
+    }
+  };
+}
+
+// src/common/bash-touch.ts
+function bashSpanToTouch(span, sessionId, cwd) {
+  if (!resolveTouchScope(cwd, span.absolutePath)) return null;
+  switch (span.operation) {
+    case "read":
+      return {
+        kind: "read",
+        sessionId,
+        cwd,
+        filePath: span.absolutePath,
+        offset: span.lineStart,
+        limit: span.lineStart !== void 0 && span.lineEnd !== void 0 ? span.lineEnd - span.lineStart + 1 : void 0
+      };
+    case "create-overwrite":
+    case "rename-copy":
+      return {
+        kind: "write",
+        sessionId,
+        cwd,
+        filePath: span.absolutePath,
+        written: "",
+        targetState: "exists",
+        postState: span.written !== void 0 ? { content: { exact: span.written } } : void 0
+      };
+    case "truncate":
+      return {
+        kind: "write",
+        sessionId,
+        cwd,
+        filePath: span.absolutePath,
+        written: "",
+        targetState: "exists",
+        postState: span.size === 0 ? { content: { empty: true } } : span.size !== void 0 ? { content: { size: span.size } } : void 0
+      };
+    case "append":
+      return {
+        kind: "write",
+        sessionId,
+        cwd,
+        filePath: span.absolutePath,
+        written: span.written ?? "",
+        targetState: "exists",
+        postState: span.written !== void 0 ? { content: { suffix: span.written } } : void 0
+      };
+    case "modify":
+      return {
+        kind: "write",
+        sessionId,
+        cwd,
+        filePath: span.absolutePath,
+        written: "",
+        targetState: "exists",
+        range: span.lineStart !== void 0 ? { start: span.lineStart, end: span.lineEnd ?? span.lineStart } : void 0,
+        postState: span.expectedContent !== void 0 ? { content: { exact: span.expectedContent } } : void 0
+      };
+    case "delete":
+      return {
+        kind: "write",
+        sessionId,
+        cwd,
+        filePath: span.absolutePath,
+        written: "",
+        targetState: "absent",
+        postState: { realDelete: true }
+      };
+  }
+}
+
 // src/common/parse-response.ts
-import { existsSync as existsSync2, statSync as statSync5 } from "node:fs";
-import { dirname as dirname4, join as join4, resolve as resolvePath2, sep } from "node:path";
+import { existsSync as existsSync3, statSync as statSync5 } from "node:fs";
+import { dirname as dirname5, join as join5, resolve as resolvePath2, sep } from "node:path";
 var MAX_RESPONSE_SPANS = 50;
 var SEARCH_BINS = /* @__PURE__ */ new Set(["rg", "grep", "egrep", "fgrep"]);
 var VALUE_SHORT_FLAGS = /* @__PURE__ */ new Set(["A", "B", "C", "e", "f", "m", "g", "t", "T"]);
@@ -4565,7 +4574,7 @@ function hasDiffRevPathArg(argv, start, cwd) {
       if (!a.includes("=") && valueFlags.has(a)) i += 1;
       continue;
     }
-    if (a.includes(":") && !existsSync2(resolvePath2(cwd, a))) return true;
+    if (a.includes(":") && !existsSync3(resolvePath2(cwd, a))) return true;
   }
   return false;
 }
@@ -4828,8 +4837,8 @@ function isFile(abs) {
 function findGitRoot(startDir) {
   let dir = startDir;
   for (; ; ) {
-    if (existsSync2(join4(dir, ".git"))) return dir;
-    const parent = dirname4(dir);
+    if (existsSync3(join5(dir, ".git"))) return dir;
+    const parent = dirname5(dir);
     if (parent === dir) return null;
     dir = parent;
   }
@@ -5126,10 +5135,10 @@ function parseResponse(input) {
 }
 
 // src/common/snapshot-core.ts
-import { execFileSync as execFileSync5 } from "node:child_process";
+import { execFileSync as execFileSync6 } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, lstatSync, mkdirSync as mkdirSync4, writeFileSync as writeFileSync2 } from "node:fs";
-import { isAbsolute as isAbsolute3, join as join5, relative, resolve as resolve2, sep as sep2 } from "node:path";
+import { copyFileSync, lstatSync, mkdirSync as mkdirSync5, writeFileSync as writeFileSync3 } from "node:fs";
+import { isAbsolute as isAbsolute4, join as join6, relative, resolve as resolve3, sep as sep2 } from "node:path";
 var DEFAULT_SNAPSHOT_BUDGETS = {
   preSideMaxWallSeconds: 1,
   maxStorageBytes: 64 * 1024 * 1024,
@@ -5292,7 +5301,7 @@ function findRedirects(argv, currentDir) {
     present = true;
     if (target === "") target = argv[i + 1] ?? "";
     if (target !== "" && !target.startsWith("~") && !/[$`*?]/.test(target)) {
-      targets.push(resolve2(currentDir, target));
+      targets.push(resolve3(currentDir, target));
     }
   }
   return { present, targets };
@@ -5307,7 +5316,7 @@ function classifyGitExec(argv, assignments, cwd) {
   while (i < argv.length) {
     const a = argv[i];
     if (a === "-C") {
-      cTarget = resolve2(cTarget ?? cwd, argv[i + 1] ?? "");
+      cTarget = resolve3(cTarget ?? cwd, argv[i + 1] ?? "");
       i += 2;
       continue;
     }
@@ -5370,7 +5379,7 @@ function classifyGitExec(argv, assignments, cwd) {
 }
 function repoTopLevel(dir) {
   try {
-    const out = execFileSync5("git", ["-C", dir, "rev-parse", "--show-toplevel"], {
+    const out = execFileSync6("git", ["-C", dir, "rev-parse", "--show-toplevel"], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"]
     });
@@ -5382,7 +5391,7 @@ function repoTopLevel(dir) {
 }
 function readExecConfig(cwd) {
   try {
-    const out = execFileSync5("git", ["config", "--get-regexp", EXEC_CONFIG_PATTERN], {
+    const out = execFileSync6("git", ["config", "--get-regexp", EXEC_CONFIG_PATTERN], {
       cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"]
@@ -5409,13 +5418,13 @@ function isSymlinkOrUnknowable(p) {
 function fastPathTargetsOk(absTarget, cwd) {
   if (isSymlinkOrUnknowable(absTarget)) return false;
   const rel = relative(cwd, absTarget);
-  if (rel === "" || isAbsolute3(rel) || rel.startsWith("..")) return true;
+  if (rel === "" || isAbsolute4(rel) || rel.startsWith("..")) return true;
   const parts = rel.split("/");
   let cur = cwd;
   for (let i = 0; i < parts.length - 1; i += 1) {
     const part = parts[i];
     if (part === "" || part === ".") continue;
-    cur = join5(cur, part);
+    cur = join6(cur, part);
     if (isSymlinkOrUnknowable(cur)) return false;
   }
   return true;
@@ -5468,7 +5477,7 @@ function classifyCommandForSnapshot(command, cwd) {
     const heredocRef = simple.text.match(/^__heredoc_(\d+)__$/);
     if (heredocRef !== null) {
       const h = writes[Number.parseInt(heredocRef[1], 10)];
-      const absTarget = resolve2(currentDir, h.target);
+      const absTarget = resolve3(currentDir, h.target);
       const literal = !h.target.startsWith("~") && !/[$`*?]/.test(h.target);
       if (literal) pushTier1(absTarget);
       anyWrite = true;
@@ -5486,7 +5495,7 @@ function classifyCommandForSnapshot(command, cwd) {
       continue;
     }
     if (argv[0] === "cd" && argv.length >= 2 && argv[1] !== "-" && !/[$`]/.test(argv[1])) {
-      currentDir = resolve2(currentDir, argv[1]);
+      currentDir = resolve3(currentDir, argv[1]);
     }
     const cls = classifySimple(simple.text, argv, currentDir, background);
     if (cls.writeCapable) anyWrite = true;
@@ -5612,8 +5621,8 @@ function captureWriteTree(input) {
   const start = input.wallStart ?? Date.now();
   const remaining = () => Math.max(1, wallBudgetMs - (Date.now() - start));
   try {
-    mkdirSync4(join5(objectDir, "info"), { recursive: true, mode: 448 });
-    writeFileSync2(join5(objectDir, "info", "alternates"), `${alternates}
+    mkdirSync5(join6(objectDir, "info"), { recursive: true, mode: 448 });
+    writeFileSync3(join6(objectDir, "info", "alternates"), `${alternates}
 `, { mode: 384 });
     if (realIndexFile !== null) copyFileSync(realIndexFile, indexFile2);
     const env = { GIT_INDEX_FILE: indexFile2, GIT_OBJECT_DIRECTORY: objectDir };
@@ -5651,13 +5660,13 @@ function statOnlySweep(input) {
   const statOnly = {};
   for (const rel of raw.split("\0")) {
     if (rel.length === 0 || isInsideSpanRoot(rel, spanRel)) continue;
-    const st = input.stat(join5(input.repoRoot, rel));
+    const st = input.stat(join6(input.repoRoot, rel));
     if (st !== null) statOnly[rel] = { size: st.size, mtimeNs: st.mtimeNs };
   }
   return statOnly;
 }
 function spanRootRelative(repoRoot, spanRoot) {
-  return isAbsolute3(spanRoot) ? relative(repoRoot, spanRoot).split(sep2).join("/") : spanRoot;
+  return isAbsolute4(spanRoot) ? relative(repoRoot, spanRoot).split(sep2).join("/") : spanRoot;
 }
 function compareTrees(input) {
   const { preTreeSha, postTreeSha, repoRoot, objectDir, spanRoot, budgets, wallStart, runGit } = input;
@@ -5863,37 +5872,37 @@ function hashTreePath(input) {
 }
 
 // src/common/snapshot-harness.ts
-import { execFileSync as execFileSync6 } from "node:child_process";
-import { mkdirSync as mkdirSync6, readdirSync as readdirSync3, readFileSync as readFileSync7, rmSync as rmSync3, statSync as statSync7, writeFileSync as writeFileSync4 } from "node:fs";
-import { join as join7 } from "node:path";
+import { execFileSync as execFileSync7 } from "node:child_process";
+import { mkdirSync as mkdirSync7, readdirSync as readdirSync3, readFileSync as readFileSync8, rmSync as rmSync4, statSync as statSync7, writeFileSync as writeFileSync5 } from "node:fs";
+import { join as join8 } from "node:path";
 
 // src/common/snapshot-store.ts
 import {
-  chmodSync,
-  existsSync as existsSync3,
-  mkdirSync as mkdirSync5,
+  chmodSync as chmodSync2,
+  existsSync as existsSync4,
+  mkdirSync as mkdirSync6,
   readdirSync as readdirSync2,
-  readFileSync as readFileSync6,
-  renameSync as renameSync3,
-  rmSync as rmSync2,
+  readFileSync as readFileSync7,
+  renameSync as renameSync4,
+  rmSync as rmSync3,
   statSync as statSync6,
   utimesSync as utimesSync2,
-  writeFileSync as writeFileSync3
+  writeFileSync as writeFileSync4
 } from "node:fs";
-import { basename as basename4, dirname as dirname5, join as join6 } from "node:path";
+import { basename as basename5, dirname as dirname6, join as join7 } from "node:path";
 var SNAPSHOT_INDEX_DIR = "snapshot-index";
 var ACTIVITY_LOG_DIR = "activity-log";
 function indexDir(repoRoot) {
-  return join6(queueRoot(repoRoot), SNAPSHOT_INDEX_DIR);
+  return join7(queueRoot(repoRoot), SNAPSHOT_INDEX_DIR);
 }
 function indexFile(repoRoot, sessionId, toolUseId) {
-  return join6(indexDir(repoRoot), `${sanitizeSessionId(sessionId)}__${sanitizeSessionId(toolUseId)}.json`);
+  return join7(indexDir(repoRoot), `${sanitizeSessionId(sessionId)}__${sanitizeSessionId(toolUseId)}.json`);
 }
 function activityDir(repoRoot) {
-  return join6(queueRoot(repoRoot), ACTIVITY_LOG_DIR);
+  return join7(queueRoot(repoRoot), ACTIVITY_LOG_DIR);
 }
 function activityFile(repoRoot, sessionId, toolUseId) {
-  return join6(activityDir(repoRoot), `${sanitizeSessionId(sessionId)}__${sanitizeSessionId(toolUseId)}.json`);
+  return join7(activityDir(repoRoot), `${sanitizeSessionId(sessionId)}__${sanitizeSessionId(toolUseId)}.json`);
 }
 var SWEEP_READ_MARGIN_MS = 5e3;
 var TRASH_TTL_MS = 6e4;
@@ -5903,8 +5912,8 @@ function isTrashName(name) {
 }
 function trashFile(file) {
   try {
-    const trashPath = join6(dirname5(file), `.${basename4(file)}${TRASH_MARKER}${process.pid}-${Date.now().toString(36)}`);
-    renameSync3(file, trashPath);
+    const trashPath = join7(dirname6(file), `.${basename5(file)}${TRASH_MARKER}${process.pid}-${Date.now().toString(36)}`);
+    renameSync4(file, trashPath);
     try {
       const now = Date.now() / 1e3;
       utimesSync2(trashPath, now, now);
@@ -5925,14 +5934,14 @@ function isRecentlyWritten(file, now) {
 function emptyTrash(dir, now) {
   for (const name of listDir(dir)) {
     if (!isTrashName(name)) continue;
-    const file = join6(dir, name);
+    const file = join7(dir, name);
     let mtimeMs;
     try {
       mtimeMs = statSync6(file).mtimeMs;
     } catch {
       continue;
     }
-    if (mtimeMs < now - TRASH_TTL_MS) rmSync2(file, { recursive: true, force: true });
+    if (mtimeMs < now - TRASH_TTL_MS) rmSync3(file, { recursive: true, force: true });
   }
 }
 function bigintReplacer(_key, value) {
@@ -5950,26 +5959,26 @@ function recordReviver(key, value) {
 }
 function readJsonFile(file) {
   try {
-    return JSON.parse(readFileSync6(file, "utf8"));
+    return JSON.parse(readFileSync7(file, "utf8"));
   } catch {
     return null;
   }
 }
 function writeJsonAtomic(file, data, replacer) {
-  const dir = dirname5(file);
-  mkdirSync5(dir, { recursive: true, mode: 448 });
-  chmodSync(dir, 448);
-  chmodSync(dirname5(dir), 448);
-  const tmp = join6(
+  const dir = dirname6(file);
+  mkdirSync6(dir, { recursive: true, mode: 448 });
+  chmodSync2(dir, 448);
+  chmodSync2(dirname6(dir), 448);
+  const tmp = join7(
     dir,
-    `.${basename4(file)}.${process.pid}.${Date.now().toString(36)}.${Math.random().toString(36).slice(2)}.tmp`
+    `.${basename5(file)}.${process.pid}.${Date.now().toString(36)}.${Math.random().toString(36).slice(2)}.tmp`
   );
   try {
-    writeFileSync3(tmp, JSON.stringify(data, replacer), { mode: 384 });
-    chmodSync(tmp, 384);
-    renameSync3(tmp, file);
+    writeFileSync4(tmp, JSON.stringify(data, replacer), { mode: 384 });
+    chmodSync2(tmp, 384);
+    renameSync4(tmp, file);
   } catch (err) {
-    rmSync2(tmp, { force: true });
+    rmSync3(tmp, { force: true });
     throw err;
   }
 }
@@ -5989,7 +5998,7 @@ function dirSizeBytes(dir) {
     return 0;
   }
   for (const name of names) {
-    const entry = join6(dir, name);
+    const entry = join7(dir, name);
     let st;
     try {
       st = statSync6(entry);
@@ -6008,7 +6017,7 @@ function listDir(dir) {
   }
 }
 function readRecordFile(file, logger2) {
-  if (!existsSync3(file)) return null;
+  if (!existsSync4(file)) return null;
   const data = readJsonFile(file);
   if (data === null) {
     logger2.warn(`snapshot store: unreadable record file ${file}, treated as absent`);
@@ -6033,7 +6042,7 @@ function readIndexEntries(repoRoot, logger2) {
   const out = [];
   for (const name of listDir(indexDir(repoRoot))) {
     if (!name.endsWith(".json")) continue;
-    const data = readJsonFile(join6(indexDir(repoRoot), name));
+    const data = readJsonFile(join7(indexDir(repoRoot), name));
     if (data === null || typeof data !== "object" || data === null) continue;
     const version = data.version;
     if (version !== void 0 && version !== 1) {
@@ -6082,7 +6091,7 @@ function createSnapshotStore(logger2, budgets = DEFAULT_SNAPSHOT_BUDGETS, layout
   function reapForeignRecord(dir, name, parsed) {
     const stem = layout.callStem(name) ?? name;
     const siblings = layout.callFiles(dir, stem);
-    trashFile(join6(dir, name));
+    trashFile(join7(dir, name));
     trashFile(siblings.tombstone);
     trashFile(siblings.objectDir);
     trashFile(siblings.tempIndexFile);
@@ -6093,7 +6102,7 @@ function createSnapshotStore(logger2, budgets = DEFAULT_SNAPSHOT_BUDGETS, layout
       removeIndexEntry(repoRoot, sessionId, toolUseId);
     }
     logger2.info?.("git-span snapshot sweep reaped an incompatible or unreadable record", {
-      file: join6(dir, name)
+      file: join7(dir, name)
     });
   }
   function writeRecord(record) {
@@ -6105,7 +6114,7 @@ function createSnapshotStore(logger2, budgets = DEFAULT_SNAPSHOT_BUDGETS, layout
       const dir = layout.snapshotsDir(sessionName);
       for (const name of listDir(dir)) {
         if (!layout.isRecordName(name)) continue;
-        const file = join6(dir, name);
+        const file = join7(dir, name);
         if (isRecentlyWritten(file, Date.now())) continue;
         const rec = readRecordFile(file, logger2);
         if (rec !== null) repos.add(rec.repoRoot);
@@ -6119,7 +6128,7 @@ function createSnapshotStore(logger2, budgets = DEFAULT_SNAPSHOT_BUDGETS, layout
       try {
         for (const name of listDir(activityDir(repo))) {
           if (!name.endsWith(".json")) continue;
-          const file = join6(activityDir(repo), name);
+          const file = join7(activityDir(repo), name);
           if (isRecentlyWritten(file, now)) continue;
           const entry = readActivityEntry(file);
           if (entry === null) continue;
@@ -6147,7 +6156,7 @@ function createSnapshotStore(logger2, budgets = DEFAULT_SNAPSHOT_BUDGETS, layout
       try {
         for (const name of listDir(indexDir(repo))) {
           if (!name.endsWith(".json")) continue;
-          const file = join6(indexDir(repo), name);
+          const file = join7(indexDir(repo), name);
           if (isRecentlyWritten(file, _now)) continue;
           const data = readJsonFile(file);
           if (data === null || typeof data !== "object" || data === null) continue;
@@ -6174,7 +6183,7 @@ function createSnapshotStore(logger2, budgets = DEFAULT_SNAPSHOT_BUDGETS, layout
       const names = listDir(dir);
       for (const name of names) {
         if (!layout.isTombstoneName(name)) continue;
-        const file = join6(dir, name);
+        const file = join7(dir, name);
         if (isRecentlyWritten(file, now)) continue;
         const t = readTombstoneFile(file, logger2);
         if (t === null) continue;
@@ -6192,7 +6201,7 @@ function createSnapshotStore(logger2, budgets = DEFAULT_SNAPSHOT_BUDGETS, layout
       }
       for (const name of names) {
         if (!layout.isRecordName(name)) continue;
-        const file = join6(dir, name);
+        const file = join7(dir, name);
         if (isRecentlyWritten(file, now)) continue;
         const data = readJsonFile(file);
         const parsed = data !== null && typeof data === "object" ? data : null;
@@ -6230,8 +6239,8 @@ function createSnapshotStore(logger2, budgets = DEFAULT_SNAPSHOT_BUDGETS, layout
         if (!name.endsWith(".objects") && !name.endsWith(".index")) continue;
         const stem = layout.callStem(name);
         if (stem === null) continue;
-        const file = join6(dir, name);
-        if (existsSync3(layout.callFiles(dir, stem).record)) continue;
+        const file = join7(dir, name);
+        if (existsSync4(layout.callFiles(dir, stem).record)) continue;
         if (isRecentlyWritten(file, now)) continue;
         let mtimeMs;
         try {
@@ -6314,12 +6323,12 @@ function createSnapshotStore(logger2, budgets = DEFAULT_SNAPSHOT_BUDGETS, layout
     },
     tombstone(sessionId, toolUseId, consumedAt) {
       const file = tombstoneFile(sessionId, toolUseId);
-      const dir = dirname5(file);
-      mkdirSync5(dir, { recursive: true, mode: 448 });
-      chmodSync(dir, 448);
-      chmodSync(dirname5(dir), 448);
+      const dir = dirname6(file);
+      mkdirSync6(dir, { recursive: true, mode: 448 });
+      chmodSync2(dir, 448);
+      chmodSync2(dirname6(dir), 448);
       try {
-        writeFileSync3(file, JSON.stringify({ version: 1, toolUseId, consumedAt }), { flag: "wx", mode: 384 });
+        writeFileSync4(file, JSON.stringify({ version: 1, toolUseId, consumedAt }), { flag: "wx", mode: 384 });
         return true;
       } catch {
         return false;
@@ -6337,7 +6346,7 @@ function createSnapshotStore(logger2, budgets = DEFAULT_SNAPSHOT_BUDGETS, layout
       let recordsRemoved = 0;
       for (const name of listDir(dir)) {
         if (!layout.isRecordName(name)) continue;
-        const data = readJsonFile(join6(dir, name));
+        const data = readJsonFile(join7(dir, name));
         const parsed = data !== null && typeof data === "object" ? data : null;
         if (parsed === null || parsed.version !== 2) {
           if (agentId === void 0) {
@@ -6346,11 +6355,11 @@ function createSnapshotStore(logger2, budgets = DEFAULT_SNAPSHOT_BUDGETS, layout
           }
           continue;
         }
-        const rec = readRecordFile(join6(dir, name), logger2);
+        const rec = readRecordFile(join7(dir, name), logger2);
         if (rec === null) continue;
         if (agentId !== void 0 && rec.agentId !== agentId) continue;
         repos.add(rec.repoRoot);
-        trashFile(join6(dir, name));
+        trashFile(join7(dir, name));
         trashFile(tombstoneFile(rec.sessionId, rec.toolUseId));
         trashFile(layout.objectDir(rec.sessionId, rec.toolUseId));
         trashFile(layout.tempIndexFile(rec.sessionId, rec.toolUseId));
@@ -6363,9 +6372,9 @@ function createSnapshotStore(logger2, budgets = DEFAULT_SNAPSHOT_BUDGETS, layout
         try {
           for (const name of listDir(activityDir(repo))) {
             if (!name.endsWith(".json")) continue;
-            const entry = readActivityEntry(join6(activityDir(repo), name));
+            const entry = readActivityEntry(join7(activityDir(repo), name));
             if (entry !== null && entry.sessionId === sessionId && (agentId === void 0 || entry.agentId === agentId)) {
-              trashFile(join6(activityDir(repo), name));
+              trashFile(join7(activityDir(repo), name));
               activityRemoved += 1;
             }
           }
@@ -6400,7 +6409,7 @@ function activityEntriesCovering(repoRoot, path, windowStart, now, budgets) {
   const out = [];
   for (const name of listDir(activityDir(repoRoot))) {
     if (!name.endsWith(".json")) continue;
-    const file = join6(activityDir(repoRoot), name);
+    const file = join7(activityDir(repoRoot), name);
     let mtimeMs;
     try {
       mtimeMs = statSync6(file).mtimeMs;
@@ -6450,7 +6459,7 @@ function resolveSnapshotBudgets(repoRoot) {
 function readSnapshotConfig(repoRoot) {
   const values = /* @__PURE__ */ new Map();
   try {
-    const out = execFileSync6("git", ["-C", repoRoot, "config", "--get-regexp", "^git-span\\.snapshot[-.]"], {
+    const out = execFileSync7("git", ["-C", repoRoot, "config", "--get-regexp", "^git-span\\.snapshot[-.]"], {
       stdio: ["ignore", "pipe", "ignore"],
       encoding: "utf8"
     });
@@ -6475,7 +6484,7 @@ var AMBIENT_GIT_LOCATION_VARS = [
 var defaultGitRunner = (args, opts) => {
   const ambient = { ...process.env };
   for (const key of AMBIENT_GIT_LOCATION_VARS) delete ambient[key];
-  return execFileSync6("git", args, {
+  return execFileSync7("git", args, {
     cwd: opts.cwd,
     env: opts.env === void 0 ? ambient : { ...ambient, ...opts.env },
     // execFileSync rejects non-integer timeouts, and a fractional
@@ -6511,8 +6520,8 @@ function capturePreSnapshot(opts) {
   const objectDir = layout.objectDir(opts.sessionId, opts.toolUseId);
   const indexFile2 = layout.tempIndexFile(opts.sessionId, opts.toolUseId);
   const removeArtifacts = () => {
-    rmSync3(objectDir, { recursive: true, force: true });
-    rmSync3(indexFile2, { force: true });
+    rmSync4(objectDir, { recursive: true, force: true });
+    rmSync4(indexFile2, { force: true });
   };
   const gitPaths = resolveGitPaths(opts.repoRoot, runGit);
   if (gitPaths === null) return null;
@@ -6556,8 +6565,8 @@ ${indentBlockBody(
 </git-span-error>`;
 function shouldSurfaceRecordlessNote(sessionId, logger2, layout) {
   try {
-    mkdirSync6(layout.dir(sessionId), { recursive: true, mode: 448 });
-    writeFileSync4(layout.recordlessNoteFile(sessionId), "", { flag: "wx" });
+    mkdirSync7(layout.dir(sessionId), { recursive: true, mode: 448 });
+    writeFileSync5(layout.recordlessNoteFile(sessionId), "", { flag: "wx" });
     return true;
   } catch (err) {
     if (err.code === "EEXIST") return false;
@@ -6571,7 +6580,7 @@ function readSiblingRecord(layout, sessionId, toolUseId, cache) {
   if (cached !== void 0) return cached;
   let record = null;
   try {
-    const raw = JSON.parse(readFileSync7(layout.recordFile(sessionId, toolUseId), "utf8"));
+    const raw = JSON.parse(readFileSync8(layout.recordFile(sessionId, toolUseId), "utf8"));
     if (raw !== null && typeof raw === "object") {
       record = raw.version === 2 ? raw : "incompatible";
     }
@@ -6584,7 +6593,7 @@ function readSiblingRecord(layout, sessionId, toolUseId, cache) {
 function appendRecordGap(layout, sessionId, toolUseId, gaps, logger2) {
   try {
     const file = layout.recordFile(sessionId, toolUseId);
-    const raw = JSON.parse(readFileSync7(file, "utf8"));
+    const raw = JSON.parse(readFileSync8(file, "utf8"));
     if (raw === null || typeof raw !== "object" || raw.version !== 2) return;
     const rec = raw;
     let changed = false;
@@ -6661,7 +6670,7 @@ function unfinishedEntryCovering(repoRoot, path, now, budgets) {
   const earliest = now - budgets.unfinishedEntryTtlMs;
   let dir;
   try {
-    dir = join7(queueRoot(repoRoot), "activity-log");
+    dir = join8(queueRoot(repoRoot), "activity-log");
   } catch {
     return null;
   }
@@ -6673,7 +6682,7 @@ function unfinishedEntryCovering(repoRoot, path, now, budgets) {
   }
   for (const name of names) {
     if (!name.endsWith(".json")) continue;
-    const file = join7(dir, name);
+    const file = join8(dir, name);
     let mtimeMs;
     try {
       mtimeMs = statSync7(file).mtimeMs;
@@ -6683,7 +6692,7 @@ function unfinishedEntryCovering(repoRoot, path, now, budgets) {
     if (mtimeMs < earliest || mtimeMs > now + 1) continue;
     let entry;
     try {
-      entry = JSON.parse(readFileSync7(file, "utf8"));
+      entry = JSON.parse(readFileSync8(file, "utf8"));
     } catch {
       continue;
     }
@@ -6823,12 +6832,12 @@ ${indentBlockBody(
       logger2.info?.(`git-span absorbed-double: ${path} attributed (interleaved edit absorbed)`);
     }
     if (attribution.kind === "rename") {
-      scopes.push({ filePath: join7(repoRoot, attribution.from), observed: { changed: [], wholeFile: true } });
+      scopes.push({ filePath: join8(repoRoot, attribution.from), observed: { changed: [], wholeFile: true } });
       excludedPaths.add(attribution.from);
       excludedPaths.add(path);
     } else {
       const observed = attribution.kind === "changed" ? attribution.observed : { changed: [], wholeFile: true };
-      scopes.push({ filePath: join7(repoRoot, path), observed });
+      scopes.push({ filePath: join8(repoRoot, path), observed });
       excludedPaths.add(path);
     }
   }
@@ -6939,7 +6948,7 @@ function toTouchInput(toolName, toolInput, sessionId, cwd, filePath) {
 }
 function hashOfFile(absPath) {
   try {
-    return createHash2("sha256").update(readFileSync8(absPath)).digest("hex");
+    return createHash2("sha256").update(readFileSync9(absPath)).digest("hex");
   } catch {
     return null;
   }

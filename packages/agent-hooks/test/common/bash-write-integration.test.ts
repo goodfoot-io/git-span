@@ -355,6 +355,62 @@ describe('layered substitution range integration', () => {
 
     expect(cap.fixPaths).toEqual([]);
   });
+
+  it('runs a literal Python replace and drives its recovered line touch', async () => {
+    repo = freshRepo();
+    const before = 'alpha\nbeta\nomega\n';
+    seedTrackedSpan(repo.root, 'f.txt', before, 'f-lines');
+    const fullPath = join(repo.root, 'f.txt');
+    const command =
+      "python3 -c \"from pathlib import Path; p=Path('f.txt'); s=p.read_text(); p.write_text(s.replace('beta','BETA'))\"";
+    const parsed = parseCommandLayered(command, {
+      cwd: repo.root,
+      readPreState: (absolutePath) => (absolutePath === fullPath ? before : null)
+    });
+
+    expect(bashRun(command, repo.root)).toBe(0);
+    const cap = makeCaptureExecutors();
+    await runBashTouches(
+      parsed.resolved.map(({ span }): SpanMatch => ({ status: 'resolved', idiom: 'sed-inplace', span })),
+      SESSION_ID,
+      repo.root,
+      { exit_code: 0 },
+      cap.executors,
+      createMemoryMemoStore()
+    );
+
+    expect(parsed.unresolved).toEqual([]);
+    expect(parsed.resolved.map(({ span }) => [span.lineStart, span.lineEnd])).toEqual([[2, 2]]);
+    expect(lineDiff(splitLines(before), splitLines(readRel(repo.root, 'f.txt'))).changed).toEqual([2]);
+    expect(cap.fixPaths).toEqual([fullPath]);
+  });
+
+  it('suppresses failed Python attribution when the decisive post-state evidence mismatches', async () => {
+    repo = freshRepo();
+    const before = 'alpha\nbeta\nomega\n';
+    seedTrackedSpan(repo.root, 'f.txt', before, 'f-lines');
+    const fullPath = join(repo.root, 'f.txt');
+    const parsed = parseCommandLayered(
+      "python3 -c \"from pathlib import Path; p=Path('f.txt'); s=p.read_text(); p.write_text(s.replace('beta','BETA'))\"",
+      {
+        cwd: repo.root,
+        readPreState: (absolutePath) => (absolutePath === fullPath ? before : null)
+      }
+    );
+    writeRel(repo.root, 'f.txt', 'unexpected\n');
+    const cap = makeCaptureExecutors();
+
+    await runBashTouches(
+      parsed.resolved.map(({ span }): SpanMatch => ({ status: 'resolved', idiom: 'sed-inplace', span })),
+      SESSION_ID,
+      repo.root,
+      { exit_code: 1 },
+      cap.executors,
+      createMemoryMemoStore()
+    );
+
+    expect(cap.fixPaths).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------
