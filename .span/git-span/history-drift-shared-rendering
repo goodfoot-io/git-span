@@ -1,5 +1,6 @@
 packages/git-span/src/cli/drift_output.rs#L1733-L1796 rk64:1098504ab103f17d
 packages/git-span/src/cli/drift_output.rs#L1822-L1885 rk64:1098504ab103f17d
+packages/git-span/src/cli/drift_output.rs#L1860-L1923 rk64:1098504ab103f17d
 packages/git-span/src/cli/history.rs#L1731-L2000 rk64:aff8e1140a2e5313
 packages/git-span/src/git.rs#L1187-L1229 rk64:1f027fadf4e20366
 

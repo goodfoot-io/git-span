@@ -1079,6 +1079,18 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
                 let updated = fr.anchors_updated;
                 let removed = fr.anchors_removed;
                 let total = updated + removed;
+                // A collapse books in neither counter by design (see
+                // `FixResult::identities_collapsed`), so without its own
+                // clause a `--fix` run that destroyed records printed
+                // "Updated 0 anchors (0 updated, 0 removed)" two lines after
+                // announcing the collapse — the run's own accounting denying
+                // work it had just done.
+                let collapse_clause = collapse_summary_clause(&fr.identities_collapsed);
+                let unverified_collapses = fr
+                    .identities_collapsed
+                    .iter()
+                    .filter(|c| c.agreed_hash.is_none())
+                    .count();
                 if drift_count > 0 {
                     // "run git span drift again" is advice only while some
                     // remaining drift could actually change on a re-run. When
@@ -1093,6 +1105,7 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
                         if total == 1 { "anchor" } else { "anchors" },
                         updated,
                         removed,
+                        collapse,
                         drifted_anchor_count,
                         if drifted_anchor_count == 1 {
                             "anchor remains"
@@ -1131,16 +1144,24 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
                         if names.len() == 1 { "was" } else { "were" },
                         names.join(", "),
                     );
-                } else if total > 0 {
+                } else if total > 0 || collapse_clause.is_some() {
+                    // A collapse-only pass reaches here with `total == 0`. It
+                    // still wrote the span file and still destroyed records,
+                    // so printing nothing (the old behavior) reported a no-op
+                    // over a span the command had just rewritten.
                     let spans = fr.spans_touched;
+                    let collapse = collapse_clause
+                        .map(|c| format!("; {c}"))
+                        .unwrap_or_default();
                     println!(
-                        "Reconciled {} {}, {} {} ({} updated, {} removed).",
+                        "Reconciled {} {}, {} {} ({} updated, {} removed){}.",
                         spans,
                         if spans == 1 { "span" } else { "spans" },
                         total,
                         if total == 1 { "anchor" } else { "anchors" },
                         updated,
                         removed,
+                        collapse,
                     );
                 }
             }
@@ -1358,6 +1379,52 @@ fn splice_named_scope_post_fix(
 // Shared formatting helpers.
 // ---------------------------------------------------------------------------
 
+/// The `--fix` summary's account of the duplicate identities this pass
+/// collapsed, or `None` when it collapsed none.
+///
+/// Reports three quantities because they are genuinely three, and an
+/// operator reading a repair log needs each: how many identities were
+/// duplicated (`collapsed N duplicate identities`), how many records ceased
+/// to exist as a result (`M records dropped` — a group of three collapses to
+/// one and destroys two, so this is not the identity count), and how many of
+/// the survivors carry no verified content (`U unverified`), which is the
+/// subset that will keep reporting drifted until someone settles them. The
+/// unverified tally is omitted rather than printed as zero when every
+/// collapsed group already agreed: that case is a plain deduplication whose
+/// content was never in doubt, and a "0 unverified" would invite the reader
+/// to look for a doubt that does not exist.
+fn collapse_summary_clause(collapsed: &[git_span_core::CollapsedIdentity]) -> Option<String> {
+    if collapsed.is_empty() {
+        return None;
+    }
+    let identities = collapsed.len();
+    // `records_before` is the pre-collapse group size and the post-collapse
+    // size is always exactly one, so each group destroyed `records_before - 1`
+    // records.
+    let dropped: usize = collapsed
+        .iter()
+        .map(|c| c.records_before.saturating_sub(1))
+        .sum();
+    let unverified = collapsed
+        .iter()
+        .filter(|c| c.agreed_hash.is_none())
+        .count();
+    let unverified_clause = if unverified > 0 {
+        format!(", {unverified} unverified")
+    } else {
+        String::new()
+    };
+    Some(format!(
+        "collapsed {identities} duplicate {} ({dropped} {} dropped{unverified_clause})",
+        if identities == 1 {
+            "identity"
+        } else {
+            "identities"
+        },
+        if dropped == 1 { "record" } else { "records" },
+    ))
+}
+
 /// Whether `f.stored_hash` is the duplicate-collapse sentinel — the fixed
 /// rk64 marker [`git_span_core::rk64_unmatched_sentinel`] plants on a
 /// survivor whose content was never verified (plan §3e). Compares against
@@ -1374,6 +1441,67 @@ fn is_collapsed_duplicate_sentinel(f: &Finding) -> bool {
         )
 }
 
+/// The report line for a record carrying the duplicate-collapse sentinel,
+/// composed from the record alone.
+///
+/// This exists as its own function, called from above the status match in
+/// [`describe_finding_lower`], because the marker is a property of the
+/// record and the status is not allowed to decide whether it appears. The
+/// earlier shape asked the question inside the `Changed` arm, which meant a
+/// collapsed survivor whose file was later deleted, sparse-excluded, or
+/// caught mid-merge resolved to some other status and rendered as ordinary
+/// drift — dropping the one fact that distinguishes it, exactly where the
+/// operator most needs it.
+///
+/// The status label is carried through in parentheses for every status
+/// *except* `Changed`. `Changed` is the sentinel's own shadow rather than an
+/// independent finding: every freshness and relocation path is keyed on the
+/// stored hash and the sentinel is chosen precisely so no content matches
+/// it, so a sentinel-bearing record resolves `Changed` at its recorded
+/// address unconditionally. Printing it would dress a tautology up as
+/// evidence about the content. Every other status is a fact about the
+/// repository that the collapse did not cause and the reader cannot infer.
+///
+/// The completion advice splits on whether the operator can answer the
+/// question it asks. `add`-or-`replace` turns on "is the coupled content
+/// still at this address" — which nobody can check in a checkout that
+/// cannot read the file at all, so the unreadable statuses get the step
+/// that makes the file readable instead of a choice that would have to be
+/// guessed. This mirrors the same split `drift --fix` makes when it tracks
+/// a sentinel's position (`drift_fix.rs`), so the two surfaces cannot give
+/// one operator contradictory instructions about one record.
+fn collapsed_duplicate_description(f: &Finding) -> String {
+    let addr = render_path_extent_plain(&f.anchored.path, f.anchored.extent);
+    let status_clause = if f.status == AnchorStatus::Changed {
+        String::new()
+    } else {
+        format!(
+            " ({})",
+            super::drift_label::format_drift_label(
+                &f.status,
+                f.source,
+                f.locus.as_ref(),
+                f.current.is_some(),
+            )
+        )
+    };
+    match &f.status {
+        AnchorStatus::MergeConflict | AnchorStatus::ContentUnavailable(_) => format!(
+            "collapsed duplicate{status_clause} — content is still unverified, \
+             and this checkout cannot read `{addr}` to check whether the \
+             coupled content is still there — clear that condition first, then \
+             re-run `git span drift`"
+        ),
+        _ => format!(
+            "collapsed duplicate{status_clause} — content is still unverified, \
+             and this address is where the records were, not a location \
+             anything has confirmed — run `git span add {addr}` only if the \
+             coupled content still lives there, otherwise `git span replace \
+             {addr} <new-address>` naming where it lives now"
+        ),
+    }
+}
+
 /// Lowercase prose description for use in the unified block-shape suffix.
 ///
 /// Returns strings like:
@@ -1382,6 +1510,12 @@ fn is_collapsed_duplicate_sentinel(f: &Finding) -> bool {
 /// - "moved to new/path#L1-L10"
 /// - "deleted in HEAD (path no longer exists)"
 fn describe_finding_lower(f: &Finding) -> String {
+    // Derived once, from the record, before anything looks at the status:
+    // whether this finding carries the duplicate-collapse sentinel is a fact
+    // about its stored hash and nothing else. See
+    // [`collapsed_duplicate_description`] for why it may not live in an arm.
+    let collapsed = is_collapsed_duplicate_sentinel(f);
+
     let src_phrase = |src: Option<DriftSource>| -> &'static str {
         match src {
             Some(DriftSource::Head) => "in HEAD",
@@ -1392,45 +1526,12 @@ fn describe_finding_lower(f: &Finding) -> String {
     };
 
     let base = match &f.status {
-        AnchorStatus::Changed => {
-            if is_collapsed_duplicate_sentinel(f) {
-                // `Changed` does **not** mean this anchor resolved at its
-                // stored position. For a sentinel, `current == anchored` is
-                // what the resolver reports when it has nothing to track by:
-                // every relocation path is keyed on the stored hash, and the
-                // sentinel is chosen precisely so no content matches it. So
-                // the recorded address is the last place the records agreed
-                // the content was, not a location anything has confirmed —
-                // and a bare `add` there hashes whatever now occupies those
-                // lines and records it as verified, replacing the coupling
-                // with a different one.
-                //
-                // Both completions are correct, for different situations,
-                // and the operator is the one who can tell which: `add` when
-                // the content is still there, `replace` when it moved. Name
-                // the condition that selects each rather than implying the
-                // tool knows. Matches the vocabulary of `drift --fix`'s own
-                // collapse line (`drift_fix.rs`) so the same fact reads the
-                // same way whether an operator sees it during the collapse
-                // or later, cold, from a plain `drift` run.
-                let addr = render_path_extent_plain(&f.anchored.path, f.anchored.extent);
-                format!(
-                    "collapsed duplicate — content is still unverified, and \
-                     this address is where the records were, not a location \
-                     anything has confirmed — run `git span add {addr}` only \
-                     if the coupled content still lives there, otherwise \
-                     `git span replace {addr} <new-address>` naming where it \
-                     lives now"
-                )
-            } else {
-                super::drift_label::format_drift_label(
-                    &f.status,
-                    f.source,
-                    f.locus.as_ref(),
-                    f.current.is_some(),
-                )
-            }
-        }
+        AnchorStatus::Changed => super::drift_label::format_drift_label(
+            &f.status,
+            f.source,
+            f.locus.as_ref(),
+            f.current.is_some(),
+        ),
         AnchorStatus::ResolvedPendingCommit => "resolved, pending commit".to_string(),
         AnchorStatus::Moved => {
             // Relocation provenance is the move itself, not a per-layer
@@ -1500,6 +1601,16 @@ fn describe_finding_lower(f: &Finding) -> String {
             }
         }
         AnchorStatus::Fresh => unreachable!("Fresh anchors have no description"),
+    };
+
+    // The collapse marker replaces whatever the status match produced,
+    // uniformly, for every status. A sentinel-bearing record is never
+    // `Fresh` — the sentinel matches no content by construction — so the
+    // `unreachable!` above is not reachable through this path either.
+    let base = if collapsed {
+        collapsed_duplicate_description(f)
+    } else {
+        base
     };
 
     // When fuzzy successors exist but the status was NOT reclassified as
@@ -1956,6 +2067,19 @@ fn render_porcelain(
                 end_col,
             );
         }
+        // Duplicate-collapse comment line. Porcelain carried no collapse
+        // marker under any status, so a script consuming it could not tell a
+        // collapsed survivor — a record whose content nothing ever verified —
+        // from an ordinary drifted anchor, which is precisely the
+        // invisibility the human and JSON markers exist to remove. Emitted as
+        // a comment line rather than a new column: the row's five (or six)
+        // tab-separated fields are a fixed contract that existing parsers
+        // index positionally, and the `# renamed-to` / `# fuzzy` lines are
+        // already this file's convention for a per-finding qualifier. Like
+        // the JSON field, it is derived from the record, not from the status.
+        if is_collapsed_duplicate_sentinel(f) {
+            println!("# collapsed-duplicate");
+        }
         // Renamed-deletion comment line: the rename target the deleted-locus
         // walk recovered, when the anchor's own orphaning commit's rewrite
         // resolved to a path that's live at HEAD.
@@ -2079,8 +2203,13 @@ fn finding_json(f: &Finding, followed_ids: &HashSet<String>) -> Value {
         None
     };
     let auto_followed = followed_ids.contains(&f.anchor_id);
-    let collapsed_duplicate =
-        f.status == AnchorStatus::Changed && is_collapsed_duplicate_sentinel(f);
+    // Derived from the record's stored hash alone. The `Changed` conjunct
+    // that used to guard this was the same positional bug the human renderer
+    // carried: a collapsed survivor whose file is later deleted or sparse-
+    // excluded resolves to another status, and a consumer keying off this
+    // field saw an ordinary drifted anchor with no way to learn its content
+    // was never verified.
+    let collapsed_duplicate = is_collapsed_duplicate_sentinel(f);
     // Surface all fuzzy successors for operator review, regardless of
     // anchor status. Empty when no fuzzy scan ran or no candidates found.
     let fuzzy_successors_json: Vec<Value> = f

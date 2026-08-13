@@ -1087,6 +1087,198 @@ fn an_agreed_collapse_still_coalesces_with_its_neighbour() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// The summary counters account for the collapse
+//
+// A collapse books in neither `anchors_updated` nor `anchors_removed` — by
+// design, since it is neither a verified re-anchor nor an interior-anchor
+// excision — so a `--fix` run that destroyed a record announced the collapse
+// and then, two lines later, printed `Updated 0 anchors (0 updated, 0
+// removed)`: the run's own accounting denying work it had just done. The
+// advice was the second half of the same problem. "Run git span drift again"
+// is a closed loop for an unverified collapse, whose survivor carries a hash
+// no content can match, so every re-run reports the identical drift forever.
+//
+// Both fixtures below carry a neighbour, in both orientations, and each
+// asserts the resulting record set alongside the line — a counter that reads
+// right over a file that is wrong is the failure this card exists to close.
+// ---------------------------------------------------------------------------
+
+/// A divergent collapse beside a contiguous neighbour, in both orientations.
+/// The counters name the collapse, and the advice names the step that ends
+/// the state rather than the one that repeats it.
+#[test]
+fn the_fix_summary_counts_a_divergent_collapse_and_names_the_step_that_ends_it() -> Result<()> {
+    for (name, dup, neighbour, orientation) in [
+        (
+            "count-after",
+            "file1.txt#L3-L5",
+            "file1.txt#L6-L7",
+            "neighbour after",
+        ),
+        (
+            "count-before",
+            "file1.txt#L3-L5",
+            "file1.txt#L1-L2",
+            "neighbour before",
+        ),
+    ] {
+        // Built locally rather than through `fix_with_contiguous_neighbour`:
+        // that helper leaves its hash-donor span in the corpus, and this test
+        // asserts corpus-wide counters, which the donor's own coalescing
+        // would inflate. The fixture is otherwise identical — a divergent
+        // duplicate beside a contiguous, worktree-fresh neighbour.
+        let repo = TestRepo::seeded()?;
+        repo.span_stdout(["add", "donor", dup])?;
+        repo.span_stdout(["add", "donor", neighbour])?;
+        let donor = span_text(&repo, "donor")?;
+        let real: Vec<String> = anchor_lines(&donor).iter().map(|l| l.to_string()).collect();
+        std::fs::remove_file(span_path(&repo, "donor"))?;
+
+        let mut body = String::new();
+        for line in &real {
+            body.push_str(line);
+            body.push('\n');
+            if line.starts_with(&format!("{dup} ")) {
+                body.push_str(&format!("{dup} rk64:dddddddddddddddd\n"));
+            }
+        }
+        body.push_str("\nwhy: a divergent duplicate beside a contiguous neighbour.\n");
+        commit_span(&repo, name, &body)?;
+
+        let out = repo.run_span(["drift", "--fix"])?;
+        let code = out.status.code();
+        let stdout = stdout_of(&out);
+        let text = span_text(&repo, name)?;
+
+        // The record set first: the line is only worth reading if the file
+        // behind it is what the line claims.
+        let lines = anchor_lines(&text);
+        assert_eq!(
+            lines.len(),
+            2,
+            "{orientation}: three records collapse to two — the survivor and \
+             the untouched neighbour:\n{text}"
+        );
+        assert!(
+            lines.contains(&format!("{dup} {SENTINEL}").as_str()),
+            "{orientation}: the survivor keeps the unverified marker:\n{text}"
+        );
+        assert!(
+            lines.iter().any(|l| l.starts_with(&format!("{neighbour} "))),
+            "{orientation}: the neighbour is untouched:\n{text}"
+        );
+
+        assert!(
+            stdout.contains(
+                "Updated 0 anchors (0 updated, 0 removed); collapsed 1 duplicate identity \
+                 (1 record dropped, 1 unverified); 1 anchor remains drifted"
+            ),
+            "{orientation}: the counters must account for the record the \
+             collapse destroyed instead of reporting a run that did nothing; \
+             stdout:\n{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "an unverified collapse is not cleared by re-running: settle each collapsed \
+                 address named above with `git span add` or `git span replace`, then run \
+                 git span drift again"
+            ),
+            "{orientation}: `run git span drift again` on its own is a closed \
+             loop — the sentinel matches no content, so the same report \
+             returns forever; stdout:\n{stdout}"
+        );
+        assert_eq!(code, Some(1), "{orientation}: stdout:\n{stdout}");
+    }
+    Ok(())
+}
+
+/// A collapse-only pass — an *agreed* duplicate, deduplicated, with a
+/// non-contiguous neighbour so nothing coalesces and both counters stay
+/// zero. This run rewrote the span and destroyed a record, and printed
+/// nothing at all: the old summary fired only when `updated + removed > 0`,
+/// so the one shape where the collapse is the *entire* result was the one
+/// shape it never described.
+///
+/// The unverified tally is absent here rather than reported as zero: an
+/// agreed group's content was never in doubt, and a "0 unverified" would
+/// invite the reader to look for a doubt that does not exist.
+#[test]
+fn the_fix_summary_reports_a_collapse_only_pass_instead_of_staying_silent() -> Result<()> {
+    for (name, dup, neighbour, orientation) in [
+        (
+            "collapse-only-after",
+            "file1.txt#L3-L5",
+            "file1.txt#L9-L10",
+            "neighbour after",
+        ),
+        (
+            "collapse-only-before",
+            "file1.txt#L9-L10",
+            "file1.txt#L1-L2",
+            "neighbour before",
+        ),
+    ] {
+        let repo = TestRepo::seeded()?;
+        repo.span_stdout(["add", "seed", dup])?;
+        repo.span_stdout(["add", "seed", neighbour])?;
+        let seed = span_text(&repo, "seed")?;
+        let dup_line = anchor_lines(&seed)
+            .into_iter()
+            .find(|l| l.starts_with(&format!("{dup} ")))
+            .expect("seeded record")
+            .to_string();
+        let neighbour_line = anchor_lines(&seed)
+            .into_iter()
+            .find(|l| l.starts_with(&format!("{neighbour} ")))
+            .expect("seeded record")
+            .to_string();
+
+        // The duplicate is the *same* line twice: an agreed group, so the
+        // survivor keeps its verified hash and the pass has no re-anchoring
+        // to do. The neighbour is deliberately non-contiguous, so coalescing
+        // finds nothing to merge and both counters stay at zero.
+        let body = format!("{dup_line}\n{dup_line}\n{neighbour_line}\n\nwhy: an agreed pair.\n");
+        commit_span(&repo, name, &body)?;
+
+        let out = repo.run_span(["drift", "--fix"])?;
+        let stdout = stdout_of(&out);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{orientation}: an agreed dedupe manufactures no drift; \
+             stdout:\n{stdout}"
+        );
+
+        let text = span_text(&repo, name)?;
+        let mut lines = anchor_lines(&text);
+        lines.sort_unstable();
+        let mut expected = vec![dup_line.as_str(), neighbour_line.as_str()];
+        expected.sort_unstable();
+        assert_eq!(
+            lines, expected,
+            "{orientation}: the duplicate is gone and both records still \
+             carry their original verified hashes — nothing was rehashed and \
+             nothing was merged:\n{text}"
+        );
+
+        assert!(
+            stdout.contains(
+                "Reconciled 1 span, 0 anchors (0 updated, 0 removed); collapsed 1 duplicate \
+                 identity (1 record dropped)."
+            ),
+            "{orientation}: a pass whose only result is a collapse must still \
+             describe itself; stdout:\n{stdout}"
+        );
+        assert!(
+            !stdout.contains("unverified"),
+            "{orientation}: an agreed group's content was never in doubt; \
+             stdout:\n{stdout}"
+        );
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // A terminal verdict names this anchor's reason, not the default
 // ---------------------------------------------------------------------------
 
