@@ -70,7 +70,7 @@ judgment. Claude and Codex router branches may differ by harness.
 
 - Core recipes and routing: `plugins-{claude,codex}/git-span/skills/git-span/SKILL.md`.
 - Judgment loaded with the core skill: `plugins-{claude,codex}/git-span/agents/expert.md`.
-- Multi-span branch: `plugins-{claude,codex}/git-span/skills/reconcile/SKILL.md`.
+- Multi-span branch: `plugins-{claude,codex}/git-span/skills/reconcile/` — SKILL.md dispatches; `references/reconcile.md` holds the workflow.
 - Cleanup branch: `plugins-{claude,codex}/git-span/skills/git-span/references/why-cleanup-campaign.md`.
 - Deleted-anchor branch: `.../references/terminal-statuses.md`.
 - Why lifecycle caveats: `.../references/command-quirks-and-errors.md`.

@@ -222,7 +222,7 @@ fn head_source_does_not_claim_a_worktree_only_reanchor_was_committed() -> Result
 
     let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let guidance = std::fs::read_to_string(
-        workspace.join("plugins-claude/git-span/skills/reconcile/SKILL.md"),
+        workspace.join("plugins-claude/git-span/skills/reconcile/references/reconcile.md"),
     )?;
     let guidance = guidance.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(

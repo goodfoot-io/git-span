@@ -2,11 +2,13 @@ plugins-claude/git-span/agents/expert.md rk64:92119ed4ab0ea7af
 plugins-claude/git-span/skills/git-span/SKILL.md#L48-L51 rk64:208d10a605282398
 plugins-claude/git-span/skills/git-span/references/triage.md rk64:dca29dcc545e6641
 plugins-claude/git-span/skills/git-span/references/whole-file-and-lfs.md rk64:1aa9958f802dee1e
-plugins-claude/git-span/skills/reconcile/SKILL.md rk64:54cdec2ea7d45bf2
+plugins-claude/git-span/skills/reconcile/SKILL.md rk64:ab9f4446b4925dde
+plugins-claude/git-span/skills/reconcile/references/reconcile.md rk64:b53d6ce4d5404e7f
 plugins-codex/git-span/agents/expert.md rk64:92119ed4ab0ea7af
 plugins-codex/git-span/skills/git-span/SKILL.md#L48-L51 rk64:208d10a605282398
 plugins-codex/git-span/skills/git-span/references/triage.md rk64:dca29dcc545e6641
 plugins-codex/git-span/skills/git-span/references/whole-file-and-lfs.md rk64:1aa9958f802dee1e
-plugins-codex/git-span/skills/reconcile/SKILL.md rk64:deea3413b482ba9a
+plugins-codex/git-span/skills/reconcile/SKILL.md rk64:f4435f16514674d5
+plugins-codex/git-span/skills/reconcile/references/reconcile.md rk64:0c2e2cd2076e8b4f
 
 The Claude plugin tree is the normative source for the expert, triage, whole-file-anchor, and reconcile guidance and the core skill's never-narrow gotcha bullet, and the Codex tree mirrors it; an edit to one side lands identically on the other, harness-specific fork-dispatch sections excepted.
