@@ -16,7 +16,7 @@
  * worktree that reproduces the underlying symlink layout.
  */
 import { execFileSync } from 'node:child_process';
-import { lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -36,6 +36,7 @@ import {
   makeRealBundleRepo,
   type RealBundleRepo,
   runRealShell,
+  WORKSPACE_ROOT,
   writeRepoFile
 } from '../real-bundle-helpers.js';
 import { STATIC_ATTRIBUTION_CORPUS } from './fixtures/static-attribution-corpus.js';
@@ -70,7 +71,42 @@ function groupFor(out: ReturnType<typeof readHooksJson>, event: string, bundle: 
 // exceeds vitest's 5s default, so give the builds real headroom.
 const BUILD_TEST_TIMEOUT_MS = 30_000;
 
+const REMOVED_SOURCE_PATHS = [
+  'packages/agent-hooks/src/common/snapshot-core.ts',
+  'packages/agent-hooks/src/common/snapshot-harness.ts',
+  'packages/agent-hooks/src/common/snapshot-store.ts',
+  'packages/agent-hooks/src/claude/snapshot.ts',
+  'packages/agent-hooks/src/claude/activity-log.ts',
+  'packages/agent-hooks/src/codex/snapshot.ts',
+  'packages/agent-hooks/src/codex/activity-log.ts',
+  'packages/agent-hooks/src/codex/subagent-stop.ts',
+  'packages/agent-hooks/src/mswea/snapshot.ts'
+] as const;
+
+const LEGACY_RUNTIME_MARKERS = [
+  'snapshot-core',
+  'snapshot-harness',
+  'snapshot-store',
+  'snapshot-recordless-note',
+  'snapshot-index',
+  'activity-log',
+  'GIT_SPAN_SNAPSHOT_',
+  'git-span.snapshot-',
+  'ObservedWriteScope'
+] as const;
+
 describe('generated hook bin portability', () => {
+  it('has physically removed every legacy source entrypoint and store', () => {
+    for (const path of REMOVED_SOURCE_PATHS) expect(existsSync(join(WORKSPACE_ROOT, path)), path).toBe(false);
+    const sourceRoot = join(WORKSPACE_ROOT, 'packages/agent-hooks/src');
+    const activeSources = allPaths(sourceRoot).filter((path) => path.endsWith('.ts'));
+    activeSources.push(join(WORKSPACE_ROOT, 'packages/agent-hooks/package.json'));
+    for (const path of activeSources) {
+      const content = readFileSync(path, 'utf8');
+      for (const marker of LEGACY_RUNTIME_MARKERS) expect(content, `${path} contains ${marker}`).not.toContain(marker);
+    }
+  });
+
   it('anchors claude-code-hooks node_modules imports to the short, worktree-independent relative form', {
     timeout: BUILD_TEST_TIMEOUT_MS
   }, () => {
@@ -128,7 +164,7 @@ describe('generated hook bin portability', () => {
         [
           'codex-hooks',
           '-i',
-          'src/codex/{advisor,static-plan,apply-patch-plan,post-tool-use,stop,subagent-stop}.ts',
+          'src/codex/{advisor,static-plan,apply-patch-plan,post-tool-use,stop}.ts',
           '-o',
           join(outDir, 'hooks.json'),
           '--plugin-root'
@@ -151,6 +187,7 @@ describe('generated hook bin portability', () => {
       );
       expect(groupFor(out, 'PreToolUse', 'snapshot.mjs')).toBeNull();
       expect(groupFor(out, 'PreToolUse', 'activity-log.mjs')).toBeNull();
+      expect(out.hooks['SubagentStop']).toBeUndefined();
     } finally {
       rmSync(outDir, { recursive: true, force: true });
     }
@@ -502,6 +539,14 @@ function assertNoLegacyRuntimeArtifacts(repo: RealBundleRepo): void {
   expect(paths.some((path) => lstatSync(path).isSocket())).toBe(false);
 }
 
+function assertNoLegacyBundleCode(dir: string): void {
+  const files = readdirSync(dir).filter((name) => name.endsWith('.mjs') || name === 'hooks.json');
+  for (const name of files) {
+    const content = readFileSync(join(dir, name), 'utf8');
+    for (const marker of LEGACY_RUNTIME_MARKERS) expect(content, `${name} contains ${marker}`).not.toContain(marker);
+  }
+}
+
 describe('mandatory installed-artifact static attribution smoke', () => {
   let bundles: BuiltRealHookBundles;
   let pathDir: string;
@@ -528,13 +573,15 @@ describe('mandatory installed-artifact static attribution smoke', () => {
       'apply-patch-plan.mjs',
       'post-tool-use.mjs',
       'static-plan.mjs',
-      'stop.mjs',
-      'subagent-stop.mjs'
+      'stop.mjs'
     ]);
     for (const names of [emittedBundleNames(bundles.claudeHooksDir), emittedBundleNames(bundles.codexHooksDir)]) {
       expect(names).not.toContain('snapshot.mjs');
       expect(names).not.toContain('activity-log.mjs');
+      expect(names).not.toContain('subagent-stop.mjs');
     }
+    assertNoLegacyBundleCode(bundles.claudeHooksDir);
+    assertNoLegacyBundleCode(bundles.codexHooksDir);
   });
 
   it('executes the emitted Claude tree against the shared static-intent matrix and workspace git-span', {

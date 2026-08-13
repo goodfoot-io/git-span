@@ -55,7 +55,7 @@ import { createHandler as createClaudeHandler } from '../../src/claude/post-tool
 import { createHandler as createClaudePlanHandler } from '../../src/claude/static-plan.js';
 import { createHandler as createCodexHandler } from '../../src/codex/post-tool-use.js';
 import { createHandler as createCodexPlanHandler } from '../../src/codex/static-plan.js';
-import type { DriftPorcelainRow, PorcelainRow } from '../../src/common/agent-hooks-common.js';
+import { createSessionLayout, type DriftPorcelainRow, type PorcelainRow } from '../../src/common/agent-hooks-common.js';
 import { runBashTouches } from '../../src/common/bash-touch.js';
 import { parseCommandDetailed, type ResolvedSpan, type SpanMatch } from '../../src/common/parse-command.js';
 import type { MemoStore } from '../../src/common/span-surface.js';
@@ -1876,75 +1876,76 @@ describe('bounded planned-touch store contract (bootstrap)', () => {
     };
   }
 
-  it('atomically stores a content-minimal record and consumes it once', () => {
-    const baseDir = mkdtempSync(join(tmpdir(), 'planned-touch-'));
-    try {
-      const store = createPlannedTouchStore(baseDir, budgets);
-      const record = plannedRecord('/repo');
-      store.put(record);
+  function storeFixture(customBudgets: PlannedTouchBudgets = budgets) {
+    const parent = mkdtempSync(join(tmpdir(), 'planned-touch-'));
+    const storeLayout = createSessionLayout(join(parent, 'session'));
+    return { parent, layout: storeLayout, store: createPlannedTouchStore(storeLayout, customBudgets) };
+  }
 
-      expect(store.consume(record.sessionId, record.toolUseId)).toEqual(record);
-      expect(store.consume(record.sessionId, record.toolUseId)).toBeNull();
+  it('atomically stores a content-minimal record and consumes it once', () => {
+    const fixture = storeFixture();
+    try {
+      const record = plannedRecord('/repo');
+      fixture.store.put(record);
+
+      expect(fixture.store.consume(record.sessionId, record.toolUseId)).toEqual(record);
+      expect(fixture.store.consume(record.sessionId, record.toolUseId)).toBeNull();
     } finally {
-      rmSync(baseDir, { recursive: true, force: true });
+      rmSync(fixture.parent, { recursive: true, force: true });
     }
   });
 
   it('discard is idempotent for failure and interruption cleanup', () => {
-    const baseDir = mkdtempSync(join(tmpdir(), 'planned-touch-'));
+    const fixture = storeFixture();
     try {
-      const store = createPlannedTouchStore(baseDir, budgets);
       const record = plannedRecord('/repo');
-      store.put(record);
-      store.discard(record.sessionId, record.toolUseId);
-      store.discard(record.sessionId, record.toolUseId);
+      fixture.store.put(record);
+      fixture.store.discard(record.sessionId, record.toolUseId);
+      fixture.store.discard(record.sessionId, record.toolUseId);
 
-      expect(store.consume(record.sessionId, record.toolUseId)).toBeNull();
+      expect(fixture.store.consume(record.sessionId, record.toolUseId)).toBeNull();
     } finally {
-      rmSync(baseDir, { recursive: true, force: true });
+      rmSync(fixture.parent, { recursive: true, force: true });
     }
   });
 
   it('rejects an over-budget record without replacing a valid pending plan', () => {
-    const baseDir = mkdtempSync(join(tmpdir(), 'planned-touch-'));
+    const fixture = storeFixture({ ...budgets, maxTouchesPerRecord: 1 });
     try {
-      const store = createPlannedTouchStore(baseDir, { ...budgets, maxTouchesPerRecord: 1 });
       const record = plannedRecord('/repo');
-      store.put(record);
+      fixture.store.put(record);
       const oversized: PlannedTouchRecord = { ...record, touches: [...record.touches, ...record.touches] };
 
-      expect(() => store.put(oversized)).toThrow();
-      expect(store.consume(record.sessionId, record.toolUseId)).toEqual(record);
+      expect(() => fixture.store.put(oversized)).toThrow();
+      expect(fixture.store.consume(record.sessionId, record.toolUseId)).toEqual(record);
     } finally {
-      rmSync(baseDir, { recursive: true, force: true });
+      rmSync(fixture.parent, { recursive: true, force: true });
     }
   });
 
   it('persists only the declared content-minimal fields', () => {
-    const baseDir = mkdtempSync(join(tmpdir(), 'planned-touch-'));
+    const fixture = storeFixture();
     try {
-      const store = createPlannedTouchStore(baseDir, budgets);
       const record = plannedRecord('/repo');
       const withBody = {
         ...record,
         fileBody: 'must never be stored',
         touches: [{ ...record.touches[0], preStateBody: 'also forbidden' }]
       } as unknown as PlannedTouchRecord;
-      store.put(withBody);
+      fixture.store.put(withBody);
 
-      const encoded = readFileSync(join(baseDir, SESSION_ID, 'planned-touches', 'tool-static-plan.json'), 'utf8');
+      const encoded = readFileSync(fixture.layout.plannedTouchRecordFile(SESSION_ID, 'tool-static-plan'), 'utf8');
       expect(encoded).not.toContain('must never be stored');
       expect(encoded).not.toContain('also forbidden');
-      expect(store.consume(record.sessionId, record.toolUseId)).toEqual(record);
+      expect(fixture.store.consume(record.sessionId, record.toolUseId)).toEqual(record);
     } finally {
-      rmSync(baseDir, { recursive: true, force: true });
+      rmSync(fixture.parent, { recursive: true, force: true });
     }
   });
 
   it('rejects repository traversal and oversized evidence before writing', () => {
-    const baseDir = mkdtempSync(join(tmpdir(), 'planned-touch-'));
+    const fixture = storeFixture({ ...budgets, maxEvidenceBytes: 8 });
     try {
-      const store = createPlannedTouchStore(baseDir, { ...budgets, maxEvidenceBytes: 8 });
       const record = plannedRecord('/repo');
       const traversal: PlannedTouchRecord = {
         ...record,
@@ -1955,11 +1956,11 @@ describe('bounded planned-touch store contract (bootstrap)', () => {
         touches: [{ ...record.touches[0], evidence: { kind: 'anchor', literal: 'a long anchor', line: 3 } }]
       };
 
-      expect(() => store.put(traversal)).toThrow();
-      expect(() => store.put(oversizedEvidence)).toThrow();
-      expect(store.consume(record.sessionId, record.toolUseId)).toBeNull();
+      expect(() => fixture.store.put(traversal)).toThrow();
+      expect(() => fixture.store.put(oversizedEvidence)).toThrow();
+      expect(fixture.store.consume(record.sessionId, record.toolUseId)).toBeNull();
     } finally {
-      rmSync(baseDir, { recursive: true, force: true });
+      rmSync(fixture.parent, { recursive: true, force: true });
     }
   });
 });

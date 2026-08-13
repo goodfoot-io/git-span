@@ -39,7 +39,7 @@ export function buildRealHookBundles(): BuiltRealHookBundles {
       [
         'codex-hooks',
         '-i',
-        'src/codex/{advisor,static-plan,apply-patch-plan,post-tool-use,stop,subagent-stop}.ts',
+        'src/codex/{advisor,static-plan,apply-patch-plan,post-tool-use,stop}.ts',
         '-o',
         join(codexRoot, 'hooks.json'),
         '--plugin-root',

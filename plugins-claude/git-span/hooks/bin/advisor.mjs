@@ -760,41 +760,18 @@ function sanitizeSessionId(sessionId) {
     return `%${ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`;
   });
 }
-var SNAPSHOTS_DIR = "snapshots";
-var TOMBSTONE_SUFFIX = ".tombstone.json";
-var OBJECT_DIR_SUFFIX = ".objects";
-var TEMP_INDEX_SUFFIX = ".index";
-var RECORD_SUFFIX = ".json";
 function createSessionLayout(base) {
   const dir = (sessionId) => nodePath3.join(base, sanitizeSessionId(sessionId));
-  const snapshotsDir = (sessionId) => nodePath3.join(dir(sessionId), SNAPSHOTS_DIR);
-  const callFile = (sessionId, toolUseId, suffix) => nodePath3.join(snapshotsDir(sessionId), `${sanitizeSessionId(toolUseId)}${suffix}`);
-  const isTombstoneName = (name) => name.endsWith(TOMBSTONE_SUFFIX);
+  const plannedTouchesDir = (sessionId) => nodePath3.join(dir(sessionId), "planned-touches");
+  const plannedTouchFile = (sessionId, toolUseId, suffix) => nodePath3.join(plannedTouchesDir(sessionId), `${sanitizeSessionId(toolUseId)}${suffix}`);
   return Object.freeze({
     base,
     trashDir: nodePath3.join(nodePath3.dirname(base), "session-trash"),
     dir,
-    snapshotsDir,
-    recordFile: (sessionId, toolUseId) => callFile(sessionId, toolUseId, RECORD_SUFFIX),
-    objectDir: (sessionId, toolUseId) => callFile(sessionId, toolUseId, OBJECT_DIR_SUFFIX),
-    tempIndexFile: (sessionId, toolUseId) => callFile(sessionId, toolUseId, TEMP_INDEX_SUFFIX),
-    tombstoneFile: (sessionId, toolUseId) => callFile(sessionId, toolUseId, TOMBSTONE_SUFFIX),
     memoFile: (sessionId) => nodePath3.join(dir(sessionId), "touch-memo.json"),
-    recordlessNoteFile: (sessionId) => nodePath3.join(dir(sessionId), "snapshot-recordless-note"),
-    isTombstoneName,
-    isRecordName: (name) => name.endsWith(RECORD_SUFFIX) && !isTombstoneName(name),
-    callStem: (name) => {
-      for (const suffix of [TOMBSTONE_SUFFIX, RECORD_SUFFIX, OBJECT_DIR_SUFFIX, TEMP_INDEX_SUFFIX]) {
-        if (name.endsWith(suffix)) return name.slice(0, -suffix.length);
-      }
-      return null;
-    },
-    callFiles: (snapshots, stem) => ({
-      record: nodePath3.join(snapshots, `${stem}${RECORD_SUFFIX}`),
-      tombstone: nodePath3.join(snapshots, `${stem}${TOMBSTONE_SUFFIX}`),
-      objectDir: nodePath3.join(snapshots, `${stem}${OBJECT_DIR_SUFFIX}`),
-      tempIndexFile: nodePath3.join(snapshots, `${stem}${TEMP_INDEX_SUFFIX}`)
-    })
+    plannedTouchesDir,
+    plannedTouchRecordFile: (sessionId, toolUseId) => plannedTouchFile(sessionId, toolUseId, ".json"),
+    plannedTouchConsumedFile: (sessionId, toolUseId) => plannedTouchFile(sessionId, toolUseId, ".consumed")
   });
 }
 var DEFAULT_SESSION_LAYOUT = createSessionLayout(

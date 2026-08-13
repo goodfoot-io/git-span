@@ -2,21 +2,21 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash|shell|exec|local_shell|exec_command",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/hooks/static-plan.mjs\"",
-            "timeout": 10
-          }
-        ]
-      },
-      {
         "matcher": "Bash|shell|exec|local_shell",
         "hooks": [
           {
             "type": "command",
             "command": "node \"${PLUGIN_ROOT}/hooks/advisor.mjs\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|shell|exec|local_shell|exec_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/hooks/static-plan.mjs\"",
             "timeout": 10
           }
         ]
@@ -50,17 +50,6 @@
           {
             "type": "command",
             "command": "node \"${PLUGIN_ROOT}/hooks/stop.mjs\"",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
-    "SubagentStop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"${PLUGIN_ROOT}/hooks/subagent-stop.mjs\"",
             "timeout": 10
           }
         ]

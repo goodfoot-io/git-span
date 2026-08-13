@@ -437,41 +437,18 @@ function sanitizeSessionId(sessionId) {
     return `%${ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`;
   });
 }
-var SNAPSHOTS_DIR = "snapshots";
-var TOMBSTONE_SUFFIX = ".tombstone.json";
-var OBJECT_DIR_SUFFIX = ".objects";
-var TEMP_INDEX_SUFFIX = ".index";
-var RECORD_SUFFIX = ".json";
 function createSessionLayout(base) {
   const dir = (sessionId) => nodePath.join(base, sanitizeSessionId(sessionId));
-  const snapshotsDir = (sessionId) => nodePath.join(dir(sessionId), SNAPSHOTS_DIR);
-  const callFile = (sessionId, toolUseId, suffix) => nodePath.join(snapshotsDir(sessionId), `${sanitizeSessionId(toolUseId)}${suffix}`);
-  const isTombstoneName = (name) => name.endsWith(TOMBSTONE_SUFFIX);
+  const plannedTouchesDir = (sessionId) => nodePath.join(dir(sessionId), "planned-touches");
+  const plannedTouchFile = (sessionId, toolUseId, suffix) => nodePath.join(plannedTouchesDir(sessionId), `${sanitizeSessionId(toolUseId)}${suffix}`);
   return Object.freeze({
     base,
     trashDir: nodePath.join(nodePath.dirname(base), "session-trash"),
     dir,
-    snapshotsDir,
-    recordFile: (sessionId, toolUseId) => callFile(sessionId, toolUseId, RECORD_SUFFIX),
-    objectDir: (sessionId, toolUseId) => callFile(sessionId, toolUseId, OBJECT_DIR_SUFFIX),
-    tempIndexFile: (sessionId, toolUseId) => callFile(sessionId, toolUseId, TEMP_INDEX_SUFFIX),
-    tombstoneFile: (sessionId, toolUseId) => callFile(sessionId, toolUseId, TOMBSTONE_SUFFIX),
     memoFile: (sessionId) => nodePath.join(dir(sessionId), "touch-memo.json"),
-    recordlessNoteFile: (sessionId) => nodePath.join(dir(sessionId), "snapshot-recordless-note"),
-    isTombstoneName,
-    isRecordName: (name) => name.endsWith(RECORD_SUFFIX) && !isTombstoneName(name),
-    callStem: (name) => {
-      for (const suffix of [TOMBSTONE_SUFFIX, RECORD_SUFFIX, OBJECT_DIR_SUFFIX, TEMP_INDEX_SUFFIX]) {
-        if (name.endsWith(suffix)) return name.slice(0, -suffix.length);
-      }
-      return null;
-    },
-    callFiles: (snapshots, stem) => ({
-      record: nodePath.join(snapshots, `${stem}${RECORD_SUFFIX}`),
-      tombstone: nodePath.join(snapshots, `${stem}${TOMBSTONE_SUFFIX}`),
-      objectDir: nodePath.join(snapshots, `${stem}${OBJECT_DIR_SUFFIX}`),
-      tempIndexFile: nodePath.join(snapshots, `${stem}${TEMP_INDEX_SUFFIX}`)
-    })
+    plannedTouchesDir,
+    plannedTouchRecordFile: (sessionId, toolUseId) => plannedTouchFile(sessionId, toolUseId, ".json"),
+    plannedTouchConsumedFile: (sessionId, toolUseId) => plannedTouchFile(sessionId, toolUseId, ".consumed")
   });
 }
 var DEFAULT_SESSION_LAYOUT = createSessionLayout(
@@ -5287,24 +5264,22 @@ var DEFAULT_PLANNED_TOUCH_BUDGETS = Object.freeze({
   maxEvidenceBytes: 16 * 1024,
   maxRecordBytes: 64 * 1024
 });
-function createPlannedTouchStore(baseDir, budgets) {
+function createPlannedTouchStore(layout, budgets) {
   validateBudgets(budgets);
-  if (baseDir.length === 0) throw new Error("planned-touch base directory must not be empty");
+  if (layout.base.length === 0) throw new Error("planned-touch base directory must not be empty");
   const recordPaths = (sessionId, toolUseId) => {
     if (sessionId.length === 0 || toolUseId.length === 0) {
       throw new Error("planned-touch session and tool-use ids must not be empty");
     }
-    const dir = nodePath4.join(baseDir, sanitizeSessionId(sessionId), "planned-touches");
-    const stem = sanitizeSessionId(toolUseId);
     return {
-      dir,
-      record: nodePath4.join(dir, `${stem}.json`),
-      consumed: nodePath4.join(dir, `${stem}.consumed`)
+      dir: layout.plannedTouchesDir(sessionId),
+      record: layout.plannedTouchRecordFile(sessionId, toolUseId),
+      consumed: layout.plannedTouchConsumedFile(sessionId, toolUseId)
     };
   };
   const makeRestrictiveDir = (dir) => {
     fs4.mkdirSync(dir, { recursive: true, mode: 448 });
-    fs4.chmodSync(baseDir, 448);
+    fs4.chmodSync(layout.base, 448);
     fs4.chmodSync(nodePath4.dirname(dir), 448);
     fs4.chmodSync(dir, 448);
   };
@@ -5318,6 +5293,7 @@ function createPlannedTouchStore(baseDir, budgets) {
     }
   };
   const take = (sessionId, toolUseId) => {
+    pruneStaleSessions(layout);
     const paths = recordPaths(sessionId, toolUseId);
     makeRestrictiveDir(paths.dir);
     if (!claim(paths.consumed)) return { status: "consumed" };
@@ -5339,6 +5315,7 @@ function createPlannedTouchStore(baseDir, budgets) {
   };
   return {
     put(record) {
+      pruneStaleSessions(layout);
       const normalized = normalizePlannedTouchRecord(record, budgets);
       const paths = recordPaths(normalized.sessionId, normalized.toolUseId);
       makeRestrictiveDir(paths.dir);
@@ -5365,6 +5342,7 @@ function createPlannedTouchStore(baseDir, budgets) {
     },
     take,
     discard(sessionId, toolUseId) {
+      pruneStaleSessions(layout);
       const paths = recordPaths(sessionId, toolUseId);
       makeRestrictiveDir(paths.dir);
       claim(paths.consumed);
@@ -6036,7 +6014,7 @@ function recoverReadRange(offset, limit, filePath) {
 function onTouchedFile(row, filePath) {
   return filePath === row.path || filePath.endsWith(`/${row.path}`);
 }
-async function computeSurfaceParts(input, executors, memo, range, driftRows) {
+async function computeSurfaceParts(input, executors, memo, range) {
   const covering = await executors.list(input.filePath, input.cwd);
   if (covering.length === 0) return null;
   const anchorsByName = /* @__PURE__ */ new Map();
@@ -6050,7 +6028,7 @@ async function computeSurfaceParts(input, executors, memo, range, driftRows) {
   );
   if (touchedNames.length === 0) return null;
   const driftByName = /* @__PURE__ */ new Map();
-  for (const row of driftRows ?? await executors.drift([input.filePath], input.cwd)) {
+  for (const row of await executors.drift([input.filePath], input.cwd)) {
     const rows = driftByName.get(row.name) ?? [];
     rows.push(row);
     driftByName.set(row.name, rows);
@@ -6085,43 +6063,12 @@ async function computeSurface(input, executors, memo, range) {
   if (parts === null) return null;
   return buildBlock(parts.sections, parts.header, parts.footer);
 }
-async function runTouchHook(input, executors, memo, probeCache, scopes) {
-  if (input.kind === "write" && input.observed !== void 0 && input.written.length > 0) {
-    throw new Error("touch write carries both written and observed: exactly one must be set");
-  }
-  if (scopes !== void 0 && scopes.length > 0) {
-    let treeModified2 = false;
-    try {
-      for (const scope of scopes) {
-        const fix = await executors.fix(scope.filePath, input.cwd);
-        treeModified2 = treeModified2 || fix.modified;
-      }
-      const driftRows = await executors.drift([], input.cwd);
-      const sections = [];
-      let header = null;
-      let footer = null;
-      for (const scope of scopes) {
-        const scopeInput = { ...input, filePath: scope.filePath };
-        const range = scope.observed.wholeFile ? "whole-file" : scope.observed.changed;
-        const parts = await computeSurfaceParts(scopeInput, executors, memo, range, driftRows);
-        if (parts === null) continue;
-        if (header === null) {
-          header = parts.header;
-          footer = parts.footer;
-        }
-        sections.push(...parts.sections);
-      }
-      if (sections.length === 0) return { additionalContext: null, treeModified: treeModified2 };
-      return { additionalContext: buildBlock(sections, header, footer), treeModified: treeModified2 };
-    } catch {
-      return { additionalContext: null, treeModified: treeModified2 };
-    }
-  }
+async function runTouchHook(input, executors, memo, probeCache) {
   let treeModified = false;
   try {
     let range = "whole-file";
     if (input.kind === "write") {
-      if (input.observed === void 0 && input.targetState !== void 0) {
+      if (input.targetState !== void 0) {
         const probe = probeCache ?? createRealityProbeCache(input.targetState === "absent" ? [input.filePath] : []);
         const outcome = evaluateWriteGate(input, probe);
         if (outcome === "decisiveFail" || outcome === "inconclusive" && input.targetState === "absent") {
@@ -6132,8 +6079,6 @@ async function runTouchHook(input, executors, memo, probeCache, scopes) {
       treeModified = fix.modified;
       if (input.range !== void 0) {
         range = [input.range];
-      } else if (input.observed !== void 0) {
-        range = input.observed.wholeFile ? "whole-file" : input.observed.changed;
       } else {
         const recovered = recoverRangeFromDisk(input.written, input.filePath);
         range = recovered === "whole-file" ? "whole-file" : [recovered];
@@ -6154,7 +6099,7 @@ function repoRelArg(filePath, cwd) {
   if (!repoRoot) return null;
   return { repoRoot, relPath: relativeToRepo(repoRoot, filePath) };
 }
-function spanStatusSnapshot(repoRoot) {
+function readSpanStatus(repoRoot) {
   const spanRoot = resolveSpanRoot(repoRoot);
   try {
     return execFileSync5("git", ["-C", repoRoot, "status", "--porcelain", "--", spanRoot], {
@@ -6171,7 +6116,7 @@ function createDefaultTouchExecutors(timeoutMs = DEFAULT_TIMEOUT_MS) {
     fix: async (filePath, cwd) => {
       const resolved = repoRelArg(filePath, cwd);
       if (!resolved) return { modified: false };
-      const before = spanStatusSnapshot(resolved.repoRoot);
+      const before = readSpanStatus(resolved.repoRoot);
       try {
         execFileSync5("git", ["span", "drift", resolved.relPath, "--fix"], {
           cwd: resolved.repoRoot,
@@ -6182,7 +6127,7 @@ function createDefaultTouchExecutors(timeoutMs = DEFAULT_TIMEOUT_MS) {
       } catch (err) {
         void err;
       }
-      const after = spanStatusSnapshot(resolved.repoRoot);
+      const after = readSpanStatus(resolved.repoRoot);
       return { modified: before !== after };
     },
     list: async (filePath, cwd) => {
@@ -7308,7 +7253,7 @@ function normalizeBashResponse(toolResponse) {
   return null;
 }
 function createDefaultPlannedTouchStore(layout) {
-  return createPlannedTouchStore(layout.base, DEFAULT_PLANNED_TOUCH_BUDGETS);
+  return createPlannedTouchStore(layout, DEFAULT_PLANNED_TOUCH_BUDGETS);
 }
 function readText(path) {
   try {

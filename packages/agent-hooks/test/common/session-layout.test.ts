@@ -34,72 +34,25 @@ describe('DEFAULT_SESSION_LAYOUT', () => {
 describe('createSessionLayout paths', () => {
   it('derives every session-scoped path from the base', () => {
     expect(layout.dir('s')).toBe(`${BASE}/s`);
-    expect(layout.snapshotsDir('s')).toBe(`${BASE}/s/snapshots`);
-    expect(layout.recordFile('s', 't')).toBe(`${BASE}/s/snapshots/t.json`);
-    expect(layout.objectDir('s', 't')).toBe(`${BASE}/s/snapshots/t.objects`);
-    expect(layout.tempIndexFile('s', 't')).toBe(`${BASE}/s/snapshots/t.index`);
-    expect(layout.tombstoneFile('s', 't')).toBe(`${BASE}/s/snapshots/t.tombstone.json`);
     expect(layout.memoFile('s')).toBe(`${BASE}/s/touch-memo.json`);
-    expect(layout.recordlessNoteFile('s')).toBe(`${BASE}/s/snapshot-recordless-note`);
+    expect(layout.plannedTouchesDir('s')).toBe(`${BASE}/s/planned-touches`);
+    expect(layout.plannedTouchRecordFile('s', 't')).toBe(`${BASE}/s/planned-touches/t.json`);
+    expect(layout.plannedTouchConsumedFile('s', 't')).toBe(`${BASE}/s/planned-touches/t.consumed`);
   });
 
   it('trashes beside the base, matching the production sibling rule', () => {
     expect(layout.trashDir).toBe('/tmp/layout-fixture/session-trash');
   });
 
-  it('sanitizes both the session id and the tool use id', () => {
+  it('sanitizes both the session id and the planned tool-use id', () => {
     const dirty = 'a/b c';
     expect(layout.dir(dirty)).toBe(`${BASE}/${sanitizeSessionId(dirty)}`);
-    expect(layout.recordFile(dirty, dirty)).toBe(
-      `${BASE}/${sanitizeSessionId(dirty)}/snapshots/${sanitizeSessionId(dirty)}.json`
+    expect(layout.plannedTouchRecordFile(dirty, dirty)).toBe(
+      `${BASE}/${sanitizeSessionId(dirty)}/planned-touches/${sanitizeSessionId(dirty)}.json`
     );
-  });
-
-  it('re-sanitizes a directory name passed back into snapshotsDir', () => {
-    // The sweep and reposFromRecords feed already-sanitized readdir names back
-    // in, and sanitizeSessionId is not idempotent. Keeping the second pass is
-    // what keeps the set of directories the sweep reaches byte-identical.
-    const once = sanitizeSessionId('a b');
-    expect(layout.snapshotsDir(once)).toBe(`${BASE}/${sanitizeSessionId(once)}/snapshots`);
-    expect(sanitizeSessionId(once)).not.toBe(once);
   });
 
   it('is frozen, so a caller cannot repoint one member of a layout', () => {
     expect(Object.isFrozen(layout)).toBe(true);
-  });
-});
-
-describe('call-artifact naming', () => {
-  it('classifies record and tombstone names', () => {
-    expect(layout.isRecordName('t.json')).toBe(true);
-    expect(layout.isRecordName('t.tombstone.json')).toBe(false);
-    expect(layout.isTombstoneName('t.tombstone.json')).toBe(true);
-    expect(layout.isTombstoneName('t.json')).toBe(false);
-  });
-
-  it("recovers one stem from any of a call's four artifact names", () => {
-    for (const name of ['t.json', 't.tombstone.json', 't.objects', 't.index']) {
-      expect(layout.callStem(name)).toBe('t');
-    }
-    expect(layout.callStem('snapshot-recordless-note')).toBeNull();
-  });
-
-  it('names the sibling artifacts of a stem inside a resolved snapshots dir', () => {
-    const dir = layout.snapshotsDir('s');
-    expect(layout.callFiles(dir, 't')).toEqual({
-      record: `${dir}/t.json`,
-      tombstone: `${dir}/t.tombstone.json`,
-      objectDir: `${dir}/t.objects`,
-      tempIndexFile: `${dir}/t.index`
-    });
-  });
-
-  it('agrees with the (sessionId, toolUseId) builders for the same call', () => {
-    const dir = layout.snapshotsDir('s');
-    const files = layout.callFiles(dir, sanitizeSessionId('t'));
-    expect(files.record).toBe(layout.recordFile('s', 't'));
-    expect(files.tombstone).toBe(layout.tombstoneFile('s', 't'));
-    expect(files.objectDir).toBe(layout.objectDir('s', 't'));
-    expect(files.tempIndexFile).toBe(layout.tempIndexFile('s', 't'));
   });
 });

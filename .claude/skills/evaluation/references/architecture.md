@@ -21,7 +21,7 @@ covered here).
   config fields), `_build_attestation` (preflight logic), `HookedEnvironmentMixin`
   (pre/post hook wiring around `execute()`, `serialize()`).
 - `src/minisweagent_gitspan/bridge.py` — `HookBridge`/`DockerHookBridge`,
-  `ALL_HOOKS = ("snapshot", "advisor", "post-tool-use", "post-tool-use-failure",
+  `ALL_HOOKS = ("static-plan", "advisor", "post-tool-use", "post-tool-use-failure",
   "session-end")`, `default_hooks_dir()`, `_rewrite_context` (swaps unsupported
   "Load the git-span:git-span skill" prose for a `sed`-the-SKILL.md instruction).
 - `src/minisweagent_gitspan/cli.py` — `main_extra`, the `mswea-extra` entry

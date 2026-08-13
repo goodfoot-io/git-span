@@ -134,10 +134,8 @@ export function createDiskMemoStore(logger: MemoLogger, layout: SessionLayout): 
       const memoPath = layout.memoFile(sessionId);
       const tmpPath = `${memoPath}.tmp`;
       try {
-        // 0o700 matches the snapshot store's discipline. The memo store is the
-        // third writer that can create a session dir first; without the mode a
-        // memo-first session sat at 0755 until a later tombstone write healed
-        // it, so the dir's permissions depended on arrival order.
+        // The memo and plan stores can each create the shared session dir
+        // first, so both enforce the same restrictive mode.
         fs.mkdirSync(memoDir, { recursive: true, mode: 0o700 });
         fs.writeFileSync(tmpPath, JSON.stringify({ surfaced: [...existing] }), 'utf8');
         fs.renameSync(tmpPath, memoPath);

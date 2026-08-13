@@ -24,6 +24,17 @@ EXPECTED_BUNDLES = {
     "session-end.mjs",
     "static-plan.mjs",
 }
+LEGACY_RUNTIME_MARKERS = (
+    "snapshot-core",
+    "snapshot-harness",
+    "snapshot-store",
+    "snapshot-recordless-note",
+    "snapshot-index",
+    "activity-log",
+    "GIT_SPAN_SNAPSHOT_",
+    "git-span.snapshot-",
+    "ObservedWriteScope",
+)
 TEXT = "alpha\nneedle one\nbeta\nneedle two\nomega\n"
 
 
@@ -94,6 +105,12 @@ def installed_wheel(tmp_path_factory: pytest.TempPathFactory) -> InstalledWheel:
     assert bundled == EXPECTED_BUNDLES
     assert "snapshot.mjs" not in bundled
     assert "activity-log.mjs" not in bundled
+    assert "subagent-stop.mjs" not in bundled
+
+    for path in [*hooks_dir.glob("*.mjs"), hooks_dir.parent / "hooks.json"]:
+        content = path.read_text()
+        for marker in LEGACY_RUNTIME_MARKERS:
+            assert marker not in content, f"{path.name} contains removed runtime marker {marker}"
 
     home = temp / "home"
     home.mkdir()

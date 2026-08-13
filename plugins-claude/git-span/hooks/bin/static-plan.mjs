@@ -629,47 +629,65 @@ function sanitizeSessionId(sessionId) {
     return `%${ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`;
   });
 }
-var SNAPSHOTS_DIR = "snapshots";
-var TOMBSTONE_SUFFIX = ".tombstone.json";
-var OBJECT_DIR_SUFFIX = ".objects";
-var TEMP_INDEX_SUFFIX = ".index";
-var RECORD_SUFFIX = ".json";
 function createSessionLayout(base) {
   const dir = (sessionId) => nodePath.join(base, sanitizeSessionId(sessionId));
-  const snapshotsDir = (sessionId) => nodePath.join(dir(sessionId), SNAPSHOTS_DIR);
-  const callFile = (sessionId, toolUseId, suffix) => nodePath.join(snapshotsDir(sessionId), `${sanitizeSessionId(toolUseId)}${suffix}`);
-  const isTombstoneName = (name) => name.endsWith(TOMBSTONE_SUFFIX);
+  const plannedTouchesDir = (sessionId) => nodePath.join(dir(sessionId), "planned-touches");
+  const plannedTouchFile = (sessionId, toolUseId, suffix) => nodePath.join(plannedTouchesDir(sessionId), `${sanitizeSessionId(toolUseId)}${suffix}`);
   return Object.freeze({
     base,
     trashDir: nodePath.join(nodePath.dirname(base), "session-trash"),
     dir,
-    snapshotsDir,
-    recordFile: (sessionId, toolUseId) => callFile(sessionId, toolUseId, RECORD_SUFFIX),
-    objectDir: (sessionId, toolUseId) => callFile(sessionId, toolUseId, OBJECT_DIR_SUFFIX),
-    tempIndexFile: (sessionId, toolUseId) => callFile(sessionId, toolUseId, TEMP_INDEX_SUFFIX),
-    tombstoneFile: (sessionId, toolUseId) => callFile(sessionId, toolUseId, TOMBSTONE_SUFFIX),
     memoFile: (sessionId) => nodePath.join(dir(sessionId), "touch-memo.json"),
-    recordlessNoteFile: (sessionId) => nodePath.join(dir(sessionId), "snapshot-recordless-note"),
-    isTombstoneName,
-    isRecordName: (name) => name.endsWith(RECORD_SUFFIX) && !isTombstoneName(name),
-    callStem: (name) => {
-      for (const suffix of [TOMBSTONE_SUFFIX, RECORD_SUFFIX, OBJECT_DIR_SUFFIX, TEMP_INDEX_SUFFIX]) {
-        if (name.endsWith(suffix)) return name.slice(0, -suffix.length);
-      }
-      return null;
-    },
-    callFiles: (snapshots, stem) => ({
-      record: nodePath.join(snapshots, `${stem}${RECORD_SUFFIX}`),
-      tombstone: nodePath.join(snapshots, `${stem}${TOMBSTONE_SUFFIX}`),
-      objectDir: nodePath.join(snapshots, `${stem}${OBJECT_DIR_SUFFIX}`),
-      tempIndexFile: nodePath.join(snapshots, `${stem}${TEMP_INDEX_SUFFIX}`)
-    })
+    plannedTouchesDir,
+    plannedTouchRecordFile: (sessionId, toolUseId) => plannedTouchFile(sessionId, toolUseId, ".json"),
+    plannedTouchConsumedFile: (sessionId, toolUseId) => plannedTouchFile(sessionId, toolUseId, ".consumed")
   });
 }
 var DEFAULT_SESSION_LAYOUT = createSessionLayout(
   nodePath.join(os.homedir(), ".cache", "git-span", "session")
 );
 var THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1e3;
+var SESSION_TRASH_TTL_MS = 6e4;
+var SESSION_TRASH_MARKER = ".trash-session-";
+function pruneStaleSessions(layout, now = Date.now(), maxAgeMs = THIRTY_DAYS_MS) {
+  try {
+    for (const entry of fs2.readdirSync(layout.trashDir, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !entry.name.includes(SESSION_TRASH_MARKER)) continue;
+      const trashPath = nodePath.join(layout.trashDir, entry.name);
+      try {
+        const stat = fs2.statSync(trashPath);
+        if (now - stat.mtimeMs > SESSION_TRASH_TTL_MS) {
+          fs2.rmSync(trashPath, { recursive: true, force: true });
+        }
+      } catch (err) {
+      }
+    }
+  } catch (err) {
+  }
+  let entries;
+  try {
+    entries = fs2.readdirSync(layout.base, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const dirPath = nodePath.join(layout.base, entry.name);
+    try {
+      const stat = fs2.statSync(dirPath);
+      if (now - stat.mtimeMs > maxAgeMs) {
+        fs2.mkdirSync(layout.trashDir, { recursive: true, mode: 448 });
+        const trashPath = nodePath.join(
+          layout.trashDir,
+          `${entry.name}${SESSION_TRASH_MARKER}${process.pid}-${Date.now().toString(36)}`
+        );
+        fs2.renameSync(dirPath, trashPath);
+        fs2.utimesSync(trashPath, now / 1e3, now / 1e3);
+      }
+    } catch (err) {
+    }
+  }
+}
 
 // src/common/bash-attribution.ts
 import { createHash } from "node:crypto";
@@ -5282,24 +5300,22 @@ var DEFAULT_PLANNED_TOUCH_BUDGETS = Object.freeze({
   maxEvidenceBytes: 16 * 1024,
   maxRecordBytes: 64 * 1024
 });
-function createPlannedTouchStore(baseDir, budgets) {
+function createPlannedTouchStore(layout, budgets) {
   validateBudgets(budgets);
-  if (baseDir.length === 0) throw new Error("planned-touch base directory must not be empty");
+  if (layout.base.length === 0) throw new Error("planned-touch base directory must not be empty");
   const recordPaths = (sessionId, toolUseId) => {
     if (sessionId.length === 0 || toolUseId.length === 0) {
       throw new Error("planned-touch session and tool-use ids must not be empty");
     }
-    const dir = nodePath4.join(baseDir, sanitizeSessionId(sessionId), "planned-touches");
-    const stem = sanitizeSessionId(toolUseId);
     return {
-      dir,
-      record: nodePath4.join(dir, `${stem}.json`),
-      consumed: nodePath4.join(dir, `${stem}.consumed`)
+      dir: layout.plannedTouchesDir(sessionId),
+      record: layout.plannedTouchRecordFile(sessionId, toolUseId),
+      consumed: layout.plannedTouchConsumedFile(sessionId, toolUseId)
     };
   };
   const makeRestrictiveDir = (dir) => {
     fs5.mkdirSync(dir, { recursive: true, mode: 448 });
-    fs5.chmodSync(baseDir, 448);
+    fs5.chmodSync(layout.base, 448);
     fs5.chmodSync(nodePath4.dirname(dir), 448);
     fs5.chmodSync(dir, 448);
   };
@@ -5313,6 +5329,7 @@ function createPlannedTouchStore(baseDir, budgets) {
     }
   };
   const take = (sessionId, toolUseId) => {
+    pruneStaleSessions(layout);
     const paths = recordPaths(sessionId, toolUseId);
     makeRestrictiveDir(paths.dir);
     if (!claim(paths.consumed)) return { status: "consumed" };
@@ -5334,6 +5351,7 @@ function createPlannedTouchStore(baseDir, budgets) {
   };
   return {
     put(record) {
+      pruneStaleSessions(layout);
       const normalized = normalizePlannedTouchRecord(record, budgets);
       const paths = recordPaths(normalized.sessionId, normalized.toolUseId);
       makeRestrictiveDir(paths.dir);
@@ -5360,6 +5378,7 @@ function createPlannedTouchStore(baseDir, budgets) {
     },
     take,
     discard(sessionId, toolUseId) {
+      pruneStaleSessions(layout);
       const paths = recordPaths(sessionId, toolUseId);
       makeRestrictiveDir(paths.dir);
       claim(paths.consumed);
@@ -5568,7 +5587,7 @@ import { dirname as dirname5, join as join5, resolve as resolvePath2, sep } from
 
 // src/common/bash-attribution.ts
 function createDefaultPlannedTouchStore(layout) {
-  return createPlannedTouchStore(layout.base, DEFAULT_PLANNED_TOUCH_BUDGETS);
+  return createPlannedTouchStore(layout, DEFAULT_PLANNED_TOUCH_BUDGETS);
 }
 function readText(path) {
   try {

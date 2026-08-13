@@ -1897,7 +1897,7 @@ describe('parse-response (Phase 3a–3c — search layouts, unified diffs, and b
     const matrix = buildGoldenMatrix(root);
     fixtures = new Map(matrix.fixtures.map((f) => [f.name, f]));
     diffRepos = matrix.repos;
-  });
+  }, 30_000);
 
   afterAll(() => {
     for (const repo of diffRepos) repo.cleanup();

@@ -12,10 +12,11 @@ import {
   isGitIgnored,
   isInsideSpanRoot,
   type LineRange,
+  pruneStaleSessions,
   relativeToRepo,
   resolveRepoRoot,
   resolveSpanRoot,
-  sanitizeSessionId,
+  type SessionLayout,
   toPosix
 } from './agent-hooks-common.js';
 import {
@@ -2272,27 +2273,25 @@ export interface PlannedTouchStore {
   discard(sessionId: string, toolUseId: string): void;
 }
 
-/** Create the bounded disk-backed planned-touch store rooted at `baseDir`. */
-export function createPlannedTouchStore(baseDir: string, budgets: PlannedTouchBudgets): PlannedTouchStore {
+/** Create the bounded disk-backed planned-touch store under a session layout. */
+export function createPlannedTouchStore(layout: SessionLayout, budgets: PlannedTouchBudgets): PlannedTouchStore {
   validateBudgets(budgets);
-  if (baseDir.length === 0) throw new Error('planned-touch base directory must not be empty');
+  if (layout.base.length === 0) throw new Error('planned-touch base directory must not be empty');
 
   const recordPaths = (sessionId: string, toolUseId: string): { dir: string; record: string; consumed: string } => {
     if (sessionId.length === 0 || toolUseId.length === 0) {
       throw new Error('planned-touch session and tool-use ids must not be empty');
     }
-    const dir = nodePath.join(baseDir, sanitizeSessionId(sessionId), 'planned-touches');
-    const stem = sanitizeSessionId(toolUseId);
     return {
-      dir,
-      record: nodePath.join(dir, `${stem}.json`),
-      consumed: nodePath.join(dir, `${stem}.consumed`)
+      dir: layout.plannedTouchesDir(sessionId),
+      record: layout.plannedTouchRecordFile(sessionId, toolUseId),
+      consumed: layout.plannedTouchConsumedFile(sessionId, toolUseId)
     };
   };
 
   const makeRestrictiveDir = (dir: string): void => {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    fs.chmodSync(baseDir, 0o700);
+    fs.chmodSync(layout.base, 0o700);
     fs.chmodSync(nodePath.dirname(dir), 0o700);
     fs.chmodSync(dir, 0o700);
   };
@@ -2314,6 +2313,7 @@ export function createPlannedTouchStore(baseDir: string, budgets: PlannedTouchBu
     | { readonly status: 'record'; readonly record: PlannedTouchRecord }
     | { readonly status: 'missing' }
     | { readonly status: 'consumed' } => {
+    pruneStaleSessions(layout);
     const paths = recordPaths(sessionId, toolUseId);
     makeRestrictiveDir(paths.dir);
     if (!claim(paths.consumed)) return { status: 'consumed' };
@@ -2338,6 +2338,7 @@ export function createPlannedTouchStore(baseDir: string, budgets: PlannedTouchBu
 
   return {
     put(record) {
+      pruneStaleSessions(layout);
       const normalized = normalizePlannedTouchRecord(record, budgets);
       const paths = recordPaths(normalized.sessionId, normalized.toolUseId);
       makeRestrictiveDir(paths.dir);
@@ -2365,6 +2366,7 @@ export function createPlannedTouchStore(baseDir: string, budgets: PlannedTouchBu
     },
     take,
     discard(sessionId, toolUseId) {
+      pruneStaleSessions(layout);
       const paths = recordPaths(sessionId, toolUseId);
       makeRestrictiveDir(paths.dir);
       claim(paths.consumed);

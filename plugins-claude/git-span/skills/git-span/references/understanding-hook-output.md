@@ -313,104 +313,56 @@ this check entirely. Generated bundles are the common case: the classifier only
 ever inspects manifest-shaped files, so it cannot recognize a regenerated bundle
 on its own, and spanning build output contradicts the guidance in `SKILL.md`.
 
-## Bash write attribution: the snapshot surface
+## Bash intent attribution
 
-A `Bash`/shell call whose writes are invisible to static command parsing —
-formatters, generators, embedded scripts, project tools — is attributed by
-pre/post file snapshots instead. A `PreToolUse` hook (the same `Bash`
-matcher as the advisor; on Codex the same `Bash|shell|exec|local_shell`
-matcher) classifies the command and, when the command is write-capable but
-its targets cannot be resolved statically, walks the repo's eligible files
-under strict budgets and persists a per-call pre-walk record (hashes only —
-never file contents — under `~/.cache/git-span/session/`, 0600). The
-`PostToolUse` hook re-walks, compares, and emits exact changed/deleted line
-ranges the same way a `Write`/`Edit` touch would; reads, read-only commands,
-statically covered writes, and chmod/mtime-only changes never snapshot.
-A failed command is compared too when the platform reports the failure
-(Claude's `PostToolUseFailure`); partial mutations from a failed command are
-attributed, never silently lost, and a failure with no record discards with
-a warning. Concurrent calls are handled by an ambiguity table — a changed
-path whose change cannot be proven to be this call's is dropped with a
-warning naming the reason, never guessed. Session-end (Claude `SessionEnd`,
-Codex `Stop`/`SubagentStop`) removes the session's snapshot state; a crashed
-session's end hook never runs, so the record TTL (24 h by default) is the
-crash-recovery backstop for the whole store surface — it ages records,
-tombstones, and finished activity entries alike (only the sweep's
-unfinished-entry TTL is the shorter 15 min). The sweep never unlinks under a
-reader on virtiofs: removals rename the file to a trash name in the same
-directory (keeping the inode alive for any peer reader's open fd) and the
-trash pass unlinks only after a 60 s TTL measured from the rename instant —
-the trash file's mtime is stamped at rename, because a bare rename preserves
-the write mtime, which would defeat the keepalive entirely for TTL-expired
-records.
+Bash and shell calls are attributed from explicit command intent. The
+`PreToolUse` planner and `PostToolUse` handler share one bounded parser for
+literal shell writes and reads, literal-list loops, literal `sed`/Perl
+substitutions, and proven literal Python/Node file-edit dataflows. The parser
+never runs an embedded program or expands a dynamic path. Unsupported syntax,
+globs, command substitutions, arbitrary generators, history-changing Git
+operations, and other unproven dataflows produce logger-only unresolved reason
+codes and no touch.
 
-The intentionally silent set is small: the pure-read fast path (no write
-possible), out-of-scope writes (gitignored, binary, span-root, submodule,
-outside-repo), and chmod/mtime-only changes. Everything else is reported —
-snapshot decisions and coverage, budget caps hit, coverage gaps, ambiguous
-paths with their reasons, cleanup and sweep counts through the hook logger
-(see "Mechanical churn is suppressed" above for how to enable it; set
-`CLAUDE_CODE_HOOKS_LOG_FILE` to a path to capture the records) — and the
-attribution-shaping events the model loop must see surface as
-transcript-visible notes in the tool block (`additionalContext`), not
-logger-only: the interleaved-edit deferral — an overlapping Edit/Write
-still in flight — which appends the remediation `Re-run the command once
-the overlapping edit completes to attribute the write.`; and the real
-failures — compare aborts, post-side wall-budget exhaustion in both its
-variants (before any attribution, and partway with a tail dropped), the
-post-side stat-only degrade under a pre tree, and the missing-record note —
-each wrapped in a `<git-span-error>` block. Ambiguity deferrals — a path's
-attribution dropped because a sibling session's write window overlaps — are
-the exception: normal concurrency behavior, not actionable, so they remain
-logger-only with the ambiguous-path reasons above.
+Every candidate is scoped to the effective working directory's repository and
+filtered through one batched tracked-file query. Files outside the repository,
+ignored files, span metadata, and untracked files are dropped. A Codex
+`exec_command` or code-mode `exec` envelope's `workdir` is used for both
+planning and post-tool attribution, so an explicit working directory inside a
+different repository is handled in that repository.
 
-### Snapshot budgets
+Most commands need no persisted pre-state. When a delete, substitution range,
+or pre-command EOF cannot be reconstructed safely after execution,
+`static-plan.mjs` stores one content-minimal record under the session's
+`planned-touches/` directory. A record contains only tracked
+repository-relative paths, bounded ranges, operation/index metadata, and small
+verification evidence; it never contains a file body or repository tree.
+`PostToolUse` atomically consumes the record once, verifies the evidence,
+reparses ordinary operations, and applies shell join and post-state gates before
+touching a span. Success, failure, interruption, and duplicate delivery cannot
+reuse a plan. `SessionEnd` on Claude/mini-swe and `Stop` on Codex eagerly
+retire the session memo and plans; opportunistic 30-day cleanup covers crashed
+sessions.
 
-The snapshot walk and comparison run under budgets; exceeding one cuts the
-walk short with a coverage-gap diagnostic (the comparison never describes
-partial coverage as complete), the pre-side wall budget bounds the
-user-visible cost of the pre-walk, and the post-side wall budget anchors at
-the post-side work's own start — the handler's `now` at entry, on an
-injectable clock — so it measures only the comparison's own cost, never the
-record's age: record age includes the whole command runtime, which would
-silently zero attribution for any opaque write command at or past the
-budget. Each budget resolves with the
-same precedence as the span-root setting: the `GIT_SPAN_SNAPSHOT_*`
-environment variable wins, then the `git-span.snapshot-*` key in the repo's
-git config, then the default. Both key spellings resolve — the dash form
-`git-span.snapshot-max-files` (`git config git-span.snapshot-max-files 1000`)
-and the git-native subsection form `git-span.snapshot.max-files` — with the
-subsection normalized onto the dash form's key space. A
-malformed value is ignored (the default stands); a repo-less hook call or a
-failed config read simply skips the config layer.
+A failed Bash command can still surface a write only when the supported family
+provides decisive post-state evidence, such as an expected replacement result.
+Inconclusive writes and interrupted calls stay silent. Response-derived reads
+remain a separate pass and share only the session memo, so a later read can
+surface context without duplicating command-derived output.
 
-| Budget | Env var | Git config key | Default |
-|---|---|---|---|
-| Files captured per record | `GIT_SPAN_SNAPSHOT_MAX_FILES` | `git-span.snapshot-max-files` | 5000 |
-| Per-file byte cap (larger files excluded) | `GIT_SPAN_SNAPSHOT_MAX_BYTES_PER_FILE` | `git-span.snapshot-max-bytes-per-file` | 1 MiB |
-| Total bytes across one record's pre-walk | `GIT_SPAN_SNAPSHOT_MAX_TOTAL_BYTES` | `git-span.snapshot-max-total-bytes` | 64 MiB |
-| Line hashes per file (over it: recorded coarse) | `GIT_SPAN_SNAPSHOT_MAX_LINE_HASHES_PER_FILE` | `git-span.snapshot-max-line-hashes-per-file` | 4000 |
-| Line hashes per record (later files coarse) | `GIT_SPAN_SNAPSHOT_MAX_LINE_HASHES_PER_RECORD` | `git-span.snapshot-max-line-hashes-per-record` | 200,000 |
-| Pre-side wall budget (seconds) | `GIT_SPAN_SNAPSHOT_PRE_SIDE_MAX_WALL_SECONDS` | `git-span.snapshot-pre-side-max-wall-seconds` | 1 s |
-| Storage cap across the repo's records | `GIT_SPAN_SNAPSHOT_MAX_STORAGE_BYTES` | `git-span.snapshot-max-storage-bytes` | 64 MiB |
-| Touched files per tool call | `GIT_SPAN_SNAPSHOT_MAX_TOUCHED_FILES` | `git-span.snapshot-max-touched-files` | 100 |
-| Post-side comparison wall budget (seconds, from the comparison's own start) | `GIT_SPAN_SNAPSHOT_POST_SIDE_WALL_SECONDS` | `git-span.snapshot-post-side-wall-seconds` | 5 s |
-| Record/tombstone TTL | `GIT_SPAN_SNAPSHOT_RECORD_TTL_MS` | `git-span.snapshot-record-ttl-ms` | 24 h |
-| Unfinished activity-entry TTL | `GIT_SPAN_SNAPSHOT_UNFINISHED_ENTRY_TTL_MS` | `git-span.snapshot-unfinished-entry-ttl-ms` | 15 min |
+The parser's candidate ceiling is 32 and is all-or-nothing: a bounded set is
+attributed completely or rejected before any touch. Planned records allow at
+most 32 touches and 32 ranges per touch, 16 KiB of verification evidence, and
+64 KiB total. These are internal safety limits rather than runtime
+configuration. The former `GIT_SPAN_SNAPSHOT_*` environment variables and
+`git-span.snapshot-*` Git configuration keys have been removed and no longer
+affect hook behavior.
 
-Storage exhaustion refuses new snapshots with a warning — records are never
-dropped early, because a dropped record is indistinguishable from an expired
-one and would reopen the fail-open the ambiguity rules guard. A refused
-snapshot degrades that call to the static-parse path, visibly: the
-`PostToolUse` side, when a snapshot should exist but the record is missing,
-emits a transcript-visible note in the tool block — `git-span: snapshot
-record unavailable — this command's file writes were not snapshot-attributed;
-the static spans below are the only attribution` — wrapped in a
-`<git-span-error>` block beside the logger warn, so the model loop sees why
-no snapshot attribution happened. The note fires only
-when the call's cwd is inside a repo — where the pre-walk could have created
-a record; in a repo-less cwd the fallback is silent, since no record could
-ever have been created there.
+Diagnostics are written through the hook logger: resolved read/write counts,
+unresolved reason counts, scope/tracked/execution drops, parser and touch
+latency, subprocess count, and whether dependency context surfaced. Unresolved
+static intent never creates a transcript warning by itself; the safe result is
+simply no attribution.
 
 ## Failure behavior
 
@@ -419,15 +371,11 @@ to say: a missing `git span` binary, a timeout, a failed scan, or a
 malformed/unexpected CLI result resolves to "allow silently, inject
 nothing." Silence from either hook is the correct steady state when
 `git span` isn't installed, the repo has no spans, or nothing needs to be
-said — never an error condition. Writes landing outside the session repo
-are not snapshot-attributed and are silent by design: the snapshot surface
-is per-repo, anchored at the hook cwd, and a cross-repo write compares
-against a baseline that never captured it — the static path is equally
-silent for an out-of-repo write. The one exception is the shell envelope's
-`workdir` field (the classic `exec_command` and code-mode `exec` forms on
-the Codex side): it is threaded through both the pre-walk and the post
-comparison, so a write through a workdir pointing into another repo is
-recorded, compared, and attributed in that repo. The one noisy case is the advisor's own
+said — never an error condition. Writes outside the effective repository,
+untracked writes, and unsupported dynamic intent are silent by design. The
+shell envelope's `workdir` field (the classic `exec_command` and code-mode
+`exec` forms on the Codex side) selects the effective repository for both
+planning and attribution. The one noisy case is the advisor's own
 scoped scan failing to complete (see "The advisor: what a held command sees"
 above): that still fails open, but visibly — a warning names the failure and
 carries the failed command's stderr in a delimited `<git-span-error>` block

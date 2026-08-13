@@ -343,38 +343,14 @@ export function sanitizeSessionId(sessionId: string): string {
 // Per-session directory layout
 // ---------------------------------------------------------------------------
 
-/** The `snapshots/` subdirectory of a session dir, holding the store's state. */
-const SNAPSHOTS_DIR = 'snapshots';
-
-/** Suffix marking a consumed call's tombstone beside its record file. */
-const TOMBSTONE_SUFFIX = '.tombstone.json';
-
-/** Suffix of a call's private GIT_OBJECT_DIRECTORY. */
-const OBJECT_DIR_SUFFIX = '.objects';
-
-/** Suffix of a call's private temp GIT_INDEX_FILE. */
-const TEMP_INDEX_SUFFIX = '.index';
-
-/** Suffix of a record file. Note `.tombstone.json` ends with it too. */
-const RECORD_SUFFIX = '.json';
-
-/** The four artifacts one captured call owns, all named off a shared stem. */
-export interface SessionCallFiles {
-  record: string;
-  tombstone: string;
-  objectDir: string;
-  tempIndexFile: string;
-}
-
 /**
  * Every session-scoped path, derived from one base directory.
  *
  * The base is a value the caller supplies rather than a module constant, so a
  * test can point a hook at a scratch directory the same way production points
  * it at `~/.cache/git-span/session` — see {@link DEFAULT_SESSION_LAYOUT}. The
- * layout is the single owner of the on-disk naming vocabulary: nothing outside
- * it may concatenate a session path or a file suffix, or the two would drift
- * apart.
+ * layout is the single owner of the on-disk naming vocabulary for the touch
+ * memo and bounded pre-tool plans.
  */
 export interface SessionLayout {
   /** Base dir holding one subdirectory per session, keyed by sanitized id. */
@@ -387,39 +363,14 @@ export interface SessionLayout {
   readonly trashDir: string;
   /** The per-session state directory for a given session id. */
   dir(sessionId: string): string;
-  /** The session's snapshot-store directory. */
-  snapshotsDir(sessionId: string): string;
-  /** The record file for one captured call. */
-  recordFile(sessionId: string, toolUseId: string): string;
-  /**
-   * One call's private GIT_OBJECT_DIRECTORY, shared by the call's pre and post
-   * write-trees (the post side's unchanged blobs are already local) and read
-   * by later siblings' on-demand hash derivations. Lives next to the record
-   * file so the sweep and session cleanup remove the pair together.
-   */
-  objectDir(sessionId: string, toolUseId: string): string;
-  /** One call's private temp GIT_INDEX_FILE, primed from the real index per capture. */
-  tempIndexFile(sessionId: string, toolUseId: string): string;
-  /** The consumption tombstone beside a call's record. */
-  tombstoneFile(sessionId: string, toolUseId: string): string;
   /** The touch-hook session memo (span-surface.ts's MemoStore). */
   memoFile(sessionId: string): string;
-  /** The once-per-session marker gating the recordless fallback note. */
-  recordlessNoteFile(sessionId: string): string;
-  /** Whether a name in a snapshots dir is a tombstone. */
-  isTombstoneName(name: string): boolean;
-  /** Whether a name in a snapshots dir is a record (a tombstone is not one). */
-  isRecordName(name: string): boolean;
-  /**
-   * The shared stem of a call's four artifacts, from any one of their file
-   * names; null when the name belongs to none of them. The sweep and the
-   * foreign-record reap derive sibling paths from a `readdir` name rather than
-   * from a payload's (untrustworthy) fields, and must not re-spell the
-   * suffixes to do it.
-   */
-  callStem(name: string): string | null;
-  /** The four artifact paths for a stem inside an already-resolved snapshots dir. */
-  callFiles(snapshotsDir: string, stem: string): SessionCallFiles;
+  /** Directory holding bounded pre-tool plans for one session. */
+  plannedTouchesDir(sessionId: string): string;
+  /** One pending pre-tool plan, keyed by tool-use id. */
+  plannedTouchRecordFile(sessionId: string, toolUseId: string): string;
+  /** The idempotent-consumption marker for one tool-use id. */
+  plannedTouchConsumedFile(sessionId: string, toolUseId: string): string;
 }
 
 /**
@@ -428,41 +379,17 @@ export interface SessionLayout {
  */
 export function createSessionLayout(base: string): SessionLayout {
   const dir = (sessionId: string): string => nodePath.join(base, sanitizeSessionId(sessionId));
-  // NOTE: snapshotsDir sanitizes via dir() even when its caller passes an
-  // already-sanitized directory name back in (reposFromRecords, runSweep).
-  // sanitizeSessionId is *not* idempotent ('%' -> '%25'), so that second pass
-  // is what fixes the set of directories the sweep reaches. Do not "tidy" it:
-  // dropping it would silently widen the sweep's reach.
-  const snapshotsDir = (sessionId: string): string => nodePath.join(dir(sessionId), SNAPSHOTS_DIR);
-  const callFile = (sessionId: string, toolUseId: string, suffix: string): string =>
-    nodePath.join(snapshotsDir(sessionId), `${sanitizeSessionId(toolUseId)}${suffix}`);
-  const isTombstoneName = (name: string): boolean => name.endsWith(TOMBSTONE_SUFFIX);
+  const plannedTouchesDir = (sessionId: string): string => nodePath.join(dir(sessionId), 'planned-touches');
+  const plannedTouchFile = (sessionId: string, toolUseId: string, suffix: string): string =>
+    nodePath.join(plannedTouchesDir(sessionId), `${sanitizeSessionId(toolUseId)}${suffix}`);
   return Object.freeze({
     base,
     trashDir: nodePath.join(nodePath.dirname(base), 'session-trash'),
     dir,
-    snapshotsDir,
-    recordFile: (sessionId, toolUseId) => callFile(sessionId, toolUseId, RECORD_SUFFIX),
-    objectDir: (sessionId, toolUseId) => callFile(sessionId, toolUseId, OBJECT_DIR_SUFFIX),
-    tempIndexFile: (sessionId, toolUseId) => callFile(sessionId, toolUseId, TEMP_INDEX_SUFFIX),
-    tombstoneFile: (sessionId, toolUseId) => callFile(sessionId, toolUseId, TOMBSTONE_SUFFIX),
     memoFile: (sessionId) => nodePath.join(dir(sessionId), 'touch-memo.json'),
-    recordlessNoteFile: (sessionId) => nodePath.join(dir(sessionId), 'snapshot-recordless-note'),
-    isTombstoneName,
-    isRecordName: (name) => name.endsWith(RECORD_SUFFIX) && !isTombstoneName(name),
-    callStem: (name) => {
-      // Tombstone first: `.tombstone.json` also ends with the record suffix.
-      for (const suffix of [TOMBSTONE_SUFFIX, RECORD_SUFFIX, OBJECT_DIR_SUFFIX, TEMP_INDEX_SUFFIX]) {
-        if (name.endsWith(suffix)) return name.slice(0, -suffix.length);
-      }
-      return null;
-    },
-    callFiles: (snapshots, stem) => ({
-      record: nodePath.join(snapshots, `${stem}${RECORD_SUFFIX}`),
-      tombstone: nodePath.join(snapshots, `${stem}${TOMBSTONE_SUFFIX}`),
-      objectDir: nodePath.join(snapshots, `${stem}${OBJECT_DIR_SUFFIX}`),
-      tempIndexFile: nodePath.join(snapshots, `${stem}${TEMP_INDEX_SUFFIX}`)
-    })
+    plannedTouchesDir,
+    plannedTouchRecordFile: (sessionId, toolUseId) => plannedTouchFile(sessionId, toolUseId, '.json'),
+    plannedTouchConsumedFile: (sessionId, toolUseId) => plannedTouchFile(sessionId, toolUseId, '.consumed')
   } satisfies SessionLayout);
 }
 
@@ -478,8 +405,7 @@ export const DEFAULT_SESSION_LAYOUT: SessionLayout = createSessionLayout(
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
- * Retention for pruned session dirs, mirroring the snapshot store's
- * `TRASH_TTL_MS` discipline: a pruned dir is renamed away (an atomic same-fs
+ * Retention for pruned session dirs. A pruned dir is renamed away (an atomic same-fs
  * rename — never an in-place recursive unlink) and the unlink happens only
  * once the rename mtime aged past this, long after any hook-process read of
  * the dir's files closed. 60s of keepalive is far longer than any synchronous
@@ -498,11 +424,7 @@ const SESSION_TRASH_MARKER = '.trash-session-';
  *
  * A pruned directory is renamed to `layout.trashDir`, never unlinked
  * in place: an in-place recursive `rmSync` can abort a concurrent reader of
- * the dir's files (the node-on-virtiofs close-after-unlink assertion the
- * snapshot store's removals guard against — the snapshot sweep reads every
- * session dir on each write, including a 30-day-idle one whose records no
- * sweep has reached since they were written). The trash pass unlinks renamed
- * dirs once their stamped rename mtime aged past
+ * the dir's files. The trash pass unlinks renamed dirs once their stamped rename mtime aged past
  * {@link SESSION_TRASH_TTL_MS}, long after any reader closed.
  *
  * Best-effort and non-throwing: called opportunistically from hook read/write
@@ -567,6 +489,30 @@ export function pruneStaleSessions(
       // best-effort prune must never throw into the caller's hot path.
       void err;
     }
+  }
+}
+
+/**
+ * Eagerly retire one session's memo and planned-touch state.
+ *
+ * SessionEnd/Stop call this after the host has finished the session. The
+ * directory is renamed beside the session root so concurrent readers keep a
+ * valid inode; {@link pruneStaleSessions} removes the retired directory after
+ * the same short keepalive used for expired state. Missing or already-retired
+ * sessions are an idempotent no-op.
+ */
+export function cleanupSessionState(layout: SessionLayout, sessionId: string, now: number = Date.now()): void {
+  const dirPath = layout.dir(sessionId);
+  try {
+    fs.mkdirSync(layout.trashDir, { recursive: true, mode: 0o700 });
+    const trashPath = nodePath.join(
+      layout.trashDir,
+      `${sanitizeSessionId(sessionId)}${SESSION_TRASH_MARKER}${process.pid}-${now.toString(36)}`
+    );
+    fs.renameSync(dirPath, trashPath);
+    fs.utimesSync(trashPath, now / 1000, now / 1000);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
 }
 

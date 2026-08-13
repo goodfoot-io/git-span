@@ -1,5 +1,0 @@
-packages/agent-hooks/src/common/snapshot-core.ts#L733-L886 rk64:a6ccb6114fb7c82a
-packages/agent-hooks/test/common/snapshot-core.test.ts#L716-L951 rk64:80dd6533d1c5af90
-packages/agent-hooks/test/common/snapshot-store.test.ts#L447-L475 rk64:825d30f386ef84c3
-
-applyAmbiguityRules is the deterministic eight-row table for the retained snapshot source, and snapshot-store index entries are the sibling set it reads, with a coverage gap representing all paths. The common pure-function and store-index checks pin the same table until snapshot source is removed.

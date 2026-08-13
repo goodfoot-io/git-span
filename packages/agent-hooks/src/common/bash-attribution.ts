@@ -87,7 +87,7 @@ export function normalizeBashResponse(toolResponse: unknown): NormalizedBashResp
 
 /** Create the production planned-touch store under a session layout. */
 export function createDefaultPlannedTouchStore(layout: SessionLayout): PlannedTouchStore {
-  return createPlannedTouchStore(layout.base, DEFAULT_PLANNED_TOUCH_BUDGETS);
+  return createPlannedTouchStore(layout, DEFAULT_PLANNED_TOUCH_BUDGETS);
 }
 
 function readText(path: string): string | null {

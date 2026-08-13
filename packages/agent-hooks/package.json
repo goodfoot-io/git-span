@@ -8,7 +8,7 @@
     "build:codex": "yarn build:hooks:codex",
     "build:mswea": "yarn build:hooks:mswea",
     "build:hooks": "yarn claude-code-hooks -i \"src/claude/{advisor,static-plan,post-tool-use,post-tool-use-failure,session-end}.ts\" -o \"../../plugins-claude/git-span/hooks/hooks.json\" --no-sourcemap",
-    "build:hooks:codex": "yarn codex-hooks -i \"src/codex/{advisor,static-plan,apply-patch-plan,post-tool-use,stop,subagent-stop}.ts\" -o \"../../plugins-codex/git-span/hooks/hooks.json\" --plugin-root --no-sourcemap",
+    "build:hooks:codex": "yarn codex-hooks -i \"src/codex/{advisor,static-plan,apply-patch-plan,post-tool-use,stop}.ts\" -o \"../../plugins-codex/git-span/hooks/hooks.json\" --plugin-root --no-sourcemap",
     "build:hooks:mswea": "yarn claude-code-hooks -i \"src/mswea/{advisor,static-plan,post-tool-use,post-tool-use-failure,session-end}.ts\" -o \"../../packages/mini-swe-agent/src/minisweagent_gitspan/hooks/hooks.json\"",
     "claude-code-hooks": "node scripts/hooks-cli-wrapper.js @goodfoot/claude-code-hooks",
     "codex-hooks": "node scripts/hooks-cli-wrapper.js @goodfoot/codex-hooks",

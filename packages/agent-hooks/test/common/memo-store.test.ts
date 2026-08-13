@@ -15,7 +15,7 @@
 import * as fs from 'node:fs';
 import * as nodePath from 'node:path';
 import { afterAll, afterEach, describe, expect, it } from 'vitest';
-import { pruneStaleSessions } from '../../src/common/agent-hooks-common.js';
+import { cleanupSessionState, pruneStaleSessions } from '../../src/common/agent-hooks-common.js';
 import { createDiskMemoStore } from '../../src/common/span-surface.js';
 import { makeAbsentLayout, makeTempLayout } from '../session-layout-helpers.js';
 
@@ -52,10 +52,8 @@ describe('MemoStore location', () => {
   });
 
   it('creates the session directory 0700, whichever writer reaches it first', () => {
-    // The memo store is one of three writers that can create a session dir.
-    // Without an explicit mode it created 0755 and stayed there until an
-    // unrelated snapshot-store tombstone write healed it, making the
-    // permissions a function of arrival order.
+    // The memo and plan stores can each create a session dir first; either
+    // arrival order must retain the restrictive mode.
     const id = sid('mode');
     createDiskMemoStore(logger, layout).addSurfaced(id, ['some-span']);
     expect(fs.statSync(layout.dir(id)).mode & 0o777).toBe(0o700);
@@ -70,6 +68,21 @@ describe('MemoStore location', () => {
     const surfaced = store.getSurfaced(id);
     expect(surfaced.has('span-a')).toBe(true);
     expect(surfaced.has('span-b')).toBe(true);
+  });
+});
+
+describe('cleanupSessionState', () => {
+  it('eagerly retires both memo and planned-touch state and is idempotent', () => {
+    const id = sid('cleanup');
+    createDiskMemoStore(logger, layout).addSurfaced(id, ['some-span']);
+    fs.mkdirSync(layout.plannedTouchesDir(id), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(layout.plannedTouchRecordFile(id, 'tool-1'), '{}', { mode: 0o600 });
+
+    cleanupSessionState(layout, id);
+    cleanupSessionState(layout, id);
+
+    expect(fs.existsSync(layout.dir(id))).toBe(false);
+    expect(fs.readdirSync(layout.trashDir).some((name) => name.startsWith(id))).toBe(true);
   });
 });
 
