@@ -379,12 +379,22 @@ pub enum Error {
     #[error("invalid span file: {0}")]
     InvalidSpanFile(String),
 
-    /// The span file (or its source content) is in a Git conflict state
-    /// (unmerged index entry / textual conflict markers), so it cannot be
-    /// read reliably. Fail-closed: callers must surface `Conflict`, never
-    /// present conflict-marker content as valid span data.
-    #[error("span `{0}` is in a Git conflict state (unresolved merge)")]
-    SpanConflict(String),
+    /// The span file (or its source content) is in a Git conflict state, so
+    /// it cannot be read reliably. Fail-closed: callers must surface
+    /// `Conflict`, never present conflict-marker content as valid span data.
+    ///
+    /// `kind` is the discriminator the detection sites have always had and the
+    /// reporting layer used to throw away one frame later. An unmerged index
+    /// entry and marker text in an otherwise-merged file are cleared by
+    /// different actions — the first needs the file staged after `resolve`
+    /// settles it, the second does not — so every surface downstream had to
+    /// give one generic instruction because it could not tell which half
+    /// fired. Carrying it costs one field and buys back the advice.
+    #[error("span `{span}` is in a Git conflict state ({kind})")]
+    SpanConflict {
+        span: String,
+        kind: git_span_core::ConflictKind,
+    },
 
     /// Generic git-process / gix error.
     #[error("git: {0}")]
@@ -409,7 +419,14 @@ impl From<git_span_core::Error> for Error {
             }
             git_span_core::Error::InvalidName(s) => Error::InvalidName(s),
             git_span_core::Error::InvalidSpanFile(s) => Error::InvalidSpanFile(s),
-            git_span_core::Error::SpanConflict(s) => Error::SpanConflict(s),
+            // The kernel parses text and has no span name to give, so the
+            // name is filled in by `SpanFileReader`, which does. This blanket
+            // arm exists for the `?` paths that have neither; it keeps the
+            // kind, which is the half that drives the advice.
+            git_span_core::Error::SpanConflict(kind) => Error::SpanConflict {
+                span: "<unnamed span file>".to_string(),
+                kind,
+            },
         }
     }
 }

@@ -24,6 +24,7 @@ pub mod format;
 pub mod history;
 pub mod interior_anchor;
 pub mod merge_driver;
+pub(crate) mod repair_domain;
 pub mod resolve;
 pub mod show;
 pub mod drift_cluster;

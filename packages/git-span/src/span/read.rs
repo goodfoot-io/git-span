@@ -142,7 +142,7 @@ fn read_effective_parallel(
                             local.push((i, LoadSlot::Loaded(span_from_file(name, &file))));
                         }
                         Ok(None) => local.push((i, LoadSlot::Tombstoned)),
-                        Err(Error::SpanConflict(_)) => local.push((i, LoadSlot::Conflicted)),
+                        Err(Error::SpanConflict { .. }) => local.push((i, LoadSlot::Conflicted)),
                         Err(e) => {
                             fatal.lock().unwrap().get_or_insert(e);
                             break;
@@ -292,7 +292,7 @@ fn read_effective_serial(
                 out.push((name.clone(), span_from_file(name, &file)));
             }
             Ok(None) => {}
-            Err(Error::SpanConflict(_)) => conflicted.push(name.clone()),
+            Err(Error::SpanConflict { .. }) => conflicted.push(name.clone()),
             Err(e) => return Err(e),
         }
     }
@@ -308,7 +308,7 @@ pub fn conflicted_span_names_in(repo: &gix::Repository, span_root: &str) -> Resu
     names.sort();
     let mut conflicted = Vec::new();
     for name in names {
-        if let Err(Error::SpanConflict(_)) = reader.read_effective(&name) {
+        if let Err(Error::SpanConflict { .. }) = reader.read_effective(&name) {
             conflicted.push(name);
         }
     }
@@ -685,7 +685,7 @@ mod tests {
 
         // Index 0 → "conflicted" → Err(SpanConflict).
         assert!(
-            matches!(&parallel[0], Err(Error::SpanConflict(_))),
+            matches!(&parallel[0], Err(Error::SpanConflict { .. })),
             "index 0 (conflicted) must be Err(SpanConflict), got: {:?}",
             parallel[0]
         );
@@ -710,7 +710,10 @@ mod tests {
                     assert_eq!(sm.name, pm.name, "slot {i} ({name}): span name mismatch");
                 }
                 (Ok(None), Ok(None)) => {}
-                (Err(Error::SpanConflict(sn)), Err(Error::SpanConflict(pn))) => {
+                (
+                    Err(Error::SpanConflict { span: sn, .. }),
+                    Err(Error::SpanConflict { span: pn, .. }),
+                ) => {
                     assert_eq!(sn, pn, "slot {i} ({name}): conflict name mismatch");
                 }
                 _ => panic!(

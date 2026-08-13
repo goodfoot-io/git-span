@@ -1,8 +1,8 @@
-packages/git-span-core/src/span_file.rs#L490-L570 rk64:cce07a4961aa32a3
-packages/git-span-core/src/span_file.rs#L702-L899 rk64:70a7516d8937ab1d
-packages/git-span/src/cli/drift_fix.rs#L219-L319 rk64:6a34c17390856f37
-packages/git-span/src/cli/drift_fix.rs#L350-L377 rk64:30f9ed5debab0258
-packages/git-span/src/cli/drift_fix.rs#L508-L602 rk64:6ecedf52ff640ea8
+packages/git-span-core/src/span_file.rs#L488-L568 rk64:cce07a4961aa32a3
+packages/git-span-core/src/span_file.rs#L700-L897 rk64:70a7516d8937ab1d
+packages/git-span/src/cli/drift_fix.rs#L241-L341 rk64:6a34c17390856f37
+packages/git-span/src/cli/drift_fix.rs#L372-L399 rk64:30f9ed5debab0258
+packages/git-span/src/cli/drift_fix.rs#L530-L624 rk64:6ecedf52ff640ea8
 packages/git-span/src/cli/resolve.rs rk64:fdbda460a169538e
 packages/git-span/src/git.rs#L1032-L1057 rk64:83cc73fe05f4945a
 packages/git-span/src/git.rs#L1349-L1371 rk64:405271ca12017c23

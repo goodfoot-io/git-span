@@ -45,8 +45,41 @@ pub enum Error {
 
     /// The span file carries Git textual conflict markers (an unresolved
     /// merge), so it cannot be parsed as valid span data. Fail closed.
-    #[error("span `{0}` is in a Git conflict state (unresolved merge)")]
-    SpanConflict(String),
+    ///
+    /// The kernel only ever detects one of the two conditions — marker text —
+    /// but it names which one, because the caller cannot recover the
+    /// distinction afterwards and every surface that tried to give advice
+    /// without it had to give generic advice. See [`ConflictKind`].
+    #[error("span file is in a Git conflict state: {0}")]
+    SpanConflict(ConflictKind),
+}
+
+/// **Which** condition put a span file into a conflict state.
+///
+/// The two are detected in different places and cleared by different actions,
+/// and collapsing them is why "resolve the merge" was the best any surface
+/// could say. `git span resolve` settles the *text*; only staging clears an
+/// unmerged *index* entry, so a surface that knows it is looking at
+/// [`Self::UnmergedIndex`] can say the second half out loud.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictKind {
+    /// Git left stage 1/2/3 entries for the span path in the index. The merge
+    /// is unresolved at the index level, so settling the worktree text is only
+    /// half the exit — the file still has to be staged.
+    UnmergedIndex,
+    /// The file's text carries `<<<<<<<` / `=======` / `>>>>>>>` while the
+    /// index holds a single merged entry: residue committed or left behind
+    /// after the index was already settled.
+    MarkerText,
+}
+
+impl std::fmt::Display for ConflictKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnmergedIndex => f.write_str("unmerged index entry"),
+            Self::MarkerText => f.write_str("conflict markers in the file text"),
+        }
+    }
 }
 
 /// `Result` specialized to the kernel's [`Error`].

@@ -377,7 +377,10 @@ fn check_worktree_prefix_collision(
         // the effective view (mirrors `load_all_spans_in`).
         match reader.read_effective(other) {
             Ok(Some(_)) => {}
-            Err(crate::Error::SpanConflict(_)) => {}
+            // Either kind means the name is occupied, which is the only
+            // question this loop asks — so discarding the discriminator here
+            // stays correct after it was given one.
+            Err(crate::Error::SpanConflict { .. }) => {}
             Ok(None) => continue,
             Err(e) => return Err(e),
         }
@@ -1513,16 +1516,28 @@ fn run_why_reader(repo: &gix::Repository, name: &str, span_root: &str) -> Result
     // match on it — so the remediation is attached here, where `why` is the
     // surface an operator lands on mid-merge.
     let span = reader.read_effective(name).map_err(|e| -> anyhow::Error {
-        if matches!(e, crate::Error::SpanConflict(_)) {
+        if let crate::Error::SpanConflict { kind, .. } = e {
             CliError {
                 subcommand: "why",
                 summary: format!("span `{name}` is in a Git conflict state."),
-                what_happened: format!(
-                    "The span file for `{name}` has an unresolved merge (unmerged index entry \
-                     or `<<<<<<<`/`>>>>>>>` markers). git-span refuses to read \
-                     conflict-marker content as valid why prose."
-                ),
-                next_steps: crate::cli::resolve::conflict_remediation(&[name]),
+                what_happened: crate::cli::resolve::conflict_diagnosis(name, kind),
+                // `why` was the worst of the five circling surfaces and this
+                // is why: it passed `conflict_remediation` straight through
+                // with nothing in front of it, so its *first* fenced command
+                // was `git span resolve --dry-run` — a command that writes
+                // nothing — and it showed no `git status` at all. An operator
+                // mid-merge, which its own comment above says is exactly who
+                // lands here, got a dead end as the opening move. `show`
+                // already put a `git status` in front; match it, so the first
+                // command shows the operator where they actually are.
+                next_steps: {
+                    let mut steps =
+                        vec![NextStep::Bash(format!("git status {span_root}/{name}"))];
+                    steps.extend(crate::cli::resolve::conflict_remediation(
+                        &[name], span_root,
+                    ));
+                    steps
+                },
             }
             .into()
         } else {

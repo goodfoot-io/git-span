@@ -35,6 +35,7 @@
 
 use crate::cli::commit::{span_file_path, write_worktree_span};
 use crate::cli::drift_fix::{read_clean_source_files, split_conflict_markers};
+use crate::cli::repair_domain;
 use crate::cli::{CliError, NextStep, ResolveArgs, ResolveFormat};
 use crate::span_file::{AnchorRecord, SpanFile};
 use anyhow::Result;
@@ -79,6 +80,33 @@ const WHY_LOSS_LINE: &str = "The why text was written empty. The residue writer 
 // The shared "resolve exists" remediation
 // ---------------------------------------------------------------------------
 
+/// What was *actually detected*, said as the thing that was detected.
+///
+/// Both halves of `Error::SpanConflict` used to arrive as one opaque variant,
+/// so every surface printed the same sentence — "an unresolved merge (unmerged
+/// index entry or `<<<<<<<`/`>>>>>>>` markers)" — an either/or that told the
+/// operator the tool had not looked. It had looked; the answer was discarded
+/// one frame later. With the kind carried through, each surface can say which
+/// one fired, and more usefully can say what that implies about staging: an
+/// unmerged index entry outlives the text fix, and marker text in an
+/// already-merged file does not.
+pub(crate) fn conflict_diagnosis(name: &str, kind: git_span_core::ConflictKind) -> String {
+    match kind {
+        git_span_core::ConflictKind::UnmergedIndex => format!(
+            "The index holds unmerged stage entries for `{name}`: Git recorded a conflict here \
+             and nothing has settled it yet. git-span refuses to read any layer's content as \
+             valid span data while that is true. Settling the worktree text is half the exit — \
+             the unmerged index entry survives it until the file is staged."
+        ),
+        git_span_core::ConflictKind::MarkerText => format!(
+            "The span file for `{name}` carries `<<<<<<<`/`=======`/`>>>>>>>` markers while the \
+             index holds a single, merged entry — residue committed, or left behind after the \
+             index was already settled. git-span refuses to read marker text as valid span \
+             data. There is no unmerged stage here, so settling the text is the whole fix."
+        ),
+    }
+}
+
 /// The remediation that names `git span resolve` on the surfaces an operator
 /// actually reaches while a span file is conflicted — `show`, `list`, `why`,
 /// and `drift --fix`'s bail-outs. Every one of those refuses the file, and
@@ -95,7 +123,7 @@ const WHY_LOSS_LINE: &str = "The why text was written empty. The residue writer 
 ///   anchor/why boundary it cannot establish, and `--rehash` fails closed on a
 ///   source it cannot read. Pointing an operator at a command that will refuse
 ///   them, without saying so, is the same defect as not pointing at all.
-pub(crate) fn conflict_remediation(names: &[&str]) -> Vec<NextStep> {
+pub(crate) fn conflict_remediation(names: &[&str], span_root: &str) -> Vec<NextStep> {
     let plural = names.len() != 1;
     let file_word = if plural { "files" } else { "file" };
     vec![
@@ -119,6 +147,31 @@ pub(crate) fn conflict_remediation(names: &[&str]) -> Vec<NextStep> {
              and editing the file by hand remains available."
                 .into(),
         ),
+        // The exit. Without this the operator lands back here: `resolve`
+        // succeeds, the worktree file is clean, and the index still holds the
+        // unmerged entry — so every surface that reads the *effective* view
+        // keeps refusing, and each one points at `resolve` again. Five
+        // surfaces, one circle. `resolve` not staging is a deliberate contract
+        // of this command, which makes `git add` the exit and makes naming it
+        // this text's job. Named only; nothing here runs it.
+        NextStep::Prose(format!(
+            "`resolve` writes the settled span {file_word} to the working tree and stops — it \
+             never stages. Until the {file_word} {} staged the index still holds the unmerged \
+             entry, and `show`, `list`, `why`, and `drift` all keep reporting the conflict. \
+             Review the result with `git diff`, then finish the merge:",
+            if plural { "are" } else { "is" }
+        )),
+        NextStep::Bash(
+            repair_domain::commands_for(repair_domain::BLOCKER_UNSTAGED_RESOLUTION)
+                .iter()
+                .flat_map(|d| {
+                    names
+                        .iter()
+                        .map(move |n| format!("{} {span_root}/{n}", d.command))
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
     ]
 }
 
@@ -128,11 +181,13 @@ pub(crate) fn conflict_remediation(names: &[&str]) -> Vec<NextStep> {
 ///
 /// Same two restraints: it names `--dry-run` rather than a side, and it says
 /// the run may write nothing.
-pub(crate) fn conflict_hint_line(name: &str) -> String {
+pub(crate) fn conflict_hint_line(name: &str, span_root: &str) -> String {
     format!(
         "`git span resolve {name} --dry-run` reports what `--rehash`, `--ours`, and `--theirs` \
          would each write for this span; re-run with the side you want. It writes nothing \
-         unless the side you pick settles every entry."
+         unless the side you pick settles every entry, and it never stages — finish with \
+         `git add {span_root}/{name}` once the result reads right, or this report says the \
+         same thing on the next run."
     )
 }
 
@@ -437,7 +492,19 @@ struct Settlement {
 #[derive(Debug)]
 enum SideOutcome {
     Resolved(Box<Settlement>),
-    Failed(Vec<String>),
+    /// The side cannot settle this file. `reasons` is what the operator reads;
+    /// `blocker` is what the *remediation* is computed from.
+    ///
+    /// Carrying `blocker` is the point. Detection knows more than a sentence:
+    /// it knows an unreadable anchor has a readable same-range counterpart at
+    /// another path, which is a defect `git span drift --fix` repairs. Before
+    /// this field the reporting layer could only see a list of English
+    /// sentences, so it named no command and the operator was left at a dead
+    /// end. See [`crate::cli::repair_domain`].
+    Failed {
+        reasons: Vec<String>,
+        blocker: Vec<repair_domain::Repair>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -559,7 +626,7 @@ pub fn run_resolve(repo: &gix::Repository, args: ResolveArgs, span_root: &str) -
     // Steps 5–8: compute source evidence, run the pre-kernel checks, merge,
     // and settle why/config.
     match evaluate_side(repo, side, &ours, &theirs, &stages) {
-        SideOutcome::Failed(reasons) => {
+        SideOutcome::Failed { reasons, blocker } => {
             // The remediation may not promise what this run has not checked, so
             // check it: evaluate the sides it is about to recommend against
             // this same file and recommend only the ones that settle it.
@@ -574,7 +641,7 @@ pub fn run_resolve(repo: &gix::Repository, args: ResolveArgs, span_root: &str) -
                     )
                 })
                 .collect();
-            Err(failure_error(&name, side, &reasons, &alternatives).into())
+            Err(failure_error(&name, side, &reasons, &alternatives, &blocker).into())
         }
         SideOutcome::Resolved(settlement) => {
             let mut settlement = *settlement;
@@ -583,7 +650,7 @@ pub fn run_resolve(repo: &gix::Repository, args: ResolveArgs, span_root: &str) -
             write_worktree_span(repo, span_root, &name, &mut settlement.merged)?;
             // Step 11: report.
             match args.format {
-                ResolveFormat::Human => print_human(&name, side, &settlement),
+                ResolveFormat::Human => print_human(&name, side, &settlement, span_root),
                 ResolveFormat::Json => print_json(&name, side, &settlement)?,
             }
             Ok(0)
@@ -618,7 +685,7 @@ fn run_dry_run(
                             println!("  {line}");
                         }
                     }
-                    SideOutcome::Failed(reasons) => {
+                    SideOutcome::Failed { reasons, .. } => {
                         println!("{}: would fail", side.flag());
                         for reason in reasons {
                             println!("  {reason}");
@@ -647,7 +714,7 @@ fn run_dry_run(
                             structural_only: Some(s.structural_only),
                             warnings: s.warnings.clone(),
                         },
-                        SideOutcome::Failed(reasons) => SideDocument {
+                        SideOutcome::Failed { reasons, .. } => SideDocument {
                             side: side.name(),
                             outcome: "failed",
                             entries: Vec::new(),
@@ -757,7 +824,18 @@ fn marker_run_len(line: &str, c: char) -> Option<usize> {
 ///
 /// [`SideBuilder`]: crate::cli::drift_fix
 fn verify_driver_shape(raw: &str, name: &str) -> std::result::Result<String, CliError> {
-    let refusal = |reason: String| CliError {
+    // Two blockers live in this function and they have different repair
+    // domains, so they get different remediations — see
+    // [`crate::cli::repair_domain`]. A malformed *shape* (a `[config]` header
+    // inside a block, more blocks in one region than any writer emits) is
+    // re-derivable: `drift --fix` splits the file and writes canonical residue
+    // back. A line on the wrong side of the *separator* is not: every writer
+    // here, `drift --fix` included, reads the separator's position out of the
+    // text rather than deciding it, so `drift --fix` rewrites the marker
+    // labels, changes the file, and leaves the blocker exactly where it was.
+    // Naming it there is what made `resolve` → `drift --fix` → `resolve` a
+    // loop with no exit.
+    let refusal = |reason: String, blocker: &'static [repair_domain::Repair]| CliError {
         subcommand: "resolve",
         summary: format!("span `{name}` is not in the shape `resolve` can settle."),
         what_happened: format!(
@@ -765,16 +843,11 @@ fn verify_driver_shape(raw: &str, name: &str) -> std::result::Result<String, Cli
              produce, and `resolve`'s marker-splitting is not verified safe for it. The span \
              file was not modified."
         ),
-        next_steps: vec![
-            NextStep::Prose(
-                "If this came from Git's default text merge (the span merge driver not \
-                 registered in `.gitattributes`), run the structural fix first:"
-                    .into(),
-            ),
-            NextStep::Bash("git span drift --fix".into()),
-            NextStep::Prose("Otherwise resolve this span file by hand.".into()),
-        ],
+        next_steps: shape_refusal_steps(blocker),
     };
+    let shape_refusal = |reason: String| refusal(reason, repair_domain::BLOCKER_RESIDUE_SHAPE);
+    let unparseable_refusal =
+        |reason: String| refusal(reason, repair_domain::BLOCKER_UNPARSEABLE_RESIDUE);
 
     let mut out = String::new();
     // Blocks are counted per region, split at the first blank line outside
@@ -832,14 +905,15 @@ fn verify_driver_shape(raw: &str, name: &str) -> std::result::Result<String, Cli
                 continue;
             }
             if line.trim() == "[config]" {
-                return Err(refusal(format!(
-                    "Span `{name}` has a `[config]` header inside a conflict block."
+                return Err(unparseable_refusal(format!(
+                    "Span `{name}` has a `[config]` header inside a conflict block, so that \
+                     side does not parse as a span file."
                 )));
             }
             if !in_base
                 && let Some(reason) = boundary_violation(line, in_why_region, name)
             {
-                return Err(refusal(reason));
+                return Err(refusal(reason, repair_domain::BLOCKER_SEPARATOR_PLACEMENT));
             }
         } else if line.is_empty() && !in_why_region {
             // The first blank line outside every block is the anchor/why
@@ -851,13 +925,13 @@ fn verify_driver_shape(raw: &str, name: &str) -> std::result::Result<String, Cli
     }
 
     if anchor_blocks > 1 {
-        return Err(refusal(format!(
+        return Err(shape_refusal(format!(
             "Span `{name}` has {anchor_blocks} conflict blocks in its anchor block; the residue \
              writer coalesces every divergent anchor into one."
         )));
     }
     if why_blocks > 1 {
-        return Err(refusal(format!(
+        return Err(shape_refusal(format!(
             "Span `{name}` has {why_blocks} conflict blocks in its why text; the residue writer \
              writes at most one."
         )));
@@ -967,6 +1041,51 @@ fn boundary_violation(line: &str, in_why_region: bool, name: &str) -> Option<Str
     }
 }
 
+/// The remediation for a [`verify_driver_shape`] refusal, derived from the
+/// blocker rather than written per call site.
+///
+/// When [`repair_domain::commands_for`] returns nothing the refusal says so in
+/// as many words and stops at the hand edit. That empty case is the whole
+/// reason this is computed: the previous text offered `git span drift --fix`
+/// unconditionally, and on the separator-placement blocker that command
+/// rewrites the marker labels — changing the file, advancing nothing, and
+/// sending the operator back into `resolve` for the identical refusal.
+fn shape_refusal_steps(blocker: &[repair_domain::Repair]) -> Vec<NextStep> {
+    let commands = repair_domain::commands_for(blocker);
+    if commands.is_empty() {
+        return vec![
+            NextStep::Prose(format!(
+                "No git-span command repairs this. {}",
+                repair_domain::no_command_reason(blocker)
+            )),
+            NextStep::Prose(
+                "Edit the span file by hand: move each line inside the conflict block to the \
+                 side of the blank-line separator it belongs on — anchor records before it, \
+                 why prose after it — and lift any `[config]` header out of the block \
+                 entirely. `resolve` has written nothing, so the file is exactly as Git left \
+                 it."
+                    .into(),
+            ),
+        ];
+    }
+    let mut steps = vec![NextStep::Prose(
+        "If this came from Git's default text merge (the span merge driver not registered in \
+         `.gitattributes`), the structural fix re-derives the residue:"
+            .into(),
+    )];
+    steps.push(NextStep::Bash(
+        commands
+            .iter()
+            .map(|d| d.command)
+            .collect::<Vec<_>>()
+            .join("\n"),
+    ));
+    steps.push(NextStep::Prose(
+        "Otherwise resolve this span file by hand.".into(),
+    ));
+    steps
+}
+
 /// Wrap a side's parse failure. Names which side failed and the underlying
 /// parse error — residue has not been enumerated yet, so no anchor can be
 /// named. The file is untouched either way.
@@ -1017,7 +1136,12 @@ fn evaluate_side(
     let source_files: Vec<(String, Vec<u8>)> = if side == Side::Rehash {
         match read_clean_source_files(repo, ours, theirs) {
             Ok(files) => files,
-            Err(e) => return SideOutcome::Failed(vec![e.to_string()]),
+            Err(e) => {
+                return SideOutcome::Failed {
+                    reasons: vec![e.to_string()],
+                    blocker: Vec::new(),
+                };
+            }
         }
     } else {
         Vec::new()
@@ -1026,8 +1150,17 @@ fn evaluate_side(
     // Steps 6 + 6b: pre-kernel checks that keep the kernel from producing a
     // hash `resolve` cannot vouch for.
     let mut failures: Vec<String> = Vec::new();
+    // What the *reporting* layer will be allowed to name. Detection fills it;
+    // `failure_error` reads it. Empty means no command in this CLI advances
+    // what stopped this side.
+    let mut blocker: Vec<repair_domain::Repair> = Vec::new();
     if side == Side::Rehash {
-        failures.extend(unverifiable_anchor_failures(ours, theirs, &source_files));
+        let renamed = renamed_anchor_candidates(ours, theirs, &source_files);
+        let unverifiable = unverifiable_anchor_failures(ours, theirs, &source_files, &renamed);
+        if !unverifiable.is_empty() && !renamed.is_empty() {
+            blocker.extend_from_slice(repair_domain::BLOCKER_RENAMED_ANCHOR_PATH);
+        }
+        failures.extend(unverifiable);
         failures.extend(rehash_validity_failures(ours, theirs, &source_files));
     }
 
@@ -1075,7 +1208,10 @@ fn evaluate_side(
                 failures.push("`[config]` diverged between ours and theirs".to_string());
             }
             if !failures.is_empty() {
-                return SideOutcome::Failed(failures);
+                return SideOutcome::Failed {
+                    reasons: failures,
+                    blocker,
+                };
             }
         }
         Side::Ours | Side::Theirs => {
@@ -1234,6 +1370,7 @@ fn unverifiable_anchor_failures(
     ours: &SpanFile,
     theirs: &SpanFile,
     source_files: &[(String, Vec<u8>)],
+    renamed: &[(String, String)],
 ) -> Vec<String> {
     let readable: HashSet<&str> = source_files.iter().map(|(p, _)| p.as_str()).collect();
     let ours_keys: HashSet<(&str, u32, u32)> = ours.anchors.iter().map(anchor_key).collect();
@@ -1251,17 +1388,85 @@ fn unverifiable_anchor_failures(
             (false, true) => Some("theirs"),
             _ => None,
         };
+        // The observation, stated as an observation. Not "this file was
+        // renamed" — an operator who cannot reproduce that claim from the two
+        // sides in front of them has been failed exactly the way this finding
+        // describes, one layer along. What is true and checkable is that some
+        // *other* anchor on this input covers the same range at a path that
+        // does read.
+        let counterpart: String = renamed
+            .iter()
+            .filter(|(dead, _)| *dead == addr)
+            .map(|(_, live)| live.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let same_range = if counterpart.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "; an anchor over the same line range at a different, readable path is present \
+                 on this input ({counterpart})"
+            )
+        };
         failures.insert(match orphan_side {
             Some(side_name) => format!(
                 "{addr}: orphan anchor referenced only by {side_name}; source unreadable, \
-                 cannot verify under --rehash"
+                 cannot verify under --rehash{same_range}"
             ),
             None => format!(
-                "{addr}: source unreadable, cannot verify this anchor under --rehash"
+                "{addr}: source unreadable, cannot verify this anchor under --rehash{same_range}"
             ),
         });
     }
     failures.into_iter().collect()
+}
+
+/// The rename *signal*, and nothing more than the signal.
+///
+/// [`unverifiable_anchor_failures`] refuses an anchor whose source cannot be
+/// read, and until now it named no command — leaving the operator at a dead
+/// end on the one input where a command does apply. Rename repair is squarely
+/// inside `git span drift --fix`'s domain, so the refusal is allowed to name it
+/// (see [`crate::cli::repair_domain`]) exactly when this predicate holds.
+///
+/// The predicate is deliberately the smallest thing that supports the claim:
+/// **for an unreadable anchor, does a readable anchor over the same line range
+/// at a different path exist across the two sides?** It is computed over the
+/// union of both parsed sides and the already-collected readable source set,
+/// so it needs nothing beyond what `--rehash` has already read.
+///
+/// It notably does **not** call `plan_orphan_removals`. That function is pure,
+/// so borrowing its candidate search was tempting, but its search is defined
+/// over orphan index sets — precisely the bookkeeping `resolve` was moved off
+/// — and importing it would re-couple the two. What is needed here is one
+/// range comparison, not a relocation planner.
+///
+/// What the caller may say from this is bounded by what was actually observed:
+/// a same-range readable counterpart exists. It is **not** evidence that a
+/// rename happened — an unrelated anchor can share a range — and the message
+/// must not claim one.
+fn renamed_anchor_candidates(
+    ours: &SpanFile,
+    theirs: &SpanFile,
+    source_files: &[(String, Vec<u8>)],
+) -> Vec<(String, String)> {
+    let readable: HashSet<&str> = source_files.iter().map(|(p, _)| p.as_str()).collect();
+    let union: Vec<&AnchorRecord> = ours.anchors.iter().chain(theirs.anchors.iter()).collect();
+    let mut pairs = BTreeSet::new();
+    for dead in union.iter().filter(|a| !readable.contains(a.path.as_str())) {
+        for live in union.iter().filter(|a| readable.contains(a.path.as_str())) {
+            if live.path != dead.path
+                && live.start_line == dead.start_line
+                && live.end_line == dead.end_line
+            {
+                pairs.insert((
+                    address(&dead.path, dead.start_line, dead.end_line),
+                    address(&live.path, live.start_line, live.end_line),
+                ));
+            }
+        }
+    }
+    pairs.into_iter().collect()
 }
 
 /// The `--ours`/`--theirs` counterpart to [`unverifiable_anchor_failures`]: on
@@ -1560,13 +1765,19 @@ fn field_label_config(
 /// vanishes only when none does — in which case the operator is told that, and
 /// pointed at `--dry-run` and a hand edit instead of at a command that will
 /// fail the same way.
-fn failure_error(name: &str, side: Side, reasons: &[String], alternatives: &[Side]) -> CliError {
+fn failure_error(
+    name: &str,
+    side: Side,
+    reasons: &[String],
+    alternatives: &[Side],
+    blocker: &[repair_domain::Repair],
+) -> CliError {
     let listed = reasons
         .iter()
         .map(|r| format!("- {r}"))
         .collect::<Vec<_>>()
         .join("\n");
-    let next_steps = if alternatives.is_empty() {
+    let mut next_steps = if alternatives.is_empty() {
         vec![
             NextStep::Prose(
                 "The other sides were evaluated against this same file and do not settle it \
@@ -1601,6 +1812,40 @@ fn failure_error(name: &str, side: Side, reasons: &[String], alternatives: &[Sid
             )),
         ]
     };
+    // The blocker-derived half. `--rehash`'s unreadable-source refusal used to
+    // name nothing at all, which is the same defect as naming the wrong thing:
+    // on the input where an anchor's source cannot be read *and* a same-range
+    // readable anchor sits at another path, rename reconciliation is squarely
+    // inside `git span drift --fix`'s repair domain and it is the exit.
+    //
+    // The wording is fenced by two things it must not claim. It does not say
+    // the file was renamed — only that the counterpart exists, which is all
+    // the tool saw. And it does not present `resolve` as the rename command in
+    // general: a `git mv` that neither side re-anchors after merges with no
+    // conflict markers at all, so `resolve` says "nothing to resolve" and never
+    // runs, and that stale anchor on a dead path is `drift`'s alone. This
+    // refusal is the diverged case only — both sides re-anchored, which is why
+    // there is a conflict here to refuse.
+    for domain in repair_domain::commands_for(blocker) {
+        next_steps.push(NextStep::Prose(format!(
+            "The entries above pair an anchor whose source cannot be read with one over the \
+             same line range at a different, readable path. That is what a rename looks like \
+             from here — the tool has seen the pairing, not the rename itself. \
+             `{}` reconciles renames; run it, then re-run `resolve` on the residue it leaves:",
+            domain.command
+        )));
+        next_steps.push(NextStep::Bash(format!(
+            "{}\ngit span resolve {name} --dry-run",
+            domain.command
+        )));
+        next_steps.push(NextStep::Prose(
+            "This applies to a rename the two sides disagreed about. A `git mv` that neither \
+             side re-anchored after produces no conflict markers in the span file at all — \
+             `resolve` reports `no conflict markers; nothing to resolve` and is not involved; \
+             `git span drift` surfaces that stale anchor on its own."
+                .into(),
+        ));
+    }
     CliError {
         subcommand: "resolve",
         summary: format!(
@@ -1633,13 +1878,20 @@ fn settlement_lines(settlement: &Settlement) -> Vec<String> {
     lines
 }
 
-fn print_human(name: &str, side: Side, settlement: &Settlement) {
+fn print_human(name: &str, side: Side, settlement: &Settlement, span_root: &str) {
     println!("resolved `{name}` with {}", side.flag());
     for line in settlement_lines(settlement) {
         println!("  {line}");
     }
+    // "not staged" was already here and was already true; what it did not say
+    // is that the merge is therefore unfinished, so an operator who stopped at
+    // this line went straight back to `show`/`drift` and was told the span was
+    // still conflicted. Name the exit. Naming it is all that happens — this
+    // command does not stage, by contract.
+    println!("  `{name}` was written to the worktree and not staged; review it with `git diff`.");
     println!(
-        "  `{name}` was written to the worktree and not staged; review it with `git diff`."
+        "  The index still holds the unmerged entry until you stage it: `{} {span_root}/{name}`.",
+        repair_domain::GIT_ADD.command
     );
 }
 
@@ -1684,6 +1936,6 @@ pub fn settle_for_test(
     };
     match evaluate_side(repo, side, ours, theirs, &StageEvidence::default()) {
         SideOutcome::Resolved(s) => Ok((s.merged.clone(), s.why_label.clone(), s.config_label.clone())),
-        SideOutcome::Failed(reasons) => Err(reasons),
+        SideOutcome::Failed { reasons, .. } => Err(reasons),
     }
 }

@@ -1849,9 +1849,28 @@ their refined purpose
 
     let out = repo.run_span(["drift", "--fix", "--no-exit-code"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
+    // This assertion used to demand the word `Reconciled` on exactly the run
+    // that had just printed `partial resolution: ... residue remains`. The
+    // summary gated the word on `drift_count == 0`, and the count was zero
+    // because a still-conflicted span file is *excluded from analysis* — not
+    // because it was settled. `FixResult::residue_span_names` now carries the
+    // fact the partial branch used to print and drop.
     assert!(
-        stdout.contains("Reconciled 1 span, 2 anchors (2 updated, 0 removed)."),
-        "expected summary for partially-resolved conflict; stdout=\n{stdout}"
+        !stdout.contains("Reconciled"),
+        "a span left carrying residue this same run must not be called reconciled; \
+         stdout=\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Updated 2 anchors (2 updated, 0 removed)")
+            && stdout.contains("still carries residue")
+            && stdout.contains("not analyzed for drift"),
+        "the summary must say what was actually done and why the zero drift count proves \
+         nothing about `m`; stdout=\n{stdout}"
+    );
+    assert!(
+        stdout.contains("git span resolve m"),
+        "the span left conflicted must reach the remediation that names `resolve`; \
+         stdout=\n{stdout}"
     );
     Ok(())
 }

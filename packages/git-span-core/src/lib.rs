@@ -24,7 +24,7 @@ pub mod error;
 pub mod span_file;
 pub mod validation;
 
-pub use error::{Error, Result};
+pub use error::{ConflictKind, Error, Result};
 pub use span_file::{
     AnchorLineShape, CopyDetection, SpanConfig, SpanMergeResult, UnresolvedAnchor,
     classify_anchor_line, has_conflict_markers, merge_span_files, resolve_config,

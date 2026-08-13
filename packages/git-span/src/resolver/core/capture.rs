@@ -397,7 +397,7 @@ fn load_committed(repo: &gix::Repository, span_root: &str) -> Result<CommittedSp
                 blob: oid.to_string(),
             });
         }
-        let file = reader.read_head_blob(*oid)?;
+        let file = reader.read_head_blob(name, *oid)?;
         spans.push(crate::types::span_from_file(name, &file));
     }
     Ok(CommittedSpans { blobs, spans })

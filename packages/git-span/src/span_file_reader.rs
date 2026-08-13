@@ -13,6 +13,23 @@ use std::path::Path;
 use crate::span_file::SpanFile;
 use crate::{Error, Result};
 
+/// Parse a layer's text, naming the span in any error it raises.
+///
+/// The kernel parses a string and has no name to put in its error; this layer
+/// does. Routing every parse through here is what lets
+/// `Error::SpanConflict { span, kind }` carry both halves — the name for the
+/// operator and the kind for the surface deciding what to advise — instead of
+/// the kernel's detail string arriving where a span name was expected.
+fn parse_named(name: &str, text: &str) -> Result<SpanFile> {
+    SpanFile::parse(text).map_err(|e| match e {
+        git_span_core::Error::SpanConflict(kind) => Error::SpanConflict {
+            span: name.to_string(),
+            kind,
+        },
+        other => other.into(),
+    })
+}
+
 /// Reads span files from the three Git layers (HEAD / index / worktree)
 /// with configurable overlay semantics.
 pub struct SpanFileReader<'repo> {
@@ -39,7 +56,10 @@ impl<'repo> SpanFileReader<'repo> {
         // file means an unresolved merge. Refuse to present any layer's
         // content as valid — the effective view is unreliable.
         if self.is_unmerged_in_index(name)? {
-            return Err(Error::SpanConflict(name.to_string()));
+            return Err(Error::SpanConflict {
+                span: name.to_string(),
+                kind: git_span_core::ConflictKind::UnmergedIndex,
+            });
         }
         // Worktree layer (highest priority).
         if let Some(span) = self.read_worktree(name)? {
@@ -71,7 +91,7 @@ impl<'repo> SpanFileReader<'repo> {
     pub fn read_head(&self, name: &str) -> Result<Option<SpanFile>> {
         let span_path = self.span_path(name);
         match crate::git::tree_entry_at(self.repo, "HEAD", Path::new(&span_path))? {
-            Some((_mode, oid)) => self.read_head_blob(oid).map(Some),
+            Some((_mode, oid)) => self.read_head_blob(name, oid).map(Some),
             None => Ok(None),
         }
     }
@@ -84,11 +104,11 @@ impl<'repo> SpanFileReader<'repo> {
     /// `tree_entry_at` HEAD re-walk that `read_head` performs internally.
     /// Byte-for-byte identical read/parse to `read_head`'s inner branch, so a
     /// caller with a resolved id gets exactly the same `SpanFile`.
-    pub fn read_head_blob(&self, oid: gix::ObjectId) -> Result<SpanFile> {
+    pub fn read_head_blob(&self, name: &str, oid: gix::ObjectId) -> Result<SpanFile> {
         let text = crate::git::read_git_text(self.repo, &oid.to_string())?;
         crate::perf::record_list_layer_read();
         crate::perf::record_list_bytes_parsed(text.len() as u64);
-        SpanFile::parse(&text).map_err(Into::into)
+        parse_named(name, &text)
     }
 
     /// Read the span file from the index (staged) layer.
@@ -108,7 +128,7 @@ impl<'repo> SpanFileReader<'repo> {
                 let text = self.read_index_blob_text(entry.id)?;
                 crate::perf::record_list_layer_read();
                 crate::perf::record_list_bytes_parsed(text.len() as u64);
-                return SpanFile::parse(&text).map(Some).map_err(Into::into);
+                return parse_named(name, &text).map(Some);
             }
         }
         Ok(None)
@@ -128,7 +148,7 @@ impl<'repo> SpanFileReader<'repo> {
             let content = std::fs::read_to_string(&abs)?;
             crate::perf::record_list_layer_read();
             crate::perf::record_list_bytes_parsed(content.len() as u64);
-            SpanFile::parse(&content).map(Some).map_err(Into::into)
+            parse_named(name, &content).map(Some)
         } else {
             Ok(None)
         }

@@ -1027,11 +1027,18 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
             //   again". "Reconciled" is withheld while drift remains —
             //   nothing is reconciled. M is the real count (0 when the fix
             //   could do no work); the drift report above carries the state.
-            // - zero drift with work done → "Reconciled N spans, M anchors
-            //   (U updated, K removed)." — now literally true.
+            // - zero drift with residue this pass left behind → "Reconciled"
+            //   is withheld and the spans are named. The comment here used to
+            //   claim the word was "now literally true" whenever drift hit
+            //   zero; it was not, because a span `--fix` only partially
+            //   resolved is excluded from analysis and so scores zero drift
+            //   without being clean. `FixResult::residue_span_names` is what
+            //   tells the two zeroes apart.
+            // - zero drift with work done and no residue → "Reconciled N
+            //   spans, M anchors (U updated, K removed)."
             // - zero drift with zero work → nothing printed: the `0 drift`
             //   line above already covers the clean case.
-            let conflicted: Vec<&str> = spans
+            let mut conflicted: Vec<&str> = spans
                 .iter()
                 .filter(|s| {
                     s.anchors
@@ -1040,6 +1047,19 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
                 })
                 .map(|s| s.name.as_str())
                 .collect();
+            // A span `--fix` partially resolved this run is conflicted for
+            // every purpose the footer below serves, but it is not in `spans`
+            // as a `MergeConflict` — that is the whole excluded-from-analysis
+            // problem. Union it in so the one place that names `resolve`
+            // reaches the spans that most need it.
+            if let Some(ref fr) = fix_result {
+                for name in &fr.residue_span_names {
+                    if !conflicted.contains(&name.as_str()) {
+                        conflicted.push(name.as_str());
+                    }
+                }
+                conflicted.sort_unstable();
+            }
             let conflicted_anchor_count = spans
                 .iter()
                 .flat_map(|s| s.anchors.iter())
@@ -1078,6 +1098,32 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
                             ""
                         },
                     );
+                } else if !fr.residue_span_names.is_empty() {
+                    // `drift_count == 0` is not evidence of a clean tree here.
+                    // A span this pass only partially resolved still carries
+                    // conflict markers, and a conflicted span file is excluded
+                    // from analysis — so it contributes zero drift because it
+                    // was never analyzed, not because it is settled. Reporting
+                    // "Reconciled" off that zero told the operator the one
+                    // thing this pass had just finished proving false. The
+                    // partial-resolution branch now records which spans it
+                    // left residue in, so the word is withheld and the spans
+                    // are named.
+                    let names: Vec<&str> =
+                        fr.residue_span_names.iter().map(String::as_str).collect();
+                    println!(
+                        "Updated {} {} ({} updated, {} removed); {} {} still {} residue and {} \
+                         not analyzed for drift ({}).",
+                        total,
+                        if total == 1 { "anchor" } else { "anchors" },
+                        updated,
+                        removed,
+                        names.len(),
+                        if names.len() == 1 { "span" } else { "spans" },
+                        if names.len() == 1 { "carries" } else { "carry" },
+                        if names.len() == 1 { "was" } else { "were" },
+                        names.join(", "),
+                    );
                 } else if total > 0 {
                     let spans = fr.spans_touched;
                     println!(
@@ -1110,7 +1156,10 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
                     },
                     conflicted.join(", "),
                 );
-                println!("{}", crate::cli::resolve::conflict_hint_line(first));
+                println!(
+                    "{}",
+                    crate::cli::resolve::conflict_hint_line(first, span_root)
+                );
                 if conflicted.len() > 1 {
                     println!("Repeat for each span named above.");
                 }

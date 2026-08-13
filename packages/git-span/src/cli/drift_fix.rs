@@ -17,7 +17,7 @@ use anyhow::Result;
 use git_span_core::UnresolvedAnchor;
 use git_span_core::span_file::merge_span_files;
 use git_span_core::{RK64_ALGORITHM, cheap_fingerprint_with_extent, rk64_to_hex};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// Carries the result of a single `apply_fix` invocation.
 pub(crate) struct FixResult {
@@ -48,6 +48,18 @@ pub(crate) struct FixResult {
     /// How many anchor records were removed outright (interior-anchor
     /// repair: records whose path falls under the span root).
     pub(crate) anchors_removed: usize,
+    /// Spans this pass **partially** resolved: the resolved anchors were
+    /// written clean and residue was written back inside conflict markers.
+    ///
+    /// The partial-resolution branch below printed that fact and then dropped
+    /// it, and the summary line had no way to ask. So it asked the only
+    /// question it could — `drift_count == 0` — which a still-conflicted span
+    /// answers *yes* for the wrong reason: a conflicted span file is excluded
+    /// from analysis, so it contributes no drift because it was never looked
+    /// at, not because it is clean. `drift --fix` then printed "Reconciled" on
+    /// a span it had explicitly not finished. This set is the discriminator
+    /// the reporting layer was missing.
+    pub(crate) residue_span_names: BTreeSet<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -80,19 +92,29 @@ pub(crate) enum FixBlocker {
 impl FixBlocker {
     /// The next-step line for this blocker, naming `resolve` for what it
     /// actually does with this class of residue and no more.
-    pub(crate) fn next_step(self, span: &str) -> String {
+    pub(crate) fn next_step(self, span: &str, span_root: &str) -> String {
+        // Both arms end at the same exit, because both route to `resolve` and
+        // `resolve` deliberately never stages: an operator who follows either
+        // sentence gets a clean worktree span file and an index that still
+        // holds the unmerged entry, so the very next `drift` reports the
+        // conflict again. Naming `git add` is what turns the pointer into a
+        // way out. Named only — `--fix` does not stage on this path either.
+        let stage = format!(
+            "`git span resolve` writes the worktree file and stops; finish the merge with \
+             `git add {span_root}/{span}`."
+        );
         match self {
             Self::SideSettles => format!(
                 "`git span resolve {span} --ours` (or `--theirs`) settles this span from the \
                  conflict text itself, without reading that source; `git span resolve {span} \
-                 --dry-run` shows what each side would write first."
+                 --dry-run` shows what each side would write first. {stage}"
             ),
             Self::RenameByHand => format!(
                 "`git span resolve {span}` can settle this file under an explicit side, but it \
                  does no rename recovery: `--rehash` fails closed naming the orphaned anchor, \
                  and `--ours`/`--theirs` write a clean span that still carries the old path for \
                  you to re-anchor with `git span replace`. See what each side would write with \
-                 `git span resolve {span} --dry-run`."
+                 `git span resolve {span} --dry-run`. {stage}"
             ),
         }
     }
@@ -773,6 +795,7 @@ fn resolve_conflicted_span(
             &theirs.why,
         )?;
         fix_result.rewritten_span_names.insert(name.to_string());
+        fix_result.residue_span_names.insert(name.to_string());
         fix_result.spans_touched += 1;
         fix_result.anchors_updated += result.merged.anchors.len();
 
@@ -824,6 +847,7 @@ pub(crate) fn apply_fix(
     fuzzy_threshold: f64,
 ) -> Result<FixResult> {
     let mut fix = FixResult {
+        residue_span_names: BTreeSet::new(),
         rewritten_anchor_ids: HashSet::new(),
         rewritten_span_names: HashSet::new(),
         spans_touched: 0,
@@ -876,7 +900,7 @@ pub(crate) fn apply_fix(
                     // the stack) gets no pointer rather than a guessed one.
                     eprintln!("warning: cannot resolve conflict in `{}`: {}", m.name, e);
                     if let Some(blocked) = e.downcast_ref::<ConflictFixBlocked>() {
-                        eprintln!("  {}", blocked.blocker.next_step(&m.name));
+                        eprintln!("  {}", blocked.blocker.next_step(&m.name, span_root));
                     }
                 }
             }

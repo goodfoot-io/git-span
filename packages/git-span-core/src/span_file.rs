@@ -171,9 +171,7 @@ impl SpanFile {
         // it as valid span data so `show`/`list`/`drift` never present
         // `<<<<<<<` / `=======` / `>>>>>>>` content as real why/anchors.
         if has_conflict_markers(input) {
-            return Err(Error::SpanConflict(
-                "span file contains Git conflict markers".to_string(),
-            ));
+            return Err(Error::SpanConflict(crate::error::ConflictKind::MarkerText));
         }
         // Split on first blank line (double newline). `why_first_line` is
         // the 1-based line number of the why section's first line in the

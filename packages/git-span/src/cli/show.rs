@@ -291,15 +291,10 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs, span_root: &str) -> Resu
         // Fail-closed: a span in a Git conflict state cannot be shown —
         // refuse explicitly rather than rendering conflict-marker text as
         // valid why/anchor data.
-        let conflict_err = |name: &str| CliError {
+        let conflict_err = |name: &str, kind: git_span_core::ConflictKind| CliError {
             subcommand: "show",
             summary: format!("span `{name}` is in a Git conflict state."),
-            what_happened: format!(
-                "The span file for `{name}` has an unresolved merge \
-                 (unmerged index entry or `<<<<<<<`/`>>>>>>>` markers). \
-                 git-span refuses to present conflict-marker content as \
-                 valid span data."
-            ),
+            what_happened: crate::cli::resolve::conflict_diagnosis(name, kind),
             next_steps: {
                 // The refusal used to end at "resolve the merge conflict in
                 // the span file" over a `git status` — an instruction to open
@@ -307,13 +302,13 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs, span_root: &str) -> Resu
                 // to replace. Naming it here is the difference between the
                 // command existing and the operator finding it.
                 let mut steps = vec![NextStep::Bash(format!("git status {span_root}/{name}"))];
-                steps.extend(crate::cli::resolve::conflict_remediation(&[name]));
+                steps.extend(crate::cli::resolve::conflict_remediation(&[name], span_root));
                 steps
             },
         };
         crate::span::read::read_span_in(repo, &args.name, span_root).map_err(|e| {
-            if matches!(e, crate::Error::SpanConflict(_)) {
-                conflict_err(&args.name)
+            if let crate::Error::SpanConflict { kind, .. } = e {
+                conflict_err(&args.name, kind)
             } else if matches!(e, crate::Error::SpanNotFound(_)) {
                 CliError {
                     subcommand: "show",
@@ -424,7 +419,7 @@ pub fn run_list(repo: &gix::Repository, args: ListArgs, span_root: &str) -> Resu
                 next_steps: {
                     let mut steps = vec![NextStep::Bash(format!("git status {span_root}"))];
                     let names: Vec<&str> = in_scope.iter().map(String::as_str).collect();
-                    steps.extend(crate::cli::resolve::conflict_remediation(&names));
+                    steps.extend(crate::cli::resolve::conflict_remediation(&names, span_root));
                     steps
                 },
             }
