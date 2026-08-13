@@ -27,6 +27,28 @@
 //! and let [`commands_for`] decide which commands may appear. The decision is
 //! then a property of the data, testable on its own, rather than of prose
 //! written once and copied thereafter.
+//!
+//! **The failure this module keeps meeting, stated once.** Every defect found
+//! in these remediations has been a guard that works for a reason one frame
+//! away from the property it is supposed to hold: a gate filtering `--dry-run`
+//! because it is a report, on a fence where it was the tail of a sequence; this
+//! table consulted with a literal blocker instead of the state's own; a fixture
+//! asserting a substring that every branch prints; a lifetime bound sitting on
+//! a caller rather than on the function it protects. Each still passes, still
+//! reads as protection, and stops holding the moment the frame moves. When
+//! adding a check here, the question is not whether it passes but whether what
+//! it consumes was *derived* from the thing it claims to verify.
+//!
+//! The same holds for the sentence a refusal prints when *no* command
+//! qualifies. It was first written per **blocker** — one branch for separator
+//! placement and one claim about `drift --fix` for everything else — and that
+//! second claim was true of a `[config]` header before the separator and false
+//! of one after it, where `drift --fix` rewrites the file and drops the span's
+//! settings. So the reason hangs off the [`Repair`] variant as well, via
+//! [`Repair::no_command_reason`]: a claim about a command's behaviour can then
+//! only reach the case it was written about.
+
+use crate::cli::error::NextStep;
 
 /// A class of defect a command can repair.
 ///
@@ -48,15 +70,34 @@ pub(crate) enum Repair {
     /// two sides, which collapses the extra blocks and re-hashes.
     ResidueShape,
     /// A conflict side that does not parse as a span file at all — a `[config]`
-    /// header stranded inside a block being the case that occurs.
+    /// header stranded inside a block — where that block sits in the **anchor
+    /// region**, before the blank-line separator.
     ///
-    /// **No command repairs this.** Re-deriving residue means merging the two
-    /// sides, and a side that will not parse cannot be merged: `drift --fix`
-    /// bails with `malformed anchor line: no space found in `[config]`` and
-    /// leaves the file byte-identical. This variant exists because the
-    /// mechanical gate caught it — the refusal named `drift --fix` for both
-    /// shape defects, and only one of them was really in its domain.
-    UnparseableResidueSide,
+    /// **No command repairs this, and none touches the file either.**
+    /// Re-deriving residue means merging the two sides, and a side that will
+    /// not parse cannot be merged: `drift --fix` bails with `malformed anchor
+    /// line: no space found in `[config]`` and leaves the file byte-identical.
+    /// This variant exists because the mechanical gate caught it — the refusal
+    /// named `drift --fix` for both shape defects, and only one of them was
+    /// really in its domain.
+    UnparseableAnchorResidue,
+    /// The same stranded `[config]` header, in a block that sits in the **why
+    /// region**, after the separator. Split from the anchor-region variant
+    /// because the two behave *oppositely* under the command the operator
+    /// reaches for, and one message cannot be true of both.
+    ///
+    /// `[config]` is the span file's trailing block, so this is the shape a
+    /// default text merge actually produces when both sides edited settings and
+    /// the why prose above them diverged too. **No command repairs it — but
+    /// `drift --fix` is not inert on it.** Its split still cannot merge an
+    /// unparseable side, yet it rewrites the residue anyway and writes that
+    /// side back *empty*: the `[config]` block, its settings, and any prose
+    /// beside them are dropped, and the file retains no evidence that anything
+    /// stood there. It exits 0 while doing so. Saying "leaves it
+    /// byte-identical" here — which is what one shared message did — steers an
+    /// operator straight into it and then into the hand-resolve that makes it
+    /// permanent.
+    UnparseableWhyResidue,
     /// Choosing between two divergent values inside well-formed residue — the
     /// question `resolve`'s side flags answer.
     ResidueSettlement,
@@ -92,9 +133,15 @@ impl RepairDomain {
 
 /// `git span drift --fix`.
 ///
-/// Its domain is exactly what its implementation does: re-anchor and re-hash
+/// Its domain is what it *repairs*, not what it calls: re-anchor and re-hash
 /// drifted anchors, canonicalize marker labels, and re-derive residue by
 /// splitting a conflicted span file and merging the two sides structurally.
+/// The distinction is load-bearing rather than pedantic — `drift --fix` does
+/// call `git add` (see `drift_fix.rs`'s re-stage step), and reading that as
+/// domain membership would put [`Repair::IndexStaging`] here and rebuild the
+/// loop: on the settled-text-unmerged-index state, running it leaves both
+/// unmerged stages exactly where they were. The apparent gap in this table is
+/// the table being right.
 /// It does **not** appear here with [`Repair::SeparatorPlacement`], and that
 /// omission is the finding: its split reads the separator from the text
 /// exactly as `resolve`'s does, so a line on the wrong side of it stays there.
@@ -121,27 +168,108 @@ pub(crate) const RESOLVE: RepairDomain = RepairDomain {
     repairs: &[Repair::ResidueSettlement],
 };
 
-/// Every command this module knows about, in the order a remediation would
-/// naturally present them.
-const ALL: &[&RepairDomain] = &[&DRIFT_FIX, &RESOLVE, &GIT_ADD];
+/// Every command this module knows about, in the order a remediation must
+/// present them: re-derive the residue, then settle it, then stage the result.
+///
+/// That order used to be described here as the one a remediation "would
+/// naturally present" — a claim about intent that nothing enforced, on a list
+/// whose consumers joined it into a single fence. Every declared blocker holds
+/// one [`Repair`] and the domains are disjoint, so every such fence is one line
+/// today and the order never shows. A blocker spanning two domains —
+/// `&[ResidueShape, ResidueSettlement]` is an entirely natural one to want —
+/// emits `drift --fix` followed by `resolve` from this declaration alone,
+/// which is an ordered sequence nobody authored. [`remediation_fence`] emits it
+/// as [`NextStep::Ordered`], so the order this list declares is the order the
+/// type claims and the one a gate can check.
+pub(crate) const ALL: &[&RepairDomain] = &[&DRIFT_FIX, &RESOLVE, &GIT_ADD];
+
+/// The commands for `blocker` as a fence, **with the variant declared** rather
+/// than defaulted.
+///
+/// Consumers used to `join("\n")` [`commands_for`]'s output into a
+/// [`NextStep::Bash`], which says the lines are order-independent — a claim
+/// nobody made and, for a multi-domain blocker, a false one. Emitting
+/// [`NextStep::Ordered`] states what [`ALL`] means: run them in this order,
+/// each against what the previous one left. A one-command fence satisfies both
+/// readings, so nothing changes today; the point is that the first fence that
+/// does not is typed correctly on the day it appears.
+pub(crate) fn remediation_fence(blocker: &[Repair]) -> NextStep {
+    NextStep::Ordered(
+        commands_for(blocker)
+            .iter()
+            .map(|d| d.command.to_string())
+            .collect(),
+    )
+}
+
+impl Repair {
+    /// Why nothing can be named for *this* repair, and what the command the
+    /// operator would reach for does to the file anyway.
+    ///
+    /// `None` means some command's domain covers the repair, so the question
+    /// never arises; [`unrepairable_repairs_state_why`] holds the two halves in
+    /// step.
+    ///
+    /// **The reason belongs here, on the variant, and not on the blocker** —
+    /// the same move [`commands_for`] already makes for command names. It was
+    /// written once per *blocker*, as a branch over the repair set, and the
+    /// non-separator arm then asserted a single behaviour of `drift --fix` for
+    /// every other unrepairable repair. The unparseable-side repair had two
+    /// variants by then and they behave oppositely, so the shared sentence was
+    /// true of one and false of the other: it promised a byte-identical file on
+    /// the very input where `drift --fix` deletes the operator's `[config]`.
+    /// Keyed on the variant, a claim can only be made about the case it was
+    /// written for.
+    fn no_command_reason(self) -> Option<&'static str> {
+        match self {
+            Repair::AnchorAddress
+            | Repair::MarkerLabel
+            | Repair::ResidueShape
+            | Repair::ResidueSettlement
+            | Repair::IndexStaging => None,
+            Repair::SeparatorPlacement => Some(
+                "`git span drift --fix` in particular does not: it re-anchors drifted anchors \
+                 and rewrites conflict-marker labels, and it reads the anchor/why separator out \
+                 of the file exactly as `resolve` does rather than deciding which side of it a \
+                 line belongs on. Running it here changes the file — the labels — and leaves \
+                 this refusal saying the same thing on the next run.",
+            ),
+            Repair::UnparseableAnchorResidue => Some(
+                "`git span drift --fix` in particular does not: re-deriving residue means \
+                 merging the two sides, and a side that will not parse cannot be merged. With \
+                 the unparseable block before the separator it bails on this file and leaves it \
+                 byte-identical.",
+            ),
+            Repair::UnparseableWhyResidue => Some(
+                "`git span drift --fix` in particular does not — and here it is destructive \
+                 rather than merely useless. It still cannot merge a side that will not parse, \
+                 but this block sits after the separator, in the why text, where it rewrites \
+                 the residue anyway: the side carrying the unparseable line is written back \
+                 **empty**, and everything standing on it — the `[config]` block and its \
+                 settings, any why prose beside them — is gone from the file with nothing left \
+                 to show it was ever there. It exits 0. What remains looks like a small why \
+                 conflict, which is the trap: hand-resolving that and staging the file makes \
+                 the loss permanent. If you have already run it, do not resolve by hand — the \
+                 merge's unmerged index stages still hold both original sides, and running \
+                 `git span resolve` on this span with `--ours` or `--theirs` reads `[config]` \
+                 back out of them. Once the stages are gone too, `git log -p` on the span file \
+                 is the only record.",
+            ),
+        }
+    }
+}
 
 /// Why nothing can be named, for the blockers no command repairs.
 ///
 /// A refusal that simply falls silent about the command it used to offer reads
 /// like an omission. Saying *which* command the operator would reach for and
 /// why it will not help is what stops them reaching for it anyway.
-pub(crate) fn no_command_reason(blocker: &[Repair]) -> &'static str {
-    if blocker.contains(&Repair::SeparatorPlacement) {
-        "`git span drift --fix` in particular does not: it re-anchors drifted anchors and \
-         rewrites conflict-marker labels, and it reads the anchor/why separator out of the file \
-         exactly as `resolve` does rather than deciding which side of it a line belongs on. \
-         Running it here changes the file — the labels — and leaves this refusal saying the \
-         same thing on the next run."
-    } else {
-        "`git span drift --fix` in particular does not: re-deriving residue means merging the \
-         two sides, and a side that will not parse cannot be merged. It bails on this file and \
-         leaves it byte-identical."
-    }
+pub(crate) fn no_command_reason(blocker: &[Repair]) -> String {
+    blocker
+        .iter()
+        .filter_map(|r| r.no_command_reason())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The commands a refusal blocked on `blocker` may name.
@@ -166,8 +294,13 @@ pub(crate) const BLOCKER_SEPARATOR_PLACEMENT: &[Repair] = &[Repair::SeparatorPla
 pub(crate) const BLOCKER_RESIDUE_SHAPE: &[Repair] = &[Repair::ResidueShape];
 
 /// The blocker `resolve` reports when a conflict side will not parse — a
-/// `[config]` header inside a block.
-pub(crate) const BLOCKER_UNPARSEABLE_RESIDUE: &[Repair] = &[Repair::UnparseableResidueSide];
+/// `[config]` header inside a block — in the anchor region.
+pub(crate) const BLOCKER_UNPARSEABLE_ANCHOR_RESIDUE: &[Repair] =
+    &[Repair::UnparseableAnchorResidue];
+
+/// The same defect after the separator, where `drift --fix` is destructive
+/// rather than inert. Two constants because the two carry different reasons.
+pub(crate) const BLOCKER_UNPARSEABLE_WHY_RESIDUE: &[Repair] = &[Repair::UnparseableWhyResidue];
 
 /// The blocker `resolve --rehash` reports when an anchor's source cannot be
 /// read, *and* the other side carries a readable anchor over the same line
@@ -178,6 +311,33 @@ pub(crate) const BLOCKER_RENAMED_ANCHOR_PATH: &[Repair] = &[Repair::AnchorAddres
 /// `resolve` has settled the text: the index is still unmerged and `resolve`
 /// does not stage.
 pub(crate) const BLOCKER_UNSTAGED_RESOLUTION: &[Repair] = &[Repair::IndexStaging];
+
+/// What is actually outstanding in a `SpanConflict` state, **derived from the
+/// state** rather than assumed by the caller.
+///
+/// This exists because the shared conflict remediation queried [`commands_for`]
+/// with [`BLOCKER_UNSTAGED_RESOLUTION`] hardcoded — the table consulted with the
+/// answer already supplied. `commands_for` cannot decline a command when the
+/// caller hands it the blocker that justifies one, so `git add` was named on
+/// [`git_span_core::ConflictKind::MarkerText`], where the index holds a single
+/// merged entry and there is nothing to stage, four lines under a diagnosis
+/// that said so. Every domain test still passed, because they all asked the
+/// table about constants and never about a real state.
+///
+/// * [`MarkerText`](git_span_core::ConflictKind::MarkerText): markers in the
+///   text, index merged. Settling the text is the whole fix — settlement only.
+/// * [`UnmergedIndex`](git_span_core::ConflictKind::UnmergedIndex): Git
+///   recorded the conflict and nothing has settled it. The text may or may not
+///   still carry markers, but the stage entry outlives the text either way, so
+///   both repairs are live.
+pub(crate) fn conflict_blocker(kind: git_span_core::ConflictKind) -> &'static [Repair] {
+    match kind {
+        git_span_core::ConflictKind::MarkerText => &[Repair::ResidueSettlement],
+        git_span_core::ConflictKind::UnmergedIndex => {
+            &[Repair::ResidueSettlement, Repair::IndexStaging]
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -207,11 +367,68 @@ mod tests {
     }
 
     /// The gate's own catch: a side that will not parse is not re-derivable,
-    /// so the shape refusal had to stop naming `drift --fix` for that half.
+    /// so the shape refusal had to stop naming `drift --fix` for either half.
     #[test]
     fn unparseable_residue_side_admits_no_command() {
-        assert!(commands_for(BLOCKER_UNPARSEABLE_RESIDUE).is_empty());
-        assert!(!DRIFT_FIX.intersects(BLOCKER_UNPARSEABLE_RESIDUE));
+        for blocker in [
+            BLOCKER_UNPARSEABLE_ANCHOR_RESIDUE,
+            BLOCKER_UNPARSEABLE_WHY_RESIDUE,
+        ] {
+            assert!(commands_for(blocker).is_empty());
+            assert!(!DRIFT_FIX.intersects(blocker));
+        }
+    }
+
+    /// The two unparseable-side variants must not share a sentence: they
+    /// describe opposite behaviours of the same command, so one text is
+    /// necessarily false about one of them. The anchor-region reason claims
+    /// byte-identity; the why-region reason must not, and must disclose the
+    /// rewrite instead of merely withholding the reassurance.
+    #[test]
+    fn unparseable_variants_do_not_share_a_reason() {
+        let anchor = no_command_reason(BLOCKER_UNPARSEABLE_ANCHOR_RESIDUE);
+        let why = no_command_reason(BLOCKER_UNPARSEABLE_WHY_RESIDUE);
+        assert_ne!(anchor, why);
+        assert!(anchor.contains("leaves it byte-identical"));
+        assert!(
+            !why.contains("byte-identical"),
+            "the why-region variant is the one where `drift --fix` rewrites the file"
+        );
+        assert!(
+            why.contains("written back **empty**") && why.contains("exits 0"),
+            "disclosing the destruction is the fix; withholding the reassurance is not"
+        );
+        assert!(
+            !why.contains("may leave") && !why.contains("might leave"),
+            "hedging trades a false claim for a vague one and still hides the rewrite"
+        );
+    }
+
+    /// **The pairing gate.** Every repair no command's domain covers must carry
+    /// a reason, and every repair some command covers must not — otherwise a
+    /// refusal that names nothing either says nothing about why, or repeats a
+    /// reason belonging to a different case. Adding a `Repair` fails here until
+    /// its side of the pairing is decided.
+    #[test]
+    fn unrepairable_repairs_state_why() {
+        for repair in [
+            Repair::AnchorAddress,
+            Repair::MarkerLabel,
+            Repair::ResidueShape,
+            Repair::UnparseableAnchorResidue,
+            Repair::UnparseableWhyResidue,
+            Repair::ResidueSettlement,
+            Repair::SeparatorPlacement,
+            Repair::IndexStaging,
+        ] {
+            let repairable = !commands_for(&[repair]).is_empty();
+            assert_eq!(
+                repairable,
+                repair.no_command_reason().is_none(),
+                "{repair:?}: a repair with no command must explain the absence, and a repair \
+                 with one must not carry an explanation of why there is none"
+            );
+        }
     }
 
     #[test]

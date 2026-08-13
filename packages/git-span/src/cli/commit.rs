@@ -1534,7 +1534,7 @@ fn run_why_reader(repo: &gix::Repository, name: &str, span_root: &str) -> Result
                     let mut steps =
                         vec![NextStep::Bash(format!("git status {span_root}/{name}"))];
                     steps.extend(crate::cli::resolve::conflict_remediation(
-                        &[name], span_root,
+                        &[name], span_root, kind,
                     ));
                     steps
                 },

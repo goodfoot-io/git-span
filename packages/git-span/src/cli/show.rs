@@ -302,7 +302,9 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs, span_root: &str) -> Resu
                 // to replace. Naming it here is the difference between the
                 // command existing and the operator finding it.
                 let mut steps = vec![NextStep::Bash(format!("git status {span_root}/{name}"))];
-                steps.extend(crate::cli::resolve::conflict_remediation(&[name], span_root));
+                steps.extend(crate::cli::resolve::conflict_remediation(
+                    &[name], span_root, kind,
+                ));
                 steps
             },
         };
@@ -398,15 +400,31 @@ pub fn run_list(repo: &gix::Repository, args: ListArgs, span_root: &str) -> Resu
     // empty list. Conflict names were collected during the single
     // corpus load above — no second scan needed.
     {
-        let in_scope: Vec<String> = match &resolved_names {
+        let in_scope: Vec<(String, git_span_core::ConflictKind)> = match &resolved_names {
             Some(names) => conflicted
                 .into_iter()
-                .filter(|c| names.iter().any(|n| n == c))
+                .filter(|(c, _)| names.iter().any(|n| n == c))
                 .collect(),
             None => conflicted,
         };
         if !in_scope.is_empty() {
-            let joined = in_scope.join("`, `");
+            let joined = in_scope
+                .iter()
+                .map(|(n, _)| n.as_str())
+                .collect::<Vec<_>>()
+                .join("`, `");
+            // The corpus load observed a kind per span, so this batch does not
+            // have to guess one. An unmerged stage anywhere in the batch means
+            // staging is still outstanding for the batch; only when every span
+            // is marker-text-only is there nothing to stage.
+            let kind = if in_scope
+                .iter()
+                .any(|(_, k)| matches!(k, git_span_core::ConflictKind::UnmergedIndex))
+            {
+                git_span_core::ConflictKind::UnmergedIndex
+            } else {
+                git_span_core::ConflictKind::MarkerText
+            };
             return Err(CliError {
                 subcommand: "list",
                 summary: format!("span `{joined}` is in a Git conflict state."),
@@ -418,8 +436,10 @@ pub fn run_list(repo: &gix::Repository, args: ListArgs, span_root: &str) -> Resu
                 ),
                 next_steps: {
                     let mut steps = vec![NextStep::Bash(format!("git status {span_root}"))];
-                    let names: Vec<&str> = in_scope.iter().map(String::as_str).collect();
-                    steps.extend(crate::cli::resolve::conflict_remediation(&names, span_root));
+                    let names: Vec<&str> = in_scope.iter().map(|(n, _)| n.as_str()).collect();
+                    steps.extend(crate::cli::resolve::conflict_remediation(
+                        &names, span_root, kind,
+                    ));
                     steps
                 },
             }

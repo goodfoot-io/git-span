@@ -33,8 +33,32 @@ pub struct CliError {
 pub enum NextStep {
     /// Rendered as a plain prose paragraph.
     Prose(String),
-    /// Rendered inside a fenced ```bash block.
+    /// Rendered inside a fenced ```bash block whose lines are
+    /// **order-independent**. That is the property, not "alternatives": the
+    /// per-span `git add` and `--dry-run` fences list commands that are all
+    /// *required*, just not in any particular order, while a side-flag fence is
+    /// a menu. Both are order-independent, which is what a reader may rely on.
+    /// A report-only command such as `--dry-run` is a legitimate member,
+    /// because nothing here claims a line advances the state the next line
+    /// meets.
     Bash(String),
+    /// A fenced ```bash block whose lines are a **sequence**, run in the order
+    /// given, each against the state the previous one left. Rendered
+    /// identically; typed apart because the guarantees differ.
+    ///
+    /// The distinction exists because a gate could not see it. The rename
+    /// refusal fenced `drift --fix` followed by `resolve --dry-run` under "run
+    /// it, then re-run `resolve` on the residue it leaves", and the residue
+    /// never materialized — `drift --fix` settles that input completely, so the
+    /// operator's last output was `no conflict markers; nothing to resolve`,
+    /// the very sentence the same refusal teaches them to read as "you are in
+    /// the other case". The gate passed anyway: it filters `--dry-run` out as a
+    /// report rather than a repair, which is correct for alternatives and
+    /// inverted for the tail of a sequence, and it re-seeds the fixture per
+    /// command, which dissolves the ordering the defect lives in. With the two
+    /// kinds different types, a check can hold a sequence to ending in a real
+    /// repair while leaving alternatives exempt.
+    Ordered(Vec<String>),
 }
 
 impl std::error::Error for CliError {}
@@ -78,6 +102,12 @@ fn render(err: &CliError) -> String {
                 NextStep::Bash(cmd) => {
                     out.push_str("```bash\n");
                     out.push_str(cmd);
+                    out.push('\n');
+                    out.push_str("```");
+                }
+                NextStep::Ordered(cmds) => {
+                    out.push_str("```bash\n");
+                    out.push_str(&cmds.join("\n"));
                     out.push('\n');
                     out.push_str("```");
                 }

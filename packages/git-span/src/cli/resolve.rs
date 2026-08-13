@@ -123,10 +123,52 @@ pub(crate) fn conflict_diagnosis(name: &str, kind: git_span_core::ConflictKind) 
 ///   anchor/why boundary it cannot establish, and `--rehash` fails closed on a
 ///   source it cannot read. Pointing an operator at a command that will refuse
 ///   them, without saying so, is the same defect as not pointing at all.
-pub(crate) fn conflict_remediation(names: &[&str], span_root: &str) -> Vec<NextStep> {
+///
+/// It takes the same `kind` [`conflict_diagnosis`] does, and for the same
+/// reason. Printed one paragraph under that diagnosis, it used to contradict it
+/// outright on the [`MarkerText`](git_span_core::ConflictKind::MarkerText) arm:
+/// the diagnosis said "there is no unmerged stage here" and this text answered
+/// that the index still holds one until the file is staged, then fenced
+/// `git add`. It reached that by asking [`repair_domain::commands_for`] with
+/// [`repair_domain::BLOCKER_UNSTAGED_RESOLUTION`] hardcoded — the domain table
+/// consulted with the answer supplied — which is why no test in
+/// [`repair_domain`] could catch it. The blocker now comes from
+/// [`repair_domain::conflict_blocker`], so the state decides which commands are
+/// nameable and this text can only describe the one it is in.
+pub(crate) fn conflict_remediation(
+    names: &[&str],
+    span_root: &str,
+    kind: git_span_core::ConflictKind,
+) -> Vec<NextStep> {
     let plural = names.len() != 1;
     let file_word = if plural { "files" } else { "file" };
-    vec![
+    let blocker = repair_domain::conflict_blocker(kind);
+    let staging = repair_domain::commands_for(blocker)
+        .into_iter()
+        .find(|d| d.intersects(repair_domain::BLOCKER_UNSTAGED_RESOLUTION));
+    let mut steps = vec![
+        // On an unmerged index the text half may already be done — this is the
+        // state `resolve` itself leaves behind, since it writes the worktree
+        // and never stages. Leading straight into `resolve --dry-run` there
+        // prescribes a command that prints "no conflict markers; nothing to
+        // resolve" and exits 0, which reads as "everything is fine" to an
+        // operator whose merge is still unfinished. Say which half is which
+        // before naming either.
+        NextStep::Prose(match kind {
+            git_span_core::ConflictKind::UnmergedIndex => format!(
+                "Two things are outstanding and they clear in order: the marker text in the \
+                 span {file_word}, then the unmerged index entry. If the {file_word} no longer \
+                 {} `<<<<<<<` markers — an earlier `resolve` or a hand edit already settled the \
+                 text — skip to the staging step below; `resolve` would report `nothing to \
+                 resolve` and exit 0 without changing anything.",
+                if plural { "carry" } else { "carries" }
+            ),
+            git_span_core::ConflictKind::MarkerText => format!(
+                "The index holds a single, merged entry here, so the marker text in the span \
+                 {file_word} is the only thing outstanding — there is no stage waiting on a \
+                 `git add`."
+            ),
+        }),
         NextStep::Prose(format!(
             "`git span resolve` settles a conflicted span {file_word} without a text editor: it \
              takes one side for the whole span at once — `--rehash` (re-read each anchor's \
@@ -147,32 +189,43 @@ pub(crate) fn conflict_remediation(names: &[&str], span_root: &str) -> Vec<NextS
              and editing the file by hand remains available."
                 .into(),
         ),
-        // The exit. Without this the operator lands back here: `resolve`
-        // succeeds, the worktree file is clean, and the index still holds the
-        // unmerged entry — so every surface that reads the *effective* view
-        // keeps refusing, and each one points at `resolve` again. Five
-        // surfaces, one circle. `resolve` not staging is a deliberate contract
-        // of this command, which makes `git add` the exit and makes naming it
-        // this text's job. Named only; nothing here runs it.
-        NextStep::Prose(format!(
-            "`resolve` writes the settled span {file_word} to the working tree and stops — it \
-             never stages. Until the {file_word} {} staged the index still holds the unmerged \
-             entry, and `show`, `list`, `why`, and `drift` all keep reporting the conflict. \
-             Review the result with `git diff`, then finish the merge:",
-            if plural { "are" } else { "is" }
-        )),
-        NextStep::Bash(
-            repair_domain::commands_for(repair_domain::BLOCKER_UNSTAGED_RESOLUTION)
-                .iter()
-                .flat_map(|d| {
-                    names
-                        .iter()
-                        .map(move |n| format!("{} {span_root}/{n}", d.command))
-                })
-                .collect::<Vec<_>>()
-                .join("\n"),
-        ),
-    ]
+    ];
+    // The exit — on the state that has one. Without it the operator lands back
+    // here: `resolve` succeeds, the worktree file is clean, and the index still
+    // holds the unmerged entry — so every surface that reads the *effective*
+    // view keeps refusing, and each one points at `resolve` again. Five
+    // surfaces, one circle. `resolve` not staging is a deliberate contract of
+    // this command, which makes `git add` the exit and makes naming it this
+    // text's job. Named only; nothing here runs it.
+    //
+    // On `MarkerText` there is no unmerged stage, so this whole paragraph is a
+    // claim about a state the operator is not in, and the command under it is
+    // one `commands_for` declines to name. Both drop out together, from the
+    // same lookup.
+    match staging {
+        Some(domain) => {
+            steps.push(NextStep::Prose(format!(
+                "`resolve` writes the settled span {file_word} to the working tree and stops — \
+                 it never stages. Until the {file_word} {} staged the index still holds the \
+                 unmerged entry, and `show`, `list`, `why`, and `drift` all keep reporting the \
+                 conflict. Review the result with `git diff`, then finish the merge:",
+                if plural { "are" } else { "is" }
+            )));
+            steps.push(NextStep::Bash(
+                names
+                    .iter()
+                    .map(|n| format!("{} {span_root}/{n}", domain.command))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ));
+        }
+        None => steps.push(NextStep::Prose(format!(
+            "Review the result with `git diff`. Nothing further is needed: with the markers out \
+             of the {file_word}, `show`, `list`, `why`, and `drift` read {} again.",
+            if plural { "them" } else { "it" }
+        ))),
+    }
+    steps
 }
 
 /// The one-line form of [`conflict_remediation`], for the streaming surfaces
@@ -824,17 +877,20 @@ fn marker_run_len(line: &str, c: char) -> Option<usize> {
 ///
 /// [`SideBuilder`]: crate::cli::drift_fix
 fn verify_driver_shape(raw: &str, name: &str) -> std::result::Result<String, CliError> {
-    // Two blockers live in this function and they have different repair
+    // Several blockers live in this function and they have different repair
     // domains, so they get different remediations — see
-    // [`crate::cli::repair_domain`]. A malformed *shape* (a `[config]` header
-    // inside a block, more blocks in one region than any writer emits) is
-    // re-derivable: `drift --fix` splits the file and writes canonical residue
-    // back. A line on the wrong side of the *separator* is not: every writer
-    // here, `drift --fix` included, reads the separator's position out of the
-    // text rather than deciding it, so `drift --fix` rewrites the marker
+    // [`crate::cli::repair_domain`]. More blocks in one region than any writer
+    // emits is re-derivable: `drift --fix` splits the file and writes canonical
+    // residue back. A line on the wrong side of the *separator* is not: every
+    // writer here, `drift --fix` included, reads the separator's position out
+    // of the text rather than deciding it, so `drift --fix` rewrites the marker
     // labels, changes the file, and leaves the blocker exactly where it was.
     // Naming it there is what made `resolve` → `drift --fix` → `resolve` a
-    // loop with no exit.
+    // loop with no exit. An unparseable side is a third case, and it is split
+    // by region rather than reported as one blocker: `drift --fix` bails on an
+    // unparseable *anchor* block and touches nothing, but on an unparseable
+    // *why* block it rewrites the file and drops `[config]` entirely, so the
+    // two cannot share a sentence about what running it would do.
     let refusal = |reason: String, blocker: &'static [repair_domain::Repair]| CliError {
         subcommand: "resolve",
         summary: format!("span `{name}` is not in the shape `resolve` can settle."),
@@ -846,8 +902,6 @@ fn verify_driver_shape(raw: &str, name: &str) -> std::result::Result<String, Cli
         next_steps: shape_refusal_steps(blocker),
     };
     let shape_refusal = |reason: String| refusal(reason, repair_domain::BLOCKER_RESIDUE_SHAPE);
-    let unparseable_refusal =
-        |reason: String| refusal(reason, repair_domain::BLOCKER_UNPARSEABLE_RESIDUE);
 
     let mut out = String::new();
     // Blocks are counted per region, split at the first blank line outside
@@ -905,10 +959,24 @@ fn verify_driver_shape(raw: &str, name: &str) -> std::result::Result<String, Cli
                 continue;
             }
             if line.trim() == "[config]" {
-                return Err(unparseable_refusal(format!(
-                    "Span `{name}` has a `[config]` header inside a conflict block, so that \
-                     side does not parse as a span file."
-                )));
+                // The region decides the blocker, because it decides what
+                // `drift --fix` does to the file — nothing, or a rewrite that
+                // drops the `[config]` block the header belongs to.
+                let (region, blocker) = if in_why_region {
+                    ("why text", repair_domain::BLOCKER_UNPARSEABLE_WHY_RESIDUE)
+                } else {
+                    (
+                        "anchor block",
+                        repair_domain::BLOCKER_UNPARSEABLE_ANCHOR_RESIDUE,
+                    )
+                };
+                return Err(refusal(
+                    format!(
+                        "Span `{name}` has a `[config]` header inside a conflict block in its \
+                         {region}, so that side does not parse as a span file."
+                    ),
+                    blocker,
+                ));
             }
             if !in_base
                 && let Some(reason) = boundary_violation(line, in_why_region, name)
@@ -1044,42 +1112,66 @@ fn boundary_violation(line: &str, in_why_region: bool, name: &str) -> Option<Str
 /// The remediation for a [`verify_driver_shape`] refusal, derived from the
 /// blocker rather than written per call site.
 ///
+/// **The `&'static` bound is the guard, and it sits here rather than on the
+/// caller for a reason.** This function joins `commands_for`'s output into one
+/// fence, so a blocker spanning two domains makes that fence a sequence.
+/// `resolve` builds blockers in a runtime `Vec<Repair>` elsewhere;
+/// `'static` admits only the declared constants, so that accumulator cannot
+/// reach here. On the closure that calls this — where the bound used to be —
+/// the same guarantee held only because this function happened to have one
+/// caller, and a second caller added anywhere would have compiled with a local
+/// `Vec` and relaxed nothing visible.
+///
 /// When [`repair_domain::commands_for`] returns nothing the refusal says so in
 /// as many words and stops at the hand edit. That empty case is the whole
 /// reason this is computed: the previous text offered `git span drift --fix`
 /// unconditionally, and on the separator-placement blocker that command
 /// rewrites the marker labels — changing the file, advancing nothing, and
 /// sending the operator back into `resolve` for the identical refusal.
-fn shape_refusal_steps(blocker: &[repair_domain::Repair]) -> Vec<NextStep> {
+fn shape_refusal_steps(blocker: &'static [repair_domain::Repair]) -> Vec<NextStep> {
     let commands = repair_domain::commands_for(blocker);
     if commands.is_empty() {
-        return vec![
+        let mut steps = vec![
             NextStep::Prose(format!(
                 "No git-span command repairs this. {}",
                 repair_domain::no_command_reason(blocker)
             )),
+            // This paragraph used to instruct the operator to "lift any
+            // `[config]` header out of the block entirely" as a plain fact
+            // about the file in front of them. It presupposes the header is
+            // still there, and an operator who ran `drift --fix` first arrives
+            // with it already gone and nothing in the file recording that it
+            // existed — a tidy little why conflict that looks finished. So the
+            // instruction is conditional, and the sentence that matters most
+            // to that operator is where their settings actually survived.
             NextStep::Prose(
                 "Edit the span file by hand: move each line inside the conflict block to the \
                  side of the blank-line separator it belongs on — anchor records before it, \
-                 why prose after it — and lift any `[config]` header out of the block \
-                 entirely. `resolve` has written nothing, so the file is exactly as Git left \
-                 it."
+                 why prose after it — and if a `[config]` header is inside a block, lift it \
+                 out of the block entirely. `resolve` has written nothing, so the file is \
+                 exactly as Git left it."
                     .into(),
             ),
         ];
+        // Only on the variant where a `[config]` block can already have been
+        // destroyed before the operator got here.
+        if blocker.contains(&repair_domain::Repair::UnparseableWhyResidue) {
+            steps.push(NextStep::Prose(
+                "If the file no longer shows a `[config]` block that it used to carry, do not \
+                 finish by hand: the settings live in the unmerged index stages, `git span \
+                 resolve` reads them from there, and `git add` is what discards them. \
+                 `git show :2:<path>` prints the `ours` stage if you want to look first."
+                    .into(),
+            ));
+        }
+        return steps;
     }
     let mut steps = vec![NextStep::Prose(
         "If this came from Git's default text merge (the span merge driver not registered in \
          `.gitattributes`), the structural fix re-derives the residue:"
             .into(),
     )];
-    steps.push(NextStep::Bash(
-        commands
-            .iter()
-            .map(|d| d.command)
-            .collect::<Vec<_>>()
-            .join("\n"),
-    ));
+    steps.push(repair_domain::remediation_fence(blocker));
     steps.push(NextStep::Prose(
         "Otherwise resolve this span file by hand.".into(),
     ));
@@ -1831,13 +1923,20 @@ fn failure_error(
             "The entries above pair an anchor whose source cannot be read with one over the \
              same line range at a different, readable path. That is what a rename looks like \
              from here — the tool has seen the pairing, not the rename itself. \
-             `{}` reconciles renames; run it, then re-run `resolve` on the residue it leaves:",
+             `{}` reconciles renames, and its own report names what is left afterwards:",
             domain.command
         )));
-        next_steps.push(NextStep::Bash(format!(
-            "{}\ngit span resolve {name} --dry-run",
-            domain.command
-        )));
+        // This fence used to continue `git span resolve {name} --dry-run`,
+        // under "run it, then re-run `resolve` on the residue it leaves". On
+        // the input this refusal fires on there is no residue afterwards —
+        // `drift --fix` settles the markers outright — so the operator's last
+        // output was `no conflict markers; nothing to resolve`, which the
+        // paragraph below teaches them to read as *the other case entirely*.
+        // A sequence that ends in a command with nothing to do ends by
+        // telling the operator they were never here. `drift --fix` already
+        // routes them correctly from its own output, so the sequence stops
+        // where the repair does.
+        next_steps.push(NextStep::Ordered(vec![domain.command.to_string()]));
         next_steps.push(NextStep::Prose(
             "This applies to a rename the two sides disagreed about. A `git mv` that neither \
              side re-anchored after produces no conflict markers in the span file at all — \
@@ -1937,5 +2036,182 @@ pub fn settle_for_test(
     match evaluate_side(repo, side, ours, theirs, &StageEvidence::default()) {
         SideOutcome::Resolved(s) => Ok((s.merged.clone(), s.why_label.clone(), s.config_label.clone())),
         SideOutcome::Failed { reasons, .. } => Err(reasons),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use git_span_core::ConflictKind;
+
+    /// Every `git span …`/`git add` line the remediation fences, paired with
+    /// the [`repair_domain`] entry it belongs to. Commands no domain claims —
+    /// `git status`, which inspects rather than repairs — are not judged here.
+    fn fenced_domains(steps: &[NextStep]) -> Vec<&'static str> {
+        steps
+            .iter()
+            .flat_map(|s| match s {
+                NextStep::Bash(block) => block.lines().map(str::to_string).collect::<Vec<_>>(),
+                NextStep::Ordered(cmds) => cmds.clone(),
+                NextStep::Prose(_) => Vec::new(),
+            })
+            .filter_map(|line| {
+                repair_domain::ALL
+                    .iter()
+                    .find(|d| line.starts_with(d.command))
+                    .map(|d| d.command)
+            })
+            .collect()
+    }
+
+    /// **The gate the hardcoded blocker made structurally impossible.**
+    ///
+    /// [`conflict_remediation`] did consult [`repair_domain::commands_for`] —
+    /// with [`repair_domain::BLOCKER_UNSTAGED_RESOLUTION`] written in as the
+    /// argument, so the table was asked a question whose answer the caller had
+    /// already chosen. Every test in [`repair_domain`] passed, because they all
+    /// query the table with constants and never with a blocker derived from a
+    /// state. This one derives the blocker from the [`ConflictKind`] the
+    /// remediation was built for, which is the only way the mismatch shows.
+    #[test]
+    fn conflict_remediation_fences_only_commands_the_state_admits() {
+        for kind in [ConflictKind::UnmergedIndex, ConflictKind::MarkerText] {
+            let allowed: Vec<&str> =
+                repair_domain::commands_for(repair_domain::conflict_blocker(kind))
+                    .iter()
+                    .map(|d| d.command)
+                    .collect();
+            for command in fenced_domains(&conflict_remediation(&["m"], ".span", kind)) {
+                assert!(
+                    allowed.contains(&command),
+                    "{kind:?}: `{command}` is fenced but its repair domain does not intersect \
+                     the blocker this state actually has ({allowed:?})"
+                );
+            }
+        }
+    }
+
+    /// The occurrence, stated as the operator meets it: `git add` fenced four
+    /// lines under a diagnosis that just said there is no unmerged stage.
+    #[test]
+    fn marker_text_neither_fences_nor_claims_a_staging_step() {
+        let steps = conflict_remediation(&["m"], ".span", ConflictKind::MarkerText);
+        assert!(
+            !fenced_domains(&steps).contains(&repair_domain::GIT_ADD.command),
+            "the index holds a single merged entry here; there is nothing to stage"
+        );
+        let prose: String = steps
+            .iter()
+            .filter_map(|s| match s {
+                NextStep::Prose(p) => Some(p.as_str()),
+                NextStep::Bash(_) | NextStep::Ordered(_) => None,
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            !prose.contains("the index still holds the unmerged entry"),
+            "and the text must not assert one, one paragraph under a diagnosis denying it: \
+             {prose}"
+        );
+        assert!(
+            prose.contains("there is no stage waiting on a `git add`"),
+            "saying so is what keeps the two paragraphs from contradicting: {prose}"
+        );
+    }
+
+    /// **The ordered-fence gate.** Round 2's mechanical gate re-seeds the
+    /// fixture before each command and filters `--dry-run` out, so it judges a
+    /// fence as an unordered set of repairs. Both choices are right for
+    /// alternatives and both are blind to a *sequence*, which is where the
+    /// rename refusal's defect lived: its last command was a report that, on
+    /// this input, had nothing to report.
+    ///
+    /// So the type carries the claim and this holds it: a
+    /// [`NextStep::Ordered`] block is a prescription to run its lines in order,
+    /// therefore every line — the last one most of all — must be a command
+    /// whose repair domain intersects the blocker, and none of them may be a
+    /// report. A dry-run is welcome in a [`NextStep::Bash`] block, where it is
+    /// one of several things the operator might pick.
+    #[test]
+    fn ordered_fences_end_in_a_repair_not_a_report() {
+        for blocker in [
+            repair_domain::BLOCKER_RENAMED_ANCHOR_PATH,
+            repair_domain::BLOCKER_SEPARATOR_PLACEMENT,
+        ] {
+            let allowed: Vec<&str> = repair_domain::commands_for(blocker)
+                .iter()
+                .map(|d| d.command)
+                .collect();
+            for alternatives in [&[][..], &[Side::Ours][..]] {
+                let err = failure_error("m", Side::Rehash, &["reason".into()], alternatives, blocker);
+                for step in &err.next_steps {
+                    let NextStep::Ordered(cmds) = step else {
+                        continue;
+                    };
+                    assert!(!cmds.is_empty(), "an empty sequence prescribes nothing");
+                    for cmd in cmds {
+                        assert!(
+                            !cmd.contains("--dry-run"),
+                            "`{cmd}` reports; a step in a prescribed sequence must repair. The                              rename refusal ended on one and handed the operator `nothing to                              resolve` as their final output"
+                        );
+                        assert!(
+                            allowed.iter().any(|c| cmd.starts_with(c)),
+                            "`{cmd}` is prescribed but its repair domain does not intersect this                              blocker ({allowed:?})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The latent case, exercised before it exists in production: a blocker
+    /// spanning two domains. Every declared blocker holds one repair today, so
+    /// [`repair_domain::remediation_fence`] emits one line and the ordering is
+    /// invisible — but [`repair_domain::ALL`] declares an order, `resolve.rs`
+    /// already builds blockers in a `Vec` at runtime, and the first
+    /// multi-domain blocker produces `drift --fix` then `resolve` from that
+    /// declaration alone, with no author involved. Typed as
+    /// [`NextStep::Ordered`], that fence arrives already under the sequence
+    /// rules rather than silently claiming order-independence.
+    #[test]
+    fn a_multi_domain_blocker_emits_an_ordered_fence_in_the_declared_order() {
+        let blocker = &[
+            repair_domain::Repair::ResidueSettlement,
+            repair_domain::Repair::ResidueShape,
+        ];
+        let NextStep::Ordered(cmds) = repair_domain::remediation_fence(blocker) else {
+            panic!("a fence built from the table must state that its order is meant");
+        };
+        assert_eq!(
+            cmds,
+            vec![
+                "git span drift --fix".to_string(),
+                "git span resolve".to_string(),
+            ],
+            "re-derive the residue, then settle it — the order `ALL` declares, regardless of \
+             the order the blocker's repairs were accumulated in"
+        );
+        for cmd in &cmds {
+            assert!(!cmd.contains("--dry-run"), "`{cmd}` reports rather than repairs");
+        }
+    }
+
+    /// The other arm keeps the exit — `resolve` writes the worktree and never
+    /// stages, so `git add` is the only way out of an unmerged index — but must
+    /// not open on a command that exits 0 having done nothing. The post-
+    /// `resolve` state reaches this text with the text half already settled,
+    /// where `resolve --dry-run` reports `nothing to resolve`.
+    #[test]
+    fn unmerged_index_keeps_the_exit_and_does_not_open_on_a_no_op() {
+        let steps = conflict_remediation(&["m"], ".span", ConflictKind::UnmergedIndex);
+        assert!(fenced_domains(&steps).contains(&repair_domain::GIT_ADD.command));
+        let NextStep::Prose(first) = &steps[0] else {
+            panic!("the first step must be prose, not a command: {steps:?}");
+        };
+        assert!(
+            first.contains("nothing to resolve") && first.contains("skip to the staging step"),
+            "an operator whose text is already settled must be told before the fence, not by \
+             a command that exits 0: {first}"
+        );
     }
 }

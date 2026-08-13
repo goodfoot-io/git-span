@@ -37,8 +37,17 @@ pub fn read_span_in(repo: &gix::Repository, name: &str, span_root: &str) -> Resu
     Ok(span_from_file(name, &file))
 }
 
-/// Result of loading all spans: `(loaded_spans, conflicted_names)`.
-pub type LoadedSpans = (Vec<(String, Span)>, Vec<String>);
+/// Result of loading all spans: `(loaded_spans, conflicted)`.
+///
+/// Each conflicted entry carries the [`ConflictKind`](git_span_core::ConflictKind)
+/// that fired, not just the name. The two kinds need different remediations —
+/// an unmerged stage outlives the text fix and a marker-text conflict does not
+/// — and a caller handed only names has to guess which, which is exactly how a
+/// `git add` was prescribed for a state with nothing to stage.
+pub type LoadedSpans = (
+    Vec<(String, Span)>,
+    Vec<(String, git_span_core::ConflictKind)>,
+);
 
 /// Load every visible span under a specific span root.
 ///
@@ -67,8 +76,9 @@ enum LoadSlot {
     /// nothing to either output vector.
     Tombstoned,
     /// `Err(SpanConflict)` → name is in a Git conflict state; surfaced in the
-    /// separate `conflicted` list rather than the loaded set.
-    Conflicted,
+    /// separate `conflicted` list rather than the loaded set, tagged with the
+    /// kind so the caller can tell an unmerged stage from marker text.
+    Conflicted(git_span_core::ConflictKind),
 }
 
 /// Read and parse the effective view of each `name` concurrently, then
@@ -142,7 +152,9 @@ fn read_effective_parallel(
                             local.push((i, LoadSlot::Loaded(span_from_file(name, &file))));
                         }
                         Ok(None) => local.push((i, LoadSlot::Tombstoned)),
-                        Err(Error::SpanConflict { .. }) => local.push((i, LoadSlot::Conflicted)),
+                        Err(Error::SpanConflict { kind, .. }) => {
+                            local.push((i, LoadSlot::Conflicted(kind)));
+                        }
                         Err(e) => {
                             fatal.lock().unwrap().get_or_insert(e);
                             break;
@@ -173,7 +185,7 @@ fn read_effective_parallel(
                 out.push((name, span));
             }
             LoadSlot::Tombstoned => {}
-            LoadSlot::Conflicted => conflicted.push(name),
+            LoadSlot::Conflicted(kind) => conflicted.push((name, kind)),
         }
     }
     Ok((out, conflicted))
@@ -292,7 +304,7 @@ fn read_effective_serial(
                 out.push((name.clone(), span_from_file(name, &file)));
             }
             Ok(None) => {}
-            Err(Error::SpanConflict { .. }) => conflicted.push(name.clone()),
+            Err(Error::SpanConflict { kind, .. }) => conflicted.push((name.clone(), kind)),
             Err(e) => return Err(e),
         }
     }

@@ -471,11 +471,15 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
         // both preserve it) — the exact contract `conflicted_span_names_in`
         // upholds. Reuse the conflicted list captured by the single pre-fix
         // corpus load instead of re-discovering + re-reading every span.
+        // The kind rides along with each name now; `drift`'s rows only need
+        // the name, so it is dropped here rather than at the source.
         let conflicted: Vec<String> = pre_fix_corpus
             .as_ref()
             .expect("pre_fix_corpus set before detect-conflicts when !use_whole_result")
             .1
-            .clone();
+            .iter()
+            .map(|(name, _kind)| name.clone())
+            .collect();
         // When positional args were given, only report conflicts for the
         // requested scope (a named span or a path/glob that resolves to
         // one); a full scan reports every conflicted span.

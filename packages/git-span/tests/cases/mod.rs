@@ -58,6 +58,7 @@ pub mod retired_and_reserved_names;
 pub mod round2_eval_qa_fixes;
 pub mod round2_eval_regressions;
 pub mod round2_repair_domain;
+pub mod round3_unparseable_variants;
 pub mod slice_1_validation;
 pub mod slice_5_6_integration;
 pub mod span_config_block;

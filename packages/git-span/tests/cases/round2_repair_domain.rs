@@ -36,21 +36,21 @@ use support::TestRepo;
 // ---------------------------------------------------------------------------
 
 /// `file1.txt` as `TestRepo::seeded` writes it (10 lines).
-const ORIGINAL: &str = "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
+pub const ORIGINAL: &str = "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
 
 /// Well-formed rk64 tokens matching no real content.
-const OTHER_HASH: &str = "0123456789abcdef";
+pub const OTHER_HASH: &str = "0123456789abcdef";
 const THIRD_HASH: &str = "fedcba9876543210";
 
-fn span_path(repo: &TestRepo, name: &str) -> std::path::PathBuf {
+pub fn span_path(repo: &TestRepo, name: &str) -> std::path::PathBuf {
     repo.path().join(".span").join(name)
 }
 
-fn read_span_bytes(repo: &TestRepo, name: &str) -> Result<Vec<u8>> {
+pub fn read_span_bytes(repo: &TestRepo, name: &str) -> Result<Vec<u8>> {
     Ok(std::fs::read(span_path(repo, name))?)
 }
 
-fn line_slice_hash(text: &str, start: u32, end: u32) -> String {
+pub fn line_slice_hash(text: &str, start: u32, end: u32) -> String {
     let lines: Vec<&str> = text.lines().collect();
     let lo = (start as usize).saturating_sub(1);
     let hi = (end as usize).min(lines.len());
@@ -88,7 +88,7 @@ fn driver_residue(repo: &TestRepo, base: &str, ours: &str, theirs: &str) -> Resu
 ///
 /// This is what "the refusal names a command" means operationally: the fenced
 /// block is the thing an operator copies.
-fn fenced_commands(stderr: &str) -> Vec<String> {
+pub fn fenced_commands(stderr: &str) -> Vec<String> {
     let mut cmds = Vec::new();
     let mut inside = false;
     for line in stderr.lines() {
@@ -105,7 +105,7 @@ fn fenced_commands(stderr: &str) -> Vec<String> {
 
 /// Whitespace-normalized stderr — the refusals are single long sentences that
 /// the terminal wraps, so assertions are about the words, not the line breaks.
-fn flat(stderr: &str) -> String {
+pub fn flat(stderr: &str) -> String {
     stderr.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
@@ -347,7 +347,7 @@ file1.txt#L1-L5 rk64:{OTHER_HASH}
 /// Residue whose `--rehash` blocker carries the rename signal: an anchor whose
 /// source cannot be read, alongside a readable anchor over the **same line
 /// range** at a different path.
-fn renamed_anchor_residue(repo: &TestRepo) -> Result<String> {
+pub fn renamed_anchor_residue(repo: &TestRepo) -> Result<String> {
     let h1 = line_slice_hash(ORIGINAL, 1, 5);
     let dead = format!("moved/from.txt#L1-L5 rk64:{OTHER_HASH}");
     let base = format!("{dead}\nfile1.txt#L1-L5 rk64:{h1}\n\nshared rationale\n");
