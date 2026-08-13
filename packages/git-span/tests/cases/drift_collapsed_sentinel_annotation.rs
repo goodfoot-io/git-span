@@ -369,7 +369,10 @@ fn a_sparse_excluded_collapse_is_marked_but_offered_the_step_that_makes_it_reada
         "the line names the address it cannot read; stdout:\n{human}"
     );
     assert!(
-        !human.contains("git span replace src/data.txt#L4-L6"),
+        // Matched on the bare command, not on `replace <address>`: once the
+        // span name became part of every printed command, an assertion
+        // spelling the old argv would pass against any output at all.
+        !human.contains("git span replace"),
         "an unreadable file is not a mis-addressed anchor — offering \
          `replace` here talks the operator into overwriting a correct \
          address with a guess; stdout:\n{human}"
@@ -412,7 +415,9 @@ fn two_pass_collapse_annotation_survives_a_separate_plain_drift_run() -> Result<
     // Plant the sentinel via `--fix`.
     let fix_out = repo.run_span(["drift", "--fix"])?;
     assert!(
-        stdout_of(&fix_out).contains("collapsed duplicate identity: `file1.txt#L1-L5` — 2 records → 1"),
+        stdout_of(&fix_out).contains(
+            "collapsed duplicate identity in `annot-two-pass`: `file1.txt#L1-L5` — 2 records → 1"
+        ),
         "sanity: the sweep must collapse and name the identity; stdout:\n{}",
         stdout_of(&fix_out)
     );
@@ -428,15 +433,29 @@ fn two_pass_collapse_annotation_survives_a_separate_plain_drift_run() -> Result<
     let human_stdout = stdout_of(&human);
     assert!(
         human_stdout.contains(
-            "collapsed duplicate — content is still unverified, and this \
-             address is where the records were, not a location anything has \
-             confirmed — run `git span add file1.txt#L1-L5` only if the \
-             coupled content still lives there, otherwise `git span replace \
-             file1.txt#L1-L5 <new-address>` naming where it lives now"
+            "collapsed duplicate — content is still unverified: nothing \
+             established what belongs at `file1.txt#L1-L5`, so `git span add \
+             annot-two-pass file1.txt#L1-L5` will hash whatever occupies it \
+             now and record that as verified. Read those lines first, and run \
+             it only if the coupled content is still there — otherwise `git \
+             span replace annot-two-pass file1.txt#L1-L5 <new-address>` \
+             naming where it lives now"
         ),
         "a reader who never ran the collapsing command must be told why the \
          anchor is drifting, and which command retires the sentinel under \
          which condition, not shown the generic label; stdout:\n{human_stdout}"
+    );
+    // The annotation speaks about content and never about position. `drift
+    // --fix` is the surface that knows whether a record's position was
+    // tracked this pass and says so on its own line; when this line also
+    // claimed the address was "not a location anything has confirmed" it
+    // contradicted a `position tracked` line in the same run, about the same
+    // record, three lines apart.
+    assert!(
+        !human_stdout.contains("not a location anything has confirmed")
+            && !human_stdout.contains("this address is where the records were"),
+        "the renderer may not assert anything about position — it cannot \
+         know what `--fix` tracked; stdout:\n{human_stdout}"
     );
     let lower = human_stdout.to_lowercase();
     assert!(
@@ -444,15 +463,21 @@ fn two_pass_collapse_annotation_survives_a_separate_plain_drift_run() -> Result<
         "the annotation must never claim the content was re-verified — that \
          would misstate what happened; stdout:\n{human_stdout}"
     );
-    // "confirmed" may appear, but only under a negation: the annotation now
-    // says the address is *not* a location anything has confirmed. Every
-    // occurrence must be that one — an affirmative "confirmed" would be the
-    // same misstatement in a different word.
+    // The annotation must never assert that anything about this record was
+    // confirmed or verified — the one thing that is certainly untrue of it.
+    // "verified" survives in exactly one place: the warning that running
+    // `add` here would *record* whatever occupies the address as verified,
+    // which is a statement about a hazard rather than about the record.
+    assert!(
+        !lower.contains("confirmed"),
+        "the annotation must not use `confirmed` at all now that it makes no \
+         position claim; stdout:\n{human_stdout}"
+    );
     assert_eq!(
-        lower.matches("confirmed").count(),
-        lower.matches("not a location anything has confirmed").count(),
-        "every occurrence of `confirmed` must be the negated one; the \
-         annotation must not assert that anything was confirmed; \
+        lower.matches("verified").count(),
+        lower.matches("unverified").count() + lower.matches("record that as verified").count(),
+        "every `verified` must be either `unverified` or the hazard warning; \
+         an unqualified one would claim the content was checked; \
          stdout:\n{human_stdout}"
     );
 
@@ -487,11 +512,13 @@ fn hand_written_sentinel_fixture_reports_the_annotation_without_any_collapse_run
     let human_stdout = stdout_of(&human);
     assert!(
         human_stdout.contains(
-            "collapsed duplicate — content is still unverified, and this \
-             address is where the records were, not a location anything has \
-             confirmed — run `git span add file1.txt#L1-L5` only if the \
-             coupled content still lives there, otherwise `git span replace \
-             file1.txt#L1-L5 <new-address>` naming where it lives now"
+            "collapsed duplicate — content is still unverified: nothing \
+             established what belongs at `file1.txt#L1-L5`, so `git span add \
+             annot-fixture file1.txt#L1-L5` will hash whatever occupies it \
+             now and record that as verified. Read those lines first, and run \
+             it only if the coupled content is still there — otherwise `git \
+             span replace annot-fixture file1.txt#L1-L5 <new-address>` \
+             naming where it lives now"
         ),
         "the annotation, including the retiring command, must be durable in \
          the file itself, independent of any command that ran in this test; \

@@ -55,16 +55,69 @@ pub fn format_same_side_collapse(
 /// merge confirmed — so the two completion commands are offered against the
 /// question only the operator can answer, and neither is presented as the
 /// default.
-pub fn format_sentinel_preserved(path: &str, start_line: u32, end_line: u32) -> String {
+///
+/// `span` is the span the record lives in. Both `add` and `replace` take the
+/// span name as their first positional argument, so a line that omits it
+/// prints a command that exits 2 on `<NAME>` when the operator runs it —
+/// which is worse than printing no command at all, because it looks
+/// complete. `git span drift --fix`'s conflict resolution knows the name and
+/// passes `Some`; the git-invoked merge driver is handed three temp files
+/// and a marker length by the `%O %A %B %L` protocol and genuinely does not
+/// know which span it is merging, so it passes `None` and the line carries a
+/// `<span-name>` placeholder in the same style as `<new-address>` — an
+/// explicit blank the operator fills, not a command masquerading as
+/// runnable.
+pub fn format_sentinel_preserved(
+    span: Option<&str>,
+    path: &str,
+    start_line: u32,
+    end_line: u32,
+) -> String {
     let address = merge_report_address(path, start_line, end_line);
+    let name = span.unwrap_or("<span-name>");
     format!(
         "preserved unverified collapse marker: `{address}` — a \
          duplicate-collapse sentinel survived merge; its content was never \
          verified and this merge confirmed nothing about where that content \
          now lives. Check the address yourself, then run `git span add \
-         {address}` if the coupled content still lives there, or `git span \
-         replace {address} <new-address>` if it has moved"
+         {name} {address}` if the coupled content still lives there, or `git \
+         span replace {name} {address} <new-address>` if it has moved"
     )
+}
+
+/// Whether a collapse left content that nothing has verified.
+///
+/// The obvious reading of [`git_span_core::CollapsedIdentity`] is that
+/// `agreed_hash: Some(_)` means the group agreed and there is nothing to
+/// doubt. That reading has a hole, and the hole is reachable: when *both*
+/// records at an identity already carry the duplicate-collapse sentinel —
+/// two earlier collapses landing on one address, or a merge bringing a
+/// second copy of a sentinel-bearing record — the group agrees on a value
+/// that is itself the statement "nobody knows what belongs here". The
+/// collapse then reported `records agreed; hash kept` and the summary
+/// omitted the unverified tally, three lines above a drift report saying
+/// `content is still unverified` about the same record.
+///
+/// Two sentinels agreeing is not agreement. It is the same doubt twice, and
+/// it is if anything a stronger signal than a single divergence, because the
+/// identity has now survived more than one collapse without an operator ever
+/// settling it. Every consumer that branches on "was this collapse
+/// unverified" goes through here rather than testing `agreed_hash.is_none()`
+/// directly, so the writers, the reporters, and the counters cannot reach
+/// different verdicts about one record.
+pub fn collapse_is_unverified(c: &git_span_core::CollapsedIdentity) -> bool {
+    match &c.agreed_hash {
+        None => true,
+        Some((algorithm, content_hash)) => is_sentinel_hash(algorithm, content_hash),
+    }
+}
+
+/// Whether an `(algorithm, content_hash)` pair is the duplicate-collapse
+/// sentinel. Compared against the shared constants, never a hand-written
+/// literal, so this cannot drift from the writers that plant it.
+pub fn is_sentinel_hash(algorithm: &str, content_hash: &str) -> bool {
+    algorithm == git_span_core::RK64_ALGORITHM
+        && content_hash == git_span_core::rk64_unmatched_sentinel()
 }
 
 /// Render a span-file record's stored coordinates as an anchor address.

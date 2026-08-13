@@ -10,7 +10,11 @@
 //! surfacing layer rather than via `current.blob`.
 
 use crate::cli::commit::{hash_anchor_content, lock_span_file, span_file_path, write_worktree_span};
-use crate::cli::format::{format_anchor_address, format_same_side_collapse, format_sentinel_preserved};
+use crate::cli::duplicate_identity::{AddAvailability, AddRefusal};
+use crate::cli::format::{
+    collapse_is_unverified, format_anchor_address, format_same_side_collapse,
+    format_sentinel_preserved,
+};
 use crate::git::IndexEntrySnapshot;
 use crate::span_file::{AnchorRecord, SpanFile, has_conflict_markers};
 use crate::types::{AnchorExtent, AnchorStatus, DriftSource, SpanResolved};
@@ -772,7 +776,7 @@ fn resolve_conflicted_span(
     for (path, start_line, end_line) in &result.sentinel_preserved {
         println!(
             "  {}",
-            format_sentinel_preserved(path, *start_line, *end_line)
+            format_sentinel_preserved(Some(name), path, *start_line, *end_line)
         );
     }
 
@@ -904,6 +908,12 @@ pub(crate) fn apply_fix(
         .ok()
         .map(|id| id.detach().to_string());
 
+    // The shared "can `add` actually run here?" predicate, probed once for
+    // the sweep. Every line this function prints that names a repair command
+    // asks it, so `--fix`, the drift report, and `doctor` cannot give one
+    // operator three different answers about one address.
+    let available = AddAvailability::probe(repo);
+
     // Materialize the index snapshot once — shared by every
     // hash_anchor_content call and the Index-layer hash path below.
     let index_snapshot: Option<Vec<IndexEntrySnapshot>> = crate::git::index_entries(repo).ok();
@@ -1015,7 +1025,7 @@ pub(crate) fn apply_fix(
             .map(|c| (c.path.clone(), c.start_line, c.end_line))
             .collect();
         for c in &collapsed {
-            if c.agreed_hash.is_none()
+            if collapse_is_unverified(c)
                 && let Some(survivor) = span_file.anchors.iter_mut().find(|a| {
                     a.path == c.path && a.start_line == c.start_line && a.end_line == c.end_line
                 })
@@ -1023,7 +1033,7 @@ pub(crate) fn apply_fix(
                 survivor.algorithm = RK64_ALGORITHM.to_string();
                 survivor.content_hash = rk64_unmatched_sentinel();
             }
-            println!("  {}", format_identity_collapsed(c));
+            println!("  {}", format_identity_collapsed(&m.name, c, &available));
             fix.identities_collapsed.push(c.clone());
             any_rewritten = true;
         }
@@ -1102,7 +1112,11 @@ pub(crate) fn apply_fix(
             // indefinitely.
             if record_carries_sentinel {
                 track_sentinel_position(
-                    repo,
+                    SentinelContext {
+                        repo,
+                        span: &m.name,
+                        available: &available,
+                    },
                     &mut span_file,
                     resolved,
                     reanchor,
@@ -1581,25 +1595,72 @@ fn coalesce_line_ranges(
 /// the tool has confirmed. Running `add` there hashes whatever happens to
 /// occupy those lines and records it as verified. Only the operator can
 /// tell the two cases apart, so the line asks them to.
-fn format_identity_collapsed(c: &CollapsedIdentity) -> String {
+///
+/// The line names `span` twice over, and both for the same reason: these
+/// lines are printed by the span loop, *above* the `## <span>` headings of
+/// the drift report that follows, so two spans collapsing in one sweep
+/// produce two adjacent lines with nothing to tell them apart. Naming the
+/// span in the prose disambiguates the report; naming it inside the
+/// commands is what makes them runnable, since `add` and `replace` both
+/// take `<NAME>` as their first positional and exit 2 without it.
+///
+/// The unverified branch splits its *reason* clause once more, because
+/// "records disagreed" is false of one population that reaches it: a group
+/// whose records all already carried the sentinel agreed perfectly, on a
+/// value that means nobody knows. Saying they disagreed would be as wrong as
+/// the `records agreed; hash kept` this branch replaced — the same mistake
+/// in the opposite direction. See [`collapse_is_unverified`].
+fn format_identity_collapsed(
+    span: &str,
+    c: &CollapsedIdentity,
+    available: &AddAvailability,
+) -> String {
     let address = record_address(&c.path, c.start_line, c.end_line);
-    if c.agreed_hash.is_some() {
-        format!(
-            "collapsed duplicate identity: `{address}` — {} records → 1 \
-             (records agreed; hash kept)",
+    if !collapse_is_unverified(c) {
+        return format!(
+            "collapsed duplicate identity in `{span}`: `{address}` — {} \
+             records → 1 (records agreed; hash kept)",
             c.records_before
-        )
-    } else {
-        format!(
-            "collapsed duplicate identity: `{address}` — {} records → 1 \
-             (records disagreed; content unverified, reported drifted). This \
-             address is where the records were, not a location this collapse \
-             confirmed — run `git span add {address}` only if the coupled \
-             content still lives there, otherwise `git span replace \
-             {address} <new-address>` naming where it lives now",
-            c.records_before
-        )
+        );
     }
+    let reason = if c.agreed_hash.is_some() {
+        "every record already carried the unverified marker; content is \
+         still unverified, reported drifted"
+    } else {
+        "records disagreed; content unverified, reported drifted"
+    };
+    // Same predicate the drift report and `doctor` ask, for the same reason:
+    // this line is the *first* thing an operator reads about the collapse,
+    // and it was the last place still naming `add` unconditionally. A
+    // truncated or vanished path makes that command exit non-zero, three
+    // lines above a report line that had already been corrected to say so.
+    let completion = match available.refusal(&c.path, c.end_line) {
+        Some(AddRefusal::PathMissing) => format!(
+            "`{path}` is neither tracked nor in the worktree, so `add` \
+             refuses here — run `git span replace {span} {address} \
+             <new-address>` naming where the coupled content lives now",
+            path = c.path
+        ),
+        Some(AddRefusal::RangePastEof { lines }) => format!(
+            "`{path}` is {lines} line{plural} long, so the anchored range \
+             runs past its end and `add` refuses here — run `git span \
+             replace {span} {address} <new-address>` naming where the \
+             coupled content lives now",
+            path = c.path,
+            plural = if lines == 1 { "" } else { "s" },
+        ),
+        None => format!(
+            "run `git span add {span} {address}` only if the coupled content \
+             still lives there, otherwise `git span replace {span} {address} \
+             <new-address>` naming where it lives now"
+        ),
+    };
+    format!(
+        "collapsed duplicate identity in `{span}`: `{address}` — {} records \
+         → 1 ({reason}). This address is where the records were, not a \
+         location this collapse confirmed — {completion}",
+        c.records_before
+    )
 }
 
 /// Keep a sentinel-bearing record's *position* current without ever
@@ -1622,14 +1683,30 @@ fn format_identity_collapsed(c: &CollapsedIdentity) -> String {
 /// merely not materialized in this checkout is not mis-addressed, and a
 /// path mid-merge is not yet readable; telling either operator to
 /// re-address the anchor would talk them into destroying a correct one.
+/// The repository-side context a sentinel line needs to say anything true:
+/// the repo it is reading, the span whose name every printed command takes
+/// as its first positional, and the shared predicate deciding which command
+/// may be printed at all. Grouped because they always travel together and
+/// are always derived from the same `apply_fix` sweep.
+struct SentinelContext<'a> {
+    repo: &'a gix::Repository,
+    span: &'a str,
+    available: &'a AddAvailability,
+}
+
 fn track_sentinel_position(
-    repo: &gix::Repository,
+    ctx: SentinelContext<'_>,
     span_file: &mut SpanFile,
     resolved: &crate::types::AnchorResolved,
     tracking_offered: bool,
     fix: &mut FixResult,
     any_rewritten: &mut bool,
 ) {
+    let SentinelContext {
+        repo,
+        span,
+        available,
+    } = ctx;
     let (anc_start, anc_end) = match resolved.anchored.extent {
         AnchorExtent::LineRange { start, end } => (start, end),
         AnchorExtent::WholeFile => (0, 0),
@@ -1648,10 +1725,53 @@ fn track_sentinel_position(
         .as_ref()
         .is_some_and(|(p, s, e)| p == anc_path && *s == anc_start && *e == anc_end);
 
-    // No-op guard: the record already sits where the tracked position says
-    // it does. Leave it alone entirely — no rewrite, no report, on this or
-    // any later pass.
+    // The record already sits where the tracked position says it does — so
+    // nothing is rewritten. But "nothing to rewrite" is not "nothing to
+    // say", and the difference is the worst outcome this card has produced.
+    //
+    // Position tracking here is *positional* evidence: hunks between HEAD
+    // and the working tree, applied to a HEAD-relative range. It cannot
+    // reach a shift that was already committed, because the record's
+    // coordinates are relative to some past commit nobody recorded — the
+    // new model dropped `anchor_sha`, so there is no point in history to
+    // replay forward from. An ordinary anchor does not need one: it
+    // relocates by finding its stored hash somewhere else in the file, and
+    // that is what moves the neighbours in the very same run. A sentinel is
+    // chosen so that no content ever matches it, so that route is closed to
+    // it by construction. Relocation of a sentinel across a committed shift
+    // is not a gap in this function; it is unavailable, and pretending
+    // otherwise would mean inventing coordinates.
+    //
+    // What is *not* acceptable is what this branch used to do, which was
+    // return in silence. The operator then read a report saying the address
+    // was unconfirmed, ran the `add` the report offered, and re-pointed the
+    // coupling at whatever three lines now sat at those numbers — at exit 0,
+    // certified clean. Saying so on every pass is the point: the state is
+    // unresolved and repeats until an operator resolves it.
     if unmoved {
+        let address = record_address(anc_path, anc_start, anc_end);
+        // The settling command is chosen by the shared predicate, not
+        // assumed: this branch fires on every pass over an unresolved
+        // sentinel, which is exactly the population most likely to have had
+        // its file truncated or deleted since the collapse.
+        let settle = match available.refusal(anc_path, anc_end) {
+            Some(_) => format!(
+                "`add` refuses at this address, so `git span replace {span} \
+                 {address} <new-address>` is what settles it"
+            ),
+            None => format!(
+                "Read the lines yourself before running `git span add {span} \
+                 {address}` — `add` hashes whatever occupies them and records \
+                 that as verified"
+            ),
+        };
+        println!(
+            "  position unconfirmed: `{address}` — a duplicate-collapse \
+             sentinel matches no content by construction, so nothing can \
+             confirm this address still holds the coupled content; a commit \
+             that shifted lines above it moved the content without moving \
+             this record. {settle}"
+        );
         return;
     }
 
@@ -1672,13 +1792,22 @@ fn track_sentinel_position(
         // Never `rewritten_anchor_ids`: that set is subtracted from the
         // exit code and gates coalescing, and this anchor is still
         // unverified — it must keep reporting drifted.
+        let moved_to = record_address(&new_path, new_start, new_end);
+        // Even a successfully tracked position has to clear the same gate:
+        // the hunks moved the record onto coordinates history vouches for,
+        // which says nothing about whether the file still reaches them.
+        let settle = match available.refusal(&new_path, new_end) {
+            Some(_) => format!(
+                "`add` refuses at that address — run `git span replace {span} \
+                 {moved_to} <new-address>` to resolve"
+            ),
+            None => format!("run `git span add {span} {moved_to}` to resolve"),
+        };
         println!(
             "  position tracked: `{}` — a duplicate-collapse sentinel's \
-             anchor moved to `{}`; content is still unverified — run \
-             `git span add {}` to resolve",
+             anchor moved to `{moved_to}`; content is still unverified — \
+             {settle}",
             record_address(anc_path, anc_start, anc_end),
-            record_address(&new_path, new_start, new_end),
-            record_address(&new_path, new_start, new_end),
         );
         return;
     }
@@ -1738,11 +1867,11 @@ fn track_sentinel_position(
             } else {
                 "path deleted"
             };
-            print_untrackable(&address, reason);
+            print_untrackable(span, &address, reason);
         }
         // Everything else reached the tracking attempt and it came back with
         // nothing to follow.
-        _ => print_untrackable(&address, "no trackable history"),
+        _ => print_untrackable(span, &address, "no trackable history"),
     }
 }
 
@@ -1754,12 +1883,12 @@ fn track_sentinel_position(
 /// leaves this one orphaned forever. `replace` retires the old identity and
 /// installs the new one atomically, with no existence check on the old path,
 /// which is exactly what this state needs.
-fn print_untrackable(address: &str, reason: &str) {
+fn print_untrackable(span: &str, address: &str, reason: &str) {
     println!(
         "  position untrackable: `{address}` — a duplicate-collapse sentinel \
          could not be relocated ({reason}); content is still unverified and \
          `add` at this address will not retire it — run `git span replace \
-         {address} <new-address>` naming where the content now lives"
+         {span} {address} <new-address>` naming where the content now lives"
     );
 }
 

@@ -210,11 +210,18 @@ fn merge_driver_reports_preserved_sentinel_with_no_counterpart() {
         "the line states plainly that the address is unconfirmed; \
          stdout:\n{stdout}"
     );
+    // Both commands take `<NAME>` first, and the `%O %A %B %L` protocol
+    // never tells this process which span it is merging — so the name is an
+    // explicit `<span-name>` placeholder, in the same style as
+    // `<new-address>`. Asserted positionally rather than by substring: the
+    // failure this guards against is a command that reads as complete and
+    // exits 2 on `<NAME>` when pasted, which only argument *order* catches.
     assert!(
-        stdout.contains("git span add s.txt#L2-L4")
-            && stdout.contains("git span replace s.txt#L2-L4 <new-address>"),
-        "both completion paths are named against the recorded address; \
-         stdout:\n{stdout}"
+        stdout.contains("git span add <span-name> s.txt#L2-L4")
+            && stdout.contains("git span replace <span-name> s.txt#L2-L4 <new-address>"),
+        "both completion paths are named against the recorded address, with \
+         the span-name argument present as a placeholder rather than \
+         omitted; stdout:\n{stdout}"
     );
 
     let output = std::fs::read_to_string(&ours).unwrap();

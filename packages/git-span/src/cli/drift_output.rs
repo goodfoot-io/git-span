@@ -4,6 +4,7 @@
 //! engine's `AnchorResolved` into that shape.
 
 use crate::cli::drift_fix::FixResult;
+use crate::cli::duplicate_identity::{AddAvailability, AddRefusal};
 use crate::cli::{CliError, NextStep, DriftArgs, DriftFormat, resolver_read_error};
 use crate::resolver::{
     SourceLayers, WholeResult, anchor_status_is_drift, resolve_named_spans,
@@ -1086,11 +1087,59 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
                 // announcing the collapse — the run's own accounting denying
                 // work it had just done.
                 let collapse_clause = collapse_summary_clause(&fr.identities_collapsed);
-                let unverified_collapses = fr
-                    .identities_collapsed
+                // Whether the drift being reported *right now* includes a
+                // record nothing has verified — read off the reported
+                // findings, never off this pass's collapse tally.
+                //
+                // The tally answers "did this pass collapse something
+                // unverified", which is a different question and the wrong
+                // one: a sentinel outlives the pass that planted it. It is
+                // still there on the next `--fix`, and it arrives already
+                // planted for anyone who pulled it, merged it, or checked
+                // out a branch someone else collapsed on — the population
+                // `format_sentinel_preserved` exists for. Gating on the
+                // tally gave every one of those operators the closed loop
+                // this branch set out to remove: "run git span drift again",
+                // over drift that re-running provably cannot clear.
+                //
+                // The unreadable statuses are excluded for the reason they
+                // are excluded in `collapsed_duplicate_description` and in
+                // `drift --fix`'s position tracking: "settle the address
+                // with `add` or `replace`" asks a question — is the coupled
+                // content still here — that nobody can answer in a checkout
+                // that cannot read the file. For those records re-running
+                // genuinely is the next step, once the condition blocking
+                // the read is cleared, so the loop is not closed and the
+                // ordinary advice is the true one. Gating without this split
+                // made the summary contradict the per-anchor line printed
+                // directly above it.
+                let settleable: Vec<&Finding> = findings
                     .iter()
-                    .filter(|c| c.agreed_hash.is_none())
-                    .count();
+                    .filter(|f| {
+                        is_collapsed_duplicate_sentinel(f)
+                            && !matches!(
+                                f.status,
+                                AnchorStatus::MergeConflict | AnchorStatus::ContentUnavailable(_)
+                            )
+                    })
+                    .collect();
+                let sentinel_in_report = !settleable.is_empty();
+                // Name only commands that can actually run against what is
+                // being reported. When `add` refuses on every settleable
+                // sentinel, naming it here would repeat, one line lower, the
+                // same mistake the per-anchor lines were just corrected for —
+                // so this asks the same predicate those lines ask, rather
+                // than a status that merely correlates with it.
+                let available = AddAvailability::probe(repo);
+                let all_refuse = settleable.iter().all(|f| {
+                    let end = match f.anchored.extent {
+                        AnchorExtent::LineRange { end, .. } => end,
+                        AnchorExtent::WholeFile => 0,
+                    };
+                    available
+                        .refusal(&f.anchored.path.to_string_lossy(), end)
+                        .is_some()
+                });
                 if drift_count > 0 {
                     // "run git span drift again" is advice only while some
                     // remaining drift could actually change on a re-run. When
@@ -1407,7 +1456,7 @@ fn collapse_summary_clause(collapsed: &[git_span_core::CollapsedIdentity]) -> Op
         .sum();
     let unverified = collapsed
         .iter()
-        .filter(|c| c.agreed_hash.is_none())
+        .filter(|c| super::format::collapse_is_unverified(c))
         .count();
     let unverified_clause = if unverified > 0 {
         format!(", {unverified} unverified")
@@ -1462,15 +1511,46 @@ fn is_collapsed_duplicate_sentinel(f: &Finding) -> bool {
 /// evidence about the content. Every other status is a fact about the
 /// repository that the collapse did not cause and the reader cannot infer.
 ///
-/// The completion advice splits on whether the operator can answer the
-/// question it asks. `add`-or-`replace` turns on "is the coupled content
-/// still at this address" — which nobody can check in a checkout that
-/// cannot read the file at all, so the unreadable statuses get the step
-/// that makes the file readable instead of a choice that would have to be
-/// guessed. This mirrors the same split `drift --fix` makes when it tracks
-/// a sentinel's position (`drift_fix.rs`), so the two surfaces cannot give
-/// one operator contradictory instructions about one record.
-fn collapsed_duplicate_description(f: &Finding) -> String {
+/// The completion advice splits three ways, and the rule behind the split is
+/// a single question: **will the command this line names actually run?**
+///
+/// - *Unreadable* (`MergeConflict`, `ContentUnavailable`) — `add`-or-`replace`
+///   turns on "is the coupled content still at this address", which nobody
+///   can check in a checkout that cannot read the file at all. These get the
+///   step that makes the file readable instead of a choice that would have
+///   to be guessed.
+/// - *`add` would refuse* — asked of
+///   [`AddAvailability`](crate::cli::duplicate_identity::AddAvailability),
+///   never of the status. `add` fail-closes before it ever opens the span
+///   file, on a path that is neither tracked nor in the worktree and on a
+///   file too short to reach the anchored end. `replace` retires the old
+///   identity and installs a new one with no check on the old path, which is
+///   what this state actually needs.
+///
+///   The status is *not* a usable proxy here, and the attempt to use one is
+///   worth keeping in view: gating this arm on `Deleted` looked right, on the
+///   theory that the resolver reports `Deleted` for a truncated file too. It
+///   does not — a truncated file resolves `Changed` — so that gate printed
+///   `git span add` over an address where `add` exits 1 with a bare
+///   `invalid anchor: end=N exceeds file line count (M)`, while `doctor`,
+///   holding the real predicate, withheld it correctly for the same record in
+///   the same repository. One predicate, asked by every surface, is the only
+///   arrangement in which those two answers cannot disagree.
+/// - *Readable, present, and addressable* — both completions, against the
+///   question only the operator can answer.
+///
+/// Every arm speaks about **content only**, never about position. That
+/// division is deliberate and load-bearing: `drift --fix` is the surface
+/// that knows whether a record's position was tracked this pass, and it
+/// says so on its own lines (`position tracked` / `position unconfirmed` /
+/// `position untrackable`). When this function also asserted the address was
+/// "not a location anything has confirmed", it contradicted `position
+/// tracked` — which had just moved that record onto coordinates git history
+/// does vouch for — for the same record in the same run. The renderer cannot
+/// know what `--fix` did, so it claims only what is true of every
+/// sentinel-bearing record regardless: nothing established what the content
+/// should be, and `add` here will hash whatever occupies the address now.
+fn collapsed_duplicate_description(f: &Finding, available: &AddAvailability) -> String {
     let addr = render_path_extent_plain(&f.anchored.path, f.anchored.extent);
     let status_clause = if f.status == AnchorStatus::Changed {
         String::new()
@@ -1492,13 +1572,50 @@ fn collapsed_duplicate_description(f: &Finding) -> String {
              coupled content is still there — clear that condition first, then \
              re-run `git span drift`"
         ),
-        _ => format!(
-            "collapsed duplicate{status_clause} — content is still unverified, \
-             and this address is where the records were, not a location \
-             anything has confirmed — run `git span add {addr}` only if the \
-             coupled content still lives there, otherwise `git span replace \
-             {addr} <new-address>` naming where it lives now"
-        ),
+        _ => {
+            // `add` and `replace` both take `<NAME>` as their first
+            // positional; a command printed without it exits 2 before it
+            // reads a span file. The name is on the finding, so the line
+            // that recommends the command can complete it.
+            let span = &f.span;
+            let path = f.anchored.path.to_string_lossy();
+            let end = match f.anchored.extent {
+                AnchorExtent::LineRange { end, .. } => end,
+                AnchorExtent::WholeFile => 0,
+            };
+            match available.refusal(&path, end) {
+                Some(refusal) => {
+                    let because = match refusal {
+                        AddRefusal::PathMissing => format!(
+                            "`{path}` is neither tracked nor in the worktree, \
+                             so `add`'s existence probe refuses"
+                        ),
+                        AddRefusal::RangePastEof { lines } => format!(
+                            "`{path}` is {lines} line{plural} long, so the \
+                             anchored range runs past its end and `add`'s \
+                             range check refuses",
+                            plural = if lines == 1 { "" } else { "s" },
+                        ),
+                    };
+                    format!(
+                        "collapsed duplicate{status_clause} — content is \
+                         still unverified, and {because} before it reads the \
+                         span file — run `git span replace {span} {addr} \
+                         <new-address>` naming where the coupled content \
+                         lives now"
+                    )
+                }
+                None => format!(
+                    "collapsed duplicate{status_clause} — content is still \
+                     unverified: nothing established what belongs at \
+                     `{addr}`, so `git span add {span} {addr}` will hash \
+                     whatever occupies it now and record that as verified. \
+                     Read those lines first, and run it only if the coupled \
+                     content is still there — otherwise `git span replace \
+                     {span} {addr} <new-address>` naming where it lives now"
+                ),
+            }
+        }
     }
 }
 
@@ -1509,7 +1626,7 @@ fn collapsed_duplicate_description(f: &Finding) -> String {
 /// - "changed in HEAD"
 /// - "moved to new/path#L1-L10"
 /// - "deleted in HEAD (path no longer exists)"
-fn describe_finding_lower(f: &Finding) -> String {
+fn describe_finding_lower(f: &Finding, available: &AddAvailability) -> String {
     // Derived once, from the record, before anything looks at the status:
     // whether this finding carries the duplicate-collapse sentinel is a fact
     // about its stored hash and nothing else. See
@@ -1608,7 +1725,7 @@ fn describe_finding_lower(f: &Finding) -> String {
     // `Fresh` — the sentinel matches no content by construction — so the
     // `unreachable!` above is not reachable through this path either.
     let base = if collapsed {
-        collapsed_duplicate_description(f)
+        collapsed_duplicate_description(f, available)
     } else {
         base
     };
@@ -1739,6 +1856,10 @@ fn render_human(
     // For workspace scan: suppress clean spans.
     // For named lookup: always render block.
     let _is_named_lookup = options.named_lookup;
+
+    // Probed once for the whole report: the collapsed-duplicate lines may only
+    // recommend `add` where `add` runs, and this is the one thing that knows.
+    let available = AddAvailability::probe(repo);
 
     let mut printed_any_span = false;
     for m in spans.iter() {
@@ -1874,7 +1995,7 @@ fn render_human(
                     println!("- {addr}");
                 } else {
                     let is_followed = followed_ids.contains(&f.anchor_id);
-                    let desc = describe_finding_lower(f);
+                    let desc = describe_finding_lower(f, &available);
                     let auto_tag = if is_followed { " — auto-updated" } else { "" };
                     println!("- {addr} — {desc}{auto_tag}");
                     if options.patch {

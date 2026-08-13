@@ -50,6 +50,28 @@ fn anchor_lines(text: &str) -> Vec<&str> {
 /// whatever the constant happens to return.
 const SENTINEL: &str = "rk64:ffffffffffffffff";
 
+/// The `--fix` summary clause that ends an unverified collapse rather than
+/// looping the operator back through a re-run that cannot clear it.
+///
+/// Spelled once so the cases that assert it and the cases that assert its
+/// *absence* cannot drift apart into asserting two different sentences —
+/// which would let the absence assertions pass vacuously.
+const TERMINATING_ADVICE: &str = "an unverified collapse is not cleared by re-running: settle \
+     each collapsed address named above with `git span add` or `git span replace`, then run git \
+     span drift again";
+
+/// Anchor `addr` in a throwaway span and return the record line the tool
+/// wrote, hash and all — a *real* neighbour, not a hand-written one, so a
+/// fixture's neighbour never drifts for a reason the case did not intend.
+fn seed_real_line(repo: &TestRepo, addr: &str) -> Result<String> {
+    repo.span_stdout(["add", "seed", addr])?;
+    Ok(anchor_lines(&span_text(repo, "seed")?)
+        .into_iter()
+        .find(|l| l.starts_with(&format!("{addr} ")))
+        .expect("the record just added")
+        .to_string())
+}
+
 /// Hand-write a span declaration and commit it, so `drift` (which reads the
 /// committed corpus) can see it.
 fn commit_span(repo: &TestRepo, name: &str, body: &str) -> Result<()> {
@@ -325,7 +347,9 @@ fn fix_collapses_divergent_duplicate_to_a_sentinel_survivor() -> Result<()> {
     let out = repo.run_span(["drift", "--fix"])?;
     let stdout = stdout_of(&out);
     assert!(
-        stdout.contains("collapsed duplicate identity: `file1.txt#L1-L5` — 2 records → 1"),
+        stdout.contains(
+            "collapsed duplicate identity in `fix-divergent`: `file1.txt#L1-L5` — 2 records → 1"
+        ),
         "the sweep must name every identity it collapsed; stdout:\n{stdout}"
     );
     assert!(
@@ -382,8 +406,9 @@ fn fix_dedupes_identical_hash_duplicate_without_manufacturing_drift() -> Result<
         "an identical-hash duplicate must not be forced drifted; stdout:\n{stdout}"
     );
     assert!(
-        stdout.contains("collapsed duplicate identity: `file1.txt#L1-L5` — 2 records → 1")
-            && stdout.contains("records agreed"),
+        stdout.contains(
+            "collapsed duplicate identity in `fix-identical`: `file1.txt#L1-L5` — 2 records → 1"
+        ) && stdout.contains("records agreed"),
         "the dedupe is still reported, and reported as agreed; stdout:\n{stdout}"
     );
 
@@ -464,7 +489,7 @@ fn fix_defers_reanchor_of_a_collapsed_identity_then_tracks_its_position() -> Res
          stdout:\n{second_out}"
     );
     assert!(
-        second_out.contains("run `git span add file1.txt#L5-L9` to resolve"),
+        second_out.contains("run `git span add fix-guard file1.txt#L5-L9` to resolve"),
         "the line names the command that can actually close the content \
          question, at the coordinates the record now holds; \
          stdout:\n{second_out}"
@@ -515,7 +540,7 @@ fn fix_does_not_follow_a_rename_for_a_sentinel_it_cannot_confirm() -> Result<()>
     let text = span_text(&repo, "fix-rename")?;
     assert!(
         stdout.contains("position untrackable: `file1.txt#L1-L5`")
-            && stdout.contains("git span replace file1.txt#L1-L5 <new-address>"),
+            && stdout.contains("git span replace fix-rename file1.txt#L1-L5 <new-address>"),
         "an unconfirmable rename is the terminal residual, named as such; \
          stdout:\n{stdout}\nspan:\n{text}"
     );
@@ -542,32 +567,173 @@ fn fix_does_not_follow_a_rename_for_a_sentinel_it_cannot_confirm() -> Result<()>
     Ok(())
 }
 
-/// The no-op guard: an unmoved sentinel is not rewritten and not reported,
-/// on this pass or any later one.
+/// The no-op guard: an unmoved sentinel is not rewritten — and is never
+/// silent about being unmoved, on this pass or any later one.
+///
+/// "Nothing to rewrite" is not "nothing to say". `--fix` tracks a position
+/// from worktree hunks applied to a HEAD-relative range, so an already
+/// *committed* shift is outside its reach entirely, and a sentinel cannot
+/// take the route an ordinary anchor takes instead — relocating by finding
+/// its stored hash elsewhere in the file — because it is chosen so no
+/// content ever matches it. The two cases are therefore indistinguishable
+/// from inside this branch: "the content did not move" and "the content
+/// moved and nothing here can see it" both arrive as an unmoved record. It
+/// reports on both, because the operator can tell them apart by reading the
+/// lines and the tool cannot.
 #[test]
-fn fix_leaves_an_unmoved_sentinel_untouched_and_unreported() -> Result<()> {
-    let repo = TestRepo::seeded()?;
-    commit_span(
-        &repo,
-        "fix-noop",
-        &format!("file1.txt#L1-L5 {SENTINEL}\n\nwhy: sentinel, nothing moved.\n"),
-    )?;
+fn fix_reports_the_unmoved_sentinel_it_leaves_untouched() -> Result<()> {
+    for (name, neighbour_first) in [("fix-noop-after", false), ("fix-noop-before", true)] {
+        let repo = TestRepo::seeded()?;
+        let neighbour_line = commit_span_beside_neighbour(
+            &repo,
+            name,
+            &format!("file1.txt#L1-L5 {SENTINEL}\n"),
+            "file2.txt#L10-L12",
+            neighbour_first,
+        )?;
 
-    let first = repo.run_span(["drift", "--fix"])?;
-    let before = span_text(&repo, "fix-noop")?;
-    let second = repo.run_span(["drift", "--fix"])?;
-    let after = span_text(&repo, "fix-noop")?;
+        let first = repo.run_span(["drift", "--fix"])?;
+        let before = span_text(&repo, name)?;
+        let second = repo.run_span(["drift", "--fix"])?;
+        let after = span_text(&repo, name)?;
 
-    assert_eq!(
-        before, after,
-        "an unmoved sentinel is never rewritten:\nbefore:\n{before}\nafter:\n{after}"
-    );
-    for (label, out) in [("first", &first), ("second", &second)] {
-        let stdout = stdout_of(out);
+        assert_eq!(
+            before, after,
+            "an unmoved sentinel is never rewritten:\nbefore:\n{before}\nafter:\n{after}"
+        );
         assert!(
-            !stdout.contains("position tracked") && !stdout.contains("position untrackable"),
-            "the {label} pass must report nothing for an unmoved sentinel; \
+            anchor_lines(&after).iter().any(|l| *l == neighbour_line),
+            "and the neighbour is untouched, hash included:\n{after}"
+        );
+        for (label, out) in [("first", &first), ("second", &second)] {
+            let stdout = stdout_of(out);
+            assert!(
+                stdout.contains("position unconfirmed: `file1.txt#L1-L5`"),
+                "the {label} pass must say the address is unconfirmed rather \
+                 than pass over it in silence; stdout:\n{stdout}"
+            );
+            assert!(
+                !stdout.contains("position tracked") && !stdout.contains("position untrackable"),
+                "the {label} pass neither claims to have tracked it nor \
+                 declares it terminal; stdout:\n{stdout}"
+            );
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// A shift that was already committed
+//
+// The worst outcome this card produced, and the one that motivated the
+// branch above. `--fix` sees hunks between HEAD and the working tree, so a
+// shift the operator already committed is invisible to it: the record keeps
+// its old line numbers while the coupled content sits several lines lower.
+// Every other anchor in the same span relocates in that same run, by
+// matching its stored hash against the file's new contents — a sentinel is
+// the one record for which that route is closed by construction.
+//
+// The old code returned in silence here. The operator then read a report
+// naming the address, ran the `add` it offered, and re-pointed the coupling
+// at whatever lines now sat at those numbers, at exit 0. The fixtures below
+// pin both ends of that: the sweep names the hazard on every pass, and `add`
+// — run as the string the sweep printed, not as a hand-written argv —
+// announces what it resolved instead of certifying in silence.
+// ---------------------------------------------------------------------------
+
+/// The neighbour relocates and the sentinel does not, and the report says
+/// so out loud.
+///
+/// The neighbour is in the *same file* and below the insertion point on
+/// purpose: it is the control. If it fails to move, the fixture never
+/// committed a real shift and the sentinel's stillness would prove nothing.
+#[test]
+fn a_committed_shift_leaves_the_sentinel_reported_rather_than_silently_stale() -> Result<()> {
+    for (name, neighbour_first) in [("fix-shift-after", false), ("fix-shift-before", true)] {
+        let repo = TestRepo::seeded()?;
+        let neighbour_line = commit_span_beside_neighbour(
+            &repo,
+            name,
+            &format!("file1.txt#L3-L5 {SENTINEL}\n"),
+            "file1.txt#L8-L10",
+            neighbour_first,
+        )?;
+
+        // Two lines in at the top, and *committed* — the shape `--fix`
+        // cannot see.
+        repo.write_file(
+            "file1.txt",
+            "new1\nnew2\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+        )?;
+        repo.run_git(["commit", "-am", "shift every line down by two"])?;
+
+        let out = repo.run_span(["drift", "--fix"])?;
+        let stdout = stdout_of(&out);
+        let text = span_text(&repo, name)?;
+        let lines = anchor_lines(&text);
+
+        assert!(
+            lines.iter().any(|l| l.starts_with("file1.txt#L10-L12 ")),
+            "{name}: the control neighbour must relocate, or this fixture \
+             never committed a shift at all:\n{text}\nstdout:\n{stdout}"
+        );
+        assert!(
+            !lines.iter().any(|l| *l == neighbour_line),
+            "{name}: and it must not have stayed where it was:\n{text}"
+        );
+        assert!(
+            lines.contains(&format!("file1.txt#L3-L5 {SENTINEL}").as_str()),
+            "{name}: the sentinel keeps its coordinates — inventing new ones \
+             would be a claim nothing supports:\n{text}"
+        );
+        assert!(
+            stdout.contains(
+                "position unconfirmed: `file1.txt#L3-L5` — a duplicate-collapse \
+                 sentinel matches no content by construction, so nothing can \
+                 confirm this address still holds the coupled content; a commit \
+                 that shifted lines above it moved the content without moving \
+                 this record."
+            ),
+            "{name}: the one thing that must never happen here is silence; \
              stdout:\n{stdout}"
+        );
+        assert!(
+            !stdout.contains("position tracked"),
+            "{name}: nothing tracked it, and saying otherwise would be the \
+             invented coordinates again; stdout:\n{stdout}"
+        );
+
+        // Now type what the tool printed — the exact string, taken from the
+        // line that printed it. A hand-written argv here would pass over a
+        // command missing its `<NAME>` positional, which is the whole point.
+        let advice = stdout
+            .lines()
+            .find(|l| l.contains("position unconfirmed"))
+            .unwrap_or_else(|| panic!("the line asserted just above:\n{stdout}"));
+        let add = repo.run_printed_command(advice, "git span add")?;
+        let add_out = stdout_of(&add);
+        assert_eq!(
+            add.status.code(),
+            Some(0),
+            "{name}: the printed command must run as printed; stdout:\n{add_out}\
+             \nstderr:\n{}",
+            String::from_utf8_lossy(&add.stderr)
+        );
+        assert!(
+            add_out.contains("(unverified collapse resolved)")
+                && add_out.contains(
+                    "Resolved an unverified collapse: 1 retired record carried \
+                     the collapsed-duplicate marker"
+                ),
+            "{name}: `add` retired a record nothing had verified — an exit 0 \
+             with no mention of it is the silent certification this fixture \
+             exists to forbid; stdout:\n{add_out}"
+        );
+
+        let text = span_text(&repo, name)?;
+        assert!(
+            !text.contains(SENTINEL),
+            "{name}: and the marker really is gone afterward:\n{text}"
         );
     }
     Ok(())
@@ -596,7 +762,7 @@ fn fix_names_replace_for_an_untrackable_sentinel_and_add_orphans_it() -> Result<
          silent fall-through; stdout:\n{stdout}"
     );
     assert!(
-        stdout.contains("git span replace file2.txt#L1-L5 <new-address>"),
+        stdout.contains("git span replace fix-terminal file2.txt#L1-L5 <new-address>"),
         "the terminal residual's completion command is `replace`; \
          stdout:\n{stdout}"
     );
@@ -1148,18 +1314,28 @@ fn coalescing_never_merges_a_sentinel_with_a_preceding_neighbour() -> Result<()>
 /// second, overlapping anchor over lines the merged record already covered —
 /// at exit 0, invisible to `drift`, `--fix`, and `doctor` forever after. So
 /// this runs the printed command and asserts the resulting record set.
+///
+/// "Runs the printed command" is literal, and the earlier version of this
+/// test is why it has to be. It asserted the printed string and then called
+/// `run_span(["add", "coalesce-seq", "file1.txt#L3-L5"])` — supplying the
+/// span name the printed command had left out. The command it typed was not
+/// the command the tool printed, so it went green while every operator who
+/// pasted the real one got `error: the following required arguments were not
+/// provided: <ANCHORS>` and exit 2. The argv now comes out of the stdout
+/// under test and nowhere else.
 #[test]
 fn following_the_printed_command_after_a_collapse_leaves_no_overlapping_anchor() -> Result<()> {
     let (repo, text, stdout, _code) =
         fix_with_contiguous_neighbour("coalesce-seq", "file1.txt#L3-L5", "file1.txt#L6-L7")?;
     assert!(text.contains(SENTINEL), "precondition:\n{text}");
     assert!(
-        stdout.contains("git span add file1.txt#L3-L5"),
-        "the collapse names the address it is talking about; stdout:\n{stdout}"
+        stdout.contains("git span add coalesce-seq file1.txt#L3-L5"),
+        "the collapse names the span and the address it is talking about; \
+         stdout:\n{stdout}"
     );
 
-    // Type what the tool printed.
-    let out = repo.run_span(["add", "coalesce-seq", "file1.txt#L3-L5"])?;
+    // Type what the tool printed — extracted from stdout, never rebuilt.
+    let out = repo.run_printed_command(&stdout, "git span add ")?;
     assert_eq!(
         out.status.code(),
         Some(0),
@@ -1366,16 +1542,191 @@ fn the_fix_summary_counts_a_divergent_collapse_and_names_the_step_that_ends_it()
              stdout:\n{stdout}"
         );
         assert!(
-            stdout.contains(
-                "an unverified collapse is not cleared by re-running: settle each collapsed \
-                 address named above with `git span add` or `git span replace`, then run \
-                 git span drift again"
-            ),
+            stdout.contains(TERMINATING_ADVICE),
             "{orientation}: `run git span drift again` on its own is a closed \
              loop — the sentinel matches no content, so the same report \
              returns forever; stdout:\n{stdout}"
         );
         assert_eq!(code, Some(1), "{orientation}: stdout:\n{stdout}");
+    }
+    Ok(())
+}
+
+/// The advice that ends the state must outlive the pass that planted the
+/// sentinel.
+///
+/// Gating it on "did *this* pass collapse something unverified" gets the
+/// first run right and every run after it wrong. The sentinel is durable in
+/// the file; pass 2 finds the same unverified record, still cannot clear it
+/// by re-running, and — under the old gate — was told to run `drift` again.
+/// That is the closed loop this card exists to remove, restored on the
+/// second invocation.
+///
+/// Both passes run back to back with the span file untouched in between, so
+/// the only difference between them is which pass performed the collapse.
+#[test]
+fn the_terminating_advice_survives_the_pass_that_performed_the_collapse() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let neighbour = seed_real_line(&repo, "file1.txt#L7-L9")?;
+    commit_span(
+        &repo,
+        "twice",
+        &format!(
+            "file1.txt#L1-L5 rk64:aaaaaaaaaaaaaaaa\n\
+             file1.txt#L1-L5 rk64:bbbbbbbbbbbbbbbb\n\
+             {neighbour}\n\
+             \nwhy: a divergent duplicate beside a neighbour.\n"
+        ),
+    )?;
+
+    let first = stdout_of(&repo.run_span(["drift", "--fix"])?);
+    assert!(
+        first.contains("collapsed 1 duplicate identity (1 record dropped, 1 unverified)"),
+        "pass 1 performs the collapse; stdout:\n{first}"
+    );
+    assert!(
+        first.contains(TERMINATING_ADVICE),
+        "pass 1 names the step that ends the state; stdout:\n{first}"
+    );
+
+    let after_first = span_text(&repo, "twice")?;
+    let second = stdout_of(&repo.run_span(["drift", "--fix"])?);
+    assert_eq!(
+        span_text(&repo, "twice")?,
+        after_first,
+        "precondition: pass 2 changes nothing, so the two runs differ only \
+         in which one collapsed:\n{after_first}"
+    );
+    assert!(
+        second.contains("collapsed"),
+        "precondition: the sentinel is still reported on pass 2; \
+         stdout:\n{second}"
+    );
+    assert!(
+        !second.contains("duplicate identity"),
+        "precondition: pass 2 collapses nothing — its counters describe its \
+         own work, which is none; stdout:\n{second}"
+    );
+    assert!(
+        second.contains(TERMINATING_ADVICE),
+        "the advice is a fact about the drift being reported, not about the \
+         pass reporting it — pass 2 faces the same unclearable record and \
+         must not be told to re-run; stdout:\n{second}"
+    );
+    assert!(
+        !second.contains("drifted — run git span drift again"),
+        "and must not be told so in the plain form either; stdout:\n{second}"
+    );
+    Ok(())
+}
+
+/// The population that never sees the collapsing pass at all.
+///
+/// A sentinel arrives already planted for anyone who pulled it, merged it,
+/// or checked out a branch someone else collapsed on — the population
+/// `format_sentinel_preserved` exists to serve. No collapse happens in this
+/// test; `--fix` finds a record it cannot clear and has no collapse tally of
+/// its own to reason from. Under the old gate this operator got the closed
+/// loop on their *first* and every subsequent run.
+#[test]
+fn a_sentinel_arriving_from_elsewhere_still_gets_the_terminating_advice() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let neighbour = seed_real_line(&repo, "file1.txt#L7-L9")?;
+    commit_span(
+        &repo,
+        "arrived",
+        &format!(
+            "file1.txt#L1-L5 {SENTINEL}\n{neighbour}\n\
+             \nwhy: a sentinel committed by somebody else.\n"
+        ),
+    )?;
+
+    let out = repo.run_span(["drift", "--fix"])?;
+    let stdout = stdout_of(&out);
+    assert!(
+        !stdout.contains("duplicate identity"),
+        "precondition: nothing collapses in this run; stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains(TERMINATING_ADVICE),
+        "an operator who inherited the sentinel must be told what ends it, \
+         not handed the re-run that provably cannot; stdout:\n{stdout}"
+    );
+    assert_eq!(out.status.code(), Some(1), "stdout:\n{stdout}");
+
+    // And the command the report offers is runnable as printed.
+    let followed = repo.run_printed_command(&stdout, "git span add ")?;
+    assert_eq!(
+        followed.status.code(),
+        Some(0),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&followed.stderr)
+    );
+    assert!(
+        !span_text(&repo, "arrived")?.contains(SENTINEL),
+        "and following it actually retires the marker:\n{}",
+        span_text(&repo, "arrived")?
+    );
+    Ok(())
+}
+
+/// Two spans collapsing in one sweep.
+///
+/// The collapse lines are printed by the span loop, *above* the `## <span>`
+/// headings of the report that follows, so with two spans collapsing they
+/// arrive as adjacent lines with the report nowhere near them. Naming only
+/// the address left the operator unable to tell which line belonged to which
+/// span — and, worse, handed them two `git span add <address>` commands that
+/// were missing the one argument that would have disambiguated them.
+#[test]
+fn two_spans_collapsing_in_one_sweep_each_name_their_own_span() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    for (name, addr) in [("alpha", "file1.txt#L1-L5"), ("beta", "file2.txt#L1-L5")] {
+        let neighbour = seed_real_line(&repo, &format!("{}#L7-L9", addr.split('#').next().unwrap()))?;
+        commit_span(
+            &repo,
+            name,
+            &format!(
+                "{addr} rk64:aaaaaaaaaaaaaaaa\n{addr} rk64:bbbbbbbbbbbbbbbb\n\
+                 {neighbour}\n\nwhy: divergent duplicate.\n"
+            ),
+        )?;
+    }
+
+    let stdout = stdout_of(&repo.run_span(["drift", "--fix"])?);
+    for (name, addr) in [("alpha", "file1.txt#L1-L5"), ("beta", "file2.txt#L1-L5")] {
+        assert!(
+            stdout.contains(&format!(
+                "collapsed duplicate identity in `{name}`: `{addr}`"
+            )),
+            "each collapse line names the span it belongs to, since nothing \
+             else nearby does; stdout:\n{stdout}"
+        );
+        assert!(
+            stdout.contains(&format!("git span add {name} {addr}")),
+            "and each carries a command that is complete on its own; \
+             stdout:\n{stdout}"
+        );
+    }
+
+    // Both printed `add` commands run, and each settles only its own span.
+    for name in ["alpha", "beta"] {
+        let line = stdout
+            .lines()
+            .find(|l| l.contains(&format!("identity in `{name}`")))
+            .unwrap_or_else(|| panic!("collapse line for `{name}`; stdout:\n{stdout}"));
+        let out = repo.run_printed_command(line, "git span add ")?;
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "stderr:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            !span_text(&repo, name)?.contains(SENTINEL),
+            "`{name}` is settled by its own line:\n{}",
+            span_text(&repo, name)?
+        );
     }
     Ok(())
 }
@@ -1742,15 +2093,29 @@ fn a_collapse_never_presents_its_recorded_address_as_confirmed() -> Result<()> {
         "the line says plainly that the address is unconfirmed; stdout:\n{stdout}"
     );
     assert!(
-        stdout.contains("git span add file1.txt#L3-L5")
-            && stdout.contains("git span replace file1.txt#L3-L5 <new-address>"),
+        stdout.contains("git span add unconfirmed file1.txt#L3-L5")
+            && stdout.contains("git span replace unconfirmed file1.txt#L3-L5 <new-address>"),
         "and offers both completions against the question only the operator \
-         can answer; stdout:\n{stdout}"
+         can answer, each carrying the span name both commands take as their \
+         first positional; stdout:\n{stdout}"
     );
     assert!(
         stdout.contains("only if the coupled content still lives there"),
         "with the condition that separates them stated, not implied; \
          stdout:\n{stdout}"
+    );
+
+    // Runnable as printed, not merely well-worded: the `add` the line
+    // recommends is lifted out of this stdout and executed verbatim. The
+    // argv is never rewritten here — a test that reconstructs it cannot
+    // distinguish a complete command from one missing `<NAME>`, which is
+    // exactly the failure the well-worded version of this line shipped with.
+    let followed = repo.run_printed_command(&stdout, "git span add ")?;
+    assert_eq!(
+        followed.status.code(),
+        Some(0),
+        "the printed `add` must run as printed; stderr:\n{}",
+        String::from_utf8_lossy(&followed.stderr)
     );
     Ok(())
 }
@@ -1999,6 +2364,470 @@ fn replace_json_carries_the_retired_and_collapsed_counts() -> Result<()> {
     assert!(
         !text.contains(SENTINEL),
         "and the state really is resolved on disk:\n{text}"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// A surface may only name a command that runs
+//
+// The rule the four cases below share, applied at the two surfaces that name
+// commands. `add` has prechecks that run *before* the span file is opened —
+// the path must exist, and the anchored range must fit inside it — and each
+// one turns a recommendation into a command that exits non-zero on the
+// operator. Both surfaces answer to `add_refusal`, so `drift` steering a
+// `Deleted` collapse to `replace` and `doctor` withholding `add` from a
+// truncated file are one rule, not two coincidences.
+//
+// Each case runs the command it claims is unavailable and asserts the
+// refusal is real. A finding that steers around a command has to be right
+// about that command, and only execution establishes that.
+// ---------------------------------------------------------------------------
+
+/// The `--fix` summary clause for a report whose every unverified collapse
+/// sits on a deleted address. `add` cannot run against any of them, so the
+/// clause must not offer it.
+const TERMINATING_ADVICE_DELETED: &str =
+    "an unverified collapse is not cleared by re-running: settle each collapsed address named \
+     above with `git span replace`, then run git span drift again";
+
+/// The `--fix` summary clause for a report whose every unverified collapse
+/// sits where `add` refuses for the *range* reason rather than the existence
+/// one. Byte-identical to [`TERMINATING_ADVICE_DELETED`] by design: the
+/// summary narrows to `replace` on the predicate, not on which refusal fired.
+const TERMINATING_ADVICE_REFUSED: &str = TERMINATING_ADVICE_DELETED;
+
+/// A sentinel over a **truncated** file is never handed the command that
+/// refuses either — the case a status-shaped gate could not see.
+///
+/// This is the regression for the second time this card made the same
+/// mistake. The first gate on this branch keyed the "don't offer `add`" arm
+/// to `AnchorStatus::Deleted`, on the stated theory that the resolver reports
+/// `Deleted` both for a vanished path and for a file too short to reach the
+/// anchored end. Only the first half is true. A file truncated below the
+/// anchored range resolves `Changed`, sailed through the `Deleted` gate, and
+/// got printed `git span add <name> <addr>` by all three surfaces — a command
+/// that exits 1 with a bare `invalid anchor: end=N exceeds file line count`,
+/// no `CliError` block and no next steps. `doctor`, gated on the real
+/// predicate, withheld `add` for that same record in that same repository.
+///
+/// So the assertion is deliberately made against every surface at once,
+/// including `doctor`: the point of routing them all through
+/// `AddAvailability` is that they cannot disagree, and a test that checked
+/// one of them would not have caught the disagreement that existed.
+///
+/// The neighbour is in both orientations, and the truncation is **committed**
+/// — an uncommitted one leaves the file readable at HEAD and is the fixture
+/// shape that hid the position-tracking defect earlier in this card.
+#[test]
+fn a_truncated_sentinel_is_never_offered_the_command_that_refuses() -> Result<()> {
+    for (name, neighbour_first) in [("trunc-sent-after", false), ("trunc-sent-before", true)] {
+        let repo = TestRepo::seeded()?;
+        // A genuine divergent duplicate rather than a pre-planted sentinel,
+        // so the whole chain runs for real: `doctor` sees the duplicate,
+        // `--fix` collapses it and plants the marker, and `drift` reports the
+        // survivor. All three then have something to say about one address,
+        // which is the disagreement this test exists to forbid.
+        commit_span_beside_neighbour(
+            &repo,
+            name,
+            "file2.txt#L12-L15 rk64:1111111111111111\n\
+             file2.txt#L12-L15 rk64:2222222222222222\n",
+            "file1.txt#L1-L3",
+            neighbour_first,
+        )?;
+        // `file2.txt` still exists — this is the whole point. It is simply
+        // too short now for the anchored range, which is a state no drift
+        // status distinguishes from an ordinary content edit.
+        repo.write_file("file2.txt", "line1\nline2\n")?;
+        repo.run_git(["add", "file2.txt"])?;
+        repo.run_git(["commit", "-m", "truncate the anchored file"])?;
+
+        // `doctor` first, while the duplicate is still on disk for it to
+        // find; `--fix` collapses it, and `drift` then reads the survivor.
+        let doctor = repo.run_span(["doctor"])?;
+        let fix = repo.run_span(["drift", "--fix"])?;
+        let surfaces = [
+            ("doctor", doctor),
+            ("drift --fix", fix),
+            ("drift", repo.run_span(["drift"])?),
+        ];
+        for (surface, out) in surfaces {
+            let stdout = stdout_of(&out);
+            assert!(
+                stdout.contains("2 lines long"),
+                "{surface}: every surface says *why* `add` is unavailable, \
+                 naming the length that makes the range unreachable; \
+                 stdout:\n{stdout}"
+            );
+            // The rule is not "never say the word `add`" — `doctor` names the
+            // refused command deliberately, inside a clause explaining that it
+            // cannot repair this one, which is more useful than silence about
+            // the obvious candidate. The rule is that no surface *instructs*
+            // it. So the drift surfaces, which have no such explanatory frame
+            // and whose every backticked command is an instruction, must not
+            // carry the string at all.
+            if surface == "doctor" {
+                assert!(
+                    stdout.contains(&format!(
+                        "(`git span add {name} file2.txt#L12-L15` cannot repair this one"
+                    )),
+                    "doctor names the refused command only to rule it out; \
+                     stdout:\n{stdout}"
+                );
+                assert!(
+                    stdout.contains("fix:          git span drift --fix"),
+                    "and the `fix:` line it does instruct is the one that \
+                     runs; stdout:\n{stdout}"
+                );
+            } else {
+                assert!(
+                    !stdout.contains(&format!("git span add {name} file2.txt#L12-L15")),
+                    "{surface}: `add` exits 1 at this address, and every \
+                     backticked command on this surface is an instruction, so \
+                     it must not appear at all; stdout:\n{stdout}"
+                );
+            }
+        }
+
+        // The summary narrows to `replace` on the predicate, not on status.
+        let fix_stdout = stdout_of(&repo.run_span(["drift", "--fix"])?);
+        assert!(
+            fix_stdout.contains(TERMINATING_ADVICE_REFUSED),
+            "the run summary must narrow to `replace` for a range refusal \
+             exactly as it does for a missing path; stdout:\n{fix_stdout}"
+        );
+
+        // And the command the surfaces *do* name is one that runs: `replace`
+        // has no existence or range check on the old address, so it retires
+        // the unverified identity and installs a reachable one.
+        let out = repo.run_span(["replace", name, "file2.txt#L12-L15", "file2.txt#L1-L2"])?;
+        assert!(
+            out.status.success(),
+            "the recommended `replace` must actually run; stderr:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let anchors = anchor_lines(&span_text(&repo, name)?).join("\n");
+        assert!(
+            !anchors.contains(SENTINEL),
+            "and it retires the sentinel rather than carrying it; span:\n{anchors}"
+        );
+        assert!(
+            anchors.contains("file1.txt#L1-L3"),
+            "the neighbour survives untouched; span:\n{anchors}"
+        );
+    }
+    Ok(())
+}
+
+/// A sentinel whose path is gone is never handed the command that refuses —
+/// not in the per-anchor line, not in the summary.
+///
+/// `add` and `replace` are not interchangeable here. `replace` retires every
+/// record at the old identity and installs one at a new address; `add`
+/// hashes content at the address it is given, which for a deleted path means
+/// it exits before it reads anything. Offering it three lines under a line
+/// saying the address is deleted told the operator two incompatible things
+/// in one report.
+#[test]
+fn a_deleted_sentinel_is_never_offered_the_command_that_refuses() -> Result<()> {
+    for (name, neighbour_first) in [("del-sent-after", false), ("del-sent-before", true)] {
+        let repo = TestRepo::seeded()?;
+        let neighbour_line = commit_span_beside_neighbour(
+            &repo,
+            name,
+            &format!("file2.txt#L1-L5 {SENTINEL}\n"),
+            "file1.txt#L1-L3",
+            neighbour_first,
+        )?;
+        repo.run_git(["rm", "file2.txt"])?;
+        repo.run_git(["commit", "-m", "delete the anchored file"])?;
+
+        // Both surfaces carry the per-anchor line; only `--fix` prints the
+        // run summary, so the summary clause is asserted where it exists.
+        let fix = repo.run_span(["drift", "--fix"])?;
+        for (surface, out) in [("drift", repo.run_span(["drift"])?), ("drift --fix", fix)] {
+            let stdout = stdout_of(&out);
+            assert!(
+                stdout.contains(&format!(
+                    "`file2.txt` is neither tracked nor in the worktree, so \
+                     `add`'s existence probe refuses before it reads the span \
+                     file — run `git span replace {name} file2.txt#L1-L5 \
+                     <new-address>` naming where the coupled content lives now"
+                )),
+                "{surface}: the line names the command that runs, and says why \
+                 the other one does not; stdout:\n{stdout}"
+            );
+            assert!(
+                !stdout.contains(&format!("git span add {name} file2.txt#L1-L5")),
+                "{surface}: the command that exits non-zero must not appear \
+                 anywhere in the report; stdout:\n{stdout}"
+            );
+            if surface == "drift --fix" {
+                assert!(
+                    stdout.contains(TERMINATING_ADVICE_DELETED),
+                    "{surface}: the summary narrows to `replace` too — every \
+                     unverified collapse in this report is on a deleted address; \
+                     stdout:\n{stdout}"
+                );
+            }
+            assert!(
+                !stdout.contains(TERMINATING_ADVICE),
+                "{surface}: and it must not fall back to the both-commands \
+                 wording, which would put `add` back in front of the operator; \
+                 stdout:\n{stdout}"
+            );
+        }
+
+        // The steering is only honest if the refusal is real.
+        let refused = repo.run_span(["add", name, "file2.txt#L1-L5"])?;
+        assert_ne!(
+            refused.status.code(),
+            Some(0),
+            "`add` must in fact refuse the deleted path; stdout:\n{}",
+            stdout_of(&refused)
+        );
+
+        let text = span_text(&repo, name)?;
+        assert!(
+            anchor_lines(&text).iter().any(|l| *l == neighbour_line),
+            "and the neighbour came through both passes untouched:\n{text}"
+        );
+    }
+    Ok(())
+}
+
+/// `doctor` withholds `add` from a file that no longer reaches the anchored
+/// range, for the same reason it withholds it from a vanished path.
+///
+/// Existence was the gate, and existence is necessary but not sufficient:
+/// the file is right there, `add`'s range check rejects it anyway, and the
+/// operator was sent to a command that exits 1 with the file sitting in
+/// front of them. The finding now names the line count, so the reason is
+/// checkable against the file rather than merely asserted.
+#[test]
+fn doctor_withholds_add_when_the_range_runs_past_the_end_of_the_file() -> Result<()> {
+    for (name, neighbour_first) in [("doc-eof-after", false), ("doc-eof-before", true)] {
+        let repo = TestRepo::seeded()?;
+        let neighbour_line = commit_span_beside_neighbour(
+            &repo,
+            name,
+            "file2.txt#L1-L12 rk64:aaaaaaaaaaaaaaaa\n\
+             file2.txt#L1-L12 rk64:bbbbbbbbbbbbbbbb\n",
+            "file1.txt#L1-L3",
+            neighbour_first,
+        )?;
+        // The file stays — it just stops being long enough.
+        repo.write_file("file2.txt", "line1\nline2\n")?;
+        repo.run_git(["commit", "-am", "truncate the anchored file"])?;
+
+        let out = repo.run_span(["doctor"])?;
+        let stdout = stdout_of(&out);
+        assert_eq!(out.status.code(), Some(1), "stdout:\n{stdout}");
+        assert!(
+            stdout.contains("fix:          git span drift --fix"),
+            "the command that still works is named; stdout:\n{stdout}"
+        );
+        assert!(
+            !stdout.contains("fix:          git span add"),
+            "and the one whose range check refuses is not; stdout:\n{stdout}"
+        );
+        assert!(
+            stdout.contains(&format!(
+                "(`git span add {name} file2.txt#L1-L12` cannot repair this one: \
+                 `file2.txt` is"
+            )) && stdout.contains("2 lines long, so the anchored range runs past its end"),
+            "the reason is given against the file's actual length, so the \
+             operator can check it; stdout:\n{stdout}"
+        );
+
+        let refused = repo.run_span(["add", name, "file2.txt#L1-L12"])?;
+        assert_ne!(
+            refused.status.code(),
+            Some(0),
+            "`add` must in fact refuse a range past the end of the file; \
+             stdout:\n{}",
+            stdout_of(&refused)
+        );
+
+        // And the named repair really does collapse the duplicate.
+        repo.run_span(["drift", "--fix"])?;
+        let text = span_text(&repo, name)?;
+        let lines = anchor_lines(&text);
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| l.starts_with("file2.txt#L1-L12 "))
+                .count(),
+            1,
+            "the duplicate is collapsed to one record:\n{text}"
+        );
+        assert!(
+            lines.iter().any(|l| *l == neighbour_line),
+            "the neighbour survives the sweep:\n{text}"
+        );
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Two sentinels agreeing is not agreement
+//
+// `CollapsedIdentity::agreed_hash` reads as "the group agreed, nothing to
+// doubt", and that reading has a reachable hole: when every record at the
+// identity already carries the sentinel, the group agrees on a value that is
+// itself the statement "nobody knows what belongs here". Two earlier
+// collapses landing on one address get there, and so does a merge bringing a
+// second copy of a sentinel-bearing record.
+// ---------------------------------------------------------------------------
+
+/// A group of sentinels collapses as unverified, is counted as unverified,
+/// and keeps the marker.
+#[test]
+fn two_sentinels_at_one_identity_are_not_reported_as_agreement() -> Result<()> {
+    for (name, neighbour_first) in [("dup-sent-after", false), ("dup-sent-before", true)] {
+        let repo = TestRepo::seeded()?;
+        let neighbour_line = commit_span_beside_neighbour(
+            &repo,
+            name,
+            &format!("file1.txt#L1-L5 {SENTINEL}\nfile1.txt#L1-L5 {SENTINEL}\n"),
+            "file2.txt#L1-L3",
+            neighbour_first,
+        )?;
+
+        let out = repo.run_span(["drift", "--fix"])?;
+        let stdout = stdout_of(&out);
+        assert!(
+            stdout.contains(&format!(
+                "collapsed duplicate identity in `{name}`: `file1.txt#L1-L5` — 2 \
+                 records → 1 (every record already carried the unverified \
+                 marker; content is still unverified, reported drifted)"
+            )),
+            "the same doubt twice is still doubt, and the line says which \
+             kind; stdout:\n{stdout}"
+        );
+        assert!(
+            !stdout.contains("records agreed"),
+            "agreeing on `nobody knows` is not agreeing; stdout:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("collapsed 1 duplicate identity (1 record dropped, 1 unverified)"),
+            "and the counters carry the unverified tally rather than omitting \
+             it three lines above a report saying the content is unverified; \
+             stdout:\n{stdout}"
+        );
+        assert!(
+            stdout.contains(TERMINATING_ADVICE),
+            "the state still needs an operator to end it; stdout:\n{stdout}"
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "and the survivor is reported drifted; stdout:\n{stdout}"
+        );
+
+        let text = span_text(&repo, name)?;
+        let lines = anchor_lines(&text);
+        assert_eq!(
+            lines.len(),
+            2,
+            "one survivor at the identity, plus the neighbour:\n{text}"
+        );
+        assert!(
+            lines.contains(&format!("file1.txt#L1-L5 {SENTINEL}").as_str()),
+            "the survivor keeps the marker — an agreed-hash path here would \
+             have laundered it into a verified-looking record:\n{text}"
+        );
+        assert!(
+            lines.iter().any(|l| *l == neighbour_line),
+            "the neighbour is untouched:\n{text}"
+        );
+    }
+    Ok(())
+}
+
+/// A record whose position *was* tracked is not then told its address is
+/// merely where the records used to be.
+///
+/// The two statements come from different code paths — the sweep's tracking
+/// line and the drift report's annotation — and they described the same
+/// record in one run. The split is by subject: position is the sweep's to
+/// report, content is the annotation's, and the annotation makes no position
+/// claim at all now, so there is nothing left for the two to disagree about.
+#[test]
+fn a_tracked_position_is_not_contradicted_by_the_drift_annotation() -> Result<()> {
+    for (name, neighbour_first) in [("track-after", false), ("track-before", true)] {
+        let repo = TestRepo::seeded()?;
+        commit_span_beside_neighbour(
+            &repo,
+            name,
+            &format!("file1.txt#L3-L7 {SENTINEL}\n"),
+            "file2.txt#L1-L3",
+            neighbour_first,
+        )?;
+        // Uncommitted, so the sweep's worktree hunks can see it.
+        repo.write_file(
+            "file1.txt",
+            "new1\nnew2\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+        )?;
+
+        let out = repo.run_span(["drift", "--fix"])?;
+        let stdout = stdout_of(&out);
+        assert!(
+            stdout.contains(
+                "position tracked: `file1.txt#L3-L7` — a duplicate-collapse \
+                 sentinel's anchor moved to `file1.txt#L5-L9`"
+            ),
+            "{name}: the position really did track forward; stdout:\n{stdout}"
+        );
+        assert!(
+            stdout.contains(&format!(
+                "nothing established what belongs at `file1.txt#L5-L9`, so `git \
+                 span add {name} file1.txt#L5-L9` will hash whatever occupies it \
+                 now"
+            )),
+            "{name}: the annotation speaks about content, at the coordinates \
+             the record now holds; stdout:\n{stdout}"
+        );
+        assert!(
+            !stdout.contains("where the records were"),
+            "{name}: and it makes no claim about position, so it cannot \
+             contradict the line above it; stdout:\n{stdout}"
+        );
+    }
+    Ok(())
+}
+
+/// `add`'s machine-readable form carries the collapse it retired, so a hook
+/// is not left parsing prose — and omits the field entirely when there was
+/// no collapse, so its presence means something.
+#[test]
+fn add_json_carries_the_collapsed_duplicates_it_retired() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    commit_span_beside_neighbour(
+        &repo,
+        "add-json",
+        &format!("file1.txt#L2-L3 {SENTINEL}\n"),
+        "file2.txt#L10-L12",
+        true,
+    )?;
+
+    let out = repo.run_span(["add", "add-json", "file1.txt#L2-L3", "--format", "json"])?;
+    let stdout = stdout_of(&out);
+    let doc: serde_json::Value = serde_json::from_str(&stdout)?;
+    assert_eq!(
+        doc["addresses"][0]["retired_collapsed_duplicates"], 1,
+        "the unverified record `add` destroyed is counted; stdout:\n{stdout}"
+    );
+
+    // A second `add` at the same identity retires an ordinary, verified
+    // record — nothing was in doubt, so the field is absent rather than 0.
+    let again = repo.run_span(["add", "add-json", "file1.txt#L2-L3", "--format", "json"])?;
+    let doc: serde_json::Value = serde_json::from_str(&stdout_of(&again))?;
+    assert!(
+        doc["addresses"][0]["retired_collapsed_duplicates"].is_null(),
+        "an ordinary re-add claims no collapse; stdout:\n{}",
+        stdout_of(&again)
     );
     Ok(())
 }

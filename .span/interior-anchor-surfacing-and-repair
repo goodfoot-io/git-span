@@ -2,6 +2,8 @@ packages/git-span/src/cli/doctor.rs#L58-L93 rk64:463eae2d9ac6fd0a
 packages/git-span/src/cli/drift_fix.rs#L38-L55 rk64:f5aae92e3213a232
 packages/git-span/src/cli/drift_fix.rs#L38-L67 rk64:c8e535c9347cfc58
 packages/git-span/src/cli/drift_fix.rs#L44-L71 rk64:7704dd29d4988fb3
+packages/git-span/src/cli/drift_fix.rs#L48-L75 rk64:7704dd29d4988fb3
+packages/git-span/src/cli/drift_output.rs#L864-L899 rk64:d33661316183a587
 packages/git-span/src/cli/drift_output.rs#L867-L902 rk64:d33661316183a587
 packages/git-span/src/cli/interior_anchor.rs rk64:15cdc4a34ede7bdf
 

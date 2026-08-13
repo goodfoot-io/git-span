@@ -1003,6 +1003,9 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result
     struct AddOutcome {
         addr: String,
         kind: AddOutcomeKind,
+        /// Records retired at this identity that carried the
+        /// duplicate-collapse sentinel. See the acknowledgement below.
+        retired_sentinels: usize,
     }
     enum AddOutcomeKind {
         Added,     // new anchor — record created
@@ -1054,7 +1057,19 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result
             // scope is deliberately one identity — `add` acts on the
             // addresses it was given and never sweeps the rest of the file;
             // that sweep is `drift --fix`'s job.
-            remove_all_at_identity(&mut span_file.anchors, path, start_line, end_line);
+            // The retired records are read, not discarded. `add` at a
+            // sentinel-bearing address *is* the operator asserting the
+            // coupled content is still here — the exact verification the
+            // sentinel was planted to wait for, and as legitimate a
+            // resolution as `replace` naming a new address. It is also, until
+            // now, the silent one: `replace` narrated what it destroyed while
+            // `add`, the first-named and likelier branch of the same
+            // annotation, printed `(hash changed)` over a value that was
+            // never a hash of anything and exited 0. An operator who answered
+            // "yes, still here" got silence; one who answered "it moved" got
+            // a paragraph.
+            let retired = remove_all_at_identity(&mut span_file.anchors, path, start_line, end_line);
+            let retired_sentinels = retired.iter().filter(|r| carried_sentinel(r)).count();
             span_file.anchors.push(AnchorRecord {
                 path: path.clone(),
                 start_line,
@@ -1072,7 +1087,11 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result
                 n => AddOutcomeKind::Collapsed { records_before: n },
             };
 
-            outcomes.push(AddOutcome { addr, kind });
+            outcomes.push(AddOutcome {
+                addr,
+                kind,
+                retired_sentinels,
+            });
         }
     }
 
@@ -1140,8 +1159,16 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result
                         format!("- added: `{}` `{}`", args.name, o.addr)
                     }
                     AddOutcomeKind::Resolved => {
+                        // "hash changed" is the wrong noun for a sentinel:
+                        // the prior value was not a hash of anything, it was
+                        // the marker meaning nothing had been hashed.
+                        let detail = if o.retired_sentinels > 0 {
+                            "unverified collapse resolved"
+                        } else {
+                            "hash changed"
+                        };
                         format!(
-                            "- resolved in-place: `{}` `{}` (hash changed)",
+                            "- resolved in-place: `{}` `{}` ({detail})",
                             args.name, o.addr
                         )
                     }
@@ -1159,6 +1186,26 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result
                     }
                 };
                 println!("{line}");
+            }
+
+            // The symmetric acknowledgement to `replace`'s, in the same
+            // vocabulary, because the two are the two endpoints of one
+            // annotation and should read as one story rather than as two
+            // commands with unrelated manners.
+            let retired_sentinels: usize = outcomes.iter().map(|o| o.retired_sentinels).sum();
+            if retired_sentinels > 0 {
+                println!();
+                println!(
+                    "Resolved an unverified collapse: {} retired record{} carried the \
+                     collapsed-duplicate marker, so nothing had confirmed what that identity \
+                     tracked. Naming this address is that confirmation — the installed record \
+                     is hashed from the content that is there now, and the marker is gone. If \
+                     those lines are not the coupled content, `git span replace {} <old> \
+                     <new-address>` is the command that moves it.",
+                    retired_sentinels,
+                    if retired_sentinels == 1 { "" } else { "s" },
+                    args.name,
+                );
             }
 
             // The post-write facts: superseded, remains, and the single
@@ -1184,6 +1231,8 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result
                             AddOutcomeKind::Collapsed { records_before } => Some(records_before),
                             _ => None,
                         },
+                        retired_collapsed_duplicates: (o.retired_sentinels > 0)
+                            .then_some(o.retired_sentinels),
                     })
                     .collect(),
                 check.superseded.clone(),
@@ -1843,6 +1892,16 @@ pub struct AnchorOutcome {
     /// pre-existing outcome kinds' JSON is byte-for-byte unchanged.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub records_before: Option<usize>,
+    /// How many records this mutation retired at the address carried the
+    /// duplicate-collapse sentinel. Present only when at least one did, so
+    /// every row that resolves nothing unverified is byte-for-byte unchanged.
+    ///
+    /// The sibling of `replace`'s `retired_collapsed_duplicates`, and named
+    /// to match it: a script that wants to know "did this command silently
+    /// dispose of a state nobody had verified" must be able to ask both
+    /// endpoints of the annotation's advice the same question.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retired_collapsed_duplicates: Option<usize>,
 }
 
 /// One provably superseded old anchor: the covering new address, its state,
@@ -2795,6 +2854,7 @@ mod tests {
                 address: "src/read-user.ts#L1-L3".into(),
                 outcome: AddressOutcome::Added,
                 records_before: None,
+                retired_collapsed_duplicates: None,
             }],
             vec![SupersededAnchor {
                 address: "src/read-user.ts#L1-L5".into(),

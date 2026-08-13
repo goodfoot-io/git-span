@@ -66,7 +66,14 @@ pub(crate) fn run_merge_driver(args: MergeDriverArgs) -> Result<i32> {
         println!("{}", format_same_side_collapse(*side, collapsed));
     }
     for (path, start_line, end_line) in &result.sentinel_preserved {
-        println!("{}", format_sentinel_preserved(path, *start_line, *end_line));
+        // The `%O %A %B %L` protocol hands this process three temp files and
+        // a marker length — never the span's name — so the completion
+        // commands carry an explicit `<span-name>` placeholder rather than a
+        // fabricated one. See [`format_sentinel_preserved`].
+        println!(
+            "{}",
+            format_sentinel_preserved(None, path, *start_line, *end_line)
+        );
     }
 
     // Step 4: Write the merged result to the %A (ours) path.

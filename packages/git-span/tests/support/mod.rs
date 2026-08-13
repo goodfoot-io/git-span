@@ -193,6 +193,52 @@ impl TestRepo {
         Ok(cmd.output()?)
     }
 
+    /// Find the backtick-quoted `git span …` command in `stdout` that starts
+    /// with `prefix`, and run **that exact string** — never a hand-written
+    /// argv reconstructed from it.
+    ///
+    /// This exists because the alternative silently defeats its own test. A
+    /// case that asserts `stdout.contains("git span add a.txt#L1-L2")` and
+    /// then calls `run_span(["add", "some-span", "a.txt#L1-L2"])` has
+    /// supplied the span name the printed command was missing; it passes
+    /// while the printed command exits 2 on the operator who copies it. Any
+    /// test claiming an operator can follow printed advice has to take its
+    /// argv from the output under test, so that a malformed command fails
+    /// the assertion instead of being quietly repaired by the harness.
+    ///
+    /// Splitting on whitespace is sufficient and deliberate: every argument
+    /// these commands print is a span name or an anchor address, neither of
+    /// which may contain a space. A printed command that needed quoting
+    /// would be one no operator could paste either, so failing here is the
+    /// correct outcome rather than a gap to paper over.
+    ///
+    /// Panics when no command in `stdout` matches `prefix`, or when a match
+    /// still carries an unfilled `<placeholder>` — a placeholder is a blank
+    /// only the operator can fill, so a test that tries to execute one is
+    /// asserting the wrong thing.
+    #[allow(dead_code)]
+    pub fn run_printed_command(&self, stdout: &str, prefix: &str) -> Result<Output> {
+        let cmd = stdout
+            .split('`')
+            .find(|seg| seg.starts_with(prefix))
+            .unwrap_or_else(|| {
+                panic!("no backticked command starting with `{prefix}` in stdout:\n{stdout}")
+            })
+            .trim();
+        assert!(
+            !cmd.contains('<'),
+            "the printed command `{cmd}` carries an operator placeholder and \
+             cannot be executed as printed; stdout:\n{stdout}"
+        );
+        let argv: Vec<&str> = cmd.split_whitespace().collect();
+        assert_eq!(
+            &argv[..2],
+            &["git", "span"],
+            "printed command is not a `git span` invocation: `{cmd}`"
+        );
+        self.run_span(&argv[2..])
+    }
+
     /// Run the `git-span` binary in this repo's directory with one extra
     /// environment variable set. Used to drive the `GIT_SPAN_CACHE=0`
     /// off-switch for cache vs cache-off parity assertions.

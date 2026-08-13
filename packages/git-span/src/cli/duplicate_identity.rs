@@ -36,11 +36,152 @@ pub struct DuplicateIdentity {
     /// states at once. The finding's `why:` line branches on this, because a
     /// sentence that is true of one is false of the other.
     pub hashes_agree: bool,
-    /// Whether the anchored path is tracked in the index or present in the
-    /// worktree — the same probe `git span add` runs before it reads the span
-    /// file, and therefore the exact condition under which `add` is available
-    /// as the one-step repair.
-    pub path_exists: bool,
+    /// Why `git span add <name> <address>` would refuse this identity, or
+    /// `None` when it will run. See [`add_refusal`].
+    pub add_refusal: Option<AddRefusal>,
+}
+
+/// A reason `git span add <NAME> <ADDRESS>` fails *before* it ever reads the
+/// span file, and therefore a reason no surface may name it as the one-step
+/// repair for a duplicate identity at that address.
+///
+/// These refusals are the whole reason `add` cannot be recommended
+/// unconditionally. They are also easy to under-count: gating on existence
+/// alone is necessary and not sufficient, because a file that exists can
+/// still be too short to hold the anchored range, and `add` rejects that
+/// with a bare `anyhow` bail — no `CliError` block, no next steps — which is
+/// the worst version of the refusal for the operator to receive.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AddRefusal {
+    /// Neither tracked in the index nor present in the worktree, so `add`'s
+    /// existence probe rejects it.
+    PathMissing,
+    /// The file is there but has fewer lines than the anchored range needs,
+    /// so `add`'s range check rejects it (`end` exceeds the line count).
+    RangePastEof {
+        /// Lines the file actually has now.
+        lines: u32,
+    },
+}
+
+/// Will `git span add <NAME> <address>` actually run against this address?
+///
+/// One predicate, because the alternative is what produced three defects in
+/// one card: independent gates at each surface, each covering the subset of
+/// refusals whoever wrote it happened to think of. `doctor`'s `fix:` line and
+/// the collapsed-duplicate annotations in [`crate::cli::drift_output`] and
+/// [`crate::cli::drift_fix`] all answer to this one rule: **a surface may
+/// recommend `add` only where `add` runs.**
+///
+/// The third instance is worth recording, because it is the one that proves
+/// why the rule has to be a shared function rather than a shared intention.
+/// The drift annotation's first attempt gated on `AnchorStatus::Deleted`,
+/// reasoning that the resolver already reports `Deleted` both for a vanished
+/// path *and* for a file that no longer reaches the anchored end. The second
+/// half of that is false — a truncated file resolves `Changed` — so the
+/// annotation kept printing an `add` that exits 1, at the same address where
+/// `doctor`, gated on the real predicate, correctly withheld it. A status is
+/// a fact about drift; whether `add` runs is a fact about the filesystem, and
+/// no amount of care spent picking the right status proxy makes it the same
+/// question. See [`AddAvailability`], which is how the surfaces ask.
+///
+/// `line_count` is `None` for a whole-file address, which has no range to
+/// outrun, and for a path that could not be read — the caller has already
+/// established existence by then, so an unreadable file is left to `add`'s
+/// own error rather than guessed at here.
+///
+/// Deliberately *not* exhaustive over every precheck in
+/// [`crate::types::validate_add_target`]: binary content, symlinks,
+/// gitignored paths, and submodule interiors all refuse too, but none of
+/// them can be reached by a duplicate identity that a previous `add` or
+/// `drift --fix` created, because those same prechecks would have rejected
+/// the record when it was written. Existence and range are the two that a
+/// *later* edit to the repository can introduce under a record that was
+/// legal when it was made, which is exactly why they are the two that bite.
+pub fn add_refusal(path_exists: bool, end_line: u32, line_count: Option<u32>) -> Option<AddRefusal> {
+    if !path_exists {
+        return Some(AddRefusal::PathMissing);
+    }
+    match line_count {
+        Some(lines) if end_line > lines => Some(AddRefusal::RangePastEof { lines }),
+        _ => None,
+    }
+}
+
+/// The filesystem probes behind [`add_refusal`], gathered once and asked
+/// many times.
+///
+/// This is the shared form of the predicate — the thing a surface holds so
+/// that it *cannot* answer "will `add` run here" by any other means. Every
+/// caller that recommends `add` builds one of these and asks it; none of them
+/// re-derive the answer from a status, a path string, or a hunch.
+///
+/// Cheap to hold and cheap to ask: the index is read once at construction,
+/// and only the range check touches the disk, only for a ranged address, only
+/// on a path that already passed the existence probe.
+pub struct AddAvailability {
+    /// Paths tracked in the index, for the half of `add`'s existence probe
+    /// that a file absent from the worktree can still satisfy.
+    index_paths: std::collections::HashSet<String>,
+    /// The worktree root, absent in a bare repository — in which case the
+    /// existence probe falls back to the index alone, which errs toward
+    /// reporting a refusal rather than toward advice that fail-closes.
+    workdir: Option<std::path::PathBuf>,
+}
+
+impl AddAvailability {
+    /// Read the probes out of `repo`. Reading the index is best-effort for
+    /// the same reason it is in the scan: a repository without a readable
+    /// index should degrade to worktree-only existence testing, not fail.
+    pub fn probe(repo: &gix::Repository) -> Self {
+        Self {
+            index_paths: crate::git::index_entries(repo)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|en| en.path)
+                .collect(),
+            workdir: repo.workdir().map(std::path::Path::to_path_buf),
+        }
+    }
+
+    /// Why `git span add <NAME> <path>#L<..>-L<end_line>` would refuse, or
+    /// `None` when it will run.
+    ///
+    /// `end_line` is `0` for a whole-file address, which has no range to
+    /// outrun and is therefore never gated on length.
+    pub fn refusal(&self, path: &str, end_line: u32) -> Option<AddRefusal> {
+        let exists = self.index_paths.contains(path)
+            || self
+                .workdir
+                .as_ref()
+                .is_some_and(|w| w.join(path).exists());
+        let line_count = if end_line == 0 {
+            None
+        } else {
+            self.line_count(path)
+        };
+        add_refusal(exists, end_line, line_count)
+    }
+
+    /// Lines in the worktree copy of `path`, or `None` when there is no
+    /// worktree copy to count.
+    ///
+    /// The worktree file is the right one to measure: it is the content
+    /// `add` would hash, and the same effective span the duplicate scan
+    /// reads. A path tracked but not materialized here yields `None`, which
+    /// leaves the range ungated — `add`'s own error for that case names the
+    /// real condition better than a guess made from a missing file would.
+    fn line_count(&self, path: &str) -> Option<u32> {
+        let bytes = std::fs::read(self.workdir.as_ref()?.join(path)).ok()?;
+        if bytes.is_empty() {
+            return Some(0);
+        }
+        let mut lines = bytes.iter().filter(|b| **b == b'\n').count();
+        if !bytes.ends_with(b"\n") {
+            lines += 1;
+        }
+        u32::try_from(lines).ok()
+    }
 }
 
 impl DuplicateIdentity {
@@ -56,16 +197,18 @@ impl DuplicateIdentity {
     /// Both the `why:` and the `fix:` line branch, because the unconditional
     /// forms of each were wrong for one of the two populations they served.
     ///
-    /// `fix:` branches on [`Self::path_exists`]. `git span add` is the
+    /// `fix:` branches on [`Self::add_refusal`]. `git span add` is the
     /// one-step repair — it removes every record at the identity it is handed
-    /// and installs one hashed from the named content — but its existence
-    /// probe and `validate_add_target` both run *before* the span file is
-    /// read, so it refuses outright on a path that is neither tracked nor in
-    /// the worktree. That refusal is the whole reason `add` cannot be named
-    /// unconditionally; it is not a reason to withhold it from the operators
-    /// for whom it works, which is what naming only the two-step
-    /// `drift --fix` did. When the path is there, say `add`; when it is not,
-    /// say `drift --fix` and say why `add` is unavailable.
+    /// and installs one hashed from the named content — but several of its
+    /// prechecks run *before* the span file is read, and each one turns the
+    /// recommendation into a command that exits non-zero. Gating on existence
+    /// alone was necessary and not sufficient: a file that still exists but
+    /// has been truncated below the anchored end refuses too, with a bare
+    /// `invalid anchor: end=N exceeds file line count (M)` and no next steps,
+    /// while `drift --fix` repairs it perfectly well. The gate is the shared
+    /// [`add_refusal`] predicate, so widening it widens every surface at
+    /// once. When `add` runs, say `add`; when it does not, say `drift --fix`
+    /// and say precisely which refusal is in the way.
     ///
     /// `why:` branches on [`Self::hashes_agree`]. "the identity reports in
     /// two states at once" is a true and useful sentence about a divergent
@@ -95,17 +238,16 @@ impl DuplicateIdentity {
              two states at once"
                 .to_string()
         };
-        let fix = if self.path_exists {
-            format!(
+        let fix = match self.add_refusal {
+            None => format!(
                 "git span add {name} {address}\n                \
                  (one step: `add` retires every record at the identity and installs\n                 \
                  one hashed from the named content. `git span drift --fix` also\n                 \
                  collapses it, over a whole-repository sweep rather than this anchor)",
                 name = self.span_name,
                 address = self.address,
-            )
-        } else {
-            format!(
+            ),
+            Some(AddRefusal::PathMissing) => format!(
                 "git span drift --fix\n                \
                  (`git span add {name} {address}` cannot repair this one: its existence\n                 \
                  probe runs before the span file is read, and `{path}` is neither\n                 \
@@ -113,7 +255,17 @@ impl DuplicateIdentity {
                 name = self.span_name,
                 address = self.address,
                 path = self.path,
-            )
+            ),
+            Some(AddRefusal::RangePastEof { lines }) => format!(
+                "git span drift --fix\n                \
+                 (`git span add {name} {address}` cannot repair this one: `{path}` is\n                 \
+                 {lines} line{plural} long, so the anchored range runs past its end and\n                 \
+                 `add`'s range check refuses before the span file is read)",
+                name = self.span_name,
+                address = self.address,
+                path = self.path,
+                plural = if lines == 1 { "" } else { "s" },
+            ),
         };
         format!(
             "span `{name}` carries {records} records for one anchor identity:\n  \
@@ -150,17 +302,11 @@ pub fn scan_duplicate_identities(
     repo: &gix::Repository,
     span_root: &str,
 ) -> crate::Result<Vec<DuplicateIdentity>> {
-    // The same existence probe `git span add` runs — tracked in the index, or
-    // present in the worktree — so the `fix:` line offers `add` exactly when
-    // `add` will not refuse. Reading the index is best-effort: without one,
-    // fall back to the worktree test alone, which errs toward the two-step
-    // advice rather than toward advice that fail-closes.
-    let index_snapshot = crate::git::index_entries(repo).unwrap_or_default();
-    let workdir = repo.workdir().map(std::path::Path::to_path_buf);
-    let path_exists = |path: &str| -> bool {
-        index_snapshot.iter().any(|en| en.path == path)
-            || workdir.as_ref().is_some_and(|w| w.join(path).exists())
-    };
+    // The same prechecks `git span add` runs before it reads the span file,
+    // asked through the same object every other surface asks — so `doctor`'s
+    // `fix:` line offers `add` exactly when the drift annotations do, and
+    // exactly when `add` will not refuse.
+    let available = AddAvailability::probe(repo);
 
     let reader = SpanFileReader::new(repo, span_root.to_string());
     let mut findings = Vec::new();
@@ -168,7 +314,9 @@ pub fn scan_duplicate_identities(
         let Ok(Some(file)) = reader.read_effective(&name) else {
             continue;
         };
-        findings.extend(duplicates_in(&name, &file.anchors, &path_exists));
+        findings.extend(duplicates_in(&name, &file.anchors, &|path, end| {
+            available.refusal(path, end)
+        }));
     }
     Ok(findings)
 }
@@ -179,7 +327,7 @@ pub fn scan_duplicate_identities(
 fn duplicates_in(
     span_name: &str,
     anchors: &[AnchorRecord],
-    path_exists: &impl Fn(&str) -> bool,
+    refusal: &impl Fn(&str, u32) -> Option<AddRefusal>,
 ) -> Vec<DuplicateIdentity> {
     // Group the records themselves rather than counting them: whether the
     // group's hashes agree decides which `why:` sentence is true of it, and
@@ -206,7 +354,7 @@ fn duplicates_in(
                 address: address_for(path, start, end),
                 records: group.len(),
                 hashes_agree,
-                path_exists: path_exists(path),
+                add_refusal: refusal(path, end),
             }
         })
         .collect()
@@ -244,8 +392,14 @@ mod tests {
             address: "src/a.rs#L1-L5".to_string(),
             records: 2,
             hashes_agree,
-            path_exists,
+            add_refusal: add_refusal(path_exists, 5, Some(5)),
         }
+    }
+
+    /// Every path present and long enough, so the gate never fires except
+    /// where a test sets out to fire it.
+    fn add_runs(_: &str, _: u32) -> Option<AddRefusal> {
+        None
     }
 
     #[test]
@@ -256,7 +410,7 @@ mod tests {
             record("src/a.rs", 1, 5, "bbbbbbbbbbbbbbbb"),
             record("src/a.rs", 1, 5, "dddddddddddddddd"),
         ];
-        let found = duplicates_in("billing/flow", &anchors, &|_| true);
+        let found = duplicates_in("billing/flow", &anchors, &add_runs);
         assert_eq!(found.len(), 1, "one finding per identity: {found:?}");
         assert_eq!(found[0].address, "src/a.rs#L1-L5");
         assert_eq!(found[0].records, 3, "the true N, not a pairwise count");
@@ -270,7 +424,7 @@ mod tests {
             record("src/a.rs", 6, 9, "bbbbbbbbbbbbbbbb"),
             record("src/b.rs", 1, 5, "cccccccccccccccc"),
         ];
-        assert!(duplicates_in("billing/flow", &anchors, &|_| true).is_empty());
+        assert!(duplicates_in("billing/flow", &anchors, &add_runs).is_empty());
     }
 
     #[test]
@@ -280,7 +434,7 @@ mod tests {
             record("src/a.rs", 1, 5, "aaaaaaaaaaaaaaaa"),
             record("src/a.rs", 9, 9, "bbbbbbbbbbbbbbbb"),
         ];
-        let found = duplicates_in("billing/flow", &anchors, &|_| true);
+        let found = duplicates_in("billing/flow", &anchors, &add_runs);
         assert_eq!(found.len(), 1, "the neighbour is not a duplicate: {found:?}");
         assert!(
             found[0].hashes_agree,
@@ -289,19 +443,21 @@ mod tests {
     }
 
     #[test]
-    fn the_existence_probe_decides_path_exists_per_finding() {
+    fn the_existence_probe_decides_add_availability_per_finding() {
         let anchors = vec![
             record("src/present.rs", 1, 5, "aaaaaaaaaaaaaaaa"),
             record("src/present.rs", 1, 5, "bbbbbbbbbbbbbbbb"),
             record("src/gone.rs", 1, 5, "cccccccccccccccc"),
             record("src/gone.rs", 1, 5, "dddddddddddddddd"),
         ];
-        let found = duplicates_in("billing/flow", &anchors, &|p| p == "src/present.rs");
+        let found = duplicates_in("billing/flow", &anchors, &|p, _| {
+            (p != "src/present.rs").then_some(AddRefusal::PathMissing)
+        });
         assert_eq!(found.len(), 2, "{found:?}");
         let present = found.iter().find(|f| f.path == "src/present.rs").unwrap();
         let gone = found.iter().find(|f| f.path == "src/gone.rs").unwrap();
-        assert!(present.path_exists);
-        assert!(!gone.path_exists);
+        assert_eq!(present.add_refusal, None);
+        assert_eq!(gone.add_refusal, Some(AddRefusal::PathMissing));
     }
 
     #[test]
