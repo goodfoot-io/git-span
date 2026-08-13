@@ -525,7 +525,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(result.reason).not.toContain('guide.md#');
     });
 
-    it('renders the condensed `alreadySeen` drift retry as a tree of bare paths', async () => {
+    it('keeps an identical report-only drift retry silent after the full first preview', async () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
@@ -536,18 +536,13 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       });
       const paths = ['src/app.ts', 'api/charge.ts'];
 
-      // The first `report-only` marks the debt state seen; the second renders
-      // the condensed form.
+      // The first `report-only` records both rows individually, so the second
+      // has no new information to render.
       await evaluateAdvisor(paths, REPO_ROOT, executors, memo, 'report-only');
-      const condensed = await evaluateAdvisor(paths, REPO_ROOT, executors, memo, 'report-only');
-
-      if (condensed.kind !== 'semantic-drift-report') throw new Error('unreachable');
-      expect(condensed.reason).toContain('This change still leaves an implicit dependency out of date:');
-      // Bare-path leaves — this deduped retry list never claimed a range, so it
-      // must not render one, and it must not diverge in format from the full
-      // form it condenses.
-      expect(condensed.reason).toContain(['├─ src/app.ts', '└─ api/charge.ts'].join('\n'));
-      expect(condensed.reason).not.toContain('- src/app.ts');
+      expect(await evaluateAdvisor(paths, REPO_ROOT, executors, memo, 'report-only')).toEqual({
+        decision: 'allow',
+        kind: 'silent'
+      });
     });
 
     it('a changed findings set produces a fresh semantic-drift deny (new digest) even after the prior digest was memoized', async () => {
@@ -944,7 +939,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       );
     });
 
-    it('the condensed `alreadySeen` form ranks and caps the related-spans section exactly as the full message it condenses', async () => {
+    it('the full first report ranks and caps related spans, then an unchanged retry is silent', async () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [
@@ -963,28 +958,20 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
         ...Array.from({ length: 8 }, (_, index) => `src/f${index}.ts`)
       ];
 
-      // First `report-only` renders the full form; the second, on the unchanged
-      // debt state, renders the condensed one.
+      // First `report-only` renders the full form; the second has no newly
+      // uncovered path to report.
       const full = await evaluateAdvisor(paths, REPO_ROOT, executors, memo, 'report-only');
-      const condensed = await evaluateAdvisor(paths, REPO_ROOT, executors, memo, 'report-only');
       if (full.kind !== 'uncovered-writes-report') throw new Error('unreachable');
-      if (condensed.kind !== 'uncovered-writes-report') throw new Error('unreachable');
-
-      expect(condensed.reason).toContain('Already flagged for git-span review above.');
-      // Compare the section itself, stopping at the disclosure line — what
-      // trails it differs between the forms for reasons predating ranking
-      // (the full form closes with the skill-loading sentence).
-      const section = (reason: string): string => {
-        const body = reason.slice(reason.indexOf('Other files in this change'));
-        return body.slice(0, body.indexOf('not shown'));
-      };
-      expect(section(condensed.reason)).toBe(section(full.reason));
       // The two-file span leads, the ninth-ranked span is cut, and the cut is disclosed.
-      expect(condensed.reason.indexOf('## zeta/pair')).toBeLessThan(condensed.reason.indexOf('## span/00'));
-      expect(condensed.reason).not.toContain('## span/07');
-      expect(condensed.reason).toContain(
+      expect(full.reason.indexOf('## zeta/pair')).toBeLessThan(full.reason.indexOf('## span/00'));
+      expect(full.reason).not.toContain('## span/07');
+      expect(full.reason).toContain(
         '1 more span covers files in this change and is not shown — `git span list` lists every span in the repository.'
       );
+      expect(await evaluateAdvisor(paths, REPO_ROOT, executors, memo, 'report-only')).toEqual({
+        decision: 'allow',
+        kind: 'silent'
+      });
     });
 
     it('an `inform` (status) preview that already showed a debt state lets the following `enforce` attempt through instead of denying it again', async () => {
@@ -1031,7 +1018,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(result.kind).toBe('already-presented');
     });
 
-    it('an `enforce` (commit) deny of a semantic-drift group, followed by an `inform` (status) preview of the same unchanged debt state, does not repeat the full checklist verbatim', async () => {
+    it('a first status preview remains full even when a prior commit hold named the same semantic drift', async () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
@@ -1049,7 +1036,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(info.decision).toBe('allow');
       expect(info.kind).toBe('semantic-drift-report');
       if (info.kind !== 'semantic-drift-report') throw new Error('unreachable');
-      expect(info.reason).not.toContain('This change leaves an implicit dependency out of date');
+      expect(info.reason).toContain('This change leaves an implicit dependency out of date');
     });
 
     it('a `.span/.advisorignore` match drops the sole uncovered path, resolving to allow/silent', async () => {
@@ -1388,7 +1375,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
   // -------------------------------------------------------------------------
 
   describe("evaluateAdvisor in 'report-only' mode", () => {
-    it('semantic drift → allow/semantic-drift-report (never deny), and repeats identically on a second call', async () => {
+    it('semantic drift → allow/semantic-drift-report once, then allow/silent on an identical call', async () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
@@ -1404,14 +1391,12 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
         expect(first.reason).toContain('This change leaves an implicit dependency out of date:');
       }
 
-      // A status preview never memoizes, so an identical second call reports
-      // the same live debt again rather than falling through to already-presented.
+      // Each row was named by the first preview, so the second has nothing new.
       const second = await evaluateAdvisor(paths, REPO_ROOT, executors, memo, 'report-only');
-      expect(second.decision).toBe('allow');
-      expect(second.kind).toBe('semantic-drift-report');
+      expect(second).toEqual({ decision: 'allow', kind: 'silent' });
     });
 
-    it('uncovered writes → allow/uncovered-writes-report (never deny), and repeats identically on a second call', async () => {
+    it('uncovered writes → allow/uncovered-writes-report once, then allow/silent on an identical call', async () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [],
@@ -1427,8 +1412,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       }
 
       const second = await evaluateAdvisor(paths, REPO_ROOT, executors, memo, 'report-only');
-      expect(second.decision).toBe('allow');
-      expect(second.kind).toBe('uncovered-writes-report');
+      expect(second).toEqual({ decision: 'allow', kind: 'silent' });
     });
 
     it('a clean changeset → allow/silent, same as enforce mode', async () => {
@@ -1470,7 +1454,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(result.kind).toBe('scan-failed');
     });
 
-    it('never reads or writes the enforce deny-credit digest directly — an inform call only ever touches the orthogonal "seen" marker', async () => {
+    it('never reads or writes the enforce hold-credit digest directly — a report touches only seen-state and item markers', async () => {
       const digestCalls: string[] = [];
       const backing = createMemoryAdvisorMemoState();
       const spyingMemo: AdvisorMemoState = {
@@ -1491,9 +1475,11 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
 
       const informResult = await evaluateAdvisor(paths, REPO_ROOT, executors, spyingMemo, 'report-only');
       expect(informResult.decision).toBe('allow');
-      // The inform pass only ever touches the orthogonal "seen" (rendering
-      // verbosity) marker — never the bare deny-credit digest itself.
-      expect(digestCalls.every((d) => d.startsWith('seen-'))).toBe(true);
+      // The report pass records the whole state only on the orthogonal `seen-`
+      // axis and records individual rows under `report-`; it never touches the
+      // bare hold-credit digest itself.
+      expect(digestCalls.every((d) => d.startsWith('seen-') || d.startsWith('report-'))).toBe(true);
+      expect(digestCalls.some((d) => d.startsWith('report-'))).toBe(true);
       expect(digestCalls.length).toBeGreaterThan(0);
 
       // The identical debt state, now evaluated in 'may-hold' mode against the
@@ -1985,8 +1971,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       }
     });
 
-    it('the condensed already-seen forms are reminders and never read `harness`', async () => {
-      // A harness-aware drift retry still condenses to the bare-path reminder.
+    it('identical report-only retries stay silent under every harness', async () => {
       const driftMemo = createMemoryAdvisorMemoState();
       const driftExecutors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
@@ -1994,7 +1979,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       });
       const driftPaths = ['src/app.ts'];
       await evaluateAdvisor(driftPaths, REPO_ROOT, driftExecutors, driftMemo, 'report-only', undefined, 'claude');
-      const condensedDrift = await evaluateAdvisor(
+      const repeatedDrift = await evaluateAdvisor(
         driftPaths,
         REPO_ROOT,
         driftExecutors,
@@ -2003,14 +1988,8 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
         undefined,
         'claude'
       );
-      expect(condensedDrift.kind).toBe('semantic-drift-report');
-      if (condensedDrift.kind === 'semantic-drift-report') {
-        expect(condensedDrift.reason).toContain('Already flagged above — restore agreement');
-        expect(condensedDrift.reason).not.toContain('forked subagent');
-        expect(condensedDrift.reason).not.toContain('reconcile');
-      }
+      expect(repeatedDrift).toEqual({ decision: 'allow', kind: 'silent' });
 
-      // A harness-aware uncovered retry still condenses to the one-line reminder.
       const uncoveredMemo = createMemoryAdvisorMemoState();
       const uncoveredExecutors = createFakeAdvisorExecutors({
         list: async (): Promise<PorcelainRow[]> => [],
@@ -2026,7 +2005,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
         undefined,
         'codex'
       );
-      const condensedUncovered = await evaluateAdvisor(
+      const repeatedUncovered = await evaluateAdvisor(
         uncoveredPaths,
         REPO_ROOT,
         uncoveredExecutors,
@@ -2035,12 +2014,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
         undefined,
         'codex'
       );
-      expect(condensedUncovered.kind).toBe('uncovered-writes-report');
-      if (condensedUncovered.kind === 'uncovered-writes-report') {
-        expect(condensedUncovered.reason).toContain('Already flagged for git-span review above.');
-        expect(condensedUncovered.reason).not.toContain('forked subagent');
-        expect(condensedUncovered.reason).not.toContain('skill for guidance');
-      }
+      expect(repeatedUncovered).toEqual({ decision: 'allow', kind: 'silent' });
     });
 
     it('a may-hold retry under any harness resolves allow/already-presented with no reason — unchanged from generic', async () => {
@@ -2056,8 +2030,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       for (const harness of ['generic', 'claude', 'codex'] as const) {
         // The first may-hold pass holds with the harness-specific closing; the
         // retry on the same debt state collapses to the harness-free
-        // allow/already-presented decision — the condensed decision never
-        // reads `harness`.
+        // allow/already-presented decision, which never reads `harness`.
         const driftMemo = createMemoryAdvisorMemoState();
         const firstDrift = await evaluateAdvisor(
           ['src/app.ts'],
@@ -2373,8 +2346,8 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
     // new one. A `git status` that suppressed churn followed by a `git commit`
     // whose diff read failed therefore looks like an unseen debt state and holds
     // — re-presenting, in full, the wall the agent already acknowledged in
-    // filtered form moments earlier. `wasAlreadySeen`'s doc names that exact
-    // status→commit sequence as the thing it exists to prevent.
+    // filtered form moments earlier. The whole-state `seen-` bridge names that
+    // exact status→commit sequence as the thing it exists to prevent.
     //
     // Both failure shapes are covered because both are reachable and they take
     // different code paths into the same outcome: production reaches the *empty*
@@ -2666,7 +2639,7 @@ describe('fail-closed anchor rendering', () => {
     expect(result.reason).not.toContain('└─');
   });
 
-  it('degrades the condensed `alreadySeen` retry to a flat path list rather than throwing', async () => {
+  it('keeps an identical report-only retry silent when tree rendering is unavailable', async () => {
     const { evaluateAdvisor: evaluate } = await withThrowingRenderer();
     const memo = createMemoryAdvisorMemoState();
     const executors = createFakeAdvisorExecutors({
@@ -2675,10 +2648,9 @@ describe('fail-closed anchor rendering', () => {
     });
 
     await evaluate(['src/app.ts'], REPO_ROOT, executors, memo, 'report-only');
-    const condensed = await evaluate(['src/app.ts'], REPO_ROOT, executors, memo, 'report-only');
-
-    if (condensed.kind !== 'semantic-drift-report') throw new Error('unreachable');
-    expect(condensed.reason).toContain('- src/app.ts');
-    expect(condensed.reason).not.toContain('└─');
+    expect(await evaluate(['src/app.ts'], REPO_ROOT, executors, memo, 'report-only')).toEqual({
+      decision: 'allow',
+      kind: 'silent'
+    });
   });
 });

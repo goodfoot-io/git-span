@@ -224,13 +224,12 @@ carries into the `git status` advisory the same way — it's supplementary
 context about the changeset, not part of what's flagged or consider-once'd,
 so it never affects the debt-state digest.
 
-A condensed "Already flagged for git-span review above." form of both
-checklists exists, but only ever appears in the `git status` advisory: a
-second `git status` on an unchanged debt state shows the condensed form
-instead of repeating the full checklist. A `git commit`/`git push` never
-renders it — either the state is genuinely new (full checklist, held once)
-or it was already shown by a preceding `git status`, in which case the
-command passes silently rather than holding with a shorter message.
+The `git status` advisory remembers each uncovered path and semantic drift
+row it has already named this session. A later status preview renders the full
+checklist for only newly discovered items; if every current item was already
+shown, it stays silent. A `git commit`/`git push` either sees a genuinely new
+debt state (full checklist, held once) or a state already shown by a preceding
+`git status`, in which case the command passes silently rather than holding.
 
 `MOVED` and `RESOLVED_PENDING_COMMIT` are never debt — they never appear in
 either checklist and never cause a hold. `.span/**` writes are excluded from
@@ -249,14 +248,14 @@ difference: each drops its retry phrasing — drift drops `— then retry`
 from its closing sentence, and uncovered writes drops the whole `If none
 exist, retry the command to proceed (one-time check).` sentence — since a
 status preview never held the command and there's nothing to retry. A `git
-status` call also never reads or writes the consider-once *hold-credit* memo
-— it always reports whatever debt is live right now, and it can't spend the
-one-time hold a later real `git commit`/`git push` with the same debt depends
-on. It does mark the debt state as already-explained on a separate axis,
-though: a `git commit`/`git push` that follows a `git status` on the same
-unchanged debt state passes rather than holding, since the advisor only
-reports and there's nothing left to tell the agent that the status preview
-didn't already say.
+status` call also never spends the consider-once *hold-credit* memo. It reads
+and writes separate per-item preview markers so it can report only newly seen
+paths and rows, and it can't consume the one-time hold a later real `git
+commit`/`git push` with the same debt depends on. It also marks the complete
+debt state as already-explained on a separate axis: a `git commit`/`git push`
+that follows a `git status` on the same unchanged debt state passes rather
+than holding, since the advisor only reports and there's nothing left to tell
+the agent that the status preview didn't already say.
 
 ### Resolving a held commit
 

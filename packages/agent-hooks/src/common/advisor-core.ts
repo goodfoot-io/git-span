@@ -647,19 +647,19 @@ export interface AdvisorExecutors {
 }
 
 /**
- * The advisor's per-changeset memo — "have I already presented this exact debt
- * state once?" The persisted unit is a digest of the sorted drift findings
- * plus the sorted uncovered paths (design-decisions.md #9's "hold once per
- * distinct debt-state"); the disk-backed implementation stores one marker per
- * digest under {@link advisorMemoDir} (`<git-common-dir>/git-span/advisor/`), where
- * presence means "already presented once." Injected as a store abstraction
- * (like span-surface.ts's `MemoStore`) so Phase 3.2 fakes it in memory.
+ * The advisor's session memo. Hold credit uses a digest of the complete debt
+ * state (design-decisions.md #9's "hold once per distinct debt-state"), while
+ * report-only previews use separate hashed markers for individual semantic
+ * rows and uncovered paths. The disk-backed implementation stores one marker
+ * file per key under {@link advisorMemoDir}
+ * (`<git-common-dir>/git-span/advisor/`). Injected as a store abstraction (like
+ * span-surface.ts's `MemoStore`) so tests can fake it in memory.
  */
 export interface AdvisorMemoState {
-  /** Whether this exact debt-state digest has already been presented once. */
+  /** Whether this hold-state or report-item marker is present. */
   has(digest: string): boolean;
   /**
-   * Record that this debt-state digest has now been presented, returning
+   * Record a hold-state or report-item marker, returning
    * whether the record actually persisted. `false` means the memo could not be
    * written (e.g. an unwritable memo directory) — the advisor treats that as a
    * fail-open signal rather than holding, because a non-persisting memo would
@@ -768,10 +768,10 @@ export type AdvisorResult =
  * Neither mode enforces: `'may-hold'` is the stronger of the two only in that
  * it can interrupt once per distinct debt state, and even that interruption
  * clears on a bare retry. In `'report-only'` every branch that would otherwise
- * return `decision: 'hold'` returns its `-report` `allow` counterpart carrying
- * the identical payload, and `memoState` is never read or written — a `status`
- * preview must not spend the one-time hold that a subsequent `commit`/`push`
- * would otherwise use to get the same report read.
+ * return `decision: 'hold'` returns its `-report` `allow` counterpart for only
+ * the rows or paths not already reported this session. Report-only reads and
+ * writes item markers, but never spends the one-time hold that a subsequent
+ * `commit`/`push` would otherwise use to get the same report read.
  */
 export type AdvisorMode = 'may-hold' | 'report-only';
 
@@ -783,8 +783,8 @@ export type AdvisorMode = 'may-hold' | 'report-only';
  * `'codex'` instead direct it to dispatch a forked subagent — Claude's
  * `Agent` tool with `subagent_type: "fork"`, Codex's `spawn_agent` with
  * `fork_turns: "all"` — since the research/reconcile task is self-contained
- * and benefits from isolation. Informational closings (the condensed
- * already-seen forms, environmental, scan-failed) do not read this value.
+ * and benefits from isolation. Environmental and scan-failed messages do not
+ * read this value.
  */
 export type AdvisorHarness = 'claude' | 'codex' | 'generic';
 
@@ -856,10 +856,10 @@ export type AdvisorHarness = 'claude' | 'codex' | 'generic';
  * here: every evaluation of a still-failing scan warns again.
  *
  * In `'report-only'` mode (`status`), the same classification runs but neither
- * `hold` branch fires and `memoState` is never read or written: semantic
- * drift resolves to `allow`/`semantic-drift-report` and uncovered
- * writes to `allow`/`uncovered-writes-report` — the same reports, the same
- * `findings`/`uncovered`/`reason` payload, simply without the one-time hold.
+ * `hold` branch fires. Each semantic row and uncovered path is memoized
+ * independently: a preview reports only items this session has not named yet,
+ * and resolves to `allow`/`silent` when none are new. These item markers are
+ * separate from the once-per-debt-state hold credit, which status never spends.
  * The environmental/scan-failed/silent branches are unaffected by mode — they
  * already always allow.
  *
@@ -867,7 +867,7 @@ export type AdvisorHarness = 'claude' | 'codex' | 'generic';
  *   `allow`/`silent`.
  * @param cwd The working directory the git command ran in.
  * @param executors The injected `fix`/`drift`/`list` surface.
- * @param memoState The per-changeset debt-state memo. Unused in `'report-only'` mode.
+ * @param memoState The session memo for hold-credit state and report-only item markers.
  * @param mode `'may-hold'` (default) may hold the command once; `'report-only'`
  *   delivers the same report and never holds. Neither enforces.
  * @param churn The optional mechanical-churn suppression surface (see
@@ -907,23 +907,24 @@ export async function evaluateAdvisor(
 
     if (mode === 'report-only') {
       // A status preview never holds and never spends the `'may-hold'`
-      // one-time hold credit — it reports whatever debt is live right
-      // now, every time it's asked. It does, however, mark the debt state as
-      // "seen" (a separate axis from the hold credit) so a `'may-hold'`
-      // evaluation of the same unchanged state moments later — e.g. a `git
-      // commit` right after the `git status` that just showed this — renders
-      // a condensed reminder instead of repeating the identical checklist.
+      // one-time hold credit. Item-level markers keep successive previews from
+      // repeating rows or paths already named this session. The whole-state
+      // `seen-` marker remains a separate bridge to `'may-hold'`: a commit
+      // immediately following a status preview still knows the exact state was
+      // already explained, without report-only using whole-state equality to
+      // decide what to render.
       if (semantic.length > 0) {
-        const seen = wasAlreadySeen(memoState, advisorStateDigest(semantic, []));
+        memoState.record(`seen-${advisorStateDigest(semantic, [])}`);
+        const newSemantic = filterNewReportItems(semantic, memoState, semanticReportIdentity);
+        if (newSemantic.length === 0) return { decision: 'allow', kind: 'silent' };
         return {
           decision: 'allow',
           kind: 'semantic-drift-report',
-          findings: semantic,
+          findings: newSemantic,
           reason: renderDriftReason(
-            semantic,
-            await fetchSpanBlocks(executors, semantic, cwd),
+            newSemantic,
+            await fetchSpanBlocks(executors, newSemantic, cwd),
             'report-only',
-            seen,
             harness
           )
         };
@@ -938,17 +939,18 @@ export async function evaluateAdvisor(
       }
       const { uncovered, covering } = await computeUncoveredPaths(paths, cwd, executors, churn);
       if (uncovered.length === 0) return { decision: 'allow', kind: 'silent' };
-      const seen = wasAlreadySeen(memoState, advisorStateDigest([], uncovered));
+      memoState.record(`seen-${advisorStateDigest([], uncovered)}`);
+      const newUncovered = filterNewReportItems(uncovered, memoState, uncoveredReportIdentity);
+      if (newUncovered.length === 0) return { decision: 'allow', kind: 'silent' };
       return {
         decision: 'allow',
         kind: 'uncovered-writes-report',
-        uncovered,
+        uncovered: newUncovered,
         reason: renderUncoveredReason(
-          uncovered,
+          newUncovered,
           covering,
           await fetchSpanBlocks(executors, covering, cwd),
           'report-only',
-          seen,
           harness
         )
       };
@@ -979,13 +981,7 @@ export async function evaluateAdvisor(
           decision: 'hold',
           kind: 'semantic-drift',
           findings: semantic,
-          reason: renderDriftReason(
-            semantic,
-            await fetchSpanBlocks(executors, semantic, cwd),
-            'may-hold',
-            false,
-            harness
-          )
+          reason: renderDriftReason(semantic, await fetchSpanBlocks(executors, semantic, cwd), 'may-hold', harness)
         };
       }
     }
@@ -1050,7 +1046,6 @@ export async function evaluateAdvisor(
         covering,
         await fetchSpanBlocks(executors, covering, cwd),
         'may-hold',
-        false,
         harness
       )
     };
@@ -1275,28 +1270,30 @@ function advisorStateDigest(findings: DriftPorcelainRow[], uncovered: string[]):
   return createHash('sha256').update(payload).digest('hex');
 }
 
-/**
- * Whether this debt-state digest has already been explained to the agent in
- * full — orthogonal to (and independent of) the `'may-hold'`-only one-time
- * hold credit `evaluateAdvisor` reads/writes on the same `digest` value under its
- * own `seen-`-prefixed key. A single `git status`/`git add` preview and the
- * `git commit`/`push` that follows it moments later resolve to the same
- * digest but reach `evaluateAdvisor` through different modes (`'report-only'` never
- * touches the hold credit). A hold only ever buys one reading of the report —
- * it cannot compel a fix, and a bare retry proceeds regardless — so
- * `evaluateAdvisor` consults this "seen" axis directly
- * (via `memoState.has`/`record` on the `seen-` key, inline, not through this
- * helper) before a `'may-hold'` hold: already seen → resolve straight to
- * `allow`/`already-presented` instead of holding on a state the agent has
- * already been shown. `wasAlreadySeen` itself remains for `'report-only'` mode,
- * where a repeated preview of the same state still renders a condensed
- * reminder rather than the full checklist twice.
- */
-function wasAlreadySeen(memoState: AdvisorMemoState, digest: string): boolean {
-  const seenKey = `seen-${digest}`;
-  const already = memoState.has(seenKey);
-  memoState.record(seenKey);
-  return already;
+/** A stable, filename-safe marker for one item already named by report-only. */
+function reportItemKey(identity: string): string {
+  return `report-${createHash('sha256').update(identity).digest('hex')}`;
+}
+
+/** Semantic previews treat path + span name as the durable row identity. */
+function semanticReportIdentity(row: DriftPorcelainRow): string {
+  return JSON.stringify({ kind: 'semantic', path: row.path, name: row.name });
+}
+
+/** Uncovered previews memoize each path independently. */
+function uncoveredReportIdentity(path: string): string {
+  return JSON.stringify({ kind: 'uncovered', path });
+}
+
+/** Filter against the pre-preview memo, then persist every identity that will be shown. */
+function filterNewReportItems<T>(items: T[], memoState: AdvisorMemoState, identityOf: (item: T) => string): T[] {
+  const unseen = new Set<string>();
+  for (const item of items) {
+    const identity = identityOf(item);
+    if (!memoState.has(reportItemKey(identity))) unseen.add(identity);
+  }
+  for (const identity of unseen) memoState.record(reportItemKey(identity));
+  return items.filter((item) => unseen.has(identityOf(item)));
 }
 
 /**
@@ -1433,25 +1430,6 @@ function renderAnchorRun(rows: AnchorRow[], flat: string[]): string[] {
     return renderAnchorTree(collapseByPath(rows));
   } catch {
     return flat;
-  }
-}
-
-/**
- * Lay a bare path list (no ranges at all) out as a tree — the `alreadySeen`
- * condensed retry's shape. Each path becomes a `TreeAnchor` with an **empty**
- * `ranges` array: a bare-path leaf, deliberately distinct from a `whole-file`
- * range, which would assert an anchor semantic this deduped retry list never
- * claimed.
- *
- * The catch is fail-closed for the same reason as {@link renderAnchorRun}'s —
- * see that comment; this list is rendered from inside the same `evaluateAdvisor`
- * `try` whose outer catch would otherwise turn a hold into an allow.
- */
-function renderPathRun(paths: string[]): string[] {
-  try {
-    return renderAnchorTree(paths.map((path) => ({ path, ranges: [] })));
-  } catch {
-    return paths.map((path) => `- ${path}`);
   }
 }
 
@@ -1619,25 +1597,18 @@ function annotateBlocks(blocksText: string, rows: DriftPorcelainRow[]): string {
  * then retry" in `'report-only'` mode: a `status` check never held anything, so
  * there is nothing to retry. The `harness` selects who the closing directs to
  * do the work: inline (`'generic'`, unchanged), or a forked subagent
- * (`'claude'`/`'codex'`). The condensed already-seen form below is a reminder,
- * not a tasking, and never reads `harness`.
+ * (`'claude'`/`'codex'`).
  */
 function renderDriftReason(
   findings: DriftPorcelainRow[],
   blocksText: string,
   mode: AdvisorMode = 'may-hold',
-  alreadySeen = false,
   harness: AdvisorHarness = 'generic'
 ): string {
   const names = [...new Set(findings.map((row) => row.name))];
   const subject = names.length === 1 ? 'an implicit dependency' : 'implicit dependencies';
   const name = names.length === 1 ? names[0] : '<name>';
   const action = `preserve anchor shape; if an address changed, swap the old anchor for the new one with \`git span replace\`; update or retire the why only if its meaning changed; require \`git span drift ${name}\` to report zero`;
-  if (alreadySeen) {
-    const paths = [...new Set(findings.map((row) => row.path))];
-    const closing = `Already flagged above — restore agreement and require scoped zero drift; update or retire the why only if its meaning changed.`;
-    return [`This change still leaves ${subject} out of date:`, ...renderPathRun(paths), '', closing].join('\n');
-  }
   // Who the closing directs to do the work: inline by default (`'generic'`, the
   // pre-harness prose, unchanged); a forked subagent for `'claude'` (Claude's
   // `Agent` tool with `subagent_type: "fork"`) and `'codex'` (`spawn_agent`
@@ -1954,31 +1925,20 @@ function renderRelatedSpansSection(
  * held anything, so there is nothing to retry and no consider-once state to
  * clear. `covering` — the rest of the changeset's existing span coverage,
  * from the same {@link computeUncoveredPaths} call — renders as a related-
- * spans section (via {@link renderRelatedSpansSection}) in both the full and
- * `alreadySeen` condensed forms: it's supplementary context about the
- * changeset, not itself part of what's flagged or consider-once'd. Both forms
- * pass the same `uncovered`/`covering` pair, so both rank and cap identically
- * — a condensed retry reordering the message it condenses would be its own
- * defect. The `harness` selects who the action line directs to do the work:
- * inline (`'generic'`, unchanged), or a forked subagent (`'claude'`/`'codex'`).
- * The condensed already-seen form is a reminder, not a tasking, and never
- * reads `harness`.
+ * spans section (via {@link renderRelatedSpansSection}): it's supplementary
+ * context about the changeset, not itself part of what's flagged or
+ * consider-once'd. The `harness` selects who the action line directs to do the
+ * work: inline (`'generic'`, unchanged), or a forked subagent
+ * (`'claude'`/`'codex'`).
  */
 function renderUncoveredReason(
   uncovered: string[],
   covering: PorcelainRow[],
   coveringBlocksText: string,
   mode: AdvisorMode = 'may-hold',
-  alreadySeen = false,
   harness: AdvisorHarness = 'generic'
 ): string {
   const lines = uncovered.map((path) => `- ${path}`);
-  if (alreadySeen) {
-    const body = ['<git-span>', ...lines, '', 'Already flagged for git-span review above.'];
-    body.push(...renderRelatedSpansSection(covering, uncovered, coveringBlocksText));
-    body.push('</git-span>');
-    return body.join('\n');
-  }
   const subject = uncovered.length === 1 ? 'this file carries' : 'these files carry';
   const actionLine =
     harness === 'generic'
@@ -2463,10 +2423,11 @@ export function createDefaultAdvisorExecutors(timeoutMs: number = DEFAULT_TIMEOU
 }
 
 /**
- * The production disk-backed {@link AdvisorMemoState}: one marker file per debt-state
- * digest under {@link advisorMemoDir} (`<git-common-dir>/git-span/advisor/`), following
- * span-surface.ts's file-backed `MemoStore` pattern. The digest is a hex sha256,
- * a safe filename. Best-effort and non-throwing: a memo whose repo cannot be
+ * The production disk-backed {@link AdvisorMemoState}: one marker file per
+ * hashed state/item key under {@link advisorMemoDir}
+ * (`<git-common-dir>/git-span/advisor/`), following span-surface.ts's
+ * file-backed `MemoStore` pattern. Keys are prefixed hex sha256 values and are
+ * safe filenames. Best-effort and non-throwing: a memo whose repo cannot be
  * resolved degrades to a no-op store (never persists → uncovered would re-hold,
  * but an unresolvable repo yields an empty changeset upstream anyway).
  */

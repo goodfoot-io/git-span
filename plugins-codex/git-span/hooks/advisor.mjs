@@ -1103,16 +1103,17 @@ async function evaluateAdvisor(paths, cwd, executors, memoState, mode = "may-hol
     const environmental = debtRows.filter((row) => isEnvironmentalStatus(row.status));
     if (mode === "report-only") {
       if (semantic.length > 0) {
-        const seen2 = wasAlreadySeen(memoState, advisorStateDigest(semantic, []));
+        memoState.record(`seen-${advisorStateDigest(semantic, [])}`);
+        const newSemantic = filterNewReportItems(semantic, memoState, semanticReportIdentity);
+        if (newSemantic.length === 0) return { decision: "allow", kind: "silent" };
         return {
           decision: "allow",
           kind: "semantic-drift-report",
-          findings: semantic,
+          findings: newSemantic,
           reason: renderDriftReason(
-            semantic,
-            await fetchSpanBlocks(executors, semantic, cwd),
+            newSemantic,
+            await fetchSpanBlocks(executors, newSemantic, cwd),
             "report-only",
-            seen2,
             harness
           )
         };
@@ -1127,17 +1128,18 @@ async function evaluateAdvisor(paths, cwd, executors, memoState, mode = "may-hol
       }
       const { uncovered: uncovered2, covering: covering2 } = await computeUncoveredPaths(paths, cwd, executors, churn);
       if (uncovered2.length === 0) return { decision: "allow", kind: "silent" };
-      const seen = wasAlreadySeen(memoState, advisorStateDigest([], uncovered2));
+      memoState.record(`seen-${advisorStateDigest([], uncovered2)}`);
+      const newUncovered = filterNewReportItems(uncovered2, memoState, uncoveredReportIdentity);
+      if (newUncovered.length === 0) return { decision: "allow", kind: "silent" };
       return {
         decision: "allow",
         kind: "uncovered-writes-report",
-        uncovered: uncovered2,
+        uncovered: newUncovered,
         reason: renderUncoveredReason(
-          uncovered2,
+          newUncovered,
           covering2,
           await fetchSpanBlocks(executors, covering2, cwd),
           "report-only",
-          seen,
           harness
         )
       };
@@ -1157,13 +1159,7 @@ async function evaluateAdvisor(paths, cwd, executors, memoState, mode = "may-hol
           decision: "hold",
           kind: "semantic-drift",
           findings: semantic,
-          reason: renderDriftReason(
-            semantic,
-            await fetchSpanBlocks(executors, semantic, cwd),
-            "may-hold",
-            false,
-            harness
-          )
+          reason: renderDriftReason(semantic, await fetchSpanBlocks(executors, semantic, cwd), "may-hold", harness)
         };
       }
     }
@@ -1196,7 +1192,6 @@ async function evaluateAdvisor(paths, cwd, executors, memoState, mode = "may-hol
         covering,
         await fetchSpanBlocks(executors, covering, cwd),
         "may-hold",
-        false,
         harness
       )
     };
@@ -1279,11 +1274,23 @@ function advisorStateDigest(findings, uncovered) {
   const payload = JSON.stringify({ findings: findingKeys, uncovered: [...uncovered].sort() });
   return createHash("sha256").update(payload).digest("hex");
 }
-function wasAlreadySeen(memoState, digest) {
-  const seenKey = `seen-${digest}`;
-  const already = memoState.has(seenKey);
-  memoState.record(seenKey);
-  return already;
+function reportItemKey(identity) {
+  return `report-${createHash("sha256").update(identity).digest("hex")}`;
+}
+function semanticReportIdentity(row) {
+  return JSON.stringify({ kind: "semantic", path: row.path, name: row.name });
+}
+function uncoveredReportIdentity(path) {
+  return JSON.stringify({ kind: "uncovered", path });
+}
+function filterNewReportItems(items, memoState, identityOf) {
+  const unseen = /* @__PURE__ */ new Set();
+  for (const item of items) {
+    const identity = identityOf(item);
+    if (!memoState.has(reportItemKey(identity))) unseen.add(identity);
+  }
+  for (const identity of unseen) memoState.record(reportItemKey(identity));
+  return items.filter((item) => unseen.has(identityOf(item)));
 }
 async function fetchSpanBlocks(executors, rows, cwd) {
   const names = [...new Set(rows.map((row) => row.name))].sort();
@@ -1341,13 +1348,6 @@ function renderAnchorRun(rows, flat) {
     return renderAnchorTree(collapseByPath(rows));
   } catch {
     return flat;
-  }
-}
-function renderPathRun(paths) {
-  try {
-    return renderAnchorTree(paths.map((path) => ({ path, ranges: [] })));
-  } catch {
-    return paths.map((path) => `- ${path}`);
   }
 }
 function annotateBulletRun(bulletLines, pending) {
@@ -1443,16 +1443,11 @@ function annotateBlocks(blocksText, rows) {
   }
   return out.join("\n");
 }
-function renderDriftReason(findings, blocksText, mode = "may-hold", alreadySeen = false, harness = "generic") {
+function renderDriftReason(findings, blocksText, mode = "may-hold", harness = "generic") {
   const names = [...new Set(findings.map((row) => row.name))];
   const subject = names.length === 1 ? "an implicit dependency" : "implicit dependencies";
   const name = names.length === 1 ? names[0] : "<name>";
   const action = `preserve anchor shape; if an address changed, swap the old anchor for the new one with \`git span replace\`; update or retire the why only if its meaning changed; require \`git span drift ${name}\` to report zero`;
-  if (alreadySeen) {
-    const paths = [...new Set(findings.map((row) => row.path))];
-    const closing2 = `Already flagged above \u2014 restore agreement and require scoped zero drift; update or retire the why only if its meaning changed.`;
-    return [`This change still leaves ${subject} out of date:`, ...renderPathRun(paths), "", closing2].join("\n");
-  }
   const lead = harness === "claude" ? "Dispatch a forked subagent to bring the coupled files back into agreement (follow confirmed authority)" : harness === "codex" ? 'Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to bring the coupled files back into agreement (follow confirmed authority)' : "Bring the coupled files back into agreement (follow confirmed authority)";
   const tail = harness === "generic" ? mode === "may-hold" ? `then reconcile: ${action}. Retry the command; the hold will not fire again for the same debt state. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.` : `then reconcile: ${action}. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.` : mode === "may-hold" ? `\u2014 ${action}. Then retry. Load the \`git-span:reconcile\` skill in the fork. The hold will not fire again for the same debt state. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.` : `\u2014 ${action}. Load the \`git-span:reconcile\` skill in the fork. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.`;
   const closing = `${lead}${harness === "generic" ? "," : ""} ${tail}`;
@@ -1605,14 +1600,8 @@ function renderRelatedSpansSection(covering, uncovered, coveringBlocksText) {
   }
   return lines;
 }
-function renderUncoveredReason(uncovered, covering, coveringBlocksText, mode = "may-hold", alreadySeen = false, harness = "generic") {
+function renderUncoveredReason(uncovered, covering, coveringBlocksText, mode = "may-hold", harness = "generic") {
   const lines = uncovered.map((path) => `- ${path}`);
-  if (alreadySeen) {
-    const body2 = ["<git-span>", ...lines, "", "Already flagged for git-span review above."];
-    body2.push(...renderRelatedSpansSection(covering, uncovered, coveringBlocksText));
-    body2.push("</git-span>");
-    return body2.join("\n");
-  }
   const subject = uncovered.length === 1 ? "this file carries" : "these files carry";
   const actionLine = harness === "generic" ? `Determine if ${subject} implicit dependencies, then use \`git span\` to document them:` : harness === "claude" ? `Dispatch a forked subagent to determine if ${subject} implicit dependencies and to then use \`git span\` to document them:` : `Spawn a forked subagent with \`spawn_agent\`, setting \`fork_turns: "all"\`, to determine if ${subject} implicit dependencies and to then use \`git span\` to document them:`;
   const body = [
