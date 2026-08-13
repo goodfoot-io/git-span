@@ -54,6 +54,69 @@ pub(crate) struct FixResult {
 // Conflict resolution helpers
 // ---------------------------------------------------------------------------
 
+/// Why a `--fix` conflict resolution stopped, and therefore which next step is
+/// honest to offer alongside it.
+///
+/// `--fix`'s bail-outs used to end at *"resolve manually"* — the instruction to
+/// open a text editor that `git span resolve` exists to replace. But the two
+/// classes are not equally served by `resolve`, and offering the same sentence
+/// for both would overpromise on one of them: `resolve` settles anchor-hash
+/// residue under an explicit side, and does no rename recovery at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FixBlocker {
+    /// The disagreement is over anchor records that both sides carry, and the
+    /// only thing `--fix` lacked was a readable source. `resolve --ours` /
+    /// `--theirs` settles this from the residue text itself, never touching the
+    /// blocked source.
+    SideSettles,
+    /// An orphaned anchor whose path is unreadable — a rename `--fix` could not
+    /// pair unambiguously. `resolve` never calls the rename-recovery path:
+    /// under `--rehash` it fails closed naming the orphan, and under a side
+    /// flag it writes a clean span that still carries the old path. The
+    /// re-anchor stays the operator's.
+    RenameByHand,
+}
+
+impl FixBlocker {
+    /// The next-step line for this blocker, naming `resolve` for what it
+    /// actually does with this class of residue and no more.
+    pub(crate) fn next_step(self, span: &str) -> String {
+        match self {
+            Self::SideSettles => format!(
+                "`git span resolve {span} --ours` (or `--theirs`) settles this span from the \
+                 conflict text itself, without reading that source; `git span resolve {span} \
+                 --dry-run` shows what each side would write first."
+            ),
+            Self::RenameByHand => format!(
+                "`git span resolve {span}` can settle this file under an explicit side, but it \
+                 does no rename recovery: `--rehash` fails closed naming the orphaned anchor, \
+                 and `--ours`/`--theirs` write a clean span that still carries the old path for \
+                 you to re-anchor with `git span replace`. See what each side would write with \
+                 `git span resolve {span} --dry-run`."
+            ),
+        }
+    }
+}
+
+/// A `--fix` conflict-resolution failure that knows which next step fits it.
+///
+/// Carried through the `anyhow` chain so the single reporting site in
+/// [`apply_fix`] can downcast for the remediation instead of matching on
+/// message text.
+#[derive(Debug)]
+pub(crate) struct ConflictFixBlocked {
+    pub(crate) blocker: FixBlocker,
+    pub(crate) detail: String,
+}
+
+impl std::fmt::Display for ConflictFixBlocked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.detail)
+    }
+}
+
+impl std::error::Error for ConflictFixBlocked {}
+
 /// Read raw span file content from the worktree, returning `None` when the
 /// file does not exist.
 fn read_raw_span_content(
@@ -238,10 +301,14 @@ pub(crate) fn read_clean_source_files(
         if std::str::from_utf8(&bytes).is_ok() {
             let text = String::from_utf8_lossy(&bytes);
             if has_conflict_markers(&text) {
-                anyhow::bail!(
-                    "source file `{}` contains conflict markers; cannot resolve span conflict",
-                    anchor.path
-                );
+                return Err(ConflictFixBlocked {
+                    blocker: FixBlocker::SideSettles,
+                    detail: format!(
+                        "source file `{}` contains conflict markers; cannot resolve span conflict",
+                        anchor.path
+                    ),
+                }
+                .into());
             }
         }
 
@@ -386,22 +453,32 @@ fn plan_orphan_removals(
             .collect();
 
         match candidates.len() {
-            0 => anyhow::bail!(
-                "source file `{}` referenced by conflicted anchor no longer exists \
-                 and was not found among readable sources; resolve manually",
-                anchor.path
-            ),
+            0 => {
+                return Err(ConflictFixBlocked {
+                    blocker: FixBlocker::RenameByHand,
+                    detail: format!(
+                        "source file `{}` referenced by conflicted anchor no longer exists \
+                         and was not found among readable sources",
+                        anchor.path
+                    ),
+                }
+                .into());
+            }
             1 => {
                 let c = candidates[0];
                 chosen.push((i, (c.path.clone(), c.start_line, c.end_line)));
             }
             _ => {
                 let names: Vec<&str> = candidates.iter().map(|c| c.path.as_str()).collect();
-                anyhow::bail!(
-                    "anchor `{}` has multiple possible rename targets ({}); resolve manually",
-                    anchor.path,
-                    names.join(", ")
-                );
+                return Err(ConflictFixBlocked {
+                    blocker: FixBlocker::RenameByHand,
+                    detail: format!(
+                        "anchor `{}` has multiple possible rename targets ({})",
+                        anchor.path,
+                        names.join(", ")
+                    ),
+                }
+                .into());
             }
         }
     }
@@ -414,13 +491,14 @@ fn plan_orphan_removals(
     }
     for (_, key) in &chosen {
         if claims[key] > 1 {
-            anyhow::bail!(
-                "multiple conflicted anchors map to the same rename target \
-                 `{}#L{}-L{}`; resolve manually",
-                key.0,
-                key.1,
-                key.2
-            );
+            return Err(ConflictFixBlocked {
+                blocker: FixBlocker::RenameByHand,
+                detail: format!(
+                    "multiple conflicted anchors map to the same rename target `{}#L{}-L{}`",
+                    key.0, key.1, key.2
+                ),
+            }
+            .into());
         }
     }
 
@@ -790,8 +868,16 @@ pub(crate) fn apply_fix(
                 Ok(()) => {}
                 Err(e) => {
                     // Resolution failed (e.g. conflicted source file).
-                    // Report loudly and leave the span conflicted.
+                    // Report loudly and leave the span conflicted — with the
+                    // next step that fits this blocker, since these bail-outs
+                    // are exactly where the operator is standing when they
+                    // need `git span resolve`. A blocker with no
+                    // classification (an I/O or parse failure from deeper in
+                    // the stack) gets no pointer rather than a guessed one.
                     eprintln!("warning: cannot resolve conflict in `{}`: {}", m.name, e);
+                    if let Some(blocked) = e.downcast_ref::<ConflictFixBlocked>() {
+                        eprintln!("  {}", blocked.blocker.next_step(&m.name));
+                    }
                 }
             }
             // Skip the per-anchor re-anchor loop — the conflict resolution

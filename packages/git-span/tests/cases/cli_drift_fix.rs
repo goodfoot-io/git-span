@@ -16,6 +16,32 @@ fn read_span(repo: &TestRepo, name: &str) -> Result<String> {
     Ok(std::fs::read_to_string(path)?)
 }
 
+/// The three rename bail-outs live in `prune_unreadable_renamed_orphans`,
+/// which `git span resolve` never calls — a prior wave decided deliberately
+/// that rename recovery does not belong in `resolve`. So these bail-outs must
+/// name the command (it *is* the way out of the conflict markers) while saying
+/// accurately what it does not do, rather than implying it settles the rename.
+fn assert_rename_bailout_names_resolve_accurately(stderr: &str) {
+    assert!(
+        stderr.contains("git span resolve m --dry-run"),
+        "a rename bail-out must still name `resolve` — it is the only way out of \
+         the markers; stderr=\n{stderr}"
+    );
+    assert!(
+        stderr.contains("does no rename recovery"),
+        "a rename bail-out must say `resolve` will not settle the rename, or it \
+         promises what the command does not do; stderr=\n{stderr}"
+    );
+    assert!(
+        stderr.contains("git span replace"),
+        "a rename bail-out must name who does settle the rename; stderr=\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("resolve manually"),
+        "the bail-out must not still end at a bare text editor; stderr=\n{stderr}"
+    );
+}
+
 fn line_slice_hash(text: &str, start: u32, end: u32) -> String {
     let lines: Vec<&str> = text.lines().collect();
     let lo = (start as usize).saturating_sub(1);
@@ -1115,6 +1141,7 @@ file2.txt#L1-L5 rk64:{h2}
         stderr.contains("file1.txt") && stderr.contains("file2.txt"),
         "ambiguous message must name every candidate path; stderr=\n{stderr}"
     );
+    assert_rename_bailout_names_resolve_accurately(&stderr);
 
     let span = read_span(&repo, "m")?;
     assert!(
@@ -1167,6 +1194,7 @@ file2.txt#L11-L15 rk64:{h2}
         !stderr.contains("multiple possible rename targets"),
         "no-candidate message must not read as an ambiguity; stderr=\n{stderr}"
     );
+    assert_rename_bailout_names_resolve_accurately(&stderr);
 
     let span = read_span(&repo, "m")?;
     assert!(
@@ -1215,6 +1243,7 @@ new.txt#L1-L5 rk64:{h}
         stderr.contains("map to the same rename target"),
         "collision message must name the contested target; stderr=\n{stderr}"
     );
+    assert_rename_bailout_names_resolve_accurately(&stderr);
 
     let span = read_span(&repo, "m")?;
     assert!(

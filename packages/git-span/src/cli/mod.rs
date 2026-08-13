@@ -64,6 +64,9 @@ pub struct Cli {
 pub enum Commands {
     /// Show the named span — its anchors, why, and config. Equivalent
     /// to the bare `git span <name>` positional form.
+    ///
+    /// A span whose file is in a Git conflict state is refused rather than
+    /// rendered from conflict-marker text; `git span resolve` settles it.
     #[command(name = "show")]
     Show(ShowArgs),
 
@@ -93,6 +96,10 @@ pub enum Commands {
     /// range/hash with no clean source) or a divergent `--why` write the
     /// resolved anchors cleanly with minimal residue markers and are not
     /// re-staged.
+    ///
+    /// A span `--fix` cannot finish is not analyzable by re-running `drift`.
+    /// See `git span resolve` (`--dry-run` first), which settles a
+    /// conflict-markered span file under one explicitly chosen side.
     Drift(DriftArgs),
 
     /// Add anchors to a span, writing the span file under the span root.

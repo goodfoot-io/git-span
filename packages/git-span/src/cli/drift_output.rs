@@ -1031,6 +1031,21 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
             //   (U updated, K removed)." — now literally true.
             // - zero drift with zero work → nothing printed: the `0 drift`
             //   line above already covers the clean case.
+            let conflicted: Vec<&str> = spans
+                .iter()
+                .filter(|s| {
+                    s.anchors
+                        .iter()
+                        .any(|a| matches!(a.status, AnchorStatus::MergeConflict))
+                })
+                .map(|s| s.name.as_str())
+                .collect();
+            let conflicted_anchor_count = spans
+                .iter()
+                .flat_map(|s| s.anchors.iter())
+                .filter(|a| matches!(a.status, AnchorStatus::MergeConflict))
+                .count();
+
             if args.fix
                 && let Some(ref fr) = fix_result
             {
@@ -1038,8 +1053,15 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
                 let removed = fr.anchors_removed;
                 let total = updated + removed;
                 if drift_count > 0 {
+                    // "run git span drift again" is advice only while some
+                    // remaining drift could actually change on a re-run. When
+                    // every remaining anchor is a merge conflict, re-running
+                    // is the one thing that cannot help — the file is not
+                    // analyzable until it is settled, and the block below
+                    // names what settles it.
+                    let retry_helps = drifted_anchor_count > conflicted_anchor_count;
                     println!(
-                        "Updated {} {} ({} updated, {} removed); {} {} drifted — run git span drift again",
+                        "Updated {} {} ({} updated, {} removed); {} {} drifted{}",
                         total,
                         if total == 1 { "anchor" } else { "anchors" },
                         updated,
@@ -1049,6 +1071,11 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
                             "anchor remains"
                         } else {
                             "anchors remain"
+                        },
+                        if retry_helps {
+                            " — run git span drift again"
+                        } else {
+                            ""
                         },
                     );
                 } else if total > 0 {
@@ -1062,6 +1089,30 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
                         updated,
                         removed,
                     );
+                }
+            }
+
+            // A `MergeConflict` finding renders as a bare `— conflict` row,
+            // and after `--fix` the summary above says "run git span drift
+            // again" — which is the one thing that cannot help, since a
+            // conflicted span file is not analyzable until it is settled.
+            // Name the command that settles it, once per report rather than
+            // once per row.
+            if let Some(&first) = conflicted.first() {
+                println!();
+                println!(
+                    "{} {} in a Git conflict state ({}) — not analyzed until settled.",
+                    conflicted.len(),
+                    if conflicted.len() == 1 {
+                        "span is"
+                    } else {
+                        "spans are"
+                    },
+                    conflicted.join(", "),
+                );
+                println!("{}", crate::cli::resolve::conflict_hint_line(first));
+                if conflicted.len() > 1 {
+                    println!("Repeat for each span named above.");
                 }
             }
         }

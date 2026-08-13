@@ -300,10 +300,16 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs, span_root: &str) -> Resu
                  git-span refuses to present conflict-marker content as \
                  valid span data."
             ),
-            next_steps: vec![
-                NextStep::Bash(format!("git status {span_root}/{name}")),
-                NextStep::Prose("Resolve the merge conflict in the span file, then retry.".into()),
-            ],
+            next_steps: {
+                // The refusal used to end at "resolve the merge conflict in
+                // the span file" over a `git status` — an instruction to open
+                // an editor, which is exactly what `git span resolve` exists
+                // to replace. Naming it here is the difference between the
+                // command existing and the operator finding it.
+                let mut steps = vec![NextStep::Bash(format!("git status {span_root}/{name}"))];
+                steps.extend(crate::cli::resolve::conflict_remediation(&[name]));
+                steps
+            },
         };
         crate::span::read::read_span_in(repo, &args.name, span_root).map_err(|e| {
             if matches!(e, crate::Error::SpanConflict(_)) {
@@ -415,12 +421,12 @@ pub fn run_list(repo: &gix::Repository, args: ListArgs, span_root: &str) -> Resu
                      git-span refuses to list conflict-marker content as \
                      valid span data."
                 ),
-                next_steps: vec![
-                    NextStep::Bash(format!("git status {span_root}")),
-                    NextStep::Prose(
-                        "Resolve the merge conflict in the span file(s), then retry.".into(),
-                    ),
-                ],
+                next_steps: {
+                    let mut steps = vec![NextStep::Bash(format!("git status {span_root}"))];
+                    let names: Vec<&str> = in_scope.iter().map(String::as_str).collect();
+                    steps.extend(crate::cli::resolve::conflict_remediation(&names));
+                    steps
+                },
             }
             .into());
         }

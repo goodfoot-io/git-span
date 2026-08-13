@@ -2323,3 +2323,174 @@ fn resolve_unreadable_ours_stage_never_becomes_a_config_value() -> Result<()> {
 fn resolve_unreadable_theirs_stage_never_becomes_a_config_value() -> Result<()> {
     unreadable_stage_case(3)
 }
+
+// ---------------------------------------------------------------------------
+// 12. Discoverability: every surface an operator hits while a span is
+//     conflicted names `git span resolve`
+//
+// The command was complete and unreachable — `show`/`list`/`why` refused the
+// file with an instruction to open a text editor (verbatim the option
+// `resolve` replaces), `drift` rendered a bare `— conflict` row, and
+// `drift --fix`'s bail-outs said "resolve manually". Nothing named the
+// command, and no test asserted on the absence of a pointer, so it escaped.
+// These assert presence at each surface.
+//
+// Every fixture below is a real mid-merge repo: real `MERGE_HEAD`, real
+// unmerged stages, driver-produced residue. That matters here more than
+// elsewhere, because what is under test is the message an operator sees when
+// they are actually mid-merge.
+// ---------------------------------------------------------------------------
+
+/// The pointer every conflicted surface must carry: the command, named with
+/// the span, and `--dry-run` — not a side, which is the operator's choice.
+fn assert_names_resolve(text: &str, surface: &str) {
+    assert!(
+        text.contains("git span resolve m --dry-run"),
+        "`{surface}` must name `git span resolve m --dry-run`; output=\n{text}"
+    );
+}
+
+/// The instruction the pointer replaces. A surface that still says this has
+/// sent the operator to a text editor.
+fn assert_no_editor_instruction(text: &str, surface: &str) {
+    assert!(
+        !text.contains("Resolve the merge conflict in the span file"),
+        "`{surface}` must not send the operator to a text editor; output=\n{text}"
+    );
+}
+
+#[test]
+fn show_conflict_refusal_names_resolve() -> Result<()> {
+    let (base, ours, theirs) = shared_why_sides();
+    let (repo, _) = mid_merge_repo(&base, &ours, &theirs)?;
+
+    let out = repo.run_span(["show", "m"])?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_ne!(out.status.code(), Some(0), "show must still refuse");
+    assert!(
+        stderr.contains("Git conflict state"),
+        "show must still name the conflict; stderr=\n{stderr}"
+    );
+    assert_names_resolve(&stderr, "show");
+    assert_no_editor_instruction(&stderr, "show");
+    Ok(())
+}
+
+#[test]
+fn list_conflict_refusal_names_resolve() -> Result<()> {
+    let (base, ours, theirs) = shared_why_sides();
+    let (repo, _) = mid_merge_repo(&base, &ours, &theirs)?;
+
+    let out = repo.run_span(["list"])?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_ne!(out.status.code(), Some(0), "list must still refuse");
+    assert_names_resolve(&stderr, "list");
+    assert_no_editor_instruction(&stderr, "list");
+    Ok(())
+}
+
+#[test]
+fn why_conflict_refusal_names_resolve() -> Result<()> {
+    let (base, ours, theirs) = shared_why_sides();
+    let (repo, _) = mid_merge_repo(&base, &ours, &theirs)?;
+
+    let out = repo.run_span(["why", "m"])?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_ne!(out.status.code(), Some(0), "why must still refuse");
+    // `why` used to surface the bare `Error::SpanConflict` Display — a
+    // diagnosis with no next step at all.
+    assert!(
+        stderr.contains("What to do next"),
+        "why's refusal must carry a remediation section; stderr=\n{stderr}"
+    );
+    assert_names_resolve(&stderr, "why");
+    Ok(())
+}
+
+#[test]
+fn drift_conflict_report_names_resolve() -> Result<()> {
+    let (base, ours, theirs) = shared_why_sides();
+    let (repo, _) = mid_merge_repo(&base, &ours, &theirs)?;
+
+    let out = repo.run_span(["drift"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("conflict"),
+        "drift must still report the conflict; stdout=\n{stdout}"
+    );
+    assert_names_resolve(&stdout, "drift");
+    Ok(())
+}
+
+#[test]
+fn drift_fix_poisoned_source_bailout_names_resolve() -> Result<()> {
+    // Card dead end 1: `--fix` aborts the whole span because the anchored
+    // source is itself conflicted. This is the case `resolve --ours`/
+    // `--theirs` handles perfectly — it settles from the residue text and
+    // never reads that source — so the bail-out may say so plainly.
+    let (base, ours, theirs) = shared_why_sides();
+    let (repo, _) = mid_merge_repo(&base, &ours, &theirs)?;
+    repo.write_file(
+        "later.txt",
+        "<<<<<<< HEAD\nalpha\n=======\nALPHA\n>>>>>>> side\nbravo\ncharlie\ndelta\n",
+    )?;
+
+    let out = repo.run_span(["drift", "--fix"])?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("cannot resolve conflict in `m`")
+            && stderr.contains("contains conflict markers"),
+        "the poisoned-source bail-out must still fire; stderr=\n{stderr}"
+    );
+    assert!(
+        stderr.contains("git span resolve m --ours"),
+        "the poisoned-source bail-out must name the side flags that settle it \
+         without reading that source; stderr=\n{stderr}"
+    );
+    assert_names_resolve(&stderr, "drift --fix");
+    assert!(
+        !stderr.contains("resolve manually"),
+        "the bail-out must not still end at a text editor; stderr=\n{stderr}"
+    );
+    // And the claim has to be true: `--ours` must actually settle this file.
+    let settled = repo.run_span(["resolve", "m", "--ours"])?;
+    assert_eq!(
+        settled.status.code(),
+        Some(0),
+        "the bail-out promised `--ours` settles this; it must; stderr=\n{}",
+        String::from_utf8_lossy(&settled.stderr)
+    );
+    let span = read_span(&repo, "m")?;
+    assert!(
+        !span.contains("<<<<<<<"),
+        "the span must be clean after the advised command; span:\n{span}"
+    );
+    Ok(())
+}
+
+#[test]
+fn drift_fix_does_not_advise_re_running_itself_on_a_pure_conflict() -> Result<()> {
+    // The evaluator's exact sequence: the operator follows `--fix`, it
+    // dead-ends, and the summary tells them to re-run the thing that just
+    // failed. A conflicted span file is not analyzable until it is settled,
+    // so "run git span drift again" is the one advice that cannot help here.
+    let (base, ours, theirs) = shared_why_sides();
+    let (repo, _) = mid_merge_repo(&base, &ours, &theirs)?;
+    repo.write_file(
+        "later.txt",
+        "<<<<<<< HEAD\nalpha\n=======\nALPHA\n>>>>>>> side\nbravo\ncharlie\ndelta\n",
+    )?;
+
+    let out = repo.run_span(["drift", "--fix"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("anchor remains drifted"),
+        "the count line must still report what remains; stdout=\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("run git span drift again"),
+        "re-running drift cannot settle a conflict; stdout=\n{stdout}"
+    );
+    assert_names_resolve(&stdout, "drift --fix");
+    Ok(())
+}

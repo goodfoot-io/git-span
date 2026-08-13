@@ -1507,7 +1507,28 @@ fn run_why_reader(repo: &gix::Repository, name: &str, span_root: &str) -> Result
 
     // Current effective view: worktree overlays index overlays HEAD.
     let reader = SpanFileReader::new(repo, span_root.to_string());
-    let span = reader.read_effective(name)?;
+    // A conflicted span reaches here as the bare `Error::SpanConflict`, whose
+    // Display is a diagnosis with no next step. The variant text stays as it
+    // is — `commit.rs` swallows the variant deliberately and other readers
+    // match on it — so the remediation is attached here, where `why` is the
+    // surface an operator lands on mid-merge.
+    let span = reader.read_effective(name).map_err(|e| -> anyhow::Error {
+        if matches!(e, crate::Error::SpanConflict(_)) {
+            CliError {
+                subcommand: "why",
+                summary: format!("span `{name}` is in a Git conflict state."),
+                what_happened: format!(
+                    "The span file for `{name}` has an unresolved merge (unmerged index entry \
+                     or `<<<<<<<`/`>>>>>>>` markers). git-span refuses to read \
+                     conflict-marker content as valid why prose."
+                ),
+                next_steps: crate::cli::resolve::conflict_remediation(&[name]),
+            }
+            .into()
+        } else {
+            e.into()
+        }
+    })?;
 
     match span {
         Some(mf) if !mf.why.is_empty() => {

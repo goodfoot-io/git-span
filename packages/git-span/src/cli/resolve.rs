@@ -76,6 +76,67 @@ const WHY_LOSS_LINE: &str = "The why text was written empty. The residue writer 
      determined from here. Restore it by hand if the span had why prose before this conflict.";
 
 // ---------------------------------------------------------------------------
+// The shared "resolve exists" remediation
+// ---------------------------------------------------------------------------
+
+/// The remediation that names `git span resolve` on the surfaces an operator
+/// actually reaches while a span file is conflicted — `show`, `list`, `why`,
+/// and `drift --fix`'s bail-outs. Every one of those refuses the file, and
+/// none of them could previously offer anything but a text editor.
+///
+/// Two things this text deliberately does **not** do:
+///
+/// * **It does not pick a side.** `--rehash` and `--ours`/`--theirs` answer
+///   different questions — worktree truth versus "this branch was right" — and
+///   which one the operator wants is not derivable from the fact that a file is
+///   conflicted. `--dry-run` reports all three without writing, so it is the
+///   only honest first suggestion.
+/// * **It does not promise success.** `resolve` fails closed on residue whose
+///   anchor/why boundary it cannot establish, and `--rehash` fails closed on a
+///   source it cannot read. Pointing an operator at a command that will refuse
+///   them, without saying so, is the same defect as not pointing at all.
+pub(crate) fn conflict_remediation(names: &[&str]) -> Vec<NextStep> {
+    let plural = names.len() != 1;
+    let file_word = if plural { "files" } else { "file" };
+    vec![
+        NextStep::Prose(format!(
+            "`git span resolve` settles a conflicted span {file_word} without a text editor: it \
+             takes one side for the whole span at once — `--rehash` (re-read each anchor's \
+             source and hash it), `--ours`, or `--theirs`. Which side is right is yours to \
+             decide; `--dry-run` writes nothing and reports what all three would produce:"
+        )),
+        NextStep::Bash(
+            names
+                .iter()
+                .map(|n| format!("git span resolve {n} --dry-run"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        NextStep::Prose(
+            "Then re-run with the side you chose. `resolve` is all-or-nothing: if it cannot \
+             settle every entry under that side — or cannot establish the anchor/why boundary \
+             in the residue — it leaves the span file byte-identical and names what stopped it, \
+             and editing the file by hand remains available."
+                .into(),
+        ),
+    ]
+}
+
+/// The one-line form of [`conflict_remediation`], for the streaming surfaces
+/// (`drift`'s report footer, `drift --fix`'s per-span warnings) that have no
+/// `## What to do next` section to render into.
+///
+/// Same two restraints: it names `--dry-run` rather than a side, and it says
+/// the run may write nothing.
+pub(crate) fn conflict_hint_line(name: &str) -> String {
+    format!(
+        "`git span resolve {name} --dry-run` reports what `--rehash`, `--ours`, and `--theirs` \
+         would each write for this span; re-run with the side you want. It writes nothing \
+         unless the side you pick settles every entry."
+    )
+}
+
+// ---------------------------------------------------------------------------
 // Sides
 // ---------------------------------------------------------------------------
 

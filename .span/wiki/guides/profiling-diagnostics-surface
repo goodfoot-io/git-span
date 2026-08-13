@@ -1,5 +1,5 @@
 packages/git-span/src/cli/drift_output.rs#L112-L119 rk64:cad4ab94d8a3157c
-packages/git-span/src/cli/mod.rs#L297-L303 rk64:6b8232536b7ab78c
+packages/git-span/src/cli/mod.rs#L304-L310 rk64:6b8232536b7ab78c
 packages/git-span/src/perf.rs#L58-L74 rk64:f77e9c9b16b10157
 packages/git-span/src/perf.rs#L354-L365 rk64:a0ebbef90e571cab
 packages/git-span/src/resolver/engine/mod.rs#L568-L591 rk64:c33903b65fc2e5af

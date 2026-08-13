@@ -37,7 +37,7 @@ fn commit_anchor(repo: &TestRepo, span: &str, path: &str, lines: u32) -> Result<
 }
 
 /// Phase 2: given an anchor already committed by [`commit_anchor`] on a
-/// >=7-line `path`, re-anchor it against an unstaged, un-committed prepend
+/// `path` of at least 7 lines, re-anchor it against an unstaged, un-committed prepend
 /// so it resolves `ResolvedPendingCommit` (the span file matches the
 /// worktree; only the source commit is pending). Performs no commit, so it
 /// is safe to call for several spans back-to-back as the last step of a
