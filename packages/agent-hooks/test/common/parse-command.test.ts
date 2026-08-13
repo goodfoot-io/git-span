@@ -1659,13 +1659,13 @@ describe('layered static attribution contract (bootstrap)', () => {
     expect(result.preStateRequests.map(({ requirement }) => requirement)).toEqual(fixture.preStateRequirements ?? []);
   });
 
-  it.skip('exposes a closed, stable unresolved-reason vocabulary', () => {
+  it('exposes a closed, stable unresolved-reason vocabulary', () => {
     expect(new Set(UNRESOLVED_REASON_CODES).size).toBe(UNRESOLVED_REASON_CODES.length);
     expect(UNRESOLVED_REASON_CODES).toContain('unsupported-dataflow');
     expect(UNRESOLVED_REASON_CODES).toContain('untracked-path');
   });
 
-  it.skip('starts each per-call diagnostic with explicit zero values', () => {
+  it('starts each per-call diagnostic with explicit zero values', () => {
     expect(createAttributionDiagnostics()).toEqual({
       resolvedReads: 0,
       resolvedWrites: 0,

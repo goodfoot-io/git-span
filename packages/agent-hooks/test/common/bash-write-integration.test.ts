@@ -1706,7 +1706,7 @@ describe('bounded planned-touch store contract (bootstrap)', () => {
     };
   }
 
-  it.skip('atomically stores a content-minimal record and consumes it once', () => {
+  it('atomically stores a content-minimal record and consumes it once', () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'planned-touch-'));
     try {
       const store = createPlannedTouchStore(baseDir, budgets);
@@ -1720,7 +1720,7 @@ describe('bounded planned-touch store contract (bootstrap)', () => {
     }
   });
 
-  it.skip('discard is idempotent for failure and interruption cleanup', () => {
+  it('discard is idempotent for failure and interruption cleanup', () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'planned-touch-'));
     try {
       const store = createPlannedTouchStore(baseDir, budgets);
@@ -1735,7 +1735,7 @@ describe('bounded planned-touch store contract (bootstrap)', () => {
     }
   });
 
-  it.skip('rejects an over-budget record without replacing a valid pending plan', () => {
+  it('rejects an over-budget record without replacing a valid pending plan', () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'planned-touch-'));
     try {
       const store = createPlannedTouchStore(baseDir, { ...budgets, maxTouchesPerRecord: 1 });
@@ -1745,6 +1745,49 @@ describe('bounded planned-touch store contract (bootstrap)', () => {
 
       expect(() => store.put(oversized)).toThrow();
       expect(store.consume(record.sessionId, record.toolUseId)).toEqual(record);
+    } finally {
+      rmSync(baseDir, { recursive: true, force: true });
+    }
+  });
+
+  it('persists only the declared content-minimal fields', () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'planned-touch-'));
+    try {
+      const store = createPlannedTouchStore(baseDir, budgets);
+      const record = plannedRecord('/repo');
+      const withBody = {
+        ...record,
+        fileBody: 'must never be stored',
+        touches: [{ ...record.touches[0], preStateBody: 'also forbidden' }]
+      } as unknown as PlannedTouchRecord;
+      store.put(withBody);
+
+      const encoded = readFileSync(join(baseDir, SESSION_ID, 'planned-touches', 'tool-static-plan.json'), 'utf8');
+      expect(encoded).not.toContain('must never be stored');
+      expect(encoded).not.toContain('also forbidden');
+      expect(store.consume(record.sessionId, record.toolUseId)).toEqual(record);
+    } finally {
+      rmSync(baseDir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects repository traversal and oversized evidence before writing', () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'planned-touch-'));
+    try {
+      const store = createPlannedTouchStore(baseDir, { ...budgets, maxEvidenceBytes: 8 });
+      const record = plannedRecord('/repo');
+      const traversal: PlannedTouchRecord = {
+        ...record,
+        touches: [{ ...record.touches[0], repoRelativePath: '../outside.txt' }]
+      };
+      const oversizedEvidence: PlannedTouchRecord = {
+        ...record,
+        touches: [{ ...record.touches[0], evidence: { kind: 'anchor', literal: 'a long anchor', line: 3 } }]
+      };
+
+      expect(() => store.put(traversal)).toThrow();
+      expect(() => store.put(oversizedEvidence)).toThrow();
+      expect(store.consume(record.sessionId, record.toolUseId)).toBeNull();
     } finally {
       rmSync(baseDir, { recursive: true, force: true });
     }

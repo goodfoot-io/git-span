@@ -1,13 +1,23 @@
 /**
  * Public contracts for the layered static-intent attribution pipeline.
  *
- * This module is intentionally a TDD bootstrap: the exported functions have
- * their final consumer-facing signatures but do not implement behavior yet.
- * Later phases replace each `Not Implemented` sentinel as its skipped
- * acceptance checks are enabled.
+ * Recognizers land incrementally, but the shared diagnostics, tracked-file
+ * eligibility, and bounded pre-tool plan store are usable by every producer.
  */
 
-import type { LineRange } from './agent-hooks-common.js';
+import { execFileSync } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as nodePath from 'node:path';
+import {
+  isGitIgnored,
+  isInsideSpanRoot,
+  type LineRange,
+  relativeToRepo,
+  resolveRepoRoot,
+  resolveSpanRoot,
+  sanitizeSessionId,
+  toPosix
+} from './agent-hooks-common.js';
 import type { Operation, ParseOptions, ResolvedSpan } from './parse-command.js';
 
 /** Stable machine-readable classifications for candidates the parser refuses. */
@@ -104,7 +114,19 @@ export interface AttributionDiagnostics {
 
 /** Create the zero-valued diagnostic accumulator for one invocation. */
 export function createAttributionDiagnostics(): AttributionDiagnostics {
-  throw new Error('Not Implemented');
+  return {
+    resolvedReads: 0,
+    resolvedWrites: 0,
+    unresolvedByIdiom: {},
+    unresolvedByReason: {},
+    scopeDrops: 0,
+    trackedDrops: 0,
+    executionGateDrops: 0,
+    parserLatencyMs: 0,
+    touchLatencyMs: 0,
+    subprocessCount: 0,
+    dependencyContextSurfaced: false
+  };
 }
 
 /** Bounded evidence sufficient to verify a planned range without retaining a file body. */
@@ -173,8 +195,247 @@ export interface PlannedTouchStore {
 }
 
 /** Create the bounded disk-backed planned-touch store rooted at `baseDir`. */
-export function createPlannedTouchStore(_baseDir: string, _budgets: PlannedTouchBudgets): PlannedTouchStore {
-  throw new Error('Not Implemented');
+export function createPlannedTouchStore(baseDir: string, budgets: PlannedTouchBudgets): PlannedTouchStore {
+  validateBudgets(budgets);
+  if (baseDir.length === 0) throw new Error('planned-touch base directory must not be empty');
+
+  const recordPaths = (sessionId: string, toolUseId: string): { dir: string; record: string; consumed: string } => {
+    if (sessionId.length === 0 || toolUseId.length === 0) {
+      throw new Error('planned-touch session and tool-use ids must not be empty');
+    }
+    const dir = nodePath.join(baseDir, sanitizeSessionId(sessionId), 'planned-touches');
+    const stem = sanitizeSessionId(toolUseId);
+    return {
+      dir,
+      record: nodePath.join(dir, `${stem}.json`),
+      consumed: nodePath.join(dir, `${stem}.consumed`)
+    };
+  };
+
+  const makeRestrictiveDir = (dir: string): void => {
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    fs.chmodSync(baseDir, 0o700);
+    fs.chmodSync(nodePath.dirname(dir), 0o700);
+    fs.chmodSync(dir, 0o700);
+  };
+
+  const claim = (consumed: string): boolean => {
+    try {
+      fs.writeFileSync(consumed, '', { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+      throw error;
+    }
+  };
+
+  return {
+    put(record) {
+      const normalized = normalizePlannedTouchRecord(record, budgets);
+      const paths = recordPaths(normalized.sessionId, normalized.toolUseId);
+      makeRestrictiveDir(paths.dir);
+      if (fs.existsSync(paths.consumed)) {
+        throw new Error('planned-touch record has already been consumed or discarded');
+      }
+
+      const encoded = JSON.stringify(normalized);
+      const tmp = nodePath.join(
+        paths.dir,
+        `.${nodePath.basename(paths.record)}.${process.pid}.${Date.now().toString(36)}.${Math.random().toString(36).slice(2)}.tmp`
+      );
+      try {
+        fs.writeFileSync(tmp, encoded, { encoding: 'utf8', mode: 0o600 });
+        fs.chmodSync(tmp, 0o600);
+        fs.renameSync(tmp, paths.record);
+      } catch (error) {
+        fs.rmSync(tmp, { force: true });
+        throw error;
+      }
+    },
+    consume(sessionId, toolUseId) {
+      const paths = recordPaths(sessionId, toolUseId);
+      makeRestrictiveDir(paths.dir);
+      if (!claim(paths.consumed)) return null;
+
+      let raw: string;
+      try {
+        raw = fs.readFileSync(paths.record, 'utf8');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+        throw error;
+      } finally {
+        fs.rmSync(paths.record, { force: true });
+      }
+
+      try {
+        return normalizePlannedTouchRecord(JSON.parse(raw) as PlannedTouchRecord, budgets);
+      } catch {
+        return null;
+      }
+    },
+    discard(sessionId, toolUseId) {
+      const paths = recordPaths(sessionId, toolUseId);
+      makeRestrictiveDir(paths.dir);
+      claim(paths.consumed);
+      fs.rmSync(paths.record, { force: true });
+    }
+  };
+}
+
+const OPERATIONS: ReadonlySet<Operation> = new Set([
+  'read',
+  'create-overwrite',
+  'append',
+  'modify',
+  'rename-copy',
+  'truncate',
+  'delete'
+]);
+
+function validateBudgets(budgets: PlannedTouchBudgets): void {
+  for (const [name, value] of [
+    ['maxTouchesPerRecord', budgets.maxTouchesPerRecord],
+    ['maxRangesPerTouch', budgets.maxRangesPerTouch],
+    ['maxEvidenceBytes', budgets.maxEvidenceBytes],
+    ['maxRecordBytes', budgets.maxRecordBytes]
+  ] as const) {
+    if (!Number.isSafeInteger(value) || value < 0)
+      throw new Error(`planned-touch ${name} must be a non-negative integer`);
+  }
+}
+
+function validRange(value: unknown): value is LineRange {
+  if (typeof value !== 'object' || value === null) return false;
+  const range = value as Partial<LineRange>;
+  return (
+    Number.isSafeInteger(range.start) &&
+    Number.isSafeInteger(range.end) &&
+    (range.start as number) >= 1 &&
+    (range.end as number) >= (range.start as number)
+  );
+}
+
+function normalizeEvidence(value: PreStateEvidence | undefined): PreStateEvidence | undefined {
+  if (value === undefined) return undefined;
+  switch (value.kind) {
+    case 'literal-occurrences':
+      if (
+        typeof value.literal !== 'string' ||
+        !Array.isArray(value.ranges) ||
+        !value.ranges.every(validRange) ||
+        !Number.isSafeInteger(value.expectedCount) ||
+        value.expectedCount < 0
+      ) {
+        throw new Error('invalid literal-occurrences evidence');
+      }
+      return {
+        kind: value.kind,
+        literal: value.literal,
+        ranges: value.ranges.map(({ start, end }) => ({ start, end })),
+        expectedCount: value.expectedCount
+      };
+    case 'anchor':
+      if (typeof value.literal !== 'string' || !Number.isSafeInteger(value.line) || value.line < 1) {
+        throw new Error('invalid anchor evidence');
+      }
+      return { kind: value.kind, literal: value.literal, line: value.line };
+    case 'eof':
+      if (
+        !Number.isSafeInteger(value.line) ||
+        value.line < 0 ||
+        !Number.isSafeInteger(value.byteLength) ||
+        value.byteLength < 0
+      ) {
+        throw new Error('invalid eof evidence');
+      }
+      return { kind: value.kind, line: value.line, byteLength: value.byteLength };
+    case 'content-digest':
+      if (value.algorithm !== 'sha256' || !/^[a-f0-9]{64}$/.test(value.digest) || !validRange(value.range)) {
+        throw new Error('invalid content-digest evidence');
+      }
+      return {
+        kind: value.kind,
+        algorithm: value.algorithm,
+        digest: value.digest,
+        range: { start: value.range.start, end: value.range.end }
+      };
+    case 'tracked':
+      if (value.tracked !== true) throw new Error('invalid tracked evidence');
+      return { kind: value.kind, tracked: true };
+    default:
+      throw new Error('invalid planned-touch evidence kind');
+  }
+}
+
+function normalizePlannedTouchRecord(record: PlannedTouchRecord, budgets: PlannedTouchBudgets): PlannedTouchRecord {
+  if (
+    typeof record !== 'object' ||
+    record === null ||
+    record.version !== 1 ||
+    typeof record.sessionId !== 'string' ||
+    record.sessionId.length === 0 ||
+    typeof record.toolUseId !== 'string' ||
+    record.toolUseId.length === 0 ||
+    typeof record.repoRoot !== 'string' ||
+    record.repoRoot.length === 0 ||
+    !Number.isFinite(record.createdAtMs) ||
+    record.createdAtMs < 0 ||
+    !Array.isArray(record.touches)
+  ) {
+    throw new Error('invalid planned-touch record');
+  }
+  const repoRoot = toPosix(record.repoRoot);
+  if (!nodePath.isAbsolute(record.repoRoot) && !/^[A-Za-z]:\//.test(repoRoot)) {
+    throw new Error('planned-touch repository root must be absolute');
+  }
+  if (record.touches.length > budgets.maxTouchesPerRecord) {
+    throw new Error('planned-touch record exceeds touch budget');
+  }
+
+  let evidenceBytes = 0;
+  const touches = record.touches.map((touch): PlannedTouch => {
+    if (typeof touch !== 'object' || touch === null) throw new Error('invalid planned touch');
+    const repoRelativePath = toPosix(touch.repoRelativePath);
+    if (
+      repoRelativePath.length === 0 ||
+      repoRelativePath.startsWith('/') ||
+      /^[A-Za-z]:\//.test(repoRelativePath) ||
+      repoRelativePath.split('/').some((part) => part === '..')
+    ) {
+      throw new Error('planned-touch path must be repository-relative');
+    }
+    if (!OPERATIONS.has(touch.operation)) throw new Error('invalid planned-touch operation');
+    if (!Array.isArray(touch.ranges) || touch.ranges.length > budgets.maxRangesPerTouch) {
+      throw new Error('planned touch exceeds range budget');
+    }
+    if (!touch.ranges.every(validRange)) throw new Error('invalid planned-touch range');
+    if (!Number.isSafeInteger(touch.simpleCommandIndex) || touch.simpleCommandIndex < 0) {
+      throw new Error('invalid planned-touch command index');
+    }
+    const evidence = normalizeEvidence(touch.evidence);
+    if (evidence !== undefined) evidenceBytes += Buffer.byteLength(JSON.stringify(evidence));
+    return {
+      repoRelativePath,
+      operation: touch.operation,
+      ranges: touch.ranges.map((range: LineRange) => ({ start: range.start, end: range.end })),
+      simpleCommandIndex: touch.simpleCommandIndex,
+      ...(evidence === undefined ? {} : { evidence })
+    };
+  });
+  if (evidenceBytes > budgets.maxEvidenceBytes) throw new Error('planned-touch record exceeds evidence budget');
+
+  const normalized: PlannedTouchRecord = {
+    version: 1,
+    sessionId: record.sessionId,
+    toolUseId: record.toolUseId,
+    repoRoot,
+    createdAtMs: record.createdAtMs,
+    touches
+  };
+  if (Buffer.byteLength(JSON.stringify(normalized)) > budgets.maxRecordBytes) {
+    throw new Error('planned-touch record exceeds byte budget');
+  }
+  return normalized;
 }
 
 /** A path candidate supplied by any command-, response-, or structured-tool producer. */
@@ -206,13 +467,93 @@ export type TrackedFilesQuery = (repoRoot: string, repoRelativePaths: readonly s
 
 export interface TrackedEligibilityOptions {
   readonly cwd: string;
-  readonly queryTrackedFiles: TrackedFilesQuery;
+  readonly queryTrackedFiles?: TrackedFilesQuery;
 }
+
+/** Query the index without consulting the working tree or untracked files. */
+export const queryTrackedFiles: TrackedFilesQuery = (repoRoot, repoRelativePaths) => {
+  if (repoRelativePaths.length === 0) return new Set();
+  const stdout = execFileSync('git', ['-C', repoRoot, 'ls-files', '-z', '--cached', '--', ...repoRelativePaths], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore']
+  });
+  return new Set(
+    stdout
+      .split('\0')
+      .filter((path) => path.length > 0)
+      .map(toPosix)
+  );
+};
 
 /** Filter all candidates in repository batches, preserving their original payloads and order. */
 export function filterTrackedEligibility<T>(
-  _candidates: readonly TrackedEligibilityCandidate<T>[],
-  _options: TrackedEligibilityOptions
+  candidates: readonly TrackedEligibilityCandidate<T>[],
+  options: TrackedEligibilityOptions
 ): TrackedEligibilityResult<T> {
-  throw new Error('Not Implemented');
+  const eligible: TrackedEligibilityCandidate<T>[] = [];
+  const dropped: TrackedEligibilityDrop<T>[] = [];
+  const cwdRepoRoot = resolveRepoRoot(options.cwd);
+  if (cwdRepoRoot === null) {
+    return {
+      eligible,
+      dropped: candidates.map((candidate) => ({ candidate, reason: 'outside-repository' })),
+      subprocessCount: 0
+    };
+  }
+
+  const repoByDirectory = new Map<string, string | null>();
+  const inScope: Array<{ candidate: TrackedEligibilityCandidate<T>; repoRoot: string; repoRelativePath: string }> = [];
+  const spanRoot = resolveSpanRoot(cwdRepoRoot);
+  for (const candidate of candidates) {
+    const directory = toPosix(nodePath.dirname(candidate.absolutePath));
+    let fileRepoRoot = repoByDirectory.get(directory);
+    if (fileRepoRoot === undefined) {
+      fileRepoRoot = resolveRepoRoot(directory);
+      repoByDirectory.set(directory, fileRepoRoot);
+    }
+    if (fileRepoRoot !== cwdRepoRoot) {
+      dropped.push({ candidate, reason: 'outside-repository' });
+      continue;
+    }
+    const repoRelativePath = relativeToRepo(cwdRepoRoot, candidate.absolutePath);
+    if (isGitIgnored(cwdRepoRoot, repoRelativePath)) {
+      dropped.push({ candidate, reason: 'ignored-path' });
+      continue;
+    }
+    if (isInsideSpanRoot(repoRelativePath, spanRoot)) {
+      dropped.push({ candidate, reason: 'span-metadata-path' });
+      continue;
+    }
+    inScope.push({ candidate, repoRoot: cwdRepoRoot, repoRelativePath });
+  }
+
+  const byRepo = new Map<string, typeof inScope>();
+  for (const scoped of inScope) {
+    const group = byRepo.get(scoped.repoRoot) ?? [];
+    group.push(scoped);
+    byRepo.set(scoped.repoRoot, group);
+  }
+
+  let subprocessCount = 0;
+  const query = options.queryTrackedFiles ?? queryTrackedFiles;
+  for (const [repoRoot, group] of byRepo) {
+    const paths = [...new Set(group.map(({ repoRelativePath }) => repoRelativePath))];
+    let tracked: ReadonlySet<string>;
+    subprocessCount += 1;
+    try {
+      tracked = query(repoRoot, paths);
+    } catch {
+      tracked = new Set();
+    }
+    const normalizedTracked = new Set([...tracked].map(toPosix));
+    for (const scoped of group) {
+      if (normalizedTracked.has(scoped.repoRelativePath)) eligible.push(scoped.candidate);
+      else dropped.push({ candidate: scoped.candidate, reason: 'untracked-path' });
+    }
+  }
+
+  const candidateOrder = new Map(candidates.map((candidate, index) => [candidate, index]));
+  eligible.sort((left, right) => (candidateOrder.get(left) ?? 0) - (candidateOrder.get(right) ?? 0));
+  dropped.sort((left, right) => (candidateOrder.get(left.candidate) ?? 0) - (candidateOrder.get(right.candidate) ?? 0));
+  return { eligible, dropped, subprocessCount };
 }

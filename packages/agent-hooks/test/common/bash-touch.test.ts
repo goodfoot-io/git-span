@@ -273,7 +273,7 @@ describe('bashSpanToTouch — operation→touch translation (plan §2)', () => {
 });
 
 describe('batched tracked eligibility contract (bootstrap)', () => {
-  it.skip('queries each repository once and preserves eligible producer payloads', () => {
+  it('queries each repository once and preserves eligible producer payloads', () => {
     const repo = makeTempRepo();
     const root = repo.root;
     writeFileSync(join(root, 'tracked.txt'), 'x\n');
@@ -302,7 +302,7 @@ describe('batched tracked eligibility contract (bootstrap)', () => {
     repo.cleanup();
   });
 
-  it.skip('drops out-of-scope paths before tracked membership without querying their repositories', () => {
+  it('drops out-of-scope paths before tracked membership without querying their repositories', () => {
     const repo = makeTempRepo();
     const root = repo.root;
     const result = filterTrackedEligibility([{ absolutePath: '/tmp/outside.txt', value: 'structured-write' }], {
@@ -315,6 +315,83 @@ describe('batched tracked eligibility contract (bootstrap)', () => {
     expect(result.eligible).toEqual([]);
     expect(result.dropped.map(({ reason }) => reason)).toEqual(['outside-repository']);
     expect(result.subprocessCount).toBe(0);
+    repo.cleanup();
+  });
+
+  it('uses one real index query for tracked and untracked candidates', () => {
+    const repo = makeTempRepo();
+    const root = repo.root;
+    writeFileSync(join(root, 'tracked.txt'), 'tracked\n');
+    writeFileSync(join(root, 'untracked.txt'), 'untracked\n');
+    execFileSync('git', ['add', 'tracked.txt'], { cwd: root });
+
+    const result = filterTrackedEligibility(
+      [
+        { absolutePath: join(root, 'tracked.txt'), value: 'tracked' },
+        { absolutePath: join(root, 'untracked.txt'), value: 'untracked' }
+      ],
+      { cwd: root }
+    );
+
+    expect(result.eligible.map(({ value }) => value)).toEqual(['tracked']);
+    expect(result.dropped.map(({ reason }) => reason)).toEqual(['untracked-path']);
+    expect(result.subprocessCount).toBe(1);
+    repo.cleanup();
+  });
+
+  it('classifies ignored and span metadata paths before the index query', () => {
+    const repo = makeTempRepo();
+    const root = repo.root;
+    writeFileSync(join(root, '.gitignore'), 'ignored.txt\n');
+    writeFileSync(join(root, 'ignored.txt'), 'ignored\n');
+    mkdirSync(join(root, '.span'), { recursive: true });
+    writeFileSync(join(root, '.span', 'intent.md'), 'intent\n');
+    const calls: string[][] = [];
+
+    const result = filterTrackedEligibility(
+      [
+        { absolutePath: join(root, 'ignored.txt'), value: 'ignored' },
+        { absolutePath: join(root, '.span', 'intent.md'), value: 'span' }
+      ],
+      {
+        cwd: root,
+        queryTrackedFiles: (_repoRoot, paths) => {
+          calls.push([...paths]);
+          return new Set();
+        }
+      }
+    );
+
+    expect(result.eligible).toEqual([]);
+    expect(result.dropped.map(({ reason }) => reason)).toEqual(['ignored-path', 'span-metadata-path']);
+    expect(calls).toEqual([]);
+    expect(result.subprocessCount).toBe(0);
+    repo.cleanup();
+  });
+
+  it('deduplicates membership pathspecs without deduplicating producer payloads', () => {
+    const repo = makeTempRepo();
+    const root = repo.root;
+    writeFileSync(join(root, 'tracked.txt'), 'tracked\n');
+    execFileSync('git', ['add', 'tracked.txt'], { cwd: root });
+    const calls: string[][] = [];
+
+    const result = filterTrackedEligibility(
+      [
+        { absolutePath: join(root, 'tracked.txt'), value: 'bash' },
+        { absolutePath: join(root, 'tracked.txt'), value: 'structured-edit' }
+      ],
+      {
+        cwd: root,
+        queryTrackedFiles: (_repoRoot, paths) => {
+          calls.push([...paths]);
+          return new Set(['tracked.txt']);
+        }
+      }
+    );
+
+    expect(calls).toEqual([['tracked.txt']]);
+    expect(result.eligible.map(({ value }) => value)).toEqual(['bash', 'structured-edit']);
     repo.cleanup();
   });
 });
