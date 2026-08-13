@@ -77,10 +77,12 @@ if ! acquire_lock; then
   fi
 fi
 
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 # Guardrail: integration tests must not reference `std::os::unix` directly —
 # they go through tests/support/mod.rs cross-platform helpers so the suite
 # compiles and runs on Windows. Fail fast before the (slow) yarn pipeline.
-guardrail_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/packages/git-span/tests"
+guardrail_root="$repo_root/packages/git-span/tests"
 if [ -d "$guardrail_root" ]; then
   offenders=""
   while IFS= read -r f; do
@@ -105,8 +107,24 @@ fi
 log_path="$(git rev-parse --absolute-git-dir)/validate-output.log"
 echo "Full validation log: $log_path"
 
+# The drift gate must certify the tree with the binary built from it, never
+# with a git-span resolved through PATH. The npm-installed release and the
+# workspace build report the same version string, so a --version comparison is
+# not a signal — only provenance is. Build the workspace binary under the
+# shared target lock (the same pattern every cargo gate in
+# packages/git-span/package.json uses), then prepend its build directory to
+# PATH so `git span` resolves to this tree's build and nothing else. If the
+# build fails, the && chain below fails the validation — the gate fails closed
+# rather than falling through to an installed release.
+target_root="${GIT_SPAN_CARGO_TARGET_ROOT:-/var/cache/git-span/cargo-target}"
+build_dir="$target_root/git-span/build"
+
 {
-  git span drift &&
+  (
+    cd "$repo_root/packages/git-span"
+    bash scripts/with-target-lock.sh shared env CARGO_TARGET_DIR="$build_dir" cargo build --quiet --locked --bin git-span
+  ) &&
+  PATH="$build_dir/debug:$PATH" git span drift &&
   yarn typecheck &&
   yarn lint &&
   yarn test &&
