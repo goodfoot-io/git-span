@@ -1,9 +1,7 @@
-packages/git-span-core/src/lib.rs#L27-L31 rk64:0c58bd9235351c76
-packages/git-span-core/src/lib.rs#L27-L32 rk64:5b48e4926cfc7ace
-packages/git-span-core/src/span_file.rs#L40-L1394 rk64:4378ccdcc03bd9d3
-packages/git-span-core/src/span_file.rs#L40-L1472 rk64:5402aff130331583
+packages/git-span-core/src/lib.rs#L27-L32 rk64:905254f8de7b98d0
+packages/git-span-core/src/span_file.rs#L40-L2081 rk64:c821db9cbe368178
 packages/git-span-core/src/validation.rs#L29-L33 rk64:2796333a43593e93
+packages/git-span/src/cli/merge_driver.rs rk64:ed1ffcc810f8b7d1
 packages/git-span/src/span_file.rs#L10-L12 rk64:97fa297382cec2a4
-packages/git-span/src/cli/merge_driver.rs rk64:e1acba5800b83cc0
 
-The merge-driver CLI delegates to the git-span-core kernel with no worktree sources; the cli_merge_driver integration tests enforce its exit-0-on-resolve, exit-1-with-conflict-markers contract, so edits to either crate must preserve it.
+The merge-driver CLI delegates to the git-span-core kernel with no worktree sources; the cli_merge_driver integration tests enforce its exit-0-on-resolve, exit-1-with-conflict-markers contract, so edits to either crate must preserve it. The kernel also collapses duplicate same-identity records as part of the merge, reporting the outcome through same_side_collapsed and carrying an unverified sentinel forward rather than resolving it, so a collapse the merge cannot verify must still leave the exit contract intact.

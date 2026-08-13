@@ -1,4 +1,4 @@
-packages/git-span/src/cli/mod.rs#L277-L283 rk64:6b8232536b7ab78c
-packages/git-span/src/cli/mod.rs#L305-L311 rk64:6b8232536b7ab78c
-wiki/guides/profiling-git-span-drift.md#L42-L48 rk64:d10245a13331443e
+packages/git-span/src/cli/mod.rs#L306-L312 rk64:6b8232536b7ab78c
+packages/git-span/src/cli/mod.rs#L306-L312 rk64:6b8232536b7ab78c
+wiki/guides/profiling-git-span-drift.md#L42-L48 rk64:f996b552f11c5f6a
 

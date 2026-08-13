@@ -1,5 +1,4 @@
 README.md#L18-L55 rk64:8b11f6a77fbb14aa
-packages/git-span/src/cli/mod.rs#L43-L198 rk64:3989dbe9609bf297
 packages/git-span/src/cli/mod.rs#L45-L207 rk64:479694d06ed03b7b
 packages/git-span/src/main.rs#L49-L156 rk64:49bcd3a7ade7baec
 wiki/meta/git-span-documentation-touchpoints.md#L180-L192 rk64:710400daef46ec0e

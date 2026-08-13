@@ -1141,15 +1141,35 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
                         .is_some()
                 });
                 if drift_count > 0 {
+                    let collapse = collapse_clause
+                        .map(|c| format!("{c}; "))
+                        .unwrap_or_default();
                     // "run git span drift again" is advice only while some
-                    // remaining drift could actually change on a re-run. When
-                    // every remaining anchor is a merge conflict, re-running
-                    // is the one thing that cannot help — the file is not
-                    // analyzable until it is settled, and the block below
-                    // names what settles it.
+                    // remaining drift could actually change on a re-run. Two
+                    // separate conditions make it false. When every remaining
+                    // anchor is a merge conflict, the file is not analyzable
+                    // until it is settled. And an unverified collapse is a
+                    // closed loop: the survivor carries a hash no content can
+                    // match, so every re-run reports the same drift forever.
+                    // Both cases have to name the step that actually ends the
+                    // state rather than the one that cannot.
                     let retry_helps = drifted_anchor_count > conflicted_anchor_count;
+                    let advice = match (sentinel_in_report, all_refuse, retry_helps) {
+                        (true, true, _) => {
+                            "— an unverified collapse is not cleared by re-running: settle each \
+                             collapsed address named above with `git span replace`, then run git \
+                             span drift again"
+                        }
+                        (true, false, _) => {
+                            "— an unverified collapse is not cleared by re-running: settle each \
+                             collapsed address named above with `git span add` or `git span \
+                             replace`, then run git span drift again"
+                        }
+                        (false, _, true) => "— run git span drift again",
+                        (false, _, false) => "",
+                    };
                     println!(
-                        "Updated {} {} ({} updated, {} removed); {} {} drifted{}",
+                        "Updated {} {} ({} updated, {} removed); {}{} {} drifted {}",
                         total,
                         if total == 1 { "anchor" } else { "anchors" },
                         updated,
@@ -1161,11 +1181,7 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
                         } else {
                             "anchors remain"
                         },
-                        if retry_helps {
-                            " — run git span drift again"
-                        } else {
-                            ""
-                        },
+                        advice,
                     );
                 } else if !fr.residue_span_names.is_empty() {
                     // `drift_count == 0` is not evidence of a clean tree here.
