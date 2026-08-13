@@ -1091,21 +1091,55 @@ fn boundary_violation(line: &str, in_why_region: bool, name: &str) -> Option<Str
              ends in a colon-bearing token such as a URL, and settling it would write a \
              fabricated anchor whose path is a sentence."
         )),
-        // What is left is what a real anchor record looks like, which is
-        // exactly what belongs before the separator. Named rather than left to
-        // a wildcard so a new `AnchorLineShape` has to be decided here too.
+        // The second half of the same discriminator the why-region arm reads,
+        // in the direction this region asks it. A content hash that is not
+        // sixteen lowercase hex is not one any writer here produced — the only
+        // production write is `content_hash: rk64_to_hex(fp)`, which is
+        // `format!("{fp:016x}")` — so a line carrying `//example.com` or `1234`
+        // is a sentence whose last token merely holds a colon, not an anchor
+        // record. `See https://example.com` splits at the last space into
+        // address `See` and hash part `https://example.com`, so it has a
+        // *whitespace-free* whole-file address and the arm above cannot see it;
+        // settling it writes a tracked coupling at path `See`, a word lifted
+        // out of the operator's own prose.
         //
-        // `hash_is_writer_shaped` is deliberately *not* consulted here. It
-        // would also close the pre-separator fabrication (`See
-        // https://example.com` written back as an anchor at path `See`), but
-        // that half is disclosed by the `unverified:` report rather than
-        // silent, and this wave buys the silent half. See the card's
-        // `notes/boundary-provenance-limit.md`.
+        // Both arms read the same property and neither can refuse a
+        // writer-produced line on it: after the separator the shape is a
+        // precondition on refusing, so consulting it only permits more; here it
+        // is the mirror — everything it newly refuses is a line no writer emits
+        // in this region, because every record a writer puts before the
+        // separator carries a sixteen-hex hash by construction.
         AnchorLineShape::WholeFile {
-            path_has_whitespace: false,
+            hash_is_writer_shaped: false,
             ..
         }
-        | AnchorLineShape::LineRange { .. } => None,
+        | AnchorLineShape::LineRange {
+            hash_is_writer_shaped: false,
+            ..
+        } => Some(format!(
+            "Span `{name}` has a line inside its anchor-residue conflict block whose content \
+             hash is not the sixteen lowercase hex digits every writer emits: `{line}`. That is \
+             the shape prose takes when its last word holds a colon, and settling it would write \
+             a fabricated anchor whose path is a word from the surrounding sentence."
+        )),
+        // What is left is what a real anchor record looks like, which is
+        // exactly what belongs before the separator. Every field is named
+        // rather than left to a wildcard so a new `AnchorLineShape` — and a new
+        // combination of these two — has to be decided here too.
+        //
+        // A line-range address whose path holds whitespace stays permitted, and
+        // that is a trade rather than an omission: unlike the hash test it has
+        // a real cost, since an anchor whose own path contains a space
+        // (`my file.txt#L1-L3 rk64:…`) is a genuine record this would hard-stop.
+        // See the card's `notes/boundary-provenance-limit.md`.
+        AnchorLineShape::WholeFile {
+            path_has_whitespace: false,
+            hash_is_writer_shaped: true,
+        }
+        | AnchorLineShape::LineRange {
+            hash_is_writer_shaped: true,
+            ..
+        } => None,
     }
 }
 

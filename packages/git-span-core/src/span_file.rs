@@ -532,11 +532,17 @@ pub enum AnchorLineShape {
 /// token: `https://example.com` (hash `//example.com`) and `rfc:1234` (hash
 /// `1234`) are not hashes any writer here produced.
 ///
-/// Use it only to *narrow* a refusal — as a precondition, never as a trigger.
-/// A reader that refuses because this returns true is a strict subset of one
-/// that refuses without consulting it, so consulting it can only permit more.
-/// Reversing that polarity would rebuild the gate whose failure was refusing
-/// valid spans on the strength of a shape.
+/// The invariant to hold is that **no writer-produced line is ever refused on
+/// the strength of this predicate**, which is what the retired `rk64` gate
+/// violated. Where a record is the thing being refused — a bare anchor found in
+/// the why region — that means using it only to *narrow*, as a precondition and
+/// never as a trigger: a reader that refuses because this returns true is a
+/// strict subset of one that refuses without consulting it, so consulting it
+/// can only permit more. Where prose is the thing being refused — a sentence
+/// found in the anchor region — the same invariant reads mirrored, refusing on
+/// `false`, because a line that is not writer-shaped is by construction not a
+/// line a writer put there. What is never sound is refusing a `true` outside
+/// the first case, which is the gate rebuilt.
 fn hash_is_writer_shaped(hash: &str) -> bool {
     hash.len() == 16 && hash.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
