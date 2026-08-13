@@ -2018,7 +2018,12 @@ fn termination_injection_matrix_keeps_store_consistent_and_usable() {
                 Ok(s) => s,
                 Err(_) => return,
             };
-            for _ in 0..20_000 {
+            // The child lives at most ~50ms + exec overhead, and each read
+            // pays full envelope verification (~75µs), so ~1,500 reads cover
+            // the whole kill window; 3,000 leaves margin on slower machines.
+            // This loop is the test's dominant cost, so the count is bounded
+            // to the window it must saturate, not an arbitrary number.
+            for _ in 0..3_000 {
                 match store.get_generation(&key(CONC_BASE_KEY), V1) {
                     Ok(GetOutcome::Hit(g)) => {
                         assert_eq!(g.summary, b"baseline-complete");
