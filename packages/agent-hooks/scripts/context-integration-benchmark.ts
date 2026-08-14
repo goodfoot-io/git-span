@@ -53,7 +53,9 @@ interface ArmResult extends Distribution {
 const PACKAGE_ROOT =
   process.env['AGENT_HOOKS_BENCHMARK_ROOT'] ?? resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const WORKSPACE_ROOT = resolve(PACKAGE_ROOT, '../..');
-const BASELINE = 'implement/main-245/baseline';
+// The last pre-integration revision is an ancestor of main, so the benchmark remains
+// reproducible after the temporary implementation checkpoint tag is removed.
+const BASELINE = 'ee50e7397836117df405a76b9f661322f803d3db';
 const TEXT = `${['alpha', 'anchor-one', 'middle', 'anchor-two', 'spare', 'six', 'seven', 'eight', 'nine', 'tail'].join('\n')}\n`;
 
 function buildAcceptanceGitSpan(): { binary: string; pathDir: string } {
