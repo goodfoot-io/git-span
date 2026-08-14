@@ -66,6 +66,51 @@ pub fn load_all_spans_in(repo: &gix::Repository, span_root: &str) -> Result<Load
     crate::perf::time_list_parse(|| read_effective_parallel(repo, span_root, names))
 }
 
+/// Fail-closed corpus capture rooted at one retained worktree/span inode chain.
+pub(crate) fn load_all_spans_strict_in(
+    repo: &gix::Repository,
+    span_root: &str,
+    authority: &crate::descriptor_authority::SpanRootAuthority,
+) -> Result<LoadedSpans> {
+    let reader = SpanFileReader::new(repo, span_root.to_string());
+    let mut names = reader
+        .list_git_span_names()?
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    for relative in authority
+        .root()
+        .map_err(|error| {
+            Error::Io(std::io::Error::other(format!(
+                "retain span root: {error:#}"
+            )))
+        })?
+        .regular_file_names()
+        .map_err(|error| {
+            Error::Io(std::io::Error::other(format!(
+                "enumerate retained span root: {error:#}"
+            )))
+        })?
+    {
+        let Some(name) = relative.to_str() else {
+            return Err(Error::Parse("span name is not UTF-8".into()));
+        };
+        if name.split('/').all(|segment| !segment.starts_with('.')) {
+            names.insert(name.to_owned());
+        }
+    }
+    let mut loaded = Vec::new();
+    let mut conflicted = Vec::new();
+    for name in names {
+        match reader.read_effective_retained(&name, authority) {
+            Ok(Some(file)) => loaded.push((name.clone(), span_from_file(&name, &file))),
+            Ok(None) => {}
+            Err(Error::SpanConflict { kind, .. }) => conflicted.push((name, kind)),
+            Err(error) => return Err(error),
+        }
+    }
+    Ok((loaded, conflicted))
+}
+
 /// Per-name outcome of a `read_effective` call, carried back from a worker
 /// thread tagged with the name's original (sorted) index so the caller can
 /// reassemble results deterministically regardless of completion order.

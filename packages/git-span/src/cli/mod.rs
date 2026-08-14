@@ -18,6 +18,7 @@
 
 pub mod commit;
 pub mod context;
+pub(crate) mod context_service;
 pub mod doctor;
 pub mod drift_label;
 pub mod duplicate_identity;
@@ -109,6 +110,9 @@ pub enum Commands {
     /// Return exact dependency context for repository-relative paths or
     /// inclusive line ranges as one versioned JSON document.
     Context(ContextArgs),
+
+    #[command(name = "__context-service", hide = true)]
+    ContextService(ContextServiceArgs),
 
     /// Add anchors to a span, writing the span file under the span root.
     /// Stage and commit the change with `git add .span && git commit`.
@@ -304,6 +308,16 @@ pub struct ContextArgs {
     /// Stable idempotency key for a repair retry. Valid only with `--fix`.
     #[arg(long, value_name = "UUID", requires = "fix")]
     pub operation_id: Option<uuid::Uuid>,
+}
+
+#[derive(Debug, Clone, clap::Args)]
+pub struct ContextServiceArgs {
+    #[arg(long)]
+    pub service_key: String,
+    #[arg(long)]
+    pub nonce: String,
+    #[arg(long)]
+    pub span_root: String,
 }
 
 /// Output format for `git span add`'s write-mode result.
@@ -626,7 +640,9 @@ pub fn dispatch(
     let span_root = crate::span_root::resolve_span_root(repo, span_dir, env_dir.as_deref())
         .map_err(|e| anyhow::anyhow!("{}", e))?;
     let span_root = span_root.as_str();
-    let _recovery_guard = recovery_domain::acquire(repo, recovery_domain::command_mode(&command))?;
+    let _recovery_guard = recovery_domain::command_mode(&command)
+        .map(|mode| recovery_domain::acquire(repo, mode))
+        .transpose()?;
     match command {
         Commands::Show(args) => {
             let _perf = crate::perf::span("command.show");
@@ -644,6 +660,7 @@ pub fn dispatch(
             let _perf = crate::perf::span("command.context");
             context::run_context(repo, args, span_root)
         }
+        Commands::ContextService(args) => context_service::serve(repo, args),
         Commands::Add(args) => {
             let _perf = crate::perf::span("command.add");
             commit::run_add(repo, args, span_root)

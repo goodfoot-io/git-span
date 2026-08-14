@@ -138,8 +138,19 @@ struct ClosedContextCapture {
     token: crate::resolver::core::token::StateToken,
 }
 
-fn capture_snapshot(repo: &gix::Repository, span_root: &str) -> Result<ContextSnapshot> {
-    let (definitions, conflicted) = crate::span::read::load_all_spans_in(repo, span_root)?;
+pub(crate) struct ContextServiceSeed {
+    pub(crate) spans: Vec<ContextSpan>,
+    pub(crate) known_paths: BTreeSet<String>,
+    pub(crate) external_watch_roots: BTreeSet<std::path::PathBuf>,
+}
+
+fn capture_snapshot(
+    repo: &gix::Repository,
+    span_root: &str,
+    authority: &crate::descriptor_authority::SpanRootAuthority,
+) -> Result<ContextSnapshot> {
+    let (definitions, conflicted) =
+        crate::span::read::load_all_spans_strict_in(repo, span_root, authority)?;
     if !conflicted.is_empty() {
         let names = conflicted
             .iter()
@@ -177,6 +188,7 @@ fn close_context_capture(
     repo: &gix::Repository,
     span_root: &str,
     snapshot: &ContextSnapshot,
+    authority: &crate::descriptor_authority::SpanRootAuthority,
     query_paths: impl IntoIterator<Item = String>,
 ) -> Result<ClosedContextCapture> {
     let discovery = resolve_snapshot(repo, snapshot)?;
@@ -191,7 +203,7 @@ fn close_context_capture(
         &paths,
         None,
     )?;
-    let closed_snapshot = capture_snapshot(repo, span_root)?;
+    let closed_snapshot = capture_snapshot(repo, span_root, authority)?;
     anyhow::ensure!(
         closed_snapshot == *snapshot,
         "span definitions changed while resolving context"
@@ -469,6 +481,34 @@ fn context_status(status: &AnchorStatus) -> ContextStatus {
     }
 }
 
+fn context_span_from_resolved(span: SpanResolved, overlaps: Vec<ContextOverlap>) -> ContextSpan {
+    let why = (!span.why.trim().is_empty()).then_some(span.why.clone());
+    let anchors = span
+        .anchors
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, anchor)| ContextAnchor {
+            ordinal,
+            id: anchor.anchor_id,
+            anchored: location_from_domain(&anchor.anchored),
+            current: anchor.current.as_ref().map(location_from_domain),
+            status: context_status(&anchor.status),
+            source: anchor.source.map(context_source),
+            sources: anchor
+                .layer_sources
+                .into_iter()
+                .map(context_source)
+                .collect(),
+        })
+        .collect();
+    ContextSpan {
+        name: span.name,
+        why,
+        overlaps,
+        anchors,
+    }
+}
+
 fn select_context(
     scopes: Vec<ContextScope>,
     resolved: Vec<SpanResolved>,
@@ -528,31 +568,7 @@ fn select_context(
             .map(|overlap| overlap.anchor.ordinal)
             .collect::<HashSet<_>>()
             .len() as u64;
-        let why = (!span.why.trim().is_empty()).then_some(span.why.clone());
-        let anchors = span
-            .anchors
-            .into_iter()
-            .enumerate()
-            .map(|(ordinal, anchor)| ContextAnchor {
-                ordinal,
-                id: anchor.anchor_id,
-                anchored: location_from_domain(&anchor.anchored),
-                current: anchor.current.as_ref().map(location_from_domain),
-                status: context_status(&anchor.status),
-                source: anchor.source.map(context_source),
-                sources: anchor
-                    .layer_sources
-                    .into_iter()
-                    .map(context_source)
-                    .collect(),
-            })
-            .collect();
-        spans.push(ContextSpan {
-            name: span.name,
-            why,
-            overlaps,
-            anchors,
-        });
+        spans.push(context_span_from_resolved(span, overlaps));
     }
     spans.sort_by(|left, right| left.name.cmp(&right.name));
     crate::perf::counter("context.spans-considered", spans_considered);
@@ -565,6 +581,139 @@ fn select_context(
         mutation,
         spans,
     }
+}
+
+pub(crate) fn build_service_seed(
+    repo: &gix::Repository,
+    span_root: &str,
+) -> Result<ContextServiceSeed> {
+    let authority = crate::descriptor_authority::SpanRootAuthority::open(
+        crate::git::work_dir(repo)?,
+        span_root,
+        crate::descriptor_authority::DirectoryPolicy::Existing,
+    )?;
+    let snapshot = capture_snapshot(repo, span_root, &authority)?;
+    let capture =
+        close_context_capture(repo, span_root, &snapshot, &authority, std::iter::empty())?;
+    let mut known_paths = capture.paths.clone();
+    known_paths.extend(
+        crate::git::index_entries(repo)?
+            .into_iter()
+            .map(|entry| entry.path),
+    );
+    if let Ok(head) = repo.head_commit()
+        && let Ok(tree) = head.tree()
+        && let Ok(paths) = crate::resolver::walker::tree_all_paths(&tree)
+    {
+        known_paths.extend(paths);
+    }
+
+    let workdir = crate::git::work_dir(repo)?.to_path_buf();
+    let mut external_watch_roots = BTreeSet::new();
+    for dependency in &capture.token.filters {
+        let Ok(parts) = shell_words::split(&dependency.command) else {
+            continue;
+        };
+        let Some(program) = parts.first() else {
+            continue;
+        };
+        let candidate = Path::new(program);
+        let resolved = if candidate.is_absolute() {
+            candidate.to_path_buf()
+        } else if program.contains('/') {
+            workdir.join(candidate)
+        } else {
+            std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+                .map(|directory| directory.join(candidate))
+                .find(|path| path.is_file())
+                .unwrap_or_else(|| workdir.join(candidate))
+        };
+        if let Some(parent) = resolved.parent() {
+            external_watch_roots.insert(parent.to_path_buf());
+        }
+    }
+
+    let spans = capture
+        .resolved
+        .into_iter()
+        .map(|span| context_span_from_resolved(span, Vec::new()))
+        .collect();
+    Ok(ContextServiceSeed {
+        spans,
+        known_paths,
+        external_watch_roots,
+    })
+}
+
+pub(crate) fn normalize_service_scopes(
+    addresses: &[String],
+    known_paths: &BTreeSet<String>,
+    workdir: &Path,
+) -> Result<Vec<ContextScope>> {
+    anyhow::ensure!(
+        !addresses.is_empty(),
+        "context requires at least one address"
+    );
+    anyhow::ensure!(
+        addresses.len() <= MAX_CONTEXT_ADDRESSES,
+        "context accepts at most {MAX_CONTEXT_ADDRESSES} addresses (got {})",
+        addresses.len()
+    );
+    let mut by_path: BTreeMap<String, Vec<ContextExtent>> = BTreeMap::new();
+    for address in addresses {
+        let (raw_path, extent) = parse_context_address(address)?;
+        let path = canonicalize_path(&raw_path)?;
+        crate::span_root::validate_repo_relative_path("context path", &path)
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        anyhow::ensure!(
+            known_paths.contains(&path) || workdir.join(&path).exists(),
+            "context path `{path}` does not exist in the worktree, index, HEAD, or span snapshot"
+        );
+        by_path.entry(path).or_default().push(extent);
+    }
+    merge_scopes(by_path)
+}
+
+fn merge_scopes(by_path: BTreeMap<String, Vec<ContextExtent>>) -> Result<Vec<ContextScope>> {
+    let mut scopes = Vec::new();
+    for (path, mut extents) in by_path {
+        if extents.contains(&ContextExtent::Whole) {
+            scopes.push(ContextScope {
+                path,
+                extent: ContextExtent::Whole,
+            });
+            continue;
+        }
+        extents.sort();
+        let mut merged: Vec<ContextExtent> = Vec::with_capacity(extents.len());
+        for extent in extents {
+            let ContextExtent::Lines { start, end } = extent else {
+                unreachable!("whole-file scopes were handled above")
+            };
+            match merged.last_mut() {
+                Some(ContextExtent::Lines { end: prior_end, .. }) if start <= *prior_end => {
+                    *prior_end = (*prior_end).max(end);
+                }
+                _ => merged.push(ContextExtent::Lines { start, end }),
+            }
+        }
+        scopes.extend(merged.into_iter().map(|extent| ContextScope {
+            path: path.clone(),
+            extent,
+        }));
+    }
+    anyhow::ensure!(
+        scopes.len() <= MAX_CONTEXT_ADDRESSES,
+        "context normalized to more than {MAX_CONTEXT_ADDRESSES} scopes"
+    );
+    Ok(scopes)
+}
+
+pub(crate) fn context_intersection(
+    scope: &ContextScope,
+    location: &ContextLocation,
+) -> Option<ContextExtent> {
+    intersection(scope, location)
 }
 
 fn render_document(document: &ContextDocument) -> Result<Vec<u8>> {
@@ -600,12 +749,30 @@ fn run_context_read_only(
     addresses: &[String],
     span_root: &str,
 ) -> Result<ContextDocument> {
+    let Some(authority) = crate::descriptor_authority::SpanRootAuthority::open_optional(
+        crate::git::work_dir(repo)?,
+        span_root,
+    )?
+    else {
+        let scopes = normalize_scopes(
+            repo,
+            addresses,
+            &ContextSnapshot {
+                definitions: Vec::new(),
+            },
+        )?;
+        return Ok(select_context(
+            scopes,
+            Vec::new(),
+            ContextMutation::default(),
+        ));
+    };
     let query_paths = raw_query_paths(addresses)?;
     let mut last_error = None;
     for attempt in 0..2 {
-        let snapshot = capture_snapshot(repo, span_root)?;
+        let snapshot = capture_snapshot(repo, span_root, &authority)?;
         let scopes = normalize_scopes(repo, addresses, &snapshot)?;
-        match close_context_capture(repo, span_root, &snapshot, query_paths.clone()) {
+        match close_context_capture(repo, span_root, &snapshot, &authority, query_paths.clone()) {
             Ok(capture) => {
                 let _proof = (&capture.paths, &capture.token);
                 return Ok(select_context(
@@ -625,7 +792,35 @@ pub fn run_context(repo: &gix::Repository, args: ContextArgs, span_root: &str) -
     if args.fix {
         anyhow::bail!("context --fix is not implemented yet")
     }
-    let document = run_context_read_only(repo, &args.addresses, span_root)?;
+    let document =
+        match super::context_service::query(repo, span_root, &args.addresses).unwrap_or(None) {
+            Some((document, counters)) => {
+                crate::perf::counter("context.service-generation-hits", counters.generation_hits);
+                crate::perf::counter("context.service-corpus-loads", counters.corpus_loads);
+                crate::perf::counter("context.service-resolver-passes", counters.resolver_passes);
+                crate::perf::counter("context.service-invalidations", counters.invalidations);
+                crate::perf::counter(
+                    "context.service-watcher-overflows",
+                    counters.watcher_overflows,
+                );
+                crate::perf::counter("context.service-stale-fallbacks", counters.stale_fallbacks);
+                crate::perf::counter("context.service-epoch-checks", counters.epoch_checks);
+                crate::perf::counter("context.service-rows-decoded", counters.rows_decoded);
+                crate::perf::counter("context.service-rpc-connect-us", counters.rpc_connect_us);
+                crate::perf::counter(
+                    "context.service-watcher-drain-us",
+                    counters.watcher_drain_us,
+                );
+                crate::perf::counter("context.service-total-us", counters.total_latency_us);
+                document
+            }
+            None => {
+                crate::perf::counter("context.strict-fallbacks", 1);
+                let _guard =
+                    super::recovery_domain::acquire(repo, super::recovery_domain::Mode::Shared)?;
+                run_context_read_only(repo, &args.addresses, span_root)?
+            }
+        };
     let bytes = render_document(&document)?;
     std::io::stdout().lock().write_all(&bytes)?;
     Ok(0)

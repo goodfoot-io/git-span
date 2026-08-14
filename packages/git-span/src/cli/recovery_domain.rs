@@ -18,17 +18,17 @@ pub(crate) struct Guard {
     _file: File,
 }
 
-pub(crate) fn command_mode(command: &Commands) -> Mode {
+pub(crate) fn command_mode(command: &Commands) -> Option<Mode> {
     match command {
-        Commands::Drift(args) if args.fix => Mode::Exclusive,
-        Commands::Why(args) if args.why_text.is_some() => Mode::Exclusive,
-        Commands::Resolve(args) if !args.dry_run => Mode::Exclusive,
-        Commands::Context(args) if args.fix => Mode::Exclusive,
+        Commands::Context(_) | Commands::ContextService(_) => None,
+        Commands::Drift(args) if args.fix => Some(Mode::Exclusive),
+        Commands::Why(args) if args.why_text.is_some() => Some(Mode::Exclusive),
+        Commands::Resolve(args) if !args.dry_run => Some(Mode::Exclusive),
         Commands::Add(_)
         | Commands::Remove(_)
         | Commands::Replace(_)
         | Commands::Delete(_)
-        | Commands::MergeDriver(_) => Mode::Exclusive,
+        | Commands::MergeDriver(_) => Some(Mode::Exclusive),
         Commands::Show(_)
         | Commands::List(_)
         | Commands::Drift(_)
@@ -36,8 +36,7 @@ pub(crate) fn command_mode(command: &Commands) -> Mode {
         | Commands::Doctor(_)
         | Commands::Tree(_)
         | Commands::History(_)
-        | Commands::Resolve(_) => Mode::Shared,
-        Commands::Context(_) => Mode::Shared,
+        | Commands::Resolve(_) => Some(Mode::Shared),
     }
 }
 
@@ -63,7 +62,7 @@ mod tests {
     use super::*;
     use clap::Parser;
 
-    fn parsed_mode(args: &[&str]) -> Mode {
+    fn parsed_mode(args: &[&str]) -> Option<Mode> {
         let cli = crate::cli::Cli::try_parse_from(args).expect("command should parse");
         command_mode(cli.command.as_ref().expect("command should be present"))
     }
@@ -80,7 +79,7 @@ mod tests {
             &["git-span", "history", "s"][..],
             &["git-span", "resolve", "s", "--dry-run"][..],
         ] {
-            assert_eq!(parsed_mode(args), Mode::Shared, "{args:?}");
+            assert_eq!(parsed_mode(args), Some(Mode::Shared), "{args:?}");
         }
         for args in [
             &["git-span", "drift", "--fix"][..],
@@ -92,7 +91,7 @@ mod tests {
             &["git-span", "merge-driver", "base", "ours", "theirs", "7"][..],
             &["git-span", "resolve", "s"][..],
         ] {
-            assert_eq!(parsed_mode(args), Mode::Exclusive, "{args:?}");
+            assert_eq!(parsed_mode(args), Some(Mode::Exclusive), "{args:?}");
         }
     }
 

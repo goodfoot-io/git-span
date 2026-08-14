@@ -117,6 +117,7 @@ fn run() -> Result<i32> {
     // stopped `stale` from being routed to `show` in the first place.
     let is_bare_name = first_non_opt.is_some_and(|first| {
         !first.starts_with('-')
+            && first != "__context-service"
             && !is_reserved_span_name(first)
             && !matches!(first.as_str(), "help" | "--help" | "-h")
     });

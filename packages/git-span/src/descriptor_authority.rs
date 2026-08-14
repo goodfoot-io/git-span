@@ -537,6 +537,102 @@ impl RetainedDirectory {
         }
     }
 
+    /// Whether a final entry exists, inspected without following it.
+    pub fn entry_exists(&self, name: &OsStr) -> Result<bool> {
+        #[cfg(unix)]
+        {
+            let name = component_c_string(name)?;
+            let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+            let status = unsafe {
+                libc::fstatat(
+                    self.descriptor.as_raw_fd(),
+                    name.as_ptr(),
+                    stat.as_mut_ptr(),
+                    libc::AT_SYMLINK_NOFOLLOW,
+                )
+            };
+            if status == 0 {
+                return Ok(true);
+            }
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::NotFound {
+                return Ok(false);
+            }
+            Err(error).context("inspect retained entry")
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = name;
+            bail!("descriptor authority requires openat-style platform support")
+        }
+    }
+
+    /// Recursively enumerate regular-file leaves from this retained inode.
+    pub fn regular_file_names(&self) -> Result<Vec<PathBuf>> {
+        #[cfg(target_os = "linux")]
+        fn walk(
+            directory: &RetainedDirectory,
+            prefix: &Path,
+            output: &mut Vec<PathBuf>,
+        ) -> Result<()> {
+            let path = PathBuf::from(format!(
+                "/proc/self/fd/{}",
+                directory.descriptor.as_raw_fd()
+            ));
+            let mut entries = std::fs::read_dir(path)?.collect::<std::io::Result<Vec<_>>>()?;
+            entries.sort_by_key(std::fs::DirEntry::file_name);
+            for entry in entries {
+                let name = entry.file_name();
+                ensure_single_component(&name)?;
+                let relative = prefix.join(&name);
+                let kind = entry.file_type()?;
+                ensure!(!kind.is_symlink(), "retained directory contains a symlink");
+                if kind.is_dir() {
+                    let child = directory.descend(Path::new(&name), DirectoryPolicy::Existing)?;
+                    walk(&child, &relative, output)?;
+                } else if kind.is_file() {
+                    output.push(relative);
+                } else {
+                    bail!("retained directory contains a non-file entry")
+                }
+            }
+            Ok(())
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            let mut output = Vec::new();
+            walk(self, Path::new(""), &mut output)?;
+            Ok(output)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            bail!("descriptor-rooted enumeration requires Linux procfs")
+        }
+    }
+
+    /// Validate a private Unix socket without following its final component.
+    #[cfg(target_os = "linux")]
+    pub fn validate_owned_socket(&self, name: &OsStr, mode: u32) -> Result<()> {
+        use std::os::unix::fs::FileTypeExt;
+        use std::os::unix::fs::MetadataExt;
+        let path = self.descriptor_path(name)?;
+        let metadata = std::fs::symlink_metadata(&path)?;
+        ensure!(
+            metadata.file_type().is_socket(),
+            "retained entry is not a Unix socket"
+        );
+        ensure!(
+            metadata.uid() == unsafe { libc::geteuid() },
+            "retained socket has another owner"
+        );
+        ensure!(
+            metadata.mode() & 0o777 == mode,
+            "retained socket permissions are not {mode:#o}"
+        );
+        Ok(())
+    }
+
     /// Original discovery path, retained only for actionable diagnostics.
     pub fn display_path(&self) -> &Path {
         &self.display_path
@@ -558,6 +654,24 @@ pub struct SpanRootAuthority {
 }
 
 impl SpanRootAuthority {
+    /// Retain an existing span root, or report that no root existed at the
+    /// descriptor lookup's linearization point. Other lookup failures remain
+    /// fail-closed (notably symlinks and permission errors).
+    pub fn open_optional(worktree: &Path, span_root: &str) -> Result<Option<Self>> {
+        match Self::open(worktree, span_root, DirectoryPolicy::Existing) {
+            Ok(authority) => Ok(Some(authority)),
+            Err(error)
+                if error
+                    .chain()
+                    .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
+                    .any(|io| io.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     /// Retain the canonical worktree and no-follow span-root chain.
     pub fn open(worktree: &Path, span_root: &str, policy: DirectoryPolicy) -> Result<Self> {
         git_span_core::validate_repo_relative_path("span root", span_root)?;
@@ -602,10 +716,18 @@ impl RuntimeAuthority {
             "service key must be at least sixteen hexadecimal characters"
         );
         let git_dir = RetainedDirectory::open_canonical(git_dir)?;
-        let relative = PathBuf::from("span")
-            .join("context")
-            .join(&service_key[..16]);
-        let directory = git_dir.descend(&relative, DirectoryPolicy::Private { mode: 0o700 })?;
+        // `.git/span` is shared with the resolver store and may predate the
+        // service. Retain it without weakening its established permissions;
+        // the service-owned context subtree and identity leaf are private.
+        let span = git_dir.descend(Path::new("span"), DirectoryPolicy::Create { mode: 0o755 })?;
+        let context = span.descend(
+            Path::new("context"),
+            DirectoryPolicy::Private { mode: 0o700 },
+        )?;
+        let directory = context.descend(
+            Path::new(&service_key[..16]),
+            DirectoryPolicy::Private { mode: 0o700 },
+        )?;
         Ok(Self { directory })
     }
 

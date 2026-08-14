@@ -11,7 +11,7 @@ keywords: [reconcile, drift, authority, source of truth, fail closed, doc rewrit
 `git span drift --fix` auto-resolves `Moved` and whitespace-equivalent
 `Changed` anchors; a `Changed` anchor whose content differs beyond whitespace
 is left drifting so it resurfaces for confirmation
-([mod.rs](../../packages/git-span/src/cli/mod.rs#L80-L87)). This page governs
+([mod.rs](../../packages/git-span/src/cli/mod.rs#L81-L88)). This page governs
 that residue — the meaning-altering `Changed` and `Deleted` anchors
 ([types.rs](../../packages/git-span/src/types.rs#L137-L148)).
 
@@ -40,7 +40,7 @@ by cost of error:
    declaration or content change was committed: a worktree-only declaration
    re-anchor can compare against `HEAD` and produce that source too. Inspect the
    declaration diff and `git span history <name>` timeline
-   ([mod.rs](../../packages/git-span/src/cli/mod.rs#L207-L217)); commit or revert
+   ([mod.rs](../../packages/git-span/src/cli/mod.rs#L211-L221)); commit or revert
    an uncommitted declaration edit rather than searching for a source commit
    that does not exist. A doc
    drifting behind a deliberate, committed code change means the doc is
@@ -66,4 +66,4 @@ Fail closed on authority ambiguity, not on editing per se.
   ([types.rs](../../packages/git-span/src/types.rs#L140-L142)).
 - Keep the span's why across routine re-anchors; write a new one only when
   the subsystem itself changed
-  ([mod.rs](../../packages/git-span/src/cli/mod.rs#L144-L146)).
+  ([mod.rs](../../packages/git-span/src/cli/mod.rs#L148-L150)).

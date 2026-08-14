@@ -87,6 +87,57 @@ impl<'repo> SpanFileReader<'repo> {
         self.read_head(name)
     }
 
+    /// Effective layered read whose worktree authority is a retained span root.
+    pub(crate) fn read_effective_retained(
+        &self,
+        name: &str,
+        authority: &crate::descriptor_authority::SpanRootAuthority,
+    ) -> Result<Option<SpanFile>> {
+        if self.is_unmerged_in_index(name)? {
+            return Err(Error::SpanConflict {
+                span: name.to_string(),
+                kind: git_span_core::ConflictKind::UnmergedIndex,
+            });
+        }
+        let worktree =
+            match authority.target(name, crate::descriptor_authority::DirectoryPolicy::Existing) {
+                Ok(target) => target.parent.read_optional(&target.leaf).map_err(|error| {
+                    Error::Io(std::io::Error::other(format!(
+                        "retained span read: {error:#}"
+                    )))
+                })?,
+                Err(error)
+                    if error.chain().any(|cause| {
+                        cause
+                            .downcast_ref::<std::io::Error>()
+                            .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
+                    }) =>
+                {
+                    None
+                }
+                Err(error) => {
+                    return Err(Error::Io(std::io::Error::other(format!(
+                        "retain span parent: {error:#}"
+                    ))));
+                }
+            };
+        if let Some(bytes) = worktree {
+            let text = String::from_utf8(bytes)
+                .map_err(|error| Error::Parse(format!("worktree span not utf-8: {error}")))?;
+            return parse_named(name, &text).map(Some);
+        }
+        if self.exists_in_index(name)? || self.exists_in_head(name)? {
+            return Ok(None);
+        }
+        if let Some(span) = self.read_staged(name)? {
+            return Ok(Some(span));
+        }
+        if self.exists_in_head(name)? {
+            return Ok(None);
+        }
+        self.read_head(name)
+    }
+
     /// Read the span file from the HEAD tree only.
     pub fn read_head(&self, name: &str) -> Result<Option<SpanFile>> {
         let span_path = self.span_path(name);
@@ -170,6 +221,13 @@ impl<'repo> SpanFileReader<'repo> {
         // Collect from index.
         self.collect_index_names(&mut names)?;
 
+        Ok(names.into_iter().collect())
+    }
+
+    pub(crate) fn list_git_span_names(&self) -> Result<Vec<String>> {
+        let mut names = BTreeSet::new();
+        self.collect_head_names(&mut names)?;
+        self.collect_index_names(&mut names)?;
         Ok(names.into_iter().collect())
     }
 

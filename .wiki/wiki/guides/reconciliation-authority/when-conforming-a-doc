@@ -1,5 +1,5 @@
-packages/git-span/src/cli/mod.rs#L142-L144 rk64:66565da39683d693
-packages/git-span/src/cli/mod.rs#L144-L146 rk64:3e1cebdc8206a9e7
+packages/git-span/src/cli/mod.rs#L146-L148 rk64:66565da39683d693
+packages/git-span/src/cli/mod.rs#L148-L150 rk64:3e1cebdc8206a9e7
 packages/git-span/src/types.rs#L140-L142 rk64:df130798f7928c93
 packages/git-span/src/types.rs#L140-L142 rk64:df130798f7928c93
 wiki/guides/reconciliation-authority.md#L56-L64 rk64:a327cab2216210b8
