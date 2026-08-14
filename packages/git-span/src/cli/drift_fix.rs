@@ -54,7 +54,8 @@ pub(crate) struct FixResult {
     /// anchor each.  Conflict-resolution merged anchors count here.
     pub(crate) anchors_updated: usize,
     /// How many anchor records were removed outright (interior-anchor
-    /// repair: records whose path falls under the span root).
+    /// repair, or a relocation converging with another record at the same
+    /// final identity).
     pub(crate) anchors_removed: usize,
     /// Spans this pass **partially** resolved: the resolved anchors were
     /// written clean and residue was written back inside conflict markers.
@@ -78,6 +79,133 @@ pub(crate) struct FixResult {
     /// the next drift comparison reports it, and counting it as followed
     /// would subtract it from the very exit code that must surface it.
     pub(crate) identities_collapsed: Vec<CollapsedIdentity>,
+}
+
+type AnchorIdentity = (String, u32, u32);
+
+struct PlannedReanchor {
+    anchor_id: String,
+    source: AnchorIdentity,
+    destination: AnchorIdentity,
+    content_hash: String,
+}
+
+enum ReanchorMutation {
+    Update {
+        destination: AnchorIdentity,
+        content_hash: String,
+    },
+    Remove,
+}
+
+/// Apply ordinary re-anchors as one batch so final identities, rather than
+/// mutation order, decide whether records collide. A destination occupied by
+/// another moving record is not a convergence (the records may be swapping or
+/// forming a chain); only multiple final records at one identity are grouped.
+/// Agreed hashes collapse to one record. Disagreement fails closed: none of
+/// the group's source records move, and the operator is told why.
+fn apply_planned_reanchors(
+    span_name: &str,
+    span_file: &mut SpanFile,
+    plans: Vec<PlannedReanchor>,
+    fix: &mut FixResult,
+    any_rewritten: &mut bool,
+) {
+    let moving_sources: HashSet<AnchorIdentity> =
+        plans.iter().map(|plan| plan.source.clone()).collect();
+    let mut plans_by_destination: BTreeMap<AnchorIdentity, Vec<usize>> = BTreeMap::new();
+    for (index, plan) in plans.iter().enumerate() {
+        plans_by_destination
+            .entry(plan.destination.clone())
+            .or_default()
+            .push(index);
+    }
+
+    let mut mutations: HashMap<AnchorIdentity, ReanchorMutation> = HashMap::new();
+
+    for (destination, plan_indexes) in plans_by_destination {
+        let stationary = if moving_sources.contains(&destination) {
+            None
+        } else {
+            span_file.anchors.iter().find(|record| {
+                (record.path.as_str(), record.start_line, record.end_line)
+                    == (destination.0.as_str(), destination.1, destination.2)
+            })
+        };
+        let participant_count = plan_indexes.len() + usize::from(stationary.is_some());
+
+        let expected_hash = plans[plan_indexes[0]].content_hash.as_str();
+        let plans_agree = plan_indexes
+            .iter()
+            .all(|&index| plans[index].content_hash == expected_hash);
+        let stationary_agrees = stationary.is_none_or(|record| {
+            record.algorithm == RK64_ALGORITHM && record.content_hash == expected_hash
+        });
+        let hashes_agree = plans_agree && stationary_agrees;
+        let address = format_anchor_address(
+            &destination.0,
+            (destination.1 != 0).then_some(destination.1),
+            (destination.2 != 0).then_some(destination.2),
+        );
+
+        if participant_count > 1 && !hashes_agree {
+            println!(
+                "  convergence at `{address}` in span `{span_name}` not applied — hashes disagree; source records left unchanged"
+            );
+            continue;
+        }
+
+        if participant_count > 1 {
+            println!(
+                "  converged {participant_count} anchors in span `{span_name}` at `{address}` — {participant_count} records → 1"
+            );
+        }
+
+        let survivor_plan = stationary.is_none().then_some(plan_indexes[0]);
+        for &index in &plan_indexes {
+            let plan = &plans[index];
+            let mutation = if survivor_plan == Some(index) {
+                ReanchorMutation::Update {
+                    destination: plan.destination.clone(),
+                    content_hash: plan.content_hash.clone(),
+                }
+            } else {
+                ReanchorMutation::Remove
+            };
+            mutations.insert(plan.source.clone(), mutation);
+            fix.rewritten_anchor_ids.insert(plan.anchor_id.clone());
+            crate::perf::record_fix_rewritable_anchor();
+        }
+    }
+
+    if mutations.is_empty() {
+        return;
+    }
+
+    let mut rewritten = Vec::with_capacity(span_file.anchors.len());
+    for mut record in span_file.anchors.drain(..) {
+        let source = (record.path.clone(), record.start_line, record.end_line);
+        match mutations.remove(&source) {
+            Some(ReanchorMutation::Update {
+                destination,
+                content_hash,
+            }) => {
+                record.path = destination.0;
+                record.start_line = destination.1;
+                record.end_line = destination.2;
+                record.algorithm = RK64_ALGORITHM.to_string();
+                record.content_hash = content_hash;
+                fix.anchors_updated += 1;
+                rewritten.push(record);
+            }
+            Some(ReanchorMutation::Remove) => {
+                fix.anchors_removed += 1;
+            }
+            None => rewritten.push(record),
+        }
+    }
+    span_file.anchors = rewritten;
+    *any_rewritten = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1048,6 +1176,7 @@ pub(crate) fn apply_fix(
         // quietly certifying a record nothing verified.
         let sentinels_before = span_file.anchors.iter().filter(|r| carried_sentinel(r)).count();
 
+        let mut planned_reanchors = Vec::new();
         for resolved in &m.anchors {
             // The identity of the record this resolved entry speaks for.
             let (anc_start, anc_end) = match resolved.anchored.extent {
@@ -1260,29 +1389,25 @@ pub(crate) fn apply_fix(
                 }
             };
 
-            // Locate the AnchorRecord matching the anchored (path, extent),
-            // whose identity was resolved at the top of this iteration.
-            let record = span_file
-                .anchors
-                .iter_mut()
-                .find(|r| r.path == anc_path && r.start_line == anc_start && r.end_line == anc_end);
-            let Some(record) = record else { continue };
-
-            // Rewrite in place.
             let (new_start, new_end) = match cur_extent {
                 AnchorExtent::LineRange { start, end } => (start, end),
                 AnchorExtent::WholeFile => (0, 0),
             };
-            record.path = cur_path_str;
-            record.start_line = new_start;
-            record.end_line = new_end;
-            record.algorithm = RK64_ALGORITHM.to_string();
-            record.content_hash = hash_hex;
-            fix.rewritten_anchor_ids.insert(resolved.anchor_id.clone());
-            fix.anchors_updated += 1;
-            crate::perf::record_fix_rewritable_anchor();
-            any_rewritten = true;
+            planned_reanchors.push(PlannedReanchor {
+                anchor_id: resolved.anchor_id.clone(),
+                source: (anc_path, anc_start, anc_end),
+                destination: (cur_path_str, new_start, new_end),
+                content_hash: hash_hex,
+            });
         }
+
+        apply_planned_reanchors(
+            &m.name,
+            &mut span_file,
+            planned_reanchors,
+            &mut fix,
+            &mut any_rewritten,
+        );
 
         // Record keys (path, start, end) of anchors eligible to participate
         // in a line-range merge. A record is mergeable ONLY when it is
