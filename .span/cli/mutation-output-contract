@@ -8,6 +8,6 @@ packages/git-span/src/cli/commit.rs#L2276-L2367 rk64:1ea4243347bad57b
 packages/git-span/src/cli/commit.rs#L2346-L2437 rk64:1ea4243347bad57b
 packages/git-span/tests/cases/cli_exit_codes.rs#L1-L112 rk64:532f9a16d9798421
 packages/git-span/tests/cases/cli_history/mod.rs#L187-L200 rk64:f1eb5d09f6e553ff
-packages/git-span/tests/cases/cli_reconcile_output.rs#L24-L597 rk64:60389ae621402b7a
+packages/git-span/tests/cases/cli_reconcile_output.rs#L24-L597 rk64:446c20d2826cb345
 
 The add/why mutation surface runs a post-write reconcile check whose output splits into the requested-address outcome, superseded-anchor fates, and span-wide health (clean/drift/indeterminate) with drift-aligned exit codes 0/1/2 and an always-emit JSON document; these lines carry the check, the exit-code mapping, and both renderers, so the local facts, the supersession block, and the span-wide line cannot silently diverge from each other or from the three-fact terminology table.

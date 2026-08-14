@@ -17,6 +17,7 @@ use crate::support;
 
 use anyhow::Result;
 use serde_json::Value;
+use std::process::{Command, Stdio};
 use support::TestRepo;
 
 /// The worktree-effective span declaration on disk, for byte-identity
@@ -581,7 +582,11 @@ fn reconcile_output_why_non_terminal_stdin_precedes_json_format() -> Result<()> 
     // No why text and non-terminal stdin must fail before considering the
     // read-mode format, so automation cannot block while trying to infer
     // whether input is coming.
-    let out = repo.run_span(["why", "read-reject", "--format", "json"])?;
+    let out = Command::new(env!("CARGO_BIN_EXE_git-span"))
+        .current_dir(repo.path())
+        .args(["why", "read-reject", "--format", "json"])
+        .stdin(Stdio::null())
+        .output()?;
     assert_eq!(out.status.code(), Some(1));
     assert!(
         out.stdout.is_empty(),
