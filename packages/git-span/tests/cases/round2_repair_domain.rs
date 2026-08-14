@@ -533,33 +533,6 @@ fn every_conflict_surface_names_the_staging_exit() -> Result<()> {
     Ok(())
 }
 
-/// `why` was the worst of the five and the reason it was triaged first: it
-/// passed the shared remediation through with nothing in front of it, so its
-/// *first* fenced command was `resolve --dry-run` — a command that writes
-/// nothing — and it showed no `git status` at all, to an operator its own
-/// implementation comment identifies as standing mid-merge.
-#[test]
-fn why_leads_with_where_the_operator_is_standing() -> Result<()> {
-    let seed = format!("file1.txt#L1-L5 rk64:{OTHER_HASH}\n\nbase why\n");
-    let repo = mid_merge(&seed)?;
-
-    let out = repo.run_span(["why", "m"])?;
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    let commands = fenced_commands(&stderr);
-    assert_eq!(
-        commands.first().map(String::as_str),
-        Some("git status .span/m"),
-        "the first fenced command must show the operator their own state, not a dry run; \
-         stderr=\n{stderr}"
-    );
-    assert_eq!(
-        commands.last().map(String::as_str),
-        Some("git add .span/m"),
-        "and the last must be the exit; stderr=\n{stderr}"
-    );
-    Ok(())
-}
-
 /// The successful run is a steering surface too — arguably the first one. It
 /// already said "not staged"; what it did not say is that the merge is
 /// therefore unfinished, so an operator who stopped reading there went

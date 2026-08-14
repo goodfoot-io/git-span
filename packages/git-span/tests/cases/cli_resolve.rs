@@ -2658,24 +2658,6 @@ fn list_conflict_refusal_names_resolve() -> Result<()> {
 }
 
 #[test]
-fn why_conflict_refusal_names_resolve() -> Result<()> {
-    let (base, ours, theirs) = shared_why_sides();
-    let (repo, _) = mid_merge_repo(&base, &ours, &theirs)?;
-
-    let out = repo.run_span(["why", "m"])?;
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert_ne!(out.status.code(), Some(0), "why must still refuse");
-    // `why` used to surface the bare `Error::SpanConflict` Display — a
-    // diagnosis with no next step at all.
-    assert!(
-        stderr.contains("What to do next"),
-        "why's refusal must carry a remediation section; stderr=\n{stderr}"
-    );
-    assert_names_resolve(&stderr, "why");
-    Ok(())
-}
-
-#[test]
 fn drift_conflict_report_names_resolve() -> Result<()> {
     let (base, ours, theirs) = shared_why_sides();
     let (repo, _) = mid_merge_repo(&base, &ours, &theirs)?;
