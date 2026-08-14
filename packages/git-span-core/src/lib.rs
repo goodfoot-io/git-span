@@ -199,45 +199,6 @@ fn build_indexed(files: &[(String, Vec<u8>)]) -> Vec<(String, LineIndex<'_>)> {
         .collect()
 }
 
-/// Emit a whole-file `Location { 0, 0 }` for every file whose bytes satisfy
-/// `keep`. `bytes_of` projects each file element to its buffer.
-fn whole_file_matches<T>(
-    files: &[(String, T)],
-    bytes_of: impl Fn(&T) -> &[u8],
-    keep: impl Fn(&[u8]) -> bool,
-) -> Vec<Location> {
-    files
-        .iter()
-        .filter(|(_, t)| keep(bytes_of(t)))
-        .map(|(path, _)| Location {
-            path: path.clone(),
-            start_line: 0,
-            end_line: 0,
-        })
-        .collect()
-}
-
-/// Drive a per-file windowed scan: for each file with enough lines, compute its
-/// window bounds and run `scan_one`, accumulating into `out`. `wins` maps a
-/// file's line count to its `(win_lo, win_hi)` window range, returning `None`
-/// to skip the file.
-fn scan_files(
-    files: &[(String, LineIndex)],
-    extent: usize,
-    wins: impl Fn(usize) -> Option<(usize, usize)>,
-    mut scan_one: impl FnMut(&str, &LineIndex, (usize, usize), &mut Vec<Location>),
-    out: &mut Vec<Location>,
-) {
-    for (path, idx) in files {
-        let n = idx.line_count();
-        if n < extent {
-            continue;
-        }
-        let Some(w) = wins(n) else { continue };
-        scan_one(path, idx, w, out);
-    }
-}
-
 /// Cached rolling-fingerprint prefix hashes and powers for the file bytes.
 /// These are a pure function of the bytes and are computed at most once per
 /// `LineIndex` lifetime.
@@ -809,32 +770,12 @@ pub fn scan_indexed_rk64(
     extent: AnchorExtent,
     near: Option<u32>,
 ) -> Vec<Location> {
-    match extent {
-        AnchorExtent::WholeFile => {
-            whole_file_matches(files, |idx| idx.bytes, |b| horner(b) == cheap_fp)
-        }
-        AnchorExtent::LineRange { start, end } => {
-            let extent = line_range_extent(start, end);
-            if extent == 0 {
-                return Vec::new();
-            }
-            let mut out: Vec<Location> = Vec::new();
-            scan_files(
-                files,
-                extent,
-                |n| Some((0, n - extent)),
-                |path, idx, w, out| {
-                    // No SHA verify: a matching fingerprint is the match.
-                    scan_one_file_fp_filtered(path, idx, extent, w, cheap_fp, |_| true, out);
-                },
-                &mut out,
-            );
-            if let Some(near) = near {
-                sort_near(&mut out, near);
-            }
-            out
-        }
-    }
+    scan_indexed_rk64_iter(
+        files.iter().map(|(path, idx)| (path.as_str(), idx)),
+        cheap_fp,
+        extent,
+        near,
+    )
 }
 
 /// [`scan_indexed_rk64`] against a single already-built [`LineIndex`], taken
@@ -853,37 +794,7 @@ pub fn scan_indexed_rk64_one(
     extent: AnchorExtent,
     near: Option<u32>,
 ) -> Vec<Location> {
-    match extent {
-        AnchorExtent::WholeFile => {
-            if horner(idx.bytes) == cheap_fp {
-                vec![Location {
-                    path: path.to_string(),
-                    start_line: 0,
-                    end_line: 0,
-                }]
-            } else {
-                Vec::new()
-            }
-        }
-        AnchorExtent::LineRange { start, end } => {
-            let extent = line_range_extent(start, end);
-            if extent == 0 {
-                return Vec::new();
-            }
-            let n = idx.line_count();
-            if n < extent {
-                return Vec::new();
-            }
-            let mut out: Vec<Location> = Vec::new();
-            // No SHA verify: a matching fingerprint is the match (mirrors
-            // `scan_indexed_rk64`'s per-file body exactly).
-            scan_one_file_fp_filtered(path, idx, extent, (0, n - extent), cheap_fp, |_| true, &mut out);
-            if let Some(near) = near {
-                sort_near(&mut out, near);
-            }
-            out
-        }
-    }
+    scan_indexed_rk64_iter(std::iter::once((path, idx)), cheap_fp, extent, near)
 }
 
 /// [`scan_indexed_rk64`] over `Vec<u8>` inputs, building each [`LineIndex`]
@@ -895,7 +806,65 @@ pub fn scan_for_content_hash_rk64(
     near: Option<u32>,
 ) -> Vec<Location> {
     let indexed = build_indexed(files);
-    scan_indexed_rk64(&indexed, cheap_fp, extent, near)
+    scan_indexed_rk64_iter(
+        indexed.iter().map(|(path, idx)| (path.as_str(), idx)),
+        cheap_fp,
+        extent,
+        near,
+    )
+}
+
+/// Shared extent dispatch for every rk64 scan entry point. Callers adapt their
+/// collection shape into borrowed `(path, index)` pairs, so a single cached
+/// [`LineIndex`] can use the same implementation without cloning.
+fn scan_indexed_rk64_iter<'index, 'bytes>(
+    files: impl IntoIterator<Item = (&'index str, &'index LineIndex<'bytes>)>,
+    cheap_fp: u64,
+    extent: AnchorExtent,
+    near: Option<u32>,
+) -> Vec<Location>
+where
+    'bytes: 'index,
+{
+    match extent {
+        AnchorExtent::WholeFile => files
+            .into_iter()
+            .filter(|(_, idx)| horner(idx.bytes) == cheap_fp)
+            .map(|(path, _)| Location {
+                path: path.to_string(),
+                start_line: 0,
+                end_line: 0,
+            })
+            .collect(),
+        AnchorExtent::LineRange { start, end } => {
+            let extent = line_range_extent(start, end);
+            if extent == 0 {
+                return Vec::new();
+            }
+
+            let mut out = Vec::new();
+            for (path, idx) in files {
+                let n = idx.line_count();
+                if n < extent {
+                    continue;
+                }
+                // No SHA verify: a matching fingerprint is the match.
+                scan_one_file_fp_filtered(
+                    path,
+                    idx,
+                    extent,
+                    (0, n - extent),
+                    cheap_fp,
+                    |_| true,
+                    &mut out,
+                );
+            }
+            if let Some(near) = near {
+                sort_near(&mut out, near);
+            }
+            out
+        }
+    }
 }
 
 /// Scan one file's `extent`-high windows, emitting a [`Location`] for every
