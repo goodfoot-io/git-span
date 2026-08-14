@@ -224,28 +224,29 @@ describe('cross-adapter contract — identical touch call sequences (Phase 3)', 
     { cmd: "nl -ba f | sed -n '2,4p'", expected: [read('f', 2, 3)] }
   ];
 
-  it.each(
-    SHARED_FIXTURES.filter((f) => f.skipReason === undefined)
-  )('$cmd — identical touches across Claude Bash / Codex Bash / classic exec_command / code-mode exec', async (fixture) => {
-    const expected = fixture.expected.map((c) => ({
-      filePath: join(repoA.root, c.rel),
-      offset: c.offset,
-      limit: c.limit,
-      cwd: repoA.root
-    }));
-    const runners = [
-      () => runClaudeBash(repoA.root, fixture.cmd),
-      () => runMiniBash(repoA.root, fixture.cmd),
-      () => runCodexBash(repoA.root, fixture.cmd),
-      () => runCodexExecCommand(repoA.root, fixture.cmd, repoA.root),
-      () => runCodexCodeModeExec(repoA.root, fixture.cmd, repoA.root)
-    ];
-    for (const run of runners) {
-      recorded.calls.length = 0;
-      await run();
-      expect(recorded.calls).toEqual(expected);
+  it.each(SHARED_FIXTURES.filter((f) => f.skipReason === undefined))(
+    '$cmd — identical touches across Claude Bash / Codex Bash / classic exec_command / code-mode exec',
+    async (fixture) => {
+      const expected = fixture.expected.map((c) => ({
+        filePath: join(repoA.root, c.rel),
+        offset: c.offset,
+        limit: c.limit,
+        cwd: repoA.root
+      }));
+      const runners = [
+        () => runClaudeBash(repoA.root, fixture.cmd),
+        () => runMiniBash(repoA.root, fixture.cmd),
+        () => runCodexBash(repoA.root, fixture.cmd),
+        () => runCodexExecCommand(repoA.root, fixture.cmd, repoA.root),
+        () => runCodexCodeModeExec(repoA.root, fixture.cmd, repoA.root)
+      ];
+      for (const run of runners) {
+        recorded.calls.length = 0;
+        await run();
+        expect(recorded.calls).toEqual(expected);
+      }
     }
-  });
+  );
 
   // Plan-foreign rows, kept skipped with their reasons (never weakened — the
   // expectation stands for a future phase that scopes touches to the tracked

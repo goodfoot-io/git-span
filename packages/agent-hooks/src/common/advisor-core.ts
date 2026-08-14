@@ -216,7 +216,7 @@ const COMMIT_VALUE_OPTIONS = new Set([
 export function commitStagesAll(command: string): boolean {
   for (const segment of splitSegments(command)) {
     const inv = matchGitInvocation(tokenize(segment));
-    if (!inv || inv.subcommand !== 'commit') continue;
+    if (inv?.subcommand !== 'commit') continue;
     const dashDash = inv.args.indexOf('--');
     const flagArgs = dashDash >= 0 ? inv.args.slice(0, dashDash) : inv.args;
     for (let i = 0; i < flagArgs.length; i++) {

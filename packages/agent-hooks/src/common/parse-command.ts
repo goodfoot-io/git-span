@@ -1746,7 +1746,7 @@ const REV_PATH = /^([^\s:]+):(.+)$/;
 function matchGitShow(argv: string[]): MatchResult[] {
   if (argv[0] !== 'git') return [];
   const sub = findGitSubcommand(argv.slice(1));
-  if (!sub || sub.subcommand !== 'show') return [];
+  if (sub?.subcommand !== 'show') return [];
   const after = argv
     .slice(1)
     .slice(sub.subIdx + 1)
@@ -1781,7 +1781,7 @@ function matchGitShow(argv: string[]): MatchResult[] {
 function matchGitLogL(argv: string[]): MatchResult[] {
   if (argv[0] !== 'git') return [];
   const sub = findGitSubcommand(argv.slice(1));
-  if (!sub || sub.subcommand !== 'log') return [];
+  if (sub?.subcommand !== 'log') return [];
   const after = argv.slice(1).slice(sub.subIdx + 1);
   for (let i = 0; i < after.length; i++) {
     const a = after[i];

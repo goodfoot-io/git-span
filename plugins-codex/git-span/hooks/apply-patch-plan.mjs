@@ -11,6 +11,8 @@ function attachMetadata(hookEventName, config, handler) {
   hook.hookEventName = hookEventName;
   hook.timeout = config.timeout;
   hook.statusMessage = config.statusMessage;
+  hook.unexpectedError = config.unexpectedError;
+  hook.onUnexpectedError = config.onUnexpectedError;
   if ("matcher" in config && typeof config.matcher === "string") {
     hook.matcher = config.matcher;
   }
@@ -214,6 +216,7 @@ function subagentStartOutput(options = {}) {
 }
 
 // ../../node_modules/@goodfoot/codex-hooks/dist/runtime.js
+var EMPTY_OUTPUT = { stdout: {} };
 async function readStdin() {
   return new Promise((resolve3, reject) => {
     const chunks = [];
@@ -226,8 +229,8 @@ async function readStdin() {
 function parseStdinInput(stdinContent) {
   return JSON.parse(stdinContent);
 }
-function writeStdout(output) {
-  process.stdout.write(JSON.stringify(output.stdout));
+function serializeStdout(output) {
+  return JSON.stringify(output.stdout);
 }
 function normalizeStringOutput(hookEventName, result) {
   if (!EVENTS_WITH_TEXT_OUTPUT.has(hookEventName)) {
@@ -244,39 +247,86 @@ function normalizeStringOutput(hookEventName, result) {
 function convertToHookOutput(output) {
   return output.stderr !== void 0 ? { stdout: output.stdout, stderr: output.stderr } : { stdout: output.stdout };
 }
+function writeStderr(error) {
+  if (error instanceof Error) {
+    process.stderr.write(`${error.stack ?? error.message}
+`);
+  } else {
+    process.stderr.write(`${String(error)}
+`);
+  }
+}
+function reportUnexpectedError(onUnexpectedError, error, phase) {
+  try {
+    onUnexpectedError?.(error, phase);
+  } catch {
+  }
+  try {
+    logger.logError(error, `Unexpected error in ${phase} phase (fail-open)`, { phase });
+  } catch {
+  }
+}
+function cleanup(policy, onUnexpectedError) {
+  try {
+    logger.clearContext();
+    logger.close();
+  } catch (error) {
+    if (policy !== "continue") {
+      throw error;
+    }
+    reportUnexpectedError(onUnexpectedError, error, "cleanup");
+  }
+}
 async function execute(hookFn) {
+  const policy = hookFn.unexpectedError ?? "error";
+  const onUnexpectedError = hookFn.onUnexpectedError;
+  let phase = "read";
+  let output;
   try {
     const stdinContent = await readStdin();
+    phase = "parse";
     const input = parseStdinInput(stdinContent);
     logger.setContext(hookFn.hookEventName, input);
     const context = { logger };
+    phase = "handler";
     const result = await hookFn(input, context);
-    let output = { stdout: {} };
+    phase = "serialize";
     if (typeof result === "string") {
       output = convertToHookOutput(normalizeStringOutput(hookFn.hookEventName, result));
     } else if (result !== void 0) {
       output = convertToHookOutput(result);
+    } else {
+      output = EMPTY_OUTPUT;
     }
-    writeStdout(output);
-    process.exit(EXIT_CODES.SUCCESS);
+    serializeStdout(output);
   } catch (error) {
     if (error instanceof BlockError) {
+      cleanup(policy, onUnexpectedError);
       process.stderr.write(`${error.reason}
 `);
       process.exit(EXIT_CODES.BLOCK);
     }
-    if (error instanceof Error) {
-      process.stderr.write(`${error.stack ?? error.message}
-`);
-    } else {
-      process.stderr.write(`${String(error)}
-`);
+    if (policy !== "continue") {
+      cleanup(policy, onUnexpectedError);
+      writeStderr(error);
+      process.exit(EXIT_CODES.ERROR);
     }
-    process.exit(EXIT_CODES.ERROR);
-  } finally {
-    logger.clearContext();
-    logger.close();
+    reportUnexpectedError(onUnexpectedError, error, phase);
+    output = EMPTY_OUTPUT;
   }
+  phase = "write";
+  try {
+    process.stdout.write(serializeStdout(output));
+  } catch (error) {
+    if (policy !== "continue") {
+      cleanup(policy, onUnexpectedError);
+      writeStderr(error);
+      process.exit(EXIT_CODES.ERROR);
+    }
+    reportUnexpectedError(onUnexpectedError, error, "write");
+  }
+  cleanup(policy, onUnexpectedError);
+  process.exit(EXIT_CODES.SUCCESS);
 }
 
 // src/common/agent-hooks-common.ts
@@ -1701,7 +1751,7 @@ var REV_PATH = /^([^\s:]+):(.+)$/;
 function matchGitShow(argv) {
   if (argv[0] !== "git") return [];
   const sub = findGitSubcommand(argv.slice(1));
-  if (!sub || sub.subcommand !== "show") return [];
+  if (sub?.subcommand !== "show") return [];
   const after = argv.slice(1).slice(sub.subIdx + 1).filter((a) => !a.startsWith("-"));
   const revPathArg = after.find((a) => REV_PATH.test(a));
   if (!revPathArg) return [];
@@ -1732,7 +1782,7 @@ function matchGitShow(argv) {
 function matchGitLogL(argv) {
   if (argv[0] !== "git") return [];
   const sub = findGitSubcommand(argv.slice(1));
-  if (!sub || sub.subcommand !== "log") return [];
+  if (sub?.subcommand !== "log") return [];
   const after = argv.slice(1).slice(sub.subIdx + 1);
   for (let i = 0; i < after.length; i++) {
     const a = after[i];
@@ -8216,7 +8266,7 @@ var COMMIT_VALUE_OPTIONS = /* @__PURE__ */ new Set([
 function commitStagesAll(command) {
   for (const segment of splitSegments2(command)) {
     const inv = matchGitInvocation(tokenize2(segment));
-    if (!inv || inv.subcommand !== "commit") continue;
+    if (inv?.subcommand !== "commit") continue;
     const dashDash = inv.args.indexOf("--");
     const flagArgs = dashDash >= 0 ? inv.args.slice(0, dashDash) : inv.args;
     for (let i = 0; i < flagArgs.length; i++) {
