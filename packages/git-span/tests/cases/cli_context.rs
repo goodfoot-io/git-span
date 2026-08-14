@@ -292,5 +292,84 @@ fn perf_counter(stderr: &str, label: &str) -> u64 {
 }
 contract_case!(atomic_recovery_and_operation_id_replay);
 contract_case!(controlled_repair_epoch);
-contract_case!(strict_tombstone_and_definition_capture);
+#[test]
+fn strict_tombstone_and_definition_capture() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    assert!(
+        repo.run_span(["add", "gone", "file1.txt#L1-L2"])?
+            .status
+            .success()
+    );
+    repo.commit_all("commit tombstoned span")?;
+    std::fs::remove_file(repo.path().join(".span/gone"))?;
+    let strict = |repo: &TestRepo| {
+        repo.run_span_with_env(
+            ["context", "file1.txt", "--format", "json"],
+            "GIT_SPAN_CONTEXT_DISABLE_SERVICE",
+            "1",
+        )
+    };
+    let tombstone = strict(&repo)?;
+    assert!(tombstone.status.success());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&tombstone.stdout)?["spans"],
+        serde_json::json!([])
+    );
+
+    repo.write_file(".span/broken", "not a span\n")?;
+    let broken = strict(&repo)?;
+    assert!(!broken.status.success());
+    assert!(broken.stdout.is_empty());
+    std::fs::remove_file(repo.path().join(".span/broken"))?;
+    repo.write_file(".span/conflicted", "<<<<<<< ours\nfile1.txt rk64:0000000000000000\n=======\nfile2.txt rk64:0000000000000000\n>>>>>>> theirs\n")?;
+    let conflicted = strict(&repo)?;
+    assert!(!conflicted.status.success());
+    assert!(conflicted.stdout.is_empty());
+    assert!(String::from_utf8(conflicted.stderr)?.contains("conflicted definitions"));
+
+    std::fs::remove_file(repo.path().join(".span/conflicted"))?;
+    assert!(
+        repo.run_span(["add", "racy", "file1.txt#L1-L2"])?
+            .status
+            .success()
+    );
+    let definition = repo.path().join(".span/racy");
+    let original = std::fs::read_to_string(&definition)?;
+    let alternate = original.replace("file1.txt", "file2.txt");
+    let hooks = tempfile::tempdir()?;
+    let child = std::process::Command::new(env!("CARGO_BIN_EXE_git-span"))
+        .current_dir(repo.path())
+        .env("GIT_SPAN_CONTEXT_DISABLE_SERVICE", "1")
+        .env("GIT_SPAN_CONTEXT_TEST_HOOK_DIR", hooks.path())
+        .args(["context", "file1.txt", "--format", "json"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    let ready = hooks.path().join("after-discovery.ready");
+    let release = hooks.path().join("after-discovery.release");
+    let first = wait_for_checkpoint(&ready, None)?;
+    std::fs::write(&definition, &alternate)?;
+    std::fs::write(&release, &first)?;
+    let second = wait_for_checkpoint(&ready, Some(&first))?;
+    std::fs::write(&definition, &original)?;
+    std::fs::write(&release, second)?;
+    let raced = child.wait_with_output()?;
+    assert!(!raced.status.success());
+    assert!(raced.stdout.is_empty());
+    assert!(String::from_utf8(raced.stderr)?.contains("span definitions changed"));
+    Ok(())
+}
+
+fn wait_for_checkpoint(path: &std::path::Path, previous: Option<&str>) -> Result<String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        if let Ok(token) = std::fs::read_to_string(path)
+            && previous != Some(token.as_str())
+        {
+            return Ok(token);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    anyhow::bail!("timed out waiting for context checkpoint")
+}
 contract_case!(production_perf_counters_and_acceptance_harness);
