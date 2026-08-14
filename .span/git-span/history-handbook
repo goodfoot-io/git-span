@@ -1,5 +1,5 @@
 packages/git-span/src/cli/history.rs#L1-L220 rk64:b87afa2d806ddd56
-plugins-claude/git-span/skills/git-span/references/command-reference.md#L86-L106 rk64:7e3d35cdc79eb4a4
+plugins-claude/git-span/skills/git-span/references/command-reference.md#L153-L173 rk64:7e3d35cdc79eb4a4
 plugins-codex/git-span/skills/git-span/references/command-reference.md#L81-L101 rk64:7e3d35cdc79eb4a4
 
 The command-reference history section documents the timeline the module header defines — first-parent-diffed walks including merges, re-anchors rendered as renames at or above the 50% similarity floor, and a headerless current block naming its drift-source layers; the plugins-claude copy is normative and the plugins-codex copy mirrors it.

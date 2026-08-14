@@ -1,5 +1,5 @@
-packages/git-span/src/resolver/engine/mod.rs#L1028-L1030 rk64:ffe5049cf110d674
-packages/git-span/src/resolver/engine/mod.rs#L1638-L1642 rk64:0b67bdc3e215b462
+packages/git-span/src/resolver/engine/mod.rs#L1063-L1065 rk64:ffe5049cf110d674
+packages/git-span/src/resolver/engine/mod.rs#L1673-L1677 rk64:0b67bdc3e215b462
 packages/git-span/src/resolver/mod.rs#L32-L32 rk64:fbf80b9853416cb1
 packages/git-span/tests/cases/cli_drift_fix_perf_equivalence.rs#L40-L306 rk64:9552505411ede27a
 packages/git-span/tests/cases/cli_drift_fix_perf_equivalence.rs#L581-L682 rk64:83a7815b3ff9c5fd
