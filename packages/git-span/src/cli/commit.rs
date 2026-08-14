@@ -1244,11 +1244,11 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result
                     ResolvedRecord {
                         timestamp: resolution_timestamp(),
                         command: ResolveCommand::Add,
-                        path: path.clone(),
+                        path: c.path.clone(),
                         start_line,
                         end_line,
-                        algorithm: algorithm.clone(),
-                        content_hash: content_hash.clone(),
+                        algorithm: c.algorithm.clone(),
+                        content_hash: c.content_hash.clone(),
                     },
                 );
             }
