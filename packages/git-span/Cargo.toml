@@ -109,6 +109,10 @@ name = "size_sweep"
 harness = false
 required-features = ["bench-corpus"]
 
+[[bench]]
+name = "resolved_section_sweep"
+harness = false
+
 [[bin]]
 name = "bench-corpus-gen"
 path = "src/bin/bench-corpus-gen.rs"
