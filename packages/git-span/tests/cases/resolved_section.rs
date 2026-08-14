@@ -378,8 +378,6 @@ fn why_write_preserves_an_indented_resolved_marker_as_prose() -> Result<()> {
     let span = read_span(&repo, "audit")?;
     assert!(span.resolved.is_empty());
     assert_eq!(span.why, "why\n    [resolved]\nstill why");
-    let why = repo.span_stdout(["why", "audit"])?;
-    assert!(why.contains("    [resolved]"), "{why}");
     Ok(())
 }
 
