@@ -5,7 +5,6 @@
 #[cfg(unix)]
 mod unix {
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     use std::process::{Child, Command};
     use std::thread;
@@ -47,9 +46,7 @@ mod unix {
             "#!/usr/bin/env bash\nset -euo pipefail\ntouch \"$TEST_STARTED\"\nwhile [ ! -e \"$RELEASE_TEST\" ]; do sleep 0.02; done\n",
         )
         .expect("write fake cargo");
-        let mut permissions = fs::metadata(&fake_cargo).unwrap().permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&fake_cargo, permissions).expect("make fake cargo executable");
+        crate::support::make_executable(&fake_cargo).expect("make fake cargo executable");
 
         let inherited_path = std::env::var_os("PATH").expect("PATH must be set");
         let mut path = fake_bin.into_os_string();
