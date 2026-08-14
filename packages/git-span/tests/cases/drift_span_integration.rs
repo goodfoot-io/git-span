@@ -160,6 +160,71 @@ fn add_submodule_gitlink(repo: &TestRepo, sub_rel: &str) -> Result<PathBuf> {
     Ok(inner_path)
 }
 
+/// Replace an ordinary tracked directory with a submodule containing the
+/// requested files. This is the only ordinary CLI route to a line-range
+/// anchor whose parent later resolves as a gitlink: `add` correctly refuses
+/// line ranges below a directory that is already a submodule.
+fn promote_directory_to_submodule(
+    repo: &TestRepo,
+    sub_rel: &str,
+    files: &[(&str, &str)],
+) -> Result<()> {
+    let inner = tempfile::tempdir()?;
+    let inner_path = inner.keep();
+    let init = std::process::Command::new("git")
+        .args(["init", "--initial-branch=main"])
+        .arg(&inner_path)
+        .output()?;
+    anyhow::ensure!(
+        init.status.success(),
+        "initialize submodule source: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    for (rel, contents) in files {
+        let path = inner_path.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, contents)?;
+    }
+    for args in [
+        vec!["-c", "user.email=t@e", "-c", "user.name=T", "add", "-A"],
+        vec![
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=T",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "inner",
+        ],
+    ] {
+        let out = std::process::Command::new("git")
+            .current_dir(&inner_path)
+            .args(args)
+            .output()?;
+        anyhow::ensure!(
+            out.status.success(),
+            "prepare submodule source: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    repo.run_git(["rm", "-r", sub_rel])?;
+    repo.run_git([
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        &inner_path.to_string_lossy(),
+        sub_rel,
+    ])?;
+    repo.commit_all(&format!("promote {sub_rel} to submodule"))?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Acceptance tests.
 // ---------------------------------------------------------------------------
@@ -598,41 +663,7 @@ fn line_range_anchor_inside_submodule_promoted_directory_reports_submodule() -> 
     assert_eq!(out.status.code(), Some(0), "fresh span: exit 0");
 
     // Promote the `lib` directory into a submodule.
-    let inner = tempfile::tempdir()?;
-    let inner_path = inner.keep();
-    std::process::Command::new("git")
-        .args(["init", "--initial-branch=main"])
-        .arg(&inner_path)
-        .output()?;
-    std::fs::write(inner_path.join("util.ts"), "submodule content\n")?;
-    std::process::Command::new("git")
-        .current_dir(&inner_path)
-        .args(["-c", "user.email=t@e", "-c", "user.name=T", "add", "-A"])
-        .output()?;
-    std::process::Command::new("git")
-        .current_dir(&inner_path)
-        .args([
-            "-c",
-            "user.email=t@e",
-            "-c",
-            "user.name=T",
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "-m",
-            "inner",
-        ])
-        .output()?;
-    repo.run_git(["rm", "-r", "lib"])?;
-    repo.run_git([
-        "-c",
-        "protocol.file.allow=always",
-        "submodule",
-        "add",
-        &inner_path.to_string_lossy(),
-        "lib",
-    ])?;
-    repo.commit_all("promote lib to submodule")?;
+    promote_directory_to_submodule(&repo, "lib", &[("util.ts", "submodule content\n")])?;
 
     // Drift must report SUBMODULE, not DELETED.
     let out = repo.run_span(["drift", "util/add", "--format=porcelain"])?;
@@ -656,6 +687,173 @@ fn line_range_anchor_inside_submodule_promoted_directory_reports_submodule() -> 
     let _fix = repo.run_span(["drift", "--fix"])?;
     let after = std::fs::read_to_string(repo.path().join(".span").join("util").join("add"))?;
     assert_eq!(before, after, "--fix must not touch a SUBMODULE anchor");
+
+    Ok(())
+}
+
+/// A duplicate-collapse sentinel must survive the ordinary
+/// directory-to-submodule transition on every public drift surface. `--fix`
+/// cannot relocate a line range through a gitlink, but its printed `replace`
+/// escape must be executable and must retire the sentinel completely.
+///
+/// The second fixture inserts and commits a line above the anchor before the
+/// promotion. It proves that the submodule arm does not accidentally claim
+/// the committed shift was tracked from the worktree diff: both coordinates
+/// and the complete record stay unchanged until the operator runs `replace`.
+#[test]
+fn submodule_sentinel_survives_renderers_fix_and_printed_replace() -> Result<()> {
+    const SENTINEL: &str = "rk64:ffffffffffffffff";
+    const SPAN: &str = "util/add";
+    const OLD_ADDRESS: &str = "lib/util.ts#L1-L3";
+    const NEW_ADDRESS: &str = "replacement.txt#L1-L3";
+    const ORIGINAL: &str = "export function add(a: number, b: number) {\n  return a + b;\n}\nexport function sub(a: number, b: number) {\n  return a - b;\n}\n";
+
+    for committed_shift in [false, true] {
+        let repo = TestRepo::new()?;
+        repo.write_file("lib/util.ts", ORIGINAL)?;
+        repo.write_file(
+            "replacement.txt",
+            "replacement one\nreplacement two\nreplacement three\n",
+        )?;
+        repo.commit_all("initial ordinary directory")?;
+
+        // The anchor is created through the public CLI while `lib` is still
+        // an ordinary directory. Only its stored hash is changed to the
+        // durable duplicate-collapse token before the declaration is
+        // committed; the address itself is entirely CLI-produced.
+        repo.span_stdout(["add", SPAN, OLD_ADDRESS])?;
+        repo.span_stdout(["why", SPAN, "submodule sentinel contract"])?;
+        let span_path = repo.path().join(".span").join("util").join("add");
+        let seeded = std::fs::read_to_string(&span_path)?;
+        let seeded_record = seeded
+            .lines()
+            .find(|line| line.starts_with(&format!("{OLD_ADDRESS} ")))
+            .expect("the CLI-created declaration contains the requested address");
+        let sentinel_record = format!("{OLD_ADDRESS} {SENTINEL}");
+        std::fs::write(&span_path, seeded.replace(seeded_record, &sentinel_record))?;
+        repo.commit_all("commit sentinel-bearing span")?;
+
+        if committed_shift {
+            repo.write_file("lib/util.ts", &format!("// committed header\n{ORIGINAL}"))?;
+            repo.commit_all("shift anchored content in committed history")?;
+        }
+
+        promote_directory_to_submodule(&repo, "lib", &[("util.ts", "submodule content\n")])?;
+
+        let human = repo.run_span(["drift", SPAN])?;
+        assert_eq!(human.status.code(), Some(1));
+        let human_stdout = String::from_utf8_lossy(&human.stdout);
+        assert!(
+            human_stdout.contains(&format!("{OLD_ADDRESS} — collapsed duplicate (submodule)")),
+            "the human renderer must keep the sentinel annotation (committed_shift={committed_shift}); stdout:\n{human_stdout}"
+        );
+
+        let porcelain = repo.run_span(["drift", SPAN, "--format=porcelain"])?;
+        assert_eq!(porcelain.status.code(), Some(1));
+        let porcelain_stdout = String::from_utf8_lossy(&porcelain.stdout);
+        assert!(
+            porcelain_stdout
+                .lines()
+                .any(|line| line == "SUBMODULE\t-\tutil/add\tlib/util.ts\t1\t3"),
+            "porcelain must preserve the SUBMODULE record (committed_shift={committed_shift}); stdout:\n{porcelain_stdout}"
+        );
+        assert!(
+            porcelain_stdout
+                .lines()
+                .any(|line| line == "# collapsed-duplicate"),
+            "porcelain must attach the sentinel marker (committed_shift={committed_shift}); stdout:\n{porcelain_stdout}"
+        );
+
+        let json = repo.run_span(["drift", SPAN, "--format=json", "--no-exit-code"])?;
+        assert_eq!(json.status.code(), Some(0));
+        let document: serde_json::Value = serde_json::from_slice(&json.stdout)?;
+        let findings = document["findings"]
+            .as_array()
+            .expect("JSON findings array");
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0]["status"]["code"], "SUBMODULE");
+        assert_eq!(findings[0]["collapsed_duplicate"], true);
+        assert_eq!(findings[0]["anchored"]["path"], "lib/util.ts");
+        assert_eq!(findings[0]["anchored"]["extent"]["start"], 1);
+        assert_eq!(findings[0]["anchored"]["extent"]["end"], 3);
+
+        let before_fix = std::fs::read(&span_path)?;
+        let fix = repo.run_span(["drift", "--fix"])?;
+        assert_eq!(fix.status.code(), Some(1));
+        let fix_stdout = String::from_utf8_lossy(&fix.stdout);
+        assert!(
+            fix_stdout.contains(&format!(
+                "position not checked: `{OLD_ADDRESS}` — a duplicate-collapse sentinel is recorded against a submodule gitlink"
+            )),
+            "--fix must explain why the position cannot be relocated (committed_shift={committed_shift}); stdout:\n{fix_stdout}"
+        );
+        assert!(
+            !fix_stdout.contains("position tracked:"),
+            "a committed shift before promotion is not a worktree relocation through the gitlink; stdout:\n{fix_stdout}"
+        );
+        assert_eq!(
+            std::fs::read(&span_path)?,
+            before_fix,
+            "--fix must leave the complete sentinel-bearing declaration byte-identical (committed_shift={committed_shift})"
+        );
+
+        // Extract the exact command emitted by `--fix`, fill only its one
+        // documented placeholder, and execute the resulting printed string.
+        let prefix = format!("git span replace {SPAN} {OLD_ADDRESS}");
+        let printed = fix_stdout
+            .split('`')
+            .find(|segment| segment.starts_with(&prefix))
+            .unwrap_or_else(|| panic!("no printed replace command in stdout:\n{fix_stdout}"))
+            .trim();
+        assert_eq!(
+            printed.matches("<new-address>").count(),
+            1,
+            "the printed escape must expose exactly one operator placeholder: `{printed}`"
+        );
+        let executable = printed.replacen("<new-address>", NEW_ADDRESS, 1);
+        let replace = repo.run_printed_command(&format!("`{executable}`"), &prefix)?;
+        assert!(
+            replace.status.success(),
+            "the printed replace command must execute (committed_shift={committed_shift}); stderr:\n{}",
+            String::from_utf8_lossy(&replace.stderr)
+        );
+
+        let after_replace = std::fs::read_to_string(&span_path)?;
+        let records: Vec<&str> = after_replace
+            .lines()
+            .take_while(|line| !line.is_empty())
+            .collect();
+        assert_eq!(
+            records.len(),
+            1,
+            "replace must leave exactly one anchor record:\n{after_replace}"
+        );
+        let mut fields = records[0].split_whitespace();
+        assert_eq!(fields.next(), Some(NEW_ADDRESS));
+        let replacement_hash = fields.next().expect("replacement record hash");
+        assert!(
+            fields.next().is_none(),
+            "unexpected replacement record fields"
+        );
+        assert_ne!(replacement_hash, SENTINEL);
+        assert_eq!(replacement_hash.len(), "rk64:".len() + 16);
+        assert!(replacement_hash.starts_with("rk64:"));
+        assert!(
+            replacement_hash["rk64:".len()..]
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        );
+        assert!(
+            !after_replace.contains(OLD_ADDRESS) && !after_replace.contains(SENTINEL),
+            "replace must retire the old identity and its sentinel:\n{after_replace}"
+        );
+
+        let clean = repo.run_span(["drift", SPAN, "--format=json"])?;
+        assert_eq!(clean.status.code(), Some(0));
+        let clean_document: serde_json::Value = serde_json::from_slice(&clean.stdout)?;
+        assert_eq!(clean_document["clean"], true);
+        assert_eq!(clean_document["findings"], serde_json::json!([]));
+    }
 
     Ok(())
 }
