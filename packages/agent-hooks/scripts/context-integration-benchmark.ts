@@ -31,6 +31,11 @@ interface Fixture {
   legacyDependencyProcesses: (scaledCount: number) => number;
 }
 
+interface LatencyCeiling {
+  p50Ms: number;
+  p95Ms: number;
+}
+
 interface Distribution {
   samplesMs: number[];
   p50Ms: number;
@@ -98,7 +103,7 @@ function options(argv: readonly string[]): Options {
   for (const flag of values.keys()) if (!known.has(flag)) throw new Error(`unknown option: ${flag}`);
   return {
     warmups: positiveInteger(values.get('--warmups') ?? '2', '--warmups'),
-    samples: positiveInteger(values.get('--samples') ?? '7', '--samples'),
+    samples: positiveInteger(values.get('--samples') ?? '20', '--samples'),
     scaledPaths: positiveInteger(values.get('--scaled-paths') ?? '32', '--scaled-paths'),
     ...(values.has('--output') ? { output: resolve(values.get('--output')!) } : {})
   };
@@ -236,40 +241,111 @@ function invokePost(
   return { elapsedMs, context: hookContext(result.output), mutation: git(repo, ['diff', '--', '.span'], env) };
 }
 
-function measureArm(hooksDir: string, repo: RealBundleRepo, command: string, benchmarkOptions: Options): ArmResult {
-  const counter = countingEnvironment(repo);
+function countedArm(
+  hooksDir: string,
+  repo: RealBundleRepo,
+  command: string,
+  env: NodeJS.ProcessEnv,
+  log: string,
+  samplesMs: number[],
+  context: string,
+  mutation: string
+): ArmResult {
+  writeFileSync(log, '', 'utf8');
+  const state = prepare(hooksDir, repo, command, env);
+  writeFileSync(log, '', 'utf8');
+  invokePost(hooksDir, repo, command, state, env);
+  const text = readFileSync(log, 'utf8').trim();
+  const commands = text.length === 0 ? [] : text.split('\n');
+  const dependencyCommands = commands.filter((value) => /^span (?:context|list|drift|why)\b/.test(value));
+  return {
+    context,
+    mutation,
+    dependencyProcesses: dependencyCommands.length,
+    totalGitProcesses: commands.length,
+    commands,
+    ...distribution(samplesMs)
+  };
+}
+
+function measurePair(
+  legacyHooksDir: string,
+  integratedHooksDir: string,
+  legacyRepo: RealBundleRepo,
+  integratedRepo: RealBundleRepo,
+  legacyCommand: string,
+  integratedCommand: string,
+  benchmarkOptions: Options
+): { legacy: ArmResult; integrated: ArmResult } {
+  const legacyCounter = countingEnvironment(legacyRepo);
+  const integratedCounter = countingEnvironment(integratedRepo);
   try {
     for (let index = 0; index < benchmarkOptions.warmups; index += 1) {
-      const state = prepare(hooksDir, repo, command, counter.env);
-      invokePost(hooksDir, repo, command, state, counter.env);
+      const legacyState = prepare(legacyHooksDir, legacyRepo, legacyCommand, legacyCounter.env);
+      invokePost(legacyHooksDir, legacyRepo, legacyCommand, legacyState, legacyCounter.env);
+      const integratedState = prepare(integratedHooksDir, integratedRepo, integratedCommand, integratedCounter.env);
+      invokePost(integratedHooksDir, integratedRepo, integratedCommand, integratedState, integratedCounter.env);
     }
-    const samplesMs: number[] = [];
-    let context = '';
-    let mutation = '';
+    const legacySamples: number[] = [];
+    const integratedSamples: number[] = [];
+    let legacyContext = '';
+    let integratedContext = '';
+    let legacyMutation = '';
+    let integratedMutation = '';
     for (let index = 0; index < benchmarkOptions.samples; index += 1) {
-      const state = prepare(hooksDir, repo, command, counter.env);
-      const measured = invokePost(hooksDir, repo, command, state, counter.env);
-      samplesMs.push(measured.elapsedMs);
-      context = measured.context;
-      mutation = measured.mutation;
+      const measureLegacy = (): void => {
+        const state = prepare(legacyHooksDir, legacyRepo, legacyCommand, legacyCounter.env);
+        const measured = invokePost(legacyHooksDir, legacyRepo, legacyCommand, state, legacyCounter.env);
+        legacySamples.push(measured.elapsedMs);
+        legacyContext = measured.context;
+        legacyMutation = measured.mutation;
+      };
+      const measureIntegrated = (): void => {
+        const state = prepare(integratedHooksDir, integratedRepo, integratedCommand, integratedCounter.env);
+        const measured = invokePost(
+          integratedHooksDir,
+          integratedRepo,
+          integratedCommand,
+          state,
+          integratedCounter.env
+        );
+        integratedSamples.push(measured.elapsedMs);
+        integratedContext = measured.context;
+        integratedMutation = measured.mutation;
+      };
+      if (index % 2 === 0) {
+        measureLegacy();
+        measureIntegrated();
+      } else {
+        measureIntegrated();
+        measureLegacy();
+      }
     }
-    writeFileSync(counter.log, '', 'utf8');
-    const countedState = prepare(hooksDir, repo, command, counter.env);
-    writeFileSync(counter.log, '', 'utf8');
-    invokePost(hooksDir, repo, command, countedState, counter.env);
-    const text = readFileSync(counter.log, 'utf8').trim();
-    const commands = text.length === 0 ? [] : text.split('\n');
-    const dependencyCommands = commands.filter((value) => /^span (?:context|list|drift|why)\b/.test(value));
     return {
-      context,
-      mutation,
-      dependencyProcesses: dependencyCommands.length,
-      totalGitProcesses: commands.length,
-      commands,
-      ...distribution(samplesMs)
+      legacy: countedArm(
+        legacyHooksDir,
+        legacyRepo,
+        legacyCommand,
+        legacyCounter.env,
+        legacyCounter.log,
+        legacySamples,
+        legacyContext,
+        legacyMutation
+      ),
+      integrated: countedArm(
+        integratedHooksDir,
+        integratedRepo,
+        integratedCommand,
+        integratedCounter.env,
+        integratedCounter.log,
+        integratedSamples,
+        integratedContext,
+        integratedMutation
+      )
     };
   } finally {
-    counter.cleanup();
+    legacyCounter.cleanup();
+    integratedCounter.cleanup();
   }
 }
 
@@ -312,6 +388,15 @@ const FIXTURES: Fixture[] = [
   }
 ];
 
+const LATENCY_CEILINGS: Record<string, LatencyCeiling> = {
+  clean: { p50Ms: 250, p95Ms: 500 },
+  moved: { p50Ms: 250, p95Ms: 500 },
+  'semantic-drift': { p50Ms: 250, p95Ms: 500 },
+  'no-overlap': { p50Ms: 250, p95Ms: 500 },
+  'multi-span': { p50Ms: 250, p95Ms: 500 },
+  'multi-path': { p50Ms: 250, p95Ms: 500 }
+};
+
 function main(): void {
   const benchmarkOptions = options(process.argv.slice(2));
   const current = buildRealHookBundles();
@@ -327,8 +412,15 @@ function main(): void {
         const integratedScaled = seed(integratedRepo, scaledCount);
         const legacyCommand = fixture.command(legacyScaled);
         const integratedCommand = fixture.command(integratedScaled);
-        const legacy = measureArm(baseline.hooksDir, legacyRepo, legacyCommand, benchmarkOptions);
-        const integrated = measureArm(current.claudeHooksDir, integratedRepo, integratedCommand, benchmarkOptions);
+        const { legacy, integrated } = measurePair(
+          baseline.hooksDir,
+          current.claudeHooksDir,
+          legacyRepo,
+          integratedRepo,
+          legacyCommand,
+          integratedCommand,
+          benchmarkOptions
+        );
         if (legacy.context !== integrated.context) {
           throw new Error(
             `${fixture.name}: stdout/context differs between arms\nlegacy=${JSON.stringify(legacy.context)}\nintegrated=${JSON.stringify(integrated.context)}`
@@ -363,8 +455,22 @@ function main(): void {
       }
     });
     const scaled = rows.find(({ fixture }) => fixture === 'scaled-repair')!;
-    const thresholds = { scaledP50: 0.5, scaledP95: 0.4 };
-    if (scaled.improvement.p50 < thresholds.scaledP50 || scaled.improvement.p95 < thresholds.scaledP95) {
+    const thresholds = {
+      latencyCeilings: LATENCY_CEILINGS,
+      scaledImprovement: { p50: 0.5, p95: 0.4 }
+    };
+    for (const row of rows) {
+      const ceiling = LATENCY_CEILINGS[row.fixture];
+      if (ceiling !== undefined && (row.integrated.p50Ms > ceiling.p50Ms || row.integrated.p95Ms > ceiling.p95Ms)) {
+        throw new Error(
+          `${row.fixture}: integrated latency exceeded its p50/p95 ceiling: actual=${row.integrated.p50Ms}/${row.integrated.p95Ms}ms, ceiling=${ceiling.p50Ms}/${ceiling.p95Ms}ms`
+        );
+      }
+    }
+    if (
+      scaled.improvement.p50 < thresholds.scaledImprovement.p50 ||
+      scaled.improvement.p95 < thresholds.scaledImprovement.p95
+    ) {
       throw new Error(
         `scaled repair improvement missed thresholds: legacy p50/p95=${scaled.legacy.p50Ms}/${scaled.legacy.p95Ms}ms, integrated p50/p95=${scaled.integrated.p50Ms}/${scaled.integrated.p95Ms}ms, improvement p50/p95=${scaled.improvement.p50}/${scaled.improvement.p95}`
       );
@@ -377,7 +483,9 @@ function main(): void {
       binaryProfile:
         'Release. Debug-profile context repair repeatedly hashes configured filter executables without optimization and is not representative of the shipped CLI latency.',
       serviceWarmup:
-        'Each arm receives the same warmup count. Integrated measurements reuse its repository service across events, matching production watched-generation reuse.',
+        'Each arm receives the same warmup count. Samples alternate arm order so transient host load cannot systematically favor one arm; integrated measurements reuse its repository service across events, matching production watched-generation reuse.',
+      acceptancePolicy:
+        "Every non-scaled cell must keep integrated p50 below 250ms, the card's approximately 244ms pre-integration single-event baseline, and p95 below a 500ms bounded tail. The scaled cell must materially improve p50/p95 by 50%/40%. Negative percentage improvements remain visible for every cell and are never rewritten as passes.",
       policy: { ...benchmarkOptions, thresholds },
       rows
     };

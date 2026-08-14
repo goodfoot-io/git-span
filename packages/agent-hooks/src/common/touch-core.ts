@@ -760,9 +760,12 @@ function sameLocation(left: ContextLocation, right: ContextLocation): boolean {
   return left.path === right.path && sameExtent(left.extent, right.extent);
 }
 
-function containsExtent(container: ContextExtent, nested: ContextExtent): boolean {
-  if (container.kind === 'whole') return true;
-  return nested.kind === 'lines' && container.start <= nested.start && container.end >= nested.end;
+function intersectExtents(left: ContextExtent, right: ContextExtent): ContextExtent | null {
+  if (left.kind === 'whole') return right;
+  if (right.kind === 'whole') return left;
+  const start = Math.max(left.start, right.start);
+  const end = Math.min(left.end, right.end);
+  return start <= end ? { kind: 'lines', start, end } : null;
 }
 
 /** Decode the complete schema-v1 context document or reject it atomically. */
@@ -830,12 +833,9 @@ export function decodeContextDocument(stdout: string): ContextDocument {
       }
       const scope = scopes[overlap.scope];
       if (scope.path !== overlap.location.path) throw new Error(`${label} crosses scope and location paths`);
-      if (
-        !containsExtent(scope.extent, overlap.intersection) ||
-        !containsExtent(overlap.location.extent, overlap.intersection)
-      ) {
-        throw new Error(`${label}.intersection is not contained by both scope and location`);
-      }
+      const expectedIntersection = intersectExtents(scope.extent, overlap.location.extent);
+      if (expectedIntersection === null || !sameExtent(expectedIntersection, overlap.intersection))
+        throw new Error(`${label}.intersection is not the exact scope/location intersection`);
     }
   }
   return { schema_version: 1, scopes, mutation, spans };

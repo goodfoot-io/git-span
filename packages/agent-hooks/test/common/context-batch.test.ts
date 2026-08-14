@@ -125,6 +125,10 @@ describe('schema-v1 context decoder', () => {
       value.scopes[0].extent = { kind: 'whole' };
       value.spans[0].overlaps[0].intersection = { kind: 'lines', start: 9, end: 11 };
     });
+    contradict((value) => {
+      value.scopes[0].extent = { kind: 'lines', start: 1, end: 9 };
+      value.spans[0].overlaps[0].intersection = { kind: 'lines', start: 2, end: 8 };
+    });
   });
 });
 
