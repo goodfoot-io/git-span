@@ -18,7 +18,10 @@
 //!   `__update-check`, `merge-driver`) never engage or remind, so the
 //!   detached child cannot recurse.
 
-use crate::cli::Cli;
+use crate::cli::{
+    AddFormat, Cli, Commands, DriftFormat, HistoryFormat, ReplaceFormat, ResolveFormat, TreeFormat,
+    WhyFormat,
+};
 
 /// The four fail-closed suppression signals. [`signals_for`] computes them
 /// from the parsed CLI and the observed stdout TTY-ness; [`Self::suppressed`]
@@ -34,14 +37,43 @@ impl SuppressionSignals {
     /// Whether any suppression layer is active. True means no spawn and no
     /// note — the feature must never fire in an automated context.
     pub fn suppressed(&self) -> bool {
-        let _ = (
-            self.env_disable,
-            self.machine_flags,
-            self.stdout_is_tty,
-            self.internal,
-        );
-        todo!("Phase 3: OR the four signals")
+        self.env_disable || self.machine_flags || !self.stdout_is_tty || self.internal
     }
+}
+
+/// Whether the parsed command's *effective output format* is machine-
+/// readable. A typed match over the command's actual variant fields, kept
+/// adjacent to `Commands` so a future machine-readable flag extends it here —
+/// not a flag enumeration.
+fn is_machine_output(command: &Commands) -> bool {
+    match command {
+        Commands::List(args) => args.porcelain || args.oneline,
+        Commands::Drift(args) => args.format != DriftFormat::Human,
+        Commands::Add(args) => args.format != AddFormat::Human,
+        Commands::Replace(args) => args.format != ReplaceFormat::Human,
+        Commands::Why(args) => args.format != WhyFormat::Human,
+        Commands::Resolve(args) => args.format != ResolveFormat::Human,
+        Commands::Tree(args) => args.format != TreeFormat::Human,
+        Commands::History(args) => args.format != HistoryFormat::Human,
+        // `ContextFormat` has only a `Json` variant — the command's output
+        // is machine-readable by construction.
+        Commands::Context(_) => true,
+        // git's own merge-driver protocol is machine output.
+        Commands::MergeDriver(_) => true,
+        // Every remaining command has a single human output form (show,
+        // remove, delete, doctor, the hidden internal pair).
+        _ => false,
+    }
+}
+
+/// Whether the command is a hidden/internal subcommand that must never
+/// engage the update check (the detached child itself included — it would
+/// otherwise recurse).
+fn is_internal(command: &Commands) -> bool {
+    matches!(
+        command,
+        Commands::ContextService(_) | Commands::UpdateCheck | Commands::MergeDriver(_)
+    )
 }
 
 /// Compute the suppression signals for a parsed [`Cli`]. `stdout_is_tty` is
@@ -52,8 +84,18 @@ impl SuppressionSignals {
 /// format, kept adjacent to `Commands` so future machine-readable flags
 /// extend it — not a flag enumeration.
 pub fn signals_for(cli: &Cli, stdout_is_tty: bool) -> SuppressionSignals {
-    let _ = (cli, stdout_is_tty);
-    todo!("Phase 3: env presence + effective-format match + TTY + internal commands")
+    let env_disable = std::env::var_os("GIT_SPAN_DISABLE_UPDATE_CHECK").is_some();
+    let machine_flags = cli
+        .command
+        .as_ref()
+        .is_some_and(is_machine_output);
+    let internal = cli.command.as_ref().is_some_and(is_internal);
+    SuppressionSignals {
+        env_disable,
+        machine_flags,
+        stdout_is_tty,
+        internal,
+    }
 }
 
 #[cfg(test)]
@@ -68,7 +110,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Phase 3: suppression not implemented"]
     fn env_disable_var_suppresses_interactive_use() {
         unsafe {
             std::env::set_var("GIT_SPAN_DISABLE_UPDATE_CHECK", "1");
@@ -79,7 +120,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Phase 3: suppression not implemented"]
     fn non_tty_stdout_suppresses() {
         unsafe {
             std::env::remove_var("GIT_SPAN_DISABLE_UPDATE_CHECK");
@@ -90,7 +130,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Phase 3: suppression not implemented"]
     fn list_porcelain_is_machine_output() {
         unsafe {
             std::env::remove_var("GIT_SPAN_DISABLE_UPDATE_CHECK");
@@ -101,7 +140,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Phase 3: suppression not implemented"]
     fn list_oneline_is_machine_output() {
         let signals = signals_for_argv(&["git-span", "list", "--oneline"], true);
         assert!(signals.machine_flags);
@@ -109,7 +147,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Phase 3: suppression not implemented"]
     fn drift_json_and_porcelain_are_machine_output() {
         for argv in [
             &["git-span", "drift", "--format", "json"][..],
@@ -122,7 +159,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Phase 3: suppression not implemented"]
     fn json_formatted_writes_are_machine_output() {
         for argv in [
             &["git-span", "add", "s", "f.txt", "--format", "json"][..],
@@ -139,7 +175,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Phase 3: suppression not implemented"]
     fn context_is_always_machine_output() {
         // `ContextFormat` has only a `Json` variant — the command's output
         // is machine-readable by construction, whatever the flags say.
@@ -149,7 +184,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Phase 3: suppression not implemented"]
     fn merge_driver_is_machine_output_and_internal() {
         let signals = signals_for_argv(
             &["git-span", "merge-driver", "base", "ours", "theirs", "7"],
@@ -161,7 +195,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Phase 3: suppression not implemented"]
     fn internal_subcommands_never_engage() {
         let service = signals_for_argv(
             &[
@@ -185,7 +218,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Phase 3: suppression not implemented"]
     fn human_formats_are_not_machine_output() {
         unsafe {
             std::env::remove_var("GIT_SPAN_DISABLE_UPDATE_CHECK");
@@ -212,7 +244,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Phase 3: suppression not implemented"]
     fn interactive_happy_path_is_not_suppressed() {
         unsafe {
             std::env::remove_var("GIT_SPAN_DISABLE_UPDATE_CHECK");

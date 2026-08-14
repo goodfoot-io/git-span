@@ -18,6 +18,88 @@
 use std::path::Path;
 
 use semver::Version;
+use serde::Deserialize;
+
+/// Maximum directory depth below the cache root to walk for `plugin.json`
+/// files. The verified layouts put the file at depth 5
+/// (`git-span/git-span/{version}/.{claude,codex}-plugin/plugin.json`); 6
+/// bounds the walk while covering that shape and shallow variations. Depth
+/// is the second bound on the walk (symlinks are never followed, so a
+/// cyclic tree cannot run away either).
+const MAX_DEPTH: usize = 6;
+
+/// One cached plugin manifest. Only the two fields the staleness filter
+/// needs are bound; unknown fields are ignored by serde.
+#[derive(Deserialize)]
+struct PluginMeta {
+    name: String,
+    version: String,
+}
+
+/// Bounded depth-first walk of `cache_root` for cached plugin copies,
+/// returning the highest semver among copies whose manifest names
+/// `git-span`. `None` on an absent root, no matching copy, or any read /
+/// parse failure along the way (fail-closed: no finding rather than a
+/// wrong one).
+fn find_cached_plugin_version(cache_root: &Path) -> Option<Version> {
+    let mut best: Option<Version> = None;
+    walk_plugin_copies(cache_root, MAX_DEPTH, &mut best);
+    best
+}
+
+/// Recursive walk body. Files named exactly `plugin.json` whose grandparent
+/// directory (the cache's version dir) parses as semver are read as plugin
+/// manifests; directory names are never used as the *reported* version —
+/// the manifest's own `version` field is the only truth. A non-semver
+/// version dir (`local`, from local-path marketplaces) gates the whole copy
+/// out: it is the user's own dev snapshot, never an update target.
+fn walk_plugin_copies(dir: &Path, depth: usize, best: &mut Option<Version>) {
+    if depth == 0 {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() {
+            continue; // never follow links: cycles, escapes
+        }
+        let path = entry.path();
+        if file_type.is_dir() {
+            walk_plugin_copies(&path, depth - 1, best);
+        } else if path.file_name().is_some_and(|name| name == "plugin.json") {
+            let Some(version_dir) = path.parent().and_then(Path::parent) else {
+                continue;
+            };
+            let Some(version_dir_name) = version_dir.file_name().and_then(|name| name.to_str())
+            else {
+                continue;
+            };
+            if Version::parse(version_dir_name).is_err() {
+                continue;
+            }
+            if let Some(version) = read_cached_plugin_version(&path)
+                && best.as_ref().is_none_or(|current| version > *current)
+            {
+                *best = Some(version);
+            }
+        }
+    }
+}
+
+/// Read one cached `plugin.json`, keeping the copy only when it names
+/// `git-span` and its version parses as semver.
+fn read_cached_plugin_version(path: &Path) -> Option<Version> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let meta: PluginMeta = serde_json::from_str(&text).ok()?;
+    if meta.name != "git-span" {
+        return None;
+    }
+    Version::parse(&meta.version).ok()
+}
 
 /// One plugin-cache checker: the tool key (`claude` | `codex`) and the max
 /// semver found among that tool's cached `git-span` copies under
@@ -40,8 +122,7 @@ impl PluginCacheChecker for ClaudeCodeChecker {
     }
 
     fn find_cached_version(&self, cache_root: &Path) -> Option<Version> {
-        let _ = cache_root;
-        None
+        find_cached_plugin_version(cache_root)
     }
 }
 
@@ -51,14 +132,13 @@ impl PluginCacheChecker for CodexChecker {
     }
 
     fn find_cached_version(&self, cache_root: &Path) -> Option<Version> {
-        let _ = cache_root;
-        None
+        find_cached_plugin_version(cache_root)
     }
 }
 
 /// The two bundled-plugin checkers, in rendering order.
 pub fn checkers() -> Vec<Box<dyn PluginCacheChecker>> {
-    todo!("Phase 3: return the Claude and Codex checkers")
+    vec![Box::new(ClaudeCodeChecker), Box::new(CodexChecker)]
 }
 
 #[cfg(test)]
@@ -89,7 +169,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Phase 3: plugin-cache scanning not implemented"]
     fn claude_newest_of_many_copies_wins() {
         let dir = tempfile::tempdir().unwrap();
         write_plugin_copy(dir.path(), ".claude-plugin", "1.0.134", "git-span", "1.0.134");
@@ -101,7 +180,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Phase 3: plugin-cache scanning not implemented"]
     fn codex_semver_version_dir_wins() {
         let dir = tempfile::tempdir().unwrap();
         write_plugin_copy(dir.path(), ".codex-plugin", "1.1.5", "git-span", "1.1.5");
@@ -112,7 +190,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Phase 3: plugin-cache scanning not implemented"]
     fn local_version_dir_name_is_ignored() {
         // The repo's install doc documents a `local` version dir for
         // local-path marketplaces on some Codex builds; the directory name
@@ -123,7 +200,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Phase 3: plugin-cache scanning not implemented"]
     fn wrong_plugin_name_is_skipped() {
         // The cache root also holds unrelated marketplaces; matching on the
         // plugin `name` field bounds the scan.
@@ -133,7 +209,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Phase 3: plugin-cache scanning not implemented"]
     fn unparseable_version_is_ignored() {
         let dir = tempfile::tempdir().unwrap();
         write_plugin_copy(
@@ -147,7 +222,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Phase 3: plugin-cache scanning not implemented"]
     fn absent_cache_root_yields_no_finding() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(
@@ -157,7 +231,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Phase 3: plugin-cache scanning not implemented"]
     fn checkers_are_claude_and_codex() {
         let tools: Vec<&'static str> = checkers().iter().map(|checker| checker.tool()).collect();
         assert_eq!(tools, vec!["claude", "codex"]);

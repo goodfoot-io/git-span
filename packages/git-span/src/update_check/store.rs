@@ -31,8 +31,9 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 use semver::Version;
 
 /// Database basename under the resolved base directory.
@@ -96,15 +97,70 @@ impl UpdateCheckStore {
     /// then WAL, then `CREATE TABLE IF NOT EXISTS … STRICT`. `None` on any
     /// failure.
     pub fn open_at(path: &Path) -> Option<Self> {
-        let _ = (path, BUSY_TIMEOUT_MS);
-        None
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).ok()?;
+        }
+        let conn = Connection::open(path).ok()?;
+        // Busy timeout first, before any other pragma — mirrors the
+        // exe-digest store's ordering rationale: an unset busy timeout on a
+        // contended WAL switch surfaces as a spurious lock error instead of
+        // a bounded wait. rusqlite opens lazily, so the journal-mode pragma
+        // (the first statement that touches the file) is also what makes a
+        // corrupt database fail here, at bootstrap, rather than at first
+        // read.
+        conn.busy_timeout(Duration::from_millis(BUSY_TIMEOUT_MS))
+            .ok()?;
+        conn.pragma_update(None, "journal_mode", "WAL").ok()?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS update_check (
+               id INTEGER PRIMARY KEY CHECK (id = 1),
+               last_checked_at INTEGER NOT NULL,
+               last_reminded_at INTEGER NOT NULL
+             ) STRICT;
+             CREATE TABLE IF NOT EXISTS update_check_findings (
+               tool TEXT PRIMARY KEY,
+               observed_version TEXT NOT NULL
+             ) STRICT;",
+        )
+        .ok()?;
+        Some(Self { conn })
     }
 
     /// The persisted state, or `None` when no row has been written yet or
     /// the read fails.
     pub fn read_state(&self) -> Option<UpdateCheckState> {
-        let _ = &self.conn;
-        None
+        type StampRow = (i64, i64);
+        let row: Option<StampRow> = self
+            .conn
+            .query_row(
+                "SELECT last_checked_at, last_reminded_at FROM update_check WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .ok()?;
+        let (last_checked_at, last_reminded_at) = row?;
+
+        let mut stmt = self
+            .conn
+            .prepare("SELECT tool, observed_version FROM update_check_findings")
+            .ok()?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .ok()?;
+        let mut findings = BTreeMap::new();
+        for row in rows {
+            let (tool, version) = row.ok()?;
+            // A stored version that no longer parses as semver fails the
+            // whole read closed — a partial or wrong finding is worse than
+            // none, and the missing state simply re-triggers the next check.
+            findings.insert(tool, Version::parse(&version).ok()?);
+        }
+        Some(UpdateCheckState {
+            last_checked_at,
+            last_reminded_at,
+            findings,
+        })
     }
 
     /// Stamp `last_checked_at` (unconditionally) and replace the findings
@@ -112,15 +168,42 @@ impl UpdateCheckStore {
     /// on fetch failure with an empty map — one failed attempt per day,
     /// never per invocation.
     pub fn write_checked(&self, now: i64, findings: &BTreeMap<String, Version>) -> Option<()> {
-        let _ = (&self.conn, now, findings);
-        None
+        // `&self`-compatible transaction: `Transaction::new_unchecked` is the
+        // documented escape hatch for `Connection::transaction`'s `&mut`
+        // requirement (which this fail-closed API cannot offer). A dropped
+        // transaction rolls back, so any mid-way failure leaves the previous
+        // state intact.
+        let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Deferred).ok()?;
+        tx.execute(
+            "INSERT INTO update_check (id, last_checked_at, last_reminded_at) \
+             VALUES (1, ?1, 0) \
+             ON CONFLICT(id) DO UPDATE SET last_checked_at = excluded.last_checked_at",
+            [now],
+        )
+        .ok()?;
+        tx.execute("DELETE FROM update_check_findings", []).ok()?;
+        for (tool, version) in findings {
+            tx.execute(
+                "INSERT INTO update_check_findings (tool, observed_version) VALUES (?1, ?2)",
+                [tool.as_str(), &version.to_string()],
+            )
+            .ok()?;
+        }
+        tx.commit().ok()
     }
 
     /// Stamp `last_reminded_at`. Called by the foreground immediately after
     /// printing the note.
     pub fn write_reminded(&self, now: i64) -> Option<()> {
-        let _ = (&self.conn, now);
-        None
+        self.conn
+            .execute(
+                "INSERT INTO update_check (id, last_checked_at, last_reminded_at) \
+                 VALUES (1, 0, ?1) \
+                 ON CONFLICT(id) DO UPDATE SET last_reminded_at = excluded.last_reminded_at",
+                [now],
+            )
+            .ok()?;
+        Some(())
     }
 }
 
@@ -136,7 +219,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Phase 3: store not implemented"]
     fn checked_and_reminded_round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let store = UpdateCheckStore::open_at(&dir.path().join(DB_BASENAME)).expect("open");
@@ -152,7 +234,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Phase 3: store not implemented"]
     fn absent_store_has_no_state() {
         let dir = tempfile::tempdir().unwrap();
         let store = UpdateCheckStore::open_at(&dir.path().join(DB_BASENAME)).expect("open");
@@ -160,7 +241,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Phase 3: store not implemented"]
     fn corrupt_database_fails_closed() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join(DB_BASENAME);
@@ -172,7 +252,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Phase 3: store not implemented"]
     fn unwritable_parent_fails_closed() {
         // A parent path that is itself a regular file can never become a
         // directory — a reliable, environment-independent unwritable
@@ -187,7 +266,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Phase 3: store not implemented"]
     fn no_home_disables() {
         unsafe {
             std::env::remove_var("GIT_SPAN_UPDATE_CHECK_DB");
@@ -204,7 +282,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Phase 3: store not implemented"]
     fn db_path_precedence() {
         let explicit_dir = tempfile::tempdir().unwrap();
         let explicit = explicit_dir.path().join("explicit.db");
