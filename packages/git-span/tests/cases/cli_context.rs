@@ -345,6 +345,102 @@ fn prepared_repair_recovers_across_service_identity_environment_changes() -> Res
 }
 
 #[test]
+fn marker_without_journal_aborts_cleanly_before_reader_or_writer() -> Result<()> {
+    for writer in [false, true] {
+        let name = if writer {
+            "marker-gap-writer"
+        } else {
+            "marker-gap-reader"
+        };
+        let repo = moved_context_repo(name)?;
+        let original = std::fs::read(repo.path().join(".span").join(name))?;
+        let operation = uuid::Uuid::new_v4().to_string();
+        let died = std::process::Command::new(env!("CARGO_BIN_EXE_git-span"))
+            .current_dir(repo.path())
+            .env("GIT_SPAN_CONTEXT_DISABLE_SERVICE", "1")
+            .env(
+                "GIT_SPAN_CONTEXT_TEST_DIE_AFTER",
+                "recovery-marker-persisted",
+            )
+            .args([
+                "context",
+                "file1.txt",
+                "--format",
+                "json",
+                "--fix",
+                "--operation-id",
+                &operation,
+            ])
+            .output()?;
+        assert_eq!(died.status.code(), Some(86));
+        assert!(repo.path().join(".git/span/recovery.pending").exists());
+        assert!(
+            !repo
+                .path()
+                .join(format!(
+                    ".git/span/context/recovery/journal/operation-{operation}.json"
+                ))
+                .exists()
+        );
+        assert_eq!(repair_temporaries(&repo, &operation)?.len(), 1);
+
+        let output = if writer {
+            repo.run_span(["add", "after-marker-abort", "file2.txt#L1-L2"])?
+        } else {
+            repo.run_span_with_env(
+                ["context", "file1.txt", "--format", "json"],
+                "GIT_SPAN_CONTEXT_DISABLE_SERVICE",
+                "1",
+            )?
+        };
+        assert!(
+            output.status.success(),
+            "status {:?}; stdout: {}; stderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!repo.path().join(".git/span/recovery.pending").exists());
+        assert!(repair_temporaries(&repo, &operation)?.is_empty());
+
+        let listed = String::from_utf8(repo.run_span(["list", "--oneline"])?.stdout)?;
+        assert!(
+            listed.contains(&format!("`{name}` `file1.txt#L2-L3`")),
+            "{listed}"
+        );
+        assert_eq!(
+            std::fs::read(repo.path().join(".span").join(name))?,
+            original
+        );
+        if writer {
+            assert!(listed.contains("`after-marker-abort` `file2.txt#L1-L2`"));
+        } else {
+            let retry = repo.run_span_with_env(
+                [
+                    "context",
+                    "file1.txt",
+                    "--format",
+                    "json",
+                    "--fix",
+                    "--operation-id",
+                    &operation,
+                ],
+                "GIT_SPAN_CONTEXT_DISABLE_SERVICE",
+                "1",
+            )?;
+            assert!(
+                retry.status.success(),
+                "{}",
+                String::from_utf8_lossy(&retry.stderr)
+            );
+            let document: serde_json::Value = serde_json::from_slice(&retry.stdout)?;
+            assert_eq!(document["mutation"]["rewritten"], true);
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn service_identity_bootstrap_and_strict_fallback() -> Result<()> {
     let repo = TestRepo::seeded()?;
     assert!(
@@ -646,6 +742,7 @@ fn perf_counter(stderr: &str, label: &str) -> u64 {
 fn atomic_recovery_and_operation_id_replay() -> Result<()> {
     for boundary in [
         "span-temp-fsync:0",
+        "recovery-marker-persisted",
         "journal-prepared",
         "span-rename:0",
         "span-file-fsync:0",
@@ -764,6 +861,7 @@ fn atomic_recovery_and_operation_id_replay() -> Result<()> {
     if crate::support::symlinks_supported() {
         for boundary in [
             "span-temp-fsync:0",
+            "recovery-marker-persisted",
             "journal-prepared",
             "span-rename:0",
             "span-file-fsync:0",
@@ -842,6 +940,7 @@ fn atomic_recovery_and_operation_id_replay() -> Result<()> {
 
         for boundary in [
             "span-temp-fsync:0",
+            "recovery-marker-persisted",
             "journal-prepared",
             "span-rename:0",
             "span-file-fsync:0",
@@ -1077,6 +1176,40 @@ fn moved_context_repo(name: &str) -> Result<TestRepo> {
     )?;
     Ok(repo)
 }
+
+fn repair_temporaries(repo: &TestRepo, operation: &str) -> Result<Vec<std::path::PathBuf>> {
+    fn collect(
+        directory: &std::path::Path,
+        prefix: &str,
+        output: &mut Vec<std::path::PathBuf>,
+    ) -> Result<()> {
+        for entry in std::fs::read_dir(directory)? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            if kind.is_dir() {
+                collect(&entry.path(), prefix, output)?;
+            } else if kind.is_file()
+                && entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with(prefix) && name.ends_with(".tmp"))
+            {
+                output.push(entry.path());
+            }
+        }
+        Ok(())
+    }
+
+    let mut output = Vec::new();
+    collect(
+        &repo.path().join(".span"),
+        &format!(".context-{operation}-"),
+        &mut output,
+    )?;
+    output.sort();
+    Ok(output)
+}
+
 #[test]
 fn controlled_repair_epoch() -> Result<()> {
     let repo = TestRepo::seeded()?;

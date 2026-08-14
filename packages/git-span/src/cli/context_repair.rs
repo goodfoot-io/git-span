@@ -20,7 +20,7 @@ use crate::descriptor_authority::{
 use crate::span_file::SpanFile;
 use crate::types::{AnchorExtent, AnchorResolved, AnchorStatus, DriftSource, EngineOptions};
 
-const JOURNAL_VERSION: u32 = 2;
+const JOURNAL_VERSION: u32 = 3;
 const JOURNAL_TTL_SECS: u64 = 7 * 24 * 60 * 60;
 const RECOVERY_PENDING: &str = "recovery.pending";
 static BOUNDARY_STEP: AtomicUsize = AtomicUsize::new(0);
@@ -61,6 +61,13 @@ struct RecoveryMarker {
     operation_id: String,
     scope_digest: String,
     span_root: String,
+    temporaries: Vec<MarkerTemporary>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct MarkerTemporary {
+    relative: String,
+    digest: String,
 }
 
 #[derive(Debug)]
@@ -217,7 +224,9 @@ pub(super) fn execute(
         operation_id,
         recovery.scope_digest(),
         span_root,
+        &journal.entries,
     )?;
+    boundary("recovery-marker-persisted")?;
     persist_journal(&journal_directory, &journal_leaf, &journal)?;
     boundary("journal-prepared")?;
 
@@ -319,9 +328,17 @@ pub(super) fn recover_pending_locked(
         DirectoryPolicy::Private { mode: 0o700 },
     )?;
     let leaf = journal_name(operation_id);
-    let bytes = journal_directory
-        .read_optional(&leaf)?
-        .context("context repair journal disappeared during recovery")?;
+    let Some(bytes) = journal_directory.read_optional(&leaf)? else {
+        abort_unjournaled_preparation(&authority, &journal_directory, operation_id, &marker)?;
+        authority.validate_bindings()?;
+        recovery.validate_bindings()?;
+        return clear_recovery_pending(
+            &recovery_directory,
+            operation_id,
+            recovery.scope_digest(),
+            span_root,
+        );
+    };
     let mut journal: RepairJournal =
         serde_json::from_slice(&bytes).context("decode context repair journal for recovery")?;
     ensure!(
@@ -330,7 +347,8 @@ pub(super) fn recover_pending_locked(
     );
     ensure!(
         journal.operation_id == marker.operation_id
-            && journal.scope_digest == recovery.scope_digest(),
+            && journal.scope_digest == recovery.scope_digest()
+            && marker.temporaries == marker_temporaries(&journal.entries),
         "context recovery marker does not match its stable journal"
     );
     if journal.state == JournalState::Prepared {
@@ -901,6 +919,126 @@ fn recover_prepared(
     Ok(())
 }
 
+/// Abort the only phase that may durably expose a recovery marker without a
+/// journal. Every recorded span temp must still exist with its prepared
+/// bytes; a missing or changed temp means a rename could have started, so the
+/// marker is retained and recovery fails closed.
+fn abort_unjournaled_preparation(
+    authority: &SpanRootAuthority,
+    journal_directory: &RetainedDirectory,
+    operation_id: uuid::Uuid,
+    marker: &RecoveryMarker,
+) -> Result<()> {
+    let root = authority.root()?;
+    let mut seen_paths = BTreeSet::new();
+    let mut seen_indexes = BTreeSet::new();
+    for temporary in &marker.temporaries {
+        ensure!(
+            seen_paths.insert(temporary.relative.clone()),
+            "unjournaled context repair marker repeats a temporary path"
+        );
+        let (directory, leaf, index) = marker_temporary_target(&root, operation_id, temporary)?;
+        ensure!(
+            seen_indexes.insert(index),
+            "unjournaled context repair marker repeats a temporary index"
+        );
+        let bytes = directory.read_optional(&leaf)?.with_context(|| {
+            format!(
+                "cannot prove unjournaled context repair stayed before mutation: temporary `{}` is absent",
+                temporary.relative
+            )
+        })?;
+        ensure!(
+            blake3::hash(&bytes).to_hex().as_str() == temporary.digest,
+            "cannot prove unjournaled context repair stayed before mutation: temporary `{}` changed",
+            temporary.relative
+        );
+    }
+    ensure!(
+        seen_indexes.iter().copied().eq(0..marker.temporaries.len()),
+        "unjournaled context repair marker has a non-contiguous temporary set"
+    );
+
+    for temporary in &marker.temporaries {
+        let (directory, leaf, _) = marker_temporary_target(&root, operation_id, temporary)?;
+        ensure!(
+            directory.unlink_if_exists(&leaf)?,
+            "context repair temporary disappeared while aborting unjournaled preparation"
+        );
+        directory.sync()?;
+    }
+
+    let journal_prefix = format!(".{}.", journal_name(operation_id).to_string_lossy());
+    let mut removed_journal_temporary = false;
+    for relative in journal_directory.regular_file_names()? {
+        let Some(leaf) = relative.file_name() else {
+            continue;
+        };
+        let leaf = leaf.to_string_lossy();
+        if relative.components().count() == 1
+            && leaf.starts_with(&journal_prefix)
+            && leaf.ends_with(".tmp")
+        {
+            journal_directory.unlink(relative.as_os_str())?;
+            removed_journal_temporary = true;
+        }
+    }
+    if removed_journal_temporary {
+        journal_directory.sync()?;
+    }
+    Ok(())
+}
+
+fn marker_temporary_target(
+    root: &RetainedDirectory,
+    operation_id: uuid::Uuid,
+    temporary: &MarkerTemporary,
+) -> Result<(RetainedDirectory, OsString, usize)> {
+    ensure!(
+        temporary.digest.len() == 64
+            && temporary
+                .digest
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit()),
+        "unjournaled context repair marker has an invalid temporary digest"
+    );
+    let relative = std::path::Path::new(&temporary.relative);
+    ensure!(
+        relative.components().count() > 0
+            && relative
+                .components()
+                .all(|component| matches!(component, std::path::Component::Normal(_))),
+        "unjournaled context repair marker has an unsafe temporary path"
+    );
+    let leaf = relative
+        .file_name()
+        .context("unjournaled context repair temporary has no leaf")?;
+    let leaf_text = leaf
+        .to_str()
+        .context("unjournaled context repair temporary leaf is not UTF-8")?;
+    let prefix = format!(".context-{operation_id}-");
+    let index_text = leaf_text
+        .strip_prefix(&prefix)
+        .and_then(|value| value.strip_suffix(".tmp"))
+        .context("unjournaled context repair marker names an unrelated temporary")?;
+    let index = index_text
+        .parse::<usize>()
+        .context("unjournaled context repair temporary index is invalid")?;
+    ensure!(
+        index.to_string() == index_text,
+        "unjournaled context repair temporary index is not canonical"
+    );
+    let parent = relative
+        .parent()
+        .context("unjournaled context repair temporary has no parent")?;
+    let directory = if parent.as_os_str().is_empty() {
+        root.try_clone()?
+    } else {
+        root.descend(parent, DirectoryPolicy::Existing)?
+    };
+    Ok((directory, leaf.to_os_string(), index))
+}
+
 fn persist_journal(
     directory: &RetainedDirectory,
     leaf: &OsStr,
@@ -920,17 +1058,35 @@ fn recovery_marker_directory(recovery: &RetainedDirectory) -> Result<RetainedDir
     Ok(span)
 }
 
+fn marker_temporaries(entries: &[JournalEntry]) -> Vec<MarkerTemporary> {
+    entries
+        .iter()
+        .map(|entry| {
+            let relative = entry.name.rsplit_once('/').map_or_else(
+                || entry.temporary.clone(),
+                |(parent, _)| format!("{parent}/{}", entry.temporary),
+            );
+            MarkerTemporary {
+                relative,
+                digest: blake3::hash(entry.planned.as_bytes()).to_hex().to_string(),
+            }
+        })
+        .collect()
+}
+
 fn mark_recovery_pending(
     recovery: &RetainedDirectory,
     operation_id: uuid::Uuid,
     scope_digest: &str,
     span_root: &str,
+    entries: &[JournalEntry],
 ) -> Result<()> {
     let marker = RecoveryMarker {
         version: JOURNAL_VERSION,
         operation_id: operation_id.to_string(),
         scope_digest: scope_digest.to_owned(),
         span_root: span_root.to_owned(),
+        temporaries: marker_temporaries(entries),
     };
     let directory = recovery_marker_directory(recovery)?;
     if let Some(bytes) = directory.read_optional(OsStr::new(RECOVERY_PENDING))? {
@@ -940,7 +1096,8 @@ fn mark_recovery_pending(
             existing.version == marker.version
                 && existing.operation_id == marker.operation_id
                 && existing.scope_digest == marker.scope_digest
-                && existing.span_root == marker.span_root,
+                && existing.span_root == marker.span_root
+                && existing.temporaries == marker.temporaries,
             "another context repair remains prepared and must be recovered before mutation"
         );
     }
