@@ -1,0 +1,18 @@
+#!/bin/bash
+# post-checkout dispatcher. Runs each sub-script in order, forwarding the
+# hook's arguments ($1 old-head, $2 new-head, $3 branch-checkout flag).
+# Advisory: this event fires after the checkout has already landed, so a
+# sub-script failure is reported but never aborts. Edit PARTS to
+# add/reorder concerns.
+#
+# Each sub-script is independently runnable and bash -n clean.
+HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+PARTS=(
+    post-checkout.mtime-normalize.sh
+)
+for part in "${PARTS[@]}"; do
+    script="$HOOK_DIR/$part"
+    [ -x "$script" ] || continue
+    "$script" "$@" || echo "post-checkout: $part failed (advisory, not blocking)" >&2
+done
+exit 0

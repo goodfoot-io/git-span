@@ -969,9 +969,10 @@ fn rename_heavy_changeset_completes_with_note() -> Result<()> {
     repo.run_span(["why", "m", "seed"])?;
     repo.run_git(["add", ".span"])?;
     repo.run_git(["commit", "-m", "span m"])?;
-    for i in 0..1100u32 {
-        repo.run_git(["mv", &format!("bulk/a_{i}.txt"), &format!("bulk/b_{i}.txt")])?;
-    }
+    // One directory rename renames all 1100 paths — the changeset is
+    // unchanged (1100 rename pairs), but a per-file `git mv` loop would
+    // spawn 1100 git processes (~8s of the test's runtime).
+    repo.run_git(["mv", "bulk", "bulk-renamed"])?;
     repo.commit_all("bulk rename")?;
     // Tracked-file model (round-2): the span stores paths plus a content
     // hash. A committed rename of the anchored path relocates the stored

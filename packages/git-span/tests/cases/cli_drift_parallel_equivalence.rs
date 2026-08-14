@@ -412,8 +412,11 @@ fn error_path_surfaces_first_input_order_error_identically_across_threads() -> R
 
 /// Number of stress iterations. A single passing run cannot rule out a race
 /// that merely did not manifest that time; rerunning the whole comparison many
-/// times turns a nondeterministic divergence into a near-certain diff.
-const STRESS_ITERS: usize = 50;
+/// times turns a nondeterministic divergence into a near-certain diff. Each
+/// iteration is a full cold-miss CLI drift run over a mixed corpus, so the
+/// count is the test's dominant cost; 25 iterations × 3 formats still makes a
+/// race that manifests on even a few percent of runs a near-certain diff.
+const STRESS_ITERS: usize = 25;
 
 #[test]
 fn stress_shared_contention_no_divergence_over_iterations() -> Result<()> {
