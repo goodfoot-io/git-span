@@ -104,12 +104,12 @@ judgment. Claude and Codex router branches may differ by harness.
 
 These ignored files still instruct production work:
 
-- [span-creation.md](/reports/span-creation.md)
-- [span-corpus-cleanup.md](/reports/span-corpus-cleanup.md)
-- [unified-homepage.md](/reports/unified-homepage.md)
-- [span-authoring-rules.md](/reports/span-authoring-rules.md)
-- [website-guide.md](/reports/website-guide.md)
-- [animation-guide.md](/reports/animation-guide.md)
+- [span-creation.md](/reports/archive/span-creation.md)
+- [span-corpus-cleanup.md](/reports/archive/span-corpus-cleanup.md)
+- [unified-homepage.md](/reports/archive/unified-homepage.md)
+- [span-authoring-rules.md](/reports/archive/span-authoring-rules.md)
+- [website-guide.md](/reports/archive/website-guide.md)
+- [animation-guide.md](/reports/archive/animation-guide.md)
 
 Preserve measured claims. Update live instructions or mark the report superseded.
 
