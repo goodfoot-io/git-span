@@ -597,6 +597,7 @@ pub fn dispatch(
     let span_root = crate::span_root::resolve_span_root(repo, span_dir, env_dir.as_deref())
         .map_err(|e| anyhow::anyhow!("{}", e))?;
     let span_root = span_root.as_str();
+    let _recovery_guard = recovery_domain::acquire(repo, recovery_domain::command_mode(&command))?;
     match command {
         Commands::Show(args) => {
             let _perf = crate::perf::span("command.show");
