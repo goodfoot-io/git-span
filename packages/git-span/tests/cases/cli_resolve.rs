@@ -12,10 +12,9 @@
 //! fixture that stands in for real driver output is produced by running
 //! `git span merge-driver` itself ([`driver_residue`]) rather than
 //! hand-written, because hand-written residue has concealed real defects
-//! before. The fixtures that are deliberately *not* driver-shaped — the
-//! `[config]`-inside-a-block refusal and the two-blocks-on-one-side refusal —
-//! stay hand-written by design: they test what happens when the input is not
-//! the writer's own output.
+//! before. The fixtures that are deliberately *not* driver-shaped — such as
+//! two blocks on one side of the separator — stay hand-written by design:
+//! they test what happens when the input is not the writer's own output.
 
 use crate::support;
 
@@ -541,11 +540,13 @@ fn resolve_config_conflict_settlement_unit_test() -> Result<()> {
     let ours = SpanFile {
         anchors: vec![anchor(&h1)],
         why: "shared rationale".to_string(),
+        resolved: Vec::new(),
         config: ours_config,
     };
     let theirs = SpanFile {
         anchors: vec![anchor(&h1)],
         why: "shared rationale".to_string(),
+        resolved: Vec::new(),
         config: SpanConfig::default(),
     };
 
@@ -629,12 +630,10 @@ fn resolve_reports_config_loss_when_no_index_stages() -> Result<()> {
 }
 
 #[test]
-fn resolve_reports_why_loss_when_no_index_stages() -> Result<()> {
+fn resolve_preserves_one_sided_why_without_index_stages() -> Result<()> {
     let repo = TestRepo::seeded()?;
-    // The one why the residue writer still leaves out of the text: one that
-    // only `theirs` added, which its non-conflicting branch never writes
-    // because that branch emits `ours_why`. With no stages to read stage 3
-    // from, the prose is simply gone — which is what the ceiling reports.
+    // A one-sided why edit is settled by the three-way merge and must remain
+    // in residue even when no unmerged stages exist to recover it from.
     let h1 = line_slice_hash(ORIGINAL, 1, 5);
     let residue = driver_residue(
         &repo,
@@ -643,25 +642,13 @@ fn resolve_reports_why_loss_when_no_index_stages() -> Result<()> {
         &format!("file1.txt#L1-L5 rk64:{THIRD_HASH}\n\nrationale Y\n"),
         "7",
     )?;
-    assert!(
-        !residue.contains("rationale Y"),
-        "this fixture only tests why-loss if the driver really left the why out; \
-         residue=\n{residue}"
-    );
+    assert!(residue.contains("rationale Y"), "residue=\n{residue}");
     repo.write_file(".span/m", &residue)?;
 
     let out = repo.run_span(["resolve", "m", "--rehash"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(out.status.code(), Some(0));
-    assert!(
-        stdout.contains("The why text was written empty")
-            && stdout.contains("no unmerged index stage could be read"),
-        "the why-recovery ceiling must be reported loudly; stdout=\n{stdout}"
-    );
-    assert!(
-        !stdout.contains("why: unchanged"),
-        "there is no why on either side to be unchanged; stdout=\n{stdout}"
-    );
+    assert!(!stdout.contains("The why text was written empty"), "stdout=\n{stdout}");
     assert_eq!(
         field_lines(&stdout, "why:").len(),
         1,
@@ -670,8 +657,8 @@ fn resolve_reports_why_loss_when_no_index_stages() -> Result<()> {
 
     let span = read_span(&repo, "m")?;
     assert!(
-        !span.contains("rationale Y"),
-        "the why genuinely cannot be recovered from text alone; span:\n{span}"
+        span.contains("rationale Y"),
+        "the why must survive from residue alone; span:\n{span}"
     );
     Ok(())
 }
@@ -681,8 +668,9 @@ fn resolve_reports_why_loss_when_no_index_stages() -> Result<()> {
 //
 // Every test below runs against a genuinely unmerged index: a real `git
 // merge` routed through the real span merge driver, left uncommitted, so
-// stages 1/2/3 hold the pre-driver blobs the worktree residue no longer
-// carries. That is the only honest way to exercise the supplement.
+// stages 1/2/3 hold the pre-driver blobs used when an operator edit genuinely
+// removes information from the worktree residue. That is the only honest way
+// to exercise the supplement.
 // ---------------------------------------------------------------------------
 
 /// The anchors' source file. It appears in the worktree only *after* the
@@ -773,17 +761,9 @@ fn shared_why_sides() -> (String, String, String) {
     )
 }
 
-/// Base/ours/theirs for the one shape whose `why` the residue writer still
-/// leaves out of the worktree text entirely: `theirs` adds prose that `ours`
-/// does not have.
-///
-/// Three-way arbitration finds no divergence (only one side changed the
-/// field), so [`format_residue_markers`] takes its non-conflicting branch and
-/// writes `ours_why` — which is empty — while the anchor residue keeps the
-/// file unmerged. Stage 3 is then the only surviving copy of the added prose,
-/// and it is the sole remaining trigger for the stage why supplement.
-///
-/// [`format_residue_markers`]: git_span::cli::drift_fix
+/// Base/ours/theirs where only `theirs` adds why prose. Three-way arbitration
+/// settles the field before anchor residue is written, so the resulting why
+/// appears plainly outside the anchor conflict block.
 fn theirs_only_why_sides() -> (String, String, String) {
     (
         format!("later.txt#L1-L3 rk64:{BASE_HASH}\n"),
@@ -793,7 +773,7 @@ fn theirs_only_why_sides() -> (String, String, String) {
 }
 
 #[test]
-fn resolve_recovers_config_from_index_stages_after_partial_residue() -> Result<()> {
+fn resolve_preserves_one_sided_config_in_partial_residue() -> Result<()> {
     let base = format!("later.txt#L1-L3 rk64:{BASE_HASH}\n\nshared rationale\n");
     let ours = format!("later.txt#L1-L3 rk64:{OTHER_HASH}\n\nshared rationale\n");
     let theirs = format!(
@@ -802,9 +782,8 @@ fn resolve_recovers_config_from_index_stages_after_partial_residue() -> Result<(
     );
     let (repo, residue) = mid_merge_repo(&base, &ours, &theirs)?;
     assert!(
-        !residue.contains("[config]"),
-        "fixture assumption: the residue writer drops [config] from the worktree text; \
-         residue=\n{residue}"
+        residue.contains("[config]") && residue.contains("ignore_whitespace = true"),
+        "residue=\n{residue}"
     );
 
     let out = repo.run_span(["resolve", "m", "--rehash"])?;
@@ -819,11 +798,59 @@ fn resolve_recovers_config_from_index_stages_after_partial_residue() -> Result<(
     let span = read_span(&repo, "m")?;
     assert!(
         span.contains("[config]") && span.contains("ignore_whitespace = true"),
-        "the non-default config must be recovered from the stage blobs; span:\n{span}"
+        "the non-default config must survive in structural residue; span:\n{span}"
     );
     assert!(
         !stdout.contains("`[config]` was not recoverable from this input"),
         "the recovery ceiling must not be reported when stages were readable; stdout=\n{stdout}"
+    );
+    Ok(())
+}
+
+#[test]
+fn resolve_ours_keeps_hand_edited_config_residue_over_stale_stage_two() -> Result<()> {
+    let base = format!("later.txt#L1-L3 rk64:{BASE_HASH}\n\nshared rationale\n");
+    let ours = format!(
+        "later.txt#L1-L3 rk64:{OTHER_HASH}\n\nshared rationale\n\n[config]\n\
+         copy_detection = \"same-commit\"\nignore_whitespace = true\nfollow_moves = false\n"
+    );
+    let theirs = format!(
+        "later.txt#L1-L3 rk64:{THIRD_HASH}\n\nshared rationale\n\n[config]\n\
+         copy_detection = \"same-commit\"\nignore_whitespace = false\nfollow_moves = true\n"
+    );
+    let (repo, residue) = mid_merge_repo(&base, &ours, &theirs)?;
+    let staged_ours = "copy_detection = \"same-commit\"\nignore_whitespace = true\nfollow_moves = false";
+    assert!(residue.contains(staged_ours), "residue=\n{residue}");
+
+    // The worktree is the live resolution surface. Once the operator edits
+    // the config carried by its ours arm, frozen stage 2 must not overwrite
+    // that newer evidence while claiming to have kept ours.
+    let hand_config = "copy_detection = \"any-file-in-repo\"\nignore_whitespace = false\nfollow_moves = true";
+    let hand_edited = residue.replacen(staged_ours, hand_config, 1);
+    assert_ne!(hand_edited, residue, "fixture must edit the ours config arm");
+    repo.write_file(".span/m", &hand_edited)?;
+
+    let out = repo.run_span(["resolve", "m", "--ours"])?;
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr=\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let parsed = SpanFile::parse(&read_span(&repo, "m")?)?;
+    assert_eq!(
+        parsed.config,
+        SpanConfig {
+            copy_detection: CopyDetection::AnyFileInRepo,
+            ignore_whitespace: false,
+            follow_moves: true,
+        },
+        "the hand-edited text arm is authoritative over stage 2"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("config: kept ours"),
+        "the report must describe the value actually written; stdout=\n{}",
+        String::from_utf8_lossy(&out.stdout)
     );
     Ok(())
 }
@@ -895,16 +922,10 @@ fn resolve_preserves_hand_edited_worktree_content() -> Result<()> {
 fn resolve_uses_real_base_to_avoid_unnecessary_why_conflict() -> Result<()> {
     let (base, ours, theirs) = theirs_only_why_sides();
     let (repo, residue) = mid_merge_repo(&base, &ours, &theirs)?;
-    assert!(
-        !residue.contains("rationale"),
-        "fixture assumption: the writer leaves theirs' added why out of the text; \
-         residue=\n{residue}"
-    );
+    assert!(residue.contains("rationale Y"), "residue=\n{residue}");
 
-    // After the supplement the two sides' why genuinely differ — ours empty,
-    // theirs `rationale Y`. Without a real stage-1 base that is a two-way
-    // compare and `--rehash` would fail closed on it; with one, base shows
-    // only theirs changed and there is nothing to arbitrate.
+    // Rehashing the unrelated anchor conflict must leave the already-settled
+    // one-sided why edit untouched.
     let out = repo.run_span(["resolve", "m", "--rehash"])?;
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(
@@ -948,11 +969,11 @@ fn resolve_ours_preserves_non_diverged_why_change() -> Result<()> {
         "the genuinely divergent anchor still takes ours' record; span:\n{span}"
     );
     assert!(
-        stdout.contains("why: resolved automatically (matches theirs)"),
-        "the report must not claim the side choice fired; stdout=\n{stdout}"
+        stdout.contains("why: unchanged"),
+        "the plain settled field is identical on both residue sides; stdout=\n{stdout}"
     );
     assert!(
-        !stdout.contains("why: kept ours") && !stdout.contains("why: unchanged"),
+        !stdout.contains("why: kept ours"),
         "stdout=\n{stdout}"
     );
     Ok(())
@@ -981,10 +1002,7 @@ fn resolve_ours_preserves_non_diverged_config_change() -> Result<()> {
         span.contains("follow_moves = true"),
         "`--ours` must not revert theirs' uncontested setting to ours' default; span:\n{span}"
     );
-    assert!(
-        stdout.contains("config: resolved automatically (matches theirs)"),
-        "stdout=\n{stdout}"
-    );
+    assert!(stdout.contains("config: unchanged"), "stdout=\n{stdout}");
     assert!(
         !stdout.contains("config: kept ours"),
         "stdout=\n{stdout}"
@@ -993,14 +1011,10 @@ fn resolve_ours_preserves_non_diverged_config_change() -> Result<()> {
 }
 
 #[test]
-fn resolve_recovers_why_from_index_stages_after_partial_residue() -> Result<()> {
+fn resolve_preserves_one_sided_why_in_partial_residue() -> Result<()> {
     let (base, ours, theirs) = theirs_only_why_sides();
     let (repo, residue) = mid_merge_repo(&base, &ours, &theirs)?;
-    assert!(
-        !residue.contains("rationale"),
-        "fixture assumption: the writer emits `ours_why` for a non-diverged why, so theirs' \
-         added prose is absent from the text; residue=\n{residue}"
-    );
+    assert!(residue.contains("rationale Y"), "residue=\n{residue}");
 
     let out = repo.run_span(["resolve", "m", "--rehash"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -1013,12 +1027,11 @@ fn resolve_recovers_why_from_index_stages_after_partial_residue() -> Result<()> 
     let span = read_span(&repo, "m")?;
     assert!(
         span.contains("rationale Y"),
-        "the why the writer left out must be recovered from stage 3, not merely reported \
-         as lost; span:\n{span}"
+        "the settled why must survive directly in residue; span:\n{span}"
     );
     assert!(
-        stdout.contains("recovered from index stages"),
-        "the report must not present a restored why as agreement; stdout=\n{stdout}"
+        !stdout.contains("recovered from index stages"),
+        "no recovery is needed when residue retained the value; stdout=\n{stdout}"
     );
     assert!(
         !stdout.contains("no why text found in the input"),
@@ -1053,8 +1066,8 @@ fn resolve_hand_edited_why_is_never_overwritten_from_index_stages() -> Result<()
         "the hand-edited why must survive; span:\n{span}"
     );
     assert!(
-        !span.contains("rationale Y"),
-        "the stage blob must never override a non-empty text-sourced why; span:\n{span}"
+        span.contains("rationale Y"),
+        "the already-settled why remains alongside the operator edit; span:\n{span}"
     );
     assert!(
         !stdout.contains("recovered from index stages"),
@@ -1183,11 +1196,11 @@ fn resolve_never_stages() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn resolve_refuses_config_inside_conflict_block() -> Result<()> {
+fn resolve_settles_canonical_config_residue_by_side() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let h1 = line_slice_hash(ORIGINAL, 1, 5);
-    // Deliberately NOT driver-shaped: this is what Git's default text merge
-    // produces when the span merge driver is not registered.
+    // Canonical driver-shaped structural residue: config is the only
+    // divergent region and therefore occupies the tail conflict block.
     let fixture = format!(
         "\
 file1.txt#L1-L5 rk64:{h1}
@@ -1206,15 +1219,38 @@ ignore_whitespace = false
     repo.write_file(".span/m", &fixture)?;
     let before = read_span_bytes(&repo, "m")?;
 
-    for side in ["--rehash", "--ours", "--theirs"] {
+    let rehash = repo.run_span(["resolve", "m", "--rehash"])?;
+    let stderr = String::from_utf8_lossy(&rehash.stderr);
+    assert_ne!(rehash.status.code(), Some(0), "--rehash must refuse; stderr=\n{stderr}");
+    assert!(
+        stderr.contains("[config]") && stderr.contains("diverged"),
+        "--rehash must name the unresolved region; stderr=\n{stderr}"
+    );
+    assert_eq!(before, read_span_bytes(&repo, "m")?, "file must be untouched");
+
+    for (side, expected) in [("--ours", true), ("--theirs", false)] {
+        repo.write_file(".span/m", &fixture)?;
         let out = repo.run_span(["resolve", "m", side])?;
+        let stdout = String::from_utf8_lossy(&out.stdout);
         let stderr = String::from_utf8_lossy(&out.stderr);
-        assert_ne!(out.status.code(), Some(0), "{side} must refuse; stderr=\n{stderr}");
-        assert!(
-            stderr.contains("[config]") && stderr.contains("inside a conflict block"),
-            "{side} must name the reason; stderr=\n{stderr}"
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{side} must settle canonical config residue; stderr=\n{}",
+            stderr
         );
-        assert_eq!(before, read_span_bytes(&repo, "m")?, "file must be untouched");
+        assert!(
+            !stderr.contains("[config] divergence a prior partial merge may have already dropped"),
+            "the raw residue supplies config evidence; side={side}; stderr=\n{stderr}"
+        );
+        assert!(
+            !stdout.contains("`[config]` was not recoverable from this input")
+                && !stdout.contains("residue writer never serializes `[config]`"),
+            "the settlement must not emit the obsolete config-loss warning; \
+             side={side}; stdout=\n{stdout}"
+        );
+        let parsed = SpanFile::parse(&read_span(&repo, "m")?)?;
+        assert_eq!(parsed.config.ignore_whitespace, expected, "side={side}");
     }
     Ok(())
 }
@@ -2372,10 +2408,9 @@ fn resolve_rehash_refuses_a_source_renamed_away_with_ambiguous_candidates() -> R
 // 22. Stage 3 consulted for absence, not only presence
 // ---------------------------------------------------------------------------
 
-/// The deletion direction of the why supplement. `theirs` deletes prose `ours`
-/// still has; the field has not diverged, so the writer emits `ours_why`
-/// verbatim into the residue text and both split sides read it as an agreed
-/// outside line. Stage 3 is the only record that the deletion happened.
+/// The deletion direction of three-way why settlement. `theirs` deletes prose
+/// `ours` still has, so the merged empty value must be written plainly rather
+/// than resurrecting ours' unchanged prose in residue.
 #[test]
 fn resolve_honors_a_why_the_peer_deleted() -> Result<()> {
     let base = format!("later.txt#L1-L3 rk64:{BASE_HASH}\n\nours prose\n");
@@ -2383,9 +2418,8 @@ fn resolve_honors_a_why_the_peer_deleted() -> Result<()> {
     let theirs = format!("later.txt#L1-L3 rk64:{THIRD_HASH}\n");
     let (repo, residue) = mid_merge_repo(&base, &ours, &theirs)?;
     assert!(
-        residue.contains("ours prose"),
-        "fixture assumption: the writer fabricates agreement by carrying ours' why; \
-         residue=\n{residue}"
+        !residue.contains("ours prose"),
+        "residue=\n{residue}"
     );
 
     for side in ["--rehash", "--theirs"] {
@@ -2406,11 +2440,10 @@ fn resolve_honors_a_why_the_peer_deleted() -> Result<()> {
     Ok(())
 }
 
-/// The presence direction must keep working, and a hand-typed why must still
-/// be untouchable — the two properties the deletion fix could most easily have
-/// broken, since it reads the same stage from the same shape of text.
+/// A hand-typed addition must remain alongside why that the merge already
+/// settled and wrote plainly into the residue.
 #[test]
-fn resolve_why_supplement_still_ignores_a_hand_typed_why() -> Result<()> {
+fn resolve_preserves_a_hand_typed_addition_to_settled_why() -> Result<()> {
     let (base, ours, theirs) = theirs_only_why_sides();
     let (repo, residue) = mid_merge_repo(&base, &ours, &theirs)?;
     let hand_edited = format!("{residue}operator rationale\n");
@@ -2425,8 +2458,8 @@ fn resolve_why_supplement_still_ignores_a_hand_typed_why() -> Result<()> {
     );
     let span = read_span(&repo, "m")?;
     assert!(
-        span.contains("operator rationale") && !span.contains("rationale Y"),
-        "a why that differs from stage 2 is the operator's and is never replaced; span:\n{span}"
+        span.contains("rationale Y") && span.contains("operator rationale"),
+        "settled why and the operator's addition must both survive; span:\n{span}"
     );
     Ok(())
 }

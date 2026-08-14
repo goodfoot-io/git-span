@@ -15,6 +15,24 @@
 //! follow_moves = false
 //! ```
 //!
+//! The optional `[resolved]` section sits in the why region before any
+//! `[config]` block: a line that is exactly `[resolved]` starts it, and
+//! everything from that line to the `[config]` marker (or end of file)
+//! belongs to it. Each record line records one collapse resolution:
+//!
+//! ```text
+//! [resolved]
+//! 2026-08-13T12:34:56Z add file.txt#L1-L5 rk64:bb2a1e4032115e1c
+//! ```
+//!
+//! A record is `<timestamp> <add|replace> <address> <algorithm>:<hash>`,
+//! where the timestamp is exactly `YYYY-MM-DDTHH:MM:SSZ` (UTC, second
+//! precision, shape-validated as an opaque string) and the address follows
+//! the anchor-address grammar. Records are hash-tied staleness facts, not
+//! leases: the resolution is current while the identity carries the
+//! recorded hash, stale when the hash differs or the identity is gone, and
+//! is never auto-deleted.
+//!
 //! The `[config]` block is optional: a line that is exactly `[config]`
 //! within the why section starts it, and everything from that line to the
 //! end of the file belongs to it (the why text excludes the block and any
@@ -126,14 +144,231 @@ impl Default for SpanConfig {
     }
 }
 
+/// The resolution command a `[resolved]` record records. The wire name is
+/// the lowercase command token that appears in the record line.
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResolveCommand {
+    /// The identity was re-added at its current address (`git span add`).
+    Add,
+    /// The identity was moved to a new address (`git span replace`).
+    Replace,
+}
+
+impl ResolveCommand {
+    /// The lowercase token used in the record line's wire format.
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            ResolveCommand::Add => "add",
+            ResolveCommand::Replace => "replace",
+        }
+    }
+
+    /// Parse a wire-format command token. `None` for anything other than
+    /// `add`/`replace` (fail closed).
+    pub fn from_wire(name: &str) -> Option<ResolveCommand> {
+        match name {
+            "add" => Some(ResolveCommand::Add),
+            "replace" => Some(ResolveCommand::Replace),
+            _ => None,
+        }
+    }
+}
+
+/// One resolution record in a span file's `[resolved]` section: the fact
+/// that a collapse sentinel was retired by naming an address (`add`) or by
+/// moving the identity to a new address (`replace`).
+///
+/// The record line's wire format is:
+///
+/// ```text
+/// <timestamp> <add|replace> <address> <algorithm>:<content-hash>
+/// ```
+///
+/// where `<timestamp>` is exactly `YYYY-MM-DDTHH:MM:SSZ` (UTC, second
+/// precision) and `<address>` follows the anchor-address grammar
+/// (`<path>` or `<path>#L<start>-L<end>`).
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedRecord {
+    /// The UTC timestamp at which the resolution happened, exactly
+    /// `YYYY-MM-DDTHH:MM:SSZ` (shape-validated; the value is opaque to the
+    /// kernel).
+    pub timestamp: String,
+    /// Whether the resolution was an `add` (same address) or a `replace`
+    /// (new address).
+    pub command: ResolveCommand,
+    /// Repository-relative, slash-separated file path of the resolved
+    /// identity.
+    pub path: String,
+    /// 1-based start line; 0 for whole-file identities.
+    pub start_line: u32,
+    /// 1-based end line (inclusive); 0 for whole-file identities.
+    pub end_line: u32,
+    /// Hash algorithm name (e.g. `"rk64"`).
+    pub algorithm: String,
+    /// Hex content hash the identity carried at resolution time.
+    pub content_hash: String,
+}
+
+impl ResolvedRecord {
+    /// The record's identity: the `(path, start, end)` triple shared with
+    /// anchor records at the same address.
+    pub fn identity(&self) -> (&str, u32, u32) {
+        (&self.path, self.start_line, self.end_line)
+    }
+
+    /// The address portion of the record line (`<path>` or
+    /// `<path>#L<start>-L<end>`), matching `AnchorRecord`'s display form.
+    fn address(&self) -> String {
+        if self.start_line == 0 && self.end_line == 0 {
+            self.path.clone()
+        } else {
+            format!("{}#L{}-L{}", self.path, self.start_line, self.end_line)
+        }
+    }
+}
+
+impl fmt::Display for ResolvedRecord {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} {} {} {}:{}",
+            self.timestamp,
+            self.command.wire_name(),
+            self.address(),
+            self.algorithm,
+            self.content_hash
+        )
+    }
+}
+
+impl std::str::FromStr for ResolvedRecord {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        parse_resolved_record_line(s)
+    }
+}
+
+/// True when `s` has the exact shape `YYYY-MM-DDTHH:MM:SSZ`: the fixed
+/// layout of the RFC 3339 UTC timestamps the writer emits. The value is
+/// deliberately opaque — only the character-class shape is checked, never
+/// the calendar semantics (a shape-valid but impossible date like
+/// `2026-13-45T99:99:99Z` still parses). Chrono does the real formatting;
+/// the kernel stays chrono-free.
+pub fn is_rfc3339_utc_shape(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.len() != 20 {
+        return false;
+    }
+    let digit = |b: u8| b.is_ascii_digit();
+    digit(bytes[0])
+        && digit(bytes[1])
+        && digit(bytes[2])
+        && digit(bytes[3])
+        && bytes[4] == b'-'
+        && digit(bytes[5])
+        && digit(bytes[6])
+        && bytes[7] == b'-'
+        && digit(bytes[8])
+        && digit(bytes[9])
+        && bytes[10] == b'T'
+        && digit(bytes[11])
+        && digit(bytes[12])
+        && bytes[13] == b':'
+        && digit(bytes[14])
+        && digit(bytes[15])
+        && bytes[16] == b':'
+        && digit(bytes[17])
+        && digit(bytes[18])
+        && bytes[19] == b'Z'
+}
+
+/// Parse one `[resolved]` record line: `<timestamp> <add|replace> <address>
+/// <algorithm>:<content-hash>`. Splits at the last space for the hash token
+/// (the same trick `parse_anchor_line` uses, so paths containing spaces are
+/// handled), then takes the first two space-separated tokens as timestamp
+/// and command with the remainder as the address.
+fn parse_resolved_record_line(line: &str) -> std::result::Result<ResolvedRecord, String> {
+    let line = line.trim();
+    if line.is_empty() {
+        return Err("blank line inside the `[resolved]` section".to_string());
+    }
+    let space_pos = line
+        .rfind(' ')
+        .ok_or_else(|| format!("malformed [resolved] record line: no space found in `{line}`"))?;
+    let rest = &line[..space_pos];
+    let hash_part = line[space_pos + 1..].trim();
+
+    if hash_part.is_empty() {
+        return Err(format!(
+            "malformed [resolved] record line: missing hash after space in `{line}`"
+        ));
+    }
+    let colon_pos = hash_part.find(':').ok_or_else(|| {
+        format!(
+            "malformed [resolved] record line: hash `{hash_part}` is not `<algorithm>:<content-hash>`"
+        )
+    })?;
+    let algorithm = &hash_part[..colon_pos];
+    let content_hash = &hash_part[colon_pos + 1..];
+    if algorithm.is_empty() {
+        return Err(format!(
+            "malformed [resolved] record line: empty algorithm in hash `{hash_part}`"
+        ));
+    }
+    if content_hash.is_empty() {
+        return Err(format!(
+            "malformed [resolved] record line: empty content hash in hash `{hash_part}`"
+        ));
+    }
+
+    let mut parts = rest.splitn(3, ' ');
+    let timestamp = parts.next().unwrap_or("");
+    let command = parts.next().unwrap_or("");
+    let address = parts.next().unwrap_or("");
+
+    if !is_rfc3339_utc_shape(timestamp) {
+        return Err(format!(
+            "malformed [resolved] record line: timestamp `{timestamp}` is not `YYYY-MM-DDTHH:MM:SSZ`"
+        ));
+    }
+    let command = ResolveCommand::from_wire(command).ok_or_else(|| {
+        format!(
+            "malformed [resolved] record line: unknown command `{command}` (expected `add` or `replace`)"
+        )
+    })?;
+    let (path, extent) = parse_anchor_address(address)
+        .map_err(|e| format!("malformed [resolved] record line: invalid anchor address `{address}`: {e}"))?;
+    let (start_line, end_line) = match extent {
+        AnchorExtent::WholeFile => (0, 0),
+        AnchorExtent::LineRange { start, end } => (start, end),
+    };
+
+    Ok(ResolvedRecord {
+        timestamp: timestamp.to_string(),
+        command,
+        path,
+        start_line,
+        end_line,
+        algorithm: algorithm.to_string(),
+        content_hash: content_hash.to_string(),
+    })
+}
+
 /// An in-memory representation of a single span file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpanFile {
     /// Anchor records in file order.
     pub anchors: Vec<AnchorRecord>,
     /// Why text (everything after the first blank line, excluding the
-    /// optional trailing `[config]` block).
+    /// optional trailing `[resolved]` and `[config]` sections).
     pub why: String,
+    /// Resolution records from the optional `[resolved]` section, in file
+    /// order. Empty when the section is absent.
+    pub resolved: Vec<ResolvedRecord>,
     /// Resolver options from the trailing `[config]` block; defaults when
     /// the block (or a key) is absent.
     pub config: SpanConfig,
@@ -214,31 +449,70 @@ impl SpanFile {
             anchors.push(record);
         }
 
-        // Extract the optional trailing `[config]` block: the first line
-        // that is exactly `[config]` starts it; everything from that line
-        // on is configuration, not prose.
+        // Extract the optional trailing `[config]` block first. A
+        // `[resolved]` marker after it is therefore parsed as a config line
+        // and refused by `parse_config_block`, enforcing section order.
         let why_lines: Vec<&str> = why.lines().collect();
         let config_marker = why_lines.iter().position(|l| l.trim() == "[config]");
-        let (why, config) = match config_marker {
+        let (prose_lines, config) = match config_marker {
             Some(idx) => {
-                let prose = why_lines[..idx].join("\n");
                 let block: Vec<(usize, &str)> = why_lines[idx + 1..]
                     .iter()
                     .enumerate()
                     .map(|(i, l)| (why_first_line + idx + 1 + i, *l))
                     .collect();
-                (prose, parse_config_block(&block)?)
+                (&why_lines[..idx], parse_config_block(&block)?)
             }
-            None => (why, SpanConfig::default()),
+            None => (why_lines.as_slice(), SpanConfig::default()),
         };
 
-        // Trim trailing newlines (and any blank lines that preceded the
-        // `[config]` block) from why.
-        let why = why.trim_end().to_string();
+        // The first exact `[resolved]` marker in the prose region begins the
+        // structured section. Every following line is a record; blank or
+        // malformed lines fail closed with their original source line.
+        let resolved_marker = prose_lines.iter().position(|l| *l == "[resolved]");
+        let (why_lines, resolved) = match resolved_marker {
+            Some(idx) => {
+                let mut records = Vec::with_capacity(prose_lines.len().saturating_sub(idx + 1));
+                let mut identities = HashMap::new();
+                for (offset, line) in prose_lines[idx + 1..].iter().enumerate() {
+                    let lineno = why_first_line + idx + 1 + offset;
+                    let record = parse_resolved_record_line(line).map_err(|e| {
+                        Error::InvalidSpanFile(format!("line {lineno}: {e}"))
+                    })?;
+                    let identity = (record.path.clone(), record.start_line, record.end_line);
+                    if let Some(first_line) = identities.insert(identity, lineno) {
+                        return Err(Error::InvalidSpanFile(format!(
+                            "line {lineno}: duplicate [resolved] identity `{}` (first declared on line {first_line})",
+                            record.address()
+                        )));
+                    }
+                    records.push(record);
+                }
+                (&prose_lines[..idx], records)
+            }
+            None => (prose_lines, Vec::new()),
+        };
+
+        // A syntactically complete record in why prose is almost certainly a
+        // misplaced section entry. Accepting it as prose would silently lose
+        // the audit record on the next mutation, so refuse it at the boundary.
+        for (idx, line) in why_lines.iter().enumerate() {
+            if parse_resolved_record_line(line).is_ok() {
+                return Err(Error::InvalidSpanFile(format!(
+                    "line {}: [resolved] record appears before `[resolved]` marker",
+                    why_first_line + idx
+                )));
+            }
+        }
+
+        // Trim trailing newlines (and blank lines before either structured
+        // section) from why.
+        let why = why_lines.join("\n").trim_end().to_string();
 
         Ok(SpanFile {
             anchors,
             why,
+            resolved,
             config,
         })
     }
@@ -269,16 +543,38 @@ impl SpanFile {
             out.push_str(&anchor.to_string());
             out.push('\n');
         }
-        if !self.anchors.is_empty() || !self.why.is_empty() || has_config {
+        if !self.anchors.is_empty()
+            || !self.why.is_empty()
+            || !self.resolved.is_empty()
+            || has_config
+        {
             // Blank line separator (or leading blank when no anchors).
             out.push('\n');
+            if self.anchors.is_empty() {
+                // With no anchor block the separator itself is two leading
+                // newlines. A single leading newline only works while why is
+                // one paragraph; once a structured section adds another
+                // blank line, `split_once("\n\n")` would otherwise mistake
+                // the why prose for anchors.
+                out.push('\n');
+            }
         }
         if !self.why.is_empty() {
             out.push_str(&self.why);
             out.push('\n');
         }
-        if has_config {
+        if !self.resolved.is_empty() {
             if !self.why.is_empty() {
+                out.push('\n');
+            }
+            out.push_str("[resolved]\n");
+            for record in &self.resolved {
+                out.push_str(&record.to_string());
+                out.push('\n');
+            }
+        }
+        if has_config {
+            if !self.why.is_empty() && self.resolved.is_empty() {
                 // Blank line between the why prose and the config block.
                 out.push('\n');
             }
@@ -619,9 +915,7 @@ pub enum AnchorLineShape {
 /// This is derived from the writers, not assumed. The only place an anchor's
 /// content hash is produced is `content_hash: rk64_to_hex(fp)`, and
 /// [`crate::rk64_to_hex`] is `format!("{fp:016x}")` — always sixteen, always
-/// lowercase, zero-padded. The only other production write is `String::new()`
-/// for the synthetic empty-path `UnresolvedAnchor` that signals why/config
-/// divergence, which is not an anchor record at all.
+/// lowercase, zero-padded.
 ///
 /// It deliberately names **no algorithm**. The retired `rk64` whitelist keyed
 /// on the token before the colon and so would have to be revisited the day a
@@ -791,6 +1085,11 @@ pub enum MergeSide {
 pub struct SpanMergeResult {
     pub merged: SpanFile,
     pub unresolved: Vec<UnresolvedAnchor>,
+    /// Independent structural-region divergence. These fields deliberately
+    /// do not ride an empty-path anchor sentinel: callers must know which
+    /// region actually diverged so settled prose or settings are not pulled
+    /// into an unrelated conflict block.
+    pub conflicts: SpanMergeConflicts,
     /// Duplicate identities collapsed *within* one side's own anchors,
     /// before ours was ever compared against theirs. Reported so the
     /// collapse is named rather than silently absorbed by the index build.
@@ -802,6 +1101,20 @@ pub struct SpanMergeResult {
     /// destination: an entry here says nothing about whether the identity
     /// landed in `merged` or `unresolved`, and never changes which.
     pub sentinel_preserved: Vec<(String, u32, u32)>,
+}
+
+/// Structural span-file regions that could not be merged authoritatively.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SpanMergeConflicts {
+    pub why: bool,
+    pub resolved: bool,
+    pub config: bool,
+}
+
+impl SpanMergeConflicts {
+    pub fn any(self) -> bool {
+        self.why || self.resolved || self.config
+    }
 }
 
 /// Same path + extent on both sides, divergent content_hash, with no
@@ -969,31 +1282,16 @@ pub fn merge_span_files(
     // else in this result uses, so no map order leaks into the output.
     sentinel_preserved.sort();
 
-    // Resolve why text and config with the same three-way policy.
+    // Resolve prose, structured audit records, and config independently with
+    // the same fail-closed three-way policy.
     let (why_text, why_conflict) = resolve_why_text(base, ours, theirs);
+    let (resolved, resolved_conflict) = resolve_resolved_section(base, ours, theirs);
     let (config, config_conflict) = resolve_config(base, ours, theirs);
-    if why_conflict || config_conflict {
-        // Signal why conflict via a synthetic unresolved entry.
-        unresolved.push(UnresolvedAnchor {
-            path: String::new(),
-            start_line: 0,
-            end_line: 0,
-            ours: AnchorRecord {
-                path: String::new(),
-                start_line: 0,
-                end_line: 0,
-                algorithm: String::new(),
-                content_hash: String::new(),
-            },
-            theirs: AnchorRecord {
-                path: String::new(),
-                start_line: 0,
-                end_line: 0,
-                algorithm: String::new(),
-                content_hash: String::new(),
-            },
-        });
-    }
+    let conflicts = SpanMergeConflicts {
+        why: why_conflict,
+        resolved: resolved_conflict,
+        config: config_conflict,
+    };
 
     debug_assert_merge_disjoint(&merged_anchors, &unresolved);
 
@@ -1001,9 +1299,11 @@ pub fn merge_span_files(
         merged: SpanFile {
             anchors: merged_anchors,
             why: why_text,
+            resolved,
             config,
         },
         unresolved,
+        conflicts,
         same_side_collapsed,
         sentinel_preserved,
     }
@@ -1122,6 +1422,90 @@ pub fn resolve_why_text(
             }
         }
     }
+}
+
+/// Resolve the `[resolved]` sections of a three-way merge, per identity.
+///
+/// Mirrors [`resolve_why_text`] / [`resolve_config`]: an unchanged side
+/// yields to the changed one, an identical change on both sides is kept,
+/// and a divergent change fails closed (returns `diverged = true`). Union
+/// semantics matter most — a record present on one branch and absent on
+/// the other must survive the merge.
+///
+/// Returns the merged records and whether any identity diverged.
+///
+pub fn resolve_resolved_section(
+    base: Option<&SpanFile>,
+    ours: &SpanFile,
+    theirs: &SpanFile,
+) -> (Vec<ResolvedRecord>, bool) {
+    // A no-op merge must be byte-for-byte lossless even for an in-memory
+    // `SpanFile` that did not come through the parser. The parser refuses
+    // duplicate identities, but preserving identical inputs here prevents
+    // this leaf helper from silently discarding a later record.
+    if ours.resolved == theirs.resolved {
+        return (ours.resolved.clone(), false);
+    }
+
+    type Identity = (String, u32, u32);
+
+    fn identities(records: &[ResolvedRecord]) -> impl Iterator<Item = Identity> + '_ {
+        records
+            .iter()
+            .map(|r| (r.path.clone(), r.start_line, r.end_line))
+    }
+
+    fn at<'a>(records: &'a [ResolvedRecord], key: &Identity) -> Option<&'a ResolvedRecord> {
+        records.iter().find(|record| {
+            record.path == key.0 && record.start_line == key.1 && record.end_line == key.2
+        })
+    }
+
+    let mut keys = std::collections::BTreeSet::new();
+    keys.extend(identities(&ours.resolved));
+    keys.extend(identities(&theirs.resolved));
+    if let Some(base) = base {
+        keys.extend(identities(&base.resolved));
+    }
+
+    let mut merged = Vec::with_capacity(keys.len());
+    let mut diverged = false;
+    for key in keys {
+        let ours_record = at(&ours.resolved, &key);
+        let theirs_record = at(&theirs.resolved, &key);
+        let selected = match base {
+            Some(base) => {
+                let base_record = at(&base.resolved, &key);
+                if ours_record == theirs_record {
+                    ours_record
+                } else if ours_record == base_record {
+                    theirs_record
+                } else if theirs_record == base_record {
+                    ours_record
+                } else {
+                    diverged = true;
+                    // The merged value is ours-biased only as residue material;
+                    // the divergence flag prevents it from being presented as
+                    // an authoritative clean merge.
+                    ours_record
+                }
+            }
+            None => match (ours_record, theirs_record) {
+                (Some(ours), Some(theirs)) if ours != theirs => {
+                    diverged = true;
+                    Some(ours)
+                }
+                (Some(ours), _) => Some(ours),
+                (None, Some(theirs)) => Some(theirs),
+                (None, None) => None,
+            },
+        };
+        if let Some(record) = selected {
+            merged.push(record.clone());
+        }
+    }
+
+    (merged, diverged)
 }
 
 #[cfg(test)]
@@ -1442,6 +1826,7 @@ mod tests {
                 content_hash: "abcd".into(),
             }],
             why: "keep these settings.".into(),
+            resolved: Vec::new(),
             config: SpanConfig {
                 copy_detection: CopyDetection::AnyFileInCommit,
                 ignore_whitespace: true,
@@ -1468,6 +1853,7 @@ mod tests {
                 content_hash: "abcd".into(),
             }],
             why: String::new(),
+            resolved: Vec::new(),
             config: SpanConfig {
                 copy_detection: CopyDetection::Off,
                 ignore_whitespace: false,
@@ -1493,6 +1879,212 @@ mod tests {
         assert_eq!(span, reparsed);
     }
 
+    fn resolved_record(path: &str, hash: &str) -> ResolvedRecord {
+        ResolvedRecord {
+            timestamp: "2026-08-13T12:34:56Z".into(),
+            command: ResolveCommand::Add,
+            path: path.into(),
+            start_line: 1,
+            end_line: 5,
+            algorithm: "rk64".into(),
+            content_hash: hash.into(),
+        }
+    }
+
+    fn resolved_span(records: Vec<ResolvedRecord>) -> SpanFile {
+        SpanFile {
+            anchors: Vec::new(),
+            why: String::new(),
+            resolved: records,
+            config: SpanConfig::default(),
+        }
+    }
+
+    #[test]
+    fn resolved_section_roundtrips_with_why_anchors_and_config() {
+        let span = SpanFile {
+            anchors: vec![AnchorRecord {
+                path: "src/a file.rs".into(),
+                start_line: 1,
+                end_line: 5,
+                algorithm: "rk64".into(),
+                content_hash: "abcd".into(),
+            }],
+            why: "human-readable reason".into(),
+            resolved: vec![resolved_record("src/a file.rs", "abcd")],
+            config: SpanConfig {
+                copy_detection: CopyDetection::AnyFileInCommit,
+                ignore_whitespace: true,
+                follow_moves: false,
+            },
+        };
+        let serialized = span.serialize();
+        assert!(serialized.contains("\n[resolved]\n"), "{serialized}");
+        assert!(serialized.find("[resolved]").unwrap() < serialized.find("[config]").unwrap());
+        assert_eq!(SpanFile::parse(&serialized).unwrap(), span);
+    }
+
+    #[test]
+    fn resolved_section_roundtrips_without_why_or_config() {
+        let span = resolved_span(vec![resolved_record("src/a file.rs", "abcd")]);
+        let serialized = span.serialize();
+        assert_eq!(SpanFile::parse(&serialized).unwrap(), span);
+    }
+
+    #[test]
+    fn resolved_section_roundtrips_with_why_and_without_config() {
+        let mut span = resolved_span(vec![resolved_record("a.rs", "abcd")]);
+        span.why = "why prose".into();
+        assert_eq!(SpanFile::parse(&span.serialize()).unwrap(), span);
+    }
+
+    #[test]
+    fn sectionless_files_keep_empty_resolved_and_roundtrip() {
+        let input = "a.rs#L1-L5 rk64:abcd\n\nwhy prose\n";
+        let span = SpanFile::parse(input).unwrap();
+        assert!(span.resolved.is_empty());
+        assert_eq!(SpanFile::parse(&span.serialize()).unwrap(), span);
+    }
+
+    #[test]
+    fn resolved_section_failures_name_the_source_line() {
+        let bad = [
+            ("2026-08-13 12:34:56Z add a.rs#L1-L5 rk64:abcd", "timestamp"),
+            ("2026-08-13T12:34:56Z move a.rs#L1-L5 rk64:abcd", "unknown command"),
+            ("2026-08-13T12:34:56Z add a.rs#L1-L5 abcd", "hash"),
+            ("2026-08-13T12:34:56Z add a.rs#L0-L5 rk64:abcd", "address"),
+        ];
+        for (line, expected) in bad {
+            let input = format!("a.rs#L1-L5 rk64:abcd\n\nwhy\n[resolved]\n{line}\n");
+            let err = SpanFile::parse(&input).unwrap_err().to_string();
+            assert!(err.contains("line 5"), "{err}");
+            assert!(err.contains(expected), "{err}");
+        }
+    }
+
+    #[test]
+    fn resolved_section_rejects_blank_lines_and_misordering() {
+        let blank = "a.rs rk64:abcd\n\n[resolved]\n2026-08-13T12:34:56Z add a.rs rk64:abcd\n\n2026-08-13T12:35:56Z add b.rs rk64:ef01\n";
+        let err = SpanFile::parse(blank).unwrap_err().to_string();
+        assert!(err.contains("line 5") && err.contains("blank line"), "{err}");
+
+        let after_config = "a.rs rk64:abcd\n\n[config]\nfollow_moves = true\n[resolved]\n2026-08-13T12:34:56Z add a.rs rk64:abcd\n";
+        let err = SpanFile::parse(after_config).unwrap_err().to_string();
+        assert!(err.contains("line 5") && err.contains("[resolved]"), "{err}");
+    }
+
+    #[test]
+    fn resolved_section_rejects_duplicate_identities_at_the_second_line() {
+        let input = "a.rs rk64:abcd\n\nwhy\n[resolved]\n2026-08-13T12:34:56Z add a.rs rk64:abcd\n2026-08-13T12:35:56Z replace a.rs rk64:ef01\n";
+        let err = SpanFile::parse(input).unwrap_err().to_string();
+        assert!(err.contains("line 6"), "{err}");
+        assert!(err.contains("duplicate") && err.contains("a.rs"), "{err}");
+        assert!(err.contains("line 5"), "{err}");
+    }
+
+    #[test]
+    fn indented_resolved_marker_remains_why_prose() {
+        let input = "a.rs rk64:abcd\n\nwhy\n    [resolved]\nstill why\n";
+        let span = SpanFile::parse(input).unwrap();
+        assert!(span.resolved.is_empty());
+        assert_eq!(span.why, "why\n    [resolved]\nstill why");
+    }
+
+    #[test]
+    fn resolved_record_before_marker_and_marker_collision_fail_closed() {
+        let misplaced = "a.rs rk64:abcd\n\nwhy\n2026-08-13T12:34:56Z add a.rs rk64:abcd\n";
+        let err = SpanFile::parse(misplaced).unwrap_err().to_string();
+        assert!(err.contains("line 4") && err.contains("before `[resolved]`"), "{err}");
+
+        let collision = "a.rs rk64:abcd\n\nordinary prose\n[resolved]\nstill ordinary prose\n";
+        let err = SpanFile::parse(collision).unwrap_err().to_string();
+        assert!(err.contains("line 5") && err.contains("[resolved]"), "{err}");
+    }
+
+    #[test]
+    fn resolved_section_does_not_leak_into_why() {
+        let input = "a.rs#L1-L5 rk64:abcd\n\nwhy line one\nwhy line two\n[resolved]\n2026-08-13T12:34:56Z add a.rs#L1-L5 rk64:abcd\n";
+        let span = SpanFile::parse(input).unwrap();
+        assert_eq!(span.why, "why line one\nwhy line two");
+        assert_eq!(span.resolved, vec![resolved_record("a.rs", "abcd")]);
+    }
+
+    #[test]
+    fn resolve_resolved_section_obeys_three_way_changes() {
+        let base_record = resolved_record("a.rs", "base");
+        let ours_record = resolved_record("a.rs", "ours");
+        let theirs_record = resolved_record("a.rs", "theirs");
+        let base = resolved_span(vec![base_record.clone()]);
+
+        let unchanged = resolved_span(vec![base_record.clone()]);
+        let ours_changed = resolved_span(vec![ours_record.clone()]);
+        assert_eq!(
+            resolve_resolved_section(Some(&base), &ours_changed, &unchanged),
+            (vec![ours_record.clone()], false)
+        );
+        assert_eq!(
+            resolve_resolved_section(Some(&base), &unchanged, &resolved_span(vec![theirs_record.clone()])),
+            (vec![theirs_record.clone()], false)
+        );
+        assert_eq!(
+            resolve_resolved_section(Some(&base), &ours_changed, &ours_changed),
+            (vec![ours_record.clone()], false)
+        );
+        assert_eq!(
+            resolve_resolved_section(
+                Some(&base),
+                &ours_changed,
+                &resolved_span(vec![theirs_record])
+            ),
+            (vec![ours_record], true)
+        );
+    }
+
+    #[test]
+    fn resolve_resolved_section_unions_one_sided_records_without_a_base() {
+        let ours = resolved_span(vec![resolved_record("a.rs", "aaaa")]);
+        let theirs = resolved_span(vec![resolved_record("b.rs", "bbbb")]);
+        let (records, diverged) = resolve_resolved_section(None, &ours, &theirs);
+        assert!(!diverged);
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].path, "a.rs");
+        assert_eq!(records[1].path, "b.rs");
+    }
+
+    #[test]
+    fn resolve_resolved_section_fails_closed_on_no_base_divergence() {
+        let ours = resolved_span(vec![resolved_record("a.rs", "ours")]);
+        let theirs = resolved_span(vec![resolved_record("a.rs", "theirs")]);
+        let (records, diverged) = resolve_resolved_section(None, &ours, &theirs);
+        assert!(diverged);
+        assert_eq!(records, ours.resolved);
+    }
+
+    #[test]
+    fn resolve_resolved_section_noop_preserves_every_input_record() {
+        let first = resolved_record("a.rs", "first");
+        let mut second = resolved_record("a.rs", "second");
+        second.timestamp = "2026-08-13T12:35:56Z".into();
+        second.command = ResolveCommand::Replace;
+        let span = resolved_span(vec![first, second]);
+
+        let (records, diverged) = resolve_resolved_section(Some(&span), &span, &span);
+        assert!(!diverged);
+        assert_eq!(records, span.resolved);
+    }
+
+    #[test]
+    fn merge_span_files_signals_resolved_section_divergence() {
+        let base = resolved_span(vec![resolved_record("a.rs", "base")]);
+        let ours = resolved_span(vec![resolved_record("a.rs", "ours")]);
+        let theirs = resolved_span(vec![resolved_record("a.rs", "theirs")]);
+        let result = merge_span_files(Some(&base), &ours, &theirs, &[]);
+        assert!(result.conflicts.resolved);
+        assert!(!result.conflicts.why && !result.conflicts.config);
+        assert!(result.unresolved.is_empty());
+        assert_eq!(result.merged.resolved, ours.resolved);
+    }
+
     // -----------------------------------------------------------------------
     // merge_span_files
     // -----------------------------------------------------------------------
@@ -1507,8 +2099,8 @@ mod tests {
             path: "b.rs".into(), start_line: 5, end_line: 10,
             algorithm: "rk64".into(), content_hash: "2222".into(),
         };
-        let ours = SpanFile { anchors: vec![a.clone()], why: String::new(), config: SpanConfig::default() };
-        let theirs = SpanFile { anchors: vec![b.clone()], why: String::new(), config: SpanConfig::default() };
+        let ours = SpanFile { anchors: vec![a.clone()], why: String::new(), config: SpanConfig::default(), resolved: Vec::new() };
+        let theirs = SpanFile { anchors: vec![b.clone()], why: String::new(), config: SpanConfig::default(), resolved: Vec::new() };
         let result = merge_span_files(None, &ours, &theirs, &[]);
         // Both unique anchors appear in the merged output.
         assert_eq!(result.merged.anchors.len(), 2);
@@ -1523,8 +2115,8 @@ mod tests {
             path: "same.rs".into(), start_line: 1, end_line: 5,
             algorithm: "rk64".into(), content_hash: "deadbeef".into(),
         };
-        let ours = SpanFile { anchors: vec![anchor.clone()], why: String::new(), config: SpanConfig::default() };
-        let theirs = SpanFile { anchors: vec![anchor.clone()], why: String::new(), config: SpanConfig::default() };
+        let ours = SpanFile { anchors: vec![anchor.clone()], why: String::new(), config: SpanConfig::default(), resolved: Vec::new() };
+        let theirs = SpanFile { anchors: vec![anchor.clone()], why: String::new(), config: SpanConfig::default(), resolved: Vec::new() };
         let result = merge_span_files(None, &ours, &theirs, &[]);
         // Identical anchor on both sides produces a single copy.
         assert_eq!(result.merged.anchors.len(), 1);
@@ -1542,8 +2134,8 @@ mod tests {
             path: "a.txt".into(), start_line: 1, end_line: 2,
             algorithm: "rk64".into(), content_hash: "def456".into(),
         };
-        let ours = SpanFile { anchors: vec![ours_anchor], why: String::new(), config: SpanConfig::default() };
-        let theirs = SpanFile { anchors: vec![theirs_anchor], why: String::new(), config: SpanConfig::default() };
+        let ours = SpanFile { anchors: vec![ours_anchor], why: String::new(), config: SpanConfig::default(), resolved: Vec::new() };
+        let theirs = SpanFile { anchors: vec![theirs_anchor], why: String::new(), config: SpanConfig::default(), resolved: Vec::new() };
         // Source file available for re-hashing — should resolve to one anchor.
         let source = vec![("a.txt".into(), b"hello\nworld\n".to_vec())];
         let result = merge_span_files(None, &ours, &theirs, &source);
@@ -1561,8 +2153,8 @@ mod tests {
             path: "x.txt".into(), start_line: 2, end_line: 4,
             algorithm: "rk64".into(), content_hash: "def456".into(),
         };
-        let ours = SpanFile { anchors: vec![ours_anchor.clone()], why: String::new(), config: SpanConfig::default() };
-        let theirs = SpanFile { anchors: vec![theirs_anchor.clone()], why: String::new(), config: SpanConfig::default() };
+        let ours = SpanFile { anchors: vec![ours_anchor.clone()], why: String::new(), config: SpanConfig::default(), resolved: Vec::new() };
+        let theirs = SpanFile { anchors: vec![theirs_anchor.clone()], why: String::new(), config: SpanConfig::default(), resolved: Vec::new() };
         let result = merge_span_files(None, &ours, &theirs, &[]);
         // No source to re-hash — anchor listed as unresolved.
         assert_eq!(result.unresolved.len(), 1);
@@ -1578,7 +2170,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     fn span_of(anchors: Vec<AnchorRecord>) -> SpanFile {
-        SpanFile { anchors, why: String::new(), config: SpanConfig::default() }
+        SpanFile { anchors, why: String::new(), config: SpanConfig::default(), resolved: Vec::new() }
     }
 
     fn sentinel_anchor(path: &str, start: u32, end: u32) -> AnchorRecord {
@@ -1966,9 +2558,9 @@ mod tests {
             path: "a.txt".into(), start_line: 1, end_line: 3,
             algorithm: "rk64".into(), content_hash: "1111".into(),
         };
-        let base = SpanFile { anchors: vec![a.clone()], why: "common why".into(), config: SpanConfig::default() };
-        let ours = SpanFile { anchors: vec![a.clone()], why: "ours why".into(), config: SpanConfig::default() };
-        let theirs = SpanFile { anchors: vec![a.clone()], why: "common why".into(), config: SpanConfig::default() };
+        let base = SpanFile { anchors: vec![a.clone()], why: "common why".into(), config: SpanConfig::default(), resolved: Vec::new() };
+        let ours = SpanFile { anchors: vec![a.clone()], why: "ours why".into(), config: SpanConfig::default(), resolved: Vec::new() };
+        let theirs = SpanFile { anchors: vec![a.clone()], why: "common why".into(), config: SpanConfig::default(), resolved: Vec::new() };
         let result = merge_span_files(Some(&base), &ours, &theirs, &[]);
         // Only ours changed why → take ours.
         assert_eq!(result.merged.why, "ours why");
@@ -1981,9 +2573,9 @@ mod tests {
             path: "a.txt".into(), start_line: 1, end_line: 3,
             algorithm: "rk64".into(), content_hash: "1111".into(),
         };
-        let base = SpanFile { anchors: vec![a.clone()], why: "common why".into(), config: SpanConfig::default() };
-        let ours = SpanFile { anchors: vec![a.clone()], why: "common why".into(), config: SpanConfig::default() };
-        let theirs = SpanFile { anchors: vec![a.clone()], why: "theirs why".into(), config: SpanConfig::default() };
+        let base = SpanFile { anchors: vec![a.clone()], why: "common why".into(), config: SpanConfig::default(), resolved: Vec::new() };
+        let ours = SpanFile { anchors: vec![a.clone()], why: "common why".into(), config: SpanConfig::default(), resolved: Vec::new() };
+        let theirs = SpanFile { anchors: vec![a.clone()], why: "theirs why".into(), config: SpanConfig::default(), resolved: Vec::new() };
         let result = merge_span_files(Some(&base), &ours, &theirs, &[]);
         // Only theirs changed why → take theirs.
         assert_eq!(result.merged.why, "theirs why");
@@ -1996,9 +2588,9 @@ mod tests {
             path: "a.txt".into(), start_line: 1, end_line: 3,
             algorithm: "rk64".into(), content_hash: "1111".into(),
         };
-        let base = SpanFile { anchors: vec![a.clone()], why: "original why".into(), config: SpanConfig::default() };
-        let ours = SpanFile { anchors: vec![a.clone()], why: "new why".into(), config: SpanConfig::default() };
-        let theirs = SpanFile { anchors: vec![a.clone()], why: "new why".into(), config: SpanConfig::default() };
+        let base = SpanFile { anchors: vec![a.clone()], why: "original why".into(), config: SpanConfig::default(), resolved: Vec::new() };
+        let ours = SpanFile { anchors: vec![a.clone()], why: "new why".into(), config: SpanConfig::default(), resolved: Vec::new() };
+        let theirs = SpanFile { anchors: vec![a.clone()], why: "new why".into(), config: SpanConfig::default(), resolved: Vec::new() };
         let result = merge_span_files(Some(&base), &ours, &theirs, &[]);
         // Both changed why identically → accept the new common why.
         assert_eq!(result.merged.why, "new why");
@@ -2011,12 +2603,13 @@ mod tests {
             path: "a.txt".into(), start_line: 1, end_line: 3,
             algorithm: "rk64".into(), content_hash: "1111".into(),
         };
-        let base = SpanFile { anchors: vec![a.clone()], why: "base why".into(), config: SpanConfig::default() };
-        let ours = SpanFile { anchors: vec![a.clone()], why: "ours why".into(), config: SpanConfig::default() };
-        let theirs = SpanFile { anchors: vec![a.clone()], why: "theirs why".into(), config: SpanConfig::default() };
+        let base = SpanFile { anchors: vec![a.clone()], why: "base why".into(), config: SpanConfig::default(), resolved: Vec::new() };
+        let ours = SpanFile { anchors: vec![a.clone()], why: "ours why".into(), config: SpanConfig::default(), resolved: Vec::new() };
+        let theirs = SpanFile { anchors: vec![a.clone()], why: "theirs why".into(), config: SpanConfig::default(), resolved: Vec::new() };
         let result = merge_span_files(Some(&base), &ours, &theirs, &[]);
         // Both sides changed why differently from base — fail closed.
-        assert!(!result.unresolved.is_empty());
+        assert!(result.conflicts.why);
+        assert!(result.unresolved.is_empty());
     }
 
     #[test]
@@ -2025,9 +2618,9 @@ mod tests {
             path: "a.txt".into(), start_line: 1, end_line: 3,
             algorithm: "rk64".into(), content_hash: "1111".into(),
         };
-        let base = SpanFile { anchors: vec![a.clone()], why: "stable why".into(), config: SpanConfig::default() };
-        let ours = SpanFile { anchors: vec![a.clone()], why: "stable why".into(), config: SpanConfig::default() };
-        let theirs = SpanFile { anchors: vec![a.clone()], why: "stable why".into(), config: SpanConfig::default() };
+        let base = SpanFile { anchors: vec![a.clone()], why: "stable why".into(), config: SpanConfig::default(), resolved: Vec::new() };
+        let ours = SpanFile { anchors: vec![a.clone()], why: "stable why".into(), config: SpanConfig::default(), resolved: Vec::new() };
+        let theirs = SpanFile { anchors: vec![a.clone()], why: "stable why".into(), config: SpanConfig::default(), resolved: Vec::new() };
         let result = merge_span_files(Some(&base), &ours, &theirs, &[]);
         // No side changed why → keep the common value.
         assert_eq!(result.merged.why, "stable why");
@@ -2040,11 +2633,12 @@ mod tests {
             path: "a.txt".into(), start_line: 1, end_line: 3,
             algorithm: "rk64".into(), content_hash: "1111".into(),
         };
-        let ours = SpanFile { anchors: vec![a.clone()], why: "ours why".into(), config: SpanConfig::default() };
-        let theirs = SpanFile { anchors: vec![a.clone()], why: "theirs why".into(), config: SpanConfig::default() };
+        let ours = SpanFile { anchors: vec![a.clone()], why: "ours why".into(), config: SpanConfig::default(), resolved: Vec::new() };
+        let theirs = SpanFile { anchors: vec![a.clone()], why: "theirs why".into(), config: SpanConfig::default(), resolved: Vec::new() };
         let result = merge_span_files(None, &ours, &theirs, &[]);
         // No base span and divergent why — fail closed.
-        assert!(!result.unresolved.is_empty());
+        assert!(result.conflicts.why);
+        assert!(result.unresolved.is_empty());
     }
 
     #[test]
@@ -2061,8 +2655,8 @@ mod tests {
             path: "a.rs".into(), start_line: 10, end_line: 15,
             algorithm: "rk64".into(), content_hash: "ccc".into(),
         };
-        let ours = SpanFile { anchors: vec![z, a_later], why: String::new(), config: SpanConfig::default() };
-        let theirs = SpanFile { anchors: vec![a.clone()], why: String::new(), config: SpanConfig::default() };
+        let ours = SpanFile { anchors: vec![z, a_later], why: String::new(), config: SpanConfig::default(), resolved: Vec::new() };
+        let theirs = SpanFile { anchors: vec![a.clone()], why: String::new(), config: SpanConfig::default(), resolved: Vec::new() };
         let result = merge_span_files(None, &ours, &theirs, &[]);
         assert_eq!(result.merged.anchors.len(), 3);
         // Canonical: (path, start_line, end_line) ascending.
@@ -2082,8 +2676,8 @@ mod tests {
             path: "f.txt".into(), start_line: 1, end_line: 3,
             algorithm: "rk64".into(), content_hash: "line_hash".into(),
         };
-        let ours = SpanFile { anchors: vec![whole.clone()], why: String::new(), config: SpanConfig::default() };
-        let theirs = SpanFile { anchors: vec![line.clone()], why: String::new(), config: SpanConfig::default() };
+        let ours = SpanFile { anchors: vec![whole.clone()], why: String::new(), config: SpanConfig::default(), resolved: Vec::new() };
+        let theirs = SpanFile { anchors: vec![line.clone()], why: String::new(), config: SpanConfig::default(), resolved: Vec::new() };
         let result = merge_span_files(None, &ours, &theirs, &[]);
         // Whole-file and line-range anchors both preserved.
         assert_eq!(result.merged.anchors.len(), 2);

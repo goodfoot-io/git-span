@@ -155,6 +155,7 @@ pub fn generate(
             }],
             why: format!("bench span {i}"),
             config: crate::span_file::SpanConfig::default(),
+            resolved: Vec::new(),
         };
 
         let span_name = format!("span-{i}");

@@ -524,6 +524,7 @@ pub fn create_and_commit_span(
         anchors: records,
         why: why.to_string(),
         config: git_span_core::SpanConfig::default(),
+        resolved: Vec::new(),
     };
     let rel = format!(".span/{name}");
     if let Some(parent) = span_dir.join(name).parent() {

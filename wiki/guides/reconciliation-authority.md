@@ -13,7 +13,7 @@ keywords: [reconcile, drift, authority, source of truth, fail closed, doc rewrit
 is left drifting so it resurfaces for confirmation
 ([mod.rs](../../packages/git-span/src/cli/mod.rs#L78-L85)). This page governs
 that residue — the meaning-altering `Changed` and `Deleted` anchors
-([types.rs](../../packages/git-span/src/types.rs#L133-L144)).
+([types.rs](../../packages/git-span/src/types.rs#L137-L148)).
 
 Re-anchoring records the current content as the anchored baseline; the tool
 performs no semantic check. `add` and `why` (write mode) do end with a scoped
@@ -63,7 +63,7 @@ Fail closed on authority ambiguity, not on editing per se.
 - Show the doc diff in the final report; the user reviews after, not before.
 - Commit content and its `.span/` refresh together. Before that commit, anchors on
   uncommitted source appear as `ResolvedPendingCommit`
-  ([types.rs](../../packages/git-span/src/types.rs#L136-L138)).
+  ([types.rs](../../packages/git-span/src/types.rs#L140-L142)).
 - Keep the span's why across routine re-anchors; write a new one only when
   the subsystem itself changed
   ([mod.rs](../../packages/git-span/src/cli/mod.rs#L138-L140)).

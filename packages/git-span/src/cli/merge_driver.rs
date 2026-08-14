@@ -24,7 +24,7 @@
 use crate::cli::MergeDriverArgs;
 use crate::cli::drift_fix::format_residue_markers;
 use crate::cli::format::{format_same_side_collapse, format_sentinel_preserved};
-use crate::span_file::{AnchorRecord, SpanFile};
+use crate::span_file::SpanFile;
 use anyhow::Result;
 use git_span_core::merge_span_files;
 use std::io::Write;
@@ -77,7 +77,7 @@ pub(crate) fn run_merge_driver(args: MergeDriverArgs) -> Result<i32> {
     }
 
     // Step 4: Write the merged result to the %A (ours) path.
-    if result.unresolved.is_empty() {
+    if result.unresolved.is_empty() && !result.conflicts.any() {
         // Fully resolved — write clean span and exit 0.
         let serialized = result.merged.serialize();
         write_file(&args.ours, &serialized)?;
@@ -86,10 +86,9 @@ pub(crate) fn run_merge_driver(args: MergeDriverArgs) -> Result<i32> {
         // Partial resolution: write resolved anchors clean, wrap residue
         // in minimal conflict markers using the requested marker length.
         let output = serialize_with_driver_markers(
-            &result.merged,
-            &result.unresolved,
-            &ours.why,
-            &theirs.why,
+            &result,
+            &ours,
+            &theirs,
             args.marker_len,
         );
         write_file(&args.ours, &output)?;
@@ -104,10 +103,9 @@ pub(crate) fn run_merge_driver(args: MergeDriverArgs) -> Result<i32> {
 /// Build the serialized span output with minimal conflict markers wrapping
 /// unresolved residue, using the specified marker length.
 fn serialize_with_driver_markers(
-    merged: &git_span_core::span_file::SpanFile,
-    unresolved: &[git_span_core::UnresolvedAnchor],
-    ours_why: &str,
-    theirs_why: &str,
+    result: &git_span_core::SpanMergeResult,
+    ours: &SpanFile,
+    theirs: &SpanFile,
     marker_len: u32,
 ) -> String {
     // Build marker strings by repeating the marker character marker_len times.
@@ -115,21 +113,10 @@ fn serialize_with_driver_markers(
     let sep_marker = format!("{}\n", "=".repeat(marker_len as usize));
     let close_marker = format!("{} theirs\n", ">".repeat(marker_len as usize));
 
-    // Defensive sort by canonical (path, start_line, end_line) ordering,
-    // consistent with write_residue_span in drift_fix.rs.
-    let mut sorted = merged.anchors.clone();
-    sorted.sort_by(|a: &AnchorRecord, b: &AnchorRecord| {
-        a.path
-            .cmp(&b.path)
-            .then(a.start_line.cmp(&b.start_line))
-            .then(a.end_line.cmp(&b.end_line))
-    });
-
     format_residue_markers(
-        &sorted,
-        unresolved,
-        ours_why,
-        theirs_why,
+        result,
+        ours,
+        theirs,
         &open_marker,
         &sep_marker,
         &close_marker,

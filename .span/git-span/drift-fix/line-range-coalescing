@@ -1,3 +1,4 @@
+packages/git-span/src/cli/drift_fix.rs#L1372-L1649 rk64:d89d654384061c25
 packages/git-span/src/cli/drift_fix.rs#L1552-L1829 rk64:d89d654384061c25
 packages/git-span/tests/cases/cli_drift_fix.rs#L630-L690 rk64:0a5640acea83b455
 

@@ -39,8 +39,11 @@ fn write_span(repo: &TestRepo, name: &str, body: &str) -> Result<()> {
 
 /// Anchor lines (no `why` block) of a span declaration.
 fn anchor_lines(text: &str) -> Vec<&str> {
-    text.lines()
-        .filter(|l| !l.is_empty() && !l.starts_with("why:") && !l.starts_with('['))
+    text.split_once("\n\n")
+        .map(|(anchors, _)| anchors)
+        .unwrap_or(text)
+        .lines()
+        .filter(|line| !line.is_empty())
         .collect()
 }
 

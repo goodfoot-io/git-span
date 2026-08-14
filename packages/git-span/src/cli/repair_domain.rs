@@ -82,17 +82,11 @@ pub(crate) enum Repair {
     /// really in its domain.
     UnparseableAnchorResidue,
     /// The same stranded `[config]` header, in a block that sits in the **why
-    /// region**, after the separator. Split from the anchor-region variant
-    /// because the command the operator reaches for rewrites this variant but
-    /// leaves the anchor-region variant byte-identical.
-    ///
-    /// `[config]` is the span file's trailing block, so this is the shape a
-    /// default text merge actually produces when both sides edited settings and
-    /// the why prose above them diverged too. **No command repairs it — but
-    /// `drift --fix` is not inert on it.** It canonicalizes the two sides while
-    /// preserving their complete why/config state, leaves the residue visible,
-    /// and exits non-zero. Saying "leaves it byte-identical" here is still
-    /// false, but the rewrite is now lossless and script-discoverable.
+    /// region**, after the separator. `[config]` is the span file's trailing
+    /// block, so this is the shape a default text merge can produce when prose
+    /// and settings both diverge. The structural drift fixer can re-derive it
+    /// without dropping either region, then `resolve` can settle the canonical
+    /// residue.
     UnparseableWhyResidue,
     /// Choosing between two divergent values inside well-formed residue — the
     /// question `resolve`'s side flags answer.
@@ -147,6 +141,7 @@ pub(crate) const DRIFT_FIX: RepairDomain = RepairDomain {
         Repair::AnchorAddress,
         Repair::MarkerLabel,
         Repair::ResidueShape,
+        Repair::UnparseableWhyResidue,
     ],
 };
 
@@ -207,15 +202,9 @@ impl Repair {
     /// step.
     ///
     /// **The reason belongs here, on the variant, and not on the blocker** —
-    /// the same move [`commands_for`] already makes for command names. It was
-    /// written once per *blocker*, as a branch over the repair set, and the
-    /// non-separator arm then asserted a single behaviour of `drift --fix` for
-    /// every other unrepairable repair. The unparseable-side repair had two
-    /// variants by then and they behave oppositely, so the shared sentence was
-    /// true of one and false of the other: it promised a byte-identical file on
-    /// the very input where `drift --fix` deletes the operator's `[config]`.
-    /// Keyed on the variant, a claim can only be made about the case it was
-    /// written for.
+    /// the same move [`commands_for`] already makes for command names. A
+    /// trailing config block is now within the structural fixer's domain, so
+    /// only the genuinely inert anchor-region variant needs this explanation.
     fn no_command_reason(self) -> Option<&'static str> {
         match self {
             Repair::AnchorAddress
@@ -236,14 +225,7 @@ impl Repair {
                  the unparseable block before the separator it bails on this file and leaves it \
                  byte-identical.",
             ),
-            Repair::UnparseableWhyResidue => Some(
-                "`git span drift --fix` in particular does not settle this shape: it rewrites \
-                 the residue anyway into its canonical two-sided form, preserving each side's \
-                 why prose and `[config]` settings, and exits non-zero while that residue \
-                 remains. The rewrite is safe to inspect or discard, but a side still has to be \
-                 chosen by hand because `resolve` does not claim a `[config]` header inside a \
-                 conflict block.",
-            ),
+            Repair::UnparseableWhyResidue => None,
         }
     }
 }
@@ -287,8 +269,8 @@ pub(crate) const BLOCKER_RESIDUE_SHAPE: &[Repair] = &[Repair::ResidueShape];
 pub(crate) const BLOCKER_UNPARSEABLE_ANCHOR_RESIDUE: &[Repair] =
     &[Repair::UnparseableAnchorResidue];
 
-/// The same defect after the separator, where `drift --fix` is destructive
-/// rather than inert. Two constants because the two carry different reasons.
+/// The same defect after the separator, where the structural drift fixer can
+/// preserve and canonicalize both the prose and config regions.
 pub(crate) const BLOCKER_UNPARSEABLE_WHY_RESIDUE: &[Repair] = &[Repair::UnparseableWhyResidue];
 
 /// The blocker `resolve --rehash` reports when an anchor's source cannot be
@@ -355,39 +337,28 @@ mod tests {
         assert_eq!(named, vec!["git span drift --fix"]);
     }
 
-    /// The gate's own catch: a side that will not parse is not re-derivable,
-    /// so the shape refusal had to stop naming `drift --fix` for either half.
+    /// A pre-separator config header is not re-derivable, while the trailing
+    /// structural shape is within `drift --fix`'s domain.
     #[test]
-    fn unparseable_residue_side_admits_no_command() {
-        for blocker in [
-            BLOCKER_UNPARSEABLE_ANCHOR_RESIDUE,
-            BLOCKER_UNPARSEABLE_WHY_RESIDUE,
-        ] {
-            assert!(commands_for(blocker).is_empty());
-            assert!(!DRIFT_FIX.intersects(blocker));
-        }
+    fn unparseable_residue_routes_by_region() {
+        assert!(commands_for(BLOCKER_UNPARSEABLE_ANCHOR_RESIDUE).is_empty());
+        assert!(!DRIFT_FIX.intersects(BLOCKER_UNPARSEABLE_ANCHOR_RESIDUE));
+        assert_eq!(
+            commands_for(BLOCKER_UNPARSEABLE_WHY_RESIDUE)
+                .iter()
+                .map(|domain| domain.command)
+                .collect::<Vec<_>>(),
+            vec!["git span drift --fix"]
+        );
     }
 
-    /// The two unparseable-side variants must not share a sentence: they
-    /// describe opposite behaviours of the same command, so one text is
-    /// necessarily false about one of them. The anchor-region reason claims
-    /// byte-identity; the why-region reason must not, and must disclose the
-    /// rewrite instead of merely withholding the reassurance.
+    /// Only the unrecoverable anchor-region shape carries a no-command reason.
     #[test]
-    fn unparseable_variants_do_not_share_a_reason() {
+    fn only_anchor_region_has_a_no_command_reason() {
         let anchor = no_command_reason(BLOCKER_UNPARSEABLE_ANCHOR_RESIDUE);
         let why = no_command_reason(BLOCKER_UNPARSEABLE_WHY_RESIDUE);
-        assert_ne!(anchor, why);
         assert!(anchor.contains("leaves it byte-identical"));
-        assert!(
-            !why.contains("byte-identical"),
-            "the why-region variant is the one where `drift --fix` rewrites the file"
-        );
-        assert!(why.contains("preserving each side's") && why.contains("exits non-zero"));
-        assert!(
-            !why.contains("may leave") && !why.contains("might leave"),
-            "hedging trades a false claim for a vague one and still hides the rewrite"
-        );
+        assert!(why.is_empty());
     }
 
     /// **The pairing gate.** Every repair no command's domain covers must carry

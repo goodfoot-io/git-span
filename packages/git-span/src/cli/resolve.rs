@@ -42,7 +42,7 @@ use anyhow::Result;
 use git_span_core::UnresolvedAnchor;
 use git_span_core::{
     AnchorLineShape, SpanConfig, classify_anchor_line, has_conflict_markers, merge_span_files,
-    resolve_config, resolve_why_text,
+    resolve_config, resolve_resolved_section, resolve_why_text,
 };
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -64,8 +64,8 @@ pub const RESOLVE_JSON_SCHEMA_VERSION: u32 = 1;
 /// cases [`unreadable_stage_line`] tells apart.
 const CONFIG_LOSS_LINE: &str = "`[config]` was not recoverable from this input, so the span was \
      written with default settings (copy_detection=same-commit, ignore_whitespace=false, \
-     follow_moves=false). The residue writer never serializes `[config]` into the conflict text \
-     and no unmerged index stage could be read to supply one, so whether the span carried \
+     follow_moves=false). Neither side of the conflict text contained a `[config]` region and \
+     no unmerged index stage could be read to supply one, so whether the span carried \
      non-default settings before this conflict cannot be determined from here — check \
      `git log -p` on the span file if it matters, and restore them with a follow-up edit.";
 
@@ -287,8 +287,9 @@ impl Side {
 /// The stage blobs are frozen at the moment the conflict was created while the
 /// worktree file is live, so they supply only the three things the residue
 /// writer can silently drop from that live text: `base` (stage 1) for
-/// three-way arbitration, `[config]` (stages 2/3, grafted onto the
-/// text-sourced sides), and **theirs'** `why` when the text carries none.
+/// three-way arbitration, `[config]` (stages 2/3, grafted only when the
+/// worktree residue omits the region), and **theirs'** `why` when the text
+/// carries none.
 /// Anchors are never sourced from here under any circumstance.
 #[derive(Debug, Default)]
 struct StageEvidence {
@@ -313,22 +314,26 @@ struct StageEvidence {
     /// True when the supplement genuinely replaced theirs' empty text-sourced
     /// why with a non-empty stage value.
     why_recovered: bool,
+    /// The split worktree text carried a config region. The structural writer
+    /// serializes config residue now, so this live evidence outranks the frozen
+    /// index stages; when one arm is empty, that arm states the default config.
+    config_from_text: bool,
     /// Where each side's `[config]` value came from, as `(ours, theirs)`. Every
-    /// config label is derived from this: `[config]` is the one field no side
-    /// of the conflict *text* can speak about, so a label claiming the two
-    /// sides agreed — or that arbitration chose between them — has to be able
-    /// to point at what said so.
+    /// config label is derived from this so a claim of agreement or
+    /// arbitration can point at the evidence that supplied each value.
     config_provenance: (ConfigProvenance, ConfigProvenance),
 }
 
 /// What supplied one side's `[config]`, in report terms.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum ConfigProvenance {
-    /// No stage spoke for this side. Its config is whatever the input text
-    /// parsed to — which the residue writer never populates, so a *default*
-    /// value here is the absence of evidence rather than a stated setting.
+    /// Neither canonical residue nor an index stage spoke for this side. A
+    /// default value here is absence of evidence rather than a stated setting.
     #[default]
     Unread,
+    /// Canonical worktree residue supplied the config region. This is the live
+    /// resolution surface and is authoritative over an unmerged stage.
+    Text,
     /// A parsed unmerged index stage supplied it.
     Stage,
     /// The stage existed but could not be read, so the value was filled in as
@@ -356,12 +361,16 @@ impl StageRead {
     }
 }
 
+fn text_contains_config_region(text: &str) -> bool {
+    text.lines().any(|line| line.trim() == "[config]")
+}
+
 /// Read the unmerged index stages for `{span_root}/{name}` and supplement the
 /// text-sourced sides with what the residue writer drops.
 ///
-/// `ours`/`theirs` are mutated only in `.config` (unconditionally, when the
-/// corresponding stage blob exists) and `theirs.why` (only when the
-/// text-sourced value is empty). Their anchors are never touched.
+/// `ours`/`theirs` are mutated only in `.config` when the worktree text omitted
+/// the config region and in `theirs.why` when the text-sourced value is empty.
+/// Their anchors are never touched.
 ///
 /// **The why supplement is theirs-only, and that is a claim about the writer,
 /// not a convenience.** `format_residue_markers` carries a non-diverged why
@@ -396,6 +405,7 @@ fn load_stage_evidence(
     name: &str,
     ours: &mut SpanFile,
     theirs: &mut SpanFile,
+    config_from_text: bool,
 ) -> StageEvidence {
     let rel = format!("{span_root}/{name}");
     let entries = crate::git::index_entries(repo).unwrap_or_default();
@@ -445,11 +455,17 @@ fn load_stage_evidence(
             || staged_theirs.parsed().is_some(),
         unreadable,
         why_recovered: false,
-        config_provenance: (ConfigProvenance::Unread, ConfigProvenance::Unread),
+        config_from_text,
+        config_provenance: if config_from_text {
+            (ConfigProvenance::Text, ConfigProvenance::Text)
+        } else {
+            (ConfigProvenance::Unread, ConfigProvenance::Unread)
+        },
     };
 
-    // `[config]` never survives the residue writer, so a stage blob is
-    // strictly better evidence than the text whenever it exists.
+    // Canonical residue carries config as a structural region. The worktree is
+    // the live resolution surface, so once that region is present its values
+    // (including an empty/default arm) outrank the frozen index stages.
     //
     // An **unreadable** stage is the one case that must never become a value.
     // Leaving that side at `SpanConfig::default()` while the other side is
@@ -459,38 +475,40 @@ fn load_stage_evidence(
     // evidence is instead treated as *unchanged from base* — the base's value
     // if it parsed, else the other side's, else no graft at all — so the side
     // that does have evidence decides and nothing is invented.
-    let fallback_config = |other: &StageRead| -> Option<SpanConfig> {
-        staged_base
-            .parsed()
-            .or_else(|| other.parsed())
-            .map(|f| f.config)
-    };
-    evidence.config_provenance.0 = match &staged_ours {
-        StageRead::Parsed(staged) => {
-            ours.config = staged.config;
-            ConfigProvenance::Stage
-        }
-        StageRead::Unreadable => {
-            if let Some(config) = fallback_config(&staged_theirs) {
-                ours.config = config;
+    if !config_from_text {
+        let fallback_config = |other: &StageRead| -> Option<SpanConfig> {
+            staged_base
+                .parsed()
+                .or_else(|| other.parsed())
+                .map(|f| f.config)
+        };
+        evidence.config_provenance.0 = match &staged_ours {
+            StageRead::Parsed(staged) => {
+                ours.config = staged.config;
+                ConfigProvenance::Stage
             }
-            ConfigProvenance::Inferred
-        }
-        StageRead::Absent => ConfigProvenance::Unread,
-    };
-    evidence.config_provenance.1 = match &staged_theirs {
-        StageRead::Parsed(staged) => {
-            theirs.config = staged.config;
-            ConfigProvenance::Stage
-        }
-        StageRead::Unreadable => {
-            if let Some(config) = fallback_config(&staged_ours) {
-                theirs.config = config;
+            StageRead::Unreadable => {
+                if let Some(config) = fallback_config(&staged_theirs) {
+                    ours.config = config;
+                }
+                ConfigProvenance::Inferred
             }
-            ConfigProvenance::Inferred
-        }
-        StageRead::Absent => ConfigProvenance::Unread,
-    };
+            StageRead::Absent => ConfigProvenance::Unread,
+        };
+        evidence.config_provenance.1 = match &staged_theirs {
+            StageRead::Parsed(staged) => {
+                theirs.config = staged.config;
+                ConfigProvenance::Stage
+            }
+            StageRead::Unreadable => {
+                if let Some(config) = fallback_config(&staged_ours) {
+                    theirs.config = config;
+                }
+                ConfigProvenance::Inferred
+            }
+            StageRead::Absent => ConfigProvenance::Unread,
+        };
+    }
 
     // Theirs-only why supplement, per this function's doc comment.
     let text_ours_why = ours.why.clone();
@@ -650,14 +668,27 @@ pub fn run_resolve(repo: &gix::Repository, args: ResolveArgs, span_root: &str) -
     let (ours_text, theirs_text) = split_conflict_markers(&shaped).ok_or_else(|| {
         anyhow::anyhow!("internal error: span `{name}` reported as conflicted but no markers found")
     })?;
+    // A config region in either split arm proves that the structural residue
+    // is carrying this field. The opposite empty arm then states the default
+    // config rather than an omission, matching the writer's serialization.
+    let config_from_text =
+        text_contains_config_region(&ours_text) || text_contains_config_region(&theirs_text);
     let mut ours = SpanFile::parse(&ours_text).map_err(|e| parse_error(&name, "ours", e))?;
     let mut theirs = SpanFile::parse(&theirs_text).map_err(|e| parse_error(&name, "theirs", e))?;
 
-    let stages = load_stage_evidence(repo, span_root, &name, &mut ours, &mut theirs);
-    if !stages.available {
+    let stages = load_stage_evidence(
+        repo,
+        span_root,
+        &name,
+        &mut ours,
+        &mut theirs,
+        config_from_text,
+    );
+    if !stages.available && !stages.config_from_text {
         eprintln!(
-            "warning: no unmerged index stages found for `{name}`; [config] divergence a prior \
-             partial merge may have already dropped cannot be recovered."
+            "warning: no unmerged index stages found for `{name}`, and the conflict text has \
+             no `[config]` region; settings a prior partial merge may have omitted cannot be \
+             recovered."
         );
     }
     if !stages.unreadable.is_empty() {
@@ -803,11 +834,11 @@ fn marker_run_len(line: &str, c: char) -> Option<usize> {
 /// The claim is derived from the writer, which emits residue in two regions
 /// split by the blank-line separator: **at most one** conflict block before it
 /// (all divergent anchors, coalesced into a single block) and **at most one**
-/// after it (both sides' divergent why). A file with two blocks on the same
+/// after it (the contiguous range of divergent why/`[resolved]`/`[config]`
+/// regions). A file with two blocks on the same
 /// side of the separator is therefore not the writer's output — it is what
 /// Git's default text merge produces when the span driver is not registered,
-/// and `resolve`'s settlement is not verified against it. `[config]` is never
-/// serialized into residue at all, so one inside a block is refused too.
+/// and `resolve`'s settlement is not verified against it.
 ///
 /// **Counting blocks is not enough, and that is what this function got wrong
 /// before.** The span format marks the anchor/why boundary with a blank line
@@ -911,6 +942,7 @@ fn verify_driver_shape(raw: &str, name: &str) -> std::result::Result<String, Cli
     let mut why_blocks = 0usize;
     let mut in_why_region = false;
     let mut open_len: Option<usize> = None;
+    let mut canonical_writer_block = false;
     // Inside the diff3 base region the content is discarded by the split, so
     // it is neither an anchor nor a why and is not checked.
     let mut in_base = false;
@@ -923,6 +955,7 @@ fn verify_driver_shape(raw: &str, name: &str) -> std::result::Result<String, Cli
                 anchor_blocks += 1;
             }
             open_len = Some(len);
+            canonical_writer_block = line[len..].trim() == "ours";
             in_base = false;
             out.push_str("<<<<<<<");
             out.push_str(&line[len..]);
@@ -932,6 +965,7 @@ fn verify_driver_shape(raw: &str, name: &str) -> std::result::Result<String, Cli
         if let Some(len) = open_len {
             if let Some(close_len) = marker_run_len(line, '>') {
                 open_len = None;
+                canonical_writer_block = false;
                 in_base = false;
                 out.push_str(">>>>>>>");
                 out.push_str(&line[close_len..]);
@@ -958,10 +992,12 @@ fn verify_driver_shape(raw: &str, name: &str) -> std::result::Result<String, Cli
                 out.push('\n');
                 continue;
             }
-            if line.trim() == "[config]" {
-                // The region decides the blocker, because it decides what
-                // `drift --fix` does to the file — nothing, or a rewrite that
-                // drops the `[config]` block the header belongs to.
+            if line.trim() == "[config]" && (!in_why_region || !canonical_writer_block) {
+                // The structural residue writers use canonical `ours` / `theirs`
+                // labels and may now carry a real config-region divergence.
+                // A config header in any other block is still not a shape this
+                // reader can attribute to those writers, and a pre-separator
+                // config header can never be valid.
                 let (region, blocker) = if in_why_region {
                     ("why text", repair_domain::BLOCKER_UNPARSEABLE_WHY_RESIDUE)
                 } else {
@@ -972,8 +1008,8 @@ fn verify_driver_shape(raw: &str, name: &str) -> std::result::Result<String, Cli
                 };
                 return Err(refusal(
                     format!(
-                        "Span `{name}` has a `[config]` header inside a conflict block in its \
-                         {region}, so that side does not parse as a span file."
+                        "Span `{name}` has a `[config]` header inside a non-canonical conflict \
+                         block in its {region}."
                     ),
                     blocker,
                 ));
@@ -1165,19 +1201,11 @@ fn boundary_violation(line: &str, in_why_region: bool, name: &str) -> Option<Str
 fn shape_refusal_steps(blocker: &'static [repair_domain::Repair]) -> Vec<NextStep> {
     let commands = repair_domain::commands_for(blocker);
     if commands.is_empty() {
-        let mut steps = vec![
+        return vec![
             NextStep::Prose(format!(
                 "No git-span command repairs this. {}",
                 repair_domain::no_command_reason(blocker)
             )),
-            // This paragraph used to instruct the operator to "lift any
-            // `[config]` header out of the block entirely" as a plain fact
-            // about the file in front of them. It presupposes the header is
-            // still there, and an operator who ran `drift --fix` first arrives
-            // with it already gone and nothing in the file recording that it
-            // existed — a tidy little why conflict that looks finished. So the
-            // instruction is conditional, and the sentence that matters most
-            // to that operator is where their settings actually survived.
             NextStep::Prose(
                 "Edit the span file by hand: move each line inside the conflict block to the \
                  side of the blank-line separator it belongs on — anchor records before it, \
@@ -1187,18 +1215,6 @@ fn shape_refusal_steps(blocker: &'static [repair_domain::Repair]) -> Vec<NextSte
                     .into(),
             ),
         ];
-        // Only on the variant where a `[config]` block can already have been
-        // destroyed before the operator got here.
-        if blocker.contains(&repair_domain::Repair::UnparseableWhyResidue) {
-            steps.push(NextStep::Prose(
-                "If the file no longer shows a `[config]` block that it used to carry, do not \
-                 finish by hand: the settings live in the unmerged index stages, `git span \
-                 resolve` reads them from there, and `git add` is what discards them. \
-                 `git show :2:<path>` prints the `ours` stage if you want to look first."
-                    .into(),
-            ));
-        }
-        return steps;
     }
     let mut steps = vec![NextStep::Prose(
         "If this came from Git's default text merge (the span merge driver not registered in \
@@ -1297,16 +1313,14 @@ fn evaluate_side(
 
     // Step 7: kernel merge.
     let result = merge_span_files(None, ours, theirs, &source_files);
-    let anchor_residue: Vec<&UnresolvedAnchor> = result
-        .unresolved
-        .iter()
-        .filter(|u| !u.path.is_empty())
-        .collect();
+    let anchor_residue: Vec<&UnresolvedAnchor> = result.unresolved.iter().collect();
 
-    // Step 8: why/config, computed independently of the kernel's collapsed
-    // synthetic marker so each divergence is reported for what it is.
+    // Step 8: why/config/[resolved] sections are settled independently so
+    // each divergence is reported for what it is.
     let (why, why_diverged) = resolve_why_text(stages.base.as_ref(), ours, theirs);
     let (config, config_diverged) = resolve_config(stages.base.as_ref(), ours, theirs);
+    let (resolved, resolved_diverged) =
+        resolve_resolved_section(stages.base.as_ref(), ours, theirs);
 
     let mut merged = result.merged.clone();
 
@@ -1332,6 +1346,9 @@ fn evaluate_side(
             }
             if config_diverged {
                 failures.push("`[config]` diverged between ours and theirs".to_string());
+            }
+            if resolved_diverged {
+                failures.push("`[resolved]` records diverged between ours and theirs".to_string());
             }
             if !failures.is_empty() {
                 return SideOutcome::Failed {
@@ -1376,6 +1393,11 @@ fn evaluate_side(
     };
     merged.why = chosen_why;
     merged.config = chosen_config;
+    merged.resolved = if resolved_diverged && side == Side::Theirs {
+        resolve_resolved_section(stages.base.as_ref(), theirs, ours).0
+    } else {
+        resolved
+    };
 
     // Step 9: canonical order — step 7's manually pushed entries are not
     // necessarily sorted.
@@ -1398,7 +1420,8 @@ fn evaluate_side(
             .get(&anchor_key(a))
             .is_some_and(|t| t.algorithm != a.algorithm || t.content_hash != a.content_hash)
     });
-    let structural_only = !contested_anchor && !why_diverged && !config_diverged;
+    let structural_only =
+        !contested_anchor && !why_diverged && !config_diverged && !resolved_diverged;
 
     // Anchors whose source cannot be read at all. Under `--rehash` that is a
     // refusal above and this set is empty by construction; under a side flag it
@@ -1446,7 +1469,7 @@ fn evaluate_side(
     // `available` alone cannot gate these: gating on it is what suppressed
     // loss reporting on exactly the run where a stage blob failed to read.
     if !stages.available || !stages.parsed_any {
-        if merged.config == SpanConfig::default() {
+        if !stages.config_from_text && merged.config == SpanConfig::default() {
             warnings.push(CONFIG_LOSS_LINE.to_string());
         }
         if merged.why.trim().is_empty() {
@@ -1802,21 +1825,13 @@ fn field_label(
     }
 }
 
-/// [`field_label`] for `[config]`, which compares by value rather than text —
-/// and, unlike `why`, has no side of the conflict *text* to compare at all.
+/// [`field_label`] for `[config]`, which compares by value rather than text.
+/// Every branch asks what *stated* each side's value before it describes the
+/// outcome:
 ///
-/// [`crate::cli::drift_fix::format_residue_markers`] never serializes
-/// `[config]` into residue, so when no stage supplies one both split sides
-/// parse as `SpanConfig::default()`. They are then equal because nothing was
-/// read, not because the sides agreed, and the old `unchanged` printed that
-/// non-comparison as a summary two lines above [`CONFIG_LOSS_LINE`] saying the
-/// settings were gone. Every branch below therefore asks what *stated* each
-/// side's value before it describes the outcome:
-///
+/// * canonical worktree residue is authoritative for both arms, including an
+///   empty arm that states the default config;
 /// * a value from a parsed stage is stated by that side;
-/// * a value the input text carried is stated only when it is non-default,
-///   since the writer emits no `[config]` and a default is what parsing
-///   nothing produces;
 /// * a value filled in from base because the side's stage could not be read is
 ///   [`ConfigProvenance::Inferred`] and is stated by nobody.
 ///
@@ -1832,7 +1847,7 @@ fn field_label_config(
     provenance: (ConfigProvenance, ConfigProvenance),
 ) -> String {
     let stated = |prov: ConfigProvenance, config: &SpanConfig| match prov {
-        ConfigProvenance::Stage => true,
+        ConfigProvenance::Text | ConfigProvenance::Stage => true,
         ConfigProvenance::Inferred => false,
         ConfigProvenance::Unread => *config != SpanConfig::default(),
     };

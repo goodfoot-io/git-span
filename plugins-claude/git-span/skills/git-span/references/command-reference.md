@@ -60,9 +60,14 @@ file, missing span name, unmatched literal glob) — see `references/inspect.md`
 `drift` exits 1 when it finds drift, 0 when clean; `--no-exit-code` forces exit
 0 regardless of findings (report-only).
 
-`git span show <name>` emits the span file's content (name, why, anchors, and
-the `[config]` block). To read a span at a past commit, use ordinary git
-history on the tracked file: `git show <commit-ish>:.span/<name>`.
+`git span show <name>` emits the span file's content (name, why, anchors,
+resolution audit records, and the `[config]` block). Each `[[resolved]]` entry
+names the timestamp, `add`/`replace` command, address, recorded hash, and a
+computed `state`: `current` while the anchor at that identity still has the
+recorded hash, `stale` when its hash changed or the identity is gone. Stale
+records are provenance, not a command gate, and are never deleted
+automatically. To read a span at a past commit, use ordinary git history on the
+tracked file: `git show <commit-ish>:.span/<name>`.
 
 `git span tree <glob>...` traces blast radius: it renders a clique-grouped
 impact tree rooted at the matched anchor paths, expanding outward through span
@@ -153,6 +158,21 @@ unknown name prints `` `<name>` has no why recorded. `` at exit 0, and
 a positional argument (or piped stdin) on an unknown name silently **creates** a new, anchor-less span with that
 why. If a `why` you expected to update instead reads as freshly created,
 double-check the span name for typos with `git span list`.
+
+## Resolution audit records
+
+When `git span add` or `git span replace` retires an unverified
+duplicate-identity sentinel, it records that operator decision in the span
+file's `[resolved]` section. There is one record per anchor identity; resolving
+the same identity again replaces its prior record. The section is maintained
+by the CLI, preserved by ordinary span edits and merges, and appears before
+`[config]`; do not hand-edit it to make a stale record look current.
+
+The record is tied to the hash that was installed when the operator named the
+address. Use `git span show <name>` to inspect `state = "current"` or
+`state = "stale"`; age alone does not expire a matching record, while a hash
+change makes it stale immediately. JSON mutation output is unchanged—the
+audit trail is the tracked span file and the TOML-style `show` output.
 
 ## Configuration
 

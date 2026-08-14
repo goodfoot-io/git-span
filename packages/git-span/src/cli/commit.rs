@@ -26,7 +26,8 @@ use crate::types::{
 use anyhow::{Context, Result};
 use fs4::fs_std::FileExt;
 use git_span_core::{
-    RK64_ALGORITHM, carried_sentinel, cheap_fingerprint_with_extent, rk64_to_hex,
+    RK64_ALGORITHM, ResolveCommand, ResolvedRecord, carried_sentinel, cheap_fingerprint_with_extent,
+    rk64_to_hex,
 };
 use std::fmt::Write as FmtWrite;
 use std::fs::File;
@@ -422,6 +423,7 @@ pub(crate) fn read_worktree_span(
         Ok(SpanFile {
             anchors: Vec::new(),
             why: String::new(),
+            resolved: Vec::new(),
             config: crate::span_file::SpanConfig::default(),
         })
     }
@@ -506,6 +508,26 @@ fn remove_all_at_identity(
         }
     });
     removed
+}
+
+/// Record a collapse resolution in the span file's `[resolved]` section:
+/// one record per identity, the latest resolution replacing any earlier one
+/// at the same `(path, start_line, end_line)`.
+///
+fn upsert_resolved_record(records: &mut Vec<ResolvedRecord>, record: ResolvedRecord) {
+    if let Some(existing) = records.iter_mut().find(|existing| {
+        existing.path == record.path
+            && existing.start_line == record.start_line
+            && existing.end_line == record.end_line
+    }) {
+        *existing = record;
+    } else {
+        records.push(record);
+    }
+}
+
+fn resolution_timestamp() -> String {
+    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
 /// Check for prefix collision between a new span name and existing worktree
@@ -1070,6 +1092,29 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result
             // a paragraph.
             let retired = remove_all_at_identity(&mut span_file.anchors, path, start_line, end_line);
             let retired_sentinels = retired.iter().filter(|r| carried_sentinel(r)).count();
+
+            // The durable half of the acknowledgement: a sentinel retired
+            // here is a human, not a hash, deciding the coupling is correct,
+            // and the decision is recorded in the span file's `[resolved]`
+            // section so it outlives this invocation. The record is a
+            // parallel mutation on `span_file.resolved` at the same point as
+            // the anchor push below — before `write_worktree_span`, so the
+            // record is part of the persisted file.
+            if retired_sentinels > 0 {
+                upsert_resolved_record(
+                    &mut span_file.resolved,
+                    ResolvedRecord {
+                        timestamp: resolution_timestamp(),
+                        command: ResolveCommand::Add,
+                        path: path.clone(),
+                        start_line,
+                        end_line,
+                        algorithm: algorithm.clone(),
+                        content_hash: content_hash.clone(),
+                    },
+                );
+            }
+
             span_file.anchors.push(AnchorRecord {
                 path: path.clone(),
                 start_line,
@@ -1205,6 +1250,9 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result
                     retired_sentinels,
                     if retired_sentinels == 1 { "" } else { "s" },
                     args.name,
+                );
+                println!(
+                    "The resolution is recorded in the span file's `[resolved]` section."
                 );
             }
 
@@ -1543,6 +1591,25 @@ pub fn run_replace(repo: &gix::Repository, args: ReplaceArgs, span_root: &str) -
         let _perf = crate::perf::span("replace.process");
         hash_anchor_content(repo, &new_path, &new_extent, None, &index_snapshot)?
     };
+    // The durable half of the acknowledgement: a sentinel retired here is a
+    // human, not a hash, deciding where the coupled content lives, and the
+    // decision is recorded in the span file's `[resolved]` section so it
+    // outlives this invocation — at the new identity, with the `replace`
+    // command naming the move.
+    if retired_sentinels > 0 {
+        upsert_resolved_record(
+            &mut span_file.resolved,
+            ResolvedRecord {
+                timestamp: resolution_timestamp(),
+                command: ResolveCommand::Replace,
+                path: new_path.clone(),
+                start_line: new_start,
+                end_line: new_end,
+                algorithm: algorithm.clone(),
+                content_hash: content_hash.clone(),
+            },
+        );
+    }
     {
         span_file.anchors.push(AnchorRecord {
             path: new_path.clone(),
@@ -1614,6 +1681,9 @@ pub fn run_replace(repo: &gix::Repository, args: ReplaceArgs, span_root: &str) -
                     retired_sentinels,
                     if retired_sentinels == 1 { "" } else { "s" },
                     args.new_anchor
+                );
+                println!(
+                    "The resolution is recorded in the span file's `[resolved]` section."
                 );
             }
             if drift_free {
@@ -2399,6 +2469,7 @@ mod tests {
             }],
             why: "first write".into(),
             config: crate::span_file::SpanConfig::default(),
+            resolved: Vec::new(),
         };
 
         // First write: creates the file.
@@ -2419,6 +2490,7 @@ mod tests {
             }],
             why: "second write".into(),
             config: crate::span_file::SpanConfig::default(),
+            resolved: Vec::new(),
         };
         write_worktree_span(&repo, ".span", "test/atomic", &mut span2).unwrap();
 
@@ -2457,6 +2529,7 @@ mod tests {
             ],
             why: "atomic write verification".into(),
             config: crate::span_file::SpanConfig::default(),
+            resolved: Vec::new(),
         };
 
         write_worktree_span(&repo, ".span", "test/atomic", &mut span).unwrap();
@@ -2513,6 +2586,7 @@ mod tests {
             ],
             why: String::new(),
             config: crate::span_file::SpanConfig::default(),
+            resolved: Vec::new(),
         };
 
         write_worktree_span(&repo, ".span", "test/sorted", &mut span).unwrap();
@@ -2555,6 +2629,7 @@ mod tests {
             ],
             why: String::new(),
             config: crate::span_file::SpanConfig::default(),
+            resolved: Vec::new(),
         };
 
         write_worktree_span(&repo, ".span", "test/sorted", &mut span2).unwrap();

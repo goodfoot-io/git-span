@@ -58,6 +58,7 @@ pub mod poisoned_span_recovery;
 pub mod promisor_missing_reproduction;
 pub mod read_span_integration;
 pub mod replace;
+pub mod resolved_section;
 pub mod retired_and_reserved_names;
 pub mod round2_eval_qa_fixes;
 pub mod round2_eval_regressions;

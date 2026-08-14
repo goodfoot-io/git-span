@@ -74,6 +74,7 @@ fn write_span(workdir: &Path, name: &str, anchors: &[(&str, u32, u32)], why: &st
         anchors: records,
         why: why.to_string(),
         config: git_span_core::SpanConfig::default(),
+        resolved: Vec::new(),
     };
     let span_dir = workdir.join(SPAN_ROOT);
     std::fs::create_dir_all(&span_dir).expect("mkdir .span");

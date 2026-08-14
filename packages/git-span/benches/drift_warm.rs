@@ -114,6 +114,7 @@ fn build_fixture() -> Fixture {
         let mf = git_span::span_file::SpanFile {
             anchors: records,
             why: format!("span {m} covers files around {m}"),
+            resolved: Vec::new(),
             config: git_span_core::SpanConfig::default(),
         };
         fs::write(p.join(".span").join(&slug), mf.serialize()).expect("write span file");

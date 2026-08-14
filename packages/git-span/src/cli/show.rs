@@ -271,13 +271,30 @@ struct AnchorEntryToml {
     extent: AnchorExtent,
 }
 
+/// One `[resolved]` record rendered by `git span show`, with the
+/// current/stale state of the identity it records: `current` while the
+/// anchor at that identity still carries the recorded hash, `stale` when
+/// it differs or the identity is gone.
+#[derive(Serialize)]
+struct ResolvedEntryToml {
+    timestamp: String,
+    command: String,
+    address: String,
+    hash: String,
+    state: String,
+}
+
 /// Top-level TOML shape for `git span show`. Omits the compatibility
-/// `anchors` field (`Vec<String>`) and any live-resolution state.
+/// `anchors` field (`Vec<String>`) and any live-resolution state. The
+/// `resolved` list is omitted while empty so section-less spans render
+/// byte-identically to their pre-section shape.
 #[derive(Serialize)]
 struct SpanToml {
     name: String,
     why: String,
     anchors: Vec<AnchorEntryToml>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    resolved: Vec<ResolvedEntryToml>,
     config: SpanConfig,
 }
 
@@ -335,6 +352,39 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs, span_root: &str) -> Resu
 
     let _perf = crate::perf::span("show.render-default");
 
+    let resolved = span
+        .resolved
+        .iter()
+        .map(|record| {
+            let expected_hash = format!("{}:{}", record.algorithm, record.content_hash);
+            let current = span.anchors.iter().any(|(_, anchor)| {
+                let (start, end) = match anchor.extent {
+                    AnchorExtent::WholeFile => (0, 0),
+                    AnchorExtent::LineRange { start, end } => (start, end),
+                };
+                anchor.path == record.path
+                    && start == record.start_line
+                    && end == record.end_line
+                    && anchor.stored_hash == expected_hash
+            });
+            let address = if record.start_line == 0 && record.end_line == 0 {
+                record.path.clone()
+            } else {
+                format!(
+                    "{}#L{}-L{}",
+                    record.path, record.start_line, record.end_line
+                )
+            };
+            ResolvedEntryToml {
+                timestamp: record.timestamp.clone(),
+                command: record.command.wire_name().to_string(),
+                address,
+                hash: expected_hash,
+                state: if current { "current" } else { "stale" }.to_string(),
+            }
+        })
+        .collect();
+
     let toml_output = SpanToml {
         name: span.name.clone(),
         why: span.why.trim_end_matches('\n').to_string(),
@@ -347,6 +397,7 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs, span_root: &str) -> Resu
                 extent: a.extent,
             })
             .collect(),
+        resolved,
         config: span.config,
     };
 
@@ -694,6 +745,7 @@ mod tests {
         let mf = crate::span_file::SpanFile {
             anchors: Vec::new(),
             why: format!("span {name}"),
+            resolved: Vec::new(),
             config: crate::span_file::SpanConfig::default(),
         };
         std::fs::write(&span_path, mf.serialize()).unwrap();

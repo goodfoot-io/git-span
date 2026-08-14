@@ -224,6 +224,7 @@ fn setup_interior_anchor_repo() -> BenchRepo {
             content_hash: mk_hash(src_body.as_bytes()),
         }],
         why: "interior-anchor corpus: ordinary target span".to_string(),
+        resolved: Vec::new(),
         config: git_span_core::SpanConfig::default(),
     };
     fs::write(p.join(".span").join("target"), target_mf.serialize()).expect("write target span");
@@ -245,6 +246,7 @@ fn setup_interior_anchor_repo() -> BenchRepo {
             content_hash: mk_hash(&target_bytes),
         }],
         why: "interior-anchor corpus: anchor points inside .span/".to_string(),
+        resolved: Vec::new(),
         config: git_span_core::SpanConfig::default(),
     };
     fs::write(p.join(".span").join("interior"), interior_mf.serialize())

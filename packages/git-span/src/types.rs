@@ -52,7 +52,7 @@ pub struct Anchor {
 // `crate::types::CopyDetection` / `crate::types::SpanConfig` path is
 // unchanged. Serialized as kebab-case wire names: `off`, `same-commit`,
 // `any-file-in-commit`, `any-file-in-repo`.
-pub use git_span_core::{CopyDetection, SpanConfig};
+pub use git_span_core::{CopyDetection, ResolvedRecord, SpanConfig};
 
 pub const DEFAULT_COPY_DETECTION: CopyDetection = CopyDetection::SameCommit;
 pub const DEFAULT_IGNORE_WHITESPACE: bool = false;
@@ -90,6 +90,7 @@ pub fn span_from_file(name: &str, file: &SpanFile) -> Span {
         name: name.to_string(),
         anchors,
         why: file.why.clone(),
+        resolved: file.resolved.clone(),
         config: file.config,
     }
 }
@@ -103,6 +104,9 @@ pub struct Span {
     pub anchors: Vec<(String, Anchor)>,
     /// The span's why prose (from the span file, after the first blank line).
     pub why: String,
+    /// Collapse-resolution records from the span file's `[resolved]`
+    /// section, in file order.
+    pub resolved: Vec<ResolvedRecord>,
     /// Resolver options for all anchors in this span.
     pub config: SpanConfig,
 }
