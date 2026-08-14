@@ -203,7 +203,93 @@ fn service_identity_bootstrap_and_strict_fallback() -> Result<()> {
     }
     Ok(())
 }
-contract_case!(watch_closure_liveness_and_backpressure);
+#[test]
+fn watch_closure_liveness_and_backpressure() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    assert!(
+        repo.run_span(["add", "watched", "file1.txt#L1-L2"])?
+            .status
+            .success()
+    );
+    repo.commit_all("anchor watched context")?;
+    let alternate_store = TestRepo::new()?;
+    let alternate_objects = alternate_store.path().join(".git/objects");
+    repo.write_file(
+        ".git/objects/info/alternates",
+        &format!("{}\n", alternate_objects.display()),
+    )?;
+    let query = ["--perf", "context", "file1.txt#L1-L2", "--format", "json"];
+    assert!(repo.run_span(query)?.status.success());
+    assert!(repo.run_span(query)?.status.success());
+
+    std::fs::write(alternate_objects.join("context-watch-probe"), b"changed")?;
+    let alternate_changed = repo.run_span(query)?;
+    assert!(alternate_changed.status.success());
+    assert!(
+        perf_counter(
+            &String::from_utf8(alternate_changed.stderr)?,
+            "context.service-invalidations"
+        ) > 0,
+        "alternate object event was not observed"
+    );
+
+    assert!(
+        repo.run_span(["why", "watched", "Watcher-visible rationale."])?
+            .status
+            .success()
+    );
+    let definition_changed = repo.run_span(query)?;
+    assert!(definition_changed.status.success());
+    let document: serde_json::Value = serde_json::from_slice(&definition_changed.stdout)?;
+    assert_eq!(document["spans"][0]["why"], "Watcher-visible rationale.");
+
+    repo.write_file(
+        "file1.txt",
+        "LINE1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+    let worktree_changed = repo.run_span(query)?;
+    assert!(worktree_changed.status.success());
+    let document: serde_json::Value = serde_json::from_slice(&worktree_changed.stdout)?;
+    assert_eq!(
+        document["spans"][0]["anchors"][0]["status"]["code"],
+        "CHANGED"
+    );
+    repo.run_git(["add", "file1.txt", ".span/watched"])?;
+    assert!(repo.run_span(query)?.status.success());
+    repo.commit_all("advance watched source and definition")?;
+    assert!(repo.run_span(query)?.status.success());
+
+    let expected = repo.run_span(["context", "file1.txt#L1-L2", "--format", "json"])?;
+    let binary = std::path::PathBuf::from(env!("CARGO_BIN_EXE_git-span"));
+    let cwd = repo.path().to_path_buf();
+    let readers = (0..12)
+        .map(|_| {
+            let binary = binary.clone();
+            let cwd = cwd.clone();
+            std::thread::spawn(move || {
+                std::process::Command::new(binary)
+                    .current_dir(cwd)
+                    .args(["context", "file1.txt#L1-L2", "--format", "json"])
+                    .output()
+            })
+        })
+        .collect::<Vec<_>>();
+    for reader in readers {
+        let output = reader.join().expect("context reader panicked")?;
+        assert!(output.status.success());
+        assert_eq!(output.stdout, expected.stdout);
+    }
+    Ok(())
+}
+
+fn perf_counter(stderr: &str, label: &str) -> u64 {
+    let prefix = format!("git-span perf: {label} ");
+    stderr
+        .lines()
+        .find_map(|line| line.strip_prefix(&prefix))
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0)
+}
 contract_case!(atomic_recovery_and_operation_id_replay);
 contract_case!(controlled_repair_epoch);
 contract_case!(strict_tombstone_and_definition_capture);

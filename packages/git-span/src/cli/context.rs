@@ -610,6 +610,42 @@ pub(crate) fn build_service_seed(
 
     let workdir = crate::git::work_dir(repo)?.to_path_buf();
     let mut external_watch_roots = BTreeSet::new();
+    let mut object_roots = vec![crate::git::common_dir(repo).join("objects")];
+    if let Some(primary) = std::env::var_os("GIT_OBJECT_DIRECTORY") {
+        object_roots.push(std::path::PathBuf::from(primary));
+    }
+    if let Some(alternates) = std::env::var_os("GIT_ALTERNATE_OBJECT_DIRECTORIES") {
+        object_roots.extend(std::env::split_paths(&alternates));
+    }
+    let mut visited_objects = BTreeSet::new();
+    while let Some(object_root) = object_roots.pop() {
+        let object_root = std::fs::canonicalize(&object_root).with_context(|| {
+            format!(
+                "canonicalize context object database {}",
+                object_root.display()
+            )
+        })?;
+        if !visited_objects.insert(object_root.clone()) {
+            continue;
+        }
+        if object_root != crate::git::common_dir(repo).join("objects") {
+            external_watch_roots.insert(object_root.clone());
+        }
+        let alternates = object_root.join("info/alternates");
+        let contents = match std::fs::read_to_string(&alternates) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error).context("read Git alternate object databases"),
+        };
+        for line in contents.lines().filter(|line| !line.is_empty()) {
+            let candidate = Path::new(line);
+            object_roots.push(if candidate.is_absolute() {
+                candidate.to_path_buf()
+            } else {
+                object_root.join(candidate)
+            });
+        }
+    }
     for dependency in &capture.token.filters {
         let Ok(parts) = shell_words::split(&dependency.command) else {
             continue;
