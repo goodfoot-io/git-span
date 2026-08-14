@@ -1,7 +1,7 @@
 packages/agent-hooks/package.json#L10-L10 rk64:74f3313fb3a4dfa7
 packages/agent-hooks/src/claude/advisor.ts rk64:9e9bb7d8b444b363
 packages/agent-hooks/src/claude/post-tool-use-failure.ts rk64:b35c6edb0ba61e79
-packages/agent-hooks/src/claude/post-tool-use.ts rk64:07f21b98a6ecca41
+packages/agent-hooks/src/claude/post-tool-use.ts rk64:4a06a44de7ee157e
 packages/agent-hooks/src/claude/session-end.ts rk64:d2072ad540a58558
 packages/agent-hooks/src/claude/static-plan.ts rk64:5899ff9fb4a91366
 

@@ -1,4 +1,6 @@
+packages/agent-hooks/src/common/agent-hooks-common.ts#L242-L270 rk64:f311ec1059cae231
 packages/agent-hooks/src/common/agent-hooks-common.ts#L262-L290 rk64:f311ec1059cae231
 packages/agent-hooks/test/common/bash-attribution.test.ts#L335-L376 rk64:5fded359d19a88b8
+packages/agent-hooks/test/common/bash-attribution.test.ts#L336-L377 rk64:5fded359d19a88b8
 
 The static touch pipeline preserves pre-tracked delete proof after an index-changing git rm so deleted-path spans reach the real git span CLI's dead-anchor behavior, while agent-hooks-common's drift-row classification decides which resulting rows are dependency debt.
