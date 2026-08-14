@@ -1457,15 +1457,13 @@ pub fn resolve_resolved_section(
     }
 
     fn index(records: &[ResolvedRecord]) -> HashMap<(&str, u32, u32), &ResolvedRecord> {
-        records
-            .iter()
-            .map(|record| {
-                (
-                    (record.path.as_str(), record.start_line, record.end_line),
-                    record,
-                )
-            })
-            .collect()
+        let mut index = HashMap::new();
+        for record in records {
+            index
+                .entry((record.path.as_str(), record.start_line, record.end_line))
+                .or_insert(record);
+        }
+        index
     }
 
     let mut keys = std::collections::BTreeSet::new();
@@ -2086,6 +2084,22 @@ mod tests {
         let (records, diverged) = resolve_resolved_section(Some(&span), &span, &span);
         assert!(!diverged);
         assert_eq!(records, span.resolved);
+    }
+
+    #[test]
+    fn resolve_resolved_section_preserves_first_duplicate_on_non_noop_input() {
+        let first = resolved_record("a.rs", "first");
+        let mut duplicate = resolved_record("a.rs", "second");
+        duplicate.timestamp = "2026-08-13T12:35:56Z".into();
+        duplicate.command = ResolveCommand::Replace;
+        let base = resolved_span(vec![first.clone()]);
+        let ours = resolved_span(vec![first.clone(), duplicate]);
+        let theirs = base.clone();
+
+        let (records, diverged) = resolve_resolved_section(Some(&base), &ours, &theirs);
+
+        assert!(!diverged);
+        assert_eq!(records, vec![first]);
     }
 
     #[test]
