@@ -1,5 +1,5 @@
-packages/git-span/src/cli/mod.rs#L43-L198 rk64:ee6af025f27dd989
-packages/git-span/src/cli/mod.rs#L45-L200 rk64:8eb002af3bfa0c24
+packages/git-span/src/cli/mod.rs#L43-L198 rk64:75863e25144387d7
+packages/git-span/src/cli/mod.rs#L45-L200 rk64:04cc19271780d8fe
 packages/git-span/src/cli/mod.rs#L543-L607 rk64:bdc56be0c13223a1
 packages/git-span/src/main.rs#L49-L100 rk64:2aa836f03ffba1f5
 packages/git-span/src/validation.rs#L7-L28 rk64:21f44d9122bbec2a
