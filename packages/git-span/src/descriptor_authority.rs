@@ -4,23 +4,60 @@
 //! after construction. Every operation is relative to a retained directory
 //! descriptor so replacing a validated parent cannot redirect a transaction.
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::path::{Path, PathBuf};
+
+#[cfg(unix)]
+use std::ffi::CString;
+#[cfg(unix)]
+use std::os::fd::{AsRawFd, FromRawFd};
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
 
 /// Creation policy for a descendant directory chain.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DirectoryPolicy {
     /// Every component must already exist.
     Existing,
-    /// Missing components are created with owner-only permissions.
-    CreatePrivate,
+    /// Missing components are created with the requested permissions.
+    Create { mode: u32 },
+    /// Missing components are created privately and every component must be
+    /// owned by the effective user with exactly the requested mode.
+    Private { mode: u32 },
+}
+
+#[cfg(unix)]
+fn component_c_string(component: &OsStr) -> Result<CString> {
+    let bytes = component.as_bytes();
+    ensure!(
+        !bytes.is_empty() && bytes != b"." && bytes != b".." && !bytes.contains(&b'/'),
+        "descriptor-relative name must be one safe path component"
+    );
+    CString::new(bytes).context("descriptor-relative name contains NUL")
+}
+
+#[cfg(unix)]
+fn open_directory_at(parent: &File, component: &OsStr) -> Result<File> {
+    let component = component_c_string(component)?;
+    let descriptor = unsafe {
+        libc::openat(
+            parent.as_raw_fd(),
+            component.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if descriptor < 0 {
+        return Err(std::io::Error::last_os_error()).context("open retained directory component");
+    }
+    Ok(unsafe { File::from_raw_fd(descriptor) })
 }
 
 /// A directory inode retained independently of the pathname used to find it.
 #[derive(Debug)]
 pub struct RetainedDirectory {
+    ancestors: Vec<File>,
     descriptor: File,
     display_path: PathBuf,
 }
@@ -28,57 +65,257 @@ pub struct RetainedDirectory {
 impl RetainedDirectory {
     /// Open one canonical directory as the root of a descriptor authority.
     pub fn open_canonical(path: &Path) -> Result<Self> {
-        let _ = path;
-        bail!("descriptor authority is not implemented")
+        #[cfg(unix)]
+        {
+            let canonical = std::fs::canonicalize(path)
+                .with_context(|| format!("canonicalize directory `{}`", path.display()))?;
+            let encoded = CString::new(canonical.as_os_str().as_bytes())
+                .context("canonical directory contains NUL")?;
+            let descriptor = unsafe {
+                libc::open(
+                    encoded.as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                )
+            };
+            if descriptor < 0 {
+                return Err(std::io::Error::last_os_error()).with_context(|| {
+                    format!("open canonical directory `{}`", canonical.display())
+                });
+            }
+            Ok(Self {
+                ancestors: Vec::new(),
+                descriptor: unsafe { File::from_raw_fd(descriptor) },
+                display_path: canonical,
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = path;
+            bail!("descriptor authority requires openat-style platform support")
+        }
     }
 
     /// Retain a no-follow descendant directory chain.
     pub fn descend(&self, relative: &Path, policy: DirectoryPolicy) -> Result<Self> {
-        let _ = (&self.descriptor, relative, policy);
-        bail!("descriptor authority is not implemented")
+        #[cfg(unix)]
+        {
+            let mut ancestors = self
+                .ancestors
+                .iter()
+                .map(File::try_clone)
+                .collect::<std::io::Result<Vec<_>>>()?;
+            let mut current = self.descriptor.try_clone()?;
+            let mut display_path = self.display_path.clone();
+            let mut saw_component = false;
+            for component in relative.components() {
+                let std::path::Component::Normal(component) = component else {
+                    bail!("descriptor descendant must be a non-empty relative path");
+                };
+                saw_component = true;
+                let next = match open_directory_at(&current, component) {
+                    Ok(next) => next,
+                    Err(error)
+                        if matches!(
+                            policy,
+                            DirectoryPolicy::Create { .. } | DirectoryPolicy::Private { .. }
+                        ) && error
+                            .downcast_ref::<std::io::Error>()
+                            .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) =>
+                    {
+                        let mode = match policy {
+                            DirectoryPolicy::Create { mode }
+                            | DirectoryPolicy::Private { mode } => mode,
+                            DirectoryPolicy::Existing => unreachable!(),
+                        };
+                        let component_c = component_c_string(component)?;
+                        let result = unsafe {
+                            libc::mkdirat(current.as_raw_fd(), component_c.as_ptr(), mode)
+                        };
+                        if result < 0 {
+                            let mkdir_error = std::io::Error::last_os_error();
+                            if mkdir_error.kind() != std::io::ErrorKind::AlreadyExists {
+                                return Err(mkdir_error)
+                                    .context("create retained directory component");
+                            }
+                        }
+                        open_directory_at(&current, component)?
+                    }
+                    Err(error) => return Err(error),
+                };
+                if let DirectoryPolicy::Private { mode } = policy {
+                    use std::os::unix::fs::MetadataExt;
+                    let metadata = next.metadata()?;
+                    ensure!(
+                        metadata.uid() == unsafe { libc::geteuid() },
+                        "private retained directory has another owner"
+                    );
+                    ensure!(
+                        metadata.mode() & 0o777 == mode,
+                        "private retained directory permissions are not {mode:#o}"
+                    );
+                }
+                ancestors.push(current);
+                current = next;
+                display_path.push(component);
+            }
+            ensure!(saw_component, "descriptor descendant must not be empty");
+            Ok(Self {
+                ancestors,
+                descriptor: current,
+                display_path,
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (&self.descriptor, relative, policy);
+            bail!("descriptor authority requires openat-style platform support")
+        }
     }
 
     /// Open an existing regular file without following its final component.
     pub fn open_file(&self, name: &OsStr, writable: bool) -> Result<File> {
-        let _ = (&self.descriptor, name, writable);
-        bail!("descriptor authority is not implemented")
+        #[cfg(unix)]
+        {
+            let name = component_c_string(name)?;
+            let access = if writable {
+                libc::O_RDWR
+            } else {
+                libc::O_RDONLY
+            };
+            let descriptor = unsafe {
+                libc::openat(
+                    self.descriptor.as_raw_fd(),
+                    name.as_ptr(),
+                    access | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                )
+            };
+            if descriptor < 0 {
+                return Err(std::io::Error::last_os_error()).context("open retained file");
+            }
+            let file = unsafe { File::from_raw_fd(descriptor) };
+            ensure!(
+                file.metadata()?.is_file(),
+                "retained entry is not a regular file"
+            );
+            Ok(file)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (&self.descriptor, name, writable);
+            bail!("descriptor authority requires openat-style platform support")
+        }
     }
 
     /// Create a new regular file without following its final component.
     pub fn create_file(&self, name: &OsStr, mode: u32) -> Result<File> {
-        let _ = (&self.descriptor, name, mode);
-        bail!("descriptor authority is not implemented")
+        #[cfg(unix)]
+        {
+            let name = component_c_string(name)?;
+            let descriptor = unsafe {
+                libc::openat(
+                    self.descriptor.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::O_RDWR
+                        | libc::O_CREAT
+                        | libc::O_EXCL
+                        | libc::O_NOFOLLOW
+                        | libc::O_CLOEXEC,
+                    mode,
+                )
+            };
+            if descriptor < 0 {
+                return Err(std::io::Error::last_os_error()).context("create retained file");
+            }
+            Ok(unsafe { File::from_raw_fd(descriptor) })
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (&self.descriptor, name, mode);
+            bail!("descriptor authority requires openat-style platform support")
+        }
     }
 
     /// Atomically replace `destination` with `source` inside this directory.
     pub fn rename(&self, source: &OsStr, destination: &OsStr) -> Result<()> {
-        let _ = (&self.descriptor, source, destination);
-        bail!("descriptor authority is not implemented")
+        #[cfg(unix)]
+        {
+            let source = component_c_string(source)?;
+            let destination = component_c_string(destination)?;
+            let result = unsafe {
+                libc::renameat(
+                    self.descriptor.as_raw_fd(),
+                    source.as_ptr(),
+                    self.descriptor.as_raw_fd(),
+                    destination.as_ptr(),
+                )
+            };
+            if result < 0 {
+                return Err(std::io::Error::last_os_error()).context("rename retained entry");
+            }
+            Ok(())
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (&self.descriptor, source, destination);
+            bail!("descriptor authority requires openat-style platform support")
+        }
     }
 
     /// Remove one regular file or socket without following it.
     pub fn unlink(&self, name: &OsStr) -> Result<()> {
-        let _ = (&self.descriptor, name);
-        bail!("descriptor authority is not implemented")
+        #[cfg(unix)]
+        {
+            let name = component_c_string(name)?;
+            let result = unsafe { libc::unlinkat(self.descriptor.as_raw_fd(), name.as_ptr(), 0) };
+            if result < 0 {
+                return Err(std::io::Error::last_os_error()).context("unlink retained entry");
+            }
+            Ok(())
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (&self.descriptor, name);
+            bail!("descriptor authority requires openat-style platform support")
+        }
     }
 
     /// Persist directory-entry changes made through this authority.
     pub fn sync(&self) -> Result<()> {
-        let _ = &self.descriptor;
-        bail!("descriptor authority is not implemented")
+        self.descriptor
+            .sync_all()
+            .context("fsync retained directory")
     }
 
     /// Duplicate the retained descriptor without consulting its old path.
     pub fn try_clone(&self) -> Result<Self> {
-        let _ = &self.descriptor;
-        bail!("descriptor authority is not implemented")
+        Ok(Self {
+            ancestors: self
+                .ancestors
+                .iter()
+                .map(File::try_clone)
+                .collect::<std::io::Result<Vec<_>>>()?,
+            descriptor: self.descriptor.try_clone()?,
+            display_path: self.display_path.clone(),
+        })
     }
 
     /// A descriptor-rooted path for APIs such as Unix socket bind that lack
     /// an `*at` form. It never traverses the discovery pathname again.
     pub fn descriptor_path(&self, name: &OsStr) -> Result<PathBuf> {
-        let _ = (&self.descriptor, name);
-        bail!("descriptor authority is not implemented")
+        #[cfg(target_os = "linux")]
+        {
+            component_c_string(name)?;
+            Ok(PathBuf::from(format!(
+                "/proc/self/fd/{}/{}",
+                self.descriptor.as_raw_fd(),
+                name.to_string_lossy()
+            )))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = name;
+            bail!("descriptor-rooted socket paths require Linux procfs")
+        }
     }
 
     /// Original discovery path, retained only for actionable diagnostics.
@@ -97,21 +334,33 @@ pub struct SpanTarget {
 /// Authority rooted at one canonical worktree and resolved span root.
 #[derive(Debug)]
 pub struct SpanRootAuthority {
-    worktree: RetainedDirectory,
+    _worktree: RetainedDirectory,
     span_root: RetainedDirectory,
 }
 
 impl SpanRootAuthority {
     /// Retain the canonical worktree and no-follow span-root chain.
     pub fn open(worktree: &Path, span_root: &str, policy: DirectoryPolicy) -> Result<Self> {
-        let _ = (worktree, span_root, policy);
-        bail!("span-root descriptor authority is not implemented")
+        git_span_core::validate_repo_relative_path("span root", span_root)?;
+        let worktree = RetainedDirectory::open_canonical(worktree)?;
+        let span_root_directory = worktree.descend(Path::new(span_root), policy)?;
+        Ok(Self {
+            _worktree: worktree,
+            span_root: span_root_directory,
+        })
     }
 
     /// Retain every parent of a validated hierarchical span name.
     pub fn target(&self, span_name: &str, policy: DirectoryPolicy) -> Result<SpanTarget> {
-        let _ = (&self.worktree, &self.span_root, span_name, policy);
-        bail!("span target descriptor authority is not implemented")
+        git_span_core::validate_span_name_shape(span_name)?;
+        let (parent, leaf) = match span_name.rsplit_once('/') {
+            Some((parent, leaf)) => (
+                self.span_root.descend(Path::new(parent), policy)?,
+                OsString::from(leaf),
+            ),
+            None => (self.span_root.try_clone()?, OsString::from(span_name)),
+        };
+        Ok(SpanTarget { parent, leaf })
     }
 
     /// Retained descriptor for control files directly under the span root.
@@ -129,8 +378,16 @@ pub struct RuntimeAuthority {
 impl RuntimeAuthority {
     /// Retain `<git-dir>/span/context/<service-key-prefix>` with mode 0700.
     pub fn open(git_dir: &Path, service_key: &str) -> Result<Self> {
-        let _ = (git_dir, service_key);
-        bail!("runtime descriptor authority is not implemented")
+        ensure!(
+            service_key.len() >= 16 && service_key.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "service key must be at least sixteen hexadecimal characters"
+        );
+        let git_dir = RetainedDirectory::open_canonical(git_dir)?;
+        let relative = PathBuf::from("span")
+            .join("context")
+            .join(&service_key[..16]);
+        let directory = git_dir.descend(&relative, DirectoryPolicy::Private { mode: 0o700 })?;
+        Ok(Self { directory })
     }
 
     /// Duplicate the private runtime directory authority.
@@ -164,7 +421,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "TDD bootstrap: descriptor implementation follows the compiling contract"]
     fn retained_directory_survives_parent_swap_for_every_file_operation() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let trusted = temp.path().join("trusted");
@@ -190,14 +446,13 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "TDD bootstrap: descriptor implementation follows the compiling contract"]
     fn span_authority_survives_root_and_hierarchical_parent_swaps() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let worktree = temp.path().join("worktree");
         std::fs::create_dir(&worktree)?;
         let authority =
-            SpanRootAuthority::open(&worktree, ".span", DirectoryPolicy::CreatePrivate)?;
-        let target = authority.target("team/component", DirectoryPolicy::CreatePrivate)?;
+            SpanRootAuthority::open(&worktree, ".span", DirectoryPolicy::Create { mode: 0o755 })?;
+        let target = authority.target("team/component", DirectoryPolicy::Create { mode: 0o755 })?;
 
         let retained_root = worktree.join(".span-retained");
         std::fs::rename(worktree.join(".span"), &retained_root)?;
@@ -228,7 +483,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "TDD bootstrap: descriptor implementation follows the compiling contract"]
     fn runtime_authority_survives_each_private_parent_swap() -> Result<()> {
         for swapped in ["span", "context", "service"] {
             let temp = tempfile::tempdir()?;
@@ -257,7 +511,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "TDD bootstrap: descriptor implementation follows the compiling contract"]
     fn symlinked_descendants_and_leaf_files_fail_closed() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let root = temp.path().join("root");
