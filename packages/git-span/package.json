@@ -15,6 +15,7 @@
     "lint": "bash scripts/with-target-lock.sh shared env RUSTFLAGS=\"-W unused -W dead-code\" CARGO_TARGET_DIR=\"${GIT_SPAN_CARGO_TARGET_ROOT:-/var/cache/git-span/cargo-target}/git-span/check\" cargo clippy --quiet --locked -- -D warnings",
     "typecheck": "bash scripts/with-target-lock.sh shared env RUSTFLAGS=\"-W unused -W dead-code\" CARGO_TARGET_DIR=\"${GIT_SPAN_CARGO_TARGET_ROOT:-/var/cache/git-span/cargo-target}/git-span/check\" cargo clippy --quiet --locked -- -D warnings",
     "bench:check": "bash scripts/with-target-lock.sh shared env CARGO_TARGET_DIR=\"${GIT_SPAN_CARGO_TARGET_ROOT:-/var/cache/git-span/cargo-target}/git-span/build\" cargo bench --no-run --locked --features bench-corpus",
+    "bench:context": "python3 scripts/context-acceptance.py --binary \"${GIT_SPAN_CONTEXT_BINARY:-target-cache/release/git-span}\"",
     "bench": "bash scripts/with-target-lock.sh shared env CARGO_TARGET_DIR=\"${GIT_SPAN_CARGO_TARGET_ROOT:-/var/cache/git-span/cargo-target}/git-span/build\" cargo bench --locked",
     "udeps": "bash scripts/with-target-lock.sh shared env CARGO_TARGET_DIR=\"${GIT_SPAN_CARGO_TARGET_ROOT:-/var/cache/git-span/cargo-target}/git-span/udeps\" cargo +nightly udeps"
   },

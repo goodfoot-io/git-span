@@ -1,7 +1,7 @@
 //! Executable contract for the schema-v1 context query.
 
 use crate::support::TestRepo;
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 fn ignored_contract_case() -> Result<()> {
     let repo = TestRepo::seeded()?;
@@ -12,23 +12,186 @@ fn ignored_contract_case() -> Result<()> {
     Ok(())
 }
 
-macro_rules! contract_case {
-    ($name:ident) => {
-        #[test]
-        #[ignore = "context executable contract; activate with implementation slice"]
-        fn $name() -> Result<()> {
-            ignored_contract_case()
-        }
-    };
-}
-
 #[test]
 fn schema_ordering_and_exact_intersections() -> Result<()> {
     ignored_contract_case()
 }
-contract_case!(status_source_and_utf8_detail_tokens);
-contract_case!(invalid_input_race_and_size_fail_closed);
-contract_case!(repair_post_state_and_cycle_safety);
+#[test]
+fn status_source_and_utf8_detail_tokens() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    assert!(
+        repo.run_span(["add", "status", "file1.txt#L1-L2"])?
+            .status
+            .success()
+    );
+    let fresh = repo.run_span(["context", "file1.txt#L1-L2", "--format", "json"])?;
+    assert!(fresh.status.success());
+    let fresh: serde_json::Value = serde_json::from_slice(&fresh.stdout)?;
+    let anchor = &fresh["spans"][0]["anchors"][0];
+    assert_eq!(anchor["status"]["code"], "FRESH");
+    assert_eq!(anchor["source"], serde_json::Value::Null);
+    assert_eq!(anchor["sources"], serde_json::json!([]));
+
+    repo.write_file(
+        "file1.txt",
+        "meaningfully changed\ncontent\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+    let changed = repo.run_span(["context", "file1.txt#L1-L2", "--format", "json"])?;
+    assert!(
+        changed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&changed.stderr)
+    );
+    let changed: serde_json::Value = serde_json::from_slice(&changed.stdout)?;
+    let anchor = &changed["spans"][0]["anchors"][0];
+    assert_eq!(anchor["status"]["code"], "CHANGED");
+    assert_eq!(anchor["source"], "WORKTREE");
+    assert!(
+        anchor["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|source| source == "WORKTREE")
+    );
+    Ok(())
+}
+#[test]
+fn invalid_input_race_and_size_fail_closed() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let empty_fix = repo.run_span_with_env(
+        [
+            "context",
+            "file1.txt",
+            "--format",
+            "json",
+            "--fix",
+            "--operation-id",
+            &uuid::Uuid::new_v4().to_string(),
+        ],
+        "GIT_SPAN_CONTEXT_DISABLE_SERVICE",
+        "1",
+    )?;
+    assert!(empty_fix.status.success());
+    let empty_fix: serde_json::Value = serde_json::from_slice(&empty_fix.stdout)?;
+    assert_eq!(empty_fix["mutation"]["requested"], true);
+    assert_eq!(empty_fix["mutation"]["rewritten"], false);
+    assert_eq!(empty_fix["spans"], serde_json::json!([]));
+    assert!(!repo.path().join(".span").exists());
+
+    for address in [
+        "missing.txt",
+        "../file1.txt",
+        "/file1.txt",
+        "file*.txt",
+        "file1.txt#L3-L1",
+        "file1.txt#L0-L1",
+    ] {
+        let output = repo.run_span_with_env(
+            ["context", address, "--format", "json"],
+            "GIT_SPAN_CONTEXT_DISABLE_SERVICE",
+            "1",
+        )?;
+        assert!(
+            !output.status.success(),
+            "invalid address succeeded: {address}"
+        );
+        assert!(
+            output.stdout.is_empty(),
+            "invalid address emitted JSON: {address}"
+        );
+        assert!(
+            !output.stderr.is_empty(),
+            "invalid address omitted diagnostics: {address}"
+        );
+    }
+    let missing = repo.run_span(["context", "--format", "json"])?;
+    assert!(!missing.status.success());
+    assert!(missing.stdout.is_empty());
+    Ok(())
+}
+#[test]
+fn repair_post_state_and_cycle_safety() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    assert!(
+        repo.run_span(["add", "moving", "file1.txt#L1-L1", "file1.txt#L2-L2"])?
+            .status
+            .success()
+    );
+    repo.write_file(
+        "file1.txt",
+        "line2\nline1\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+    let operation = uuid::Uuid::new_v4().to_string();
+    let fixed = repo.run_span_with_env(
+        [
+            "context",
+            "file1.txt",
+            "--format",
+            "json",
+            "--fix",
+            "--operation-id",
+            &operation,
+        ],
+        "GIT_SPAN_CONTEXT_DISABLE_SERVICE",
+        "1",
+    )?;
+    assert!(
+        fixed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&fixed.stderr)
+    );
+    let document: serde_json::Value = serde_json::from_slice(&fixed.stdout)?;
+    assert_eq!(document["mutation"]["requested"], true);
+    assert_eq!(document["mutation"]["rewritten"], true);
+    assert_eq!(document["mutation"]["spans_touched"], 1);
+    assert_eq!(document["mutation"]["anchors_updated"], 2);
+    assert!(
+        document["spans"][0]["anchors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|anchor| {
+                matches!(
+                    anchor["status"]["code"].as_str(),
+                    Some("FRESH" | "RESOLVED_PENDING_COMMIT")
+                )
+            })
+    );
+
+    let replay = repo.run_span_with_env(
+        [
+            "context",
+            "file1.txt",
+            "--format",
+            "json",
+            "--fix",
+            "--operation-id",
+            &operation,
+        ],
+        "GIT_SPAN_CONTEXT_DISABLE_SERVICE",
+        "1",
+    )?;
+    assert!(replay.status.success());
+    assert_eq!(replay.stdout, fixed.stdout);
+
+    let conflict = repo.run_span_with_env(
+        [
+            "context",
+            "file2.txt",
+            "--format",
+            "json",
+            "--fix",
+            "--operation-id",
+            &operation,
+        ],
+        "GIT_SPAN_CONTEXT_DISABLE_SERVICE",
+        "1",
+    )?;
+    assert!(!conflict.status.success());
+    assert!(conflict.stdout.is_empty());
+    assert!(String::from_utf8(conflict.stderr)?.contains("different normalized request"));
+    Ok(())
+}
 #[test]
 fn service_identity_bootstrap_and_strict_fallback() -> Result<()> {
     let repo = TestRepo::seeded()?;
@@ -327,8 +490,356 @@ fn perf_counter(stderr: &str, label: &str) -> u64 {
         .and_then(|value| value.parse().ok())
         .unwrap_or(0)
 }
-contract_case!(atomic_recovery_and_operation_id_replay);
-contract_case!(controlled_repair_epoch);
+#[test]
+fn atomic_recovery_and_operation_id_replay() -> Result<()> {
+    for boundary in [
+        "span-temp-fsync:0",
+        "journal-prepared",
+        "span-rename:0",
+        "span-file-fsync:0",
+        "span-directory-fsync:0",
+        "journal-progress:0",
+        "generation-publication",
+        "journal-committed",
+    ] {
+        let repo = moved_context_repo("recoverable")?;
+        let died = std::process::Command::new(env!("CARGO_BIN_EXE_git-span"))
+            .current_dir(repo.path())
+            .env("GIT_SPAN_CONTEXT_DISABLE_SERVICE", "1")
+            .env("GIT_SPAN_CONTEXT_TEST_DIE_AFTER", boundary)
+            .args(["context", "file1.txt", "--format", "json", "--fix"])
+            .output()?;
+        assert_eq!(
+            died.status.code(),
+            Some(86),
+            "{boundary}: {}",
+            String::from_utf8_lossy(&died.stderr)
+        );
+        assert!(died.stdout.is_empty(), "{boundary}");
+        let stderr = String::from_utf8(died.stderr)?;
+        let operation = stderr
+            .lines()
+            .find_map(|line| line.strip_prefix("git-span context operation: "))
+            .expect("generated operation receipt was flushed before mutation");
+        let replay = repo.run_span_with_env(
+            [
+                "context",
+                "file1.txt",
+                "--format",
+                "json",
+                "--fix",
+                "--operation-id",
+                operation,
+            ],
+            "GIT_SPAN_CONTEXT_DISABLE_SERVICE",
+            "1",
+        )?;
+        assert!(
+            replay.status.success(),
+            "{boundary}: {}",
+            String::from_utf8_lossy(&replay.stderr)
+        );
+        let document: serde_json::Value = serde_json::from_slice(&replay.stdout)?;
+        assert_eq!(document["mutation"]["rewritten"], true, "{boundary}");
+        assert_eq!(document["mutation"]["anchors_updated"], 1, "{boundary}");
+    }
+
+    // A third-party edit after a partial transaction is never overwritten by
+    // recovery. The first span may already contain planned bytes; the second
+    // remains exactly the external bytes and the retry fails with no JSON.
+    let repo = TestRepo::seeded()?;
+    assert!(
+        repo.run_span(["add", "a", "file1.txt#L2-L3"])?
+            .status
+            .success()
+    );
+    assert!(
+        repo.run_span(["add", "b", "file1.txt#L4-L5"])?
+            .status
+            .success()
+    );
+    repo.write_file(
+        "file1.txt",
+        "prefix\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+    let original_a = std::fs::read(repo.path().join(".span/a"))?;
+    let operation = uuid::Uuid::new_v4().to_string();
+    let died = std::process::Command::new(env!("CARGO_BIN_EXE_git-span"))
+        .current_dir(repo.path())
+        .env("GIT_SPAN_CONTEXT_DISABLE_SERVICE", "1")
+        .env("GIT_SPAN_CONTEXT_TEST_DIE_AFTER", "span-rename:0")
+        .args([
+            "context",
+            "file1.txt",
+            "--format",
+            "json",
+            "--fix",
+            "--operation-id",
+            &operation,
+        ])
+        .output()?;
+    assert_eq!(died.status.code(), Some(86));
+    let divergent = format!(
+        "{}\nexternal edit\n",
+        std::fs::read_to_string(repo.path().join(".span/b"))?
+    );
+    std::fs::write(repo.path().join(".span/b"), &divergent)?;
+    let refused = repo.run_span_with_env(
+        [
+            "context",
+            "file1.txt",
+            "--format",
+            "json",
+            "--fix",
+            "--operation-id",
+            &operation,
+        ],
+        "GIT_SPAN_CONTEXT_DISABLE_SERVICE",
+        "1",
+    )?;
+    assert!(!refused.status.success());
+    assert!(refused.stdout.is_empty());
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join(".span/b"))?,
+        divergent
+    );
+    assert_eq!(
+        std::fs::read(repo.path().join(".span/a"))?,
+        original_a,
+        "prepared recovery rolls back only transaction-owned planned bytes"
+    );
+
+    if crate::support::symlinks_supported() {
+        for boundary in [
+            "span-temp-fsync:0",
+            "journal-prepared",
+            "span-rename:0",
+            "span-file-fsync:0",
+            "span-directory-fsync:0",
+            "journal-progress:0",
+            "generation-publication",
+            "journal-committed",
+        ] {
+            let repo = moved_context_repo("nested/swap-safe")?;
+            let operation = uuid::Uuid::new_v4().to_string();
+            let hooks = tempfile::tempdir()?;
+            let child = std::process::Command::new(env!("CARGO_BIN_EXE_git-span"))
+                .current_dir(repo.path())
+                .env("GIT_SPAN_CONTEXT_DISABLE_SERVICE", "1")
+                .env("GIT_SPAN_CONTEXT_TEST_REPAIR_HOOK_DIR", hooks.path())
+                .env("GIT_SPAN_CONTEXT_TEST_REPAIR_HOOK_BOUNDARY", boundary)
+                .args([
+                    "context",
+                    "file1.txt",
+                    "--format",
+                    "json",
+                    "--fix",
+                    "--operation-id",
+                    &operation,
+                ])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()?;
+            let safe = boundary.replace(':', "-");
+            let ready = hooks.path().join(format!("repair-{safe}.ready"));
+            let release = hooks.path().join(format!("repair-{safe}.release"));
+            let token = wait_for_checkpoint(&ready, None)
+                .with_context(|| format!("waiting for span-parent swap boundary {boundary}"))?;
+            let public = repo.path().join(".span/nested");
+            let retained = repo.path().join(".span/nested-retained");
+            let attacker = repo.path().join("attacker-span");
+            std::fs::create_dir(&attacker)?;
+            std::fs::rename(&public, &retained)?;
+            crate::support::symlink_dir(&attacker, &public)?;
+            std::fs::write(&release, token)?;
+            let output = child.wait_with_output()?;
+            assert!(
+                !output.status.success(),
+                "parent swap succeeded at {boundary}"
+            );
+            assert!(
+                output.stdout.is_empty(),
+                "parent swap emitted JSON at {boundary}"
+            );
+            assert_eq!(
+                std::fs::read_dir(&attacker)?.count(),
+                0,
+                "attacker directory changed at {boundary}"
+            );
+            std::fs::remove_file(&public)?;
+            std::fs::rename(&retained, &public)?;
+            let replay = repo.run_span_with_env(
+                [
+                    "context",
+                    "file1.txt",
+                    "--format",
+                    "json",
+                    "--fix",
+                    "--operation-id",
+                    &operation,
+                ],
+                "GIT_SPAN_CONTEXT_DISABLE_SERVICE",
+                "1",
+            )?;
+            assert!(
+                replay.status.success(),
+                "recovery after {boundary}: {}",
+                String::from_utf8_lossy(&replay.stderr)
+            );
+        }
+
+        for boundary in [
+            "span-temp-fsync:0",
+            "journal-prepared",
+            "span-rename:0",
+            "span-file-fsync:0",
+            "span-directory-fsync:0",
+            "journal-progress:0",
+            "generation-publication",
+            "journal-committed",
+        ] {
+            let repo = moved_context_repo("runtime-swap-safe")?;
+            let operation = uuid::Uuid::new_v4().to_string();
+            let hooks = tempfile::tempdir()?;
+            let child = std::process::Command::new(env!("CARGO_BIN_EXE_git-span"))
+                .current_dir(repo.path())
+                .env("GIT_SPAN_CONTEXT_DISABLE_SERVICE", "1")
+                .env("GIT_SPAN_CONTEXT_TEST_REPAIR_HOOK_DIR", hooks.path())
+                .env("GIT_SPAN_CONTEXT_TEST_REPAIR_HOOK_BOUNDARY", boundary)
+                .args([
+                    "context",
+                    "file1.txt",
+                    "--format",
+                    "json",
+                    "--fix",
+                    "--operation-id",
+                    &operation,
+                ])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()?;
+            let safe = boundary.replace(':', "-");
+            let ready = hooks.path().join(format!("repair-{safe}.ready"));
+            let release = hooks.path().join(format!("repair-{safe}.release"));
+            let token = wait_for_checkpoint(&ready, None)
+                .with_context(|| format!("waiting for runtime swap boundary {boundary}"))?;
+            let context_root = repo.path().join(".git/span/context");
+            let public = std::fs::read_dir(&context_root)?
+                .filter_map(std::result::Result::ok)
+                .map(|entry| entry.path())
+                .find(|path| path.is_dir())
+                .expect("repair runtime identity directory");
+            let retained = context_root.join("retained-runtime");
+            let attacker = repo.path().join("attacker-runtime");
+            std::fs::create_dir(&attacker)?;
+            std::fs::rename(&public, &retained)?;
+            crate::support::symlink_dir(&attacker, &public)?;
+            std::fs::write(&release, token)?;
+            let output = child.wait_with_output()?;
+            assert!(
+                !output.status.success(),
+                "runtime swap succeeded at {boundary}"
+            );
+            assert!(
+                output.stdout.is_empty(),
+                "runtime swap emitted JSON at {boundary}"
+            );
+            assert_eq!(
+                std::fs::read_dir(&attacker)?.count(),
+                0,
+                "attacker runtime changed at {boundary}"
+            );
+            std::fs::remove_file(&public)?;
+            std::fs::rename(&retained, &public)?;
+            let replay = repo.run_span_with_env(
+                [
+                    "context",
+                    "file1.txt",
+                    "--format",
+                    "json",
+                    "--fix",
+                    "--operation-id",
+                    &operation,
+                ],
+                "GIT_SPAN_CONTEXT_DISABLE_SERVICE",
+                "1",
+            )?;
+            assert!(
+                replay.status.success(),
+                "runtime recovery after {boundary}: {}",
+                String::from_utf8_lossy(&replay.stderr)
+            );
+        }
+    }
+    Ok(())
+}
+
+fn moved_context_repo(name: &str) -> Result<TestRepo> {
+    let repo = TestRepo::seeded()?;
+    assert!(
+        repo.run_span(["add", name, "file1.txt#L2-L3"])?
+            .status
+            .success()
+    );
+    repo.write_file(
+        "file1.txt",
+        "prefix\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+    Ok(repo)
+}
+#[test]
+fn controlled_repair_epoch() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    assert!(
+        repo.run_span(["add", "served-repair", "file1.txt#L2-L3"])?
+            .status
+            .success()
+    );
+    assert!(
+        repo.run_span(["context", "file1.txt", "--format", "json"])?
+            .status
+            .success()
+    );
+    repo.write_file(
+        "file1.txt",
+        "prefix\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+    let operation = uuid::Uuid::new_v4().to_string();
+    let fixed = repo.run_span([
+        "--perf",
+        "context",
+        "file1.txt",
+        "--format",
+        "json",
+        "--fix",
+        "--operation-id",
+        &operation,
+    ])?;
+    assert!(
+        fixed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&fixed.stderr)
+    );
+    let fixed_json: serde_json::Value = serde_json::from_slice(&fixed.stdout)?;
+    assert_eq!(fixed_json["mutation"]["rewritten"], true);
+    assert!(String::from_utf8(fixed.stderr)?.contains("context.service-corpus-loads 1"));
+
+    let next = repo.run_span(["--perf", "context", "file1.txt", "--format", "json"])?;
+    assert!(
+        next.status.success(),
+        "{}",
+        String::from_utf8_lossy(&next.stderr)
+    );
+    let next_json: serde_json::Value = serde_json::from_slice(&next.stdout)?;
+    assert_eq!(next_json["spans"], fixed_json["spans"]);
+    assert_eq!(next_json["scopes"], fixed_json["scopes"]);
+    let next_stderr = String::from_utf8(next.stderr)?;
+    assert!(
+        next_stderr.contains("context.service-generation-hits 1"),
+        "{next_stderr}"
+    );
+    Ok(())
+}
 #[test]
 fn strict_tombstone_and_definition_capture() -> Result<()> {
     let repo = TestRepo::seeded()?;
@@ -409,4 +920,83 @@ fn wait_for_checkpoint(path: &std::path::Path, previous: Option<&str>) -> Result
     }
     anyhow::bail!("timed out waiting for context checkpoint")
 }
-contract_case!(production_perf_counters_and_acceptance_harness);
+#[test]
+fn production_perf_counters_and_acceptance_harness() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    assert!(
+        repo.run_span(["add", "bench", "file1.txt#L2-L3"])?
+            .status
+            .success()
+    );
+    assert!(
+        repo.run_span(["why", "bench", "benchmark why"])?
+            .status
+            .success()
+    );
+    let query = ["context", "file1.txt#L2-L3", "--format", "json"];
+    let oracle = repo.run_span_with_env(query, "GIT_SPAN_CONTEXT_DISABLE_SERVICE", "1")?;
+    assert!(oracle.status.success());
+    assert!(repo.run_span(query)?.status.success());
+
+    let mut context_samples = Vec::with_capacity(31);
+    let mut legacy_samples = Vec::with_capacity(31);
+    for _ in 0..31 {
+        let started = std::time::Instant::now();
+        let output = repo.run_span(query)?;
+        context_samples.push(started.elapsed());
+        assert!(output.status.success());
+        assert_eq!(output.stdout, oracle.stdout);
+    }
+    for _ in 0..31 {
+        let started = std::time::Instant::now();
+        assert!(repo.run_span(["drift", "--fix"])?.status.success());
+        assert!(
+            repo.run_span(["list", "file1.txt#L2-L3", "--porcelain"])?
+                .status
+                .success()
+        );
+        let drift = repo.run_span(["drift", "file1.txt#L2-L3", "--format", "porcelain"])?;
+        assert!(matches!(drift.status.code(), Some(0 | 1)));
+        let why = repo.run_span(["why", "bench"])?;
+        assert!(matches!(why.status.code(), Some(0 | 1)));
+        legacy_samples.push(started.elapsed());
+    }
+    context_samples.sort();
+    legacy_samples.sort();
+    let context_p50 = context_samples[15];
+    let context_p95 = context_samples[28];
+    let legacy_p50 = legacy_samples[15];
+    let legacy_p95 = legacy_samples[28];
+    assert!(
+        context_p50 * 10 <= legacy_p50 * 7,
+        "p50 gate: context {context_p50:?}, legacy {legacy_p50:?}"
+    );
+    assert!(
+        context_p95 * 10 <= legacy_p95 * 8,
+        "p95 gate: context {context_p95:?}, legacy {legacy_p95:?}"
+    );
+
+    let diagnostics =
+        repo.run_span(["--perf", "context", "file1.txt#L2-L3", "--format", "json"])?;
+    assert!(diagnostics.status.success());
+    let stderr = String::from_utf8(diagnostics.stderr)?;
+    for counter in [
+        "context.service-generation-hits",
+        "context.service-corpus-loads",
+        "context.service-resolver-passes",
+        "context.service-invalidations",
+        "context.service-watcher-overflows",
+        "context.service-stale-fallbacks",
+        "context.service-epoch-checks",
+        "context.service-rows-decoded",
+        "context.service-rpc-connect-us",
+        "context.service-watcher-drain-us",
+        "context.service-total-us",
+    ] {
+        assert!(
+            stderr.contains(counter),
+            "missing perf counter {counter}: {stderr}"
+        );
+    }
+    Ok(())
+}

@@ -4,6 +4,28 @@
 
 The primary CLI surface lives in `src/cli/mod.rs`. Run `git span --help` or `git span drift --help` for flag reference.
 
+### Exact batched context
+
+`git span context <address>... --format json` returns one schema-v1 snapshot
+for exact repository-relative paths and inclusive line ranges: normalized
+scopes, exact anchored/current overlaps, complete selected spans, why text,
+live status/source facts, and structured mutation counts. `--fix` adds
+cycle-safe positional repair; `--operation-id <uuid>` makes a delivery-unknown
+repair replayable across processes. Failures leave stdout empty, while a valid
+no-overlap query succeeds with an empty `spans` array. The complete schema,
+token, failure, service, and recovery contract is in the
+[command reference](../../plugins-claude/git-span/skills/git-span/references/command-reference.md#exact-batched-context).
+
+Linux uses an authenticated private per-worktree watcher service for warm
+queries and falls back to the same strict in-process answer whenever the
+watcher or service is unavailable. The released-binary
+[acceptance harness](./scripts/context-acceptance.py) runs 31 samples in each
+required warm cell. On the documented 2026-08-14 container run, warm context
+p50/p95 improvement over the legacy process lifecycle was at least
+78.2%/76.3% (clean) and reached 86.7%/90.0% (multi-span); cold bootstrap was 43.0 ms,
+invalidated rebuild 42.7 ms, strict fallback 34.6 ms, and a journaled repair
+136.1 ms. Root-switch and linked-worktree checks passed.
+
 ### The drift cache
 
 `git span drift` (and related resolution paths) are backed by a single persistent cache: a SQLite database at `<common_dir>/span/store.db` (plus its `-wal` and `-shm` companions), implemented in `src/resolver/store/`. This is the whole on-disk cache footprint — remove `store.db*` to reset it. Setting `GIT_SPAN_CACHE=0` disables it for a run.

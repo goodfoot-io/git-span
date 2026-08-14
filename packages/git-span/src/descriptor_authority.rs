@@ -637,6 +637,38 @@ impl RetainedDirectory {
     pub fn display_path(&self) -> &Path {
         &self.display_path
     }
+
+    /// Prove the original discovery pathname still names this retained inode.
+    /// Pathnames are never used for mutation after authority is retained; this
+    /// check only turns a parent replacement into a fail-closed publication
+    /// result instead of reporting bytes through an inode no longer reachable
+    /// at the configured location.
+    pub fn validate_path_binding(&self) -> Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let path = std::fs::symlink_metadata(&self.display_path).with_context(|| {
+                format!(
+                    "revalidate retained directory `{}`",
+                    self.display_path.display()
+                )
+            })?;
+            ensure!(
+                !path.file_type().is_symlink(),
+                "retained directory path was replaced by a symlink"
+            );
+            let retained = self.descriptor.metadata()?;
+            ensure!(
+                path.dev() == retained.dev() && path.ino() == retained.ino(),
+                "retained directory path now names a different inode"
+            );
+            Ok(())
+        }
+        #[cfg(not(unix))]
+        {
+            bail!("descriptor authority requires openat-style platform support")
+        }
+    }
 }
 
 /// A validated span name split into its retained parent and final leaf.
@@ -699,6 +731,12 @@ impl SpanRootAuthority {
     /// Retained descriptor for control files directly under the span root.
     pub fn root(&self) -> Result<RetainedDirectory> {
         self.span_root.try_clone()
+    }
+
+    /// Revalidate that both public roots still name their retained inodes.
+    pub fn validate_bindings(&self) -> Result<()> {
+        self._worktree.validate_path_binding()?;
+        self.span_root.validate_path_binding()
     }
 }
 

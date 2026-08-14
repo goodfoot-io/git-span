@@ -2,7 +2,7 @@ packages/git-span/src/cli/mod.rs#L39-L114 rk64:e052e9c34a4a2f99
 packages/git-span/src/cli/mod.rs#L44-L199 rk64:75863e25144387d7
 packages/git-span/src/cli/mod.rs#L46-L208 rk64:dbefaeb0d1321bc5
 packages/git-span/src/cli/mod.rs#L50-L178 rk64:3964d8dfb778855b
-packages/git-span/src/cli/mod.rs#L499-L567 rk64:873a7ad141ee6855
+packages/git-span/src/cli/mod.rs#L500-L568 rk64:873a7ad141ee6855
 packages/git-span/src/main.rs#L49-L143 rk64:ebfafe74c31817b1
 packages/git-span/src/main.rs#L50-L156 rk64:ea8627519bd42715
 packages/git-span/src/validation.rs#L7-L37 rk64:67a4e8c157035cee

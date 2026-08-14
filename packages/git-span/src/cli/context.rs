@@ -128,14 +128,14 @@ pub struct ContextDocument {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct ContextSnapshot {
-    definitions: Vec<(String, Span)>,
+pub(super) struct ContextSnapshot {
+    pub(super) definitions: Vec<(String, Span)>,
 }
 
-struct ClosedContextCapture {
-    resolved: Vec<SpanResolved>,
-    paths: BTreeSet<String>,
-    token: crate::resolver::core::token::StateToken,
+pub(super) struct ClosedContextCapture {
+    pub(super) resolved: Vec<SpanResolved>,
+    pub(super) paths: BTreeSet<String>,
+    pub(super) token: crate::resolver::core::token::StateToken,
 }
 
 pub(crate) struct ContextServiceSeed {
@@ -144,7 +144,7 @@ pub(crate) struct ContextServiceSeed {
     pub(crate) external_watch_roots: BTreeSet<std::path::PathBuf>,
 }
 
-fn capture_snapshot(
+pub(super) fn capture_snapshot(
     repo: &gix::Repository,
     span_root: &str,
     authority: &crate::descriptor_authority::SpanRootAuthority,
@@ -164,7 +164,7 @@ fn capture_snapshot(
     Ok(ContextSnapshot { definitions })
 }
 
-fn resolve_snapshot(
+pub(super) fn resolve_snapshot(
     repo: &gix::Repository,
     snapshot: &ContextSnapshot,
 ) -> Result<Vec<SpanResolved>> {
@@ -184,7 +184,7 @@ fn resolved_paths(resolved: &[SpanResolved]) -> BTreeSet<String> {
         .collect()
 }
 
-fn close_context_capture(
+pub(super) fn close_context_capture(
     repo: &gix::Repository,
     span_root: &str,
     snapshot: &ContextSnapshot,
@@ -238,7 +238,7 @@ fn close_context_capture(
     })
 }
 
-fn parse_context_address(address: &str) -> Result<(String, ContextExtent)> {
+pub(super) fn parse_context_address(address: &str) -> Result<(String, ContextExtent)> {
     anyhow::ensure!(!address.is_empty(), "context path must not be empty");
     anyhow::ensure!(
         !address
@@ -256,7 +256,7 @@ fn parse_context_address(address: &str) -> Result<(String, ContextExtent)> {
     Ok((address.to_owned(), ContextExtent::Whole))
 }
 
-fn canonicalize_path(path: &str) -> Result<String> {
+pub(super) fn canonicalize_path(path: &str) -> Result<String> {
     let normalized = path.replace('\\', "/");
     anyhow::ensure!(
         !normalized.starts_with('/')
@@ -287,7 +287,7 @@ fn raw_query_paths(addresses: &[String]) -> Result<Vec<String>> {
         .collect()
 }
 
-fn normalize_scopes(
+pub(super) fn normalize_scopes(
     repo: &gix::Repository,
     addresses: &[String],
     snapshot: &ContextSnapshot,
@@ -509,7 +509,7 @@ fn context_span_from_resolved(span: SpanResolved, overlaps: Vec<ContextOverlap>)
     }
 }
 
-fn select_context(
+pub(super) fn select_context(
     scopes: Vec<ContextScope>,
     resolved: Vec<SpanResolved>,
     mutation: ContextMutation,
@@ -710,7 +710,9 @@ pub(crate) fn normalize_service_scopes(
     merge_scopes(by_path)
 }
 
-fn merge_scopes(by_path: BTreeMap<String, Vec<ContextExtent>>) -> Result<Vec<ContextScope>> {
+pub(super) fn merge_scopes(
+    by_path: BTreeMap<String, Vec<ContextExtent>>,
+) -> Result<Vec<ContextScope>> {
     let mut scopes = Vec::new();
     for (path, mut extents) in by_path {
         if extents.contains(&ContextExtent::Whole) {
@@ -752,7 +754,7 @@ pub(crate) fn context_intersection(
     intersection(scope, location)
 }
 
-fn render_document(document: &ContextDocument) -> Result<Vec<u8>> {
+pub(super) fn render_document(document: &ContextDocument) -> Result<Vec<u8>> {
     let mut bytes = serde_json::to_vec(document)?;
     bytes.push(b'\n');
     anyhow::ensure!(
@@ -780,7 +782,7 @@ fn context_test_checkpoint(_repo: &gix::Repository, checkpoint: &str) -> Result<
     anyhow::bail!("context test checkpoint `{checkpoint}` timed out")
 }
 
-fn run_context_read_only(
+pub(super) fn run_context_read_only(
     repo: &gix::Repository,
     addresses: &[String],
     span_root: &str,
@@ -826,28 +828,30 @@ fn run_context_read_only(
 
 pub fn run_context(repo: &gix::Repository, args: ContextArgs, span_root: &str) -> Result<i32> {
     if args.fix {
-        anyhow::bail!("context --fix is not implemented yet")
+        let operation_id = args.operation_id.unwrap_or_else(uuid::Uuid::new_v4);
+        if args.operation_id.is_none() {
+            let mut stderr = std::io::stderr().lock();
+            writeln!(stderr, "git-span context operation: {operation_id}")?;
+            stderr.flush()?;
+        }
+        let (document, counters) =
+            super::context_service::repair(repo, span_root, &args.addresses, operation_id)?;
+        record_service_counters(&counters);
+        let bytes = render_document(&document)?;
+        std::io::stdout().lock().write_all(&bytes)?;
+        std::io::stdout().lock().flush()?;
+        let _ = super::context_service::acknowledge_repair(
+            repo,
+            span_root,
+            &args.addresses,
+            operation_id,
+        );
+        return Ok(0);
     }
     let document =
         match super::context_service::query(repo, span_root, &args.addresses).unwrap_or(None) {
             Some((document, counters)) => {
-                crate::perf::counter("context.service-generation-hits", counters.generation_hits);
-                crate::perf::counter("context.service-corpus-loads", counters.corpus_loads);
-                crate::perf::counter("context.service-resolver-passes", counters.resolver_passes);
-                crate::perf::counter("context.service-invalidations", counters.invalidations);
-                crate::perf::counter(
-                    "context.service-watcher-overflows",
-                    counters.watcher_overflows,
-                );
-                crate::perf::counter("context.service-stale-fallbacks", counters.stale_fallbacks);
-                crate::perf::counter("context.service-epoch-checks", counters.epoch_checks);
-                crate::perf::counter("context.service-rows-decoded", counters.rows_decoded);
-                crate::perf::counter("context.service-rpc-connect-us", counters.rpc_connect_us);
-                crate::perf::counter(
-                    "context.service-watcher-drain-us",
-                    counters.watcher_drain_us,
-                );
-                crate::perf::counter("context.service-total-us", counters.total_latency_us);
+                record_service_counters(&counters);
                 document
             }
             None => {
@@ -860,4 +864,107 @@ pub fn run_context(repo: &gix::Repository, args: ContextArgs, span_root: &str) -
     let bytes = render_document(&document)?;
     std::io::stdout().lock().write_all(&bytes)?;
     Ok(0)
+}
+
+fn record_service_counters(counters: &super::context_service::ServiceCounters) {
+    crate::perf::counter("context.service-generation-hits", counters.generation_hits);
+    crate::perf::counter("context.service-corpus-loads", counters.corpus_loads);
+    crate::perf::counter("context.service-resolver-passes", counters.resolver_passes);
+    crate::perf::counter("context.service-invalidations", counters.invalidations);
+    crate::perf::counter(
+        "context.service-watcher-overflows",
+        counters.watcher_overflows,
+    );
+    crate::perf::counter("context.service-stale-fallbacks", counters.stale_fallbacks);
+    crate::perf::counter("context.service-epoch-checks", counters.epoch_checks);
+    crate::perf::counter("context.service-rows-decoded", counters.rows_decoded);
+    crate::perf::counter("context.service-rpc-connect-us", counters.rpc_connect_us);
+    crate::perf::counter(
+        "context.service-watcher-drain-us",
+        counters.watcher_drain_us,
+    );
+    crate::perf::counter("context.service-total-us", counters.total_latency_us);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::UnavailableReason;
+
+    #[test]
+    fn status_reason_source_tokens_and_utf8_detail_are_stable() {
+        let statuses = [
+            (AnchorStatus::Fresh, "FRESH"),
+            (
+                AnchorStatus::ResolvedPendingCommit,
+                "RESOLVED_PENDING_COMMIT",
+            ),
+            (AnchorStatus::Moved, "MOVED"),
+            (AnchorStatus::Changed, "CHANGED"),
+            (AnchorStatus::Deleted, "DELETED"),
+            (AnchorStatus::MergeConflict, "CONFLICT"),
+            (AnchorStatus::Submodule, "SUBMODULE"),
+        ];
+        for (status, token) in statuses {
+            assert_eq!(
+                serde_json::to_value(context_status(&status)).unwrap()["code"],
+                token
+            );
+        }
+        for (reason, token) in [
+            (UnavailableReason::LfsNotFetched, "LFS_NOT_FETCHED"),
+            (UnavailableReason::LfsNotInstalled, "LFS_NOT_INSTALLED"),
+            (UnavailableReason::PromisorMissing, "PROMISOR_MISSING"),
+            (UnavailableReason::SparseExcluded, "SPARSE_EXCLUDED"),
+        ] {
+            let value =
+                serde_json::to_value(context_status(&AnchorStatus::ContentUnavailable(reason)))
+                    .unwrap();
+            assert_eq!(value["code"], "CONTENT_UNAVAILABLE");
+            assert_eq!(value["reason"], token);
+        }
+        assert_eq!(
+            serde_json::to_value(context_source(DriftSource::Head)).unwrap(),
+            "HEAD"
+        );
+        assert_eq!(
+            serde_json::to_value(context_source(DriftSource::Index)).unwrap(),
+            "INDEX"
+        );
+        assert_eq!(
+            serde_json::to_value(context_source(DriftSource::Worktree)).unwrap(),
+            "WORKTREE"
+        );
+
+        let detail = format!("{}é", "x".repeat(MAX_CONTEXT_DETAIL_BYTES - 1));
+        let value = serde_json::to_value(context_status(&AnchorStatus::ContentUnavailable(
+            UnavailableReason::IoError { message: detail },
+        )))
+        .unwrap();
+        let message = value["detail"]["message"].as_str().unwrap();
+        assert!(message.len() <= MAX_CONTEXT_DETAIL_BYTES);
+        assert!(message.is_char_boundary(message.len()));
+        assert_eq!(value["detail"]["truncated"], true);
+    }
+
+    #[test]
+    fn oversized_document_is_rejected_before_output() {
+        let document = ContextDocument {
+            schema_version: CONTEXT_SCHEMA_VERSION,
+            scopes: Vec::new(),
+            mutation: ContextMutation::default(),
+            spans: vec![ContextSpan {
+                name: "large".into(),
+                why: Some("x".repeat(MAX_CONTEXT_JSON_BYTES)),
+                overlaps: Vec::new(),
+                anchors: Vec::new(),
+            }],
+        };
+        assert!(
+            render_document(&document)
+                .unwrap_err()
+                .to_string()
+                .contains("JSON limit")
+        );
+    }
 }

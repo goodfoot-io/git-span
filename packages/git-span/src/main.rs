@@ -110,6 +110,27 @@ fn run() -> Result<i32> {
         .into());
     }
 
+    // `context` became a subcommand after repositories could already carry
+    // a span with that name. Preserve the one otherwise-ambiguous legacy
+    // spelling: a bare token with no context addresses still shows an
+    // effective legacy span. If none exists, clap owns the normal missing
+    // address usage error. Explicit `show context` and all writer operations
+    // already validate existing targets by shape rather than the create-time
+    // reserved-name rule.
+    if first_non_opt.map(String::as_str) == Some("context") && args.len() == idx + 1 {
+        let repo = discover_repo()?;
+        let env_dir = std::env::var("GIT_SPAN_DIR").ok();
+        let span_root = git_span::span_root::resolve_span_root(&repo, None, env_dir.as_deref())
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        if git_span::span::read::read_span_in(&repo, "context", &span_root).is_ok() {
+            let mut show_argv = args.clone();
+            show_argv.insert(idx, "show".to_owned());
+            let cli = Cli::try_parse_from(show_argv)?;
+            git_span::perf::init(cli.perf);
+            return cli::dispatch(&repo, cli.command.expect("inserted show subcommand"), None);
+        }
+    }
+
     // `is_reserved_span_name` — not the bare reserved list — so this
     // classification and `validate_span_name` can never disagree about which
     // tokens are span names. A retired token is unreachable here (the refusal

@@ -18,22 +18,23 @@
 
 pub mod commit;
 pub mod context;
+pub(crate) mod context_repair;
 pub(crate) mod context_service;
 pub mod doctor;
+pub mod drift_cluster;
+pub mod drift_fix;
 pub mod drift_label;
+pub mod drift_output;
 pub mod duplicate_identity;
 pub mod error;
 pub mod format;
 pub mod history;
 pub mod interior_anchor;
 pub mod merge_driver;
-pub(crate) mod repair_domain;
 pub(crate) mod recovery_domain;
+pub(crate) mod repair_domain;
 pub mod resolve;
 pub mod show;
-pub mod drift_cluster;
-pub mod drift_fix;
-pub mod drift_output;
 pub mod tree;
 pub mod unified_diff;
 

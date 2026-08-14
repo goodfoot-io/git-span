@@ -48,7 +48,13 @@ struct Request {
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum Operation {
     Health,
-    Query { addresses: Vec<String> },
+    Query {
+        addresses: Vec<String>,
+    },
+    Repair {
+        addresses: Vec<String>,
+        operation_id: String,
+    },
     Shutdown,
 }
 
@@ -89,6 +95,10 @@ impl Generation {
     fn build(repo: &gix::Repository, span_root: &str) -> Result<(Self, BTreeSet<PathBuf>)> {
         let _recovery =
             super::recovery_domain::acquire(repo, super::recovery_domain::Mode::Exclusive)?;
+        Self::build_locked(repo, span_root)
+    }
+
+    fn build_locked(repo: &gix::Repository, span_root: &str) -> Result<(Self, BTreeSet<PathBuf>)> {
         let seed = build_service_seed(repo, span_root)?;
         let mut rows = Vec::with_capacity(seed.spans.len());
         let mut index: BTreeMap<String, Vec<LocationIndexEntry>> = BTreeMap::new();
@@ -214,6 +224,7 @@ mod unix {
         events: u64,
         overflow: bool,
         elapsed_us: u64,
+        paths: BTreeSet<PathBuf>,
     }
 
     #[derive(Debug)]
@@ -221,7 +232,7 @@ mod unix {
         fd: OwnedFd,
         roots: Vec<PathBuf>,
         excluded: Vec<PathBuf>,
-        watched: BTreeSet<PathBuf>,
+        watched: BTreeMap<PathBuf, i32>,
     }
 
     fn injected_watcher_failure(stage: &str) -> bool {
@@ -245,7 +256,7 @@ mod unix {
                 fd: unsafe { OwnedFd::from_raw_fd(raw_fd) },
                 roots,
                 excluded,
-                watched: BTreeSet::new(),
+                watched: BTreeMap::new(),
             };
             watcher.refresh()?;
             ensure!(!watcher.watched.is_empty(), "watcher installed no watches");
@@ -312,7 +323,7 @@ mod unix {
         }
 
         fn add_watch(&mut self, path: &Path) -> Result<()> {
-            if !self.watched.insert(path.to_path_buf()) {
+            if self.watched.contains_key(path) {
                 return Ok(());
             }
             let c_path = CString::new(path.as_os_str().as_bytes())?;
@@ -331,10 +342,10 @@ mod unix {
             let descriptor =
                 unsafe { libc::inotify_add_watch(self.fd.as_raw_fd(), c_path.as_ptr(), mask) };
             if descriptor < 0 {
-                self.watched.remove(path);
                 return Err(std::io::Error::last_os_error())
                     .with_context(|| format!("install watch for {}", path.display()));
             }
+            self.watched.insert(path.to_path_buf(), descriptor);
             Ok(())
         }
 
@@ -349,11 +360,13 @@ mod unix {
                     events: 1,
                     overflow: true,
                     elapsed_us: started.elapsed().as_micros() as u64,
+                    paths: BTreeSet::new(),
                 });
             }
             let mut buffer = [0_u8; 64 * 1024];
             let mut events = 0;
             let mut overflow = false;
+            let mut paths = BTreeSet::new();
             loop {
                 let count = unsafe {
                     libc::read(
@@ -382,6 +395,21 @@ mod unix {
                     };
                     events += 1;
                     overflow |= event.mask & libc::IN_Q_OVERFLOW != 0;
+                    if let Some((root, _)) = self
+                        .watched
+                        .iter()
+                        .find(|(_, descriptor)| **descriptor == event.wd)
+                    {
+                        if event.len == 0 {
+                            paths.insert(root.clone());
+                        } else {
+                            use std::os::unix::ffi::OsStrExt;
+                            let name_start = offset + std::mem::size_of::<libc::inotify_event>();
+                            let raw = &buffer[name_start..name_start + event.len as usize];
+                            let end = raw.iter().position(|byte| *byte == 0).unwrap_or(raw.len());
+                            paths.insert(root.join(std::ffi::OsStr::from_bytes(&raw[..end])));
+                        }
+                    }
                     offset += std::mem::size_of::<libc::inotify_event>() + event.len as usize;
                 }
             }
@@ -392,6 +420,7 @@ mod unix {
                 events,
                 overflow,
                 elapsed_us: started.elapsed().as_micros() as u64,
+                paths,
             })
         }
     }
@@ -547,7 +576,7 @@ mod unix {
         Ok(())
     }
 
-    fn service_paths(repo: &gix::Repository, span_root: &str) -> Result<Option<ServicePaths>> {
+    fn identity_paths(repo: &gix::Repository, span_root: &str) -> Result<ServicePaths> {
         let workdir = std::fs::canonicalize(crate::git::work_dir(repo)?)?;
         let git_dir = std::fs::canonicalize(crate::git::git_dir(repo))?;
         let common = std::fs::canonicalize(crate::git::common_dir(repo))?;
@@ -567,6 +596,12 @@ mod unix {
         }
         let mut environment = std::env::vars_os()
             .filter(|(name, _)| {
+                if name
+                    .to_str()
+                    .is_some_and(|name| name.starts_with("GIT_SPAN_CONTEXT_TEST_"))
+                {
+                    return false;
+                }
                 !matches!(
                     name.to_str(),
                     Some(
@@ -592,14 +627,26 @@ mod unix {
         let runtime = crate::descriptor_authority::RuntimeAuthority::open(&git_dir, &key)?;
         let directory = runtime.directory()?;
         let socket = directory.descriptor_path(std::ffi::OsStr::new("service.sock"))?;
-        if socket.as_os_str().as_bytes().len() >= 100 {
-            return Ok(None);
-        }
-        Ok(Some(ServicePaths {
+        Ok(ServicePaths {
             socket,
             directory,
             key,
-        }))
+        })
+    }
+
+    fn service_paths(repo: &gix::Repository, span_root: &str) -> Result<Option<ServicePaths>> {
+        let paths = identity_paths(repo, span_root)?;
+        if paths.socket.as_os_str().as_bytes().len() >= 100 {
+            return Ok(None);
+        }
+        Ok(Some(paths))
+    }
+
+    pub(super) fn runtime_directory(
+        repo: &gix::Repository,
+        span_root: &str,
+    ) -> Result<crate::descriptor_authority::RetainedDirectory> {
+        identity_paths(repo, span_root)?.directory.try_clone()
     }
 
     fn rpc(paths: &ServicePaths, nonce: &str, op: Operation) -> Result<(Response, u64)> {
@@ -761,6 +808,30 @@ mod unix {
         let Some(paths) = service_paths(repo, span_root)? else {
             return Ok(None);
         };
+        if let Ok(nonce) = read_nonce(&paths)
+            && let Ok((mut response, connect_us)) = rpc(
+                &paths,
+                &nonce,
+                Operation::Query {
+                    addresses: addresses.to_vec(),
+                },
+            )
+        {
+            if response.ok {
+                response.counters.rpc_connect_us = connect_us;
+                let document = response
+                    .document
+                    .ok_or_else(|| anyhow!("context service omitted its document"))?;
+                return Ok(Some((document, response.counters)));
+            }
+            if response.fallback {
+                return Ok(None);
+            }
+            return Err(anyhow!(
+                "context service rejected query: {}",
+                response.error.unwrap_or_default()
+            ));
+        }
         let lock = paths
             .directory
             .open_or_create_file(std::ffi::OsStr::new("supervisor.lock"), 0o600)?;
@@ -799,9 +870,187 @@ mod unix {
         }
     }
 
+    pub(super) fn client_repair(
+        repo: &gix::Repository,
+        span_root: &str,
+        addresses: &[String],
+        operation_id: uuid::Uuid,
+    ) -> Result<Option<(ContextDocument, ServiceCounters)>> {
+        if std::env::var_os("GIT_SPAN_CONTEXT_DISABLE_SERVICE").is_some() {
+            return Ok(None);
+        }
+        let Some(paths) = service_paths(repo, span_root)? else {
+            return Ok(None);
+        };
+        if let Ok(nonce) = read_nonce(&paths)
+            && let Ok((mut response, connect_us)) = rpc(
+                &paths,
+                &nonce,
+                Operation::Repair {
+                    addresses: addresses.to_vec(),
+                    operation_id: operation_id.to_string(),
+                },
+            )
+        {
+            if response.ok {
+                response.counters.rpc_connect_us = connect_us;
+                return Ok(Some((
+                    response
+                        .document
+                        .context("context service omitted repair response")?,
+                    response.counters,
+                )));
+            }
+            if response.fallback {
+                return Ok(None);
+            }
+            return Err(anyhow!(
+                "context service rejected repair: {}",
+                response.error.unwrap_or_default()
+            ));
+        }
+        let lock = paths
+            .directory
+            .open_or_create_file(std::ffi::OsStr::new("supervisor.lock"), 0o600)?;
+        acquire_supervisor(&lock)?;
+        let nonce = match health(&paths) {
+            Ok(nonce) => nonce,
+            Err(_) => match start_service(&paths, span_root) {
+                Ok(nonce) => nonce,
+                Err(_) => {
+                    fs4::fs_std::FileExt::unlock(&lock)?;
+                    return Ok(None);
+                }
+            },
+        };
+        fs4::fs_std::FileExt::unlock(&lock)?;
+        match rpc(
+            &paths,
+            &nonce,
+            Operation::Repair {
+                addresses: addresses.to_vec(),
+                operation_id: operation_id.to_string(),
+            },
+        ) {
+            Ok((mut response, connect_us)) if response.ok => {
+                response.counters.rpc_connect_us = connect_us;
+                Ok(Some((
+                    response
+                        .document
+                        .context("context service omitted repair response")?,
+                    response.counters,
+                )))
+            }
+            Ok((response, _)) if response.fallback => Ok(None),
+            Ok((response, _)) => Err(anyhow!(
+                "context service rejected repair: {}",
+                response.error.unwrap_or_default()
+            )),
+            // The service may have committed before the connection was lost.
+            // Falling back with the same operation ID is a journal replay,
+            // never a second mutation.
+            Err(_) => Ok(None),
+        }
+    }
+
+    fn repair_state(
+        shared: &Arc<Mutex<ServiceState>>,
+        runtime: &crate::descriptor_authority::RetainedDirectory,
+        addresses: &[String],
+        operation_id: uuid::Uuid,
+    ) -> Result<(ContextDocument, ServiceCounters)> {
+        let started = Instant::now();
+        let (repo_path, span_root) = {
+            let state = shared
+                .lock()
+                .map_err(|_| anyhow!("context service state was poisoned"))?;
+            (state.repo_path.clone(), state.span_root.clone())
+        };
+        let repo = gix::open(&repo_path).context("reopen context service repository for repair")?;
+        let mut counters = ServiceCounters::default();
+        let document = super::super::context_repair::execute(
+            &repo,
+            &span_root,
+            addresses,
+            operation_id,
+            runtime,
+            |prepared| {
+                let (generation, external_roots) = Generation::build_locked(&repo, &span_root)?;
+                let (mut proved, rows) = generation.query(prepared.scopes.clone())?;
+                proved.mutation = prepared.mutation.clone();
+                counters.rows_decoded += rows;
+                ensure!(
+                    proved == *prepared,
+                    "published context generation differs from prepared repair response"
+                );
+                let mut state = shared
+                    .lock()
+                    .map_err(|_| anyhow!("context service state was poisoned"))?;
+                let drain = state.watcher.drain()?;
+                counters.watcher_drain_us += drain.elapsed_us;
+                counters.invalidations += drain.events;
+                counters.watcher_overflows += u64::from(drain.overflow);
+                // Every event, expected or external, takes the conservative
+                // full-generation path. Nothing is ignored during repair.
+                let mut roots = state.base_watch_roots.clone();
+                roots.extend(external_roots);
+                let mut excluded = state.runtime_dirs.clone();
+                excluded.push(state.service_dir.clone());
+                let mut watcher = FailClosedWatcher::new(roots, excluded)?;
+                let clean = watcher.drain()?;
+                ensure!(
+                    clean.events == 0 && !clean.overflow,
+                    "dependency changed while publishing repaired generation"
+                );
+                state.generation = Arc::new(generation);
+                state.watcher = watcher;
+                state.epoch = state.epoch.saturating_add(1);
+                state.dirty = false;
+                counters.corpus_loads += 1;
+                counters.resolver_passes += 2;
+                Ok(())
+            },
+        )?;
+        {
+            let expected = document
+                .spans
+                .iter()
+                .map(|span| repo_path.join(&span_root).join(&span.name))
+                .collect::<BTreeSet<_>>();
+            let mut state = shared
+                .lock()
+                .map_err(|_| anyhow!("context service state was poisoned"))?;
+            let drain = state.watcher.drain()?;
+            counters.watcher_drain_us += drain.elapsed_us;
+            counters.invalidations += drain.events;
+            counters.watcher_overflows += u64::from(drain.overflow);
+            let expected_only = !drain.overflow
+                && drain.paths.iter().all(|path| {
+                    expected.iter().any(|definition| {
+                        path == definition
+                            || (path.parent() == definition.parent()
+                                && path.file_name().is_some_and(|leaf| {
+                                    let leaf = leaf.to_string_lossy();
+                                    leaf.starts_with(".context-") || leaf.ends_with(".context.lock")
+                                }))
+                    })
+                });
+            if drain.events > 0 {
+                state.epoch = state.epoch.saturating_add(1);
+                if !expected_only {
+                    state.dirty = true;
+                    state.rebuild(&mut counters)?;
+                }
+            }
+        }
+        counters.total_latency_us = started.elapsed().as_micros() as u64;
+        Ok((document, counters))
+    }
+
     fn handle_connection(
         mut stream: UnixStream,
         state: &Arc<Mutex<ServiceState>>,
+        runtime: &crate::descriptor_authority::RetainedDirectory,
         service_key: &str,
         nonce: &str,
     ) -> Result<bool> {
@@ -825,6 +1074,7 @@ mod unix {
             thread::sleep(Duration::from_millis(delay.min(2_000)));
         }
         let mut shutdown = false;
+        let mut acknowledgement: Option<(uuid::Uuid, Vec<String>)> = None;
         let response = match request.op {
             Operation::Health => Response {
                 protocol: PROTOCOL_VERSION,
@@ -863,12 +1113,49 @@ mod unix {
                     counters: ServiceCounters::default(),
                 },
             },
+            Operation::Repair {
+                addresses,
+                operation_id,
+            } => match operation_id.parse::<uuid::Uuid>() {
+                Ok(operation_id) => match repair_state(state, runtime, &addresses, operation_id) {
+                    Ok((document, counters)) => {
+                        acknowledgement = Some((operation_id, addresses));
+                        Response {
+                            protocol: PROTOCOL_VERSION,
+                            ok: true,
+                            fallback: false,
+                            document: Some(document),
+                            error: None,
+                            counters,
+                        }
+                    }
+                    Err(error) => Response {
+                        protocol: PROTOCOL_VERSION,
+                        ok: false,
+                        fallback: false,
+                        document: None,
+                        error: Some(format!("{error:#}")),
+                        counters: ServiceCounters::default(),
+                    },
+                },
+                Err(error) => Response {
+                    protocol: PROTOCOL_VERSION,
+                    ok: false,
+                    fallback: false,
+                    document: None,
+                    error: Some(format!("invalid repair operation ID: {error}")),
+                    counters: ServiceCounters::default(),
+                },
+            },
         };
         write_frame(
             &mut stream,
             &serde_json::to_vec(&response)?,
             MAX_RESPONSE_BYTES,
         )?;
+        if let Some((operation_id, addresses)) = acknowledgement {
+            let _ = super::super::context_repair::acknowledge(runtime, operation_id, &addresses);
+        }
         Ok(shutdown)
     }
 
@@ -951,11 +1238,14 @@ mod unix {
                     active.fetch_add(1, Ordering::AcqRel);
                     let active_worker = active.clone();
                     let state = state.clone();
+                    let runtime = runtime_directory.try_clone()?;
                     let key = args.service_key.clone();
                     let nonce = args.nonce.clone();
                     let shutdown_worker = shutdown.clone();
                     thread::spawn(move || {
-                        if handle_connection(stream, &state, &key, &nonce).unwrap_or(false) {
+                        if handle_connection(stream, &state, &runtime, &key, &nonce)
+                            .unwrap_or(false)
+                        {
                             shutdown_worker.store(1, Ordering::Release);
                         }
                         active_worker.fetch_sub(1, Ordering::AcqRel);
@@ -968,7 +1258,7 @@ mod unix {
                     {
                         break;
                     }
-                    thread::sleep(Duration::from_millis(10));
+                    thread::sleep(Duration::from_millis(1));
                 }
                 Err(error) => return Err(error.into()),
             }
@@ -996,6 +1286,66 @@ pub(crate) fn query(
     {
         let _ = (repo, span_root, addresses);
         Ok(None)
+    }
+}
+
+pub(crate) fn repair(
+    repo: &gix::Repository,
+    span_root: &str,
+    addresses: &[String],
+    operation_id: uuid::Uuid,
+) -> Result<(ContextDocument, ServiceCounters)> {
+    #[cfg(target_os = "linux")]
+    {
+        // A repository with no span root has nothing to journal or publish.
+        // Preserve the normal input validation and return an explicit no-op
+        // mutation result without creating public span state as a side effect.
+        if crate::descriptor_authority::SpanRootAuthority::open_optional(
+            crate::git::work_dir(repo)?,
+            span_root,
+        )?
+        .is_none()
+        {
+            let mut document = super::context::run_context_read_only(repo, addresses, span_root)?;
+            document.mutation.requested = true;
+            return Ok((document, ServiceCounters::default()));
+        }
+        if let Some(response) = unix::client_repair(repo, span_root, addresses, operation_id)? {
+            return Ok(response);
+        }
+        let runtime = unix::runtime_directory(repo, span_root)?;
+        let document = super::context_repair::execute(
+            repo,
+            span_root,
+            addresses,
+            operation_id,
+            &runtime,
+            |_| Ok(()),
+        )?;
+        Ok((document, ServiceCounters::default()))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (repo, span_root, addresses, operation_id);
+        bail!("context repair requires descriptor-relative Unix filesystem operations")
+    }
+}
+
+pub(crate) fn acknowledge_repair(
+    repo: &gix::Repository,
+    span_root: &str,
+    addresses: &[String],
+    operation_id: uuid::Uuid,
+) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        let runtime = unix::runtime_directory(repo, span_root)?;
+        super::context_repair::acknowledge(&runtime, operation_id, addresses)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (repo, span_root, addresses, operation_id);
+        Ok(())
     }
 }
 

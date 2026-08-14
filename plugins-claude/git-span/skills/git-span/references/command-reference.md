@@ -33,6 +33,8 @@ git span show <name>
 git span list [<target>...] [--porcelain] [--oneline] [--offset <n>] [--limit <n>]
 git span drift [<target>...] [--format human|porcelain|json] [--no-exit-code]
 git span drift [<target>...] [--fix]                 # re-anchor in place; resolve .span/ conflicts; human format only
+git span context <address>... [--format json]        # one exact, versioned dependency-context answer
+git span context <address>... --fix [--operation-id <uuid>]
 git span drift --perf-trace <path>                   # CSV of per-anchor wall-clock traces; full scan only, no positional paths
 git span tree <glob>... [-d|--depth <n>] [--format human|json]
 git span history <name> [--format human|json] [-n|--limit <count>]
@@ -59,6 +61,71 @@ file, missing span name, unmatched literal glob) — see `references/inspect.md`
 
 `drift` exits 1 when it finds drift, 0 when clean; `--no-exit-code` forces exit
 0 regardless of findings (report-only).
+
+### Exact batched context
+
+`git span context` accepts one or more exact repository-relative paths or
+inclusive `path#L<start>-L<end>` ranges. A bare path is whole-file scope.
+Inputs are unioned, duplicate and overlapping ranges are normalized, and the
+command returns deterministic schema-v1 JSON with:
+
+- normalized `scopes`;
+- a `mutation` object (`requested`, `rewritten`, and exact span/anchor counts);
+- every exactly overlapping span, ordered by name, with nullable `why`;
+- the anchored/current overlap(s) that selected it, including scope index,
+  final anchor ordinal and ID, basis, matched location, and intersection; and
+- the selected span's complete ordered anchor set, including anchored/current
+  locations, status, primary `source`, and ordered `sources`.
+
+Status tokens are `FRESH`, `RESOLVED_PENDING_COMMIT`, `MOVED`, `CHANGED`,
+`DELETED`, `CONFLICT`, `SUBMODULE`, and `CONTENT_UNAVAILABLE`. Source tokens
+are `WORKTREE`, `INDEX`, and `HEAD`. Unavailable reasons are
+`LFS_NOT_FETCHED`, `LFS_NOT_INSTALLED`, `PROMISOR_MISSING`, `SPARSE_EXCLUDED`,
+`FILTER_FAILED`, and `IO_ERROR`; dynamic detail is a valid UTF-8 prefix of at
+most 4096 bytes and carries `truncated: true` when shortened. Unknown schema
+versions or required enum values must be rejected by consumers.
+
+A valid scope with no overlaps exits 0 with `"spans": []`. Semantic drift is
+successful data and also exits 0. Invalid/outside/missing paths, malformed
+ranges, conflicted or racing definitions, unavailable authoritative state,
+more than 4096 input/normalized scopes, or a response above 16 MiB exit
+nonzero, diagnose on stderr, and leave stdout empty. Context accepts exact
+paths only—no globs or span names—and never expands the transitive graph that
+`tree` reports.
+
+`--fix` repairs only position drift and whitespace-equivalent changes. It
+plans the exact post-state response and checks its size before the first span
+rename, then journals original/planned bytes and publishes durable span bytes,
+the committed response, and the service's immutable post-generation before
+replying. Meaning-changing edits remain `CHANGED`. Cycles and swaps are
+planned by final ordinal rather than mutation order.
+
+For retryable automation, supply `--operation-id <uuid>` with `--fix`. The
+same UUID and identical normalized request returns the originally committed
+response—even from a later foreground process—without applying the repair a
+second time. Reusing it for a different request fails with empty stdout. If
+the option is omitted, the client generates a UUID and flushes
+`git-span context operation: <uuid>` to stderr before it can send a mutating
+request; retain that receipt when delivery becomes unknown. `--operation-id`
+without `--fix` and malformed UUIDs are usage errors.
+
+On Linux, a private per-worktree watched service keeps a split location index
+and independently decoded span rows resident. Its directory is mode 0700,
+socket mode 0600, and every request authenticates peer UID, nonce, protocol,
+build, schema, resolver, worktree, Git-dir/common-dir, resolved span root, and
+output-affecting configuration. Watch uncertainty, overflow, unsupported
+backend/platform, startup/path limits, and service health failures take the
+strict in-process path with identical JSON/failure semantics. An idle service
+exits after 60 seconds. Linked worktrees and alternate `GIT_SPAN_DIR` roots do
+not share service state.
+
+`--perf`/`GIT_SPAN_PERF=1` keeps JSON alone on stdout and reports service RPC,
+watcher, repository/corpus, generation/resolver, selection, rewrite, and
+latency counters on stderr. The released-binary acceptance harness is
+[packages/git-span/scripts/context-acceptance.py](./packages/git-span/scripts/context-acceptance.py):
+it uses 31 samples per clean, moved, semantic, no-overlap, multi-span, and
+multi-path cell and fails unless every warm cell improves at least 30% at p50
+and 20% at p95 over the legacy fix/list/drift/why process lifecycle.
 
 `git span show <name>` emits the span file's content (name, why, anchors,
 resolution audit records, and the `[config]` block). Each `[[resolved]]` entry
