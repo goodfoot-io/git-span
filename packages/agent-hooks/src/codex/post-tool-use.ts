@@ -153,7 +153,7 @@ async function runApplyPatchTouches(
   record: PlannedTouchRecord | null,
   executors: TouchExecutors,
   memo: ReturnType<MemoFactory>,
-  invocationId: string
+  invocationId: string | null
 ): Promise<string[]> {
   const planned = plannedPatchCandidates(record, cwd);
   const plannedPaths = new Set(planned.map(({ absolutePath }) => absolutePath));
@@ -185,7 +185,7 @@ async function runApplyPatchTouches(
         sessionId,
         cwd,
         filePath: candidate.absolutePath,
-        invocationId,
+        ...(invocationId === null ? {} : { invocationId }),
         written: '',
         range,
         targetState: candidate.operation === 'delete' ? 'absent' : 'exists',
@@ -260,7 +260,7 @@ export function createHandler(
       record,
       executors,
       memo,
-      `${sessionId}:${input.tool_use_id ?? 'apply_patch'}`
+      input.tool_use_id === undefined ? null : `${sessionId}:${input.tool_use_id}`
     );
     if (blocks.length === 0) return undefined;
     const combined = blocks.join('');

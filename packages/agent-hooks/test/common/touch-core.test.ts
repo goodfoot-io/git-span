@@ -27,7 +27,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { DriftPorcelainRow, PorcelainRow } from '../../src/common/agent-hooks-common.js';
-import { runBashTouches } from '../../src/common/bash-touch.js';
+import { runBashTouches as runBashTouchesImpl } from '../../src/common/bash-touch.js';
 import type { ResolvedSpan, SpanMatch } from '../../src/common/parse-command.js';
 import type { MemoStore } from '../../src/common/span-surface.js';
 import type { RealityProbeCache, TouchReadInput, TouchWriteInput } from '../../src/common/touch-core.js';
@@ -43,8 +43,29 @@ function runTouchHook(
   memo: MemoStore,
   probeCache?: RealityProbeCache
 ) {
-  return runContextTouchHook(input, contextExecutors(executors), memo, probeCache);
+  return runContextTouchHook(
+    { ...input, invocationId: input.invocationId ?? `${input.sessionId}:test-event` },
+    contextExecutors(executors),
+    memo,
+    probeCache
+  );
 }
+
+const runBashTouches = (...args: Parameters<typeof runBashTouchesImpl>): ReturnType<typeof runBashTouchesImpl> => {
+  const invocationId = args[9] ?? `${args[1]}:test-event`;
+  return runBashTouchesImpl(
+    args[0],
+    args[1],
+    args[2],
+    args[3],
+    args[4],
+    args[5],
+    args[6],
+    args[7],
+    args[8],
+    invocationId
+  );
+};
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -78,6 +99,7 @@ function writeInput(overrides: Partial<TouchWriteInput> = {}): TouchWriteInput {
     sessionId: SESSION_ID,
     cwd: REPO_ROOT,
     filePath: `${REPO_ROOT}/src/app.ts`,
+    invocationId: `${SESSION_ID}:test-event`,
     written: 'export const app = 1;\n',
     ...overrides
   };
@@ -89,6 +111,7 @@ function readInput(overrides: Partial<TouchReadInput> = {}): TouchReadInput {
     sessionId: SESSION_ID,
     cwd: REPO_ROOT,
     filePath: `${REPO_ROOT}/src/app.ts`,
+    invocationId: `${SESSION_ID}:test-event`,
     ...overrides
   };
 }

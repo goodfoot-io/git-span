@@ -285,7 +285,7 @@ export async function runBashTouches(
   warn: (message: string) => void = console.warn,
   scopeAlreadyResolved: boolean = false,
   reportDiagnostics: (diagnostics: BashTouchDiagnostics) => void = () => undefined,
-  invocationId: string = `${sessionId}:bash`
+  invocationId: string | null = null
 ): Promise<string[]> {
   const resolved = matches.filter((m): m is ResolvedMatch => m.status === 'resolved');
   // A command that did not complete produces no touches, whatever its spans.

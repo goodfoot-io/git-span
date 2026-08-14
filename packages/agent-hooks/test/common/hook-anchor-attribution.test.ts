@@ -116,6 +116,7 @@ async function touchBlock(anchors: PorcelainRow[], drift: DriftPorcelainRow[]): 
     sessionId: SESSION_ID,
     cwd: REPO_ROOT,
     filePath: `${REPO_ROOT}/${SPECIMENS}`,
+    invocationId: `${SESSION_ID}:test-event`,
     written: ''
   };
   const output = await runTouchHook(input, executors, createMemoryMemoStore());

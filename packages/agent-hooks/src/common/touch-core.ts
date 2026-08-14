@@ -590,7 +590,8 @@ export type ContextFailureCategory =
   | 'empty_output'
   | 'malformed_json'
   | 'schema_rejected'
-  | 'address_limit';
+  | 'address_limit'
+  | 'missing_invocation_identity';
 
 export interface ContextQueryRequest {
   repoRoot: string;
@@ -748,6 +749,22 @@ function decodeOverlap(value: unknown, label: string): ContextOverlap {
   };
 }
 
+function sameExtent(left: ContextExtent, right: ContextExtent): boolean {
+  return (
+    (left.kind === 'whole' && right.kind === 'whole') ||
+    (left.kind === 'lines' && right.kind === 'lines' && left.start === right.start && left.end === right.end)
+  );
+}
+
+function sameLocation(left: ContextLocation, right: ContextLocation): boolean {
+  return left.path === right.path && sameExtent(left.extent, right.extent);
+}
+
+function containsExtent(container: ContextExtent, nested: ContextExtent): boolean {
+  if (container.kind === 'whole') return true;
+  return nested.kind === 'lines' && container.start <= nested.start && container.end >= nested.end;
+}
+
 /** Decode the complete schema-v1 context document or reject it atomically. */
 export function decodeContextDocument(stdout: string): ContextDocument {
   if (Buffer.byteLength(stdout) > MAX_CONTEXT_JSON_BYTES) throw new Error('context document exceeds the size limit');
@@ -797,12 +814,27 @@ export function decodeContextDocument(stdout: string): ContextDocument {
     };
   });
   for (const [spanIndex, span] of spans.entries()) {
-    for (const overlap of span.overlaps) {
+    for (const [overlapIndex, overlap] of span.overlaps.entries()) {
+      const label = `context document.spans[${spanIndex}].overlaps[${overlapIndex}]`;
       if (overlap.scope >= scopes.length)
         throw new Error(`context document.spans[${spanIndex}] references an unknown scope`);
       const anchor = span.anchors[overlap.anchor.ordinal];
       if (anchor === undefined || anchor.id !== overlap.anchor.id || anchor.ordinal !== overlap.anchor.ordinal) {
         throw new Error(`context document.spans[${spanIndex}] references an unknown anchor`);
+      }
+      const basisLocation = overlap.basis === 'anchored' ? anchor.anchored : anchor.current;
+      if (basisLocation === null)
+        throw new Error(`${label} uses current basis for an anchor without a current location`);
+      if (!sameLocation(overlap.location, basisLocation)) {
+        throw new Error(`${label}.location does not equal its referenced ${overlap.basis} location`);
+      }
+      const scope = scopes[overlap.scope];
+      if (scope.path !== overlap.location.path) throw new Error(`${label} crosses scope and location paths`);
+      if (
+        !containsExtent(scope.extent, overlap.intersection) ||
+        !containsExtent(overlap.location.extent, overlap.intersection)
+      ) {
+        throw new Error(`${label}.intersection is not contained by both scope and location`);
       }
     }
   }
@@ -1164,7 +1196,7 @@ export async function runTouchHooks(
   inputs: readonly TouchInput[],
   executors: TouchExecutors,
   memo: MemoStore,
-  invocationId: string,
+  invocationId: string | null,
   probeCache?: RealityProbeCache
 ): Promise<TouchBatchOutput> {
   const outputs = inputs.map<TouchOutput>(() => ({ additionalContext: null, treeModified: false }));
@@ -1215,6 +1247,11 @@ export async function runTouchHooks(
       if (repair) repairFailure = true;
       continue;
     }
+    if (repair && invocationId === null) {
+      failure ??= 'missing_invocation_identity';
+      repairFailure = true;
+      continue;
+    }
     queryCount += 1;
     const result = await executors.context({
       repoRoot: partition[0].repoRoot,
@@ -1223,7 +1260,7 @@ export async function runTouchHooks(
       ...(repair
         ? {
             operationId: deterministicOperationId(
-              invocationId,
+              invocationId!,
               partition[0].repoRoot,
               normalizedAddressIdentity(partition)
             )
@@ -1237,6 +1274,7 @@ export async function runTouchHooks(
       continue;
     }
     scopeCount += result.document.scopes.length;
+    selectedResultCount += result.document.spans.length;
     documents.set(partitionKey, result.document);
     if (repair && result.document.mutation.rewritten) {
       treeModified = true;
@@ -1250,7 +1288,6 @@ export async function runTouchHooks(
       (partitions.get(touch.partitionKey)?.length ?? 0) === 1 && rewrittenPartitions.has(touch.partitionKey);
     try {
       const additionalContext = renderContextTouch(touch.input, document, touch.repoPath, touch.ranges, memo);
-      if (additionalContext !== null) selectedResultCount += 1;
       outputs[touch.index] = { additionalContext, treeModified: singleTouchMutation };
     } catch {
       outputs[touch.index] = { additionalContext: null, treeModified: singleTouchMutation };
@@ -1276,7 +1313,7 @@ export async function runTouchHook(
   memo: MemoStore,
   probeCache?: RealityProbeCache
 ): Promise<TouchOutput> {
-  const batch = await runTouchHooks([input], executors, memo, input.invocationId ?? input.sessionId, probeCache);
+  const batch = await runTouchHooks([input], executors, memo, input.invocationId ?? null, probeCache);
   return batch.outputs[0];
 }
 

@@ -21,7 +21,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { DriftPorcelainRow, PorcelainRow } from '../../src/common/agent-hooks-common.js';
-import { bashSpanToTouch, runBashTouches } from '../../src/common/bash-touch.js';
+import { bashSpanToTouch, runBashTouches as runBashTouchesImpl } from '../../src/common/bash-touch.js';
 import type { ResolvedSpan, SpanMatch } from '../../src/common/parse-command.js';
 import type { MemoStore } from '../../src/common/span-surface.js';
 import { filterTrackedEligibility } from '../../src/common/static-attribution.js';
@@ -30,6 +30,22 @@ import { makeTempRepo } from '../helpers.js';
 import { contextExecutors } from '../touch-context-fake.js';
 
 const SESSION_ID = 'session-bash-touch-test';
+
+const runBashTouches = (...args: Parameters<typeof runBashTouchesImpl>): ReturnType<typeof runBashTouchesImpl> => {
+  const invocationId = args[9] ?? `${args[1]}:test-event`;
+  return runBashTouchesImpl(
+    args[0],
+    args[1],
+    args[2],
+    args[3],
+    args[4],
+    args[5],
+    args[6],
+    args[7],
+    args[8],
+    invocationId
+  );
+};
 
 // ---------------------------------------------------------------------------
 // Fakes

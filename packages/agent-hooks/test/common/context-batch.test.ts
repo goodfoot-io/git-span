@@ -102,6 +102,30 @@ describe('schema-v1 context decoder', () => {
     unknown.spans[0].anchors[0].status = { code: 'FUTURE' } as unknown as ContextStatus;
     expect(() => decodeContextDocument(JSON.stringify(unknown))).toThrow();
   });
+
+  it('rejects nested overlap contradictions across basis, location, and intersection', () => {
+    const contradict = (mutate: (value: ContextDocument) => void): void => {
+      const value = document('src/app.ts');
+      value.scopes[0].extent = { kind: 'lines', start: 1, end: 10 };
+      mutate(value);
+      expect(() => decodeContextDocument(JSON.stringify(value))).toThrow();
+    };
+    contradict((value) => {
+      value.spans[0].overlaps[0].basis = 'current';
+      value.spans[0].anchors[0].current = null;
+    });
+    contradict((value) => {
+      value.spans[0].overlaps[0].location.extent = { kind: 'lines', start: 2, end: 10 };
+    });
+    contradict((value) => {
+      value.scopes[0].extent = { kind: 'lines', start: 2, end: 10 };
+      value.spans[0].overlaps[0].intersection = { kind: 'lines', start: 1, end: 2 };
+    });
+    contradict((value) => {
+      value.scopes[0].extent = { kind: 'whole' };
+      value.spans[0].overlaps[0].intersection = { kind: 'lines', start: 9, end: 11 };
+    });
+  });
 });
 
 describe('plural touch execution', () => {
@@ -187,6 +211,70 @@ describe('plural touch execution', () => {
       expect(first.treeModified).toBe(false);
       expect(first.diagnostics).toMatchObject({ mutation: 'unknown', failure: 'timeout' });
       expect(second.outputs[0]).toEqual({ additionalContext: null, treeModified: false });
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it('never reuses a repair identity when distinct events lack or carry different host identities', async () => {
+    const repo = makeTempRepo();
+    try {
+      writeFileSync(join(repo.root, 'a.ts'), 'a\n');
+      const operationIds: string[] = [];
+      const executors: TouchExecutors = {
+        context: async (request) => {
+          operationIds.push(request.operationId!);
+          return { ok: true, document: { ...document('a.ts'), spans: [] }, elapsedMs: 1 };
+        }
+      };
+      const touch: TouchInput = {
+        kind: 'write',
+        sessionId: 'session',
+        cwd: repo.root,
+        filePath: join(repo.root, 'a.ts'),
+        written: ''
+      };
+      const missing = await runTouchHooks([touch], executors, memoStore(), null);
+      expect(operationIds).toEqual([]);
+      expect(missing.diagnostics).toMatchObject({
+        mutation: 'unknown',
+        failure: 'missing_invocation_identity'
+      });
+      await runTouchHooks([touch], executors, memoStore(), 'session:event-1');
+      await runTouchHooks([touch], executors, memoStore(), 'session:event-2');
+      expect(operationIds).toHaveLength(2);
+      expect(operationIds[0]).not.toBe(operationIds[1]);
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  it('counts selected spans before memo suppression while rendered-block reporting remains separate', async () => {
+    const repo = makeTempRepo();
+    try {
+      writeFileSync(join(repo.root, 'a.ts'), 'a\n');
+      const selected = document('a.ts');
+      const second = structuredClone(selected.spans[0]);
+      second.name = 'span/a-second';
+      second.anchors[0].id = 'anchor-a-second';
+      second.overlaps[0].anchor.id = 'anchor-a-second';
+      selected.spans.push(second);
+      const executors: TouchExecutors = {
+        context: async () => ({ ok: true, document: selected, elapsedMs: 1 })
+      };
+      const touch: TouchInput = {
+        kind: 'read',
+        sessionId: 'session',
+        cwd: repo.root,
+        filePath: join(repo.root, 'a.ts')
+      };
+      const memo = memoStore();
+      const first = await runTouchHooks([touch], executors, memo, 'event-1');
+      const repeated = await runTouchHooks([touch], executors, memo, 'event-2');
+      expect(first.diagnostics.selectedResultCount).toBe(2);
+      expect(first.outputs[0].additionalContext).not.toBeNull();
+      expect(repeated.diagnostics.selectedResultCount).toBe(2);
+      expect(repeated.outputs[0].additionalContext).toBeNull();
     } finally {
       repo.cleanup();
     }

@@ -37,7 +37,7 @@ function toTouchInput(
   sessionId: string,
   cwd: string,
   filePath: string,
-  invocationId: string
+  invocationId: string | undefined
 ): TouchInput | null {
   if (toolName === 'Read') {
     return {
@@ -45,7 +45,7 @@ function toTouchInput(
       sessionId,
       cwd,
       filePath,
-      invocationId,
+      ...(invocationId === undefined ? {} : { invocationId }),
       offset: positiveIntField(toolInput, 'offset'),
       limit: positiveIntField(toolInput, 'limit')
     };
@@ -57,7 +57,7 @@ function toTouchInput(
       sessionId,
       cwd,
       filePath,
-      invocationId,
+      ...(invocationId === undefined ? {} : { invocationId }),
       written: typeof raw === 'string' ? raw : '',
       targetState: 'exists'
     };
@@ -105,7 +105,7 @@ export function createHandler(
       sessionId,
       cwd,
       absolutePath,
-      `${sessionId}:${input.tool_use_id ?? input.tool_name}`
+      input.tool_use_id === undefined ? undefined : `${sessionId}:${input.tool_use_id}`
     );
     if (touch === null || postTrackedValue(absolutePath, touch, cwd) === null) return null;
     const output = await runTouchHook(touch, executors, memo);

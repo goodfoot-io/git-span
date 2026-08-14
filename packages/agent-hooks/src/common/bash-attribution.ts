@@ -457,7 +457,7 @@ export async function runLayeredBashTouches(
   const touchStarted = performance.now();
   let executionGateDrops = 0;
   let commandDiagnostics: Partial<TouchBatchDiagnostics> = {};
-  const invocationId = `${sessionId}:${toolUseId ?? createHash('sha256').update(command).digest('hex')}`;
+  const invocationId = toolUseId === undefined ? null : `${sessionId}:${toolUseId}`;
   const commandBlocks = await runBashTouches(
     filtered.matches,
     sessionId,
@@ -479,7 +479,7 @@ export async function runLayeredBashTouches(
     sessionId,
     executors,
     memo,
-    `${invocationId}:response`
+    `${sessionId}:${toolUseId ?? createHash('sha256').update(command).digest('hex')}:response`
   );
   const blocks = [...commandBlocks, ...responseBatch.blocks];
   logger.info?.('git-span static attribution post', {

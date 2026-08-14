@@ -6298,6 +6298,16 @@ function decodeOverlap(value, label) {
     intersection: decodeExtent(object.intersection, `${label}.intersection`)
   };
 }
+function sameExtent(left, right) {
+  return left.kind === "whole" && right.kind === "whole" || left.kind === "lines" && right.kind === "lines" && left.start === right.start && left.end === right.end;
+}
+function sameLocation(left, right) {
+  return left.path === right.path && sameExtent(left.extent, right.extent);
+}
+function containsExtent(container, nested) {
+  if (container.kind === "whole") return true;
+  return nested.kind === "lines" && container.start <= nested.start && container.end >= nested.end;
+}
 function decodeContextDocument(stdout) {
   if (Buffer.byteLength(stdout) > MAX_CONTEXT_JSON_BYTES) throw new Error("context document exceeds the size limit");
   const root = record(JSON.parse(stdout), "context document");
@@ -6346,12 +6356,24 @@ function decodeContextDocument(stdout) {
     };
   });
   for (const [spanIndex, span] of spans.entries()) {
-    for (const overlap of span.overlaps) {
+    for (const [overlapIndex, overlap] of span.overlaps.entries()) {
+      const label = `context document.spans[${spanIndex}].overlaps[${overlapIndex}]`;
       if (overlap.scope >= scopes.length)
         throw new Error(`context document.spans[${spanIndex}] references an unknown scope`);
       const anchor = span.anchors[overlap.anchor.ordinal];
       if (anchor === void 0 || anchor.id !== overlap.anchor.id || anchor.ordinal !== overlap.anchor.ordinal) {
         throw new Error(`context document.spans[${spanIndex}] references an unknown anchor`);
+      }
+      const basisLocation = overlap.basis === "anchored" ? anchor.anchored : anchor.current;
+      if (basisLocation === null)
+        throw new Error(`${label} uses current basis for an anchor without a current location`);
+      if (!sameLocation(overlap.location, basisLocation)) {
+        throw new Error(`${label}.location does not equal its referenced ${overlap.basis} location`);
+      }
+      const scope = scopes[overlap.scope];
+      if (scope.path !== overlap.location.path) throw new Error(`${label} crosses scope and location paths`);
+      if (!containsExtent(scope.extent, overlap.intersection) || !containsExtent(overlap.location.extent, overlap.intersection)) {
+        throw new Error(`${label}.intersection is not contained by both scope and location`);
       }
     }
   }
@@ -6591,6 +6613,11 @@ async function runTouchHooks(inputs, executors, memo, invocationId, probeCache) 
       if (repair) repairFailure = true;
       continue;
     }
+    if (repair && invocationId === null) {
+      failure ??= "missing_invocation_identity";
+      repairFailure = true;
+      continue;
+    }
     queryCount += 1;
     const result = await executors.context({
       repoRoot: partition[0].repoRoot,
@@ -6611,6 +6638,7 @@ async function runTouchHooks(inputs, executors, memo, invocationId, probeCache) 
       continue;
     }
     scopeCount += result.document.scopes.length;
+    selectedResultCount += result.document.spans.length;
     documents.set(partitionKey, result.document);
     if (repair && result.document.mutation.rewritten) {
       treeModified = true;
@@ -6623,7 +6651,6 @@ async function runTouchHooks(inputs, executors, memo, invocationId, probeCache) 
     const singleTouchMutation = (partitions.get(touch.partitionKey)?.length ?? 0) === 1 && rewrittenPartitions.has(touch.partitionKey);
     try {
       const additionalContext = renderContextTouch(touch.input, document, touch.repoPath, touch.ranges, memo);
-      if (additionalContext !== null) selectedResultCount += 1;
       outputs[touch.index] = { additionalContext, treeModified: singleTouchMutation };
     } catch {
       outputs[touch.index] = { additionalContext: null, treeModified: singleTouchMutation };
@@ -6797,7 +6824,7 @@ function joinOfCommand(idx, groups, guardByIndex) {
   }
   return guardByIndex.get(idx)?.join;
 }
-async function runBashTouches(matches, sessionId, cwd, toolResponse, executors, memo, warn = console.warn, scopeAlreadyResolved = false, reportDiagnostics = () => void 0, invocationId = `${sessionId}:bash`) {
+async function runBashTouches(matches, sessionId, cwd, toolResponse, executors, memo, warn = console.warn, scopeAlreadyResolved = false, reportDiagnostics = () => void 0, invocationId = null) {
   const resolved = matches.filter((m) => m.status === "resolved");
   if (bashResponseInterrupted(toolResponse)) {
     reportDiagnostics({ executionGateDrops: resolved.length });
@@ -7947,7 +7974,7 @@ async function runLayeredBashTouches(command, cwd, sessionId, toolUseId, toolRes
   const touchStarted = performance.now();
   let executionGateDrops = 0;
   let commandDiagnostics = {};
-  const invocationId = `${sessionId}:${toolUseId ?? createHash2("sha256").update(command).digest("hex")}`;
+  const invocationId = toolUseId === void 0 ? null : `${sessionId}:${toolUseId}`;
   const commandBlocks = await runBashTouches(
     filtered.matches,
     sessionId,
@@ -7969,7 +7996,7 @@ async function runLayeredBashTouches(command, cwd, sessionId, toolUseId, toolRes
     sessionId,
     executors,
     memo,
-    `${invocationId}:response`
+    `${sessionId}:${toolUseId ?? createHash2("sha256").update(command).digest("hex")}:response`
   );
   const blocks = [...commandBlocks, ...responseBatch.blocks];
   logger2.info?.("git-span static attribution post", {
@@ -9589,7 +9616,7 @@ async function runApplyPatchTouches(command, cwd, sessionId, record2, executors,
         sessionId,
         cwd,
         filePath: candidate.absolutePath,
-        invocationId,
+        ...invocationId === null ? {} : { invocationId },
         written: "",
         range,
         targetState: candidate.operation === "delete" ? "absent" : "exists",
@@ -9657,7 +9684,7 @@ function createHandler2(executors = createDefaultTouchExecutors(), memoFactory =
       record2,
       executors,
       memo,
-      `${sessionId}:${input.tool_use_id ?? "apply_patch"}`
+      input.tool_use_id === void 0 ? null : `${sessionId}:${input.tool_use_id}`
     );
     if (blocks.length === 0) return void 0;
     const combined = blocks.join("");

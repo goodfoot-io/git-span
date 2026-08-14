@@ -56,7 +56,7 @@ import { createHandler as createClaudePlanHandler } from '../../src/claude/stati
 import { createHandler as createCodexHandler } from '../../src/codex/post-tool-use.js';
 import { createHandler as createCodexPlanHandler } from '../../src/codex/static-plan.js';
 import { createSessionLayout, type DriftPorcelainRow, type PorcelainRow } from '../../src/common/agent-hooks-common.js';
-import { runBashTouches } from '../../src/common/bash-touch.js';
+import { runBashTouches as runBashTouchesImpl } from '../../src/common/bash-touch.js';
 import { parseCommandDetailed, type ResolvedSpan, type SpanMatch } from '../../src/common/parse-command.js';
 import type { MemoStore } from '../../src/common/span-surface.js';
 import {
@@ -79,6 +79,22 @@ const layout = temp.layout;
 afterAll(() => temp.cleanup());
 
 const SESSION_ID = 'session-bash-write-integration';
+
+const runBashTouches = (...args: Parameters<typeof runBashTouchesImpl>): ReturnType<typeof runBashTouchesImpl> => {
+  const invocationId = args[9] ?? `${args[1]}:test-event`;
+  return runBashTouchesImpl(
+    args[0],
+    args[1],
+    args[2],
+    args[3],
+    args[4],
+    args[5],
+    args[6],
+    args[7],
+    args[8],
+    invocationId
+  );
+};
 
 // ---------------------------------------------------------------------------
 // Fakes
