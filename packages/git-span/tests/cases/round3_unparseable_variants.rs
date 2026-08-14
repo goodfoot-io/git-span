@@ -11,13 +11,9 @@
 //! One of them was false. `BLOCKER_UNPARSEABLE_RESIDUE` fired on a `[config]`
 //! header inside a conflict block wherever that block sat, and its shared
 //! sentence promised `drift --fix` "bails on this file and leaves it
-//! byte-identical". True before the separator. After it — which is where
-//! `[config]` actually lives, so it is the shape a default text merge produces
-//! — `drift --fix` rewrites the residue and writes the side holding the
-//! unparseable line back **empty**, taking the `[config]` block and everything
-//! beside it with it, and exits 0. The refusal was telling the operator that
-//! running a command was inert on the one input where it destroys their
-//! settings.
+//! byte-identical". True before the separator; false after it. The why-region
+//! rewrite is now lossless and exits non-zero, but the two variants still need
+//! distinct messages because only one changes the file.
 //!
 //! So this file pins the two variants *against each other*: they behave
 //! oppositely under the same command, and no single message can be true of
@@ -202,13 +198,12 @@ fn anchor_region_unparseable_side_is_inert_under_drift_fix() -> Result<()> {
     assert_no_command_reason_matches_behavior(&repo, "m", &fixture, &stderr)
 }
 
-/// **Variant two, the defect.** After the separator the same blocker fires and
-/// the opposite thing happens: `drift --fix` rewrites the file, empties the
-/// side the `[config]` block stood on, and exits 0. The refusal must disclose
-/// that, and must not carry the byte-identity claim that belongs to variant
-/// one.
+/// **Variant two.** After the separator the same blocker fires and `drift
+/// --fix` canonicalizes the residue without settling it. Every side must
+/// survive, and the refusal must describe that rewrite rather than claim the
+/// byte identity that belongs to variant one.
 #[test]
-fn why_region_unparseable_side_discloses_that_drift_fix_rewrites_it() -> Result<()> {
+fn why_region_unparseable_side_discloses_lossless_drift_fix_rewrite() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let fixture = why_region_config_residue();
     repo.write_file(".span/m", &fixture)?;
@@ -248,23 +243,21 @@ fn why_region_unparseable_side_discloses_that_drift_fix_rewrites_it() -> Result<
          anchor-region one and not a boundary refusal; stderr=\n{stderr}"
     );
 
-    // The false claim, asserted absent on the variant it is false about.
+    // The false inertness claim, asserted absent on the variant it is false about.
     assert!(
         !flattened.contains("byte-identical"),
-        "`drift --fix` rewrites this file; promising byte-identity here is the defect; \
+        "`drift --fix` rewrites this file; promising byte-identity here is false; \
          stderr=\n{stderr}"
     );
-    // And hedging is not the repair: the destruction has to be stated.
+    // And hedging is not enough: the lossless outcome has to be stated.
     for required in [
         "it rewrites the residue anyway",
-        "written back **empty**",
-        "exits 0",
-        "makes the loss permanent",
+        "preserving each side's why prose and `[config]` settings",
+        "exits non-zero",
     ] {
         assert!(
             flattened.contains(required),
-            "the refusal must disclose `{required}`; withholding the reassurance is not the \
-             same as disclosing the loss; stderr=\n{stderr}"
+            "the refusal must disclose `{required}`; stderr=\n{stderr}"
         );
     }
     assert_eq!(
@@ -298,16 +291,19 @@ fn why_region_unparseable_side_discloses_that_drift_fix_rewrites_it() -> Result<
         );
     }
 
-    // The claim, checked at the level the operator cares about: not merely
-    // "the file changed" but "the settings are gone".
+    // The claim, checked at the level the operator cares about: every side and
+    // every setting remains visible after canonicalization.
     let after = String::from_utf8(read_span_bytes(&repo, "m")?)?;
-    assert!(
-        !after.contains("[config]")
-            && !after.contains("copy_detection")
-            && !after.contains("ignore_whitespace")
-            && !after.contains("follow_moves"),
-        "fixture assumption: this is the loss the refusal warns about; after=\n{after}"
-    );
+    for required in [
+        "our why",
+        "their why",
+        "[config]",
+        "copy_detection = \"same-commit\"",
+        "ignore_whitespace = true",
+        "follow_moves = true",
+    ] {
+        assert!(after.contains(required), "rewrite dropped `{required}`; after=\n{after}");
+    }
     Ok(())
 }
 
@@ -339,16 +335,11 @@ fn the_two_variants_do_not_share_a_message() -> Result<()> {
     Ok(())
 }
 
-/// **Where the settings survive, and how easily that is thrown away.** After
-/// `drift --fix` has emptied the side, the merge's unmerged index stages still
-/// hold all three settings and `resolve` sources `[config]` from there. That is
-/// not mitigation: the refusal's own hand-edit paragraph used to route the
-/// operator past it — settle the tidy little why conflict, `git add` — and
-/// staging is precisely what discards the stages. This pins the mechanism the
-/// text now points at. A real `git merge` with the driver unregistered, because
-/// a hand-written fixture has no stages to recover from.
+/// A real merge retains the settings in both the rewritten worktree residue
+/// and the original index stages. Preservation must not consume the recovery
+/// source while canonicalizing the text.
 #[test]
-fn emptied_side_is_still_recoverable_through_resolve() -> Result<()> {
+fn preserved_sides_leave_index_recovery_intact() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let h1 = line_slice_hash(ORIGINAL, 1, 5);
     let span = |why: &str, extra: &str| {
@@ -385,40 +376,22 @@ fn emptied_side_is_still_recoverable_through_resolve() -> Result<()> {
     assert_ne!(refusal.status.code(), Some(0), "stderr=\n{stderr}");
     assert!(flat(&stderr).contains("it rewrites the residue anyway"));
 
-    // Take the path the refusal warns about, then the one it prescribes.
+    // Canonicalize the residue without discarding either evidence source.
     repo.run_span(["drift", "--fix", "--no-exit-code"])?;
-    let emptied = String::from_utf8(read_span_bytes(&repo, "m")?)?;
-    assert!(
-        !emptied.contains("[config]"),
-        "fixture assumption: the side is emptied; file=\n{emptied}"
-    );
+    let preserved = String::from_utf8(read_span_bytes(&repo, "m")?)?;
+    for setting in [
+        "copy_detection = \"same-commit\"",
+        "ignore_whitespace = true",
+        "follow_moves = true",
+    ] {
+        assert!(preserved.contains(setting), "`{setting}` must survive; file=\n{preserved}");
+    }
     let staged = repo.git_stdout(["ls-files", "-u", ".span/m"])?;
     assert!(
         staged.contains("\t.span/m"),
         "the recovery depends on the stages surviving `drift --fix`; ls-files -u:\n{staged}"
     );
 
-    let recovered = repo.run_span(["resolve", "m", "--ours"])?;
-    let stdout = String::from_utf8_lossy(&recovered.stdout);
-    assert_eq!(
-        recovered.status.code(),
-        Some(0),
-        "stdout=\n{stdout}\nstderr=\n{}",
-        String::from_utf8_lossy(&recovered.stderr)
-    );
-    let restored = String::from_utf8(read_span_bytes(&repo, "m")?)?;
-    for setting in [
-        "copy_detection = \"same-commit\"",
-        "ignore_whitespace = true",
-        "follow_moves = true",
-    ] {
-        assert!(
-            restored.contains(setting),
-            "`resolve` reads `[config]` from the index stages, so `{setting}` must come back — \
-             this is why the refusal tells the operator to resolve rather than hand-edit; \
-             file=\n{restored}"
-        );
-    }
     Ok(())
 }
 

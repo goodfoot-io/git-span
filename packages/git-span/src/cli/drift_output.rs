@@ -1271,12 +1271,17 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
     // An interior-anchor violation is a fail-closed integrity problem: it
     // drives a non-zero exit even when no anchor drifted, and `--no-exit-code`
     // (which suppresses drift exit codes) does not mask it.
+    let residue_remains = fix_result
+        .as_ref()
+        .is_some_and(|result| !result.residue_span_names.is_empty());
     let exit = if !interior_violations.is_empty() {
         1
-    } else if drift_count == 0 || args.no_exit_code {
+    } else if args.no_exit_code {
         0
-    } else {
+    } else if residue_remains || drift_count > 0 {
         1
+    } else {
+        0
     };
     {
         let _perf = crate::perf::span("drift.write-stdout");

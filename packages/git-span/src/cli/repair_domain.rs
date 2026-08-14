@@ -83,20 +83,16 @@ pub(crate) enum Repair {
     UnparseableAnchorResidue,
     /// The same stranded `[config]` header, in a block that sits in the **why
     /// region**, after the separator. Split from the anchor-region variant
-    /// because the two behave *oppositely* under the command the operator
-    /// reaches for, and one message cannot be true of both.
+    /// because the command the operator reaches for rewrites this variant but
+    /// leaves the anchor-region variant byte-identical.
     ///
     /// `[config]` is the span file's trailing block, so this is the shape a
     /// default text merge actually produces when both sides edited settings and
     /// the why prose above them diverged too. **No command repairs it — but
-    /// `drift --fix` is not inert on it.** Its split still cannot merge an
-    /// unparseable side, yet it rewrites the residue anyway and writes that
-    /// side back *empty*: the `[config]` block, its settings, and any prose
-    /// beside them are dropped, and the file retains no evidence that anything
-    /// stood there. It exits 0 while doing so. Saying "leaves it
-    /// byte-identical" here — which is what one shared message did — steers an
-    /// operator straight into it and then into the hand-resolve that makes it
-    /// permanent.
+    /// `drift --fix` is not inert on it.** It canonicalizes the two sides while
+    /// preserving their complete why/config state, leaves the residue visible,
+    /// and exits non-zero. Saying "leaves it byte-identical" here is still
+    /// false, but the rewrite is now lossless and script-discoverable.
     UnparseableWhyResidue,
     /// Choosing between two divergent values inside well-formed residue — the
     /// question `resolve`'s side flags answer.
@@ -241,19 +237,12 @@ impl Repair {
                  byte-identical.",
             ),
             Repair::UnparseableWhyResidue => Some(
-                "`git span drift --fix` in particular does not — and here it is destructive \
-                 rather than merely useless. It still cannot merge a side that will not parse, \
-                 but this block sits after the separator, in the why text, where it rewrites \
-                 the residue anyway: the side carrying the unparseable line is written back \
-                 **empty**, and everything standing on it — the `[config]` block and its \
-                 settings, any why prose beside them — is gone from the file with nothing left \
-                 to show it was ever there. It exits 0. What remains looks like a small why \
-                 conflict, which is the trap: hand-resolving that and staging the file makes \
-                 the loss permanent. If you have already run it, do not resolve by hand — the \
-                 merge's unmerged index stages still hold both original sides, and running \
-                 `git span resolve` on this span with `--ours` or `--theirs` reads `[config]` \
-                 back out of them. Once the stages are gone too, `git log -p` on the span file \
-                 is the only record.",
+                "`git span drift --fix` in particular does not settle this shape: it rewrites \
+                 the residue anyway into its canonical two-sided form, preserving each side's \
+                 why prose and `[config]` settings, and exits non-zero while that residue \
+                 remains. The rewrite is safe to inspect or discard, but a side still has to be \
+                 chosen by hand because `resolve` does not claim a `[config]` header inside a \
+                 conflict block.",
             ),
         }
     }
@@ -394,10 +383,7 @@ mod tests {
             !why.contains("byte-identical"),
             "the why-region variant is the one where `drift --fix` rewrites the file"
         );
-        assert!(
-            why.contains("written back **empty**") && why.contains("exits 0"),
-            "disclosing the destruction is the fix; withholding the reassurance is not"
-        );
+        assert!(why.contains("preserving each side's") && why.contains("exits non-zero"));
         assert!(
             !why.contains("may leave") && !why.contains("might leave"),
             "hedging trades a false claim for a vague one and still hides the rewrite"

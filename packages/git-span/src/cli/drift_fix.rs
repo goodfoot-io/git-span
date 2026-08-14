@@ -675,10 +675,8 @@ fn plan_orphan_removals(
 
 /// Format the residue marker text for a partially-resolved merge.
 ///
-/// Produces the text portion of a residue span file: the anchor block
-/// (resolved anchors in canonical order, then a conflict block wrapping any
-/// divergent anchors), the blank-line separator, then the why text (plain
-/// when both sides agree, or a second conflict block when they diverge).
+/// Produces the complete text of a two-way residue span file: resolved and
+/// divergent anchors, followed by resolved or side-specific why/config state.
 ///
 /// Anchor residue and why residue get *separate* conflict blocks, on their
 /// own sides of the separator, so that the boundary survives the round trip
@@ -688,35 +686,136 @@ fn plan_orphan_removals(
 /// inside a conflict region with nothing to mark it, which is what forced the
 /// reader to guess from line shape and let prose become anchors.
 ///
-/// The caller supplies full marker strings (including labels and trailing
-/// newlines) so that different callers can customize marker length and label
-/// format. Callers must sort `resolved_anchors` in canonical
-/// `(path, start_line, end_line)` order before calling.
-pub(crate) fn format_residue_markers(
-    resolved_anchors: &[AnchorRecord],
+/// The merged anchors must already be in canonical `(path, start_line,
+/// end_line)` order. Marker strings include their labels and trailing newline.
+struct ResidueSides<'a> {
+    ours: &'a SpanFile,
+    theirs: &'a SpanFile,
+    why_conflict: bool,
+    config_conflict: bool,
+}
+
+struct ResidueMarkers<'a> {
+    open: &'a str,
+    separator: &'a str,
+    close: &'a str,
+}
+
+fn format_preserving_residue_markers(
+    merged: &SpanFile,
     unresolved: &[UnresolvedAnchor],
-    ours_why: &str,
-    theirs_why: &str,
-    open_marker: &str,  // e.g. "<<<<<<< ours\n"
-    sep_marker: &str,   // e.g. "=======\n"
-    close_marker: &str, // e.g. ">>>>>>> theirs\n"
+    sides: ResidueSides<'_>,
+    markers: ResidueMarkers<'_>,
 ) -> String {
     let mut output = String::new();
 
     // Resolved anchors in canonical (path, start_line, end_line) order.
     // Caller is responsible for sorting.
-    for anchor in resolved_anchors {
+    for anchor in &merged.anchors {
         output.push_str(&anchor.to_string());
         output.push('\n');
     }
 
-    // Separate why divergence (empty-path entry) from anchor residue.
-    let why_conflict = unresolved.iter().any(|u| u.path.is_empty());
     let anchor_residue: Vec<&UnresolvedAnchor> =
         unresolved.iter().filter(|u| !u.path.is_empty()).collect();
 
     // Divergent anchors: a minimal conflict block that is still part of the
     // anchor block, so it goes *before* the separator.
+    if !anchor_residue.is_empty() {
+        output.push_str(markers.open);
+        for u in &anchor_residue {
+            output.push_str(&u.ours.to_string());
+            output.push('\n');
+        }
+        output.push_str(markers.separator);
+        for u in &anchor_residue {
+            output.push_str(&u.theirs.to_string());
+            output.push('\n');
+        }
+        output.push_str(markers.close);
+    }
+
+    // Always insert the blank-line separator before any why text.
+    if !merged.anchors.is_empty()
+        || !anchor_residue.is_empty()
+        || sides.why_conflict
+        || sides.config_conflict
+        || !merged.why.is_empty()
+        || merged.config != git_span_core::SpanConfig::default()
+    {
+        output.push('\n');
+    }
+
+    if sides.why_conflict || sides.config_conflict {
+        // Keep every unresolved field on its own side. Resolved fields are
+        // emitted once outside the block below, so a one-sided three-way
+        // change is never replaced with the arbitrary `ours` value.
+        if !sides.why_conflict {
+            push_why(&mut output, &merged.why);
+            if !merged.why.is_empty() && sides.config_conflict {
+                output.push('\n');
+            }
+        }
+        output.push_str(markers.open);
+        if sides.why_conflict {
+            push_why(&mut output, &sides.ours.why);
+        }
+        if sides.config_conflict {
+            push_config(
+                &mut output,
+                sides.ours.config,
+                sides.why_conflict && !sides.ours.why.is_empty(),
+            );
+        }
+        output.push_str(markers.separator);
+        if sides.why_conflict {
+            push_why(&mut output, &sides.theirs.why);
+        }
+        if sides.config_conflict {
+            push_config(
+                &mut output,
+                sides.theirs.config,
+                sides.why_conflict && !sides.theirs.why.is_empty(),
+            );
+        }
+        output.push_str(markers.close);
+    } else if !merged.why.is_empty() {
+        push_why(&mut output, &merged.why);
+    }
+
+    if !sides.config_conflict {
+        push_config(
+            &mut output,
+            merged.config,
+            sides.why_conflict || !merged.why.is_empty(),
+        );
+    }
+
+    output
+}
+
+/// Legacy merge-driver residue format. The driver has a three-way base and
+/// keeps its established wire contract; `drift --fix` uses
+/// [`format_preserving_residue_markers`] because its two-way rewrite must keep
+/// complete side state visible.
+pub(crate) fn format_residue_markers(
+    resolved_anchors: &[AnchorRecord],
+    unresolved: &[UnresolvedAnchor],
+    ours_why: &str,
+    theirs_why: &str,
+    open_marker: &str,
+    sep_marker: &str,
+    close_marker: &str,
+) -> String {
+    let mut output = String::new();
+    for anchor in resolved_anchors {
+        output.push_str(&anchor.to_string());
+        output.push('\n');
+    }
+
+    let why_conflict = unresolved.iter().any(|u| u.path.is_empty());
+    let anchor_residue: Vec<&UnresolvedAnchor> =
+        unresolved.iter().filter(|u| !u.path.is_empty()).collect();
     if !anchor_residue.is_empty() {
         output.push_str(open_marker);
         for u in &anchor_residue {
@@ -731,7 +830,6 @@ pub(crate) fn format_residue_markers(
         output.push_str(close_marker);
     }
 
-    // Always insert the blank-line separator before any why text.
     if !resolved_anchors.is_empty()
         || !anchor_residue.is_empty()
         || why_conflict
@@ -739,21 +837,39 @@ pub(crate) fn format_residue_markers(
     {
         output.push('\n');
     }
-
     if why_conflict {
-        // Divergent why: a second minimal conflict block, after the
-        // separator, so every line inside it reads back as why prose.
         output.push_str(open_marker);
         push_why(&mut output, ours_why);
         output.push_str(sep_marker);
         push_why(&mut output, theirs_why);
         output.push_str(close_marker);
     } else if !ours_why.is_empty() {
-        // No divergence, just write the why text.
         push_why(&mut output, ours_why);
     }
-
     output
+}
+
+/// Append a canonical non-default config block. `SpanFile::serialize` remains
+/// the one implementation of the wire format; this helper strips only the
+/// leading anchor/why separator produced by a config-only temporary span.
+fn push_config(
+    output: &mut String,
+    config: git_span_core::SpanConfig,
+    needs_blank_line: bool,
+) {
+    let serialized = SpanFile {
+        anchors: Vec::new(),
+        why: String::new(),
+        config,
+    }
+    .serialize();
+    let Some(block) = serialized.strip_prefix('\n') else {
+        return;
+    };
+    if needs_blank_line && !output.ends_with("\n\n") {
+        output.push('\n');
+    }
+    output.push_str(block);
 }
 
 /// Append one side's why text, newline-terminated. An empty why appends
@@ -780,28 +896,28 @@ fn write_residue_span(
     repo: &gix::Repository,
     span_root: &str,
     name: &str,
-    resolved_anchors: &[AnchorRecord],
+    merged: &SpanFile,
     unresolved: &[UnresolvedAnchor],
-    ours_why: &str,
-    theirs_why: &str,
+    sides: ResidueSides<'_>,
 ) -> Result<()> {
     // Sort resolved anchors in canonical (path, start_line, end_line) order.
-    let mut sorted = resolved_anchors.to_vec();
-    sorted.sort_by(|a, b| {
+    let mut sorted = merged.clone();
+    sorted.anchors.sort_by(|a, b| {
         a.path
             .cmp(&b.path)
             .then(a.start_line.cmp(&b.start_line))
             .then(a.end_line.cmp(&b.end_line))
     });
 
-    let output = format_residue_markers(
+    let output = format_preserving_residue_markers(
         &sorted,
         unresolved,
-        ours_why,
-        theirs_why,
-        "<<<<<<< ours\n",
-        "=======\n",
-        ">>>>>>> theirs\n",
+        sides,
+        ResidueMarkers {
+            open: "<<<<<<< ours\n",
+            separator: "=======\n",
+            close: ">>>>>>> theirs\n",
+        },
     );
 
     // Write atomically (same approach as write_worktree_span).
@@ -909,7 +1025,8 @@ fn resolve_conflicted_span(
     }
 
     // Step 5: Determine outcome.
-    let why_conflict = result.unresolved.iter().any(|u| u.path.is_empty());
+    let why_conflict = ours.why != theirs.why;
+    let config_conflict = ours.config != theirs.config;
     let anchor_residue_count = result
         .unresolved
         .iter()
@@ -948,10 +1065,14 @@ fn resolve_conflicted_span(
             repo,
             span_root,
             name,
-            &result.merged.anchors,
+            &result.merged,
             &result.unresolved,
-            &ours.why,
-            &theirs.why,
+            ResidueSides {
+                ours: &ours,
+                theirs: &theirs,
+                why_conflict,
+                config_conflict,
+            },
         )?;
         fix_result.rewritten_span_names.insert(name.to_string());
         fix_result.residue_span_names.insert(name.to_string());
@@ -966,6 +1087,9 @@ fn resolve_conflicted_span(
             }
             if why_conflict {
                 r.push("--why text diverged".to_string());
+            }
+            if config_conflict {
+                r.push("[config] diverged".to_string());
             }
             r
         };
