@@ -1,0 +1,275 @@
+[
+  {
+    "tag_name": "git-span-v1.1.4",
+    "name": "git-span-v1.1.4",
+    "draft": false,
+    "prerelease": false,
+    "published_at": "2026-08-13T17:51:27Z",
+    "created_at": "2026-08-13T17:45:22Z",
+    "target_commitish": "main",
+    "html_url": "https://github.com/goodfoot-io/git-span/releases/tag/git-span-v1.1.4",
+    "tarball_url": "https://api.github.com/repos/goodfoot-io/git-span/tarball/git-span-v1.1.4",
+    "zipball_url": "https://api.github.com/repos/goodfoot-io/git-span/zipball/git-span-v1.1.4",
+    "assets": [
+      {
+        "name": "git-span-cli-checksums.json",
+        "size": 784,
+        "browser_download_url": "https://github.com/goodfoot-io/git-span/releases/download/git-span-v1.1.4/git-span-cli-checksums.json",
+        "content_type": "application/json"
+      },
+      {
+        "name": "git-span-darwin-arm64",
+        "size": 12735664,
+        "browser_download_url": "https://github.com/goodfoot-io/git-span/releases/download/git-span-v1.1.4/git-span-darwin-arm64",
+        "content_type": "application/octet-stream"
+      },
+      {
+        "name": "git-span-darwin-x64",
+        "size": 13201948,
+        "browser_download_url": "https://github.com/goodfoot-io/git-span/releases/download/git-span-v1.1.4/git-span-darwin-x64",
+        "content_type": "application/octet-stream"
+      },
+      {
+        "name": "git-span-extension-1.1.4.vsix",
+        "size": 1689104,
+        "browser_download_url": "https://github.com/goodfoot-io/git-span/releases/download/git-span-v1.1.4/git-span-extension-1.1.4.vsix",
+        "content_type": "application/octet-stream"
+      },
+      {
+        "name": "git-span-linux-arm64",
+        "size": 14140376,
+        "browser_download_url": "https://github.com/goodfoot-io/git-span/releases/download/git-span-v1.1.4/git-span-linux-arm64",
+        "content_type": "application/octet-stream"
+      },
+      {
+        "name": "git-span-linux-x64",
+        "size": 15093904,
+        "browser_download_url": "https://github.com/goodfoot-io/git-span/releases/download/git-span-v1.1.4/git-span-linux-x64",
+        "content_type": "application/octet-stream"
+      },
+      {
+        "name": "git-span-win32-x64.exe",
+        "size": 11654144,
+        "browser_download_url": "https://github.com/goodfoot-io/git-span/releases/download/git-span-v1.1.4/git-span-win32-x64.exe",
+        "content_type": "application/x-msdos-program"
+      }
+    ],
+    "body": "**Full Changelog**: https://github.com/goodfoot-io/git-span/compare/git-span-v1.1.1...git-span-v1.1.4"
+  },
+  {
+    "tag_name": "git-span-v1.1.1",
+    "name": "git-span-v1.1.1",
+    "draft": false,
+    "prerelease": false,
+    "published_at": "2026-08-10T18:50:04Z",
+    "created_at": "2026-08-10T18:43:55Z",
+    "target_commitish": "main",
+    "html_url": "https://github.com/goodfoot-io/git-span/releases/tag/git-span-v1.1.1",
+    "tarball_url": "https://api.github.com/repos/goodfoot-io/git-span/tarball/git-span-v1.1.1",
+    "zipball_url": "https://api.github.com/repos/goodfoot-io/git-span/zipball/git-span-v1.1.1",
+    "assets": [
+      {
+        "name": "git-span-cli-checksums.json",
+        "size": 784,
+        "browser_download_url": "https://github.com/goodfoot-io/git-span/releases/download/git-span-v1.1.1/git-span-cli-checksums.json",
+        "content_type": "application/json"
+      },
+      {
+        "name": "git-span-darwin-arm64",
+        "size": 12439472,
+        "browser_download_url": "https://github.com/goodfoot-io/git-span/releases/download/git-span-v1.1.1/git-span-darwin-arm64",
+        "content_type": "application/octet-stream"
+      },
+      {
+        "name": "git-span-darwin-x64",
+        "size": 12872788,
+        "browser_download_url": "https://github.com/goodfoot-io/git-span/releases/download/git-span-v1.1.1/git-span-darwin-x64",
+        "content_type": "application/octet-stream"
+      },
+      {
+        "name": "git-span-extension-1.1.1.vsix",
+        "size": 1689102,
+        "browser_download_url": "https://github.com/goodfoot-io/git-span/releases/download/git-span-v1.1.1/git-span-extension-1.1.1.vsix",
+        "content_type": "application/octet-stream"
+      },
+      {
+        "name": "git-span-linux-arm64",
+        "size": 13798848,
+        "browser_download_url": "https://github.com/goodfoot-io/git-span/releases/download/git-span-v1.1.1/git-span-linux-arm64",
+        "content_type": "application/octet-stream"
+      },
+      {
+        "name": "git-span-linux-x64",
+        "size": 14734584,
+        "browser_download_url": "https://github.com/goodfoot-io/git-span/releases/download/git-span-v1.1.1/git-span-linux-x64",
+        "content_type": "application/octet-stream"
+      },
+      {
+        "name": "git-span-win32-x64.exe",
+        "size": 11378688,
+        "browser_download_url": "https://github.com/goodfoot-io/git-span/releases/download/git-span-v1.1.1/git-span-win32-x64.exe",
+        "content_type": "application/x-msdos-program"
+      }
+    ],
+    "body": "**Full Changelog**: https://github.com/goodfoot-io/git-span/compare/git-span-v1.0.148...git-span-v1.1.1"
+  },
+  {
+    "tag_name": "git-span-v1.0.148",
+    "name": "git-span-v1.0.148",
+    "draft": false,
+    "prerelease": false,
+    "published_at": "2026-08-06T23:30:16Z",
+    "created_at": "2026-08-06T23:15:10Z",
+    "target_commitish": "main",
+    "html_url": "https://github.com/goodfoot-io/git-span/releases/tag/git-span-v1.0.148",
+    "tarball_url": "https://api.github.com/repos/goodfoot-io/git-span/tarball/git-span-v1.0.148",
+    "zipball_url": "https://api.github.com/repos/goodfoot-io/git-span/zipball/git-span-v1.0.148",
+    "assets": [
+      {
+        "name": "git-span-cli-checksums.json",
+        "size": 786,
+        "browser_download_url": "https://github.com/goodfoot-io/git-span/releases/download/git-span-v1.0.148/git-span-cli-checksums.json",
+        "content_type": "application/json"
+      },
+      {
+        "name": "git-span-darwin-arm64",
+        "size": 12439568,
+        "browser_download_url": "https://github.com/goodfoot-io/git-span/releases/download/git-span-v1.0.148/git-span-darwin-arm64",
+        "content_type": "application/octet-stream"
+      },
+      {
+        "name": "git-span-darwin-x64",
+        "size": 12872852,
+        "browser_download_url": "https://github.com/goodfoot-io/git-span/releases/download/git-span-v1.0.148/git-span-darwin-x64",
+        "content_type": "application/octet-stream"
+      },
+      {
+        "name": "git-span-extension-1.0.148.vsix",
+        "size": 1689055,
+        "browser_download_url": "https://github.com/goodfoot-io/git-span/releases/download/git-span-v1.0.148/git-span-extension-1.0.148.vsix",
+        "content_type": "application/octet-stream"
+      },
+      {
+        "name": "git-span-linux-arm64",
+        "size": 13812304,
+        "browser_download_url": "https://github.com/goodfoot-io/git-span/releases/download/git-span-v1.0.148/git-span-linux-arm64",
+        "content_type": "application/octet-stream"
+      },
+      {
+        "name": "git-span-linux-x64",
+        "size": 14734096,
+        "browser_download_url": "https://github.com/goodfoot-io/git-span/releases/download/git-span-v1.0.148/git-span-linux-x64",
+        "content_type": "application/octet-stream"
+      },
+      {
+        "name": "git-span-win32-x64.exe",
+        "size": 11378688,
+        "browser_download_url": "https://github.com/goodfoot-io/git-span/releases/download/git-span-v1.0.148/git-span-win32-x64.exe",
+        "content_type": "application/x-msdos-program"
+      }
+    ],
+    "body": "**Full Changelog**: https://github.com/goodfoot-io/git-span/compare/git-span-v1.0.145...git-span-v1.0.148"
+  },
+  {
+    "tag_name": "git-span-v1.0.145",
+    "name": "git-span-v1.0.145",
+    "draft": false,
+    "prerelease": false,
+    "published_at": "2026-08-05T22:06:41Z",
+    "created_at": "2026-08-05T22:00:42Z",
+    "target_commitish": "main",
+    "html_url": "https://github.com/goodfoot-io/git-span/releases/tag/git-span-v1.0.145",
+    "tarball_url": "https://api.github.com/repos/goodfoot-io/git-span/tarball/git-span-v1.0.145",
+    "zipball_url": "https://api.github.com/repos/goodfoot-io/git-span/zipball/git-span-v1.0.145",
+    "assets": [
+      {
+        "name": "git-span-cli-checksums.json",
+        "size": 786,
+        "browser_download_url": "https://github.com/goodfoot-io/git-span/releases/download/git-span-v1.0.145/git-span-cli-checksums.json",
+        "content_type": "application/json"
+      },
+      {
+        "name": "git-span-darwin-arm64",
+        "size": 12427840,
+        "browser_download_url": "https://github.com/goodfoot-io/git-span/releases/download/git-span-v1.0.145/git-span-darwin-arm64",
+        "content_type": "application/octet-stream"
+      },
+      {
+        "name": "git-span-darwin-x64",
+        "size": 12860748,
+        "browser_download_url": "https://github.com/goodfoot-io/git-span/releases/download/git-span-v1.0.145/git-span-darwin-x64",
+        "content_type": "application/octet-stream"
+      },
+      {
+        "name": "git-span-linux-arm64",
+        "size": 13857552,
+        "browser_download_url": "https://github.com/goodfoot-io/git-span/releases/download/git-span-v1.0.145/git-span-linux-arm64",
+        "content_type": "application/octet-stream"
+      },
+      {
+        "name": "git-span-linux-x64",
+        "size": 14741824,
+        "browser_download_url": "https://github.com/goodfoot-io/git-span/releases/download/git-span-v1.0.145/git-span-linux-x64",
+        "content_type": "application/octet-stream"
+      },
+      {
+        "name": "git-span-win32-x64.exe",
+        "size": 11392000,
+        "browser_download_url": "https://github.com/goodfoot-io/git-span/releases/download/git-span-v1.0.145/git-span-win32-x64.exe",
+        "content_type": "application/x-msdos-program"
+      }
+    ],
+    "body": "**Full Changelog**: https://github.com/goodfoot-io/git-span/compare/git-span-v1.0.141...git-span-v1.0.145"
+  },
+  {
+    "tag_name": "git-span-v1.0.141",
+    "name": "git-span-v1.0.141",
+    "draft": false,
+    "prerelease": false,
+    "published_at": "2026-07-29T17:02:42Z",
+    "created_at": "2026-07-29T16:56:59Z",
+    "target_commitish": "main",
+    "html_url": "https://github.com/goodfoot-io/git-span/releases/tag/git-span-v1.0.141",
+    "tarball_url": "https://api.github.com/repos/goodfoot-io/git-span/tarball/git-span-v1.0.141",
+    "zipball_url": "https://api.github.com/repos/goodfoot-io/git-span/zipball/git-span-v1.0.141",
+    "assets": [
+      {
+        "name": "git-span-cli-checksums.json",
+        "size": 786,
+        "browser_download_url": "https://github.com/goodfoot-io/git-span/releases/download/git-span-v1.0.141/git-span-cli-checksums.json",
+        "content_type": "application/json"
+      },
+      {
+        "name": "git-span-darwin-arm64",
+        "size": 12213008,
+        "browser_download_url": "https://github.com/goodfoot-io/git-span/releases/download/git-span-v1.0.141/git-span-darwin-arm64",
+        "content_type": "application/octet-stream"
+      },
+      {
+        "name": "git-span-darwin-x64",
+        "size": 12632124,
+        "browser_download_url": "https://github.com/goodfoot-io/git-span/releases/download/git-span-v1.0.141/git-span-darwin-x64",
+        "content_type": "application/octet-stream"
+      },
+      {
+        "name": "git-span-linux-arm64",
+        "size": 13575336,
+        "browser_download_url": "https://github.com/goodfoot-io/git-span/releases/download/git-span-v1.0.141/git-span-linux-arm64",
+        "content_type": "application/octet-stream"
+      },
+      {
+        "name": "git-span-linux-x64",
+        "size": 14456008,
+        "browser_download_url": "https://github.com/goodfoot-io/git-span/releases/download/git-span-v1.0.141/git-span-linux-x64",
+        "content_type": "application/octet-stream"
+      },
+      {
+        "name": "git-span-win32-x64.exe",
+        "size": 11123200,
+        "browser_download_url": "https://github.com/goodfoot-io/git-span/releases/download/git-span-v1.0.141/git-span-win32-x64.exe",
+        "content_type": "application/x-msdos-program"
+      }
+    ],
+    "body": "**Full Changelog**: https://github.com/goodfoot-io/git-span/compare/git-span-v1.0.140...git-span-v1.0.141"
+  }
+]

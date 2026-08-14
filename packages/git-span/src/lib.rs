@@ -28,6 +28,7 @@ pub mod span_file;
 pub mod span_file_reader;
 pub mod span_root;
 pub mod types;
+pub mod update_check;
 pub mod validation;
 
 pub use git::read_git_text;

@@ -152,7 +152,7 @@ fn run() -> Result<i32> {
     // stopped `stale` from being routed to `show` in the first place.
     let is_bare_name = first_non_opt.is_some_and(|first| {
         !first.starts_with('-')
-            && first != "__context-service"
+            && !matches!(first.as_str(), "__context-service" | "__update-check")
             && !is_reserved_span_name(first)
             && !matches!(first.as_str(), "help" | "--help" | "-h")
     });
@@ -169,13 +169,15 @@ fn run() -> Result<i32> {
         show_argv.extend(args[idx..].iter().cloned());
         let cli = Cli::try_parse_from(show_argv)?;
         git_span::perf::init(cli.perf);
-        let cmd = cli.command.unwrap_or_else(|| {
+        // Clone the command so `cli` stays whole: dispatch borrows `&cli`
+        // for the update-check seam while it consumes the owned command.
+        let cmd = cli.command.clone().unwrap_or_else(|| {
             Commands::Show(ShowArgs {
                 name: first.clone(),
             })
         });
         let repo = discover_repo()?;
-        return cli::dispatch(&repo, cmd, None);
+        return cli::dispatch(&repo, cmd, None, &cli);
     }
 
     // Parse first so `--help` short-circuits before we touch the
@@ -184,8 +186,8 @@ fn run() -> Result<i32> {
     git_span::perf::init(cli.perf);
 
     let repo = discover_repo()?;
-    match cli.command {
-        Some(cmd) => cli::dispatch(&repo, cmd, None),
+    match &cli.command {
+        Some(cmd) => cli::dispatch(&repo, cmd.clone(), None, &cli),
         None => {
             Cli::command().print_help()?;
             println!();

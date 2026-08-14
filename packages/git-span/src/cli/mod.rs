@@ -37,6 +37,7 @@ pub mod resolve;
 pub mod show;
 pub mod tree;
 pub mod unified_diff;
+pub(crate) mod update_check;
 
 pub use drift_label::format_drift_label;
 
@@ -66,7 +67,11 @@ pub struct Cli {
 }
 
 /// Every subcommand the CLI accepts. Mirrors §10.2.
-#[derive(Debug, Subcommand)]
+///
+/// `Clone` exists so the update-check seam can pass both an owned command
+/// and a whole `&Cli` (whose `command` the suppression match reads) to
+/// [`dispatch`].
+#[derive(Debug, Clone, Subcommand)]
 pub enum Commands {
     /// Show the named span — its anchors, why, and config. The bare
     /// `git span <name>` positional form is equivalent to
@@ -147,6 +152,12 @@ pub enum Commands {
 
     #[command(name = "__context-service", hide = true)]
     ContextService(ContextServiceArgs),
+
+    /// Hidden internal command: body of the detached daily update-check
+    /// child. Never engages the update check itself (suppressed as
+    /// internal), so the child cannot recurse.
+    #[command(name = "__update-check", hide = true)]
+    UpdateCheck,
 
     /// Add anchors to a span, writing the span file under the span root.
     ///
@@ -370,14 +381,14 @@ pub enum Commands {
 }
 
 /// `git span <name>` / `git span show <name>`.
-#[derive(Debug, clap::Args)]
+#[derive(Debug, Clone, clap::Args)]
 pub struct ShowArgs {
     /// Span name. Required (the bare `git span` form with no name is
     /// handled in `main`, which prints the command help and exits 0).
     pub name: String,
 }
 
-#[derive(Debug, clap::Args)]
+#[derive(Debug, Clone, clap::Args)]
 pub struct ListArgs {
     /// File paths, `<path>#L<start>-L<end>` ranges, or bare span names to list.
     /// Omit to list all spans.
@@ -510,7 +521,7 @@ pub struct DriftArgs {
     pub cluster: bool,
 }
 
-#[derive(Debug, clap::Args)]
+#[derive(Debug, Clone, clap::Args)]
 pub struct AddArgs {
     /// Span name to stage into.
     pub name: String,
@@ -538,7 +549,7 @@ pub struct AddArgs {
     pub format: AddFormat,
 }
 
-#[derive(Debug, clap::Args)]
+#[derive(Debug, Clone, clap::Args)]
 pub struct RemoveArgs {
     /// Span to stage the removal into.
     pub name: String,
@@ -549,7 +560,7 @@ pub struct RemoveArgs {
     pub anchors: Vec<String>,
 }
 
-#[derive(Debug, clap::Args)]
+#[derive(Debug, Clone, clap::Args)]
 pub struct ReplaceArgs {
     /// Span whose anchor to replace.
     pub name: String,
@@ -568,7 +579,7 @@ pub struct ReplaceArgs {
     pub format: ReplaceFormat,
 }
 
-#[derive(Debug, clap::Args)]
+#[derive(Debug, Clone, clap::Args)]
 pub struct WhyArgs {
     /// Span whose why text to read or stage.
     pub name: String,
@@ -584,13 +595,13 @@ pub struct WhyArgs {
     pub format: WhyFormat,
 }
 
-#[derive(Debug, clap::Args)]
+#[derive(Debug, Clone, clap::Args)]
 pub struct DeleteArgs {
     /// Span to delete (removes its file under the span root).
     pub name: String,
 }
 
-#[derive(Debug, clap::Args)]
+#[derive(Debug, Clone, clap::Args)]
 pub struct DoctorArgs {}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
@@ -600,7 +611,7 @@ pub enum TreeFormat {
     Json,
 }
 
-#[derive(Debug, clap::Args)]
+#[derive(Debug, Clone, clap::Args)]
 pub struct TreeArgs {
     /// File paths or globs to use as tree roots (repo-relative, required).
     #[arg(required = true, num_args = 1..)]
@@ -617,7 +628,7 @@ pub struct TreeArgs {
 
 /// Arguments for `git span merge-driver`, matching git's merge driver
 /// protocol (%O %A %B %L).
-#[derive(Debug, clap::Args)]
+#[derive(Debug, Clone, clap::Args)]
 pub struct MergeDriverArgs {
     /// Base version (%O from git) — the merge-base span temp file path.
     pub base: String,
@@ -665,7 +676,7 @@ pub enum ResolveFormat {
 }
 
 /// Arguments for `git span resolve <name>`.
-#[derive(Debug, clap::Args)]
+#[derive(Debug, Clone, clap::Args)]
 pub struct ResolveArgs {
     /// Span to resolve. Must currently carry Git conflict markers.
     pub name: String,
@@ -700,7 +711,7 @@ pub struct ResolveArgs {
 }
 
 /// Arguments for `git span history <span>`.
-#[derive(Debug, clap::Args)]
+#[derive(Debug, Clone, clap::Args)]
 pub struct HistoryArgs {
     /// Span name whose git history to walk.
     pub span: String,
@@ -754,10 +765,16 @@ pub fn parse_range_address(text: &str) -> anyhow::Result<(String, u32, u32)> {
 /// below. The `--span-dir` flag that once supplied it was removed as unused
 /// in `da2b052d`, so both call sites in `main` pass `None` and this
 /// parameter is currently always `None`.
+///
+/// `cli` is the fully parsed CLI: the update check's engagement seam
+/// ([`crate::update_check::maybe_engage`]) and reminder seam
+/// ([`crate::update_check::maybe_remind`]) read the suppression signals and
+/// cadence state from it.
 pub fn dispatch(
     repo: &gix::Repository,
     command: Commands,
     span_dir: Option<&str>,
+    cli: &Cli,
 ) -> anyhow::Result<i32> {
     // Resolve the span root once, here, through the single precedence
     // chain (`span_dir` > `GIT_SPAN_DIR` > `git config git-span.dir`
@@ -774,7 +791,14 @@ pub fn dispatch(
             recovery_domain::Mode::Exclusive => recovery_domain::acquire_writer(repo, span_root),
         })
         .transpose()?;
-    match command {
+
+    // Update-check engagement sits here, after span-root resolution and the
+    // recovery-domain guard: a command that failed before this point neither
+    // spawns the detached child nor prints a note. Hidden/internal commands
+    // short-circuit in `suppress`, so the child itself never recurses.
+    crate::update_check::maybe_engage(cli);
+
+    let result = match command {
         Commands::Show(args) => {
             let _perf = crate::perf::span("command.show");
             show::run_show(repo, args, span_root)
@@ -792,6 +816,7 @@ pub fn dispatch(
             context::run_context(repo, args, span_root)
         }
         Commands::ContextService(args) => context_service::serve(repo, args),
+        Commands::UpdateCheck => update_check::run_update_check(),
         Commands::Add(args) => {
             let _perf = crate::perf::span("command.add");
             commit::run_add(repo, args, span_root)
@@ -832,7 +857,15 @@ pub fn dispatch(
             let _perf = crate::perf::span("command.resolve");
             resolve::run_resolve(repo, args, span_root)
         }
+    };
+
+    // The reminder prints only on a command's success path — an errored
+    // command keeps its output clean. `maybe_remind` never changes the exit
+    // code; hidden/internal commands short-circuit in `suppress`.
+    if result.is_ok() {
+        crate::update_check::maybe_remind(cli);
     }
+    result
 }
 
 /// Resolve the one syntax shared by the `context` subcommand and a legacy
