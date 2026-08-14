@@ -35,14 +35,27 @@ export async function loader({ params }: LoaderFunctionArgs) {
     throw redirect('/docs/overview');
   }
 
-  const renamedTo = RENAMED_DOC_SLUGS[urlPath.replace(/\/+$/, '')];
+  // A trailing slash is an address variant, not a resource: strip it once up
+  // front so every lookup below sees the canonical slug. The rename lookup
+  // used to do this inline, but the page lookup did not — the reason a
+  // trailing slash survived on renamed slugs and 404'd on current ones.
+  const canonicalPath = urlPath.replace(/\/+$/, '');
+
+  const renamedTo = RENAMED_DOC_SLUGS[canonicalPath];
   if (renamedTo) {
     throw redirect(`/docs/${renamedTo}`, 301);
   }
 
-  const page = source.getPage(urlPath.split('/'));
+  const page = source.getPage(canonicalPath.split('/'));
   if (!page) {
     throw new Response('Not found', { status: 404 });
+  }
+
+  // Only settle the trailing-slash form on the canonical address once that
+  // address is known to resolve — an unknown slug 404s in both forms rather
+  // than redirecting to a dead end.
+  if (canonicalPath !== urlPath) {
+    throw redirect(`/docs/${canonicalPath}`, 301);
   }
 
   const slugKey = page.slugs.join('/');
