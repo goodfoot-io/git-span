@@ -117,8 +117,13 @@ fn help_for_retired_subcommand_still_gets_the_rename() -> Result<()> {
 /// A typo is not a retired name: `stail` remains an ordinary missing span, so
 /// the two mistakes stay distinguishable from their output alone.
 #[test]
-fn typo_still_reports_a_missing_span() -> Result<()> {
+fn unknown_typo_reports_missing_span_without_creating_or_reserving_it() -> Result<()> {
     let repo = TestRepo::seeded()?;
+    let status_before = repo.git_stdout(["status", "--porcelain=v1"])?;
+    assert!(
+        !repo.path().join(".span/stail").exists(),
+        "fixture must not already contain the misspelled span"
+    );
     let out = repo.run_span(["stail"])?;
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(1));
@@ -129,6 +134,15 @@ fn typo_still_reports_a_missing_span() -> Result<()> {
     assert!(
         !stderr.contains("was retired"),
         "a typo must not be reported as a rename, got: {stderr}"
+    );
+    assert_eq!(
+        repo.git_stdout(["status", "--porcelain=v1"])?,
+        status_before,
+        "looking up an unknown typo must leave the repository unchanged"
+    );
+    assert!(
+        !repo.path().join(".span/stail").exists(),
+        "the failed lookup must not create a span artifact"
     );
     Ok(())
 }
@@ -202,8 +216,10 @@ fn pre_existing_reserved_span_can_be_renamed_away() -> Result<()> {
 /// a finding with a remedy, so the user meets it there rather than when a
 /// write already refused.
 #[test]
-fn doctor_reports_a_pre_existing_reserved_span() -> Result<()> {
+fn doctor_fails_for_a_pre_existing_reserved_span_without_mutating_it() -> Result<()> {
     let repo = repo_with_pre_existing_drift_span()?;
+    let span_before = std::fs::read(repo.path().join(".span/drift"))?;
+    let status_before = repo.git_stdout(["status", "--porcelain=v1"])?;
     let out = repo.run_span(["doctor"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
 
@@ -219,6 +235,16 @@ fn doctor_reports_a_pre_existing_reserved_span() -> Result<()> {
     assert!(
         stdout.contains("git span delete drift"),
         "the finding must carry the escape, got: {stdout}"
+    );
+    assert_eq!(
+        std::fs::read(repo.path().join(".span/drift"))?,
+        span_before,
+        "doctor must audit the reserved span without rewriting it"
+    );
+    assert_eq!(
+        repo.git_stdout(["status", "--porcelain=v1"])?,
+        status_before,
+        "doctor must leave the repository unchanged"
     );
     Ok(())
 }

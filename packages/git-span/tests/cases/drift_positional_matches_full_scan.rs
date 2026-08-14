@@ -144,7 +144,7 @@ fn positional_porcelain_drops_clean_span() -> Result<()> {
 /// renders no span block for a fully-Fresh span, prints the "0 drift"
 /// summary instead, and exits 0.
 #[test]
-fn direct_named_clean_span_reports_zero_drift() -> Result<()> {
+fn direct_named_clean_span_omits_block_and_counts_seeded_anchors() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_fixture(&repo)?;
     drift(&repo)?;
@@ -155,8 +155,8 @@ fn direct_named_clean_span_reports_zero_drift() -> Result<()> {
         "clean named span must not render a span block; stdout=\n{stdout}"
     );
     assert!(
-        stdout.contains("0 drift across"),
-        "clean named span must print the 0-drift summary; stdout=\n{stdout}"
+        stdout.contains("0 drift across 1 span (2 anchors checked)"),
+        "summary must count the two independently seeded clean anchors; stdout=\n{stdout}"
     );
     assert_eq!(out.status.code(), Some(0), "named clean span → exit 0");
     Ok(())

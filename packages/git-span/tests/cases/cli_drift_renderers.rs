@@ -274,13 +274,11 @@ fn json_clean_derives_from_actionable_drift_not_findings() -> Result<()> {
          document: {v}"
     );
     assert!(
-        v["findings"]
-            .as_array()
-            .is_some_and(|a| {
-                !a.is_empty()
-                    && a.iter()
-                        .all(|f| f["status"]["code"] == "RESOLVED_PENDING_COMMIT")
-            }),
+        v["findings"].as_array().is_some_and(|a| {
+            !a.is_empty()
+                && a.iter()
+                    .all(|f| f["status"]["code"] == "RESOLVED_PENDING_COMMIT")
+        }),
         "the informational finding must still be present (display predicate); \
          document: {v}"
     );
@@ -483,15 +481,29 @@ fn missing_file_arg_exits_one_with_diagnostic() -> Result<()> {
 }
 
 #[test]
-fn multiple_missing_file_args_reports_each() -> Result<()> {
+fn multiple_untracked_args_are_combined_without_mutating_repository() -> Result<()> {
     let repo = TestRepo::seeded()?;
+    let before = repo.git_stdout(["status", "--porcelain=v1"])?;
     let out = repo.run_span(["drift", "bad1", "bad2"])?;
     assert_eq!(out.status.code(), Some(1));
+    assert!(out.stdout.is_empty(), "argument errors belong on stderr");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("bad1") && stderr.contains("bad2") && stderr.contains("are not tracked"),
         "expected combined diagnostic for both files, got: {stderr}"
     );
+    assert_eq!(
+        stderr.matches("bad1").count(),
+        2,
+        "bad1 must appear in both the summary and explanation: {stderr}"
+    );
+    assert_eq!(
+        stderr.matches("bad2").count(),
+        2,
+        "bad2 must appear in both the summary and explanation: {stderr}"
+    );
+    assert!(!stderr.contains("bad3"), "diagnostic must not invent an argument: {stderr}");
+    assert_eq!(repo.git_stdout(["status", "--porcelain=v1"])?, before);
     Ok(())
 }
 

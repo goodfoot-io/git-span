@@ -658,10 +658,15 @@ fn resolve_config_conflict_settlement_unit_test() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn resolve_reports_config_loss_when_no_index_stages() -> Result<()> {
+fn resolve_without_index_stages_writes_default_config_and_reports_loss() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let residue = anchor_only_residue(&repo, "7")?;
     repo.write_file(".span/m", &residue)?;
+    assert!(
+        repo.git_stdout(["ls-files", "-u", "--", ".span/m"])?
+            .is_empty(),
+        "fixture must exercise text-only recovery, without unmerged index stages"
+    );
 
     let out = repo.run_span(["resolve", "m", "--rehash"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -718,6 +723,11 @@ fn resolve_preserves_one_sided_why_without_index_stages() -> Result<()> {
     )?;
     assert!(residue.contains("rationale Y"), "residue=\n{residue}");
     repo.write_file(".span/m", &residue)?;
+    assert!(
+        repo.git_stdout(["ls-files", "-u", "--", ".span/m"])?
+            .is_empty(),
+        "fixture must exercise text-only recovery, without unmerged index stages"
+    );
 
     let out = repo.run_span(["resolve", "m", "--rehash"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -2303,7 +2313,7 @@ fn resolve_rehash_does_not_call_a_settled_divergence_structural() -> Result<()> 
 /// differ only by which anchors they carry, which the kernel unions without
 /// consulting the chosen side at all.
 #[test]
-fn resolve_reports_a_genuinely_structural_merge_as_structural() -> Result<()> {
+fn resolve_unions_disjoint_anchors_without_claiming_the_side_flag_decided() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let h1 = line_slice_hash(ORIGINAL, 1, 5);
     let h2 = line_slice_hash(FILE2, 1, 5);
@@ -2333,6 +2343,13 @@ file2.txt#L1-L5 rk64:{h2}
     assert!(
         !stdout.contains("kept ours"),
         "and nothing may be reported as decided by the side flag; stdout=\n{stdout}"
+    );
+    let span = read_span(&repo, "m")?;
+    assert!(
+        span.contains(&format!("file1.txt#L1-L5 rk64:{h1}"))
+            && span.contains(&format!("file2.txt#L1-L5 rk64:{h2}"))
+            && !span.contains("<<<<<<<"),
+        "the structural merge must persist the union as a clean artifact; span=\n{span}"
     );
     Ok(())
 }
@@ -2732,10 +2749,15 @@ fn list_conflict_refusal_names_resolve() -> Result<()> {
 }
 
 #[test]
-fn drift_conflict_report_names_resolve() -> Result<()> {
+fn drift_conflict_report_preserves_stages_and_names_a_working_resolve_probe() -> Result<()> {
     let (base, ours, theirs) = shared_why_sides();
     let (repo, _) = mid_merge_repo(&base, &ours, &theirs)?;
 
+    let stages_before = repo.git_stdout(["ls-files", "-u", "--", ".span/m"])?;
+    assert!(
+        !stages_before.is_empty(),
+        "fixture must have unmerged index stages for the conflicted span"
+    );
     let out = repo.run_span(["drift"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
@@ -2743,6 +2765,18 @@ fn drift_conflict_report_names_resolve() -> Result<()> {
         "drift must still report the conflict; stdout=\n{stdout}"
     );
     assert_names_resolve(&stdout, "drift");
+    assert_eq!(
+        repo.git_stdout(["ls-files", "-u", "--", ".span/m"])? ,
+        stages_before,
+        "reporting drift must not consume or rewrite the conflict stages"
+    );
+    let probe = repo.run_span(["resolve", "m", "--dry-run"])?;
+    assert_eq!(
+        probe.status.code(),
+        Some(0),
+        "the remediation probe named by drift must run successfully; stderr=\n{}",
+        String::from_utf8_lossy(&probe.stderr)
+    );
     Ok(())
 }
 

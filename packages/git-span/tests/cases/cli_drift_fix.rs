@@ -1295,7 +1295,7 @@ new.txt rk64:{h}
 }
 
 #[test]
-fn fix_renamed_orphan_pending_commit_reports_not_deleted() -> Result<()> {
+fn fix_keeps_staged_rename_survivor_pending_commit() -> Result<()> {
     // Finding 2: a rename resolved mid-rebase where the renamed-to path is in
     // the worktree+index but NOT YET in HEAD (the operator has not committed
     // the merge). Real git mechanics: `old.txt` is renamed to `new.txt` via
@@ -1338,6 +1338,26 @@ new.txt#L1-L5 rk64:{h}
     );
     repo.write_file(".span/m", &span_content)?;
 
+    assert_eq!(
+        repo.git_stdout(["ls-tree", "--name-only", "HEAD", "--", "new.txt"])?,
+        "",
+        "new.txt must be absent from HEAD for this pending-commit fixture"
+    );
+    assert_eq!(
+        repo.git_stdout(["show", ":new.txt"])?,
+        ORIGINAL.trim_end(),
+        "the rename target must already exist in the index"
+    );
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("new.txt"))?,
+        ORIGINAL,
+        "the rename target must already exist in the worktree"
+    );
+    assert!(
+        read_span(&repo, "m")?.contains("<<<<<<< ours"),
+        "the span must begin conflicted"
+    );
+
     let out = repo.run_span(["drift", "--fix"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -1374,6 +1394,22 @@ new.txt#L1-L5 rk64:{h}
     assert!(
         !span.contains("old.txt"),
         "dead old.txt anchor must be pruned; span:\n{span}"
+    );
+    assert_eq!(
+        repo.git_stdout(["status", "--short", "--", "old.txt", "new.txt"])?,
+        "R  old.txt -> new.txt",
+        "fixing the span must not disturb the staged rename"
+    );
+    let rerun = repo.run_span(["drift", "--fix"])?;
+    assert_eq!(
+        rerun.status.code(),
+        Some(0),
+        "the resolved state must converge"
+    );
+    assert_eq!(
+        read_span(&repo, "m")?,
+        span,
+        "a second fix must be idempotent"
     );
     Ok(())
 }
@@ -1635,7 +1671,7 @@ fn fix_moved_with_worktree_shifts_reanchors_against_head() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn fix_prints_reconciled_summary_for_updated_anchors() -> Result<()> {
+fn fix_reanchors_equivalent_change_and_converges() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;
 
@@ -1645,25 +1681,51 @@ fn fix_prints_reconciled_summary_for_updated_anchors() -> Result<()> {
         "  line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
     )?;
 
+    let before = read_span(&repo, "m")?;
+    let original_hash = line_slice_hash(ORIGINAL, 1, 5);
+    assert!(before.contains(&format!("rk64:{original_hash}")));
     let out = repo.run_span(["drift", "--fix", "--no-exit-code"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
+    let after = read_span(&repo, "m")?;
+    let edited = std::fs::read_to_string(repo.path().join("file1.txt"))?;
+    let edited_hash = line_slice_hash(&edited, 1, 5);
+    assert_ne!(
+        edited_hash, original_hash,
+        "fixture must change the recorded bytes"
+    );
+    assert!(after.contains(&format!("file1.txt#L1-L5 rk64:{edited_hash}")));
+    assert_ne!(after, before, "fix must update the span artifact");
     assert!(
         stdout.contains("Reconciled 1 span, 1 anchor (1 updated, 0 removed)."),
         "expected summary for one re-anchored anchor; stdout=\n{stdout}"
+    );
+    repo.run_span(["drift", "--fix"])?;
+    assert_eq!(
+        read_span(&repo, "m")?,
+        after,
+        "a second fix must be idempotent"
     );
     Ok(())
 }
 
 #[test]
-fn fix_prints_no_summary_on_clean_tree() -> Result<()> {
+fn fix_leaves_clean_repository_unchanged() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;
 
     // No drift at all — clean tree. Zero work means no fix summary line;
     // the `0 drift` line already covers the clean case. "Reconciled" must
     // not appear when nothing was reconciled.
+    assert_eq!(repo.git_stdout(["status", "--porcelain"])?, "");
+    let before = read_span(&repo, "m")?;
     let out = repo.run_span(["drift", "--fix"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        read_span(&repo, "m")?,
+        before,
+        "clean span must not be rewritten"
+    );
+    assert_eq!(repo.git_stdout(["status", "--porcelain"])?, "");
     assert!(
         !stdout.contains("Reconciled"),
         "clean tree with zero work must print no fix summary; stdout=\n{stdout}"
@@ -1676,7 +1738,7 @@ fn fix_prints_no_summary_on_clean_tree() -> Result<()> {
 }
 
 #[test]
-fn fix_prints_summary_with_remaining_drift() -> Result<()> {
+fn fix_updates_fixable_anchor_and_preserves_deleted_residue() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.span_stdout(["add", "m", "file1.txt#L1-L5", "file2.txt#L1-L5"])?;
     repo.span_stdout(["why", "m", "mixed"])?;
@@ -1693,6 +1755,18 @@ fn fix_prints_summary_with_remaining_drift() -> Result<()> {
 
     let out = repo.run_span(["drift", "--fix", "--no-exit-code"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
+    let after = read_span(&repo, "m")?;
+    let edited = std::fs::read_to_string(repo.path().join("file1.txt"))?;
+    let edited_hash = line_slice_hash(&edited, 1, 5);
+    assert!(after.contains(&format!("file1.txt#L1-L5 rk64:{edited_hash}")));
+    assert!(
+        after.contains("file2.txt#L1-L5"),
+        "deleted anchor must remain as residue"
+    );
+    assert!(
+        !repo.path().join("file2.txt").exists(),
+        "deleted premise must remain true"
+    );
     // The summary reports the fix and the remaining drift; "Reconciled"
     // must not appear — the span is not reconciled while drift remains.
     assert!(
@@ -1701,11 +1775,17 @@ fn fix_prints_summary_with_remaining_drift() -> Result<()> {
         ),
         "expected updated summary with remaining drift; stdout=\n{stdout}"
     );
+    repo.run_span(["drift", "--fix", "--no-exit-code"])?;
+    assert_eq!(
+        read_span(&repo, "m")?,
+        after,
+        "remaining residue must converge"
+    );
     Ok(())
 }
 
 #[test]
-fn fix_summary_counts_anchors_not_layer_findings() -> Result<()> {
+fn fix_deduplicates_multilayer_drift_by_anchor() -> Result<()> {
     // The drift-remains summary must count distinct drifted ANCHORS — what
     // the listing above it renders — not per-layer findings. An anchor
     // whose recorded hash is stale at several layers (re-anchored on a
@@ -1736,6 +1816,27 @@ fn fix_summary_counts_anchors_not_layer_findings() -> Result<()> {
     // file2: unfixable Deleted.
     std::fs::remove_file(repo.path().join("file2.txt"))?;
 
+    let before = read_span(&repo, "m")?;
+    assert_eq!(
+        before
+            .lines()
+            .filter(|line| line.starts_with("file1.txt#"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        before
+            .lines()
+            .filter(|line| line.starts_with("file2.txt#"))
+            .count(),
+        1
+    );
+    assert_ne!(
+        repo.git_stdout(["show", "HEAD:file1.txt"])?,
+        std::fs::read_to_string(repo.path().join("file1.txt"))?.trim_end()
+    );
+    assert!(!repo.path().join("file2.txt").exists());
+
     let out = repo.run_span(["drift", "--fix", "--no-exit-code"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
@@ -1760,6 +1861,15 @@ fn fix_summary_counts_anchors_not_layer_findings() -> Result<()> {
         file2_rows, 1,
         "file2 must render one listing row; stdout=\n{stdout}"
     );
+    assert_eq!(
+        read_span(&repo, "m")?,
+        before,
+        "unfixable anchors must remain unchanged"
+    );
+    let rerun = repo.run_span(["drift", "--fix", "--no-exit-code"])?;
+    let rerun_stdout = String::from_utf8_lossy(&rerun.stdout);
+    assert_eq!(rerun_stdout.matches("- file1.txt#L1-L5").count(), 1);
+    assert_eq!(rerun_stdout.matches("- file2.txt#L1-L5").count(), 1);
     Ok(())
 }
 
@@ -1794,7 +1904,7 @@ fn fix_prints_removed_count_for_interior_anchor() -> Result<()> {
 }
 
 #[test]
-fn fix_conflict_resolved_summary() -> Result<()> {
+fn fix_settles_clean_anchor_conflict_and_converges() -> Result<()> {
     let repo = TestRepo::seeded()?;
 
     // Span conflict: ours has file1.txt#L1-L5, theirs has file2.txt#L1-L5.
@@ -1811,6 +1921,7 @@ file2.txt#L1-L5 rk64:{h2}
 "
     );
     repo.write_file(".span/m", &span_content)?;
+    assert!(read_span(&repo, "m")?.contains("<<<<<<< ours"));
 
     let out = repo.run_span(["drift", "--fix"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -1819,11 +1930,21 @@ file2.txt#L1-L5 rk64:{h2}
         "expected summary for fully-resolved conflict; stdout=\n{stdout}"
     );
     assert_eq!(out.status.code(), Some(0), "clean resolution must exit 0");
+    let settled = read_span(&repo, "m")?;
+    assert!(!settled.contains("<<<<<<<") && !settled.contains(">>>>>>>"));
+    assert!(settled.contains(&format!("file1.txt#L1-L5 rk64:{h1}")));
+    assert!(settled.contains(&format!("file2.txt#L1-L5 rk64:{h2}")));
+    repo.run_span(["drift", "--fix"])?;
+    assert_eq!(
+        read_span(&repo, "m")?,
+        settled,
+        "settled conflict must be idempotent"
+    );
     Ok(())
 }
 
 #[test]
-fn fix_partial_conflict_summary() -> Result<()> {
+fn fix_preserves_why_residue_after_partial_resolution() -> Result<()> {
     let repo = TestRepo::seeded()?;
 
     // One anchor outside markers (common), one inside (same hash on both
@@ -1846,6 +1967,9 @@ their refined purpose
 "
     );
     repo.write_file(".span/m", &span_content)?;
+    let premise = read_span(&repo, "m")?;
+    assert!(premise.contains("<<<<<<< ours"));
+    assert!(premise.contains("our refined purpose") && premise.contains("their refined purpose"));
 
     let out = repo.run_span(["drift", "--fix", "--no-exit-code"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -1871,6 +1995,17 @@ their refined purpose
         stdout.contains("git span resolve m"),
         "the span left conflicted must reach the remediation that names `resolve`; \
          stdout=\n{stdout}"
+    );
+    let partial = read_span(&repo, "m")?;
+    assert!(partial.contains(&format!("file1.txt#L1-L5 rk64:{h_out}")));
+    assert!(partial.contains(&format!("file2.txt#L1-L3 rk64:{h_in}")));
+    assert!(partial.contains("<<<<<<<") && partial.contains(">>>>>>>"));
+    assert!(partial.contains("our refined purpose") && partial.contains("their refined purpose"));
+    repo.run_span(["drift", "--fix", "--no-exit-code"])?;
+    assert_eq!(
+        read_span(&repo, "m")?,
+        partial,
+        "partial residue must remain stable on rerun"
     );
     Ok(())
 }

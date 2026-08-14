@@ -3,6 +3,7 @@
 use crate::support;
 
 use anyhow::Result;
+use serde_json::Value;
 use support::TestRepo;
 
 fn seed(repo: &TestRepo, name: &str) -> Result<()> {
@@ -51,7 +52,7 @@ fn clean_exit_zero() -> Result<()> {
 }
 
 #[test]
-fn pending_why_matching_committed_message_is_not_duplicated() -> Result<()> {
+fn matching_why_is_idempotent_in_declaration_and_human_drift_block() -> Result<()> {
     // The drift block includes the committed why text inline.
     // Verify the drift output includes the span heading.
     let repo = TestRepo::seeded()?;
@@ -62,6 +63,8 @@ fn pending_why_matching_committed_message_is_not_duplicated() -> Result<()> {
         repo.run_git(["commit", "-m", "span commit"])?;
     }
     drift(&repo, "mutate")?;
+    let declaration_path = repo.path().join(".span/m");
+    let before = std::fs::read(&declaration_path)?;
     // The why write lands, but the post-write check reports the drifted
     // anchor → exit 1 (plan: why write on a span with a stale anchor).
     let out = repo.run_span(["why", "m", "shared why text"])?;
@@ -71,11 +74,21 @@ fn pending_why_matching_committed_message_is_not_duplicated() -> Result<()> {
         Some(1),
         "stale anchor must make the why write exit 1; stdout=\n{why_stdout}"
     );
+    let after = std::fs::read(&declaration_path)?;
+    assert_eq!(
+        after, before,
+        "re-applying committed why text must not mutate the declaration"
+    );
     let stdout = repo.span_stdout(["drift", "m", "--no-exit-code"])?;
     // The block heading is the span name.
     assert!(
         stdout.contains("## m"),
         "expected block heading; stdout=\n{stdout}"
+    );
+    assert_eq!(
+        stdout.matches("shared why text").count(),
+        1,
+        "the committed why text must render exactly once; stdout=\n{stdout}"
     );
     Ok(())
 }
@@ -103,8 +116,7 @@ fn no_exit_code_forces_zero() -> Result<()> {
 }
 
 #[test]
-
-fn human_output_has_summary_line() -> Result<()> {
+fn human_drift_block_names_span_confirmed_by_structured_finding() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "m")?;
     drift(&repo, "mutate")?;
@@ -119,6 +131,10 @@ fn human_output_has_summary_line() -> Result<()> {
         stdout.contains("changed"),
         "drifted anchor must carry status suffix, got: {stdout}"
     );
+    let json = repo.run_span(["drift", "m", "--format=json"])?;
+    let report: Value = serde_json::from_slice(&json.stdout)?;
+    assert_eq!(report["findings"][0]["span"], "m");
+    assert_eq!(report["findings"][0]["anchored"]["path"], "file1.txt");
     Ok(())
 }
 
@@ -135,7 +151,7 @@ fn workspace_scan_without_name() -> Result<()> {
 }
 
 #[test]
-fn human_output_has_drift_summary_line() -> Result<()> {
+fn human_changed_suffix_agrees_with_structured_changed_status() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "m")?;
     drift(&repo, "mutate")?;
@@ -150,6 +166,10 @@ fn human_output_has_drift_summary_line() -> Result<()> {
         stdout.contains("changed"),
         "drifted anchor must carry status suffix, got: {stdout}"
     );
+    let json = repo.run_span(["drift", "m", "--format=json"])?;
+    let report: Value = serde_json::from_slice(&json.stdout)?;
+    assert_eq!(report["clean"], false);
+    assert_eq!(report["findings"][0]["status"]["code"], "CHANGED");
     Ok(())
 }
 
@@ -199,7 +219,7 @@ fn workspace_scan_all_clean_exit_zero() -> Result<()> {
 /// A clean named span is a drift report: no span block renders, the "0 drift"
 /// summary prints instead, and the command exits 0.
 #[test]
-fn named_lookup_clean_span_reports_zero_drift() -> Result<()> {
+fn named_clean_lookup_omits_block_and_counts_seeded_anchor() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed(&repo, "quiet")?;
     let out = repo.run_span(["drift", "quiet"])?;
@@ -211,8 +231,8 @@ fn named_lookup_clean_span_reports_zero_drift() -> Result<()> {
     );
     // Explicit "checked, all clean" feedback instead of empty output.
     assert!(
-        stdout.contains("0 drift across"),
-        "summary must mention 0 drift for a clean named span, got: {stdout}"
+        stdout.contains("0 drift across 1 span (1 anchor checked)"),
+        "summary must count the independently seeded anchor, got: {stdout}"
     );
     assert_eq!(out.status.code(), Some(0), "exit 0 for clean named span");
     Ok(())

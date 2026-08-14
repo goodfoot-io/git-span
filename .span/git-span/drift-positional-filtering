@@ -1,5 +1,5 @@
-packages/git-span/tests/cases/cli_drift_human.rs#L199-L222 rk64:0478b2bf0e4360b0
-packages/git-span/tests/cases/cli_drift_renderers.rs#L330-L345 rk64:2664b0761f7992a6
-packages/git-span/tests/cases/cli_drift_renderers.rs#L470-L604 rk64:46488613ae757087
+packages/git-span/tests/cases/cli_drift_human.rs#L219-L239 rk64:cfdf44841584ad36
+packages/git-span/tests/cases/cli_drift_renderers.rs#L328-L343 rk64:2664b0761f7992a6
+packages/git-span/tests/cases/cli_drift_renderers.rs#L468-L615 rk64:45367005cba22a85
 
 Positional path and span-name arguments to git span drift resolve through the single SpanPathIndex, and this suite asserts that resolution and clean-span filtering stay identical across the human, porcelain, and JSON renderers.
