@@ -501,7 +501,8 @@ fn mid_merge(repo_seed: &str) -> Result<TestRepo> {
 /// Every surface that refuses a conflicted span must name the exit. `resolve`
 /// writes the worktree and never stages — a deliberate contract of this card —
 /// so without `git add` in the text the operator settles the file, re-runs, and
-/// is told the same thing by the same surfaces. Five surfaces, one circle.
+/// is told the same thing by the same surfaces. Interactive `why` is covered
+/// separately because automation cannot invoke its terminal-only read mode.
 ///
 /// `git add` appears in the *text* only; nothing here runs it, and
 /// `resolve_never_stages` in `cli_resolve` guards the other half.
@@ -510,7 +511,7 @@ fn every_conflict_surface_names_the_staging_exit() -> Result<()> {
     let seed = format!("file1.txt#L1-L5 rk64:{OTHER_HASH}\n\nbase why\n");
     let repo = mid_merge(&seed)?;
 
-    for args in [vec!["why", "m"], vec!["m"], vec!["list"]] {
+    for args in [vec!["m"], vec!["list"]] {
         let out = repo.run_span(args.clone())?;
         let text = format!(
             "{}{}",
@@ -579,20 +580,17 @@ fn unmerged_index_and_marker_text_are_reported_apart() -> Result<()> {
     // Half one: a real merge leaves stage 1/2/3 entries.
     let seed = format!("file1.txt#L1-L5 rk64:{OTHER_HASH}\n\nbase why\n");
     let unmerged = mid_merge(&seed)?;
-    for args in [vec!["why", "m"], vec!["m"]] {
-        let out = unmerged.run_span(args.clone())?;
-        let flattened = flat(&String::from_utf8_lossy(&out.stderr));
-        assert!(
-            flattened.contains("The index holds unmerged stage entries"),
-            "`git span {}` must name the condition that actually fired; stderr=\n{flattened}",
-            args.join(" ")
-        );
-        assert!(
-            flattened.contains("survives it until the file is staged"),
-            "and say what that implies, which is the whole reason to tell them apart; \
-             stderr=\n{flattened}"
-        );
-    }
+    let out = unmerged.run_span(["m"])?;
+    let flattened = flat(&String::from_utf8_lossy(&out.stderr));
+    assert!(
+        flattened.contains("The index holds unmerged stage entries"),
+        "`git span m` must name the condition that actually fired; stderr=\n{flattened}"
+    );
+    assert!(
+        flattened.contains("survives it until the file is staged"),
+        "and say what that implies, which is the whole reason to tell them apart; \
+         stderr=\n{flattened}"
+    );
 
     // Half two: marker text committed into an otherwise-merged file. No
     // unmerged stage exists, so staging is not what is missing.
@@ -619,22 +617,19 @@ why prose
         "fixture assumption: no unmerged stage may exist here; ls-files -u:\n{staged}"
     );
 
-    for args in [vec!["why", "m"], vec!["m"]] {
-        let out = marker_only.run_span(args.clone())?;
-        let flattened = flat(&String::from_utf8_lossy(&out.stderr));
-        assert!(
-            flattened.contains("while the index holds a single, merged entry"),
-            "`git span {}` must name *this* condition instead; stderr=\n{flattened}",
-            args.join(" ")
-        );
-        assert!(
-            flattened.contains("no unmerged stage here"),
-            "and must not imply a stage is waiting on a `git add`; stderr=\n{flattened}"
-        );
-        assert!(
-            !flattened.contains("The index holds unmerged stage entries"),
-            "the two diagnoses must not both fire; stderr=\n{flattened}"
-        );
-    }
+    let out = marker_only.run_span(["m"])?;
+    let flattened = flat(&String::from_utf8_lossy(&out.stderr));
+    assert!(
+        flattened.contains("while the index holds a single, merged entry"),
+        "`git span m` must name *this* condition instead; stderr=\n{flattened}"
+    );
+    assert!(
+        flattened.contains("no unmerged stage here"),
+        "and must not imply a stage is waiting on a `git add`; stderr=\n{flattened}"
+    );
+    assert!(
+        !flattened.contains("The index holds unmerged stage entries"),
+        "the two diagnoses must not both fire; stderr=\n{flattened}"
+    );
     Ok(())
 }
