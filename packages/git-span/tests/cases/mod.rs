@@ -4,6 +4,7 @@ pub mod add_filter_rewritten_anchor_reject;
 pub mod add_gitignored_anchor_reject;
 pub mod add_index_loaded_once;
 pub mod add_superseding_overlap_reject;
+pub mod add_superseded_address_reject;
 pub mod anchor_inside_span_root_reject;
 pub mod anchor_path_portability;
 pub mod cargo_config_layout;
