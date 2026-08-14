@@ -1947,6 +1947,7 @@ NODE`;
 
   it.each([
     ["sed -i 's/n[e]edle/pin/' src/a.txt", 'unsupported-expression'],
+    ["sed -i '2s/n.*/pin/' src/a.txt", 'unsupported-expression'],
     ["sed -i '2d' src/a.txt", 'unsupported-expression'],
     ["perl -0777pi -e 's/needle/pin/' src/a.txt", 'unsupported-expression']
   ] as const)('rejects unsupported pattern form: %s', (command, reasonCode) => {
@@ -1974,6 +1975,16 @@ NODE`;
     expect(result.unresolved.map(({ reasonCode }) => reasonCode)).toEqual(['unsupported-dataflow']);
   });
 
+  it('rejects an unquoted loop expansion that Bash would field-split', () => {
+    const result = parseCommandLayered("for f in 'src/a b.txt'; do sed -i 's/needle/pin/' $f; done", {
+      cwd: dir,
+      readPreState: () => 'needle\n'
+    });
+
+    expect(result.resolved).toEqual([]);
+    expect(result.unresolved.map(({ reasonCode }) => reasonCode)).toEqual(['unsupported-dataflow']);
+  });
+
   it.each([
     [
       `true && python3 -c "from pathlib import Path; p=Path('src/a.txt'); s=p.read_text(); p.write_text(s.replace('needle','pin'))"`,
@@ -1990,6 +2001,21 @@ NODE`;
     expect(result.unresolved).toEqual([]);
     expect(result.resolved).toHaveLength(1);
     expect(result.resolved[0]).toMatchObject({ idiom, span: { simpleCommandIndex: 1, join: '&&' } });
+  });
+
+  it.each([
+    [
+      `printf input | python3 -c "from pathlib import Path; p=Path('src/a.txt'); s=p.read_text(); p.write_text(s.replace('needle','pin'))"`,
+      'python-replace'
+    ],
+    [`printf input | node -e "require('node:fs').writeFileSync('src/a.txt','written')"`, 'node-write'],
+    ['printf input | for f in src/a.txt; do sed -i \'s/needle/pin/\' "$f"; done', 'sed-inplace']
+  ] as const)('recognizes supported %s intent nested in a pipeline', (command, idiom) => {
+    const result = parseCommandLayered(command, { cwd: dir, readPreState: () => 'needle\n' });
+
+    expect(result.unresolved).toEqual([]);
+    expect(result.resolved).toHaveLength(1);
+    expect(result.resolved[0]).toMatchObject({ idiom, span: { simpleCommandIndex: 1 } });
   });
 
   it.each([

@@ -417,10 +417,11 @@ function expandLiteralLoopVariable(
   body: string,
   variable: string,
   binding: string
-): { readonly command: string; readonly replacements: number } {
+): { readonly command: string; readonly replacements: number; readonly unsafeUnquoted: boolean } {
   let command = '';
   let quote: "'" | '"' | null = null;
   let replacements = 0;
+  let unsafeUnquoted = false;
   for (let index = 0; index < body.length; index += 1) {
     const character = body[index];
     if (character === '\\' && quote !== "'") {
@@ -450,6 +451,7 @@ function expandLiteralLoopVariable(
       continue;
     }
     const length = braced ? variable.length + 3 : variable.length + 1;
+    if (quote === null && /\s/.test(binding)) unsafeUnquoted = true;
     command +=
       quote === '"'
         ? binding.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('$', '\\$')
@@ -457,7 +459,7 @@ function expandLiteralLoopVariable(
     replacements += 1;
     index += length - 1;
   }
-  return { command, replacements };
+  return { command, replacements, unsafeUnquoted };
 }
 
 function stableReason(match: Extract<SpanMatch, { status: 'unresolved' }>): UnresolvedReasonCode {
@@ -1908,6 +1910,20 @@ export function parseCommandLayered(command: string, options: LayeredParseOption
         };
       }
       const expanded = expandLiteralLoopVariable(body, variable, binding);
+      if (expanded.unsafeUnquoted) {
+        return {
+          resolved: [],
+          unresolved: [
+            unresolved(
+              'literal-loop',
+              'literal-list-loop',
+              'unsupported-dataflow',
+              'unquoted loop expansion would perform shell field splitting'
+            )
+          ],
+          preStateRequests: []
+        };
+      }
       if (expanded.replacements === 0) {
         return {
           resolved: [],
@@ -1957,7 +1973,11 @@ export function parseCommandLayered(command: string, options: LayeredParseOption
 
   const split = splitTopLevel(command);
   const hasPipeline = split.stages.some((stage) => stage.precededBy === 'pipe');
-  if (split.malformed === undefined && split.stages.length > 1 && !hasPipeline) {
+  const hasLayeredPipelineStage = split.stages.some((stage) => {
+    const stageText = stage.text.trimStart();
+    return /^(?:python(?:3(?:\.\d+)?)?|node|for)\b/.test(stageText) || parsePatternCommand(stage.text) !== null;
+  });
+  if (split.malformed === undefined && split.stages.length > 1 && (!hasPipeline || hasLayeredPipelineStage)) {
     if (split.stages.some((stage) => argvOf(stage.text)?.[0] === 'cd')) {
       return {
         resolved: [],
@@ -2028,6 +2048,20 @@ export function parseCommandLayered(command: string, options: LayeredParseOption
       const start = Number.parseInt(numericMatch[1], 10);
       const end = Number.parseInt(numericMatch[2] ?? numericMatch[1], 10);
       const substitution = parseLiteralSubstitution(patternCommand.script.slice(numericMatch[0].indexOf('s')));
+      if (substitution === null) {
+        return {
+          resolved: [],
+          unresolved: [
+            unresolved(
+              'pattern-substitution',
+              'sed-inplace',
+              'unsupported-expression',
+              'numeric substitutions require a literal pattern and replacement for post-state verification'
+            )
+          ],
+          preStateRequests: []
+        };
+      }
       const resolved: LayeredResolvedMatch[] = [];
       const unresolvedMatches: UnresolvedAttribution[] = [];
       const preStateRequests: PreStateRequest[] = [];
@@ -2038,9 +2072,9 @@ export function parseCommandLayered(command: string, options: LayeredParseOption
           continue;
         }
         const absolutePath = nodePath.resolve(cwd, file);
-        const content = substitution === null ? null : (options.readPreState?.(absolutePath) ?? null);
+        const content = options.readPreState?.(absolutePath) ?? null;
         const expectedContent =
-          content === null || content.includes('\0') || substitution === null
+          content === null || content.includes('\0')
             ? undefined
             : content
                 .split(/(?<=\n)/)
