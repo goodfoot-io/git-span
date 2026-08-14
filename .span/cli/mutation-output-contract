@@ -1,9 +1,13 @@
 packages/git-span/src/cli/commit.rs#L1144-L1163 rk64:c82df180b9b32ad2
+packages/git-span/src/cli/commit.rs#L1239-L1258 rk64:c82df180b9b32ad2
 packages/git-span/src/cli/commit.rs#L1777-L1830 rk64:44e75a532a577973
+packages/git-span/src/cli/commit.rs#L1897-L1950 rk64:44e75a532a577973
 packages/git-span/src/cli/commit.rs#L2179-L2274 rk64:ff5bd3519ca27ce1
+packages/git-span/src/cli/commit.rs#L2299-L2394 rk64:ff5bd3519ca27ce1
 packages/git-span/src/cli/commit.rs#L2346-L2437 rk64:1ea4243347bad57b
+packages/git-span/src/cli/commit.rs#L2466-L2557 rk64:1ea4243347bad57b
 packages/git-span/tests/cases/cli_exit_codes.rs#L1-L112 rk64:532f9a16d9798421
 packages/git-span/tests/cases/cli_history/mod.rs#L187-L200 rk64:f1eb5d09f6e553ff
-packages/git-span/tests/cases/cli_reconcile_output.rs#L24-L597 rk64:446c20d2826cb345
+packages/git-span/tests/cases/cli_reconcile_output.rs#L24-L597 rk64:153fd881366cb0a8
 
 The add/why mutation surface runs a post-write reconcile check whose output splits into the requested-address outcome, superseded-anchor fates, and span-wide health (clean/drift/indeterminate) with drift-aligned exit codes 0/1/2 and an always-emit JSON document; these lines carry the check, the exit-code mapping, and both renderers, so the local facts, the supersession block, and the span-wide line cannot silently diverge from each other or from the three-fact terminology table.

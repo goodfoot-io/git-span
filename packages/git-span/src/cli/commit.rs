@@ -724,6 +724,131 @@ pub(crate) fn supersession_conflict(
     None
 }
 
+/// A requested anchor whose freshly computed content identity (algorithm +
+/// content hash) is known before any mutation — shared by the
+/// content-identity pairing pass and the mutation loop so every anchored
+/// file is read exactly once.
+#[derive(Debug, Clone)]
+pub(crate) struct ComputedAnchor {
+    pub path: String,
+    pub extent: AnchorExtent,
+    pub algorithm: String,
+    pub content_hash: String,
+}
+
+/// Where the paired anchor comes from: an anchor already tracked on the
+/// span, or a second anchor requested in the same invocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PairingSource {
+    /// The pairing is against an anchor already tracked on the span.
+    ExistingRecord,
+    /// The pairing is between two anchors requested in the same invocation.
+    CoRequested,
+}
+
+/// A content-identity pairing between a requested anchor and another anchor
+/// on the same path at a *different* address: the content under both
+/// addresses hashes identically. Identical content at two addresses is the
+/// signature of a superseded address — one region has accumulated a second
+/// identity that every same-identity sweep is structurally blind to — so
+/// the pairing must be reported rather than written in silence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ContentIdentityPairing {
+    /// Canonical address of the requested anchor
+    /// (`<path>` or `<path>#L<s>-L<e>`).
+    pub requested_addr: String,
+    /// Canonical address of the anchor it pairs with — either an existing
+    /// record on the span or a co-requested anchor.
+    pub paired_addr: String,
+    /// Whether the paired anchor is tracked on the span or was requested in
+    /// the same invocation.
+    pub source: PairingSource,
+}
+
+/// Return every content-identity pairing between freshly hashed requested
+/// anchors and a span's existing anchors.
+///
+/// A pairing is: same path, different identity (`(start_line, end_line)`),
+/// identical algorithm, and identical content hash. Overlap alone is never
+/// the signal — spans legitimately nest regions — and neither is content
+/// alone across paths (a span may couple the same contract text anchored in
+/// source and in tests; a region lives in one file). Exact identity is the
+/// supported refresh (`unchanged` / `resolved in-place`) and never a
+/// pairing; records carrying the collapse sentinel hash nothing, so they
+/// cannot attest to duplicate content. A pairing is a *report*, never a
+/// refusal: two genuinely distinct blocks with byte-identical content are a
+/// legal span shape.
+///
+/// Iteration is requested-outer, existing-inner, then co-requested pairs
+/// (`i < j`), so the reported list is deterministic.
+pub(crate) fn content_identity_pairings(
+    computed: &[ComputedAnchor],
+    existing: &[AnchorRecord],
+) -> Vec<ContentIdentityPairing> {
+    /// The `(start_line, end_line)` identity of an extent, with whole-file
+    /// using the `(0, 0)` sentinel.
+    fn extent_identity(e: &AnchorExtent) -> (u32, u32) {
+        match e {
+            AnchorExtent::LineRange { start, end } => (*start, *end),
+            AnchorExtent::WholeFile => (0, 0),
+        }
+    }
+    /// Canonical address of an existing record — whole-file records render
+    /// as bare `<path>`, never `#L0-L0`.
+    fn record_addr(r: &AnchorRecord) -> String {
+        if r.start_line == 0 && r.end_line == 0 {
+            format_anchor_address(&r.path, None, None)
+        } else {
+            format_anchor_address(&r.path, Some(r.start_line), Some(r.end_line))
+        }
+    }
+
+    let mut pairings = Vec::new();
+
+    // Requested-outer: each requested anchor against every existing record.
+    for c in computed {
+        let (start_line, end_line) = extent_identity(&c.extent);
+        for r in existing {
+            if r.path != c.path || (r.start_line, r.end_line) == (start_line, end_line) {
+                continue;
+            }
+            if r.algorithm != c.algorithm || carried_sentinel(r) || r.content_hash != c.content_hash {
+                continue;
+            }
+            pairings.push(ContentIdentityPairing {
+                requested_addr: addr_from_extent(&c.path, &c.extent),
+                paired_addr: record_addr(r),
+                source: PairingSource::ExistingRecord,
+            });
+        }
+    }
+
+    // Then the co-requested pairs (post-coalesce, so no two of them share
+    // an identity — the identity guard is defensive).
+    for (i, c) in computed.iter().enumerate() {
+        let (start_line, end_line) = extent_identity(&c.extent);
+        for other in &computed[i + 1..] {
+            if other.path != c.path {
+                continue;
+            }
+            let (other_start, other_end) = extent_identity(&other.extent);
+            if (other_start, other_end) == (start_line, end_line) {
+                continue;
+            }
+            if other.algorithm != c.algorithm || other.content_hash != c.content_hash {
+                continue;
+            }
+            pairings.push(ContentIdentityPairing {
+                requested_addr: addr_from_extent(&c.path, &c.extent),
+                paired_addr: addr_from_extent(&other.path, &other.extent),
+                source: PairingSource::CoRequested,
+            });
+        }
+    }
+
+    pairings
+}
+
 pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result<i32> {
     crate::validation::validate_span_name(&args.name)?;
 
@@ -1038,21 +1163,35 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result
         Collapsed { records_before: usize },
     }
 
+    // Hash every requested anchor once, up front: the content-identity
+    // pairing pass needs each fresh hash, and the mutation loop reuses the
+    // same values rather than re-reading every anchored file.
+    let mut computed: Vec<ComputedAnchor> = Vec::with_capacity(parsed.len());
+    {
+        let _perf = crate::perf::span("add.hash-anchors");
+        for (path, extent) in &parsed {
+            let (algorithm, content_hash) =
+                hash_anchor_content(repo, path, extent, anchor_oid.as_deref(), &index_snapshot)?;
+            computed.push(ComputedAnchor {
+                path: path.clone(),
+                extent: *extent,
+                algorithm,
+                content_hash,
+            });
+        }
+    }
+
     let mut outcomes: Vec<AddOutcome> = Vec::with_capacity(parsed.len());
 
     {
         let _perf = crate::perf::span("add.process-anchors");
-        for (path, extent) in &parsed {
-            let (algorithm, content_hash) =
-                hash_anchor_content(repo, path, extent, anchor_oid.as_deref(), &index_snapshot)?;
-            let addr = addr_from_extent(path, extent);
-
-            let (start_line, end_line) = match extent {
+        for c in &computed {
+            let (start_line, end_line) = match &c.extent {
                 AnchorExtent::LineRange { start, end } => (*start, *end),
                 AnchorExtent::WholeFile => (0, 0),
             };
 
-            let key = (path.clone(), start_line, end_line);
+            let key = (c.path.clone(), start_line, end_line);
 
             // Retain-and-replace, not patch-the-first-match: every record at
             // this identity is removed and one record carrying the hash just
@@ -1066,7 +1205,7 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result
                 .anchors
                 .iter()
                 .filter(|a| {
-                    a.path == *path && a.start_line == start_line && a.end_line == end_line
+                    a.path == c.path && a.start_line == start_line && a.end_line == end_line
                 })
                 .count();
             // `add` does not run the shared collapse primitive, and does not
@@ -1089,7 +1228,7 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result
             // never a hash of anything and exited 0. An operator who answered
             // "yes, still here" got silence; one who answered "it moved" got
             // a paragraph.
-            let retired = remove_all_at_identity(&mut span_file.anchors, path, start_line, end_line);
+            let retired = remove_all_at_identity(&mut span_file.anchors, &c.path, start_line, end_line);
             let retired_sentinels = retired.iter().filter(|r| carried_sentinel(r)).count();
 
             // The durable half of the acknowledgement: a sentinel retired
@@ -1115,24 +1254,24 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result
             }
 
             span_file.anchors.push(AnchorRecord {
-                path: path.clone(),
+                path: c.path.clone(),
                 start_line,
                 end_line,
-                algorithm,
-                content_hash: content_hash.clone(),
+                algorithm: c.algorithm.clone(),
+                content_hash: c.content_hash.clone(),
             });
 
             let kind = match matching_before {
                 0 => AddOutcomeKind::Added,
                 // The `existing` map is trustworthy as a hash-match oracle
                 // only when the identity is known to hold exactly one record.
-                1 if existing.get(&key) == Some(&content_hash) => AddOutcomeKind::Unchanged,
+                1 if existing.get(&key) == Some(&c.content_hash) => AddOutcomeKind::Unchanged,
                 1 => AddOutcomeKind::Resolved,
                 n => AddOutcomeKind::Collapsed { records_before: n },
             };
 
             outcomes.push(AddOutcome {
-                addr,
+                addr: addr_from_extent(&c.path, &c.extent),
                 kind,
                 retired_sentinels,
             });
@@ -1253,6 +1392,57 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result
                 println!(
                     "The resolution is recorded in the span file's `[resolved]` section."
                 );
+            }
+
+            // Content-identity pairings: a requested anchor hashes to the
+            // same content as another anchor at a different address on the
+            // same path. The write above kept both — twins are legal — but
+            // the pairing is the one signature every observed
+            // superseded-address cluster exhibited, so it is reported with
+            // the remediation that collapses it, rather than left to
+            // accumulate in silence. Computed against the pre-write anchor
+            // set, so a pairing names what the operator actually inherited.
+            let pairings = content_identity_pairings(&computed, &pre_write_anchors);
+            for p in &pairings {
+                println!();
+                match p.source {
+                    PairingSource::ExistingRecord => {
+                        println!(
+                            "Content-identity pairing: `{}` hashes to the same content as the \
+                             existing anchor `{}`. Two addresses with identical content are \
+                             invisible to every same-identity sweep, so this add does not \
+                             retire the old address. If one region was re-anchored, move the \
+                             old anchor instead:",
+                            p.requested_addr, p.paired_addr
+                        );
+                        println!(
+                            "    git span replace {} {} {}",
+                            args.name,
+                            quote_shell(&p.paired_addr),
+                            quote_shell(&p.requested_addr)
+                        );
+                        println!("or remove the old address and retry the add:");
+                        println!(
+                            "    git span remove {} {}",
+                            args.name,
+                            quote_shell(&p.paired_addr)
+                        );
+                    }
+                    PairingSource::CoRequested => {
+                        println!(
+                            "Content-identity pairing: the requested anchors `{}` and `{}` \
+                             hash to the same content. Two addresses with identical content \
+                             are invisible to every same-identity sweep. If one of them was \
+                             meant to re-anchor the other, drop one:",
+                            p.requested_addr, p.paired_addr
+                        );
+                        println!(
+                            "    git span remove {} {}",
+                            args.name,
+                            quote_shell(&p.requested_addr)
+                        );
+                    }
+                }
             }
 
             // The post-write facts: superseded, remains, and the single
@@ -2701,6 +2891,160 @@ mod tests {
         assert!(!is_superseded(&old_range, "src/b.ts", &AnchorExtent::WholeFile));
         assert!(!is_superseded(&old_range, "src/b.ts", &lines(0, 100)));
         assert!(!is_superseded(&old_whole, "src/b.ts", &AnchorExtent::WholeFile));
+    }
+
+    // ---------------------------------------------------------------------
+    // Content-identity pairing contract
+    //
+    // These checks pin the `content_identity_pairings` rule table: content
+    // identity, not overlap, is the pairing signal — and only at a
+    // different address on the same path.
+    // ---------------------------------------------------------------------
+
+    /// A freshly hashed requested anchor as `run_add` builds it.
+    fn computed(path: &str, extent: AnchorExtent, hash: &str) -> ComputedAnchor {
+        ComputedAnchor {
+            path: path.into(),
+            extent,
+            algorithm: "rk64".into(),
+            content_hash: hash.into(),
+        }
+    }
+
+    /// An `AnchorRecord` with an explicit content hash.
+    fn rec_hash(path: &str, start_line: u32, end_line: u32, hash: &str) -> AnchorRecord {
+        AnchorRecord {
+            path: path.into(),
+            start_line,
+            end_line,
+            algorithm: "rk64".into(),
+            content_hash: hash.into(),
+        }
+    }
+
+    #[test]
+    fn content_identity_pairings_rule_table() {
+        // Same path, same hash, different identity → paired with the
+        // existing record.
+        assert_eq!(
+            content_identity_pairings(
+                &[computed("src/a.rs", lines(50, 52), "h")],
+                &[rec_hash("src/a.rs", 5, 7, "h")],
+            ),
+            vec![ContentIdentityPairing {
+                requested_addr: "src/a.rs#L50-L52".into(),
+                paired_addr: "src/a.rs#L5-L7".into(),
+                source: PairingSource::ExistingRecord,
+            }]
+        );
+
+        // A whole-file existing record renders as a bare path, never
+        // `#L0-L0`.
+        assert_eq!(
+            content_identity_pairings(
+                &[computed("src/a.rs", lines(50, 52), "h")],
+                &[rec_hash("src/a.rs", 0, 0, "h")],
+            )[0]
+            .paired_addr,
+            "src/a.rs"
+        );
+
+        // Exact identity → the supported refresh path, never a pairing.
+        assert!(content_identity_pairings(
+            &[computed("src/a.rs", lines(5, 7), "h")],
+            &[rec_hash("src/a.rs", 5, 7, "h")],
+        )
+        .is_empty());
+
+        // Same path, different hash → no pairing.
+        assert!(content_identity_pairings(
+            &[computed("src/a.rs", lines(50, 52), "g")],
+            &[rec_hash("src/a.rs", 5, 7, "h")],
+        )
+        .is_empty());
+
+        // Different path, same hash → a legitimate coupling, no pairing.
+        assert!(content_identity_pairings(
+            &[computed("src/b.rs", lines(1, 3), "h")],
+            &[rec_hash("src/a.rs", 5, 7, "h")],
+        )
+        .is_empty());
+
+        // A different algorithm's hash is not comparable, even when equal.
+        assert!(content_identity_pairings(
+            &[computed("src/a.rs", lines(50, 52), "h")],
+            &[AnchorRecord {
+                path: "src/a.rs".into(),
+                start_line: 5,
+                end_line: 7,
+                algorithm: "sha256".into(),
+                content_hash: "h".into(),
+            }],
+        )
+        .is_empty());
+
+        // A sentinel record hashes nothing and cannot attest to content,
+        // even against a hash that compares equal.
+        let sentinel = git_span_core::rk64_unmatched_sentinel();
+        assert!(content_identity_pairings(
+            &[computed("src/a.rs", lines(50, 52), &sentinel)],
+            &[rec_hash("src/a.rs", 5, 7, &sentinel)],
+        )
+        .is_empty());
+
+        // Co-requested pair: same path, same hash, different identity.
+        assert_eq!(
+            content_identity_pairings(
+                &[
+                    computed("src/a.rs", lines(5, 7), "h"),
+                    computed("src/a.rs", lines(50, 52), "h"),
+                ],
+                &[],
+            ),
+            vec![ContentIdentityPairing {
+                requested_addr: "src/a.rs#L5-L7".into(),
+                paired_addr: "src/a.rs#L50-L52".into(),
+                source: PairingSource::CoRequested,
+            }]
+        );
+
+        // Co-requested with different hashes → no pairing.
+        assert!(content_identity_pairings(
+            &[
+                computed("src/a.rs", lines(5, 7), "h"),
+                computed("src/a.rs", lines(50, 52), "g"),
+            ],
+            &[],
+        )
+        .is_empty());
+
+        // Existing pairings are reported before co-requested ones, and one
+        // requested anchor can pair with several existing records — every
+        // residue address is reported, not just the first.
+        let many = content_identity_pairings(
+            &[
+                computed("src/a.rs", lines(50, 52), "h"),
+                computed("src/a.rs", lines(80, 82), "h"),
+            ],
+            &[
+                rec_hash("src/a.rs", 5, 7, "h"),
+                rec_hash("src/a.rs", 10, 12, "h"),
+            ],
+        );
+        assert_eq!(
+            many.iter()
+                .filter(|p| p.source == PairingSource::ExistingRecord)
+                .count(),
+            4,
+            "each requested anchor pairs with each matching existing record"
+        );
+        assert_eq!(
+            many.iter()
+                .filter(|p| p.source == PairingSource::CoRequested)
+                .count(),
+            1,
+            "the two identical requested anchors also pair with each other"
+        );
     }
 
     // ---------------------------------------------------------------------
