@@ -27,7 +27,8 @@ import {
   type PlannedTouchRecord,
   type PlannedTouchStore,
   type PreStateEvidence,
-  parseCommandLayered
+  parseCommandLayered,
+  type TrackedEligibilityError
 } from './static-attribution.js';
 import { runTouchHook, type TouchExecutors } from './touch-core.js';
 
@@ -139,6 +140,16 @@ function planGroupKey(span: ResolvedSpan): string {
   return `${span.absolutePath}\0${span.operation}\0${span.simpleCommandIndex}`;
 }
 
+function countBy<T extends string>(values: readonly T[]): Record<T, number> {
+  return values.reduce<Record<T, number>>(
+    (counts, value) => {
+      counts[value] = (counts[value] ?? 0) + 1;
+      return counts;
+    },
+    {} as Record<T, number>
+  );
+}
+
 /**
  * Parse and persist the bounded pieces of Bash attribution that cannot be
  * reconstructed safely after execution. All persisted paths pass pre-side
@@ -174,10 +185,15 @@ export function planBashTouches(
     logger.info?.('git-span static attribution pre-plan', {
       resolved: parsed.resolved.length,
       unresolved: parsed.unresolved.length,
+      unresolvedByIdiom: countBy(parsed.unresolved.map(({ idiom }) => idiom)),
+      unresolvedByReason: countBy(parsed.unresolved.map(({ reasonCode }) => reasonCode)),
       planned: 0,
       trackedDrops: tracked.dropped.length,
+      executionGateDrops: 0,
       parserLatencyMs: performance.now() - started,
-      subprocessCount: tracked.subprocessCount
+      ignoreQueryCount: tracked.ignoreQueryCount,
+      trackedQueryCount: tracked.trackedQueryCount,
+      eligibilityErrors: tracked.errors
     });
     return;
   }
@@ -211,10 +227,15 @@ export function planBashTouches(
     resolved: parsed.resolved.length,
     unresolved: parsed.unresolved.length,
     unresolvedReasons: parsed.unresolved.map(({ reasonCode }) => reasonCode),
+    unresolvedByIdiom: countBy(parsed.unresolved.map(({ idiom }) => idiom)),
+    unresolvedByReason: countBy(parsed.unresolved.map(({ reasonCode }) => reasonCode)),
     planned: touches.length,
     trackedDrops: tracked.dropped.length,
+    executionGateDrops: 0,
     parserLatencyMs: performance.now() - started,
-    subprocessCount: tracked.subprocessCount
+    ignoreQueryCount: tracked.ignoreQueryCount,
+    trackedQueryCount: tracked.trackedQueryCount,
+    eligibilityErrors: tracked.errors
   });
 }
 
@@ -287,7 +308,9 @@ function filterPostTracked(
   responseSpans: ResponseSpan[];
   trackedDrops: number;
   scopeDrops: number;
-  subprocessCount: number;
+  ignoreQueryCount: number;
+  trackedQueryCount: number;
+  eligibilityErrors: readonly TrackedEligibilityError[];
 } {
   const guards = matches.filter(
     (match): match is Extract<BashTouchMatch, { status: 'builtin-guard' }> => match.status === 'builtin-guard'
@@ -326,8 +349,12 @@ function filterPostTracked(
     matches: [...kept, ...guards],
     responseSpans: eligibleResponses,
     trackedDrops: filtered.dropped.filter(({ reason }) => reason === 'untracked-path').length,
-    scopeDrops: filtered.dropped.filter(({ reason }) => reason !== 'untracked-path').length,
-    subprocessCount: filtered.subprocessCount
+    scopeDrops: filtered.dropped.filter(({ reason }) =>
+      ['outside-repository', 'ignored-path', 'span-metadata-path'].includes(reason)
+    ).length,
+    ignoreQueryCount: filtered.ignoreQueryCount,
+    trackedQueryCount: filtered.trackedQueryCount,
+    eligibilityErrors: filtered.errors
   };
 }
 
@@ -370,7 +397,9 @@ export async function runLayeredBashTouches(
   store: PlannedTouchStore
 ): Promise<string[]> {
   const parserStarted = performance.now();
-  const record = toolUseId === undefined ? null : store.consume(sessionId, toolUseId);
+  const claimed = toolUseId === undefined ? { status: 'missing' as const } : store.take(sessionId, toolUseId);
+  if (claimed.status === 'consumed') return [];
+  const record = claimed.status === 'record' ? claimed.record : null;
   const planned = plannedSpans(record, cwd, logger);
   const parsed = parseCommandLayered(command, { cwd, readPreState: readText });
   const preStateKeys = new Set(parsed.preStateRequests.map((request) => planGroupKey(request)));
@@ -426,6 +455,7 @@ export async function runLayeredBashTouches(
   const filtered = filterPostTracked(combined, responseSpans, cwd, preTrackedPaths, preTrackedDeletes);
   const parserLatencyMs = performance.now() - parserStarted;
   const touchStarted = performance.now();
+  let executionGateDrops = 0;
   const commandBlocks = await runBashTouches(
     filtered.matches,
     sessionId,
@@ -434,7 +464,10 @@ export async function runLayeredBashTouches(
     executors,
     memo,
     (message) => logger.warn(message),
-    true
+    true,
+    (diagnostics) => {
+      executionGateDrops = diagnostics.executionGateDrops;
+    }
   );
   const responseBlocks = await runResponseReadTouches(filtered.responseSpans, cwd, sessionId, executors, memo);
   const blocks = [...commandBlocks, ...responseBlocks];
@@ -443,15 +476,16 @@ export async function runLayeredBashTouches(
       .length,
     resolvedWrites: filtered.matches.filter((match) => match.status === 'resolved' && match.span.operation !== 'read')
       .length,
-    unresolvedByReason: parsed.unresolved.reduce<Record<string, number>>((counts, item) => {
-      counts[item.reasonCode] = (counts[item.reasonCode] ?? 0) + 1;
-      return counts;
-    }, {}),
+    unresolvedByIdiom: countBy(parsed.unresolved.map(({ idiom }) => idiom)),
+    unresolvedByReason: countBy(parsed.unresolved.map(({ reasonCode }) => reasonCode)),
     scopeDrops: filtered.scopeDrops,
     trackedDrops: filtered.trackedDrops,
+    executionGateDrops,
     parserLatencyMs,
     touchLatencyMs: performance.now() - touchStarted,
-    subprocessCount: filtered.subprocessCount,
+    ignoreQueryCount: filtered.ignoreQueryCount,
+    trackedQueryCount: filtered.trackedQueryCount,
+    eligibilityErrors: filtered.eligibilityErrors,
     dependencyContextSurfaced: blocks.length > 0
   });
   return blocks;

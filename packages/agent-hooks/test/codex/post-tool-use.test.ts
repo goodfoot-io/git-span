@@ -6,8 +6,8 @@
  * and drives the shared runTouchHook core. A PreToolUse plan preserves
  * pre-edit hunk ranges; a genuinely missing plan retains the patch parser's
  * whole-file fallback. The tests use injected executors and an in-memory memo. It
- * preserves the success-classification belt: a confirmed rejection suppresses
- * the touch, an unrecognized shape proceeds with a warning.
+ * preserves the success-classification belt: only a confirmed success runs
+ * the touch, while rejection and unrecognized response shapes fail closed.
  *
  * Success fixtures are built by {@link printSummary}, mirroring Codex's real
  * `print_summary` (header `Success. Updated the following files:` then
@@ -204,9 +204,8 @@ describe('classifyApplyPatchResponse', () => {
   it('classifies every array shape as unknown, never as a confirmed rejection', () => {
     // normalizeShellResponse accepts text-block arrays for the shell-parse
     // evidence source, but the baseline extractResponseText returned null for
-    // arrays — so the apply_patch gate must treat them as unrecognized and
-    // proceed defensively (with a warning), even when the joined text carries
-    // the success header or is empty.
+    // arrays — so the apply_patch gate must treat them as unrecognized rather
+    // than trusting text from an envelope whose contract is unknown.
     expect(classifyApplyPatchResponse([{ type: 'text', text: SUCCESS_RESPONSE }])).toBe('unknown');
     expect(classifyApplyPatchResponse([{ type: 'text', text: FAILURE_RESPONSE }])).toBe('unknown');
     expect(classifyApplyPatchResponse([])).toBe('unknown');
@@ -345,7 +344,7 @@ describe('codex post-tool-use touch signal', () => {
     }
   });
 
-  it('runs the touch (and warns) when the tool_response shape is unrecognized', async () => {
+  it('suppresses the touch (and warns) when the tool_response shape is unrecognized', async () => {
     const repo = repoWithFoo();
     try {
       const { executors, calls } = makeExecutors({ list: [porcelainRow()], drift: [driftRow('CHANGED')] });
@@ -353,14 +352,15 @@ describe('codex post-tool-use touch signal', () => {
       const handler = createHandler(executors, inMemoryMemoFactory(), layout);
       await handler(postInput(repo.root, updateEnvelope(), { exitCode: 0 }) as never, { logger: capture } as never);
 
-      expect(calls.fix).toBe(1);
+      expect(calls.fix).toBe(0);
+      expect(calls.list).toBe(0);
       expect(warnings.some((m) => m.includes('unrecognized'))).toBe(true);
     } finally {
       repo.cleanup();
     }
   });
 
-  it('runs the touch (and warns) for an array-shaped tool_response, even one whose text carries the success header', async () => {
+  it('suppresses the touch (and warns) for an array-shaped response even when its text carries the success header', async () => {
     // The target file must be on disk: the write gate (plan §3 step 1) fails
     // closed when the apply target is absent, so the seeded repo is
     // required — the hook runs post-apply, and the file exists by then.
@@ -371,15 +371,15 @@ describe('codex post-tool-use touch signal', () => {
       const handler = createHandler(executors, inMemoryMemoFactory(), layout);
       // An array is an unrecognized apply_patch shape (the baseline
       // extractResponseText returned null for arrays), so it classifies
-      // 'unknown' and proceeds defensively — the joined success header must
-      // not be read as a confirmation, and its absence must not read as a
-      // rejection that suppresses the touch.
+      // 'unknown' and fails closed — the joined success header must not be
+      // read as confirmation from an unsupported envelope.
       await handler(
         postInput(repo.root, updateEnvelope(), [{ type: 'text', text: SUCCESS_RESPONSE }]) as never,
         { logger: capture } as never
       );
 
-      expect(calls.fix).toBe(1);
+      expect(calls.fix).toBe(0);
+      expect(calls.list).toBe(0);
       expect(warnings.some((m) => m.includes('unrecognized'))).toBe(true);
     } finally {
       repo.cleanup();

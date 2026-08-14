@@ -106,13 +106,16 @@ function driftRow(status: PorcelainStatus): DriftPorcelainRow {
   return { name: SPAN, path: 'app.ts', start: 1, end: 10, status };
 }
 
+let nextToolUseId = 0;
+
 function postInput(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  nextToolUseId += 1;
   return {
     hook_event_name: 'PostToolUse' as const,
     session_id: 'sess-1',
     transcript_path: '/tmp/t',
     cwd: '/tmp',
-    tool_use_id: 'tu-1',
+    tool_use_id: `tu-${nextToolUseId}`,
     tool_name: 'Read',
     tool_input: {},
     tool_response: {},

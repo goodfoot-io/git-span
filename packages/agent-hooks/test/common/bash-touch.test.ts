@@ -315,7 +315,8 @@ describe('batched tracked eligibility contract (bootstrap)', () => {
     );
 
     expect(calls).toEqual([{ repoRoot: root, paths: ['tracked.txt', 'untracked.txt'] }]);
-    expect(result.subprocessCount).toBe(1);
+    expect(result.ignoreQueryCount).toBe(1);
+    expect(result.trackedQueryCount).toBe(1);
     expect(result.eligible.map(({ value }) => value.producer)).toEqual(['bash']);
     expect(result.dropped.map(({ reason }) => reason)).toEqual(['untracked-path']);
     repo.cleanup();
@@ -333,7 +334,8 @@ describe('batched tracked eligibility contract (bootstrap)', () => {
 
     expect(result.eligible).toEqual([]);
     expect(result.dropped.map(({ reason }) => reason)).toEqual(['outside-repository']);
-    expect(result.subprocessCount).toBe(0);
+    expect(result.ignoreQueryCount).toBe(0);
+    expect(result.trackedQueryCount).toBe(0);
     repo.cleanup();
   });
 
@@ -354,7 +356,8 @@ describe('batched tracked eligibility contract (bootstrap)', () => {
 
     expect(result.eligible.map(({ value }) => value)).toEqual(['tracked']);
     expect(result.dropped.map(({ reason }) => reason)).toEqual(['untracked-path']);
-    expect(result.subprocessCount).toBe(1);
+    expect(result.ignoreQueryCount).toBe(1);
+    expect(result.trackedQueryCount).toBe(1);
     repo.cleanup();
   });
 
@@ -384,7 +387,62 @@ describe('batched tracked eligibility contract (bootstrap)', () => {
     expect(result.eligible).toEqual([]);
     expect(result.dropped.map(({ reason }) => reason)).toEqual(['ignored-path', 'span-metadata-path']);
     expect(calls).toEqual([]);
-    expect(result.subprocessCount).toBe(0);
+    expect(result.ignoreQueryCount).toBe(1);
+    expect(result.trackedQueryCount).toBe(0);
+    repo.cleanup();
+  });
+
+  it('excludes an ignored path even when it is already tracked', () => {
+    const repo = makeTempRepo();
+    const root = repo.root;
+    writeFileSync(join(root, '.gitignore'), 'ignored.txt\n');
+    writeFileSync(join(root, 'ignored.txt'), 'tracked but ignored\n');
+    execFileSync('git', ['add', '-f', 'ignored.txt'], { cwd: root });
+    const trackedQueries: string[][] = [];
+
+    const result = filterTrackedEligibility([{ absolutePath: join(root, 'ignored.txt'), value: 'ignored' }], {
+      cwd: root,
+      queryTrackedFiles: (_repoRoot, paths) => {
+        trackedQueries.push([...paths]);
+        return new Set(paths);
+      }
+    });
+
+    expect(result.eligible).toEqual([]);
+    expect(result.dropped.map(({ reason }) => reason)).toEqual(['ignored-path']);
+    expect(result.errors).toEqual([]);
+    expect(result.ignoreQueryCount).toBe(1);
+    expect(result.trackedQueryCount).toBe(0);
+    expect(trackedQueries).toEqual([]);
+    repo.cleanup();
+  });
+
+  it('fails closed with a typed error when the ignore query fails operationally', () => {
+    const repo = makeTempRepo();
+    const root = repo.root;
+    writeFileSync(join(root, 'tracked.txt'), 'tracked\n');
+    execFileSync('git', ['add', 'tracked.txt'], { cwd: root });
+    const trackedQueries: string[][] = [];
+
+    const result = filterTrackedEligibility([{ absolutePath: join(root, 'tracked.txt'), value: 'tracked' }], {
+      cwd: root,
+      queryIgnoredFiles: () => {
+        throw new Error('check-ignore unavailable');
+      },
+      queryTrackedFiles: (_repoRoot, paths) => {
+        trackedQueries.push([...paths]);
+        return new Set(paths);
+      }
+    });
+
+    expect(result.eligible).toEqual([]);
+    expect(result.dropped.map(({ reason }) => reason)).toEqual(['eligibility-query-failed']);
+    expect(result.errors).toEqual([
+      { kind: 'ignored-files-query-failed', repoRoot: root, message: 'check-ignore unavailable' }
+    ]);
+    expect(result.ignoreQueryCount).toBe(1);
+    expect(result.trackedQueryCount).toBe(0);
+    expect(trackedQueries).toEqual([]);
     repo.cleanup();
   });
 

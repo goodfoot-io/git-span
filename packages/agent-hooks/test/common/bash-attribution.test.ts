@@ -79,6 +79,51 @@ describe('Bash response normalization', () => {
 });
 
 describe('static Bash pre/post plan lifecycle', () => {
+  it('claims an ordinary post-only command once without requiring a pre-plan', async () => {
+    const repo = makeTempRepo();
+    const temp = makeTempLayout();
+    try {
+      const filePath = join(repo.root, 'f.txt');
+      writeFileSync(filePath, 'before\n');
+      execFileSync('git', ['add', 'f.txt'], { cwd: repo.root });
+      writeFileSync(filePath, 'after\n');
+      const store = createDefaultPlannedTouchStore(temp.layout);
+      const log = logger();
+      const command = 'echo after > f.txt';
+
+      const first = capture();
+      await runLayeredBashTouches(
+        command,
+        repo.root,
+        SESSION_ID,
+        'ordinary-once',
+        { exitStatus: 0 },
+        first.executors,
+        memo(),
+        log.value,
+        store
+      );
+      expect(first.fixes).toEqual([filePath]);
+
+      const duplicate = capture();
+      await runLayeredBashTouches(
+        command,
+        repo.root,
+        SESSION_ID,
+        'ordinary-once',
+        { exitStatus: 0 },
+        duplicate.executors,
+        memo(),
+        log.value,
+        store
+      );
+      expect(duplicate.fixes).toEqual([]);
+    } finally {
+      temp.cleanup();
+      repo.cleanup();
+    }
+  });
+
   it('consumes a verified sed plan once and never widens a missing second delivery', async () => {
     const repo = makeTempRepo();
     const temp = makeTempLayout();
@@ -250,6 +295,24 @@ describe('static Bash pre/post plan lifecycle', () => {
       );
       expect(verified.fixes).toEqual([filePath]);
 
+      writeFileSync(filePath, 'keep\nneedle\n');
+      const numericCommand = "sed -i '2s/needle/pin/' f.txt; false";
+      planBashTouches(numericCommand, repo.root, SESSION_ID, 'numeric-partial-write', log.value, store);
+      writeFileSync(filePath, 'keep\npin\n');
+      const numericVerified = capture();
+      await runLayeredBashTouches(
+        numericCommand,
+        repo.root,
+        SESSION_ID,
+        'numeric-partial-write',
+        { exitStatus: 1 },
+        numericVerified.executors,
+        memo(),
+        log.value,
+        store
+      );
+      expect(numericVerified.fixes).toEqual([filePath]);
+
       const formatter = capture();
       await runLayeredBashTouches(
         'prettier --write f.txt',
@@ -365,7 +428,69 @@ describe('static Bash pre/post plan lifecycle', () => {
         createDefaultPlannedTouchStore(temp.layout)
       );
 
-      expect(log.infos.at(-1)?.subprocessCount).toBe(1);
+      expect(log.infos.at(-1)?.ignoreQueryCount).toBe(1);
+      expect(log.infos.at(-1)?.trackedQueryCount).toBe(1);
+    } finally {
+      temp.cleanup();
+      repo.cleanup();
+    }
+  });
+
+  it('reports unresolved idioms and explicit eligibility query counts in production diagnostics', async () => {
+    const repo = makeTempRepo();
+    const temp = makeTempLayout();
+    try {
+      const log = logger();
+      await runLayeredBashTouches(
+        'make generate',
+        repo.root,
+        SESSION_ID,
+        undefined,
+        { exitCode: 0 },
+        capture().executors,
+        memo(),
+        log.value,
+        createDefaultPlannedTouchStore(temp.layout)
+      );
+
+      expect(log.infos.at(-1)).toMatchObject({
+        unresolvedByIdiom: { 'generator-operation': 1 },
+        unresolvedByReason: { 'generator-operation': 1 },
+        executionGateDrops: 0,
+        ignoreQueryCount: 0,
+        trackedQueryCount: 0
+      });
+      expect(log.infos.at(-1)).not.toHaveProperty('subprocessCount');
+    } finally {
+      temp.cleanup();
+      repo.cleanup();
+    }
+  });
+
+  it('reports spans suppressed by compound execution gates', async () => {
+    const repo = makeTempRepo();
+    const temp = makeTempLayout();
+    try {
+      const filePath = join(repo.root, 'f.txt');
+      writeFileSync(filePath, 'x\n');
+      execFileSync('git', ['add', 'f.txt'], { cwd: repo.root });
+      const log = logger();
+      const run = capture();
+
+      await runLayeredBashTouches(
+        'false && echo x > f.txt',
+        repo.root,
+        SESSION_ID,
+        undefined,
+        { exitCode: 1 },
+        run.executors,
+        memo(),
+        log.value,
+        createDefaultPlannedTouchStore(temp.layout)
+      );
+
+      expect(run.fixes).toEqual([]);
+      expect(log.infos.at(-1)).toMatchObject({ executionGateDrops: 1 });
     } finally {
       temp.cleanup();
       repo.cleanup();

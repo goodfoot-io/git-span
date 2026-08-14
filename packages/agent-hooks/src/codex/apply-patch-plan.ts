@@ -59,7 +59,9 @@ export function createHandler(layout: SessionLayout = DEFAULT_SESSION_LAYOUT) {
       ctx.logger.info?.('git-span apply_patch pre-plan', {
         planned: touches.length,
         trackedDrops: tracked.dropped.length,
-        subprocessCount: tracked.subprocessCount
+        ignoreQueryCount: tracked.ignoreQueryCount,
+        trackedQueryCount: tracked.trackedQueryCount,
+        eligibilityErrors: tracked.errors
       });
       return undefined;
     } catch (err) {

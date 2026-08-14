@@ -1903,6 +1903,21 @@ NODE`;
     expect(result.resolved.map(({ span }) => [span.lineStart, span.lineEnd])).toEqual([[1, 1]]);
   });
 
+  it('records decisive post-state evidence for numeric sed substitutions', () => {
+    const result = parseCommandLayered("sed -i '2s/needle/pin/' src/a.txt", {
+      cwd: dir,
+      readPreState: () => 'first\nneedle\nlast\n'
+    });
+
+    expect(result.unresolved).toEqual([]);
+    expect(result.preStateRequests).toHaveLength(1);
+    expect(result.resolved[0]?.span).toMatchObject({
+      lineStart: 2,
+      lineEnd: 2,
+      expectedContent: 'first\npin\nlast\n'
+    });
+  });
+
   it('retains the backup write for an attached sed in-place suffix', () => {
     const result = parseCommandLayered("sed -i.bak 's/needle/pin/' src/a.txt", {
       cwd: dir,
@@ -1949,6 +1964,34 @@ NODE`;
     expect(result.unresolved).toHaveLength(1);
   });
 
+  it('does not expand a loop variable inside single-quoted shell text', () => {
+    const result = parseCommandLayered("for f in src/a.txt src/b.txt; do sed -i 's/needle/pin/' '$f'; done", {
+      cwd: dir,
+      readPreState: () => 'needle\n'
+    });
+
+    expect(result.resolved).toEqual([]);
+    expect(result.unresolved.map(({ reasonCode }) => reasonCode)).toEqual(['unsupported-dataflow']);
+  });
+
+  it.each([
+    [
+      `true && python3 -c "from pathlib import Path; p=Path('src/a.txt'); s=p.read_text(); p.write_text(s.replace('needle','pin'))"`,
+      'python-replace'
+    ],
+    [
+      `true && node -e "const fs=require('node:fs');const p='src/a.txt';const s=fs.readFileSync(p,'utf8');fs.writeFileSync(p,s.replace('needle','pin'))"`,
+      'node-replace'
+    ],
+    ['true && for f in src/a.txt; do sed -i \'s/needle/pin/\' "$f"; done', 'sed-inplace']
+  ] as const)('recognizes supported %s intent nested in a joined compound', (command, idiom) => {
+    const result = parseCommandLayered(command, { cwd: dir, readPreState: () => 'needle\n' });
+
+    expect(result.unresolved).toEqual([]);
+    expect(result.resolved).toHaveLength(1);
+    expect(result.resolved[0]).toMatchObject({ idiom, span: { simpleCommandIndex: 1, join: '&&' } });
+  });
+
   it.each([
     [32, 32, undefined],
     [33, 0, 'candidate-budget-exceeded'],
@@ -1981,7 +2024,8 @@ NODE`;
       executionGateDrops: 0,
       parserLatencyMs: 0,
       touchLatencyMs: 0,
-      subprocessCount: 0,
+      ignoreQueryCount: 0,
+      trackedQueryCount: 0,
       dependencyContextSurfaced: false
     });
   });

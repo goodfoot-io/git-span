@@ -282,14 +282,21 @@ export async function runBashTouches(
   executors: TouchExecutors,
   memo: MemoStore,
   warn: (message: string) => void = console.warn,
-  scopeAlreadyResolved: boolean = false
+  scopeAlreadyResolved: boolean = false,
+  reportDiagnostics: (diagnostics: BashTouchDiagnostics) => void = () => undefined
 ): Promise<string[]> {
-  // A command that did not complete produces no touches, whatever its spans.
-  if (bashResponseInterrupted(toolResponse)) return [];
-  const exitCode = bashResponseExitCode(toolResponse);
   const resolved = matches.filter((m): m is ResolvedMatch => m.status === 'resolved');
+  // A command that did not complete produces no touches, whatever its spans.
+  if (bashResponseInterrupted(toolResponse)) {
+    reportDiagnostics({ executionGateDrops: resolved.length });
+    return [];
+  }
+  const exitCode = bashResponseExitCode(toolResponse);
   const guards = matches.filter((m): m is GuardMatch => m.status === 'builtin-guard');
-  if (resolved.length === 0) return [];
+  if (resolved.length === 0) {
+    reportDiagnostics({ executionGateDrops: 0 });
+    return [];
+  }
 
   // Candidate sets are atomic at the safety boundary. The previous driver
   // executed the first 32 touches and silently discarded the rest, which
@@ -299,6 +306,7 @@ export async function runBashTouches(
     warn(
       `Bash candidate budget exceeded: ${resolved.length} candidates (limit ${DEFAULT_MAX_ATTRIBUTION_CANDIDATES}); rejecting the complete touch set`
     );
+    reportDiagnostics({ executionGateDrops: resolved.length });
     return [];
   }
 
@@ -552,6 +560,7 @@ export async function runBashTouches(
   // commands have no touches. Explained fails and decisive fails never
   // reach an executor.
   const blocks: string[] = [];
+  let executedTouches = 0;
   const invocationExecutors = executors.forInvocation?.() ?? executors;
   for (const idx of commandOrder) {
     if (skipped.has(idx)) continue;
@@ -563,9 +572,16 @@ export async function runBashTouches(
       if (e.outcome === 'inconclusive' && e.touch.kind === 'write' && e.touch.targetState === 'absent') continue;
       if (e.outcome === 'inconclusive' && e.touch.kind === 'write' && exitCode !== undefined && exitCode !== 0)
         continue;
+      executedTouches += 1;
       const output = await runTouchHook(e.touch, invocationExecutors, memo, probeCache);
       if (output.additionalContext) blocks.push(output.additionalContext);
     }
   }
+  reportDiagnostics({ executionGateDrops: resolved.length - executedTouches });
   return blocks;
+}
+
+/** Counts spans suppressed by interruption, budget, join, or execution evidence. */
+export interface BashTouchDiagnostics {
+  readonly executionGateDrops: number;
 }

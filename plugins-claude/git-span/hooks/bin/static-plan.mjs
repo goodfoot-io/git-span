@@ -3754,6 +3754,45 @@ function parsePatternCommand(command) {
 function shellQuote(value) {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
+function expandLiteralLoopVariable(body, variable, binding) {
+  let command = "";
+  let quote = null;
+  let replacements = 0;
+  for (let index = 0; index < body.length; index += 1) {
+    const character = body[index];
+    if (character === "\\" && quote !== "'") {
+      command += character;
+      if (index + 1 < body.length) command += body[++index];
+      continue;
+    }
+    if (character === "'" && quote !== '"') {
+      quote = quote === "'" ? null : "'";
+      command += character;
+      continue;
+    }
+    if (character === '"' && quote !== "'") {
+      quote = quote === '"' ? null : '"';
+      command += character;
+      continue;
+    }
+    if (character !== "$" || quote === "'") {
+      command += character;
+      continue;
+    }
+    const braced = body.startsWith(`\${${variable}}`, index);
+    const plain = body.startsWith(`$${variable}`, index);
+    const suffix = body[index + variable.length + 1];
+    if (!braced && (!plain || suffix !== void 0 && /[A-Za-z0-9_]/.test(suffix))) {
+      command += character;
+      continue;
+    }
+    const length = braced ? variable.length + 3 : variable.length + 1;
+    command += quote === '"' ? binding.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("$", "\\$") : shellQuote(binding);
+    replacements += 1;
+    index += length - 1;
+  }
+  return { command, replacements };
+}
 function stableReason(match) {
   if (match.fileArg.includes("$(") || match.fileArg.includes("`")) return "command-substitution";
   if (SHELL_EXPANSION.test(match.fileArg)) return "dynamic-path";
@@ -4995,16 +5034,6 @@ function parseCommandLayered(command, options = {}) {
         preStateRequests: []
       };
     }
-    const variablePattern = new RegExp(`\\$\\{${variable}\\}|\\$${variable}(?![A-Za-z0-9_])`, "g");
-    if (!variablePattern.test(body)) {
-      return {
-        resolved: [],
-        unresolved: [
-          unresolved("literal-loop", "literal-list-loop", "unsupported-dataflow", "loop variable is not used directly")
-        ],
-        preStateRequests: []
-      };
-    }
     const resolved2 = [];
     const unresolvedMatches2 = [];
     const preStateRequests = [];
@@ -5019,10 +5048,22 @@ function parseCommandLayered(command, options = {}) {
           preStateRequests: []
         };
       }
-      const braced = `\\$\\{${variable}\\}`;
-      const plain = `\\$${variable}(?![A-Za-z0-9_])`;
-      const expanded = body.replace(new RegExp(`"(?:${braced}|${plain})"`, "g"), shellQuote(binding)).replace(variablePattern, shellQuote(binding));
-      const result = parseCommandLayered(expanded, { ...options, maxCandidates });
+      const expanded = expandLiteralLoopVariable(body, variable, binding);
+      if (expanded.replacements === 0) {
+        return {
+          resolved: [],
+          unresolved: [
+            unresolved(
+              "literal-loop",
+              "literal-list-loop",
+              "unsupported-dataflow",
+              "loop variable is not used in an expandable shell context"
+            )
+          ],
+          preStateRequests: []
+        };
+      }
+      const result = parseCommandLayered(expanded.command, { ...options, maxCandidates });
       resolved2.push(...result.resolved.map((match) => ({ ...match, layer: "literal-loop" })));
       unresolvedMatches2.push(...result.unresolved.map((match) => ({ ...match, layer: "literal-loop" })));
       preStateRequests.push(...result.preStateRequests);
@@ -5055,9 +5096,8 @@ function parseCommandLayered(command, options = {}) {
     return { resolved: resolved2, unresolved: [], preStateRequests };
   }
   const split = splitTopLevel(command);
-  const hasPatternStage = split.stages.some((stage) => parsePatternCommand(stage.text) !== null);
   const hasPipeline = split.stages.some((stage) => stage.precededBy === "pipe");
-  if (split.malformed === void 0 && split.stages.length > 1 && hasPatternStage && !hasPipeline) {
+  if (split.malformed === void 0 && split.stages.length > 1 && !hasPipeline) {
     if (split.stages.some((stage) => argvOf(stage.text)?.[0] === "cd")) {
       return {
         resolved: [],
@@ -5125,26 +5165,42 @@ function parseCommandLayered(command, options = {}) {
       }
       const start = Number.parseInt(numericMatch[1], 10);
       const end = Number.parseInt(numericMatch[2] ?? numericMatch[1], 10);
+      const substitution = parseLiteralSubstitution(patternCommand.script.slice(numericMatch[0].indexOf("s")));
       const resolved2 = [];
       const unresolvedMatches2 = [];
+      const preStateRequests = [];
       for (const file of patternCommand.files) {
         const reason = classifyDynamicWord(file);
         if (reason !== null) {
           unresolvedMatches2.push(unresolved("shell", "sed-inplace", reason, "target path is dynamic", file));
           continue;
         }
+        const absolutePath = nodePath4.resolve(cwd, file);
+        const content = substitution === null ? null : options.readPreState?.(absolutePath) ?? null;
+        const expectedContent = content === null || content.includes("\0") || substitution === null ? void 0 : content.split(/(?<=\n)/).map(
+          (line, index) => index + 1 >= start && index + 1 <= end ? replaceLiteral(line, substitution.pattern, substitution.replacement, substitution.global) : line
+        ).join("");
         resolved2.push({
           status: "resolved",
           layer: "shell",
           idiom: "sed-inplace",
           span: {
             operation: "modify",
-            absolutePath: nodePath4.resolve(cwd, file),
+            absolutePath,
             lineStart: start,
             lineEnd: end,
+            expectedContent,
             simpleCommandIndex: patternCommand.simpleCommandIndex
           }
         });
+        if (expectedContent !== void 0) {
+          preStateRequests.push({
+            absolutePath,
+            operation: "modify",
+            requirement: "match-locations",
+            simpleCommandIndex: patternCommand.simpleCommandIndex
+          });
+        }
         if (patternCommand.backupSuffix !== void 0 && patternCommand.backupSuffix !== "") {
           resolved2.push({
             status: "resolved",
@@ -5173,7 +5229,7 @@ function parseCommandLayered(command, options = {}) {
           preStateRequests: []
         };
       }
-      return { resolved: resolved2, unresolved: [], preStateRequests: [] };
+      return { resolved: resolved2, unresolved: [], preStateRequests };
     }
     if (!numericSed) {
       let addressLiteral = null;
@@ -5617,14 +5673,15 @@ var queryIgnoredFiles = (repoRoot, repoRelativePaths) => {
   const input = `${repoRelativePaths.join("\0")}\0`;
   let stdout;
   try {
-    stdout = execFileSync4("git", ["-C", repoRoot, "check-ignore", "-z", "--stdin"], {
+    stdout = execFileSync4("git", ["-C", repoRoot, "check-ignore", "--no-index", "-z", "--stdin"], {
       input,
       encoding: "utf8",
       stdio: ["pipe", "pipe", "ignore"]
     });
   } catch (error) {
-    const captured = error.stdout;
-    stdout = typeof captured === "string" ? captured : "";
+    const failure = error;
+    if (failure.status !== 1) throw error;
+    stdout = typeof failure.stdout === "string" ? failure.stdout : "";
   }
   return new Set(
     stdout.split("\0").filter((path) => path.length > 0).map(toPosix)
@@ -5633,13 +5690,16 @@ var queryIgnoredFiles = (repoRoot, repoRelativePaths) => {
 function filterTrackedEligibility(candidates, options) {
   const eligible = [];
   const dropped = [];
-  if (candidates.length === 0) return { eligible, dropped, subprocessCount: 0 };
+  const errors = [];
+  if (candidates.length === 0) return { eligible, dropped, errors, ignoreQueryCount: 0, trackedQueryCount: 0 };
   const cwdRepoRoot = resolveRepoRoot(options.cwd);
   if (cwdRepoRoot === null) {
     return {
       eligible,
       dropped: candidates.map((candidate) => ({ candidate, reason: "outside-repository" })),
-      subprocessCount: 0
+      errors,
+      ignoreQueryCount: 0,
+      trackedQueryCount: 0
     };
   }
   const inScope = [];
@@ -5659,11 +5719,24 @@ function filterTrackedEligibility(candidates, options) {
     inScope.push({ candidate, repoRoot: cwdRepoRoot, repoRelativePath });
   }
   const ignoreQuery = options.queryIgnoredFiles ?? queryIgnoredFiles;
+  let ignoreQueryCount = 0;
   let ignored;
   try {
-    ignored = ignoreQuery(cwdRepoRoot, [...new Set(inScope.map(({ repoRelativePath }) => repoRelativePath))]);
-  } catch {
-    ignored = /* @__PURE__ */ new Set();
+    const ignorePaths = [...new Set(inScope.map(({ repoRelativePath }) => repoRelativePath))];
+    if (ignorePaths.length > 0) ignoreQueryCount += 1;
+    ignored = ignoreQuery(cwdRepoRoot, ignorePaths);
+  } catch (error) {
+    errors.push({
+      kind: "ignored-files-query-failed",
+      repoRoot: cwdRepoRoot,
+      message: error instanceof Error ? error.message : String(error)
+    });
+    dropped.push(...inScope.map(({ candidate }) => ({ candidate, reason: "eligibility-query-failed" })));
+    const candidateOrder2 = new Map(candidates.map((candidate, index) => [candidate, index]));
+    dropped.sort(
+      (left, right) => (candidateOrder2.get(left.candidate) ?? 0) - (candidateOrder2.get(right.candidate) ?? 0)
+    );
+    return { eligible, dropped, errors, ignoreQueryCount, trackedQueryCount: 0 };
   }
   const normalizedIgnored = new Set([...ignored].map(toPosix));
   const eligibleForMembership = inScope.filter(({ candidate, repoRelativePath }) => {
@@ -5677,16 +5750,22 @@ function filterTrackedEligibility(candidates, options) {
     group.push(scoped);
     byRepo.set(scoped.repoRoot, group);
   }
-  let subprocessCount = 0;
+  let trackedQueryCount = 0;
   const query = options.queryTrackedFiles ?? queryTrackedFiles;
   for (const [repoRoot, group] of byRepo) {
     const paths = [...new Set(group.map(({ repoRelativePath }) => repoRelativePath))];
     let tracked;
-    subprocessCount += 1;
+    trackedQueryCount += 1;
     try {
       tracked = query(repoRoot, paths);
-    } catch {
-      tracked = /* @__PURE__ */ new Set();
+    } catch (error) {
+      errors.push({
+        kind: "tracked-files-query-failed",
+        repoRoot,
+        message: error instanceof Error ? error.message : String(error)
+      });
+      dropped.push(...group.map(({ candidate }) => ({ candidate, reason: "eligibility-query-failed" })));
+      continue;
     }
     const normalizedTracked = new Set([...tracked].map(toPosix));
     for (const scoped of group) {
@@ -5697,7 +5776,7 @@ function filterTrackedEligibility(candidates, options) {
   const candidateOrder = new Map(candidates.map((candidate, index) => [candidate, index]));
   eligible.sort((left, right) => (candidateOrder.get(left) ?? 0) - (candidateOrder.get(right) ?? 0));
   dropped.sort((left, right) => (candidateOrder.get(left.candidate) ?? 0) - (candidateOrder.get(right.candidate) ?? 0));
-  return { eligible, dropped, subprocessCount };
+  return { eligible, dropped, errors, ignoreQueryCount, trackedQueryCount };
 }
 
 // src/common/touch-core.ts
@@ -5755,6 +5834,15 @@ function planEvidence(matches, requirements) {
 function planGroupKey(span) {
   return `${span.absolutePath}\0${span.operation}\0${span.simpleCommandIndex}`;
 }
+function countBy(values) {
+  return values.reduce(
+    (counts, value) => {
+      counts[value] = (counts[value] ?? 0) + 1;
+      return counts;
+    },
+    {}
+  );
+}
 function planBashTouches(command, cwd, sessionId, toolUseId, logger2, store) {
   const started = performance.now();
   const parsed = parseCommandLayered(command, { cwd, readPreState: readText });
@@ -5776,10 +5864,15 @@ function planBashTouches(command, cwd, sessionId, toolUseId, logger2, store) {
     logger2.info?.("git-span static attribution pre-plan", {
       resolved: parsed.resolved.length,
       unresolved: parsed.unresolved.length,
+      unresolvedByIdiom: countBy(parsed.unresolved.map(({ idiom }) => idiom)),
+      unresolvedByReason: countBy(parsed.unresolved.map(({ reasonCode }) => reasonCode)),
       planned: 0,
       trackedDrops: tracked.dropped.length,
+      executionGateDrops: 0,
       parserLatencyMs: performance.now() - started,
-      subprocessCount: tracked.subprocessCount
+      ignoreQueryCount: tracked.ignoreQueryCount,
+      trackedQueryCount: tracked.trackedQueryCount,
+      eligibilityErrors: tracked.errors
     });
     return;
   }
@@ -5812,10 +5905,15 @@ function planBashTouches(command, cwd, sessionId, toolUseId, logger2, store) {
     resolved: parsed.resolved.length,
     unresolved: parsed.unresolved.length,
     unresolvedReasons: parsed.unresolved.map(({ reasonCode }) => reasonCode),
+    unresolvedByIdiom: countBy(parsed.unresolved.map(({ idiom }) => idiom)),
+    unresolvedByReason: countBy(parsed.unresolved.map(({ reasonCode }) => reasonCode)),
     planned: touches.length,
     trackedDrops: tracked.dropped.length,
+    executionGateDrops: 0,
     parserLatencyMs: performance.now() - started,
-    subprocessCount: tracked.subprocessCount
+    ignoreQueryCount: tracked.ignoreQueryCount,
+    trackedQueryCount: tracked.trackedQueryCount,
+    eligibilityErrors: tracked.errors
   });
 }
 

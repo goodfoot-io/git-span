@@ -50,7 +50,8 @@ export const STATIC_ATTRIBUTION_CORPUS: readonly StaticAttributionCorpusCase[] =
     layer: 'shell',
     command: "sed -i '3s/beta/BETA/' src/a.txt",
     files: ONE_TRACKED_FILE,
-    expectedOperations: [{ operation: 'modify', path: 'src/a.txt', ranges: [{ start: 3, end: 3 }] }]
+    expectedOperations: [{ operation: 'modify', path: 'src/a.txt', ranges: [{ start: 3, end: 3 }] }],
+    preStateRequirements: ['match-locations']
   },
   {
     name: 'literal-list loop expands completely',

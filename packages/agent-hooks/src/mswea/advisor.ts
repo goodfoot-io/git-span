@@ -17,6 +17,8 @@
 import { preToolUseHook } from '@goodfoot/claude-code-hooks';
 import { createHandler as createClaudeHandler } from '../claude/advisor.js';
 import type { AdvisorExecutors, AdvisorMemoState, GitExecutor } from '../common/advisor-core.js';
+import { DEFAULT_SESSION_LAYOUT, type SessionLayout } from '../common/agent-hooks-common.js';
+import { createDefaultPlannedTouchStore } from '../common/bash-attribution.js';
 
 /**
  * The Claude adapter's handler with the harness fixed to `'generic'`: the
@@ -27,7 +29,25 @@ import type { AdvisorExecutors, AdvisorMemoState, GitExecutor } from '../common/
 export const createHandler = (
   git?: GitExecutor,
   executors?: AdvisorExecutors,
-  memoFactory?: (cwd: string) => AdvisorMemoState
-) => createClaudeHandler(git, executors, memoFactory, 'generic');
+  memoFactory?: (cwd: string) => AdvisorMemoState,
+  layout: SessionLayout = DEFAULT_SESSION_LAYOUT
+) => {
+  const delegate = createClaudeHandler(git, executors, memoFactory, 'generic');
+  return async (...args: Parameters<typeof delegate>): Promise<Awaited<ReturnType<typeof delegate>>> => {
+    const [input] = args;
+    const result = await delegate(...args);
+    const decision = (
+      result as { stdout?: { hookSpecificOutput?: { permissionDecision?: unknown } } } | null | undefined
+    )?.stdout?.hookSpecificOutput?.permissionDecision;
+    if (decision === 'deny' && input.session_id && input.tool_use_id) {
+      try {
+        createDefaultPlannedTouchStore(layout).discard(input.session_id, input.tool_use_id);
+      } catch (err) {
+        args[1].logger.warn('git-span advisor could not discard a denied static plan', { err });
+      }
+    }
+    return result;
+  };
+};
 
 export default preToolUseHook({ matcher: 'Bash', timeout: 10_000 }, createHandler());

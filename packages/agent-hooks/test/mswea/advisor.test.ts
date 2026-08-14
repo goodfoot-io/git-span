@@ -14,7 +14,9 @@ import { Logger } from '@goodfoot/claude-code-hooks';
 import { describe, expect, it } from 'vitest';
 import type { AdvisorExecutors, AdvisorMemoState, GitExecutor } from '../../src/common/advisor-core.js';
 import type { DriftPorcelainRow, PorcelainRow } from '../../src/common/agent-hooks-common.js';
+import { createDefaultPlannedTouchStore } from '../../src/common/bash-attribution.js';
 import hook, { createHandler } from '../../src/mswea/advisor.js';
+import { makeTempLayout } from '../session-layout-helpers.js';
 
 const logger = new Logger();
 
@@ -127,5 +129,40 @@ describe('mswea advisor adapter', () => {
       'Determine if these files carry implicit dependencies, then use `git span` to document them:'
     );
     expect(result.stdout.hookSpecificOutput?.permissionDecisionReason).not.toContain('Dispatch a forked subagent');
+  });
+
+  it('discards a pending static plan when the advisor denies the command', async () => {
+    const temp = makeTempLayout();
+    try {
+      const store = createDefaultPlannedTouchStore(temp.layout);
+      store.put({
+        version: 1,
+        sessionId: 'sess-1',
+        toolUseId: 'tu-1',
+        repoRoot: '/repo',
+        createdAtMs: Date.now(),
+        touches: [
+          {
+            repoRelativePath: 'src/app.ts',
+            operation: 'modify',
+            ranges: [{ start: 1, end: 1 }],
+            simpleCommandIndex: 0
+          }
+        ]
+      });
+      const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
+      const executors = fakeExecutors({
+        list: async () => [porcelainRow()],
+        drift: async () => [driftRow('CHANGED')]
+      });
+
+      const handler = createHandler(git, executors, sharedMemoFactory(), temp.layout);
+      const result = toResult(await handler(preInput('git commit -m "wip"') as never, { logger } as never));
+
+      expect(result.stdout.hookSpecificOutput?.permissionDecision).toBe('deny');
+      expect(store.take('sess-1', 'tu-1')).toEqual({ status: 'consumed' });
+    } finally {
+      temp.cleanup();
+    }
   });
 });

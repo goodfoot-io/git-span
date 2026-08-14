@@ -112,7 +112,7 @@ export function narrowCodeModeExec(toolInput: unknown): CodeModeExecNarrow {
   return { matched: false, cmd: null, workdir: null };
 }
 
-/** Classify apply_patch output without treating unknown object/array shapes as failures. */
+/** Classify apply_patch output; only the explicit success summary authorizes attribution. */
 export function classifyApplyPatchResponse(toolResponse: unknown): 'success' | 'failure' | 'unknown' {
   if (Array.isArray(toolResponse)) return 'unknown';
   const normalized = normalizeBashResponse(toolResponse);
@@ -247,7 +247,8 @@ export function createHandler(
     const classification = classifyApplyPatchResponse(input.tool_response);
     if (classification === 'failure') return undefined;
     if (classification === 'unknown') {
-      ctx.logger.warn('Codex apply_patch tool_response shape unrecognized; running touch defensively');
+      ctx.logger.warn('Codex apply_patch tool_response shape unrecognized; suppressing attribution');
+      return undefined;
     }
     const blocks = await runApplyPatchTouches(command, cwd, sessionId, record, executors, memo);
     if (blocks.length === 0) return undefined;
