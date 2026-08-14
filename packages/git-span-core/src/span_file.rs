@@ -1138,8 +1138,9 @@ pub fn merge_span_files(
     theirs: &SpanFile,
     source_files: &[(String, Vec<u8>)],
 ) -> SpanMergeResult {
-    fn find_source<'a>(path: &str, files: &'a [(String, Vec<u8>)]) -> Option<&'a [u8]> {
-        files.iter().find(|(p, _)| p == path).map(|(_, b)| b.as_slice())
+    let mut source_map: HashMap<&str, &[u8]> = HashMap::with_capacity(source_files.len());
+    for (path, bytes) in source_files {
+        source_map.entry(path.as_str()).or_insert(bytes.as_slice());
     }
 
     fn rehash(anchor: &AnchorRecord, source: &[u8]) -> AnchorRecord {
@@ -1194,7 +1195,7 @@ pub fn merge_span_files(
                     sentinel_preserved.push((path.to_string(), start_line, end_line));
                     merged_anchors.push((*o_anchor).clone());
                 } else {
-                    let anchor = match find_source(path, source_files) {
+                    let anchor = match source_map.get(path).copied() {
                         Some(src) => rehash(o_anchor, src),
                         None => (*o_anchor).clone(),
                     };
@@ -1216,7 +1217,7 @@ pub fn merge_span_files(
                     if sentinel_here {
                         sentinel_preserved.push((path.to_string(), start_line, end_line));
                     }
-                    match find_source(path, source_files) {
+                    match source_map.get(path).copied() {
                         Some(src) => {
                             // A sentinel-bearing record is never resolved by
                             // rehashing: `rehash` recomputes at the record's
@@ -1256,7 +1257,7 @@ pub fn merge_span_files(
                 sentinel_preserved.push((path.to_string(), start_line, end_line));
                 merged_anchors.push((*t_anchor).clone());
             } else {
-                let anchor = match find_source(path, source_files) {
+                let anchor = match source_map.get(path).copied() {
                     Some(src) => rehash(t_anchor, src),
                     None => (*t_anchor).clone(),
                 };
@@ -2140,6 +2141,32 @@ mod tests {
         let source = vec![("a.txt".into(), b"hello\nworld\n".to_vec())];
         let result = merge_span_files(None, &ours, &theirs, &source);
         assert_eq!(result.merged.anchors.len(), 1);
+        assert!(result.unresolved.is_empty());
+    }
+
+    #[test]
+    fn merge_duplicate_source_paths_use_first_entry() {
+        let ours_anchor = AnchorRecord {
+            path: "a.txt".into(), start_line: 1, end_line: 2,
+            algorithm: "rk64".into(), content_hash: "abc123".into(),
+        };
+        let theirs_anchor = AnchorRecord {
+            path: "a.txt".into(), start_line: 1, end_line: 2,
+            algorithm: "rk64".into(), content_hash: "def456".into(),
+        };
+        let ours = span_of(vec![ours_anchor]);
+        let theirs = span_of(vec![theirs_anchor]);
+        let first = b"first\nsource\n".to_vec();
+        let second = b"second\nsource\n".to_vec();
+        let source = vec![("a.txt".into(), first.clone()), ("a.txt".into(), second)];
+
+        let result = merge_span_files(None, &ours, &theirs, &source);
+
+        let expected = rk64_to_hex(cheap_fingerprint_with_extent(
+            &first,
+            &AnchorExtent::LineRange { start: 1, end: 2 },
+        ));
+        assert_eq!(result.merged.anchors[0].content_hash, expected);
         assert!(result.unresolved.is_empty());
     }
 
