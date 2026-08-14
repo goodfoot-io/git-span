@@ -562,6 +562,7 @@ export async function runBashTouches(
   const blocks: string[] = [];
   let executedTouches = 0;
   const invocationExecutors = executors.forInvocation?.() ?? executors;
+  const admitted: TouchInput[] = [];
   for (const idx of commandOrder) {
     if (skipped.has(idx)) continue;
     const list = evals.get(idx);
@@ -572,10 +573,19 @@ export async function runBashTouches(
       if (e.outcome === 'inconclusive' && e.touch.kind === 'write' && e.touch.targetState === 'absent') continue;
       if (e.outcome === 'inconclusive' && e.touch.kind === 'write' && exitCode !== undefined && exitCode !== 0)
         continue;
-      executedTouches += 1;
-      const output = await runTouchHook(e.touch, invocationExecutors, memo, probeCache);
-      if (output.additionalContext) blocks.push(output.additionalContext);
+      admitted.push(e.touch);
     }
+  }
+  // Heal the whole write set and read every span in one round-trip before any
+  // block renders, collapsing three subprocesses per touched file into three
+  // for the command. This also settles the tree first, so every anchor in the
+  // report agrees with every other and with disk instead of each block seeing
+  // whatever the loop had healed so far.
+  await invocationExecutors.prefetch?.(admitted, probeCache);
+  for (const touch of admitted) {
+    executedTouches += 1;
+    const output = await runTouchHook(touch, invocationExecutors, memo, probeCache);
+    if (output.additionalContext) blocks.push(output.additionalContext);
   }
   reportDiagnostics({ executionGateDrops: resolved.length - executedTouches });
   return blocks;

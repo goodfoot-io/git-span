@@ -512,6 +512,22 @@ export function evaluateWriteGate(input: TouchWriteInput, probeCache: RealityPro
   return 'inconclusive';
 }
 
+/**
+ * Whether the layered write gate rejects this touch outright, so it reaches no
+ * executor at all — a decisive fail, or an inconclusive phantom delete.
+ *
+ * The single source of truth for that decision, shared by {@link runTouchHook}
+ * and the batched {@link TouchExecutors.prefetch}: the prefetch must heal
+ * exactly the set the per-touch path would have healed, and any divergence
+ * here would silently `--fix` a file whose write never landed. Read-path
+ * touches and writes without a `targetState` claim are never rejected.
+ */
+export function gateRejectsTouch(input: TouchInput, probeCache: RealityProbeCache): boolean {
+  if (input.kind !== 'write' || input.targetState === undefined) return false;
+  const outcome = evaluateWriteGate(input, probeCache);
+  return outcome === 'decisiveFail' || (outcome === 'inconclusive' && input.targetState === 'absent');
+}
+
 // ---------------------------------------------------------------------------
 // Injected executors
 // ---------------------------------------------------------------------------
@@ -561,6 +577,21 @@ export type TouchWhyExecutor = (name: string, cwd: string) => Promise<string | n
  * and the core never spawns a subprocess itself. The `read` path never invokes
  * `fix`.
  */
+/**
+ * One-spawn-per-kind counterparts to the per-file executors, used only to
+ * prime an invocation's memo caches (see {@link TouchExecutors.prefetch}).
+ * Each takes every path in the batch and returns the union result; the
+ * per-file views are reconstructed from it by span coverage.
+ */
+export interface BatchedTouchExecutors {
+  /** One `git span drift <p1> <p2> ... --fix` for the whole write set. */
+  fixMany: (filePaths: string[], cwd: string) => Promise<TouchFixResult>;
+  /** One `git span list --porcelain <p1> <p2> ...` for the whole batch. */
+  listMany: (filePaths: string[], cwd: string) => Promise<PorcelainRow[]>;
+  /** One `git span drift --format porcelain <p1> <p2> ...` for the whole batch. */
+  driftMany: (filePaths: string[], cwd: string) => Promise<DriftPorcelainRow[]>;
+}
+
 export interface TouchExecutors {
   fix: TouchFixExecutor;
   list: TouchListExecutor;
@@ -573,6 +604,25 @@ export interface TouchExecutors {
    * from one tool event into the next.
    */
   forInvocation?: () => TouchExecutors;
+  /** Batched primers; present on the production surface, absent in fakes. */
+  batched?: BatchedTouchExecutors;
+  /**
+   * Collapse a multi-touch invocation's `fix`/`list`/`drift` subprocesses into
+   * one spawn each, priming this wrapper's memo caches so the per-touch calls
+   * that follow are cache hits.
+   *
+   * This heals the entire write set **before** any surface is computed, which
+   * is the point: the per-touch order otherwise let one file's block render
+   * another file's anchors at their pre-heal line numbers while a later block
+   * in the same report rendered them healed. Every anchor in a report now
+   * agrees with every other and with what is on disk at render time.
+   *
+   * Only touches whose write gate admits them are healed, matching
+   * {@link runTouchHook} exactly (see {@link gateRejectsTouch}); a rejected
+   * touch reaches no executor here either. No-ops without {@link batched}, so
+   * injected fakes keep the per-file path.
+   */
+  prefetch?: (inputs: readonly TouchInput[], probeCache: RealityProbeCache) => Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -939,8 +989,7 @@ export async function runTouchHook(
       // claim against disk before any executor call.
       if (input.targetState !== undefined) {
         const probe = probeCache ?? createRealityProbeCache(input.targetState === 'absent' ? [input.filePath] : []);
-        const outcome = evaluateWriteGate(input, probe);
-        if (outcome === 'decisiveFail' || (outcome === 'inconclusive' && input.targetState === 'absent')) {
+        if (gateRejectsTouch(input, probe)) {
           return { additionalContext: null, treeModified: false };
         }
       }
@@ -998,11 +1047,63 @@ function memoizedExecutors(base: TouchExecutors): TouchExecutors {
     cache.set(key, pending);
     return pending;
   };
+  const batched = base.batched;
+  const prefetch =
+    batched === undefined
+      ? undefined
+      : async (inputs: readonly TouchInput[], probeCache: RealityProbeCache): Promise<void> => {
+          // Mirror runTouchHook: a gate-rejected touch reaches no executor, so
+          // healing or reading for it here would fire a subprocess the
+          // per-touch path never fires.
+          const admitted = inputs.filter((input) => !gateRejectsTouch(input, probeCache));
+          if (admitted.length < 2) return; // one touch has nothing to batch
+          // cwd is part of every memo key; batch per cwd rather than assume one.
+          const byCwd = new Map<string, TouchInput[]>();
+          for (const input of admitted) {
+            const group = byCwd.get(input.cwd) ?? [];
+            group.push(input);
+            byCwd.set(input.cwd, group);
+          }
+          await Promise.all(
+            [...byCwd].map(async ([cwd, group]) => {
+              const paths = [...new Set(group.map((input) => input.filePath))];
+              const writePaths = [...new Set(group.filter((i) => i.kind === 'write').map((i) => i.filePath))];
+              // Heal first, then read: every subsequent list/drift — and so
+              // every rendered anchor in the report — observes one settled
+              // post-heal tree.
+              if (writePaths.length > 0) {
+                const result = await batched.fixMany(writePaths, cwd);
+                for (const filePath of writePaths) {
+                  fixes.set(`${cwd}\0${filePath}`, Promise.resolve(result));
+                }
+              }
+              const [listRows, driftRows] = await Promise.all([
+                batched.listMany(paths, cwd),
+                batched.driftMany(paths, cwd)
+              ]);
+              for (const filePath of paths) {
+                // `git span list <path>` returns every anchor of every span
+                // covering that path, including anchors on other files — so the
+                // per-file view is a span-coverage reconstruction, not a path
+                // filter. Spans covering this file are those with an anchor on
+                // it; the file's rows are then all anchors of those spans.
+                // `git span drift <path>` is scoped the same way, so the same
+                // name set reconstructs it.
+                const names = new Set(listRows.filter((row) => onTouchedFile(row, filePath)).map((row) => row.name));
+                lists.set(`${cwd}\0${filePath}`, Promise.resolve(listRows.filter((row) => names.has(row.name))));
+                drifts.set(`${cwd}\0${filePath}`, Promise.resolve(driftRows.filter((row) => names.has(row.name))));
+              }
+            })
+          );
+        };
+
   return {
     fix: (filePath, cwd) => once(fixes, `${cwd}\0${filePath}`, () => base.fix(filePath, cwd)),
     list: (filePath, cwd) => once(lists, `${cwd}\0${filePath}`, () => base.list(filePath, cwd)),
     drift: (args, cwd) => once(drifts, `${cwd}\0${args.join('\0')}`, () => base.drift(args, cwd)),
-    why: (name, cwd) => once(whys, `${cwd}\0${name}`, () => base.why(name, cwd))
+    why: (name, cwd) => once(whys, `${cwd}\0${name}`, () => base.why(name, cwd)),
+    batched,
+    prefetch
   };
 }
 
@@ -1093,6 +1194,73 @@ export function createDefaultTouchExecutors(timeoutMs: number = DEFAULT_TIMEOUT_
         return text;
       } catch {
         return null;
+      }
+    },
+
+    batched: {
+      fixMany: async (filePaths, cwd) => {
+        const repoRoot = resolveRepoRoot(cwd);
+        if (!repoRoot) return { modified: false };
+        const rels = filePaths.map((filePath) => relativeToRepo(repoRoot, filePath));
+        if (rels.length === 0) return { modified: false };
+        let out = '';
+        try {
+          out = execFileSync('git', ['span', 'drift', ...rels, '--fix'], {
+            cwd: repoRoot,
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'pipe'],
+            timeout: timeoutMs
+          });
+        } catch (err) {
+          const captured = (err as { stdout?: string }).stdout;
+          if (typeof captured === 'string') out = captured;
+        }
+        // One summary covers the whole write set, so `modified` is the set's
+        // verdict rather than each file's. Nothing in production reads the
+        // per-touch value; only tests do, and they drive the per-file path.
+        return { modified: fixOutputModified(out) };
+      },
+
+      listMany: async (filePaths, cwd) => {
+        const repoRoot = resolveRepoRoot(cwd);
+        if (!repoRoot) return [];
+        const rels = filePaths.map((filePath) => relativeToRepo(repoRoot, filePath));
+        if (rels.length === 0) return [];
+        try {
+          const out = execFileSync('git', ['span', 'list', '--porcelain', ...rels], {
+            cwd: repoRoot,
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'pipe'],
+            timeout: timeoutMs
+          });
+          return parsePorcelain(out);
+        } catch {
+          return [];
+        }
+      },
+
+      driftMany: async (filePaths, cwd) => {
+        const repoRoot = resolveRepoRoot(cwd);
+        const runCwd = repoRoot ?? cwd;
+        const scoped = repoRoot ? filePaths.map((filePath) => relativeToRepo(repoRoot, filePath)) : filePaths;
+        if (scoped.length === 0) return [];
+        let out: string;
+        try {
+          out = execFileSync('git', ['span', 'drift', '--format', 'porcelain', ...scoped], {
+            cwd: runCwd,
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'pipe'],
+            timeout: timeoutMs
+          });
+        } catch (err) {
+          const captured = (err as { stdout?: string }).stdout;
+          if (typeof captured === 'string') {
+            out = captured;
+          } else {
+            return [];
+          }
+        }
+        return parseDriftPorcelain(out);
       }
     },
 

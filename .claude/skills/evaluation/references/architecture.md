@@ -140,8 +140,8 @@ once at `SessionEnd`):
 ```
 span_count          int      len(unique span names from `git span list --porcelain`)
 anchor_count        int      total anchor rows (a span can have >1 anchor)
-why_count            int      spans where `git span why <name>` succeeded and had output
-why_errors            list[str]  span names where `git span why` exited non-zero
+why_count            int      spans whose `git span list <name>` block carries why prose (a body line that is neither the `##` header nor a `-` anchor bullet); bare `git span why <name>` is interactive read mode and fails on a non-terminal stdin, so it cannot be used here
+why_errors            list[str]  span names where `git span list <name>` exited non-zero
 list_returncode        int
 drift_returncode        int
 drift                     Any    parsed `git span drift --format json --no-exit-code`; {"unparsed": ...} if not valid JSON

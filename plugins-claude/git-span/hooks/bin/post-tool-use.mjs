@@ -6444,6 +6444,11 @@ function evaluateWriteGate(input, probeCache) {
   }
   return "inconclusive";
 }
+function gateRejectsTouch(input, probeCache) {
+  if (input.kind !== "write" || input.targetState === void 0) return false;
+  const outcome = evaluateWriteGate(input, probeCache);
+  return outcome === "decisiveFail" || outcome === "inconclusive" && input.targetState === "absent";
+}
 function driftKey(name, status) {
   return `${name}	${status}`;
 }
@@ -6601,8 +6606,7 @@ async function runTouchHook(input, executors, memo, probeCache) {
     if (input.kind === "write") {
       if (input.targetState !== void 0) {
         const probe = probeCache ?? createRealityProbeCache(input.targetState === "absent" ? [input.filePath] : []);
-        const outcome = evaluateWriteGate(input, probe);
-        if (outcome === "decisiveFail" || outcome === "inconclusive" && input.targetState === "absent") {
+        if (gateRejectsTouch(input, probe)) {
           return { additionalContext: null, treeModified: false };
         }
       }
@@ -6648,11 +6652,45 @@ function memoizedExecutors(base) {
     cache.set(key, pending);
     return pending;
   };
+  const batched = base.batched;
+  const prefetch = batched === void 0 ? void 0 : async (inputs, probeCache) => {
+    const admitted = inputs.filter((input) => !gateRejectsTouch(input, probeCache));
+    if (admitted.length < 2) return;
+    const byCwd = /* @__PURE__ */ new Map();
+    for (const input of admitted) {
+      const group = byCwd.get(input.cwd) ?? [];
+      group.push(input);
+      byCwd.set(input.cwd, group);
+    }
+    await Promise.all(
+      [...byCwd].map(async ([cwd, group]) => {
+        const paths = [...new Set(group.map((input) => input.filePath))];
+        const writePaths = [...new Set(group.filter((i) => i.kind === "write").map((i) => i.filePath))];
+        if (writePaths.length > 0) {
+          const result = await batched.fixMany(writePaths, cwd);
+          for (const filePath of writePaths) {
+            fixes.set(`${cwd}\0${filePath}`, Promise.resolve(result));
+          }
+        }
+        const [listRows, driftRows] = await Promise.all([
+          batched.listMany(paths, cwd),
+          batched.driftMany(paths, cwd)
+        ]);
+        for (const filePath of paths) {
+          const names = new Set(listRows.filter((row) => onTouchedFile(row, filePath)).map((row) => row.name));
+          lists.set(`${cwd}\0${filePath}`, Promise.resolve(listRows.filter((row) => names.has(row.name))));
+          drifts.set(`${cwd}\0${filePath}`, Promise.resolve(driftRows.filter((row) => names.has(row.name))));
+        }
+      })
+    );
+  };
   return {
     fix: (filePath, cwd) => once(fixes, `${cwd}\0${filePath}`, () => base.fix(filePath, cwd)),
     list: (filePath, cwd) => once(lists, `${cwd}\0${filePath}`, () => base.list(filePath, cwd)),
     drift: (args, cwd) => once(drifts, `${cwd}\0${args.join("\0")}`, () => base.drift(args, cwd)),
-    why: (name, cwd) => once(whys, `${cwd}\0${name}`, () => base.why(name, cwd))
+    why: (name, cwd) => once(whys, `${cwd}\0${name}`, () => base.why(name, cwd)),
+    batched,
+    prefetch
   };
 }
 function createDefaultTouchExecutors(timeoutMs = DEFAULT_TIMEOUT_MS) {
@@ -6725,6 +6763,67 @@ function createDefaultTouchExecutors(timeoutMs = DEFAULT_TIMEOUT_MS) {
         return text;
       } catch {
         return null;
+      }
+    },
+    batched: {
+      fixMany: async (filePaths, cwd) => {
+        const repoRoot = resolveRepoRoot(cwd);
+        if (!repoRoot) return { modified: false };
+        const rels = filePaths.map((filePath) => relativeToRepo(repoRoot, filePath));
+        if (rels.length === 0) return { modified: false };
+        let out = "";
+        try {
+          out = execFileSync5("git", ["span", "drift", ...rels, "--fix"], {
+            cwd: repoRoot,
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "pipe"],
+            timeout: timeoutMs
+          });
+        } catch (err) {
+          const captured = err.stdout;
+          if (typeof captured === "string") out = captured;
+        }
+        return { modified: fixOutputModified(out) };
+      },
+      listMany: async (filePaths, cwd) => {
+        const repoRoot = resolveRepoRoot(cwd);
+        if (!repoRoot) return [];
+        const rels = filePaths.map((filePath) => relativeToRepo(repoRoot, filePath));
+        if (rels.length === 0) return [];
+        try {
+          const out = execFileSync5("git", ["span", "list", "--porcelain", ...rels], {
+            cwd: repoRoot,
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "pipe"],
+            timeout: timeoutMs
+          });
+          return parsePorcelain(out);
+        } catch {
+          return [];
+        }
+      },
+      driftMany: async (filePaths, cwd) => {
+        const repoRoot = resolveRepoRoot(cwd);
+        const runCwd = repoRoot ?? cwd;
+        const scoped = repoRoot ? filePaths.map((filePath) => relativeToRepo(repoRoot, filePath)) : filePaths;
+        if (scoped.length === 0) return [];
+        let out;
+        try {
+          out = execFileSync5("git", ["span", "drift", "--format", "porcelain", ...scoped], {
+            cwd: runCwd,
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "pipe"],
+            timeout: timeoutMs
+          });
+        } catch (err) {
+          const captured = err.stdout;
+          if (typeof captured === "string") {
+            out = captured;
+          } else {
+            return [];
+          }
+        }
+        return parseDriftPorcelain(out);
       }
     },
     forInvocation: () => memoizedExecutors(executors)
@@ -7028,6 +7127,7 @@ async function runBashTouches(matches, sessionId, cwd, toolResponse, executors, 
   const blocks = [];
   let executedTouches = 0;
   const invocationExecutors = executors.forInvocation?.() ?? executors;
+  const admitted = [];
   for (const idx of commandOrder) {
     if (skipped.has(idx)) continue;
     const list = evals.get(idx);
@@ -7038,10 +7138,14 @@ async function runBashTouches(matches, sessionId, cwd, toolResponse, executors, 
       if (e.outcome === "inconclusive" && e.touch.kind === "write" && e.touch.targetState === "absent") continue;
       if (e.outcome === "inconclusive" && e.touch.kind === "write" && exitCode !== void 0 && exitCode !== 0)
         continue;
-      executedTouches += 1;
-      const output = await runTouchHook(e.touch, invocationExecutors, memo, probeCache);
-      if (output.additionalContext) blocks.push(output.additionalContext);
+      admitted.push(e.touch);
     }
+  }
+  await invocationExecutors.prefetch?.(admitted, probeCache);
+  for (const touch of admitted) {
+    executedTouches += 1;
+    const output = await runTouchHook(touch, invocationExecutors, memo, probeCache);
+    if (output.additionalContext) blocks.push(output.additionalContext);
   }
   reportDiagnostics({ executionGateDrops: resolved.length - executedTouches });
   return blocks;

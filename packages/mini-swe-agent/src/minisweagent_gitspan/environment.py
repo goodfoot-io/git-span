@@ -352,11 +352,21 @@ class HookedEnvironmentMixin:
         why_count = 0
         why_errors: list[str] = []
         for name in names:
-            result = self._execute_raw(f"git span why {shlex.quote(name)}", cwd, self.config.timeout)
-            if result.get("returncode") == 0 and result.get("output", "").strip():
-                why_count += 1
-            elif result.get("returncode") != 0:
+            # `git span why <name>` is interactive read mode and fails outright on a
+            # non-terminal stdin, so the session summary reads the why out of the span's
+            # `list` block instead: `## <name>` header, `- <path>` anchor bullets, then
+            # the why prose. A span carries a why iff its block has a non-bullet body line.
+            result = self._execute_raw(f"git span list {shlex.quote(name)}", cwd, self.config.timeout)
+            if result.get("returncode") != 0:
                 why_errors.append(name)
+                continue
+            body = [
+                line.strip()
+                for line in result.get("output", "").splitlines()
+                if line.strip() and not line.startswith(("#", "-"))
+            ]
+            if body:
+                why_count += 1
         drift = self._execute_raw("git span drift --format json --no-exit-code", cwd, self.config.timeout)
         drift_output = drift.get("output", "").strip()
         try:
