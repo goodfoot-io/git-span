@@ -38,8 +38,8 @@ export default defineConfig(async ({ command }) => ({
   resolve: {
     dedupe: ['react', 'react-dom'],
     alias: {
-      '~': path.resolve(__dirname, './app'),
-      collections: path.resolve(__dirname, './.source')
+      '~': path.resolve(import.meta.dirname, './app'),
+      collections: path.resolve(import.meta.dirname, './.source')
     }
   },
   optimizeDeps: {

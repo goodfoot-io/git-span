@@ -5,6 +5,7 @@ import {
   createDefaultTouchExecutors,
   createRealityProbeCache,
   runTouchHook,
+  runTouchHooks,
   type TouchInput
 } from '../../src/common/touch-core.js';
 import {
@@ -16,8 +17,8 @@ import {
 } from '../real-bundle-helpers.js';
 
 /**
- * The batched prefetch collapses one `fix`/`list`/`drift` subprocess per
- * touched file into one per command. These tests run the real `git span`
+ * The batched context query collapses one dependency subprocess per touched
+ * file into one per repository/mutation partition. These tests run the real `git span`
  * binary rather than a fake, because the property under test is a property of
  * the CLI's scoping: `git span list <path>` and `git span drift <path>` both
  * return every anchor of every span *covering* that path, including anchors on
@@ -25,7 +26,7 @@ import {
  * than by filtering on path.
  */
 
-const SESSION = 'batch-prefetch-session';
+const SESSION = 'batch-context-session';
 
 /** An in-memory MemoStore — one Set of surfaced keys per session id. */
 function createMemoStore(): MemoStore {
@@ -56,7 +57,14 @@ function git(repo: RealBundleRepo, ...args: string[]): string {
 }
 
 function writeTouch(repo: RealBundleRepo, rel: string, written: string): TouchInput {
-  return { kind: 'write', sessionId: SESSION, cwd: repo.root, filePath: `${repo.root}/${rel}`, written };
+  return {
+    kind: 'write',
+    sessionId: SESSION,
+    cwd: repo.root,
+    filePath: `${repo.root}/${rel}`,
+    invocationId: `${SESSION}:${rel}`,
+    written
+  };
 }
 
 /** Surfaced-span names, in order, parsed out of a rendered `<git-span>` block. */
@@ -94,7 +102,7 @@ async function withRepoEnv<T>(repo: RealBundleRepo, fn: () => Promise<T>): Promi
   }
 }
 
-/** Run a batch of touches through the per-file path (no prefetch). */
+/** Run a batch of touches through the singleton compatibility path. */
 async function runPerFile(repo: RealBundleRepo, touches: TouchInput[]): Promise<(string | null)[]> {
   return withRepoEnv(repo, async () => {
     const executors = createDefaultTouchExecutors().forInvocation?.() ?? createDefaultTouchExecutors();
@@ -108,19 +116,15 @@ async function runPerFile(repo: RealBundleRepo, touches: TouchInput[]): Promise<
   });
 }
 
-/** Run the same batch through the batched prefetch path. */
+/** Run the same batch through the plural context-query path. */
 async function runBatched(repo: RealBundleRepo, touches: TouchInput[]): Promise<(string | null)[]> {
   return withRepoEnv(repo, async () => {
     const base = createDefaultTouchExecutors();
     const executors = base.forInvocation?.() ?? base;
     const memo = createMemoStore();
     const probe = createRealityProbeCache([]);
-    await executors.prefetch?.(touches, probe);
-    const out: (string | null)[] = [];
-    for (const touch of touches) {
-      out.push((await runTouchHook(touch, executors, memo, probe)).additionalContext);
-    }
-    return out;
+    const batch = await runTouchHooks(touches, executors, memo, SESSION, probe);
+    return batch.outputs.map((output) => output.additionalContext);
   });
 }
 
@@ -144,7 +148,7 @@ function seedRepo(): RealBundleRepo {
   return repo;
 }
 
-describe('batched touch prefetch', () => {
+describe('batched touch context', () => {
   beforeAll(() => {
     PATH_DIR = buildWorkspaceGitSpan().pathDir;
   }, INSTALLED_SMOKE_TIMEOUT_MS);
@@ -293,7 +297,7 @@ describe('batched touch prefetch', () => {
   });
 
   it('leaves a single-touch invocation on the per-file path', { timeout: INSTALLED_SMOKE_TIMEOUT_MS }, async () => {
-    // Nothing to batch, so prefetch must not fire a subprocess whose result
+    // Nothing to batch, so the plural path must not fire a subprocess whose result
     // would differ from what the per-file call would have produced.
     const repo = seedRepo();
     git(repo, 'add', 'solo', 'a.txt#L2-L2');
