@@ -503,6 +503,18 @@ function bundleCells(options: Options): MeasuredCell[] {
         invoke(counter.env);
         const processLog = readFileSync(counter.log, 'utf8').trim();
         gitCommands = processLog.length === 0 ? [] : processLog.split('\n');
+        if (definition.phase === 'post' && definition.candidates > 0) {
+          const contextCommands = gitCommands.filter((command) => command.startsWith('span context '));
+          if (contextCommands.length !== 1) {
+            throw new Error(
+              `${definition.name}: expected exactly one git span context child, got ${contextCommands.length}`
+            );
+          }
+          const legacy = gitCommands.filter((command) => /^span (?:list|drift|why)\b/.test(command));
+          if (legacy.length > 0) {
+            throw new Error(`${definition.name}: legacy dependency children remain: ${legacy.join(', ')}`);
+          }
+        }
       } finally {
         counter.cleanup();
       }

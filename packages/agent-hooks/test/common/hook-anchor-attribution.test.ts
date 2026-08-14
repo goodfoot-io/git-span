@@ -22,6 +22,7 @@ import type { DriftPorcelainRow, PorcelainRow } from '../../src/common/agent-hoo
 import type { MemoStore } from '../../src/common/span-surface.js';
 import { runTouchHook, type TouchExecutors, type TouchWriteInput } from '../../src/common/touch-core.js';
 import { makeTempRepo } from '../helpers.js';
+import { contextExecutors } from '../touch-context-fake.js';
 
 // The touch hook's write gate (plan §3 step 1) verifies the target exists on
 // disk before any executor call, so the fixtures run against a real temp repo
@@ -100,12 +101,12 @@ async function advisorReason(anchors: PorcelainRow[], drift: DriftPorcelainRow[]
 
 /** The touch hook's rendered block for the same repository state. */
 async function touchBlock(anchors: PorcelainRow[], drift: DriftPorcelainRow[]): Promise<string> {
-  const executors: TouchExecutors = {
+  const executors: TouchExecutors = contextExecutors({
     fix: async (): Promise<{ modified: boolean }> => ({ modified: false }),
     list: async (): Promise<PorcelainRow[]> => anchors,
     drift: async (): Promise<DriftPorcelainRow[]> => drift,
     why: async (): Promise<string | null> => WHY
-  };
+  });
   // `written: ''` scopes the touch whole-file: the fixture's anchors sit at
   // lines 36-134 while the seeded file is a one-line stub, so a recovered
   // range could never intersect them — the parity check is about attribution,

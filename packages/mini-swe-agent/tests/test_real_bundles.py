@@ -241,12 +241,15 @@ def assert_context(context: str, expected: tuple[str, ...], excluded: tuple[str,
 
 def assert_no_legacy_runtime_artifacts(repo: Path, home: Path) -> None:
     paths = [path for root in (repo, home) for path in root.rglob("*")]
+    context_socket = re.compile(r"/\.git/span/context/[a-f0-9]+/service\.sock$")
     forbidden = re.compile(
         r"(?:snapshots|snapshot-recordless-note|activity-log|\.objects(?:/|$)|\.index$|tombstone|watcher|\.sock$|socket)",
         re.IGNORECASE,
     )
-    assert [path for path in paths if forbidden.search(path.as_posix())] == []
-    assert not any(path.is_socket() for path in paths)
+    assert [path for path in paths if forbidden.search(path.as_posix()) and not context_socket.search(path.as_posix())] == []
+    sockets = [path for path in paths if path.is_socket()]
+    assert sockets
+    assert all(context_socket.search(path.as_posix()) for path in sockets)
 
 
 def test_installed_wheel_runs_static_matrix_without_legacy_state(installed_wheel: InstalledWheel, tmp_path: Path):

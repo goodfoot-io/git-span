@@ -61,16 +61,34 @@ const { recorded } = vi.hoisted(() => ({ recorded: { calls: [] as RecordedTouch[
 
 vi.mock('../../src/common/touch-core.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/common/touch-core.js')>();
+  const record = (input: TouchInput): void => {
+    recorded.calls.push({
+      filePath: input.filePath,
+      cwd: input.cwd,
+      offset: 'offset' in input ? input.offset : undefined,
+      limit: 'limit' in input ? input.limit : undefined
+    });
+  };
   return {
     ...actual,
     runTouchHook: vi.fn(async (input: TouchInput) => {
-      recorded.calls.push({
-        filePath: input.filePath,
-        cwd: input.cwd,
-        offset: 'offset' in input ? input.offset : undefined,
-        limit: 'limit' in input ? input.limit : undefined
-      });
+      record(input);
       return { additionalContext: null, treeModified: false };
+    }),
+    runTouchHooks: vi.fn(async (inputs: readonly TouchInput[]) => {
+      for (const input of inputs) record(input);
+      return {
+        outputs: inputs.map(() => ({ additionalContext: null, treeModified: false })),
+        treeModified: false,
+        diagnostics: {
+          queryCount: inputs.length > 0 ? 1 : 0,
+          scopeCount: inputs.length,
+          selectedResultCount: 0,
+          elapsedMs: 0,
+          mutation: 'unchanged',
+          failure: null
+        }
+      };
     })
   };
 });

@@ -15,6 +15,7 @@ import type { CoreLogger, MemoStore } from '../../src/common/span-surface.js';
 import type { TouchExecutors } from '../../src/common/touch-core.js';
 import { makeTempRepo } from '../helpers.js';
 import { makeTempLayout } from '../session-layout-helpers.js';
+import { contextExecutors } from '../touch-context-fake.js';
 
 const SESSION_ID = 'static-attribution-lifecycle';
 
@@ -32,7 +33,7 @@ function capture(): { executors: TouchExecutors; fixes: string[] } {
   const fixes: string[] = [];
   return {
     fixes,
-    executors: {
+    executors: contextExecutors({
       fix: async (filePath) => {
         fixes.push(filePath);
         return { modified: false };
@@ -40,7 +41,7 @@ function capture(): { executors: TouchExecutors; fixes: string[] } {
       list: async () => [],
       drift: async () => [],
       why: async () => null
-    }
+    })
   };
 }
 

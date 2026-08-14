@@ -16,7 +16,12 @@ import {
 } from '../common/bash-attribution.js';
 import { createDiskMemoStore, type MemoFactory } from '../common/span-surface.js';
 import { filterTrackedEligibility, type PlannedTouchRecord } from '../common/static-attribution.js';
-import { createDefaultTouchExecutors, runTouchHook, type TouchExecutors } from '../common/touch-core.js';
+import {
+  createDefaultTouchExecutors,
+  runTouchHooks,
+  type TouchExecutors,
+  type TouchInput
+} from '../common/touch-core.js';
 import { extractShellCommand } from './advisor.js';
 import { parseApplyPatch } from './apply-patch.js';
 
@@ -147,7 +152,8 @@ async function runApplyPatchTouches(
   sessionId: string,
   record: PlannedTouchRecord | null,
   executors: TouchExecutors,
-  memo: ReturnType<MemoFactory>
+  memo: ReturnType<MemoFactory>,
+  invocationId: string
 ): Promise<string[]> {
   const planned = plannedPatchCandidates(record, cwd);
   const plannedPaths = new Set(planned.map(({ absolutePath }) => absolutePath));
@@ -169,29 +175,26 @@ async function runApplyPatchTouches(
   const eligible = new Set(tracked.eligible.map(({ value }) => value));
   for (const candidate of candidates) if (candidate.preTrackedDelete) eligible.add(candidate);
 
-  const blocks: string[] = [];
+  const touches: TouchInput[] = [];
   for (const candidate of candidates) {
     if (!eligible.has(candidate)) continue;
     const ranges = candidate.ranges.length === 0 ? [undefined] : candidate.ranges;
     for (const range of ranges) {
-      const output = await runTouchHook(
-        {
-          kind: 'write',
-          sessionId,
-          cwd,
-          filePath: candidate.absolutePath,
-          written: '',
-          range,
-          targetState: candidate.operation === 'delete' ? 'absent' : 'exists',
-          ...(candidate.operation === 'delete' ? { postState: { realDelete: true } } : {})
-        },
-        executors,
-        memo
-      );
-      if (output.additionalContext) blocks.push(output.additionalContext);
+      touches.push({
+        kind: 'write',
+        sessionId,
+        cwd,
+        filePath: candidate.absolutePath,
+        invocationId,
+        written: '',
+        range,
+        targetState: candidate.operation === 'delete' ? 'absent' : 'exists',
+        ...(candidate.operation === 'delete' ? { postState: { realDelete: true } } : {})
+      });
     }
   }
-  return blocks;
+  const batch = await runTouchHooks(touches, executors, memo, invocationId);
+  return batch.outputs.flatMap((output) => (output.additionalContext === null ? [] : [output.additionalContext]));
 }
 
 export function createHandler(
@@ -250,7 +253,15 @@ export function createHandler(
       ctx.logger.warn('Codex apply_patch tool_response shape unrecognized; suppressing attribution');
       return undefined;
     }
-    const blocks = await runApplyPatchTouches(command, cwd, sessionId, record, executors, memo);
+    const blocks = await runApplyPatchTouches(
+      command,
+      cwd,
+      sessionId,
+      record,
+      executors,
+      memo,
+      `${sessionId}:${input.tool_use_id ?? 'apply_patch'}`
+    );
     if (blocks.length === 0) return undefined;
     const combined = blocks.join('');
     return postToolUseOutput({ additionalContext: combined, systemMessage: combined });

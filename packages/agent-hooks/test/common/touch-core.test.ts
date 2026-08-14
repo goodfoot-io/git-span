@@ -30,9 +30,21 @@ import type { DriftPorcelainRow, PorcelainRow } from '../../src/common/agent-hoo
 import { runBashTouches } from '../../src/common/bash-touch.js';
 import type { ResolvedSpan, SpanMatch } from '../../src/common/parse-command.js';
 import type { MemoStore } from '../../src/common/span-surface.js';
-import type { TouchExecutors, TouchFixResult, TouchReadInput, TouchWriteInput } from '../../src/common/touch-core.js';
-import { fixOutputModified, recoverRange, runTouchHook } from '../../src/common/touch-core.js';
+import type { RealityProbeCache, TouchReadInput, TouchWriteInput } from '../../src/common/touch-core.js';
+import { recoverRange, runTouchHook as runContextTouchHook } from '../../src/common/touch-core.js';
 import { makeTempRepo } from '../helpers.js';
+import { contextExecutors, type SurfaceFake as TouchExecutors } from '../touch-context-fake.js';
+
+type TouchFixResult = { modified: boolean };
+
+function runTouchHook(
+  input: TouchReadInput | TouchWriteInput,
+  executors: TouchExecutors,
+  memo: MemoStore,
+  probeCache?: RealityProbeCache
+) {
+  return runContextTouchHook(input, contextExecutors(executors), memo, probeCache);
+}
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -151,19 +163,6 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
 
   afterAll(() => {
     repo.cleanup();
-  });
-
-  describe('drift fix summary', () => {
-    it('reports only summaries that prove span state was rewritten', () => {
-      expect(fixOutputModified('Reconciled 1 span, 1 anchor (1 updated, 0 removed).\n')).toBe(true);
-      expect(
-        fixOutputModified(
-          'Reconciled 1 span, 0 anchors (0 updated, 0 removed); collapsed 1 duplicate identity (1 record dropped).\n'
-        )
-      ).toBe(true);
-      expect(fixOutputModified('Updated 0 anchors (0 updated, 0 removed); 1 anchor remains drifted.\n')).toBe(false);
-      expect(fixOutputModified('fatal: not a git repository\n')).toBe(false);
-    });
   });
 
   describe('runTouchHook — write path', () => {
@@ -463,7 +462,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
           why: async (): Promise<string | null> => WHY
         };
 
-        const output = await run(writeInput(), executors, memo);
+        const output = await run(writeInput(), contextExecutors(executors), memo);
 
         expect(output.additionalContext).not.toBeNull();
         expect(output.additionalContext).toContain('- src/app.ts#L1-L10 — changed');
@@ -767,7 +766,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
           why: async (): Promise<string | null> => null
         };
 
-        await run(matches, SESSION_ID, root, {}, executors, createMemoryMemoStore());
+        await run(matches, SESSION_ID, root, {}, contextExecutors(executors), createMemoryMemoStore());
 
         const lsFiles = gitCalls.filter((c) => c[0] === 'ls-files');
         const spanLists = gitCalls.filter((c) => c[0] === 'span' && c.includes('list'));
@@ -817,7 +816,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
         SESSION_ID,
         root,
         {},
-        executors,
+        contextExecutors(executors),
         createMemoryMemoStore()
       );
 
@@ -844,7 +843,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
         SESSION_ID,
         root,
         {},
-        executors,
+        contextExecutors(executors),
         createMemoryMemoStore()
       );
 
@@ -871,7 +870,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
         SESSION_ID,
         root,
         {},
-        executors,
+        contextExecutors(executors),
         createMemoryMemoStore()
       );
 

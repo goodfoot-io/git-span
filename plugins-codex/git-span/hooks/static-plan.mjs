@@ -11,8 +11,6 @@ function attachMetadata(hookEventName, config, handler) {
   hook.hookEventName = hookEventName;
   hook.timeout = config.timeout;
   hook.statusMessage = config.statusMessage;
-  hook.unexpectedError = config.unexpectedError;
-  hook.onUnexpectedError = config.onUnexpectedError;
   if ("matcher" in config && typeof config.matcher === "string") {
     hook.matcher = config.matcher;
   }
@@ -216,7 +214,6 @@ function subagentStartOutput(options = {}) {
 }
 
 // ../../node_modules/@goodfoot/codex-hooks/dist/runtime.js
-var EMPTY_OUTPUT = { stdout: {} };
 async function readStdin() {
   return new Promise((resolve3, reject) => {
     const chunks = [];
@@ -229,8 +226,8 @@ async function readStdin() {
 function parseStdinInput(stdinContent) {
   return JSON.parse(stdinContent);
 }
-function serializeStdout(output) {
-  return JSON.stringify(output.stdout);
+function writeStdout(output) {
+  process.stdout.write(JSON.stringify(output.stdout));
 }
 function normalizeStringOutput(hookEventName, result) {
   if (!EVENTS_WITH_TEXT_OUTPUT.has(hookEventName)) {
@@ -247,86 +244,39 @@ function normalizeStringOutput(hookEventName, result) {
 function convertToHookOutput(output) {
   return output.stderr !== void 0 ? { stdout: output.stdout, stderr: output.stderr } : { stdout: output.stdout };
 }
-function writeStderr(error) {
-  if (error instanceof Error) {
-    process.stderr.write(`${error.stack ?? error.message}
-`);
-  } else {
-    process.stderr.write(`${String(error)}
-`);
-  }
-}
-function reportUnexpectedError(onUnexpectedError, error, phase) {
-  try {
-    onUnexpectedError?.(error, phase);
-  } catch {
-  }
-  try {
-    logger.logError(error, `Unexpected error in ${phase} phase (fail-open)`, { phase });
-  } catch {
-  }
-}
-function cleanup(policy, onUnexpectedError) {
-  try {
-    logger.clearContext();
-    logger.close();
-  } catch (error) {
-    if (policy !== "continue") {
-      throw error;
-    }
-    reportUnexpectedError(onUnexpectedError, error, "cleanup");
-  }
-}
 async function execute(hookFn) {
-  const policy = hookFn.unexpectedError ?? "error";
-  const onUnexpectedError = hookFn.onUnexpectedError;
-  let phase = "read";
-  let output;
   try {
     const stdinContent = await readStdin();
-    phase = "parse";
     const input = parseStdinInput(stdinContent);
     logger.setContext(hookFn.hookEventName, input);
     const context = { logger };
-    phase = "handler";
     const result = await hookFn(input, context);
-    phase = "serialize";
+    let output = { stdout: {} };
     if (typeof result === "string") {
       output = convertToHookOutput(normalizeStringOutput(hookFn.hookEventName, result));
     } else if (result !== void 0) {
       output = convertToHookOutput(result);
-    } else {
-      output = EMPTY_OUTPUT;
     }
-    serializeStdout(output);
+    writeStdout(output);
+    process.exit(EXIT_CODES.SUCCESS);
   } catch (error) {
     if (error instanceof BlockError) {
-      cleanup(policy, onUnexpectedError);
       process.stderr.write(`${error.reason}
 `);
       process.exit(EXIT_CODES.BLOCK);
     }
-    if (policy !== "continue") {
-      cleanup(policy, onUnexpectedError);
-      writeStderr(error);
-      process.exit(EXIT_CODES.ERROR);
+    if (error instanceof Error) {
+      process.stderr.write(`${error.stack ?? error.message}
+`);
+    } else {
+      process.stderr.write(`${String(error)}
+`);
     }
-    reportUnexpectedError(onUnexpectedError, error, phase);
-    output = EMPTY_OUTPUT;
+    process.exit(EXIT_CODES.ERROR);
+  } finally {
+    logger.clearContext();
+    logger.close();
   }
-  phase = "write";
-  try {
-    process.stdout.write(serializeStdout(output));
-  } catch (error) {
-    if (policy !== "continue") {
-      cleanup(policy, onUnexpectedError);
-      writeStderr(error);
-      process.exit(EXIT_CODES.ERROR);
-    }
-    reportUnexpectedError(onUnexpectedError, error, "write");
-  }
-  cleanup(policy, onUnexpectedError);
-  process.exit(EXIT_CODES.SUCCESS);
 }
 
 // src/common/agent-hooks-common.ts
@@ -346,16 +296,8 @@ function abspathAgainst(base, target) {
   const b = toPosix(base).replace(/\/+$/, "");
   return `${b}/${t}`;
 }
-var repoRootCache = /* @__PURE__ */ new Map();
 function resolveRepoRoot(dir) {
   if (!dir) return null;
-  const cached = repoRootCache.get(dir);
-  if (cached !== void 0) return cached;
-  const resolved = resolveRepoRootUncached(dir);
-  repoRootCache.set(dir, resolved);
-  return resolved;
-}
-function resolveRepoRootUncached(dir) {
   try {
     let current = fs.realpathSync.native(dir);
     for (; ; ) {
@@ -560,17 +502,13 @@ function pruneStaleSessions(layout, now = Date.now(), maxAgeMs = THIRTY_DAYS_MS)
   } catch {
     return;
   }
-  let trashDirReady = false;
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const dirPath = nodePath.join(layout.base, entry.name);
     try {
       const stat = fs.statSync(dirPath);
       if (now - stat.mtimeMs > maxAgeMs) {
-        if (!trashDirReady) {
-          fs.mkdirSync(layout.trashDir, { recursive: true, mode: 448 });
-          trashDirReady = true;
-        }
+        fs.mkdirSync(layout.trashDir, { recursive: true, mode: 448 });
         const trashPath = nodePath.join(
           layout.trashDir,
           `${entry.name}${SESSION_TRASH_MARKER}${process.pid}-${Date.now().toString(36)}`
@@ -605,7 +543,7 @@ function indentBlockBody(text) {
 }
 
 // src/common/bash-attribution.ts
-import { createHash } from "node:crypto";
+import { createHash as createHash2 } from "node:crypto";
 import * as fs6 from "node:fs";
 import * as nodePath5 from "node:path";
 
@@ -1763,7 +1701,7 @@ var REV_PATH = /^([^\s:]+):(.+)$/;
 function matchGitShow(argv) {
   if (argv[0] !== "git") return [];
   const sub = findGitSubcommand(argv.slice(1));
-  if (sub?.subcommand !== "show") return [];
+  if (!sub || sub.subcommand !== "show") return [];
   const after = argv.slice(1).slice(sub.subIdx + 1).filter((a) => !a.startsWith("-"));
   const revPathArg = after.find((a) => REV_PATH.test(a));
   if (!revPathArg) return [];
@@ -1794,7 +1732,7 @@ function matchGitShow(argv) {
 function matchGitLogL(argv) {
   if (argv[0] !== "git") return [];
   const sub = findGitSubcommand(argv.slice(1));
-  if (sub?.subcommand !== "log") return [];
+  if (!sub || sub.subcommand !== "log") return [];
   const after = argv.slice(1).slice(sub.subIdx + 1);
   for (let i = 0; i < after.length; i++) {
     const a = after[i];
@@ -5584,16 +5522,16 @@ function createPlannedTouchStore(layout, budgets) {
       fs4.rmSync(paths.record, { force: true });
     }
     try {
-      const record = normalizePlannedTouchRecord(JSON.parse(raw), budgets);
-      return { status: "record", record };
+      const record2 = normalizePlannedTouchRecord(JSON.parse(raw), budgets);
+      return { status: "record", record: record2 };
     } catch {
       return { status: "missing" };
     }
   };
   return {
-    put(record) {
+    put(record2) {
       pruneStaleSessions(layout);
-      const normalized = normalizePlannedTouchRecord(record, budgets);
+      const normalized = normalizePlannedTouchRecord(record2, budgets);
       const paths = recordPaths(normalized.sessionId, normalized.toolUseId);
       makeRestrictiveDir(paths.dir);
       if (fs4.existsSync(paths.consumed)) {
@@ -5692,19 +5630,19 @@ function normalizeEvidence(value) {
       throw new Error("invalid planned-touch evidence kind");
   }
 }
-function normalizePlannedTouchRecord(record, budgets) {
-  if (typeof record !== "object" || record === null || record.version !== 1 || typeof record.sessionId !== "string" || record.sessionId.length === 0 || typeof record.toolUseId !== "string" || record.toolUseId.length === 0 || typeof record.repoRoot !== "string" || record.repoRoot.length === 0 || !Number.isFinite(record.createdAtMs) || record.createdAtMs < 0 || !Array.isArray(record.touches)) {
+function normalizePlannedTouchRecord(record2, budgets) {
+  if (typeof record2 !== "object" || record2 === null || record2.version !== 1 || typeof record2.sessionId !== "string" || record2.sessionId.length === 0 || typeof record2.toolUseId !== "string" || record2.toolUseId.length === 0 || typeof record2.repoRoot !== "string" || record2.repoRoot.length === 0 || !Number.isFinite(record2.createdAtMs) || record2.createdAtMs < 0 || !Array.isArray(record2.touches)) {
     throw new Error("invalid planned-touch record");
   }
-  const repoRoot = toPosix(record.repoRoot);
-  if (!nodePath4.isAbsolute(record.repoRoot) && !/^[A-Za-z]:\//.test(repoRoot)) {
+  const repoRoot = toPosix(record2.repoRoot);
+  if (!nodePath4.isAbsolute(record2.repoRoot) && !/^[A-Za-z]:\//.test(repoRoot)) {
     throw new Error("planned-touch repository root must be absolute");
   }
-  if (record.touches.length > budgets.maxTouchesPerRecord) {
+  if (record2.touches.length > budgets.maxTouchesPerRecord) {
     throw new Error("planned-touch record exceeds touch budget");
   }
   let evidenceBytes = 0;
-  const touches = record.touches.map((touch) => {
+  const touches = record2.touches.map((touch) => {
     if (typeof touch !== "object" || touch === null) throw new Error("invalid planned touch");
     const repoRelativePath = toPosix(touch.repoRelativePath);
     if (repoRelativePath.length === 0 || repoRelativePath.startsWith("/") || /^[A-Za-z]:\//.test(repoRelativePath) || repoRelativePath.split("/").some((part) => part === "..")) {
@@ -5731,10 +5669,10 @@ function normalizePlannedTouchRecord(record, budgets) {
   if (evidenceBytes > budgets.maxEvidenceBytes) throw new Error("planned-touch record exceeds evidence budget");
   const normalized = {
     version: 1,
-    sessionId: record.sessionId,
-    toolUseId: record.toolUseId,
+    sessionId: record2.sessionId,
+    toolUseId: record2.toolUseId,
     repoRoot,
-    createdAtMs: record.createdAtMs,
+    createdAtMs: record2.createdAtMs,
     touches
   };
   if (Buffer.byteLength(JSON.stringify(normalized)) > budgets.maxRecordBytes) {
@@ -5865,8 +5803,9 @@ function filterTrackedEligibility(candidates, options) {
 
 // src/common/touch-core.ts
 import { execFileSync as execFileSync5 } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as fs5 from "node:fs";
-import { basename as basename4, join as join4 } from "node:path";
+import { basename as basename4, dirname as dirname5, join as join4 } from "node:path";
 
 // src/common/anchor-tree.ts
 function collapseByPath(rows) {
@@ -6236,10 +6175,187 @@ function evaluateWriteGate(input, probeCache) {
   }
   return "inconclusive";
 }
-function gateRejectsTouch(input, probeCache) {
-  if (input.kind !== "write" || input.targetState === void 0) return false;
-  const outcome = evaluateWriteGate(input, probeCache);
-  return outcome === "decisiveFail" || outcome === "inconclusive" && input.targetState === "absent";
+var MAX_CONTEXT_JSON_BYTES = 16 * 1024 * 1024;
+var MAX_CONTEXT_ADDRESSES = 4096;
+function record(value, label) {
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    throw new Error(`${label} must be an object`);
+  return value;
+}
+function exactKeys(value, keys, label) {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
+    throw new Error(`${label} has unsupported fields`);
+  }
+}
+function stringField(value, label) {
+  if (typeof value !== "string") throw new Error(`${label} must be a string`);
+  return value;
+}
+function integerField(value, label) {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${label} must be a non-negative integer`);
+  }
+  return value;
+}
+function booleanField(value, label) {
+  if (typeof value !== "boolean") throw new Error(`${label} must be a boolean`);
+  return value;
+}
+function arrayField(value, label) {
+  if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
+  return value;
+}
+function enumField(value, tokens, label) {
+  if (typeof value !== "string" || !tokens.includes(value)) throw new Error(`${label} has an unsupported token`);
+  return value;
+}
+function decodeExtent(value, label) {
+  const object = record(value, label);
+  const kind = enumField(object.kind, ["whole", "lines"], `${label}.kind`);
+  if (kind === "whole") {
+    exactKeys(object, ["kind"], label);
+    return { kind };
+  }
+  exactKeys(object, ["kind", "start", "end"], label);
+  const start = integerField(object.start, `${label}.start`);
+  const end = integerField(object.end, `${label}.end`);
+  if (start < 1 || end < start) throw new Error(`${label} has an invalid line range`);
+  return { kind, start, end };
+}
+function decodeLocation(value, label) {
+  const object = record(value, label);
+  exactKeys(object, ["path", "extent"], label);
+  return { path: stringField(object.path, `${label}.path`), extent: decodeExtent(object.extent, `${label}.extent`) };
+}
+function decodeStatus(value, label) {
+  const object = record(value, label);
+  const code = enumField(
+    object.code,
+    [
+      "FRESH",
+      "RESOLVED_PENDING_COMMIT",
+      "MOVED",
+      "CHANGED",
+      "DELETED",
+      "CONFLICT",
+      "SUBMODULE",
+      "CONTENT_UNAVAILABLE"
+    ],
+    `${label}.code`
+  );
+  if (code !== "CONTENT_UNAVAILABLE") {
+    exactKeys(object, ["code"], label);
+    return { code };
+  }
+  exactKeys(object, ["code", "reason", "detail"], label);
+  const reason = enumField(
+    object.reason,
+    [
+      "LFS_NOT_FETCHED",
+      "LFS_NOT_INSTALLED",
+      "PROMISOR_MISSING",
+      "SPARSE_EXCLUDED",
+      "FILTER_FAILED",
+      "IO_ERROR"
+    ],
+    `${label}.reason`
+  );
+  return { code, reason, detail: object.detail };
+}
+function decodeSource(value, label) {
+  return enumField(value, ["WORKTREE", "INDEX", "HEAD"], label);
+}
+function decodeAnchor(value, label) {
+  const object = record(value, label);
+  exactKeys(object, ["ordinal", "id", "anchored", "current", "status", "source", "sources"], label);
+  return {
+    ordinal: integerField(object.ordinal, `${label}.ordinal`),
+    id: stringField(object.id, `${label}.id`),
+    anchored: decodeLocation(object.anchored, `${label}.anchored`),
+    current: object.current === null ? null : decodeLocation(object.current, `${label}.current`),
+    status: decodeStatus(object.status, `${label}.status`),
+    source: object.source === null ? null : decodeSource(object.source, `${label}.source`),
+    sources: arrayField(object.sources, `${label}.sources`).map(
+      (source, index) => decodeSource(source, `${label}.sources[${index}]`)
+    )
+  };
+}
+function decodeOverlap(value, label) {
+  const object = record(value, label);
+  exactKeys(object, ["scope", "anchor", "basis", "location", "intersection"], label);
+  const anchor = record(object.anchor, `${label}.anchor`);
+  exactKeys(anchor, ["ordinal", "id"], `${label}.anchor`);
+  return {
+    scope: integerField(object.scope, `${label}.scope`),
+    anchor: {
+      ordinal: integerField(anchor.ordinal, `${label}.anchor.ordinal`),
+      id: stringField(anchor.id, `${label}.anchor.id`)
+    },
+    basis: enumField(object.basis, ["anchored", "current"], `${label}.basis`),
+    location: decodeLocation(object.location, `${label}.location`),
+    intersection: decodeExtent(object.intersection, `${label}.intersection`)
+  };
+}
+function decodeContextDocument(stdout) {
+  if (Buffer.byteLength(stdout) > MAX_CONTEXT_JSON_BYTES) throw new Error("context document exceeds the size limit");
+  const root = record(JSON.parse(stdout), "context document");
+  exactKeys(root, ["schema_version", "scopes", "mutation", "spans"], "context document");
+  if (root.schema_version !== 1) throw new Error("unsupported context schema version");
+  const scopes = arrayField(root.scopes, "context document.scopes").map((scope, index) => {
+    const object = record(scope, `context document.scopes[${index}]`);
+    exactKeys(object, ["path", "extent"], `context document.scopes[${index}]`);
+    return {
+      path: stringField(object.path, `context document.scopes[${index}].path`),
+      extent: decodeExtent(object.extent, `context document.scopes[${index}].extent`)
+    };
+  });
+  const mutationObject = record(root.mutation, "context document.mutation");
+  exactKeys(
+    mutationObject,
+    ["requested", "rewritten", "spans_touched", "anchors_updated", "anchors_removed", "identities_collapsed"],
+    "context document.mutation"
+  );
+  const mutation = {
+    requested: booleanField(mutationObject.requested, "context document.mutation.requested"),
+    rewritten: booleanField(mutationObject.rewritten, "context document.mutation.rewritten"),
+    spans_touched: integerField(mutationObject.spans_touched, "context document.mutation.spans_touched"),
+    anchors_updated: integerField(mutationObject.anchors_updated, "context document.mutation.anchors_updated"),
+    anchors_removed: integerField(mutationObject.anchors_removed, "context document.mutation.anchors_removed"),
+    identities_collapsed: integerField(
+      mutationObject.identities_collapsed,
+      "context document.mutation.identities_collapsed"
+    )
+  };
+  const spans = arrayField(root.spans, "context document.spans").map((span, index) => {
+    const label = `context document.spans[${index}]`;
+    const object = record(span, label);
+    exactKeys(object, ["name", "why", "overlaps", "anchors"], label);
+    const why = object.why;
+    if (why !== null && typeof why !== "string") throw new Error(`${label}.why must be a string or null`);
+    return {
+      name: stringField(object.name, `${label}.name`),
+      why,
+      overlaps: arrayField(object.overlaps, `${label}.overlaps`).map(
+        (overlap, overlapIndex) => decodeOverlap(overlap, `${label}.overlaps[${overlapIndex}]`)
+      ),
+      anchors: arrayField(object.anchors, `${label}.anchors`).map(
+        (anchor, anchorIndex) => decodeAnchor(anchor, `${label}.anchors[${anchorIndex}]`)
+      )
+    };
+  });
+  for (const [spanIndex, span] of spans.entries()) {
+    for (const overlap of span.overlaps) {
+      if (overlap.scope >= scopes.length)
+        throw new Error(`context document.spans[${spanIndex}] references an unknown scope`);
+      const anchor = span.anchors[overlap.anchor.ordinal];
+      if (anchor === void 0 || anchor.id !== overlap.anchor.id || anchor.ordinal !== overlap.anchor.ordinal) {
+        throw new Error(`context document.spans[${spanIndex}] references an unknown anchor`);
+      }
+    }
+  }
+  return { schema_version: 1, scopes, mutation, spans };
 }
 function driftKey(name, status) {
   return `${name}	${status}`;
@@ -6310,11 +6426,6 @@ ${body}
 </git-span>
 `;
 }
-function intersectsAny(row, ranges) {
-  if (ranges === "whole-file") return true;
-  if (row.start === 0 && row.end === 0) return true;
-  return ranges.some((range) => rangesIntersect(range, { start: row.start, end: row.end }));
-}
 function recoverRangeFromDisk(written, filePath) {
   if (written.length === 0) return "whole-file";
   let content;
@@ -6339,286 +6450,239 @@ function recoverReadRange(offset, limit, filePath) {
   const end = Math.min(start + (limit ?? DEFAULT_READ_LIMIT) - 1, Math.max(lineCount2, start));
   return { start, end };
 }
-function onTouchedFile(row, filePath) {
-  return filePath === row.path || filePath.endsWith(`/${row.path}`);
+function rangesForInput(input) {
+  if (input.kind === "read") {
+    const recovered2 = recoverReadRange(input.offset, input.limit, input.filePath);
+    return recovered2 === "whole-file" ? "whole-file" : [recovered2];
+  }
+  if (input.range !== void 0) return [input.range];
+  const recovered = recoverRangeFromDisk(input.written, input.filePath);
+  return recovered === "whole-file" ? "whole-file" : [recovered];
 }
-async function computeSurfaceParts(input, executors, memo, range) {
-  const covering = await executors.list(input.filePath, input.cwd);
-  if (covering.length === 0) return null;
-  const anchorsByName = /* @__PURE__ */ new Map();
-  for (const row of covering) {
-    const rows = anchorsByName.get(row.name) ?? [];
-    rows.push(row);
-    anchorsByName.set(row.name, rows);
-  }
-  const touchedNames = [...anchorsByName.keys()].filter(
-    (name) => (anchorsByName.get(name) ?? []).some((row) => onTouchedFile(row, input.filePath) && intersectsAny(row, range))
-  );
-  if (touchedNames.length === 0) return null;
-  const driftByName = /* @__PURE__ */ new Map();
-  for (const row of await executors.drift([input.filePath], input.cwd)) {
-    const rows = driftByName.get(row.name) ?? [];
-    rows.push(row);
-    driftByName.set(row.name, rows);
-  }
+function extentIntersects(a, b) {
+  if (b === "whole-file" || a.kind === "whole") return true;
+  return b.some((range) => rangesIntersect(range, { start: a.start, end: a.end }));
+}
+function contextStatusToken(status) {
+  return status.code === "CONTENT_UNAVAILABLE" ? status.reason : status.code;
+}
+function contextAnchorRow(name, anchor) {
+  const extent = anchor.anchored.extent;
+  return {
+    name,
+    path: anchor.anchored.path,
+    start: extent.kind === "whole" ? 0 : extent.start,
+    end: extent.kind === "whole" ? 0 : extent.end
+  };
+}
+function contextDriftRow(name, anchor) {
+  return { ...contextAnchorRow(name, anchor), status: contextStatusToken(anchor.status) };
+}
+function spanTouchesInput(span, document, repoPath, ranges) {
+  return span.overlaps.some((overlap) => {
+    const scope = document.scopes[overlap.scope];
+    return scope.path === repoPath && extentIntersects(overlap.intersection, ranges);
+  });
+}
+function renderContextTouch(input, document, repoPath, ranges, memo) {
   const surfaced = memo.getSurfaced(input.sessionId);
-  const toRecord = [];
   const sections = [];
+  const toRecord = [];
   const driftedNames = [];
-  for (const name of touchedNames) {
-    const spanDrift = driftByName.get(name) ?? [];
-    const debtRows = spanDrift.filter((row) => isDebt(row.status));
-    if (spanDrift.length > 0 && debtRows.length === 0) continue;
+  for (const span of document.spans) {
+    if (!spanTouchesInput(span, document, repoPath, ranges)) continue;
+    const anchors = span.anchors.map((anchor) => contextAnchorRow(span.name, anchor));
+    const drift = span.anchors.filter((anchor) => anchor.status.code !== "FRESH").map((anchor) => contextDriftRow(span.name, anchor));
+    const debtRows = drift.filter((row) => isDebt(row.status));
+    if (drift.length > 0 && debtRows.length === 0) continue;
     const debtStatuses = [...new Set(debtRows.map((row) => row.status))].sort();
-    const unsurfacedDebt = debtStatuses.filter((status) => !surfaced.has(driftKey(name, status)));
-    const isNewName = !surfaced.has(name);
+    const unsurfacedDebt = debtStatuses.filter((status) => !surfaced.has(driftKey(span.name, status)));
+    const isNewName = !surfaced.has(span.name);
     if (!isNewName && unsurfacedDebt.length === 0) continue;
-    const why = await executors.why(name, input.cwd);
-    sections.push(renderSpanSection(name, anchorsByName.get(name) ?? [], debtRows, why));
-    if (debtStatuses.length > 0) driftedNames.push(name);
-    if (isNewName) toRecord.push(name);
-    for (const status of unsurfacedDebt) toRecord.push(driftKey(name, status));
+    sections.push(renderSpanSection(span.name, anchors, debtRows, span.why));
+    if (debtStatuses.length > 0) driftedNames.push(span.name);
+    if (isNewName) toRecord.push(span.name);
+    for (const status of unsurfacedDebt) toRecord.push(driftKey(span.name, status));
   }
   if (sections.length === 0) return null;
   memo.addSurfaced(input.sessionId, toRecord);
   const fileName = basename4(input.filePath);
   const header = driftedNames.length > 0 ? driftHeader(driftedNames.length, input.kind) : cleanHeader(fileName);
   const footer = driftedNames.length > 0 ? driftFooter(driftedNames) : cleanFooter(fileName);
-  return { sections, header, footer, toRecord };
+  return buildBlock(sections, header, footer);
 }
-async function computeSurface(input, executors, memo, range) {
-  const parts = await computeSurfaceParts(input, executors, memo, range);
-  if (parts === null) return null;
-  return buildBlock(parts.sections, parts.header, parts.footer);
-}
-async function runTouchHook(input, executors, memo, probeCache) {
-  let treeModified = false;
-  try {
-    let range = "whole-file";
-    if (input.kind === "write") {
-      if (input.targetState !== void 0) {
-        const probe = probeCache ?? createRealityProbeCache(input.targetState === "absent" ? [input.filePath] : []);
-        if (gateRejectsTouch(input, probe)) {
-          return { additionalContext: null, treeModified: false };
-        }
-      }
-      const fix = await executors.fix(input.filePath, input.cwd);
-      treeModified = fix.modified;
-      if (input.range !== void 0) {
-        range = [input.range];
-      } else {
-        const recovered = recoverRangeFromDisk(input.written, input.filePath);
-        range = recovered === "whole-file" ? "whole-file" : [recovered];
-      }
+function normalizedAddressIdentity(touches) {
+  const byPath = /* @__PURE__ */ new Map();
+  for (const touch of touches) {
+    const existing = byPath.get(touch.repoPath);
+    if (existing === "whole-file" || touch.ranges === "whole-file") {
+      byPath.set(touch.repoPath, "whole-file");
     } else {
-      const recovered = recoverReadRange(input.offset, input.limit, input.filePath);
-      range = recovered === "whole-file" ? "whole-file" : [recovered];
+      byPath.set(touch.repoPath, [...existing ?? [], ...touch.ranges]);
     }
-    const additionalContext = await computeSurface(input, executors, memo, range);
-    return { additionalContext, treeModified };
-  } catch {
-    return { additionalContext: null, treeModified };
   }
+  const identity = [];
+  for (const path of [...byPath.keys()].sort()) {
+    const ranges = byPath.get(path);
+    if (ranges === "whole-file") {
+      identity.push(path);
+      continue;
+    }
+    const sorted = [...ranges].sort((a, b) => a.start - b.start || a.end - b.end);
+    const merged = [];
+    for (const range of sorted) {
+      const prior = merged.at(-1);
+      if (prior !== void 0 && range.start <= prior.end) prior.end = Math.max(prior.end, range.end);
+      else merged.push({ ...range });
+    }
+    identity.push(...merged.map((range) => `${path}#L${range.start}-L${range.end}`));
+  }
+  return identity;
+}
+function deterministicOperationId(invocationId, repoRoot, addresses) {
+  const bytes = createHash("sha256").update(invocationId).update("\0").update(repoRoot).update("\0").update(addresses.join("\0")).digest();
+  bytes[6] = bytes[6] & 15 | 80;
+  bytes[8] = bytes[8] & 63 | 128;
+  const hex = bytes.subarray(0, 16).toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+async function runTouchHooks(inputs, executors, memo, invocationId, probeCache) {
+  const outputs = inputs.map(() => ({ additionalContext: null, treeModified: false }));
+  const prepared = [];
+  for (const [index, input] of inputs.entries()) {
+    if (input.kind === "write" && input.targetState !== void 0) {
+      const probe = probeCache ?? createRealityProbeCache(input.targetState === "absent" ? [input.filePath] : []);
+      const outcome = evaluateWriteGate(input, probe);
+      if (outcome === "decisiveFail" || outcome === "inconclusive" && input.targetState === "absent") continue;
+    }
+    const repoRoot = resolveRepoRoot(dirname5(input.filePath));
+    if (repoRoot === null) continue;
+    prepared.push({
+      input,
+      index,
+      repoRoot,
+      repoPath: relativeToRepo(repoRoot, input.filePath),
+      ranges: rangesForInput(input),
+      partitionKey: `${repoRoot}\0${input.kind === "write" ? "repair" : "read"}`
+    });
+  }
+  const partitions = /* @__PURE__ */ new Map();
+  for (const touch of prepared) {
+    const partition = partitions.get(touch.partitionKey);
+    if (partition === void 0) partitions.set(touch.partitionKey, [touch]);
+    else partition.push(touch);
+  }
+  let queryCount = 0;
+  let scopeCount = 0;
+  let selectedResultCount = 0;
+  let elapsedMs = 0;
+  let treeModified = false;
+  let failure = null;
+  let repairFailure = false;
+  const documents = /* @__PURE__ */ new Map();
+  const rewrittenPartitions = /* @__PURE__ */ new Set();
+  for (const [partitionKey, partition] of partitions) {
+    const repair = partition[0].input.kind === "write";
+    const addresses = partition.flatMap(
+      (touch) => touch.ranges === "whole-file" ? [touch.repoPath] : touch.ranges.map((range) => `${touch.repoPath}#L${range.start}-L${range.end}`)
+    );
+    if (addresses.length > MAX_CONTEXT_ADDRESSES) {
+      failure ??= "address_limit";
+      if (repair) repairFailure = true;
+      continue;
+    }
+    queryCount += 1;
+    const result = await executors.context({
+      repoRoot: partition[0].repoRoot,
+      addresses,
+      repair,
+      ...repair ? {
+        operationId: deterministicOperationId(
+          invocationId,
+          partition[0].repoRoot,
+          normalizedAddressIdentity(partition)
+        )
+      } : {}
+    });
+    elapsedMs += result.elapsedMs;
+    if (!result.ok) {
+      failure ??= result.failure;
+      if (repair) repairFailure = true;
+      continue;
+    }
+    scopeCount += result.document.scopes.length;
+    documents.set(partitionKey, result.document);
+    if (repair && result.document.mutation.rewritten) {
+      treeModified = true;
+      rewrittenPartitions.add(partitionKey);
+    }
+  }
+  for (const touch of prepared) {
+    const document = documents.get(touch.partitionKey);
+    if (document === void 0) continue;
+    const singleTouchMutation = (partitions.get(touch.partitionKey)?.length ?? 0) === 1 && rewrittenPartitions.has(touch.partitionKey);
+    try {
+      const additionalContext = renderContextTouch(touch.input, document, touch.repoPath, touch.ranges, memo);
+      if (additionalContext !== null) selectedResultCount += 1;
+      outputs[touch.index] = { additionalContext, treeModified: singleTouchMutation };
+    } catch {
+      outputs[touch.index] = { additionalContext: null, treeModified: singleTouchMutation };
+    }
+  }
+  return {
+    outputs,
+    treeModified,
+    diagnostics: {
+      queryCount,
+      scopeCount,
+      selectedResultCount,
+      elapsedMs,
+      mutation: treeModified ? "rewritten" : repairFailure ? "unknown" : "unchanged",
+      failure
+    }
+  };
 }
 var DEFAULT_TIMEOUT_MS = 1e4;
-function repoRelArg(filePath, cwd) {
-  const repoRoot = resolveRepoRoot(cwd);
-  if (!repoRoot) return null;
-  return { repoRoot, relPath: relativeToRepo(repoRoot, filePath) };
-}
-function fixOutputModified(stdout) {
-  for (const match of stdout.matchAll(/\((\d+) updated, (\d+) removed\)/g)) {
-    if (Number(match[1]) > 0 || Number(match[2]) > 0) return true;
-  }
-  return /\bcollapsed [1-9]\d* duplicate/.test(stdout);
-}
-function memoizedExecutors(base) {
-  const fixes = /* @__PURE__ */ new Map();
-  const lists = /* @__PURE__ */ new Map();
-  const drifts = /* @__PURE__ */ new Map();
-  const whys = /* @__PURE__ */ new Map();
-  const once = (cache, key, run) => {
-    const found = cache.get(key);
-    if (found !== void 0) return found;
-    const pending = run();
-    cache.set(key, pending);
-    return pending;
-  };
-  const batched = base.batched;
-  const prefetch = batched === void 0 ? void 0 : async (inputs, probeCache) => {
-    const admitted = inputs.filter((input) => !gateRejectsTouch(input, probeCache));
-    if (admitted.length < 2) return;
-    const byCwd = /* @__PURE__ */ new Map();
-    for (const input of admitted) {
-      const group = byCwd.get(input.cwd) ?? [];
-      group.push(input);
-      byCwd.set(input.cwd, group);
-    }
-    await Promise.all(
-      [...byCwd].map(async ([cwd, group]) => {
-        const paths = [...new Set(group.map((input) => input.filePath))];
-        const writePaths = [...new Set(group.filter((i) => i.kind === "write").map((i) => i.filePath))];
-        if (writePaths.length > 0) {
-          const result = await batched.fixMany(writePaths, cwd);
-          for (const filePath of writePaths) {
-            fixes.set(`${cwd}\0${filePath}`, Promise.resolve(result));
-          }
-        }
-        const [listRows, driftRows] = await Promise.all([
-          batched.listMany(paths, cwd),
-          batched.driftMany(paths, cwd)
-        ]);
-        for (const filePath of paths) {
-          const names = new Set(listRows.filter((row) => onTouchedFile(row, filePath)).map((row) => row.name));
-          lists.set(`${cwd}\0${filePath}`, Promise.resolve(listRows.filter((row) => names.has(row.name))));
-          drifts.set(`${cwd}\0${filePath}`, Promise.resolve(driftRows.filter((row) => names.has(row.name))));
-        }
-      })
-    );
-  };
-  return {
-    fix: (filePath, cwd) => once(fixes, `${cwd}\0${filePath}`, () => base.fix(filePath, cwd)),
-    list: (filePath, cwd) => once(lists, `${cwd}\0${filePath}`, () => base.list(filePath, cwd)),
-    drift: (args, cwd) => once(drifts, `${cwd}\0${args.join("\0")}`, () => base.drift(args, cwd)),
-    why: (name, cwd) => once(whys, `${cwd}\0${name}`, () => base.why(name, cwd)),
-    batched,
-    prefetch
-  };
-}
 function createDefaultTouchExecutors(timeoutMs = DEFAULT_TIMEOUT_MS) {
   const executors = {
-    fix: async (filePath, cwd) => {
-      const resolved = repoRelArg(filePath, cwd);
-      if (!resolved) return { modified: false };
-      let out = "";
+    context: async (request) => {
+      const started = performance.now();
+      const args = ["span", "context", ...request.addresses, "--format", "json"];
+      if (request.repair) args.push("--fix", "--operation-id", request.operationId);
+      let stdout;
       try {
-        out = execFileSync5("git", ["span", "drift", resolved.relPath, "--fix"], {
-          cwd: resolved.repoRoot,
+        stdout = execFileSync5("git", args, {
+          cwd: request.repoRoot,
           encoding: "utf8",
           stdio: ["ignore", "pipe", "pipe"],
-          timeout: timeoutMs
+          timeout: timeoutMs,
+          maxBuffer: MAX_CONTEXT_JSON_BYTES + 1
         });
-      } catch (err) {
-        const captured = err.stdout;
-        if (typeof captured === "string") out = captured;
+      } catch (error) {
+        const typed = error;
+        const stderr = typeof typed.stderr === "string" ? typed.stderr : typed.stderr?.toString("utf8");
+        const failure = typed.code === "ENOENT" || stderr?.includes("is not a git command") === true ? "command_absent" : typed.code === "ETIMEDOUT" || typed.signal === "SIGTERM" || typed.killed === true ? "timeout" : typed.code === "ENOBUFS" ? "schema_rejected" : "nonzero_exit";
+        return { ok: false, failure, elapsedMs: performance.now() - started };
       }
-      return { modified: fixOutputModified(out) };
-    },
-    list: async (filePath, cwd) => {
-      const resolved = repoRelArg(filePath, cwd);
-      if (!resolved) return [];
+      if (stdout.trim().length === 0) {
+        return { ok: false, failure: "empty_output", elapsedMs: performance.now() - started };
+      }
       try {
-        const out = execFileSync5("git", ["span", "list", "--porcelain", resolved.relPath], {
-          cwd: resolved.repoRoot,
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "pipe"],
-          timeout: timeoutMs
-        });
-        return parsePorcelain(out);
+        JSON.parse(stdout);
       } catch {
-        return [];
+        return { ok: false, failure: "malformed_json", elapsedMs: performance.now() - started };
       }
-    },
-    drift: async (args, cwd) => {
-      const repoRoot = resolveRepoRoot(cwd);
-      const runCwd = repoRoot ?? cwd;
-      const scoped = repoRoot ? args.map((a) => relativeToRepo(repoRoot, a)) : args;
-      let out;
       try {
-        out = execFileSync5("git", ["span", "drift", "--format", "porcelain", ...scoped], {
-          cwd: runCwd,
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "pipe"],
-          timeout: timeoutMs
-        });
-      } catch (err) {
-        const captured = err.stdout;
-        if (typeof captured === "string") {
-          out = captured;
-        } else {
-          return [];
+        const document = decodeContextDocument(stdout);
+        if (document.mutation.requested !== request.repair || document.mutation.rewritten && !request.repair) {
+          throw new Error("context mutation does not match the requested mode");
         }
-      }
-      return parseDriftPorcelain(out);
-    },
-    why: async (name, cwd) => {
-      const repoRoot = resolveRepoRoot(cwd);
-      try {
-        const out = execFileSync5("git", ["span", "why", name], {
-          cwd: repoRoot ?? cwd,
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "pipe"],
-          timeout: timeoutMs
-        });
-        const text = out.trimEnd();
-        if (text.length === 0 || text === `\`${name}\` has no why recorded.`) return null;
-        return text;
+        return { ok: true, document, elapsedMs: performance.now() - started };
       } catch {
-        return null;
+        return { ok: false, failure: "schema_rejected", elapsedMs: performance.now() - started };
       }
     },
-    batched: {
-      fixMany: async (filePaths, cwd) => {
-        const repoRoot = resolveRepoRoot(cwd);
-        if (!repoRoot) return { modified: false };
-        const rels = filePaths.map((filePath) => relativeToRepo(repoRoot, filePath));
-        if (rels.length === 0) return { modified: false };
-        let out = "";
-        try {
-          out = execFileSync5("git", ["span", "drift", ...rels, "--fix"], {
-            cwd: repoRoot,
-            encoding: "utf8",
-            stdio: ["ignore", "pipe", "pipe"],
-            timeout: timeoutMs
-          });
-        } catch (err) {
-          const captured = err.stdout;
-          if (typeof captured === "string") out = captured;
-        }
-        return { modified: fixOutputModified(out) };
-      },
-      listMany: async (filePaths, cwd) => {
-        const repoRoot = resolveRepoRoot(cwd);
-        if (!repoRoot) return [];
-        const rels = filePaths.map((filePath) => relativeToRepo(repoRoot, filePath));
-        if (rels.length === 0) return [];
-        try {
-          const out = execFileSync5("git", ["span", "list", "--porcelain", ...rels], {
-            cwd: repoRoot,
-            encoding: "utf8",
-            stdio: ["ignore", "pipe", "pipe"],
-            timeout: timeoutMs
-          });
-          return parsePorcelain(out);
-        } catch {
-          return [];
-        }
-      },
-      driftMany: async (filePaths, cwd) => {
-        const repoRoot = resolveRepoRoot(cwd);
-        const runCwd = repoRoot ?? cwd;
-        const scoped = repoRoot ? filePaths.map((filePath) => relativeToRepo(repoRoot, filePath)) : filePaths;
-        if (scoped.length === 0) return [];
-        let out;
-        try {
-          out = execFileSync5("git", ["span", "drift", "--format", "porcelain", ...scoped], {
-            cwd: runCwd,
-            encoding: "utf8",
-            stdio: ["ignore", "pipe", "pipe"],
-            timeout: timeoutMs
-          });
-        } catch (err) {
-          const captured = err.stdout;
-          if (typeof captured === "string") {
-            out = captured;
-          } else {
-            return [];
-          }
-        }
-        return parseDriftPorcelain(out);
-      }
-    },
-    forInvocation: () => memoizedExecutors(executors)
+    forInvocation: () => executors
   };
   return executors;
 }
@@ -6696,17 +6760,17 @@ function bashSpanToTouch(span, sessionId, cwd, scopeAlreadyResolved = false) {
 }
 function bashResponseInterrupted(toolResponse) {
   if (toolResponse !== null && typeof toolResponse === "object") {
-    const record = toolResponse;
-    const timedOutAfterMs = record.timedOutAfterMs;
-    return record.interrupted === true || record.is_interrupt === true || typeof timedOutAfterMs === "number" && Number.isFinite(timedOutAfterMs) && timedOutAfterMs >= 0;
+    const record2 = toolResponse;
+    const timedOutAfterMs = record2.timedOutAfterMs;
+    return record2.interrupted === true || record2.is_interrupt === true || typeof timedOutAfterMs === "number" && Number.isFinite(timedOutAfterMs) && timedOutAfterMs >= 0;
   }
   return false;
 }
 function bashResponseExitCode(toolResponse) {
   if (toolResponse !== null && typeof toolResponse === "object") {
-    const record = toolResponse;
+    const record2 = toolResponse;
     for (const field of ["exit_code", "exitCode", "exitStatus"]) {
-      const code = record[field];
+      const code = record2[field];
       if (typeof code === "number" && Number.isInteger(code)) return code;
     }
   }
@@ -6733,7 +6797,7 @@ function joinOfCommand(idx, groups, guardByIndex) {
   }
   return guardByIndex.get(idx)?.join;
 }
-async function runBashTouches(matches, sessionId, cwd, toolResponse, executors, memo, warn = console.warn, scopeAlreadyResolved = false, reportDiagnostics = () => void 0) {
+async function runBashTouches(matches, sessionId, cwd, toolResponse, executors, memo, warn = console.warn, scopeAlreadyResolved = false, reportDiagnostics = () => void 0, invocationId = `${sessionId}:bash`) {
   const resolved = matches.filter((m) => m.status === "resolved");
   if (bashResponseInterrupted(toolResponse)) {
     reportDiagnostics({ executionGateDrops: resolved.length });
@@ -6916,10 +6980,8 @@ async function runBashTouches(matches, sessionId, cwd, toolResponse, executors, 
     effective.set(idx, computed.get(idx));
     prevIndex = idx;
   }
-  const blocks = [];
-  let executedTouches = 0;
+  const touches = [];
   const invocationExecutors = executors.forInvocation?.() ?? executors;
-  const admitted = [];
   for (const idx of commandOrder) {
     if (skipped.has(idx)) continue;
     const list = evals.get(idx);
@@ -6930,22 +6992,20 @@ async function runBashTouches(matches, sessionId, cwd, toolResponse, executors, 
       if (e.outcome === "inconclusive" && e.touch.kind === "write" && e.touch.targetState === "absent") continue;
       if (e.outcome === "inconclusive" && e.touch.kind === "write" && exitCode !== void 0 && exitCode !== 0)
         continue;
-      admitted.push(e.touch);
+      touches.push(e.touch);
     }
   }
-  await invocationExecutors.prefetch?.(admitted, probeCache);
-  for (const touch of admitted) {
-    executedTouches += 1;
-    const output = await runTouchHook(touch, invocationExecutors, memo, probeCache);
-    if (output.additionalContext) blocks.push(output.additionalContext);
-  }
-  reportDiagnostics({ executionGateDrops: resolved.length - executedTouches });
+  const batch = await runTouchHooks(touches, invocationExecutors, memo, invocationId, probeCache);
+  const blocks = batch.outputs.flatMap(
+    (output) => output.additionalContext === null ? [] : [output.additionalContext]
+  );
+  reportDiagnostics({ executionGateDrops: resolved.length - touches.length, ...batch.diagnostics });
   return blocks;
 }
 
 // src/common/parse-response.ts
 import { existsSync as existsSync4, statSync as statSync5 } from "node:fs";
-import { dirname as dirname5, join as join5, resolve as resolvePath2, sep as sep2 } from "node:path";
+import { dirname as dirname6, join as join5, resolve as resolvePath2, sep as sep2 } from "node:path";
 var MAX_RESPONSE_SPANS = 50;
 var SEARCH_BINS = /* @__PURE__ */ new Set(["rg", "grep", "egrep", "fgrep"]);
 var VALUE_SHORT_FLAGS = /* @__PURE__ */ new Set(["A", "B", "C", "e", "f", "m", "g", "t", "T"]);
@@ -7367,7 +7427,7 @@ function findGitRoot(startDir) {
   let dir = startDir;
   for (; ; ) {
     if (existsSync4(join5(dir, ".git"))) return dir;
-    const parent = dirname5(dir);
+    const parent = dirname6(dir);
     if (parent === dir) return null;
     dir = parent;
   }
@@ -7483,18 +7543,18 @@ function decodeUnifiedDiff(stdout) {
   }
   return perFile;
 }
-function emitHunkRange(perFile, record, hunk) {
-  if (record.binary || record.combined || record.submodule || record.unusable) return;
+function emitHunkRange(perFile, record2, hunk) {
+  if (record2.binary || record2.combined || record2.submodule || record2.unusable) return;
   const oldStart = Number.parseInt(hunk[1], 10);
   const oldCount = hunk[2] === void 0 ? 1 : Number.parseInt(hunk[2], 10);
   const newStart = Number.parseInt(hunk[3], 10);
   const newCount = hunk[4] === void 0 ? 1 : Number.parseInt(hunk[4], 10);
-  if (record.rename) {
-    if (record.newPath !== null) addLines(perFile, record.newPath, newStart, newCount);
+  if (record2.rename) {
+    if (record2.newPath !== null) addLines(perFile, record2.newPath, newStart, newCount);
     return;
   }
-  if (record.oldPath !== null) addLines(perFile, record.oldPath, oldStart, oldCount);
-  if (record.newPath !== null) addLines(perFile, record.newPath, newStart, newCount);
+  if (record2.oldPath !== null) addLines(perFile, record2.oldPath, oldStart, oldCount);
+  if (record2.newPath !== null) addLines(perFile, record2.newPath, newStart, newCount);
 }
 function addLines(perFile, path, start, count) {
   if (start < 1 || count <= 0) return;
@@ -7665,13 +7725,13 @@ function parseResponse(input) {
 
 // src/common/bash-attribution.ts
 var RESPONSE_TEXT_FIELDS = ["output", "stdout", "content", "text"];
-function finiteTimeout(record) {
-  const value = record.timedOutAfterMs;
+function finiteTimeout(record2) {
+  const value = record2.timedOutAfterMs;
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
-function integerExitStatus(record) {
+function integerExitStatus(record2) {
   for (const field of ["exit_code", "exitCode", "exitStatus"]) {
-    const value = record[field];
+    const value = record2[field];
     if (typeof value === "number" && Number.isInteger(value)) return value;
   }
   return void 0;
@@ -7689,16 +7749,16 @@ function normalizeBashResponse(toolResponse) {
     return { stdout: text.join("") };
   }
   if (toolResponse === null || typeof toolResponse !== "object") return null;
-  const record = toolResponse;
+  const record2 = toolResponse;
   for (const field of RESPONSE_TEXT_FIELDS) {
-    const value = record[field];
+    const value = record2[field];
     if (typeof value !== "string") continue;
-    const interrupted = record.interrupted === true || record.is_interrupt === true || finiteTimeout(record);
-    const rawOutputPath = record.rawOutputPath;
+    const interrupted = record2.interrupted === true || record2.is_interrupt === true || finiteTimeout(record2);
+    const rawOutputPath = record2.rawOutputPath;
     return {
       stdout: value,
-      stderr: typeof record.stderr === "string" ? record.stderr : void 0,
-      exitStatus: integerExitStatus(record),
+      stderr: typeof record2.stderr === "string" ? record2.stderr : void 0,
+      exitStatus: integerExitStatus(record2),
       truncated: typeof rawOutputPath === "string" && rawOutputPath.length > 0 || rawOutputPath === true || interrupted,
       interrupted
     };
@@ -7731,7 +7791,7 @@ function planEvidence(matches, requirements) {
     return {
       kind: "content-digest",
       algorithm: "sha256",
-      digest: createHash("sha256").update(expectedContent).digest("hex"),
+      digest: createHash2("sha256").update(expectedContent).digest("hex"),
       range: unionRange(ranges)
     };
   }
@@ -7832,24 +7892,24 @@ function planBashTouches(command, cwd, sessionId, toolUseId, logger2, store) {
     eligibilityErrors: tracked.errors
   });
 }
-function plannedSpans(record, cwd, logger2) {
-  if (record === null) return [];
-  const relativeCwd = nodePath5.relative(record.repoRoot, cwd);
+function plannedSpans(record2, cwd, logger2) {
+  if (record2 === null) return [];
+  const relativeCwd = nodePath5.relative(record2.repoRoot, cwd);
   const cwdInsidePlannedRepo = relativeCwd === "" || relativeCwd !== ".." && !relativeCwd.startsWith(`..${nodePath5.sep}`) && !nodePath5.isAbsolute(relativeCwd);
   if (!cwdInsidePlannedRepo) {
     logger2.warn("git-span static attribution ignored an incompatible planned-touch record", {
-      plannedRepoRoot: record.repoRoot,
+      plannedRepoRoot: record2.repoRoot,
       currentCwd: cwd
     });
     return [];
   }
   const matches = [];
-  for (const touch of record.touches) {
-    const absolutePath = nodePath5.join(record.repoRoot, touch.repoRelativePath);
+  for (const touch of record2.touches) {
+    const absolutePath = nodePath5.join(record2.repoRoot, touch.repoRelativePath);
     let expectedContent;
     if (touch.evidence?.kind === "content-digest") {
       const content = readText(absolutePath);
-      const digest = content === null ? null : createHash("sha256").update(content).digest("hex");
+      const digest = content === null ? null : createHash2("sha256").update(content).digest("hex");
       if (digest !== touch.evidence.digest) {
         logger2.warn("git-span static attribution discarded unverifiable planned evidence", {
           path: touch.repoRelativePath,
@@ -7927,31 +7987,29 @@ function filterPostTracked(matches, responseSpans, cwd, preTrackedPaths, preTrac
     eligibilityErrors: filtered.errors
   };
 }
-async function runResponseReadTouches(spans, cwd, sessionId, executors, memo) {
-  const blocks = [];
-  for (const span of spans) {
-    const output = await runTouchHook(
-      {
-        kind: "read",
-        sessionId,
-        cwd,
-        filePath: span.absolutePath,
-        offset: span.lineStart,
-        limit: span.lineEnd - span.lineStart + 1
-      },
-      executors,
-      memo
-    );
-    if (output.additionalContext) blocks.push(output.additionalContext);
-  }
-  return blocks;
+async function runResponseReadTouches(spans, cwd, sessionId, executors, memo, invocationId) {
+  const touches = spans.map(
+    (span) => ({
+      kind: "read",
+      sessionId,
+      cwd,
+      filePath: span.absolutePath,
+      offset: span.lineStart,
+      limit: span.lineEnd - span.lineStart + 1
+    })
+  );
+  const batch = await runTouchHooks(touches, executors, memo, invocationId);
+  return {
+    blocks: batch.outputs.flatMap((output) => output.additionalContext === null ? [] : [output.additionalContext]),
+    diagnostics: batch.diagnostics
+  };
 }
 async function runLayeredBashTouches(command, cwd, sessionId, toolUseId, toolResponse, executors, memo, logger2, store) {
   const parserStarted = performance.now();
   const claimed = toolUseId === void 0 ? { status: "missing" } : store.take(sessionId, toolUseId);
   if (claimed.status === "consumed") return [];
-  const record = claimed.status === "record" ? claimed.record : null;
-  const planned = plannedSpans(record, cwd, logger2);
+  const record2 = claimed.status === "record" ? claimed.record : null;
+  const planned = plannedSpans(record2, cwd, logger2);
   const parsed = parseCommandLayered(command, { cwd, readPreState: readText });
   const preStateKeys = new Set(parsed.preStateRequests.map((request) => planGroupKey(request)));
   const ordinary = parsed.resolved.filter(({ span }) => !preStateKeys.has(planGroupKey(span))).map(({ idiom, span }) => ({ status: "resolved", idiom, span }));
@@ -7982,10 +8040,10 @@ async function runLayeredBashTouches(command, cwd, sessionId, toolUseId, toolRes
     ...guards
   ];
   const preTrackedDeletes = new Set(
-    (record?.touches ?? []).filter(({ operation, evidence }) => operation === "delete" && evidence?.kind === "tracked").map(({ repoRelativePath }) => nodePath5.join(record.repoRoot, repoRelativePath))
+    (record2?.touches ?? []).filter(({ operation, evidence }) => operation === "delete" && evidence?.kind === "tracked").map(({ repoRelativePath }) => nodePath5.join(record2.repoRoot, repoRelativePath))
   );
   const preTrackedPaths = new Set(
-    (record?.touches ?? []).map(({ repoRelativePath }) => nodePath5.join(record.repoRoot, repoRelativePath))
+    (record2?.touches ?? []).map(({ repoRelativePath }) => nodePath5.join(record2.repoRoot, repoRelativePath))
   );
   const response = bashResponseInterrupted(toolResponse) ? null : normalizeBashResponse(toolResponse);
   const responseSpans = response === null ? [] : parseResponse({ command, cwd, ...response });
@@ -7993,6 +8051,8 @@ async function runLayeredBashTouches(command, cwd, sessionId, toolUseId, toolRes
   const parserLatencyMs = performance.now() - parserStarted;
   const touchStarted = performance.now();
   let executionGateDrops = 0;
+  let commandDiagnostics = {};
+  const invocationId = `${sessionId}:${toolUseId ?? createHash2("sha256").update(command).digest("hex")}`;
   const commandBlocks = await runBashTouches(
     filtered.matches,
     sessionId,
@@ -8004,10 +8064,19 @@ async function runLayeredBashTouches(command, cwd, sessionId, toolUseId, toolRes
     true,
     (diagnostics) => {
       executionGateDrops = diagnostics.executionGateDrops;
-    }
+      commandDiagnostics = diagnostics;
+    },
+    invocationId
   );
-  const responseBlocks = await runResponseReadTouches(filtered.responseSpans, cwd, sessionId, executors, memo);
-  const blocks = [...commandBlocks, ...responseBlocks];
+  const responseBatch = await runResponseReadTouches(
+    filtered.responseSpans,
+    cwd,
+    sessionId,
+    executors,
+    memo,
+    `${invocationId}:response`
+  );
+  const blocks = [...commandBlocks, ...responseBatch.blocks];
   logger2.info?.("git-span static attribution post", {
     resolvedReads: filtered.matches.filter((match) => match.status === "resolved" && match.span.operation === "read").length,
     resolvedWrites: filtered.matches.filter((match) => match.status === "resolved" && match.span.operation !== "read").length,
@@ -8021,6 +8090,12 @@ async function runLayeredBashTouches(command, cwd, sessionId, toolUseId, toolRes
     ignoreQueryCount: filtered.ignoreQueryCount,
     trackedQueryCount: filtered.trackedQueryCount,
     eligibilityErrors: filtered.eligibilityErrors,
+    contextQueryCount: (commandDiagnostics.queryCount ?? 0) + responseBatch.diagnostics.queryCount,
+    contextScopeCount: (commandDiagnostics.scopeCount ?? 0) + responseBatch.diagnostics.scopeCount,
+    contextSelectedResultCount: (commandDiagnostics.selectedResultCount ?? 0) + responseBatch.diagnostics.selectedResultCount,
+    contextElapsedMs: (commandDiagnostics.elapsedMs ?? 0) + responseBatch.diagnostics.elapsedMs,
+    contextMutation: commandDiagnostics.mutation ?? "unchanged",
+    contextFailure: commandDiagnostics.failure ?? responseBatch.diagnostics.failure,
     dependencyContextSurfaced: blocks.length > 0
   });
   return blocks;
@@ -8028,7 +8103,7 @@ async function runLayeredBashTouches(command, cwd, sessionId, toolUseId, toolRes
 
 // src/common/advisor-core.ts
 import { execFileSync as execFileSync6 } from "node:child_process";
-import { createHash as createHash2 } from "node:crypto";
+import { createHash as createHash3 } from "node:crypto";
 import * as fs8 from "node:fs";
 import * as nodePath7 from "node:path";
 
@@ -8289,7 +8364,7 @@ var COMMIT_VALUE_OPTIONS = /* @__PURE__ */ new Set([
 function commitStagesAll(command) {
   for (const segment of splitSegments2(command)) {
     const inv = matchGitInvocation(tokenize2(segment));
-    if (inv?.subcommand !== "commit") continue;
+    if (!inv || inv.subcommand !== "commit") continue;
     const dashDash = inv.args.indexOf("--");
     const flagArgs = dashDash >= 0 ? inv.args.slice(0, dashDash) : inv.args;
     for (let i = 0; i < flagArgs.length; i++) {
@@ -8610,10 +8685,10 @@ function anchorText2(row) {
 function advisorStateDigest(findings, uncovered) {
   const findingKeys = findings.map((row) => `${row.status}	${row.name}	${row.path}	${row.start}	${row.end}`).sort();
   const payload = JSON.stringify({ findings: findingKeys, uncovered: [...uncovered].sort() });
-  return createHash2("sha256").update(payload).digest("hex");
+  return createHash3("sha256").update(payload).digest("hex");
 }
 function reportItemKey(identity) {
-  return `report-${createHash2("sha256").update(identity).digest("hex")}`;
+  return `report-${createHash3("sha256").update(identity).digest("hex")}`;
 }
 function semanticReportIdentity(row) {
   return JSON.stringify({ kind: "semantic", path: row.path, name: row.name });
@@ -9406,14 +9481,14 @@ function processUpdateLine(hunk, raw) {
 function splitLines(content) {
   return content.split("\n");
 }
-function scanLineIndices(lines, value) {
+function lineIndices(lines, value) {
   const out = [];
   for (let i = 0; i < lines.length; i++) {
     if (lines[i] === value) out.push(i);
   }
   return out;
 }
-function scanContiguousMatches(haystack, needle) {
+function contiguousMatches(haystack, needle) {
   const out = [];
   if (needle.length === 0 || needle.length > haystack.length) return out;
   const last = haystack.length - needle.length;
@@ -9429,57 +9504,12 @@ function scanContiguousMatches(haystack, needle) {
   }
   return out;
 }
-function buildLineOccurrences(lines) {
-  const occurrences = /* @__PURE__ */ new Map();
-  for (let i = 0; i < lines.length; i++) {
-    const seen = occurrences.get(lines[i]);
-    if (seen === void 0) occurrences.set(lines[i], i);
-    else if (typeof seen === "number") occurrences.set(lines[i], [seen, i]);
-    else seen.push(i);
-  }
-  return occurrences;
-}
-function occurrencesOf(occurrences, value) {
-  const seen = occurrences.get(value);
-  if (seen === void 0) return [];
-  return typeof seen === "number" ? [seen] : seen;
-}
-function indexedContiguousMatches(haystack, needle, occurrences) {
-  const out = [];
-  if (needle.length === 0 || needle.length > haystack.length) return out;
-  const last = haystack.length - needle.length;
-  for (const start of occurrencesOf(occurrences, needle[0])) {
-    if (start > last) break;
-    let ok = true;
-    for (let j = 1; j < needle.length; j++) {
-      if (haystack[start + j] !== needle[j]) {
-        ok = false;
-        break;
-      }
-    }
-    if (ok) out.push(start);
-  }
-  return out;
-}
-function preEditLines(lines, chunkCount) {
-  if (chunkCount <= 1) {
-    return {
-      lineIndices: (value) => scanLineIndices(lines, value),
-      contiguousMatches: (needle) => scanContiguousMatches(lines, needle)
-    };
-  }
-  const occurrences = buildLineOccurrences(lines);
-  return {
-    lineIndices: (value) => occurrencesOf(occurrences, value),
-    contiguousMatches: (needle) => indexedContiguousMatches(lines, needle, occurrences)
-  };
-}
 function locateChunk(preLines, chunk) {
   const block = chunk.oldLines;
   if (block.length === 0) {
     const ctx2 = chunk.changeContext;
     if (ctx2 !== null && ctx2 !== "") {
-      const ctxIdxs = preLines.lineIndices(ctx2);
+      const ctxIdxs = lineIndices(preLines, ctx2);
       if (ctxIdxs.length === 1) {
         const line = ctxIdxs[0] + 1;
         return { start: line, end: line };
@@ -9487,7 +9517,7 @@ function locateChunk(preLines, chunk) {
     }
     return null;
   }
-  const starts = preLines.contiguousMatches(block);
+  const starts = contiguousMatches(preLines, block);
   if (starts.length === 1) {
     const s = starts[0];
     return { start: s + 1, end: s + block.length };
@@ -9495,7 +9525,7 @@ function locateChunk(preLines, chunk) {
   if (starts.length === 0) return null;
   const ctx = chunk.changeContext;
   if (ctx !== null && ctx !== "") {
-    for (const c of preLines.lineIndices(ctx)) {
+    for (const c of lineIndices(preLines, ctx)) {
       const after = starts.find((s) => s >= c);
       if (after !== void 0) {
         return { start: after + 1, end: after + block.length };
@@ -9530,8 +9560,7 @@ function parseApplyPatch(command, readPreEditFile = defaultReadPreEditFile) {
       continue;
     }
     const content = readPreEditFile(hunk.path);
-    const pre = content === null ? null : preEditLines(splitLines(content), hunk.chunks.length);
-    const range = pre === null ? null : recoverRange2(pre, hunk.chunks);
+    const range = content === null ? null : recoverRange2(splitLines(content), hunk.chunks);
     if (range !== null) {
       anchors.push({ path: targetPath, kind: "write", range });
     } else {
@@ -9627,18 +9656,18 @@ function classifyApplyPatchResponse(toolResponse) {
   return normalized.stdout.startsWith(APPLY_PATCH_SUCCESS_PREFIX) ? "success" : "failure";
 }
 var noRangeRecovery = () => null;
-function plannedPatchCandidates(record, cwd) {
+function plannedPatchCandidates(record2, cwd) {
   const repoRoot = resolveRepoRoot(cwd);
-  if (record === null || repoRoot === null || toPosix(record.repoRoot) !== toPosix(repoRoot)) return [];
-  return record.touches.map((touch) => ({
-    absolutePath: resolvePath3(record.repoRoot, touch.repoRelativePath),
+  if (record2 === null || repoRoot === null || toPosix(record2.repoRoot) !== toPosix(repoRoot)) return [];
+  return record2.touches.map((touch) => ({
+    absolutePath: resolvePath3(record2.repoRoot, touch.repoRelativePath),
     operation: touch.operation === "delete" ? "delete" : touch.operation === "create-overwrite" ? "create-overwrite" : "modify",
     ranges: touch.ranges,
     preTrackedDelete: touch.operation === "delete" && touch.evidence?.kind === "tracked"
   }));
 }
-async function runApplyPatchTouches(command, cwd, sessionId, record, executors, memo) {
-  const planned = plannedPatchCandidates(record, cwd);
+async function runApplyPatchTouches(command, cwd, sessionId, record2, executors, memo, invocationId) {
+  const planned = plannedPatchCandidates(record2, cwd);
   const plannedPaths = new Set(planned.map(({ absolutePath }) => absolutePath));
   const fallback = parseApplyPatch(command, noRangeRecovery).map(
     (anchor) => ({
@@ -9655,29 +9684,26 @@ async function runApplyPatchTouches(command, cwd, sessionId, record, executors, 
   );
   const eligible = new Set(tracked.eligible.map(({ value }) => value));
   for (const candidate of candidates) if (candidate.preTrackedDelete) eligible.add(candidate);
-  const blocks = [];
+  const touches = [];
   for (const candidate of candidates) {
     if (!eligible.has(candidate)) continue;
     const ranges = candidate.ranges.length === 0 ? [void 0] : candidate.ranges;
     for (const range of ranges) {
-      const output = await runTouchHook(
-        {
-          kind: "write",
-          sessionId,
-          cwd,
-          filePath: candidate.absolutePath,
-          written: "",
-          range,
-          targetState: candidate.operation === "delete" ? "absent" : "exists",
-          ...candidate.operation === "delete" ? { postState: { realDelete: true } } : {}
-        },
-        executors,
-        memo
-      );
-      if (output.additionalContext) blocks.push(output.additionalContext);
+      touches.push({
+        kind: "write",
+        sessionId,
+        cwd,
+        filePath: candidate.absolutePath,
+        invocationId,
+        written: "",
+        range,
+        targetState: candidate.operation === "delete" ? "absent" : "exists",
+        ...candidate.operation === "delete" ? { postState: { realDelete: true } } : {}
+      });
     }
   }
-  return blocks;
+  const batch = await runTouchHooks(touches, executors, memo, invocationId);
+  return batch.outputs.flatMap((output) => output.additionalContext === null ? [] : [output.additionalContext]);
 }
 function createHandler2(executors = createDefaultTouchExecutors(), memoFactory = createDiskMemoStore, layout = DEFAULT_SESSION_LAYOUT) {
   return async (input, ctx) => {
@@ -9722,14 +9748,22 @@ function createHandler2(executors = createDefaultTouchExecutors(), memoFactory =
     const store = createDefaultPlannedTouchStore(layout);
     const planned = input.tool_use_id === void 0 ? { status: "missing" } : store.take(sessionId, input.tool_use_id);
     if (planned.status === "consumed") return void 0;
-    const record = planned.status === "record" ? planned.record : null;
+    const record2 = planned.status === "record" ? planned.record : null;
     const classification = classifyApplyPatchResponse(input.tool_response);
     if (classification === "failure") return void 0;
     if (classification === "unknown") {
       ctx.logger.warn("Codex apply_patch tool_response shape unrecognized; suppressing attribution");
       return void 0;
     }
-    const blocks = await runApplyPatchTouches(command, cwd, sessionId, record, executors, memo);
+    const blocks = await runApplyPatchTouches(
+      command,
+      cwd,
+      sessionId,
+      record2,
+      executors,
+      memo,
+      `${sessionId}:${input.tool_use_id ?? "apply_patch"}`
+    );
     if (blocks.length === 0) return void 0;
     const combined = blocks.join("");
     return postToolUseOutput({ additionalContext: combined, systemMessage: combined });

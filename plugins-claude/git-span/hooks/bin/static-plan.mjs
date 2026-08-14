@@ -778,7 +778,7 @@ function pruneStaleSessions(layout, now = Date.now(), maxAgeMs = THIRTY_DAYS_MS)
 }
 
 // src/common/bash-attribution.ts
-import { createHash } from "node:crypto";
+import { createHash as createHash2 } from "node:crypto";
 import * as fs7 from "node:fs";
 import * as nodePath5 from "node:path";
 
@@ -5905,12 +5905,14 @@ function filterTrackedEligibility(candidates, options) {
 
 // src/common/touch-core.ts
 import { execFileSync as execFileSync5 } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as fs6 from "node:fs";
-import { basename as basename4, join as join4 } from "node:path";
+import { basename as basename4, dirname as dirname5, join as join4 } from "node:path";
+var MAX_CONTEXT_JSON_BYTES = 16 * 1024 * 1024;
 
 // src/common/parse-response.ts
 import { existsSync as existsSync4, statSync as statSync5 } from "node:fs";
-import { dirname as dirname5, join as join5, resolve as resolvePath2, sep as sep2 } from "node:path";
+import { dirname as dirname6, join as join5, resolve as resolvePath2, sep as sep2 } from "node:path";
 
 // src/common/bash-attribution.ts
 function createDefaultPlannedTouchStore(layout) {
@@ -5939,7 +5941,7 @@ function planEvidence(matches, requirements) {
     return {
       kind: "content-digest",
       algorithm: "sha256",
-      digest: createHash("sha256").update(expectedContent).digest("hex"),
+      digest: createHash2("sha256").update(expectedContent).digest("hex"),
       range: unionRange(ranges)
     };
   }

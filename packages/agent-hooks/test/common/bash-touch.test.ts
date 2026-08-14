@@ -25,8 +25,9 @@ import { bashSpanToTouch, runBashTouches } from '../../src/common/bash-touch.js'
 import type { ResolvedSpan, SpanMatch } from '../../src/common/parse-command.js';
 import type { MemoStore } from '../../src/common/span-surface.js';
 import { filterTrackedEligibility } from '../../src/common/static-attribution.js';
-import type { TouchExecutors, TouchFixResult } from '../../src/common/touch-core.js';
+import type { TouchExecutors } from '../../src/common/touch-core.js';
 import { makeTempRepo } from '../helpers.js';
+import { contextExecutors } from '../touch-context-fake.js';
 
 const SESSION_ID = 'session-bash-touch-test';
 
@@ -64,8 +65,8 @@ function makeCountingExecutors(): {
   const fixPaths: string[] = [];
   const listPaths: string[] = [];
   return {
-    executors: {
-      fix: async (filePath): Promise<TouchFixResult> => {
+    executors: contextExecutors({
+      fix: async (filePath) => {
         calls.fix += 1;
         fixPaths.push(filePath);
         return { modified: false };
@@ -83,7 +84,7 @@ function makeCountingExecutors(): {
         calls.why += 1;
         return null;
       }
-    },
+    }),
     calls,
     fixPaths,
     listPaths

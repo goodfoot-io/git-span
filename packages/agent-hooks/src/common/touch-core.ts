@@ -16,8 +16,9 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import {
   type DriftPorcelainRow,
   humanStatusLabel,
@@ -25,7 +26,6 @@ import {
   type LineRange,
   type PorcelainRow,
   type PorcelainStatus,
-  parseDriftPorcelain,
   parsePorcelain,
   rangesIntersect,
   relativeToRepo,
@@ -117,6 +117,8 @@ interface TouchInputBase {
   cwd: string;
   /** Absolute, canonicalized path of the touched file. */
   filePath: string;
+  /** Stable identity of this host tool invocation, used for repair replay. */
+  invocationId?: string;
 }
 
 /** A read touch (Claude `Read`, or a read-shaped Codex event). */
@@ -512,117 +514,299 @@ export function evaluateWriteGate(input: TouchWriteInput, probeCache: RealityPro
   return 'inconclusive';
 }
 
-/**
- * Whether the layered write gate rejects this touch outright, so it reaches no
- * executor at all — a decisive fail, or an inconclusive phantom delete.
- *
- * The single source of truth for that decision, shared by {@link runTouchHook}
- * and the batched {@link TouchExecutors.prefetch}: the prefetch must heal
- * exactly the set the per-touch path would have healed, and any divergence
- * here would silently `--fix` a file whose write never landed. Read-path
- * touches and writes without a `targetState` claim are never rejected.
- */
-export function gateRejectsTouch(input: TouchInput, probeCache: RealityProbeCache): boolean {
-  if (input.kind !== 'write' || input.targetState === undefined) return false;
-  const outcome = evaluateWriteGate(input, probeCache);
-  return outcome === 'decisiveFail' || (outcome === 'inconclusive' && input.targetState === 'absent');
-}
-
 // ---------------------------------------------------------------------------
 // Injected executors
 // ---------------------------------------------------------------------------
 
-/** Structured result of a scoped `git span drift <file> --fix`. */
-export interface TouchFixResult {
-  /**
-   * Whether `--fix` re-anchored at least one span in the working tree. Drives
-   * {@link TouchOutput.treeModified} so a caller/test can assert the healing
-   * happened without diffing the tree itself.
-   */
-  modified: boolean;
+export type ContextExtent = { kind: 'whole' } | { kind: 'lines'; start: number; end: number };
+
+export interface ContextScope {
+  path: string;
+  extent: ContextExtent;
 }
 
-/**
- * Run `git span drift <file> --fix` scoped to the touched file (write path
- * only), reporting whether the working tree was healed. Async so the eventual
- * implementation and its tests can inject a fake without a real subprocess.
- */
-export type TouchFixExecutor = (filePath: string, cwd: string) => Promise<TouchFixResult>;
-
-/**
- * Run `git span list --porcelain <file>` and return its parsed rows — one per
- * anchor covering the file. Structured (not raw stdout) so the merged-block
- * computation and its tests share the same shape.
- */
-export type TouchListExecutor = (filePath: string, cwd: string) => Promise<PorcelainRow[]>;
-
-/**
- * Run `git span drift --format porcelain <args>` (scoped to the touched file or
- * its spans) and return its parsed rows — one per drifted anchor, empty when
- * clean. Status classification is via `isDebt()`; positional (`MOVED`,
- * `RESOLVED_PENDING_COMMIT`) rows are never debt.
- */
-export type TouchDriftExecutor = (args: string[], cwd: string) => Promise<DriftPorcelainRow[]>;
-
-/**
- * Run bare `git span why <name>` and return the span's recorded why sentence,
- * or `null` when none is recorded or the read fails. Feeds the human-format
- * span render; invoked only for spans actually being surfaced this touch.
- */
-export type TouchWhyExecutor = (name: string, cwd: string) => Promise<string | null>;
-
-/**
- * The injected execution surface. Kept as four narrow async functions (rather
- * than a raw command runner) so tests inject fakes returning structured data
- * and the core never spawns a subprocess itself. The `read` path never invokes
- * `fix`.
- */
-/**
- * One-spawn-per-kind counterparts to the per-file executors, used only to
- * prime an invocation's memo caches (see {@link TouchExecutors.prefetch}).
- * Each takes every path in the batch and returns the union result; the
- * per-file views are reconstructed from it by span coverage.
- */
-export interface BatchedTouchExecutors {
-  /** One `git span drift <p1> <p2> ... --fix` for the whole write set. */
-  fixMany: (filePaths: string[], cwd: string) => Promise<TouchFixResult>;
-  /** One `git span list --porcelain <p1> <p2> ...` for the whole batch. */
-  listMany: (filePaths: string[], cwd: string) => Promise<PorcelainRow[]>;
-  /** One `git span drift --format porcelain <p1> <p2> ...` for the whole batch. */
-  driftMany: (filePaths: string[], cwd: string) => Promise<DriftPorcelainRow[]>;
+export interface ContextLocation {
+  path: string;
+  extent: ContextExtent;
 }
 
+export type ContextSource = 'WORKTREE' | 'INDEX' | 'HEAD';
+export type ContextUnavailableReason =
+  | 'LFS_NOT_FETCHED'
+  | 'LFS_NOT_INSTALLED'
+  | 'PROMISOR_MISSING'
+  | 'SPARSE_EXCLUDED'
+  | 'FILTER_FAILED'
+  | 'IO_ERROR';
+export type ContextStatus =
+  | { code: 'FRESH' | 'RESOLVED_PENDING_COMMIT' | 'MOVED' | 'CHANGED' | 'DELETED' | 'CONFLICT' | 'SUBMODULE' }
+  | { code: 'CONTENT_UNAVAILABLE'; reason: ContextUnavailableReason; detail: unknown };
+
+export interface ContextAnchor {
+  ordinal: number;
+  id: string;
+  anchored: ContextLocation;
+  current: ContextLocation | null;
+  status: ContextStatus;
+  source: ContextSource | null;
+  sources: ContextSource[];
+}
+
+export interface ContextOverlap {
+  scope: number;
+  anchor: { ordinal: number; id: string };
+  basis: 'anchored' | 'current';
+  location: ContextLocation;
+  intersection: ContextExtent;
+}
+
+export interface ContextSpan {
+  name: string;
+  why: string | null;
+  overlaps: ContextOverlap[];
+  anchors: ContextAnchor[];
+}
+
+export interface ContextMutation {
+  requested: boolean;
+  rewritten: boolean;
+  spans_touched: number;
+  anchors_updated: number;
+  anchors_removed: number;
+  identities_collapsed: number;
+}
+
+export interface ContextDocument {
+  schema_version: 1;
+  scopes: ContextScope[];
+  mutation: ContextMutation;
+  spans: ContextSpan[];
+}
+
+export type ContextFailureCategory =
+  | 'command_absent'
+  | 'timeout'
+  | 'nonzero_exit'
+  | 'empty_output'
+  | 'malformed_json'
+  | 'schema_rejected'
+  | 'address_limit';
+
+export interface ContextQueryRequest {
+  repoRoot: string;
+  addresses: string[];
+  repair: boolean;
+  operationId?: string;
+}
+
+export type ContextQueryResult =
+  | { ok: true; document: ContextDocument; elapsedMs: number }
+  | { ok: false; failure: ContextFailureCategory; elapsedMs: number };
+
+export type TouchContextExecutor = (request: ContextQueryRequest) => Promise<ContextQueryResult>;
+
+/** The injected plural execution surface used by every hook driver. */
 export interface TouchExecutors {
-  fix: TouchFixExecutor;
-  list: TouchListExecutor;
-  drift: TouchDriftExecutor;
-  why: TouchWhyExecutor;
-  /**
-   * Return a per-hook wrapper that may memoize identical executor requests.
-   * The wrapper is deliberately invocation-scoped: hook handlers can be
-   * reused by tests or future transports without carrying repository state
-   * from one tool event into the next.
-   */
+  context: TouchContextExecutor;
   forInvocation?: () => TouchExecutors;
-  /** Batched primers; present on the production surface, absent in fakes. */
-  batched?: BatchedTouchExecutors;
-  /**
-   * Collapse a multi-touch invocation's `fix`/`list`/`drift` subprocesses into
-   * one spawn each, priming this wrapper's memo caches so the per-touch calls
-   * that follow are cache hits.
-   *
-   * This heals the entire write set **before** any surface is computed, which
-   * is the point: the per-touch order otherwise let one file's block render
-   * another file's anchors at their pre-heal line numbers while a later block
-   * in the same report rendered them healed. Every anchor in a report now
-   * agrees with every other and with what is on disk at render time.
-   *
-   * Only touches whose write gate admits them are healed, matching
-   * {@link runTouchHook} exactly (see {@link gateRejectsTouch}); a rejected
-   * touch reaches no executor here either. No-ops without {@link batched}, so
-   * injected fakes keep the per-file path.
-   */
-  prefetch?: (inputs: readonly TouchInput[], probeCache: RealityProbeCache) => Promise<void>;
+}
+
+const MAX_CONTEXT_JSON_BYTES = 16 * 1024 * 1024;
+const MAX_CONTEXT_ADDRESSES = 4096;
+
+function record(value: unknown, label: string): Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value))
+    throw new Error(`${label} must be an object`);
+  return value as Record<string, unknown>;
+}
+
+function exactKeys(value: Record<string, unknown>, keys: readonly string[], label: string): void {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
+    throw new Error(`${label} has unsupported fields`);
+  }
+}
+
+function stringField(value: unknown, label: string): string {
+  if (typeof value !== 'string') throw new Error(`${label} must be a string`);
+  return value;
+}
+
+function integerField(value: unknown, label: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${label} must be a non-negative integer`);
+  }
+  return value;
+}
+
+function booleanField(value: unknown, label: string): boolean {
+  if (typeof value !== 'boolean') throw new Error(`${label} must be a boolean`);
+  return value;
+}
+
+function arrayField(value: unknown, label: string): unknown[] {
+  if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
+  return value;
+}
+
+function enumField<T extends string>(value: unknown, tokens: readonly T[], label: string): T {
+  if (typeof value !== 'string' || !tokens.includes(value as T)) throw new Error(`${label} has an unsupported token`);
+  return value as T;
+}
+
+function decodeExtent(value: unknown, label: string): ContextExtent {
+  const object = record(value, label);
+  const kind = enumField(object.kind, ['whole', 'lines'] as const, `${label}.kind`);
+  if (kind === 'whole') {
+    exactKeys(object, ['kind'], label);
+    return { kind };
+  }
+  exactKeys(object, ['kind', 'start', 'end'], label);
+  const start = integerField(object.start, `${label}.start`);
+  const end = integerField(object.end, `${label}.end`);
+  if (start < 1 || end < start) throw new Error(`${label} has an invalid line range`);
+  return { kind, start, end };
+}
+
+function decodeLocation(value: unknown, label: string): ContextLocation {
+  const object = record(value, label);
+  exactKeys(object, ['path', 'extent'], label);
+  return { path: stringField(object.path, `${label}.path`), extent: decodeExtent(object.extent, `${label}.extent`) };
+}
+
+function decodeStatus(value: unknown, label: string): ContextStatus {
+  const object = record(value, label);
+  const code = enumField(
+    object.code,
+    [
+      'FRESH',
+      'RESOLVED_PENDING_COMMIT',
+      'MOVED',
+      'CHANGED',
+      'DELETED',
+      'CONFLICT',
+      'SUBMODULE',
+      'CONTENT_UNAVAILABLE'
+    ] as const,
+    `${label}.code`
+  );
+  if (code !== 'CONTENT_UNAVAILABLE') {
+    exactKeys(object, ['code'], label);
+    return { code };
+  }
+  exactKeys(object, ['code', 'reason', 'detail'], label);
+  const reason = enumField(
+    object.reason,
+    [
+      'LFS_NOT_FETCHED',
+      'LFS_NOT_INSTALLED',
+      'PROMISOR_MISSING',
+      'SPARSE_EXCLUDED',
+      'FILTER_FAILED',
+      'IO_ERROR'
+    ] as const,
+    `${label}.reason`
+  );
+  return { code, reason, detail: object.detail };
+}
+
+function decodeSource(value: unknown, label: string): ContextSource {
+  return enumField(value, ['WORKTREE', 'INDEX', 'HEAD'] as const, label);
+}
+
+function decodeAnchor(value: unknown, label: string): ContextAnchor {
+  const object = record(value, label);
+  exactKeys(object, ['ordinal', 'id', 'anchored', 'current', 'status', 'source', 'sources'], label);
+  return {
+    ordinal: integerField(object.ordinal, `${label}.ordinal`),
+    id: stringField(object.id, `${label}.id`),
+    anchored: decodeLocation(object.anchored, `${label}.anchored`),
+    current: object.current === null ? null : decodeLocation(object.current, `${label}.current`),
+    status: decodeStatus(object.status, `${label}.status`),
+    source: object.source === null ? null : decodeSource(object.source, `${label}.source`),
+    sources: arrayField(object.sources, `${label}.sources`).map((source, index) =>
+      decodeSource(source, `${label}.sources[${index}]`)
+    )
+  };
+}
+
+function decodeOverlap(value: unknown, label: string): ContextOverlap {
+  const object = record(value, label);
+  exactKeys(object, ['scope', 'anchor', 'basis', 'location', 'intersection'], label);
+  const anchor = record(object.anchor, `${label}.anchor`);
+  exactKeys(anchor, ['ordinal', 'id'], `${label}.anchor`);
+  return {
+    scope: integerField(object.scope, `${label}.scope`),
+    anchor: {
+      ordinal: integerField(anchor.ordinal, `${label}.anchor.ordinal`),
+      id: stringField(anchor.id, `${label}.anchor.id`)
+    },
+    basis: enumField(object.basis, ['anchored', 'current'] as const, `${label}.basis`),
+    location: decodeLocation(object.location, `${label}.location`),
+    intersection: decodeExtent(object.intersection, `${label}.intersection`)
+  };
+}
+
+/** Decode the complete schema-v1 context document or reject it atomically. */
+export function decodeContextDocument(stdout: string): ContextDocument {
+  if (Buffer.byteLength(stdout) > MAX_CONTEXT_JSON_BYTES) throw new Error('context document exceeds the size limit');
+  const root = record(JSON.parse(stdout) as unknown, 'context document');
+  exactKeys(root, ['schema_version', 'scopes', 'mutation', 'spans'], 'context document');
+  if (root.schema_version !== 1) throw new Error('unsupported context schema version');
+  const scopes = arrayField(root.scopes, 'context document.scopes').map((scope, index): ContextScope => {
+    const object = record(scope, `context document.scopes[${index}]`);
+    exactKeys(object, ['path', 'extent'], `context document.scopes[${index}]`);
+    return {
+      path: stringField(object.path, `context document.scopes[${index}].path`),
+      extent: decodeExtent(object.extent, `context document.scopes[${index}].extent`)
+    };
+  });
+  const mutationObject = record(root.mutation, 'context document.mutation');
+  exactKeys(
+    mutationObject,
+    ['requested', 'rewritten', 'spans_touched', 'anchors_updated', 'anchors_removed', 'identities_collapsed'],
+    'context document.mutation'
+  );
+  const mutation: ContextMutation = {
+    requested: booleanField(mutationObject.requested, 'context document.mutation.requested'),
+    rewritten: booleanField(mutationObject.rewritten, 'context document.mutation.rewritten'),
+    spans_touched: integerField(mutationObject.spans_touched, 'context document.mutation.spans_touched'),
+    anchors_updated: integerField(mutationObject.anchors_updated, 'context document.mutation.anchors_updated'),
+    anchors_removed: integerField(mutationObject.anchors_removed, 'context document.mutation.anchors_removed'),
+    identities_collapsed: integerField(
+      mutationObject.identities_collapsed,
+      'context document.mutation.identities_collapsed'
+    )
+  };
+  const spans = arrayField(root.spans, 'context document.spans').map((span, index): ContextSpan => {
+    const label = `context document.spans[${index}]`;
+    const object = record(span, label);
+    exactKeys(object, ['name', 'why', 'overlaps', 'anchors'], label);
+    const why = object.why;
+    if (why !== null && typeof why !== 'string') throw new Error(`${label}.why must be a string or null`);
+    return {
+      name: stringField(object.name, `${label}.name`),
+      why,
+      overlaps: arrayField(object.overlaps, `${label}.overlaps`).map((overlap, overlapIndex) =>
+        decodeOverlap(overlap, `${label}.overlaps[${overlapIndex}]`)
+      ),
+      anchors: arrayField(object.anchors, `${label}.anchors`).map((anchor, anchorIndex) =>
+        decodeAnchor(anchor, `${label}.anchors[${anchorIndex}]`)
+      )
+    };
+  });
+  for (const [spanIndex, span] of spans.entries()) {
+    for (const overlap of span.overlaps) {
+      if (overlap.scope >= scopes.length)
+        throw new Error(`context document.spans[${spanIndex}] references an unknown scope`);
+      const anchor = span.anchors[overlap.anchor.ordinal];
+      if (anchor === undefined || anchor.id !== overlap.anchor.id || anchor.ordinal !== overlap.anchor.ordinal) {
+        throw new Error(`context document.spans[${spanIndex}] references an unknown anchor`);
+      }
+    }
+  }
+  return { schema_version: 1, scopes, mutation, spans };
 }
 
 // ---------------------------------------------------------------------------
@@ -776,17 +960,6 @@ function buildBlock(sections: string[], header: string, footer: string): string 
 // ---------------------------------------------------------------------------
 
 /**
- * Whether a covering row is in scope for the touched ranges. A `'whole-file'`
- * scope (an unreadable write or a read without offset/limit) keeps every
- * covering anchor; otherwise the row must intersect a touched range.
- */
-function intersectsAny(row: PorcelainRow, ranges: LineRange[] | 'whole-file'): boolean {
-  if (ranges === 'whole-file') return true;
-  if (row.start === 0 && row.end === 0) return true; // whole-file anchor
-  return ranges.some((range) => rangesIntersect(range, { start: row.start, end: row.end }));
-}
-
-/**
  * Recover the touched range from the on-disk file for a write. An empty write or
  * an unreadable file (e.g. a delete, or the file was never written) degrades to
  * `'whole-file'`, scoping the touch to every covering span — the fail-open
@@ -838,180 +1011,273 @@ function recoverReadRange(
   return { start, end };
 }
 
-/**
- * Whether a covering row is an anchor in the touched file itself. `list
- * --porcelain <file>` returns every anchor of each matching span — cross-file
- * anchors included — but only anchors in the touched file participate in the
- * range-intersection scope test. Row paths are repo-relative; the touched path
- * is absolute, so match on an exact or `/`-separated suffix.
- */
-function onTouchedFile(row: PorcelainRow, filePath: string): boolean {
-  return filePath === row.path || filePath.endsWith(`/${row.path}`);
+function rangesForInput(input: TouchInput): LineRange[] | 'whole-file' {
+  if (input.kind === 'read') {
+    const recovered = recoverReadRange(input.offset, input.limit, input.filePath);
+    return recovered === 'whole-file' ? 'whole-file' : [recovered];
+  }
+  if (input.range !== undefined) return [input.range];
+  const recovered = recoverRangeFromDisk(input.written, input.filePath);
+  return recovered === 'whole-file' ? 'whole-file' : [recovered];
 }
 
-/**
- * One file's surface computation result: the sections it renders, the
- * header/footer its section run belongs under, and the memo keys to record.
- */
-interface SurfaceParts {
-  sections: string[];
-  header: string;
-  footer: string;
-  toRecord: string[];
+function extentIntersects(a: ContextExtent, b: LineRange[] | 'whole-file'): boolean {
+  if (b === 'whole-file' || a.kind === 'whole') return true;
+  return b.some((range) => rangesIntersect(range, { start: a.start, end: a.end }));
 }
 
-/**
- * Compute the surfaced spans for one touched file, or `null` when there is
- * nothing worth surfacing. The write path passes a recovered range for
- * precision and the read path passes its requested range or file-wide scope.
- *
- * A span renders as a full human-format section (name, all anchors with
- * drifted ones status-suffixed, why) when its name has not been surfaced this
- * session, or when it carries a drift status not yet surfaced for it — so a
- * span first seen healthy re-renders in full when drift later appears. A span
- * whose only drift is positional (`MOVED`/`RESOLVED_PENDING_COMMIT` — never
- * `isDebt`) is filtered out entirely: positional drift never surfaces.
- *
- * The drift list is scoped to the touched file.
- */
-async function computeSurfaceParts(
+function contextStatusToken(status: ContextStatus): PorcelainStatus {
+  return status.code === 'CONTENT_UNAVAILABLE' ? status.reason : status.code;
+}
+
+function contextAnchorRow(name: string, anchor: ContextAnchor): PorcelainRow {
+  const extent = anchor.anchored.extent;
+  return {
+    name,
+    path: anchor.anchored.path,
+    start: extent.kind === 'whole' ? 0 : extent.start,
+    end: extent.kind === 'whole' ? 0 : extent.end
+  };
+}
+
+function contextDriftRow(name: string, anchor: ContextAnchor): DriftPorcelainRow {
+  return { ...contextAnchorRow(name, anchor), status: contextStatusToken(anchor.status) };
+}
+
+function spanTouchesInput(
+  span: ContextSpan,
+  document: ContextDocument,
+  repoPath: string,
+  ranges: LineRange[] | 'whole-file'
+): boolean {
+  return span.overlaps.some((overlap) => {
+    const scope = document.scopes[overlap.scope];
+    return scope.path === repoPath && extentIntersects(overlap.intersection, ranges);
+  });
+}
+
+function renderContextTouch(
   input: TouchInput,
-  executors: TouchExecutors,
-  memo: MemoStore,
-  range: LineRange[] | 'whole-file'
-): Promise<SurfaceParts | null> {
-  const covering = await executors.list(input.filePath, input.cwd);
-  if (covering.length === 0) return null;
-
-  // Group every anchor by span; a span is in scope when one of its anchors on
-  // the touched file intersects the touched ranges.
-  const anchorsByName = new Map<string, PorcelainRow[]>();
-  for (const row of covering) {
-    const rows = anchorsByName.get(row.name) ?? [];
-    rows.push(row);
-    anchorsByName.set(row.name, rows);
-  }
-  const touchedNames = [...anchorsByName.keys()].filter((name) =>
-    (anchorsByName.get(name) ?? []).some((row) => onTouchedFile(row, input.filePath) && intersectsAny(row, range))
-  );
-  if (touchedNames.length === 0) return null;
-
-  const driftByName = new Map<string, DriftPorcelainRow[]>();
-  for (const row of await executors.drift([input.filePath], input.cwd)) {
-    const rows = driftByName.get(row.name) ?? [];
-    rows.push(row);
-    driftByName.set(row.name, rows);
-  }
-
+  document: ContextDocument,
+  repoPath: string,
+  ranges: LineRange[] | 'whole-file',
+  memo: MemoStore
+): string | null {
   const surfaced = memo.getSurfaced(input.sessionId);
-  const toRecord: string[] = [];
   const sections: string[] = [];
+  const toRecord: string[] = [];
   const driftedNames: string[] = [];
-
-  for (const name of touchedNames) {
-    const spanDrift = driftByName.get(name) ?? [];
-    const debtRows = spanDrift.filter((row) => isDebt(row.status));
-    if (spanDrift.length > 0 && debtRows.length === 0) continue; // positional-only drift never surfaces
-
+  for (const span of document.spans) {
+    if (!spanTouchesInput(span, document, repoPath, ranges)) continue;
+    const anchors = span.anchors.map((anchor) => contextAnchorRow(span.name, anchor));
+    const drift = span.anchors
+      .filter((anchor) => anchor.status.code !== 'FRESH')
+      .map((anchor) => contextDriftRow(span.name, anchor));
+    const debtRows = drift.filter((row) => isDebt(row.status));
+    if (drift.length > 0 && debtRows.length === 0) continue;
     const debtStatuses = [...new Set(debtRows.map((row) => row.status))].sort();
-    const unsurfacedDebt = debtStatuses.filter((status) => !surfaced.has(driftKey(name, status)));
-    const isNewName = !surfaced.has(name);
-    if (!isNewName && unsurfacedDebt.length === 0) continue; // fully surfaced already
-
-    const why = await executors.why(name, input.cwd);
-    sections.push(renderSpanSection(name, anchorsByName.get(name) ?? [], debtRows, why));
-    if (debtStatuses.length > 0) driftedNames.push(name);
-
-    if (isNewName) toRecord.push(name);
-    for (const status of unsurfacedDebt) toRecord.push(driftKey(name, status));
+    const unsurfacedDebt = debtStatuses.filter((status) => !surfaced.has(driftKey(span.name, status)));
+    const isNewName = !surfaced.has(span.name);
+    if (!isNewName && unsurfacedDebt.length === 0) continue;
+    sections.push(renderSpanSection(span.name, anchors, debtRows, span.why));
+    if (debtStatuses.length > 0) driftedNames.push(span.name);
+    if (isNewName) toRecord.push(span.name);
+    for (const status of unsurfacedDebt) toRecord.push(driftKey(span.name, status));
   }
-
   if (sections.length === 0) return null;
   memo.addSurfaced(input.sessionId, toRecord);
   const fileName = basename(input.filePath);
   const header = driftedNames.length > 0 ? driftHeader(driftedNames.length, input.kind) : cleanHeader(fileName);
   const footer = driftedNames.length > 0 ? driftFooter(driftedNames) : cleanFooter(fileName);
-  return { sections, header, footer, toRecord };
+  return buildBlock(sections, header, footer);
 }
 
-/**
- * Compute the merged `<git-span>` block for a single-path touch, or `null`
- * when there is nothing worth surfacing. The single-path caller scopes the
- * drift to the touched file itself.
- */
-async function computeSurface(
-  input: TouchInput,
+interface PreparedTouch {
+  input: TouchInput;
+  index: number;
+  repoRoot: string;
+  repoPath: string;
+  ranges: LineRange[] | 'whole-file';
+  partitionKey: string;
+}
+
+export interface TouchBatchDiagnostics {
+  queryCount: number;
+  scopeCount: number;
+  selectedResultCount: number;
+  elapsedMs: number;
+  mutation: 'rewritten' | 'unchanged' | 'unknown';
+  failure: ContextFailureCategory | null;
+}
+
+export interface TouchBatchOutput {
+  outputs: TouchOutput[];
+  treeModified: boolean;
+  diagnostics: TouchBatchDiagnostics;
+}
+
+function normalizedAddressIdentity(touches: readonly PreparedTouch[]): string[] {
+  const byPath = new Map<string, LineRange[] | 'whole-file'>();
+  for (const touch of touches) {
+    const existing = byPath.get(touch.repoPath);
+    if (existing === 'whole-file' || touch.ranges === 'whole-file') {
+      byPath.set(touch.repoPath, 'whole-file');
+    } else {
+      byPath.set(touch.repoPath, [...(existing ?? []), ...touch.ranges]);
+    }
+  }
+  const identity: string[] = [];
+  for (const path of [...byPath.keys()].sort()) {
+    const ranges = byPath.get(path)!;
+    if (ranges === 'whole-file') {
+      identity.push(path);
+      continue;
+    }
+    const sorted = [...ranges].sort((a, b) => a.start - b.start || a.end - b.end);
+    const merged: LineRange[] = [];
+    for (const range of sorted) {
+      const prior = merged.at(-1);
+      if (prior !== undefined && range.start <= prior.end) prior.end = Math.max(prior.end, range.end);
+      else merged.push({ ...range });
+    }
+    identity.push(...merged.map((range) => `${path}#L${range.start}-L${range.end}`));
+  }
+  return identity;
+}
+
+function deterministicOperationId(invocationId: string, repoRoot: string, addresses: readonly string[]): string {
+  const bytes = createHash('sha256')
+    .update(invocationId)
+    .update('\0')
+    .update(repoRoot)
+    .update('\0')
+    .update(addresses.join('\0'))
+    .digest();
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.subarray(0, 16).toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/** Query repository/mutation partitions once, then replay logical touches in their original order. */
+export async function runTouchHooks(
+  inputs: readonly TouchInput[],
   executors: TouchExecutors,
   memo: MemoStore,
-  range: LineRange[] | 'whole-file'
-): Promise<string | null> {
-  const parts = await computeSurfaceParts(input, executors, memo, range);
-  if (parts === null) return null;
-  return buildBlock(parts.sections, parts.header, parts.footer);
+  invocationId: string,
+  probeCache?: RealityProbeCache
+): Promise<TouchBatchOutput> {
+  const outputs = inputs.map<TouchOutput>(() => ({ additionalContext: null, treeModified: false }));
+  const prepared: PreparedTouch[] = [];
+  for (const [index, input] of inputs.entries()) {
+    if (input.kind === 'write' && input.targetState !== undefined) {
+      const probe = probeCache ?? createRealityProbeCache(input.targetState === 'absent' ? [input.filePath] : []);
+      const outcome = evaluateWriteGate(input, probe);
+      if (outcome === 'decisiveFail' || (outcome === 'inconclusive' && input.targetState === 'absent')) continue;
+    }
+    const repoRoot = resolveRepoRoot(dirname(input.filePath));
+    if (repoRoot === null) continue;
+    prepared.push({
+      input,
+      index,
+      repoRoot,
+      repoPath: relativeToRepo(repoRoot, input.filePath),
+      ranges: rangesForInput(input),
+      partitionKey: `${repoRoot}\0${input.kind === 'write' ? 'repair' : 'read'}`
+    });
+  }
+
+  const partitions = new Map<string, PreparedTouch[]>();
+  for (const touch of prepared) {
+    const partition = partitions.get(touch.partitionKey);
+    if (partition === undefined) partitions.set(touch.partitionKey, [touch]);
+    else partition.push(touch);
+  }
+
+  let queryCount = 0;
+  let scopeCount = 0;
+  let selectedResultCount = 0;
+  let elapsedMs = 0;
+  let treeModified = false;
+  let failure: ContextFailureCategory | null = null;
+  let repairFailure = false;
+  const documents = new Map<string, ContextDocument>();
+  const rewrittenPartitions = new Set<string>();
+  for (const [partitionKey, partition] of partitions) {
+    const repair = partition[0].input.kind === 'write';
+    const addresses = partition.flatMap((touch) =>
+      touch.ranges === 'whole-file'
+        ? [touch.repoPath]
+        : touch.ranges.map((range) => `${touch.repoPath}#L${range.start}-L${range.end}`)
+    );
+    if (addresses.length > MAX_CONTEXT_ADDRESSES) {
+      failure ??= 'address_limit';
+      if (repair) repairFailure = true;
+      continue;
+    }
+    queryCount += 1;
+    const result = await executors.context({
+      repoRoot: partition[0].repoRoot,
+      addresses,
+      repair,
+      ...(repair
+        ? {
+            operationId: deterministicOperationId(
+              invocationId,
+              partition[0].repoRoot,
+              normalizedAddressIdentity(partition)
+            )
+          }
+        : {})
+    });
+    elapsedMs += result.elapsedMs;
+    if (!result.ok) {
+      failure ??= result.failure;
+      if (repair) repairFailure = true;
+      continue;
+    }
+    scopeCount += result.document.scopes.length;
+    documents.set(partitionKey, result.document);
+    if (repair && result.document.mutation.rewritten) {
+      treeModified = true;
+      rewrittenPartitions.add(partitionKey);
+    }
+  }
+  for (const touch of prepared) {
+    const document = documents.get(touch.partitionKey);
+    if (document === undefined) continue;
+    const singleTouchMutation =
+      (partitions.get(touch.partitionKey)?.length ?? 0) === 1 && rewrittenPartitions.has(touch.partitionKey);
+    try {
+      const additionalContext = renderContextTouch(touch.input, document, touch.repoPath, touch.ranges, memo);
+      if (additionalContext !== null) selectedResultCount += 1;
+      outputs[touch.index] = { additionalContext, treeModified: singleTouchMutation };
+    } catch {
+      outputs[touch.index] = { additionalContext: null, treeModified: singleTouchMutation };
+    }
+  }
+  return {
+    outputs,
+    treeModified,
+    diagnostics: {
+      queryCount,
+      scopeCount,
+      selectedResultCount,
+      elapsedMs,
+      mutation: treeModified ? 'rewritten' : repairFailure ? 'unknown' : 'unchanged',
+      failure
+    }
+  };
 }
 
-/**
- * Run the touch hook for a single tool call, branching on {@link TouchInput.kind}.
- *
- * - **Write path**: {@link evaluateWriteGate} (plan §3 step 1) runs first —
- *   any decisive fail, or an inconclusive phantom delete, blocks the touch
- *   with no executor call — then `executors.fix` (`git span drift <file>
- *   --fix`) scoped to the touched file heals positional drift in the working
- *   tree, and the merged `<git-span>` block is computed against the healed
- *   anchors, rendering each surfaced span as a full human-format section with
- *   any remaining semantic drift status-suffixed on its anchors. Cadence is
- *   deduped through `memo` per span name and per (span, status).
- * - **Read path**: never invokes `fix` and never mutates the tree; surfaces the
- *   spans overlapping the read's `offset`/`limit` window (see
- *   {@link recoverReadRange}; a read with neither is whole-file, matching
- *   today's behavior) with positional statuses filtered out via `isDebt()`.
- *
- * The optional `probeCache` shares the driver's per-command delete-reality
- * probe into pass B (plan §3 step 2) so surviving deletes re-gate without
- * re-probing; direct callers get a per-call cache seeded with the touched
- * path when the target is `'absent'`.
- * Fails open: any executor rejection or internal error yields
- * `additionalContext: null` (no signal, editing never blocked) rather than
- * throwing. `treeModified` reflects a successful `--fix` even when the
- * subsequent surface computation fails.
- */
 export async function runTouchHook(
   input: TouchInput,
   executors: TouchExecutors,
   memo: MemoStore,
   probeCache?: RealityProbeCache
 ): Promise<TouchOutput> {
-  let treeModified = false;
-  try {
-    let range: LineRange[] | 'whole-file' = 'whole-file';
-    if (input.kind === 'write') {
-      // The reality-probe write gate verifies a producer's `targetState`
-      // claim against disk before any executor call.
-      if (input.targetState !== undefined) {
-        const probe = probeCache ?? createRealityProbeCache(input.targetState === 'absent' ? [input.filePath] : []);
-        if (gateRejectsTouch(input, probe)) {
-          return { additionalContext: null, treeModified: false };
-        }
-      }
-      const fix = await executors.fix(input.filePath, input.cwd);
-      treeModified = fix.modified;
-      if (input.range !== undefined) {
-        range = [input.range];
-      } else {
-        const recovered = recoverRangeFromDisk(input.written, input.filePath);
-        range = recovered === 'whole-file' ? 'whole-file' : [recovered];
-      }
-    } else {
-      const recovered = recoverReadRange(input.offset, input.limit, input.filePath);
-      range = recovered === 'whole-file' ? 'whole-file' : [recovered];
-    }
-    const additionalContext = await computeSurface(input, executors, memo, range);
-    return { additionalContext, treeModified };
-  } catch {
-    // Fail open: never let a touch-core error propagate up and block the tool
-    // call. The tree may already have been healed (treeModified preserved).
-    return { additionalContext: null, treeModified };
-  }
+  const batch = await runTouchHooks([input], executors, memo, input.invocationId ?? input.sessionId, probeCache);
+  return batch.outputs[0];
 }
 
 // ---------------------------------------------------------------------------
@@ -1020,251 +1286,57 @@ export async function runTouchHook(
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 
-/** Resolve the touched file to a path relative to its repo root, for `git span`. */
-function repoRelArg(filePath: string, cwd: string): { repoRoot: string; relPath: string } | null {
-  const repoRoot = resolveRepoRoot(cwd);
-  if (!repoRoot) return null;
-  return { repoRoot, relPath: relativeToRepo(repoRoot, filePath) };
-}
-
-/** Whether the CLI's authoritative fix summary says it rewrote span state. */
-export function fixOutputModified(stdout: string): boolean {
-  for (const match of stdout.matchAll(/\((\d+) updated, (\d+) removed\)/g)) {
-    if (Number(match[1]) > 0 || Number(match[2]) > 0) return true;
-  }
-  return /\bcollapsed [1-9]\d* duplicate/.test(stdout);
-}
-
-function memoizedExecutors(base: TouchExecutors): TouchExecutors {
-  const fixes = new Map<string, Promise<TouchFixResult>>();
-  const lists = new Map<string, Promise<PorcelainRow[]>>();
-  const drifts = new Map<string, Promise<DriftPorcelainRow[]>>();
-  const whys = new Map<string, Promise<string | null>>();
-  const once = <T>(cache: Map<string, Promise<T>>, key: string, run: () => Promise<T>): Promise<T> => {
-    const found = cache.get(key);
-    if (found !== undefined) return found;
-    const pending = run();
-    cache.set(key, pending);
-    return pending;
-  };
-  const batched = base.batched;
-  const prefetch =
-    batched === undefined
-      ? undefined
-      : async (inputs: readonly TouchInput[], probeCache: RealityProbeCache): Promise<void> => {
-          // Mirror runTouchHook: a gate-rejected touch reaches no executor, so
-          // healing or reading for it here would fire a subprocess the
-          // per-touch path never fires.
-          const admitted = inputs.filter((input) => !gateRejectsTouch(input, probeCache));
-          if (admitted.length < 2) return; // one touch has nothing to batch
-          // cwd is part of every memo key; batch per cwd rather than assume one.
-          const byCwd = new Map<string, TouchInput[]>();
-          for (const input of admitted) {
-            const group = byCwd.get(input.cwd) ?? [];
-            group.push(input);
-            byCwd.set(input.cwd, group);
-          }
-          await Promise.all(
-            [...byCwd].map(async ([cwd, group]) => {
-              const paths = [...new Set(group.map((input) => input.filePath))];
-              const writePaths = [...new Set(group.filter((i) => i.kind === 'write').map((i) => i.filePath))];
-              // Heal first, then read: every subsequent list/drift — and so
-              // every rendered anchor in the report — observes one settled
-              // post-heal tree.
-              if (writePaths.length > 0) {
-                const result = await batched.fixMany(writePaths, cwd);
-                for (const filePath of writePaths) {
-                  fixes.set(`${cwd}\0${filePath}`, Promise.resolve(result));
-                }
-              }
-              const [listRows, driftRows] = await Promise.all([
-                batched.listMany(paths, cwd),
-                batched.driftMany(paths, cwd)
-              ]);
-              for (const filePath of paths) {
-                // `git span list <path>` returns every anchor of every span
-                // covering that path, including anchors on other files — so the
-                // per-file view is a span-coverage reconstruction, not a path
-                // filter. Spans covering this file are those with an anchor on
-                // it; the file's rows are then all anchors of those spans.
-                // `git span drift <path>` is scoped the same way, so the same
-                // name set reconstructs it.
-                const names = new Set(listRows.filter((row) => onTouchedFile(row, filePath)).map((row) => row.name));
-                lists.set(`${cwd}\0${filePath}`, Promise.resolve(listRows.filter((row) => names.has(row.name))));
-                drifts.set(`${cwd}\0${filePath}`, Promise.resolve(driftRows.filter((row) => names.has(row.name))));
-              }
-            })
-          );
-        };
-
-  return {
-    fix: (filePath, cwd) => once(fixes, `${cwd}\0${filePath}`, () => base.fix(filePath, cwd)),
-    list: (filePath, cwd) => once(lists, `${cwd}\0${filePath}`, () => base.list(filePath, cwd)),
-    drift: (args, cwd) => once(drifts, `${cwd}\0${args.join('\0')}`, () => base.drift(args, cwd)),
-    why: (name, cwd) => once(whys, `${cwd}\0${name}`, () => base.why(name, cwd)),
-    batched,
-    prefetch
-  };
-}
-
 /**
- * The production execution surface: three subprocess-backed executors following
- * span-surface.ts's `createDefault*Executor` style. Each captures stdout even on
- * a non-zero exit where the CLI still emits useful output, and every failure
- * mode (absent binary, timeout, parse failure) surfaces as an empty/clean result
- * so {@link runTouchHook}'s fail-open contract holds.
+ * The production execution surface: one strict subprocess-backed context
+ * query per repository/mutation partition.
  */
 export function createDefaultTouchExecutors(timeoutMs: number = DEFAULT_TIMEOUT_MS): TouchExecutors {
   const executors: TouchExecutors = {
-    fix: async (filePath, cwd) => {
-      const resolved = repoRelArg(filePath, cwd);
-      if (!resolved) return { modified: false };
-      let out = '';
+    context: async (request) => {
+      const started = performance.now();
+      const args = ['span', 'context', ...request.addresses, '--format', 'json'];
+      if (request.repair) args.push('--fix', '--operation-id', request.operationId!);
+      let stdout: string;
       try {
-        out = execFileSync('git', ['span', 'drift', resolved.relPath, '--fix'], {
-          cwd: resolved.repoRoot,
+        stdout = execFileSync('git', args, {
+          cwd: request.repoRoot,
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'pipe'],
-          timeout: timeoutMs
+          timeout: timeoutMs,
+          maxBuffer: MAX_CONTEXT_JSON_BYTES + 1
         });
-      } catch (err) {
-        // `git span drift` exits 1 on drift even when `--fix` healed something,
-        // and non-zero on genuine failure. Its summary is still emitted on
-        // stdout after a successful rewrite, so preserve captured output.
-        const captured = (err as { stdout?: string }).stdout;
-        if (typeof captured === 'string') out = captured;
+      } catch (error) {
+        const typed = error as { code?: string; signal?: string; killed?: boolean; stderr?: string | Buffer };
+        const stderr = typeof typed.stderr === 'string' ? typed.stderr : typed.stderr?.toString('utf8');
+        const failure: ContextFailureCategory =
+          typed.code === 'ENOENT' || stderr?.includes('is not a git command') === true
+            ? 'command_absent'
+            : typed.code === 'ETIMEDOUT' || typed.signal === 'SIGTERM' || typed.killed === true
+              ? 'timeout'
+              : typed.code === 'ENOBUFS'
+                ? 'schema_rejected'
+                : 'nonzero_exit';
+        return { ok: false, failure, elapsedMs: performance.now() - started };
       }
-      return { modified: fixOutputModified(out) };
-    },
-
-    list: async (filePath, cwd) => {
-      const resolved = repoRelArg(filePath, cwd);
-      if (!resolved) return [];
+      if (stdout.trim().length === 0) {
+        return { ok: false, failure: 'empty_output', elapsedMs: performance.now() - started };
+      }
       try {
-        const out = execFileSync('git', ['span', 'list', '--porcelain', resolved.relPath], {
-          cwd: resolved.repoRoot,
-          encoding: 'utf8',
-          stdio: ['ignore', 'pipe', 'pipe'],
-          timeout: timeoutMs
-        });
-        return parsePorcelain(out);
+        JSON.parse(stdout);
       } catch {
-        return [];
+        return { ok: false, failure: 'malformed_json', elapsedMs: performance.now() - started };
       }
-    },
-
-    drift: async (args, cwd) => {
-      const repoRoot = resolveRepoRoot(cwd);
-      const runCwd = repoRoot ?? cwd;
-      // The core passes an absolute file path; scope `git span drift` to it
-      // relative to the repo root so the path index resolves it.
-      const scoped = repoRoot ? args.map((a) => relativeToRepo(repoRoot, a)) : args;
-      let out: string;
       try {
-        out = execFileSync('git', ['span', 'drift', '--format', 'porcelain', ...scoped], {
-          cwd: runCwd,
-          encoding: 'utf8',
-          stdio: ['ignore', 'pipe', 'pipe'],
-          timeout: timeoutMs
-        });
-      } catch (err) {
-        const captured = (err as { stdout?: string }).stdout;
-        if (typeof captured === 'string') {
-          out = captured;
-        } else {
-          return [];
+        const document = decodeContextDocument(stdout);
+        if (document.mutation.requested !== request.repair || (document.mutation.rewritten && !request.repair)) {
+          throw new Error('context mutation does not match the requested mode');
         }
-      }
-      return parseDriftPorcelain(out);
-    },
-
-    why: async (name, cwd) => {
-      const repoRoot = resolveRepoRoot(cwd);
-      try {
-        const out = execFileSync('git', ['span', 'why', name], {
-          cwd: repoRoot ?? cwd,
-          encoding: 'utf8',
-          stdio: ['ignore', 'pipe', 'pipe'],
-          timeout: timeoutMs
-        });
-        const text = out.trimEnd();
-        // Bare `git span why` prints this exact sentinel (exit 0) when the
-        // span has no why recorded — treat it as "no why", not as content.
-        if (text.length === 0 || text === `\`${name}\` has no why recorded.`) return null;
-        return text;
+        return { ok: true, document, elapsedMs: performance.now() - started };
       } catch {
-        return null;
+        return { ok: false, failure: 'schema_rejected', elapsedMs: performance.now() - started };
       }
     },
-
-    batched: {
-      fixMany: async (filePaths, cwd) => {
-        const repoRoot = resolveRepoRoot(cwd);
-        if (!repoRoot) return { modified: false };
-        const rels = filePaths.map((filePath) => relativeToRepo(repoRoot, filePath));
-        if (rels.length === 0) return { modified: false };
-        let out = '';
-        try {
-          out = execFileSync('git', ['span', 'drift', ...rels, '--fix'], {
-            cwd: repoRoot,
-            encoding: 'utf8',
-            stdio: ['ignore', 'pipe', 'pipe'],
-            timeout: timeoutMs
-          });
-        } catch (err) {
-          const captured = (err as { stdout?: string }).stdout;
-          if (typeof captured === 'string') out = captured;
-        }
-        // One summary covers the whole write set, so `modified` is the set's
-        // verdict rather than each file's. Nothing in production reads the
-        // per-touch value; only tests do, and they drive the per-file path.
-        return { modified: fixOutputModified(out) };
-      },
-
-      listMany: async (filePaths, cwd) => {
-        const repoRoot = resolveRepoRoot(cwd);
-        if (!repoRoot) return [];
-        const rels = filePaths.map((filePath) => relativeToRepo(repoRoot, filePath));
-        if (rels.length === 0) return [];
-        try {
-          const out = execFileSync('git', ['span', 'list', '--porcelain', ...rels], {
-            cwd: repoRoot,
-            encoding: 'utf8',
-            stdio: ['ignore', 'pipe', 'pipe'],
-            timeout: timeoutMs
-          });
-          return parsePorcelain(out);
-        } catch {
-          return [];
-        }
-      },
-
-      driftMany: async (filePaths, cwd) => {
-        const repoRoot = resolveRepoRoot(cwd);
-        const runCwd = repoRoot ?? cwd;
-        const scoped = repoRoot ? filePaths.map((filePath) => relativeToRepo(repoRoot, filePath)) : filePaths;
-        if (scoped.length === 0) return [];
-        let out: string;
-        try {
-          out = execFileSync('git', ['span', 'drift', '--format', 'porcelain', ...scoped], {
-            cwd: runCwd,
-            encoding: 'utf8',
-            stdio: ['ignore', 'pipe', 'pipe'],
-            timeout: timeoutMs
-          });
-        } catch (err) {
-          const captured = (err as { stdout?: string }).stdout;
-          if (typeof captured === 'string') {
-            out = captured;
-          } else {
-            return [];
-          }
-        }
-        return parseDriftPorcelain(out);
-      }
-    },
-
-    forInvocation: () => memoizedExecutors(executors)
+    forInvocation: () => executors
   };
   return executors;
 }

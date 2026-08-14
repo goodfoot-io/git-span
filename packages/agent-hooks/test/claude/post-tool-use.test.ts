@@ -17,9 +17,10 @@ import hook, { createHandler } from '../../src/claude/post-tool-use.js';
 import { createHandler as createStaticPlanHandler } from '../../src/claude/static-plan.js';
 import type { DriftPorcelainRow, PorcelainRow, PorcelainStatus } from '../../src/common/agent-hooks-common.js';
 import type { MemoFactory, MemoLogger, MemoStore } from '../../src/common/span-surface.js';
-import type { TouchExecutors, TouchFixResult } from '../../src/common/touch-core.js';
+import type { TouchExecutors } from '../../src/common/touch-core.js';
 import { makeTempRepo } from '../helpers.js';
 import { makeTempLayout } from '../session-layout-helpers.js';
+import { contextExecutors } from '../touch-context-fake.js';
 
 /**
  * This file's own session base, on /tmp. Static plans and memo state must not
@@ -58,8 +59,8 @@ function makeExecutors(opts: FakeOpts = {}): {
   const boom = () => {
     throw new Error('spawn git ENOENT');
   };
-  const executors: TouchExecutors = {
-    fix: async (filePath): Promise<TouchFixResult> => {
+  const executors = contextExecutors({
+    fix: async (filePath) => {
       calls.fix += 1;
       fixPaths.push(filePath);
       if (opts.reject) boom();
@@ -81,7 +82,7 @@ function makeExecutors(opts: FakeOpts = {}): {
       if (opts.reject) boom();
       return WHY;
     }
-  };
+  });
   return { executors, calls, fixPaths, listPaths };
 }
 

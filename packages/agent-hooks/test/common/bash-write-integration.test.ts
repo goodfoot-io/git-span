@@ -65,9 +65,10 @@ import {
   type PlannedTouchRecord,
   parseCommandLayered
 } from '../../src/common/static-attribution.js';
-import type { TouchExecutors, TouchFixResult } from '../../src/common/touch-core.js';
+import type { TouchExecutors } from '../../src/common/touch-core.js';
 import { makeTempRepo } from '../helpers.js';
 import { makeTempLayout } from '../session-layout-helpers.js';
+import { contextExecutors } from '../touch-context-fake.js';
 
 /**
  * This file's own session base, on /tmp. Static plans and memo state must not
@@ -110,8 +111,8 @@ function makeCaptureExecutors(
   const fixPaths: string[] = [];
   const listPaths: string[] = [];
   return {
-    executors: {
-      fix: async (filePath: string): Promise<TouchFixResult> => {
+    executors: contextExecutors({
+      fix: async (filePath: string) => {
         fixPaths.push(filePath);
         return { modified: false };
       },
@@ -121,7 +122,7 @@ function makeCaptureExecutors(
       },
       drift: async (): Promise<DriftPorcelainRow[]> => driftRows,
       why: async (): Promise<string | null> => null
-    },
+    }),
     fixPaths,
     listPaths
   };
@@ -287,7 +288,7 @@ describe('layered substitution range integration', () => {
       [4, 4]
     ]);
     expect(lineDiff(splitLines(before), splitLines(readRel(repo.root, 'f.txt'))).changed).toEqual([2, 4]);
-    expect(cap.fixPaths).toEqual([fullPath, fullPath]);
+    expect(cap.fixPaths).toEqual([fullPath]);
   });
 
   it('recovers a multiline Perl -0pi substitution without widening to the file', () => {

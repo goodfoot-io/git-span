@@ -30,7 +30,7 @@ import {
   parseCommandLayered,
   type TrackedEligibilityError
 } from './static-attribution.js';
-import { runTouchHook, type TouchExecutors } from './touch-core.js';
+import { runTouchHooks, type TouchBatchDiagnostics, type TouchExecutors, type TouchInput } from './touch-core.js';
 
 /** The response fields understood by response-derived read attribution. */
 export type NormalizedBashResponse = Pick<
@@ -363,25 +363,25 @@ async function runResponseReadTouches(
   cwd: string,
   sessionId: string,
   executors: TouchExecutors,
-  memo: MemoStore
-): Promise<string[]> {
-  const blocks: string[] = [];
-  for (const span of spans) {
-    const output = await runTouchHook(
-      {
+  memo: MemoStore,
+  invocationId: string
+): Promise<{ blocks: string[]; diagnostics: TouchBatchDiagnostics }> {
+  const touches: TouchInput[] = spans.map(
+    (span) =>
+      ({
         kind: 'read',
         sessionId,
         cwd,
         filePath: span.absolutePath,
         offset: span.lineStart,
         limit: span.lineEnd - span.lineStart + 1
-      },
-      executors,
-      memo
-    );
-    if (output.additionalContext) blocks.push(output.additionalContext);
-  }
-  return blocks;
+      }) satisfies TouchInput
+  );
+  const batch = await runTouchHooks(touches, executors, memo, invocationId);
+  return {
+    blocks: batch.outputs.flatMap((output) => (output.additionalContext === null ? [] : [output.additionalContext])),
+    diagnostics: batch.diagnostics
+  };
 }
 
 /** Run the complete command-derived pass followed by the independent response-read pass. */
@@ -456,6 +456,8 @@ export async function runLayeredBashTouches(
   const parserLatencyMs = performance.now() - parserStarted;
   const touchStarted = performance.now();
   let executionGateDrops = 0;
+  let commandDiagnostics: Partial<TouchBatchDiagnostics> = {};
+  const invocationId = `${sessionId}:${toolUseId ?? createHash('sha256').update(command).digest('hex')}`;
   const commandBlocks = await runBashTouches(
     filtered.matches,
     sessionId,
@@ -467,10 +469,19 @@ export async function runLayeredBashTouches(
     true,
     (diagnostics) => {
       executionGateDrops = diagnostics.executionGateDrops;
-    }
+      commandDiagnostics = diagnostics;
+    },
+    invocationId
   );
-  const responseBlocks = await runResponseReadTouches(filtered.responseSpans, cwd, sessionId, executors, memo);
-  const blocks = [...commandBlocks, ...responseBlocks];
+  const responseBatch = await runResponseReadTouches(
+    filtered.responseSpans,
+    cwd,
+    sessionId,
+    executors,
+    memo,
+    `${invocationId}:response`
+  );
+  const blocks = [...commandBlocks, ...responseBatch.blocks];
   logger.info?.('git-span static attribution post', {
     resolvedReads: filtered.matches.filter((match) => match.status === 'resolved' && match.span.operation === 'read')
       .length,
@@ -486,6 +497,13 @@ export async function runLayeredBashTouches(
     ignoreQueryCount: filtered.ignoreQueryCount,
     trackedQueryCount: filtered.trackedQueryCount,
     eligibilityErrors: filtered.eligibilityErrors,
+    contextQueryCount: (commandDiagnostics.queryCount ?? 0) + responseBatch.diagnostics.queryCount,
+    contextScopeCount: (commandDiagnostics.scopeCount ?? 0) + responseBatch.diagnostics.scopeCount,
+    contextSelectedResultCount:
+      (commandDiagnostics.selectedResultCount ?? 0) + responseBatch.diagnostics.selectedResultCount,
+    contextElapsedMs: (commandDiagnostics.elapsedMs ?? 0) + responseBatch.diagnostics.elapsedMs,
+    contextMutation: commandDiagnostics.mutation ?? 'unchanged',
+    contextFailure: commandDiagnostics.failure ?? responseBatch.diagnostics.failure,
     dependencyContextSurfaced: blocks.length > 0
   });
   return blocks;

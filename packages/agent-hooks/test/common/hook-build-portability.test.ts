@@ -553,13 +553,18 @@ function allPaths(root: string): string[] {
 
 function assertNoLegacyRuntimeArtifacts(repo: RealBundleRepo): void {
   const paths = [...allPaths(repo.home), ...allPaths(repo.root)].map((path) => path.replaceAll('\\', '/'));
-  const forbidden = paths.filter((path) =>
-    /(?:snapshots|snapshot-recordless-note|activity-log|\.objects(?:\/|$)|\.index$|tombstone|watcher|\.sock$|socket)/i.test(
-      path
-    )
+  const contextSocket = /\/\.git\/span\/context\/[a-f0-9]+\/service\.sock$/;
+  const forbidden = paths.filter(
+    (path) =>
+      !contextSocket.test(path) &&
+      /(?:snapshots|snapshot-recordless-note|activity-log|\.objects(?:\/|$)|\.index$|tombstone|watcher|\.sock$|socket)/i.test(
+        path
+      )
   );
   expect(forbidden).toEqual([]);
-  expect(paths.some((path) => lstatSync(path).isSocket())).toBe(false);
+  const sockets = paths.filter((path) => lstatSync(path).isSocket());
+  expect(sockets.length).toBeGreaterThan(0);
+  expect(sockets.every((path) => contextSocket.test(path))).toBe(true);
 }
 
 function assertNoLegacyBundleCode(dir: string): void {
