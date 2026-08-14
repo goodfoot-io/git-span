@@ -66,8 +66,17 @@ struct RecoveryMarker {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct MarkerTemporary {
+    target_relative: String,
     relative: String,
-    digest: String,
+    planned_digest: String,
+    original: MarkerOriginal,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+enum MarkerOriginal {
+    Absent,
+    Present { digest: String },
 }
 
 #[derive(Debug)]
@@ -920,9 +929,11 @@ fn recover_prepared(
 }
 
 /// Abort the only phase that may durably expose a recovery marker without a
-/// journal. Every recorded span temp must still exist with its prepared
-/// bytes; a missing or changed temp means a rename could have started, so the
-/// marker is retained and recovery fails closed.
+/// journal. Every recorded span temp must still contain its prepared bytes
+/// and every live target must still have its original presence and content.
+/// Any mismatch means a rename or external mutation could have occurred, so
+/// the marker and all transaction residue are retained and recovery fails
+/// closed.
 fn abort_unjournaled_preparation(
     authority: &SpanRootAuthority,
     journal_directory: &RetainedDirectory,
@@ -931,11 +942,17 @@ fn abort_unjournaled_preparation(
 ) -> Result<()> {
     let root = authority.root()?;
     let mut seen_paths = BTreeSet::new();
+    let mut seen_targets = BTreeSet::new();
     let mut seen_indexes = BTreeSet::new();
+    let mut validated = Vec::with_capacity(marker.temporaries.len());
     for temporary in &marker.temporaries {
         ensure!(
             seen_paths.insert(temporary.relative.clone()),
             "unjournaled context repair marker repeats a temporary path"
+        );
+        ensure!(
+            seen_targets.insert(temporary.target_relative.clone()),
+            "unjournaled context repair marker repeats a live target path"
         );
         let (directory, leaf, index) = marker_temporary_target(&root, operation_id, temporary)?;
         ensure!(
@@ -949,18 +966,47 @@ fn abort_unjournaled_preparation(
             )
         })?;
         ensure!(
-            blake3::hash(&bytes).to_hex().as_str() == temporary.digest,
+            blake3::hash(&bytes).to_hex().as_str() == temporary.planned_digest,
             "cannot prove unjournaled context repair stayed before mutation: temporary `{}` changed",
             temporary.relative
         );
+        let target = authority.target(&temporary.target_relative, DirectoryPolicy::Existing)?;
+        let target_relative = std::path::Path::new(&temporary.target_relative);
+        let temporary_relative = std::path::Path::new(&temporary.relative);
+        ensure!(
+            target_relative.parent() == temporary_relative.parent(),
+            "unjournaled context repair marker separates a temporary from its live target"
+        );
+        let live = target.parent.read_optional(&target.leaf)?;
+        match &temporary.original {
+            MarkerOriginal::Absent => ensure!(
+                live.is_none(),
+                "cannot prove unjournaled context repair stayed before mutation: originally absent target `{}` now exists",
+                temporary.target_relative
+            ),
+            MarkerOriginal::Present { digest } => {
+                validate_marker_digest(digest, "original target")?;
+                let live = live.with_context(|| {
+                    format!(
+                        "cannot prove unjournaled context repair stayed before mutation: original target `{}` is absent",
+                        temporary.target_relative
+                    )
+                })?;
+                ensure!(
+                    blake3::hash(&live).to_hex().as_str() == digest,
+                    "cannot prove unjournaled context repair stayed before mutation: target `{}` differs from its original bytes",
+                    temporary.target_relative
+                );
+            }
+        }
+        validated.push((directory, leaf));
     }
     ensure!(
         seen_indexes.iter().copied().eq(0..marker.temporaries.len()),
         "unjournaled context repair marker has a non-contiguous temporary set"
     );
 
-    for temporary in &marker.temporaries {
-        let (directory, leaf, _) = marker_temporary_target(&root, operation_id, temporary)?;
+    for (directory, leaf) in validated {
         ensure!(
             directory.unlink_if_exists(&leaf)?,
             "context repair temporary disappeared while aborting unjournaled preparation"
@@ -994,14 +1040,7 @@ fn marker_temporary_target(
     operation_id: uuid::Uuid,
     temporary: &MarkerTemporary,
 ) -> Result<(RetainedDirectory, OsString, usize)> {
-    ensure!(
-        temporary.digest.len() == 64
-            && temporary
-                .digest
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit()),
-        "unjournaled context repair marker has an invalid temporary digest"
-    );
+    validate_marker_digest(&temporary.planned_digest, "temporary")?;
     let relative = std::path::Path::new(&temporary.relative);
     ensure!(
         relative.components().count() > 0
@@ -1039,6 +1078,14 @@ fn marker_temporary_target(
     Ok((directory, leaf.to_os_string(), index))
 }
 
+fn validate_marker_digest(digest: &str, subject: &str) -> Result<()> {
+    ensure!(
+        digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "unjournaled context repair marker has an invalid {subject} digest"
+    );
+    Ok(())
+}
+
 fn persist_journal(
     directory: &RetainedDirectory,
     leaf: &OsStr,
@@ -1067,11 +1114,22 @@ fn marker_temporaries(entries: &[JournalEntry]) -> Vec<MarkerTemporary> {
                 |(parent, _)| format!("{parent}/{}", entry.temporary),
             );
             MarkerTemporary {
+                target_relative: entry.name.clone(),
                 relative,
-                digest: blake3::hash(entry.planned.as_bytes()).to_hex().to_string(),
+                planned_digest: blake3::hash(entry.planned.as_bytes()).to_hex().to_string(),
+                original: marker_original(Some(entry.original.as_bytes())),
             }
         })
         .collect()
+}
+
+fn marker_original(bytes: Option<&[u8]>) -> MarkerOriginal {
+    match bytes {
+        Some(bytes) => MarkerOriginal::Present {
+            digest: blake3::hash(bytes).to_hex().to_string(),
+        },
+        None => MarkerOriginal::Absent,
+    }
 }
 
 fn mark_recovery_pending(

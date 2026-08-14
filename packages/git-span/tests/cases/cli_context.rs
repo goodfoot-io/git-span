@@ -355,23 +355,7 @@ fn marker_without_journal_aborts_cleanly_before_reader_or_writer() -> Result<()>
         let repo = moved_context_repo(name)?;
         let original = std::fs::read(repo.path().join(".span").join(name))?;
         let operation = uuid::Uuid::new_v4().to_string();
-        let died = std::process::Command::new(env!("CARGO_BIN_EXE_git-span"))
-            .current_dir(repo.path())
-            .env("GIT_SPAN_CONTEXT_DISABLE_SERVICE", "1")
-            .env(
-                "GIT_SPAN_CONTEXT_TEST_DIE_AFTER",
-                "recovery-marker-persisted",
-            )
-            .args([
-                "context",
-                "file1.txt",
-                "--format",
-                "json",
-                "--fix",
-                "--operation-id",
-                &operation,
-            ])
-            .output()?;
+        let died = crash_after_recovery_marker(&repo, &operation)?;
         assert_eq!(died.status.code(), Some(86));
         assert!(repo.path().join(".git/span/recovery.pending").exists());
         assert!(
@@ -435,6 +419,86 @@ fn marker_without_journal_aborts_cleanly_before_reader_or_writer() -> Result<()>
             );
             let document: serde_json::Value = serde_json::from_slice(&retry.stdout)?;
             assert_eq!(document["mutation"]["rewritten"], true);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn marker_without_journal_refuses_changed_live_targets() -> Result<()> {
+    enum Divergence {
+        Planned,
+        External,
+        OriginallyAbsent,
+    }
+
+    for (label, divergence) in [
+        ("planned", Divergence::Planned),
+        ("external", Divergence::External),
+        ("created", Divergence::OriginallyAbsent),
+    ] {
+        let span_name = format!("marker-live-{label}");
+        let repo = moved_context_repo(&span_name)?;
+        let operation = uuid::Uuid::new_v4().to_string();
+        let died = crash_after_recovery_marker(&repo, &operation)?;
+        assert_eq!(died.status.code(), Some(86));
+
+        let temporaries = repair_temporaries(&repo, &operation)?;
+        assert_eq!(temporaries.len(), 1);
+        let temporary = &temporaries[0];
+        let target = match divergence {
+            Divergence::Planned => {
+                let target = repo.path().join(".span").join(&span_name);
+                std::fs::copy(temporary, &target)?;
+                target
+            }
+            Divergence::External => {
+                let target = repo.path().join(".span").join(&span_name);
+                std::fs::write(&target, b"third-party live span bytes\n")?;
+                target
+            }
+            Divergence::OriginallyAbsent => {
+                let target_relative = format!("created-after-{label}");
+                let target = repo.path().join(".span").join(&target_relative);
+                assert!(!target.exists());
+                // Model the marker state for a transaction-created target:
+                // the path is absent at the durable marker boundary, then an
+                // external writer creates it before recovery.
+                retarget_marker_as_originally_absent(&repo, &target_relative)?;
+                std::fs::write(&target, b"new external live span bytes\n")?;
+                target
+            }
+        };
+        let expected_live = std::fs::read(&target)?;
+        let expected_temporary = std::fs::read(temporary)?;
+        let marker = repo.path().join(".git/span/recovery.pending");
+        let expected_marker = std::fs::read(&marker)?;
+
+        for writer in [false, true] {
+            let output = if writer {
+                repo.run_span(["add", &format!("blocked-{label}"), "file2.txt#L1-L2"])?
+            } else {
+                repo.run_span_with_env(
+                    ["context", "file1.txt", "--format", "json"],
+                    "GIT_SPAN_CONTEXT_DISABLE_SERVICE",
+                    "1",
+                )?
+            };
+            assert!(
+                !output.status.success(),
+                "{label} {} unexpectedly succeeded: {}",
+                if writer { "writer" } else { "reader" },
+                String::from_utf8_lossy(&output.stdout)
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains("cannot prove unjournaled context repair stayed before mutation"),
+                "{label} {} stderr: {stderr}",
+                if writer { "writer" } else { "reader" }
+            );
+            assert_eq!(std::fs::read(&marker)?, expected_marker);
+            assert_eq!(std::fs::read(temporary)?, expected_temporary);
+            assert_eq!(std::fs::read(&target)?, expected_live);
         }
     }
     Ok(())
@@ -1160,6 +1224,39 @@ fn legacy_writer_recovers_prepared_repair_before_per_span_mutation() -> Result<(
     let shown = repo.run_span(["show", "b"])?;
     assert!(shown.status.success());
     assert!(String::from_utf8(shown.stdout)?.contains("Recovery precedes this legacy writer."));
+    Ok(())
+}
+
+fn crash_after_recovery_marker(repo: &TestRepo, operation: &str) -> Result<std::process::Output> {
+    Ok(std::process::Command::new(env!("CARGO_BIN_EXE_git-span"))
+        .current_dir(repo.path())
+        .env("GIT_SPAN_CONTEXT_DISABLE_SERVICE", "1")
+        .env(
+            "GIT_SPAN_CONTEXT_TEST_DIE_AFTER",
+            "recovery-marker-persisted",
+        )
+        .args([
+            "context",
+            "file1.txt",
+            "--format",
+            "json",
+            "--fix",
+            "--operation-id",
+            operation,
+        ])
+        .output()?)
+}
+
+fn retarget_marker_as_originally_absent(repo: &TestRepo, target: &str) -> Result<()> {
+    let path = repo.path().join(".git/span/recovery.pending");
+    let mut marker: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+    let temporaries = marker["temporaries"]
+        .as_array_mut()
+        .context("recovery marker has no temporary manifest")?;
+    anyhow::ensure!(temporaries.len() == 1, "expected one recovery temporary");
+    temporaries[0]["target_relative"] = serde_json::Value::String(target.to_owned());
+    temporaries[0]["original"] = serde_json::json!({ "state": "absent" });
+    std::fs::write(path, serde_json::to_vec(&marker)?)?;
     Ok(())
 }
 
