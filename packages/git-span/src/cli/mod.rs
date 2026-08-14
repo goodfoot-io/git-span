@@ -642,7 +642,10 @@ pub fn dispatch(
         .map_err(|e| anyhow::anyhow!("{}", e))?;
     let span_root = span_root.as_str();
     let _recovery_guard = recovery_domain::command_mode(&command)
-        .map(|mode| recovery_domain::acquire(repo, mode))
+        .map(|mode| match mode {
+            recovery_domain::Mode::Shared => recovery_domain::acquire_reader(repo, span_root),
+            recovery_domain::Mode::Exclusive => recovery_domain::acquire(repo, mode),
+        })
         .transpose()?;
     match command {
         Commands::Show(args) => {
@@ -703,6 +706,30 @@ pub fn dispatch(
             resolve::run_resolve(repo, args, span_root)
         }
     }
+}
+
+/// Resolve the one syntax shared by the `context` subcommand and a legacy
+/// span carrying that now-reserved name.
+///
+/// `None` means no effective legacy span exists, so the caller should return
+/// clap's already-captured missing-address error. The existence probe and
+/// rendering share one recovery-domain guard; this is deliberately not a
+/// raw read from `main`, where it could observe a half-recovered repair.
+pub fn dispatch_legacy_context_show(
+    repo: &gix::Repository,
+    args: ShowArgs,
+    span_dir: Option<&str>,
+) -> anyhow::Result<Option<i32>> {
+    let env_dir = std::env::var("GIT_SPAN_DIR").ok();
+    let span_root = crate::span_root::resolve_span_root(repo, span_dir, env_dir.as_deref())
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let span_root = span_root.as_str();
+    let _recovery_guard = recovery_domain::acquire_reader(repo, span_root)?;
+    if !show::exists_for_show(repo, &args.name, span_root)? {
+        return Ok(None);
+    }
+    let _perf = crate::perf::span("command.show");
+    show::run_show(repo, args, span_root).map(Some)
 }
 
 // ---------------------------------------------------------------------------

@@ -302,6 +302,21 @@ struct SpanToml {
 // Public run functions
 // ---------------------------------------------------------------------------
 
+/// Test whether the effective declaration exists without turning absence into
+/// `show`'s operational error. The caller must hold the recovery-domain read
+/// guard across this probe and the subsequent [`run_show`] call so a span
+/// writer cannot change the answer between routing and rendering.
+pub(crate) fn exists_for_show(repo: &gix::Repository, name: &str, span_root: &str) -> Result<bool> {
+    match crate::span::read::read_span_in(repo, name, span_root) {
+        Ok(_) => Ok(true),
+        Err(crate::Error::SpanNotFound(_)) => Ok(false),
+        // A declaration that exists but is conflicted, malformed, or
+        // unreadable still belongs to `show`: its normal diagnostic is more
+        // accurate than pretending the context command merely lacks input.
+        Err(_) => Ok(true),
+    }
+}
+
 pub fn run_show(repo: &gix::Repository, args: ShowArgs, span_root: &str) -> Result<i32> {
     let span = {
         let _perf = crate::perf::span("show.read-span");
@@ -320,7 +335,9 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs, span_root: &str) -> Resu
                 // command existing and the operator finding it.
                 let mut steps = vec![NextStep::Bash(format!("git status {span_root}/{name}"))];
                 steps.extend(crate::cli::resolve::conflict_remediation(
-                    &[name], span_root, kind,
+                    &[name],
+                    span_root,
+                    kind,
                 ));
                 steps
             },

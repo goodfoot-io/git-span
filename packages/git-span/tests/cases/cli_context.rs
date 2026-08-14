@@ -774,6 +774,95 @@ fn atomic_recovery_and_operation_id_replay() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn ordinary_readers_recover_prepared_repair_before_observation() -> Result<()> {
+    for surface in ["list", "show", "drift", "context"] {
+        let repo = TestRepo::seeded()?;
+        assert!(
+            repo.run_span(["add", "a", "file1.txt#L2-L3"])?
+                .status
+                .success()
+        );
+        assert!(
+            repo.run_span(["add", "b", "file1.txt#L4-L5"])?
+                .status
+                .success()
+        );
+        repo.write_file(
+            "file1.txt",
+            "prefix\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+        )?;
+        let operation = uuid::Uuid::new_v4().to_string();
+        let died = std::process::Command::new(env!("CARGO_BIN_EXE_git-span"))
+            .current_dir(repo.path())
+            .env("GIT_SPAN_CONTEXT_DISABLE_SERVICE", "1")
+            .env("GIT_SPAN_CONTEXT_TEST_DIE_AFTER", "span-rename:0")
+            .args([
+                "context",
+                "file1.txt",
+                "--format",
+                "json",
+                "--fix",
+                "--operation-id",
+                &operation,
+            ])
+            .output()?;
+        assert_eq!(died.status.code(), Some(86), "{surface}");
+
+        let observed = match surface {
+            "list" => repo.run_span_with_env(
+                ["list", "--oneline"],
+                "GIT_SPAN_CONTEXT_DISABLE_SERVICE",
+                "1",
+            )?,
+            "show" => {
+                repo.run_span_with_env(["show", "b"], "GIT_SPAN_CONTEXT_DISABLE_SERVICE", "1")?
+            }
+            "drift" => repo.run_span_with_env(
+                ["drift", "--format", "porcelain"],
+                "GIT_SPAN_CONTEXT_DISABLE_SERVICE",
+                "1",
+            )?,
+            "context" => repo.run_span_with_env(
+                ["context", "file1.txt", "--format", "json"],
+                "GIT_SPAN_CONTEXT_DISABLE_SERVICE",
+                "1",
+            )?,
+            _ => unreachable!(),
+        };
+        assert!(
+            observed.status.success(),
+            "{surface}: {}",
+            String::from_utf8_lossy(&observed.stderr)
+        );
+        match surface {
+            "list" => {
+                let stdout = String::from_utf8(observed.stdout)?;
+                assert!(stdout.contains("`a` `file1.txt#L3-L4`"), "{stdout}");
+                assert!(stdout.contains("`b` `file1.txt#L5-L6`"), "{stdout}");
+            }
+            "show" => {
+                let stdout = String::from_utf8(observed.stdout)?;
+                assert!(stdout.contains("start = 5"), "{stdout}");
+                assert!(stdout.contains("end = 6"), "{stdout}");
+            }
+            "drift" => assert!(observed.stdout.is_empty()),
+            "context" => {
+                let document: serde_json::Value = serde_json::from_slice(&observed.stdout)?;
+                assert_eq!(document["spans"].as_array().map(Vec::len), Some(2));
+                assert!(document["spans"].as_array().unwrap().iter().all(|span| {
+                    matches!(
+                        span["anchors"][0]["status"]["code"].as_str(),
+                        Some("FRESH" | "RESOLVED_PENDING_COMMIT")
+                    )
+                }));
+            }
+            _ => unreachable!(),
+        }
+    }
+    Ok(())
+}
+
 fn moved_context_repo(name: &str) -> Result<TestRepo> {
     let repo = TestRepo::seeded()?;
     assert!(
@@ -838,6 +927,125 @@ fn controlled_repair_epoch() -> Result<()> {
         next_stderr.contains("context.service-generation-hits 1"),
         "{next_stderr}"
     );
+    Ok(())
+}
+
+#[test]
+fn dirty_rebuild_completes_while_another_query_holds_shared_recovery() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    assert!(
+        repo.run_span(["add", "served", "file1.txt#L2-L3"])?
+            .status
+            .success()
+    );
+    let hooks = tempfile::tempdir()?;
+    let hook_path = hooks.path().to_string_lossy().into_owned();
+    let query = ["context", "file1.txt", "--format", "json"];
+    let warm =
+        repo.run_span_with_env(query, "GIT_SPAN_CONTEXT_TEST_SERVICE_HOOK_DIR", &hook_path)?;
+    assert!(warm.status.success());
+
+    let checkpoint = "query-shared-before-stability";
+    std::fs::write(hooks.path().join(format!("{checkpoint}.arm")), b"armed")?;
+    let binary = env!("CARGO_BIN_EXE_git-span").to_owned();
+    let cwd = repo.path().to_path_buf();
+    let (reader_tx, reader_rx) = std::sync::mpsc::channel();
+    std::thread::spawn({
+        let binary = binary.clone();
+        let cwd = cwd.clone();
+        move || {
+            let result = std::process::Command::new(binary)
+                .current_dir(cwd)
+                .args(query)
+                .output();
+            let _ = reader_tx.send(result);
+        }
+    });
+    let ready = hooks.path().join(format!("{checkpoint}.ready"));
+    let token = wait_for_checkpoint(&ready, None)?;
+
+    repo.write_file(
+        "file1.txt",
+        "prefix\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+    let (dirty_tx, dirty_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = std::process::Command::new(binary)
+            .current_dir(cwd)
+            .args(query)
+            .output();
+        let _ = dirty_tx.send(result);
+    });
+    let dirty = dirty_rx.recv_timeout(std::time::Duration::from_secs(5));
+    std::fs::write(hooks.path().join(format!("{checkpoint}.release")), token)?;
+    let reader = reader_rx.recv_timeout(std::time::Duration::from_secs(5))??;
+    let dirty = dirty.context("dirty rebuild blocked behind a shared query")??;
+    assert!(
+        reader.status.success(),
+        "{}",
+        String::from_utf8_lossy(&reader.stderr)
+    );
+    assert!(
+        dirty.status.success(),
+        "{}",
+        String::from_utf8_lossy(&dirty.stderr)
+    );
+    let oracle = repo.run_span_with_env(query, "GIT_SPAN_CONTEXT_DISABLE_SERVICE", "1")?;
+    assert!(oracle.status.success());
+    assert_eq!(dirty.stdout, oracle.stdout);
+    assert_eq!(reader.stdout, oracle.stdout);
+    Ok(())
+}
+
+#[test]
+fn foreground_repair_replay_publishes_to_resident_service() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    assert!(
+        repo.run_span(["add", "served", "file1.txt#L2-L3"])?
+            .status
+            .success()
+    );
+    assert!(
+        repo.run_span(["context", "file1.txt", "--format", "json"])?
+            .status
+            .success()
+    );
+    repo.write_file(
+        "file1.txt",
+        "prefix\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+    let operation = uuid::Uuid::new_v4().to_string();
+    let repair_args = [
+        "context",
+        "file1.txt",
+        "--format",
+        "json",
+        "--fix",
+        "--operation-id",
+        &operation,
+    ];
+    let foreground =
+        repo.run_span_with_env(repair_args, "GIT_SPAN_CONTEXT_DISABLE_SERVICE", "1")?;
+    assert!(foreground.status.success());
+
+    let replay = repo.run_span(repair_args)?;
+    assert!(
+        replay.status.success(),
+        "{}",
+        String::from_utf8_lossy(&replay.stderr)
+    );
+    assert_eq!(replay.stdout, foreground.stdout);
+    let next = repo.run_span(["--perf", "context", "file1.txt", "--format", "json"])?;
+    assert!(
+        next.status.success(),
+        "{}",
+        String::from_utf8_lossy(&next.stderr)
+    );
+    let replay_json: serde_json::Value = serde_json::from_slice(&replay.stdout)?;
+    let next_json: serde_json::Value = serde_json::from_slice(&next.stdout)?;
+    assert_eq!(next_json["spans"], replay_json["spans"]);
+    assert_eq!(next_json["scopes"], replay_json["scopes"]);
+    assert!(String::from_utf8(next.stderr)?.contains("context.service-generation-hits 1"));
     Ok(())
 }
 #[test]

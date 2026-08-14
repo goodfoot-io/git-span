@@ -57,6 +57,27 @@ pub(crate) fn acquire(repo: &gix::Repository, mode: Mode) -> Result<Guard> {
     Ok(Guard { _file: file })
 }
 
+/// Enter the shared reader domain only after settling any crash-left prepared
+/// context repair. The common path takes one shared lock and one marker stat.
+/// A pending marker forces an exclusive recovery pass, followed by an atomic
+/// `flock` downgrade on the same descriptor so no writer can enter between
+/// recovery and the caller's read.
+pub(crate) fn acquire_reader(repo: &gix::Repository, span_root: &str) -> Result<Guard> {
+    let shared = acquire(repo, Mode::Shared)?;
+    let Some(runtime) = super::context_repair::pending_runtime(repo, span_root)? else {
+        return Ok(shared);
+    };
+
+    drop(shared);
+    let exclusive = acquire(repo, Mode::Exclusive)?;
+    super::context_repair::recover_pending_locked(repo, span_root, &runtime)?;
+    exclusive
+        ._file
+        .lock_shared()
+        .context("downgrade recovered repository domain to shared")?;
+    Ok(exclusive)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

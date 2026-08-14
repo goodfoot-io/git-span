@@ -34,6 +34,21 @@ fn repo_with_pre_existing_drift_span() -> Result<TestRepo> {
     Ok(repo)
 }
 
+/// Build a repo carrying a span named `context`, from before that token became
+/// a subcommand. The fixture writes the declaration directly because current
+/// create-time validation correctly reserves the command name.
+fn repo_with_pre_existing_context_span() -> Result<TestRepo> {
+    let repo = TestRepo::seeded()?;
+    let gix = repo.gix_repo()?;
+    support::create_and_commit_span(
+        &gix,
+        "context",
+        &[("file1.txt", 1, 3)],
+        "Legacy context span remains readable after the command is added.",
+    )?;
+    Ok(repo)
+}
+
 // --- Retired subcommand -----------------------------------------------
 
 /// `git span stale` must name its replacement and must not run the drift
@@ -286,5 +301,111 @@ fn write_to_reserved_span_explains_the_escape() -> Result<()> {
         stderr.contains("git span delete drift"),
         "the refusal must name the escape, got: {stderr}"
     );
+    Ok(())
+}
+
+// --- Pre-existing span colliding with the context subcommand -------------
+
+/// The compatibility spelling is a bare span read, so global flags may appear
+/// on either side of the legacy name. Context addresses and context-specific
+/// options remain unambiguously owned by the new command.
+#[test]
+fn pre_existing_context_span_has_a_precise_bare_routing_matrix() -> Result<()> {
+    let repo = repo_with_pre_existing_context_span()?;
+
+    for args in [
+        vec!["context"],
+        vec!["--perf", "context"],
+        vec!["context", "--perf"],
+    ] {
+        let output = repo.run_span(&args)?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "legacy read {args:?} failed; stderr: {stderr}"
+        );
+        assert!(
+            stdout.contains("Legacy context span remains readable"),
+            "legacy read {args:?} did not show the span: {stdout}"
+        );
+    }
+
+    let explicit = repo.run_span(["show", "context"])?;
+    assert_eq!(
+        explicit.status.code(),
+        Some(0),
+        "explicit show must remain available: {}",
+        String::from_utf8_lossy(&explicit.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&explicit.stdout).contains("Legacy context span remains readable")
+    );
+
+    let query = repo.run_span_with_env(
+        ["context", "file1.txt#L1-L1", "--format", "json"],
+        "GIT_SPAN_CONTEXT_DISABLE_SERVICE",
+        "1",
+    )?;
+    assert_eq!(
+        query.status.code(),
+        Some(0),
+        "an address must route to the context command: {}",
+        String::from_utf8_lossy(&query.stderr)
+    );
+    let document: serde_json::Value = serde_json::from_slice(&query.stdout)?;
+    assert_eq!(document["schema_version"], 1);
+
+    let option_without_address = repo.run_span(["context", "--format", "json"])?;
+    let stderr = String::from_utf8_lossy(&option_without_address.stderr);
+    assert_eq!(
+        option_without_address.status.code(),
+        Some(2),
+        "a context-specific option must not fall back to the legacy span; stderr: {stderr}"
+    );
+    assert!(option_without_address.stdout.is_empty());
+    assert!(
+        stderr.contains("required arguments were not provided"),
+        "clap must own the missing-address diagnostic: {stderr}"
+    );
+    Ok(())
+}
+
+/// Outside a repository there cannot be a legacy span to disambiguate. The
+/// parser therefore owns bare `context` and reports its missing address with
+/// clap's usage exit, rather than attempting repository discovery first.
+#[test]
+fn bare_context_outside_a_repository_is_a_usage_error() -> Result<()> {
+    let outside = tempfile::tempdir()?;
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_git-span"))
+        .current_dir(outside.path())
+        .arg("context")
+        .output()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(output.status.code(), Some(2), "stderr: {stderr}");
+    assert!(output.stdout.is_empty());
+    assert!(
+        stderr.contains("required arguments were not provided"),
+        "clap must report the missing context address: {stderr}"
+    );
+    assert!(
+        !stderr.contains("not inside a git repository"),
+        "repository discovery must not replace the usage error: {stderr}"
+    );
+
+    let repo_without_legacy_span = TestRepo::seeded()?;
+    for args in [vec!["context"], vec!["context", "--perf"]] {
+        let output = repo_without_legacy_span.run_span(&args)?;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "a repository without the legacy span must keep clap's usage error for {args:?}: {stderr}"
+        );
+        assert!(output.stdout.is_empty());
+        assert!(stderr.contains("required arguments were not provided"));
+    }
     Ok(())
 }

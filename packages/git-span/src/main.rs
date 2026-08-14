@@ -110,25 +110,38 @@ fn run() -> Result<i32> {
         .into());
     }
 
-    // `context` became a subcommand after repositories could already carry
-    // a span with that name. Preserve the one otherwise-ambiguous legacy
-    // spelling: a bare token with no context addresses still shows an
-    // effective legacy span. If none exists, clap owns the normal missing
-    // address usage error. Explicit `show context` and all writer operations
-    // already validate existing targets by shape rather than the create-time
-    // reserved-name rule.
-    if first_non_opt.map(String::as_str) == Some("context") && args.len() == idx + 1 {
-        let repo = discover_repo()?;
-        let env_dir = std::env::var("GIT_SPAN_DIR").ok();
-        let span_root = git_span::span_root::resolve_span_root(&repo, None, env_dir.as_deref())
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-        if git_span::span::read::read_span_in(&repo, "context", &span_root).is_ok() {
-            let mut show_argv = args.clone();
-            show_argv.insert(idx, "show".to_owned());
-            let cli = Cli::try_parse_from(show_argv)?;
-            git_span::perf::init(cli.perf);
-            return cli::dispatch(&repo, cli.command.expect("inserted show subcommand"), None);
-        }
+    // `context` became a subcommand after repositories could already carry a
+    // span with that name. The only ambiguous spelling is `context` plus
+    // global flags: an address or a context-specific option always belongs to
+    // the command. Capture clap's missing-address result first, then attempt
+    // the legacy read through normal recovery-domain dispatch. When there is
+    // no repository or no effective legacy span, clap still owns the usage
+    // error rather than repository discovery or `show` claiming the syntax.
+    let bare_context = is_bare_context_syntax(&args);
+    if bare_context {
+        let usage_error = Cli::try_parse_from(args.clone())
+            .expect_err("bare context without an address must be rejected by clap");
+        let mut show_argv = args.clone();
+        let context_index = show_argv
+            .iter()
+            .skip(1)
+            .position(|arg| arg == "context")
+            .map(|position| position + 1)
+            .expect("bare context probe contains the context token");
+        show_argv.insert(context_index, "show".to_owned());
+        let cli = Cli::try_parse_from(show_argv)?;
+        let repo = match discover_repo() {
+            Ok(repo) => repo,
+            Err(_) => return Err(usage_error.into()),
+        };
+        git_span::perf::init(cli.perf);
+        let Commands::Show(show_args) = cli.command.expect("inserted show subcommand") else {
+            unreachable!("inserted show subcommand must parse as show");
+        };
+        return match cli::dispatch_legacy_context_show(&repo, show_args, None)? {
+            Some(code) => Ok(code),
+            None => Err(usage_error.into()),
+        };
     }
 
     // `is_reserved_span_name` — not the bare reserved list — so this
@@ -178,6 +191,21 @@ fn run() -> Result<i32> {
             Ok(0)
         }
     }
+}
+
+/// Whether argv contains only the ambiguous `context` token and global
+/// `--perf` flags. A `--` terminator makes everything after it positional, so
+/// an escaped path named `--perf` remains a real context address.
+fn is_bare_context_syntax(args: &[String]) -> bool {
+    let mut saw_context = false;
+    for argument in args.iter().skip(1) {
+        match argument.as_str() {
+            "--perf" => {}
+            "context" if !saw_context => saw_context = true,
+            _ => return false,
+        }
+    }
+    saw_context
 }
 
 fn discover_repo() -> Result<gix::Repository> {

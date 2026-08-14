@@ -856,8 +856,7 @@ pub fn run_context(repo: &gix::Repository, args: ContextArgs, span_root: &str) -
             }
             None => {
                 crate::perf::counter("context.strict-fallbacks", 1);
-                let _guard =
-                    super::recovery_domain::acquire(repo, super::recovery_domain::Mode::Shared)?;
+                let _guard = super::recovery_domain::acquire_reader(repo, span_root)?;
                 run_context_read_only(repo, &args.addresses, span_root)?
             }
         };

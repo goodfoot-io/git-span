@@ -93,8 +93,7 @@ struct Generation {
 
 impl Generation {
     fn build(repo: &gix::Repository, span_root: &str) -> Result<(Self, BTreeSet<PathBuf>)> {
-        let _recovery =
-            super::recovery_domain::acquire(repo, super::recovery_domain::Mode::Exclusive)?;
+        let _recovery = super::recovery_domain::acquire_reader(repo, span_root)?;
         Self::build_locked(repo, span_root)
     }
 
@@ -450,9 +449,15 @@ mod unix {
             Ok(())
         }
 
-        fn rebuild(&mut self, counters: &mut ServiceCounters) -> Result<()> {
-            let repo = gix::open(&self.repo_path).context("reopen context service repository")?;
-            let (generation, external_roots) = Generation::build(&repo, &self.span_root)?;
+        /// Rebuild while the caller already holds the repository recovery
+        /// domain before `ServiceState`'s mutex. Keeping lock acquisition out
+        /// of this method makes the global order explicit: recovery, state.
+        fn rebuild_locked(
+            &mut self,
+            repo: &gix::Repository,
+            counters: &mut ServiceCounters,
+        ) -> Result<()> {
+            let (generation, external_roots) = Generation::build_locked(repo, &self.span_root)?;
             let mut roots = self.base_watch_roots.clone();
             roots.extend(external_roots);
             let mut excluded = self.runtime_dirs.clone();
@@ -479,13 +484,24 @@ mod unix {
         let started = Instant::now();
         let mut counters = ServiceCounters::default();
         for attempt in 0..=1 {
-            let (generation, scopes, epoch, repo_path) = {
+            // Extract immutable identity without retaining the state mutex.
+            // Every subsequent state access is ordered after the repository
+            // recovery domain, matching repair publication's lock order.
+            let (repo_path, span_root) = {
+                let state = shared
+                    .lock()
+                    .map_err(|_| anyhow!("context service state was poisoned"))?;
+                (state.repo_path.clone(), state.span_root.clone())
+            };
+            let repo = gix::open(&repo_path).context("reopen context service repository")?;
+            let _recovery = crate::cli::recovery_domain::acquire_reader(&repo, &span_root)?;
+            let (generation, scopes, epoch) = {
                 let mut state = shared
                     .lock()
                     .map_err(|_| anyhow!("context service state was poisoned"))?;
                 state.drain(&mut counters)?;
                 if state.dirty {
-                    state.rebuild(&mut counters)?;
+                    state.rebuild_locked(&repo, &mut counters)?;
                 } else {
                     counters.generation_hits = 1;
                 }
@@ -495,20 +511,11 @@ mod unix {
                     &state.repo_path,
                 )?;
                 counters.epoch_checks += 1;
-                (
-                    state.generation.clone(),
-                    scopes,
-                    state.epoch,
-                    state.repo_path.clone(),
-                )
+                (state.generation.clone(), scopes, state.epoch)
             };
-            let repo = gix::open(&repo_path).context("reopen context service repository")?;
-            let _recovery = crate::cli::recovery_domain::acquire(
-                &repo,
-                crate::cli::recovery_domain::Mode::Shared,
-            )?;
             let (document, rows) = generation.query(scopes)?;
             counters.rows_decoded += rows;
+            service_test_checkpoint("query-shared-before-stability")?;
             let stable = {
                 let mut state = shared
                     .lock()
@@ -525,6 +532,31 @@ mod unix {
             counters.stale_fallbacks += 1;
         }
         unreachable!("query loop returns or fails")
+    }
+
+    fn service_test_checkpoint(name: &str) -> Result<()> {
+        let Ok(directory) = std::env::var("GIT_SPAN_CONTEXT_TEST_SERVICE_HOOK_DIR") else {
+            return Ok(());
+        };
+        let directory = Path::new(&directory);
+        let arm = directory.join(format!("{name}.arm"));
+        match std::fs::remove_file(&arm) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        }
+        let token = uuid::Uuid::new_v4().to_string();
+        std::fs::write(directory.join(format!("{name}.ready")), &token)?;
+        let release = directory.join(format!("{name}.release"));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if std::fs::read_to_string(&release).ok().as_deref() == Some(token.as_str()) {
+                let _ = std::fs::remove_file(release);
+                return Ok(());
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        bail!("context service test checkpoint `{name}` timed out")
     }
 
     fn peer_uid(stream: &UnixStream) -> Result<u32> {
@@ -1011,6 +1043,7 @@ mod unix {
                 Ok(())
             },
         )?;
+        let _recovery = crate::cli::recovery_domain::acquire_reader(&repo, &span_root)?;
         {
             let expected = document
                 .spans
@@ -1039,7 +1072,7 @@ mod unix {
                 state.epoch = state.epoch.saturating_add(1);
                 if !expected_only {
                     state.dirty = true;
-                    state.rebuild(&mut counters)?;
+                    state.rebuild_locked(&repo, &mut counters)?;
                 }
             }
         }
