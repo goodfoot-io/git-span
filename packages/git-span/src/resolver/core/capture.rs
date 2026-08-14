@@ -148,6 +148,16 @@ pub(crate) fn capture_state_token_with_memo(
     options: EngineOptions,
     memo: Option<&mut dyn ExeDigestMemo>,
 ) -> Result<StateToken> {
+    capture_state_token_with_extra_paths(repo, span_root, options, &BTreeSet::new(), memo)
+}
+
+pub(crate) fn capture_state_token_with_extra_paths(
+    repo: &gix::Repository,
+    span_root: &str,
+    options: EngineOptions,
+    extra_paths: &BTreeSet<String>,
+    memo: Option<&mut dyn ExeDigestMemo>,
+) -> Result<StateToken> {
     let committed = {
         let _perf = crate::perf::span("cache.capture.committed");
         load_committed(repo, span_root)?
@@ -189,6 +199,10 @@ pub(crate) fn capture_state_token_with_memo(
         relevant.insert(path.clone());
     }
     for path in &uncommitted.anchored {
+        anchored.insert(path.clone());
+        relevant.insert(path.clone());
+    }
+    for path in extra_paths {
         anchored.insert(path.clone());
         relevant.insert(path.clone());
     }
@@ -327,6 +341,17 @@ pub(crate) fn revalidate_with_memo(
     memo: Option<&mut dyn ExeDigestMemo>,
 ) -> Result<Revalidation> {
     let fresh = capture_state_token_with_memo(repo, span_root, options, memo)?;
+    Ok(diff_tokens(original, &fresh))
+}
+
+pub(crate) fn revalidate_with_extra_paths(
+    repo: &gix::Repository,
+    span_root: &str,
+    options: EngineOptions,
+    extra_paths: &BTreeSet<String>,
+    original: &StateToken,
+) -> Result<Revalidation> {
+    let fresh = capture_state_token_with_extra_paths(repo, span_root, options, extra_paths, None)?;
     Ok(diff_tokens(original, &fresh))
 }
 

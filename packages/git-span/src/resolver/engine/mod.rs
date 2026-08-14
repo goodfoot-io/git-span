@@ -770,6 +770,41 @@ pub(crate) fn span_has_actionable_drift(m: &SpanResolved) -> bool {
 /// its `Ok(SpanResolved)` or a per-name resolution `Err`.
 type NamedSpanResults = Vec<(String, std::result::Result<SpanResolved, Error>)>;
 
+pub(crate) fn resolve_loaded_spans(
+    repo: &gix::Repository,
+    spans: &[(String, Span)],
+    options: EngineOptions,
+) -> Result<Vec<SpanResolved>> {
+    let _perf = crate::perf::span("resolver.resolve-loaded-spans");
+    let mut state = EngineState::new_with_fuzzy_threshold(
+        repo,
+        options.layers,
+        options.needs_all_layers,
+        options.fuzzy_threshold,
+    )?;
+    if !spans.is_empty() {
+        state
+            .concurrent
+            .build_reverse_walk(&mut state.shared, repo, spans)?;
+    }
+    let mut resolved = Vec::with_capacity(spans.len());
+    for (_, span) in spans {
+        resolved.push(resolve_loaded_span_with_state(
+            repo,
+            &mut state,
+            span.clone(),
+            options,
+        )?);
+    }
+    emit_session_walk_counters(&state.concurrent);
+    if state.finish(repo) {
+        return Err(Error::Git(
+            "repository index changed while resolving context; retry the query".into(),
+        ));
+    }
+    Ok(resolved)
+}
+
 pub(crate) fn resolve_named_spans(
     repo: &gix::Repository,
     span_root: &str,
