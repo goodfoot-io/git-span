@@ -5311,15 +5311,8 @@ function parseCommandLayered(command, options = {}) {
         (match) => match.status === "unresolved" ? [unresolved("shell", match.idiom, stableReason(match), match.reason, match.fileArg)] : []
       );
       const layeredReads = resolved2.filter(({ layer, span }) => layer !== "shell" && span.operation === "read");
-      const seenReads = /* @__PURE__ */ new Set();
-      const reads = [...pipelineReads, ...layeredReads].filter(({ span }) => {
-        const key = `${span.absolutePath}\0${span.lineStart ?? ""}\0${span.lineEnd ?? ""}\0${span.simpleCommandIndex}`;
-        if (seenReads.has(key)) return false;
-        seenReads.add(key);
-        return true;
-      });
       const writes = resolved2.filter(({ span }) => span.operation !== "read");
-      resolved2.splice(0, resolved2.length, ...reads, ...writes);
+      resolved2.splice(0, resolved2.length, ...pipelineReads, ...layeredReads, ...writes);
       const layeredUnresolved = unresolvedMatches2.filter(({ layer }) => layer !== "shell");
       unresolvedMatches2.splice(0, unresolvedMatches2.length, ...pipelineUnresolved, ...layeredUnresolved);
     }

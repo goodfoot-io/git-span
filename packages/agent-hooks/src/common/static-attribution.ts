@@ -2022,15 +2022,8 @@ export function parseCommandLayered(command: string, options: LayeredParseOption
           : []
       );
       const layeredReads = resolved.filter(({ layer, span }) => layer !== 'shell' && span.operation === 'read');
-      const seenReads = new Set<string>();
-      const reads = [...pipelineReads, ...layeredReads].filter(({ span }) => {
-        const key = `${span.absolutePath}\0${span.lineStart ?? ''}\0${span.lineEnd ?? ''}\0${span.simpleCommandIndex}`;
-        if (seenReads.has(key)) return false;
-        seenReads.add(key);
-        return true;
-      });
       const writes = resolved.filter(({ span }) => span.operation !== 'read');
-      resolved.splice(0, resolved.length, ...reads, ...writes);
+      resolved.splice(0, resolved.length, ...pipelineReads, ...layeredReads, ...writes);
       const layeredUnresolved = unresolvedMatches.filter(({ layer }) => layer !== 'shell');
       unresolvedMatches.splice(0, unresolvedMatches.length, ...pipelineUnresolved, ...layeredUnresolved);
     }
