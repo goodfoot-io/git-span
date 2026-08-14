@@ -1,0 +1,5 @@
+.github/workflows/ci.yml#L121-L124 rk64:b5c27abda9676fb7
+packages/agent-hooks/src/common/advisor-core.ts#L1-L24 rk64:11c0e3d597175fc3
+packages/agent-hooks/src/common/touch-core.ts#L3-L16 rk64:702945b1cbe3f42a
+wiki/marketing/use-cases/agent-change-assurance.md#L9-L38 rk64:7cf6fa1ef580e5e0
+
