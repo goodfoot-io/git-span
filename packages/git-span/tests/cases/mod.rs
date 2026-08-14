@@ -19,6 +19,7 @@ pub mod cli_resolve;
 pub mod cli_rev_parse_errors;
 pub mod cli_show;
 pub mod cli_drift_fix;
+pub mod cli_drift_fix_convergence;
 pub mod cli_drift_fix_equivalence;
 pub mod cli_drift_fix_mid_merge;
 pub mod cli_drift_fix_perf_equivalence;
