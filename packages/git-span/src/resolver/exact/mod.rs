@@ -294,11 +294,14 @@ pub(crate) fn drift_spans_new_store(
 
     let _perf = crate::perf::span("resolver.store");
 
-    let mut store = match CacheStore::open(repo) {
-        Ok(s) => s,
-        Err(e) => {
-            crate::perf::note(&format!("cache-path.bypass-reason: store-open: {e}"));
-            return Ok(ExactAttempt::Bypass);
+    let mut store = {
+        let _perf = crate::perf::span("resolver.store.open");
+        match CacheStore::open(repo) {
+            Ok(s) => s,
+            Err(e) => {
+                crate::perf::note(&format!("cache-path.bypass-reason: store-open: {e}"));
+                return Ok(ExactAttempt::Bypass);
+            }
         }
     };
 
@@ -317,7 +320,10 @@ pub(crate) fn drift_spans_new_store(
     // previous commit's superseded generation and feeds the count leg that
     // gates the bounded sweep; no generation was just published here, so no
     // same-head narrowing applies.
-    maybe_maintain(repo, &mut store, None);
+    {
+        let _perf = crate::perf::span("resolver.store.maintain");
+        maybe_maintain(repo, &mut store, None);
+    }
 
     // Snapshot the complete invocation state up front: this is both the exact
     // read key and the baseline `revalidate` diffs against after a cold build.
@@ -349,11 +355,15 @@ pub(crate) fn drift_spans_new_store(
         );
     }
 
-    let attempt = drift_spans_new_store_inner(repo, span_root, options, &token, &mut store)?;
+    let attempt = {
+        let _perf = crate::perf::span("resolver.store.lookup");
+        drift_spans_new_store_inner(repo, span_root, options, &token, &mut store)?
+    };
     // Two whole-result short-circuit guards `run_drift` depends on. Both keep
     // the reportable `spans` intact; only the whole-result (which lets the CLI
     // skip its per-invocation corpus scans) is withheld.
     let attempt = withhold_whole_result_for_interior_anchor(span_root, attempt);
+    let _perf_withhold = crate::perf::span("resolver.store.withhold-dirty-tree");
     withhold_whole_result_for_dirty_tree(repo, &token, attempt)
 }
 
@@ -868,13 +878,17 @@ fn reconcile_liveness(
     store: &mut CacheStore,
     current: Option<(&str, &[u8; 32])>,
 ) {
-    let live_heads = match crate::git::live_worktree_heads(repo) {
-        Ok(h) => h,
-        Err(e) => {
-            crate::perf::note(&format!("cache-path.reconcile-skipped: live-heads: {e}"));
-            return;
+    let live_heads = {
+        let _perf = crate::perf::span("resolver.store.reconcile.live-heads");
+        match crate::git::live_worktree_heads(repo) {
+            Ok(h) => h,
+            Err(e) => {
+                crate::perf::note(&format!("cache-path.reconcile-skipped: live-heads: {e}"));
+                return;
+            }
         }
     };
+    let _perf_reconcile = crate::perf::span("resolver.store.reconcile.update");
     match store.reconcile_live_heads(&live_heads, current) {
         Ok(demoted) => crate::perf::counter("cache-path.reconcile-demoted", demoted),
         Err(e) => crate::perf::note(&format!("cache-path.reconcile-failed: {e}")),

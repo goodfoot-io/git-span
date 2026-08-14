@@ -975,11 +975,13 @@ fn os_str_bytes(s: &std::ffi::OsStr) -> std::borrow::Cow<'_, [u8]> {
 /// absent" so a later addition of a `.gitattributes` changes the digest.
 fn attributes_digest(repo: &gix::Repository, anchored: &BTreeSet<String>) -> [u8; 32] {
     let mut attrs: BTreeMap<String, Option<String>> = BTreeMap::new();
-    collect_gitattributes(repo, Path::new(".gitattributes"), &mut attrs);
+    let head_tree = head_root_tree(repo);
+    let head_tree = head_tree.as_ref();
+    collect_gitattributes(head_tree, Path::new(".gitattributes"), &mut attrs);
     for p in anchored {
         let mut dir = Path::new(p).parent();
         while let Some(d) = dir {
-            collect_gitattributes(repo, &d.join(".gitattributes"), &mut attrs);
+            collect_gitattributes(head_tree, &d.join(".gitattributes"), &mut attrs);
             dir = d.parent();
         }
     }
@@ -1001,8 +1003,26 @@ fn attributes_digest(repo: &gix::Repository, anchored: &BTreeSet<String>) -> [u8
     *h.finalize().as_bytes()
 }
 
+/// HEAD's root tree, peeled once for a whole [`attributes_digest`] pass.
+///
+/// [`crate::git::tree_entry_at`] re-parses the revspec, reloads the commit and
+/// re-peels to the tree on *every* call, so calling it once per candidate
+/// `.gitattributes` re-walked HEAD once per ancestor directory — the same shape
+/// as the card main-157 F4 regression fixed in
+/// [`crate::resolver::dirty::head_blob_path_map`]. `None` (an unresolvable or
+/// unborn HEAD) leaves every lookup absent, exactly as the per-call form
+/// returned `Ok(None)` when `rev_parse_single` failed.
+fn head_root_tree(repo: &gix::Repository) -> Option<gix::Tree<'_>> {
+    repo.rev_parse_single("HEAD")
+        .ok()?
+        .object()
+        .ok()?
+        .peel_to_tree()
+        .ok()
+}
+
 fn collect_gitattributes(
-    repo: &gix::Repository,
+    head_tree: Option<&gix::Tree<'_>>,
     path: &Path,
     out: &mut BTreeMap<String, Option<String>>,
 ) {
@@ -1010,8 +1030,8 @@ fn collect_gitattributes(
     if out.contains_key(&key) {
         return;
     }
-    let oid = match crate::git::tree_entry_at(repo, "HEAD", path) {
-        Ok(Some((mode, oid))) if mode.is_blob() => Some(oid.to_string()),
+    let oid = match head_tree.and_then(|t| t.lookup_entry_by_path(path).ok().flatten()) {
+        Some(e) if e.mode().is_blob() => Some(e.object_id().to_string()),
         _ => None,
     };
     out.insert(key, oid);
@@ -1165,13 +1185,31 @@ fn staged_states(
 /// Typed worktree identity for every relevant path. Read failures are typed
 /// `Unreadable` (a directory where a file is expected, a permission error),
 /// never conflated with `Absent` and never seeded with wall-clock time.
+/// Split floor for the worktree-state fork.  Each task is one `symlink_metadata`
+/// plus a full file read and BLAKE3 pass, so the per-task payload is large
+/// relative to rayon's split overhead — but a span set with only a handful of
+/// relevant paths still runs effectively serially rather than paying for a
+/// fork it cannot amortize.
+const MIN_PATHS_PER_WORKTREE_STATE_TASK: usize = 16;
+
 fn worktree_states(
     repo: &gix::Repository,
     relevant: &BTreeSet<String>,
 ) -> Result<Vec<PathStateEntry>> {
+    use rayon::prelude::*;
+
     let workdir = crate::git::work_dir(repo)?;
-    Ok(relevant
-        .iter()
+    // Every entry is an independent stat + read + hash over one path with no
+    // shared mutable state and no `gix` handle, so this forks cleanly without
+    // the `map_init` repository cloning the anchor-resolution fork needs.
+    // Collecting to a slice first keeps the iterator *indexed*, so rayon
+    // preserves `relevant`'s BTreeSet ordering — the token digest hashes these
+    // entries in order and revalidation compares them field-by-field, so a
+    // reordered vector would spuriously invalidate every cached result.
+    let paths: Vec<&String> = relevant.iter().collect();
+    Ok(paths
+        .into_par_iter()
+        .with_min_len(MIN_PATHS_PER_WORKTREE_STATE_TASK)
         .map(|p| PathStateEntry {
             path: p.clone(),
             state: worktree_path_state(workdir, p),
