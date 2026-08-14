@@ -5,10 +5,44 @@
 //! module is used by at least one caller. No `#[allow(dead_code)]`
 //! annotations are needed.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::fs;
+use std::io;
 use std::path::Path;
 use std::process::{Command, Output};
+
+/// Spawn `cmd` and capture its output, naming the binary when the spawn
+/// itself fails.
+///
+/// A bare `cmd.output()?` propagates the raw `io::Error`, so a failed spawn
+/// surfaces as a context-free `No such file or directory (os error 2)` with
+/// no indication of *which* binary was missing — an expensive thing to
+/// diagnose from a test log.
+///
+/// The `NotFound`-and-absent case gets a pointed message because it has a
+/// known cause here: the cargo target root is shared across worktrees (see
+/// `scripts/with-target-lock.sh`), every cargo task holds only a *shared*
+/// lock, and cargo's own `.cargo-lock` serializes build-vs-build but not
+/// build-vs-run. A sibling worktree relinking `git-span` can therefore
+/// unlink the binary out from under an already-running test's spawn.
+///
+/// This is diagnosis, not a fix: it makes the race legible, it does not
+/// prevent it. Deliberately no retry — the flake should stay visible.
+fn capture(cmd: &mut Command) -> Result<Output> {
+    let program = cmd.get_program().to_string_lossy().into_owned();
+    match cmd.output() {
+        Ok(out) => Ok(out),
+        Err(err) if err.kind() == io::ErrorKind::NotFound && !Path::new(&program).exists() => {
+            anyhow::bail!(
+                "`{program}` did not exist at spawn time: {err}\n\
+                 The cargo target root is shared across worktrees and scripted cargo tasks \
+                 take only a shared lock, so a sibling worktree's relink can remove this \
+                 binary mid-run. Re-run to confirm it is the race and not a missing build."
+            )
+        }
+        Err(err) => Err(err).with_context(|| format!("failed to spawn `{program}`")),
+    }
+}
 
 /// A scratch git repository, owned by a tempdir that's cleaned up on
 /// drop. Set up with `user.name` / `user.email` so commits work without
@@ -112,7 +146,7 @@ impl TestRepo {
         for a in args {
             cmd.arg(a.as_ref());
         }
-        let out = cmd.output()?;
+        let out = capture(&mut cmd)?;
         anyhow::ensure!(
             out.status.success(),
             "git failed: {}",
@@ -138,7 +172,7 @@ impl TestRepo {
         for (k, v) in env {
             cmd.env(k, v);
         }
-        let out = cmd.output()?;
+        let out = capture(&mut cmd)?;
         anyhow::ensure!(
             out.status.success(),
             "git failed: {}",
@@ -190,7 +224,7 @@ impl TestRepo {
         for a in args {
             cmd.arg(a.as_ref());
         }
-        Ok(cmd.output()?)
+        capture(&mut cmd)
     }
 
     /// Find the backtick-quoted `git span …` command in `stdout` that starts
@@ -266,7 +300,7 @@ impl TestRepo {
         for a in args {
             cmd.arg(a.as_ref());
         }
-        Ok(cmd.output()?)
+        capture(&mut cmd)
     }
 
     /// Run the `git-span` binary from an explicit working directory.
@@ -284,7 +318,7 @@ impl TestRepo {
         for a in args {
             cmd.arg(a.as_ref());
         }
-        Ok(cmd.output()?)
+        capture(&mut cmd)
     }
 
     pub fn span_stdout<I, S>(&self, args: I) -> Result<String>
@@ -496,15 +530,13 @@ pub fn create_and_commit_span(
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(span_dir.join(name), mf.serialize())?;
-    let out = Command::new("git")
-        .current_dir(&workdir)
-        .args(["add", &rel])
-        .output()?;
+    let out = capture(Command::new("git").current_dir(&workdir).args(["add", &rel]))?;
     assert!(out.status.success(), "git add {rel} failed");
-    let out = Command::new("git")
-        .current_dir(&workdir)
-        .args(["commit", "-m", &format!("span: {name}")])
-        .output()?;
+    let out = capture(
+        Command::new("git")
+            .current_dir(&workdir)
+            .args(["commit", "-m", &format!("span: {name}")]),
+    )?;
     assert!(
         out.status.success(),
         "git commit failed: {}",
@@ -523,10 +555,7 @@ pub struct BareRepo {
 impl BareRepo {
     pub fn new() -> Result<Self> {
         let dir = tempfile::tempdir()?;
-        let out = Command::new("git")
-            .args(["init", "--bare"])
-            .arg(dir.path())
-            .output()?;
+        let out = capture(Command::new("git").args(["init", "--bare"]).arg(dir.path()))?;
         anyhow::ensure!(
             out.status.success(),
             "git init --bare failed: {}",
