@@ -36,7 +36,8 @@ use support::TestRepo;
 // ---------------------------------------------------------------------------
 
 /// `file1.txt` as `TestRepo::seeded` writes it (10 lines).
-pub const ORIGINAL: &str = "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
+pub const ORIGINAL: &str =
+    "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n";
 
 /// Well-formed rk64 tokens matching no real content.
 pub const OTHER_HASH: &str = "0123456789abcdef";
@@ -118,9 +119,8 @@ pub fn flat(stderr: &str) -> String {
 /// repair. Everything else in a fence is being offered as the exit, and an
 /// exit that leaves the file byte-identical is a loop.
 fn assert_named_commands_change_the_file(
-    repo: &TestRepo,
+    arrange: impl Fn() -> Result<(TestRepo, String)>,
     name: &str,
-    fixture: &str,
     stderr: &str,
 ) -> Result<()> {
     let commands: Vec<String> = fenced_commands(stderr)
@@ -132,18 +132,23 @@ fn assert_named_commands_change_the_file(
         "this refusal is supposed to name a repair command; stderr=\n{stderr}"
     );
     for cmd in commands {
-        // Each command is judged against the state the operator is actually
-        // in — the refused file — not against whatever an earlier command in
-        // the same list left behind. Running them in sequence made the second
-        // one a no-op for the trivial reason that the first had already
-        // settled the file, which is a fact about the harness, not the advice.
-        repo.write_file(&format!(".span/{name}"), fixture)?;
-        let before = read_span_bytes(repo, name)?;
+        // Rebuild the whole repository for every independent command. Writing
+        // only `.span/{name}` restored the visible artifact but retained the
+        // index (and any other Git state) left by an earlier command. That is
+        // not the state the refusal observed and makes an index-sensitive
+        // command look tested when it was run against a half-restored repo.
+        let (repo, fixture) = arrange()?;
+        assert_eq!(
+            read_span_bytes(&repo, name)?,
+            fixture.as_bytes(),
+            "arrangement must return the refused artifact it installed"
+        );
+        let before = read_span_bytes(&repo, name)?;
         let args: Vec<&str> = cmd.split_whitespace().skip(2).collect();
         repo.run_span(args)?;
         assert_ne!(
             before,
-            read_span_bytes(repo, name)?,
+            read_span_bytes(&repo, name)?,
             "the refusal named `{cmd}`, so running it must change `{name}`; a named command \
              that leaves the file byte-identical sends the operator straight back to the same \
              refusal"
@@ -152,32 +157,71 @@ fn assert_named_commands_change_the_file(
     Ok(())
 }
 
+/// The complete refusal-steering surface declared by `repair_domain` and the
+/// behavioral test that owns each case. This is an inventory, not a coverage
+/// count: production adds the left-hand side, and the derived gate below
+/// refuses to pass until a named behavioral owner exists on the right.
+const REFUSAL_GATE_CASES: &[(&str, &str)] = &[
+    // gate-case: BLOCKER_SEPARATOR_PLACEMENT
+    ("SEPARATOR_PLACEMENT", "boundary_refusal_names_no_command"),
+    // gate-case: BLOCKER_RESIDUE_SHAPE
+    (
+        "RESIDUE_SHAPE",
+        "residue_shape_refusal_names_drift_fix_and_it_moves_the_file",
+    ),
+    // gate-case: BLOCKER_UNPARSEABLE_ANCHOR_RESIDUE
+    (
+        "UNPARSEABLE_ANCHOR_RESIDUE",
+        "unparseable_side_refusal_names_no_command_because_drift_fix_cannot_move_it",
+    ),
+    // gate-case: BLOCKER_UNPARSEABLE_WHY_RESIDUE
+    (
+        "UNPARSEABLE_WHY_RESIDUE",
+        "why_region_noncanonical_residue_routes_through_safe_drift_fix",
+    ),
+    // gate-case: BLOCKER_RENAMED_ANCHOR_PATH
+    (
+        "RENAMED_ANCHOR_PATH",
+        "rename_signal_refusal_names_drift_fix",
+    ),
+    // gate-case: BLOCKER_UNSTAGED_RESOLUTION
+    (
+        "UNSTAGED_RESOLUTION",
+        "unmerged_index_keeps_the_exit_and_does_not_open_on_a_no_op",
+    ),
+];
+
 /// The behavioral gate must account for every refusal blocker production
 /// declares. A hand-picked set of helper calls is not coverage: adding a new
 /// blocker must make this test fail until its behavior is exercised.
 #[test]
 fn refusal_repair_gate_covers_every_declared_blocker() {
     let production = include_str!("../../src/cli/repair_domain.rs");
-    let this_gate = include_str!("round2_repair_domain.rs");
     let declared: Vec<&str> = production
-        .lines()
-        .filter_map(|line| {
-            line.trim_start()
-                .strip_prefix("pub(crate) const BLOCKER_")
-                .and_then(|tail| tail.split_once(':'))
-                .map(|(name, _)| name)
-        })
+        .split("pub(crate) const BLOCKER_")
+        .skip(1)
+        .filter_map(|tail| tail.split_once(':').map(|(name, _)| name.trim()))
         .collect();
 
-    assert!(!declared.is_empty(), "fixture assumption: production declares refusal blockers");
-    for blocker in declared {
-        let coverage_marker = format!("gate-case: BLOCKER_{blocker}");
+    assert!(
+        !declared.is_empty(),
+        "fixture assumption: production declares refusal blockers"
+    );
+    for blocker in &declared {
+        let owner = REFUSAL_GATE_CASES
+            .iter()
+            .find(|(covered, _)| *covered == *blocker);
         assert!(
-            this_gate.contains(&coverage_marker),
+            owner.is_some(),
             "production blocker `BLOCKER_{blocker}` is outside the behavioral refusal gate; \
              add a derived gate case, not another opt-in helper call"
         );
     }
+    assert_eq!(
+        REFUSAL_GATE_CASES.len(),
+        declared.len(),
+        "the refusal gate names a case production no longer declares"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -314,7 +358,15 @@ why prose
             .any(|c| c == "git span drift --fix"),
         "residue shape is inside `drift --fix`'s domain, so it stays named; stderr=\n{stderr}"
     );
-    assert_named_commands_change_the_file(&repo, "m", &fixture, &stderr)
+    assert_named_commands_change_the_file(
+        || {
+            let repo = TestRepo::seeded()?;
+            repo.write_file(".span/m", &fixture)?;
+            Ok((repo, fixture.clone()))
+        },
+        "m",
+        &stderr,
+    )
 }
 
 /// **What the gate caught that the design rule alone did not.** A `[config]`
@@ -408,7 +460,16 @@ fn rename_signal_refusal_names_drift_fix() -> Result<()> {
         "an unreadable anchor with a same-range readable counterpart is rename repair, which \
          `drift --fix` does; stderr=\n{stderr}"
     );
-    assert_named_commands_change_the_file(&repo, "m", &residue, &stderr)
+    assert_named_commands_change_the_file(
+        || {
+            let repo = TestRepo::seeded()?;
+            let residue = renamed_anchor_residue(&repo)?;
+            repo.write_file(".span/m", &residue)?;
+            Ok((repo, residue))
+        },
+        "m",
+        &stderr,
+    )
 }
 
 /// **Claim only what the tool can see.** The tool observed a same-range
@@ -433,7 +494,11 @@ fn rename_refusal_claims_the_pairing_not_the_rename() -> Result<()> {
         flattened.contains("the tool has seen the pairing, not the rename itself"),
         "and must mark the gap between that observation and a rename; stderr=\n{stderr}"
     );
-    for overclaim in ["file was renamed", "this file was renamed", "was renamed to"] {
+    for overclaim in [
+        "file was renamed",
+        "this file was renamed",
+        "was renamed to",
+    ] {
         assert!(
             !flattened.contains(overclaim),
             "the refusal must not assert `{overclaim}` — it cannot see that; stderr=\n{stderr}"
@@ -503,11 +568,17 @@ fn mid_merge(repo_seed: &str) -> Result<TestRepo> {
     repo.commit_all("declare m")?;
 
     repo.run_git(["checkout", "-b", "side"])?;
-    repo.write_file(".span/m", &format!("file1.txt#L1-L5 rk64:{OTHER_HASH}\n\ntheir why\n"))?;
+    repo.write_file(
+        ".span/m",
+        &format!("file1.txt#L1-L5 rk64:{OTHER_HASH}\n\ntheir why\n"),
+    )?;
     repo.commit_all("side edits m")?;
 
     repo.run_git(["checkout", "main"])?;
-    repo.write_file(".span/m", &format!("file1.txt#L1-L5 rk64:{THIRD_HASH}\n\nour why\n"))?;
+    repo.write_file(
+        ".span/m",
+        &format!("file1.txt#L1-L5 rk64:{THIRD_HASH}\n\nour why\n"),
+    )?;
     repo.commit_all("main edits m")?;
 
     let merge = std::process::Command::new("git")
