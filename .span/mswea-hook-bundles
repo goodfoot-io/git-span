@@ -1,4 +1,4 @@
-packages/agent-hooks/src/mswea/advisor.ts rk64:fddbad1c59b62cbf
+packages/agent-hooks/src/mswea/advisor.ts rk64:db226e31ba2c1570
 packages/agent-hooks/src/mswea/post-tool-use-failure.ts rk64:fda0a05d1fcdcb9c
 packages/agent-hooks/src/mswea/post-tool-use.ts rk64:4a063dd76e48c843
 packages/agent-hooks/src/mswea/session-end.ts rk64:e007d89d82112759
