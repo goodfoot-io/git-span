@@ -1,13 +1,19 @@
 import path from 'node:path';
+import fumadocsMdx from 'fumadocs-mdx/vite';
 import { defineConfig } from 'vitest/config';
 
-export default defineConfig({
-  // Component tests import their siblings, and app code resolves the `~` alias
-  // through vite.config.ts — vitest reads only this file, so the alias must be
-  // mirrored here for colocated tests to resolve at all.
+export default defineConfig(async () => ({
+  // The docs source imports content through `?collection=docs`-quoted globs
+  // that only [fumadocsMdx()](./vite.config.ts) teaches Vite how to load;
+  // vitest reads only this file, so the plugin must be loaded here too.
+  plugins: [...(await fumadocsMdx())],
+  // Component tests import their siblings, and app code resolves the `~` and
+  // `collections` aliases through vite.config.ts — vitest reads only this file,
+  // so both aliases must be mirrored here for colocated tests to resolve at all.
   resolve: {
     alias: {
-      '~': path.resolve(import.meta.dirname, './app')
+      '~': path.resolve(import.meta.dirname, './app'),
+      collections: path.resolve(import.meta.dirname, './.source')
     }
   },
   test: {
@@ -30,4 +36,4 @@ export default defineConfig({
     // the bound meaningful while absorbing harness-load cold-start.
     testTimeout: 30_000
   }
-});
+}));
