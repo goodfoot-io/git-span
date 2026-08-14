@@ -86,4 +86,5 @@ pub mod store_differential;
 pub mod uncommitted_span_cache_reuse;
 pub mod untracked_span_invalidation;
 pub mod why_writer_name_validation;
+pub mod why_non_terminal_stdin;
 pub mod worktree_path_resolution;
