@@ -74,6 +74,7 @@ pub mod drift_bare_scan_actionable_drift;
 pub mod drift_bloom_integration;
 pub mod drift_deleted_moved_states;
 pub mod drift_fix_uncommitted_moved;
+pub mod drift_fix_residue_preservation;
 pub mod drift_positional_matches_full_scan;
 pub mod drift_relocation_scan_amortized;
 pub mod drift_resolved_pending_commit;
