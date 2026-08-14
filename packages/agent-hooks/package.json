@@ -13,6 +13,7 @@
     "claude-code-hooks": "node scripts/hooks-cli-wrapper.js @goodfoot/claude-code-hooks",
     "codex-hooks": "node scripts/hooks-cli-wrapper.js @goodfoot/codex-hooks",
     "bench:static": "node scripts/run-static-attribution-benchmark.js",
+    "bench:hooks": "node scripts/run-hook-path-benchmark.js",
     "test": "vitest run",
     "lint": "biome check .",
     "typecheck": "tsc --noEmit"
