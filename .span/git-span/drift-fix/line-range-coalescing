@@ -1,4 +1,4 @@
-packages/git-span/src/cli/drift_fix.rs#L1428-L1705 rk64:d89d654384061c25
+packages/git-span/src/cli/drift_fix.rs#L1552-L1829 rk64:d89d654384061c25
 packages/git-span/tests/cases/cli_drift_fix.rs#L630-L690 rk64:0a5640acea83b455
 
 drift --fix collapses contiguous or overlapping line-range anchors on one path only when every merged record is worktree-fresh; terminal anchors and committed or staged drift are never folded in, so the merge never hides drift the operator still needs to see.
