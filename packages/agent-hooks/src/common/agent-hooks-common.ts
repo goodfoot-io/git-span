@@ -31,8 +31,28 @@ export function abspathAgainst(base: string, target: string): string {
   return `${b}/${t}`;
 }
 
+/**
+ * Repo root per requested directory, for the life of the process.
+ *
+ * Hooks are one-shot processes: they resolve the same handful of directories
+ * repeatedly — every advisor git call re-resolves the same `cwd` — and a
+ * repository does not appear or move underneath a single hook invocation. The
+ * miss path is what makes this worth caching: a directory that is not in a
+ * repo costs a `git rev-parse` spawn every time it is asked about.
+ */
+const repoRootCache = new Map<string, string | null>();
+
 export function resolveRepoRoot(dir: string | undefined | null): string | null {
   if (!dir) return null;
+  // Stored values are `string | null`, so `undefined` means "never resolved".
+  const cached = repoRootCache.get(dir);
+  if (cached !== undefined) return cached;
+  const resolved = resolveRepoRootUncached(dir);
+  repoRootCache.set(dir, resolved);
+  return resolved;
+}
+
+function resolveRepoRootUncached(dir: string): string | null {
   // Normal worktrees (including linked worktrees and submodules) expose a
   // `.git` directory or gitfile at their top level. Walk parents in-process
   // before spawning `git rev-parse`: hook processes ask for the same root many
@@ -481,13 +501,20 @@ export function pruneStaleSessions(
   } catch {
     return; // base dir absent or unreadable — nothing to prune
   }
+  // The trash root is created on the first retirement rather than up front, so
+  // a sweep that retires nothing leaves the layout untouched — but once it
+  // exists, re-issuing the mkdir for every later stale dir buys nothing.
+  let trashDirReady = false;
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const dirPath = nodePath.join(layout.base, entry.name);
     try {
       const stat = fs.statSync(dirPath);
       if (now - stat.mtimeMs > maxAgeMs) {
-        fs.mkdirSync(layout.trashDir, { recursive: true, mode: 0o700 });
+        if (!trashDirReady) {
+          fs.mkdirSync(layout.trashDir, { recursive: true, mode: 0o700 });
+          trashDirReady = true;
+        }
         const trashPath = nodePath.join(
           layout.trashDir,
           `${entry.name}${SESSION_TRASH_MARKER}${process.pid}-${Date.now().toString(36)}`

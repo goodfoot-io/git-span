@@ -642,8 +642,16 @@ function abspathAgainst(base, target) {
   const b = toPosix(base).replace(/\/+$/, "");
   return `${b}/${t}`;
 }
+var repoRootCache = /* @__PURE__ */ new Map();
 function resolveRepoRoot(dir) {
   if (!dir) return null;
+  const cached = repoRootCache.get(dir);
+  if (cached !== void 0) return cached;
+  const resolved = resolveRepoRootUncached(dir);
+  repoRootCache.set(dir, resolved);
+  return resolved;
+}
+function resolveRepoRootUncached(dir) {
   try {
     let current = fs2.realpathSync.native(dir);
     for (; ; ) {
@@ -835,13 +843,17 @@ function pruneStaleSessions(layout, now = Date.now(), maxAgeMs = THIRTY_DAYS_MS)
   } catch {
     return;
   }
+  let trashDirReady = false;
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const dirPath = nodePath.join(layout.base, entry.name);
     try {
       const stat = fs2.statSync(dirPath);
       if (now - stat.mtimeMs > maxAgeMs) {
-        fs2.mkdirSync(layout.trashDir, { recursive: true, mode: 448 });
+        if (!trashDirReady) {
+          fs2.mkdirSync(layout.trashDir, { recursive: true, mode: 448 });
+          trashDirReady = true;
+        }
         const trashPath = nodePath.join(
           layout.trashDir,
           `${entry.name}${SESSION_TRASH_MARKER}${process.pid}-${Date.now().toString(36)}`

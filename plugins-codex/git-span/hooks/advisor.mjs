@@ -404,8 +404,16 @@ import * as nodePath3 from "node:path";
 function toPosix(p) {
   return p.replace(/\\/g, "/");
 }
+var repoRootCache = /* @__PURE__ */ new Map();
 function resolveRepoRoot(dir) {
   if (!dir) return null;
+  const cached = repoRootCache.get(dir);
+  if (cached !== void 0) return cached;
+  const resolved = resolveRepoRootUncached(dir);
+  repoRootCache.set(dir, resolved);
+  return resolved;
+}
+function resolveRepoRootUncached(dir) {
   try {
     let current = fs3.realpathSync.native(dir);
     for (; ; ) {

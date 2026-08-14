@@ -1,6 +1,6 @@
 packages/agent-hooks/src/claude/session-end.ts rk64:d2072ad540a58558
 packages/agent-hooks/src/codex/stop.ts rk64:7a530d0cf918f1b3
-packages/agent-hooks/src/common/agent-hooks-common.ts#L512-L534 rk64:341424695ca3aad9
+packages/agent-hooks/src/common/agent-hooks-common.ts#L539-L561 rk64:341424695ca3aad9
 packages/agent-hooks/test/common/memo-store.test.ts#L74-L87 rk64:ea6aa01f028a1fcf
 
 SessionEnd and Stop retire the session-shared memo and bounded planned-touch state through the common cleanup contract, while stale-session pruning covers hosts that terminate without an end event.

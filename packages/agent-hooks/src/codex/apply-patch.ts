@@ -227,7 +227,7 @@ function splitLines(content: string): string[] {
 }
 
 /** Indices (0-based) at which `value` appears as a full line in `lines`. */
-function lineIndices(lines: string[], value: string): number[] {
+function scanLineIndices(lines: readonly string[], value: string): number[] {
   const out: number[] = [];
   for (let i = 0; i < lines.length; i++) {
     if (lines[i] === value) out.push(i);
@@ -236,7 +236,7 @@ function lineIndices(lines: string[], value: string): number[] {
 }
 
 /** Start indices (0-based) at which `needle` matches contiguously in `haystack`. */
-function contiguousMatches(haystack: string[], needle: string[]): number[] {
+function scanContiguousMatches(haystack: readonly string[], needle: readonly string[]): number[] {
   const out: number[] = [];
   if (needle.length === 0 || needle.length > haystack.length) return out;
   const last = haystack.length - needle.length;
@@ -254,6 +254,100 @@ function contiguousMatches(haystack: string[], needle: string[]): number[] {
 }
 
 /**
+ * Line content → the ascending indices it occupies. A line that occurs once —
+ * the overwhelmingly common case in source files — is stored as a bare number
+ * so a unique line costs one map slot rather than a one-element array.
+ */
+type LineOccurrences = Map<string, number | number[]>;
+
+function buildLineOccurrences(lines: readonly string[]): LineOccurrences {
+  const occurrences: LineOccurrences = new Map();
+  for (let i = 0; i < lines.length; i++) {
+    const seen = occurrences.get(lines[i]);
+    if (seen === undefined) occurrences.set(lines[i], i);
+    else if (typeof seen === 'number') occurrences.set(lines[i], [seen, i]);
+    else seen.push(i);
+  }
+  return occurrences;
+}
+
+/**
+ * The ascending indices of `value`. The returned array is the index's own
+ * storage for a duplicated line — callers read it and never mutate it.
+ */
+function occurrencesOf(occurrences: LineOccurrences, value: string): number[] {
+  const seen = occurrences.get(value);
+  if (seen === undefined) return [];
+  return typeof seen === 'number' ? [seen] : seen;
+}
+
+function indexedContiguousMatches(
+  haystack: readonly string[],
+  needle: readonly string[],
+  occurrences: LineOccurrences
+): number[] {
+  const out: number[] = [];
+  if (needle.length === 0 || needle.length > haystack.length) return out;
+  const last = haystack.length - needle.length;
+  // The candidate starts are exactly the occurrences of the block's first
+  // line: every other position fails at `j === 0` in the scanning form, so
+  // testing them is pure waste. The remaining lines still confirm the match.
+  for (const start of occurrencesOf(occurrences, needle[0])) {
+    if (start > last) break; // occurrences ascend — no later one can fit either
+    let ok = true;
+    for (let j = 1; j < needle.length; j++) {
+      if (haystack[start + j] !== needle[j]) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) out.push(start);
+  }
+  return out;
+}
+
+/**
+ * The two pre-edit lookups range recovery performs, bound to one file's lines.
+ *
+ * Both implementations answer identically; they differ only in what they pay
+ * up front. {@link preEditLines} picks between them.
+ */
+interface PreEditLines {
+  /** Indices (0-based) at which `value` appears as a full line. */
+  lineIndices(value: string): number[];
+  /** Start indices (0-based) at which `needle` matches contiguously. */
+  contiguousMatches(needle: readonly string[]): number[];
+}
+
+/**
+ * Choose a lookup strategy for a hunk's `chunkCount` chunks.
+ *
+ * Every chunk searches the whole file, because a block is only accepted when
+ * its match is unique across the file — so recovery cost scales with chunks ×
+ * lines, and a many-chunk edit to a large file was the quadratic case.
+ * Hashing every line once collapses each later chunk's search to the
+ * occurrences of its first line.
+ *
+ * A single chunk asks each question exactly once, leaving the build nothing to
+ * amortize against: hashing every line to answer one lookup costs strictly
+ * more than the single linear scan it would replace. So one-chunk hunks — the
+ * common shape — keep scanning directly and pay nothing for this.
+ */
+function preEditLines(lines: readonly string[], chunkCount: number): PreEditLines {
+  if (chunkCount <= 1) {
+    return {
+      lineIndices: (value) => scanLineIndices(lines, value),
+      contiguousMatches: (needle) => scanContiguousMatches(lines, needle)
+    };
+  }
+  const occurrences = buildLineOccurrences(lines);
+  return {
+    lineIndices: (value) => occurrencesOf(occurrences, value),
+    contiguousMatches: (needle) => indexedContiguousMatches(lines, needle, occurrences)
+  };
+}
+
+/**
  * Locate a single chunk's pre-edit block in the file, returning its 1-based
  * line range or null when it cannot be located unambiguously.
  *
@@ -262,13 +356,13 @@ function contiguousMatches(haystack: string[], needle: string[]): number[] {
  * - Empty block (pure insertion): anchor on a unique change-context line if one
  *   is given; otherwise it is unlocatable.
  */
-function locateChunk(preLines: string[], chunk: UpdateChunk): LineRange | null {
+function locateChunk(preLines: PreEditLines, chunk: UpdateChunk): LineRange | null {
   const block = chunk.oldLines;
 
   if (block.length === 0) {
     const ctx = chunk.changeContext;
     if (ctx !== null && ctx !== '') {
-      const ctxIdxs = lineIndices(preLines, ctx);
+      const ctxIdxs = preLines.lineIndices(ctx);
       if (ctxIdxs.length === 1) {
         const line = ctxIdxs[0] + 1;
         return { start: line, end: line };
@@ -277,7 +371,7 @@ function locateChunk(preLines: string[], chunk: UpdateChunk): LineRange | null {
     return null;
   }
 
-  const starts = contiguousMatches(preLines, block);
+  const starts = preLines.contiguousMatches(block);
   if (starts.length === 1) {
     const s = starts[0];
     return { start: s + 1, end: s + block.length };
@@ -287,7 +381,7 @@ function locateChunk(preLines: string[], chunk: UpdateChunk): LineRange | null {
   // Duplicated block: use the change context to select the match after it.
   const ctx = chunk.changeContext;
   if (ctx !== null && ctx !== '') {
-    for (const c of lineIndices(preLines, ctx)) {
+    for (const c of preLines.lineIndices(ctx)) {
       const after = starts.find((s) => s >= c);
       if (after !== undefined) {
         return { start: after + 1, end: after + block.length };
@@ -301,7 +395,7 @@ function locateChunk(preLines: string[], chunk: UpdateChunk): LineRange | null {
  * Recover a single line range spanning all of an update's chunks. Returns null
  * (→ whole-file fallback) if any chunk cannot be located.
  */
-function recoverRange(preLines: string[], chunks: UpdateChunk[]): LineRange | null {
+function recoverRange(preLines: PreEditLines, chunks: UpdateChunk[]): LineRange | null {
   let union: LineRange | null = null;
   for (const chunk of chunks) {
     const r = locateChunk(preLines, chunk);
@@ -355,7 +449,8 @@ export function parseApplyPatch(
 
     // Range recovery reads the pre-edit content at the original (pre-move) path.
     const content = readPreEditFile(hunk.path);
-    const range = content === null ? null : recoverRange(splitLines(content), hunk.chunks);
+    const pre = content === null ? null : preEditLines(splitLines(content), hunk.chunks.length);
+    const range = pre === null ? null : recoverRange(pre, hunk.chunks);
     if (range !== null) {
       anchors.push({ path: targetPath, kind: 'write', range });
     } else {

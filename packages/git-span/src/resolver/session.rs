@@ -31,11 +31,11 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 /// borrows from it. Rebuilding the index per anchor on the same file is the
 /// central cost Tier 2 amortizes away.
 ///
-/// The inner [`LineIndex`] lazily allocates prefix-hash and power tables
-/// (~16 bytes per file byte) on the first prefiltered scan.  Files exceeding
-/// [`git_span_core::PREFILTER_TABLES_MAX_BYTES`] (32 MiB) skip this allocation
-/// and fall back to per-window hashing.  Tables live for the [`ConcurrentSession`]
-/// lifetime and are evicted with the line-index cache.
+/// The inner [`LineIndex`] lazily allocates line-indexed prefix-hash tables (~16
+/// bytes per file *line*, plus ~8 per 256 bytes of powers) on the first
+/// prefiltered scan.  Files exceeding [`git_span_core::PREFILTER_TABLES_MAX_BYTES`]
+/// (32 MiB) skip this allocation and fall back to per-window hashing.  Tables live
+/// for the [`ConcurrentSession`] lifetime and are evicted with the line-index cache.
 ///
 /// Card main-162 staged-rollout step 3: `idx` is an [`OnceLock`] rather than
 /// an `Option`, so [`get`](Self::get) is `&self`-only — a warm entry can be

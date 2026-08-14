@@ -346,8 +346,16 @@ function abspathAgainst(base, target) {
   const b = toPosix(base).replace(/\/+$/, "");
   return `${b}/${t}`;
 }
+var repoRootCache = /* @__PURE__ */ new Map();
 function resolveRepoRoot(dir) {
   if (!dir) return null;
+  const cached = repoRootCache.get(dir);
+  if (cached !== void 0) return cached;
+  const resolved = resolveRepoRootUncached(dir);
+  repoRootCache.set(dir, resolved);
+  return resolved;
+}
+function resolveRepoRootUncached(dir) {
   try {
     let current = fs.realpathSync.native(dir);
     for (; ; ) {
@@ -552,13 +560,17 @@ function pruneStaleSessions(layout, now = Date.now(), maxAgeMs = THIRTY_DAYS_MS)
   } catch {
     return;
   }
+  let trashDirReady = false;
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const dirPath = nodePath.join(layout.base, entry.name);
     try {
       const stat = fs.statSync(dirPath);
       if (now - stat.mtimeMs > maxAgeMs) {
-        fs.mkdirSync(layout.trashDir, { recursive: true, mode: 448 });
+        if (!trashDirReady) {
+          fs.mkdirSync(layout.trashDir, { recursive: true, mode: 448 });
+          trashDirReady = true;
+        }
         const trashPath = nodePath.join(
           layout.trashDir,
           `${entry.name}${SESSION_TRASH_MARKER}${process.pid}-${Date.now().toString(36)}`
@@ -9290,14 +9302,14 @@ function processUpdateLine(hunk, raw) {
 function splitLines(content) {
   return content.split("\n");
 }
-function lineIndices(lines, value) {
+function scanLineIndices(lines, value) {
   const out = [];
   for (let i = 0; i < lines.length; i++) {
     if (lines[i] === value) out.push(i);
   }
   return out;
 }
-function contiguousMatches(haystack, needle) {
+function scanContiguousMatches(haystack, needle) {
   const out = [];
   if (needle.length === 0 || needle.length > haystack.length) return out;
   const last = haystack.length - needle.length;
@@ -9313,12 +9325,57 @@ function contiguousMatches(haystack, needle) {
   }
   return out;
 }
+function buildLineOccurrences(lines) {
+  const occurrences = /* @__PURE__ */ new Map();
+  for (let i = 0; i < lines.length; i++) {
+    const seen = occurrences.get(lines[i]);
+    if (seen === void 0) occurrences.set(lines[i], i);
+    else if (typeof seen === "number") occurrences.set(lines[i], [seen, i]);
+    else seen.push(i);
+  }
+  return occurrences;
+}
+function occurrencesOf(occurrences, value) {
+  const seen = occurrences.get(value);
+  if (seen === void 0) return [];
+  return typeof seen === "number" ? [seen] : seen;
+}
+function indexedContiguousMatches(haystack, needle, occurrences) {
+  const out = [];
+  if (needle.length === 0 || needle.length > haystack.length) return out;
+  const last = haystack.length - needle.length;
+  for (const start of occurrencesOf(occurrences, needle[0])) {
+    if (start > last) break;
+    let ok = true;
+    for (let j = 1; j < needle.length; j++) {
+      if (haystack[start + j] !== needle[j]) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) out.push(start);
+  }
+  return out;
+}
+function preEditLines(lines, chunkCount) {
+  if (chunkCount <= 1) {
+    return {
+      lineIndices: (value) => scanLineIndices(lines, value),
+      contiguousMatches: (needle) => scanContiguousMatches(lines, needle)
+    };
+  }
+  const occurrences = buildLineOccurrences(lines);
+  return {
+    lineIndices: (value) => occurrencesOf(occurrences, value),
+    contiguousMatches: (needle) => indexedContiguousMatches(lines, needle, occurrences)
+  };
+}
 function locateChunk(preLines, chunk) {
   const block = chunk.oldLines;
   if (block.length === 0) {
     const ctx2 = chunk.changeContext;
     if (ctx2 !== null && ctx2 !== "") {
-      const ctxIdxs = lineIndices(preLines, ctx2);
+      const ctxIdxs = preLines.lineIndices(ctx2);
       if (ctxIdxs.length === 1) {
         const line = ctxIdxs[0] + 1;
         return { start: line, end: line };
@@ -9326,7 +9383,7 @@ function locateChunk(preLines, chunk) {
     }
     return null;
   }
-  const starts = contiguousMatches(preLines, block);
+  const starts = preLines.contiguousMatches(block);
   if (starts.length === 1) {
     const s = starts[0];
     return { start: s + 1, end: s + block.length };
@@ -9334,7 +9391,7 @@ function locateChunk(preLines, chunk) {
   if (starts.length === 0) return null;
   const ctx = chunk.changeContext;
   if (ctx !== null && ctx !== "") {
-    for (const c of lineIndices(preLines, ctx)) {
+    for (const c of preLines.lineIndices(ctx)) {
       const after = starts.find((s) => s >= c);
       if (after !== void 0) {
         return { start: after + 1, end: after + block.length };
@@ -9369,7 +9426,8 @@ function parseApplyPatch(command, readPreEditFile = defaultReadPreEditFile) {
       continue;
     }
     const content = readPreEditFile(hunk.path);
-    const range = content === null ? null : recoverRange2(splitLines(content), hunk.chunks);
+    const pre = content === null ? null : preEditLines(splitLines(content), hunk.chunks.length);
+    const range = pre === null ? null : recoverRange2(pre, hunk.chunks);
     if (range !== null) {
       anchors.push({ path: targetPath, kind: "write", range });
     } else {

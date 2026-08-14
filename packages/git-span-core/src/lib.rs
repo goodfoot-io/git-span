@@ -202,16 +202,46 @@ fn build_indexed(files: &[(String, Vec<u8>)]) -> Vec<(String, LineIndex<'_>)> {
 /// Cached rolling-fingerprint prefix hashes and powers for the file bytes.
 /// These are a pure function of the bytes and are computed at most once per
 /// `LineIndex` lifetime.
+///
+/// Both tables are indexed by **line**, not by byte. A window's fingerprint is
+/// only ever taken over `[starts[w], ends[w + extent - 1])`, and both bounds are
+/// line boundaries, so a prefix hash at any interior byte offset can never be
+/// read. Storing one entry per line instead of one per byte is what keeps this
+/// cache proportional to the line count (16 B/line) rather than to the file
+/// size (16 B/byte) — on ordinary source files, a ~40x smaller allocation with
+/// the same O(1) per-window lookup.
 struct PrefixTables {
-    ph: Vec<u64>,
-    pow: Vec<u64>,
+    /// `horner(bytes[0..starts[k]])` — the prefix hash at line `k`'s first byte.
+    at_start: Vec<u64>,
+    /// `horner(bytes[0..ends[k]])` — the prefix hash at line `k`'s content end.
+    at_end: Vec<u64>,
+    /// `BASE^(256·j)`, the coarse half of the split power lookup. Paired with
+    /// the file-independent [`POW_LO`] so an arbitrary `BASE^n` costs one extra
+    /// multiply instead of an 8 B/byte power table — see [`pow_base`].
+    pow_hi: Vec<u64>,
 }
 
 /// Files larger than this threshold skip precomputed prefix-hash tables
 /// and fall back to per-window `horner` (O(N.S) time, O(1) extra memory).
-/// Bounds peak table memory to ~512 MiB (2 × 8 B × 32M).  Source-code
-/// files (the common anchor target) are virtually always under this limit.
+/// Source-code files (the common anchor target) are virtually always under
+/// this limit.
+///
+/// The bound this buys is now far smaller than it once was: the tables are
+/// line-indexed rather than byte-indexed (see [`PrefixTables`]), so a 32 MiB
+/// file costs 16 B per line plus a ~128 KiB power table, not the 512 MiB a
+/// byte-indexed pair of tables would have reached. The threshold is retained
+/// as the documented ceiling on that allocation rather than because the
+/// allocation is still large.
 pub const PREFILTER_TABLES_MAX_BYTES: usize = 32 * 1024 * 1024; // 32 MiB
+
+/// Assumed average line length used to pre-size [`LineIndex`]'s offset vectors.
+/// Deliberately on the short side: under-reserving costs one realloc, while
+/// over-reserving wastes memory on every indexed file.
+const LINE_LENGTH_GUESS: usize = 32;
+
+/// Ceiling on the pre-sized line count (64 Ki lines => 256 KiB per vector), so
+/// a large buffer cannot turn the guess into a huge speculative allocation.
+const LINE_RESERVE_CAP: usize = 64 * 1024;
 
 /// A reusable, allocation-cheap line index over a byte buffer: the start
 /// and content-end (terminator-excluded) offset of every line, derived once
@@ -240,6 +270,12 @@ pub struct LineIndex<'a> {
     /// Files exceeding [`PREFILTER_TABLES_MAX_BYTES`] never allocate these
     /// tables; the scan falls back to per-window `horner`.
     fp_tables: Arc<OnceLock<PrefixTables>>,
+    /// Lazily-computed `horner(bytes)` for the whole buffer, shared across
+    /// clones alongside `fp_tables`.  The `WholeFile` extent is the single most
+    /// repeated fingerprint request — every whole-file anchor tested against
+    /// this file asks for the same value — so it is computed once rather than
+    /// re-scanning the buffer per anchor.
+    whole_fp: Arc<OnceLock<u64>>,
     /// `true` when the buffer contains no `\r` bytes and is valid UTF-8.
     /// Computed once at build time so that both scan inner loops avoid
     /// re-scanning the whole buffer per call.
@@ -263,14 +299,27 @@ impl<'a> LineIndex<'a> {
             bytes.len(),
             u32::MAX,
         );
-        let mut starts = Vec::new();
-        let mut ends = Vec::new();
+        // Guess the line count from the buffer size so the two offset vectors
+        // grow at most once for ordinary source files instead of walking the
+        // doubling chain from zero. The cap keeps a long-line file (minified
+        // JS, a single-line JSON blob) from reserving megabytes it will never
+        // fill; overshooting or undershooting only costs a realloc, never
+        // correctness.
+        let guess = (bytes.len() / LINE_LENGTH_GUESS + 1).min(LINE_RESERVE_CAP);
+        let mut starts = Vec::with_capacity(guess);
+        let mut ends = Vec::with_capacity(guess);
         let mut seg = 0usize;
+        // `has_cr` rides along with the newline scan rather than costing a
+        // second full pass over the buffer: both questions are answered by
+        // looking at every byte exactly once.
+        let mut has_cr = false;
         for (i, &b) in bytes.iter().enumerate() {
             if b == b'\n' {
                 starts.push(seg as u32);
                 ends.push(i as u32);
                 seg = i + 1;
+            } else if b == b'\r' {
+                has_cr = true;
             }
         }
         // A trailing segment with no terminating newline is the final,
@@ -280,8 +329,15 @@ impl<'a> LineIndex<'a> {
             starts.push(seg as u32);
             ends.push(bytes.len() as u32);
         }
-        let lf_clean = !bytes.contains(&b'\r') && std::str::from_utf8(bytes).is_ok();
-        LineIndex { bytes, starts, ends, fp_tables: Arc::new(OnceLock::new()), lf_clean }
+        let lf_clean = !has_cr && std::str::from_utf8(bytes).is_ok();
+        LineIndex {
+            bytes,
+            starts,
+            ends,
+            fp_tables: Arc::new(OnceLock::new()),
+            whole_fp: Arc::new(OnceLock::new()),
+            lf_clean,
+        }
     }
 
     /// The underlying buffer.
@@ -324,10 +380,50 @@ impl<'a> LineIndex<'a> {
         if self.bytes.len() > PREFILTER_TABLES_MAX_BYTES {
             return None;
         }
-        Some(self.fp_tables.get_or_init(|| {
-            let (ph, pow) = prefix_hashes_and_powers(self.bytes);
-            PrefixTables { ph, pow }
-        }))
+        Some(self.fp_tables.get_or_init(|| self.build_prefix_tables()))
+    }
+
+    /// One pass over the buffer, recording the running Horner value at every
+    /// line start and every line content end — the only two kinds of offset a
+    /// window fingerprint is ever taken at.
+    fn build_prefix_tables(&self) -> PrefixTables {
+        let lines = self.starts.len();
+        let mut at_start = Vec::with_capacity(lines);
+        let mut at_end = Vec::with_capacity(lines);
+        let mut h = 0u64;
+        let mut pos = 0usize;
+        for line in 0..lines {
+            let s = self.starts[line] as usize;
+            let e = self.ends[line] as usize;
+            // Absorb the line terminator left over from the previous line.
+            while pos < s {
+                h = h.wrapping_mul(FP_BASE).wrapping_add(fp_byte(self.bytes[pos]));
+                pos += 1;
+            }
+            at_start.push(h);
+            while pos < e {
+                h = h.wrapping_mul(FP_BASE).wrapping_add(fp_byte(self.bytes[pos]));
+                pos += 1;
+            }
+            at_end.push(h);
+        }
+
+        // `BASE^(256·j)` for every 256-byte stride the file can span. Paired
+        // with `POW_LO` this reconstructs any `BASE^n` for `n` up to the file
+        // length, at one multiply, from a table sized N/256 instead of N.
+        let strides = (self.bytes.len() >> 8) + 2;
+        let mut pow_hi = Vec::with_capacity(strides);
+        let mut p = 1u64;
+        for _ in 0..strides {
+            pow_hi.push(p);
+            p = p.wrapping_mul(POW_LO_STRIDE);
+        }
+        PrefixTables { at_start, at_end, pow_hi }
+    }
+
+    /// `horner(self.bytes)`, computed at most once and shared across clones.
+    fn whole_file_fingerprint(&self) -> u64 {
+        *self.whole_fp.get_or_init(|| horner(self.bytes))
     }
 }
 
@@ -412,6 +508,33 @@ fn horner(bytes: &[u8]) -> u64 {
     h
 }
 
+/// `BASE^0 ..= BASE^255`, the fine half of the split power lookup. Baked at
+/// compile time and shared by every file, so it costs no per-file memory and
+/// no build-time work.
+const POW_LO: [u64; 256] = {
+    let mut table = [1u64; 256];
+    let mut i = 1;
+    while i < 256 {
+        table[i] = table[i - 1].wrapping_mul(FP_BASE);
+        i += 1;
+    }
+    table
+};
+
+/// `BASE^256`, the ratio between consecutive entries of `PrefixTables::pow_hi`.
+const POW_LO_STRIDE: u64 = POW_LO[255].wrapping_mul(FP_BASE);
+
+/// `BASE^n` reconstructed from the split tables:
+/// `BASE^n == BASE^(256·(n>>8)) · BASE^(n&0xff)`.
+///
+/// One multiply replaces an 8 B-per-byte power table. `n` is always a window
+/// byte length, so `n >> 8` is in range for a `pow_hi` sized from the file
+/// length.
+#[inline]
+fn pow_base(pow_hi: &[u64], n: usize) -> u64 {
+    pow_hi[n >> 8].wrapping_mul(POW_LO[n & 0xff])
+}
+
 
 /// Cheap (non-cryptographic) fingerprint of an extent's canonical content:
 /// LF-normalized `lines().join("\n")` for line ranges; the full buffer for
@@ -435,7 +558,7 @@ pub fn cheap_fingerprint_with_extent(bytes: &[u8], extent: &AnchorExtent) -> u64
 /// paid for.
 pub fn cheap_fingerprint_indexed(idx: &LineIndex, extent: &AnchorExtent) -> u64 {
     match extent {
-        AnchorExtent::WholeFile => horner(idx.bytes),
+        AnchorExtent::WholeFile => idx.whole_file_fingerprint(),
         AnchorExtent::LineRange { start, end } => match idx.region(*start, *end) {
             Some((rs, re)) => canonical_region(idx.bytes, rs, re, *start, *end, horner),
             None => 0,
@@ -829,7 +952,7 @@ where
     match extent {
         AnchorExtent::WholeFile => files
             .into_iter()
-            .filter(|(_, idx)| horner(idx.bytes) == cheap_fp)
+            .filter(|(_, idx)| idx.whole_file_fingerprint() == cheap_fp)
             .map(|(path, _)| Location {
                 path: path.to_string(),
                 start_line: 0,
@@ -888,25 +1011,40 @@ fn scan_one_file_fp_filtered(
     let simple = idx.lf_clean;
 
     if simple {
-        // Prefix hashes `ph[k] = horner(bytes[0..k])` and powers `pow[i] =
-        // BASE^i` give every window's fingerprint as `ph[re] - ph[rs]·pow[re-rs]`
-        // in O(1) — the rolling reduction of recomputing `horner` per window.
-        // For files under the size threshold the tables are cached on the
-        // `LineIndex`; larger files fall back to per-window `horner`.
-        let tables = idx.prefilter_tables();
-        for win in win_lo..=win_hi {
-            let rs = idx.starts[win] as usize;
-            let re = idx.ends[win + extent - 1] as usize;
-            let fp = match tables {
-                Some(t) => t.ph[re].wrapping_sub(t.ph[rs].wrapping_mul(t.pow[re - rs])),
-                None => horner(&bytes[rs..re]),
-            };
-            if fp == cheap_fp && confirm(&bytes[rs..re]) {
-                out.push(Location {
-                    path: path.to_string(),
-                    start_line: (win as u32) + 1,
-                    end_line: (win as u32) + extent as u32,
-                });
+        // Prefix hashes at line boundaries give every window's fingerprint as
+        // `at_end[last] - at_start[win]·BASE^(re-rs)` in O(1) — the rolling
+        // reduction of recomputing `horner` per window. For files under the
+        // size threshold the tables are cached on the `LineIndex`; larger files
+        // fall back to per-window `horner`.
+        match idx.prefilter_tables() {
+            Some(t) => {
+                for win in win_lo..=win_hi {
+                    let rs = idx.starts[win] as usize;
+                    let last = win + extent - 1;
+                    let re = idx.ends[last] as usize;
+                    let fp = t.at_end[last]
+                        .wrapping_sub(t.at_start[win].wrapping_mul(pow_base(&t.pow_hi, re - rs)));
+                    if fp == cheap_fp && confirm(&bytes[rs..re]) {
+                        out.push(Location {
+                            path: path.to_string(),
+                            start_line: (win as u32) + 1,
+                            end_line: (win as u32) + extent as u32,
+                        });
+                    }
+                }
+            }
+            None => {
+                for win in win_lo..=win_hi {
+                    let rs = idx.starts[win] as usize;
+                    let re = idx.ends[win + extent - 1] as usize;
+                    if horner(&bytes[rs..re]) == cheap_fp && confirm(&bytes[rs..re]) {
+                        out.push(Location {
+                            path: path.to_string(),
+                            start_line: (win as u32) + 1,
+                            end_line: (win as u32) + extent as u32,
+                        });
+                    }
+                }
             }
         }
     } else {
@@ -923,23 +1061,6 @@ fn scan_one_file_fp_filtered(
             }
         }
     }
-}
-
-/// Build the prefix-hash and power tables for `bytes` in one pass. `ph` has
-/// length `bytes.len() + 1` with `ph[0] = 0` and `ph[k+1] = ph[k]·BASE +
-/// fp_byte(bytes[k])`; `pow[i] = BASE^i` for `i in 0..=bytes.len()`. Then
-/// `horner(bytes[a..b]) == ph[b] - ph[a]·pow[b-a]` over wrapping `u64`.
-fn prefix_hashes_and_powers(bytes: &[u8]) -> (Vec<u64>, Vec<u64>) {
-    let n = bytes.len();
-    let mut ph = Vec::with_capacity(n + 1);
-    let mut pow = Vec::with_capacity(n + 1);
-    ph.push(0u64);
-    pow.push(1u64);
-    for (i, &b) in bytes.iter().enumerate() {
-        ph.push(ph[i].wrapping_mul(FP_BASE).wrapping_add(fp_byte(b)));
-        pow.push(pow[i].wrapping_mul(FP_BASE));
-    }
-    (ph, pow)
 }
 
 #[cfg(test)]
@@ -1178,6 +1299,63 @@ mod tests {
                 "rk64 drift: files={files:?} {extent:?} near={near:?}"
             );
         }
+    }
+
+    /// The random property test above draws 30-byte buffers, so every window it
+    /// hashes is shorter than the 256-byte stride of the split power lookup and
+    /// only ever reads `pow_hi[0]`.  This exercises the other half: a long,
+    /// definitely-LF-clean file whose windows span several strides, so a wrong
+    /// `pow_hi` entry, a wrong `at_start`/`at_end` line alignment, or a stride
+    /// off-by-one shows up as a fingerprint mismatch against the naive
+    /// reference rather than passing unnoticed.
+    #[test]
+    fn rk64_long_lf_clean_file_windows_cross_power_strides() {
+        let mut state = 0xA5A5_1234_DEAD_BEEFu64;
+        let mut text = String::new();
+        for line in 0..600 {
+            // ~40 bytes per line, so a 7-line window already crosses one
+            // stride and a 64-line window crosses ten.
+            text.push_str(&format!("line {line:04} "));
+            for _ in 0..6 {
+                text.push_str(&format!("{:04x} ", lcg(&mut state) & 0xffff));
+            }
+            text.push('\n');
+        }
+        let files = vec![("long.txt".to_string(), text.clone().into_bytes())];
+        let indexed = index_all(&files);
+        assert!(indexed[0].1.lf_clean, "fixture must take the fast scan path");
+        assert!(
+            indexed[0].1.prefilter_tables().is_some(),
+            "fixture must be under the table size threshold"
+        );
+
+        let lines: Vec<&str> = text.lines().collect();
+        for extent_lines in [1usize, 7, 20, 64] {
+            for w in (0..=lines.len() - extent_lines).step_by(37) {
+                let start = (w as u32) + 1;
+                let extent = AnchorExtent::LineRange { start, end: start + extent_lines as u32 - 1 };
+                let fp = cheap_fingerprint_with_extent(
+                    lines[w..w + extent_lines].join("\n").as_bytes(),
+                    &AnchorExtent::WholeFile,
+                );
+                assert_eq!(
+                    scan_indexed_rk64(&indexed, fp, extent, None),
+                    ref_rk64(&files, fp, extent, None),
+                    "rk64 drift at window {w} of {extent_lines} lines"
+                );
+            }
+        }
+
+        // A miss must stay a miss on the table path.
+        assert!(
+            scan_indexed_rk64(
+                &indexed,
+                0xdead_beef_dead_beef,
+                AnchorExtent::LineRange { start: 1, end: 20 },
+                None
+            )
+            .is_empty()
+        );
     }
 
     #[test]
