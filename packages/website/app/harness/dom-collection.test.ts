@@ -1,7 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
 
 // The website vitest config's include glob only matches `app/**/*.test.ts`, so
@@ -11,11 +10,18 @@ import { afterAll, describe, expect, it } from 'vitest';
 // loud. It plants a `.tsx` probe under `app/`, runs the package's own vitest
 // over it, and asserts that the probe file was collected and its DOM assertion
 // executed. See card main-260.
-const packageRoot = fileURLToPath(new URL('../..', import.meta.url));
+// vitest runs each suite with the package directory as cwd (directly and via
+// the root `yarn test` foreach harness), and under the jsdom environment
+// `import.meta.url` is an http:// URL — so the package root comes from cwd.
+const packageRoot = process.cwd();
 
+// The last candidate skips the `.bin` symlink because the devcontainer shares
+// `.bin` with the primary checkout — through that link the binary would
+// resolve to the shared vitest, which cannot see this checkout's jsdom.
 const vitestCli = [
   path.join(packageRoot, 'node_modules', '.bin', 'vitest'),
-  path.join(packageRoot, '..', '..', 'node_modules', '.bin', 'vitest')
+  path.join(packageRoot, '..', '..', 'node_modules', '.bin', 'vitest'),
+  path.join(packageRoot, '..', '..', 'node_modules', 'vitest', 'vitest.mjs')
 ].find((candidate) => existsSync(candidate));
 
 // The deliberately failing assertion is gated on an environment variable set
