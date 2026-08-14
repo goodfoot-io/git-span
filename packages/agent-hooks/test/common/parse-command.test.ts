@@ -2018,6 +2018,33 @@ NODE`;
     expect(result.resolved[0]).toMatchObject({ idiom, span: { simpleCommandIndex: 1 } });
   });
 
+  it('preserves legacy read-range algebra when a pipeline also contains a layered writer', () => {
+    const result = parseCommandLayered(
+      `cat src/a.txt | head -3 | node -e "require('node:fs').writeFileSync('src/b.txt','written')"`,
+      { cwd: dir }
+    );
+
+    expect(result.unresolved).toEqual([]);
+    expect(
+      result.resolved.map(({ idiom, span }) => ({
+        idiom,
+        operation: span.operation,
+        path: relative(dir, span.absolutePath),
+        lineStart: span.lineStart,
+        lineEnd: span.lineEnd
+      }))
+    ).toEqual([
+      { idiom: 'head-file', operation: 'read', path: 'src/a.txt', lineStart: 1, lineEnd: 3 },
+      {
+        idiom: 'node-write',
+        operation: 'create-overwrite',
+        path: 'src/b.txt',
+        lineStart: undefined,
+        lineEnd: undefined
+      }
+    ]);
+  });
+
   it.each([
     [32, 32, undefined],
     [33, 0, 'candidate-budget-exceeded'],

@@ -5122,6 +5122,19 @@ function parseCommandLayered(command, options = {}) {
       unresolvedMatches2.push(...child.unresolved.map((match) => ({ ...match, simpleCommandIndex: index })));
       preStateRequests.push(...child.preStateRequests.map((request) => ({ ...request, simpleCommandIndex: index })));
     }
+    if (hasPipeline) {
+      const pipelineDetailed = parseCommandDetailed(command, options);
+      const pipelineReads = pipelineDetailed.flatMap(
+        (match) => match.status === "resolved" && match.span.operation === "read" ? [{ status: "resolved", layer: "shell", idiom: match.idiom, span: match.span }] : []
+      );
+      const pipelineUnresolved = pipelineDetailed.flatMap(
+        (match) => match.status === "unresolved" ? [unresolved("shell", match.idiom, stableReason(match), match.reason, match.fileArg)] : []
+      );
+      const writes = resolved2.filter(({ span }) => span.operation !== "read");
+      resolved2.splice(0, resolved2.length, ...pipelineReads, ...writes);
+      const layeredUnresolved = unresolvedMatches2.filter(({ layer }) => layer !== "shell");
+      unresolvedMatches2.splice(0, unresolvedMatches2.length, ...pipelineUnresolved, ...layeredUnresolved);
+    }
     if (resolved2.length > maxCandidates) {
       return {
         resolved: [],
