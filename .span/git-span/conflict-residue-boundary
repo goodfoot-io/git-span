@@ -1,7 +1,4 @@
-packages/git-span/src/cli/drift_fix.rs#L98-L305 rk64:34ca9b2b41bb9da2
-packages/git-span/src/cli/drift_fix.rs#L226-L348 rk64:1aa814a5434b9654
-packages/git-span/src/cli/drift_fix.rs#L311-L433 rk64:e576914f42cac56f
-packages/git-span/src/cli/drift_fix.rs#L548-L642 rk64:6ecedf52ff640ea8
+packages/git-span/src/cli/drift_fix.rs#L226-L433 rk64:34ca9b2b41bb9da2
 packages/git-span/src/cli/drift_fix.rs#L676-L770 rk64:6ecedf52ff640ea8
 packages/git-span/tests/cases/conflict_split_boundary.rs rk64:9e7ac8e17dd74de6
 
