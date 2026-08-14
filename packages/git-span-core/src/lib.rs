@@ -492,7 +492,8 @@ pub fn cheap_fingerprint_indexed(idx: &LineIndex, extent: &AnchorExtent) -> u64 
 /// whole-file or line-range anchor, allowing the caller to verify
 /// canonicalization; the similarity computation itself treats both buffers
 /// identically.
-pub fn jaccard_similarity(a: &[u8], b: &[u8], _extent_a: &AnchorExtent) -> f64 {
+#[cfg(test)]
+fn jaccard_similarity(a: &[u8], b: &[u8], _extent_a: &AnchorExtent) -> f64 {
     let lines_a = normalize_lines_jaccard(a);
     let lines_b = normalize_lines_jaccard(b);
 
@@ -530,6 +531,7 @@ pub fn jaccard_similarity(a: &[u8], b: &[u8], _extent_a: &AnchorExtent) -> f64 {
 /// Split `bytes` into lines, whitespace-normalize each line, and collect into
 /// `Vec<String>`. Used by [`jaccard_similarity`] and extracted so the anchored
 /// lines can be normalized once and cached across many candidate windows.
+#[cfg(test)]
 fn normalize_lines_jaccard(bytes: &[u8]) -> Vec<String> {
     let s = String::from_utf8_lossy(bytes);
     s.lines()
@@ -578,7 +580,8 @@ pub fn intern_normalized_lines(
 
 /// Incremental sliding-window Jaccard scan: for every window of `extent`
 /// lines in `candidate_lines`, computes **exactly** the confidence
-/// [`jaccard_similarity`] would return for `(anchored, window_lines.join("\n"))`,
+/// the test-only naive Jaccard reference would return for
+/// `(anchored, window_lines.join("\n"))`,
 /// but in amortized O(1) per window slide instead of re-normalizing and
 /// re-hashing the whole window every time.
 ///
@@ -589,7 +592,7 @@ pub fn intern_normalized_lines(
 /// ## Why this is exact, not approximate
 ///
 /// Both the anchored text and every candidate line are whitespace-normalized
-/// once (matching [`normalize_lines_jaccard`]'s per-line transform) and
+/// once (matching the naive reference's per-line transform) and
 /// interned so line identity becomes exact integer equality. The window
 /// then slides by maintaining a running per-id `window_count` and the
 /// multiset intersection size `intersection = Σ min(anchored_count[id],
@@ -603,7 +606,7 @@ pub fn intern_normalized_lines(
 /// The multiset union size is `anchored_total + extent - intersection`
 /// (inclusion-exclusion over multisets, since the window always has exactly
 /// `extent` lines), and `confidence = intersection / union` — dividing the
-/// **same two integers** [`jaccard_similarity`]'s from-scratch computation
+/// **same two integers** the naive reference's from-scratch computation
 /// would produce for that window, so the `f64` result is bit-identical.
 ///
 /// Joining a window's lines with `"\n"` and re-splitting via `str::lines()`
