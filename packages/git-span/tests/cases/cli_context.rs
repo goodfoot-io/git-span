@@ -1342,7 +1342,7 @@ fn controlled_repair_epoch() -> Result<()> {
     );
     let fixed_json: serde_json::Value = serde_json::from_slice(&fixed.stdout)?;
     assert_eq!(fixed_json["mutation"]["rewritten"], true);
-    assert!(String::from_utf8(fixed.stderr)?.contains("context.service-corpus-loads 1"));
+    assert!(String::from_utf8(fixed.stderr)?.contains("context.service-corpus-loads 2"));
 
     let next = repo.run_span(["--perf", "context", "file1.txt", "--format", "json"])?;
     assert!(
@@ -1358,6 +1358,50 @@ fn controlled_repair_epoch() -> Result<()> {
         next_stderr.contains("context.service-generation-hits 1"),
         "{next_stderr}"
     );
+    Ok(())
+}
+
+#[test]
+fn resident_service_repairs_each_immediate_full_file_prepend() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    assert!(
+        repo.run_span(["add", "served-repeat", "file1.txt#L2-L3"])?
+            .status
+            .success()
+    );
+    assert!(
+        repo.run_span(["context", "file1.txt", "--format", "json"])?
+            .status
+            .success()
+    );
+
+    let original = std::fs::read_to_string(repo.path().join("file1.txt"))?;
+    let mut prefixes = String::new();
+    for expected_start in 3..=10 {
+        prefixes.push_str(&format!("prefix-{expected_start}\n"));
+        repo.write_file("file1.txt", &format!("{prefixes}{original}"))?;
+        let operation = uuid::Uuid::new_v4().to_string();
+        let fixed = repo.run_span([
+            "context",
+            "file1.txt",
+            "--fix",
+            "--operation-id",
+            &operation,
+            "--format",
+            "json",
+        ])?;
+        assert!(
+            fixed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&fixed.stderr)
+        );
+        let document: serde_json::Value = serde_json::from_slice(&fixed.stdout)?;
+        assert_eq!(document["mutation"]["rewritten"], true);
+        assert_eq!(
+            document["spans"][0]["anchors"][0]["current"]["extent"]["start"],
+            expected_start
+        );
+    }
     Ok(())
 }
 

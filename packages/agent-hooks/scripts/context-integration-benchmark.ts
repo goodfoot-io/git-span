@@ -27,7 +27,7 @@ interface Options {
 interface Fixture {
   name: string;
   scaled?: boolean;
-  command: (scaledPaths: readonly string[]) => string;
+  command: (scaledPaths: readonly string[], iteration: number) => string;
   legacyDependencyProcesses: (scaledCount: number) => number;
 }
 
@@ -211,7 +211,6 @@ function prepare(
   env: NodeJS.ProcessEnv
 ): { sessionId: string; toolUseId: string; stdout: string } {
   invocation += 1;
-  git(repo, ['checkout', '-q', '--', '.'], env);
   const sessionId = `context-benchmark-${invocation}`;
   const toolUseId = `tool-${invocation}`;
   invokeRealHook(join(hooksDir, 'static-plan.mjs'), envelope(repo, sessionId, toolUseId, command), env);
@@ -238,7 +237,11 @@ function invokePost(
     env
   );
   const elapsedMs = rounded(performance.now() - started);
-  return { elapsedMs, context: hookContext(result.output), mutation: git(repo, ['diff', '--', '.span'], env) };
+  return {
+    elapsedMs,
+    context: hookContext(result.output),
+    mutation: git(repo, ['diff', '--', '.span'], env)
+  };
 }
 
 function countedArm(
@@ -273,18 +276,20 @@ function measurePair(
   integratedHooksDir: string,
   legacyRepo: RealBundleRepo,
   integratedRepo: RealBundleRepo,
-  legacyCommand: string,
-  integratedCommand: string,
+  legacyCommand: (iteration: number) => string,
+  integratedCommand: (iteration: number) => string,
   benchmarkOptions: Options
 ): { legacy: ArmResult; integrated: ArmResult } {
   const legacyCounter = countingEnvironment(legacyRepo);
   const integratedCounter = countingEnvironment(integratedRepo);
   try {
     for (let index = 0; index < benchmarkOptions.warmups; index += 1) {
-      const legacyState = prepare(legacyHooksDir, legacyRepo, legacyCommand, legacyCounter.env);
-      invokePost(legacyHooksDir, legacyRepo, legacyCommand, legacyState, legacyCounter.env);
-      const integratedState = prepare(integratedHooksDir, integratedRepo, integratedCommand, integratedCounter.env);
-      invokePost(integratedHooksDir, integratedRepo, integratedCommand, integratedState, integratedCounter.env);
+      const legacyValue = legacyCommand(index);
+      const integratedValue = integratedCommand(index);
+      const legacyState = prepare(legacyHooksDir, legacyRepo, legacyValue, legacyCounter.env);
+      invokePost(legacyHooksDir, legacyRepo, legacyValue, legacyState, legacyCounter.env);
+      const integratedState = prepare(integratedHooksDir, integratedRepo, integratedValue, integratedCounter.env);
+      invokePost(integratedHooksDir, integratedRepo, integratedValue, integratedState, integratedCounter.env);
     }
     const legacySamples: number[] = [];
     const integratedSamples: number[] = [];
@@ -294,21 +299,17 @@ function measurePair(
     let integratedMutation = '';
     for (let index = 0; index < benchmarkOptions.samples; index += 1) {
       const measureLegacy = (): void => {
-        const state = prepare(legacyHooksDir, legacyRepo, legacyCommand, legacyCounter.env);
-        const measured = invokePost(legacyHooksDir, legacyRepo, legacyCommand, state, legacyCounter.env);
+        const command = legacyCommand(benchmarkOptions.warmups + index);
+        const state = prepare(legacyHooksDir, legacyRepo, command, legacyCounter.env);
+        const measured = invokePost(legacyHooksDir, legacyRepo, command, state, legacyCounter.env);
         legacySamples.push(measured.elapsedMs);
         legacyContext = measured.context;
         legacyMutation = measured.mutation;
       };
       const measureIntegrated = (): void => {
-        const state = prepare(integratedHooksDir, integratedRepo, integratedCommand, integratedCounter.env);
-        const measured = invokePost(
-          integratedHooksDir,
-          integratedRepo,
-          integratedCommand,
-          state,
-          integratedCounter.env
-        );
+        const command = integratedCommand(benchmarkOptions.warmups + index);
+        const state = prepare(integratedHooksDir, integratedRepo, command, integratedCounter.env);
+        const measured = invokePost(integratedHooksDir, integratedRepo, command, state, integratedCounter.env);
         integratedSamples.push(measured.elapsedMs);
         integratedContext = measured.context;
         integratedMutation = measured.mutation;
@@ -320,12 +321,22 @@ function measurePair(
         measureIntegrated();
         measureLegacy();
       }
+      if (legacyContext !== integratedContext) {
+        throw new Error(
+          `sample ${index + 1}: stdout/context differs between arms\nlegacy=${JSON.stringify(legacyContext)}\nintegrated=${JSON.stringify(integratedContext)}`
+        );
+      }
+      if (legacyMutation !== integratedMutation) {
+        throw new Error(
+          `sample ${index + 1}: span mutation differs between arms\nlegacy=${JSON.stringify(legacyMutation)}\nintegrated=${JSON.stringify(integratedMutation)}`
+        );
+      }
     }
     return {
       legacy: countedArm(
         legacyHooksDir,
         legacyRepo,
-        legacyCommand,
+        legacyCommand(benchmarkOptions.warmups + benchmarkOptions.samples),
         legacyCounter.env,
         legacyCounter.log,
         legacySamples,
@@ -335,7 +346,7 @@ function measurePair(
       integrated: countedArm(
         integratedHooksDir,
         integratedRepo,
-        integratedCommand,
+        integratedCommand(benchmarkOptions.warmups + benchmarkOptions.samples),
         integratedCounter.env,
         integratedCounter.log,
         integratedSamples,
@@ -357,33 +368,61 @@ const FIXTURES: Fixture[] = [
   },
   {
     name: 'moved',
-    command: () => `cat > a.txt <<'EOF'\ninserted\n${TEXT}EOF`,
+    command: (_scaled, iteration) => `cat > a.txt <<'EOF'\n${'inserted\n'.repeat(iteration + 1)}${TEXT}EOF`,
     legacyDependencyProcesses: () => 3
   },
   {
     name: 'semantic-drift',
-    command: () => "sed -i '2s/anchor-one/ANCHOR-ONE/' a.txt",
+    command: (_scaled, iteration) =>
+      iteration === 0
+        ? "sed -i '2s/anchor-one/ANCHOR-ONE/' a.txt"
+        : iteration % 2 === 1
+          ? "sed -i '2s/ANCHOR-ONE/ANCHOR-TWO/' a.txt"
+          : "sed -i '2s/ANCHOR-TWO/ANCHOR-ONE/' a.txt",
     legacyDependencyProcesses: () => 4
   },
   {
     name: 'no-overlap',
-    command: () => "sed -i '10s/tail/TAIL/' a.txt",
+    command: (_scaled, iteration) =>
+      iteration === 0
+        ? "sed -i '10s/tail/TAIL-ONE/' a.txt"
+        : iteration % 2 === 1
+          ? "sed -i '10s/TAIL-ONE/TAIL-TWO/' a.txt"
+          : "sed -i '10s/TAIL-TWO/TAIL-ONE/' a.txt",
     legacyDependencyProcesses: () => 2
   },
   {
     name: 'multi-span',
-    command: () => "sed -i '2,4s/anchor/ANCHOR/' a.txt",
+    command: (_scaled, iteration) =>
+      iteration === 0
+        ? "sed -i '2,4s/anchor/ANCHOR/' a.txt"
+        : iteration % 2 === 1
+          ? "sed -i '2,4s/ANCHOR/ANCH0R/' a.txt"
+          : "sed -i '2,4s/ANCH0R/ANCHOR/' a.txt",
     legacyDependencyProcesses: () => 5
   },
   {
     name: 'multi-path',
-    command: () => "sed -i '2s/anchor-one/ANCHOR-ONE/' a.txt b.txt",
+    command: (_scaled, iteration) =>
+      iteration === 0
+        ? "sed -i '2s/anchor-one/ANCHOR-ONE/' a.txt b.txt"
+        : iteration % 2 === 1
+          ? "sed -i '2s/ANCHOR-ONE/ANCHOR-TWO/' a.txt b.txt"
+          : "sed -i '2s/ANCHOR-TWO/ANCHOR-ONE/' a.txt b.txt",
     legacyDependencyProcesses: () => 8
   },
   {
     name: 'scaled-repair',
     scaled: true,
-    command: (scaled) => `sed -i '2s/anchor-one/ANCHOR-ONE/' ${scaled.join(' ')}`,
+    command: (scaled, iteration) => {
+      const replacement =
+        iteration === 0
+          ? 'anchor-one/ANCHOR-ONE'
+          : iteration % 2 === 1
+            ? 'ANCHOR-ONE/ANCHOR-TWO'
+            : 'ANCHOR-TWO/ANCHOR-ONE';
+      return `sed -i '2s/${replacement}/' ${scaled.join(' ')}`;
+    },
     legacyDependencyProcesses: (scaledCount) => scaledCount * 4
   }
 ];
@@ -410,8 +449,8 @@ function main(): void {
         const scaledCount = fixture.scaled === true ? benchmarkOptions.scaledPaths : 0;
         const legacyScaled = seed(legacyRepo, scaledCount);
         const integratedScaled = seed(integratedRepo, scaledCount);
-        const legacyCommand = fixture.command(legacyScaled);
-        const integratedCommand = fixture.command(integratedScaled);
+        const legacyCommand = (iteration: number) => fixture.command(legacyScaled, iteration);
+        const integratedCommand = (iteration: number) => fixture.command(integratedScaled, iteration);
         const { legacy, integrated } = measurePair(
           baseline.hooksDir,
           current.claudeHooksDir,
@@ -426,8 +465,11 @@ function main(): void {
             `${fixture.name}: stdout/context differs between arms\nlegacy=${JSON.stringify(legacy.context)}\nintegrated=${JSON.stringify(integrated.context)}`
           );
         }
-        if (legacy.mutation !== integrated.mutation)
-          throw new Error(`${fixture.name}: span mutation differs between arms`);
+        if (legacy.mutation !== integrated.mutation) {
+          throw new Error(
+            `${fixture.name}: span mutation differs between arms\nlegacy=${JSON.stringify(legacy.mutation)}\nintegrated=${JSON.stringify(integrated.mutation)}`
+          );
+        }
         const expectedLegacy = fixture.legacyDependencyProcesses(scaledCount);
         if (legacy.dependencyProcesses !== expectedLegacy) {
           throw new Error(
@@ -483,7 +525,7 @@ function main(): void {
       binaryProfile:
         'Release. Debug-profile context repair repeatedly hashes configured filter executables without optimization and is not representative of the shipped CLI latency.',
       serviceWarmup:
-        'Each arm receives the same warmup count. Samples alternate arm order so transient host load cannot systematically favor one arm; integrated measurements reuse its repository service across events, matching production watched-generation reuse.',
+        'Each arm receives the same warmup count. Samples alternate arm order so transient host load cannot systematically favor one arm, and fixtures advance through equivalent edits rather than rewinding repository state. Integrated measurements therefore reuse one repository service across events, matching production watched-generation reuse.',
       acceptancePolicy:
         "Every non-scaled cell must keep integrated p50 below 250ms, the card's approximately 244ms pre-integration single-event baseline, and p95 below a 500ms bounded tail. The scaled cell must materially improve p50/p95 by 50%/40%. Negative percentage improvements remain visible for every cell and are never rewritten as passes.",
       policy: { ...benchmarkOptions, thresholds },

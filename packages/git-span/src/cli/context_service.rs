@@ -993,6 +993,19 @@ mod unix {
         };
         let repo = gix::open(&repo_path).context("reopen context service repository for repair")?;
         let mut counters = ServiceCounters::default();
+        // A repair follows a caller's worktree write immediately. inotify is
+        // an invalidation hint, not a publication barrier: the notification
+        // is allowed to arrive after this worker accepts the RPC. Rebuild
+        // synchronously before planning so repair never starts from the
+        // resident generation merely because its event has not queued yet.
+        {
+            let _recovery = crate::cli::recovery_domain::acquire_reader(&repo, &span_root)?;
+            let mut state = shared
+                .lock()
+                .map_err(|_| anyhow!("context service state was poisoned"))?;
+            state.drain(&mut counters)?;
+            state.rebuild_locked(&repo, &mut counters)?;
+        }
         let document = super::super::context_repair::execute(
             &repo,
             &span_root,
