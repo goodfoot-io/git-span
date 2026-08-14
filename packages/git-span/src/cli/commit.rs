@@ -13,6 +13,7 @@ use crate::cli::drift_output::status_json;
 use crate::cli::error::from_lib_error;
 use crate::cli::format::{IDEMPOTENT_TAG, format_anchor_address, quote_shell};
 use crate::cli::{AddArgs, AddFormat, CliError, NextStep, RemoveArgs, ReplaceArgs, ReplaceFormat, WhyArgs, WhyFormat};
+use crate::descriptor_authority::DirectoryPolicy;
 use crate::git::IndexEntrySnapshot;
 use crate::resolver::{anchor_status_is_drift, resolve_named_spans_retaining_source_layers};
 use crate::span_file::AnchorRecord;
@@ -243,26 +244,18 @@ fn head_has_path(repo: &gix::Repository, path: &str) -> bool {
     crate::git::path_blob_at(repo, &head.detach().to_string(), path).is_ok()
 }
 
-/// RAII guard that releases an advisory file lock and removes the lock
-/// file on drop.
+/// RAII guard that releases an advisory file lock on drop.
+///
+/// The hidden lock inode remains in the retained span directory. Unlinking a
+/// lock while another process waits on its open inode permits a third process
+/// to create and lock a different inode, splitting the critical section.
 pub(crate) struct SpanLock {
     _file: File,
-    path: std::path::PathBuf,
-}
-
-impl Drop for SpanLock {
-    fn drop(&mut self) {
-        // Best-effort cleanup — a stale lock file is harmless (another
-        // process can still acquire the lock on a new inode), but leaving
-        // it behind confuses empty-directory pruning.
-        let _ = std::fs::remove_file(&self.path);
-    }
 }
 
 /// Acquire an exclusive advisory file lock (`flock`) for a span file,
 /// protecting the read-modify-write critical section against concurrent
-/// writers. The lock is released and the lock-file path is cleaned up
-/// when the returned [`SpanLock`] is dropped.
+/// writers. The lock is released when the returned [`SpanLock`] is dropped.
 ///
 /// The lock file lives alongside the span file in `<span_root>/`, named
 /// `.<basename>.lock`. The dot prefix keeps it invisible to all three
@@ -287,38 +280,31 @@ pub(crate) fn lock_span_file(
     let workdir = repo
         .workdir()
         .ok_or_else(|| anyhow::anyhow!("bare repository is not supported"))?;
-    let lock_dir = workdir.join(span_root);
-
-    // Derive the lock-file path from the span path. For "foo/bar", the
-    // span file is `<span_root>/foo/bar` and the lock file is
-    // `<span_root>/foo/.bar.lock`.
-    let span_path = lock_dir.join(name);
-    let lock_name = format!(
-        ".{}.lock",
-        span_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("span")
-    );
-    let lock_path = span_path
-        .parent()
-        .map(|p| p.join(&lock_name))
-        .unwrap_or_else(|| lock_dir.join(&lock_name));
-
-    if let Some(parent) = lock_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    let file = File::create(&lock_path)
-        .with_context(|| format!("failed to create lock file `{}`", lock_path.display()))?;
+    let authority = crate::span::structural::ensure_span_authority(workdir, span_root)?;
+    // Flat names retain the established public lock name used by operators
+    // and diagnostics. Hierarchical names keep their persistent lock inode at
+    // the span root: placing it beside the leaf would make an otherwise empty
+    // hierarchy impossible to prune after deletion.
+    let (lock_directory, lock_name) = if name.contains('/') {
+        (
+            authority.root()?,
+            format!(
+                ".span-lock-{}",
+                &blake3::hash(name.as_bytes()).to_hex()[..32]
+            ),
+        )
+    } else {
+        (authority.root()?, format!(".{name}.lock"))
+    };
+    let lock_path = lock_directory.display_path().join(&lock_name);
+    let file = lock_directory
+        .open_or_create_file(std::ffi::OsStr::new(&lock_name), 0o600)
+        .with_context(|| format!("failed to open lock file `{}`", lock_path.display()))?;
 
     // Fast path: uncontended, which is every ordinary invocation.
     match file.try_lock_exclusive() {
         Ok(true) => {
-            return Ok(SpanLock {
-                _file: file,
-                path: lock_path,
-            });
+            return Ok(SpanLock { _file: file });
         }
         Ok(false) => {}
         Err(e) => {
@@ -342,10 +328,7 @@ pub(crate) fn lock_span_file(
     loop {
         match file.try_lock_exclusive() {
             Ok(true) => {
-                return Ok(SpanLock {
-                    _file: file,
-                    path: lock_path,
-                });
+                return Ok(SpanLock { _file: file });
             }
             Ok(false) => {}
             Err(e) => {
@@ -414,17 +397,44 @@ pub(crate) fn read_worktree_span(
     span_root: &str,
     name: &str,
 ) -> Result<SpanFile> {
-    let path = span_file_path(repo, span_root, name)?;
-    if path.exists() {
-        let content = std::fs::read_to_string(&path)?;
-        Ok(SpanFile::parse(&content)?)
-    } else {
-        Ok(SpanFile {
-            anchors: Vec::new(),
-            why: String::new(),
-            resolved: Vec::new(),
-            config: crate::span_file::SpanConfig::default(),
-        })
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| anyhow::anyhow!("bare repository is not supported"))?;
+    let missing = || SpanFile {
+        anchors: Vec::new(),
+        why: String::new(),
+        resolved: Vec::new(),
+        config: crate::span_file::SpanConfig::default(),
+    };
+    let authority = match crate::descriptor_authority::SpanRootAuthority::open(
+        workdir,
+        span_root,
+        DirectoryPolicy::Existing,
+    ) {
+        Ok(authority) => authority,
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            return Ok(missing());
+        }
+        Err(error) => return Err(error),
+    };
+    let target = match authority.target(name, DirectoryPolicy::Existing) {
+        Ok(target) => target,
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            return Ok(missing());
+        }
+        Err(error) => return Err(error),
+    };
+    match target.parent.read_optional(&target.leaf)? {
+        Some(bytes) => Ok(SpanFile::parse(&String::from_utf8(bytes)?)?),
+        None => Ok(missing()),
     }
 }
 
@@ -457,24 +467,14 @@ pub(crate) fn write_worktree_span(
             .then(a.end_line.cmp(&b.end_line))
     });
 
-    let path = span_file_path(repo, span_root, name)?;
     let workdir = repo
         .workdir()
         .ok_or_else(|| anyhow::anyhow!("bare repository is not supported"))?;
-    crate::span::structural::ensure_span_dir(workdir, span_root)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp_name = format!(
-        ".{}.tmp",
-        path.file_name().and_then(|n| n.to_str()).unwrap_or("span")
-    );
-    let tmp_path = path
-        .parent()
-        .map(|p| p.join(&tmp_name))
-        .unwrap_or_else(|| std::path::PathBuf::from(&tmp_name));
-    std::fs::write(&tmp_path, span.serialize())?;
-    std::fs::rename(&tmp_path, &path)?;
+    let authority = crate::span::structural::ensure_span_authority(workdir, span_root)?;
+    let target = authority.target(name, DirectoryPolicy::Create { mode: 0o755 })?;
+    target
+        .parent
+        .atomic_write(&target.leaf, span.serialize().as_bytes(), 0o644)?;
     Ok(())
 }
 
@@ -2694,6 +2694,87 @@ mod tests {
             "write_worktree_span must use atomic rename (inode changed), \
              but inode stayed the same — direct write detected"
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn writer_stays_on_retained_span_root_after_public_parent_swap() {
+        use std::os::unix::fs::symlink;
+
+        let (dir, repo) = temp_repo();
+        let mut first = SpanFile {
+            anchors: Vec::new(),
+            why: "first".into(),
+            config: crate::span_file::SpanConfig::default(),
+            resolved: Vec::new(),
+        };
+        write_worktree_span(&repo, ".span", "test/atomic", &mut first).unwrap();
+
+        let public_root = dir.path().join(".span");
+        let retained_root = dir.path().join(".span-retained");
+        let attacker = dir.path().join("attacker");
+        std::fs::create_dir(&attacker).unwrap();
+        let mut swapped = false;
+        let public_for_hook = public_root.clone();
+        let retained_for_hook = retained_root.clone();
+        let attacker_for_hook = attacker.clone();
+        let mut second = SpanFile {
+            anchors: Vec::new(),
+            why: "second".into(),
+            config: crate::span_file::SpanConfig::default(),
+            resolved: Vec::new(),
+        };
+        crate::descriptor_authority::with_test_boundary_hook(
+            move |boundary| {
+                if boundary == "temp-create" && !swapped {
+                    std::fs::rename(&public_for_hook, &retained_for_hook).unwrap();
+                    symlink(&attacker_for_hook, &public_for_hook).unwrap();
+                    swapped = true;
+                }
+            },
+            || write_worktree_span(&repo, ".span", "test/atomic", &mut second),
+        )
+        .unwrap();
+
+        let retained = std::fs::read_to_string(retained_root.join("test/atomic")).unwrap();
+        assert!(retained.contains("second"));
+        assert!(!attacker.join("test/atomic").exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn lock_stays_on_retained_span_root_after_swap() {
+        use std::os::unix::fs::symlink;
+
+        let (dir, repo) = temp_repo();
+        crate::span::structural::ensure_span_authority(dir.path(), ".span").unwrap();
+        let public_parent = dir.path().join(".span");
+        let retained_parent = dir.path().join(".span-retained");
+        let attacker = dir.path().join("attacker-lock");
+        std::fs::create_dir(&attacker).unwrap();
+        let public_for_hook = public_parent.clone();
+        let retained_for_hook = retained_parent.clone();
+        let attacker_for_hook = attacker.clone();
+        let mut swapped = false;
+        let lock = crate::descriptor_authority::with_test_boundary_hook(
+            move |boundary| {
+                if boundary == "open-or-create" && !swapped {
+                    std::fs::rename(&public_for_hook, &retained_for_hook).unwrap();
+                    symlink(&attacker_for_hook, &public_for_hook).unwrap();
+                    swapped = true;
+                }
+            },
+            || lock_span_file(&repo, ".span", "team/member"),
+        )
+        .unwrap();
+
+        let lock_name = format!(
+            ".span-lock-{}",
+            &blake3::hash(b"team/member").to_hex()[..32]
+        );
+        assert!(retained_parent.join(&lock_name).is_file());
+        assert!(!attacker.join(&lock_name).exists());
+        drop(lock);
     }
 
     #[test]

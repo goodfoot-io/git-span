@@ -23,11 +23,11 @@
 
 use crate::cli::MergeDriverArgs;
 use crate::cli::drift_fix::format_residue_markers;
+use crate::descriptor_authority::RetainedDirectory;
 use crate::cli::format::{format_same_side_collapse, format_sentinel_preserved};
 use crate::span_file::SpanFile;
 use anyhow::Result;
 use git_span_core::merge_span_files;
-use std::io::Write;
 
 /// Run the merge driver: read base/ours/theirs from temp file paths, merge
 /// structurally, and write the output to the `%A` (ours) path.
@@ -126,20 +126,12 @@ fn serialize_with_driver_markers(
 /// Write content to a file atomically (write to temp, rename).
 fn write_file(path: &str, content: &str) -> Result<()> {
     let p = std::path::Path::new(path);
-    if let Some(parent) = p.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp_name = format!(
-        ".{}.tmp",
-        p.file_name().and_then(|n| n.to_str()).unwrap_or("merge")
-    );
-    let tmp_path = p
+    let parent = p
         .parent()
-        .map(|pp| pp.join(&tmp_name))
-        .unwrap_or_else(|| std::path::PathBuf::from(&tmp_name));
-    let mut f = std::fs::File::create(&tmp_path)?;
-    f.write_all(content.as_bytes())?;
-    f.sync_all()?;
-    std::fs::rename(&tmp_path, p)?;
-    Ok(())
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let leaf = p
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("merge output has no file name"))?;
+    RetainedDirectory::open_canonical(parent)?.atomic_write(leaf, content.as_bytes(), 0o644)
 }

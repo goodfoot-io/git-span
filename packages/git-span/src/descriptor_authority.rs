@@ -7,7 +7,39 @@
 use anyhow::{Context, Result, bail, ensure};
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+
+#[cfg(test)]
+thread_local! {
+    static TEST_BOUNDARY_HOOK: std::cell::RefCell<Option<Box<dyn FnMut(&str)>>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+fn test_boundary(name: &str) {
+    TEST_BOUNDARY_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().as_mut() {
+            hook(name);
+        }
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn with_test_boundary_hook<T>(
+    hook: impl FnMut(&str) + 'static,
+    action: impl FnOnce() -> T,
+) -> T {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_BOUNDARY_HOOK.with(|slot| *slot.borrow_mut() = None);
+        }
+    }
+    TEST_BOUNDARY_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+    let _reset = Reset;
+    action()
+}
 
 #[cfg(unix)]
 use std::ffi::CString;
@@ -30,12 +62,19 @@ pub enum DirectoryPolicy {
 
 #[cfg(unix)]
 fn component_c_string(component: &OsStr) -> Result<CString> {
+    ensure_single_component(component)?;
     let bytes = component.as_bytes();
+    CString::new(bytes).context("descriptor-relative name contains NUL")
+}
+
+fn ensure_single_component(component: &OsStr) -> Result<()> {
+    let mut components = Path::new(component).components();
     ensure!(
-        !bytes.is_empty() && bytes != b"." && bytes != b".." && !bytes.contains(&b'/'),
+        matches!(components.next(), Some(std::path::Component::Normal(_)))
+            && components.next().is_none(),
         "descriptor-relative name must be one safe path component"
     );
-    CString::new(bytes).context("descriptor-relative name contains NUL")
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -235,17 +274,116 @@ impl RetainedDirectory {
         }
     }
 
-    /// Atomically replace `destination` with `source` inside this directory.
-    pub fn rename(&self, source: &OsStr, destination: &OsStr) -> Result<()> {
+    /// Open or create one stable regular file without truncating it.
+    pub fn open_or_create_file(&self, name: &OsStr, mode: u32) -> Result<File> {
         #[cfg(unix)]
         {
+            #[cfg(test)]
+            test_boundary("open-or-create");
+            let name = component_c_string(name)?;
+            let descriptor = unsafe {
+                libc::openat(
+                    self.descriptor.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::O_RDWR | libc::O_CREAT | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                    mode,
+                )
+            };
+            if descriptor < 0 {
+                return Err(std::io::Error::last_os_error())
+                    .context("open or create retained file");
+            }
+            let file = unsafe { File::from_raw_fd(descriptor) };
+            ensure!(
+                file.metadata()?.is_file(),
+                "retained entry is not a regular file"
+            );
+            Ok(file)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (&self.descriptor, name, mode);
+            bail!("descriptor authority requires openat-style platform support")
+        }
+    }
+
+    /// Read a regular file, distinguishing a missing leaf from every unsafe
+    /// or unreadable state.
+    pub fn read_optional(&self, name: &OsStr) -> Result<Option<Vec<u8>>> {
+        #[cfg(test)]
+        test_boundary("read");
+        match self.open_file(name, false) {
+            Ok(mut file) => {
+                let mut bytes = Vec::new();
+                file.read_to_end(&mut bytes)?;
+                Ok(Some(bytes))
+            }
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Durably replace one regular file using an exclusive sibling temp.
+    pub fn atomic_write(&self, destination: &OsStr, contents: &[u8], mode: u32) -> Result<()> {
+        ensure_single_component(destination)?;
+        let temporary = OsString::from(format!(
+            ".{}.{}.tmp",
+            destination.to_string_lossy(),
+            uuid::Uuid::new_v4()
+        ));
+        let result = (|| {
+            #[cfg(test)]
+            test_boundary("temp-create");
+            let mut file = self.create_file(&temporary, mode)?;
+            file.write_all(contents)?;
+            #[cfg(test)]
+            test_boundary("temp-fsync");
+            file.sync_all()?;
+            #[cfg(test)]
+            test_boundary("rename");
+            self.rename(&temporary, destination)?;
+            #[cfg(test)]
+            test_boundary("final-fsync");
+            self.open_file(destination, false)?.sync_all()?;
+            #[cfg(test)]
+            test_boundary("directory-fsync");
+            self.sync()
+        })();
+        if result.is_err() {
+            let _ = self.unlink(&temporary);
+        }
+        result
+    }
+
+    /// Atomically replace `destination` with `source` inside this directory.
+    pub fn rename(&self, source: &OsStr, destination: &OsStr) -> Result<()> {
+        self.rename_to(source, self, destination)
+    }
+
+    /// Atomically move an entry between two retained directories.
+    pub fn rename_to(
+        &self,
+        source: &OsStr,
+        destination_directory: &Self,
+        destination: &OsStr,
+    ) -> Result<()> {
+        #[cfg(unix)]
+        {
+            #[cfg(test)]
+            test_boundary("rename-to");
             let source = component_c_string(source)?;
             let destination = component_c_string(destination)?;
             let result = unsafe {
                 libc::renameat(
                     self.descriptor.as_raw_fd(),
                     source.as_ptr(),
-                    self.descriptor.as_raw_fd(),
+                    destination_directory.descriptor.as_raw_fd(),
                     destination.as_ptr(),
                 )
             };
@@ -256,15 +394,96 @@ impl RetainedDirectory {
         }
         #[cfg(not(unix))]
         {
-            let _ = (&self.descriptor, source, destination);
+            let _ = (
+                &self.descriptor,
+                source,
+                &destination_directory.descriptor,
+                destination,
+            );
             bail!("descriptor authority requires openat-style platform support")
         }
+    }
+
+    /// Remove a missing-or-present leaf without following it.
+    pub fn unlink_if_exists(&self, name: &OsStr) -> Result<bool> {
+        match self.unlink(name) {
+            Ok(()) => Ok(true),
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Remove an empty descendant directory without following it.
+    pub fn unlink_empty_directory(&self, name: &OsStr) -> Result<bool> {
+        #[cfg(unix)]
+        {
+            #[cfg(test)]
+            test_boundary("unlink-directory");
+            let name = component_c_string(name)?;
+            let result = unsafe {
+                libc::unlinkat(
+                    self.descriptor.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::AT_REMOVEDIR,
+                )
+            };
+            if result == 0 {
+                return Ok(true);
+            }
+            let error = std::io::Error::last_os_error();
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::DirectoryNotEmpty
+            ) || error.raw_os_error() == Some(libc::EEXIST)
+            {
+                return Ok(false);
+            }
+            Err(error).context("unlink empty retained directory")
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (&self.descriptor, name);
+            bail!("descriptor authority requires openat-style platform support")
+        }
+    }
+
+    /// Retained immediate parent and this directory's leaf within it.
+    pub fn parent(&self) -> Result<Option<(Self, OsString)>> {
+        let Some((parent_descriptor, earlier)) = self.ancestors.split_last() else {
+            return Ok(None);
+        };
+        let leaf = self
+            .display_path
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("retained directory has no parent leaf"))?
+            .to_os_string();
+        let parent = Self {
+            ancestors: earlier
+                .iter()
+                .map(File::try_clone)
+                .collect::<std::io::Result<Vec<_>>>()?,
+            descriptor: parent_descriptor.try_clone()?,
+            display_path: self
+                .display_path
+                .parent()
+                .ok_or_else(|| anyhow::anyhow!("retained directory has no parent"))?
+                .to_path_buf(),
+        };
+        Ok(Some((parent, leaf)))
     }
 
     /// Remove one regular file or socket without following it.
     pub fn unlink(&self, name: &OsStr) -> Result<()> {
         #[cfg(unix)]
         {
+            #[cfg(test)]
+            test_boundary("unlink");
             let name = component_c_string(name)?;
             let result = unsafe { libc::unlinkat(self.descriptor.as_raw_fd(), name.as_ptr(), 0) };
             if result < 0 {

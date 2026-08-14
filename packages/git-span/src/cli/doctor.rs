@@ -6,35 +6,6 @@ use crate::span::structural::delete_span_in;
 use crate::span_file_reader::SpanFileReader;
 use anyhow::Result;
 
-/// Prune now-empty parent directories of a removed span file, walking up
-/// from the deepest segment toward — but never including or past — the
-/// span root. A hierarchical span name like `bulk/foo` leaves an empty
-/// `<root>/bulk/` directory once its last span is removed; that empty
-/// shell is noise in `git status` and the worktree, so collapse it.
-///
-/// Best-effort: a non-empty directory (another span still lives under it)
-/// stops the walk, and any I/O error simply ends pruning without failing
-/// the command — the span removal itself already succeeded.
-fn prune_empty_parents(repo: &gix::Repository, span_root: &str, name: &str) {
-    let Some(workdir) = repo.workdir() else {
-        return;
-    };
-    let root = workdir.join(span_root);
-    // The span file lived at `<root>/<name>`; start at its parent.
-    let mut dir = root.join(name);
-    while dir.pop() {
-        // Stop before removing the span root itself or escaping above it.
-        if dir == root || !dir.starts_with(&root) {
-            break;
-        }
-        // `remove_dir` only succeeds on an empty directory; a populated
-        // parent (sibling span present) ends the walk.
-        if std::fs::remove_dir(&dir).is_err() {
-            break;
-        }
-    }
-}
-
 pub fn run_delete(repo: &gix::Repository, args: DeleteArgs, span_root: &str) -> Result<i32> {
     delete_span_in(repo, &args.name, span_root).map_err(|e| CliError {
         subcommand: "delete",
@@ -42,7 +13,6 @@ pub fn run_delete(repo: &gix::Repository, args: DeleteArgs, span_root: &str) -> 
         what_happened: e.to_string(),
         next_steps: vec![NextStep::Bash("git span list".into())],
     })?;
-    prune_empty_parents(repo, span_root, &args.name);
     println!("Deleted `{}`.{}", args.name, DESTRUCTIVE_TAG);
     println!();
     println!("Run `git span list` to confirm the span is gone, then commit the change.");

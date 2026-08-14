@@ -10,8 +10,9 @@
 //! surfacing layer rather than via `current.blob`.
 
 use crate::cli::commit::{
-    hash_anchor_content, lock_span_file, span_file_path, write_worktree_span,
+    hash_anchor_content, lock_span_file, write_worktree_span,
 };
+use crate::descriptor_authority::{DirectoryPolicy, SpanRootAuthority};
 use crate::cli::duplicate_identity::{AddAvailability, AddRefusal};
 use crate::cli::format::{
     collapse_is_unverified, format_anchor_address, format_same_side_collapse,
@@ -294,12 +295,37 @@ fn read_raw_span_content(
     span_root: &str,
     name: &str,
 ) -> Result<Option<String>> {
-    let path = span_file_path(repo, span_root, name)?;
-    if path.exists() {
-        Ok(Some(std::fs::read_to_string(&path)?))
-    } else {
-        Ok(None)
-    }
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| anyhow::anyhow!("bare repository is not supported"))?;
+    let authority = match SpanRootAuthority::open(workdir, span_root, DirectoryPolicy::Existing) {
+        Ok(authority) => authority,
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            return Ok(None);
+        }
+        Err(error) => return Err(error),
+    };
+    let target = match authority.target(name, DirectoryPolicy::Existing) {
+        Ok(target) => target,
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            return Ok(None);
+        }
+        Err(error) => return Err(error),
+    };
+    target
+        .parent
+        .read_optional(&target.leaf)?
+        .map(String::from_utf8)
+        .transpose()
+        .map_err(Into::into)
 }
 
 /// A text region within a conflict-markered file.
@@ -900,21 +926,14 @@ fn write_residue_span(
         ">>>>>>> theirs\n",
     );
 
-    // Write atomically (same approach as write_worktree_span).
-    let path = span_file_path(repo, span_root, name)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp_name = format!(
-        ".{}.tmp",
-        path.file_name().and_then(|n| n.to_str()).unwrap_or("span")
-    );
-    let tmp_path = path
-        .parent()
-        .map(|p| p.join(&tmp_name))
-        .unwrap_or_else(|| std::path::PathBuf::from(&tmp_name));
-    std::fs::write(&tmp_path, &output)?;
-    std::fs::rename(&tmp_path, &path)?;
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| anyhow::anyhow!("bare repository is not supported"))?;
+    let authority = crate::span::structural::ensure_span_authority(workdir, span_root)?;
+    let target = authority.target(name, DirectoryPolicy::Create { mode: 0o755 })?;
+    target
+        .parent
+        .atomic_write(&target.leaf, output.as_bytes(), 0o644)?;
 
     // Only attempt to restore unmerged index stages when the span file
     // actually has unmerged index entries. Otherwise `git update-index

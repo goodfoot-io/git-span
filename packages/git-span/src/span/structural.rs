@@ -5,12 +5,18 @@
 //! transaction — the change is an ordinary worktree edit committed with
 //! `git`.
 
+use crate::descriptor_authority::{DirectoryPolicy, RetainedDirectory, SpanRootAuthority};
 use crate::span_file_reader::SpanFileReader;
 use crate::validation::{validate_span_name, validate_span_name_shape};
 use crate::{Error, Result};
-use std::path::{Path, PathBuf};
+use std::ffi::OsStr;
+use std::path::Path;
 
 const DEFAULT_SPAN_ROOT: &str = ".span";
+
+fn authority_error(error: anyhow::Error) -> Error {
+    Error::Git(error.to_string())
+}
 
 /// Canonical contents of `.span/.gitattributes` -- forces LF line endings
 /// for all span files, keeping anchors portable across platforms.
@@ -65,10 +71,20 @@ const HOOKIGNORE_CONTENTS: &str = "\
 /// (non-blank, non-comment lines) that are missing are appended. A rule
 /// git-span needs is therefore never absent, and a rule the user added
 /// is never removed.
-fn reconcile_control_file(path: &Path, canonical: &str) -> Result<()> {
-    let current = std::fs::read_to_string(path).unwrap_or_default();
+fn reconcile_control_file(
+    directory: &RetainedDirectory,
+    name: &OsStr,
+    canonical: &str,
+) -> Result<()> {
+    let current = match directory.read_optional(name).map_err(authority_error)? {
+        Some(bytes) => String::from_utf8(bytes)
+            .map_err(|error| Error::InvalidSpanFile(error.to_string()))?,
+        None => String::new(),
+    };
     if current.trim().is_empty() {
-        std::fs::write(path, canonical)?;
+        directory
+            .atomic_write(name, canonical.as_bytes(), 0o644)
+            .map_err(authority_error)?;
         return Ok(());
     }
 
@@ -95,11 +111,13 @@ fn reconcile_control_file(path: &Path, canonical: &str) -> Result<()> {
         updated.push_str(rule);
         updated.push('\n');
     }
-    std::fs::write(path, updated)?;
+    directory
+        .atomic_write(name, updated.as_bytes(), 0o644)
+        .map_err(authority_error)?;
     eprintln!(
         "git-span: appended {} missing rule(s) to `{}`; existing lines were left untouched.",
         missing.len(),
-        path.display()
+        directory.display_path().join(name).display()
     );
     Ok(())
 }
@@ -112,26 +130,47 @@ fn reconcile_control_file(path: &Path, canonical: &str) -> Result<()> {
 ///   canonical rules are appended, preserving any user-added rules.
 /// * `.hookignore` -- written only when missing (existence-only guard),
 ///   preserving any user-added rules.
+#[cfg(test)]
 pub(crate) fn ensure_span_dir(workdir: &Path, span_root: &str) -> Result<()> {
-    let span_dir = workdir.join(span_root);
-    std::fs::create_dir_all(&span_dir)?;
-
-    reconcile_control_file(&span_dir.join(".gitattributes"), GITATTRIBUTES_CONTENTS)?;
-    reconcile_control_file(&span_dir.join(".gitignore"), SPAN_GITIGNORE_CONTENTS)?;
-
-    let hi_path = span_dir.join(".hookignore");
-    if !hi_path.exists() {
-        std::fs::write(&hi_path, HOOKIGNORE_CONTENTS)?;
-    }
-
-    Ok(())
+    ensure_span_authority(workdir, span_root).map(|_| ())
 }
 
-fn span_file_path(repo: &gix::Repository, span_root: &str, name: &str) -> Result<PathBuf> {
-    let workdir = repo
-        .workdir()
-        .ok_or_else(|| Error::Git("bare repository is not supported".into()))?;
-    Ok(workdir.join(span_root).join(name))
+pub(crate) fn ensure_span_authority(
+    workdir: &Path,
+    span_root: &str,
+) -> Result<SpanRootAuthority> {
+    let authority = SpanRootAuthority::open(
+        workdir,
+        span_root,
+        DirectoryPolicy::Create { mode: 0o755 },
+    )
+    .map_err(authority_error)?;
+    let directory = authority.root().map_err(authority_error)?;
+
+    reconcile_control_file(
+        &directory,
+        OsStr::new(".gitattributes"),
+        GITATTRIBUTES_CONTENTS,
+    )?;
+    reconcile_control_file(
+        &directory,
+        OsStr::new(".gitignore"),
+        SPAN_GITIGNORE_CONTENTS,
+    )?;
+    if directory
+        .read_optional(OsStr::new(".hookignore"))
+        .map_err(authority_error)?
+        .is_none()
+    {
+        directory.atomic_write(
+            OsStr::new(".hookignore"),
+            HOOKIGNORE_CONTENTS.as_bytes(),
+            0o644,
+        )
+        .map_err(authority_error)?;
+    }
+
+    Ok(authority)
 }
 
 /// Delete a span by removing its worktree file under the span root.
@@ -151,10 +190,42 @@ pub fn delete_span_in(repo: &gix::Repository, name: &str, span_root: &str) -> Re
     if reader.read_effective(name)?.is_none() {
         return Err(Error::SpanNotFound(name.into()));
     }
-    let path = span_file_path(repo, span_root, name)?;
-    if path.exists() {
-        std::fs::remove_file(&path)
-            .map_err(|e| Error::Git(format!("remove span file `{}`: {e}", path.display())))?;
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| Error::Git("bare repository is not supported".into()))?;
+    let authority = SpanRootAuthority::open(workdir, span_root, DirectoryPolicy::Existing)
+        .map_err(authority_error)?;
+    let target = match authority.target(name, DirectoryPolicy::Existing) {
+        Ok(target) => target,
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            return Ok(());
+        }
+        Err(error) => return Err(authority_error(error)),
+    };
+    if target
+        .parent
+        .unlink_if_exists(&target.leaf)
+        .map_err(authority_error)?
+    {
+        target.parent.sync().map_err(authority_error)?;
+        let mut directory = target.parent;
+        for _ in 0..name.split('/').count().saturating_sub(1) {
+            let Some((parent, leaf)) = directory.parent().map_err(authority_error)? else {
+                break;
+            };
+            if !parent
+                .unlink_empty_directory(&leaf)
+                .map_err(authority_error)?
+            {
+                break;
+            }
+            parent.sync().map_err(authority_error)?;
+            directory = parent;
+        }
     }
     Ok(())
 }
@@ -182,8 +253,13 @@ pub fn rename_span_in(repo: &gix::Repository, old: &str, new: &str, span_root: &
         return Err(Error::SpanAlreadyExists(new.into()));
     }
 
-    let old_path = span_file_path(repo, span_root, old)?;
-    let new_path = span_file_path(repo, span_root, new)?;
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| Error::Git("bare repository is not supported".into()))?;
+    let authority = ensure_span_authority(workdir, span_root)?;
+    let old_target = authority
+        .target(old, DirectoryPolicy::Create { mode: 0o755 })
+        .map_err(authority_error)?;
 
     // File→directory transition: when `new` has `old` as a strict path
     // prefix (`old` followed by `/`), the old regular file lies on the
@@ -192,26 +268,31 @@ pub fn rename_span_in(repo: &gix::Repository, old: &str, new: &str, span_root: &
     let new_under_old = new
         .strip_prefix(old)
         .is_some_and(|rest| rest.starts_with('/'));
-    if new_under_old && old_path.exists() {
-        std::fs::remove_file(&old_path)
-            .map_err(|e| Error::Git(format!("remove `{}`: {e}", old_path.display())))?;
+    if new_under_old
+        && old_target
+            .parent
+            .unlink_if_exists(&old_target.leaf)
+            .map_err(authority_error)?
+    {
+        old_target.parent.sync().map_err(authority_error)?;
     }
 
-    if let Some(parent) = new_path.parent() {
-        let workdir = repo
-            .workdir()
-            .ok_or_else(|| Error::Git("bare repository is not supported".into()))?;
-        ensure_span_dir(workdir, span_root)?;
-        std::fs::create_dir_all(parent)
-            .map_err(|e| Error::Git(format!("create `{}`: {e}", parent.display())))?;
-    }
+    let new_target = authority
+        .target(new, DirectoryPolicy::Create { mode: 0o755 })
+        .map_err(authority_error)?;
     // Write the new file from the effective content (covers the case
     // where the old version lived only in HEAD/index, not on disk).
-    std::fs::write(&new_path, file.serialize())
-        .map_err(|e| Error::Git(format!("write `{}`: {e}", new_path.display())))?;
-    if !new_under_old && old_path.exists() {
-        std::fs::remove_file(&old_path)
-            .map_err(|e| Error::Git(format!("remove `{}`: {e}", old_path.display())))?;
+    new_target
+        .parent
+        .atomic_write(&new_target.leaf, file.serialize().as_bytes(), 0o644)
+        .map_err(authority_error)?;
+    if !new_under_old
+        && old_target
+            .parent
+            .unlink_if_exists(&old_target.leaf)
+            .map_err(authority_error)?
+    {
+        old_target.parent.sync().map_err(authority_error)?;
     }
     Ok(())
 }
