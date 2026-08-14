@@ -819,6 +819,11 @@ mod unix {
             "service identity mismatch"
         );
         ensure!(request.nonce == nonce, "service nonce mismatch");
+        if let Ok(delay) = std::env::var("GIT_SPAN_CONTEXT_TEST_WORKER_DELAY_MS")
+            && let Ok(delay) = delay.parse::<u64>()
+        {
+            thread::sleep(Duration::from_millis(delay.min(2_000)));
+        }
         let mut shutdown = false;
         let response = match request.op {
             Operation::Health => Response {

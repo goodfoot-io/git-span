@@ -279,6 +279,43 @@ fn watch_closure_liveness_and_backpressure() -> Result<()> {
         assert!(output.status.success());
         assert_eq!(output.stdout, expected.stdout);
     }
+
+    let saturated = (0..32)
+        .map(|_| {
+            let binary = binary.clone();
+            let cwd = cwd.clone();
+            std::thread::spawn(move || {
+                std::process::Command::new(binary)
+                    .current_dir(cwd)
+                    .env("GIT_SPAN_CONTEXT_TEST_WORKER_DELAY_MS", "250")
+                    .args(["context", "file1.txt#L1-L2", "--format", "json"])
+                    .output()
+            })
+        })
+        .collect::<Vec<_>>();
+    for client in saturated {
+        let output = client.join().expect("saturated context client panicked")?;
+        assert!(output.status.success());
+        assert_eq!(output.stdout, expected.stdout);
+    }
+    #[cfg(unix)]
+    {
+        let socket = std::fs::read_dir(repo.path().join(".git/span/context"))?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path().join("service.sock"))
+            .find(|path| path.exists())
+            .expect("context service socket");
+        let stalled = (0..16)
+            .map(|_| crate::support::stall_unix_socket(&socket))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let bounded = repo.run_span(["context", "file1.txt#L1-L2", "--format", "json"])?;
+        assert!(bounded.status.success());
+        assert_eq!(bounded.stdout, expected.stdout);
+        for client in stalled {
+            client.join().expect("stalled peer thread panicked");
+        }
+    }
     Ok(())
 }
 

@@ -384,6 +384,15 @@ pub fn symlinks_supported() -> bool {
     true
 }
 
+#[cfg(unix)]
+pub fn stall_unix_socket(path: &Path) -> std::io::Result<std::thread::JoinHandle<()>> {
+    let stream = std::os::unix::net::UnixStream::connect(path)?;
+    Ok(std::thread::spawn(move || {
+        let _stream = stream;
+        std::thread::sleep(std::time::Duration::from_secs(3));
+    }))
+}
+
 /// Whether the host can create symlinks. On Windows, probe once by creating
 /// then removing a temp symlink, and cache the outcome.
 #[cfg(windows)]
@@ -531,13 +540,17 @@ pub fn create_and_commit_span(
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(span_dir.join(name), mf.serialize())?;
-    let out = capture(Command::new("git").current_dir(&workdir).args(["add", &rel]))?;
-    assert!(out.status.success(), "git add {rel} failed");
     let out = capture(
         Command::new("git")
             .current_dir(&workdir)
-            .args(["commit", "-m", &format!("span: {name}")]),
+            .args(["add", &rel]),
     )?;
+    assert!(out.status.success(), "git add {rel} failed");
+    let out = capture(Command::new("git").current_dir(&workdir).args([
+        "commit",
+        "-m",
+        &format!("span: {name}"),
+    ]))?;
     assert!(
         out.status.success(),
         "git commit failed: {}",
