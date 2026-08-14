@@ -1679,6 +1679,12 @@ describe('layered static attribution contract (bootstrap)', () => {
     ]);
   });
 
+  it('retains fail-closed generator diagnostics through lexical fast rejection', () => {
+    expect(parseCommandLayered('make generate', { cwd: dir }).unresolved.map(({ reasonCode }) => reasonCode)).toEqual([
+      'generator-operation'
+    ]);
+  });
+
   it('widens a Python replace across every ambiguous literal occurrence and honors a literal count', () => {
     const target = join(dir, 'ambiguous.txt');
     const command = (count = '') =>

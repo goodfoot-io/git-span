@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const AGENT_HOOKS_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const AGENT_HOOKS_ROOT =
+  process.env['AGENT_HOOKS_BENCHMARK_ROOT'] ?? resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const WORKSPACE_ROOT = resolve(AGENT_HOOKS_ROOT, '../..');
 
 export interface BuiltRealHookBundles {

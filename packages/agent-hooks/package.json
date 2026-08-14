@@ -12,6 +12,7 @@
     "build:hooks:mswea": "yarn claude-code-hooks -i \"src/mswea/{advisor,static-plan,post-tool-use,post-tool-use-failure,session-end}.ts\" -o \"../../packages/mini-swe-agent/src/minisweagent_gitspan/hooks/hooks.json\"",
     "claude-code-hooks": "node scripts/hooks-cli-wrapper.js @goodfoot/claude-code-hooks",
     "codex-hooks": "node scripts/hooks-cli-wrapper.js @goodfoot/codex-hooks",
+    "bench:static": "node scripts/run-static-attribution-benchmark.js",
     "test": "vitest run",
     "lint": "biome check .",
     "typecheck": "tsc --noEmit"

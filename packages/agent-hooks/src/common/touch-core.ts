@@ -29,8 +29,7 @@ import {
   parsePorcelain,
   rangesIntersect,
   relativeToRepo,
-  resolveRepoRoot,
-  resolveSpanRoot
+  resolveRepoRoot
 } from './agent-hooks-common.js';
 import { collapseByPath, type RangeLabel, renderAnchorTree } from './anchor-tree.js';
 import type { MemoStore } from './span-surface.js';
@@ -567,6 +566,13 @@ export interface TouchExecutors {
   list: TouchListExecutor;
   drift: TouchDriftExecutor;
   why: TouchWhyExecutor;
+  /**
+   * Return a per-hook wrapper that may memoize identical executor requests.
+   * The wrapper is deliberately invocation-scoped: hook handlers can be
+   * reused by tests or future transports without carrying repository state
+   * from one tool event into the next.
+   */
+  forInvocation?: () => TouchExecutors;
 }
 
 // ---------------------------------------------------------------------------
@@ -972,22 +978,32 @@ function repoRelArg(filePath: string, cwd: string): { repoRoot: string; relPath:
   return { repoRoot, relPath: relativeToRepo(repoRoot, filePath) };
 }
 
-/**
- * Read the span root's working-tree status to detect whether a `--fix`
- * re-anchored anything. Compared before/after; an unresolvable repo or
- * a failed status yields a stable empty string (→ `modified: false`).
- */
-function readSpanStatus(repoRoot: string): string {
-  const spanRoot = resolveSpanRoot(repoRoot);
-  try {
-    return execFileSync('git', ['-C', repoRoot, 'status', '--porcelain', '--', spanRoot], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: DEFAULT_TIMEOUT_MS
-    });
-  } catch {
-    return '';
+/** Whether the CLI's authoritative fix summary says it rewrote span state. */
+export function fixOutputModified(stdout: string): boolean {
+  for (const match of stdout.matchAll(/\((\d+) updated, (\d+) removed\)/g)) {
+    if (Number(match[1]) > 0 || Number(match[2]) > 0) return true;
   }
+  return /\bcollapsed [1-9]\d* duplicate/.test(stdout);
+}
+
+function memoizedExecutors(base: TouchExecutors): TouchExecutors {
+  const fixes = new Map<string, Promise<TouchFixResult>>();
+  const lists = new Map<string, Promise<PorcelainRow[]>>();
+  const drifts = new Map<string, Promise<DriftPorcelainRow[]>>();
+  const whys = new Map<string, Promise<string | null>>();
+  const once = <T>(cache: Map<string, Promise<T>>, key: string, run: () => Promise<T>): Promise<T> => {
+    const found = cache.get(key);
+    if (found !== undefined) return found;
+    const pending = run();
+    cache.set(key, pending);
+    return pending;
+  };
+  return {
+    fix: (filePath, cwd) => once(fixes, `${cwd}\0${filePath}`, () => base.fix(filePath, cwd)),
+    list: (filePath, cwd) => once(lists, `${cwd}\0${filePath}`, () => base.list(filePath, cwd)),
+    drift: (args, cwd) => once(drifts, `${cwd}\0${args.join('\0')}`, () => base.drift(args, cwd)),
+    why: (name, cwd) => once(whys, `${cwd}\0${name}`, () => base.why(name, cwd))
+  };
 }
 
 /**
@@ -998,13 +1014,13 @@ function readSpanStatus(repoRoot: string): string {
  * so {@link runTouchHook}'s fail-open contract holds.
  */
 export function createDefaultTouchExecutors(timeoutMs: number = DEFAULT_TIMEOUT_MS): TouchExecutors {
-  return {
+  const executors: TouchExecutors = {
     fix: async (filePath, cwd) => {
       const resolved = repoRelArg(filePath, cwd);
       if (!resolved) return { modified: false };
-      const before = readSpanStatus(resolved.repoRoot);
+      let out = '';
       try {
-        execFileSync('git', ['span', 'drift', resolved.relPath, '--fix'], {
+        out = execFileSync('git', ['span', 'drift', resolved.relPath, '--fix'], {
           cwd: resolved.repoRoot,
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'pipe'],
@@ -1012,12 +1028,12 @@ export function createDefaultTouchExecutors(timeoutMs: number = DEFAULT_TIMEOUT_
         });
       } catch (err) {
         // `git span drift` exits 1 on drift even when `--fix` healed something,
-        // and non-zero on genuine failure; the before/after status delta is
-        // the source of truth for whether the tree changed.
-        void err;
+        // and non-zero on genuine failure. Its summary is still emitted on
+        // stdout after a successful rewrite, so preserve captured output.
+        const captured = (err as { stdout?: string }).stdout;
+        if (typeof captured === 'string') out = captured;
       }
-      const after = readSpanStatus(resolved.repoRoot);
-      return { modified: before !== after };
+      return { modified: fixOutputModified(out) };
     },
 
     list: async (filePath, cwd) => {
@@ -1078,6 +1094,9 @@ export function createDefaultTouchExecutors(timeoutMs: number = DEFAULT_TIMEOUT_
       } catch {
         return null;
       }
-    }
+    },
+
+    forInvocation: () => memoizedExecutors(executors)
   };
+  return executors;
 }

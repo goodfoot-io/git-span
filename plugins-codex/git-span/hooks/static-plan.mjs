@@ -299,6 +299,16 @@ function abspathAgainst(base, target) {
 function resolveRepoRoot(dir) {
   if (!dir) return null;
   try {
+    let current = fs.realpathSync.native(dir);
+    for (; ; ) {
+      if (fs.existsSync(nodePath.join(current, ".git"))) return toPosix(current);
+      const parent = nodePath.dirname(current);
+      if (parent === current) break;
+      current = parent;
+    }
+  } catch {
+  }
+  try {
     const out = execFileSync("git", ["-C", dir, "rev-parse", "--show-toplevel"], {
       stdio: ["ignore", "pipe", "ignore"],
       encoding: "utf8"
@@ -347,6 +357,18 @@ function relativeToRepo(repoRoot, absPath) {
   const abs = toPosix(absPath);
   const prefix = root.endsWith("/") ? root : `${root}/`;
   return abs.startsWith(prefix) ? abs.slice(prefix.length) : abs;
+}
+function canonicalizePath(absPath) {
+  try {
+    return toPosix(fs.realpathSync.native(absPath));
+  } catch {
+    try {
+      const dir = toPosix(fs.realpathSync.native(nodePath.dirname(absPath)));
+      return `${dir}/${nodePath.basename(absPath)}`;
+    } catch {
+      return absPath;
+    }
+  }
 }
 function rangesIntersect(a, b) {
   return a.start <= b.end && a.end >= b.start;
@@ -3460,6 +3482,89 @@ var DEFAULT_MAX_ATTRIBUTION_CANDIDATES = 32;
 var SHELL_EXPANSION = /(?:\$|`)/;
 var GLOB_META = /[*?[\]]/;
 var REGEX_META = /[.^$*+?()[\]{}|]/;
+var STATIC_INTENT_COMMANDS = /* @__PURE__ */ new Set([
+  ":",
+  "autopep8",
+  "biome",
+  "black",
+  "bunx",
+  "cat",
+  "cd",
+  "clang-format",
+  "command",
+  "cp",
+  "deno",
+  "doas",
+  "dprint",
+  "echo",
+  "env",
+  "eslint",
+  "false",
+  "git",
+  "gofmt",
+  "goimports",
+  "head",
+  "install",
+  "isort",
+  "make",
+  "mv",
+  "nice",
+  "nl",
+  "node",
+  "nohup",
+  "npm",
+  "npx",
+  "patch",
+  "perl",
+  "pnpm",
+  "prettier",
+  "printf",
+  "rm",
+  "ruff",
+  "rustfmt",
+  "sed",
+  "shfmt",
+  "sudo",
+  "tail",
+  "tee",
+  "terraform",
+  "time",
+  "truncate",
+  "true",
+  "xargs",
+  "yapf",
+  "yarn"
+]);
+var SHELL_INTENT_SYNTAX = /[<>|;&\n(){}$`]/;
+var STATICALLY_SILENT_GIT_SUBCOMMANDS = /* @__PURE__ */ new Set([
+  "add",
+  "branch",
+  "commit",
+  "config",
+  "diff",
+  "fetch",
+  "ls-files",
+  "pull",
+  "push",
+  "remote",
+  "rev-parse",
+  "status",
+  "tag",
+  "worktree"
+]);
+function canCarryStaticIntent(command) {
+  const trimmed = command.trimStart();
+  if (trimmed.length === 0) return false;
+  if (SHELL_INTENT_SYNTAX.test(trimmed)) return true;
+  const firstWord = trimmed.match(/^[^\s]+/)?.[0] ?? "";
+  if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(firstWord)) return true;
+  if (/^python(?:3(?:\.\d+)?)?$/.test(firstWord)) return true;
+  if (firstWord === "git") {
+    const subcommand = trimmed.slice(firstWord.length).trimStart().match(/^[^\s]+/)?.[0] ?? "";
+    if (STATICALLY_SILENT_GIT_SUBCOMMANDS.has(subcommand)) return false;
+  }
+  return STATIC_INTENT_COMMANDS.has(firstWord);
+}
 function unresolved(layer, idiom, reasonCode, detail, fileArg, simpleCommandIndex = 0) {
   return { status: "unresolved", layer, idiom, reasonCode, detail, fileArg, simpleCommandIndex };
 }
@@ -4793,10 +4898,16 @@ function parseCommandLayered(command, options = {}) {
   if (!Number.isSafeInteger(maxCandidates) || maxCandidates < 1) {
     throw new Error("maxCandidates must be a positive safe integer");
   }
-  const python = parsePythonAttribution(command, options);
-  if (python !== null) return python;
-  const node = parseNodeAttribution(command, options);
-  if (node !== null) return node;
+  if (!canCarryStaticIntent(command)) return { resolved: [], unresolved: [], preStateRequests: [] };
+  const trimmed = command.trimStart();
+  if (/^python(?:3(?:\.\d+)?)?\b/.test(trimmed)) {
+    const python = parsePythonAttribution(command, options);
+    if (python !== null) return python;
+  }
+  if (/^node\b/.test(trimmed)) {
+    const node = parseNodeAttribution(command, options);
+    if (node !== null) return node;
+  }
   const loop = command.trim().match(/^for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+([\s\S]*?)\s*;\s*do\s+([\s\S]*?)\s*;\s*done\s*$/);
   if (loop !== null) {
     const [, variable, listSource, body] = loop;
@@ -5475,9 +5586,28 @@ var queryTrackedFiles = (repoRoot, repoRelativePaths) => {
     stdout.split("\0").filter((path) => path.length > 0).map(toPosix)
   );
 };
+var queryIgnoredFiles = (repoRoot, repoRelativePaths) => {
+  if (repoRelativePaths.length === 0) return /* @__PURE__ */ new Set();
+  const input = `${repoRelativePaths.join("\0")}\0`;
+  let stdout;
+  try {
+    stdout = execFileSync4("git", ["-C", repoRoot, "check-ignore", "-z", "--stdin"], {
+      input,
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "ignore"]
+    });
+  } catch (error) {
+    const captured = error.stdout;
+    stdout = typeof captured === "string" ? captured : "";
+  }
+  return new Set(
+    stdout.split("\0").filter((path) => path.length > 0).map(toPosix)
+  );
+};
 function filterTrackedEligibility(candidates, options) {
   const eligible = [];
   const dropped = [];
+  if (candidates.length === 0) return { eligible, dropped, subprocessCount: 0 };
   const cwdRepoRoot = resolveRepoRoot(options.cwd);
   if (cwdRepoRoot === null) {
     return {
@@ -5486,33 +5616,37 @@ function filterTrackedEligibility(candidates, options) {
       subprocessCount: 0
     };
   }
-  const repoByDirectory = /* @__PURE__ */ new Map();
   const inScope = [];
   const spanRoot = resolveSpanRoot(cwdRepoRoot);
   for (const candidate of candidates) {
-    const directory = toPosix(nodePath4.dirname(candidate.absolutePath));
-    let fileRepoRoot = repoByDirectory.get(directory);
-    if (fileRepoRoot === void 0) {
-      fileRepoRoot = resolveRepoRoot(directory);
-      repoByDirectory.set(directory, fileRepoRoot);
-    }
-    if (fileRepoRoot !== cwdRepoRoot) {
+    const canonicalPath = canonicalizePath(candidate.absolutePath);
+    const relativePath = nodePath4.relative(cwdRepoRoot, canonicalPath);
+    if (relativePath === "" || relativePath === ".." || relativePath.startsWith(`..${nodePath4.sep}`) || nodePath4.isAbsolute(relativePath)) {
       dropped.push({ candidate, reason: "outside-repository" });
       continue;
     }
-    const repoRelativePath = relativeToRepo(cwdRepoRoot, candidate.absolutePath);
-    if (isGitIgnored(cwdRepoRoot, repoRelativePath)) {
-      dropped.push({ candidate, reason: "ignored-path" });
-      continue;
-    }
+    const repoRelativePath = toPosix(relativePath);
     if (isInsideSpanRoot(repoRelativePath, spanRoot)) {
       dropped.push({ candidate, reason: "span-metadata-path" });
       continue;
     }
     inScope.push({ candidate, repoRoot: cwdRepoRoot, repoRelativePath });
   }
+  const ignoreQuery = options.queryIgnoredFiles ?? queryIgnoredFiles;
+  let ignored;
+  try {
+    ignored = ignoreQuery(cwdRepoRoot, [...new Set(inScope.map(({ repoRelativePath }) => repoRelativePath))]);
+  } catch {
+    ignored = /* @__PURE__ */ new Set();
+  }
+  const normalizedIgnored = new Set([...ignored].map(toPosix));
+  const eligibleForMembership = inScope.filter(({ candidate, repoRelativePath }) => {
+    if (!normalizedIgnored.has(repoRelativePath)) return true;
+    dropped.push({ candidate, reason: "ignored-path" });
+    return false;
+  });
   const byRepo = /* @__PURE__ */ new Map();
-  for (const scoped of inScope) {
+  for (const scoped of eligibleForMembership) {
     const group = byRepo.get(scoped.repoRoot) ?? [];
     group.push(scoped);
     byRepo.set(scoped.repoRoot, group);
@@ -6099,36 +6233,49 @@ function repoRelArg(filePath, cwd) {
   if (!repoRoot) return null;
   return { repoRoot, relPath: relativeToRepo(repoRoot, filePath) };
 }
-function readSpanStatus(repoRoot) {
-  const spanRoot = resolveSpanRoot(repoRoot);
-  try {
-    return execFileSync5("git", ["-C", repoRoot, "status", "--porcelain", "--", spanRoot], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: DEFAULT_TIMEOUT_MS
-    });
-  } catch {
-    return "";
+function fixOutputModified(stdout) {
+  for (const match of stdout.matchAll(/\((\d+) updated, (\d+) removed\)/g)) {
+    if (Number(match[1]) > 0 || Number(match[2]) > 0) return true;
   }
+  return /\bcollapsed [1-9]\d* duplicate/.test(stdout);
+}
+function memoizedExecutors(base) {
+  const fixes = /* @__PURE__ */ new Map();
+  const lists = /* @__PURE__ */ new Map();
+  const drifts = /* @__PURE__ */ new Map();
+  const whys = /* @__PURE__ */ new Map();
+  const once = (cache, key, run) => {
+    const found = cache.get(key);
+    if (found !== void 0) return found;
+    const pending = run();
+    cache.set(key, pending);
+    return pending;
+  };
+  return {
+    fix: (filePath, cwd) => once(fixes, `${cwd}\0${filePath}`, () => base.fix(filePath, cwd)),
+    list: (filePath, cwd) => once(lists, `${cwd}\0${filePath}`, () => base.list(filePath, cwd)),
+    drift: (args, cwd) => once(drifts, `${cwd}\0${args.join("\0")}`, () => base.drift(args, cwd)),
+    why: (name, cwd) => once(whys, `${cwd}\0${name}`, () => base.why(name, cwd))
+  };
 }
 function createDefaultTouchExecutors(timeoutMs = DEFAULT_TIMEOUT_MS) {
-  return {
+  const executors = {
     fix: async (filePath, cwd) => {
       const resolved = repoRelArg(filePath, cwd);
       if (!resolved) return { modified: false };
-      const before = readSpanStatus(resolved.repoRoot);
+      let out = "";
       try {
-        execFileSync5("git", ["span", "drift", resolved.relPath, "--fix"], {
+        out = execFileSync5("git", ["span", "drift", resolved.relPath, "--fix"], {
           cwd: resolved.repoRoot,
           encoding: "utf8",
           stdio: ["ignore", "pipe", "pipe"],
           timeout: timeoutMs
         });
       } catch (err) {
-        void err;
+        const captured = err.stdout;
+        if (typeof captured === "string") out = captured;
       }
-      const after = readSpanStatus(resolved.repoRoot);
-      return { modified: before !== after };
+      return { modified: fixOutputModified(out) };
     },
     list: async (filePath, cwd) => {
       const resolved = repoRelArg(filePath, cwd);
@@ -6182,13 +6329,15 @@ function createDefaultTouchExecutors(timeoutMs = DEFAULT_TIMEOUT_MS) {
       } catch {
         return null;
       }
-    }
+    },
+    forInvocation: () => memoizedExecutors(executors)
   };
+  return executors;
 }
 
 // src/common/bash-touch.ts
-function bashSpanToTouch(span, sessionId, cwd) {
-  if (!resolveTouchScope(cwd, span.absolutePath)) return null;
+function bashSpanToTouch(span, sessionId, cwd, scopeAlreadyResolved = false) {
+  if (!scopeAlreadyResolved && !resolveTouchScope(cwd, span.absolutePath)) return null;
   switch (span.operation) {
     case "read":
       return {
@@ -6296,7 +6445,7 @@ function joinOfCommand(idx, groups, guardByIndex) {
   }
   return guardByIndex.get(idx)?.join;
 }
-async function runBashTouches(matches, sessionId, cwd, toolResponse, executors, memo, warn = console.warn) {
+async function runBashTouches(matches, sessionId, cwd, toolResponse, executors, memo, warn = console.warn, scopeAlreadyResolved = false) {
   if (bashResponseInterrupted(toolResponse)) return [];
   const exitCode = bashResponseExitCode(toolResponse);
   const resolved = matches.filter((m) => m.status === "resolved");
@@ -6356,7 +6505,7 @@ async function runBashTouches(matches, sessionId, cwd, toolResponse, executors, 
     let deleteCursor = 0;
     const list = [];
     for (const m of spans) {
-      const touch = bashSpanToTouch(m.span, sessionId, cwd);
+      const touch = bashSpanToTouch(m.span, sessionId, cwd, scopeAlreadyResolved);
       const entry = {
         match: m,
         touch,
@@ -6473,6 +6622,7 @@ async function runBashTouches(matches, sessionId, cwd, toolResponse, executors, 
     prevIndex = idx;
   }
   const blocks = [];
+  const invocationExecutors = executors.forInvocation?.() ?? executors;
   for (const idx of commandOrder) {
     if (skipped.has(idx)) continue;
     const list = evals.get(idx);
@@ -6483,7 +6633,7 @@ async function runBashTouches(matches, sessionId, cwd, toolResponse, executors, 
       if (e.outcome === "inconclusive" && e.touch.kind === "write" && e.touch.targetState === "absent") continue;
       if (e.outcome === "inconclusive" && e.touch.kind === "write" && exitCode !== void 0 && exitCode !== 0)
         continue;
-      const output = await runTouchHook(e.touch, executors, memo, probeCache);
+      const output = await runTouchHook(e.touch, invocationExecutors, memo, probeCache);
       if (output.additionalContext) blocks.push(output.additionalContext);
     }
   }
@@ -6491,8 +6641,8 @@ async function runBashTouches(matches, sessionId, cwd, toolResponse, executors, 
 }
 
 // src/common/parse-response.ts
-import { existsSync as existsSync3, statSync as statSync5 } from "node:fs";
-import { dirname as dirname5, join as join5, resolve as resolvePath2, sep } from "node:path";
+import { existsSync as existsSync4, statSync as statSync5 } from "node:fs";
+import { dirname as dirname5, join as join5, resolve as resolvePath2, sep as sep2 } from "node:path";
 var MAX_RESPONSE_SPANS = 50;
 var SEARCH_BINS = /* @__PURE__ */ new Set(["rg", "grep", "egrep", "fgrep"]);
 var VALUE_SHORT_FLAGS = /* @__PURE__ */ new Set(["A", "B", "C", "e", "f", "m", "g", "t", "T"]);
@@ -6650,7 +6800,7 @@ function hasDiffRevPathArg(argv, start, cwd) {
       if (!a.includes("=") && valueFlags.has(a)) i += 1;
       continue;
     }
-    if (a.includes(":") && !existsSync3(resolvePath2(cwd, a))) return true;
+    if (a.includes(":") && !existsSync4(resolvePath2(cwd, a))) return true;
   }
   return false;
 }
@@ -6797,10 +6947,10 @@ function detectLayout(stdout, info, oneFileEligible) {
   if (info.numbered && /^[^:]+$/.test(first)) return "heading";
   return null;
 }
-function parseRecord(line, sep2) {
-  const first = line.indexOf(sep2);
+function parseRecord(line, sep4) {
+  const first = line.indexOf(sep4);
   if (first === -1) return null;
-  const second = line.indexOf(sep2, first + 1);
+  const second = line.indexOf(sep4, first + 1);
   if (second === -1) return null;
   const path = line.slice(0, first);
   const lineToken = line.slice(first + 1, second);
@@ -6899,7 +7049,7 @@ function decodeSearchLayout(layout, stdout, singleFileArg) {
 }
 function insideRoot(abs, roots) {
   for (const root of roots) {
-    if (abs === root || abs.startsWith(root + sep)) return true;
+    if (abs === root || abs.startsWith(root + sep2)) return true;
   }
   return false;
 }
@@ -6913,7 +7063,7 @@ function isFile(abs) {
 function findGitRoot(startDir) {
   let dir = startDir;
   for (; ; ) {
-    if (existsSync3(join5(dir, ".git"))) return dir;
+    if (existsSync4(join5(dir, ".git"))) return dir;
     const parent = dirname5(dir);
     if (parent === dir) return null;
     dir = parent;
@@ -7158,10 +7308,10 @@ function parseResponse(input) {
     if (hasDiffRevPathArg(gated.argv, gated.start, effectiveDir)) return [];
     const repoRoot = findGitRoot(effectiveDir);
     if (repoRoot === null) return [];
-    const relative = diffRelativeBase(gated.argv, gated.start, effectiveDir, repoRoot);
-    if (relative === "unresolvable") return [];
-    const base2 = relative !== null ? relative.base : repoRoot;
-    const roots2 = relative !== null ? [relative.root] : [repoRoot];
+    const relative3 = diffRelativeBase(gated.argv, gated.start, effectiveDir, repoRoot);
+    if (relative3 === "unresolvable") return [];
+    const base2 = relative3 !== null ? relative3.base : repoRoot;
+    const roots2 = relative3 !== null ? [relative3.root] : [repoRoot];
     return capSpans(spansFor(decodeUnifiedDiff(stdout), base2, roots2));
   }
   const info = analyzeSearchArgv(gated.argv, gated.start);
@@ -7314,8 +7464,7 @@ function planBashTouches(command, cwd, sessionId, toolUseId, logger2, store) {
     candidates.map((value) => ({ absolutePath: value.span.absolutePath, value })),
     { cwd }
   );
-  const repoRoot = resolveRepoRoot(cwd);
-  if (repoRoot === null || tracked.eligible.length === 0) {
+  if (tracked.eligible.length === 0) {
     logger2.info?.("git-span static attribution pre-plan", {
       resolved: parsed.resolved.length,
       unresolved: parsed.unresolved.length,
@@ -7326,6 +7475,8 @@ function planBashTouches(command, cwd, sessionId, toolUseId, logger2, store) {
     });
     return;
   }
+  const repoRoot = resolveRepoRoot(cwd);
+  if (repoRoot === null) return;
   const groups = /* @__PURE__ */ new Map();
   for (const { value } of tracked.eligible) {
     const key = planGroupKey(value.span);
@@ -7361,11 +7512,12 @@ function planBashTouches(command, cwd, sessionId, toolUseId, logger2, store) {
 }
 function plannedSpans(record, cwd, logger2) {
   if (record === null) return [];
-  const repoRoot = resolveRepoRoot(cwd);
-  if (repoRoot === null || toPosix(repoRoot) !== toPosix(record.repoRoot)) {
+  const relativeCwd = nodePath5.relative(record.repoRoot, cwd);
+  const cwdInsidePlannedRepo = relativeCwd === "" || relativeCwd !== ".." && !relativeCwd.startsWith(`..${nodePath5.sep}`) && !nodePath5.isAbsolute(relativeCwd);
+  if (!cwdInsidePlannedRepo) {
     logger2.warn("git-span static attribution ignored an incompatible planned-touch record", {
       plannedRepoRoot: record.repoRoot,
-      currentRepoRoot: repoRoot
+      currentCwd: cwd
     });
     return [];
   }
@@ -7410,7 +7562,7 @@ function matchKey(match) {
     "\0"
   );
 }
-function filterPostTracked(matches, responseSpans, cwd, preTrackedDeletes) {
+function filterPostTracked(matches, responseSpans, cwd, preTrackedPaths, preTrackedDeletes) {
   const guards = matches.filter(
     (match) => match.status === "builtin-guard"
   );
@@ -7421,8 +7573,11 @@ function filterPostTracked(matches, responseSpans, cwd, preTrackedDeletes) {
     ...resolved.map((match) => ({ source: "command", match })),
     ...responseSpans.map((span) => ({ source: "response", span }))
   ];
+  const preEligibleCommands = resolved.filter((match) => preTrackedPaths.has(match.span.absolutePath));
+  const preEligibleSet = new Set(preEligibleCommands);
+  const postCandidates = candidates.filter((value) => value.source === "response" || !preEligibleSet.has(value.match));
   const filtered = filterTrackedEligibility(
-    candidates.map((value) => ({
+    postCandidates.map((value) => ({
       absolutePath: value.source === "command" ? value.match.span.absolutePath : value.span.absolutePath,
       value
     })),
@@ -7431,6 +7586,7 @@ function filterPostTracked(matches, responseSpans, cwd, preTrackedDeletes) {
   const eligibleCommands = new Set(
     filtered.eligible.flatMap(({ value }) => value.source === "command" ? [value.match] : [])
   );
+  for (const match of preEligibleCommands) eligibleCommands.add(match);
   const eligibleResponses = filtered.eligible.flatMap(({ value }) => value.source === "response" ? [value.span] : []);
   for (const match of resolved) {
     if (match.span.operation === "delete" && preTrackedDeletes.has(match.span.absolutePath))
@@ -7469,17 +7625,17 @@ async function runLayeredBashTouches(command, cwd, sessionId, toolUseId, toolRes
   const record = toolUseId === void 0 ? null : store.consume(sessionId, toolUseId);
   const planned = plannedSpans(record, cwd, logger2);
   const parsed = parseCommandLayered(command, { cwd, readPreState: readText });
-  const plannedKeys = new Set(
-    planned.filter((match) => match.status === "resolved").map(({ span }) => planGroupKey(span))
-  );
   const preStateKeys = new Set(parsed.preStateRequests.map((request) => planGroupKey(request)));
-  const ordinary = parsed.resolved.filter(({ span }) => !preStateKeys.has(planGroupKey(span)) || plannedKeys.has(planGroupKey(span))).map(({ idiom, span }) => ({ status: "resolved", idiom, span }));
-  const detailed = parseCommandDetailed(command, { cwd });
-  const joinByIndex = new Map(
-    detailed.flatMap(
+  const ordinary = parsed.resolved.filter(({ span }) => !preStateKeys.has(planGroupKey(span))).map(({ idiom, span }) => ({ status: "resolved", idiom, span }));
+  const detailed = /&&|\|\|/.test(command) ? parseCommandDetailed(command, { cwd }) : [];
+  const joinByIndex = new Map([
+    ...parsed.resolved.flatMap(
+      ({ span }) => span.join === void 0 ? [] : [[span.simpleCommandIndex, span.join]]
+    ),
+    ...detailed.flatMap(
       (match) => match.status === "resolved" && match.span.join !== void 0 ? [[match.span.simpleCommandIndex, match.span.join]] : []
     )
-  );
+  ]);
   for (const match of planned) {
     if (match.status === "resolved") match.span.join = joinByIndex.get(match.span.simpleCommandIndex);
   }
@@ -7500,9 +7656,12 @@ async function runLayeredBashTouches(command, cwd, sessionId, toolUseId, toolRes
   const preTrackedDeletes = new Set(
     (record?.touches ?? []).filter(({ operation, evidence }) => operation === "delete" && evidence?.kind === "tracked").map(({ repoRelativePath }) => nodePath5.join(record.repoRoot, repoRelativePath))
   );
+  const preTrackedPaths = new Set(
+    (record?.touches ?? []).map(({ repoRelativePath }) => nodePath5.join(record.repoRoot, repoRelativePath))
+  );
   const response = bashResponseInterrupted(toolResponse) ? null : normalizeBashResponse(toolResponse);
   const responseSpans = response === null ? [] : parseResponse({ command, cwd, ...response });
-  const filtered = filterPostTracked(combined, responseSpans, cwd, preTrackedDeletes);
+  const filtered = filterPostTracked(combined, responseSpans, cwd, preTrackedPaths, preTrackedDeletes);
   const parserLatencyMs = performance.now() - parserStarted;
   const touchStarted = performance.now();
   const commandBlocks = await runBashTouches(
@@ -7512,7 +7671,8 @@ async function runLayeredBashTouches(command, cwd, sessionId, toolUseId, toolRes
     toolResponse,
     executors,
     memo,
-    (message) => logger2.warn(message)
+    (message) => logger2.warn(message),
+    true
   );
   const responseBlocks = await runResponseReadTouches(filtered.responseSpans, cwd, sessionId, executors, memo);
   const blocks = [...commandBlocks, ...responseBlocks];

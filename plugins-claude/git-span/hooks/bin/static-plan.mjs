@@ -561,6 +561,16 @@ function toPosix(p) {
 function resolveRepoRoot(dir) {
   if (!dir) return null;
   try {
+    let current = fs2.realpathSync.native(dir);
+    for (; ; ) {
+      if (fs2.existsSync(nodePath.join(current, ".git"))) return toPosix(current);
+      const parent = nodePath.dirname(current);
+      if (parent === current) break;
+      current = parent;
+    }
+  } catch {
+  }
+  try {
     const out = execFileSync("git", ["-C", dir, "rev-parse", "--show-toplevel"], {
       stdio: ["ignore", "pipe", "ignore"],
       encoding: "utf8"
@@ -592,21 +602,23 @@ function isInsideSpanRoot(repoRelPath, spanRoot = SPAN_ROOT) {
   const root = spanRoot.replace(/\/+$/, "");
   return repoRelPath === root || repoRelPath.startsWith(`${root}/`);
 }
-function isGitIgnored(repoRoot, repoRelPath) {
-  try {
-    execFileSync("git", ["-C", repoRoot, "check-ignore", "-q", "--", repoRelPath], {
-      stdio: ["ignore", "ignore", "ignore"]
-    });
-    return true;
-  } catch (err) {
-    return false;
-  }
-}
 function relativeToRepo(repoRoot, absPath) {
   const root = toPosix(repoRoot);
   const abs = toPosix(absPath);
   const prefix = root.endsWith("/") ? root : `${root}/`;
   return abs.startsWith(prefix) ? abs.slice(prefix.length) : abs;
+}
+function canonicalizePath(absPath) {
+  try {
+    return toPosix(fs2.realpathSync.native(absPath));
+  } catch {
+    try {
+      const dir = toPosix(fs2.realpathSync.native(nodePath.dirname(absPath)));
+      return `${dir}/${nodePath.basename(absPath)}`;
+    } catch {
+      return absPath;
+    }
+  }
 }
 var PORCELAIN_STATUSES = [
   "FRESH",
@@ -3496,6 +3508,89 @@ var DEFAULT_MAX_ATTRIBUTION_CANDIDATES = 32;
 var SHELL_EXPANSION = /(?:\$|`)/;
 var GLOB_META = /[*?[\]]/;
 var REGEX_META = /[.^$*+?()[\]{}|]/;
+var STATIC_INTENT_COMMANDS = /* @__PURE__ */ new Set([
+  ":",
+  "autopep8",
+  "biome",
+  "black",
+  "bunx",
+  "cat",
+  "cd",
+  "clang-format",
+  "command",
+  "cp",
+  "deno",
+  "doas",
+  "dprint",
+  "echo",
+  "env",
+  "eslint",
+  "false",
+  "git",
+  "gofmt",
+  "goimports",
+  "head",
+  "install",
+  "isort",
+  "make",
+  "mv",
+  "nice",
+  "nl",
+  "node",
+  "nohup",
+  "npm",
+  "npx",
+  "patch",
+  "perl",
+  "pnpm",
+  "prettier",
+  "printf",
+  "rm",
+  "ruff",
+  "rustfmt",
+  "sed",
+  "shfmt",
+  "sudo",
+  "tail",
+  "tee",
+  "terraform",
+  "time",
+  "truncate",
+  "true",
+  "xargs",
+  "yapf",
+  "yarn"
+]);
+var SHELL_INTENT_SYNTAX = /[<>|;&\n(){}$`]/;
+var STATICALLY_SILENT_GIT_SUBCOMMANDS = /* @__PURE__ */ new Set([
+  "add",
+  "branch",
+  "commit",
+  "config",
+  "diff",
+  "fetch",
+  "ls-files",
+  "pull",
+  "push",
+  "remote",
+  "rev-parse",
+  "status",
+  "tag",
+  "worktree"
+]);
+function canCarryStaticIntent(command) {
+  const trimmed = command.trimStart();
+  if (trimmed.length === 0) return false;
+  if (SHELL_INTENT_SYNTAX.test(trimmed)) return true;
+  const firstWord = trimmed.match(/^[^\s]+/)?.[0] ?? "";
+  if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(firstWord)) return true;
+  if (/^python(?:3(?:\.\d+)?)?$/.test(firstWord)) return true;
+  if (firstWord === "git") {
+    const subcommand = trimmed.slice(firstWord.length).trimStart().match(/^[^\s]+/)?.[0] ?? "";
+    if (STATICALLY_SILENT_GIT_SUBCOMMANDS.has(subcommand)) return false;
+  }
+  return STATIC_INTENT_COMMANDS.has(firstWord);
+}
 function unresolved(layer, idiom, reasonCode, detail, fileArg, simpleCommandIndex = 0) {
   return { status: "unresolved", layer, idiom, reasonCode, detail, fileArg, simpleCommandIndex };
 }
@@ -4829,10 +4924,16 @@ function parseCommandLayered(command, options = {}) {
   if (!Number.isSafeInteger(maxCandidates) || maxCandidates < 1) {
     throw new Error("maxCandidates must be a positive safe integer");
   }
-  const python = parsePythonAttribution(command, options);
-  if (python !== null) return python;
-  const node = parseNodeAttribution(command, options);
-  if (node !== null) return node;
+  if (!canCarryStaticIntent(command)) return { resolved: [], unresolved: [], preStateRequests: [] };
+  const trimmed = command.trimStart();
+  if (/^python(?:3(?:\.\d+)?)?\b/.test(trimmed)) {
+    const python = parsePythonAttribution(command, options);
+    if (python !== null) return python;
+  }
+  if (/^node\b/.test(trimmed)) {
+    const node = parseNodeAttribution(command, options);
+    if (node !== null) return node;
+  }
   const loop = command.trim().match(/^for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+([\s\S]*?)\s*;\s*do\s+([\s\S]*?)\s*;\s*done\s*$/);
   if (loop !== null) {
     const [, variable, listSource, body] = loop;
@@ -5511,9 +5612,28 @@ var queryTrackedFiles = (repoRoot, repoRelativePaths) => {
     stdout.split("\0").filter((path) => path.length > 0).map(toPosix)
   );
 };
+var queryIgnoredFiles = (repoRoot, repoRelativePaths) => {
+  if (repoRelativePaths.length === 0) return /* @__PURE__ */ new Set();
+  const input = `${repoRelativePaths.join("\0")}\0`;
+  let stdout;
+  try {
+    stdout = execFileSync4("git", ["-C", repoRoot, "check-ignore", "-z", "--stdin"], {
+      input,
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "ignore"]
+    });
+  } catch (error) {
+    const captured = error.stdout;
+    stdout = typeof captured === "string" ? captured : "";
+  }
+  return new Set(
+    stdout.split("\0").filter((path) => path.length > 0).map(toPosix)
+  );
+};
 function filterTrackedEligibility(candidates, options) {
   const eligible = [];
   const dropped = [];
+  if (candidates.length === 0) return { eligible, dropped, subprocessCount: 0 };
   const cwdRepoRoot = resolveRepoRoot(options.cwd);
   if (cwdRepoRoot === null) {
     return {
@@ -5522,33 +5642,37 @@ function filterTrackedEligibility(candidates, options) {
       subprocessCount: 0
     };
   }
-  const repoByDirectory = /* @__PURE__ */ new Map();
   const inScope = [];
   const spanRoot = resolveSpanRoot(cwdRepoRoot);
   for (const candidate of candidates) {
-    const directory = toPosix(nodePath4.dirname(candidate.absolutePath));
-    let fileRepoRoot = repoByDirectory.get(directory);
-    if (fileRepoRoot === void 0) {
-      fileRepoRoot = resolveRepoRoot(directory);
-      repoByDirectory.set(directory, fileRepoRoot);
-    }
-    if (fileRepoRoot !== cwdRepoRoot) {
+    const canonicalPath = canonicalizePath(candidate.absolutePath);
+    const relativePath = nodePath4.relative(cwdRepoRoot, canonicalPath);
+    if (relativePath === "" || relativePath === ".." || relativePath.startsWith(`..${nodePath4.sep}`) || nodePath4.isAbsolute(relativePath)) {
       dropped.push({ candidate, reason: "outside-repository" });
       continue;
     }
-    const repoRelativePath = relativeToRepo(cwdRepoRoot, candidate.absolutePath);
-    if (isGitIgnored(cwdRepoRoot, repoRelativePath)) {
-      dropped.push({ candidate, reason: "ignored-path" });
-      continue;
-    }
+    const repoRelativePath = toPosix(relativePath);
     if (isInsideSpanRoot(repoRelativePath, spanRoot)) {
       dropped.push({ candidate, reason: "span-metadata-path" });
       continue;
     }
     inScope.push({ candidate, repoRoot: cwdRepoRoot, repoRelativePath });
   }
+  const ignoreQuery = options.queryIgnoredFiles ?? queryIgnoredFiles;
+  let ignored;
+  try {
+    ignored = ignoreQuery(cwdRepoRoot, [...new Set(inScope.map(({ repoRelativePath }) => repoRelativePath))]);
+  } catch {
+    ignored = /* @__PURE__ */ new Set();
+  }
+  const normalizedIgnored = new Set([...ignored].map(toPosix));
+  const eligibleForMembership = inScope.filter(({ candidate, repoRelativePath }) => {
+    if (!normalizedIgnored.has(repoRelativePath)) return true;
+    dropped.push({ candidate, reason: "ignored-path" });
+    return false;
+  });
   const byRepo = /* @__PURE__ */ new Map();
-  for (const scoped of inScope) {
+  for (const scoped of eligibleForMembership) {
     const group = byRepo.get(scoped.repoRoot) ?? [];
     group.push(scoped);
     byRepo.set(scoped.repoRoot, group);
@@ -5582,8 +5706,8 @@ import * as fs6 from "node:fs";
 import { basename as basename4, join as join4 } from "node:path";
 
 // src/common/parse-response.ts
-import { existsSync as existsSync3, statSync as statSync5 } from "node:fs";
-import { dirname as dirname5, join as join5, resolve as resolvePath2, sep } from "node:path";
+import { existsSync as existsSync4, statSync as statSync5 } from "node:fs";
+import { dirname as dirname5, join as join5, resolve as resolvePath2, sep as sep2 } from "node:path";
 
 // src/common/bash-attribution.ts
 function createDefaultPlannedTouchStore(layout) {
@@ -5648,8 +5772,7 @@ function planBashTouches(command, cwd, sessionId, toolUseId, logger2, store) {
     candidates.map((value) => ({ absolutePath: value.span.absolutePath, value })),
     { cwd }
   );
-  const repoRoot = resolveRepoRoot(cwd);
-  if (repoRoot === null || tracked.eligible.length === 0) {
+  if (tracked.eligible.length === 0) {
     logger2.info?.("git-span static attribution pre-plan", {
       resolved: parsed.resolved.length,
       unresolved: parsed.unresolved.length,
@@ -5660,6 +5783,8 @@ function planBashTouches(command, cwd, sessionId, toolUseId, logger2, store) {
     });
     return;
   }
+  const repoRoot = resolveRepoRoot(cwd);
+  if (repoRoot === null) return;
   const groups = /* @__PURE__ */ new Map();
   for (const { value } of tracked.eligible) {
     const key = planGroupKey(value.span);

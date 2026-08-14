@@ -27,7 +27,8 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { dirname, resolve } from 'node:path';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { normalizeModuleComments } from './normalize-hook-module-comments.js';
 
@@ -45,6 +46,77 @@ function findOutputPath(cliArgs) {
     }
   }
   return undefined;
+}
+
+function findInputPath(cliArgs) {
+  for (let i = 0; i < cliArgs.length; i += 1) {
+    const arg = cliArgs[i];
+    if (arg === '-i' || arg === '--input') {
+      return cliArgs[i + 1];
+    }
+    if (arg.startsWith('--input=')) {
+      return arg.slice('--input='.length);
+    }
+    if (arg.startsWith('-i=')) {
+      return arg.slice('-i='.length);
+    }
+  }
+  return undefined;
+}
+
+function declaredBundleOrder(inputArg) {
+  if (inputArg === undefined) return [];
+  const brace = inputArg.match(/\{([^{}]+)\}/);
+  const paths =
+    brace === null
+      ? [inputArg]
+      : brace[1]
+          .split(',')
+          .map((part) => `${inputArg.slice(0, brace.index)}${part}${inputArg.slice(brace.index + brace[0].length)}`);
+  return paths.map((path) => basename(path).replace(/\.[^.]+$/, ''));
+}
+
+function commandBundle(command) {
+  return command.match(/([A-Za-z0-9-]+)\.mjs\b/)?.[1];
+}
+
+function canonicalizeHookManifest(outputPath, inputArg) {
+  const manifest = JSON.parse(readFileSync(outputPath, 'utf8'));
+  const declared = declaredBundleOrder(inputArg);
+  const rankByBundle = new Map(declared.map((bundle, index) => [bundle, index]));
+  const rankOfCommand = (command) => rankByBundle.get(commandBundle(command)) ?? Number.MAX_SAFE_INTEGER;
+  const rankOfGroup = (group) => Math.min(...(group.hooks ?? []).map((hook) => rankOfCommand(hook.command)));
+  const compareGroups = (left, right) => {
+    const rank = rankOfGroup(left) - rankOfGroup(right);
+    if (rank !== 0) return rank;
+    return JSON.stringify(left).localeCompare(JSON.stringify(right));
+  };
+
+  const hookEntries = Object.entries(manifest.hooks ?? {});
+  for (const [, groups] of hookEntries) {
+    for (const group of groups) {
+      group.hooks?.sort((left, right) => {
+        const rank = rankOfCommand(left.command) - rankOfCommand(right.command);
+        return rank !== 0 ? rank : left.command.localeCompare(right.command);
+      });
+    }
+    groups.sort(compareGroups);
+  }
+  hookEntries.sort(([leftEvent, leftGroups], [rightEvent, rightGroups]) => {
+    const leftRank = Math.min(...leftGroups.map(rankOfGroup));
+    const rightRank = Math.min(...rightGroups.map(rankOfGroup));
+    return leftRank !== rightRank ? leftRank - rightRank : leftEvent.localeCompare(rightEvent);
+  });
+  manifest.hooks = Object.fromEntries(hookEntries);
+
+  if (Array.isArray(manifest.__generated?.files)) {
+    manifest.__generated.files.sort((left, right) => {
+      const leftRank = rankByBundle.get(left.replace(/\.mjs$/, '')) ?? Number.MAX_SAFE_INTEGER;
+      const rightRank = rankByBundle.get(right.replace(/\.mjs$/, '')) ?? Number.MAX_SAFE_INTEGER;
+      return leftRank !== rightRank ? leftRank - rightRank : left.localeCompare(right);
+    });
+  }
+  writeFileSync(outputPath, `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
 async function main() {
@@ -76,6 +148,7 @@ async function main() {
   }
   const outputDir = dirname(resolve(process.cwd(), outputArg));
   normalizeModuleComments([outputDir]);
+  canonicalizeHookManifest(resolve(process.cwd(), outputArg), findInputPath(cliArgs));
 }
 
 main().catch((error) => {

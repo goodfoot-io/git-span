@@ -1,12 +1,12 @@
 ---
 title: Running the git-span benchmarks
-summary: How to compile-check, run, and interpret the git-span performance benchmarks — the real-corpus scoreboard with its byte-identical correctness oracle, the in-process warm-drift SLA gate, the synthetic size-sweep and its deterministic corpus generator, the one active SQLite store and its single GIT_SPAN_CACHE=0 disable switch, the quota/GC/diagnostics surface, and the perf-baseline.json no-regression rule — plus how they relate to the GIT_SPAN_PERF profiling tools.
-aliases: [git-span benchmarks, bench:check, yarn bench, size sweep, perf-baseline, real_corpus]
+summary: How to compile-check, run, and interpret the git-span and static-attribution performance benchmarks — the real-corpus scoreboard, hook parser/corpus and emitted-bundle harness, warm-drift SLA, size sweep, cache controls, and profiling tools.
+aliases: [git-span benchmarks, bench:check, yarn bench, size sweep, perf-baseline, real_corpus, static attribution benchmark]
 ---
 
 # Running the git-span benchmarks
 
-git-span ships three benchmark surfaces, all under [packages/git-span/benches](../../packages/git-span/benches), plus a deterministic corpus generator. They are **standalone commands, deliberately kept out of `yarn validate`**: timed benchmarks on a shared devcontainer would flake and block unrelated work, so the validation lane carries none of them. Run them on demand or in a dedicated CI job.
+git-span ships three Rust benchmark surfaces under [packages/git-span/benches](../../packages/git-span/benches), plus the agent-hook static-attribution benchmark under [packages/agent-hooks/scripts](../../packages/agent-hooks/scripts). They are **standalone commands, deliberately kept out of `yarn validate`**: timed benchmarks on a shared devcontainer would flake and block unrelated work, so the validation lane carries none of them. Run them on demand or in a dedicated CI job.
 
 The guiding invariant across every benchmark: **an optimized command must never change its output**. A faster run that diverges from a genuinely cache-disabled run is a regression, not a win — so every measured cell is guarded by a byte-identical oracle before any number is trusted.
 
@@ -17,8 +17,33 @@ The guiding invariant across every benchmark: **an optimized command must never 
 | `yarn bench:check` | Compiles every bench + the feature-gated targets (`cargo bench --no-run --locked --features bench-corpus`). The anti-rot guard. | no |
 | `yarn bench` | Runs the real-corpus scoreboard ([real_corpus.rs](../../packages/git-span/benches/real_corpus.rs)) + the in-process warm/cold benches ([drift_warm.rs](../../packages/git-span/benches/drift_warm.rs), [drift_head_only.rs](../../packages/git-span/benches/drift_head_only.rs)). | yes |
 | `cargo bench --bench size_sweep --features bench-corpus` | Runs the synthetic scaling sweep ([size_sweep.rs](../../packages/git-span/benches/size_sweep.rs)). Slow (up to 2000 spans). | yes |
+| `cd packages/agent-hooks && yarn bench:static` | Checks the shared static-attribution corpus, times parser cells, builds the emitted Claude hooks, and times real Pre/Post hook lifecycles in small and large Git repositories. | yes |
 
 Both scripts live in [packages/git-span/package.json](../../packages/git-span/package.json) and route through [scripts/with-target-lock.sh](../../packages/git-span/scripts/with-target-lock.sh) into the shared `build` cargo target group, so they serialize against sibling-worktree builds rather than corrupting them.
+
+## `yarn bench:static` — parser and emitted-hook attribution
+
+Run the deterministic harness from the agent-hooks package:
+
+```bash
+cd packages/agent-hooks
+yarn bench:static --output /tmp/static-attribution.json
+```
+
+The entry point in [run-static-attribution-benchmark.js](../../packages/agent-hooks/scripts/run-static-attribution-benchmark.js) bundles [static-attribution-benchmark.ts](../../packages/agent-hooks/scripts/static-attribution-benchmark.ts) exactly as the shipped hook build does. Its parser cells import the same [static-attribution corpus](../../packages/agent-hooks/test/common/fixtures/static-attribution-corpus.ts) as Vitest. Before timing, the harness fails if resolved operations, refusal reasons, pre-state requirements, per-layer recall, or conservative range breadth differ from that corpus.
+
+The emitted-bundle cells use the workspace `git-span` executable in real temporary repositories: 16 tracked files for the small fixture, 1,500 by default for the large fixture, plus one- and four-candidate writes and a no-intent rejection cell. Post cells include rendered dependency context. A tracked Post measurement is the complete lifecycle needed to produce it — paired Pre plan, simulated write, and Post hook — and its process counter covers both hook processes and every `git`/`git span` child. The first invocation is reported separately as natural cold (filesystem and operating-system caches are not forcibly dropped); discarded warmups and every raw measured sample remain in the JSON. Percentiles use nearest rank.
+
+Tune the policy without editing the harness:
+
+```bash
+yarn bench:static \
+  --parser-warmups 10 --parser-samples 80 \
+  --bundle-warmups 3 --bundle-samples 20 \
+  --large-files 1500 --output /tmp/static-attribution.json
+```
+
+The three measured optimization checkpoints that introduced the harness are recorded in [round 1](./static-attribution-benchmark-round-1.md), [round 2](./static-attribution-benchmark-round-2.md), and [round 3](./static-attribution-benchmark-round-3.md). Round 3 is intentionally explicit that the full rendered tracked-Post path remains above 100 ms: a benchmark report is evidence, not a place to convert an unmet latency objective into a success by changing the boundary after measuring it.
 
 ## `yarn bench:check` — the rot guard
 

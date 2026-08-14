@@ -9,11 +9,10 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as nodePath from 'node:path';
 import {
-  isGitIgnored,
+  canonicalizePath,
   isInsideSpanRoot,
   type LineRange,
   pruneStaleSessions,
-  relativeToRepo,
   resolveRepoRoot,
   resolveSpanRoot,
   type SessionLayout,
@@ -120,6 +119,103 @@ interface PatternCommand {
 const SHELL_EXPANSION = /(?:\$|`)/;
 const GLOB_META = /[*?[\]]/;
 const REGEX_META = /[.^$*+?()[\]{}|]/;
+
+/**
+ * Direct command words understood by at least one static layer. Commands
+ * outside this set need the shell parser only when they carry shell control
+ * or redirection syntax; a plain `cargo test`/`rg`/`git status`-style command
+ * can return the empty parse without allocating the full shell grammar.
+ */
+const STATIC_INTENT_COMMANDS: ReadonlySet<string> = new Set([
+  ':',
+  'autopep8',
+  'biome',
+  'black',
+  'bunx',
+  'cat',
+  'cd',
+  'clang-format',
+  'command',
+  'cp',
+  'deno',
+  'doas',
+  'dprint',
+  'echo',
+  'env',
+  'eslint',
+  'false',
+  'git',
+  'gofmt',
+  'goimports',
+  'head',
+  'install',
+  'isort',
+  'make',
+  'mv',
+  'nice',
+  'nl',
+  'node',
+  'nohup',
+  'npm',
+  'npx',
+  'patch',
+  'perl',
+  'pnpm',
+  'prettier',
+  'printf',
+  'rm',
+  'ruff',
+  'rustfmt',
+  'sed',
+  'shfmt',
+  'sudo',
+  'tail',
+  'tee',
+  'terraform',
+  'time',
+  'truncate',
+  'true',
+  'xargs',
+  'yapf',
+  'yarn'
+]);
+
+const SHELL_INTENT_SYNTAX = /[<>|;&\n(){}$`]/;
+const STATICALLY_SILENT_GIT_SUBCOMMANDS: ReadonlySet<string> = new Set([
+  'add',
+  'branch',
+  'commit',
+  'config',
+  'diff',
+  'fetch',
+  'ls-files',
+  'pull',
+  'push',
+  'remote',
+  'rev-parse',
+  'status',
+  'tag',
+  'worktree'
+]);
+
+/** Cheap negative sentinel; false means every recognizer is provably irrelevant. */
+function canCarryStaticIntent(command: string): boolean {
+  const trimmed = command.trimStart();
+  if (trimmed.length === 0) return false;
+  if (SHELL_INTENT_SYNTAX.test(trimmed)) return true;
+  const firstWord = trimmed.match(/^[^\s]+/)?.[0] ?? '';
+  if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(firstWord)) return true;
+  if (/^python(?:3(?:\.\d+)?)?$/.test(firstWord)) return true;
+  if (firstWord === 'git') {
+    const subcommand =
+      trimmed
+        .slice(firstWord.length)
+        .trimStart()
+        .match(/^[^\s]+/)?.[0] ?? '';
+    if (STATICALLY_SILENT_GIT_SUBCOMMANDS.has(subcommand)) return false;
+  }
+  return STATIC_INTENT_COMMANDS.has(firstWord);
+}
 
 function unresolved(
   layer: AttributionLayer,
@@ -1673,12 +1769,19 @@ export function parseCommandLayered(command: string, options: LayeredParseOption
     throw new Error('maxCandidates must be a positive safe integer');
   }
 
+  if (!canCarryStaticIntent(command)) return { resolved: [], unresolved: [], preStateRequests: [] };
+
   // Cheap interpreter sentinel precedes the bounded Python lexical/dataflow
   // recognizer, keeping ordinary Bash commands on the existing fast path.
-  const python = parsePythonAttribution(command, options);
-  if (python !== null) return python;
-  const node = parseNodeAttribution(command, options);
-  if (node !== null) return node;
+  const trimmed = command.trimStart();
+  if (/^python(?:3(?:\.\d+)?)?\b/.test(trimmed)) {
+    const python = parsePythonAttribution(command, options);
+    if (python !== null) return python;
+  }
+  if (/^node\b/.test(trimmed)) {
+    const node = parseNodeAttribution(command, options);
+    if (node !== null) return node;
+  }
 
   const loop = command
     .trim()
@@ -2558,9 +2661,13 @@ export interface TrackedEligibilityResult<T> {
 /** Executes one NUL-delimited tracked-membership query for a repository. */
 export type TrackedFilesQuery = (repoRoot: string, repoRelativePaths: readonly string[]) => ReadonlySet<string>;
 
+/** Executes one NUL-delimited ignore query for the invocation's candidate set. */
+export type IgnoredFilesQuery = (repoRoot: string, repoRelativePaths: readonly string[]) => ReadonlySet<string>;
+
 export interface TrackedEligibilityOptions {
   readonly cwd: string;
   readonly queryTrackedFiles?: TrackedFilesQuery;
+  readonly queryIgnoredFiles?: IgnoredFilesQuery;
 }
 
 /** Query the index without consulting the working tree or untracked files. */
@@ -2578,6 +2685,29 @@ export const queryTrackedFiles: TrackedFilesQuery = (repoRoot, repoRelativePaths
   );
 };
 
+/** Query ignore rules once for the complete candidate set. */
+export const queryIgnoredFiles: IgnoredFilesQuery = (repoRoot, repoRelativePaths) => {
+  if (repoRelativePaths.length === 0) return new Set();
+  const input = `${repoRelativePaths.join('\0')}\0`;
+  let stdout: string;
+  try {
+    stdout = execFileSync('git', ['-C', repoRoot, 'check-ignore', '-z', '--stdin'], {
+      input,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'ignore']
+    });
+  } catch (error) {
+    const captured = (error as { stdout?: string }).stdout;
+    stdout = typeof captured === 'string' ? captured : '';
+  }
+  return new Set(
+    stdout
+      .split('\0')
+      .filter((path) => path.length > 0)
+      .map(toPosix)
+  );
+};
+
 /** Filter all candidates in repository batches, preserving their original payloads and order. */
 export function filterTrackedEligibility<T>(
   candidates: readonly TrackedEligibilityCandidate<T>[],
@@ -2585,6 +2715,7 @@ export function filterTrackedEligibility<T>(
 ): TrackedEligibilityResult<T> {
   const eligible: TrackedEligibilityCandidate<T>[] = [];
   const dropped: TrackedEligibilityDrop<T>[] = [];
+  if (candidates.length === 0) return { eligible, dropped, subprocessCount: 0 };
   const cwdRepoRoot = resolveRepoRoot(options.cwd);
   if (cwdRepoRoot === null) {
     return {
@@ -2594,25 +2725,21 @@ export function filterTrackedEligibility<T>(
     };
   }
 
-  const repoByDirectory = new Map<string, string | null>();
   const inScope: Array<{ candidate: TrackedEligibilityCandidate<T>; repoRoot: string; repoRelativePath: string }> = [];
   const spanRoot = resolveSpanRoot(cwdRepoRoot);
   for (const candidate of candidates) {
-    const directory = toPosix(nodePath.dirname(candidate.absolutePath));
-    let fileRepoRoot = repoByDirectory.get(directory);
-    if (fileRepoRoot === undefined) {
-      fileRepoRoot = resolveRepoRoot(directory);
-      repoByDirectory.set(directory, fileRepoRoot);
-    }
-    if (fileRepoRoot !== cwdRepoRoot) {
+    const canonicalPath = canonicalizePath(candidate.absolutePath);
+    const relativePath = nodePath.relative(cwdRepoRoot, canonicalPath);
+    if (
+      relativePath === '' ||
+      relativePath === '..' ||
+      relativePath.startsWith(`..${nodePath.sep}`) ||
+      nodePath.isAbsolute(relativePath)
+    ) {
       dropped.push({ candidate, reason: 'outside-repository' });
       continue;
     }
-    const repoRelativePath = relativeToRepo(cwdRepoRoot, candidate.absolutePath);
-    if (isGitIgnored(cwdRepoRoot, repoRelativePath)) {
-      dropped.push({ candidate, reason: 'ignored-path' });
-      continue;
-    }
+    const repoRelativePath = toPosix(relativePath);
     if (isInsideSpanRoot(repoRelativePath, spanRoot)) {
       dropped.push({ candidate, reason: 'span-metadata-path' });
       continue;
@@ -2620,8 +2747,22 @@ export function filterTrackedEligibility<T>(
     inScope.push({ candidate, repoRoot: cwdRepoRoot, repoRelativePath });
   }
 
+  const ignoreQuery = options.queryIgnoredFiles ?? queryIgnoredFiles;
+  let ignored: ReadonlySet<string>;
+  try {
+    ignored = ignoreQuery(cwdRepoRoot, [...new Set(inScope.map(({ repoRelativePath }) => repoRelativePath))]);
+  } catch {
+    ignored = new Set();
+  }
+  const normalizedIgnored = new Set([...ignored].map(toPosix));
+  const eligibleForMembership = inScope.filter(({ candidate, repoRelativePath }) => {
+    if (!normalizedIgnored.has(repoRelativePath)) return true;
+    dropped.push({ candidate, reason: 'ignored-path' });
+    return false;
+  });
+
   const byRepo = new Map<string, typeof inScope>();
-  for (const scoped of inScope) {
+  for (const scoped of eligibleForMembership) {
     const group = byRepo.get(scoped.repoRoot) ?? [];
     group.push(scoped);
     byRepo.set(scoped.repoRoot, group);

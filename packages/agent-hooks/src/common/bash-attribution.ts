@@ -170,8 +170,7 @@ export function planBashTouches(
     candidates.map((value) => ({ absolutePath: value.span.absolutePath, value })),
     { cwd }
   );
-  const repoRoot = resolveRepoRoot(cwd);
-  if (repoRoot === null || tracked.eligible.length === 0) {
+  if (tracked.eligible.length === 0) {
     logger.info?.('git-span static attribution pre-plan', {
       resolved: parsed.resolved.length,
       unresolved: parsed.unresolved.length,
@@ -182,6 +181,8 @@ export function planBashTouches(
     });
     return;
   }
+  const repoRoot = resolveRepoRoot(cwd);
+  if (repoRoot === null) return;
 
   const groups = new Map<string, LayeredResolvedMatch[]>();
   for (const { value } of tracked.eligible) {
@@ -219,11 +220,14 @@ export function planBashTouches(
 
 function plannedSpans(record: PlannedTouchRecord | null, cwd: string, logger: CoreLogger): BashTouchMatch[] {
   if (record === null) return [];
-  const repoRoot = resolveRepoRoot(cwd);
-  if (repoRoot === null || toPosix(repoRoot) !== toPosix(record.repoRoot)) {
+  const relativeCwd = nodePath.relative(record.repoRoot, cwd);
+  const cwdInsidePlannedRepo =
+    relativeCwd === '' ||
+    (relativeCwd !== '..' && !relativeCwd.startsWith(`..${nodePath.sep}`) && !nodePath.isAbsolute(relativeCwd));
+  if (!cwdInsidePlannedRepo) {
     logger.warn('git-span static attribution ignored an incompatible planned-touch record', {
       plannedRepoRoot: record.repoRoot,
-      currentRepoRoot: repoRoot
+      currentCwd: cwd
     });
     return [];
   }
@@ -276,6 +280,7 @@ function filterPostTracked(
   matches: readonly BashTouchMatch[],
   responseSpans: readonly ResponseSpan[],
   cwd: string,
+  preTrackedPaths: ReadonlySet<string>,
   preTrackedDeletes: ReadonlySet<string>
 ): {
   matches: BashTouchMatch[];
@@ -297,8 +302,11 @@ function filterPostTracked(
     ...resolved.map((match): Candidate => ({ source: 'command', match })),
     ...responseSpans.map((span): Candidate => ({ source: 'response', span }))
   ];
+  const preEligibleCommands = resolved.filter((match) => preTrackedPaths.has(match.span.absolutePath));
+  const preEligibleSet = new Set(preEligibleCommands);
+  const postCandidates = candidates.filter((value) => value.source === 'response' || !preEligibleSet.has(value.match));
   const filtered = filterTrackedEligibility(
-    candidates.map((value) => ({
+    postCandidates.map((value) => ({
       absolutePath: value.source === 'command' ? value.match.span.absolutePath : value.span.absolutePath,
       value
     })),
@@ -307,6 +315,7 @@ function filterPostTracked(
   const eligibleCommands = new Set(
     filtered.eligible.flatMap(({ value }) => (value.source === 'command' ? [value.match] : []))
   );
+  for (const match of preEligibleCommands) eligibleCommands.add(match);
   const eligibleResponses = filtered.eligible.flatMap(({ value }) => (value.source === 'response' ? [value.span] : []));
   for (const match of resolved) {
     if (match.span.operation === 'delete' && preTrackedDeletes.has(match.span.absolutePath))
@@ -364,23 +373,29 @@ export async function runLayeredBashTouches(
   const record = toolUseId === undefined ? null : store.consume(sessionId, toolUseId);
   const planned = plannedSpans(record, cwd, logger);
   const parsed = parseCommandLayered(command, { cwd, readPreState: readText });
-  const plannedKeys = new Set(
-    planned
-      .filter((match): match is Extract<BashTouchMatch, { status: 'resolved' }> => match.status === 'resolved')
-      .map(({ span }) => planGroupKey(span))
-  );
   const preStateKeys = new Set(parsed.preStateRequests.map((request) => planGroupKey(request)));
   const ordinary: BashTouchMatch[] = parsed.resolved
-    .filter(({ span }) => !preStateKeys.has(planGroupKey(span)) || plannedKeys.has(planGroupKey(span)))
+    // A pre-state-sensitive command is represented by its consumed plan.
+    // Re-emitting the post-state parse alongside that plan made one logical
+    // write run the full git-span surface twice whenever its recovered range
+    // differed from the planned union range.
+    .filter(({ span }) => !preStateKeys.has(planGroupKey(span)))
     .map(({ idiom, span }) => ({ status: 'resolved', idiom, span }));
-  const detailed = parseCommandDetailed(command, { cwd });
-  const joinByIndex = new Map(
-    detailed.flatMap((match) =>
+  // A second deterministic parse is needed only for conditional compounds:
+  // the layered result already carries every resolved span's join metadata,
+  // while `&&`/`||` additionally need span-less builtin guards. Simple
+  // commands avoid repeating lexical dispatch entirely.
+  const detailed = /&&|\|\|/.test(command) ? parseCommandDetailed(command, { cwd }) : [];
+  const joinByIndex = new Map([
+    ...parsed.resolved.flatMap(({ span }) =>
+      span.join === undefined ? [] : ([[span.simpleCommandIndex, span.join]] as const)
+    ),
+    ...detailed.flatMap((match) =>
       match.status === 'resolved' && match.span.join !== undefined
         ? [[match.span.simpleCommandIndex, match.span.join] as const]
         : []
     )
-  );
+  ]);
   for (const match of planned) {
     if (match.status === 'resolved') match.span.join = joinByIndex.get(match.span.simpleCommandIndex);
   }
@@ -403,9 +418,12 @@ export async function runLayeredBashTouches(
       .filter(({ operation, evidence }) => operation === 'delete' && evidence?.kind === 'tracked')
       .map(({ repoRelativePath }) => nodePath.join(record!.repoRoot, repoRelativePath))
   );
+  const preTrackedPaths = new Set(
+    (record?.touches ?? []).map(({ repoRelativePath }) => nodePath.join(record!.repoRoot, repoRelativePath))
+  );
   const response = bashResponseInterrupted(toolResponse) ? null : normalizeBashResponse(toolResponse);
   const responseSpans = response === null ? [] : parseResponse({ command, cwd, ...response });
-  const filtered = filterPostTracked(combined, responseSpans, cwd, preTrackedDeletes);
+  const filtered = filterPostTracked(combined, responseSpans, cwd, preTrackedPaths, preTrackedDeletes);
   const parserLatencyMs = performance.now() - parserStarted;
   const touchStarted = performance.now();
   const commandBlocks = await runBashTouches(
@@ -415,7 +433,8 @@ export async function runLayeredBashTouches(
     toolResponse,
     executors,
     memo,
-    (message) => logger.warn(message)
+    (message) => logger.warn(message),
+    true
   );
   const responseBlocks = await runResponseReadTouches(filtered.responseSpans, cwd, sessionId, executors, memo);
   const blocks = [...commandBlocks, ...responseBlocks];

@@ -48,10 +48,16 @@ function nodeModulesComments(generated: string): string[] {
 /** The emitted hooks.json parsed from the built output directory. */
 function readHooksJson(outDir: string): {
   hooks: Record<string, { matcher?: string; hooks: { command: string }[] }[]>;
+  __generated?: { files: string[] };
 } {
   return JSON.parse(readFileSync(join(outDir, 'hooks.json'), 'utf8')) as {
     hooks: Record<string, { matcher?: string; hooks: { command: string }[] }[]>;
+    __generated?: { files: string[] };
   };
+}
+
+function groupBundle(group: { hooks: { command: string }[] }): string | undefined {
+  return group.hooks[0]?.command.match(/([A-Za-z0-9-]+\.mjs)\b/)?.[1];
 }
 
 /**
@@ -172,6 +178,12 @@ describe('generated hook bin portability', () => {
         { stdio: 'pipe' }
       );
       const out = readHooksJson(outDir);
+      expect(Object.keys(out.hooks)).toEqual(['PreToolUse', 'PostToolUse', 'Stop']);
+      expect(out.hooks['PreToolUse']?.map(groupBundle)).toEqual([
+        'advisor.mjs',
+        'static-plan.mjs',
+        'apply-patch-plan.mjs'
+      ]);
       const pre = groupFor(out, 'PreToolUse', 'static-plan.mjs');
       expect(pre, 'PreToolUse static-plan.mjs group must exist').not.toBeNull();
       expect(pre!.matcher, 'PreToolUse static-plan.mjs matcher must equal CODEX_STATIC_PLAN_PRE_MATCHER').toBe(
@@ -220,6 +232,17 @@ describe('generated hook bin portability', () => {
         { stdio: 'pipe' }
       );
       const out = readHooksJson(outDir);
+      expect(Object.keys(out.hooks)).toEqual(['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'SessionEnd']);
+      expect(
+        out.hooks['PreToolUse']?.[0]?.hooks.map(({ command }) => command.match(/([A-Za-z0-9-]+\.mjs)\b/)?.[1])
+      ).toEqual(['advisor.mjs', 'static-plan.mjs']);
+      expect(out.__generated?.files).toEqual([
+        'advisor.mjs',
+        'static-plan.mjs',
+        'post-tool-use.mjs',
+        'post-tool-use-failure.mjs',
+        'session-end.mjs'
+      ]);
       const expected: [string, string, string][] = [
         ['PreToolUse', 'static-plan.mjs', CLAUDE_STATIC_PLAN_PRE_MATCHER],
         ['PreToolUse', 'advisor.mjs', 'Bash'],

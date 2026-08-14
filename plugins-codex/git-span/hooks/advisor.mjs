@@ -357,6 +357,16 @@ function toPosix(p) {
 function resolveRepoRoot(dir) {
   if (!dir) return null;
   try {
+    let current = fs3.realpathSync.native(dir);
+    for (; ; ) {
+      if (fs3.existsSync(nodePath3.join(current, ".git"))) return toPosix(current);
+      const parent = nodePath3.dirname(current);
+      if (parent === current) break;
+      current = parent;
+    }
+  } catch {
+  }
+  try {
     const out = execFileSync("git", ["-C", dir, "rev-parse", "--show-toplevel"], {
       stdio: ["ignore", "pipe", "ignore"],
       encoding: "utf8"

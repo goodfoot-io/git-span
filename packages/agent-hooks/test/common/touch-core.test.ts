@@ -31,7 +31,7 @@ import { runBashTouches } from '../../src/common/bash-touch.js';
 import type { ResolvedSpan, SpanMatch } from '../../src/common/parse-command.js';
 import type { MemoStore } from '../../src/common/span-surface.js';
 import type { TouchExecutors, TouchFixResult, TouchReadInput, TouchWriteInput } from '../../src/common/touch-core.js';
-import { recoverRange, runTouchHook } from '../../src/common/touch-core.js';
+import { fixOutputModified, recoverRange, runTouchHook } from '../../src/common/touch-core.js';
 import { makeTempRepo } from '../helpers.js';
 
 // ---------------------------------------------------------------------------
@@ -151,6 +151,19 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
 
   afterAll(() => {
     repo.cleanup();
+  });
+
+  describe('drift fix summary', () => {
+    it('reports only summaries that prove span state was rewritten', () => {
+      expect(fixOutputModified('Reconciled 1 span, 1 anchor (1 updated, 0 removed).\n')).toBe(true);
+      expect(
+        fixOutputModified(
+          'Reconciled 1 span, 0 anchors (0 updated, 0 removed); collapsed 1 duplicate identity (1 record dropped).\n'
+        )
+      ).toBe(true);
+      expect(fixOutputModified('Updated 0 anchors (0 updated, 0 removed); 1 anchor remains drifted.\n')).toBe(false);
+      expect(fixOutputModified('fatal: not a git repository\n')).toBe(false);
+    });
   });
 
   describe('runTouchHook — write path', () => {

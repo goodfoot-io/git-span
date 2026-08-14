@@ -33,6 +33,23 @@ export function abspathAgainst(base: string, target: string): string {
 
 export function resolveRepoRoot(dir: string | undefined | null): string | null {
   if (!dir) return null;
+  // Normal worktrees (including linked worktrees and submodules) expose a
+  // `.git` directory or gitfile at their top level. Walk parents in-process
+  // before spawning `git rev-parse`: hook processes ask for the same root many
+  // times, and filesystem discovery is both deterministic and sufficient for
+  // this overwhelmingly common shape. Exotic GIT_DIR/core.worktree layouts
+  // retain the authoritative Git fallback below.
+  try {
+    let current = fs.realpathSync.native(dir);
+    for (;;) {
+      if (fs.existsSync(nodePath.join(current, '.git'))) return toPosix(current);
+      const parent = nodePath.dirname(current);
+      if (parent === current) break;
+      current = parent;
+    }
+  } catch {
+    // Missing/non-directory inputs use Git's own resolution below.
+  }
   try {
     const out = execFileSync('git', ['-C', dir, 'rev-parse', '--show-toplevel'], {
       stdio: ['ignore', 'pipe', 'ignore'],

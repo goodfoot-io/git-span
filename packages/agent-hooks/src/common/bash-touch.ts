@@ -37,8 +37,13 @@ import {
  * driver pairs cp/install and mv sources onto the destination touches
  * afterward.
  */
-export function bashSpanToTouch(span: ResolvedSpan, sessionId: string, cwd: string): TouchInput | null {
-  if (!resolveTouchScope(cwd, span.absolutePath)) return null;
+export function bashSpanToTouch(
+  span: ResolvedSpan,
+  sessionId: string,
+  cwd: string,
+  scopeAlreadyResolved: boolean = false
+): TouchInput | null {
+  if (!scopeAlreadyResolved && !resolveTouchScope(cwd, span.absolutePath)) return null;
   switch (span.operation) {
     case 'read':
       return {
@@ -276,7 +281,8 @@ export async function runBashTouches(
   toolResponse: unknown,
   executors: TouchExecutors,
   memo: MemoStore,
-  warn: (message: string) => void = console.warn
+  warn: (message: string) => void = console.warn,
+  scopeAlreadyResolved: boolean = false
 ): Promise<string[]> {
   // A command that did not complete produces no touches, whatever its spans.
   if (bashResponseInterrupted(toolResponse)) return [];
@@ -361,7 +367,7 @@ export async function runBashTouches(
     let deleteCursor = 0;
     const list: SpanEval[] = [];
     for (const m of spans) {
-      const touch = bashSpanToTouch(m.span, sessionId, cwd);
+      const touch = bashSpanToTouch(m.span, sessionId, cwd, scopeAlreadyResolved);
       const entry: SpanEval = {
         match: m,
         touch,
@@ -546,6 +552,7 @@ export async function runBashTouches(
   // commands have no touches. Explained fails and decisive fails never
   // reach an executor.
   const blocks: string[] = [];
+  const invocationExecutors = executors.forInvocation?.() ?? executors;
   for (const idx of commandOrder) {
     if (skipped.has(idx)) continue;
     const list = evals.get(idx);
@@ -556,7 +563,7 @@ export async function runBashTouches(
       if (e.outcome === 'inconclusive' && e.touch.kind === 'write' && e.touch.targetState === 'absent') continue;
       if (e.outcome === 'inconclusive' && e.touch.kind === 'write' && exitCode !== undefined && exitCode !== 0)
         continue;
-      const output = await runTouchHook(e.touch, executors, memo, probeCache);
+      const output = await runTouchHook(e.touch, invocationExecutors, memo, probeCache);
       if (output.additionalContext) blocks.push(output.additionalContext);
     }
   }
