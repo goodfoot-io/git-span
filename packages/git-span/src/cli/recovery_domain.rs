@@ -78,6 +78,18 @@ pub(crate) fn acquire_reader(repo: &gix::Repository, span_root: &str) -> Result<
     Ok(exclusive)
 }
 
+/// Enter the exclusive writer domain after settling any crash-left prepared
+/// context repair. Recovery runs while this same guard remains exclusive, so
+/// the handler can subsequently take its per-span locks without exposing a
+/// gap or inverting the repository-before-span lock order.
+pub(crate) fn acquire_writer(repo: &gix::Repository, span_root: &str) -> Result<Guard> {
+    let exclusive = acquire(repo, Mode::Exclusive)?;
+    if let Some(runtime) = super::context_repair::pending_runtime(repo, span_root)? {
+        super::context_repair::recover_pending_locked(repo, span_root, &runtime)?;
+    }
+    Ok(exclusive)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -863,6 +863,59 @@ fn ordinary_readers_recover_prepared_repair_before_observation() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn legacy_writer_recovers_prepared_repair_before_per_span_mutation() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    assert!(
+        repo.run_span(["add", "a", "file1.txt#L2-L3"])?
+            .status
+            .success()
+    );
+    assert!(
+        repo.run_span(["add", "b", "file1.txt#L4-L5"])?
+            .status
+            .success()
+    );
+    repo.write_file(
+        "file1.txt",
+        "prefix\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+    let operation = uuid::Uuid::new_v4().to_string();
+    let died = std::process::Command::new(env!("CARGO_BIN_EXE_git-span"))
+        .current_dir(repo.path())
+        .env("GIT_SPAN_CONTEXT_DISABLE_SERVICE", "1")
+        .env("GIT_SPAN_CONTEXT_TEST_DIE_AFTER", "span-rename:0")
+        .args([
+            "context",
+            "file1.txt",
+            "--format",
+            "json",
+            "--fix",
+            "--operation-id",
+            &operation,
+        ])
+        .output()?;
+    assert_eq!(died.status.code(), Some(86));
+
+    let writer = repo.run_span(["why", "b", "Recovery precedes this legacy writer."])?;
+    assert!(
+        writer.status.success(),
+        "{}",
+        String::from_utf8_lossy(&writer.stderr)
+    );
+    assert!(!repo.path().join(".git/span/recovery.pending").exists());
+
+    let listed = repo.run_span(["list", "--oneline"])?;
+    assert!(listed.status.success());
+    let stdout = String::from_utf8(listed.stdout)?;
+    assert!(stdout.contains("`a` `file1.txt#L3-L4`"), "{stdout}");
+    assert!(stdout.contains("`b` `file1.txt#L5-L6`"), "{stdout}");
+    let shown = repo.run_span(["show", "b"])?;
+    assert!(shown.status.success());
+    assert!(String::from_utf8(shown.stdout)?.contains("Recovery precedes this legacy writer."));
+    Ok(())
+}
+
 fn moved_context_repo(name: &str) -> Result<TestRepo> {
     let repo = TestRepo::seeded()?;
     assert!(

@@ -644,7 +644,7 @@ pub fn dispatch(
     let _recovery_guard = recovery_domain::command_mode(&command)
         .map(|mode| match mode {
             recovery_domain::Mode::Shared => recovery_domain::acquire_reader(repo, span_root),
-            recovery_domain::Mode::Exclusive => recovery_domain::acquire(repo, mode),
+            recovery_domain::Mode::Exclusive => recovery_domain::acquire_writer(repo, span_root),
         })
         .transpose()?;
     match command {
