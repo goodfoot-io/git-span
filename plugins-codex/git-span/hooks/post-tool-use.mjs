@@ -11,6 +11,8 @@ function attachMetadata(hookEventName, config, handler) {
   hook.hookEventName = hookEventName;
   hook.timeout = config.timeout;
   hook.statusMessage = config.statusMessage;
+  hook.unexpectedError = config.unexpectedError;
+  hook.onUnexpectedError = config.onUnexpectedError;
   if ("matcher" in config && typeof config.matcher === "string") {
     hook.matcher = config.matcher;
   }
@@ -214,6 +216,7 @@ function subagentStartOutput(options = {}) {
 }
 
 // ../../node_modules/@goodfoot/codex-hooks/dist/runtime.js
+var EMPTY_OUTPUT = { stdout: {} };
 async function readStdin() {
   return new Promise((resolve3, reject) => {
     const chunks = [];
@@ -226,8 +229,8 @@ async function readStdin() {
 function parseStdinInput(stdinContent) {
   return JSON.parse(stdinContent);
 }
-function writeStdout(output) {
-  process.stdout.write(JSON.stringify(output.stdout));
+function serializeStdout(output) {
+  return JSON.stringify(output.stdout);
 }
 function normalizeStringOutput(hookEventName, result) {
   if (!EVENTS_WITH_TEXT_OUTPUT.has(hookEventName)) {
@@ -244,39 +247,86 @@ function normalizeStringOutput(hookEventName, result) {
 function convertToHookOutput(output) {
   return output.stderr !== void 0 ? { stdout: output.stdout, stderr: output.stderr } : { stdout: output.stdout };
 }
+function writeStderr(error) {
+  if (error instanceof Error) {
+    process.stderr.write(`${error.stack ?? error.message}
+`);
+  } else {
+    process.stderr.write(`${String(error)}
+`);
+  }
+}
+function reportUnexpectedError(onUnexpectedError, error, phase) {
+  try {
+    onUnexpectedError?.(error, phase);
+  } catch {
+  }
+  try {
+    logger.logError(error, `Unexpected error in ${phase} phase (fail-open)`, { phase });
+  } catch {
+  }
+}
+function cleanup(policy, onUnexpectedError) {
+  try {
+    logger.clearContext();
+    logger.close();
+  } catch (error) {
+    if (policy !== "continue") {
+      throw error;
+    }
+    reportUnexpectedError(onUnexpectedError, error, "cleanup");
+  }
+}
 async function execute(hookFn) {
+  const policy = hookFn.unexpectedError ?? "error";
+  const onUnexpectedError = hookFn.onUnexpectedError;
+  let phase = "read";
+  let output;
   try {
     const stdinContent = await readStdin();
+    phase = "parse";
     const input = parseStdinInput(stdinContent);
     logger.setContext(hookFn.hookEventName, input);
     const context = { logger };
+    phase = "handler";
     const result = await hookFn(input, context);
-    let output = { stdout: {} };
+    phase = "serialize";
     if (typeof result === "string") {
       output = convertToHookOutput(normalizeStringOutput(hookFn.hookEventName, result));
     } else if (result !== void 0) {
       output = convertToHookOutput(result);
+    } else {
+      output = EMPTY_OUTPUT;
     }
-    writeStdout(output);
-    process.exit(EXIT_CODES.SUCCESS);
+    serializeStdout(output);
   } catch (error) {
     if (error instanceof BlockError) {
+      cleanup(policy, onUnexpectedError);
       process.stderr.write(`${error.reason}
 `);
       process.exit(EXIT_CODES.BLOCK);
     }
-    if (error instanceof Error) {
-      process.stderr.write(`${error.stack ?? error.message}
-`);
-    } else {
-      process.stderr.write(`${String(error)}
-`);
+    if (policy !== "continue") {
+      cleanup(policy, onUnexpectedError);
+      writeStderr(error);
+      process.exit(EXIT_CODES.ERROR);
     }
-    process.exit(EXIT_CODES.ERROR);
-  } finally {
-    logger.clearContext();
-    logger.close();
+    reportUnexpectedError(onUnexpectedError, error, phase);
+    output = EMPTY_OUTPUT;
   }
+  phase = "write";
+  try {
+    process.stdout.write(serializeStdout(output));
+  } catch (error) {
+    if (policy !== "continue") {
+      cleanup(policy, onUnexpectedError);
+      writeStderr(error);
+      process.exit(EXIT_CODES.ERROR);
+    }
+    reportUnexpectedError(onUnexpectedError, error, "write");
+  }
+  cleanup(policy, onUnexpectedError);
+  process.exit(EXIT_CODES.SUCCESS);
 }
 
 // src/common/agent-hooks-common.ts
@@ -296,8 +346,16 @@ function abspathAgainst(base, target) {
   const b = toPosix(base).replace(/\/+$/, "");
   return `${b}/${t}`;
 }
+var repoRootCache = /* @__PURE__ */ new Map();
 function resolveRepoRoot(dir) {
   if (!dir) return null;
+  const cached = repoRootCache.get(dir);
+  if (cached !== void 0) return cached;
+  const resolved = resolveRepoRootUncached(dir);
+  repoRootCache.set(dir, resolved);
+  return resolved;
+}
+function resolveRepoRootUncached(dir) {
   try {
     let current = fs.realpathSync.native(dir);
     for (; ; ) {
@@ -502,13 +560,17 @@ function pruneStaleSessions(layout, now = Date.now(), maxAgeMs = THIRTY_DAYS_MS)
   } catch {
     return;
   }
+  let trashDirReady = false;
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const dirPath = nodePath.join(layout.base, entry.name);
     try {
       const stat = fs.statSync(dirPath);
       if (now - stat.mtimeMs > maxAgeMs) {
-        fs.mkdirSync(layout.trashDir, { recursive: true, mode: 448 });
+        if (!trashDirReady) {
+          fs.mkdirSync(layout.trashDir, { recursive: true, mode: 448 });
+          trashDirReady = true;
+        }
         const trashPath = nodePath.join(
           layout.trashDir,
           `${entry.name}${SESSION_TRASH_MARKER}${process.pid}-${Date.now().toString(36)}`
@@ -1701,7 +1763,7 @@ var REV_PATH = /^([^\s:]+):(.+)$/;
 function matchGitShow(argv) {
   if (argv[0] !== "git") return [];
   const sub = findGitSubcommand(argv.slice(1));
-  if (!sub || sub.subcommand !== "show") return [];
+  if (sub?.subcommand !== "show") return [];
   const after = argv.slice(1).slice(sub.subIdx + 1).filter((a) => !a.startsWith("-"));
   const revPathArg = after.find((a) => REV_PATH.test(a));
   if (!revPathArg) return [];
@@ -1732,7 +1794,7 @@ function matchGitShow(argv) {
 function matchGitLogL(argv) {
   if (argv[0] !== "git") return [];
   const sub = findGitSubcommand(argv.slice(1));
-  if (!sub || sub.subcommand !== "log") return [];
+  if (sub?.subcommand !== "log") return [];
   const after = argv.slice(1).slice(sub.subIdx + 1);
   for (let i = 0; i < after.length; i++) {
     const a = after[i];
@@ -8289,7 +8351,7 @@ var COMMIT_VALUE_OPTIONS = /* @__PURE__ */ new Set([
 function commitStagesAll(command) {
   for (const segment of splitSegments2(command)) {
     const inv = matchGitInvocation(tokenize2(segment));
-    if (!inv || inv.subcommand !== "commit") continue;
+    if (inv?.subcommand !== "commit") continue;
     const dashDash = inv.args.indexOf("--");
     const flagArgs = dashDash >= 0 ? inv.args.slice(0, dashDash) : inv.args;
     for (let i = 0; i < flagArgs.length; i++) {
@@ -9403,14 +9465,14 @@ function processUpdateLine(hunk, raw) {
 function splitLines(content) {
   return content.split("\n");
 }
-function lineIndices(lines, value) {
+function scanLineIndices(lines, value) {
   const out = [];
   for (let i = 0; i < lines.length; i++) {
     if (lines[i] === value) out.push(i);
   }
   return out;
 }
-function contiguousMatches(haystack, needle) {
+function scanContiguousMatches(haystack, needle) {
   const out = [];
   if (needle.length === 0 || needle.length > haystack.length) return out;
   const last = haystack.length - needle.length;
@@ -9426,12 +9488,57 @@ function contiguousMatches(haystack, needle) {
   }
   return out;
 }
+function buildLineOccurrences(lines) {
+  const occurrences = /* @__PURE__ */ new Map();
+  for (let i = 0; i < lines.length; i++) {
+    const seen = occurrences.get(lines[i]);
+    if (seen === void 0) occurrences.set(lines[i], i);
+    else if (typeof seen === "number") occurrences.set(lines[i], [seen, i]);
+    else seen.push(i);
+  }
+  return occurrences;
+}
+function occurrencesOf(occurrences, value) {
+  const seen = occurrences.get(value);
+  if (seen === void 0) return [];
+  return typeof seen === "number" ? [seen] : seen;
+}
+function indexedContiguousMatches(haystack, needle, occurrences) {
+  const out = [];
+  if (needle.length === 0 || needle.length > haystack.length) return out;
+  const last = haystack.length - needle.length;
+  for (const start of occurrencesOf(occurrences, needle[0])) {
+    if (start > last) break;
+    let ok = true;
+    for (let j = 1; j < needle.length; j++) {
+      if (haystack[start + j] !== needle[j]) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) out.push(start);
+  }
+  return out;
+}
+function preEditLines(lines, chunkCount) {
+  if (chunkCount <= 1) {
+    return {
+      lineIndices: (value) => scanLineIndices(lines, value),
+      contiguousMatches: (needle) => scanContiguousMatches(lines, needle)
+    };
+  }
+  const occurrences = buildLineOccurrences(lines);
+  return {
+    lineIndices: (value) => occurrencesOf(occurrences, value),
+    contiguousMatches: (needle) => indexedContiguousMatches(lines, needle, occurrences)
+  };
+}
 function locateChunk(preLines, chunk) {
   const block = chunk.oldLines;
   if (block.length === 0) {
     const ctx2 = chunk.changeContext;
     if (ctx2 !== null && ctx2 !== "") {
-      const ctxIdxs = lineIndices(preLines, ctx2);
+      const ctxIdxs = preLines.lineIndices(ctx2);
       if (ctxIdxs.length === 1) {
         const line = ctxIdxs[0] + 1;
         return { start: line, end: line };
@@ -9439,7 +9546,7 @@ function locateChunk(preLines, chunk) {
     }
     return null;
   }
-  const starts = contiguousMatches(preLines, block);
+  const starts = preLines.contiguousMatches(block);
   if (starts.length === 1) {
     const s = starts[0];
     return { start: s + 1, end: s + block.length };
@@ -9447,7 +9554,7 @@ function locateChunk(preLines, chunk) {
   if (starts.length === 0) return null;
   const ctx = chunk.changeContext;
   if (ctx !== null && ctx !== "") {
-    for (const c of lineIndices(preLines, ctx)) {
+    for (const c of preLines.lineIndices(ctx)) {
       const after = starts.find((s) => s >= c);
       if (after !== void 0) {
         return { start: after + 1, end: after + block.length };
@@ -9482,7 +9589,8 @@ function parseApplyPatch(command, readPreEditFile = defaultReadPreEditFile) {
       continue;
     }
     const content = readPreEditFile(hunk.path);
-    const range = content === null ? null : recoverRange2(splitLines(content), hunk.chunks);
+    const pre = content === null ? null : preEditLines(splitLines(content), hunk.chunks.length);
+    const range = pre === null ? null : recoverRange2(pre, hunk.chunks);
     if (range !== null) {
       anchors.push({ path: targetPath, kind: "write", range });
     } else {

@@ -57,6 +57,8 @@ function createHookFunction(hookEventName, config, handler) {
   hookFn.hookEventName = hookEventName;
   hookFn.matcher = config.matcher;
   hookFn.timeout = config.timeout;
+  hookFn.unexpectedError = config.unexpectedError;
+  hookFn.onUnexpectedError = config.onUnexpectedError;
   return hookFn;
 }
 function preToolUseHook(config, handler) {
@@ -482,9 +484,6 @@ function parseStdinInput(stdinContent) {
   const rawInput = JSON.parse(stdinContent);
   return rawInput;
 }
-function writeStdout(output) {
-  process.stdout.write(JSON.stringify(output));
-}
 function createMalformedInputOutput(error) {
   logger.error(`Invalid JSON input: ${error instanceof Error ? error.message : String(error)}`);
   return { stdout: {} };
@@ -502,6 +501,41 @@ function handleHandlerError(error) {
   logger.close();
   process.exit(EXIT_CODES.BLOCK);
 }
+function writeUnexpectedErrorStderr(error) {
+  if (error instanceof Error) {
+    process.stderr.write(`${error.stack ?? error.message}
+`);
+  } else {
+    process.stderr.write(`${String(error)}
+`);
+  }
+}
+function reportUnexpectedError(onUnexpectedError, error, phase) {
+  try {
+    onUnexpectedError?.(error, phase);
+  } catch {
+  }
+  try {
+    logger.logError(error, `Unexpected error in ${phase} phase (fail-open)`, { phase });
+  } catch {
+  }
+}
+function handleUnexpectedError(error, phase, policy, onUnexpectedError) {
+  if (policy === "continue") {
+    reportUnexpectedError(onUnexpectedError, error, phase);
+    return;
+  }
+  writeUnexpectedErrorStderr(error);
+  process.exit(EXIT_CODES.ERROR);
+}
+function cleanup(policy, onUnexpectedError) {
+  try {
+    logger.clearContext();
+    logger.close();
+  } catch (error) {
+    handleUnexpectedError(error, "cleanup", policy, onUnexpectedError);
+  }
+}
 function convertToHookOutput(specificOutput) {
   const { stdout, stderr, rawStdout } = specificOutput;
   const result = { stdout };
@@ -513,52 +547,82 @@ function convertToHookOutput(specificOutput) {
   }
   return result;
 }
+var HandlerThrewError = class {
+  original;
+  constructor(original) {
+    this.original = original;
+  }
+};
+async function runHandlerPhases(hookFn, policy, onUnexpectedError, setPhase) {
+  let stdinContent;
+  try {
+    stdinContent = await readStdin();
+  } catch (error) {
+    logger.logError(error, "Failed to read stdin");
+    return createMalformedInputOutput(error);
+  }
+  setPhase("parse");
+  let input;
+  try {
+    input = parseStdinInput(stdinContent);
+  } catch (error) {
+    logger.logError(error, "Failed to parse stdin JSON");
+    return createMalformedInputOutput(error);
+  }
+  const hookEventName = hookFn.hookEventName;
+  logger.setContext(hookEventName, input);
+  const context = hookEventName === "SessionStart" ? { logger, persistEnvVar, persistEnvVars } : { logger };
+  setPhase("handler");
+  try {
+    const specificOutput = await hookFn(input, context);
+    return specificOutput !== null ? convertToHookOutput(specificOutput) : void 0;
+  } catch (error) {
+    if (policy !== "continue") {
+      throw new HandlerThrewError(error);
+    }
+    reportUnexpectedError(onUnexpectedError, error, "handler");
+    return void 0;
+  }
+}
 async function execute(hookFn) {
+  const policy = hookFn.unexpectedError ?? "error";
+  const onUnexpectedError = hookFn.onUnexpectedError;
+  let phase = "read";
   let output;
   try {
-    let stdinContent;
-    try {
-      stdinContent = await readStdin();
-    } catch (error) {
-      logger.logError(error, "Failed to read stdin");
-      output = createMalformedInputOutput(error);
-      return;
+    output = await runHandlerPhases(hookFn, policy, onUnexpectedError, (p) => {
+      phase = p;
+    });
+  } catch (error) {
+    if (error instanceof HandlerThrewError) {
+      handleHandlerError(error.original);
     }
-    let input;
-    try {
-      input = parseStdinInput(stdinContent);
-    } catch (error) {
-      logger.logError(error, "Failed to parse stdin JSON");
-      output = createMalformedInputOutput(error);
-      return;
-    }
-    const hookEventName = hookFn.hookEventName;
-    logger.setContext(hookEventName, input);
-    const context = hookEventName === "SessionStart" ? { logger, persistEnvVar, persistEnvVars } : { logger };
-    try {
-      const specificOutput = await hookFn(input, context);
-      if (specificOutput !== null) {
-        output = convertToHookOutput(specificOutput);
-      }
-    } catch (error) {
-      handleHandlerError(error);
-    }
-  } finally {
-    if (output !== void 0) {
-      if (output.rawStdout !== void 0) {
-        process.stdout.write(output.rawStdout);
-      } else {
-        writeStdout(output.stdout);
-      }
-    }
-    logger.clearContext();
-    logger.close();
-    if (output?.stderr !== void 0) {
-      process.stderr.write(output.stderr);
-      process.exit(EXIT_CODES.BLOCK);
-    }
-    process.exit(EXIT_CODES.SUCCESS);
+    handleUnexpectedError(error, phase, policy, onUnexpectedError);
+    output = void 0;
   }
+  if (output?.stderr !== void 0) {
+    phase = "cleanup";
+    cleanup(policy, onUnexpectedError);
+    process.stderr.write(output.stderr);
+    process.exit(EXIT_CODES.BLOCK);
+  }
+  phase = "serialize";
+  let serializedText;
+  try {
+    serializedText = output?.rawStdout !== void 0 ? output.rawStdout : JSON.stringify(output?.stdout ?? {});
+  } catch (error) {
+    handleUnexpectedError(error, "serialize", policy, onUnexpectedError);
+    serializedText = "{}";
+  }
+  phase = "write";
+  try {
+    process.stdout.write(serializedText);
+  } catch (error) {
+    handleUnexpectedError(error, "write", policy, onUnexpectedError);
+  }
+  phase = "cleanup";
+  cleanup(policy, onUnexpectedError);
+  process.exit(EXIT_CODES.SUCCESS);
 }
 
 // src/common/agent-hooks-common.ts
@@ -578,8 +642,16 @@ function abspathAgainst(base, target) {
   const b = toPosix(base).replace(/\/+$/, "");
   return `${b}/${t}`;
 }
+var repoRootCache = /* @__PURE__ */ new Map();
 function resolveRepoRoot(dir) {
   if (!dir) return null;
+  const cached = repoRootCache.get(dir);
+  if (cached !== void 0) return cached;
+  const resolved = resolveRepoRootUncached(dir);
+  repoRootCache.set(dir, resolved);
+  return resolved;
+}
+function resolveRepoRootUncached(dir) {
   try {
     let current = fs2.realpathSync.native(dir);
     for (; ; ) {
@@ -751,13 +823,17 @@ function pruneStaleSessions(layout, now = Date.now(), maxAgeMs = THIRTY_DAYS_MS)
   } catch {
     return;
   }
+  let trashDirReady = false;
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const dirPath = nodePath.join(layout.base, entry.name);
     try {
       const stat = fs2.statSync(dirPath);
       if (now - stat.mtimeMs > maxAgeMs) {
-        fs2.mkdirSync(layout.trashDir, { recursive: true, mode: 448 });
+        if (!trashDirReady) {
+          fs2.mkdirSync(layout.trashDir, { recursive: true, mode: 448 });
+          trashDirReady = true;
+        }
         const trashPath = nodePath.join(
           layout.trashDir,
           `${entry.name}${SESSION_TRASH_MARKER}${process.pid}-${Date.now().toString(36)}`
@@ -1877,7 +1953,7 @@ var REV_PATH = /^([^\s:]+):(.+)$/;
 function matchGitShow(argv) {
   if (argv[0] !== "git") return [];
   const sub = findGitSubcommand(argv.slice(1));
-  if (!sub || sub.subcommand !== "show") return [];
+  if (sub?.subcommand !== "show") return [];
   const after = argv.slice(1).slice(sub.subIdx + 1).filter((a) => !a.startsWith("-"));
   const revPathArg = after.find((a) => REV_PATH.test(a));
   if (!revPathArg) return [];
@@ -1908,7 +1984,7 @@ function matchGitShow(argv) {
 function matchGitLogL(argv) {
   if (argv[0] !== "git") return [];
   const sub = findGitSubcommand(argv.slice(1));
-  if (!sub || sub.subcommand !== "log") return [];
+  if (sub?.subcommand !== "log") return [];
   const after = argv.slice(1).slice(sub.subIdx + 1);
   for (let i = 0; i < after.length; i++) {
     const a = after[i];
