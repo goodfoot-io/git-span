@@ -12,6 +12,7 @@ pub mod cargo_config_linker_worktree_invariance;
 pub mod cargo_target_missing_stamp_preserves_cache;
 pub mod cargo_target_test_lock;
 pub mod cli_exit_codes;
+pub mod cli_context;
 pub mod cli_history;
 pub mod cli_ls;
 pub mod cli_merge_driver;

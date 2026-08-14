@@ -17,6 +17,7 @@
 //!   `Show` handler.
 
 pub mod commit;
+pub mod context;
 pub mod doctor;
 pub mod drift_label;
 pub mod duplicate_identity;
@@ -104,6 +105,10 @@ pub enum Commands {
     /// See `git span resolve` (`--dry-run` first), which settles a
     /// conflict-markered span file under one explicitly chosen side.
     Drift(DriftArgs),
+
+    /// Return exact dependency context for repository-relative paths or
+    /// inclusive line ranges as one versioned JSON document.
+    Context(ContextArgs),
 
     /// Add anchors to a span, writing the span file under the span root.
     /// Stage and commit the change with `git add .span && git commit`.
@@ -275,6 +280,30 @@ pub enum DriftFormat {
     Human,
     Porcelain,
     Json,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+pub enum ContextFormat {
+    Json,
+}
+
+#[derive(Debug, Clone, clap::Args)]
+pub struct ContextArgs {
+    /// Repository-relative paths or inclusive `<path>#L<start>-L<end>` ranges.
+    #[arg(required = true, num_args = 1..=4096)]
+    pub addresses: Vec<String>,
+
+    #[arg(long, value_enum, default_value_t = ContextFormat::Json)]
+    pub format: ContextFormat,
+
+    /// Repair position-only or whitespace-equivalent drift before reporting.
+    #[arg(long)]
+    pub fix: bool,
+
+    /// Stable idempotency key for a repair retry. Valid only with `--fix`.
+    #[arg(long, value_name = "UUID", requires = "fix")]
+    pub operation_id: Option<uuid::Uuid>,
 }
 
 /// Output format for `git span add`'s write-mode result.
@@ -610,6 +639,10 @@ pub fn dispatch(
         Commands::Drift(args) => {
             let _perf = crate::perf::span("command.drift");
             drift_output::run_drift(repo, args, span_root)
+        }
+        Commands::Context(args) => {
+            let _perf = crate::perf::span("command.context");
+            context::run_context(repo, args, span_root)
         }
         Commands::Add(args) => {
             let _perf = crate::perf::span("command.add");

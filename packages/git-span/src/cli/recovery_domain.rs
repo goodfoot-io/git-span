@@ -23,6 +23,7 @@ pub(crate) fn command_mode(command: &Commands) -> Mode {
         Commands::Drift(args) if args.fix => Mode::Exclusive,
         Commands::Why(args) if args.why_text.is_some() => Mode::Exclusive,
         Commands::Resolve(args) if !args.dry_run => Mode::Exclusive,
+        Commands::Context(args) if args.fix => Mode::Exclusive,
         Commands::Add(_)
         | Commands::Remove(_)
         | Commands::Replace(_)
@@ -36,6 +37,7 @@ pub(crate) fn command_mode(command: &Commands) -> Mode {
         | Commands::Tree(_)
         | Commands::History(_)
         | Commands::Resolve(_) => Mode::Shared,
+        Commands::Context(_) => Mode::Shared,
     }
 }
 
