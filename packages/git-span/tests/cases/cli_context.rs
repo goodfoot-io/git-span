@@ -192,6 +192,158 @@ fn repair_post_state_and_cycle_safety() -> Result<()> {
     assert!(String::from_utf8(conflict.stderr)?.contains("different normalized request"));
     Ok(())
 }
+
+#[test]
+fn completed_repair_replays_across_service_identity_environment_changes() -> Result<()> {
+    let repo = moved_context_repo("stable-completed-journal")?;
+    let operation = uuid::Uuid::new_v4().to_string();
+    let fixed = repo.run_span_with_envs(
+        [
+            "context",
+            "file1.txt",
+            "--format",
+            "json",
+            "--fix",
+            "--operation-id",
+            &operation,
+        ],
+        &[("GIT_SPAN_JOURNAL_IDENTITY_VARIANT", "A")],
+    )?;
+    assert!(
+        fixed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&fixed.stderr)
+    );
+    let fixed_document: serde_json::Value = serde_json::from_slice(&fixed.stdout)?;
+    assert_eq!(fixed_document["mutation"]["rewritten"], true);
+
+    let replay = repo.run_span_with_envs(
+        [
+            "context",
+            "file1.txt",
+            "--format",
+            "json",
+            "--fix",
+            "--operation-id",
+            &operation,
+        ],
+        &[("GIT_SPAN_JOURNAL_IDENTITY_VARIANT", "B")],
+    )?;
+    assert!(
+        replay.status.success(),
+        "{}",
+        String::from_utf8_lossy(&replay.stderr)
+    );
+    assert_eq!(replay.stdout, fixed.stdout);
+
+    let conflicting = repo.run_span_with_envs(
+        [
+            "context",
+            "file2.txt",
+            "--format",
+            "json",
+            "--fix",
+            "--operation-id",
+            &operation,
+        ],
+        &[("GIT_SPAN_JOURNAL_IDENTITY_VARIANT", "B")],
+    )?;
+    assert!(!conflicting.status.success());
+    assert!(conflicting.stdout.is_empty());
+    assert!(String::from_utf8(conflicting.stderr)?.contains("different normalized request"));
+
+    let alternate_add = repo.run_span_with_env(
+        ["add", "alternate", "file2.txt#L1-L2"],
+        "GIT_SPAN_DIR",
+        "alternate-spans",
+    )?;
+    assert!(alternate_add.status.success());
+    let wrong_root = repo.run_span_with_envs(
+        [
+            "context",
+            "file1.txt",
+            "--format",
+            "json",
+            "--fix",
+            "--operation-id",
+            &operation,
+        ],
+        &[
+            ("GIT_SPAN_JOURNAL_IDENTITY_VARIANT", "B"),
+            ("GIT_SPAN_DIR", "alternate-spans"),
+        ],
+    )?;
+    assert!(!wrong_root.status.success());
+    assert!(wrong_root.stdout.is_empty());
+    assert!(String::from_utf8(wrong_root.stderr)?.contains("recovery scope"));
+    Ok(())
+}
+
+#[test]
+fn prepared_repair_recovers_across_service_identity_environment_changes() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    assert!(
+        repo.run_span(["add", "a", "file1.txt#L2-L3"])?
+            .status
+            .success()
+    );
+    assert!(
+        repo.run_span(["add", "b", "file1.txt#L4-L5"])?
+            .status
+            .success()
+    );
+    repo.write_file(
+        "file1.txt",
+        "prefix\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+    let operation = uuid::Uuid::new_v4().to_string();
+    let died = std::process::Command::new(env!("CARGO_BIN_EXE_git-span"))
+        .current_dir(repo.path())
+        .env("GIT_SPAN_CONTEXT_DISABLE_SERVICE", "1")
+        .env("GIT_SPAN_JOURNAL_IDENTITY_VARIANT", "A")
+        .env("GIT_SPAN_CONTEXT_TEST_DIE_AFTER", "span-rename:0")
+        .args([
+            "context",
+            "file1.txt",
+            "--format",
+            "json",
+            "--fix",
+            "--operation-id",
+            &operation,
+        ])
+        .output()?;
+    assert_eq!(died.status.code(), Some(86));
+
+    let replay = repo.run_span_with_envs(
+        [
+            "context",
+            "file1.txt",
+            "--format",
+            "json",
+            "--fix",
+            "--operation-id",
+            &operation,
+        ],
+        &[
+            ("GIT_SPAN_CONTEXT_DISABLE_SERVICE", "1"),
+            ("GIT_SPAN_JOURNAL_IDENTITY_VARIANT", "B"),
+        ],
+    )?;
+    assert!(
+        replay.status.success(),
+        "{}",
+        String::from_utf8_lossy(&replay.stderr)
+    );
+    let document: serde_json::Value = serde_json::from_slice(&replay.stdout)?;
+    assert_eq!(document["mutation"]["rewritten"], true);
+    assert_eq!(document["mutation"]["anchors_updated"], 2);
+    assert!(!repo.path().join(".git/span/recovery.pending").exists());
+    let listed = String::from_utf8(repo.run_span(["list", "--oneline"])?.stdout)?;
+    assert!(listed.contains("`a` `file1.txt#L3-L4`"), "{listed}");
+    assert!(listed.contains("`b` `file1.txt#L5-L6`"), "{listed}");
+    Ok(())
+}
+
 #[test]
 fn service_identity_bootstrap_and_strict_fallback() -> Result<()> {
     let repo = TestRepo::seeded()?;
@@ -698,7 +850,7 @@ fn atomic_recovery_and_operation_id_replay() -> Result<()> {
             "generation-publication",
             "journal-committed",
         ] {
-            let repo = moved_context_repo("runtime-swap-safe")?;
+            let repo = moved_context_repo("recovery-swap-safe")?;
             let operation = uuid::Uuid::new_v4().to_string();
             let hooks = tempfile::tempdir()?;
             let child = std::process::Command::new(env!("CARGO_BIN_EXE_git-span"))
@@ -722,15 +874,11 @@ fn atomic_recovery_and_operation_id_replay() -> Result<()> {
             let ready = hooks.path().join(format!("repair-{safe}.ready"));
             let release = hooks.path().join(format!("repair-{safe}.release"));
             let token = wait_for_checkpoint(&ready, None)
-                .with_context(|| format!("waiting for runtime swap boundary {boundary}"))?;
+                .with_context(|| format!("waiting for recovery swap boundary {boundary}"))?;
             let context_root = repo.path().join(".git/span/context");
-            let public = std::fs::read_dir(&context_root)?
-                .filter_map(std::result::Result::ok)
-                .map(|entry| entry.path())
-                .find(|path| path.is_dir())
-                .expect("repair runtime identity directory");
-            let retained = context_root.join("retained-runtime");
-            let attacker = repo.path().join("attacker-runtime");
+            let public = context_root.join("recovery");
+            let retained = context_root.join("retained-recovery");
+            let attacker = repo.path().join("attacker-recovery");
             std::fs::create_dir(&attacker)?;
             std::fs::rename(&public, &retained)?;
             crate::support::symlink_dir(&attacker, &public)?;
@@ -738,16 +886,16 @@ fn atomic_recovery_and_operation_id_replay() -> Result<()> {
             let output = child.wait_with_output()?;
             assert!(
                 !output.status.success(),
-                "runtime swap succeeded at {boundary}"
+                "recovery authority swap succeeded at {boundary}"
             );
             assert!(
                 output.stdout.is_empty(),
-                "runtime swap emitted JSON at {boundary}"
+                "recovery authority swap emitted JSON at {boundary}"
             );
             assert_eq!(
                 std::fs::read_dir(&attacker)?.count(),
                 0,
-                "attacker runtime changed at {boundary}"
+                "attacker recovery directory changed at {boundary}"
             );
             std::fs::remove_file(&public)?;
             std::fs::rename(&retained, &public)?;
@@ -766,7 +914,7 @@ fn atomic_recovery_and_operation_id_replay() -> Result<()> {
             )?;
             assert!(
                 replay.status.success(),
-                "runtime recovery after {boundary}: {}",
+                "descriptor-safe recovery after {boundary}: {}",
                 String::from_utf8_lossy(&replay.stderr)
             );
         }

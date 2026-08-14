@@ -64,13 +64,13 @@ pub(crate) fn acquire(repo: &gix::Repository, mode: Mode) -> Result<Guard> {
 /// recovery and the caller's read.
 pub(crate) fn acquire_reader(repo: &gix::Repository, span_root: &str) -> Result<Guard> {
     let shared = acquire(repo, Mode::Shared)?;
-    let Some(runtime) = super::context_repair::pending_runtime(repo, span_root)? else {
+    let Some(recovery) = super::context_repair::pending_recovery(repo, span_root)? else {
         return Ok(shared);
     };
 
     drop(shared);
     let exclusive = acquire(repo, Mode::Exclusive)?;
-    super::context_repair::recover_pending_locked(repo, span_root, &runtime)?;
+    super::context_repair::recover_pending_locked(repo, span_root, &recovery)?;
     exclusive
         ._file
         .lock_shared()
@@ -84,8 +84,8 @@ pub(crate) fn acquire_reader(repo: &gix::Repository, span_root: &str) -> Result<
 /// gap or inverting the repository-before-span lock order.
 pub(crate) fn acquire_writer(repo: &gix::Repository, span_root: &str) -> Result<Guard> {
     let exclusive = acquire(repo, Mode::Exclusive)?;
-    if let Some(runtime) = super::context_repair::pending_runtime(repo, span_root)? {
-        super::context_repair::recover_pending_locked(repo, span_root, &runtime)?;
+    if let Some(recovery) = super::context_repair::pending_recovery(repo, span_root)? {
+        super::context_repair::recover_pending_locked(repo, span_root, &recovery)?;
     }
     Ok(exclusive)
 }

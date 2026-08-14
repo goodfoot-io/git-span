@@ -775,9 +775,81 @@ impl RuntimeAuthority {
     }
 }
 
+/// Stable authority for context-repair journals below one worktree Git
+/// directory. The directory is independent of the environment- and
+/// build-keyed service runtime; the digest binds every journal stored there
+/// to the canonical worktree and resolved span root that produced it.
+#[derive(Debug)]
+pub struct RecoveryAuthority {
+    git_dir: RetainedDirectory,
+    worktree: RetainedDirectory,
+    span_root: RetainedDirectory,
+    directory: RetainedDirectory,
+    scope_digest: String,
+}
+
+impl RecoveryAuthority {
+    /// Retain `<git-dir>/span/context/recovery` with mode 0700 and calculate
+    /// the canonical public scope that every journal must match on replay.
+    pub fn open(git_dir: &Path, worktree: &Path, span_root: &str) -> Result<Self> {
+        git_span_core::validate_repo_relative_path("span root", span_root)?;
+        let git_dir = RetainedDirectory::open_canonical(git_dir)?;
+        let worktree = RetainedDirectory::open_canonical(worktree)?;
+        let span_root = worktree.descend(Path::new(span_root), DirectoryPolicy::Existing)?;
+        let span = git_dir.descend(Path::new("span"), DirectoryPolicy::Create { mode: 0o755 })?;
+        let context = span.descend(
+            Path::new("context"),
+            DirectoryPolicy::Private { mode: 0o700 },
+        )?;
+        let directory = context.descend(
+            Path::new("recovery"),
+            DirectoryPolicy::Private { mode: 0o700 },
+        )?;
+
+        let mut hasher = blake3::Hasher::new();
+        for path in [
+            git_dir.display_path(),
+            worktree.display_path(),
+            span_root.display_path(),
+        ] {
+            let bytes = path.as_os_str().as_encoded_bytes();
+            hasher.update(&(bytes.len() as u64).to_le_bytes());
+            hasher.update(bytes);
+        }
+        let scope_digest = hasher.finalize().to_hex().to_string();
+        Ok(Self {
+            git_dir,
+            worktree,
+            span_root,
+            directory,
+            scope_digest,
+        })
+    }
+
+    /// Duplicate the stable journal-directory authority.
+    pub fn directory(&self) -> Result<RetainedDirectory> {
+        self.directory.try_clone()
+    }
+
+    /// Canonical worktree/span-root binding persisted with each journal.
+    pub fn scope_digest(&self) -> &str {
+        &self.scope_digest
+    }
+
+    /// Revalidate every path used to discover this authority.
+    pub fn validate_bindings(&self) -> Result<()> {
+        self.git_dir.validate_path_binding()?;
+        self.worktree.validate_path_binding()?;
+        self.span_root.validate_path_binding()?;
+        self.directory.validate_path_binding()
+    }
+}
+
 #[cfg(all(test, unix))]
 mod tests {
-    use super::{DirectoryPolicy, RetainedDirectory, RuntimeAuthority, SpanRootAuthority};
+    use super::{
+        DirectoryPolicy, RecoveryAuthority, RetainedDirectory, RuntimeAuthority, SpanRootAuthority,
+    };
     use anyhow::Result;
     use std::ffi::OsStr;
     use std::io::{Read, Write};
@@ -886,6 +958,40 @@ mod tests {
             assert_eq!(read_through(&directory)?, b"runtime");
             assert!(!attacker.join("value").exists());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_authority_is_scope_bound_and_survives_private_leaf_swap() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let git_dir = temp.path().join("git-dir");
+        let worktree = temp.path().join("worktree");
+        std::fs::create_dir(&git_dir)?;
+        std::fs::create_dir(&worktree)?;
+        std::fs::create_dir(worktree.join(".span"))?;
+        std::fs::create_dir(worktree.join("alternate-spans"))?;
+
+        let recovery = RecoveryAuthority::open(&git_dir, &worktree, ".span")?;
+        let repeated = RecoveryAuthority::open(&git_dir, &worktree, ".span")?;
+        let alternate = RecoveryAuthority::open(&git_dir, &worktree, "alternate-spans")?;
+        assert_eq!(recovery.scope_digest(), repeated.scope_digest());
+        assert_ne!(recovery.scope_digest(), alternate.scope_digest());
+        assert_eq!(
+            recovery.directory()?.display_path(),
+            alternate.directory()?.display_path(),
+            "one per-worktree namespace relies on the persisted scope binding"
+        );
+
+        let public = git_dir.join("span/context/recovery");
+        let retained = git_dir.join("span/context/recovery-retained");
+        let attacker = temp.path().join("attacker-recovery");
+        std::fs::create_dir(&attacker)?;
+        std::fs::rename(&public, &retained)?;
+        symlink(&attacker, &public)?;
+        replace_through(&recovery.directory()?, b"stable journal")?;
+        assert_eq!(std::fs::read(retained.join("value"))?, b"stable journal");
+        assert!(!attacker.join("value").exists());
+        assert!(recovery.validate_bindings().is_err());
         Ok(())
     }
 

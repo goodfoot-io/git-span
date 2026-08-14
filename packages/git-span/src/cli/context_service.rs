@@ -674,13 +674,6 @@ mod unix {
         Ok(Some(paths))
     }
 
-    pub(super) fn runtime_directory(
-        repo: &gix::Repository,
-        span_root: &str,
-    ) -> Result<crate::descriptor_authority::RetainedDirectory> {
-        identity_paths(repo, span_root)?.directory.try_clone()
-    }
-
     fn rpc(paths: &ServicePaths, nonce: &str, op: Operation) -> Result<(Response, u64)> {
         paths
             .directory
@@ -1005,7 +998,7 @@ mod unix {
             &span_root,
             addresses,
             operation_id,
-            runtime,
+            Some(runtime),
             |prepared| {
                 let (generation, external_roots) = Generation::build_locked(&repo, &span_root)?;
                 let (mut proved, rows) = generation.query(prepared.scopes.clone())?;
@@ -1078,6 +1071,22 @@ mod unix {
         }
         counters.total_latency_us = started.elapsed().as_micros() as u64;
         Ok((document, counters))
+    }
+
+    fn acknowledge_state(
+        shared: &Arc<Mutex<ServiceState>>,
+        operation_id: uuid::Uuid,
+        addresses: &[String],
+    ) -> Result<()> {
+        let (repo_path, span_root) = {
+            let state = shared
+                .lock()
+                .map_err(|_| anyhow!("context service state was poisoned"))?;
+            (state.repo_path.clone(), state.span_root.clone())
+        };
+        let repo = gix::open(&repo_path)
+            .context("reopen context service repository for repair acknowledgement")?;
+        super::super::context_repair::acknowledge(&repo, &span_root, operation_id, addresses)
     }
 
     fn handle_connection(
@@ -1187,7 +1196,7 @@ mod unix {
             MAX_RESPONSE_BYTES,
         )?;
         if let Some((operation_id, addresses)) = acknowledgement {
-            let _ = super::super::context_repair::acknowledge(runtime, operation_id, &addresses);
+            let _ = acknowledge_state(state, operation_id, &addresses);
         }
         Ok(shutdown)
     }
@@ -1346,15 +1355,10 @@ pub(crate) fn repair(
         if let Some(response) = unix::client_repair(repo, span_root, addresses, operation_id)? {
             return Ok(response);
         }
-        let runtime = unix::runtime_directory(repo, span_root)?;
-        let document = super::context_repair::execute(
-            repo,
-            span_root,
-            addresses,
-            operation_id,
-            &runtime,
-            |_| Ok(()),
-        )?;
+        let document =
+            super::context_repair::execute(repo, span_root, addresses, operation_id, None, |_| {
+                Ok(())
+            })?;
         Ok((document, ServiceCounters::default()))
     }
     #[cfg(not(target_os = "linux"))]
@@ -1372,8 +1376,7 @@ pub(crate) fn acknowledge_repair(
 ) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
-        let runtime = unix::runtime_directory(repo, span_root)?;
-        super::context_repair::acknowledge(&runtime, operation_id, addresses)
+        super::context_repair::acknowledge(repo, span_root, operation_id, addresses)
     }
     #[cfg(not(target_os = "linux"))]
     {

@@ -14,11 +14,13 @@ use std::ffi::{OsStr, OsString};
 use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::descriptor_authority::{DirectoryPolicy, RetainedDirectory, SpanRootAuthority};
+use crate::descriptor_authority::{
+    DirectoryPolicy, RecoveryAuthority, RetainedDirectory, SpanRootAuthority,
+};
 use crate::span_file::SpanFile;
 use crate::types::{AnchorExtent, AnchorResolved, AnchorStatus, DriftSource, EngineOptions};
 
-const JOURNAL_VERSION: u32 = 1;
+const JOURNAL_VERSION: u32 = 2;
 const JOURNAL_TTL_SECS: u64 = 7 * 24 * 60 * 60;
 const RECOVERY_PENDING: &str = "recovery.pending";
 static BOUNDARY_STEP: AtomicUsize = AtomicUsize::new(0);
@@ -44,6 +46,7 @@ struct RepairJournal {
     version: u32,
     operation_id: String,
     request_digest: String,
+    scope_digest: String,
     created_unix_secs: u64,
     state: JournalState,
     applied: usize,
@@ -56,7 +59,7 @@ struct RepairJournal {
 struct RecoveryMarker {
     version: u32,
     operation_id: String,
-    runtime_key: String,
+    scope_digest: String,
     span_root: String,
 }
 
@@ -79,7 +82,7 @@ pub(super) fn execute(
     span_root: &str,
     addresses: &[String],
     operation_id: uuid::Uuid,
-    runtime: &RetainedDirectory,
+    publication_runtime: Option<&RetainedDirectory>,
     mut publish: impl FnMut(&ContextDocument) -> Result<()>,
 ) -> Result<ContextDocument> {
     let _domain = super::recovery_domain::acquire(repo, super::recovery_domain::Mode::Exclusive)?;
@@ -88,7 +91,13 @@ pub(super) fn execute(
         span_root,
         DirectoryPolicy::Existing,
     )?;
-    let journal_directory = runtime.descend(
+    let recovery = RecoveryAuthority::open(
+        crate::git::git_dir(repo),
+        crate::git::work_dir(repo)?,
+        span_root,
+    )?;
+    let recovery_directory = recovery.directory()?;
+    let journal_directory = recovery_directory.descend(
         std::path::Path::new("journal"),
         DirectoryPolicy::Private { mode: 0o700 },
     )?;
@@ -104,16 +113,24 @@ pub(super) fn execute(
             "unsupported context repair journal version"
         );
         ensure!(
-            journal.operation_id == operation_id.to_string() && journal.request_digest == digest,
-            "context operation ID is already bound to a different normalized request"
+            journal.operation_id == operation_id.to_string()
+                && journal.request_digest == digest
+                && journal.scope_digest == recovery.scope_digest(),
+            "context operation ID is already bound to a different normalized request or recovery scope"
         );
         match journal.state {
             JournalState::Committed | JournalState::Delivered => {
                 verify_persisted_response(repo, span_root, addresses, &journal.response)?;
                 publish(&journal.response)?;
                 authority.validate_bindings()?;
-                runtime.validate_path_binding()?;
-                clear_recovery_pending(runtime)?;
+                validate_publication_runtime(publication_runtime)?;
+                recovery.validate_bindings()?;
+                clear_recovery_pending(
+                    &recovery_directory,
+                    operation_id,
+                    recovery.scope_digest(),
+                    span_root,
+                )?;
                 return Ok(journal.response);
             }
             JournalState::Prepared => {
@@ -129,13 +146,20 @@ pub(super) fn execute(
                 publish(&journal.response)?;
                 boundary("generation-publication")?;
                 authority.validate_bindings()?;
-                runtime.validate_path_binding()?;
+                validate_publication_runtime(publication_runtime)?;
+                recovery.validate_bindings()?;
                 journal.state = JournalState::Committed;
                 persist_journal(&journal_directory, &journal_leaf, &journal)?;
                 boundary("journal-committed")?;
                 authority.validate_bindings()?;
-                runtime.validate_path_binding()?;
-                clear_recovery_pending(runtime)?;
+                validate_publication_runtime(publication_runtime)?;
+                recovery.validate_bindings()?;
+                clear_recovery_pending(
+                    &recovery_directory,
+                    operation_id,
+                    recovery.scope_digest(),
+                    span_root,
+                )?;
                 return Ok(journal.response);
             }
         }
@@ -180,6 +204,7 @@ pub(super) fn execute(
         version: JOURNAL_VERSION,
         operation_id: operation_id.to_string(),
         request_digest: digest,
+        scope_digest: recovery.scope_digest().to_owned(),
         created_unix_secs: unix_now(),
         state: JournalState::Prepared,
         applied: 0,
@@ -187,7 +212,12 @@ pub(super) fn execute(
         entries,
         response,
     };
-    mark_recovery_pending(runtime, operation_id, span_root)?;
+    mark_recovery_pending(
+        &recovery_directory,
+        operation_id,
+        recovery.scope_digest(),
+        span_root,
+    )?;
     persist_journal(&journal_directory, &journal_leaf, &journal)?;
     boundary("journal-prepared")?;
 
@@ -196,30 +226,31 @@ pub(super) fn execute(
     publish(&journal.response)?;
     boundary("generation-publication")?;
     authority.validate_bindings()?;
-    runtime.validate_path_binding()?;
+    validate_publication_runtime(publication_runtime)?;
+    recovery.validate_bindings()?;
     validate_targets(&targets)?;
     journal.state = JournalState::Committed;
     persist_journal(&journal_directory, &journal_leaf, &journal)?;
     boundary("journal-committed")?;
     authority.validate_bindings()?;
-    runtime.validate_path_binding()?;
+    validate_publication_runtime(publication_runtime)?;
+    recovery.validate_bindings()?;
     validate_targets(&targets)?;
-    clear_recovery_pending(runtime)?;
+    clear_recovery_pending(
+        &recovery_directory,
+        operation_id,
+        recovery.scope_digest(),
+        span_root,
+    )?;
     Ok(journal.response)
 }
 
-/// Whether an interrupted prepared transaction requires an exclusive recovery
-/// pass before a reader can enter the span corpus.
-pub(super) fn recovery_pending(runtime: &RetainedDirectory) -> Result<bool> {
-    recovery_marker_directory(runtime)?.entry_exists(OsStr::new(RECOVERY_PENDING))
-}
-
 /// Resolve the exact private journal named by the repository-wide pending
-/// marker. A clean reader never traverses the service-identity tree.
-pub(super) fn pending_runtime(
+/// marker. A clean reader never traverses the stable recovery tree.
+pub(super) fn pending_recovery(
     repo: &gix::Repository,
     span_root: &str,
-) -> Result<Option<RetainedDirectory>> {
+) -> Result<Option<RecoveryAuthority>> {
     let git_directory = RetainedDirectory::open_canonical(crate::git::git_dir(repo))?;
     let marker_directory = git_directory.descend(
         std::path::Path::new("span"),
@@ -237,11 +268,16 @@ pub(super) fn pending_runtime(
     if marker.span_root != span_root {
         return Ok(None);
     }
-    let runtime = crate::descriptor_authority::RuntimeAuthority::open(
+    let recovery = RecoveryAuthority::open(
         crate::git::git_dir(repo),
-        &marker.runtime_key,
+        crate::git::work_dir(repo)?,
+        span_root,
     )?;
-    Ok(Some(runtime.directory()?))
+    ensure!(
+        marker.scope_digest == recovery.scope_digest(),
+        "context recovery marker belongs to a different canonical worktree or span root"
+    );
+    Ok(Some(recovery))
 }
 
 /// Finish every prepared transaction while the caller holds the repository
@@ -250,68 +286,92 @@ pub(super) fn pending_runtime(
 pub(super) fn recover_pending_locked(
     repo: &gix::Repository,
     span_root: &str,
-    runtime: &RetainedDirectory,
+    recovery: &RecoveryAuthority,
 ) -> Result<()> {
-    if !recovery_pending(runtime)? {
+    let recovery_directory = recovery.directory()?;
+    let marker_directory = recovery_marker_directory(&recovery_directory)?;
+    let Some(marker_bytes) = marker_directory.read_optional(OsStr::new(RECOVERY_PENDING))? else {
+        return Ok(());
+    };
+    let marker: RecoveryMarker = serde_json::from_slice(&marker_bytes)
+        .context("decode context repair recovery marker during recovery")?;
+    ensure!(
+        marker.version == JOURNAL_VERSION,
+        "unsupported context recovery marker version"
+    );
+    if marker.span_root != span_root {
         return Ok(());
     }
+    ensure!(
+        marker.scope_digest == recovery.scope_digest(),
+        "context recovery marker belongs to a different canonical worktree or span root"
+    );
+    let operation_id = marker
+        .operation_id
+        .parse::<uuid::Uuid>()
+        .context("context recovery marker has an invalid operation ID")?;
     let Some(authority) = SpanRootAuthority::open_optional(crate::git::work_dir(repo)?, span_root)?
     else {
         anyhow::bail!("context repair recovery marker exists without its span root")
     };
-    let journal_directory = runtime.descend(
+    let journal_directory = recovery_directory.descend(
         std::path::Path::new("journal"),
         DirectoryPolicy::Private { mode: 0o700 },
     )?;
-    for relative in journal_directory.regular_file_names()? {
-        let Some(leaf) = relative.file_name() else {
-            continue;
-        };
-        if relative.components().count() != 1
-            || !leaf.to_string_lossy().starts_with("operation-")
-            || !leaf.to_string_lossy().ends_with(".json")
-        {
-            continue;
-        }
-        let bytes = journal_directory
-            .read_optional(leaf)?
-            .context("context repair journal disappeared during recovery")?;
-        let mut journal: RepairJournal =
-            serde_json::from_slice(&bytes).context("decode context repair journal for recovery")?;
-        ensure!(
-            journal.version == JOURNAL_VERSION,
-            "unsupported context repair journal version"
-        );
-        if journal.state != JournalState::Prepared {
-            continue;
-        }
+    let leaf = journal_name(operation_id);
+    let bytes = journal_directory
+        .read_optional(&leaf)?
+        .context("context repair journal disappeared during recovery")?;
+    let mut journal: RepairJournal =
+        serde_json::from_slice(&bytes).context("decode context repair journal for recovery")?;
+    ensure!(
+        journal.version == JOURNAL_VERSION,
+        "unsupported context repair journal version"
+    );
+    ensure!(
+        journal.operation_id == marker.operation_id
+            && journal.scope_digest == recovery.scope_digest(),
+        "context recovery marker does not match its stable journal"
+    );
+    if journal.state == JournalState::Prepared {
         recover_prepared(
             repo,
             span_root,
             &authority,
             &journal_directory,
-            leaf,
+            &leaf,
             &mut journal,
         )?;
         verify_persisted_response(repo, span_root, &journal.addresses, &journal.response)?;
         authority.validate_bindings()?;
-        runtime.validate_path_binding()?;
+        recovery.validate_bindings()?;
         journal.state = JournalState::Committed;
-        persist_journal(&journal_directory, leaf, &journal)?;
+        persist_journal(&journal_directory, &leaf, &journal)?;
         authority.validate_bindings()?;
-        runtime.validate_path_binding()?;
+        recovery.validate_bindings()?;
     }
-    clear_recovery_pending(runtime)
+    clear_recovery_pending(
+        &recovery_directory,
+        operation_id,
+        recovery.scope_digest(),
+        span_root,
+    )
 }
 
 /// Mark a committed response delivered. A dropped stdout/RPC leaves it in the
 /// committed state so a later process can replay it with the same ID.
 pub(super) fn acknowledge(
-    runtime: &RetainedDirectory,
+    repo: &gix::Repository,
+    span_root: &str,
     operation_id: uuid::Uuid,
     addresses: &[String],
 ) -> Result<()> {
-    let journal_directory = runtime.descend(
+    let recovery = RecoveryAuthority::open(
+        crate::git::git_dir(repo),
+        crate::git::work_dir(repo)?,
+        span_root,
+    )?;
+    let journal_directory = recovery.directory()?.descend(
         std::path::Path::new("journal"),
         DirectoryPolicy::Private { mode: 0o700 },
     )?;
@@ -321,7 +381,10 @@ pub(super) fn acknowledge(
     };
     let mut journal: RepairJournal = serde_json::from_slice(&bytes)?;
     ensure!(
-        journal.request_digest == request_digest(addresses)?,
+        journal.version == JOURNAL_VERSION
+            && journal.operation_id == operation_id.to_string()
+            && journal.scope_digest == recovery.scope_digest()
+            && journal.request_digest == request_digest(addresses)?,
         "context operation ID request changed before acknowledgement"
     );
     ensure!(
@@ -329,7 +392,8 @@ pub(super) fn acknowledge(
         "cannot acknowledge an uncommitted context repair"
     );
     journal.state = JournalState::Delivered;
-    persist_journal(&journal_directory, &leaf, &journal)
+    persist_journal(&journal_directory, &leaf, &journal)?;
+    recovery.validate_bindings()
 }
 
 fn plan_repair(
@@ -719,6 +783,13 @@ fn validate_targets(targets: &[crate::descriptor_authority::SpanTarget]) -> Resu
     Ok(())
 }
 
+fn validate_publication_runtime(runtime: Option<&RetainedDirectory>) -> Result<()> {
+    if let Some(runtime) = runtime {
+        runtime.validate_path_binding()?;
+    }
+    Ok(())
+}
+
 fn apply_prepared_retained(
     targets: &[crate::descriptor_authority::SpanTarget],
     journal_directory: &RetainedDirectory,
@@ -839,41 +910,36 @@ fn persist_journal(
     directory.sync()
 }
 
-fn recovery_marker_directory(runtime: &RetainedDirectory) -> Result<RetainedDirectory> {
-    let (context, _) = runtime
+fn recovery_marker_directory(recovery: &RetainedDirectory) -> Result<RetainedDirectory> {
+    let (context, _) = recovery
         .parent()?
-        .context("context repair runtime has no context parent")?;
+        .context("context repair authority has no context parent")?;
     let (span, _) = context
         .parent()?
-        .context("context repair runtime has no repository span parent")?;
+        .context("context repair authority has no repository span parent")?;
     Ok(span)
 }
 
 fn mark_recovery_pending(
-    runtime: &RetainedDirectory,
+    recovery: &RetainedDirectory,
     operation_id: uuid::Uuid,
+    scope_digest: &str,
     span_root: &str,
 ) -> Result<()> {
-    let runtime_key = runtime
-        .display_path()
-        .file_name()
-        .context("context repair runtime has no identity leaf")?
-        .to_string_lossy()
-        .into_owned();
     let marker = RecoveryMarker {
         version: JOURNAL_VERSION,
         operation_id: operation_id.to_string(),
-        runtime_key,
+        scope_digest: scope_digest.to_owned(),
         span_root: span_root.to_owned(),
     };
-    let directory = recovery_marker_directory(runtime)?;
+    let directory = recovery_marker_directory(recovery)?;
     if let Some(bytes) = directory.read_optional(OsStr::new(RECOVERY_PENDING))? {
         let existing: RecoveryMarker = serde_json::from_slice(&bytes)
             .context("decode existing context repair recovery marker")?;
         ensure!(
             existing.version == marker.version
                 && existing.operation_id == marker.operation_id
-                && existing.runtime_key == marker.runtime_key
+                && existing.scope_digest == marker.scope_digest
                 && existing.span_root == marker.span_root,
             "another context repair remains prepared and must be recovered before mutation"
         );
@@ -886,31 +952,25 @@ fn mark_recovery_pending(
     directory.sync()
 }
 
-fn clear_recovery_pending(runtime: &RetainedDirectory) -> Result<()> {
-    let journal_directory = runtime.descend(
-        std::path::Path::new("journal"),
-        DirectoryPolicy::Private { mode: 0o700 },
-    )?;
-    for relative in journal_directory.regular_file_names()? {
-        let Some(leaf) = relative.file_name() else {
-            continue;
-        };
-        if relative.components().count() != 1
-            || !leaf.to_string_lossy().starts_with("operation-")
-            || !leaf.to_string_lossy().ends_with(".json")
-        {
-            continue;
-        }
-        let bytes = journal_directory
-            .read_optional(leaf)?
-            .context("context repair journal disappeared while clearing recovery marker")?;
-        let journal: RepairJournal = serde_json::from_slice(&bytes)
-            .context("decode context repair journal while clearing recovery marker")?;
-        if journal.state == JournalState::Prepared {
-            return Ok(());
-        }
+fn clear_recovery_pending(
+    recovery: &RetainedDirectory,
+    operation_id: uuid::Uuid,
+    scope_digest: &str,
+    span_root: &str,
+) -> Result<()> {
+    let marker_directory = recovery_marker_directory(recovery)?;
+    let Some(bytes) = marker_directory.read_optional(OsStr::new(RECOVERY_PENDING))? else {
+        return Ok(());
+    };
+    let marker: RecoveryMarker = serde_json::from_slice(&bytes)
+        .context("decode context repair recovery marker while clearing it")?;
+    if marker.version != JOURNAL_VERSION
+        || marker.operation_id != operation_id.to_string()
+        || marker.scope_digest != scope_digest
+        || marker.span_root != span_root
+    {
+        return Ok(());
     }
-    let marker_directory = recovery_marker_directory(runtime)?;
     if marker_directory.unlink_if_exists(OsStr::new(RECOVERY_PENDING))? {
         marker_directory.sync()?;
     }
