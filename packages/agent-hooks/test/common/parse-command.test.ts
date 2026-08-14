@@ -2045,6 +2045,23 @@ NODE`;
     ]);
   });
 
+  it('retains layered loop source reads needed to pair copy destinations in a pipeline', () => {
+    const result = parseCommandLayered('printf input | for f in dst.txt; do cp -n src.txt "$f"; done', { cwd: dir });
+
+    expect(result.unresolved).toEqual([]);
+    expect(
+      result.resolved.map(({ layer, span }) => ({
+        layer,
+        operation: span.operation,
+        path: relative(dir, span.absolutePath),
+        simpleCommandIndex: span.simpleCommandIndex
+      }))
+    ).toEqual([
+      { layer: 'literal-loop', operation: 'read', path: 'src.txt', simpleCommandIndex: 1 },
+      { layer: 'literal-loop', operation: 'create-overwrite', path: 'dst.txt', simpleCommandIndex: 1 }
+    ]);
+  });
+
   it.each([
     [32, 32, undefined],
     [33, 0, 'candidate-budget-exceeded'],
