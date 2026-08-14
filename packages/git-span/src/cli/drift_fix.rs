@@ -758,17 +758,23 @@ pub(crate) fn format_residue_markers(
         },
     ];
 
-    // Always insert the anchor/why separator when either region has content.
-    if !resolved_anchors.is_empty()
-        || !result.unresolved.is_empty()
-        || regions.iter().any(|region| {
-            region.conflicted
-                || !region.merged.is_empty()
-                || !region.ours.is_empty()
-                || !region.theirs.is_empty()
-        })
-    {
+    let has_anchor_block = !resolved_anchors.is_empty() || !result.unresolved.is_empty();
+    let has_tail = regions.iter().any(|region| {
+        region.conflicted
+            || !region.merged.is_empty()
+            || !region.ours.is_empty()
+            || !region.theirs.is_empty()
+    });
+
+    // Match `SpanFile::serialize`'s anchor/why boundary. An anchor block needs
+    // one additional newline after its already newline-terminated content;
+    // an anchorless structured tail needs two leading newlines so a later
+    // `split_once("\n\n")` cannot mistake its why text for anchors.
+    if has_anchor_block || has_tail {
         output.push('\n');
+        if !has_anchor_block {
+            output.push('\n');
+        }
     }
 
     let first_conflict = regions.iter().position(|region| region.conflicted);

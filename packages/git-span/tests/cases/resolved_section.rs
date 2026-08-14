@@ -254,6 +254,68 @@ fn divergent_sections_fail_rehash_and_resolve_with_ours() -> Result<()> {
 }
 
 #[test]
+fn anchorless_tail_residue_round_trips_from_driver_to_resolve() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let dir = tempfile::tempdir()?;
+    let base = dir.path().join("base");
+    let ours = dir.path().join("ours");
+    let theirs = dir.path().join("theirs");
+
+    for (name, base_why, ours_why, theirs_why, expected_prefix, expected_why) in [
+        (
+            "conflicted-tail",
+            "base why",
+            "our why",
+            "their why",
+            "\n\n<<<<<<<",
+            "our why",
+        ),
+        (
+            "plain-prefix",
+            "base why",
+            "settled why",
+            "base why",
+            "\n\nsettled why\n\n<<<<<<<",
+            "settled why",
+        ),
+    ] {
+        let span = |why: &str, timestamp: &str, hash: &str| {
+            format!("\n\n{why}\n\n[resolved]\n{timestamp} add retired.rs rk64:{hash}\n")
+        };
+        std::fs::write(&base, span(base_why, "2026-08-13T12:00:00Z", "base"))?;
+        std::fs::write(&ours, span(ours_why, "2026-08-13T12:01:00Z", "ours"))?;
+        std::fs::write(&theirs, span(theirs_why, "2026-08-13T12:02:00Z", "theirs"))?;
+
+        let driver = run_driver(&base, &ours, &theirs)?;
+        assert_eq!(
+            driver.status.code(),
+            Some(1),
+            "{name}: stderr={} ",
+            String::from_utf8_lossy(&driver.stderr)
+        );
+        let residue = std::fs::read_to_string(&ours)?;
+        assert!(
+            residue.starts_with(expected_prefix),
+            "{name}: anchorless residue lost its two-newline boundary:\n{residue}"
+        );
+        write_span(&repo, name, &residue)?;
+
+        let resolved = repo.run_span(["resolve", name, "--ours"])?;
+        assert!(
+            resolved.status.success(),
+            "{name}: stderr={}",
+            String::from_utf8_lossy(&resolved.stderr)
+        );
+        let settled = read_span(&repo, name)?;
+        assert!(settled.anchors.is_empty());
+        assert_eq!(settled.why, expected_why);
+        assert_eq!(settled.resolved.len(), 1);
+        assert_eq!(settled.resolved[0].content_hash, "ours");
+    }
+    Ok(())
+}
+
+#[test]
 fn one_sided_why_edit_stays_settled_while_records_cross_driver_drift_and_resolve() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let base = dir.path().join("base");
