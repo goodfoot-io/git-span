@@ -1,10 +1,10 @@
 packages/git-span/src/cli/drift_output.rs#L113-L120 rk64:cad4ab94d8a3157c
-packages/git-span/src/cli/mod.rs#L306-L312 rk64:6b8232536b7ab78c
+packages/git-span/src/cli/mod.rs#L308-L314 rk64:6b8232536b7ab78c
 packages/git-span/src/perf.rs#L58-L74 rk64:f77e9c9b16b10157
 packages/git-span/src/perf.rs#L354-L365 rk64:a0ebbef90e571cab
 packages/git-span/src/resolver/engine/mod.rs#L568-L591 rk64:c33903b65fc2e5af
 packages/git-span/src/resolver/store/mod.rs#L1-L20 rk64:5ff7f3b1be2832ca
-wiki/guides/profiling-git-span-drift.md#L42-L66 rk64:76309a834e9eb50f
+wiki/guides/profiling-git-span-drift.md#L42-L66 rk64:70b312f8a37ea917
 wiki/guides/profiling-git-span-drift.md#L95-L183 rk64:d92af93c3ab9df4f
 
 The guide's --perf-trace schema and cache-path.* counter family describe the perf::note/perf::counter emitters, the trace capture and counter emission in the resolver, the store's publish/maintain surface, and the --perf-trace/--fix validation in the CLI and drift output; either side changing alone silently falsifies the other.
