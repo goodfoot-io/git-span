@@ -1456,10 +1456,16 @@ pub fn resolve_resolved_section(
             .map(|r| (r.path.clone(), r.start_line, r.end_line))
     }
 
-    fn at<'a>(records: &'a [ResolvedRecord], key: &Identity) -> Option<&'a ResolvedRecord> {
-        records.iter().find(|record| {
-            record.path == key.0 && record.start_line == key.1 && record.end_line == key.2
-        })
+    fn index(records: &[ResolvedRecord]) -> HashMap<(&str, u32, u32), &ResolvedRecord> {
+        records
+            .iter()
+            .map(|record| {
+                (
+                    (record.path.as_str(), record.start_line, record.end_line),
+                    record,
+                )
+            })
+            .collect()
     }
 
     let mut keys = std::collections::BTreeSet::new();
@@ -1469,14 +1475,22 @@ pub fn resolve_resolved_section(
         keys.extend(identities(&base.resolved));
     }
 
+    let ours_index = index(&ours.resolved);
+    let theirs_index = index(&theirs.resolved);
+    let base_index = base.map(|base| index(&base.resolved));
+
     let mut merged = Vec::with_capacity(keys.len());
     let mut diverged = false;
     for key in keys {
-        let ours_record = at(&ours.resolved, &key);
-        let theirs_record = at(&theirs.resolved, &key);
+        let lookup_key = (key.0.as_str(), key.1, key.2);
+        let ours_record = ours_index.get(&lookup_key).copied();
+        let theirs_record = theirs_index.get(&lookup_key).copied();
         let selected = match base {
-            Some(base) => {
-                let base_record = at(&base.resolved, &key);
+            Some(_) => {
+                let base_record = base_index
+                    .as_ref()
+                    .and_then(|index| index.get(&lookup_key))
+                    .copied();
                 if ours_record == theirs_record {
                     ours_record
                 } else if ours_record == base_record {
@@ -2072,6 +2086,27 @@ mod tests {
         let (records, diverged) = resolve_resolved_section(Some(&span), &span, &span);
         assert!(!diverged);
         assert_eq!(records, span.resolved);
+    }
+
+    #[test]
+    fn resolve_resolved_section_unions_large_disjoint_sides_in_identity_order() {
+        let ours = resolved_span(
+            (0..2_000)
+                .map(|i| resolved_record(&format!("ours-{i:04}.rs"), "ours"))
+                .collect(),
+        );
+        let theirs = resolved_span(
+            (0..2_000)
+                .map(|i| resolved_record(&format!("theirs-{i:04}.rs"), "theirs"))
+                .collect(),
+        );
+        let base = resolved_span(Vec::new());
+
+        let (records, diverged) = resolve_resolved_section(Some(&base), &ours, &theirs);
+
+        assert!(!diverged);
+        assert_eq!(records.len(), 4_000);
+        assert!(records.windows(2).all(|pair| pair[0].path < pair[1].path));
     }
 
     #[test]
