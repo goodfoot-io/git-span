@@ -222,9 +222,11 @@ pub enum Commands {
     /// file without markers it is a no-op that says so.
     ///
     /// `--rehash` (the default) re-reads each conflicted anchor's source from
-    /// the worktree and hashes it; `--ours`/`--theirs` keep that side's record
-    /// for every anchor residue and that side's prose for a divergent `--why`,
-    /// which is the path for a source that cannot be re-read at all.
+    /// the worktree and hashes it. `--ours`/`--theirs` choose between
+    /// conflicting values for the same anchor key; anchors declared by only
+    /// one side remain in the union. They also choose that side's prose for a
+    /// divergent `--why`, which is the path for a source that cannot be
+    /// re-read at all.
     ///
     /// Resolution is all-or-nothing per span: any entry that cannot be settled
     /// under the chosen side leaves the file byte-identical and names what
@@ -501,12 +503,14 @@ pub struct ResolveArgs {
     #[arg(long, conflicts_with_all = ["ours", "theirs"])]
     pub rehash: bool,
 
-    /// Keep this side's anchor record for every anchor residue, and this
+    /// For a conflicting value on the same anchor key, keep this side's
+    /// record; anchors declared only by theirs remain in the union. Keep this
     /// side's prose/settings for a divergent `--why` or `[config]`.
     #[arg(long, conflicts_with_all = ["rehash", "theirs"])]
     pub ours: bool,
 
-    /// Keep the other side's anchor record for every anchor residue, and its
+    /// For a conflicting value on the same anchor key, keep the other side's
+    /// record; anchors declared only by ours remain in the union. Keep its
     /// prose/settings for a divergent `--why` or `[config]`.
     #[arg(long, conflicts_with_all = ["rehash", "ours"])]
     pub theirs: bool,

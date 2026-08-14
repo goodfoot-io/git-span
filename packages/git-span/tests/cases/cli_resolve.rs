@@ -358,6 +358,43 @@ file1.txt#L1-L40 rk64:{THIRD_HASH}
 // ---------------------------------------------------------------------------
 
 #[test]
+fn resolve_help_explains_side_value_arbitration_not_membership() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    let out = repo.run_span_with_env(["resolve", "--help"], "NO_COLOR", "1")?;
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "resolve help must render; stderr=\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let help = String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        help.contains("`--ours`/`--theirs` choose between conflicting values for the same anchor key;"),
+        "the command description must distinguish value arbitration from membership union; help=\n{help}"
+    );
+    assert!(
+        help.contains("anchors declared by only one side remain in the union."),
+        "the command description must state the membership-union boundary; help=\n{help}"
+    );
+    assert!(
+        help.contains(
+            "--ours For a conflicting value on the same anchor key, keep this side's record; anchors declared only by theirs remain in the union."
+        ),
+        "--ours must not imply it drops theirs-only anchors; help=\n{help}"
+    );
+    assert!(
+        help.contains(
+            "--theirs For a conflicting value on the same anchor key, keep the other side's record; anchors declared only by ours remain in the union."
+        ),
+        "--theirs must not imply it drops ours-only anchors; help=\n{help}"
+    );
+    Ok(())
+}
+
+#[test]
 fn resolve_ours_unions_theirs_only_orphan() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let h1 = line_slice_hash(ORIGINAL, 1, 5);
@@ -394,6 +431,43 @@ file2.txt#L1-L5 rk64:{h2}
     assert!(
         !span.contains(OTHER_HASH),
         "theirs' record for the divergent anchor must be gone; span:\n{span}"
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let membership_outcome = "file2.txt#L1-L5: kept — only present in theirs; \
+                              union membership is independent of --ours/--theirs";
+    assert!(
+        stdout.contains(membership_outcome),
+        "the human report must explain why --ours retained the theirs-only anchor; stdout=\n{stdout}"
+    );
+
+    // Both formats consume `ReportEntry`, but keep this assertion at the
+    // public boundary: a future JSON renderer must not lose the explanation.
+    repo.write_file(".span/m", &fixture)?;
+    let json_out = repo.run_span(["resolve", "m", "--ours", "--format", "json"])?;
+    assert_eq!(json_out.status.code(), Some(0));
+    let json = String::from_utf8_lossy(&json_out.stdout);
+    let doc: serde_json::Value =
+        serde_json::from_str(&json).unwrap_or_else(|e| panic!("json expected: {e}\n{json}"));
+    assert!(
+        doc["entries"].as_array().is_some_and(|entries| entries.iter().any(|entry| {
+            entry["address"] == "file2.txt#L1-L5"
+                && entry["outcome"]
+                    == "kept — only present in theirs; union membership is independent of --ours/--theirs"
+        })),
+        "the JSON report must carry the same membership explanation; json=\n{json}"
+    );
+
+    // The source qualifier remains a suffix to the complete membership
+    // sentence, so it says both why the anchor was kept and what was not
+    // verified without producing a dangling or misleading clause.
+    repo.write_file(".span/m", &fixture)?;
+    std::fs::remove_file(repo.path().join("file2.txt"))?;
+    let unverified_out = repo.run_span(["resolve", "m", "--ours"])?;
+    assert_eq!(unverified_out.status.code(), Some(0));
+    let unverified_stdout = String::from_utf8_lossy(&unverified_out.stdout);
+    assert!(
+        unverified_stdout.contains(&format!("{membership_outcome} (unverified — no readable source)")),
+        "the unverified suffix must remain grammatical after the membership explanation; stdout=\n{unverified_stdout}"
     );
     Ok(())
 }

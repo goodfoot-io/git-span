@@ -1761,8 +1761,14 @@ fn build_entries(
                         }
                     }
                 }
-                (Some(_), None) => "kept — only present in ours, not itself residue".to_string(),
-                (None, Some(_)) => "kept — only present in theirs, not itself residue".to_string(),
+                (Some(_), None) => {
+                    "kept — only present in ours; union membership is independent of --ours/--theirs"
+                        .to_string()
+                }
+                (None, Some(_)) => {
+                    "kept — only present in theirs; union membership is independent of --ours/--theirs"
+                        .to_string()
+                }
                 (None, None) => "resolved".to_string(),
             };
             let outcome = if unverified.contains(a.path.as_str()) {

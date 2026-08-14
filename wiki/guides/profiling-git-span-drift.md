@@ -45,7 +45,7 @@ The devcontainer image does not set this at startup — many hardened hosts reje
 git span drift --perf-trace /tmp/trace.csv
 ```
 
-Writes one CSV row per resolved anchor to `/tmp/trace.csv`. The flag ([`src/cli/mod.rs`](../../packages/git-span/src/cli/mod.rs#L306-L312)) is opt-in; without it, no per-anchor instrumentation runs.
+Writes one CSV row per resolved anchor to `/tmp/trace.csv`. The flag ([`src/cli/mod.rs`](../../packages/git-span/src/cli/mod.rs#L308-L314)) is opt-in; without it, no per-anchor instrumentation runs.
 
 ### CSV schema
 
