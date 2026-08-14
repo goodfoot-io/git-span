@@ -566,22 +566,21 @@ fn reconcile_output_check_error_json_unknown_no_indeterminate() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Matrix row: why read-mode rejection
+// Matrix row: why non-terminal read rejection
 //
-// `why <span> --format json` in read mode → usage-style `CliError` before
-// any output, exit 1, no stdout (drift's `--fix`-with-machine-format
-// rejection is the precedent). The read mode's prose is untouched.
+// `why <span> --format json` without terminal stdin → usage-style `CliError`
+// before any output, exit 1, no stdout. The stdin guard takes precedence over
+// the read-mode format guard because automation must never enter read mode.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn reconcile_output_why_read_mode_rejects_json_format() -> Result<()> {
+fn reconcile_output_why_non_terminal_stdin_precedes_json_format() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.span_stdout(["why", "read-reject", "some reason"])?;
 
-    // No why text and non-terminal stdin → read mode. The `--format` flag
-    // applies to the write mode only; read mode must reject it fail-closed
-    // rather than silently print prose (a migrating hook would parse prose
-    // as a document).
+    // No why text and non-terminal stdin must fail before considering the
+    // read-mode format, so automation cannot block while trying to infer
+    // whether input is coming.
     let out = repo.run_span(["why", "read-reject", "--format", "json"])?;
     assert_eq!(out.status.code(), Some(1));
     assert!(
@@ -591,8 +590,8 @@ fn reconcile_output_why_read_mode_rejects_json_format() -> Result<()> {
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("--format"),
-        "a usage-style rejection must name the rejected flag; stderr:\n{stderr}"
+        stderr.contains("stdin") && stderr.contains("terminal"),
+        "the usage-style rejection must identify non-terminal stdin; stderr:\n{stderr}"
     );
     Ok(())
 }

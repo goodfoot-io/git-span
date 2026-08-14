@@ -32,7 +32,6 @@ use git_span_core::{
 use std::fmt::Write as FmtWrite;
 use std::fs::File;
 use std::io::IsTerminal;
-use std::io::Read;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1723,19 +1722,20 @@ pub fn run_why(repo: &gix::Repository, args: WhyArgs, span_root: &str) -> Result
         format,
     } = args;
 
-    // Positional text → write mode. Piped stdin → write mode (only when
-    // data is actually present — an empty stdin falls through to read).
-    // Terminal stdin with no positional → read mode (print current why).
+    // Positional text → write mode. A bare invocation is interactive read
+    // mode only: attempting to infer piped input by reading to EOF can block
+    // forever when automation inherits an open stdin.
     let write_body: Option<String> = if let Some(m) = why_text {
         Some(m)
     } else if !std::io::stdin().is_terminal() {
-        let mut body = String::new();
-        std::io::stdin().read_to_string(&mut body)?;
-        if body.is_empty() {
-            None
-        } else {
-            Some(body)
+        return Err(CliError {
+            subcommand: "why",
+            summary: "why text is required when stdin is not a terminal.".into(),
+            what_happened: "A bare `git span why <name>` is interactive read mode. Reading an inherited non-terminal stdin could block indefinitely waiting for EOF."
+                .into(),
+            next_steps: vec![NextStep::Bash(format!("git span why {name} <why text>"))],
         }
+        .into());
     } else {
         None
     };

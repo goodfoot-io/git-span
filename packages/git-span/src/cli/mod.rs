@@ -135,8 +135,8 @@ pub enum Commands {
     /// when the relationship or lifecycle state changes.
     ///
     /// Bare `git span why <name>` prints the current why; a
-    /// positional argument writes a new why into the span file;
-    /// piped stdin also writes. Commit with `git add .span &&
+    /// positional argument writes a new why into the span file. Bare
+    /// non-terminal invocations fail instead of reading stdin. Commit with `git add .span &&
     /// git commit`.
     Why(WhyArgs),
 
@@ -399,8 +399,8 @@ pub struct WhyArgs {
     /// Span whose why text to read or stage.
     pub name: String,
 
-    /// Why text to write. Omit to read from piped stdin or print the
-    /// current why when stdin is a terminal.
+    /// Why text to write. Omit to print the current why when stdin is a
+    /// terminal; bare non-terminal invocations fail.
     pub why_text: Option<String>,
 
     /// Output format for the write-mode result (`human` or `json`).

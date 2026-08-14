@@ -155,7 +155,7 @@ rather than printing prose.
 
 `git span why <name>` never gates on the span existing: a bare read of an
 unknown name prints `` `<name>` has no why recorded. `` at exit 0, and
-a positional argument (or piped stdin) on an unknown name silently **creates** a new, anchor-less span with that
+a positional argument on an unknown name silently **creates** a new, anchor-less span with that
 why. If a `why` you expected to update instead reads as freshly created,
 double-check the span name for typos with `git span list`.
 
