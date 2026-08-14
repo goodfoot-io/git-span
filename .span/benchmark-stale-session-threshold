@@ -1,0 +1,4 @@
+packages/agent-hooks/scripts/hook-path-benchmark.ts#L357-L357 rk64:5e3672958bfa19b7
+packages/agent-hooks/src/common/agent-hooks-common.ts#L422-L422 rk64:e09ec3929b5af28c
+
+The benchmark's SWEEP_MAX_AGE_MS duplicates pruneStaleSessions's THIRTY_DAYS_MS default as a literal so it exercises the real stale-session horizon; changing the real threshold without updating this literal silently mismeasures the prune path since it is a plain numeric parameter, not an imported constant.
