@@ -15,6 +15,8 @@
 pub mod bench_corpus;
 
 pub mod cli;
+#[doc(hidden)]
+pub mod descriptor_authority;
 pub mod git;
 pub mod perf;
 pub mod resolver;
