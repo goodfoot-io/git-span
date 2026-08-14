@@ -152,6 +152,34 @@ fn assert_named_commands_change_the_file(
     Ok(())
 }
 
+/// The behavioral gate must account for every refusal blocker production
+/// declares. A hand-picked set of helper calls is not coverage: adding a new
+/// blocker must make this test fail until its behavior is exercised.
+#[test]
+fn refusal_repair_gate_covers_every_declared_blocker() {
+    let production = include_str!("../../src/cli/repair_domain.rs");
+    let this_gate = include_str!("round2_repair_domain.rs");
+    let declared: Vec<&str> = production
+        .lines()
+        .filter_map(|line| {
+            line.trim_start()
+                .strip_prefix("pub(crate) const BLOCKER_")
+                .and_then(|tail| tail.split_once(':'))
+                .map(|(name, _)| name)
+        })
+        .collect();
+
+    assert!(!declared.is_empty(), "fixture assumption: production declares refusal blockers");
+    for blocker in declared {
+        let coverage_marker = format!("gate-case: BLOCKER_{blocker}");
+        assert!(
+            this_gate.contains(&coverage_marker),
+            "production blocker `BLOCKER_{blocker}` is outside the behavioral refusal gate; \
+             add a derived gate case, not another opt-in helper call"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Finding 2: the looping remediation
 // ---------------------------------------------------------------------------
