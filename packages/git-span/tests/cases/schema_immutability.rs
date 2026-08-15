@@ -9,9 +9,6 @@
 //! not glob-driven, so a v1 file deleted on a future family bump fails
 //! loudly instead of silently shrinking the corpus. A breaking change
 //! lands at a `v2` path; the v1 bytes stay byte-for-byte what they were.
-//!
-//! `#[ignore]`-marked until the first real generation run commits the
-//! manifest; unskipped in the wiring unit.
 
 use sha2::{Digest, Sha256};
 use std::path::Path;
@@ -22,7 +19,6 @@ const SCHEMA_DIR: &str = "../website/public/schemas/cli/v1";
 const FAMILIES: [&str; 5] = ["context", "drift", "history", "mutation", "resolve"];
 
 #[test]
-#[ignore = "unskipped after the first real generation run commits the digest manifest"]
 fn every_published_schema_digest_matches_the_manifest() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(SCHEMA_DIR);
     let manifest_path = dir.join("sha256-manifest.txt");

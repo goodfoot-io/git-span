@@ -1,4 +1,4 @@
-packages/git-span/src/cli/mod.rs#L82-L89 rk64:fc0923ade9c085cf
+packages/git-span/src/cli/mod.rs#L82-L89 rk64:fdf1a6b095e8bd56
 packages/git-span/src/types.rs#L137-L148 rk64:125dd45ecbbc16be
 wiki/guides/reconciliation-authority.md#L9-L30 rk64:11dd476e5cd5cc53
 

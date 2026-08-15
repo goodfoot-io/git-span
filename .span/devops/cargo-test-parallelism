@@ -1,4 +1,4 @@
 .github/workflows/ci.yml#L67-L70 rk64:919e31792255bf91
-packages/git-span/package.json#L14-L14 rk64:45af18aff19cdda5
+packages/git-span/package.json#L14-L14 rk64:5d108b00048fc466
 
 Local and CI nextest invocations retain default job parallelism and the same target layout. The local suite additionally takes the cross-worktree lock exclusively because CI runs against an isolated target.

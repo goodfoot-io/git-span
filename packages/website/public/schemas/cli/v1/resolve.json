@@ -1,0 +1,204 @@
+{
+  "$id": "https://git-span.com/schemas/cli/v1/resolve.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ResolveFamilyDoc",
+  "description": "The resolve-family JSON document: `git span resolve` emits\n[`ResolveDocument`] and `git span resolve --dry-run` emits\n[`ResolveDryRunDocument`] — one family (schema_version 1), two shapes\ndistinguished by the `sides` key. The untagged wrapper serializes\ntransparently (no envelope) and derives as a `oneOf` schema over both.",
+  "anyOf": [
+    {
+      "$ref": "#/$defs/ResolveDocument"
+    },
+    {
+      "$ref": "#/$defs/ResolveDryRunDocument"
+    }
+  ],
+  "$defs": {
+    "ReportEntry": {
+      "description": "One settled entry in the report: an anchor address and what happened to it.",
+      "type": "object",
+      "properties": {
+        "address": {
+          "type": "string"
+        },
+        "outcome": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "address",
+        "outcome"
+      ]
+    },
+    "ResolveDocument": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "config": {
+          "type": "string"
+        },
+        "dry_run": {
+          "type": "boolean"
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ReportEntry"
+          }
+        },
+        "schema_version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "side": {
+          "type": "string"
+        },
+        "span": {
+          "type": "string"
+        },
+        "structural_only": {
+          "description": "The same claim the human report's structural line makes, so the two\nsurfaces cannot tell different stories about whether the chosen side\nwas needed at all.",
+          "type": "boolean"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "why": {
+          "type": "string"
+        },
+        "written": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "command",
+        "span",
+        "side",
+        "dry_run",
+        "written",
+        "entries",
+        "why",
+        "config",
+        "structural_only",
+        "warnings"
+      ]
+    },
+    "ResolveDryRunDocument": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "dry_run": {
+          "type": "boolean"
+        },
+        "schema_version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "sides": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SideDocument"
+          }
+        },
+        "span": {
+          "type": "string"
+        },
+        "written": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "command",
+        "span",
+        "dry_run",
+        "written",
+        "sides"
+      ]
+    },
+    "SideDocument": {
+      "type": "object",
+      "properties": {
+        "config": {
+          "description": "Always emitted; `null` when the side could not recover a `[config]`.",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ReportEntry"
+          }
+        },
+        "failures": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "outcome": {
+          "type": "string"
+        },
+        "side": {
+          "type": "string"
+        },
+        "structural_only": {
+          "description": "Always emitted; `null` when the side failed before settling.",
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "why": {
+          "description": "Always emitted; `null` when the side could not recover why text.",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "side",
+        "outcome",
+        "entries",
+        "failures",
+        "why",
+        "config",
+        "structural_only",
+        "warnings"
+      ]
+    }
+  }
+}

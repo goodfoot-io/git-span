@@ -1,0 +1,420 @@
+{
+  "$id": "https://git-span.com/schemas/cli/v1/mutation.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MutationDocument",
+  "description": "The mutation-family JSON document (`schema_version: 1`).\n\nEvery top-level key is always emitted (arrays possibly empty), so hooks\nrely on a stable key set rather than key presence.",
+  "type": "object",
+  "properties": {
+    "addresses": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/AnchorOutcome"
+      }
+    },
+    "command": {
+      "type": "string"
+    },
+    "remaining": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/RemainingAnchor"
+      }
+    },
+    "schema_version": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "span": {
+      "type": "string"
+    },
+    "span_health": {
+      "$ref": "#/$defs/SpanHealth"
+    },
+    "superseded": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/SupersededAnchor"
+      }
+    },
+    "why_written": {
+      "description": "`Some(true)` only on `why` documents (plan §Output contract: the why\ndocument carries `why_written: true`); absent on `add` documents,\nwhich the plan's example shows without the key.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "command",
+    "span",
+    "addresses",
+    "superseded",
+    "remaining",
+    "span_health"
+  ],
+  "$defs": {
+    "AddressOutcome": {
+      "description": "Stable outcome enum for `addresses[].outcome` in the mutation document:\n`ADDED | RESOLVED | UNCHANGED | COLLAPSED`.\n\nEvery variant is a unit variant on purpose: `outcome` always serializes\nas a bare JSON string, so a consumer can type the field as a string and\ncompare it literally. Per-outcome detail rides on sibling fields of\n[`AnchorOutcome`] (see `records_before`), never inside `outcome`.",
+      "oneOf": [
+        {
+          "description": "Brand-new anchor record created.",
+          "type": "string",
+          "const": "ADDED"
+        },
+        {
+          "description": "Existing anchor's hash updated in place.",
+          "type": "string",
+          "const": "RESOLVED"
+        },
+        {
+          "description": "Anchor already matched the stored hash.",
+          "type": "string",
+          "const": "UNCHANGED"
+        },
+        {
+          "description": "The identity carried more than one record; all of them were replaced\nby the single freshly-hashed record. `records_before` carries the\npre-collapse count.",
+          "type": "string",
+          "const": "COLLAPSED"
+        }
+      ]
+    },
+    "AnchorOutcome": {
+      "description": "One requested address and its outcome in the mutation document.",
+      "type": "object",
+      "properties": {
+        "address": {
+          "type": "string"
+        },
+        "outcome": {
+          "$ref": "#/$defs/AddressOutcome"
+        },
+        "records_before": {
+          "description": "Record count at this identity before the mutation, present only on\n`COLLAPSED` rows. Absent — not `null` — everywhere else, so the three\npre-existing outcome kinds' JSON is byte-for-byte unchanged.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        },
+        "retired_collapsed_duplicates": {
+          "description": "How many records this mutation retired at the address carried the\nduplicate-collapse sentinel. Present only when at least one did, so\nevery row that resolves nothing unverified is byte-for-byte unchanged.\n\nThe sibling of `replace`'s `retired_collapsed_duplicates`, and named\nto match it: a script that wants to know \"did this command silently\ndispose of a state nobody had verified\" must be able to ask both\nendpoints of the annotation's advice the same question.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "address",
+        "outcome"
+      ]
+    },
+    "DriftingAnchor": {
+      "description": "One drifting anchor inside `span_health.drifting`.",
+      "type": "object",
+      "properties": {
+        "address": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/StatusDoc"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "address",
+        "status"
+      ]
+    },
+    "RemainingAnchor": {
+      "description": "One actionable-drift anchor that remains after the mutation.\n\n`status` is the exact output of `drift_output::status_json`, so the\nanchor-status vocabulary is shared with drift's findings by construction.",
+      "type": "object",
+      "properties": {
+        "address": {
+          "type": "string"
+        },
+        "label": {
+          "description": "Human drift-label vocabulary for the human remains line (plan\n§Output contract: \"reusing the drift-label vocabulary\"). Rendering\ndetail, never serialized — the JSON document carries `address`,\n`status`, and `next_step` only.",
+          "type": "string",
+          "writeOnly": true
+        },
+        "next_step": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/StatusDoc"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "address",
+        "status",
+        "next_step",
+        "label"
+      ]
+    },
+    "SpanHealth": {
+      "description": "The span-wide health block of the mutation document.",
+      "type": "object",
+      "properties": {
+        "drift_count": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "drifting": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DriftingAnchor"
+          }
+        },
+        "reason": {
+          "description": "Present only on `UNKNOWN` (\"index changed during scan\" or the\ncheck-error detail).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resolved_pending_commit_count": {
+          "description": "Count of `RESOLVED_PENDING_COMMIT` anchors: clean by definition, but\nnever hidden.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "state": {
+          "$ref": "#/$defs/SpanHealthState"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "drift_count",
+        "drifting",
+        "resolved_pending_commit_count"
+      ]
+    },
+    "SpanHealthState": {
+      "description": "Stable enum for `span_health.state`: `DRIFT_FREE | DRIFT | UNKNOWN`.",
+      "oneOf": [
+        {
+          "description": "Span-wide clean: no anchor has a status for which\n`anchor_status_is_drift()` returns true.",
+          "type": "string",
+          "const": "DRIFT_FREE"
+        },
+        {
+          "description": "At least one actionable-drift anchor on the span.",
+          "type": "string",
+          "const": "DRIFT"
+        },
+        {
+          "description": "The check could not produce a verdict — `reason` carries the detail\n(\"index changed during scan\" or the check-error detail).",
+          "type": "string",
+          "const": "UNKNOWN"
+        }
+      ]
+    },
+    "StatusDetailDoc": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "filter": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "filter"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "message"
+          ]
+        }
+      ]
+    },
+    "StatusDoc": {
+      "description": "The anchor-status vocabulary of `drift` findings and (via the shared\n[`status_json`] constructor) the mutation-family documents, so the two\nsurfaces agree by construction rather than by transcription.\n`MergeConflict` serializes as `CONFLICT` — the historical JSON token,\nwhich [`status_str`] spells without the `MERGE_` prefix the\nSCREAMING_SNAKE rename would produce.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "FRESH"
+            }
+          },
+          "required": [
+            "code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "RESOLVED_PENDING_COMMIT"
+            }
+          },
+          "required": [
+            "code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "MOVED"
+            }
+          },
+          "required": [
+            "code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "CHANGED"
+            }
+          },
+          "required": [
+            "code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "DELETED"
+            }
+          },
+          "required": [
+            "code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "CONFLICT"
+            }
+          },
+          "required": [
+            "code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "SUBMODULE"
+            }
+          },
+          "required": [
+            "code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "CONTENT_UNAVAILABLE"
+            },
+            "detail": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/StatusDetailDoc"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "reason": {
+              "$ref": "#/$defs/UnavailableReasonCodeDoc"
+            }
+          },
+          "required": [
+            "code",
+            "detail",
+            "reason"
+          ]
+        }
+      ]
+    },
+    "SupersededAnchor": {
+      "description": "One provably superseded old anchor: the covering new address, its state,\nand the runnable retire next action.",
+      "type": "object",
+      "properties": {
+        "address": {
+          "description": "Canonical address of the old anchor (e.g. `src/read-user.ts#L1-L5`).",
+          "type": "string"
+        },
+        "next_step": {
+          "description": "Runnable next action (e.g. `git span remove <span> <addr>`).",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/SupersessionState"
+        },
+        "superseded_by": {
+          "description": "Canonical address of the new anchor that covers it.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "address",
+        "superseded_by",
+        "state",
+        "next_step"
+      ]
+    },
+    "SupersessionState": {
+      "description": "Stable enum for `superseded[].state`: `RETIRED | REMAINS`.\n\n`RETIRED` is the integration seam for the main-204 atomic-replacement\ncapability (when `add` itself retires the old anchor) and is not produced\non this branch — here supersession always reports `REMAINS` (the anchor is\nstill in the declaration) and hands the operator the runnable retire\ncommand.",
+      "oneOf": [
+        {
+          "description": "The mutation itself removed the old anchor from the declaration.",
+          "type": "string",
+          "const": "RETIRED"
+        },
+        {
+          "description": "The old anchor is still in the declaration; retire it with the\nprinted `git span remove` next action.",
+          "type": "string",
+          "const": "REMAINS"
+        }
+      ]
+    },
+    "UnavailableReasonCodeDoc": {
+      "type": "string",
+      "enum": [
+        "LFS_NOT_FETCHED",
+        "LFS_NOT_INSTALLED",
+        "PROMISOR_MISSING",
+        "SPARSE_EXCLUDED",
+        "FILTER_FAILED",
+        "IO_ERROR"
+      ]
+    }
+  }
+}

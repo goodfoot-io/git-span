@@ -14,7 +14,7 @@ Update the authoritative source, then its consumers. See [[Wiki Organization]] a
 - **Why policy:** [[Writing Span Whys]].
 - **CLI behavior:** Clap declarations and handlers.
 - **Hook text:** shared TypeScript hook cores.
-- **Generated:** man page and hook bundles; regenerate, never patch.
+- **Generated:** man page, published schemas, command-reference page, and hook bundles; regenerate, never patch.
 - **Plugins:** `plugins-claude/` is normative; mirror to `plugins-codex/` while preserving
   harness-specific sections.
 - **Historical research:** preserve outcomes. Change only live instructions or specs.
@@ -41,6 +41,11 @@ For a span joining plugin trees, name the Claude-to-Codex direction in its why.
 - Man-page source: [gen-manpage.rs](/packages/git-span/src/bin/gen-manpage.rs).
 - Generated man page: [git-span.1](/packages/git-span/man/git-span.1). Regenerate from
   `packages/git-span` with `yarn build:man`.
+- Command reference and published schemas: rendered by [gen-schemas.rs](/packages/git-span/src/bin/gen-schemas.rs)
+  from the clap tree and the JSON document types ([schemas/mod.rs](/packages/git-span/src/schemas/mod.rs));
+  regenerate from `packages/git-span` with `yarn build:schemas`. The committed artifacts are
+  [commands.mdx](/packages/website/content/docs/commands.mdx) and
+  `packages/website/public/schemas/cli/v1/*.json`, the v1 schemas pinned by a digest manifest.
 
 ## Why policy
 
@@ -84,7 +89,10 @@ judgment. Claude and Codex router branches may differ by harness.
 ### Website and marketing
 
 - Definitions: [concepts.mdx](/packages/website/content/docs/concepts.mdx).
-- Command: [commands.mdx](/packages/website/content/docs/commands.mdx).
+- Command reference: [commands.mdx](/packages/website/content/docs/commands.mdx) — generated from the
+  clap tree; regenerate with `yarn build:schemas`, never edit by hand.
+- Published schemas: `packages/website/public/schemas/cli/v1/*.json` — generated; v1 bytes are
+  frozen by the digest manifest.
 - Introduction: [overview.mdx](/packages/website/content/docs/overview.mdx).
 - Hooks: [agent-integration.mdx](/packages/website/content/docs/agent-integration.mdx).
 - Creation: [mine-span-candidates.mdx](/packages/website/content/docs/guides/mine-span-candidates.mdx).
@@ -167,6 +175,8 @@ Relevant declarations include:
 - `git-span-touchpoints/cli-config`
 - `git-span/span-eligibility-clause`
 - `git-span/plugin-twin-guidance`
+- `git-span/bare-invocation-contract`
+- `git-span/published-schema-contract`
 - `website/specimen-hardwrap-coupling`
 - `wiki/meta/command-behavior-source-of-truth`
 - `wiki/meta/operator-facing-documentation`
@@ -183,7 +193,8 @@ the new one atomically. Require zero drift.
 2. Update CLI and hook sources plus exact-string tests.
 3. Update Claude agent instructions; mirror Codex without erasing harness differences.
 4. Update READMEs, website, marketing, metadata, and live instructional reports.
-5. Regenerate man and hook artifacts.
+5. Regenerate man, hook, schema, and command-reference artifacts (`yarn build:man`, agent-hooks
+   `yarn build`, `yarn build:schemas`).
 6. Validate changed packages.
 7. Reconcile affected spans and run wiki checks.
 8. Run root `yarn validate` and require zero drift.
@@ -197,6 +208,7 @@ From `packages/git-span` after Rust or man-source changes:
 
 ```bash
 yarn build:man
+yarn build:schemas
 yarn lint
 yarn typecheck
 yarn test

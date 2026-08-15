@@ -1,0 +1,4 @@
+packages/git-span/src/schemas/mod.rs#L67-L142 rk64:707d8ea906181f5b
+packages/website/content/docs/reference.mdx#L70-L86 rk64:e49afb3cb7b917f3
+
+The reference page's Published schemas section — its family table, v1-freeze promise, and unversioned-emitter statements — is the consumer-facing form of the mapping and version table in schemas/mod.rs, and nothing in the generator, its tests, or the build couples the prose to the table; a version bump, a new family, or a reclassified emitter that skips the page silently publishes a contract the docs no longer describe.

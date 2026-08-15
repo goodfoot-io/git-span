@@ -136,3 +136,27 @@ jobs:
 
       - name: Build
         run: cd packages/extension && yarn build
+
+  build-website:
+    name: Build Website (MDX)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: yarn install
+
+      # The docs render from generated MDX (commands.mdx, the published
+      # schemas), so a generator bug producing broken MDX must fail PR CI
+      # here rather than surfacing at the next deploy.
+      - name: Build
+        run: cd packages/website && yarn build

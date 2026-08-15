@@ -5,9 +5,6 @@
 //! the same types that serialize the output, and this test proves that
 //! claim against the actual bytes a user receives — a schema the binary
 //! violates fails here, not at a consumer's validator.
-//!
-//! `#[ignore]`-marked until the first real generation run commits
-//! `packages/website/public/schemas/cli/v1/`; unskipped in the wiring unit.
 
 use anyhow::{bail, Result};
 use serde_json::Value;
@@ -40,7 +37,6 @@ fn validate_against(scenario: impl Fn() -> Result<Vec<u8>>, family: &str) -> Res
 macro_rules! roundtrip_test {
     ($name:ident, $scenario:ident, $family:literal) => {
         #[test]
-        #[ignore = "unskipped after the first real generation run commits the schemas"]
         fn $name() -> Result<()> {
             validate_against(json_fixtures::$scenario, $family)
         }
@@ -58,7 +54,6 @@ roundtrip_test!(drift_clean_roundtrip, drift_clean_scenario, "drift");
 /// Negative control: prove the validator is actually engaged by removing a
 /// required key from real output — it must reject the document.
 #[test]
-#[ignore = "unskipped after the first real generation run commits the schemas"]
 fn validator_rejects_a_document_missing_a_required_key() -> Result<()> {
     let schema = committed_schema("mutation");
     let validator = jsonschema::validator_for(&schema).expect("committed schema compiles");

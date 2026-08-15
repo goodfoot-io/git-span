@@ -40,7 +40,7 @@ by cost of error:
    declaration or content change was committed: a worktree-only declaration
    re-anchor can compare against `HEAD` and produce that source too. Inspect the
    declaration diff and `git span history <name>` timeline
-   ([mod.rs](../../packages/git-span/src/cli/mod.rs#L212-L222)); commit or revert
+   ([mod.rs](../../packages/git-span/src/cli/mod.rs#L313-L323)); commit or revert
    an uncommitted declaration edit rather than searching for a source commit
    that does not exist. A doc
    drifting behind a deliberate, committed code change means the doc is
@@ -66,4 +66,4 @@ Fail closed on authority ambiguity, not on editing per se.
   ([types.rs](../../packages/git-span/src/types.rs#L140-L142)).
 - Keep the span's why across routine re-anchors; write a new one only when
   the subsystem itself changed
-  ([mod.rs](../../packages/git-span/src/cli/mod.rs#L149-L151)).
+  ([mod.rs](../../packages/git-span/src/cli/mod.rs#L245-L247)).

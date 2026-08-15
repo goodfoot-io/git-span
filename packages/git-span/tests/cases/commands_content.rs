@@ -5,9 +5,6 @@
 //! distinctive prose of each section — the behavioral contract, the callout
 //! substance, the exit-behavior sentences — survives in the generated page,
 //! so migrating prose into doc comments cannot silently drop content.
-//!
-//! `#[ignore]`-marked until the MDX renderer lands; unskipped when the
-//! first generated page is committed.
 
 use std::path::Path;
 
@@ -35,7 +32,6 @@ const SENTINELS: &[(&str, &str)] = &[
 ];
 
 #[test]
-#[ignore = "unskipped when the generated commands.mdx is first committed"]
 fn generated_page_preserves_every_section_sentinel() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../website/content/docs/commands.mdx");

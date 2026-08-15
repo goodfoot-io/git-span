@@ -5,8 +5,7 @@
 //! exit 1 with a `{label} is stale; run yarn build:schemas` line per stale
 //! artifact). The temp-dir units below exercise both modes against a
 //! throwaway tree; the committed-artifact check runs against the real
-//! website package and is `#[ignore]`-marked until the first real
-//! generation run commits `packages/website/public/schemas/cli/v1/`.
+//! website package.
 
 use assert_cmd::Command;
 use predicates::prelude::PredicateBooleanExt;
@@ -29,7 +28,6 @@ fn artifact_path(tree: &Path, name: &str) -> PathBuf {
 }
 
 #[test]
-#[ignore = "unskipped after the first real generation run commits website/public/schemas"]
 fn checked_in_schema_artifacts_are_fresh() {
     gen_schemas(&["--check"])
         .arg(website_dir())

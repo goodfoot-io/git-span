@@ -1,0 +1,426 @@
+{
+  "$id": "https://git-span.com/schemas/cli/v1/context.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ContextDocument",
+  "type": "object",
+  "properties": {
+    "mutation": {
+      "$ref": "#/$defs/ContextMutation"
+    },
+    "schema_version": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "scopes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ContextScope"
+      }
+    },
+    "spans": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ContextSpan"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "scopes",
+    "mutation",
+    "spans"
+  ],
+  "$defs": {
+    "ContextAnchor": {
+      "type": "object",
+      "properties": {
+        "anchored": {
+          "$ref": "#/$defs/ContextLocation"
+        },
+        "current": {
+          "description": "Always emitted; `null` when the anchor cannot be located in the\ncurrent worktree or index.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ContextLocation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "ordinal": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "source": {
+          "description": "Always emitted; `null` when the anchor has no recorded source layer.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ContextSource"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ContextSource"
+          }
+        },
+        "status": {
+          "$ref": "#/$defs/ContextStatus"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "ordinal",
+        "id",
+        "anchored",
+        "current",
+        "status",
+        "source",
+        "sources"
+      ]
+    },
+    "ContextAnchorIdentity": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "ordinal": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "ordinal",
+        "id"
+      ]
+    },
+    "ContextExtent": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "whole"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "end": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "kind": {
+              "type": "string",
+              "const": "lines"
+            },
+            "start": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "kind",
+            "start",
+            "end"
+          ]
+        }
+      ]
+    },
+    "ContextLocation": {
+      "type": "object",
+      "properties": {
+        "extent": {
+          "$ref": "#/$defs/ContextExtent"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "extent"
+      ]
+    },
+    "ContextMutation": {
+      "type": "object",
+      "properties": {
+        "anchors_removed": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "anchors_updated": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "identities_collapsed": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "requested": {
+          "type": "boolean"
+        },
+        "rewritten": {
+          "type": "boolean"
+        },
+        "spans_touched": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "requested",
+        "rewritten",
+        "spans_touched",
+        "anchors_updated",
+        "anchors_removed",
+        "identities_collapsed"
+      ]
+    },
+    "ContextOverlap": {
+      "type": "object",
+      "properties": {
+        "anchor": {
+          "$ref": "#/$defs/ContextAnchorIdentity"
+        },
+        "basis": {
+          "$ref": "#/$defs/ContextOverlapBasis"
+        },
+        "intersection": {
+          "$ref": "#/$defs/ContextExtent"
+        },
+        "location": {
+          "$ref": "#/$defs/ContextLocation"
+        },
+        "scope": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "scope",
+        "anchor",
+        "basis",
+        "location",
+        "intersection"
+      ]
+    },
+    "ContextOverlapBasis": {
+      "type": "string",
+      "enum": [
+        "anchored",
+        "current"
+      ]
+    },
+    "ContextScope": {
+      "type": "object",
+      "properties": {
+        "extent": {
+          "$ref": "#/$defs/ContextExtent"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "extent"
+      ]
+    },
+    "ContextSource": {
+      "type": "string",
+      "enum": [
+        "WORKTREE",
+        "INDEX",
+        "HEAD"
+      ]
+    },
+    "ContextSpan": {
+      "type": "object",
+      "properties": {
+        "anchors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ContextAnchor"
+          }
+        },
+        "name": {
+          "type": "string"
+        },
+        "overlaps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ContextOverlap"
+          }
+        },
+        "why": {
+          "description": "Always emitted; `null` when the span has no why prose.",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "why",
+        "overlaps",
+        "anchors"
+      ]
+    },
+    "ContextStatus": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "FRESH"
+            }
+          },
+          "required": [
+            "code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "RESOLVED_PENDING_COMMIT"
+            }
+          },
+          "required": [
+            "code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "MOVED"
+            }
+          },
+          "required": [
+            "code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "CHANGED"
+            }
+          },
+          "required": [
+            "code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "DELETED"
+            }
+          },
+          "required": [
+            "code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "CONFLICT"
+            }
+          },
+          "required": [
+            "code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "SUBMODULE"
+            }
+          },
+          "required": [
+            "code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "CONTENT_UNAVAILABLE"
+            },
+            "detail": {
+              "description": "Opaque per-reason payload: the family pins `reason` but not the\ndetail blob's internal shape, so the schema leaves it unconstrained."
+            },
+            "reason": {
+              "$ref": "#/$defs/ContextUnavailableReason"
+            }
+          },
+          "required": [
+            "code",
+            "reason",
+            "detail"
+          ]
+        }
+      ]
+    },
+    "ContextUnavailableReason": {
+      "type": "string",
+      "enum": [
+        "LFS_NOT_FETCHED",
+        "LFS_NOT_INSTALLED",
+        "PROMISOR_MISSING",
+        "SPARSE_EXCLUDED",
+        "FILTER_FAILED",
+        "IO_ERROR"
+      ]
+    }
+  }
+}

@@ -1,0 +1,482 @@
+{
+  "$id": "https://git-span.com/schemas/cli/v1/drift.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DriftDocument",
+  "description": "Root document of `drift --format json`.",
+  "type": "object",
+  "properties": {
+    "clean": {
+      "type": "boolean"
+    },
+    "clusters": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ClusterDoc"
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/FindingDoc"
+      }
+    },
+    "schema_version": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "span": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "clean",
+    "clusters",
+    "findings",
+    "schema_version",
+    "span"
+  ],
+  "$defs": {
+    "ClusterDoc": {
+      "type": "object",
+      "properties": {
+        "shared_files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "spans": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "shared_files",
+        "spans"
+      ]
+    },
+    "ExtentDoc": {
+      "description": "Untagged, deliberately: serde_json streams object keys in *call order*\n(no map sorting happens at serialization — the sorted bytes of the\nhand-built `json!` era came from serde_json's BTreeMap-backed `Map`\nvalue, not from the serializer). Tagged enums additionally emit the tag\nkey first, which the pinned goldens' order (`end`, `kind`, `start`)\ncannot reproduce. Untagged variants emit their fields in declaration\norder, so fields are declared in the goldens' sorted order. The `kind`\nmarkers keep the schema truthful (`{\"const\": \"whole\"}` /\n`{\"const\": \"lines\"}`) without a serde tag to break the byte contract.",
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "$ref": "#/$defs/WholeExtentKind"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "end": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "kind": {
+              "$ref": "#/$defs/LineExtentKind"
+            },
+            "start": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "end",
+            "kind",
+            "start"
+          ]
+        }
+      ]
+    },
+    "FindingDoc": {
+      "type": "object",
+      "properties": {
+        "anchored": {
+          "$ref": "#/$defs/LocationDoc"
+        },
+        "auto_followed": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "collapsed_duplicate": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "current": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LocationDoc"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fuzzy_successors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FuzzySuccessorDoc"
+          }
+        },
+        "locus": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LocusDoc"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "moved_to": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MovedToDoc"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SourceDoc"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "span": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/StatusDoc"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "anchored",
+        "auto_followed",
+        "collapsed_duplicate",
+        "current",
+        "fuzzy_successors",
+        "locus",
+        "moved_to",
+        "source",
+        "span",
+        "status"
+      ]
+    },
+    "FuzzySuccessorDoc": {
+      "type": "object",
+      "properties": {
+        "confidence": {
+          "type": "number",
+          "format": "double"
+        },
+        "extent": {
+          "$ref": "#/$defs/ExtentDoc"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "confidence",
+        "extent",
+        "path"
+      ]
+    },
+    "LineExtentKind": {
+      "type": "string",
+      "enum": [
+        "lines"
+      ]
+    },
+    "LocationDoc": {
+      "type": "object",
+      "properties": {
+        "blob": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "extent": {
+          "$ref": "#/$defs/ExtentDoc"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "blob",
+        "extent",
+        "path"
+      ]
+    },
+    "LocusDoc": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "changed_in": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "changed_in"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "deleted_in": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "deleted_in"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "renamed_at": {
+              "type": "string"
+            },
+            "renamed_to": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "renamed_at",
+            "renamed_to"
+          ]
+        }
+      ]
+    },
+    "MovedToDoc": {
+      "type": "object",
+      "properties": {
+        "confidence": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "extent": {
+          "$ref": "#/$defs/ExtentDoc"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "extent",
+        "path"
+      ]
+    },
+    "SourceDoc": {
+      "description": "The three layer strings, as published on `drift` findings' `source` and\n`history`'s `sources` array — the vocabulary lives on [`DriftSource`]\nitself, so both surfaces republish it by construction rather than by a\nsecond copy of the match that would drift from it.",
+      "type": "string",
+      "enum": [
+        "HEAD",
+        "INDEX",
+        "WORKTREE"
+      ]
+    },
+    "StatusDetailDoc": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "filter": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "filter"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "message"
+          ]
+        }
+      ]
+    },
+    "StatusDoc": {
+      "description": "The anchor-status vocabulary of `drift` findings and (via the shared\n[`status_json`] constructor) the mutation-family documents, so the two\nsurfaces agree by construction rather than by transcription.\n`MergeConflict` serializes as `CONFLICT` — the historical JSON token,\nwhich [`status_str`] spells without the `MERGE_` prefix the\nSCREAMING_SNAKE rename would produce.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "FRESH"
+            }
+          },
+          "required": [
+            "code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "RESOLVED_PENDING_COMMIT"
+            }
+          },
+          "required": [
+            "code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "MOVED"
+            }
+          },
+          "required": [
+            "code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "CHANGED"
+            }
+          },
+          "required": [
+            "code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "DELETED"
+            }
+          },
+          "required": [
+            "code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "CONFLICT"
+            }
+          },
+          "required": [
+            "code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "SUBMODULE"
+            }
+          },
+          "required": [
+            "code"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "const": "CONTENT_UNAVAILABLE"
+            },
+            "detail": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/StatusDetailDoc"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "reason": {
+              "$ref": "#/$defs/UnavailableReasonCodeDoc"
+            }
+          },
+          "required": [
+            "code",
+            "detail",
+            "reason"
+          ]
+        }
+      ]
+    },
+    "UnavailableReasonCodeDoc": {
+      "type": "string",
+      "enum": [
+        "LFS_NOT_FETCHED",
+        "LFS_NOT_INSTALLED",
+        "PROMISOR_MISSING",
+        "SPARSE_EXCLUDED",
+        "FILTER_FAILED",
+        "IO_ERROR"
+      ]
+    },
+    "WholeExtentKind": {
+      "type": "string",
+      "enum": [
+        "whole"
+      ]
+    }
+  }
+}

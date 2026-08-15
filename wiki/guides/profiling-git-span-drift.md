@@ -45,7 +45,7 @@ The devcontainer image does not set this at startup — many hardened hosts reje
 git span drift --perf-trace /tmp/trace.csv
 ```
 
-Writes one CSV row per resolved anchor to `/tmp/trace.csv`. The flag ([`src/cli/mod.rs`](../../packages/git-span/src/cli/mod.rs#L353-L359)) is opt-in; without it, no per-anchor instrumentation runs.
+Writes one CSV row per resolved anchor to `/tmp/trace.csv`. The flag ([`src/cli/mod.rs`](../../packages/git-span/src/cli/mod.rs#L472-L478)) is opt-in; without it, no per-anchor instrumentation runs.
 
 ### CSV schema
 
@@ -72,7 +72,7 @@ git span drift --perf-trace /tmp/trace.csv          # OK: full scan
 git span drift --perf-trace /tmp/trace.csv some/path  # CliError
 ```
 
-The only other flag conflict `git span drift` enforces is unrelated to `--perf-trace`: `--fix` requires `--format human` and errors on any other format ([`drift_output.rs`](../../packages/git-span/src/cli/drift_output.rs#L113-L120)).
+The only other flag conflict `git span drift` enforces is unrelated to `--perf-trace`: `--fix` requires `--format human` and errors on any other format ([`drift_output.rs`](../../packages/git-span/src/cli/drift_output.rs#L114-L121)).
 
 ### Quick analyses
 

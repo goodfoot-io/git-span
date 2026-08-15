@@ -423,7 +423,10 @@ fn flag_cell(arg: &clap::Arg) -> String {
             .iter()
             .map(|possible| possible.get_name())
             .collect();
-        format!("<{}>", values.join("|"))
+        // `\|` inside the backticked cell renders as a literal `|` but cannot
+        // terminate the table cell; an unescaped pipe breaks the row and
+        // leaves MDX parsing a stray `<value` tag fragment.
+        format!("<{}>", values.join("\\|"))
     } else {
         arg.get_value_names()
             .and_then(|names| names.first())
@@ -758,7 +761,7 @@ mod tests {
             .get_arguments()
             .find(|a| a.get_id() == "format")
             .expect("format arg exists");
-        assert_eq!(flag_cell(format), "`--format <human|porcelain|json>`");
+        assert_eq!(flag_cell(format), "`--format <human\\|porcelain\\|json>`");
         let tree = cmd.find_subcommand("tree").expect("tree exists");
         let depth = tree
             .get_arguments()

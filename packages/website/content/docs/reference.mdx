@@ -67,6 +67,24 @@ A handful of helper files live alongside the span files:
 
 The interior-anchor integrity case is never maskable by `drift --no-exit-code` — it always exits 1, even when no anchor drifted.
 
+## Published schemas
+
+Every subcommand that accepts `--format json` publishes its output family as a JSON Schema at a stable URL, derived from the same Rust types that serialize the CLI output:
+
+| Family | URL | Subcommands |
+|---|---|---|
+| mutation | `https://git-span.com/schemas/cli/v1/mutation.json` | `add`, `why` |
+| resolve | `https://git-span.com/schemas/cli/v1/resolve.json` | `resolve` |
+| context | `https://git-span.com/schemas/cli/v1/context.json` | `context` |
+| history | `https://git-span.com/schemas/cli/v1/history.json` | `history` |
+| drift | `https://git-span.com/schemas/cli/v1/drift.json` | `drift` |
+
+Each schema's `$id` is its URL, and the URL is the version: v1 is immutable. A committed `sha256-manifest.txt` beside the schemas pins every published file's digest, and CI recomputes and compares it — the manifest is never regenerated, so published bytes cannot drift. A breaking change to a family's shape lands at a `v2` URL; the v1 bytes stay byte-for-byte what they were. The frozen bytes freeze the key set with them: a validator cached against a v1 schema stays correct for every output that family produces, because a round-trip test validates real CLI stdout against the committed schemas — a schema the binary violates fails CI, not a consumer's validator.
+
+`replace` and `tree` also accept `--format json`, but their output is unversioned and unpublished: publishing would require adding a `schema_version` key to it, a change to an existing output shape. Their JSON remains an internal interface.
+
+The schemas and the [command reference](/docs/commands) are generated from the CLI itself (`yarn build:schemas` in `packages/git-span`); a staleness gate fails CI when a committed artifact falls behind the generator.
+
 ## Configuration
 
 **Span root directory.** Resolved with this precedence:

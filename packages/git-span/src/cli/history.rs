@@ -2436,7 +2436,7 @@ pub fn render_json(report: &HistoryReport) -> HistoryDocument {
         commits,
         current,
         schema_version: HISTORY_JSON_SCHEMA_VERSION,
-        scoped: report.scoped,
+        scoped: report.scoped.then_some(true),
         span: report.span.clone(),
     }
 }
@@ -2461,8 +2461,10 @@ pub struct HistoryDocument {
     schema_version: u32,
     /// Present (as `true`) only when the timeline is a `--limit`-scoped
     /// window, matching the hand-built era's insert-if-true emission.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    scoped: bool,
+    /// `Option`-shaped so the schema marks the key optional — schemars
+    /// cannot see `skip_serializing_if` and would otherwise require it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scoped: Option<bool>,
     span: String,
 }
 
@@ -2596,8 +2598,10 @@ pub struct CurrentAnchorDoc {
     // Omitted, never `[]` and never `null`: `current.anchors[]` spells
     // absence by key presence throughout, and an empty array would be a
     // positive claim that the resolver found layers and they were none.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    sources: Vec<SourceDoc>,
+    // `Option`-shaped so the schema marks the key optional — schemars
+    // cannot see `skip_serializing_if` and would otherwise require it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sources: Option<Vec<SourceDoc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     unavailable: Option<UnavailableDoc>,
 }
@@ -2609,7 +2613,8 @@ fn current_anchor_doc(a: &CurrentAnchor) -> CurrentAnchorDoc {
         path: a.path.clone(),
         proposed: a.proposed.clone(),
         recorded: a.recorded_unrecoverable.then_some(RecordedDoc::Unrecoverable),
-        sources: a.sources.iter().map(|s| SourceDoc::from(*s)).collect(),
+        sources: (!a.sources.is_empty())
+            .then(|| a.sources.iter().map(|s| SourceDoc::from(*s)).collect()),
         unavailable: a.unavailable.map(UnavailableDoc::from),
     }
 }
