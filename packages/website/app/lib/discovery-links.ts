@@ -5,13 +5,22 @@
  *
  * One module owns the contract because two consumers share it — the Worker
  * appends the relations as HTTP `Link` headers and the root layout renders
- * them as `<link>` elements — so the head contract and the header contract
- * cannot drift.
+ * them as `<link>` elements from the active pathname — so the head contract
+ * and the header contract cannot drift. Both consumers feed the classifier
+ * the raw pathname (the worker's `url.pathname`, the head's
+ * `useLocation().pathname`), and the classifier decodes exactly once,
+ * internally, so percent-encoded requests classify identically on both
+ * surfaces.
+ *
+ * The module is client-safe by construction: the existence gate is a slug
+ * set derived from the keys of a `?url` glob over the authored docs files —
+ * the same file set the server collection indexes — so the head consumer
+ * ships the file names to the client, never the MDX corpus. A key the server
+ * collection maps to a different slug is caught by the fail-closed invariant
+ * test, not at runtime.
  *
  * @summary Pathname-keyed discovery classifier, Link serializer, response finalizer
  */
-import { isPublicContentPath } from '~/lib/content-negotiation';
-import { source } from '~/lib/source';
 
 /** A discovery relation for one public page: its Markdown twin (`alternate`)
  * and the llms.txt index that describes it (`describedby`). */
@@ -26,9 +35,22 @@ const HOMEPAGE_LINKS: DiscoveryLinkDescriptor[] = [
   { rel: 'describedby', href: '/llms.txt' }
 ];
 
+/**
+ * The docs slugs the classifier may advertise: every authored docs page's
+ * path relative to `content/docs`, minus its extension — the same file set
+ * the server collection globs (`.source/server.ts`). The `?url` query keeps
+ * each value a path string, so importing this module into the client bundle
+ * carries the file names, not the page content.
+ */
+export const DOC_SLUGS: ReadonlySet<string> = new Set(
+  Object.keys(import.meta.glob('/content/docs/**/*.{mdx,md}', { eager: true, query: '?url' })).map((path) =>
+    path.slice('/content/docs/'.length).replace(/\.(mdx|md)$/, '')
+  )
+);
+
 /** The fixed relations for a canonical docs path: its `.md` twin and the
  * docs-scope llms.txt index. */
-function docsLinks(pathname: string): DiscoveryLinkDescriptor[] {
+function docsDiscoveryLinks(pathname: string): DiscoveryLinkDescriptor[] {
   return [
     { rel: 'alternate', href: `${pathname}.md`, type: 'text/markdown' },
     { rel: 'describedby', href: '/docs/llms.txt' }
@@ -36,27 +58,41 @@ function docsLinks(pathname: string): DiscoveryLinkDescriptor[] {
 }
 
 /**
+ * Decode a raw pathname the way the worker decodes request URLs: once, with
+ * malformed sequences falling back to the raw string. Because both consumers
+ * pass raw forms, decoding here — exactly once, in the shared classifier —
+ * is what keeps percent-encoded requests from splitting the head/header
+ * contract.
+ */
+function decodePathname(pathname: string): string {
+  try {
+    return decodeURIComponent(pathname);
+  } catch {
+    return pathname;
+  }
+}
+
+/**
  * The relations a public content path advertises, or `[]` for anything else.
  *
  * A `.md` twin resolves to its canonical content path first, so both
- * representations of one page emit the identical header set — the worker 404s
- * trailing-slash `.md` variants, so those are deliberately not normalized.
- * Existence is `source.getPage`, the same predicate the HTML loader and the
- * `.md` resolver use, so an advertised twin cannot 404.
+ * representations of one page emit the identical descriptor set — the worker
+ * 404s trailing-slash `.md` variants, so those are deliberately not
+ * normalized. Existence is slug membership in `DOC_SLUGS`, derived from the
+ * same authored files the server collection indexes, so an advertised twin
+ * cannot 404; the invariant test pins the two in agreement.
  *
- * @param pathname - A decoded request pathname.
+ * @param rawPathname - A raw, not-yet-decoded request pathname.
  * @summary Discovery relations for a pathname, empty outside the content set
  */
-export function getDiscoveryLinks(pathname: string): DiscoveryLinkDescriptor[] {
+export function getDiscoveryLinks(rawPathname: string): DiscoveryLinkDescriptor[] {
+  const pathname = decodePathname(rawPathname);
   if (pathname === '/' || pathname === '/index.md') return HOMEPAGE_LINKS;
 
   const mdMatch = /^\/docs\/(.+)\.md$/.exec(pathname);
   const docsPath = mdMatch ? `/docs/${mdMatch[1]}` : pathname.replace(/\/+$/, '');
-
-  if (isPublicContentPath(docsPath)) {
-    const slug = docsPath.slice('/docs/'.length);
-    if (source.getPage(slug.split('/'))) return docsLinks(docsPath);
-  }
+  const docsMatch = /^\/docs\/(.+)$/.exec(docsPath);
+  if (docsMatch && DOC_SLUGS.has(docsMatch[1])) return docsDiscoveryLinks(docsPath);
   return [];
 }
 
@@ -74,16 +110,20 @@ export function serializeDiscoveryLink(descriptor: DiscoveryLinkDescriptor): str
 
 /**
  * Append a pathname's discovery relations to a response as `Link` headers.
- * Wraps the response so the header map is mutable without buffering the body;
- * appends rather than sets, so upstream `Link` values survive.
+ * Redirects pass through untouched — the card reserves discovery for real
+ * content pages, and a client following the `Location` finds the page's
+ * relations there. Otherwise the response is wrapped so the header map is
+ * mutable without buffering the body; headers are appended rather than set,
+ * so upstream `Link` values survive.
  *
  * @param response - The response to finalize.
- * @param pathname - A decoded request pathname.
+ * @param rawPathname - A raw, not-yet-decoded request pathname.
  * @summary Response carrying the pathname's Link relations, metadata preserved
  */
-export function applyDiscoveryHeaders(response: Response, pathname: string): Response {
+export function applyDiscoveryHeaders(response: Response, rawPathname: string): Response {
+  if (response.status >= 300 && response.status < 400 && response.headers.has('Location')) return response;
   const wrapped = new Response(response.body, response);
-  for (const descriptor of getDiscoveryLinks(pathname)) {
+  for (const descriptor of getDiscoveryLinks(rawPathname)) {
     wrapped.headers.append('Link', serializeDiscoveryLink(descriptor));
   }
   return wrapped;

@@ -238,4 +238,48 @@ describe('worker discovery headers', () => {
       '</docs/overview.md>; rel="alternate"; type="text/markdown", </docs/llms.txt>; rel="describedby"'
     );
   });
+
+  it('emits decoded relations for a percent-encoded request', async () => {
+    const response = await worker.fetch(request('/docs/guides/reconcile%2Ddrifted-spans'));
+    expect(response.headers.get('Link')).toBe(
+      '</docs/guides/reconcile-drifted-spans.md>; rel="alternate"; type="text/markdown", </docs/llms.txt>; rel="describedby"'
+    );
+  });
+
+  it('emits decoded relations on negotiated Markdown for a percent-encoded request', async () => {
+    const response = await worker.fetch(markdownRequest('/docs/guides/reconcile%2Ddrifted-spans'));
+    expect(response.headers.get('Content-Type')).toBe('text/markdown; charset=utf-8');
+    expect(response.headers.get('Link')).toBe(
+      '</docs/guides/reconcile-drifted-spans.md>; rel="alternate"; type="text/markdown", </docs/llms.txt>; rel="describedby"'
+    );
+  });
+
+  it('emits decoded relations on a percent-encoded .md URL', async () => {
+    const response = await worker.fetch(request('/docs/guides/reconcile%2Ddrifted-spans.md'));
+    expect(response.headers.get('Content-Type')).toBe('text/markdown; charset=utf-8');
+    expect(response.headers.get('Link')).toBe(
+      '</docs/guides/reconcile-drifted-spans.md>; rel="alternate"; type="text/markdown", </docs/llms.txt>; rel="describedby"'
+    );
+  });
+
+  it('emits nothing on a trailing-slash HTML redirect', async () => {
+    rr.response = new Response('', { status: 301, headers: { Location: '/docs/overview' } });
+    const response = await worker.fetch(request('/docs/overview/'));
+    expect(response.status).toBe(301);
+    expect(response.headers.get('Link')).toBeNull();
+  });
+
+  it('keeps relations on negotiated Markdown for a trailing-slash URL', async () => {
+    const response = await worker.fetch(markdownRequest('/docs/overview/'));
+    expect(response.headers.get('Content-Type')).toBe('text/markdown; charset=utf-8');
+    expect(response.headers.get('Link')).toBe(
+      '</docs/overview.md>; rel="alternate"; type="text/markdown", </docs/llms.txt>; rel="describedby"'
+    );
+  });
+
+  it('emits nothing on a renamed-slug .md redirect', async () => {
+    const response = await worker.fetch(request('/docs/guides/reconcile-stale-spans.md'));
+    expect(response.status).toBe(301);
+    expect(response.headers.get('Link')).toBeNull();
+  });
 });

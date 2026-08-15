@@ -2,7 +2,7 @@
 import { matchRoutes, type RouteObject } from 'react-router';
 import { describe, expect, it } from 'vitest';
 import { markdownUrlResponse } from '~/lib/content-negotiation';
-import { applyDiscoveryHeaders, getDiscoveryLinks, serializeDiscoveryLink } from '~/lib/discovery-links';
+import { applyDiscoveryHeaders, DOC_SLUGS, getDiscoveryLinks, serializeDiscoveryLink } from '~/lib/discovery-links';
 import { collectPageNodes } from '~/lib/llms-resources';
 import { source } from '~/lib/source';
 import routes from '~/routes';
@@ -73,6 +73,20 @@ describe('getDiscoveryLinks', () => {
     expect(getDiscoveryLinks('/og.png')).toEqual([]);
     expect(getDiscoveryLinks('/api/repos')).toEqual([]);
   });
+
+  it('decodes percent-encoded pathnames before classifying', () => {
+    expect(getDiscoveryLinks('/docs/guides/reconcile%2Ddrifted-spans')).toEqual(
+      getDiscoveryLinks('/docs/guides/reconcile-drifted-spans')
+    );
+    expect(getDiscoveryLinks('/docs/guides%2Freconcile-drifted-spans')).toEqual(
+      getDiscoveryLinks('/docs/guides/reconcile-drifted-spans')
+    );
+  });
+
+  it('fails closed on malformed percent-encodings', () => {
+    expect(getDiscoveryLinks('/docs/overview%2')).toEqual([]);
+    expect(getDiscoveryLinks('/docs/%E0%A4%A')).toEqual([]);
+  });
 });
 
 describe('serializeDiscoveryLink', () => {
@@ -116,6 +130,23 @@ describe('applyDiscoveryHeaders', () => {
     expect(response.headers.get('Link')).toBeNull();
     expect(await response.text()).toBe('body');
   });
+
+  it('leaves redirect responses untouched', () => {
+    const response = applyDiscoveryHeaders(
+      new Response(null, { status: 301, headers: { Location: '/docs/overview' } }),
+      '/docs/overview/'
+    );
+    expect(response.status).toBe(301);
+    expect(response.headers.get('Location')).toBe('/docs/overview');
+    expect(response.headers.get('Link')).toBeNull();
+  });
+
+  it('keeps relations on a 304 that carries no Location', () => {
+    const response = applyDiscoveryHeaders(new Response(null, { status: 304 }), '/docs/overview');
+    expect(response.headers.get('Link')).toBe(
+      '</docs/overview.md>; rel="alternate"; type="text/markdown", </docs/llms.txt>; rel="describedby"'
+    );
+  });
 });
 
 describe('every advertised href resolves', () => {
@@ -154,6 +185,12 @@ describe('every advertised href resolves', () => {
       for (const descriptor of getDiscoveryLinks(pathname)) {
         await assertResolves(descriptor.href, pathname);
       }
+    }
+  });
+
+  it('every slug the classifier can advertise is a page in the live source', () => {
+    for (const slug of DOC_SLUGS) {
+      expect(source.getPage(slug.split('/')), `DOC_SLUGS has ${slug} but the source does not`).toBeTruthy();
     }
   });
 });

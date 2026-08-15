@@ -88,8 +88,11 @@ export default {
     // The discovery finalizer: every response class — SSR HTML, negotiated
     // Markdown, .md URLs, and thrown Responses — leaves through this one
     // return, so the Link relations are structurally present on every
-    // representation. The classifier emits nothing outside content paths, so
-    // 404s, redirects, and assets pass through with no extra headers.
-    return applyDiscoveryHeaders(response, pathname);
+    // representation. It receives the raw pathname — the same form the head
+    // consumer passes — because the classifier decodes internally, so
+    // encoded and decoded spellings of one page advertise identically. The
+    // classifier emits nothing outside content paths, and redirects pass
+    // through untouched, so 301s, 404s, and assets carry no extra headers.
+    return applyDiscoveryHeaders(response, url.pathname);
   }
 } satisfies ExportedHandler;

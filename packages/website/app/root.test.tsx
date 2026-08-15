@@ -42,4 +42,18 @@ describe('PageDiscoveryLinks', () => {
     renderAt('/api/repos');
     expect(document.head.querySelectorAll('link').length).toBe(0);
   });
+
+  it('renders decoded relations for a percent-encoded pathname', () => {
+    renderAt('/docs/guides/reconcile%2Ddrifted-spans');
+    const alternate = links('alternate');
+    expect(alternate?.getAttribute('href')).toBe('/docs/guides/reconcile-drifted-spans.md');
+    expect(alternate?.getAttribute('type')).toBe('text/markdown');
+    expect(links('describedby')?.getAttribute('href')).toBe('/docs/llms.txt');
+  });
+
+  it('renders both relations for a %2F-encoded segment', () => {
+    renderAt('/docs/guides%2Freconcile-drifted-spans');
+    expect(links('alternate')?.getAttribute('href')).toBe('/docs/guides/reconcile-drifted-spans.md');
+    expect(links('describedby')?.getAttribute('href')).toBe('/docs/llms.txt');
+  });
 });
