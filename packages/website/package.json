@@ -4,10 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node ../../scripts/ensure-worktree-local-generated.mjs packages/website && node scripts/dev-with-tunnel.mjs",
+    "dev": "node ../../scripts/ensure-worktree-local-generated.mjs packages/website && node scripts/generate-agent-skills.mjs && node scripts/dev-with-tunnel.mjs",
     "dev:stop": "node scripts/dev-with-tunnel.mjs stop",
     "dev:vite": "node ../../scripts/ensure-worktree-local-generated.mjs packages/website && react-router dev",
-    "build": "node ../../scripts/ensure-worktree-local-generated.mjs packages/website && react-router build",
+    "build": "node ../../scripts/ensure-worktree-local-generated.mjs packages/website && node scripts/generate-agent-skills.mjs && react-router build",
     "generate:images": "node scripts/generate-metadata-images.mjs",
     "deploy": "yarn build && wrangler deploy",
     "lint": "biome check --write --unsafe --max-diagnostics 500",
