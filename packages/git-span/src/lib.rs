@@ -10,6 +10,7 @@
 //! * [`resolver`]    — layered drift resolver (§5).
 //! * [`validation`]  — name validation (§3.5, §10.2).
 //! * [`cli`]         — clap surface; consumed by the binary.
+//! * [`schemas`]     — published JSON Schema + command-reference generation.
 
 #[cfg(feature = "bench-corpus")]
 pub mod bench_corpus;
@@ -20,6 +21,7 @@ pub mod descriptor_authority;
 pub mod git;
 pub mod perf;
 pub mod resolver;
+pub mod schemas;
 mod sigpipe;
 pub mod span;
 pub mod span_file;
