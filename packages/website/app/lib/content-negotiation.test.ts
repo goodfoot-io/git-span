@@ -24,7 +24,16 @@ describe('prefersMarkdown', () => {
     ['text/html;q=.5, text/markdown;q=0.8', true],
     ['text/html;q=0.9, text/markdown;q=0.8', false],
     ['text/markdown;q=0, */*;q=1', false],
-    ['text/markdown;q=wat', false]
+    ['text/markdown;q=wat', false],
+    ['text/markdown; q = 0', false],
+    ['text/html, text/markdown; q = 0', false],
+    ['text/markdown; q = 1, text/html; q = 0.5', true],
+    ['text/markdown; q = 1, text/html; q = 1', false],
+    ['text/markdown; q="0.5"', true],
+    ['text/html; q=1, text/markdown; q = "0.5"', false],
+    ['text/html; q = 0.1, text/markdown; q = 0.9', true],
+    ['TEXT/MARKDOWN; Q = 0.8, text/html; q = 0.5', true],
+    ['text/markdown; q = "wat"', false]
   ])('selects Markdown for %s only when it strictly outranks HTML', (accept, expected) => {
     expect(prefersMarkdown(accept)).toBe(expected);
   });

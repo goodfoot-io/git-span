@@ -14,15 +14,19 @@ type DocsPage = ReturnType<typeof source.getPage>;
 
 /**
  * Strip the stringifier's frontmatter preamble, but only when the document
- * opens with one: `***` … a dashed rule … blank line, then the body. Later
- * horizontal rules belong to the body and are kept — the strip stops at the
- * first rule, never scans further.
+ * opens with one: `***` … YAML frontmatter … a dashed rule … blank line, then
+ * the body. The region between the opener and the first rule must carry a
+ * `title:` line — the one key every docs page's frontmatter has — so a body
+ * that legally opens with a `***` thematic break is never mistaken for a
+ * preamble and truncated. Later horizontal rules belong to the body and are
+ * kept — the strip stops at the first rule, never scans further.
  */
 function stripFrontmatterPreamble(processed: string): string {
   if (!processed.startsWith('***\n')) return processed;
   const lines = processed.split('\n');
   const rule = lines.findIndex((line) => /^-{3,}$/.test(line));
   if (rule === -1) return processed;
+  if (!lines.slice(1, rule).some((line) => /^title:\s/.test(line))) return processed;
   let bodyStart = rule + 1;
   while (bodyStart < lines.length && lines[bodyStart] === '') bodyStart++;
   return lines.slice(bodyStart).join('\n');
@@ -71,25 +75,45 @@ function rewriteCallouts(processed: string): string {
 }
 
 /** A stringifier heading-id suffix token: `## Global options [#global-options]`. */
-const HEADING_ID = /^(#{1,6})\s+(.+?)\s+\[#[a-z0-9-]+\]$/;
+const HEADING_ID = /^(#{1,6})\s+(.+?)\s+\[#[a-z0-9_-]+\]$/;
+
+/** A CommonMark fence line: up to three leading spaces, then a run of three
+ * or more backticks or tildes. */
+const FENCE = /^ {0,3}(`{3,}|~{3,})/;
 
 /**
  * Strip the heading-id suffix tokens the stringifier appends to ATX headings.
  * The ids anchor the HTML pages' headings; the Markdown representation shows
  * the same heading text the page shows. Lines inside code fences are left
- * untouched — fence content is verbatim source, never stringifier output.
+ * untouched — fence content is verbatim source, never stringifier output. The
+ * fence tracker follows CommonMark: a fence opens on a run of three or more
+ * of one character, only the same character closes it, the closing run must
+ * be at least as long as the opener and carry nothing but trailing
+ * whitespace, and a closing fence may be indented up to three spaces.
  */
 function stripHeadingIds(processed: string): string {
   const lines = processed.split('\n');
   const out: string[] = [];
-  let inFence = false;
+  let fence: { char: string; length: number } | null = null;
   for (const line of lines) {
-    if (/^(`{3}|~{3})/.test(line)) {
-      inFence = !inFence;
+    const match = FENCE.exec(line);
+    if (match) {
+      const char = match[1][0];
+      if (fence) {
+        if (
+          char === fence.char &&
+          match[1].length >= fence.length &&
+          line.slice((match.index ?? 0) + match[0].length).trim() === ''
+        ) {
+          fence = null;
+        }
+      } else {
+        fence = { char, length: match[1].length };
+      }
       out.push(line);
       continue;
     }
-    out.push(inFence ? line : line.replace(HEADING_ID, '$1 $2'));
+    out.push(fence ? line : line.replace(HEADING_ID, '$1 $2'));
   }
   return out.join('\n');
 }

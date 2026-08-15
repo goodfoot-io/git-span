@@ -44,8 +44,11 @@ function preference(accept: string | null, wanted: string): { q: number; specifi
       continue;
     }
     const specificity = type === '*' ? 0 : subtype === '*' ? 1 : 2;
-    const qParameter = parameters.map((part) => part.trim()).find((part) => part.startsWith('q='));
-    const q = quality(qParameter?.slice(2));
+    // Tolerate BWS around the `=` and quoted q-values — `q = 0` and `q="0.5"`
+    // both carry the client's explicit intent and must not degrade to the
+    // absent-parameter default (1) or the malformed-value fallback (0).
+    const qParameter = parameters.map((part) => part.trim()).find((part) => /^q\s*=/.test(part));
+    const q = quality(qParameter?.replace(/^q\s*=\s*/, '').replace(/^"(.*)"$/, '$1'));
     if (specificity > best.specificity || (specificity === best.specificity && q > best.q)) best = { q, specificity };
   }
   return best.specificity < 0 ? { q: 0, specificity: -1 } : best;

@@ -170,4 +170,40 @@ describe('getLLMText', () => {
       (error: unknown) => error instanceof Response && error.status === 500
     );
   });
+
+  it('leaves a body that opens with a *** thematic break untouched', async () => {
+    // A frontmatter-less document may legally open with a `***` horizontal
+    // rule; the preamble strip must not mistake the opener for frontmatter
+    // and truncate the body at the first dashed rule.
+    const processed = '***\n\nBody text.\n\n---\n\nMore body.\n';
+    const text = await getLLMText(fakePage(processed));
+    expect(text).toBe('# Agent integration (/docs/agent-integration)\n\n***\n\nBody text.\n\n---\n\nMore body.\n');
+  });
+
+  it('treats a tilde run inside a backtick fence as content, not a closer', async () => {
+    const processed = '```\n## Inside [#inside]\n~~~\n```\n## After [#after]\n';
+    const text = await getLLMText(fakePage(processed));
+    expect(text).toBe(
+      '# Agent integration (/docs/agent-integration)\n\n```\n## Inside [#inside]\n~~~\n```\n## After\n'
+    );
+  });
+
+  it('closes a fence on an indented closing run of the same character', async () => {
+    const processed = '```\n## Inside [#inside]\n  ```\n## After [#after]\n';
+    const text = await getLLMText(fakePage(processed));
+    expect(text).toContain('## Inside [#inside]\n  ```\n## After\n');
+  });
+
+  it('keeps the tracker open on a shorter closing run', async () => {
+    // CommonMark closes a fence only on a run at least as long as the opener.
+    const processed = '````\n## Inside [#inside]\n```\n## Still inside [#still-inside]\n````\n## After [#after]\n';
+    const text = await getLLMText(fakePage(processed));
+    expect(text).toContain('````\n## Inside [#inside]\n```\n## Still inside [#still-inside]\n````\n## After\n');
+  });
+
+  it('strips heading-id tokens whose slugs contain underscores', async () => {
+    const processed = '## Foo_bar baz [#foo_bar-baz]\n';
+    const text = await getLLMText(fakePage(processed));
+    expect(text).toBe('# Agent integration (/docs/agent-integration)\n\n## Foo_bar baz\n');
+  });
 });
