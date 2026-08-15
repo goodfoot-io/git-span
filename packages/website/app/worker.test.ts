@@ -40,7 +40,7 @@ afterEach(() => {
 });
 
 describe('worker Markdown negotiation', () => {
-  it.skip('negotiates the homepage for GET /', async () => {
+  it('negotiates the homepage for GET /', async () => {
     const response = await worker.fetch(markdownRequest('/'));
     expect(response.status).toBe(200);
     expect(response.headers.get('Content-Type')).toBe('text/markdown; charset=utf-8');
@@ -49,38 +49,38 @@ describe('worker Markdown negotiation', () => {
     expect(await response.text()).toContain('# Agents should read between the lines.');
   });
 
-  it.skip('negotiates a nested guide slug', async () => {
+  it('negotiates a nested guide slug', async () => {
     const response = await worker.fetch(markdownRequest('/docs/guides/reconcile-drifted-spans'));
     expect(response.status).toBe(200);
     expect(response.headers.get('Content-Type')).toBe('text/markdown; charset=utf-8');
     expect(await response.text()).toContain('(/docs/guides/reconcile-drifted-spans)');
   });
 
-  it.skip('negotiates a single-segment page', async () => {
+  it('negotiates a single-segment page', async () => {
     const response = await worker.fetch(markdownRequest('/docs/overview'));
     expect(response.status).toBe(200);
     expect(await response.text()).toContain('(/docs/overview)');
   });
 
-  it.skip('negotiates a trailing-slash docs URL', async () => {
+  it('negotiates a trailing-slash docs URL', async () => {
     const response = await worker.fetch(markdownRequest('/docs/overview/'));
     expect(response.status).toBe(200);
     expect(response.headers.get('Content-Type')).toBe('text/markdown; charset=utf-8');
   });
 
-  it.skip('negotiates a percent-encoded slug', async () => {
+  it('negotiates a percent-encoded slug', async () => {
     const response = await worker.fetch(markdownRequest('/docs/guides/reconcile%2Ddrifted-spans'));
     expect(response.status).toBe(200);
     expect(response.headers.get('Content-Type')).toBe('text/markdown; charset=utf-8');
   });
 
-  it.skip('serves a percent-encoded .md URL', async () => {
+  it('serves a percent-encoded .md URL', async () => {
     const response = await worker.fetch(request('/docs/guides/reconcile%2Ddrifted-spans.md'));
     expect(response.status).toBe(200);
     expect(response.headers.get('Content-Type')).toBe('text/markdown; charset=utf-8');
   });
 
-  it.skip('adds Accept variance to eligible HTML without changing SSR metadata', async () => {
+  it('adds Accept variance to eligible HTML without changing SSR metadata', async () => {
     const response = await worker.fetch(request('/docs/overview'));
     expect(response.status).toBe(207);
     expect(response.statusText).toBe('Multi-Status');
@@ -88,20 +88,20 @@ describe('worker Markdown negotiation', () => {
     expect(await response.text()).toBe('SSR response');
   });
 
-  it.skip('leaves non-public paths untouched, with no Vary', async () => {
+  it('leaves non-public paths untouched, with no Vary', async () => {
     const response = await worker.fetch(markdownRequest('/api/repos'));
     expect(response.status).toBe(207);
     expect(response.headers.get('Content-Type')).not.toBe('text/markdown; charset=utf-8');
     expect(response.headers.get('Vary')).toBeNull();
   });
 
-  it.skip('merges Accept into existing HTML variance', async () => {
+  it('merges Accept into existing HTML variance', async () => {
     rr.response = new Response('SSR response', { headers: { Vary: 'Accept-Encoding' } });
     const response = await worker.fetch(request('/docs/overview'));
     expect(response.headers.get('Vary')).toBe('Accept-Encoding, Accept');
   });
 
-  it.skip('lets unknown docs slugs fall through to the SSR 404 with Vary merged', async () => {
+  it('lets unknown docs slugs fall through to the SSR 404 with Vary merged', async () => {
     rr.response = new Response('not found', { status: 404 });
     const response = await worker.fetch(markdownRequest('/docs/not-a-real-page'));
     expect(response.status).toBe(404);
@@ -110,26 +110,26 @@ describe('worker Markdown negotiation', () => {
     expect(await response.text()).toBe('not found');
   });
 
-  it.skip('serves /index.md without negotiation', async () => {
+  it('serves /index.md without negotiation', async () => {
     const response = await worker.fetch(request('/index.md'));
     expect(response.status).toBe(200);
     expect(response.headers.get('Content-Type')).toBe('text/markdown; charset=utf-8');
     expect(await response.text()).toContain('# Agents should read between the lines.');
   });
 
-  it.skip('serves a nested .md URL without negotiation', async () => {
+  it('serves a nested .md URL without negotiation', async () => {
     const response = await worker.fetch(request('/docs/guides/reconcile-drifted-spans.md'));
     expect(response.status).toBe(200);
     expect(response.headers.get('Content-Type')).toBe('text/markdown; charset=utf-8');
   });
 
-  it.skip('301s a renamed .md URL to its .md twin', async () => {
+  it('301s a renamed .md URL to its .md twin', async () => {
     const response = await worker.fetch(request('/docs/guides/reconcile-stale-spans.md'));
     expect(response.status).toBe(301);
     expect(response.headers.get('Location')).toBe('/docs/guides/reconcile-drifted-spans.md');
   });
 
-  it.skip('leaves trailing-slash .md variants to the SSR 404 path', async () => {
+  it('leaves trailing-slash .md variants to the SSR 404 path', async () => {
     rr.response = new Response('not found', { status: 404 });
     for (const pathname of ['/docs/overview.md/', '/index.md/']) {
       const response = await worker.fetch(request(pathname));
@@ -137,13 +137,13 @@ describe('worker Markdown negotiation', () => {
     }
   });
 
-  it.skip('returns a thrown registry Response verbatim', async () => {
+  it('returns a thrown registry Response verbatim', async () => {
     const response = await worker.fetch(markdownRequest('/docs/trigger-500'));
     expect(response.status).toBe(500);
     expect(await response.text()).toBe('Processed text unavailable');
   });
 
-  it.skip('supports conditional GET through the worker', async () => {
+  it('supports conditional GET through the worker', async () => {
     const first = await worker.fetch(markdownRequest('/docs/overview'));
     const etag = first.headers.get('ETag') ?? '';
     const conditional = await worker.fetch(markdownRequest('/docs/overview', { headers: { 'If-None-Match': etag } }));
@@ -151,7 +151,7 @@ describe('worker Markdown negotiation', () => {
     expect(await conditional.text()).toBe('');
   });
 
-  it.skip('returns bodyless HEAD with the same validator as GET', async () => {
+  it('returns bodyless HEAD with the same validator as GET', async () => {
     const get = await worker.fetch(markdownRequest('/docs/overview'));
     const head = await worker.fetch(markdownRequest('/docs/overview', { method: 'HEAD' }));
     expect(head.status).toBe(200);
@@ -159,13 +159,13 @@ describe('worker Markdown negotiation', () => {
     expect(await head.text()).toBe('');
   });
 
-  it.skip('passes eligible HEAD with HTML Accept through with Vary merged', async () => {
+  it('passes eligible HEAD with HTML Accept through with Vary merged', async () => {
     const response = await worker.fetch(request('/docs/overview', { method: 'HEAD' }));
     expect(response.status).toBe(207);
     expect(response.headers.get('Vary')).toBe('Accept');
   });
 
-  it.skip('leaves non-GET/HEAD methods on the untouched SSR path', async () => {
+  it('leaves non-GET/HEAD methods on the untouched SSR path', async () => {
     const response = await worker.fetch(markdownRequest('/docs/overview', { method: 'POST' }));
     expect(response.status).toBe(207);
     expect(response.headers.get('Content-Type')).not.toBe('text/markdown; charset=utf-8');
