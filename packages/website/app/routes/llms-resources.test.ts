@@ -40,20 +40,20 @@ describe('route precedence', () => {
 });
 
 describe('GET /llms.txt — root system map', () => {
-  it.skip('serves text/plain and opens with the system one-liner', async () => {
+  it('serves text/plain and opens with the system one-liner', async () => {
     const res = rootMapLoader();
     expect(res.headers.get('content-type')).toBe('text/plain; charset=utf-8');
     expect(await res.text()).toMatch(/^# git-span\n\n> .+/);
   });
 
-  it.skip('carries the five annotated sections', async () => {
+  it('carries the five annotated sections', async () => {
     const body = await rootMapLoader().text();
     for (const section of ['## Start here', '## Source', '## CLI', '## Agent integrations', '## Optional']) {
       expect(body).toContain(section);
     }
   });
 
-  it.skip('annotates every advertised URL with a description', async () => {
+  it('annotates every advertised URL with a description', async () => {
     const body = await rootMapLoader().text();
     const urls = [
       `${SITE_URL}/docs/llms.txt`,
@@ -69,7 +69,7 @@ describe('GET /llms.txt — root system map', () => {
     }
   });
 
-  it.skip('stays a map: no individual chapter paths', async () => {
+  it('stays a map: no individual chapter paths', async () => {
     const body = await rootMapLoader().text();
     for (const forbidden of ['/docs/overview', '/docs/ci', '/docs/reference', '/docs/guides/']) {
       expect(body).not.toContain(forbidden);
