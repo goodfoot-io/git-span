@@ -124,16 +124,12 @@ export function buildPublication(skillsRoot) {
 
 /**
  * Run biome against the emitted artifact so its bytes are stable under every
- * later lint pass. Prefers the Yarn CLI that is running us (`npm_execpath`)
- * when invoked inside a script, and falls back to `yarn` on PATH — both
- * resolve the binary the way `yarn lint` does, whatever the install layout.
+ * later lint pass. Spawned as `yarn biome` — never through `npm_execpath`,
+ * which Yarn sets to a shell wrapper that node cannot run — so the binary
+ * resolves the way `yarn lint` does, whatever the install layout.
  */
 function formatWithBiome(outPath) {
-  const args = ['biome', 'check', '--write', '--unsafe', outPath];
-  const [command, commandArgs] = process.env.npm_execpath
-    ? [process.execPath, [process.env.npm_execpath, ...args]]
-    : ['yarn', args];
-  execFileSync(command, commandArgs, { cwd: packageRoot, stdio: 'inherit' });
+  execFileSync('yarn', ['biome', 'check', '--write', '--unsafe', outPath], { cwd: packageRoot, stdio: 'inherit' });
 }
 
 /**
