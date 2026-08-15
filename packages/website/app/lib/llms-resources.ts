@@ -7,6 +7,8 @@
  * @summary Shared generators for the generated llms.txt resources
  */
 import type { Item, Node } from 'fumadocs-core/page-tree';
+import { getLLMText } from '~/lib/get-llm-text';
+import { source } from '~/lib/source';
 
 /**
  * Walk page-tree nodes in authored reading order: `page` nodes as they
@@ -15,8 +17,17 @@ import type { Item, Node } from 'fumadocs-core/page-tree';
  * @param nodes - The page-tree children to walk.
  * @returns The pages in reading order.
  */
-export function collectPageNodes(_nodes: Node[]): Item[] {
-  throw new Error('Not Implemented');
+export function collectPageNodes(nodes: Node[]): Item[] {
+  const items: Item[] = [];
+  for (const node of nodes) {
+    if (node.type === 'page') {
+      items.push(node);
+    } else if (node.type === 'folder') {
+      if (node.index) items.push(node.index);
+      items.push(...collectPageNodes(node.children));
+    }
+  }
+  return items;
 }
 
 /**
@@ -44,5 +55,7 @@ export function withMdLinks(index: string): string {
  * @returns The complete docs corpus.
  */
 export async function renderDocsCorpus(): Promise<string> {
-  throw new Error('Not Implemented');
+  const pages = collectPageNodes(source.pageTree.children);
+  const rendered = await Promise.all(pages.map((node) => getLLMText(source.getNodePage(node))));
+  return rendered.join('\n\n');
 }

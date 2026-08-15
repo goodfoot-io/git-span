@@ -54,7 +54,7 @@ describe('withMdLinks', () => {
 });
 
 describe('collectPageNodes', () => {
-  it.skip('emits pages in order with a folder index before its children and separators skipped', () => {
+  it('emits pages in order with a folder index before its children and separators skipped', () => {
     const fixture: Node[] = [
       page('Alpha', '/docs/alpha'),
       separator,
@@ -76,19 +76,19 @@ describe('collectPageNodes', () => {
 });
 
 describe('docs corpus order', () => {
-  it.skip('yields the real pages in the authored meta.json order', () => {
+  it('yields the real pages in the authored meta.json order', () => {
     const urls = collectPageNodes(source.pageTree.children).map((node) => source.getNodePage(node)?.url);
     expect(urls).toEqual(expectedDocsSlugs().map((slug) => `/docs/${slug}`));
   });
 });
 
 describe('renderDocsCorpus', () => {
-  it.skip('opens with the overview chapter', async () => {
+  it('opens with the overview chapter', async () => {
     const corpus = await renderDocsCorpus();
     expect(corpus.startsWith('# Introduction (/docs/overview)')).toBe(true);
   });
 
-  it.skip('contains all ten chapter headers in authored order', async () => {
+  it('contains all ten chapter headers in authored order', async () => {
     const corpus = await renderDocsCorpus();
     const headers = [...corpus.matchAll(/^# .+ \((\/docs\/[^)]+)\)$/gm)].map((match) => match[1]);
     expect(headers).toEqual(expectedDocsSlugs().map((slug) => `/docs/${slug}`));
