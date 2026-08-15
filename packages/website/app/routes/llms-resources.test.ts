@@ -28,7 +28,7 @@ function expectedDocsSlugs(): string[] {
 }
 
 describe('route precedence', () => {
-  it.skip('registers both docs-scope resources above the docs splat', () => {
+  it('registers both docs-scope resources above the docs splat', () => {
     const splat = routes.findIndex((r) => r.path === 'docs/*' && r.file === 'routes/docs/page.tsx');
     const index = routes.findIndex((r) => r.path === 'docs/llms.txt' && r.file === 'routes/docs.llms.txt.ts');
     const full = routes.findIndex((r) => r.path === 'docs/llms-full.txt' && r.file === 'routes/docs.llms-full.txt.ts');
