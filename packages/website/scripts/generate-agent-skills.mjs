@@ -83,10 +83,14 @@ function readFrontmatter(skillMdPath) {
   const fields = {};
   for (const field of ['name', 'description']) {
     const index = lines.findIndex((line) => line.startsWith(`${field}:`));
-    if (index === -1) throw new Error(`frontmatter in ${skillMdPath} must carry ${field}`);
+    // `description:Track` starts with the key but is a plain scalar, not a
+    // mapping entry — YAML would carry no such field, so neither may we.
+    if (index === -1 || !/^[ \t]/.test(lines[index].slice(field.length + 1))) {
+      throw new Error(`frontmatter in ${skillMdPath} must carry ${field}`);
+    }
     const value = lines[index].slice(field.length + 1).trim();
     const continued = lines[index + 1] !== undefined && /^[ \t]/.test(lines[index + 1]);
-    if (value === '' || /^["'#|>]/.test(value) || / #/.test(value) || continued) {
+    if (value === '' || /^["'#|>]/.test(value) || /[\t ]#/.test(value) || continued) {
       throw new Error(`frontmatter ${field} in ${skillMdPath} must be a bare single-line scalar`);
     }
     fields[field] = value;

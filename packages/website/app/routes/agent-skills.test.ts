@@ -211,18 +211,20 @@ describe('buildPublication fail-closed guards', () => {
   });
 
   it('rejects descriptions a real YAML parse would read differently', () => {
-    const variants = [
-      'description: Track spans\n  clean up couplings', // folded plain scalar
-      'description: Track spans # keep in sync', // inline comment
-      'description: "Track spans"' // quoted scalar
+    const variants: Array<[string, RegExp]> = [
+      ['description: Track spans\n  clean up couplings', /bare single-line scalar/], // folded plain scalar
+      ['description: Track spans # keep in sync', /bare single-line scalar/], // inline comment
+      ['description: Track spans\t# comment', /bare single-line scalar/], // tab-preceded comment
+      ['description: "Track spans"', /bare single-line scalar/], // quoted scalar
+      ['description:Track spans', /must carry description/] // plain scalar, not a mapping entry
     ];
-    for (const description of variants) {
+    for (const [description, message] of variants) {
       withTempTree({}, (root) => {
         writeFileSync(
           path.join(root, 'fixture-skill', 'SKILL.md'),
           `---\nname: fixture-skill\n${description}\n---\n# Fixture\n`
         );
-        expect(() => buildPublication(root), description).toThrow(/bare single-line scalar/);
+        expect(() => buildPublication(root), description).toThrow(message);
       });
     }
   });
