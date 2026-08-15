@@ -4,8 +4,9 @@
  */
 
 /** Emit every website-owned committed artifact into `toDir` (default: their
- * committed locations). */
-export function generateArtifacts(options?: { toDir?: string }): void;
+ * committed locations), regenerating from `skillsRoot` (default: the
+ * normative plugin skill tree). */
+export function generateArtifacts(options?: { toDir?: string; skillsRoot?: string }): void;
 
 /**
  * Compare every website-owned committed artifact under `root` against fresh

@@ -49,7 +49,7 @@ afterEach(() => {
 });
 
 describe('the umbrella artifact gate', () => {
-  it.skip('reports a tampered committed artifact as stale, naming its label and fix command', () => {
+  it('reports a tampered committed artifact as stale, naming its label and fix command', () => {
     const root = makeFakeRoot();
     tempDirs.push(root);
     generateArtifacts({ toDir: root });
@@ -64,7 +64,7 @@ describe('the umbrella artifact gate', () => {
     expect(errorSpy.mock.calls.join('\n')).toContain('yarn workspace @goodfoot/git-span-website generate:artifacts');
   });
 
-  it.skip('treats a missing committed artifact as stale, not a crash', () => {
+  it('treats a missing committed artifact as stale, not a crash', () => {
     const root = makeFakeRoot();
     tempDirs.push(root);
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -75,7 +75,7 @@ describe('the umbrella artifact gate', () => {
     expect(errorSpy.mock.calls.join('\n')).toContain(GENERATED_PATH);
   });
 
-  it.skip('passes when generate and check run against the same root (generate/check parity)', () => {
+  it('passes when generate and check run against the same root (generate/check parity)', () => {
     const root = makeFakeRoot();
     tempDirs.push(root);
     generateArtifacts({ toDir: root });
@@ -85,7 +85,7 @@ describe('the umbrella artifact gate', () => {
     expect(stale).toBe(false);
   });
 
-  it.skip('is deterministic: two generate runs are byte-identical', () => {
+  it('is deterministic: two generate runs are byte-identical', () => {
     const first = makeFakeRoot();
     const second = makeFakeRoot();
     tempDirs.push(first, second);
@@ -97,14 +97,14 @@ describe('the umbrella artifact gate', () => {
     );
   });
 
-  it.skip('emits the served-file map in sorted key order', () => {
+  it('emits the served-file map in sorted key order', () => {
     const publication = buildPublication(defaultSkillsRoot);
     const keys = Object.keys(publication.files);
 
     expect(keys).toEqual([...keys].sort());
   });
 
-  it.skip('holds the banner bijection: every banner-marked committed text file is inventory-listed, and listed generated files carry their banner', () => {
+  it('holds the banner bijection: every banner-marked committed text file is inventory-listed, and listed generated files carry their banner', () => {
     const committedFiles = execFileSync('git', ['-C', repoRoot, 'ls-files', 'packages/website'], {
       encoding: 'utf8'
     })
@@ -140,7 +140,7 @@ describe('the umbrella artifact gate', () => {
     }
   });
 
-  it.skip('names a live renderer and check for every entry, and a fix command for every committed-generated entry', () => {
+  it('names a live renderer and check for every entry, and a fix command for every committed-generated entry', () => {
     for (const entry of artifacts) {
       expect(entry.check, `${entry.label} must declare its check`).toBeTruthy();
       for (const generatorFile of entry.generatorFiles) {
@@ -155,7 +155,7 @@ describe('the umbrella artifact gate', () => {
     }
   });
 
-  it.skip('renders the full inventory with every entry and its source', () => {
+  it('renders the full inventory with every entry and its source', () => {
     const rendered = renderInventory();
 
     expect(rendered).toContain('Artifact | Kind | Source');
