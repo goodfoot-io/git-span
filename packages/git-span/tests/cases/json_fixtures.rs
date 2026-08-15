@@ -24,7 +24,7 @@ use crate::support::TestRepo;
 use anyhow::{ensure, Result};
 use std::path::Path;
 
-const FIXTURE_DIR: &str = "tests/fixtures/json";
+pub(super) const FIXTURE_DIR: &str = "tests/fixtures/json";
 
 /// `git add -A && git commit -m <msg>` with both dates pinned to an
 /// explicit-offset epoch so hashes are byte-stable across machines.
@@ -78,7 +78,7 @@ file2.txt#L1-L5 rk64:fedcba9876543210
 
 /// `add --format json` on the seeded repo. The scenario builds a fresh
 /// repo per run because `add` mutates the span store.
-fn mutation_scenario() -> Result<Vec<u8>> {
+pub(super) fn mutation_scenario() -> Result<Vec<u8>> {
     let repo = TestRepo::seeded()?;
     let out = repo.run_span(["add", "m", "file1.txt#L1-L5", "--format", "json"])?;
     ensure!(
@@ -89,7 +89,7 @@ fn mutation_scenario() -> Result<Vec<u8>> {
 }
 
 /// `resolve --ours --format json` over hand-assembled residue.
-fn resolve_scenario() -> Result<Vec<u8>> {
+pub(super) fn resolve_scenario() -> Result<Vec<u8>> {
     let repo = TestRepo::seeded()?;
     repo.write_file(".span/m", &resolve_fixture())?;
     let out = repo.run_span(["resolve", "m", "--ours", "--format", "json"])?;
@@ -97,7 +97,7 @@ fn resolve_scenario() -> Result<Vec<u8>> {
 }
 
 /// `resolve --dry-run --format json` over the same residue input.
-fn resolve_dry_run_scenario() -> Result<Vec<u8>> {
+pub(super) fn resolve_dry_run_scenario() -> Result<Vec<u8>> {
     let repo = TestRepo::seeded()?;
     repo.write_file(".span/m", &resolve_fixture())?;
     let out = repo.run_span(["resolve", "m", "--dry-run", "--format", "json"])?;
@@ -105,7 +105,7 @@ fn resolve_dry_run_scenario() -> Result<Vec<u8>> {
 }
 
 /// `context --format json` for a span queried at its own anchor address.
-fn context_scenario() -> Result<Vec<u8>> {
+pub(super) fn context_scenario() -> Result<Vec<u8>> {
     let repo = TestRepo::seeded()?;
     ensure!(repo.run_span(["add", "ctx", "file1.txt#L1-L2"])?.status.success());
     let out = repo.run_span(["context", "file1.txt#L1-L2", "--format", "json"])?;
@@ -113,7 +113,7 @@ fn context_scenario() -> Result<Vec<u8>> {
 }
 
 /// `history --format json` over pinned-date commits.
-fn history_scenario() -> Result<Vec<u8>> {
+pub(super) fn history_scenario() -> Result<Vec<u8>> {
     let repo = TestRepo::new()?;
     repo.write_file(
         "file1.txt",
@@ -137,7 +137,7 @@ fn history_scenario() -> Result<Vec<u8>> {
 }
 
 /// `drift --format json` for a mutated anchor.
-fn drift_dirty_scenario() -> Result<Vec<u8>> {
+pub(super) fn drift_dirty_scenario() -> Result<Vec<u8>> {
     let repo = TestRepo::seeded()?;
     ensure!(repo.run_span(["add", "d", "file1.txt#L1-L5"])?.status.success());
     ensure!(repo.run_span(["why", "d", "seed"])?.status.success());
@@ -155,7 +155,7 @@ fn drift_dirty_scenario() -> Result<Vec<u8>> {
 }
 
 /// `drift --format json` for a clean scan — the always-emitted-keys shape.
-fn drift_clean_scenario() -> Result<Vec<u8>> {
+pub(super) fn drift_clean_scenario() -> Result<Vec<u8>> {
     let repo = TestRepo::seeded()?;
     ensure!(repo.run_span(["add", "d", "file1.txt#L1-L5"])?.status.success());
     ensure!(repo.run_span(["why", "d", "seed"])?.status.success());

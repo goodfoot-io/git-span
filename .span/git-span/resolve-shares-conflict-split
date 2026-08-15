@@ -3,7 +3,7 @@ packages/git-span-core/src/span_file.rs#L822-L1363 rk64:0bd6211833879a50
 packages/git-span/src/cli/drift_fix.rs#L415-L515 rk64:6a34c17390856f37
 packages/git-span/src/cli/drift_fix.rs#L546-L668 rk64:6a133abbe1c12856
 packages/git-span/src/cli/drift_fix.rs#L829-L918 rk64:143124268a2cc0b8
-packages/git-span/src/cli/resolve.rs rk64:7cff3fdea389790c
+packages/git-span/src/cli/resolve.rs rk64:e0aa7de070cc20e4
 packages/git-span/src/git.rs#L1032-L1057 rk64:83cc73fe05f4945a
 packages/git-span/src/git.rs#L1349-L1371 rk64:405271ca12017c23
 

@@ -26,6 +26,7 @@ use crate::types::{
 };
 use anyhow::{Context, Result};
 use fs4::fs_std::FileExt;
+use schemars::JsonSchema;
 use git_span_core::{
     RK64_ALGORITHM, ResolveCommand, ResolvedRecord, carried_sentinel, cheap_fingerprint_with_extent,
     rk64_to_hex,
@@ -2096,7 +2097,7 @@ pub const MUTATION_JSON_SCHEMA_VERSION: u32 = 1;
 /// as a bare JSON string, so a consumer can type the field as a string and
 /// compare it literally. Per-outcome detail rides on sibling fields of
 /// [`AnchorOutcome`] (see `records_before`), never inside `outcome`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, JsonSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum AddressOutcome {
     /// Brand-new anchor record created.
@@ -2118,7 +2119,7 @@ pub enum AddressOutcome {
 /// on this branch — here supersession always reports `REMAINS` (the anchor is
 /// still in the declaration) and hands the operator the runnable retire
 /// command.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, JsonSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum SupersessionState {
     /// The mutation itself removed the old anchor from the declaration.
@@ -2129,7 +2130,7 @@ pub enum SupersessionState {
 }
 
 /// Stable enum for `span_health.state`: `DRIFT_FREE | DRIFT | UNKNOWN`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, JsonSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum SpanHealthState {
     /// Span-wide clean: no anchor has a status for which
@@ -2143,7 +2144,8 @@ pub enum SpanHealthState {
 }
 
 /// One requested address and its outcome in the mutation document.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct AnchorOutcome {
     pub address: String,
     pub outcome: AddressOutcome,
@@ -2166,7 +2168,8 @@ pub struct AnchorOutcome {
 
 /// One provably superseded old anchor: the covering new address, its state,
 /// and the runnable retire next action.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct SupersededAnchor {
     /// Canonical address of the old anchor (e.g. `src/read-user.ts#L1-L5`).
     pub address: String,
@@ -2181,7 +2184,8 @@ pub struct SupersededAnchor {
 ///
 /// `status` is the exact output of `drift_output::status_json`, so the
 /// anchor-status vocabulary is shared with drift's findings by construction.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct RemainingAnchor {
     pub address: String,
     pub status: crate::cli::drift_output::StatusDoc,
@@ -2195,14 +2199,16 @@ pub struct RemainingAnchor {
 }
 
 /// One drifting anchor inside `span_health.drifting`.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct DriftingAnchor {
     pub address: String,
     pub status: crate::cli::drift_output::StatusDoc,
 }
 
 /// The span-wide health block of the mutation document.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct SpanHealth {
     pub state: SpanHealthState,
     pub drift_count: usize,
@@ -2220,7 +2226,8 @@ pub struct SpanHealth {
 ///
 /// Every top-level key is always emitted (arrays possibly empty), so hooks
 /// rely on a stable key set rather than key presence.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct MutationDocument {
     pub schema_version: u32,
     pub command: String,

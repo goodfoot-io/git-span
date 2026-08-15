@@ -3,6 +3,7 @@
 use crate::cli::ContextArgs;
 use crate::types::{AnchorExtent, AnchorStatus, DriftSource, EngineOptions, Span, SpanResolved};
 use anyhow::{Context, Result};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -14,39 +15,45 @@ pub const MAX_CONTEXT_ADDRESSES: usize = 4096;
 pub const MAX_CONTEXT_DETAIL_BYTES: usize = 4096;
 pub const MAX_CONTEXT_JSON_BYTES: usize = 16 * 1024 * 1024;
 
-#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ContextExtent {
     Whole,
     Lines { start: u32, end: u32 },
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct ContextScope {
     pub path: String,
     pub extent: ContextExtent,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct ContextLocation {
     pub path: String,
     pub extent: ContextExtent,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(
+    Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum ContextOverlapBasis {
     Anchored,
     Current,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct ContextAnchorIdentity {
     pub ordinal: usize,
     pub id: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct ContextOverlap {
     pub scope: usize,
     pub anchor: ContextAnchorIdentity,
@@ -55,7 +62,7 @@ pub struct ContextOverlap {
     pub intersection: ContextExtent,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, JsonSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ContextSource {
     Worktree,
@@ -63,7 +70,7 @@ pub enum ContextSource {
     Head,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, JsonSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ContextUnavailableReason {
     LfsNotFetched,
@@ -74,7 +81,7 @@ pub enum ContextUnavailableReason {
     IoError,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, JsonSchema)]
 #[serde(tag = "code", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ContextStatus {
     Fresh,
@@ -86,30 +93,43 @@ pub enum ContextStatus {
     Submodule,
     ContentUnavailable {
         reason: ContextUnavailableReason,
+        /// Opaque per-reason payload: the family pins `reason` but not the
+        /// detail blob's internal shape, so the schema leaves it unconstrained.
+        #[schemars(schema_with = "crate::schemas::any_schema")]
         detail: Value,
     },
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct ContextAnchor {
     pub ordinal: usize,
     pub id: String,
     pub anchored: ContextLocation,
+    /// Always emitted; `null` when the anchor cannot be located in the
+    /// current worktree or index.
+    #[schemars(required, schema_with = "crate::schemas::nullable_schema::<ContextLocation>")]
     pub current: Option<ContextLocation>,
     pub status: ContextStatus,
+    /// Always emitted; `null` when the anchor has no recorded source layer.
+    #[schemars(required, schema_with = "crate::schemas::nullable_schema::<ContextSource>")]
     pub source: Option<ContextSource>,
     pub sources: Vec<ContextSource>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct ContextSpan {
     pub name: String,
+    /// Always emitted; `null` when the span has no why prose.
+    #[schemars(required, schema_with = "crate::schemas::nullable_schema::<String>")]
     pub why: Option<String>,
     pub overlaps: Vec<ContextOverlap>,
     pub anchors: Vec<ContextAnchor>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct ContextMutation {
     pub requested: bool,
     pub rewritten: bool,
@@ -119,7 +139,8 @@ pub struct ContextMutation {
     pub identities_collapsed: usize,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct ContextDocument {
     pub schema_version: u32,
     pub scopes: Vec<ContextScope>,

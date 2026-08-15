@@ -2274,7 +2274,7 @@ const DRIFT_JSON_SCHEMA_VERSION: u32 = 3;
 /// Root document of `drift --format json`.
 #[derive(Serialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
-struct DriftDocument {
+pub(crate) struct DriftDocument {
     clean: bool,
     clusters: Vec<ClusterDoc>,
     findings: Vec<FindingDoc>,

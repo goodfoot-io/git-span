@@ -18,8 +18,10 @@
 
 use std::path::{Path, PathBuf};
 
+use schemars::generate::SchemaSettings;
 use schemars::json_schema;
 use schemars::{JsonSchema, Schema, SchemaGenerator};
+use serde_json::Value as JsonValue;
 
 /// A generated file the CLI owns.
 ///
@@ -152,19 +154,101 @@ pub fn nullable_schema<T: JsonSchema>(generator: &mut SchemaGenerator) -> Schema
     json_schema!({ "anyOf": [inner, { "type": "null" }] })
 }
 
+/// A permissive schema for payloads a family deliberately leaves
+/// unconstrained (context's `ContentUnavailable.detail` blob): the boolean
+/// `true` schema accepts any value.
+pub fn any_schema(_generator: &mut SchemaGenerator) -> Schema {
+    json_schema!(true)
+}
+
+/// Derive one family's root schema from its serialization-shaped document
+/// type — the same types that produce the CLI's bytes, so the schema cannot
+/// describe an output shape the binary does not emit.
+fn family_schema(family: &Family) -> Schema {
+    let generator = SchemaSettings::draft2020_12().into_generator();
+    match family {
+        Family::Mutation => {
+            generator.into_root_schema_for::<crate::cli::commit::MutationDocument>()
+        }
+        Family::Resolve => {
+            generator.into_root_schema_for::<crate::cli::resolve::ResolveFamilyDoc>()
+        }
+        Family::Context => {
+            generator.into_root_schema_for::<crate::cli::context::ContextDocument>()
+        }
+        Family::History => {
+            generator.into_root_schema_for::<crate::cli::history::HistoryDocument>()
+        }
+        Family::Drift => {
+            generator.into_root_schema_for::<crate::cli::drift_output::DriftDocument>()
+        }
+    }
+}
+
 /// Build every artifact the generator owns, in both modes.
 ///
 /// Fail-closed guards fire here (not in the binary), so they hold in
-/// generate mode and `--check` mode alike.
+/// generate mode and `--check` mode alike. The commands.mdx artifact joins
+/// this list in the MDX-renderer unit.
 pub fn artifacts() -> Vec<Artifact> {
-    todo!("derive the five family schemas from the document types and render commands.mdx from the clap tree")
+    let mut artifacts = Vec::new();
+    for family in [
+        Family::Mutation,
+        Family::Resolve,
+        Family::Context,
+        Family::History,
+        Family::Drift,
+    ] {
+        let mut schema = family_schema(&family);
+        // `$id` is the family's stable URL; schemars emits `$schema`
+        // (draft 2020-12) itself but never an id.
+        schema.insert(
+            "$id".to_owned(),
+            JsonValue::String(family_schema_url(&family)),
+        );
+        let content = serde_json::to_string_pretty(&schema)
+            .expect("a generated schema is always JSON-serializable")
+            + "\n";
+        artifacts.push(Artifact {
+            label: format!("schema {}", family.key()),
+            path: PathBuf::from(format!(
+                "public/schemas/cli/v{}/{}.json",
+                family_url_version(&family),
+                family.key()
+            )),
+            content,
+        });
+    }
+    artifacts
 }
 
 /// Generate mode writes every artifact; `--check` byte-compares every
 /// artifact against its committed file and fails when any is stale.
 pub fn run(check: bool, website_dir: &Path) -> anyhow::Result<()> {
-    let _ = (check, website_dir, artifacts());
-    todo!("write artifacts in generate mode; byte-compare and exit 1 on staleness in --check mode")
+    let artifacts = artifacts();
+    let mut stale: Vec<&Artifact> = Vec::new();
+    for artifact in &artifacts {
+        let target = website_dir.join(&artifact.path);
+        if check {
+            let matches = std::fs::read_to_string(&target)
+                .map(|committed| committed == artifact.content)
+                .unwrap_or(false);
+            if !matches {
+                stale.push(artifact);
+            }
+        } else if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+            std::fs::write(&target, &artifact.content)?;
+        }
+    }
+    if !stale.is_empty() {
+        let count = stale.len();
+        for artifact in stale {
+            eprintln!("{} is stale; run yarn build:schemas", artifact.label);
+        }
+        anyhow::bail!("{count} artifact(s) stale");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -212,6 +296,97 @@ mod tests {
         assert_eq!(
             family_schema_url(&Family::Drift),
             "https://git-span.com/schemas/cli/v1/drift.json"
+        );
+    }
+
+    #[test]
+    fn artifacts_are_deterministic_across_runs() {
+        let first = artifacts();
+        let second = artifacts();
+        assert_eq!(first.len(), second.len());
+        for (a, b) in first.iter().zip(&second) {
+            assert_eq!(a.label, b.label);
+            assert_eq!(a.path, b.path);
+            assert_eq!(
+                a.content, b.content,
+                "{} content differs across two generation runs",
+                a.label
+            );
+        }
+    }
+
+    #[test]
+    fn artifacts_land_at_the_v1_schema_paths() {
+        let mut paths: Vec<String> = artifacts()
+            .iter()
+            .map(|a| a.path.to_str().expect("utf8 path").to_string())
+            .collect();
+        paths.sort_unstable();
+        let mut expected: Vec<String> = ["context", "drift", "history", "mutation", "resolve"]
+            .into_iter()
+            .map(|key| format!("public/schemas/cli/v1/{key}.json"))
+            .collect();
+        expected.sort_unstable();
+        assert_eq!(paths, expected);
+    }
+
+    #[test]
+    fn every_artifact_carries_its_family_id() {
+        for artifact in artifacts() {
+            let parsed: serde_json::Value =
+                serde_json::from_str(&artifact.content).expect("artifact is valid JSON");
+            let id = parsed["$id"].as_str().expect("schema has a string $id");
+            assert!(
+                id.starts_with("https://git-span.com/schemas/cli/v1/")
+                    && id.ends_with(".json"),
+                "unexpected $id {id}"
+            );
+        }
+    }
+
+    #[test]
+    fn mapping_table_is_a_bijection_with_the_clap_tree() {
+        use clap::CommandFactory as _;
+        let cmd = crate::cli::Cli::command();
+        let mut json_subcommands: Vec<String> = cmd
+            .get_subcommands()
+            .filter(|sub| {
+                sub.get_arguments().any(|arg| {
+                    arg.get_id() == "format"
+                        && arg
+                            .get_possible_values()
+                            .iter()
+                            .any(|possible| possible.get_name() == "json")
+                })
+            })
+            .map(|sub| sub.get_name().to_string())
+            .collect();
+        json_subcommands.sort_unstable();
+
+        let mut table: Vec<String> = json_command_mappings()
+            .iter()
+            .map(|m| m.subcommand.to_string())
+            .collect();
+        table.sort_unstable();
+
+        assert_eq!(
+            json_subcommands, table,
+            "the mapping table must name exactly the subcommands whose `--format` accepts json"
+        );
+    }
+
+    #[test]
+    fn versioned_rows_cover_each_family_exactly_once() {
+        let mut families: Vec<Family> = json_command_mappings()
+            .iter()
+            .filter_map(|m| m.family)
+            .collect();
+        families.sort_by_key(|f| f.key());
+        families.dedup();
+        assert_eq!(
+            families.len(),
+            5,
+            "each of the five families must be mapped by exactly one versioned row"
         );
     }
 }

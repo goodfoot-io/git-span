@@ -33,6 +33,8 @@
 //! three-way arbitration — never to override an anchor or a non-empty
 //! text-sourced why.
 
+use schemars::JsonSchema;
+
 use crate::cli::commit::{span_file_path, write_worktree_span};
 use crate::cli::drift_fix::{read_clean_source_files, split_conflict_markers};
 use crate::cli::repair_domain;
@@ -539,7 +541,8 @@ fn load_stage_evidence(
 // ---------------------------------------------------------------------------
 
 /// One settled entry in the report: an anchor address and what happened to it.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 struct ReportEntry {
     address: String,
     outcome: String,
@@ -582,8 +585,9 @@ enum SideOutcome {
 // JSON documents
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, serde::Serialize)]
-struct ResolveDocument {
+#[derive(Debug, serde::Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub(crate) struct ResolveDocument {
     schema_version: u32,
     command: &'static str,
     span: String,
@@ -600,26 +604,46 @@ struct ResolveDocument {
     warnings: Vec<String>,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 struct SideDocument {
     side: &'static str,
     outcome: &'static str,
     entries: Vec<ReportEntry>,
     failures: Vec<String>,
+    /// Always emitted; `null` when the side could not recover why text.
+    #[schemars(required, schema_with = "crate::schemas::nullable_schema::<String>")]
     why: Option<String>,
+    /// Always emitted; `null` when the side could not recover a `[config]`.
+    #[schemars(required, schema_with = "crate::schemas::nullable_schema::<String>")]
     config: Option<String>,
+    /// Always emitted; `null` when the side failed before settling.
+    #[schemars(required, schema_with = "crate::schemas::nullable_schema::<bool>")]
     structural_only: Option<bool>,
     warnings: Vec<String>,
 }
 
-#[derive(Debug, serde::Serialize)]
-struct ResolveDryRunDocument {
+#[derive(Debug, serde::Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub(crate) struct ResolveDryRunDocument {
     schema_version: u32,
     command: &'static str,
     span: String,
     dry_run: bool,
     written: bool,
     sides: Vec<SideDocument>,
+}
+
+/// The resolve-family JSON document: `git span resolve` emits
+/// [`ResolveDocument`] and `git span resolve --dry-run` emits
+/// [`ResolveDryRunDocument`] — one family (schema_version 1), two shapes
+/// distinguished by the `sides` key. The untagged wrapper serializes
+/// transparently (no envelope) and derives as a `oneOf` schema over both.
+#[derive(Debug, serde::Serialize, JsonSchema)]
+#[serde(untagged)]
+pub(crate) enum ResolveFamilyDoc {
+    Written(ResolveDocument),
+    DryRun(ResolveDryRunDocument),
 }
 
 // ---------------------------------------------------------------------------
@@ -779,7 +803,7 @@ fn run_dry_run(
             }
         }
         ResolveFormat::Json => {
-            let doc = ResolveDryRunDocument {
+            let doc = ResolveFamilyDoc::DryRun(ResolveDryRunDocument {
                 schema_version: RESOLVE_JSON_SCHEMA_VERSION,
                 command: "resolve",
                 span: name.to_string(),
@@ -810,7 +834,7 @@ fn run_dry_run(
                         },
                     })
                     .collect(),
-            };
+            });
             println!("{}", serde_json::to_string_pretty(&doc)?);
         }
     }
@@ -2050,7 +2074,7 @@ fn print_human(name: &str, side: Side, settlement: &Settlement, span_root: &str)
 }
 
 fn print_json(name: &str, side: Side, settlement: &Settlement) -> Result<()> {
-    let doc = ResolveDocument {
+    let doc = ResolveFamilyDoc::Written(ResolveDocument {
         schema_version: RESOLVE_JSON_SCHEMA_VERSION,
         command: "resolve",
         span: name.to_string(),
@@ -2062,7 +2086,7 @@ fn print_json(name: &str, side: Side, settlement: &Settlement) -> Result<()> {
         config: settlement.config_label.clone(),
         structural_only: settlement.structural_only,
         warnings: settlement.warnings.clone(),
-    };
+    });
     println!("{}", serde_json::to_string_pretty(&doc)?);
     Ok(())
 }

@@ -1,5 +1,5 @@
-packages/git-span/src/cli/drift_output.rs#L2090-L2153 rk64:1098504ab103f17d
-packages/git-span/src/cli/history.rs#L1731-L2000 rk64:aff8e1140a2e5313
+packages/git-span/src/cli/drift_output.rs#L2091-L2154 rk64:1098504ab103f17d
+packages/git-span/src/cli/history.rs#L1725-L1994 rk64:aff8e1140a2e5313
 packages/git-span/src/git.rs#L1187-L1229 rk64:1f027fadf4e20366
 
 History's current block and drift share one normalized read per live snapshot — body and rk64 token always the same bytes, existence asked before content — and apply the commit path's strict decode, single slice_line_range, and fail-closed filter policy.
