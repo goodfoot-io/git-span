@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "command": "add",
+  "span": "m",
+  "addresses": [
+    {
+      "address": "file1.txt#L1-L5",
+      "outcome": "ADDED"
+    }
+  ],
+  "superseded": [],
+  "remaining": [],
+  "span_health": {
+    "state": "DRIFT_FREE",
+    "drift_count": 0,
+    "drifting": [],
+    "resolved_pending_commit_count": 0
+  }
+}

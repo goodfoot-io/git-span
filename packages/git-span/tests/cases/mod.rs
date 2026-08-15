@@ -51,6 +51,7 @@ pub mod filter_driver_failure;
 pub mod head_read_failures;
 pub mod incremental_differential;
 pub mod interior_anchor_parity;
+pub mod json_fixtures;
 pub mod lfs_shape_parity;
 pub mod list_bracketed_literal_path;
 pub mod list_loads_corpus_once;

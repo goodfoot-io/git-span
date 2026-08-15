@@ -1,0 +1,38 @@
+{
+  "clean": false,
+  "clusters": [],
+  "findings": [
+    {
+      "anchored": {
+        "blob": "213460d3912ffabe673015d9a62042cb5d0c0a41",
+        "extent": {
+          "end": 5,
+          "kind": "lines",
+          "start": 1
+        },
+        "path": "file1.txt"
+      },
+      "auto_followed": null,
+      "collapsed_duplicate": null,
+      "current": {
+        "blob": null,
+        "extent": {
+          "end": 5,
+          "kind": "lines",
+          "start": 1
+        },
+        "path": "file1.txt"
+      },
+      "fuzzy_successors": [],
+      "locus": null,
+      "moved_to": null,
+      "source": "HEAD",
+      "span": "d",
+      "status": {
+        "code": "CHANGED"
+      }
+    }
+  ],
+  "schema_version": 3,
+  "span": "d"
+}

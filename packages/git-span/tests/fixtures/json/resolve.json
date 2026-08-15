@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "command": "resolve",
+  "span": "m",
+  "side": "ours",
+  "dry_run": false,
+  "written": true,
+  "entries": [
+    {
+      "address": "file1.txt#L1-L5",
+      "outcome": "kept ours"
+    },
+    {
+      "address": "file2.txt#L1-L5",
+      "outcome": "kept — only present in theirs; union membership is independent of --ours/--theirs"
+    }
+  ],
+  "why": "written empty — no why text in this input",
+  "config": "written with default settings — no `[config]` in this input stated one",
+  "structural_only": false,
+  "warnings": [
+    "`[config]` was not recoverable from this input, so the span was written with default settings (copy_detection=same-commit, ignore_whitespace=false, follow_moves=false). Neither side of the conflict text contained a `[config]` region and no unmerged index stage could be read to supply one, so whether the span carried non-default settings before this conflict cannot be determined from here — check `git log -p` on the span file if it matters, and restore them with a follow-up edit.",
+    "The why text was written empty. The residue writer carries only the `ours` side's why into the conflict text, so a why only `theirs` added is absent from it, and no unmerged index stage could be read to supply one — whether prose was lost cannot be determined from here. Restore it by hand if the span had why prose before this conflict."
+  ]
+}
