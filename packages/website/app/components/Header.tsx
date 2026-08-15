@@ -52,7 +52,7 @@ export function Header() {
   return (
     <header className="fixed top-0 left-0 right-0 z-50 border-b border-rule bg-ground/80 backdrop-blur-sm">
       <div className="flex h-16 items-center justify-between px-6 lg:pl-12">
-        <Link to="/" className="flex items-center text-ink-primary">
+        <Link to="/" aria-label="git-span home" className="flex items-center text-ink-primary">
           <LogoMark size={34} />
         </Link>
         <nav className="flex items-center gap-4 sm:gap-6">
