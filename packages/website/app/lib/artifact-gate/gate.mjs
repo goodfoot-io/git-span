@@ -15,7 +15,7 @@
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildPublication, defaultSkillsRoot, emit } from '../../../scripts/generate-agent-skills.mjs';
+import { defaultSkillsRoot } from '../../../scripts/generate-agent-skills.mjs';
 import { artifacts } from './inventory.mjs';
 
 /** The package root (`packages/website`) — this module lives in `app/lib/artifact-gate/`. */
@@ -34,19 +34,13 @@ const inventoryByPath = new Map(artifacts.map((entry) => [entry.path, entry]));
  * deliberately absent: they are generated and gated by gen-schemas, which
  * this module cannot chain.
  */
-const websiteOwnedRenderers = new Map([
-  [
-    'app/lib/agent-skills.generated.ts',
-    (toDir, skillsRoot) =>
-      emit(buildPublication(skillsRoot), path.join(toDir, 'app/lib/agent-skills.generated.ts'))
-  ]
-]);
+const websiteOwnedArtifacts = artifacts.filter((entry) => entry.render !== null);
 
 /** Emit every website-owned committed artifact into `toDir` (default: their
  * committed locations, so the build regenerates in place). */
 export function generateArtifacts({ toDir = packageRoot, skillsRoot = defaultSkillsRoot } = {}) {
-  for (const render of websiteOwnedRenderers.values()) {
-    render(toDir, skillsRoot);
+  for (const artifact of websiteOwnedArtifacts) {
+    artifact.render({ toDir, skillsRoot });
   }
 }
 
@@ -69,13 +63,14 @@ export function checkArtifacts({ root = packageRoot, skillsRoot = defaultSkillsR
   try {
     generateArtifacts({ toDir: tempDir, skillsRoot });
     let stale = false;
-    for (const artifactPath of websiteOwnedRenderers.keys()) {
+    for (const entry of websiteOwnedArtifacts) {
+      const artifactPath = entry.path;
       const committed = readCommitted(root, artifactPath);
       const fresh = readCommitted(tempDir, artifactPath);
       if (committed === undefined || fresh === undefined || Buffer.compare(committed, fresh) !== 0) {
-        const entry = inventoryByPath.get(artifactPath);
-        const label = entry?.label ?? artifactPath;
-        const fixCommand = entry?.fixCommand ?? 'yarn workspace @goodfoot/git-span-website generate:artifacts';
+        const declared = inventoryByPath.get(artifactPath);
+        const label = declared?.label ?? artifactPath;
+        const fixCommand = declared?.fixCommand ?? 'yarn workspace @goodfoot/git-span-website generate:artifacts';
         console.error(`ERROR: ${label} is stale; run ${fixCommand}`);
         stale = true;
       }

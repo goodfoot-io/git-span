@@ -26,6 +26,8 @@ export interface ArtifactEntry {
   banner: string | null;
   /** Why a committed-generated artifact is bannerless, null when it carries a banner. */
   bannerJustification: string | null;
+  /** Executable renderer for website-owned committed output; null for delegated or runtime entries. */
+  render: ((options: { toDir: string; skillsRoot: string }) => void) | null;
 }
 
 export const artifacts: ArtifactEntry[];

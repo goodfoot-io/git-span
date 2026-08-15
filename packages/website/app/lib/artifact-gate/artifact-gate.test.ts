@@ -153,6 +153,20 @@ describe('the umbrella artifact gate', () => {
         expect(entry.fixCommand, `${entry.label} must declare its fix command`).toBeTruthy();
       }
     }
+    expect(
+      artifacts.filter((entry) => entry.render !== null).map((entry) => entry.path),
+      'the inventory itself must declare every artifact the umbrella generates and checks'
+    ).toEqual([GENERATED_PATH]);
+  });
+
+  it('inventories the public Agent Skills index and payload routes, not only their committed container', () => {
+    const publicSurface = artifacts.find((entry) => entry.path.includes('/.well-known/agent-skills/index.json'));
+
+    expect(publicSurface?.path).toContain('/.well-known/agent-skills/*');
+    expect(publicSurface?.generatorFiles).toEqual([
+      'app/routes/agent-skills/index.ts',
+      'app/routes/agent-skills/file.ts'
+    ]);
   });
 
   it('renders the full inventory with every entry and its source', () => {
