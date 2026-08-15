@@ -21,6 +21,7 @@
  *
  * @summary Pathname-keyed discovery classifier, Link serializer, response finalizer
  */
+import { AGENT_SKILLS_LINK } from './agent-skills';
 
 /** A discovery relation for one public page: its Markdown twin (`alternate`)
  * and the llms.txt index that describes it (`describedby`). */
@@ -117,11 +118,16 @@ export function serializeDiscoveryLink(descriptor: DiscoveryLinkDescriptor): str
 
 /**
  * Append a pathname's discovery relations to a response as `Link` headers.
- * Redirects pass through untouched — the card reserves discovery for real
- * content pages, and a client following the `Location` finds the page's
- * relations there. Otherwise the response is wrapped so the header map is
- * mutable without buffering the body; headers are appended rather than set,
- * so upstream `Link` values survive.
+ * Redirects pass through untouched — a client following the `Location` finds
+ * the relations on the page it lands on, and Cloudflare's redirect passthrough
+ * contract stays intact. Otherwise the response is wrapped so the header map
+ * is mutable without buffering the body; headers are appended rather than
+ * set, so upstream `Link` values survive.
+ *
+ * The agent-skills index link is appended to every non-redirect response,
+ * after the page descriptors: it advertises the site-wide well-known surface,
+ * not the requested pathname, so it is constant where the descriptors are
+ * per-page.
  *
  * @param response - The response to finalize.
  * @param rawPathname - A raw, not-yet-decoded request pathname.
@@ -133,5 +139,6 @@ export function applyDiscoveryHeaders(response: Response, rawPathname: string): 
   for (const descriptor of getDiscoveryLinks(rawPathname)) {
     wrapped.headers.append('Link', serializeDiscoveryLink(descriptor));
   }
+  wrapped.headers.append('Link', AGENT_SKILLS_LINK);
   return wrapped;
 }

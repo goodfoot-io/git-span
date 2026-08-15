@@ -8,14 +8,18 @@
  * is a path the generator walked inside the tree. The body is nulled on
  * HEAD explicitly, mirroring the index route and `markdownResponse`.
  *
+ * This module imports the build-generated publication directly, rather than
+ * through `lib/agent-skills`, so the lib module stays import-free and the
+ * publication never reaches the client bundle.
+ *
  * @summary Agent-skills file resource route
  */
 import type { LoaderFunctionArgs } from 'react-router';
-import { resolveAgentSkillsFile } from '~/lib/agent-skills';
+import { agentSkillsPublication } from '~/lib/agent-skills.generated';
 
 export function loader({ params, request }: LoaderFunctionArgs): Response {
   const pathname = params['*'] ?? '';
-  const file = resolveAgentSkillsFile(pathname);
+  const file = agentSkillsPublication.files[pathname] ?? null;
   if (file === null) {
     throw new Response(`No agent-skills file at /${pathname}`, { status: 404 });
   }

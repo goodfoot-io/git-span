@@ -91,8 +91,10 @@ export default {
     // representation. It receives the raw pathname — the same form the head
     // consumer passes — because the classifier decodes internally, so
     // encoded and decoded spellings of one page advertise identically. The
-    // classifier emits nothing outside content paths, and redirects pass
-    // through untouched, so 301s, 404s, and assets carry no extra headers.
+    // classifier emits page relations only on content paths; the finalizer
+    // adds the constant agent-skills index link on every non-redirect
+    // response, so the well-known surface is advertised site-wide. Redirects
+    // pass through untouched.
     return applyDiscoveryHeaders(response, url.pathname);
   }
 } satisfies ExportedHandler;

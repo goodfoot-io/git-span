@@ -1,7 +1,6 @@
 /**
  * The agent-skills discovery surface: the Cloudflare Agent Skills draft v0.2.0
- * index document shape, the stable publication constants, and the resolver
- * that maps a request path to the served skill bytes.
+ * index document shape and the stable publication constants.
  *
  * One module owns the shape because three surfaces share it — the build-time
  * generator emits `agent-skills.generated.ts` against these interfaces, the
@@ -9,9 +8,14 @@
  * appends the index link constant — so the generated artifact, the routes,
  * and the header advertisement cannot disagree about the contract.
  *
- * @summary Agent-skills index shape, Link constant, and file resolver
+ * The module is client-safe by construction: it imports nothing but types
+ * and string constants. The build-generated publication itself is imported
+ * only by server-side route modules, so appending the link constant from the
+ * client-imported finalizer module cannot drag the skill bodies into the
+ * browser bundle.
+ *
+ * @summary Agent-skills index shape and Link constant
  */
-import { agentSkillsPublication } from './agent-skills.generated';
 
 /** One index entry per the Cloudflare Agent Skills draft v0.2.0: enough for an
  * agent to decide whether to fetch the body, and nothing more. */
@@ -50,16 +54,3 @@ export const AGENT_SKILLS_INDEX_PATH = '/.well-known/agent-skills/index.json';
  * defines no discovery relation; `rel="agent-skills"` mirrors the reference
  * implementation's `rel="api-catalog"` convention. */
 export const AGENT_SKILLS_LINK = '</.well-known/agent-skills/index.json>; rel="agent-skills"';
-
-/**
- * Resolve a served-file path — relative to `/.well-known/agent-skills/` — to
- * its content, or null when the publication does not carry it. Lookup is
- * exact, so an unknown path 404s fail-closed and traversal is structurally
- * impossible.
- *
- * @param pathname - The path segment below the well-known prefix.
- * @summary The published file at a path, or null
- */
-export function resolveAgentSkillsFile(pathname: string): AgentSkillsFile | null {
-  return agentSkillsPublication.files[pathname] ?? null;
-}

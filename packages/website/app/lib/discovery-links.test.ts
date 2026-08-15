@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { matchRoutes, type RouteObject } from 'react-router';
 import { describe, expect, it } from 'vitest';
+import { AGENT_SKILLS_LINK } from '~/lib/agent-skills';
 import { markdownUrlResponse } from '~/lib/content-negotiation';
 import { applyDiscoveryHeaders, DOC_SLUGS, getDiscoveryLinks, serializeDiscoveryLink } from '~/lib/discovery-links';
 import { collectPageNodes } from '~/lib/llms-resources';
@@ -120,7 +121,7 @@ describe('applyDiscoveryHeaders', () => {
     expect(response.statusText).toBe('Multi-Status');
     expect(await response.text()).toBe('body');
     expect(response.headers.get('Link')).toBe(
-      '</docs/overview.md>; rel="alternate"; type="text/markdown", </docs/llms.txt>; rel="describedby"'
+      `</docs/overview.md>; rel="alternate"; type="text/markdown", </docs/llms.txt>; rel="describedby", ${AGENT_SKILLS_LINK}`
     );
   });
 
@@ -130,13 +131,13 @@ describe('applyDiscoveryHeaders', () => {
       '/docs/overview'
     );
     expect(response.headers.get('Link')).toBe(
-      '</styles.css>; rel="stylesheet", </docs/overview.md>; rel="alternate"; type="text/markdown", </docs/llms.txt>; rel="describedby"'
+      `</styles.css>; rel="stylesheet", </docs/overview.md>; rel="alternate"; type="text/markdown", </docs/llms.txt>; rel="describedby", ${AGENT_SKILLS_LINK}`
     );
   });
 
-  it('adds nothing on a non-content path', async () => {
+  it('advertises only the agent-skills index on a non-content path', async () => {
     const response = applyDiscoveryHeaders(new Response('body'), '/api/repos');
-    expect(response.headers.get('Link')).toBeNull();
+    expect(response.headers.get('Link')).toBe(AGENT_SKILLS_LINK);
     expect(await response.text()).toBe('body');
   });
 
@@ -153,7 +154,7 @@ describe('applyDiscoveryHeaders', () => {
   it('keeps relations on a 304 that carries no Location', () => {
     const response = applyDiscoveryHeaders(new Response(null, { status: 304 }), '/docs/overview');
     expect(response.headers.get('Link')).toBe(
-      '</docs/overview.md>; rel="alternate"; type="text/markdown", </docs/llms.txt>; rel="describedby"'
+      `</docs/overview.md>; rel="alternate"; type="text/markdown", </docs/llms.txt>; rel="describedby", ${AGENT_SKILLS_LINK}`
     );
   });
 });

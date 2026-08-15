@@ -181,14 +181,14 @@ describe('worker discovery headers', () => {
     expect(response.statusText).toBe('Multi-Status');
     expect(await response.text()).toBe('SSR response');
     expect(response.headers.get('Link')).toBe(
-      '</docs/overview.md>; rel="alternate"; type="text/markdown", </docs/llms.txt>; rel="describedby"'
+      `</docs/overview.md>; rel="alternate"; type="text/markdown", </docs/llms.txt>; rel="describedby", ${AGENT_SKILLS_LINK}`
     );
   });
 
   it('emits the homepage relations on /', async () => {
     const response = await worker.fetch(request('/'));
     expect(response.headers.get('Link')).toBe(
-      '</index.md>; rel="alternate"; type="text/markdown", </llms.txt>; rel="describedby"'
+      `</index.md>; rel="alternate"; type="text/markdown", </llms.txt>; rel="describedby", ${AGENT_SKILLS_LINK}`
     );
   });
 
@@ -196,7 +196,7 @@ describe('worker discovery headers', () => {
     const response = await worker.fetch(markdownRequest('/docs/overview'));
     expect(response.headers.get('Content-Type')).toBe('text/markdown; charset=utf-8');
     expect(response.headers.get('Link')).toBe(
-      '</docs/overview.md>; rel="alternate"; type="text/markdown", </docs/llms.txt>; rel="describedby"'
+      `</docs/overview.md>; rel="alternate"; type="text/markdown", </docs/llms.txt>; rel="describedby", ${AGENT_SKILLS_LINK}`
     );
   });
 
@@ -204,20 +204,20 @@ describe('worker discovery headers', () => {
     const response = await worker.fetch(request('/docs/overview.md'));
     expect(response.headers.get('Content-Type')).toBe('text/markdown; charset=utf-8');
     expect(response.headers.get('Link')).toBe(
-      '</docs/overview.md>; rel="alternate"; type="text/markdown", </docs/llms.txt>; rel="describedby"'
+      `</docs/overview.md>; rel="alternate"; type="text/markdown", </docs/llms.txt>; rel="describedby", ${AGENT_SKILLS_LINK}`
     );
   });
 
-  it('emits nothing on non-content paths', async () => {
+  it('advertises only the agent-skills index on non-content paths', async () => {
     const response = await worker.fetch(request('/api/repos'));
-    expect(response.headers.get('Link')).toBeNull();
+    expect(response.headers.get('Link')).toBe(AGENT_SKILLS_LINK);
   });
 
-  it('emits nothing on an unknown docs slug 404', async () => {
+  it('advertises the agent-skills index on an unknown docs slug 404', async () => {
     rr.response = new Response('not found', { status: 404 });
     const response = await worker.fetch(request('/docs/not-a-real-page'));
     expect(response.status).toBe(404);
-    expect(response.headers.get('Link')).toBeNull();
+    expect(response.headers.get('Link')).toBe(AGENT_SKILLS_LINK);
   });
 
   it('preserves an upstream Link alongside the appended relations', async () => {
@@ -228,7 +228,7 @@ describe('worker discovery headers', () => {
     });
     const response = await worker.fetch(request('/docs/overview'));
     expect(response.headers.get('Link')).toBe(
-      '</styles.css>; rel="stylesheet", </docs/overview.md>; rel="alternate"; type="text/markdown", </docs/llms.txt>; rel="describedby"'
+      `</styles.css>; rel="stylesheet", </docs/overview.md>; rel="alternate"; type="text/markdown", </docs/llms.txt>; rel="describedby", ${AGENT_SKILLS_LINK}`
     );
   });
 
@@ -236,14 +236,14 @@ describe('worker discovery headers', () => {
     const response = await worker.fetch(request('/docs/overview', { method: 'HEAD' }));
     expect(response.status).toBe(207);
     expect(response.headers.get('Link')).toBe(
-      '</docs/overview.md>; rel="alternate"; type="text/markdown", </docs/llms.txt>; rel="describedby"'
+      `</docs/overview.md>; rel="alternate"; type="text/markdown", </docs/llms.txt>; rel="describedby", ${AGENT_SKILLS_LINK}`
     );
   });
 
   it('emits decoded relations for a percent-encoded request', async () => {
     const response = await worker.fetch(request('/docs/guides/reconcile%2Ddrifted-spans'));
     expect(response.headers.get('Link')).toBe(
-      '</docs/guides/reconcile-drifted-spans.md>; rel="alternate"; type="text/markdown", </docs/llms.txt>; rel="describedby"'
+      `</docs/guides/reconcile-drifted-spans.md>; rel="alternate"; type="text/markdown", </docs/llms.txt>; rel="describedby", ${AGENT_SKILLS_LINK}`
     );
   });
 
@@ -251,7 +251,7 @@ describe('worker discovery headers', () => {
     const response = await worker.fetch(markdownRequest('/docs/guides/reconcile%2Ddrifted-spans'));
     expect(response.headers.get('Content-Type')).toBe('text/markdown; charset=utf-8');
     expect(response.headers.get('Link')).toBe(
-      '</docs/guides/reconcile-drifted-spans.md>; rel="alternate"; type="text/markdown", </docs/llms.txt>; rel="describedby"'
+      `</docs/guides/reconcile-drifted-spans.md>; rel="alternate"; type="text/markdown", </docs/llms.txt>; rel="describedby", ${AGENT_SKILLS_LINK}`
     );
   });
 
@@ -259,7 +259,7 @@ describe('worker discovery headers', () => {
     const response = await worker.fetch(request('/docs/guides/reconcile%2Ddrifted-spans.md'));
     expect(response.headers.get('Content-Type')).toBe('text/markdown; charset=utf-8');
     expect(response.headers.get('Link')).toBe(
-      '</docs/guides/reconcile-drifted-spans.md>; rel="alternate"; type="text/markdown", </docs/llms.txt>; rel="describedby"'
+      `</docs/guides/reconcile-drifted-spans.md>; rel="alternate"; type="text/markdown", </docs/llms.txt>; rel="describedby", ${AGENT_SKILLS_LINK}`
     );
   });
 
@@ -274,7 +274,7 @@ describe('worker discovery headers', () => {
     const response = await worker.fetch(markdownRequest('/docs/overview/'));
     expect(response.headers.get('Content-Type')).toBe('text/markdown; charset=utf-8');
     expect(response.headers.get('Link')).toBe(
-      '</docs/overview.md>; rel="alternate"; type="text/markdown", </docs/llms.txt>; rel="describedby"'
+      `</docs/overview.md>; rel="alternate"; type="text/markdown", </docs/llms.txt>; rel="describedby", ${AGENT_SKILLS_LINK}`
     );
   });
 
@@ -287,30 +287,30 @@ describe('worker discovery headers', () => {
   it('emits the canonical relations for a case-variant docs prefix', async () => {
     const response = await worker.fetch(request('/DOCS/overview'));
     expect(response.headers.get('Link')).toBe(
-      '</docs/overview.md>; rel="alternate"; type="text/markdown", </docs/llms.txt>; rel="describedby"'
+      `</docs/overview.md>; rel="alternate"; type="text/markdown", </docs/llms.txt>; rel="describedby", ${AGENT_SKILLS_LINK}`
     );
   });
 });
 
 describe('worker agent-skills discovery headers', () => {
-  it.skip('advertises the agent-skills index on an SSR response', async () => {
+  it('advertises the agent-skills index on an SSR response', async () => {
     const response = await worker.fetch(request('/docs/overview'));
     expect(response.headers.get('Link')).toContain(AGENT_SKILLS_LINK);
   });
 
-  it.skip('advertises the agent-skills index on non-content paths', async () => {
+  it('advertises the agent-skills index on non-content paths', async () => {
     const response = await worker.fetch(request('/api/repos'));
     expect(response.headers.get('Link')).toBe(AGENT_SKILLS_LINK);
   });
 
-  it.skip('advertises the agent-skills index on an unknown-slug 404', async () => {
+  it('advertises the agent-skills index on an unknown-slug 404', async () => {
     rr.response = new Response('not found', { status: 404 });
     const response = await worker.fetch(request('/docs/not-a-real-page'));
     expect(response.status).toBe(404);
     expect(response.headers.get('Link')).toBe(AGENT_SKILLS_LINK);
   });
 
-  it.skip('keeps redirects free of the agent-skills index', async () => {
+  it('keeps redirects free of the agent-skills index', async () => {
     rr.response = new Response('', { status: 301, headers: { Location: '/docs/overview' } });
     const response = await worker.fetch(request('/docs/overview/'));
     expect(response.status).toBe(301);
