@@ -104,22 +104,22 @@ describe('GET /docs/llms.txt — docs index', () => {
 });
 
 describe('full corpus', () => {
-  it.skip('serves both full files as text/plain', async () => {
+  it('serves both full files as text/plain', async () => {
     expect((await docsFullLoader()).headers.get('content-type')).toBe('text/plain; charset=utf-8');
     expect((await rootFullLoader()).headers.get('content-type')).toBe('text/plain; charset=utf-8');
   });
 
-  it.skip('composes the root full file from the homepage and the one shared corpus', async () => {
+  it('composes the root full file from the homepage and the one shared corpus', async () => {
     const rootBody = await (await rootFullLoader()).text();
     const corpus = await renderDocsCorpus();
     expect(rootBody.startsWith('# Agents should read between the lines.')).toBe(true);
     expect(rootBody.endsWith(corpus)).toBe(true);
   });
 
-  it.skip('emits corpus chapters in the same order as the index', async () => {
+  it('emits corpus chapters in the same order as the index', async () => {
     const indexBody = withMdLinks(llms(source).index());
     const corpus = await renderDocsCorpus();
-    const indexSlugs = [...indexBody.matchAll(/\]\(\/docs\/([^)]+)\)/g)].map((match) => match[1]);
+    const indexSlugs = [...indexBody.matchAll(/\]\(\/docs\/([^)]+)\)/g)].map((match) => match[1].replace(/\.md$/, ''));
     const corpusSlugs = [...corpus.matchAll(/^# .+ \((\/docs\/[^)]+)\)$/gm)].map((match) =>
       match[1].replace(/^\/docs\//, '')
     );
