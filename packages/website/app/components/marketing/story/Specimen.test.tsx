@@ -40,11 +40,11 @@ describe('PhaseSpecimen scrollback', () => {
         '$ git show ./api/src/routes/products.ts',
         '@@ -3,6 +3,6 @@ function listProducts(q: ProductQuery) {',
         ' ',
-        '  return {',
-        '    items: items.slice(0, limit),',
+        '   return {',
+        '     items: items.slice(0, limit),',
         '-    page: page.nextPage,',
         '+    cursor: page.nextCursor,',
-        '  };'
+        '   };'
       ]
     ],
     [
@@ -52,11 +52,11 @@ describe('PhaseSpecimen scrollback', () => {
       [
         '● Update(api/src/routes/products.ts)',
         '  ⎿  Added 1 line, removed 1 line',
-        '  04   return {',
-        '  05     items: items.slice(0, limit),',
-        '  06 -   page: page.nextPage,',
-        '  06 +   cursor: page.nextCursor',
-        '  07   };',
+        '   4   return {',
+        '   5     items: items.slice(0, limit),',
+        '   6 -   page: page.nextPage,',
+        '   6 +   cursor: page.nextCursor',
+        '   7   };',
         '  ⎿  PostToolUse says: <git-span>',
         '## product-listing-pagination',
         'api/src/routes/products.ts#L4-L7',
