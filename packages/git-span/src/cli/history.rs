@@ -228,10 +228,12 @@ use crate::cli::unified_diff::{
     render_diff_header, render_unified_diff, render_unified_diff_always, similarity,
 };
 use crate::cli::{CliError, HistoryArgs, HistoryFormat, NextStep};
+use crate::cli::drift_output::SourceDoc;
 use crate::span::read::read_span_at_in;
 use crate::types::{Anchor, AnchorExtent, AnchorLocation, Span};
 use anyhow::Result;
-use serde_json::{Value, json};
+use schemars::JsonSchema;
+use serde::Serialize;
 use std::rc::Rc;
 
 /// Similarity floor for pairing a dropped anchor with an added one as a
@@ -311,18 +313,10 @@ pub enum Unavailable {
     Submodule,
 }
 
-impl Unavailable {
-    /// The JSON token for this reason.
-    fn as_str(self) -> &'static str {
-        match self {
-            Unavailable::Absent => "absent",
-            Unavailable::RangePastEof => "range-past-eof",
-            Unavailable::Binary => "binary",
-            Unavailable::FilterFailed => "filter-failed",
-            Unavailable::Submodule => "submodule",
-        }
-    }
-}
+// The JSON tokens for these reasons live on [`UnavailableDoc`]'s serde
+// renames, which the byte-goldens pin against the hand-built era's
+// `as_str` spellings: absent, range-past-eof, binary, filter-failed,
+// submodule.
 
 /// One anchor's change record within a commit section.
 ///
@@ -2384,7 +2378,7 @@ pub fn render_human(report: &HistoryReport) -> String {
     blocks.join("\n")
 }
 
-/// Render a `HistoryReport` as a `schema_version: 2` `serde_json::Value`.
+/// Render a `HistoryReport` as the typed `schema_version: 2` document.
 ///
 /// Top level: `schema_version`, `span`, `commits` (newest-first), plus
 /// `scoped: true` and `current` when they apply. `scoped` means `--limit`
@@ -2419,96 +2413,203 @@ pub fn render_human(report: &HistoryReport) -> String {
 /// **`proposed`** appears on a current anchor when the resolver believes the
 /// anchored content now lives at a different address. It is a *proposal*
 /// (`git span drift --fix` would write it), not an accomplished move.
-pub fn render_json(report: &HistoryReport) -> Value {
-    let commits: Vec<Value> = report
+pub fn render_json(report: &HistoryReport) -> HistoryDocument {
+    let commits: Vec<HistoryCommitDoc> = report
         .commits
         .iter()
         .rev()
-        .map(|c| {
-            let mut obj = serde_json::Map::new();
-            obj.insert("hash".into(), json!(c.hash));
-            obj.insert("date".into(), json!(c.date));
-            obj.insert("summary".into(), json!(c.summary));
-            if let Some(diff) = &c.span_diff {
-                obj.insert("span_diff".into(), json!(diff));
-            }
-            let anchors: Vec<Value> = c
-                .anchors
-                .iter()
-                .map(|a| {
-                    let mut ao = serde_json::Map::new();
-                    ao.insert("path".into(), json!(a.path));
-                    match &a.content {
-                        Some(content) => ao.insert("content".into(), json!(content)),
-                        None => ao.insert("diff".into(), json!(a.diff)),
-                    };
-                    if let Some(u) = a.unavailable {
-                        ao.insert("unavailable".into(), json!(u.as_str()));
-                    }
-                    // The structured form discriminator. Its presence *is*
-                    // "this is the rebound block"; a consumer never has to
-                    // parse the patch string to tell the two blocks at one
-                    // address apart.
-                    if let Some(r) = &a.rebound {
-                        ao.insert("rebound".into(), json!({ "from": r.from, "to": r.to }));
-                    }
-                    Value::Object(ao)
-                })
-                .collect();
-            obj.insert("anchors".into(), json!(anchors));
-            Value::Object(obj)
+        .map(|c| HistoryCommitDoc {
+            anchors: c.anchors.iter().map(commit_anchor_doc).collect(),
+            date: c.date.clone(),
+            hash: c.hash.clone(),
+            span_diff: c.span_diff.clone(),
+            summary: c.summary.clone(),
         })
         .collect();
 
-    let mut root = serde_json::Map::new();
-    root.insert("schema_version".into(), json!(2));
-    root.insert("span".into(), json!(report.span));
-    if report.scoped {
-        root.insert("scoped".into(), json!(true));
-    }
-    if let Some(cur) = &report.current {
-        let mut co = serde_json::Map::new();
-        if let Some(diff) = &cur.span_diff {
-            co.insert("span_diff".into(), json!(diff));
-        }
-        let anchors: Vec<Value> = cur
-            .anchors
-            .iter()
-            .map(|a| {
-                let mut ao = serde_json::Map::new();
-                ao.insert("path".into(), json!(a.path));
-                if let Some(proposed) = &a.proposed {
-                    ao.insert("proposed".into(), json!(proposed));
-                }
-                ao.insert("diff".into(), json!(a.diff));
-                if let Some(content) = &a.content {
-                    ao.insert("content".into(), json!(content));
-                }
-                if let Some(u) = a.unavailable {
-                    ao.insert("unavailable".into(), json!(u.as_str()));
-                }
-                if a.recorded_unrecoverable {
-                    ao.insert("recorded".into(), json!("unrecoverable"));
-                }
-                // Omitted, never `[]` and never `null`: `current.anchors[]`
-                // spells absence by key presence throughout, and an empty array
-                // would be a positive claim that the resolver found layers and
-                // they were none.
-                if !a.sources.is_empty() {
-                    let layers: Vec<&str> = a
-                        .sources
-                        .iter()
-                        .map(|s| crate::types::DriftSource::as_json_str(*s))
-                        .collect();
-                    ao.insert("sources".into(), json!(layers));
-                }
-                Value::Object(ao)
-            })
-            .collect();
-        co.insert("anchors".into(), json!(anchors));
-        root.insert("current".into(), Value::Object(co));
-    }
-    root.insert("commits".into(), json!(commits));
+    let current = report.current.as_ref().map(|cur| CurrentDoc {
+        anchors: cur.anchors.iter().map(current_anchor_doc).collect(),
+        span_diff: cur.span_diff.clone(),
+    });
 
-    Value::Object(root)
+    HistoryDocument {
+        commits,
+        current,
+        schema_version: HISTORY_JSON_SCHEMA_VERSION,
+        scoped: report.scoped,
+        span: report.span.clone(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// JSON document types (serialization-shaped: fields are declared in the
+// sorted order the hand-built `serde_json::Map` era emitted — serde_json
+// streams object keys in call order, and `tests/fixtures/json/history.json`
+// pins the byte contract).
+// ---------------------------------------------------------------------------
+
+/// The history family's schema_version.
+const HISTORY_JSON_SCHEMA_VERSION: u32 = 2;
+
+/// Root document of `history --format json`.
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct HistoryDocument {
+    commits: Vec<HistoryCommitDoc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    current: Option<CurrentDoc>,
+    schema_version: u32,
+    /// Present (as `true`) only when the timeline is a `--limit`-scoped
+    /// window, matching the hand-built era's insert-if-true emission.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    scoped: bool,
+    span: String,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct HistoryCommitDoc {
+    anchors: Vec<CommitAnchorDoc>,
+    date: String,
+    hash: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    span_diff: Option<String>,
+    summary: String,
+}
+
+/// One timeline anchor: exactly one of `content`/`diff` is present —
+/// `content` replaces `diff` on a first-add whose snapshot text was
+/// extractable. Modeled as a one-of so the schema states the exclusion;
+/// the current-anchor shape below deliberately does not share it.
+#[derive(Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum CommitAnchorDoc {
+    Content {
+        content: String,
+        path: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        rebound: Option<ReboundDoc>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        unavailable: Option<UnavailableDoc>,
+    },
+    Diff {
+        diff: String,
+        path: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        rebound: Option<ReboundDoc>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        unavailable: Option<UnavailableDoc>,
+    },
+}
+
+fn commit_anchor_doc(a: &TimelineAnchor) -> CommitAnchorDoc {
+    let rebound = a.rebound.as_ref().map(ReboundDoc::from);
+    let unavailable = a.unavailable.map(UnavailableDoc::from);
+    match &a.content {
+        Some(content) => CommitAnchorDoc::Content {
+            content: content.clone(),
+            path: a.path.clone(),
+            rebound,
+            unavailable,
+        },
+        None => CommitAnchorDoc::Diff {
+            diff: a.diff.clone(),
+            path: a.path.clone(),
+            rebound,
+            unavailable,
+        },
+    }
+}
+
+/// The structured form discriminator of a `rebound anchor` block — its
+/// presence *is* "this is the rebound block", so a consumer never has to
+/// parse the patch string to tell the two blocks at one address apart.
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct ReboundDoc {
+    from: String,
+    to: String,
+}
+
+impl From<&Rebinding> for ReboundDoc {
+    fn from(r: &Rebinding) -> Self {
+        ReboundDoc {
+            from: r.from.clone(),
+            to: r.to.clone(),
+        }
+    }
+}
+
+/// The `unavailable` vocabulary: a status to style, never source to render
+/// — no placeholder prose is ever emitted as content or as diff body text.
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum UnavailableDoc {
+    Absent,
+    RangePastEof,
+    Binary,
+    FilterFailed,
+    Submodule,
+}
+
+impl From<Unavailable> for UnavailableDoc {
+    fn from(u: Unavailable) -> Self {
+        match u {
+            Unavailable::Absent => UnavailableDoc::Absent,
+            Unavailable::RangePastEof => UnavailableDoc::RangePastEof,
+            Unavailable::Binary => UnavailableDoc::Binary,
+            Unavailable::FilterFailed => UnavailableDoc::FilterFailed,
+            Unavailable::Submodule => UnavailableDoc::Submodule,
+        }
+    }
+}
+
+/// The `recorded` marker: present exactly when no snapshot in the render's
+/// snapshot set hashes to the declaration's recorded token.
+#[derive(Serialize, JsonSchema)]
+pub enum RecordedDoc {
+    #[serde(rename = "unrecoverable")]
+    Unrecoverable,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct CurrentDoc {
+    anchors: Vec<CurrentAnchorDoc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    span_diff: Option<String>,
+}
+
+/// The current-drift anchor shape: `diff` always present, `content` optional
+/// — the commit-anchor one-of deliberately does not leak here.
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct CurrentAnchorDoc {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+    diff: String,
+    path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    proposed: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recorded: Option<RecordedDoc>,
+    // Omitted, never `[]` and never `null`: `current.anchors[]` spells
+    // absence by key presence throughout, and an empty array would be a
+    // positive claim that the resolver found layers and they were none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    sources: Vec<SourceDoc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unavailable: Option<UnavailableDoc>,
+}
+
+fn current_anchor_doc(a: &CurrentAnchor) -> CurrentAnchorDoc {
+    CurrentAnchorDoc {
+        content: a.content.clone(),
+        diff: a.diff.clone(),
+        path: a.path.clone(),
+        proposed: a.proposed.clone(),
+        recorded: a.recorded_unrecoverable.then_some(RecordedDoc::Unrecoverable),
+        sources: a.sources.iter().map(|s| SourceDoc::from(*s)).collect(),
+        unavailable: a.unavailable.map(UnavailableDoc::from),
+    }
 }

@@ -2384,7 +2384,7 @@ impl From<AnchorExtent> for ExtentDoc {
 /// second copy of the match that would drift from it.
 #[derive(Serialize, JsonSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-enum SourceDoc {
+pub(crate) enum SourceDoc {
     Head,
     Index,
     Worktree,
