@@ -4,9 +4,10 @@ import '@fontsource/ibm-plex-mono/500.css';
 import '@fontsource/ibm-plex-mono/600.css';
 import { RootProvider } from 'fumadocs-ui/provider/react-router';
 import type { LinksFunction, MetaFunction } from 'react-router';
-import { Links, Meta, Outlet, Scripts, ScrollRestoration } from 'react-router';
+import { Links, Meta, Outlet, Scripts, ScrollRestoration, useLocation } from 'react-router';
 import { Footer } from '~/components/Footer';
 import { Header } from '~/components/Header';
+import { getDiscoveryLinks } from '~/lib/discovery-links';
 import { buildRouteMeta, DEFAULT_TITLE } from '~/lib/meta';
 import globalStyles from '~/styles/global.css?url';
 
@@ -23,6 +24,19 @@ export const links: LinksFunction = () => [
 export const meta: MetaFunction = ({ location }) =>
   buildRouteMeta({ title: DEFAULT_TITLE, pathname: location.pathname });
 
+/**
+ * The discovery relations for the active pathname as `<link>` elements —
+ * the HTML-head mirror of the Worker's `Link` headers, resolved through the
+ * same classifier so the two contracts cannot drift. `useLocation` keeps SSR
+ * and client-side navigation on the same mapping.
+ */
+export function PageDiscoveryLinks() {
+  const { pathname } = useLocation();
+  return getDiscoveryLinks(pathname).map((descriptor) => (
+    <link key={`${descriptor.rel}:${descriptor.href}`} {...descriptor} />
+  ));
+}
+
 // charset/viewport/theme-color and og:type/og:site_name/twitter:card never vary per route,
 // so they're rendered unconditionally here instead of going through the `meta` export --
 // unlike og:title/description/url/image, which do vary and are handled by `buildRouteMeta`.
@@ -38,6 +52,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <meta name="twitter:card" content="summary_large_image" />
         <Meta />
         <Links />
+        <PageDiscoveryLinks />
       </head>
       <body className="min-h-screen bg-ground text-ink-primary font-sans antialiased">
         <RootProvider search={{ enabled: false }} theme={{ enabled: false }}>
