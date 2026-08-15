@@ -1,0 +1,4 @@
+packages/website/vite.config.ts#L38-L44 rk64:1b5617fb7c412bbe
+packages/website/vitest.config.ts#L13-L22 rk64:e10b3f4bef840f71
+
+vitest reads only its own config while app code resolves ~ and collections through vite.config.ts, so the vitest alias block must mirror the vite aliases or tests resolve differently than the build, with the vitest-only virtual:react-router/server-build stub alias the sole permitted difference.

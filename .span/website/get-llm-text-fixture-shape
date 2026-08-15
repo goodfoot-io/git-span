@@ -1,0 +1,5 @@
+packages/website/app/lib/get-llm-text.test.ts#L12-L36 rk64:ac2170371606e236
+packages/website/content/docs/agent-integration.mdx#L1-L24 rk64:a078f03779682fc1
+packages/website/content/docs/getting-started.mdx#L37-L44 rk64:b6dac9c62d8cf163
+
+The get-llm-text fixtures quote the real frontmatter and worst-case Callout blocks of agent-integration.mdx and getting-started.mdx exactly as the fumadocs-mdx stringifier renders them (the ***/134-dash preamble and raw Callout MDX captured by the card-repo spike), so a docs edit changing that content must refresh the fixtures.

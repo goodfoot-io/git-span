@@ -13,7 +13,11 @@ export default defineConfig(async () => ({
   resolve: {
     alias: {
       '~': path.resolve(import.meta.dirname, './app'),
-      collections: path.resolve(import.meta.dirname, './.source')
+      collections: path.resolve(import.meta.dirname, './.source'),
+      // The worker imports the server build through this virtual module at
+      // module scope; no build emits it under vitest, so resolve it to a stub
+      // that exists only for import resolution (see app/test/__stubs__).
+      'virtual:react-router/server-build': path.resolve(import.meta.dirname, './app/test/__stubs__/server-build.ts')
     }
   },
   test: {
