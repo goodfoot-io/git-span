@@ -78,16 +78,16 @@ describe('GET /llms.txt — root system map', () => {
 });
 
 describe('GET /docs/llms.txt — docs index', () => {
-  it.skip('serves text/plain', async () => {
+  it('serves text/plain', async () => {
     const res = docsIndexLoader();
     expect(res.headers.get('content-type')).toBe('text/plain; charset=utf-8');
   });
 
-  it.skip('equals the live generator output with .md link targets', async () => {
+  it('equals the live generator output with .md link targets', async () => {
     expect(await docsIndexLoader().text()).toBe(withMdLinks(llms(source).index()));
   });
 
-  it.skip('points every docs link target at the .md representation', async () => {
+  it('points every docs link target at the .md representation', async () => {
     const body = await docsIndexLoader().text();
     const targets = [...body.matchAll(/\]\(\/docs\/[^)]+\)/g)].map((match) => match[0]);
     expect(targets.length).toBeGreaterThan(0);
@@ -96,9 +96,9 @@ describe('GET /docs/llms.txt — docs index', () => {
     }
   });
 
-  it.skip('lists the ten chapters in authored meta.json order', async () => {
+  it('lists the ten chapters in authored meta.json order', async () => {
     const body = await docsIndexLoader().text();
-    const targets = [...body.matchAll(/\]\(\/docs\/([^)]+)\)/g)].map((match) => match[1]);
+    const targets = [...body.matchAll(/\]\(\/docs\/([^)]+)\)/g)].map((match) => match[1].replace(/\.md$/, ''));
     expect(targets).toEqual(expectedDocsSlugs());
   });
 });

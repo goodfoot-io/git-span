@@ -4,6 +4,12 @@
  *
  * @summary Docs-scope llms.txt index resource route
  */
+import { llms } from 'fumadocs-core/source/llms';
+import { withMdLinks } from '~/lib/llms-resources';
+import { source } from '~/lib/source';
+
+const headers = { 'Content-Type': 'text/plain; charset=utf-8' };
+
 export function loader(): Response {
-  throw new Error('Not Implemented');
+  return new Response(withMdLinks(llms(source).index()), { headers });
 }
