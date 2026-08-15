@@ -8,67 +8,67 @@ import { source } from '~/lib/source';
 import routes from '~/routes';
 
 describe('getDiscoveryLinks', () => {
-  it.skip('returns the homepage set for /', () => {
+  it('returns the homepage set for /', () => {
     expect(getDiscoveryLinks('/')).toEqual([
       { rel: 'alternate', href: '/index.md', type: 'text/markdown' },
       { rel: 'describedby', href: '/llms.txt' }
     ]);
   });
 
-  it.skip('returns the identical homepage set for /index.md', () => {
+  it('returns the identical homepage set for /index.md', () => {
     expect(getDiscoveryLinks('/index.md')).toEqual(getDiscoveryLinks('/'));
   });
 
-  it.skip('returns the docs set for a single-segment page', () => {
+  it('returns the docs set for a single-segment page', () => {
     expect(getDiscoveryLinks('/docs/overview')).toEqual([
       { rel: 'alternate', href: '/docs/overview.md', type: 'text/markdown' },
       { rel: 'describedby', href: '/docs/llms.txt' }
     ]);
   });
 
-  it.skip('returns the docs set for a nested guide slug', () => {
+  it('returns the docs set for a nested guide slug', () => {
     expect(getDiscoveryLinks('/docs/guides/reconcile-drifted-spans')).toEqual([
       { rel: 'alternate', href: '/docs/guides/reconcile-drifted-spans.md', type: 'text/markdown' },
       { rel: 'describedby', href: '/docs/llms.txt' }
     ]);
   });
 
-  it.skip('normalizes a trailing slash on a content path', () => {
+  it('normalizes a trailing slash on a content path', () => {
     expect(getDiscoveryLinks('/docs/overview/')).toEqual(getDiscoveryLinks('/docs/overview'));
   });
 
-  it.skip('returns the identical set for a .md twin', () => {
+  it('returns the identical set for a .md twin', () => {
     expect(getDiscoveryLinks('/docs/overview.md')).toEqual(getDiscoveryLinks('/docs/overview'));
   });
 
-  it.skip('returns nothing for the renamed slug', () => {
+  it('returns nothing for the renamed slug', () => {
     expect(getDiscoveryLinks('/docs/guides/reconcile-stale-spans')).toEqual([]);
     expect(getDiscoveryLinks('/docs/guides/reconcile-stale-spans.md')).toEqual([]);
   });
 
-  it.skip('returns nothing for bare /docs and its trailing-slash form', () => {
+  it('returns nothing for bare /docs and its trailing-slash form', () => {
     expect(getDiscoveryLinks('/docs')).toEqual([]);
     expect(getDiscoveryLinks('/docs/')).toEqual([]);
   });
 
-  it.skip('returns nothing for unknown slugs', () => {
+  it('returns nothing for unknown slugs', () => {
     expect(getDiscoveryLinks('/docs/not-a-real-page')).toEqual([]);
     expect(getDiscoveryLinks('/docs/not-a-real-page.md')).toEqual([]);
   });
 
-  it.skip('returns nothing for trailing-slash .md variants the worker 404s', () => {
+  it('returns nothing for trailing-slash .md variants the worker 404s', () => {
     expect(getDiscoveryLinks('/docs/overview.md/')).toEqual([]);
     expect(getDiscoveryLinks('/index.md/')).toEqual([]);
   });
 
-  it.skip('returns nothing for the llms.txt resources', () => {
+  it('returns nothing for the llms.txt resources', () => {
     expect(getDiscoveryLinks('/llms.txt')).toEqual([]);
     expect(getDiscoveryLinks('/docs/llms.txt')).toEqual([]);
     expect(getDiscoveryLinks('/llms-full.txt')).toEqual([]);
     expect(getDiscoveryLinks('/docs/llms-full.txt')).toEqual([]);
   });
 
-  it.skip('returns nothing for assets and non-content paths', () => {
+  it('returns nothing for assets and non-content paths', () => {
     expect(getDiscoveryLinks('/favicon.svg')).toEqual([]);
     expect(getDiscoveryLinks('/og.png')).toEqual([]);
     expect(getDiscoveryLinks('/api/repos')).toEqual([]);
@@ -76,19 +76,19 @@ describe('getDiscoveryLinks', () => {
 });
 
 describe('serializeDiscoveryLink', () => {
-  it.skip('emits href, rel, and type in RFC 8288 form', () => {
+  it('emits href, rel, and type in RFC 8288 form', () => {
     expect(serializeDiscoveryLink({ rel: 'alternate', href: '/index.md', type: 'text/markdown' })).toBe(
       '</index.md>; rel="alternate"; type="text/markdown"'
     );
   });
 
-  it.skip('omits the type parameter when absent', () => {
+  it('omits the type parameter when absent', () => {
     expect(serializeDiscoveryLink({ rel: 'describedby', href: '/llms.txt' })).toBe('</llms.txt>; rel="describedby"');
   });
 });
 
 describe('applyDiscoveryHeaders', () => {
-  it.skip('appends both relations to a content-path response without touching its metadata', async () => {
+  it('appends both relations to a content-path response without touching its metadata', async () => {
     const response = applyDiscoveryHeaders(
       new Response('body', { status: 207, statusText: 'Multi-Status' }),
       '/docs/overview'
@@ -101,7 +101,7 @@ describe('applyDiscoveryHeaders', () => {
     );
   });
 
-  it.skip('appends to an upstream Link instead of clobbering it', () => {
+  it('appends to an upstream Link instead of clobbering it', () => {
     const response = applyDiscoveryHeaders(
       new Response(null, { headers: { Link: '</styles.css>; rel="stylesheet"' } }),
       '/docs/overview'
@@ -111,7 +111,7 @@ describe('applyDiscoveryHeaders', () => {
     );
   });
 
-  it.skip('adds nothing on a non-content path', async () => {
+  it('adds nothing on a non-content path', async () => {
     const response = applyDiscoveryHeaders(new Response('body'), '/api/repos');
     expect(response.headers.get('Link')).toBeNull();
     expect(await response.text()).toBe('body');
@@ -134,7 +134,7 @@ describe('every advertised href resolves', () => {
     }
   }
 
-  it.skip('every page the classifier advertises has a working Markdown twin and index', async () => {
+  it('every page the classifier advertises has a working Markdown twin and index', async () => {
     for (const node of collectPageNodes(source.pageTree.children)) {
       const descriptors = getDiscoveryLinks(node.url);
       expect(descriptors, `no relations for ${node.url}`).not.toEqual([]);
@@ -149,7 +149,7 @@ describe('every advertised href resolves', () => {
     }
   });
 
-  it.skip('the homepage relations resolve on both representations', async () => {
+  it('the homepage relations resolve on both representations', async () => {
     for (const pathname of ['/', '/index.md']) {
       for (const descriptor of getDiscoveryLinks(pathname)) {
         await assertResolves(descriptor.href, pathname);

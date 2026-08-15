@@ -10,6 +10,8 @@
  *
  * @summary Pathname-keyed discovery classifier, Link serializer, response finalizer
  */
+import { isPublicContentPath } from '~/lib/content-negotiation';
+import { source } from '~/lib/source';
 
 /** A discovery relation for one public page: its Markdown twin (`alternate`)
  * and the llms.txt index that describes it (`describedby`). */
@@ -19,14 +21,43 @@ export interface DiscoveryLinkDescriptor {
   type?: string;
 }
 
+const HOMEPAGE_LINKS: DiscoveryLinkDescriptor[] = [
+  { rel: 'alternate', href: '/index.md', type: 'text/markdown' },
+  { rel: 'describedby', href: '/llms.txt' }
+];
+
+/** The fixed relations for a canonical docs path: its `.md` twin and the
+ * docs-scope llms.txt index. */
+function docsLinks(pathname: string): DiscoveryLinkDescriptor[] {
+  return [
+    { rel: 'alternate', href: `${pathname}.md`, type: 'text/markdown' },
+    { rel: 'describedby', href: '/docs/llms.txt' }
+  ];
+}
+
 /**
  * The relations a public content path advertises, or `[]` for anything else.
+ *
+ * A `.md` twin resolves to its canonical content path first, so both
+ * representations of one page emit the identical header set — the worker 404s
+ * trailing-slash `.md` variants, so those are deliberately not normalized.
+ * Existence is `source.getPage`, the same predicate the HTML loader and the
+ * `.md` resolver use, so an advertised twin cannot 404.
  *
  * @param pathname - A decoded request pathname.
  * @summary Discovery relations for a pathname, empty outside the content set
  */
-export function getDiscoveryLinks(_pathname: string): DiscoveryLinkDescriptor[] {
-  throw new Error('Not Implemented');
+export function getDiscoveryLinks(pathname: string): DiscoveryLinkDescriptor[] {
+  if (pathname === '/' || pathname === '/index.md') return HOMEPAGE_LINKS;
+
+  const mdMatch = /^\/docs\/(.+)\.md$/.exec(pathname);
+  const docsPath = mdMatch ? `/docs/${mdMatch[1]}` : pathname.replace(/\/+$/, '');
+
+  if (isPublicContentPath(docsPath)) {
+    const slug = docsPath.slice('/docs/'.length);
+    if (source.getPage(slug.split('/'))) return docsLinks(docsPath);
+  }
+  return [];
 }
 
 /**
@@ -36,8 +67,9 @@ export function getDiscoveryLinks(_pathname: string): DiscoveryLinkDescriptor[] 
  * @param descriptor - The relation to serialize.
  * @summary RFC 8288 link-value string for one descriptor
  */
-export function serializeDiscoveryLink(_descriptor: DiscoveryLinkDescriptor): string {
-  throw new Error('Not Implemented');
+export function serializeDiscoveryLink(descriptor: DiscoveryLinkDescriptor): string {
+  const typeParameter = descriptor.type === undefined ? '' : `; type="${descriptor.type}"`;
+  return `<${descriptor.href}>; rel="${descriptor.rel}"${typeParameter}`;
 }
 
 /**
@@ -49,6 +81,10 @@ export function serializeDiscoveryLink(_descriptor: DiscoveryLinkDescriptor): st
  * @param pathname - A decoded request pathname.
  * @summary Response carrying the pathname's Link relations, metadata preserved
  */
-export function applyDiscoveryHeaders(_response: Response, _pathname: string): Response {
-  throw new Error('Not Implemented');
+export function applyDiscoveryHeaders(response: Response, pathname: string): Response {
+  const wrapped = new Response(response.body, response);
+  for (const descriptor of getDiscoveryLinks(pathname)) {
+    wrapped.headers.append('Link', serializeDiscoveryLink(descriptor));
+  }
+  return wrapped;
 }
