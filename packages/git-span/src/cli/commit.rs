@@ -2184,7 +2184,7 @@ pub struct SupersededAnchor {
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct RemainingAnchor {
     pub address: String,
-    pub status: serde_json::Value,
+    pub status: crate::cli::drift_output::StatusDoc,
     pub next_step: String,
     /// Human drift-label vocabulary for the human remains line (plan
     /// §Output contract: "reusing the drift-label vocabulary"). Rendering
@@ -2198,7 +2198,7 @@ pub struct RemainingAnchor {
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct DriftingAnchor {
     pub address: String,
-    pub status: serde_json::Value,
+    pub status: crate::cli::drift_output::StatusDoc,
 }
 
 /// The span-wide health block of the mutation document.
@@ -3364,7 +3364,7 @@ mod tests {
             }],
             vec![RemainingAnchor {
                 address: "src/read-user.ts".into(),
-                status: serde_json::json!({ "code": "CHANGED" }),
+                status: crate::cli::drift_output::StatusDoc::Changed,
                 next_step: "git span remove user-id-lifecycle src/read-user.ts".into(),
                 label: "changed in the working tree".into(),
             }],
@@ -3373,7 +3373,7 @@ mod tests {
                 drift_count: 1,
                 drifting: vec![DriftingAnchor {
                     address: "src/read-user.ts".into(),
-                    status: serde_json::json!({ "code": "CHANGED" }),
+                    status: crate::cli::drift_output::StatusDoc::Changed,
                 }],
                 resolved_pending_commit_count: 0,
                 reason: None,

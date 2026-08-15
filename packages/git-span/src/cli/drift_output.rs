@@ -18,7 +18,8 @@ use crate::types::{
 };
 use crate::validation::validate_span_name_shape;
 use anyhow::Result;
-use serde_json::{Value, json};
+use schemars::JsonSchema;
+use serde::Serialize;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
@@ -2256,7 +2257,283 @@ fn render_porcelain(
 // ---------------------------------------------------------------------------
 // JSON renderer (always emits a document: `{ "schema_version": 3, clean,
 // findings }`).
+//
+// The document types below are serialization-shaped: serde_json streams
+// object keys in *call order* — no map sorting happens at serialization —
+// so every struct and enum variant declares its fields in the sorted order
+// the hand-built `json!` era emitted (that era's sorted bytes came from
+// serde_json's BTreeMap-backed `Map` value, not from the serializer).
+// `tests/fixtures/json/drift*.json` pins the byte contract. Always-emitted
+// null keys carry the required+nullable recipe so the published schema
+// states both facts (see [`crate::schemas::nullable_schema`]).
 // ---------------------------------------------------------------------------
+
+/// The drift family's schema_version.
+const DRIFT_JSON_SCHEMA_VERSION: u32 = 3;
+
+/// Root document of `drift --format json`.
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+struct DriftDocument {
+    clean: bool,
+    clusters: Vec<ClusterDoc>,
+    findings: Vec<FindingDoc>,
+    schema_version: u32,
+    span: String,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+struct ClusterDoc {
+    shared_files: Vec<String>,
+    spans: Vec<String>,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+struct FindingDoc {
+    anchored: LocationDoc,
+    #[schemars(required, schema_with = "crate::schemas::nullable_schema::<bool>")]
+    auto_followed: Option<bool>,
+    #[schemars(required, schema_with = "crate::schemas::nullable_schema::<bool>")]
+    collapsed_duplicate: Option<bool>,
+    #[schemars(required, schema_with = "crate::schemas::nullable_schema::<LocationDoc>")]
+    current: Option<LocationDoc>,
+    fuzzy_successors: Vec<FuzzySuccessorDoc>,
+    #[schemars(required, schema_with = "crate::schemas::nullable_schema::<LocusDoc>")]
+    locus: Option<LocusDoc>,
+    #[schemars(required, schema_with = "crate::schemas::nullable_schema::<MovedToDoc>")]
+    moved_to: Option<MovedToDoc>,
+    #[schemars(required, schema_with = "crate::schemas::nullable_schema::<SourceDoc>")]
+    source: Option<SourceDoc>,
+    span: String,
+    status: StatusDoc,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+struct LocationDoc {
+    #[schemars(required, schema_with = "crate::schemas::nullable_schema::<String>")]
+    blob: Option<String>,
+    extent: ExtentDoc,
+    path: String,
+}
+
+impl From<&AnchorLocation> for LocationDoc {
+    fn from(loc: &AnchorLocation) -> Self {
+        LocationDoc {
+            blob: loc.blob.map(|o| o.to_string()),
+            extent: ExtentDoc::from(loc.extent),
+            path: loc.path.display().to_string(),
+        }
+    }
+}
+
+/// Untagged, deliberately: serde_json streams object keys in *call order*
+/// (no map sorting happens at serialization — the sorted bytes of the
+/// hand-built `json!` era came from serde_json's BTreeMap-backed `Map`
+/// value, not from the serializer). Tagged enums additionally emit the tag
+/// key first, which the pinned goldens' order (`end`, `kind`, `start`)
+/// cannot reproduce. Untagged variants emit their fields in declaration
+/// order, so fields are declared in the goldens' sorted order. The `kind`
+/// markers keep the schema truthful (`{"const": "whole"}` /
+/// `{"const": "lines"}`) without a serde tag to break the byte contract.
+#[derive(Serialize, JsonSchema)]
+#[serde(untagged)]
+enum ExtentDoc {
+    WholeFile {
+        kind: WholeExtentKind,
+    },
+    LineRange {
+        end: u32,
+        kind: LineExtentKind,
+        start: u32,
+    },
+}
+
+#[derive(Serialize, JsonSchema)]
+enum WholeExtentKind {
+    #[serde(rename = "whole")]
+    Whole,
+}
+
+#[derive(Serialize, JsonSchema)]
+enum LineExtentKind {
+    #[serde(rename = "lines")]
+    Lines,
+}
+
+impl From<AnchorExtent> for ExtentDoc {
+    fn from(e: AnchorExtent) -> Self {
+        match e {
+            AnchorExtent::WholeFile => ExtentDoc::WholeFile {
+                kind: WholeExtentKind::Whole,
+            },
+            AnchorExtent::LineRange { start, end } => ExtentDoc::LineRange {
+                kind: LineExtentKind::Lines,
+                end,
+                start,
+            },
+        }
+    }
+}
+
+/// The three layer strings, as published on `drift` findings' `source` and
+/// `history`'s `sources` array — the vocabulary lives on [`DriftSource`]
+/// itself, so both surfaces republish it by construction rather than by a
+/// second copy of the match that would drift from it.
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum SourceDoc {
+    Head,
+    Index,
+    Worktree,
+}
+
+impl From<DriftSource> for SourceDoc {
+    fn from(s: DriftSource) -> Self {
+        match s {
+            DriftSource::Head => SourceDoc::Head,
+            DriftSource::Index => SourceDoc::Index,
+            DriftSource::Worktree => SourceDoc::Worktree,
+        }
+    }
+}
+
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+struct MovedToDoc {
+    // Present only when the relocation scan's fuzzy fallback found a match.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    confidence: Option<f64>,
+    extent: ExtentDoc,
+    path: String,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(untagged)]
+enum LocusDoc {
+    Changed { changed_in: String },
+    Orphaned { deleted_in: String },
+    Renamed { renamed_at: String, renamed_to: String },
+}
+
+impl From<&DriftLocus> for LocusDoc {
+    fn from(l: &DriftLocus) -> Self {
+        match l {
+            DriftLocus::ChangedAt(oid) => LocusDoc::Changed {
+                changed_in: oid.to_string(),
+            },
+            DriftLocus::OrphanedAt(oid) => LocusDoc::Orphaned {
+                deleted_in: oid.to_string(),
+            },
+            DriftLocus::RenamedAt(oid, path) => LocusDoc::Renamed {
+                renamed_at: oid.to_string(),
+                renamed_to: path.clone(),
+            },
+        }
+    }
+}
+
+#[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+struct FuzzySuccessorDoc {
+    confidence: f64,
+    extent: ExtentDoc,
+    path: String,
+}
+
+/// The anchor-status vocabulary of `drift` findings and (via the shared
+/// [`status_json`] constructor) the mutation-family documents, so the two
+/// surfaces agree by construction rather than by transcription.
+/// `MergeConflict` serializes as `CONFLICT` — the historical JSON token,
+/// which [`status_str`] spells without the `MERGE_` prefix the
+/// SCREAMING_SNAKE rename would produce.
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+#[serde(tag = "code", rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum StatusDoc {
+    Fresh,
+    ResolvedPendingCommit,
+    Moved,
+    Changed,
+    Deleted,
+    #[serde(rename = "CONFLICT")]
+    MergeConflict,
+    Submodule,
+    // Variant fields are declared in the *serialized* order the hand-built
+    // json! produced after BTreeMap sorting: `code`, `detail`, `reason`.
+    ContentUnavailable {
+        #[schemars(required, schema_with = "crate::schemas::nullable_schema::<StatusDetailDoc>")]
+        detail: Option<StatusDetailDoc>,
+        reason: UnavailableReasonCodeDoc,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum UnavailableReasonCodeDoc {
+    LfsNotFetched,
+    LfsNotInstalled,
+    PromisorMissing,
+    SparseExcluded,
+    FilterFailed,
+    IoError,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum StatusDetailDoc {
+    FilterFailed { filter: String },
+    IoError { message: String },
+}
+
+impl From<&UnavailableReason> for UnavailableReasonCodeDoc {
+    fn from(r: &UnavailableReason) -> Self {
+        match r {
+            UnavailableReason::LfsNotFetched => UnavailableReasonCodeDoc::LfsNotFetched,
+            UnavailableReason::LfsNotInstalled => UnavailableReasonCodeDoc::LfsNotInstalled,
+            UnavailableReason::PromisorMissing => UnavailableReasonCodeDoc::PromisorMissing,
+            UnavailableReason::SparseExcluded => UnavailableReasonCodeDoc::SparseExcluded,
+            UnavailableReason::FilterFailed { .. } => UnavailableReasonCodeDoc::FilterFailed,
+            UnavailableReason::IoError { .. } => UnavailableReasonCodeDoc::IoError,
+        }
+    }
+}
+
+fn status_detail(reason: &UnavailableReason) -> Option<StatusDetailDoc> {
+    match reason {
+        UnavailableReason::FilterFailed { filter } => {
+            Some(StatusDetailDoc::FilterFailed {
+                filter: filter.clone(),
+            })
+        }
+        UnavailableReason::IoError { message } => {
+            Some(StatusDetailDoc::IoError {
+                message: message.clone(),
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Render an anchor status as the document value used by drift findings and
+/// the mutation-family documents, so the anchor-status vocabulary is shared
+/// by construction rather than by convention.
+pub(crate) fn status_json(s: &AnchorStatus) -> StatusDoc {
+    match s {
+        AnchorStatus::ContentUnavailable(reason) => StatusDoc::ContentUnavailable {
+            reason: UnavailableReasonCodeDoc::from(reason),
+            detail: status_detail(reason),
+        },
+        AnchorStatus::Fresh => StatusDoc::Fresh,
+        AnchorStatus::ResolvedPendingCommit => StatusDoc::ResolvedPendingCommit,
+        AnchorStatus::Moved => StatusDoc::Moved,
+        AnchorStatus::Changed => StatusDoc::Changed,
+        AnchorStatus::Deleted => StatusDoc::Deleted,
+        AnchorStatus::MergeConflict => StatusDoc::MergeConflict,
+        AnchorStatus::Submodule => StatusDoc::Submodule,
+    }
+}
 
 fn render_json(
     spans: &[SpanResolved],
@@ -2277,69 +2554,32 @@ fn render_json(
     // `RESOLVED_PENDING_COMMIT` is *shown-but-clean* (exit 0, "0 drift",
     // `DRIFT_FREE`). Deriving clean from the actionable-drift count keeps
     // the hook signal and the CLI verdict from disagreeing.
-    let v = json!({
-        "schema_version": 3,
-        "span": spans.first().map(|m| m.name.clone()).unwrap_or_default(),
-        "clean": drift_findings == 0,
-        "findings": findings.iter().map(|f| finding_json(f, followed_ids)).collect::<Vec<_>>(),
-        "clusters": clusters.iter().map(|c| json!({
-            "spans": c.spans,
-            "shared_files": c.shared_files,
-        })).collect::<Vec<_>>(),
-    });
-    println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
+    let doc = DriftDocument {
+        clean: drift_findings == 0,
+        clusters: clusters
+            .iter()
+            .map(|c| ClusterDoc {
+                spans: c.spans.clone(),
+                shared_files: c.shared_files.clone(),
+            })
+            .collect(),
+        findings: findings.iter().map(|f| finding_doc(f, followed_ids)).collect(),
+        schema_version: DRIFT_JSON_SCHEMA_VERSION,
+        span: spans.first().map(|m| m.name.clone()).unwrap_or_default(),
+    };
+    println!("{}", serde_json::to_string_pretty(&doc)?);
     Ok(())
 }
 
-fn location_json(loc: &AnchorLocation) -> Value {
-    json!({
-        "path": loc.path.display().to_string(),
-        "extent": extent_json(loc.extent),
-        "blob": loc.blob.map(|o| o.to_string()),
-    })
-}
-
-fn extent_json(e: AnchorExtent) -> Value {
-    match e {
-        AnchorExtent::WholeFile => json!({ "kind": "whole" }),
-        AnchorExtent::LineRange { start, end } => json!({
-            "kind": "lines",
-            "start": start,
-            "end": end,
-        }),
-    }
-}
-
-/// Render an anchor status as the JSON value used by drift findings and (via
-/// promotion) the mutation-family documents, so the anchor-status vocabulary
-/// is shared by construction rather than by convention.
-pub(crate) fn status_json(s: &AnchorStatus) -> Value {
-    match s {
-        AnchorStatus::ContentUnavailable(reason) => json!({
-            "code": "CONTENT_UNAVAILABLE",
-            "reason": status_str(s),
-            "detail": match reason {
-                UnavailableReason::FilterFailed { filter } => json!({"filter": filter}),
-                UnavailableReason::IoError { message } => json!({"message": message}),
-                _ => Value::Null,
-            }
-        }),
-        _ => json!({ "code": status_str(s) }),
-    }
-}
-
-fn finding_json(f: &Finding, followed_ids: &HashSet<String>) -> Value {
+fn finding_doc(f: &Finding, followed_ids: &HashSet<String>) -> FindingDoc {
+    // `moved_to` mirrors the pre-promotion renderer: only `Moved` findings
+    // carry it, its location is the *current* side (not the fuzzy
+    // successor), and `confidence` names the best fuzzy match when one ran.
     let moved_to = if f.status == AnchorStatus::Moved {
-        f.current.as_ref().map(|loc| {
-            let mut obj = json!({
-                "path": loc.path.display().to_string(),
-                "extent": extent_json(loc.extent),
-            });
-            // Add confidence field for fuzzy matches.
-            if let Some(best) = f.fuzzy_successors.first() {
-                obj["confidence"] = json!(best.confidence);
-            }
-            obj
+        f.current.as_ref().map(|loc| MovedToDoc {
+            confidence: f.fuzzy_successors.first().map(|best| best.confidence),
+            extent: ExtentDoc::from(loc.extent),
+            path: loc.path.display().to_string(),
         })
     } else {
         None
@@ -2352,45 +2592,33 @@ fn finding_json(f: &Finding, followed_ids: &HashSet<String>) -> Value {
     // field saw an ordinary drifted anchor with no way to learn its content
     // was never verified.
     let collapsed_duplicate = is_collapsed_duplicate_sentinel(f);
-    // Surface all fuzzy successors for operator review, regardless of
-    // anchor status. Empty when no fuzzy scan ran or no candidates found.
-    let fuzzy_successors_json: Vec<Value> = f
-        .fuzzy_successors
-        .iter()
-        .map(|fs| {
-            json!({
-                "path": fs.path,
-                "extent": extent_json(AnchorExtent::LineRange {
-                    start: fs.start,
+    FindingDoc {
+        anchored: LocationDoc::from(&f.anchored),
+        auto_followed: auto_followed.then_some(true),
+        collapsed_duplicate: collapsed_duplicate.then_some(true),
+        current: f.current.as_ref().map(LocationDoc::from),
+        // Surface all fuzzy successors for operator review, regardless of
+        // anchor status. Empty when no fuzzy scan ran or no candidates
+        // found.
+        fuzzy_successors: f
+            .fuzzy_successors
+            .iter()
+            .map(|fs| FuzzySuccessorDoc {
+                confidence: fs.confidence,
+                extent: ExtentDoc::LineRange {
+                    kind: LineExtentKind::Lines,
                     end: fs.end,
-                }),
-                "confidence": fs.confidence,
+                    start: fs.start,
+                },
+                path: fs.path.clone(),
             })
-        })
-        .collect();
-    json!({
-        "span": f.span,
-        "status": status_json(&f.status),
-        // The three layer strings live on `DriftSource` itself, so `history`'s
-        // `sources` array republishes this vocabulary by construction rather
-        // than by a second copy of the match that would drift from it.
-        "source": f.source.map(DriftSource::as_json_str),
-        "anchored": location_json(&f.anchored),
-        "current": f.current.as_ref().map(location_json),
-        "moved_to": moved_to,
-        "fuzzy_successors": fuzzy_successors_json,
-        "auto_followed": if auto_followed { Value::Bool(true) } else { Value::Null },
-        "collapsed_duplicate": if collapsed_duplicate { Value::Bool(true) } else { Value::Null },
-        "locus": match &f.locus {
-            Some(DriftLocus::ChangedAt(oid)) => json!({ "changed_in": oid.to_string() }),
-            Some(DriftLocus::OrphanedAt(oid)) => json!({ "deleted_in": oid.to_string() }),
-            Some(DriftLocus::RenamedAt(oid, path)) => json!({
-                "renamed_at": oid.to_string(),
-                "renamed_to": path,
-            }),
-            None => Value::Null,
-        },
-    })
+            .collect(),
+        locus: f.locus.as_ref().map(LocusDoc::from),
+        moved_to,
+        source: f.source.map(SourceDoc::from),
+        span: f.span.clone(),
+        status: status_json(&f.status),
+    }
 }
 
 // ---------------------------------------------------------------------------
