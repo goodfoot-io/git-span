@@ -9,7 +9,11 @@
  */
 import type { AgentSkillsPublication } from './agent-skills';
 
-export const agentSkillsPublication = {
+// Annotated explicitly rather than via `satisfies`: `satisfies` would narrow
+// the literal to `skills: never[]` / `files: {}` and break string indexing in
+// consumers — the annotation keeps the runtime literal while widening the
+// declared type.
+export const agentSkillsPublication: AgentSkillsPublication = {
   index: { $schema: 'https://schemas.agentskills.io/discovery/0.2.0/schema.json', skills: [] },
   files: {}
-} satisfies AgentSkillsPublication;
+};

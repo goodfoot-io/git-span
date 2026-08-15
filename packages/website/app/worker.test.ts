@@ -25,6 +25,7 @@ vi.mock('~/lib/content-negotiation', async (importOriginal) => {
   };
 });
 
+import { AGENT_SKILLS_LINK } from '~/lib/agent-skills';
 import worker from '~/worker';
 
 function request(pathname: string, init?: RequestInit): Request {
@@ -288,5 +289,31 @@ describe('worker discovery headers', () => {
     expect(response.headers.get('Link')).toBe(
       '</docs/overview.md>; rel="alternate"; type="text/markdown", </docs/llms.txt>; rel="describedby"'
     );
+  });
+});
+
+describe('worker agent-skills discovery headers', () => {
+  it.skip('advertises the agent-skills index on an SSR response', async () => {
+    const response = await worker.fetch(request('/docs/overview'));
+    expect(response.headers.get('Link')).toContain(AGENT_SKILLS_LINK);
+  });
+
+  it.skip('advertises the agent-skills index on non-content paths', async () => {
+    const response = await worker.fetch(request('/api/repos'));
+    expect(response.headers.get('Link')).toBe(AGENT_SKILLS_LINK);
+  });
+
+  it.skip('advertises the agent-skills index on an unknown-slug 404', async () => {
+    rr.response = new Response('not found', { status: 404 });
+    const response = await worker.fetch(request('/docs/not-a-real-page'));
+    expect(response.status).toBe(404);
+    expect(response.headers.get('Link')).toBe(AGENT_SKILLS_LINK);
+  });
+
+  it.skip('keeps redirects free of the agent-skills index', async () => {
+    rr.response = new Response('', { status: 301, headers: { Location: '/docs/overview' } });
+    const response = await worker.fetch(request('/docs/overview/'));
+    expect(response.status).toBe(301);
+    expect(response.headers.get('Link')).toBeNull();
   });
 });
