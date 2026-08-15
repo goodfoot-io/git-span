@@ -33,9 +33,9 @@
  */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 /** The draft v0.2.0 index schema identifier — the opaque URI the draft pins. */
 const DRAFT_SCHEMA = 'https://schemas.agentskills.io/discovery/0.2.0/schema.json';
@@ -51,18 +51,39 @@ const packageRoot = fileURLToPath(new URL('..', import.meta.url));
 const defaultSkillsRoot = fileURLToPath(new URL('../../../plugins-claude/git-span/skills', import.meta.url));
 
 /**
+ * Read a tree file as UTF-8, failing closed on bytes that are not: serving a
+ * lossily decoded string would corrupt the wire while the digest certified
+ * the corruption, because every comparison in the pipeline is over the
+ * decoded text. Verifying the round-trip keeps the served bytes and the
+ * digest identical to the tree bytes by construction.
+ */
+function readTextFile(filePath) {
+  const bytes = readFileSync(filePath);
+  const text = bytes.toString('utf8');
+  if (Buffer.compare(bytes, Buffer.from(text, 'utf8')) !== 0) {
+    throw new Error(`${filePath} is not valid UTF-8; skill tree files must be valid UTF-8 to serve byte-identically`);
+  }
+  return text;
+}
+
+/**
  * The single name/description pair a SKILL.md frontmatter must carry — a
  * minimal `---`-block parse; the descriptions are single-line scalars today,
- * and the contract suite pins the parse against the live tree.
+ * and the contract suite pins the parse against the live tree. YAML block
+ * scalars (`description: |`) are rejected fail-closed: the one-line regex
+ * would capture the indicator character itself and publish a description
+ * that exists nowhere in the tree.
  */
 function readFrontmatter(skillMdPath) {
-  const markdown = readFileSync(skillMdPath, 'utf8');
+  const markdown = readTextFile(skillMdPath);
   const match = /^---\n([\s\S]*?)\n---/.exec(markdown);
   if (!match) throw new Error(`no frontmatter block in ${skillMdPath}`);
   const name = /^name:\s*(.+)$/m.exec(match[1])?.[1];
   const description = /^description:\s*(.+)$/m.exec(match[1])?.[1];
-  if (name === undefined || description === undefined) {
-    throw new Error(`frontmatter in ${skillMdPath} must carry name and description`);
+  for (const [field, value] of [['name', name], ['description', description]]) {
+    if (value === undefined || /^[|>]/.test(value)) {
+      throw new Error(`frontmatter ${field} in ${skillMdPath} must be a single-line scalar`);
+    }
   }
   return { name, description };
 }
@@ -104,7 +125,7 @@ export function buildPublication(skillsRoot) {
     for (const filePath of walkFiles(path.join(skillsRoot, name))) {
       const servedPath = path.relative(skillsRoot, filePath).split(path.sep).join('/');
       files[servedPath] = {
-        content: readFileSync(filePath, 'utf8'),
+        content: readTextFile(filePath),
         contentType: contentTypeFor(servedPath)
       };
     }
@@ -126,10 +147,13 @@ export function buildPublication(skillsRoot) {
  * Run biome against the emitted artifact so its bytes are stable under every
  * later lint pass. Spawned as `yarn biome` — never through `npm_execpath`,
  * which Yarn sets to a shell wrapper that node cannot run — so the binary
- * resolves the way `yarn lint` does, whatever the install layout.
+ * resolves the way `yarn lint` does, whatever the install layout. Windows
+ * resolves the shim name (`yarn.cmd`) because execFile cannot spawn `.cmd`
+ * wrappers without a shell.
  */
 function formatWithBiome(outPath) {
-  execFileSync('yarn', ['biome', 'check', '--write', '--unsafe', outPath], { cwd: packageRoot, stdio: 'inherit' });
+  const yarnCommand = process.platform === 'win32' ? 'yarn.cmd' : 'yarn';
+  execFileSync(yarnCommand, ['biome', 'check', '--write', '--unsafe', outPath], { cwd: packageRoot, stdio: 'inherit' });
 }
 
 /**
@@ -154,7 +178,10 @@ export const agentSkillsPublication: AgentSkillsPublication = ${json};
   formatWithBiome(outPath);
 }
 
-const invokedDirectly = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+// The direct-invocation guard compares realpaths, not URL strings: on
+// case-insensitive filesystems two spellings of one path must still compare
+// equal, and a symlinked invocation is the same script.
+const invokedDirectly = process.argv[1] !== undefined && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
 
 if (invokedDirectly) {
   emit(buildPublication(defaultSkillsRoot));

@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { createHash } from 'node:crypto';
-import { readdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { type LoaderFunctionArgs, matchRoutes, type RouteObject } from 'react-router';
@@ -28,11 +29,13 @@ function readFrontmatterDescription(skillDir: string): string {
   return description;
 }
 
-/** Every file under one skill directory, as plugin-tree-relative paths. */
+/** Every file under one skill directory, as plugin-tree-relative paths with
+ * `/` separators — the generator's map keys normalize `path.sep`, so the
+ * walker must too, or the key-set equality breaks on Windows. */
 function walkSkillFiles(skillDir: string, dir = skillDir): string[] {
   return readdirSync(path.join(skillsRoot, dir), { withFileTypes: true }).flatMap((entry) => {
     const relative = path.join(dir, entry.name);
-    return entry.isDirectory() ? walkSkillFiles(skillDir, relative) : [relative];
+    return entry.isDirectory() ? walkSkillFiles(skillDir, relative) : [relative.split(path.sep).join('/')];
   });
 }
 
@@ -143,7 +146,11 @@ describe('GET /.well-known/agent-skills/*', () => {
     const liveFiles = liveSkillDirs.flatMap((dir) => walkSkillFiles(dir));
     expect(Object.keys(agentSkillsPublication.files).sort()).toEqual([...liveFiles].sort());
     for (const [servedPath, file] of Object.entries(agentSkillsPublication.files)) {
-      expect(readFileSync(path.join(skillsRoot, servedPath), 'utf8')).toBe(file.content);
+      // Compare raw buffers, not decoded strings: the generator's fail-closed
+      // UTF-8 guard makes both representations agree, and a buffer comparison
+      // sees drift the decoded-string comparison could not.
+      const treeBytes = readFileSync(path.join(skillsRoot, servedPath));
+      expect(Buffer.compare(treeBytes, Buffer.from(file.content, 'utf8')), servedPath).toBe(0);
     }
   });
 
@@ -161,5 +168,45 @@ describe('GET /.well-known/agent-skills/*', () => {
     expect(error).toBeInstanceOf(Response);
     if (!(error instanceof Response)) throw new Error('expected a thrown Response');
     expect(error.status).toBe(404);
+  });
+});
+
+describe('buildPublication fail-closed guards', () => {
+  function withTempTree(files: Record<string, string | Buffer>, fn: (root: string) => void): void {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'agent-skills-fixture-'));
+    const skillDir = path.join(root, 'fixture-skill');
+    mkdirSync(skillDir);
+    writeFileSync(
+      path.join(skillDir, 'SKILL.md'),
+      '---\nname: fixture-skill\ndescription: A fixture skill\n---\n# Fixture\n'
+    );
+    for (const [relative, content] of Object.entries(files)) {
+      const filePath = path.join(skillDir, relative);
+      mkdirSync(path.dirname(filePath), { recursive: true });
+      writeFileSync(filePath, content);
+    }
+    try {
+      fn(root);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  it('rejects a skill file that is not valid UTF-8 instead of serving replacement bytes', () => {
+    withTempTree({ 'scripts/broken.mjs': Buffer.from([0x63, 0x6f, 0x6e, 0x80, 0x81]) }, (root) => {
+      // The error must name the broken file: a guard that rejected every
+      // file, valid ones included, would name SKILL.md instead.
+      expect(() => buildPublication(root)).toThrow(/broken\.mjs is not valid UTF-8/);
+    });
+  });
+
+  it('rejects a block-scalar description instead of publishing the indicator', () => {
+    withTempTree({}, (root) => {
+      writeFileSync(
+        path.join(root, 'fixture-skill', 'SKILL.md'),
+        '---\nname: fixture-skill\ndescription: |\n  A multi-line description\n---\n# Fixture\n'
+      );
+      expect(() => buildPublication(root)).toThrow(/single-line scalar/);
+    });
   });
 });
