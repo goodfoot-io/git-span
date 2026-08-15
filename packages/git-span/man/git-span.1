@@ -72,7 +72,9 @@ Bare invocations:
 .RS 4
 .TP
 .B git span
-List every span in the repository.
+Print the command help and exit 0. Run
+.B git span list
+with no arguments to list every span.
 .TP
 .BI git\ span\  <name>
 Show one span (anchors, why, config).
@@ -96,43 +98,43 @@ Print version
 .SH SUBCOMMANDS
 .TP
 git\-span\-show(1)
-Show the named span — its anchors, why, and config. Equivalent to the bare `git span <name>` positional form
+Show the named span — its anchors, why, and config. The bare `git span <name>` positional form is equivalent to `git span show <name>`
 .TP
 git\-span\-list(1)
 List files and anchors currently tracked by a span
 .TP
 git\-span\-drift(1)
-Report anchors whose content has drifted from their anchored state
+Report anchors whose content has drifted from their anchored state. `paths` may be file paths, globs, or span names; omit them to scan all spans
 .TP
 git\-span\-context(1)
 Return exact dependency context for repository\-relative paths or inclusive line ranges as one versioned JSON document
 .TP
 git\-span\-add(1)
-Add anchors to a span, writing the span file under the span root. Stage and commit the change with `git add .span && git commit`
+Add anchors to a span, writing the span file under the span root
 .TP
 git\-span\-remove(1)
-Remove anchors from a span, editing the span file under the span root. Stage and commit the change with `git add .span && git commit`
+Remove anchors from a span, editing the span file under the span root. Each anchor must match an existing one on the span exactly. Stage and commit the change with `git add .span && git commit`
 .TP
 git\-span\-replace(1)
-Replace one anchor on a span with another address, in a single atomic transaction: either the old identity is retired and the new identity installed together, or nothing changes
+Replace one anchor on a span with another address, in a single atomic transaction: either the old identity is retired and the new identity installed together, or nothing changes — there is never an intermediate state with both or neither. The new anchor passes the same validation as `add` (path safety, existence, gitignored/rewritten\-target rejection, line\-count extent), so a poisoned declaration is never written
 .TP
 git\-span\-why(1)
 Read or stage the span\*(Aqs why — one or two complete present\-tense clauses carrying decision\-relevant nonlocal context
 .TP
 git\-span\-delete(1)
-Delete a span
+Delete a span — removes its file under the span root. Destructive. Run `git span list` afterward to confirm it is gone, then commit the change
 .TP
 git\-span\-doctor(1)
-Audit the local span setup
+Audit the local span setup — reports span count and findings, plus a store\-size summary (bytes used). Exits 0
 .TP
 git\-span\-tree(1)
 Trace blast radius: render a clique\-grouped impact tree rooted at the files matched by the given paths/globs
 .TP
 git\-span\-merge\-driver(1)
-Resolve `.span/` merge conflicts structurally when invoked by git as a merge driver. Receives three clean blob temp files and the marker length from git. Resolves only what is structurally derivable without trusting the worktree (which may be mid\-merge); defers same\-anchor range/hash divergence by writing minimal conflict markers and exiting non\-zero so `git span drift \-\-fix` can finish authoritatively
+Resolve `.span/` merge conflicts structurally when invoked by git as a merge driver. Receives three clean blob temp files and the marker length from git. Resolves only what is structurally derivable without trusting the worktree, which may be mid\-merge. Same\-anchor range/hash divergence is deferred: minimal conflict markers are written and the command exits non\-zero so `git span drift \-\-fix` can finish authoritatively. Exits 0 when fully resolved, 1 when partial (residue markers written)
 .TP
 git\-span\-history(1)
-Show a span\*(Aqs git history as a git\-log\-style timeline: newest\-first commit entries whose patches are real unified diffs of the span declaration and of each anchor\*(Aqs content at its declared address, with the span\*(Aqs live drift rendered before the first commit as a headerless diff. That drift is not working\-tree\-only: it covers every resolver layer `git span drift` reports, and each block names its observational layers on a `drift source` line. `HEAD` identifies the comparison layer; it does not by itself prove that the declaration or content change was committed. Source order is the resolver\*(Aqs: line ranges use Worktree → Index → Head, while whole\-file anchors use Index → Worktree → Head
+Show a span\*(Aqs git history as a git\-log\-style timeline: newest\-first commit entries whose patches are real unified diffs of the span declaration and of each anchor\*(Aqs content at its declared address, rename\-aware by content similarity — a re\-anchor whose old and new content pair at ≥ 50% similarity (git\*(Aqs `\-M` default) renders as a rename, a sub\-threshold re\-anchor renders as a deleted anchor plus a new anchor, and a re\-anchor whose recorded side cannot be read (binary or unrecoverable content) renders `rename from`/`rename to` lines with no similarity claim, the move asserted by the declaration itself. The span\*(Aqs live drift is rendered before the first commit as a headerless diff. That drift is not working\-tree\-only: it covers every resolver layer `git span drift` reports, and each block names its observational layers on a `drift source` line. `HEAD` identifies the comparison layer; it does not by itself prove that the declaration or content change was committed. Source order is the resolver\*(Aqs: line ranges use Worktree → Index → Head, while whole\-file anchors use Index → Worktree → Head
 .TP
 git\-span\-resolve(1)
 Settle every residue entry in a conflict\-markered span file under one explicitly chosen side, and write a clean span

@@ -27,7 +27,7 @@ const SENTINELS: &[(&str, &str)] = &[
     ("tree", "Roots are file paths and globs only"),
     ("history", "rename-aware by content similarity"),
     ("history scoped output", "Treat scoped JSON output as a partial record"),
-    ("drift clean shape", "clean does not imply"),
+    ("drift clean shape", "does not imply `findings: []`"),
     ("drift fix callout", "will not touch it"),
     ("drift exit codes", "never maskable by"),
     ("doctor", "store-size summary (bytes used)"),

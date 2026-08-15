@@ -46,11 +46,12 @@ fn main() {
 fn run() -> Result<i32> {
     let args: Vec<String> = std::env::args().collect();
 
-    // §10.2: `git span` with no arg lists every span; `git span <name>`
-    // is a positional show. Clap can't distinguish a bare-name positional
-    // from a subcommand, so we pre-classify before invoking the parser.
-    // A reserved or retired token is a subcommand; anything else is a span
-    // name and routes to `Commands::Show`.
+    // §10.2: `git span` with no arg prints the command help and exits 0
+    // (`git span list` lists every span); `git span <name>` is a positional
+    // show. Clap can't distinguish a bare-name positional from a subcommand,
+    // so we pre-classify before invoking the parser. A reserved or retired
+    // token is a subcommand; anything else is a span name and routes to
+    // `Commands::Show`.
     //
     // Repo discovery happens after parsing so `--help` and any other
     // clap-handled flag works outside a git repo.

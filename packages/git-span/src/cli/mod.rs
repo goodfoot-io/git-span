@@ -68,8 +68,9 @@ pub struct Cli {
 /// Every subcommand the CLI accepts. Mirrors §10.2.
 #[derive(Debug, Subcommand)]
 pub enum Commands {
-    /// Show the named span — its anchors, why, and config. Equivalent
-    /// to the bare `git span <name>` positional form.
+    /// Show the named span — its anchors, why, and config. The bare
+    /// `git span <name>` positional form is equivalent to
+    /// `git span show <name>`.
     ///
     /// A span whose file is in a Git conflict state is refused rather than
     /// rendered from conflict-marker text; `git span resolve` settles it.
@@ -80,6 +81,8 @@ pub enum Commands {
     List(ListArgs),
 
     /// Report anchors whose content has drifted from their anchored state.
+    /// `paths` may be file paths, globs, or span names; omit them to scan
+    /// all spans.
     ///
     /// With `--fix`, also re-anchors `Moved` anchors unconditionally and
     /// whitespace-equivalent `Changed` anchors in place, and resolves
@@ -103,6 +106,31 @@ pub enum Commands {
     /// resolved anchors cleanly with minimal residue markers and are not
     /// re-staged.
     ///
+    /// `--format human` (the default) prints a summary line on a clean
+    /// scan (`0 drift across M spans (K anchors checked)`) and per-span
+    /// listings (each anchor, then the span's why) when drift is found.
+    /// `--format json` always emits a document: a clean scan carries
+    /// `"clean": true` (schema_version 3) — never empty stdout;
+    /// informational `RESOLVED_PENDING_COMMIT` findings may still be
+    /// listed, so `clean` does not imply `findings: []` — and a drifted
+    /// scan carries `"clean": false` plus the findings. `--format
+    /// porcelain` prints nothing on a clean scan (no header row).
+    ///
+    /// WARNING: `--fix` re-anchors `Moved` anchors unconditionally — pure
+    /// line shifts and file renames alike — and whitespace-equivalent
+    /// `Changed` anchors (indentation-only edits), tagging them
+    /// `resolved, pending commit — auto-updated` on the run that fixes
+    /// them. Meaning-altering `Changed` drift — content differs beyond
+    /// whitespace — is always left for you to resolve with `git span
+    /// add`; re-running `--fix` will not touch it. After `--fix`, re-run
+    /// `git span drift` and re-anchor anything still drifting yourself.
+    /// `--fix` never commits; it only rewrites `.span/` worktree files —
+    /// stage and commit with `git add .span && git commit`.
+    ///
+    /// Exit codes: 0 (no drift, or `--no-exit-code` with drift present),
+    /// 1 (drift found, or an interior-anchor integrity violation — the
+    /// latter is never maskable by `--no-exit-code`).
+    ///
     /// A span `--fix` cannot finish is not analyzable by re-running `drift`.
     /// See `git span resolve` (`--dry-run` first), which settles a
     /// conflict-markered span file under one explicitly chosen side.
@@ -110,26 +138,84 @@ pub enum Commands {
 
     /// Return exact dependency context for repository-relative paths or
     /// inclusive line ranges as one versioned JSON document.
+    ///
+    /// With `--fix`, position-only or whitespace-equivalent drift is
+    /// repaired before reporting, and `--operation-id` keys a repair
+    /// retry so the same attempt is idempotent. Output is always the
+    /// versioned context document.
     Context(ContextArgs),
 
     #[command(name = "__context-service", hide = true)]
     ContextService(ContextServiceArgs),
 
     /// Add anchors to a span, writing the span file under the span root.
+    ///
+    /// Each anchor is either a bare `<path>` (whole-file) or
+    /// `<path>#L<start>-L<end>` (line range, 1-indexed, inclusive); for
+    /// example, `git span add api-contract src/api.ts#L1-L3
+    /// tests/api.test.ts`. With `--at <commit-ish>`, every anchor in this
+    /// invocation is hashed against the file content at that commit
+    /// instead of the working tree — hashing against a commit-ish rather
+    /// than the working tree can make a new anchor itself drifted when
+    /// the working-tree content differs; the span-wide line reports it
+    /// honestly.
+    ///
+    /// Re-adding an address the span already tracks does not duplicate
+    /// the anchor — it is resolved in place, re-hashed against the
+    /// current content (`Added 0 anchors and resolved 1 in place`). That
+    /// is the idiom for confirming an intentional content change `drift`
+    /// flagged on a range that did not move — after checking that the
+    /// span's other anchors still agree with the new content; a coupled
+    /// doc that now lags is updated first.
+    ///
+    /// Every `add` ends with a scoped post-write check over the touched
+    /// span. After the requested-address lines it prints superseded old
+    /// anchors and old anchors that remain drifted — each with a runnable
+    /// `git span remove` next action — then one span-wide line that alone
+    /// asserts span-wide state: `0 drift across ...`, `N anchors drifted —
+    /// ...`, `state indeterminate (index changed during check)`, or
+    /// `state unverified`. The requested-address lines never assert span
+    /// health; "clean" appears only as the check's span-wide fact. `add`
+    /// shares `drift`'s exit contract: 0 = clean, 1 = drift remains or
+    /// the check errored, 2 = indeterminate (index changed during check)
+    /// — retryable. Exits 1 on an invalid name or an out-of-range anchor.
+    ///
     /// Stage and commit the change with `git add .span && git commit`.
     Add(AddArgs),
 
     /// Remove anchors from a span, editing the span file under the span
-    /// root. Stage and commit the change with `git add .span && git commit`.
+    /// root. Each anchor must match an existing one on the span exactly.
+    /// Stage and commit the change with `git add .span && git commit`.
     Remove(RemoveArgs),
 
     /// Replace one anchor on a span with another address, in a single
     /// atomic transaction: either the old identity is retired and the
-    /// new identity installed together, or nothing changes.
+    /// new identity installed together, or nothing changes — there is
+    /// never an intermediate state with both or neither. The new anchor
+    /// passes the same validation as `add` (path safety, existence,
+    /// gitignored/rewritten-target rejection, line-count extent), so a
+    /// poisoned declaration is never written.
     ///
     /// The old address must match an existing anchor exactly — `replace`
     /// never falls back to additive behavior. To refresh an anchor's
     /// content hash at an unchanged address, use `git span add` instead.
+    /// Refusals (all leave the declaration byte-for-byte unchanged,
+    /// exit 1):
+    /// - `old-anchor` matches no anchor on the span, or matches more
+    ///   than one record (a hand-edited or legacy declaration can hold
+    ///   two same-identity records with different hashes — no canonical
+    ///   choice exists).
+    /// - `old-anchor` and `new-anchor` are the same identity — in-place
+    ///   hash refresh is `add`'s job; `replace` changes identity.
+    /// - `new-anchor` is already tracked by the span — the swap would
+    ///   leave two same-identity records behind; retire the old anchor
+    ///   with `remove` instead.
+    ///
+    /// On success the output names the retired and installed addresses
+    /// and reports whether the span is drift-free; `--format json`
+    /// carries `span`, `retired`, `installed`, `drift_free`, and the
+    /// `drifted` addresses.
+    ///
     /// Stage and commit the change with `git add .span && git commit`.
     Replace(ReplaceArgs),
 
@@ -142,19 +228,33 @@ pub enum Commands {
     /// file names and give every clause a subject and verb. Labels such
     /// as `Authority:` or `Removal gate:` are optional, but must introduce
     /// complete clauses. Omit generic work orders and CLI procedure.
-    /// Inherit the why only while it remains true; revise or retire it
-    /// when the relationship or lifecycle state changes.
     ///
-    /// Bare `git span why <name>` prints the current why; a
-    /// positional argument writes a new why into the span file. Bare
-    /// non-terminal invocations fail instead of reading stdin. Commit with `git add .span &&
-    /// git commit`.
+    /// Bare `git span why <name>` prints the current why; a positional
+    /// argument writes a new why into the span file, and bare
+    /// non-terminal invocations fail instead of reading stdin. A write
+    /// ends with the same post-write span-wide check as `add` and shares
+    /// its exit contract (0 clean / 1 drift remains or check errored /
+    /// 2 index changed, retryable) — the output prints `Set why on span
+    /// <name>. (idempotent)`, then any remains lines and the span-wide
+    /// line; superseded lines are absent because `why` touches no
+    /// addresses. `--format json` applies to the write mode only: it
+    /// emits the mutation document (`command: "why"`, `why_written:
+    /// true`) instead of prose, and read mode rejects it fail-closed
+    /// (exit 1, no stdout) rather than printing prose.
+    ///
+    /// The why is inherited across routine re-anchors only while its
+    /// meaning remains true. Revise or retire it when the relationship
+    /// or lifecycle state changes. Commit with `git add .span && git
+    /// commit`.
     Why(WhyArgs),
 
-    /// Delete a span.
+    /// Delete a span — removes its file under the span root. Destructive.
+    /// Run `git span list` afterward to confirm it is gone, then commit
+    /// the change.
     Delete(DeleteArgs),
 
-    /// Audit the local span setup.
+    /// Audit the local span setup — reports span count and findings,
+    /// plus a store-size summary (bytes used). Exits 0.
     Doctor(DoctorArgs),
 
     /// Trace blast radius: render a clique-grouped impact tree rooted at
@@ -190,10 +290,11 @@ pub enum Commands {
     /// Resolve `.span/` merge conflicts structurally when invoked by git
     /// as a merge driver. Receives three clean blob temp files and the
     /// marker length from git. Resolves only what is structurally
-    /// derivable without trusting the worktree (which may be mid-merge);
-    /// defers same-anchor range/hash divergence by writing minimal
-    /// conflict markers and exiting non-zero so `git span drift --fix`
-    /// can finish authoritatively.
+    /// derivable without trusting the worktree, which may be mid-merge.
+    /// Same-anchor range/hash divergence is deferred: minimal conflict
+    /// markers are written and the command exits non-zero so `git span
+    /// drift --fix` can finish authoritatively. Exits 0 when fully
+    /// resolved, 1 when partial (residue markers written).
     ///
     /// Register in `.gitattributes`:
     /// ```gitattributes
@@ -211,17 +312,30 @@ pub enum Commands {
 
     /// Show a span's git history as a git-log-style timeline: newest-first
     /// commit entries whose patches are real unified diffs of the span
-    /// declaration and of each anchor's content at its declared address, with
-    /// the span's live drift rendered before the first commit as a headerless
-    /// diff. That drift is not working-tree-only: it covers every resolver
-    /// layer `git span drift` reports, and each block names its observational
-    /// layers on a `drift source` line. `HEAD` identifies the comparison layer;
-    /// it does not by itself prove that the declaration or content change was
-    /// committed. Source order is the resolver's: line ranges use Worktree →
-    /// Index → Head, while whole-file anchors use Index → Worktree → Head.
+    /// declaration and of each anchor's content at its declared address,
+    /// rename-aware by content similarity — a re-anchor whose old and new
+    /// content pair at ≥ 50% similarity (git's `-M` default) renders as a
+    /// rename, a sub-threshold re-anchor renders as a deleted anchor plus
+    /// a new anchor, and a re-anchor whose recorded side cannot be read
+    /// (binary or unrecoverable content) renders `rename from`/`rename to`
+    /// lines with no similarity claim, the move asserted by the declaration
+    /// itself. The span's live drift is rendered before the first commit
+    /// as a headerless diff. That drift is not working-tree-only: it
+    /// covers every resolver layer `git span drift` reports, and each
+    /// block names its observational layers on a `drift source` line.
+    /// `HEAD` identifies the comparison layer; it does not by itself
+    /// prove that the declaration or content change was committed. Source
+    /// order is the resolver's: line ranges use Worktree → Index → Head,
+    /// while whole-file anchors use Index → Worktree → Head.
     ///
     /// Outputs human-readable text by default; use `--format json` for
     /// `schema_version: 2` JSON carrying the same patches as raw text.
+    /// When `--limit` drops older qualifying commits, the requested
+    /// window is still printed but a warning goes to stderr, and JSON
+    /// output sets `scoped: true` (omitted, not `false`, when the
+    /// timeline is the complete record). Treat scoped JSON output as a
+    /// partial record — never read it as evidence that a span has no
+    /// history or no drift.
     History(HistoryArgs),
 
     /// Settle every residue entry in a conflict-markered span file under one
@@ -251,8 +365,7 @@ pub enum Commands {
 #[derive(Debug, clap::Args)]
 pub struct ShowArgs {
     /// Span name. Required (the bare `git span` form with no name is
-    /// handled by the `Commands::None` branch in `main`, which lists
-    /// every span).
+    /// handled in `main`, which prints the command help and exits 0).
     pub name: String,
 }
 
@@ -299,6 +412,8 @@ pub struct ContextArgs {
     #[arg(required = true, num_args = 1..=4096)]
     pub addresses: Vec<String>,
 
+    /// Output format (`json` — the versioned context document is the only
+    /// shape).
     #[arg(long, value_enum, default_value_t = ContextFormat::Json)]
     pub format: ContextFormat,
 
@@ -343,10 +458,14 @@ pub struct DriftArgs {
     /// Omit to scan all spans.
     pub paths: Vec<String>,
 
+    /// Output format (`human`, `porcelain`, or `json`; default `human`).
+    /// See the command description for what each format prints on clean
+    /// and drifted scans.
     #[arg(long, value_enum, default_value_t = DriftFormat::Human)]
     pub format: DriftFormat,
 
-    /// Exit 0 even when drift is found (report-only mode).
+    /// Exit 0 even when drift is found (report-only mode). Does not mask
+    /// the interior-anchor integrity case.
     #[arg(long)]
     pub no_exit_code: bool,
 
@@ -364,7 +483,7 @@ pub struct DriftArgs {
     /// drifting — the stored hash gates on content-equivalence so that
     /// meaning-altering edits keep surfacing until the operator confirms
     /// them. Each surfacing anchor is re-hashed against the deepest drifting
-    /// layer (Worktree > Index > HEAD). Also resolves `.span/` merge
+    /// layer (`Worktree > Index > HEAD`). Also resolves `.span/` merge
     /// conflicts structurally: splits conflict markers into ours/theirs,
     /// enforces a clean-source precondition (all referenced source files
     /// must be conflict-free), and calls the structural merge kernel. Fully
@@ -392,8 +511,8 @@ pub struct AddArgs {
         required = true,
         trailing_var_arg = false,
         allow_hyphen_values = false,
-        help = "One or more anchors to stage (<path> for whole-file, or <path>#L<start>-L<end> for line-anchor)",
-        long_help = "One or more anchors to stage. Each is either:\n  <path>                       whole-file anchor\n  <path>#L<start>-L<end>       line-anchor anchor (1-indexed, inclusive)\n\nExample: git span add api-contract src/api.ts#L1-L3 tests/api.test.ts"
+        help = "One or more anchors to stage (`<path>` for whole-file, or `<path>#L<start>-L<end>` for line-anchor)",
+        long_help = "One or more anchors to stage. Each is either:\n  `<path>`                       whole-file anchor\n  `<path>#L<start>-L<end>`       line-anchor anchor (1-indexed, inclusive)\n\nExample: `git span add api-contract src/api.ts#L1-L3 tests/api.test.ts`"
     )]
     pub anchors: Vec<String>,
 
@@ -480,7 +599,7 @@ pub struct TreeArgs {
     pub globs: Vec<String>,
 
     /// Maximum expansion depth (0 = roots only).
-    #[arg(short = 'd', long, default_value_t = 3)]
+    #[arg(short = 'd', long, value_name = "N", default_value_t = 3)]
     pub depth: usize,
 
     /// Output format.

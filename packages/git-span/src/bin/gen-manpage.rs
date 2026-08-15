@@ -129,7 +129,9 @@ Bare invocations:
 .RS 4
 .TP
 .B git span
-List every span in the repository.
+Print the command help and exit 0. Run
+.B git span list
+with no arguments to list every span.
 .TP
 .BI git\ span\  <name>
 Show one span (anchors, why, config).

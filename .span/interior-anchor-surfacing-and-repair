@@ -1,6 +1,6 @@
 packages/git-span/src/cli/doctor.rs#L28-L63 rk64:463eae2d9ac6fd0a
 packages/git-span/src/cli/drift_fix.rs#L48-L85 rk64:db9e32146e2088ae
-packages/git-span/src/cli/drift_output.rs#L868-L903 rk64:d33661316183a587
+packages/git-span/src/cli/drift_output.rs#L869-L904 rk64:d33661316183a587
 packages/git-span/src/cli/interior_anchor.rs rk64:15cdc4a34ede7bdf
 
 interior_anchor.rs scans every visible span per-span and formats the loud, actionable interior-anchor violation report, while doctor's run_doctor and drift's run_drift both call scan_interior_anchors (or the corpus-reusing scan_interior_anchors_in) and emit report_block, and drift --fix additionally repairs in place -- retaining only the anchors classify_interior_anchor accepts, and collapsing duplicate same-identity records -- booking both repair kinds in the same FixResult counters, together keeping SpanFile::parse a pure text->struct transform so a poisoned span stays loadable and repairable.
