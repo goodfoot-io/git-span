@@ -43,6 +43,25 @@ describe('withMdLinks', () => {
     expect(withMdLinks(input)).toBe(input);
   });
 
+  it('is idempotent for .md targets carrying a fragment', () => {
+    const input = '- [Commands](/docs/commands.md#flags): Flags detail.';
+    expect(withMdLinks(input)).toBe(input);
+  });
+
+  it('places .md after the slug, before any fragment or query', () => {
+    expect(withMdLinks('- [Commands](/docs/commands#flags): Flags detail.')).toBe(
+      '- [Commands](/docs/commands.md#flags): Flags detail.'
+    );
+    expect(withMdLinks('- [Commands](/docs/commands?raw=1): Raw output.')).toBe(
+      '- [Commands](/docs/commands.md?raw=1): Raw output.'
+    );
+  });
+
+  it('does not corrupt short slugs that collide with the link prefix', () => {
+    expect(withMdLinks('- [Short](/docs/s): Short chapter.')).toBe('- [Short](/docs/s.md): Short chapter.');
+    expect(withMdLinks('- [Short](/docs/oc): Short chapter.')).toBe('- [Short](/docs/oc.md): Short chapter.');
+  });
+
   it('leaves external and non-docs links untouched', () => {
     const input = [
       '- [GitHub](https://github.com/goodfoot-io/git-span) - The source.',

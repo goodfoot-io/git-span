@@ -1,13 +1,15 @@
 // @vitest-environment node
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import type { Item } from 'fumadocs-core/page-tree';
 import { llms } from 'fumadocs-core/source/llms';
+import { matchRoutes, type RouteObject } from 'react-router';
 import { describe, expect, it } from 'vitest';
 import { loader as docsIndexLoader } from './docs.llms.txt';
 import { loader as docsFullLoader } from './docs.llms-full.txt';
 import { loader as rootMapLoader } from './llms.txt';
 import { loader as rootFullLoader } from './llms-full.txt';
-import { renderDocsCorpus, withMdLinks } from '~/lib/llms-resources';
+import { renderChapter, renderDocsCorpus, withMdLinks } from '~/lib/llms-resources';
 import { SITE_URL } from '~/lib/meta';
 import { source } from '~/lib/source';
 import routes from '~/routes';
@@ -36,6 +38,18 @@ describe('route precedence', () => {
     expect(full).toBeGreaterThanOrEqual(0);
     expect(index).toBeLessThan(splat);
     expect(full).toBeLessThan(splat);
+  });
+
+  it('matches the docs-scope resources ahead of the splat at runtime', () => {
+    // React Router ranks static segments above the splat regardless of table
+    // order; the outcome is the behavior that must not regress, so pin it.
+    // The route table is the dev RouteConfig, which the matcher accepts at
+    // runtime — the cast narrows only for the type checker.
+    const table = routes as unknown as RouteObject[];
+    const fileOf = (match: ReturnType<typeof matchRoutes>): string | undefined =>
+      (match?.[0]?.route as (RouteObject & { file?: string }) | undefined)?.file;
+    expect(fileOf(matchRoutes(table, '/docs/llms.txt'))).toBe('routes/docs.llms.txt.ts');
+    expect(fileOf(matchRoutes(table, '/docs/llms-full.txt'))).toBe('routes/docs.llms-full.txt.ts');
   });
 });
 
@@ -73,6 +87,15 @@ describe('GET /llms.txt — root system map', () => {
     const body = await rootMapLoader().text();
     for (const forbidden of ['/docs/overview', '/docs/ci', '/docs/reference', '/docs/guides/']) {
       expect(body).not.toContain(forbidden);
+    }
+  });
+
+  it('links only chapters that resolve in the live page registry', async () => {
+    const body = await rootMapLoader().text();
+    const slugs = [...body.matchAll(/\]\([^)]*\/docs\/([^)]+)\.md\)/g)].map((match) => match[1]);
+    expect(slugs.length).toBe(4);
+    for (const slug of slugs) {
+      expect(source.getPage(slug.split('/'))).toBeDefined();
     }
   });
 });
@@ -124,5 +147,14 @@ describe('full corpus', () => {
       match[1].replace(/^\/docs\//, '')
     );
     expect(corpusSlugs).toEqual(indexSlugs);
+  });
+
+  it('fails a chapter closed with a 500 naming the chapter when it cannot render', async () => {
+    const missing: Item = { type: 'page', name: 'Missing', url: '/docs/nonexistent' };
+    const error = await renderChapter(missing).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Response);
+    if (!(error instanceof Response)) throw new Error('expected a Response rejection');
+    expect(error.status).toBe(500);
+    expect(await error.text()).toContain('/docs/nonexistent');
   });
 });
