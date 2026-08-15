@@ -127,6 +127,14 @@ build_dir="$target_root/git-span/build"
   PATH="$build_dir/debug:$PATH" git span drift &&
   yarn typecheck &&
   yarn lint &&
+  # The artifact drift gate runs before the test suites, never after: after
+  # `yarn build` the build would have rewritten the committed file and the
+  # check would trivially pass, and after `yarn test` the website contract
+  # suite's toEqual failure (which names no fix command) would pre-empt the
+  # umbrella's "ERROR: … is stale; run …" — the named-error contract must be
+  # the first failure a developer sees. First placement also keeps its lines
+  # in the failure-summary tail even when later steps fail too.
+  yarn workspace @goodfoot/git-span-website artifacts:check &&
   yarn test &&
   SKIP_INSTALL=1 yarn build &&
   (

@@ -69,6 +69,16 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/git-span-target/git-span/build
         run: cd packages/git-span && cargo nextest run --locked
 
+      # The yarn test script chains `gen-schemas --check` ahead of nextest,
+      # but the raw-cargo steps here never invoke it — Rust-owned drift in
+      # commands.mdx or the published schemas would pass every CI job. Run the
+      # same check explicitly; sharing the test step's target dir means the
+      # cached build pays for it.
+      - name: Check generated schemas and command reference
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/git-span-target/git-span/build
+        run: cd packages/git-span && cargo run --quiet --locked --bin gen-schemas -- --check ../website
+
       - name: Cargo clippy (git-span-core)
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/git-span-target/git-span-core/check
@@ -154,6 +164,17 @@ jobs:
 
       - name: Install dependencies
         run: yarn install
+
+      # Order matters twice. The artifact check must precede the test suite:
+      # a failing job stops at its first red step, and the contract suite's
+      # toEqual-style staleness failures name no fix command, so the
+      # named-fix-command check would be pre-empted by an unhelpful message.
+      # Both must precede the build, which regenerates and would mask drift.
+      - name: Check generated artifacts
+        run: cd packages/website && yarn artifacts:check
+
+      - name: Test (website)
+        run: cd packages/website && yarn test
 
       # The docs render from generated MDX (commands.mdx, the published
       # schemas), so a generator bug producing broken MDX must fail PR CI
