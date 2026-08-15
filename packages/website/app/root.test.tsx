@@ -56,4 +56,10 @@ describe('PageDiscoveryLinks', () => {
     expect(links('alternate')?.getAttribute('href')).toBe('/docs/guides/reconcile-drifted-spans.md');
     expect(links('describedby')?.getAttribute('href')).toBe('/docs/llms.txt');
   });
+
+  it('renders canonical relations for a case-variant docs prefix', () => {
+    renderAt('/DOCS/overview');
+    expect(links('alternate')?.getAttribute('href')).toBe('/docs/overview.md');
+    expect(links('describedby')?.getAttribute('href')).toBe('/docs/llms.txt');
+  });
 });

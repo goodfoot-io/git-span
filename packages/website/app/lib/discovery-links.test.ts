@@ -87,6 +87,15 @@ describe('getDiscoveryLinks', () => {
     expect(getDiscoveryLinks('/docs/overview%2')).toEqual([]);
     expect(getDiscoveryLinks('/docs/%E0%A4%A')).toEqual([]);
   });
+
+  it('classifies a case-variant docs prefix like the canonical spelling', () => {
+    expect(getDiscoveryLinks('/DOCS/overview')).toEqual(getDiscoveryLinks('/docs/overview'));
+  });
+
+  it('leaves case-variant .md twins and uppercase slugs unadvertised', () => {
+    expect(getDiscoveryLinks('/DOCS/overview.md')).toEqual([]);
+    expect(getDiscoveryLinks('/docs/OVERVIEW')).toEqual([]);
+  });
 });
 
 describe('serializeDiscoveryLink', () => {

@@ -282,4 +282,11 @@ describe('worker discovery headers', () => {
     expect(response.status).toBe(301);
     expect(response.headers.get('Link')).toBeNull();
   });
+
+  it('emits the canonical relations for a case-variant docs prefix', async () => {
+    const response = await worker.fetch(request('/DOCS/overview'));
+    expect(response.headers.get('Link')).toBe(
+      '</docs/overview.md>; rel="alternate"; type="text/markdown", </docs/llms.txt>; rel="describedby"'
+    );
+  });
 });

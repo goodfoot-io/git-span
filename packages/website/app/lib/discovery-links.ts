@@ -91,8 +91,15 @@ export function getDiscoveryLinks(rawPathname: string): DiscoveryLinkDescriptor[
 
   const mdMatch = /^\/docs\/(.+)\.md$/.exec(pathname);
   const docsPath = mdMatch ? `/docs/${mdMatch[1]}` : pathname.replace(/\/+$/, '');
-  const docsMatch = /^\/docs\/(.+)$/.exec(docsPath);
-  if (docsMatch && DOC_SLUGS.has(docsMatch[1])) return docsDiscoveryLinks(docsPath);
+  // The content-path prefix match is case-insensitive to mirror react-router's
+  // route matching — /DOCS/overview is a served content page, so it must
+  // advertise. The .md family stays exact-case above (the worker 404s
+  // /DOCS/overview.md), and the emitted hrefs are canonicalized, so a
+  // case-variant page advertises the canonical twin, never a case-variant one.
+  const docsMatch = /^\/docs\/(.+)$/i.exec(docsPath);
+  if (docsMatch && DOC_SLUGS.has(docsMatch[1])) {
+    return docsDiscoveryLinks(docsPath.replace(/^\/docs/i, '/docs'));
+  }
   return [];
 }
 
