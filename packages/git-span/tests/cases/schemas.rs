@@ -2,10 +2,11 @@
 //!
 //! `gen-schemas` builds an artifact list and either writes it (generate
 //! mode) or byte-compares it against committed files (`--check` mode,
-//! exit 1 with a `{label} is stale; run yarn build:schemas` line per stale
-//! artifact). The temp-dir units below exercise both modes against a
-//! throwaway tree; the committed-artifact check runs against the real
-//! website package.
+//! exit 1 with an `ERROR: {label} is stale; run yarn build:schemas` line per
+//! stale artifact — the `ERROR:` token keeps the line in the validate
+//! failure-summary tail). The temp-dir units below exercise both modes
+//! against a throwaway tree; the committed-artifact check runs against the
+//! real website package.
 
 use assert_cmd::Command;
 use predicates::prelude::PredicateBooleanExt;
@@ -62,7 +63,7 @@ fn check_reports_a_tampered_artifact_with_its_label() {
         .assert()
         .failure()
         .stderr(predicates::str::contains(
-            "schema mutation is stale; run yarn build:schemas",
+            "ERROR: schema mutation is stale; run yarn build:schemas",
         ))
         .stderr(predicates::str::contains("schema resolve").not());
 }
@@ -79,7 +80,7 @@ fn check_reports_a_missing_artifact_as_stale() {
         .assert()
         .failure()
         .stderr(predicates::str::contains(
-            "schema drift is stale; run yarn build:schemas",
+            "ERROR: schema drift is stale; run yarn build:schemas",
         ));
 }
 

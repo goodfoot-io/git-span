@@ -251,7 +251,10 @@ pub fn run(check: bool, website_dir: &Path) -> anyhow::Result<()> {
     if !stale.is_empty() {
         let count = stale.len();
         for artifact in stale {
-            eprintln!("{} is stale; run yarn build:schemas", artifact.label);
+            // The `ERROR:` token is load-bearing: the validate failure-summary
+            // grep matches on it, so this line must survive into the tail a
+            // developer actually sees (see scripts/validate.sh).
+            eprintln!("ERROR: {} is stale; run yarn build:schemas", artifact.label);
         }
         anyhow::bail!("{count} artifact(s) stale");
     }
