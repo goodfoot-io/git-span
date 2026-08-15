@@ -6,7 +6,7 @@
 //! change that alters emitted bytes fails here in the normal suite — the
 //! capture is `#[ignore]`-marked, so it can never silently rewrite its own
 //! contract. When an intentional output change lands, regenerate the
-//! fixtures with `yarn test -- --run-ignored ignored-only json_fixtures`
+//! fixtures with `bash scripts/with-target-lock.sh shared env CARGO_TARGET_DIR=... cargo nextest run --locked --run-ignored ignored-only json_fixtures`
 //! and commit both halves together.
 
 use anyhow::Result;
@@ -36,6 +36,15 @@ fn assert_golden(name: &str, actual: Vec<u8>) {
 #[test]
 fn mutation_output_matches_fixture() -> Result<()> {
     assert_golden("mutation.json", super::json_fixtures::mutation_scenario()?);
+    Ok(())
+}
+
+#[test]
+fn mutation_drift_remains_output_matches_fixture() -> Result<()> {
+    assert_golden(
+        "mutation-drift-remains.json",
+        super::json_fixtures::mutation_drift_remains_scenario()?,
+    );
     Ok(())
 }
 

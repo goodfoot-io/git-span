@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "command": "add",
+  "span": "m",
+  "addresses": [
+    {
+      "address": "file2.txt#L1-L3",
+      "outcome": "ADDED"
+    }
+  ],
+  "superseded": [],
+  "remaining": [
+    {
+      "address": "file1.txt#L1-L5",
+      "status": {
+        "code": "CHANGED"
+      },
+      "next_step": "git span remove m file1.txt#L1-L5"
+    }
+  ],
+  "span_health": {
+    "state": "DRIFT",
+    "drift_count": 1,
+    "drifting": [
+      {
+        "address": "file1.txt#L1-L5",
+        "status": {
+          "code": "CHANGED"
+        }
+      }
+    ],
+    "resolved_pending_commit_count": 0
+  }
+}

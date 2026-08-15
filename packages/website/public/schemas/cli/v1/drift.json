@@ -70,6 +70,7 @@
               "$ref": "#/$defs/WholeExtentKind"
             }
           },
+          "additionalProperties": false,
           "required": [
             "kind"
           ]
@@ -91,6 +92,7 @@
               "minimum": 0
             }
           },
+          "additionalProperties": false,
           "required": [
             "end",
             "kind",
@@ -255,6 +257,7 @@
               "type": "string"
             }
           },
+          "additionalProperties": false,
           "required": [
             "changed_in"
           ]
@@ -266,6 +269,7 @@
               "type": "string"
             }
           },
+          "additionalProperties": false,
           "required": [
             "deleted_in"
           ]
@@ -280,6 +284,7 @@
               "type": "string"
             }
           },
+          "additionalProperties": false,
           "required": [
             "renamed_at",
             "renamed_to"
@@ -328,6 +333,7 @@
               "type": "string"
             }
           },
+          "additionalProperties": false,
           "required": [
             "filter"
           ]
@@ -339,6 +345,7 @@
               "type": "string"
             }
           },
+          "additionalProperties": false,
           "required": [
             "message"
           ]
@@ -356,6 +363,7 @@
               "const": "FRESH"
             }
           },
+          "additionalProperties": false,
           "required": [
             "code"
           ]
@@ -368,6 +376,7 @@
               "const": "RESOLVED_PENDING_COMMIT"
             }
           },
+          "additionalProperties": false,
           "required": [
             "code"
           ]
@@ -380,6 +389,7 @@
               "const": "MOVED"
             }
           },
+          "additionalProperties": false,
           "required": [
             "code"
           ]
@@ -392,6 +402,7 @@
               "const": "CHANGED"
             }
           },
+          "additionalProperties": false,
           "required": [
             "code"
           ]
@@ -404,6 +415,7 @@
               "const": "DELETED"
             }
           },
+          "additionalProperties": false,
           "required": [
             "code"
           ]
@@ -416,6 +428,7 @@
               "const": "CONFLICT"
             }
           },
+          "additionalProperties": false,
           "required": [
             "code"
           ]
@@ -428,6 +441,7 @@
               "const": "SUBMODULE"
             }
           },
+          "additionalProperties": false,
           "required": [
             "code"
           ]
@@ -453,6 +467,7 @@
               "$ref": "#/$defs/UnavailableReasonCodeDoc"
             }
           },
+          "additionalProperties": false,
           "required": [
             "code",
             "detail",

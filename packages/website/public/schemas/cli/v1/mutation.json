@@ -140,11 +140,6 @@
         "address": {
           "type": "string"
         },
-        "label": {
-          "description": "Human drift-label vocabulary for the human remains line (plan\n§Output contract: \"reusing the drift-label vocabulary\"). Rendering\ndetail, never serialized — the JSON document carries `address`,\n`status`, and `next_step` only.",
-          "type": "string",
-          "writeOnly": true
-        },
         "next_step": {
           "type": "string"
         },
@@ -156,8 +151,7 @@
       "required": [
         "address",
         "status",
-        "next_step",
-        "label"
+        "next_step"
       ]
     },
     "SpanHealth": {
@@ -229,6 +223,7 @@
               "type": "string"
             }
           },
+          "additionalProperties": false,
           "required": [
             "filter"
           ]
@@ -240,6 +235,7 @@
               "type": "string"
             }
           },
+          "additionalProperties": false,
           "required": [
             "message"
           ]
@@ -257,6 +253,7 @@
               "const": "FRESH"
             }
           },
+          "additionalProperties": false,
           "required": [
             "code"
           ]
@@ -269,6 +266,7 @@
               "const": "RESOLVED_PENDING_COMMIT"
             }
           },
+          "additionalProperties": false,
           "required": [
             "code"
           ]
@@ -281,6 +279,7 @@
               "const": "MOVED"
             }
           },
+          "additionalProperties": false,
           "required": [
             "code"
           ]
@@ -293,6 +292,7 @@
               "const": "CHANGED"
             }
           },
+          "additionalProperties": false,
           "required": [
             "code"
           ]
@@ -305,6 +305,7 @@
               "const": "DELETED"
             }
           },
+          "additionalProperties": false,
           "required": [
             "code"
           ]
@@ -317,6 +318,7 @@
               "const": "CONFLICT"
             }
           },
+          "additionalProperties": false,
           "required": [
             "code"
           ]
@@ -329,6 +331,7 @@
               "const": "SUBMODULE"
             }
           },
+          "additionalProperties": false,
           "required": [
             "code"
           ]
@@ -354,6 +357,7 @@
               "$ref": "#/$defs/UnavailableReasonCodeDoc"
             }
           },
+          "additionalProperties": false,
           "required": [
             "code",
             "detail",

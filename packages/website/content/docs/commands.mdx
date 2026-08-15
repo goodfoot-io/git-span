@@ -233,9 +233,19 @@ git span merge-driver <BASE> <OURS> <THEIRS> <MARKER_LEN>
 
 Resolve `.span/` merge conflicts structurally when invoked by git as a merge driver. Receives three clean blob temp files and the marker length from git. Resolves only what is structurally derivable without trusting the worktree, which may be mid-merge. Same-anchor range/hash divergence is deferred: minimal conflict markers are written and the command exits non-zero so `git span drift --fix` can finish authoritatively. Exits 0 when fully resolved, 1 when partial (residue markers written).
 
-Register in `.gitattributes`: ```gitattributes .span/** merge=span ```
+Register in `.gitattributes`:
 
-Register in `.git/config`: ```ini [merge "span"] name = git-span structural span merge driver = git span merge-driver %O %A %B %L ```
+```text
+.span/** merge=span
+```
+
+Register in `.git/config`:
+
+```ini
+[merge "span"]
+name = git-span structural span merge
+driver = git span merge-driver %O %A %B %L
+```
 
 ### resolve
 

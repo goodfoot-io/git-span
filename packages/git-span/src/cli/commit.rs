@@ -2195,6 +2195,7 @@ pub struct RemainingAnchor {
     /// detail, never serialized — the JSON document carries `address`,
     /// `status`, and `next_step` only.
     #[serde(skip_serializing)]
+    #[schemars(skip)]
     pub label: String,
 }
 

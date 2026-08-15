@@ -44,6 +44,7 @@ macro_rules! roundtrip_test {
 }
 
 roundtrip_test!(mutation_roundtrip, mutation_scenario, "mutation");
+roundtrip_test!(mutation_drift_remains_roundtrip, mutation_drift_remains_scenario, "mutation");
 roundtrip_test!(resolve_roundtrip, resolve_scenario, "resolve");
 roundtrip_test!(resolve_dry_run_roundtrip, resolve_dry_run_scenario, "resolve");
 roundtrip_test!(context_roundtrip, context_scenario, "context");

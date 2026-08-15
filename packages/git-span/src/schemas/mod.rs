@@ -316,13 +316,44 @@ fn visible_subcommands(cmd: &clap::Command) -> Vec<clap::Command> {
 /// `<`, or `>` outside a code span parses as JSX or an expression in MDX
 /// and silently vanishes (the sibling repo's markdownCell lesson). Code
 /// spans and fenced blocks are exempt — their content is verbatim.
+///
+/// Fences obey the doc-comment convention clap can preserve: clap joins
+/// the lines of a paragraph with spaces, so every fence marker and every
+/// code line must be its own paragraph (`\n\n`-separated). A fence
+/// paragraph is exactly ` ``` ` (close) or ` ```lang ` (open, with an
+/// alphanumeric language id — anything else would be MDX expression or
+/// comment syntax); a fence marker glued to prose, an opener inside a
+/// fenced block, an unclosed fence, or an unbalanced backtick run all
+/// panic, so a doc-comment edit cannot silently ship mangled markup.
+/// Whether the site's highlighter can register a given language id is
+/// enforced where the highlighter lives: the website suite fails loudly
+/// on an unknown id rather than rendering it silently.
 fn mdx_prose(owner: &str, text: &str) -> String {
     let mut in_fence = false;
     let mut in_code = false;
     for line in text.split_inclusive('\n') {
         let line = line.trim_end();
-        if line.trim_start().starts_with("```") {
-            in_fence = !in_fence;
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") {
+            if trimmed == "```" {
+                assert!(
+                    in_fence,
+                    "commands.mdx renderer: {owner} has a closing fence with no opener"
+                );
+                in_fence = false;
+            } else {
+                assert!(
+                    !in_fence,
+                    "commands.mdx renderer: {owner} nests a fence opener inside a fenced block"
+                );
+                let lang = trimmed.strip_prefix("```").expect("starts_with checked above");
+                assert!(
+                    lang.chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+                    "commands.mdx renderer: {owner} fence opener `{trimmed}` must be ```` ```lang ```` with an alphanumeric language id"
+                );
+                in_fence = true;
+            }
             continue;
         }
         if in_fence {
@@ -336,6 +367,11 @@ fn mdx_prose(owner: &str, text: &str) -> String {
                     chars.next();
                     run += 1;
                 }
+                assert!(
+                    run < 3,
+                    "commands.mdx renderer: {owner} has a fence marker glued to prose — \
+                     every fence line must be its own paragraph"
+                );
                 if run % 2 == 1 {
                     in_code = !in_code;
                 }
@@ -349,17 +385,44 @@ fn mdx_prose(owner: &str, text: &str) -> String {
             }
         }
     }
+    assert!(
+        !in_code,
+        "commands.mdx renderer: {owner} has an unbalanced backtick run"
+    );
+    assert!(
+        !in_fence,
+        "commands.mdx renderer: {owner} has an unclosed fenced block"
+    );
     text.to_string()
 }
 
-/// Render description prose, converting the doc-comment convention for the
-/// `--fix` callout: a paragraph beginning with `WARNING:` becomes a Fumadocs
-/// warn Callout, terminating at the first blank line (the paragraph split).
+/// Render description prose with two doc-comment conventions:
+/// - a paragraph beginning with `WARNING:` becomes a Fumadocs warn Callout;
+/// - fence paragraphs — ` ``` ` (close) and ` ```lang ` (open), each its
+///   own paragraph because clap joins paragraph lines with spaces —
+///   reconstruct a fenced code block, one paragraph per code line.
 fn render_prose_paragraphs(owner: &str, text: &str) -> String {
     let mut out = String::new();
+    let mut in_fence = false;
     for paragraph in text.split("\n\n") {
         let paragraph = paragraph.trim();
         if paragraph.is_empty() {
+            continue;
+        }
+        if paragraph.starts_with("```") {
+            if paragraph == "```" {
+                out.push_str("```\n\n");
+                in_fence = false;
+            } else {
+                out.push_str(paragraph);
+                out.push('\n');
+                in_fence = true;
+            }
+            continue;
+        }
+        if in_fence {
+            out.push_str(paragraph);
+            out.push('\n');
             continue;
         }
         if let Some(rest) = paragraph.strip_prefix("WARNING:") {
@@ -791,8 +854,43 @@ mod tests {
     #[test]
     fn mdx_prose_accepts_backticked_and_fenced_sigils() {
         assert_eq!(mdx_prose("test", "anchors are `<path>`"), "anchors are `<path>`");
-        let fenced = "Register in `.gitattributes`:\n```gitattributes\n.span/** merge=span\n```\n";
+        let fenced = "```gitattributes\n\n.span/** merge=span\n\n```\n";
         assert_eq!(mdx_prose("test", fenced), fenced);
+    }
+
+    #[test]
+    #[should_panic(expected = "fence marker glued to prose")]
+    fn mdx_prose_throws_on_a_fence_glued_to_prose() {
+        mdx_prose("test", "Register in `.gitattributes`: ```gitattributes .span/** merge=span ```");
+    }
+
+    #[test]
+    #[should_panic(expected = "alphanumeric language id")]
+    fn mdx_prose_throws_on_a_non_alphanumeric_fence_language() {
+        mdx_prose("test", "```{jsx}\n\nconst x = <A />;\n\n```\n");
+    }
+
+    #[test]
+    #[should_panic(expected = "unbalanced backtick run")]
+    fn mdx_prose_throws_on_an_unbalanced_backtick_run() {
+        mdx_prose("test", "anchors are `<path>");
+    }
+
+    #[test]
+    #[should_panic(expected = "unclosed fenced block")]
+    fn mdx_prose_throws_on_an_unclosed_fenced_block() {
+        mdx_prose("test", "```gitattributes\n\n.span/** merge=span\n");
+    }
+
+    #[test]
+    fn render_prose_paragraphs_reconstructs_fenced_blocks() {
+        let prose = "Register in `.gitattributes`:\n\n```gitattributes\n\n.span/** merge=span\n\n```\n\nRegister in `.git/config`:\n\n```ini\n\n[merge \"span\"]\n\nname = git-span structural span merge\n\ndriver = git span merge-driver %O %A %B %L\n\n```\n";
+        let rendered = render_prose_paragraphs("test", prose);
+        assert_eq!(
+            rendered,
+            "Register in `.gitattributes`:\n\n```gitattributes\n.span/** merge=span\n```\n\nRegister in `.git/config`:\n\n```ini\n[merge \"span\"]\nname = git-span structural span merge\ndriver = git span merge-driver %O %A %B %L\n```\n\n",
+            "paragraph-per-line fences must reconstruct into fenced blocks"
+        );
     }
 
     #[test]

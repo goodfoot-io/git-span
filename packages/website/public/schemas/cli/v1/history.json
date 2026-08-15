@@ -77,6 +77,7 @@
               ]
             }
           },
+          "additionalProperties": false,
           "required": [
             "content",
             "path"
@@ -112,6 +113,7 @@
               ]
             }
           },
+          "additionalProperties": false,
           "required": [
             "diff",
             "path"

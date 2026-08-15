@@ -2339,6 +2339,7 @@ impl From<&AnchorLocation> for LocationDoc {
 /// markers keep the schema truthful (`{"const": "whole"}` /
 /// `{"const": "lines"}`) without a serde tag to break the byte contract.
 #[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 #[serde(untagged)]
 enum ExtentDoc {
     WholeFile {
@@ -2411,6 +2412,7 @@ struct MovedToDoc {
 }
 
 #[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 #[serde(untagged)]
 enum LocusDoc {
     Changed { changed_in: String },
@@ -2450,6 +2452,7 @@ struct FuzzySuccessorDoc {
 /// which [`status_str`] spells without the `MERGE_` prefix the
 /// SCREAMING_SNAKE rename would produce.
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 #[serde(tag = "code", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum StatusDoc {
     Fresh,
@@ -2481,6 +2484,7 @@ pub enum UnavailableReasonCodeDoc {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 #[serde(untagged)]
 pub enum StatusDetailDoc {
     FilterFailed { filter: String },

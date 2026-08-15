@@ -2484,6 +2484,7 @@ pub struct HistoryCommitDoc {
 /// extractable. Modeled as a one-of so the schema states the exclusion;
 /// the current-anchor shape below deliberately does not share it.
 #[derive(Serialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 #[serde(untagged)]
 pub enum CommitAnchorDoc {
     Content {

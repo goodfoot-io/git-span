@@ -297,15 +297,23 @@ pub enum Commands {
     /// resolved, 1 when partial (residue markers written).
     ///
     /// Register in `.gitattributes`:
-    /// ```gitattributes
+    ///
+    /// ```text
+    ///
     /// .span/** merge=span
+    ///
     /// ```
     ///
     /// Register in `.git/config`:
+    ///
     /// ```ini
+    ///
     /// [merge "span"]
-    ///     name = git-span structural span merge
-    ///     driver = git span merge-driver %O %A %B %L
+    ///
+    /// name = git-span structural span merge
+    ///
+    /// driver = git span merge-driver %O %A %B %L
+    ///
     /// ```
     #[command(name = "merge-driver")]
     MergeDriver(MergeDriverArgs),

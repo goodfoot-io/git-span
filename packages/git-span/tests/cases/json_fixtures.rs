@@ -6,7 +6,9 @@
 //! Regenerate the fixtures explicitly after an intentional output change:
 //!
 //! ```text
-//! yarn test -- --run-ignored ignored-only json_fixtures
+//! bash scripts/with-target-lock.sh shared env \
+//!   CARGO_TARGET_DIR="${GIT_SPAN_CARGO_TARGET_ROOT:-/var/cache/git-span/cargo-target}/git-span/build" \
+//!   cargo nextest run --locked --run-ignored ignored-only json_fixtures
 //! ```
 //!
 //! Determinism is enforced at capture time, not assumed: every scenario
@@ -84,6 +86,31 @@ pub(super) fn mutation_scenario() -> Result<Vec<u8>> {
     ensure!(
         !out.stdout.is_empty() && out.stdout[0] == b'{',
         "add --format json must emit a JSON object"
+    );
+    Ok(out.stdout)
+}
+
+/// `add --format json` when the write succeeds but the post-write check
+/// leaves actionable drift: the drifted anchor lands in `remaining` and
+/// the process exits 1 — the documented write-succeeded-with-drift path
+/// the clean-repo scenario cannot see, and the shape whose schema must
+/// not demand the never-serialized `label` key.
+pub(super) fn mutation_drift_remains_scenario() -> Result<Vec<u8>> {
+    let repo = TestRepo::seeded()?;
+    ensure!(repo.run_span(["add", "m", "file1.txt#L1-L5"])?.status.success());
+    {
+        repo.run_git(["add", ".span"])?;
+        pinned_commit(&repo, "span commit")?;
+    }
+    repo.write_file(
+        "file1.txt",
+        "lineONE\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
+    )?;
+    pinned_commit(&repo, "mutate")?;
+    let out = repo.run_span(["add", "m", "file2.txt#L1-L3", "--format", "json"])?;
+    ensure!(
+        !out.status.success(),
+        "the second add must exit 1 with actionable drift remaining"
     );
     Ok(out.stdout)
 }
@@ -171,6 +198,10 @@ pub(super) fn drift_clean_scenario() -> Result<Vec<u8>> {
 #[ignore = "regenerate golden JSON fixtures explicitly; normal suite only compares"]
 fn capture_all_families() -> Result<()> {
     write_fixture("mutation.json", &capture_twice(mutation_scenario)?)?;
+    write_fixture(
+        "mutation-drift-remains.json",
+        &capture_twice(mutation_drift_remains_scenario)?,
+    )?;
     write_fixture("resolve.json", &capture_twice(resolve_scenario)?)?;
     write_fixture("resolve-dry-run.json", &capture_twice(resolve_dry_run_scenario)?)?;
     write_fixture("context.json", &capture_twice(context_scenario)?)?;
