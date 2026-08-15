@@ -209,4 +209,21 @@ describe('buildPublication fail-closed guards', () => {
       expect(() => buildPublication(root)).toThrow(/single-line scalar/);
     });
   });
+
+  it('rejects descriptions a real YAML parse would read differently', () => {
+    const variants = [
+      'description: Track spans\n  clean up couplings', // folded plain scalar
+      'description: Track spans # keep in sync', // inline comment
+      'description: "Track spans"' // quoted scalar
+    ];
+    for (const description of variants) {
+      withTempTree({}, (root) => {
+        writeFileSync(
+          path.join(root, 'fixture-skill', 'SKILL.md'),
+          `---\nname: fixture-skill\n${description}\n---\n# Fixture\n`
+        );
+        expect(() => buildPublication(root), description).toThrow(/bare single-line scalar/);
+      });
+    }
+  });
 });

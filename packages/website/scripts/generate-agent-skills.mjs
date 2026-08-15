@@ -67,25 +67,31 @@ function readTextFile(filePath) {
 }
 
 /**
- * The single name/description pair a SKILL.md frontmatter must carry — a
- * minimal `---`-block parse; the descriptions are single-line scalars today,
- * and the contract suite pins the parse against the live tree. YAML block
- * scalars (`description: |`) are rejected fail-closed: the one-line regex
- * would capture the indicator character itself and publish a description
- * that exists nowhere in the tree.
+ * The single name/description pair a SKILL.md frontmatter must carry, each a
+ * YAML-bare plain scalar. Anything a real YAML parse would read differently
+ * from this one-line capture throws fail-closed — block indicators (`|`, `>`),
+ * quoted scalars, inline comments (` #`), or an indented continuation line —
+ * so the published value is exactly what the tree writes or the build fails.
+ * The contract suite pins the parse against the live tree and the rejections
+ * with fixtures.
  */
 function readFrontmatter(skillMdPath) {
   const markdown = readTextFile(skillMdPath);
   const match = /^---\n([\s\S]*?)\n---/.exec(markdown);
   if (!match) throw new Error(`no frontmatter block in ${skillMdPath}`);
-  const name = /^name:\s*(.+)$/m.exec(match[1])?.[1];
-  const description = /^description:\s*(.+)$/m.exec(match[1])?.[1];
-  for (const [field, value] of [['name', name], ['description', description]]) {
-    if (value === undefined || /^[|>]/.test(value)) {
-      throw new Error(`frontmatter ${field} in ${skillMdPath} must be a single-line scalar`);
+  const lines = match[1].split('\n');
+  const fields = {};
+  for (const field of ['name', 'description']) {
+    const index = lines.findIndex((line) => line.startsWith(`${field}:`));
+    if (index === -1) throw new Error(`frontmatter in ${skillMdPath} must carry ${field}`);
+    const value = lines[index].slice(field.length + 1).trim();
+    const continued = lines[index + 1] !== undefined && /^[ \t]/.test(lines[index + 1]);
+    if (value === '' || /^["'#|>]/.test(value) || / #/.test(value) || continued) {
+      throw new Error(`frontmatter ${field} in ${skillMdPath} must be a bare single-line scalar`);
     }
+    fields[field] = value;
   }
-  return { name, description };
+  return fields;
 }
 
 /** Every file under a directory, as absolute paths — the whole skill body:
