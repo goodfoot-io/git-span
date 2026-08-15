@@ -48,12 +48,12 @@ function fakePage(processed: string | null): PageParam {
 }
 
 describe('getLLMText', () => {
-  it.skip('prefixes the title and canonical URL', async () => {
+  it('prefixes the title and canonical URL', async () => {
     const text = await getLLMText(fakePage('## Heading\n\nBody.\n'));
     expect(text).toBe('# Agent integration (/docs/agent-integration)\n\n## Heading\n\nBody.\n');
   });
 
-  it.skip('strips the frontmatter preamble at the first dashed rule, keeping body rules', async () => {
+  it('strips the frontmatter preamble at the first dashed rule, keeping body rules', async () => {
     const processed = `${PREAMBLE}## What the advisor holds on\n\nBody before the hr.\n\n---\n\nBody after the hr.\n`;
     const text = await getLLMText(fakePage(processed));
     expect(text).not.toContain('description:');
@@ -63,13 +63,13 @@ describe('getLLMText', () => {
     );
   });
 
-  it.skip('leaves a frontmatter-less document whose body opens with an hr untouched', async () => {
+  it('leaves a frontmatter-less document whose body opens with an hr untouched', async () => {
     const processed = '---\n\nBody that starts with a rule.\n';
     const text = await getLLMText(fakePage(processed));
     expect(text).toBe('# Agent integration (/docs/agent-integration)\n\n---\n\nBody that starts with a rule.\n');
   });
 
-  it.skip('rewrites a single-paragraph Callout into a GFM note', async () => {
+  it('rewrites a single-paragraph Callout into a GFM note', async () => {
     const processed =
       '<Callout type="info">\n  Some *emphasized* text and a [link](/docs/agent-integration).\n</Callout>\n';
     const text = await getLLMText(fakePage(processed));
@@ -78,13 +78,13 @@ describe('getLLMText', () => {
     );
   });
 
-  it.skip('rewrites a warn Callout into a GFM warning', async () => {
+  it('rewrites a warn Callout into a GFM warning', async () => {
     const processed = '<Callout type="warn">\n  Do not run this twice.\n</Callout>\n';
     const text = await getLLMText(fakePage(processed));
     expect(text).toBe('# Agent integration (/docs/agent-integration)\n\n> [!WARNING]\n> Do not run this twice.\n');
   });
 
-  it.skip('blockquotes the blank line between two Callout paragraphs so the alert stays whole', async () => {
+  it('blockquotes the blank line between two Callout paragraphs so the alert stays whole', async () => {
     const text = await getLLMText(fakePage(TWO_PARAGRAPH_CALLOUT));
     const lines = text.split('\n');
     expect(lines[0]).toBe('# Agent integration (/docs/agent-integration)');
@@ -98,10 +98,14 @@ describe('getLLMText', () => {
     expect(blockquote).toContain(
       '> Both hooks fail open on everything that decides *whether* there is something to say: a missing `git span` binary, a timeout, or an unexpected result resolves to "allow silently, inject nothing." Neither can brick an edit or a commit on its own failure.'
     );
-    expect(blockquote).toContain('> Rendering is the deliberate exception, and fails **closed**.');
+    // The second paragraph's full line continues past the excerpt asserted
+    // here, so check the prefix rather than element equality.
+    expect(
+      blockquote.some((line) => line.startsWith('> Rendering is the deliberate exception, and fails **closed**.'))
+    ).toBe(true);
   });
 
-  it.skip('blockquotes fence lines so a fenced block inside a Callout stays inside the alert', async () => {
+  it('blockquotes fence lines so a fenced block inside a Callout stays inside the alert', async () => {
     const text = await getLLMText(fakePage(FENCED_CALLOUT));
     expect(text).toBe(
       `# Agent integration (/docs/agent-integration)
@@ -116,13 +120,13 @@ describe('getLLMText', () => {
     );
   });
 
-  it.skip('throws a 404 Response for a missing page', async () => {
+  it('throws a 404 Response for a missing page', async () => {
     await expect(getLLMText(undefined as unknown as PageParam)).rejects.toSatisfy(
       (error: unknown) => error instanceof Response && error.status === 404
     );
   });
 
-  it.skip('throws a 500 Response when processed text is unavailable', async () => {
+  it('throws a 500 Response when processed text is unavailable', async () => {
     await expect(getLLMText(fakePage(null))).rejects.toSatisfy(
       (error: unknown) => error instanceof Response && error.status === 500
     );

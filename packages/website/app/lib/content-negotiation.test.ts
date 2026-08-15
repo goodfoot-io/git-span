@@ -139,14 +139,17 @@ describe('renderer registry', () => {
     expect(await markdownForPathname('/')).not.toBeNull();
   });
 
-  it.skip('agrees with the eligibility predicate in both directions for every page', async () => {
+  it('agrees with the eligibility predicate in both directions for every page', async () => {
     for (const page of source.getPages()) {
-      expect(isPublicContentPath(page.path)).toBe(true);
-      expect(await markdownForPathname(page.path)).not.toBeNull();
+      // page.path is the file-relative source path; the canonical URL is
+      // derived from the slugs, exactly as the docs loader does.
+      const urlPath = `/docs/${page.slugs.join('/')}`;
+      expect(isPublicContentPath(urlPath)).toBe(true);
+      expect(await markdownForPathname(urlPath)).not.toBeNull();
     }
   });
 
-  it.skip('returns null for unregistered paths', async () => {
+  it('returns null for unregistered paths', async () => {
     expect(await markdownForPathname('/docs/not-a-real-page')).toBeNull();
     expect(await markdownForPathname('/api/repos')).toBeNull();
     expect(await markdownForPathname('/docs')).toBeNull();
@@ -161,7 +164,7 @@ describe('markdownUrlResponse', () => {
     expect(response?.headers.get('Content-Type')).toBe('text/markdown; charset=utf-8');
   });
 
-  it.skip('serves a nested .md URL from the same registry as negotiation', async () => {
+  it('serves a nested .md URL from the same registry as negotiation', async () => {
     const response = await markdownUrlResponse(
       new Request('https://git-span.test/docs/guides/reconcile-drifted-spans.md'),
       '/docs/guides/reconcile-drifted-spans.md'
@@ -171,7 +174,7 @@ describe('markdownUrlResponse', () => {
     expect(response?.headers.get('Content-Type')).toBe('text/markdown; charset=utf-8');
   });
 
-  it.skip('301s a renamed slug to its .md twin', async () => {
+  it('301s a renamed slug to its .md twin', async () => {
     const response = await markdownUrlResponse(
       new Request('https://git-span.test/docs/guides/reconcile-stale-spans.md'),
       '/docs/guides/reconcile-stale-spans.md'
@@ -180,13 +183,13 @@ describe('markdownUrlResponse', () => {
     expect(response?.headers.get('Location')).toBe('/docs/guides/reconcile-drifted-spans.md');
   });
 
-  it.skip('returns null for unknown slugs so SSR produces the 404', async () => {
+  it('returns null for unknown slugs so SSR produces the 404', async () => {
     expect(
       await markdownUrlResponse(new Request('https://git-span.test/docs/not-a-page.md'), '/docs/not-a-page.md')
     ).toBeNull();
   });
 
-  it.skip.each(['/docs/x.md/', '/index.md/', '/docs.md', '/docs'])(
+  it.each(['/docs/x.md/', '/index.md/', '/docs.md', '/docs'])(
     'returns null for the non-address %s',
     async (pathname) => {
       expect(await markdownUrlResponse(new Request(`https://git-span.test${pathname}`), pathname)).toBeNull();
