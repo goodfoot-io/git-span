@@ -1,6 +1,4 @@
 // @vitest-environment node
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
 import type { Item } from 'fumadocs-core/page-tree';
 import { llms } from 'fumadocs-core/source/llms';
 import { matchRoutes, type RouteObject } from 'react-router';
@@ -13,21 +11,7 @@ import { renderChapter, renderDocsCorpus, withMdLinks } from '~/lib/llms-resourc
 import { SITE_URL } from '~/lib/meta';
 import { source } from '~/lib/source';
 import routes from '~/routes';
-
-/**
- * The expected docs slug list in authored reading order, derived from the
- * same meta.json files that drive the page tree — independent of Fumadocs, so
- * the contract pins authored order rather than whatever the loader emits.
- */
-function expectedDocsSlugs(): string[] {
-  const root = JSON.parse(readFileSync(path.join(process.cwd(), 'content/docs/meta.json'), 'utf8')) as {
-    pages: string[];
-  };
-  const guides = JSON.parse(readFileSync(path.join(process.cwd(), 'content/docs/guides/meta.json'), 'utf8')) as {
-    pages: string[];
-  };
-  return root.pages.flatMap((slug) => (slug === 'guides' ? guides.pages.map((child) => `guides/${child}`) : [slug]));
-}
+import { expectedDocsSlugs } from '~/test/expected-docs-slugs';
 
 describe('route precedence', () => {
   it('registers both docs-scope resources above the docs splat', () => {
