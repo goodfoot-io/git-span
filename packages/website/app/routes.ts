@@ -17,6 +17,12 @@ export default [
   route('docs/*', 'routes/docs/page.tsx', { id: 'docs-splat' }),
   route('llms.txt', 'routes/llms.txt.ts'),
   route('llms-full.txt', 'routes/llms-full.txt.ts'),
+  // The agent-skills discovery surface: the draft-v0.2.0 index an agent reads
+  // to decide which skill body to fetch, and the splat serving those bodies.
+  // The static index segment ranks above the splat; the contract test pins
+  // the match outcome, not the table order.
+  route('.well-known/agent-skills/index.json', 'routes/agent-skills/index.ts'),
+  route('.well-known/agent-skills/*', 'routes/agent-skills/file.ts'),
   // Public HTML pages the sitemap advertises live in one declaration
   // (app/lib/indexable-routes.ts); the sitemap loader reads the same array,
   // so a page registered here appears there with no second edit. Empty today.
