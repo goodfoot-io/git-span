@@ -70,12 +70,37 @@ function rewriteCallouts(processed: string): string {
   return out.join('\n');
 }
 
+/** A stringifier heading-id suffix token: `## Global options [#global-options]`. */
+const HEADING_ID = /^(#{1,6})\s+(.+?)\s+\[#[a-z0-9-]+\]$/;
+
+/**
+ * Strip the heading-id suffix tokens the stringifier appends to ATX headings.
+ * The ids anchor the HTML pages' headings; the Markdown representation shows
+ * the same heading text the page shows. Lines inside code fences are left
+ * untouched — fence content is verbatim source, never stringifier output.
+ */
+function stripHeadingIds(processed: string): string {
+  const lines = processed.split('\n');
+  const out: string[] = [];
+  let inFence = false;
+  for (const line of lines) {
+    if (/^(`{3}|~{3})/.test(line)) {
+      inFence = !inFence;
+      out.push(line);
+      continue;
+    }
+    out.push(inFence ? line : line.replace(HEADING_ID, '$1 $2'));
+  }
+  return out.join('\n');
+}
+
 /**
  * Render the LLM-ready Markdown for a single docs page.
  *
  * The body is the processed markdown with the stringifier's frontmatter
- * preamble stripped and `<Callout>` blocks rewritten as GFM alerts, prefixed
- * with the page title and canonical URL.
+ * preamble stripped, `<Callout>` blocks rewritten as GFM alerts, heading-id
+ * suffix tokens removed, and any leading blank lines the stringifier left
+ * dropped, prefixed with the page title and canonical URL.
  *
  * @param page - The resolved docs page, or `undefined` when none matched.
  * @returns Markdown prefixed with the page title and canonical URL.
@@ -85,6 +110,6 @@ export async function getLLMText(page: DocsPage): Promise<string> {
   if (!page) throw new Response('Not found', { status: 404 });
   const processed = await page.data.getText('processed');
   if (!processed) throw new Response('Processed text unavailable', { status: 500 });
-  const body = rewriteCallouts(stripFrontmatterPreamble(processed));
+  const body = stripHeadingIds(rewriteCallouts(stripFrontmatterPreamble(processed))).replace(/^\n+/, '');
   return `# ${page.data.title} (${page.url})\n\n${body}`;
 }

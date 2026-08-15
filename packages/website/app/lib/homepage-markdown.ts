@@ -61,15 +61,20 @@ function fencedSpecimen(specimen: Specimen): string {
 }
 
 /**
- * Render the homepage as a complete Markdown document: the hero heading and
- * supporting copy, each story phase with its prose and full specimen, and the
- * closing headline with its CTAs — in the same phase order the page uses.
+ * Render the homepage as a complete Markdown document: the hero heading,
+ * supporting copy, and CTAs, each story phase with its prose and full
+ * specimen, and the closing headline with its CTAs — in the same phase order
+ * the page uses.
  *
  * @returns The complete homepage Markdown document.
  * @summary Markdown document mirroring the homepage's content, single-sourced
  */
 export function renderHomepageMarkdown(): string {
-  const hero = [HERO.headline.map((segment) => `# ${segment.text}`).join('\n'), HERO.supporting].join('\n\n');
+  const hero = [
+    HERO.headline.map((segment) => `# ${segment.text}`).join('\n'),
+    HERO.supporting,
+    `[${HERO.primaryCta.label}](${HERO.primaryCta.href}) [${HERO.secondaryCta.label}](${HERO.secondaryCta.href})`
+  ].join('\n\n');
 
   const phases = STORY_STEPS.flatMap((phase) => {
     const prose = PHASE_COPY[phase.id].prose;

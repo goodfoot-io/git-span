@@ -2,11 +2,20 @@ import { describe, expect, it } from 'vitest';
 import { getLLMText } from '~/lib/get-llm-text';
 
 /**
- * Fixtures below are the exact `getText('processed')` shapes captured by the
- * spike in the card repo (spike/processed-markdown-callout/captured/) — the
- * real stringifier output for git-span's docs pages, including the two
- * worst-case Callout shapes (two paragraphs separated by a blank line; a
- * fenced ```bash block inside).
+ * Fixtures below are the exact `getText('processed')` shapes for git-span's
+ * docs pages, captured by the card-repo spike (spike/processed-markdown-callout/)
+ * and by probing the website's real pipeline. Two stringifier versions shape
+ * them:
+ *
+ * - The spike executed fumadocs-core 16.14.4's remark-llms plugin (hoisted to
+ *   the repo root) and captured a frontmatter preamble plus raw Callout MDX —
+ *   the two worst-case Callout shapes (two paragraphs separated by a blank
+ *   line; a fenced ```bash block inside) are pinned from it, and the preamble
+ *   strip is pinned as a backstop.
+ * - The website's actual fumadocs-mdx 15.2.3 pipeline emits no preamble at
+ *   all: bodies open with two leading blank lines and every ATX heading
+ *   carries a ` [#slug]` suffix token. Those shapes are pinned from direct
+ *   probes of the real pipeline (the commands.mdx capture below).
  */
 
 /** Preamble the stringifier emits for pages with YAML frontmatter. */
@@ -34,6 +43,16 @@ const FENCED_CALLOUT = `<Callout type="info">
   claude plugin install git-span@git-span
   \`\`\`
 </Callout>`;
+
+/** commands.mdx processed form as the real 15.2.3 pipeline emits it: two
+ * leading blank lines, heading-id suffixes on every ATX heading. */
+const REAL_PIPELINE_HEAD = `
+## Global options [#global-options]
+
+Every subcommand accepts:
+
+* \`--perf\` — emit performance timings for major git-span operation groups to stderr.
+`;
 
 type PageParam = Parameters<typeof getLLMText>[0];
 
@@ -118,6 +137,26 @@ describe('getLLMText', () => {
 > claude plugin install git-span@git-span
 > \`\`\``
     );
+  });
+
+  it('strips heading-id suffix tokens so headings show the page text', async () => {
+    const processed = '\n\n## Touch hook + advisor [#touch-hook--advisor]\n\n### add [#add]\n\nBody.\n';
+    const text = await getLLMText(fakePage(processed));
+    expect(text).toBe('# Agent integration (/docs/agent-integration)\n\n## Touch hook + advisor\n\n### add\n\nBody.\n');
+  });
+
+  it('leaves heading-like fence lines untouched', async () => {
+    const processed = '```\n## Global options [#global-options]\n```\n';
+    const text = await getLLMText(fakePage(processed));
+    expect(text).toBe(
+      '# Agent integration (/docs/agent-integration)\n\n```\n## Global options [#global-options]\n```\n'
+    );
+  });
+
+  it('drops the real pipeline’s leading blank lines so exactly one follows the title', async () => {
+    const text = await getLLMText(fakePage(REAL_PIPELINE_HEAD));
+    expect(text.startsWith('# Agent integration (/docs/agent-integration)\n\n## Global options\n\n')).toBe(true);
+    expect(text).not.toContain('[#global-options]');
   });
 
   it('throws a 404 Response for a missing page', async () => {

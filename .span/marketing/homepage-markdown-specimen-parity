@@ -1,4 +1,4 @@
 packages/website/app/components/marketing/story/Specimen.tsx#L47-L101 rk64:a3356bed1c8e9beb
-packages/website/app/lib/homepage-markdown.test.ts#L52-L75 rk64:67af68ea44eefbe0
+packages/website/app/lib/homepage-markdown.test.ts#L59-L82 rk64:67af68ea44eefbe0
 
 Specimen.tsx rendering of the SPECIMENS records is the format authority that the homepage-markdown test expectations hard-code (the padStart(2) line-number column, the sign column with signless @ hunk headers, the ⎿ markers, and the pl-[5ch] hook-line indent), and a divergence between the two renderers is an HTML/Markdown parity bug nothing else enforces.

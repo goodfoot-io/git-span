@@ -8,12 +8,19 @@ import { renderHomepageMarkdown } from '~/lib/homepage-markdown';
 const STORY_STEPS = TIMELINE.filter((phase) => phase.id !== 'hero');
 
 describe('renderHomepageMarkdown', () => {
-  it('opens with the hero heading and supporting copy', () => {
+  it('opens with the hero heading, supporting copy, and CTAs', () => {
     const markdown = renderHomepageMarkdown();
     for (const segment of HERO.headline) {
       expect(markdown).toContain(`# ${segment.text}`);
     }
     expect(markdown).toContain(HERO.supporting);
+    for (const cta of [HERO.primaryCta, HERO.secondaryCta]) {
+      expect(markdown).toContain(`[${cta.label}](${cta.href})`);
+    }
+    // The hero places its CTAs before the first story phase, mirroring the HTML.
+    const firstPhase = markdown.indexOf('## ');
+    expect(firstPhase).toBeGreaterThanOrEqual(0);
+    expect(markdown.indexOf(`[${HERO.primaryCta.label}](${HERO.primaryCta.href})`)).toBeLessThan(firstPhase);
   });
 
   it('renders every story phase in the page order, with its prose', () => {
