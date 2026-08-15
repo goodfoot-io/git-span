@@ -32,18 +32,18 @@ function folder(name: string, children: Node[], index?: Item): Folder {
 const separator: Separator = { type: 'separator', name: 'More' };
 
 describe('withMdLinks', () => {
-  it.skip('rewrites docs link targets to the .md representation', () => {
+  it('rewrites docs link targets to the .md representation', () => {
     expect(withMdLinks('- [Overview](/docs/overview): What git-span is.')).toBe(
       '- [Overview](/docs/overview.md): What git-span is.'
     );
   });
 
-  it.skip('is idempotent for already-.md targets', () => {
+  it('is idempotent for already-.md targets', () => {
     const input = '- [Commands](/docs/commands.md): Every subcommand.';
     expect(withMdLinks(input)).toBe(input);
   });
 
-  it.skip('leaves external and non-docs links untouched', () => {
+  it('leaves external and non-docs links untouched', () => {
     const input = [
       '- [GitHub](https://github.com/goodfoot-io/git-span) - The source.',
       '- [Docs root](/docs): The documentation root.',

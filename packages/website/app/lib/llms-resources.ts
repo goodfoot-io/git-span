@@ -28,8 +28,13 @@ export function collectPageNodes(_nodes: Node[]): Item[] {
  * @param index - The live `llms(source).index()` output.
  * @returns The index with docs link targets rewritten to `.md`.
  */
-export function withMdLinks(_index: string): string {
-  throw new Error('Not Implemented');
+const DOCS_LINK_TARGET = /\]\(\/docs\/([^)]+)\)/g;
+
+export function withMdLinks(index: string): string {
+  return index.replace(DOCS_LINK_TARGET, (match, target) => {
+    if (target.endsWith('.md')) return match;
+    return match.replace(target, `${target}.md`);
+  });
 }
 
 /**
