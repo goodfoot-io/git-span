@@ -11,6 +11,7 @@
  *
  * @summary Agent-skills index shape, Link constant, and file resolver
  */
+import { agentSkillsPublication } from './agent-skills.generated';
 
 /** One index entry per the Cloudflare Agent Skills draft v0.2.0: enough for an
  * agent to decide whether to fetch the body, and nothing more. */
@@ -59,6 +60,6 @@ export const AGENT_SKILLS_LINK = '</.well-known/agent-skills/index.json>; rel="a
  * @param pathname - The path segment below the well-known prefix.
  * @summary The published file at a path, or null
  */
-export function resolveAgentSkillsFile(_pathname: string): AgentSkillsFile | null {
-  throw new Error('Not Implemented');
+export function resolveAgentSkillsFile(pathname: string): AgentSkillsFile | null {
+  return agentSkillsPublication.files[pathname] ?? null;
 }

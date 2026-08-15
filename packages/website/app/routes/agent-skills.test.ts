@@ -57,7 +57,7 @@ const entryFile = (entry: { url: string }) =>
   agentSkillsPublication.files[entry.url.slice('/.well-known/agent-skills/'.length)];
 
 describe(`GET ${AGENT_SKILLS_INDEX_PATH}`, () => {
-  it.skip('is registered as an explicit resource route the splat cannot swallow', () => {
+  it('is registered as an explicit resource route the splat cannot swallow', () => {
     expect(routes).toContainEqual({
       path: '.well-known/agent-skills/index.json',
       file: 'routes/agent-skills/index.ts'
@@ -72,21 +72,21 @@ describe(`GET ${AGENT_SKILLS_INDEX_PATH}`, () => {
     );
   });
 
-  it.skip('serves the index as application/json with the generated document', async () => {
+  it('serves the index as application/json with the generated document', async () => {
     const response = await indexLoader(loaderArgs(AGENT_SKILLS_INDEX_PATH));
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toBe('application/json');
     expect(await response.json()).toEqual(index);
   });
 
-  it.skip('answers HEAD with the same headers and no body', async () => {
+  it('answers HEAD with the same headers and no body', async () => {
     const response = await indexLoader(loaderArgs(AGENT_SKILLS_INDEX_PATH, {}, 'HEAD'));
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toBe('application/json');
     expect(await response.text()).toBe('');
   });
 
-  it.skip('pins the draft v0.2.0 envelope: schema URI and exact entry keys', () => {
+  it('pins the draft v0.2.0 envelope: schema URI and exact entry keys', () => {
     expect(index.$schema).toBe('https://schemas.agentskills.io/discovery/0.2.0/schema.json');
     for (const entry of index.skills) {
       expect(Object.keys(entry).sort()).toEqual(['description', 'digest', 'name', 'type', 'url']);
@@ -96,17 +96,17 @@ describe(`GET ${AGENT_SKILLS_INDEX_PATH}`, () => {
     }
   });
 
-  it.skip('names every skill directory in the live plugin tree and nothing else', () => {
+  it('names every skill directory in the live plugin tree and nothing else', () => {
     expect(index.skills.map((skill) => skill.name)).toEqual(liveSkillDirs);
   });
 
-  it.skip('reads each description from the live SKILL.md frontmatter', () => {
+  it('reads each description from the live SKILL.md frontmatter', () => {
     for (const entry of index.skills) {
       expect(entry.description).toBe(readFrontmatterDescription(entry.name));
     }
   });
 
-  it.skip('computes each digest over the bytes actually served', () => {
+  it('computes each digest over the bytes actually served', () => {
     for (const entry of index.skills) {
       const file = entryFile(entry);
       expect(file, `${entry.name}: index url names no served file`).toBeDefined();
@@ -116,13 +116,13 @@ describe(`GET ${AGENT_SKILLS_INDEX_PATH}`, () => {
     }
   });
 
-  it.skip('keeps the committed artifact identical to a fresh generator run', () => {
+  it('keeps the committed artifact identical to a fresh generator run', () => {
     expect(agentSkillsPublication).toEqual(buildPublication(skillsRoot));
   });
 });
 
 describe('GET /.well-known/agent-skills/*', () => {
-  it.skip('serves SKILL.md with text/markdown and scripts with text/plain', async () => {
+  it('serves SKILL.md with text/markdown and scripts with text/plain', async () => {
     for (const name of liveSkillDirs) {
       const response = await fileLoader(
         loaderArgs(`/.well-known/agent-skills/${name}/SKILL.md`, { '*': `${name}/SKILL.md` })
@@ -139,7 +139,7 @@ describe('GET /.well-known/agent-skills/*', () => {
     expect(script.headers.get('content-type')).toBe('text/plain; charset=utf-8');
   });
 
-  it.skip('keeps every served file byte-identical to the live plugin tree', () => {
+  it('keeps every served file byte-identical to the live plugin tree', () => {
     const liveFiles = liveSkillDirs.flatMap((dir) => walkSkillFiles(dir));
     expect(Object.keys(agentSkillsPublication.files).sort()).toEqual([...liveFiles].sort());
     for (const [servedPath, file] of Object.entries(agentSkillsPublication.files)) {
@@ -147,7 +147,7 @@ describe('GET /.well-known/agent-skills/*', () => {
     }
   });
 
-  it.skip('answers HEAD with the same headers and no body', async () => {
+  it('answers HEAD with the same headers and no body', async () => {
     const response = await fileLoader(
       loaderArgs('/.well-known/agent-skills/reconcile/SKILL.md', { '*': 'reconcile/SKILL.md' }, 'HEAD')
     );
@@ -156,7 +156,7 @@ describe('GET /.well-known/agent-skills/*', () => {
     expect(await response.text()).toBe('');
   });
 
-  it.skip('404s fail-closed on unknown paths', () => {
+  it('404s fail-closed on unknown paths', () => {
     const error = caught(() => fileLoader(loaderArgs('/.well-known/agent-skills/nope', { '*': 'nope' })));
     expect(error).toBeInstanceOf(Response);
     if (!(error instanceof Response)) throw new Error('expected a thrown Response');
