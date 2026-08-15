@@ -6,7 +6,10 @@
  * negotiation over canonical public URLs, and the `.md` URL family
  * (`/index.md`, `/docs/<slug…>.md`). Everything else is SSR, re-wrapped so a
  * negotiated-eligible HTML response carries `Vary: Accept` — caches must never
- * serve one representation for the other.
+ * serve one representation for the other. Every response class leaves through
+ * one discovery finalizer that appends the page's `Link` relations, so the
+ * Markdown twin and llms.txt index are announced identically on HTML,
+ * negotiated Markdown, and `.md` URLs.
  *
  * @summary Cloudflare Worker entry: Markdown negotiation and .md URLs before SSR
  * @module worker
@@ -21,6 +24,7 @@ import {
   mergeVary,
   prefersMarkdown
 } from '~/lib/content-negotiation';
+import { applyDiscoveryHeaders } from '~/lib/discovery-links';
 
 // React Router v8's virtual:react-router/server-build module exports individual
 // named fields (routes, assets, entry, ssr, etc.) matching the ServerBuild
@@ -45,16 +49,18 @@ export default {
     const isGetOrHead = request.method === 'GET' || request.method === 'HEAD';
     const eligible = isGetOrHead && isPublicContentPath(pathname);
 
+    let response: Response | null = null;
+
     if (eligible && prefersMarkdown(request.headers.get('Accept'))) {
       try {
         const markdown = await markdownForPathname(pathname);
-        if (markdown !== null) return markdownResponse(request, markdown);
+        if (markdown !== null) response = markdownResponse(request, markdown);
       } catch (error) {
         // Fail-closed: a thrown Response (getLLMText's 404/500) is returned
         // verbatim. Anything else propagates — swallowing it into the SSR path
         // would silently serve HTML for a page that should have negotiated.
-        if (error instanceof Response) return error;
-        throw error;
+        if (error instanceof Response) response = error;
+        else throw error;
       }
       // Registry miss — fall through so SSR produces the standard 404.
     } else if (isGetOrHead) {
@@ -63,19 +69,27 @@ export default {
         // return null so SSR produces the 404; the rename-map 301 keeps .md
         // URLs in step with their HTML twins.
         const mdResponse = await markdownUrlResponse(request, pathname);
-        if (mdResponse) return mdResponse;
+        if (mdResponse) response = mdResponse;
       } catch (error) {
-        if (error instanceof Response) return error;
-        throw error;
+        if (error instanceof Response) response = error;
+        else throw error;
       }
     }
 
-    // SSR HTML. Re-wrap so the (possibly streamed) response keeps its metadata,
-    // and merge Accept variance onto eligible HTML so caches separate the
-    // representations. Markdown responses returned above never reach here.
-    const rendered = await rrHandler(request);
-    const response = new Response(rendered.body, rendered);
-    if (eligible) mergeVary(response.headers);
-    return response;
+    if (response === null) {
+      // SSR HTML. Re-wrap so the (possibly streamed) response keeps its
+      // metadata, and merge Accept variance onto eligible HTML so caches
+      // separate the representations.
+      const rendered = await rrHandler(request);
+      response = new Response(rendered.body, rendered);
+      if (eligible) mergeVary(response.headers);
+    }
+
+    // The discovery finalizer: every response class — SSR HTML, negotiated
+    // Markdown, .md URLs, and thrown Responses — leaves through this one
+    // return, so the Link relations are structurally present on every
+    // representation. The classifier emits nothing outside content paths, so
+    // 404s, redirects, and assets pass through with no extra headers.
+    return applyDiscoveryHeaders(response, pathname);
   }
 } satisfies ExportedHandler;

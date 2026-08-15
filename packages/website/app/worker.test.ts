@@ -174,7 +174,7 @@ describe('worker Markdown negotiation', () => {
 });
 
 describe('worker discovery headers', () => {
-  it.skip('emits both relations on an SSR docs response', async () => {
+  it('emits both relations on an SSR docs response', async () => {
     const response = await worker.fetch(request('/docs/overview'));
     expect(response.status).toBe(207);
     expect(response.statusText).toBe('Multi-Status');
@@ -184,14 +184,14 @@ describe('worker discovery headers', () => {
     );
   });
 
-  it.skip('emits the homepage relations on /', async () => {
+  it('emits the homepage relations on /', async () => {
     const response = await worker.fetch(request('/'));
     expect(response.headers.get('Link')).toBe(
       '</index.md>; rel="alternate"; type="text/markdown", </llms.txt>; rel="describedby"'
     );
   });
 
-  it.skip('emits the identical relations on negotiated Markdown', async () => {
+  it('emits the identical relations on negotiated Markdown', async () => {
     const response = await worker.fetch(markdownRequest('/docs/overview'));
     expect(response.headers.get('Content-Type')).toBe('text/markdown; charset=utf-8');
     expect(response.headers.get('Link')).toBe(
@@ -199,7 +199,7 @@ describe('worker discovery headers', () => {
     );
   });
 
-  it.skip('emits the identical relations on .md URL responses', async () => {
+  it('emits the identical relations on .md URL responses', async () => {
     const response = await worker.fetch(request('/docs/overview.md'));
     expect(response.headers.get('Content-Type')).toBe('text/markdown; charset=utf-8');
     expect(response.headers.get('Link')).toBe(
@@ -207,19 +207,19 @@ describe('worker discovery headers', () => {
     );
   });
 
-  it.skip('emits nothing on non-content paths', async () => {
+  it('emits nothing on non-content paths', async () => {
     const response = await worker.fetch(request('/api/repos'));
     expect(response.headers.get('Link')).toBeNull();
   });
 
-  it.skip('emits nothing on an unknown docs slug 404', async () => {
+  it('emits nothing on an unknown docs slug 404', async () => {
     rr.response = new Response('not found', { status: 404 });
     const response = await worker.fetch(request('/docs/not-a-real-page'));
     expect(response.status).toBe(404);
     expect(response.headers.get('Link')).toBeNull();
   });
 
-  it.skip('preserves an upstream Link alongside the appended relations', async () => {
+  it('preserves an upstream Link alongside the appended relations', async () => {
     rr.response = new Response('SSR response', {
       status: 207,
       statusText: 'Multi-Status',
@@ -231,7 +231,7 @@ describe('worker discovery headers', () => {
     );
   });
 
-  it.skip('keeps both relations on a HEAD response', async () => {
+  it('keeps both relations on a HEAD response', async () => {
     const response = await worker.fetch(request('/docs/overview', { method: 'HEAD' }));
     expect(response.status).toBe(207);
     expect(response.headers.get('Link')).toBe(
