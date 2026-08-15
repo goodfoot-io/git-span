@@ -8,7 +8,7 @@ function locs(xml: string): string[] {
 }
 
 describe('renderSitemap', () => {
-  it.skip('emits exactly the fixture locations, each absolute under the origin', () => {
+  it('emits exactly the fixture locations, each absolute under the origin', () => {
     // The sitemap protocol defines no URL order, so the set — never the order
     // — is the load-bearing contract; sorted-array equality pins it.
     const out = locs(renderSitemap(['/', '/docs/overview', '/docs/guides/re-anchor-after-an-edit'], FIXTURE_ORIGIN));
@@ -21,13 +21,13 @@ describe('renderSitemap', () => {
     for (const loc of out) expect(loc.startsWith('https://example.com/')).toBe(true);
   });
 
-  it.skip('dedupes repeated paths to a single <loc>', () => {
+  it('dedupes repeated paths to a single <loc>', () => {
     const out = locs(renderSitemap(['/', '/docs/overview', '/', '/docs/overview'], FIXTURE_ORIGIN));
     expect(out).toHaveLength(2);
     expect(new Set(out)).toEqual(new Set(['https://example.com/', 'https://example.com/docs/overview']));
   });
 
-  it.skip('XML-escapes exactly the hazardous characters and nothing else', () => {
+  it('XML-escapes exactly the hazardous characters and nothing else', () => {
     // `&` survives WHATWG URL resolution and must become `&amp;`. `<`, `>`,
     // `"` are percent-encoded by the URL parser before escaping ever sees
     // them, so the emitted document carries `%3C`/`%3E`/`%22` and no raw
@@ -41,7 +41,7 @@ describe('renderSitemap', () => {
     for (const raw of ['a&b', '<c>', 'd"e', '&apos;']) expect(out).not.toContain(raw);
   });
 
-  it.skip('resolves relative paths against the origin and never emits a foreign host', () => {
+  it('resolves relative paths against the origin and never emits a foreign host', () => {
     // new URL semantics: a leading-slash path is origin-rooted, a bare path
     // resolves against the origin root too — and no other host can enter.
     const out = locs(renderSitemap(['/docs/overview', 'docs/guides/re-anchor-after-an-edit'], FIXTURE_ORIGIN));
