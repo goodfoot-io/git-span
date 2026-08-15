@@ -103,7 +103,11 @@ export function EngineStage({ scene }: EngineStageProps) {
           </div>
         )}
 
-        <div className="sr-only" aria-live="polite">
+        {/* role="status" makes the live region itself queryable through the
+            accessibility tree (it already implies aria-live="polite" and
+            aria-atomic) — the caption's anchor in the tree, not just a
+            styled-out div that happens to carry the text. */}
+        <div className="sr-only" role="status">
           {caption}
         </div>
       </div>
