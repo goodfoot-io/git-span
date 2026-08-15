@@ -1,4 +1,4 @@
 packages/git-span/src/main.rs#L49-L100 rk64:d7a7b1701c261b00
-packages/git-span/src/schemas/mod.rs#L269-L287 rk64:53bfc6cc8b738abb
+packages/git-span/src/schemas/mod.rs#L272-L290 rk64:53bfc6cc8b738abb
 
 The command reference's Global-options sentence records main's pre-classification behavior — bare `git span` prints help and exits 0, and `git span list` is what lists every span — and no generator test or build step pins the sentence to the code; a pre-classification change that skips the generator constant silently publishes a reference that describes behavior that no longer exists.
