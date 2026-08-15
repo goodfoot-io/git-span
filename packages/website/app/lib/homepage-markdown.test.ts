@@ -8,7 +8,7 @@ import { renderHomepageMarkdown } from '~/lib/homepage-markdown';
 const STORY_STEPS = TIMELINE.filter((phase) => phase.id !== 'hero');
 
 describe('renderHomepageMarkdown', () => {
-  it.skip('opens with the hero heading and supporting copy', () => {
+  it('opens with the hero heading and supporting copy', () => {
     const markdown = renderHomepageMarkdown();
     for (const segment of HERO.headline) {
       expect(markdown).toContain(`# ${segment.text}`);
@@ -16,7 +16,7 @@ describe('renderHomepageMarkdown', () => {
     expect(markdown).toContain(HERO.supporting);
   });
 
-  it.skip('renders every story phase in the page order, with its prose', () => {
+  it('renders every story phase in the page order, with its prose', () => {
     const markdown = renderHomepageMarkdown();
     const positions = STORY_STEPS.map((phase) => {
       const prose = PHASE_COPY[phase.id].prose;
@@ -28,12 +28,12 @@ describe('renderHomepageMarkdown', () => {
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
   });
 
-  it.skip('renders the hero phase prose-free', () => {
+  it('renders the hero phase prose-free', () => {
     expect(PHASE_COPY.hero.prose).toBeNull();
     expect(renderHomepageMarkdown()).not.toContain('## Hero');
   });
 
-  it.skip('renders every specimen header and row', () => {
+  it('renders every specimen header and row', () => {
     const markdown = renderHomepageMarkdown();
     for (const phase of STORY_STEPS) {
       const specimen = SPECIMENS[phase.id];
@@ -49,7 +49,7 @@ describe('renderHomepageMarkdown', () => {
     }
   });
 
-  it.skip('emits diff rows with a sign column and hunk headers signless', () => {
+  it('emits diff rows with a sign column and hunk headers signless', () => {
     const markdown = renderHomepageMarkdown();
     // change specimen — git prints '@' hunk headers with no sign column.
     expect(markdown).toContain('@@ -3,6 +3,6 @@ function listProducts(q: ProductQuery) {');
@@ -57,7 +57,7 @@ describe('renderHomepageMarkdown', () => {
     expect(markdown).toContain('+    cursor: page.nextCursor,');
   });
 
-  it.skip('renders the full agent specimen: tool call, numbered rows, and the git-span block', () => {
+  it('renders the full agent specimen: tool call, numbered rows, and the git-span block', () => {
     const markdown = renderHomepageMarkdown();
     expect(markdown).toContain('● Update(api/src/routes/products.ts)');
     expect(markdown).toContain('  ⎿  Added 1 line, removed 1 line');
@@ -74,7 +74,7 @@ describe('renderHomepageMarkdown', () => {
     expect(markdown).toContain('     </git-span>');
   });
 
-  it.skip('closes with the closing headline and both CTAs', () => {
+  it('closes with the closing headline and both CTAs', () => {
     const markdown = renderHomepageMarkdown();
     expect(markdown).toContain(`## ${CLOSING.headline}`);
     for (const cta of [CLOSING.primaryCta, CLOSING.secondaryCta]) {
@@ -82,7 +82,7 @@ describe('renderHomepageMarkdown', () => {
     }
   });
 
-  it.skip('ends with a newline', () => {
+  it('ends with a newline', () => {
     expect(renderHomepageMarkdown()).toMatch(/\n$/);
   });
 });

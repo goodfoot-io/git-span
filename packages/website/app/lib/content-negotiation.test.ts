@@ -134,7 +134,7 @@ describe('isPublicContentPath', () => {
 });
 
 describe('renderer registry', () => {
-  it.skip('registers the homepage', async () => {
+  it('registers the homepage', async () => {
     expect(isPublicContentPath('/')).toBe(true);
     expect(await markdownForPathname('/')).not.toBeNull();
   });
@@ -157,7 +157,7 @@ describe('renderer registry', () => {
 });
 
 describe('markdownUrlResponse', () => {
-  it.skip('serves /index.md as homepage markdown', async () => {
+  it('serves /index.md as homepage markdown', async () => {
     const response = await markdownUrlResponse(new Request('https://git-span.test/index.md'), '/index.md');
     expect(response).not.toBeNull();
     expect(response?.status).toBe(200);
