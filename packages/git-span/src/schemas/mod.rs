@@ -319,44 +319,50 @@ fn visible_subcommands(cmd: &clap::Command) -> Vec<clap::Command> {
 ///
 /// Fences obey the doc-comment convention clap can preserve: clap joins
 /// the lines of a paragraph with spaces, so every fence marker and every
-/// code line must be its own paragraph (`\n\n`-separated). A fence
-/// paragraph is exactly ` ``` ` (close) or ` ```lang ` (open, with an
-/// alphanumeric language id — anything else would be MDX expression or
-/// comment syntax); a fence marker glued to prose, an opener inside a
-/// fenced block, an unclosed fence, or an unbalanced backtick run all
-/// panic, so a doc-comment edit cannot silently ship mangled markup.
-/// Whether the site's highlighter can register a given language id is
-/// enforced where the highlighter lives: the website suite fails loudly
-/// on an unknown id rather than rendering it silently.
+/// code line must be its own paragraph (`\n\n`-separated). Fence markers
+/// are CommonMark fences: an opener is a run of three or more backticks
+/// followed by an alphanumeric language id, and a closer is a bare
+/// backtick run at least as long as the opener. A code line that is
+/// itself a bare backtick run therefore needs a longer fence around its
+/// block — the standard markdown nesting rule, and the only way an
+/// unclosed fence stays detectable when the content shows fence syntax.
+/// A fence marker glued to prose, a closing fence with no opener, an
+/// unclosed fence, or an unbalanced backtick run all panic, so a
+/// doc-comment edit cannot silently ship mangled markup. Whether the
+/// site's highlighter can register a given language id is enforced where
+/// the highlighter lives: the website suite fails loudly on an unknown
+/// id rather than rendering it silently.
 fn mdx_prose(owner: &str, text: &str) -> String {
-    let mut in_fence = false;
+    let mut fence_run = 0usize; // 0 = not in a fence; else the opener's backtick count
     let mut in_code = false;
     for line in text.split_inclusive('\n') {
         let line = line.trim_end();
         let trimmed = line.trim_start();
-        if trimmed.starts_with("```") {
-            if trimmed == "```" {
-                assert!(
-                    in_fence,
-                    "commands.mdx renderer: {owner} has a closing fence with no opener"
-                );
-                in_fence = false;
-            } else {
-                assert!(
-                    !in_fence,
-                    "commands.mdx renderer: {owner} nests a fence opener inside a fenced block"
-                );
-                let lang = trimmed.strip_prefix("```").expect("starts_with checked above");
-                assert!(
-                    lang.chars()
-                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
-                    "commands.mdx renderer: {owner} fence opener `{trimmed}` must be ```` ```lang ```` with an alphanumeric language id"
-                );
-                in_fence = true;
+        let ticks = trimmed.len() - trimmed.trim_start_matches('`').len();
+        if ticks >= 3 {
+            let rest = &trimmed[ticks..];
+            if fence_run > 0 {
+                // Inside a fence, a bare backtick run at least as long as
+                // the opener closes it; anything else — shorter runs or
+                // backticks followed by text — is verbatim code content.
+                if rest.is_empty() && ticks >= fence_run {
+                    fence_run = 0;
+                }
+                continue;
             }
+            assert!(
+                !rest.is_empty(),
+                "commands.mdx renderer: {owner} has a closing fence with no opener"
+            );
+            assert!(
+                rest.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+                "commands.mdx renderer: {owner} fence opener `{trimmed}` must be a backtick run and an alphanumeric language id"
+            );
+            fence_run = ticks;
             continue;
         }
-        if in_fence {
+        if fence_run > 0 {
             continue;
         }
         let mut chars = line.chars().peekable();
@@ -389,8 +395,8 @@ fn mdx_prose(owner: &str, text: &str) -> String {
         !in_code,
         "commands.mdx renderer: {owner} has an unbalanced backtick run"
     );
-    assert!(
-        !in_fence,
+    assert_eq!(
+        fence_run, 0,
         "commands.mdx renderer: {owner} has an unclosed fenced block"
     );
     text.to_string()
@@ -398,29 +404,39 @@ fn mdx_prose(owner: &str, text: &str) -> String {
 
 /// Render description prose with two doc-comment conventions:
 /// - a paragraph beginning with `WARNING:` becomes a Fumadocs warn Callout;
-/// - fence paragraphs — ` ``` ` (close) and ` ```lang ` (open), each its
-///   own paragraph because clap joins paragraph lines with spaces —
-///   reconstruct a fenced code block, one paragraph per code line.
+/// - fence paragraphs — each its own paragraph because clap joins
+///   paragraph lines with spaces — reconstruct a fenced code block, one
+///   paragraph per code line, with the same CommonMark fence-length
+///   rules as [`mdx_prose`]: a bare backtick run at least as long as the
+///   opener closes the block, and anything else inside is code content.
 fn render_prose_paragraphs(owner: &str, text: &str) -> String {
     let mut out = String::new();
-    let mut in_fence = false;
+    let mut fence_run = 0usize; // 0 = not in a fence; else the opener's backtick count
     for paragraph in text.split("\n\n") {
         let paragraph = paragraph.trim();
         if paragraph.is_empty() {
             continue;
         }
-        if paragraph.starts_with("```") {
-            if paragraph == "```" {
-                out.push_str("```\n\n");
-                in_fence = false;
-            } else {
-                out.push_str(paragraph);
-                out.push('\n');
-                in_fence = true;
+        let ticks = paragraph.len() - paragraph.trim_start_matches('`').len();
+        if ticks >= 3 {
+            let rest = &paragraph[ticks..];
+            if fence_run > 0 {
+                if rest.is_empty() && ticks >= fence_run {
+                    out.push_str(paragraph);
+                    out.push_str("\n\n");
+                    fence_run = 0;
+                } else {
+                    out.push_str(paragraph);
+                    out.push('\n');
+                }
+                continue;
             }
+            out.push_str(paragraph);
+            out.push('\n');
+            fence_run = ticks;
             continue;
         }
-        if in_fence {
+        if fence_run > 0 {
             out.push_str(paragraph);
             out.push('\n');
             continue;
@@ -880,6 +896,32 @@ mod tests {
     #[should_panic(expected = "unclosed fenced block")]
     fn mdx_prose_throws_on_an_unclosed_fenced_block() {
         mdx_prose("test", "```gitattributes\n\n.span/** merge=span\n");
+    }
+
+    #[test]
+    fn mdx_prose_accepts_a_shorter_backtick_line_as_fence_content() {
+        let fenced = "````text\n\n```\n\n.span/** merge=span\n\n````\n";
+        assert_eq!(mdx_prose("test", fenced), fenced);
+    }
+
+    #[test]
+    #[should_panic(expected = "unclosed fenced block")]
+    fn mdx_prose_throws_on_fence_content_missing_its_close() {
+        // The FMEA witness: a code line that is itself a bare backtick run
+        // must not defeat the unclosed-fence assert — inside a four-backtick
+        // fence it is content, so the missing close still panics.
+        mdx_prose("test", "````text\n\n```\n\n.span/** merge=span\n");
+    }
+
+    #[test]
+    fn render_prose_paragraphs_reconstructs_a_long_fence_with_backtick_content() {
+        let prose = "````text\n\n```\n\n.span/** merge=span\n\n````\n";
+        let rendered = render_prose_paragraphs("test", prose);
+        assert_eq!(
+            rendered,
+            "````text\n```\n.span/** merge=span\n````\n\n",
+            "a shorter backtick run inside a long fence must stay code content"
+        );
     }
 
     #[test]

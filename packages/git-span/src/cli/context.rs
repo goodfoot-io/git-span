@@ -17,6 +17,7 @@ pub const MAX_CONTEXT_JSON_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[schemars(deny_unknown_fields)]
 pub enum ContextExtent {
     Whole,
     Lines { start: u32, end: u32 },
@@ -83,6 +84,7 @@ pub enum ContextUnavailableReason {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, JsonSchema)]
 #[serde(tag = "code", rename_all = "SCREAMING_SNAKE_CASE")]
+#[schemars(deny_unknown_fields)]
 pub enum ContextStatus {
     Fresh,
     ResolvedPendingCommit,

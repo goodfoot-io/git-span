@@ -118,6 +118,7 @@
               "const": "whole"
             }
           },
+          "additionalProperties": false,
           "required": [
             "kind"
           ]
@@ -140,6 +141,7 @@
               "minimum": 0
             }
           },
+          "additionalProperties": false,
           "required": [
             "kind",
             "start",
@@ -313,6 +315,7 @@
               "const": "FRESH"
             }
           },
+          "additionalProperties": false,
           "required": [
             "code"
           ]
@@ -325,6 +328,7 @@
               "const": "RESOLVED_PENDING_COMMIT"
             }
           },
+          "additionalProperties": false,
           "required": [
             "code"
           ]
@@ -337,6 +341,7 @@
               "const": "MOVED"
             }
           },
+          "additionalProperties": false,
           "required": [
             "code"
           ]
@@ -349,6 +354,7 @@
               "const": "CHANGED"
             }
           },
+          "additionalProperties": false,
           "required": [
             "code"
           ]
@@ -361,6 +367,7 @@
               "const": "DELETED"
             }
           },
+          "additionalProperties": false,
           "required": [
             "code"
           ]
@@ -373,6 +380,7 @@
               "const": "CONFLICT"
             }
           },
+          "additionalProperties": false,
           "required": [
             "code"
           ]
@@ -385,6 +393,7 @@
               "const": "SUBMODULE"
             }
           },
+          "additionalProperties": false,
           "required": [
             "code"
           ]
@@ -403,6 +412,7 @@
               "$ref": "#/$defs/ContextUnavailableReason"
             }
           },
+          "additionalProperties": false,
           "required": [
             "code",
             "reason",
