@@ -1,0 +1,4 @@
+.yarnrc.yml#L21-L23 rk64:bcc02648635b6b66
+packages/website/package.json#L50-L50 rk64:9cecc07c801f54b0
+
+the .yarnrc.yml packageExtensions selector is keyed to the exact @sentry/node version this repo's dependency graph resolves from the pinned lighthouse version, so bumping the lighthouse devDependency pin without re-verifying the resolved @sentry/node version silently stops the extension from applying -- yarn install still succeeds but reverts to printing the YN0086 unmet-peer warning instead of a clean install, per notes/spike-install-integrity.md.
