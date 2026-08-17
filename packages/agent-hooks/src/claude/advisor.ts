@@ -40,6 +40,7 @@ import {
   parseGitCommand,
   resolveChangeset
 } from '../common/advisor-core.js';
+import { disableUpdateCheck } from '../common/update-check-env.js';
 
 /** Narrow a `Bash` tool_input to its `command` string. */
 function narrowCommand(toolInput: unknown): string | null {
@@ -121,5 +122,9 @@ export function createHandler(
     }
   };
 }
+
+// Automated git-span caller: suppress the update check before any executor
+// runs so every `git span` child inherits the env var.
+disableUpdateCheck();
 
 export default preToolUseHook({ matcher: 'Bash', timeout: 10_000 }, createHandler());

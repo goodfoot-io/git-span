@@ -49,6 +49,7 @@ import {
   resolveChangeset,
   wrapGitSpanContext
 } from '../common/advisor-core.js';
+import { disableUpdateCheck } from '../common/update-check-env.js';
 
 /**
  * Whether Codex's `permissionDecision: 'deny'` is trusted to block the shell tool
@@ -168,5 +169,9 @@ export function createHandler(
     }
   };
 }
+
+// Automated git-span caller: suppress the update check before any executor
+// runs so every `git span` child inherits the env var.
+disableUpdateCheck();
 
 export default preToolUseHook({ matcher: 'Bash|shell|exec|local_shell', timeout: 10_000 }, createHandler());

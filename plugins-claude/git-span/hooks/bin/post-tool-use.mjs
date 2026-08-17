@@ -8388,6 +8388,11 @@ function postTrackedValue(absolutePath, value, cwd) {
   return filterTrackedEligibility([{ absolutePath, value }], { cwd }).eligible[0]?.value ?? null;
 }
 
+// src/common/update-check-env.ts
+function disableUpdateCheck() {
+  process.env.GIT_SPAN_DISABLE_UPDATE_CHECK = "1";
+}
+
 // src/claude/static-plan.ts
 function narrowCommand(toolInput) {
   if (toolInput !== null && typeof toolInput === "object" && "command" in toolInput) {
@@ -8417,6 +8422,7 @@ function createHandler(layout = DEFAULT_SESSION_LAYOUT) {
     }
   };
 }
+disableUpdateCheck();
 var static_plan_default = preToolUseHook({ matcher: "Bash", timeout: 1e4 }, createHandler());
 
 // src/claude/post-tool-use.ts
@@ -8496,6 +8502,7 @@ function createHandler2(executors = createDefaultTouchExecutors(), memoFactory =
     });
   };
 }
+disableUpdateCheck();
 var post_tool_use_default = postToolUseHook({ matcher: "Read|Edit|Write|Bash", timeout: 1e4 }, createHandler2());
 
 // src/claude/post-tool-use-entry.ts

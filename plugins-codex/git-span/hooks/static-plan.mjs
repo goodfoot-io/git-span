@@ -9388,6 +9388,11 @@ function createDiskAdvisorMemoState(cwd) {
   };
 }
 
+// src/common/update-check-env.ts
+function disableUpdateCheck() {
+  process.env.GIT_SPAN_DISABLE_UPDATE_CHECK = "1";
+}
+
 // src/codex/advisor.ts
 var CODEX_ADVISOR_HARD_DENY = true;
 function extractShellCommand(toolInput) {
@@ -9462,6 +9467,7 @@ ${result.reason}`;
     }
   };
 }
+disableUpdateCheck();
 var advisor_default = preToolUseHook({ matcher: "Bash|shell|exec|local_shell", timeout: 1e4 }, createHandler());
 
 // src/codex/post-tool-use.ts
@@ -9907,6 +9913,7 @@ function createHandler2(executors = createDefaultTouchExecutors(), memoFactory =
     return postToolUseOutput({ additionalContext: combined, systemMessage: combined });
   };
 }
+disableUpdateCheck();
 var post_tool_use_default = postToolUseHook(
   { matcher: "apply_patch|exec_command|exec|shell|local_shell|Bash", timeout: 1e4 },
   createHandler2()
@@ -9944,6 +9951,7 @@ function createHandler3(layout = DEFAULT_SESSION_LAYOUT) {
     }
   };
 }
+disableUpdateCheck();
 var static_plan_default = preToolUseHook(
   { matcher: "Bash|shell|exec|local_shell|exec_command", timeout: 1e4 },
   createHandler3()

@@ -347,6 +347,11 @@ function cleanupSessionState(layout, sessionId, now = Date.now()) {
   }
 }
 
+// src/common/update-check-env.ts
+function disableUpdateCheck() {
+  process.env.GIT_SPAN_DISABLE_UPDATE_CHECK = "1";
+}
+
 // src/codex/stop.ts
 function createHandler(layout = DEFAULT_SESSION_LAYOUT) {
   return async (input, ctx) => {
@@ -359,6 +364,7 @@ function createHandler(layout = DEFAULT_SESSION_LAYOUT) {
     }
   };
 }
+disableUpdateCheck();
 var stop_default = stopHook({ timeout: 1e4 }, createHandler());
 
 // src/codex/stop-entry.ts

@@ -22,6 +22,7 @@ import {
   type TouchExecutors,
   type TouchInput
 } from '../common/touch-core.js';
+import { disableUpdateCheck } from '../common/update-check-env.js';
 import { extractShellCommand } from './advisor.js';
 import { parseApplyPatch } from './apply-patch.js';
 
@@ -270,6 +271,10 @@ export function createHandler(
 
 export const STATIC_POST_MATCHER = 'apply_patch|exec_command|exec|shell|local_shell|Bash';
 export const SNAPSHOT_POST_MATCHER = STATIC_POST_MATCHER;
+
+// Automated git-span caller: suppress the update check before any executor
+// runs so every `git span` child inherits the env var.
+disableUpdateCheck();
 
 export default postToolUseHook(
   { matcher: 'apply_patch|exec_command|exec|shell|local_shell|Bash', timeout: 10_000 },

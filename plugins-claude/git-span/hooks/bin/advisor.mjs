@@ -2238,6 +2238,11 @@ function createDiskAdvisorMemoState(cwd) {
   };
 }
 
+// src/common/update-check-env.ts
+function disableUpdateCheck() {
+  process.env.GIT_SPAN_DISABLE_UPDATE_CHECK = "1";
+}
+
 // src/claude/advisor.ts
 function narrowCommand(toolInput) {
   if (toolInput !== null && typeof toolInput === "object" && "command" in toolInput) {
@@ -2292,6 +2297,7 @@ function createHandler(git = createDefaultGitExecutor(), executors = createDefau
     }
   };
 }
+disableUpdateCheck();
 var advisor_default = preToolUseHook({ matcher: "Bash", timeout: 1e4 }, createHandler());
 
 // src/claude/advisor-entry.ts

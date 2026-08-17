@@ -1928,6 +1928,11 @@ function createDiskAdvisorMemoState(cwd) {
   };
 }
 
+// src/common/update-check-env.ts
+function disableUpdateCheck() {
+  process.env.GIT_SPAN_DISABLE_UPDATE_CHECK = "1";
+}
+
 // src/codex/advisor.ts
 var CODEX_ADVISOR_HARD_DENY = true;
 function extractShellCommand(toolInput) {
@@ -2002,6 +2007,7 @@ ${result.reason}`;
     }
   };
 }
+disableUpdateCheck();
 var advisor_default = preToolUseHook({ matcher: "Bash|shell|exec|local_shell", timeout: 1e4 }, createHandler());
 
 // src/codex/advisor-entry.ts

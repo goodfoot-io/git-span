@@ -2,6 +2,7 @@
 
 import { type HookContext, type SessionEndInput, sessionEndHook } from '@goodfoot/claude-code-hooks';
 import { cleanupSessionState, DEFAULT_SESSION_LAYOUT, type SessionLayout } from '../common/agent-hooks-common.js';
+import { disableUpdateCheck } from '../common/update-check-env.js';
 
 /**
  * Exported so mini-swe registers the same lifecycle and tests can inject a
@@ -18,5 +19,9 @@ export const createHandler =
       return null;
     }
   };
+
+// Automated git-span caller: suppress the update check before any executor
+// runs so every `git span` child inherits the env var.
+disableUpdateCheck();
 
 export default sessionEndHook({ timeout: 10_000 }, createHandler());

@@ -14,6 +14,7 @@ import {
 } from '../common/bash-attribution.js';
 import { createDiskMemoStore, type MemoFactory } from '../common/span-surface.js';
 import { createDefaultTouchExecutors, type TouchExecutors } from '../common/touch-core.js';
+import { disableUpdateCheck } from '../common/update-check-env.js';
 import { narrowCommand } from './static-plan.js';
 
 export function createHandler(
@@ -46,5 +47,9 @@ export function createHandler(
     }
   };
 }
+
+// Automated git-span caller: suppress the update check before any executor
+// runs so every `git span` child inherits the env var.
+disableUpdateCheck();
 
 export default postToolUseFailureHook({ matcher: 'Bash', timeout: 10_000 }, createHandler());

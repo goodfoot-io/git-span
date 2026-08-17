@@ -3,6 +3,7 @@
 import { type HookContext, type PreToolUseInput, preToolUseHook } from '@goodfoot/claude-code-hooks';
 import { DEFAULT_SESSION_LAYOUT, type SessionLayout } from '../common/agent-hooks-common.js';
 import { createDefaultPlannedTouchStore, planBashTouches } from '../common/bash-attribution.js';
+import { disableUpdateCheck } from '../common/update-check-env.js';
 
 /** Narrow the Claude/mini-swe Bash input to a non-empty command string. */
 export function narrowCommand(toolInput: unknown): string | null {
@@ -36,5 +37,9 @@ export function createHandler(layout: SessionLayout = DEFAULT_SESSION_LAYOUT) {
 }
 
 export const STATIC_PLAN_PRE_MATCHER = 'Bash';
+
+// Automated git-span caller: suppress the update check before any executor
+// runs so every `git span` child inherits the env var.
+disableUpdateCheck();
 
 export default preToolUseHook({ matcher: 'Bash', timeout: 10_000 }, createHandler());

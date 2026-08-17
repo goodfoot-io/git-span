@@ -4,6 +4,7 @@ import { resolve as resolvePath } from 'node:path';
 import { type HookContext, type PreToolUseInput, preToolUseHook } from '@goodfoot/codex-hooks';
 import { DEFAULT_SESSION_LAYOUT, type SessionLayout } from '../common/agent-hooks-common.js';
 import { createDefaultPlannedTouchStore, planBashTouches } from '../common/bash-attribution.js';
+import { disableUpdateCheck } from '../common/update-check-env.js';
 import { extractShellCommand } from './advisor.js';
 import { narrowCodeModeExec, narrowExecCommand } from './post-tool-use.js';
 
@@ -43,6 +44,10 @@ export function createHandler(layout: SessionLayout = DEFAULT_SESSION_LAYOUT) {
 }
 
 export const STATIC_PLAN_PRE_MATCHER = 'Bash|shell|exec|local_shell|exec_command';
+
+// Automated git-span caller: suppress the update check before any executor
+// runs so every `git span` child inherits the env var.
+disableUpdateCheck();
 
 export default preToolUseHook(
   { matcher: 'Bash|shell|exec|local_shell|exec_command', timeout: 10_000 },

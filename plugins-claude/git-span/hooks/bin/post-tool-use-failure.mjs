@@ -8373,6 +8373,11 @@ function failureBashResponse(input) {
   return response;
 }
 
+// src/common/update-check-env.ts
+function disableUpdateCheck() {
+  process.env.GIT_SPAN_DISABLE_UPDATE_CHECK = "1";
+}
+
 // src/claude/static-plan.ts
 function narrowCommand(toolInput) {
   if (toolInput !== null && typeof toolInput === "object" && "command" in toolInput) {
@@ -8402,6 +8407,7 @@ function createHandler(layout = DEFAULT_SESSION_LAYOUT) {
     }
   };
 }
+disableUpdateCheck();
 var static_plan_default = preToolUseHook({ matcher: "Bash", timeout: 1e4 }, createHandler());
 
 // src/claude/post-tool-use-failure.ts
@@ -8431,6 +8437,7 @@ function createHandler2(executors = createDefaultTouchExecutors(), memoFactory =
     }
   };
 }
+disableUpdateCheck();
 var post_tool_use_failure_default = postToolUseFailureHook({ matcher: "Bash", timeout: 1e4 }, createHandler2());
 
 // src/claude/post-tool-use-failure-entry.ts

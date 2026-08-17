@@ -11,6 +11,7 @@ import {
 } from '../common/agent-hooks-common.js';
 import { createDefaultPlannedTouchStore } from '../common/bash-attribution.js';
 import { filterTrackedEligibility, type PlannedTouch } from '../common/static-attribution.js';
+import { disableUpdateCheck } from '../common/update-check-env.js';
 import { parseApplyPatch } from './apply-patch.js';
 import { narrowApplyPatchCommand } from './post-tool-use.js';
 
@@ -72,5 +73,9 @@ export function createHandler(layout: SessionLayout = DEFAULT_SESSION_LAYOUT) {
 }
 
 export const APPLY_PATCH_PLAN_MATCHER = 'apply_patch';
+
+// Automated git-span caller: suppress the update check before any executor
+// runs so every `git span` child inherits the env var.
+disableUpdateCheck();
 
 export default preToolUseHook({ matcher: 'apply_patch', timeout: 10_000 }, createHandler());

@@ -22,6 +22,7 @@ import {
   type TouchExecutors,
   type TouchInput
 } from '../common/touch-core.js';
+import { disableUpdateCheck } from '../common/update-check-env.js';
 import { narrowCommand } from './static-plan.js';
 
 type ToolInput = Record<string, unknown>;
@@ -116,5 +117,9 @@ export function createHandler(
     });
   };
 }
+
+// Automated git-span caller: suppress the update check before any executor
+// runs so every `git span` child inherits the env var.
+disableUpdateCheck();
 
 export default postToolUseHook({ matcher: 'Read|Edit|Write|Bash', timeout: 10_000 }, createHandler());

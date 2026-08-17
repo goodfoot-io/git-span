@@ -674,6 +674,11 @@ function cleanupSessionState(layout, sessionId, now = Date.now()) {
   }
 }
 
+// src/common/update-check-env.ts
+function disableUpdateCheck() {
+  process.env.GIT_SPAN_DISABLE_UPDATE_CHECK = "1";
+}
+
 // src/claude/session-end.ts
 var createHandler = (layout = DEFAULT_SESSION_LAYOUT) => async (input, ctx) => {
   try {
@@ -684,6 +689,7 @@ var createHandler = (layout = DEFAULT_SESSION_LAYOUT) => async (input, ctx) => {
     return null;
   }
 };
+disableUpdateCheck();
 var session_end_default = sessionEndHook({ timeout: 1e4 }, createHandler());
 
 // src/claude/session-end-entry.ts

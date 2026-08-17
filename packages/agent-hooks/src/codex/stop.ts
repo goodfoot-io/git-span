@@ -2,6 +2,7 @@
 
 import { type HookContext, type StopInput, stopHook } from '@goodfoot/codex-hooks';
 import { cleanupSessionState, DEFAULT_SESSION_LAYOUT, type SessionLayout } from '../common/agent-hooks-common.js';
+import { disableUpdateCheck } from '../common/update-check-env.js';
 
 /**
  * The cleanup handler. Extracted from the default export so a test can
@@ -21,5 +22,9 @@ export function createHandler(layout: SessionLayout = DEFAULT_SESSION_LAYOUT) {
     }
   };
 }
+
+// Automated git-span caller: suppress the update check before any executor
+// runs so every `git span` child inherits the env var.
+disableUpdateCheck();
 
 export default stopHook({ timeout: 10_000 }, createHandler());
