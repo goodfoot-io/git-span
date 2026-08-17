@@ -1,3 +1,3 @@
-packages/git-span/tests/cases/add_index_loaded_once.rs#L1-L90 rk64:e22842206f3fe477
+packages/git-span/tests/cases/add_index_loaded_once.rs#L1-L94 rk64:f476047f02206bd7
 
 run_add threads one index snapshot through its mutation pipeline (the main-105 fix), and the post-write reconcile check's EngineState reads the index a fixed bounded number of times — two span reads plus two whole-file layer probes per whole-file anchor, zero per line-range anchor — so this fixture's total count is pinned at exactly 5, and a regression to per-anchor re-materialization fails the count.
