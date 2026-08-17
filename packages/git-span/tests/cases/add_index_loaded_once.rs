@@ -71,7 +71,11 @@ fn run_add_calls_index_entries_exactly_once() -> Result<()> {
     // `run_add`). Drive it through dispatch, exactly as `main.rs` does, so
     // the in-process index-load counter still observes a single `run_add`
     // invocation under its real caller.
-    let exit = git_span::cli::dispatch(&gix_repo, Commands::Add(args), None)?;
+    let cli = git_span::cli::Cli {
+        perf: false,
+        command: Some(Commands::Add(args.clone())),
+    };
+    let exit = git_span::cli::dispatch(&gix_repo, Commands::Add(args), None, &cli)?;
     assert_eq!(exit, 0, "dispatching `add` for this fixture must succeed");
 
     let count = index_entries_call_count();
