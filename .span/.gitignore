@@ -2,3 +2,6 @@
 # agent-hooks dispatcher writes log files alongside spans; these are
 # not meant to be committed.
 *.log
+# Transient per-process lock files (empty), written next to spans by the
+# test suite and the CLI itself.
+.span-lock-*

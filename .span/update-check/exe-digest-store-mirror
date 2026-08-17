@@ -1,6 +1,6 @@
 packages/git-span/README.md#L37-L37 rk64:c26081370a65f3b2
 packages/git-span/src/resolver/core/exe_digest_store.rs#L18-L40 rk64:c2a35ffda8d9c5af
 packages/git-span/src/update_check/store.rs#L3-L10 rk64:0a84d0fb986e396d
-packages/git-span/src/update_check/store.rs#L95-L98 rk64:79e3c9b41227eecd
+packages/git-span/src/update_check/store.rs#L98-L101 rk64:79e3c9b41227eecd
 
 The update-check store mirrors the exe-digest store's per-user path precedence (explicit DB override, then the GIT_SPAN_CACHE_HOME base, then the $HOME/.cache/git-span default) and its fail-closed open bootstrap (busy timeout before WAL before schema), the chain the package README documents for exe-digest; the update-check store additionally falls back to %USERPROFILE% on Windows, and any change to the shared chain must land identically on all three surfaces.

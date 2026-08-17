@@ -54,7 +54,10 @@ pub struct UpdateCheckState {
 /// be determined (no explicit path, no `GIT_SPAN_CACHE_HOME`, and
 /// `$HOME` / `%USERPROFILE%` unset or empty) — the feature is then
 /// permanently disabled.
-fn db_path() -> Option<PathBuf> {
+///
+/// `pub` for the orchestrator, which derives the child's log path
+/// (`update-check.log`) from the same resolved base.
+pub fn db_path() -> Option<PathBuf> {
     if let Ok(explicit) = std::env::var("GIT_SPAN_UPDATE_CHECK_DB")
         && !explicit.is_empty()
     {

@@ -1,6 +1,6 @@
 README.md#L137-L149 rk64:60c75d774faaf7db
 packages/git-span/CLAUDE.md#L1-L31 rk64:7dcc8395476ab171
-packages/git-span/Cargo.toml#L69-L82 rk64:57b48a678daa9dc4
+packages/git-span/Cargo.toml#L72-L85 rk64:57b48a678daa9dc4
 packages/git-span/scripts/cargo-build-system.md rk64:c0f7bb559071d309
 
 The cargo-build-system.md handbook is the authoritative reference for the shared per-user cargo target directory, and the README section, Cargo.toml comments, and CLAUDE.md cargo block restate its check/build group split and GIT_SPAN_CARGO_TARGET_ROOT override.

@@ -1,11 +1,7 @@
-//! Update-check integration cases — Phase 2, skipped against Phase 1 stubs.
-//!
-//! Every case is `#[ignore]` with a one-line reason; the cases compile
-//! against the stub surface and must appear as skipped in `cargo nextest
-//! run`, never failing. Phase 3 implements and unskips them one at a time.
-//!
-//! The local HTTP server and PTY plumbing here are the *real* mechanisms the
-//! plan pins — no mocks: `GIT_SPAN_UPDATE_CHECK_URL` points the child at a
+//! Update-check integration cases — the pinned no-mock contract for the
+//! daily update check. The local HTTP server and PTY plumbing here are the
+//! *real* mechanisms the plan pins:
+//! `GIT_SPAN_UPDATE_CHECK_URL` points the child at a
 //! `std::net::TcpListener` serving a synthetic payload once;
 //! `script -qec` gives the foreground a real TTY (piped capture would
 //! self-suppress); `which` guards the PTY cases on hosts without `script`.
@@ -112,7 +108,6 @@ fn run_pty(
 }
 
 #[test]
-#[ignore = "Phase 3: maybe_engage must spawn a detached child that never prints on first run"]
 fn first_tty_run_prints_nothing_and_only_spawns() -> Result<()> {
     let repo = TestRepo::seeded()?;
     // The slow server keeps the detached child from finishing before the
@@ -141,7 +136,6 @@ fn first_tty_run_prints_nothing_and_only_spawns() -> Result<()> {
 }
 
 #[test]
-#[ignore = "Phase 3: the child must fetch, scan, and stamp the store synchronously"]
 fn direct_sync_child_stamps_the_store() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let port = serve_once(synthetic_payload(), Duration::ZERO)?;
@@ -185,7 +179,6 @@ fn direct_sync_child_stamps_the_store() -> Result<()> {
 }
 
 #[test]
-#[ignore = "Phase 3: maybe_remind must print once per 24h, then stay silent"]
 fn tty_first_run_prints_note_second_run_prints_nothing() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let port = serve_once(synthetic_payload(), Duration::ZERO)?;
@@ -225,7 +218,6 @@ fn tty_first_run_prints_note_second_run_prints_nothing() -> Result<()> {
 }
 
 #[test]
-#[ignore = "Phase 3: effective-format machine-output suppression not implemented"]
 fn porcelain_invocation_prints_nothing() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let port = serve_once(synthetic_payload(), Duration::ZERO)?;
@@ -247,7 +239,6 @@ fn porcelain_invocation_prints_nothing() -> Result<()> {
 }
 
 #[test]
-#[ignore = "Phase 3: non-TTY stdout suppression not implemented"]
 fn piped_stdout_prints_nothing() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let port = serve_once(synthetic_payload(), Duration::ZERO)?;
@@ -269,7 +260,6 @@ fn piped_stdout_prints_nothing() -> Result<()> {
 }
 
 #[test]
-#[ignore = "Phase 3: env-var suppression not implemented"]
 fn disable_env_var_prints_nothing() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let port = serve_once(synthetic_payload(), Duration::ZERO)?;
@@ -295,7 +285,6 @@ fn disable_env_var_prints_nothing() -> Result<()> {
 }
 
 #[test]
-#[ignore = "Phase 3: the pre-parse classifier splice is what makes this case pass"]
 fn update_check_subcommand_runs_synchronously_and_is_not_a_span_name() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let port = serve_once(synthetic_payload(), Duration::ZERO)?;
@@ -325,7 +314,6 @@ fn update_check_subcommand_runs_synchronously_and_is_not_a_span_name() -> Result
 }
 
 #[test]
-#[ignore = "Phase 3: nothing in the update-check wiring may shift exit codes"]
 fn exit_codes_unchanged_with_update_check_env() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let port = serve_once(synthetic_payload(), Duration::ZERO)?;
