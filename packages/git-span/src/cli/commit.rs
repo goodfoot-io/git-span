@@ -24,15 +24,13 @@ use crate::types::{
     AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, EngineOptions, LayerSet,
     validate_add_target,
 };
-use anyhow::{Context, Result};
-use fs4::fs_std::FileExt;
+use anyhow::Result;
 use schemars::JsonSchema;
 use git_span_core::{
     RK64_ALGORITHM, ResolveCommand, ResolvedRecord, carried_sentinel, cheap_fingerprint_with_extent,
     rk64_to_hex,
 };
 use std::fmt::Write as FmtWrite;
-use std::fs::File;
 use std::io::IsTerminal;
 
 // ---------------------------------------------------------------------------
@@ -243,140 +241,6 @@ fn head_has_path(repo: &gix::Repository, path: &str) -> bool {
         return false;
     };
     crate::git::path_blob_at(repo, &head.detach().to_string(), path).is_ok()
-}
-
-/// RAII guard that releases an advisory file lock on drop.
-///
-/// The hidden lock inode remains in the retained span directory. Unlinking a
-/// lock while another process waits on its open inode permits a third process
-/// to create and lock a different inode, splitting the critical section.
-pub(crate) struct SpanLock {
-    _file: File,
-}
-
-/// Acquire an exclusive advisory file lock (`flock`) for a span file,
-/// protecting the read-modify-write critical section against concurrent
-/// writers. The lock is released when the returned [`SpanLock`] is dropped.
-///
-/// The lock file lives alongside the span file in `<span_root>/`, named
-/// `.<basename>.lock`. The dot prefix keeps it invisible to all three
-/// [`SpanFileReader`] enumeration paths — the same convention
-/// [`write_worktree_span`] uses for its temp file.
-///
-/// Acquisition is attempted without blocking first. When another process
-/// holds the lock, this names the span it is waiting on and then waits a
-/// bounded [`lock_wait`] before giving up with an error. An unbounded,
-/// silent block was the wrong shape here: `git span drift --fix` sweeps
-/// every span in one invocation and prints as it goes, so contention on
-/// span three of ten stalled the process mid-report with no output at all,
-/// and a CI harness could only kill it — leaving `.span/` half-reconciled
-/// with no diagnostic naming which span was stuck. A caller that would
-/// rather wait longer can re-run; a caller that cannot wait now gets told
-/// what to do about it.
-pub(crate) fn lock_span_file(
-    repo: &gix::Repository,
-    span_root: &str,
-    name: &str,
-) -> Result<SpanLock> {
-    let workdir = repo
-        .workdir()
-        .ok_or_else(|| anyhow::anyhow!("bare repository is not supported"))?;
-    let authority = crate::span::structural::ensure_span_authority(workdir, span_root)?;
-    // Flat names retain the established public lock name used by operators
-    // and diagnostics. Hierarchical names keep their persistent lock inode at
-    // the span root: placing it beside the leaf would make an otherwise empty
-    // hierarchy impossible to prune after deletion.
-    let (lock_directory, lock_name) = if name.contains('/') {
-        (
-            authority.root()?,
-            format!(
-                ".span-lock-{}",
-                &blake3::hash(name.as_bytes()).to_hex()[..32]
-            ),
-        )
-    } else {
-        (authority.root()?, format!(".{name}.lock"))
-    };
-    let lock_path = lock_directory.display_path().join(&lock_name);
-    let file = lock_directory
-        .open_or_create_file(std::ffi::OsStr::new(&lock_name), 0o600)
-        .with_context(|| format!("failed to open lock file `{}`", lock_path.display()))?;
-
-    // Fast path: uncontended, which is every ordinary invocation.
-    match file.try_lock_exclusive() {
-        Ok(true) => {
-            return Ok(SpanLock { _file: file });
-        }
-        Ok(false) => {}
-        Err(e) => {
-            return Err(anyhow::Error::from(e).context(format!(
-                "failed to acquire exclusive lock on `{}`",
-                lock_path.display()
-            )));
-        }
-    }
-
-    // Contended. Say so before waiting — a silent wait is indistinguishable
-    // from a hang, and the operator cannot tell which span is blocked.
-    let budget = lock_wait();
-    eprintln!(
-        "waiting for another `git span` process to release span `{name}` \
-         (up to {}s)",
-        budget.as_secs()
-    );
-
-    let deadline = std::time::Instant::now() + budget;
-    loop {
-        match file.try_lock_exclusive() {
-            Ok(true) => {
-                return Ok(SpanLock { _file: file });
-            }
-            Ok(false) => {}
-            Err(e) => {
-                return Err(anyhow::Error::from(e).context(format!(
-                    "failed to acquire exclusive lock on `{}`",
-                    lock_path.display()
-                )));
-            }
-        }
-        if std::time::Instant::now() >= deadline {
-            anyhow::bail!(
-                "timed out after {}s waiting for the lock on span `{name}` \
-                 (`{}`). Another `git span` process is still holding it — \
-                 wait for it to finish and re-run. If no such process exists, \
-                 the lock file is stale and can be deleted.",
-                budget.as_secs(),
-                lock_path.display(),
-            );
-        }
-        std::thread::sleep(LOCK_POLL);
-    }
-}
-
-/// How long [`lock_span_file`] waits for a contended span lock before
-/// failing with a diagnostic. Long enough to ride out a concurrent `add` or
-/// `--fix` on a large corpus, short enough that a CI job fails with a
-/// message rather than being killed on a job timeout.
-const LOCK_WAIT_DEFAULT_SECS: u64 = 30;
-
-/// Poll interval while waiting. `flock` has no timed variant, so the wait is
-/// a try-loop; the interval is short enough to be imperceptible and long
-/// enough not to spin.
-const LOCK_POLL: std::time::Duration = std::time::Duration::from_millis(25);
-
-/// The contended-lock wait budget, overridable by `GIT_SPAN_LOCK_WAIT_SECS`.
-///
-/// A harness that would rather fail fast than hold a job open — and the
-/// tests that exercise the timeout path — set it low; an operator on a slow
-/// filesystem sets it high. An unparseable or absent value takes the
-/// default rather than failing, since a bad knob must not break a command
-/// that would otherwise have acquired the lock immediately.
-fn lock_wait() -> std::time::Duration {
-    let secs = std::env::var("GIT_SPAN_LOCK_WAIT_SECS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(LOCK_WAIT_DEFAULT_SECS);
-    std::time::Duration::from_secs(secs)
 }
 
 /// Build the absolute worktree path for a span file: `<workdir>/<span_root>/<name>`.
@@ -1019,12 +883,10 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result
         )],
     })?;
 
-    // Acquire an exclusive advisory lock on the span file before reading
-    // to prevent concurrent read-modify-write races (lost-update).
-    let _add_lock = {
-        let _perf = crate::perf::span("add.lock-span");
-        lock_span_file(repo, span_root, &args.name)?
-    };
+    // The exclusive repository lock taken at dispatch
+    // (`cli/mod.rs` via `recovery_domain::acquire_writer`) is already held
+    // for this whole command, covering the read-modify-write below against
+    // concurrent writers (lost-update).
 
     // Read the current worktree span file.
     let mut span_file = {
@@ -1500,12 +1362,10 @@ pub fn run_remove(repo: &gix::Repository, args: RemoveArgs, span_root: &str) -> 
         }
     }
 
-    // Acquire an exclusive advisory lock on the span file before reading
-    // to prevent concurrent read-modify-write races.
-    let _remove_lock = {
-        let _perf = crate::perf::span("remove.lock-span");
-        lock_span_file(repo, span_root, &args.name)?
-    };
+    // The exclusive repository lock taken at dispatch
+    // (`cli/mod.rs` via `recovery_domain::acquire_writer`) is already held
+    // for this whole command, covering the read-modify-write below against
+    // concurrent writers.
 
     // Read the current worktree span file.
     let mut span_file = {
@@ -1703,12 +1563,10 @@ pub fn run_replace(repo: &gix::Repository, args: ReplaceArgs, span_root: &str) -
             })?;
     }
 
-    // Acquire an exclusive advisory lock on the span file before reading
-    // to prevent concurrent read-modify-write races (lost-update).
-    let _replace_lock = {
-        let _perf = crate::perf::span("replace.lock-span");
-        lock_span_file(repo, span_root, &args.name)?
-    };
+    // The exclusive repository lock taken at dispatch
+    // (`cli/mod.rs` via `recovery_domain::acquire_writer`) is already held
+    // for this whole command, covering the read-modify-write below against
+    // concurrent writers (lost-update).
 
     // Read the current worktree span file.
     let mut span_file = {
@@ -1815,9 +1673,6 @@ pub fn run_replace(repo: &gix::Repository, args: ReplaceArgs, span_root: &str) -
         let _perf = crate::perf::span("replace.write-span-file");
         write_worktree_span(repo, span_root, &args.name, &mut span_file)?;
     }
-    // Release the lock before the read-only drift resolve.
-    drop(_replace_lock);
-
     // --- Output -----------------------------------------------------------
     // Resolve only the replaced span (uncached engine path, so there is
     // no store staleness after the write) and report its drift-free
@@ -1960,7 +1815,8 @@ pub fn run_why(repo: &gix::Repository, args: WhyArgs, span_root: &str) -> Result
     run_why_write_mode(repo, &name, &body, span_root, format)
 }
 
-/// Write mode: write the why while holding the exclusive span-file lock,
+/// Write mode: write the why while holding the exclusive repository lock
+/// taken at dispatch (`cli/mod.rs` via `recovery_domain::acquire_writer`),
 /// then run the post-write reconcile check under the same lock (plan
 /// §Mechanism) and render the remains/span-wide block. The supersession
 /// fact is empty by construction — `why` touches no addresses — so no
@@ -1972,13 +1828,9 @@ fn run_why_write_mode(
     span_root: &str,
     format: WhyFormat,
 ) -> Result<i32> {
-    // The lock is held through the check below: it serializes the write and
-    // the check against concurrent mutations of the same span, and the check
-    // sees the just-written declaration.
-    let _why_lock = {
-        let _perf = crate::perf::span("why.lock-span");
-        lock_span_file(repo, span_root, name)?
-    };
+    // The repository lock is held through the check below: it serializes the
+    // write and the check against concurrent mutations of the same span, and
+    // the check sees the just-written declaration.
     let pre_write_anchors = {
         let _perf = crate::perf::span("why.read-current");
         let mut span_file = read_worktree_span(repo, span_root, name)?;
@@ -2747,42 +2599,6 @@ mod tests {
         let retained = std::fs::read_to_string(retained_root.join("test/atomic")).unwrap();
         assert!(retained.contains("second"));
         assert!(!attacker.join("test/atomic").exists());
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn lock_stays_on_retained_span_root_after_swap() {
-        use std::os::unix::fs::symlink;
-
-        let (dir, repo) = temp_repo();
-        crate::span::structural::ensure_span_authority(dir.path(), ".span").unwrap();
-        let public_parent = dir.path().join(".span");
-        let retained_parent = dir.path().join(".span-retained");
-        let attacker = dir.path().join("attacker-lock");
-        std::fs::create_dir(&attacker).unwrap();
-        let public_for_hook = public_parent.clone();
-        let retained_for_hook = retained_parent.clone();
-        let attacker_for_hook = attacker.clone();
-        let mut swapped = false;
-        let lock = crate::descriptor_authority::with_test_boundary_hook(
-            move |boundary| {
-                if boundary == "open-or-create" && !swapped {
-                    std::fs::rename(&public_for_hook, &retained_for_hook).unwrap();
-                    symlink(&attacker_for_hook, &public_for_hook).unwrap();
-                    swapped = true;
-                }
-            },
-            || lock_span_file(&repo, ".span", "team/member"),
-        )
-        .unwrap();
-
-        let lock_name = format!(
-            ".span-lock-{}",
-            &blake3::hash(b"team/member").to_hex()[..32]
-        );
-        assert!(retained_parent.join(&lock_name).is_file());
-        assert!(!attacker.join(&lock_name).exists());
-        drop(lock);
     }
 
     #[test]

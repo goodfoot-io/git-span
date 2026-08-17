@@ -6,7 +6,6 @@ use super::context::{
     normalize_scopes, parse_context_address, render_document, resolve_snapshot, select_context,
 };
 use anyhow::{Context, Result, ensure};
-use fs4::fs_std::FileExt;
 use git_span_core::{RK64_ALGORITHM, cheap_fingerprint_with_extent, rk64_to_hex};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -84,10 +83,6 @@ struct PlannedSpan {
     name: String,
     original: String,
     planned: SpanFile,
-}
-
-struct SpanLock {
-    _file: std::fs::File,
 }
 
 /// Run a repair while the caller supplies the publication barrier. The
@@ -191,13 +186,9 @@ pub(super) fn execute(
         .iter()
         .map(|span| authority.target(&span.name, DirectoryPolicy::Existing))
         .collect::<Result<Vec<_>>>()?;
-    let _locks = lock_targets(
-        &targets,
-        &planned
-            .iter()
-            .map(|span| span.name.as_str())
-            .collect::<Vec<_>>(),
-    )?;
+    // The `_domain` exclusive repository lock, held for the whole of
+    // `execute()`, already covers this read-modify-write against concurrent
+    // mutations of these spans — no per-span lock is taken here.
 
     let mut entries = Vec::with_capacity(planned.len());
     for (index, (span, target)) in planned.iter().zip(&targets).enumerate() {
@@ -766,43 +757,6 @@ fn verify_persisted_response(
     Ok(())
 }
 
-fn lock_entries(authority: &SpanRootAuthority, entries: &[JournalEntry]) -> Result<Vec<SpanLock>> {
-    let mut names = entries
-        .iter()
-        .map(|entry| entry.name.as_str())
-        .collect::<Vec<_>>();
-    names.sort_unstable();
-    names.dedup();
-    let mut locks = Vec::with_capacity(names.len());
-    for name in names {
-        let target = authority.target(name, DirectoryPolicy::Existing)?;
-        let lock_leaf = OsString::from(format!(".{}.context.lock", target.leaf.to_string_lossy()));
-        let file = target.parent.open_or_create_file(&lock_leaf, 0o600)?;
-        file.lock_exclusive()
-            .with_context(|| format!("lock span `{name}` for context repair"))?;
-        locks.push(SpanLock { _file: file });
-    }
-    Ok(locks)
-}
-
-fn lock_targets(
-    targets: &[crate::descriptor_authority::SpanTarget],
-    names: &[&str],
-) -> Result<Vec<SpanLock>> {
-    let mut order = (0..targets.len()).collect::<Vec<_>>();
-    order.sort_by_key(|index| names[*index]);
-    let mut locks = Vec::with_capacity(order.len());
-    for index in order {
-        let target = &targets[index];
-        let lock_leaf = OsString::from(format!(".{}.context.lock", target.leaf.to_string_lossy()));
-        let file = target.parent.open_or_create_file(&lock_leaf, 0o600)?;
-        file.lock_exclusive()
-            .with_context(|| format!("lock span `{}` for context repair", names[index]))?;
-        locks.push(SpanLock { _file: file });
-    }
-    Ok(locks)
-}
-
 fn validate_targets(targets: &[crate::descriptor_authority::SpanTarget]) -> Result<()> {
     for target in targets {
         target.parent.validate_path_binding()?;
@@ -867,7 +821,9 @@ fn recover_prepared(
     journal: &mut RepairJournal,
 ) -> Result<()> {
     let _ = (repo, span_root);
-    let _locks = lock_entries(authority, &journal.entries)?;
+    // Called only from `execute()` and `recover_pending_locked()`, both of
+    // which already hold the exclusive repository lock for their whole
+    // duration — no per-entry lock is taken here.
     let targets = journal
         .entries
         .iter()

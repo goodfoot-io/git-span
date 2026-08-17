@@ -1,10 +1,11 @@
 //! Repository-wide ordering between recovery, readers, and span mutation.
 
 use super::Commands;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use fs4::fs_std::FileExt;
 use std::ffi::OsStr;
 use std::fs::File;
+use std::time::{Duration, Instant};
 
 use crate::descriptor_authority::{DirectoryPolicy, RetainedDirectory};
 
@@ -40,6 +41,34 @@ pub(crate) fn command_mode(command: &Commands) -> Option<Mode> {
     }
 }
 
+/// Try to take `mode` on `file` without blocking. `Ok(true)` means acquired.
+///
+/// Called through fully-qualified trait syntax: `std::fs::File` has grown
+/// its own inherent `try_lock_shared` with a different (`Result<(),
+/// TryLockError>`) signature, which would otherwise shadow [`fs4`]'s
+/// extension method of the same name and silently change which lock API
+/// gets called depending on the mode.
+fn try_acquire(file: &File, mode: Mode) -> std::io::Result<bool> {
+    match mode {
+        Mode::Shared => FileExt::try_lock_shared(file),
+        Mode::Exclusive => FileExt::try_lock_exclusive(file),
+    }
+}
+
+/// Acquire the repository-wide recovery-domain lock at
+/// `<git_dir>/span/recovery-domain.lock`, shared or exclusive per `mode`.
+///
+/// Acquisition is attempted without blocking first. When another process
+/// holds the lock, this names the lock path it is waiting on and then waits
+/// a bounded [`lock_wait`] before giving up with an error. An unbounded,
+/// silent block was the wrong shape here: a reader waiting behind a long
+/// `drift --fix` had no way to tell a hang from ordinary contention, and a
+/// CI harness could only kill the job — leaving no diagnostic naming which
+/// lock it was stuck on. A caller that would rather wait longer can re-run;
+/// a caller that cannot wait now gets told what to do about it. The lock
+/// inode itself is never suggested for deletion: it is a permanent
+/// rendezvous point for every `git span` invocation against this
+/// repository, not a stale artifact.
 pub(crate) fn acquire(repo: &gix::Repository, mode: Mode) -> Result<Guard> {
     let git_directory = RetainedDirectory::open_canonical(crate::git::git_dir(repo))?;
     let lock_directory = git_directory.descend(
@@ -49,12 +78,65 @@ pub(crate) fn acquire(repo: &gix::Repository, mode: Mode) -> Result<Guard> {
     let file = lock_directory
         .open_or_create_file(OsStr::new("recovery-domain.lock"), 0o600)
         .context("open repository recovery-domain lock")?;
-    match mode {
-        Mode::Shared => file.lock_shared(),
-        Mode::Exclusive => file.lock_exclusive(),
+    let lock_path = lock_directory.display_path().join("recovery-domain.lock");
+
+    // Fast path: uncontended, which is every ordinary invocation.
+    if try_acquire(&file, mode).context("acquire repository recovery-domain lock")? {
+        return Ok(Guard { _file: file });
     }
-    .context("acquire repository recovery-domain lock")?;
-    Ok(Guard { _file: file })
+
+    // Contended. Say so before waiting — a silent wait is indistinguishable
+    // from a hang, and the operator cannot tell which lock is blocked.
+    let budget = lock_wait();
+    eprintln!(
+        "waiting for another `git span` process to release the repository lock \
+         `{}` (up to {}s)",
+        lock_path.display(),
+        budget.as_secs()
+    );
+
+    let deadline = Instant::now() + budget;
+    loop {
+        if try_acquire(&file, mode).context("acquire repository recovery-domain lock")? {
+            return Ok(Guard { _file: file });
+        }
+        if Instant::now() >= deadline {
+            bail!(
+                "timed out after {}s waiting for the repository lock `{}`. \
+                 Another `git span` process is still holding it — wait for it \
+                 to finish and re-run.",
+                budget.as_secs(),
+                lock_path.display(),
+            );
+        }
+        std::thread::sleep(LOCK_POLL);
+    }
+}
+
+/// How long [`acquire`] waits for a contended repository lock before failing
+/// with a diagnostic. Long enough to ride out a concurrent `add` or
+/// `--fix` on a large corpus, short enough that a CI job fails with a
+/// message rather than being killed on a job timeout.
+const LOCK_WAIT_DEFAULT_SECS: u64 = 30;
+
+/// Poll interval while waiting. `flock` has no timed variant, so the wait is
+/// a try-loop; the interval is short enough to be imperceptible and long
+/// enough not to spin.
+const LOCK_POLL: Duration = Duration::from_millis(25);
+
+/// The contended-lock wait budget, overridable by `GIT_SPAN_LOCK_WAIT_SECS`.
+///
+/// A harness that would rather fail fast than hold a job open — and the
+/// tests that exercise the timeout path — set it low; an operator on a slow
+/// filesystem sets it high. An unparseable or absent value takes the
+/// default rather than failing, since a bad knob must not break a command
+/// that would otherwise have acquired the lock immediately.
+fn lock_wait() -> Duration {
+    let secs = std::env::var("GIT_SPAN_LOCK_WAIT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(LOCK_WAIT_DEFAULT_SECS);
+    Duration::from_secs(secs)
 }
 
 /// Enter the shared reader domain only after settling any crash-left prepared
@@ -80,8 +162,9 @@ pub(crate) fn acquire_reader(repo: &gix::Repository, span_root: &str) -> Result<
 
 /// Enter the exclusive writer domain after settling any crash-left prepared
 /// context repair. Recovery runs while this same guard remains exclusive, so
-/// the handler can subsequently take its per-span locks without exposing a
-/// gap or inverting the repository-before-span lock order.
+/// the handler's whole read-modify-write against the span root runs under
+/// one uninterrupted hold of the repository lock, with no gap between
+/// recovery and the mutation it guards.
 pub(crate) fn acquire_writer(repo: &gix::Repository, span_root: &str) -> Result<Guard> {
     let exclusive = acquire(repo, Mode::Exclusive)?;
     if let Some(recovery) = super::context_repair::pending_recovery(repo, span_root)? {
@@ -150,6 +233,68 @@ mod tests {
         rx.recv_timeout(std::time::Duration::from_secs(2))?;
         writer.join().expect("writer thread panicked")?;
         Ok(())
+    }
+
+    #[test]
+    fn acquire_uncontended_succeeds_without_waiting() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        gix::init(directory.path())?;
+        let repo = gix::open(directory.path())?;
+        let started = Instant::now();
+        let guard = acquire(&repo, Mode::Exclusive)?;
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "an uncontended acquisition must take the fast try-lock path, not wait"
+        );
+        drop(guard);
+        Ok(())
+    }
+
+    #[test]
+    fn contended_exclusive_lock_times_out_within_budget_with_named_message() -> Result<()> {
+        // SAFETY: nextest runs each test in its own process, so no other
+        // thread in this process reads or writes the environment.
+        unsafe {
+            std::env::set_var("GIT_SPAN_LOCK_WAIT_SECS", "1");
+        }
+        let result = (|| -> Result<()> {
+            let directory = tempfile::tempdir()?;
+            gix::init(directory.path())?;
+            let repo = gix::open(directory.path())?;
+            let _held = acquire(&repo, Mode::Exclusive)?;
+
+            let started = Instant::now();
+            let result = acquire(&repo, Mode::Exclusive);
+            let elapsed = started.elapsed();
+            let err = match result {
+                Ok(_) => panic!("a second exclusive acquisition must fail once the budget elapses"),
+                Err(e) => e,
+            };
+
+            assert!(
+                elapsed < Duration::from_secs(10),
+                "the wait must be bounded by the 1s budget, not hang; took {elapsed:?}"
+            );
+            let message = err.to_string();
+            assert!(
+                message.contains("timed out after 1s waiting for the repository lock `"),
+                "message should name the timeout budget; got: {message}"
+            );
+            assert!(
+                message.ends_with(
+                    "recovery-domain.lock`. Another `git span` process is \
+                     still holding it — wait for it to finish and re-run."
+                ),
+                "message should name the lock path and give the recovery instruction, \
+                 without suggesting the lock file be deleted; got: {message}"
+            );
+            Ok(())
+        })();
+        // SAFETY: see the matching `set_var` above.
+        unsafe {
+            std::env::remove_var("GIT_SPAN_LOCK_WAIT_SECS");
+        }
+        result
     }
 
     #[test]

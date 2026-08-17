@@ -37,6 +37,19 @@ fn write_span(repo: &TestRepo, name: &str, body: &str) -> Result<()> {
     Ok(())
 }
 
+/// Absolute path of the repo's git directory (`git rev-parse --git-dir`,
+/// resolved against the repo root — the plain-worktree common case returns
+/// a relative `.git`).
+fn repo_git_dir(repo: &TestRepo) -> Result<std::path::PathBuf> {
+    let raw = repo.git_stdout(["rev-parse", "--git-dir"])?;
+    let path = std::path::PathBuf::from(raw);
+    Ok(if path.is_absolute() {
+        path
+    } else {
+        repo.path().join(path)
+    })
+}
+
 /// Anchor lines (no `why` block) of a span declaration.
 fn anchor_lines(text: &str) -> Vec<&str> {
     text.split_once("\n\n")
@@ -1977,15 +1990,16 @@ fn a_sentinel_mid_conflict_gets_no_terminal_verdict() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// A contended span lock fails with a diagnostic, never a silent wait
+// A contended repository lock fails with a diagnostic, never a silent wait
 // ---------------------------------------------------------------------------
 
-/// `--fix` prints as it sweeps, so an unbounded block on span three of ten
+/// `--fix` prints as it sweeps, so an unbounded block on the repository lock
 /// stalled the run mid-report with no output naming the cause — a CI harness
-/// could only kill it, leaving `.span/` half-reconciled. The wait is now
-/// announced and bounded.
+/// could only kill it, leaving `.span/` half-reconciled. The wait on the
+/// repository-wide recovery-domain lock (`<git_dir>/span/recovery-domain.lock`)
+/// is now announced and bounded.
 #[test]
-fn a_held_span_lock_fails_loudly_instead_of_blocking_forever() -> Result<()> {
+fn a_held_repository_lock_fails_loudly_instead_of_blocking_forever() -> Result<()> {
     use fs4::fs_std::FileExt;
 
     let repo = TestRepo::seeded()?;
@@ -1998,8 +2012,11 @@ fn a_held_span_lock_fails_loudly_instead_of_blocking_forever() -> Result<()> {
          why: two records for one identity.\n",
     )?;
 
-    // Hold the advisory lock the way a concurrent `git span` process would.
-    let lock_path = repo.path().join(".span").join(".locked.lock");
+    // Hold the repository recovery-domain lock the way a concurrent
+    // `git span` process would.
+    let span_directory = repo_git_dir(&repo)?.join("span");
+    std::fs::create_dir_all(&span_directory)?;
+    let lock_path = span_directory.join("recovery-domain.lock");
     let held = std::fs::File::create(&lock_path)?;
     assert!(held.try_lock_exclusive()?, "the test must own the lock");
 
@@ -2014,14 +2031,23 @@ fn a_held_span_lock_fails_loudly_instead_of_blocking_forever() -> Result<()> {
          (took {elapsed:?})"
     );
     assert!(
-        stderr.contains("waiting for another `git span` process to release span `locked`"),
-        "the wait names the span it is blocked on, before blocking; \
-         stderr:\n{stderr}"
+        stderr.contains(
+            "waiting for another `git span` process to release the repository lock `"
+        ) && stderr.contains("recovery-domain.lock"),
+        "the wait names the repository lock path it is blocked on, before \
+         blocking; stderr:\n{stderr}"
     );
     assert!(
-        stderr.contains("timed out") && stderr.contains("`locked`"),
-        "and giving up says so, rather than exiting silently; \
-         stderr:\n{stderr}"
+        stderr.contains("timed out after 1s waiting for the repository lock"),
+        "and giving up says so, rather than exiting silently; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "Another `git span` process is still holding it — wait for it to \
+             finish and re-run."
+        ),
+        "the message tells the operator what to do, and never suggests \
+         deleting the lock file; stderr:\n{stderr}"
     );
 
     // The span is untouched: a run that could not take the lock must not

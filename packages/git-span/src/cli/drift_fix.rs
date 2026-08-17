@@ -10,7 +10,7 @@
 //! surfacing layer rather than via `current.blob`.
 
 use crate::cli::commit::{
-    hash_anchor_content, lock_span_file, write_worktree_span,
+    hash_anchor_content, write_worktree_span,
 };
 use crate::descriptor_authority::{DirectoryPolicy, SpanRootAuthority};
 use crate::cli::duplicate_identity::{AddAvailability, AddRefusal};
@@ -1155,28 +1155,13 @@ pub(crate) fn apply_fix(
     let index_snapshot: Option<Vec<IndexEntrySnapshot>> = crate::git::index_entries(repo).ok();
 
     for m in spans {
-        // Serialize this span's whole read-modify-write against the
-        // concurrent `add`/`remove`/`replace`/`why` writers, which have
-        // always taken this same advisory lock. `--fix` never did, and the
-        // duplicate-identity collapse below makes that gap load-bearing: a
-        // lost write would silently undo a collapse the operator was just
-        // told succeeded. The guard covers both branches of the loop body —
-        // conflict resolution and the clean-parse collapse/re-anchor pass —
-        // and releases at the end of this iteration's scope.
-        //
-        // This arm covers contention as well as failure to create the lock
-        // file: `lock_span_file` tries without blocking, announces the span
-        // it is waiting on, and gives up with an error rather than blocking
-        // forever. `--fix` prints as it sweeps, so an unbounded wait here
-        // stalled the run mid-report with no output naming the cause. The
-        // span is left untouched and the sweep continues to the next one.
-        let _span_lock = match lock_span_file(repo, span_root, &m.name) {
-            Ok(guard) => guard,
-            Err(e) => {
-                eprintln!("warning: cannot lock span `{}`: {}", m.name, e);
-                continue;
-            }
-        };
+        // `drift --fix` is dispatched under `Mode::Exclusive`, so the
+        // repository lock taken at dispatch (`cli/mod.rs` via
+        // `recovery_domain::acquire_writer`) already serializes this whole
+        // sweep — every span's read-modify-write below, across both the
+        // conflict-resolution branch and the clean-parse collapse/re-anchor
+        // pass — against concurrent `add`/`remove`/`replace`/`why` writers.
+        // No per-span lock is taken here.
 
         // --- Conflict detection and resolution ---
         // Read the raw content and check for Git textual conflict markers.

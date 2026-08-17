@@ -13,9 +13,6 @@
 use crate::support::TestRepo;
 
 use anyhow::Result;
-use git_span::cli::{AddArgs, AddFormat};
-use git_span::cli::commit::run_add;
-use git_span::cli::commit::run_replace;
 use serde_json::Value;
 
 /// Path of the span declaration inside the repo.
@@ -351,49 +348,54 @@ fn replace_new_range_exceeds_line_count_rejected() -> Result<()> {
 // Concurrency — no lost update
 // ---------------------------------------------------------------------------
 
-/// A replace and an add racing on the same span both land: the span lock
-/// serializes the read-modify-write cycles. Mirrors the
-/// `concurrent_add_race` model (no Barrier — see that test's note about
-/// the shared temp-file name).
+/// A replace and an add racing on the same span both land: the exclusive
+/// repository lock taken once at CLI dispatch (`cli/mod.rs` via
+/// `recovery_domain::acquire_writer`) serializes the two read-modify-write
+/// cycles. Mirrors the `concurrent_add_race` model — real `git-span`
+/// processes, not in-process library calls, since the lock lives at
+/// dispatch and a direct call to `run_replace`/`run_add` bypasses it
+/// entirely (no Barrier — see that test's note about the shared temp-file
+/// name).
 #[test]
 fn concurrent_replace_and_add_no_lost_update() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.span_stdout(["add", "test/race", "file1.txt#L1-L5"])?;
 
-    let repo_path = repo.path().to_path_buf();
-
     // Worker 1: replaces file1.txt#L1-L5 with file1.txt#L6-L10.
-    let rp1 = repo_path.clone();
-    let t1 = std::thread::spawn(move || -> Result<()> {
-        let gix_repo = gix::open(&rp1)?;
-        let args = git_span::cli::ReplaceArgs {
-            name: "test/race".into(),
-            old_anchor: "file1.txt#L1-L5".into(),
-            new_anchor: "file1.txt#L6-L10".into(),
-            format: git_span::cli::ReplaceFormat::Human,
-        };
-        run_replace(&gix_repo, args, ".span")?;
-        Ok(())
+    let path1 = repo.path().to_path_buf();
+    let t1 = std::thread::spawn(move || -> Result<std::process::Output> {
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_git-span"));
+        cmd.current_dir(&path1);
+        cmd.args([
+            "replace",
+            "test/race",
+            "file1.txt#L1-L5",
+            "file1.txt#L6-L10",
+        ]);
+        Ok(cmd.output()?)
     });
 
     // Worker 2: adds file2.txt#L1-L5 to the same span.
-    let rp2 = repo_path.clone();
-    let t2 = std::thread::spawn(move || -> Result<()> {
-        let gix_repo = gix::open(&rp2)?;
-        let args = AddArgs {
-            name: "test/race".into(),
-            anchors: vec!["file2.txt#L1-L5".into()],
-            at: None,
-            format: AddFormat::Human,
-        };
-        run_add(&gix_repo, args, ".span")?;
-        Ok(())
+    let path2 = repo.path().to_path_buf();
+    let t2 = std::thread::spawn(move || -> Result<std::process::Output> {
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_git-span"));
+        cmd.current_dir(&path2);
+        cmd.args(["add", "test/race", "file2.txt#L1-L5"]);
+        Ok(cmd.output()?)
     });
 
-    let r1 = t1.join().unwrap();
-    let r2 = t2.join().unwrap();
-    assert!(r1.is_ok(), "replace worker failed: {r1:?}");
-    assert!(r2.is_ok(), "add worker failed: {r2:?}");
+    let r1 = t1.join().unwrap()?;
+    let r2 = t2.join().unwrap()?;
+    assert!(
+        r1.status.success(),
+        "replace worker failed; stderr:\n{}",
+        String::from_utf8_lossy(&r1.stderr)
+    );
+    assert!(
+        r2.status.success(),
+        "add worker failed; stderr:\n{}",
+        String::from_utf8_lossy(&r2.stderr)
+    );
 
     let span = String::from_utf8(span_bytes(&repo, "test/race")?.unwrap())?;
     assert!(

@@ -2,9 +2,11 @@
 
 use crate::cli::format::{DESTRUCTIVE_TAG, IDEMPOTENT_TAG};
 use crate::cli::{CliError, DeleteArgs, DoctorArgs, NextStep};
+use crate::descriptor_authority::{DirectoryPolicy, SpanRootAuthority};
 use crate::span::structural::delete_span_in;
 use crate::span_file_reader::SpanFileReader;
 use anyhow::Result;
+use std::ffi::OsStr;
 
 pub fn run_delete(repo: &gix::Repository, args: DeleteArgs, span_root: &str) -> Result<i32> {
     delete_span_in(repo, &args.name, span_root).map_err(|e| CliError {
@@ -77,6 +79,19 @@ pub fn run_doctor(repo: &gix::Repository, _args: DoctorArgs, span_root: &str) ->
         findings.push(d.report_block(span_root));
     }
 
+    // Legacy lock cleanup: older builds of git-span serialized mutations
+    // with one advisory lock per span (`.span-lock-<hash>` at a
+    // hierarchical span's parent, `.<name>.lock` for a flat span, or
+    // `.<leaf>.context.lock` beside a leaf under context repair). All
+    // mutating commands now serialize through a single repository-wide
+    // lock under the git directory instead, so any of these files still
+    // sitting in the span root is leftover residue from before the
+    // upgrade. Doctor removes it — it is safe to delete unconditionally:
+    // doctor itself runs under that same shared repository lock, and no
+    // current build creates, waits on, or otherwise depends on these
+    // paths existing.
+    let removed_locks = clean_legacy_lock_files(repo, span_root)?;
+
     let exit = if findings.is_empty() {
         println!(
             "span doctor: {n_spans} {} checked, no findings.{IDEMPOTENT_TAG}",
@@ -105,9 +120,63 @@ pub fn run_doctor(repo: &gix::Repository, _args: DoctorArgs, span_root: &str) ->
         1
     };
 
+    if !removed_locks.is_empty() {
+        println!();
+        println!("## Cleanup");
+        println!();
+        for path in &removed_locks {
+            println!(
+                "- removed stale lock file `{path}` left by an earlier git-span; locks now live under the git directory"
+            );
+        }
+    }
+
     println!();
     report_store_diagnostics(repo);
     Ok(exit)
+}
+
+/// A file is legacy lock residue iff its basename matches `.span-lock-*`
+/// (the hierarchical-span lock), or starts with `.` and ends with `.lock`
+/// (`.<name>.lock` for a flat span, `.<leaf>.context.lock` for context
+/// repair). Never matches `.gitattributes`, `.gitignore`, `.hookignore`, or
+/// a `.*.tmp` atomic-write temp file.
+fn is_legacy_lock_name(name: &str) -> bool {
+    name.starts_with(".span-lock-") || (name.starts_with('.') && name.ends_with(".lock"))
+}
+
+/// Remove every legacy lock artifact under `span_root`, returning the
+/// `<span_root>/<relative path>` of each file removed, in a stable order.
+///
+/// Non-existence of the span root is not an error here — a repository with
+/// no `.span/` directory yet has nothing to clean.
+fn clean_legacy_lock_files(repo: &gix::Repository, span_root: &str) -> Result<Vec<String>> {
+    let Some(authority) = SpanRootAuthority::open_optional(crate::git::work_dir(repo)?, span_root)?
+    else {
+        return Ok(Vec::new());
+    };
+    let root = authority.root()?;
+
+    let mut entries = root.regular_file_names()?;
+    entries.sort();
+
+    let mut removed = Vec::new();
+    for relative in entries {
+        let Some(name) = relative.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !is_legacy_lock_name(name) {
+            continue;
+        }
+        let parent_dir = match relative.parent() {
+            Some(p) if !p.as_os_str().is_empty() => root.descend(p, DirectoryPolicy::Existing)?,
+            _ => root.try_clone()?,
+        };
+        parent_dir.unlink(OsStr::new(name))?;
+        parent_dir.sync()?;
+        removed.push(format!("{span_root}/{}", relative.display()));
+    }
+    Ok(removed)
 }
 
 /// Report the persistent store's on-disk size as a plain diagnostic, plus any
