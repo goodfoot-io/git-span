@@ -107,9 +107,14 @@ describe('renderDocsCorpus', () => {
     const overview = source.getPage(['overview']);
     expect(overview).toBeDefined();
     if (!overview) return;
-    expect(
-      corpus.startsWith(`---\ndescription: "${overview.data.description}"\n---\n\n# Introduction (${overview.url})`)
-    ).toBe(true);
+    const opener = corpus.split('\n').slice(0, 5);
+    expect(opener[0]).toBe('---');
+    expect(opener[2]).toBe('---');
+    expect(opener[4]).toBe(`# Introduction (${overview.url})`);
+    // The description line's content is asserted per page — with proper YAML
+    // unescaping — by the identity guard. Interpolating the raw string here
+    // would false-fail the moment a description contains `"` or `\`.
+    expect(opener[1]).toMatch(/^description: "(?:[^"\\]|\\.)*"$/);
   });
 
   it('contains all ten chapter headers in authored order', async () => {
