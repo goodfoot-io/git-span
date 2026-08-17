@@ -102,9 +102,14 @@ describe('docs corpus order', () => {
 });
 
 describe('renderDocsCorpus', () => {
-  it('opens with the overview chapter', async () => {
+  it('opens with the overview chapter and its description preamble', async () => {
     const corpus = await renderDocsCorpus();
-    expect(corpus.startsWith('# Introduction (/docs/overview)')).toBe(true);
+    const overview = source.getPage(['overview']);
+    expect(overview).toBeDefined();
+    if (!overview) return;
+    expect(
+      corpus.startsWith(`---\ndescription: "${overview.data.description}"\n---\n\n# Introduction (${overview.url})`)
+    ).toBe(true);
   });
 
   it('contains all ten chapter headers in authored order', async () => {

@@ -56,10 +56,11 @@ Every subcommand accepts:
 
 type PageParam = Parameters<typeof getLLMText>[0];
 
-function fakePage(processed: string | null): PageParam {
+function fakePage(processed: string | null, description?: string): PageParam {
   return {
     data: {
       title: 'Agent integration',
+      ...(description === undefined ? {} : { description }),
       getText: async () => processed
     },
     url: '/docs/agent-integration'
@@ -70,6 +71,16 @@ describe('getLLMText', () => {
   it('prefixes the title and canonical URL', async () => {
     const text = await getLLMText(fakePage('## Heading\n\nBody.\n'));
     expect(text).toBe('# Agent integration (/docs/agent-integration)\n\n## Heading\n\nBody.\n');
+  });
+
+  it('emits the description as a YAML double-quoted frontmatter preamble with quotes and backslashes escaped', async () => {
+    // `"` and `\` are the only characters YAML double-quoted style escapes;
+    // `:` needs no escaping and must round-trip verbatim.
+    const description = 'What a "quoted" \\ and colon: mean';
+    const text = await getLLMText(fakePage('## Heading\n\nBody.\n', description));
+    expect(text).toBe(
+      '---\ndescription: "What a \\"quoted\\" \\\\ and colon: mean"\n---\n\n# Agent integration (/docs/agent-integration)\n\n## Heading\n\nBody.\n'
+    );
   });
 
   it('strips the frontmatter preamble at the first dashed rule, keeping body rules', async () => {

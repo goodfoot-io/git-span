@@ -1,6 +1,8 @@
 import type { LoaderFunctionArgs } from 'react-router';
 import { describe, expect, it } from 'vitest';
 import { loader } from './page';
+import { RENAMED_DOC_SLUGS } from '~/lib/renamed-doc-slugs';
+import { source } from '~/lib/source';
 
 // Every published docs URL must resolve whether or not it carries a trailing
 // slash, and the two forms must settle on one canonical address. The loader's
@@ -79,6 +81,21 @@ describe('docs loader renamed-slug redirects', () => {
   it('redirects a renamed target with a trailing slash to the slashless address', async () => {
     await expectRedirect('guides/reconcile-drifted-spans/', 301, '/docs/guides/reconcile-drifted-spans');
   });
+});
+
+describe('docs loader rename policy', () => {
+  // The rename map is the policy: a published URL never starts 404ing. Every
+  // entry must 301 to its current address, and the target must actually
+  // resolve to a page — a rename added without a map entry, or an entry whose
+  // target no longer exists, fails here. `it.each` over the live map, so a
+  // second rename is covered automatically rather than hardcoded.
+  it.each(Object.entries(RENAMED_DOC_SLUGS))(
+    '301s the published URL %s to /docs/%s and the target resolves to a page',
+    async (oldSlug, newSlug) => {
+      await expectRedirect(oldSlug, 301, `/docs/${newSlug}`);
+      expect(source.getPage(newSlug.split('/'))).toBeDefined();
+    }
+  );
 });
 
 describe('docs loader bare /docs', () => {
