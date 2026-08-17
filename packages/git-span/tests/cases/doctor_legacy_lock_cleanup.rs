@@ -78,6 +78,70 @@ fn doctor_removes_legacy_lock_files_and_reports_them() -> Result<()> {
 }
 
 #[test]
+fn doctor_removes_a_legacy_lock_symlink_without_following_it() -> Result<()> {
+    if !support::symlinks_supported() {
+        return Ok(());
+    }
+
+    let repo = TestRepo::seeded()?;
+    repo.run_span(["add", "team/member", "file1.txt"])?;
+
+    // Cards worktree provisioning symlinks untracked files — including
+    // legacy lock files — from the main checkout into a worktree, so a
+    // lock-named symlink is a real-world shape here, not just a synthetic
+    // one. Point it at a file outside `.span/` entirely, so "the target
+    // survives" is unambiguous.
+    let target = repo.path().join("outside-span-target.txt");
+    std::fs::write(&target, "kept\n")?;
+    support::symlink_file(&target, &repo.path().join(".span/.linked.lock"))?;
+
+    // A symlink whose basename does not match the legacy-lock pattern must
+    // survive untouched — only lock-named entries are in scope. Dot-prefix
+    // it like the other config artifacts (`.gitignore`, `.hookignore`) so
+    // it is excluded from span-name scanning entirely, the same way
+    // `.foo.lock` is above — otherwise the span reader would try to parse
+    // its content as a span declaration, which is not what this test is
+    // about.
+    support::symlink_file(&target, &repo.path().join(".span/.other-config-artifact"))?;
+
+    let out = repo.run_span(["doctor"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        out.status.success(),
+        "doctor must exit 0 after cleaning a legacy lock symlink;\n\
+         exit: {:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        out.status.code()
+    );
+
+    assert!(
+        !repo.path().join(".span/.linked.lock").exists(),
+        "the lock symlink itself should have been removed;\nstdout:\n{stdout}"
+    );
+    assert!(
+        target.exists(),
+        "removing the lock symlink must never remove its target"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&target)?,
+        "kept\n",
+        "the symlink target's content must be untouched"
+    );
+    assert!(
+        repo.path().join(".span/.other-config-artifact").exists(),
+        "a symlink whose name is not a legacy-lock name must survive"
+    );
+
+    assert!(
+        stdout.contains("`.span/.linked.lock`"),
+        "stdout must name the removed lock symlink;\nstdout:\n{stdout}"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn doctor_omits_cleanup_section_when_nothing_is_stale() -> Result<()> {
     let repo = TestRepo::seeded()?;
 

@@ -2,11 +2,10 @@
 
 use crate::cli::format::{DESTRUCTIVE_TAG, IDEMPOTENT_TAG};
 use crate::cli::{CliError, DeleteArgs, DoctorArgs, NextStep};
-use crate::descriptor_authority::{DirectoryPolicy, SpanRootAuthority};
 use crate::span::structural::delete_span_in;
 use crate::span_file_reader::SpanFileReader;
 use anyhow::Result;
-use std::ffi::OsStr;
+use std::path::PathBuf;
 
 pub fn run_delete(repo: &gix::Repository, args: DeleteArgs, span_root: &str) -> Result<i32> {
     delete_span_in(repo, &args.name, span_root).map_err(|e| CliError {
@@ -90,7 +89,7 @@ pub fn run_doctor(repo: &gix::Repository, _args: DoctorArgs, span_root: &str) ->
     // doctor itself runs under that same shared repository lock, and no
     // current build creates, waits on, or otherwise depends on these
     // paths existing.
-    let removed_locks = clean_legacy_lock_files(repo, span_root)?;
+    let removed_locks = clean_legacy_lock_files(repo, span_root, &mut findings)?;
 
     let exit = if findings.is_empty() {
         println!(
@@ -148,34 +147,101 @@ fn is_legacy_lock_name(name: &str) -> bool {
 /// Remove every legacy lock artifact under `span_root`, returning the
 /// `<span_root>/<relative path>` of each file removed, in a stable order.
 ///
+/// This is best-effort maintenance, not a mutation, so it deliberately does
+/// not go through `SpanRootAuthority`/`RetainedDirectory`: that guard's
+/// fail-closed symlink refusal is correct for a read-modify-write on a
+/// span file, but here it would abort the whole audit over exactly the
+/// residue this function exists to clean up. Cards worktree provisioning
+/// symlinks untracked files — including these same legacy lock files —
+/// from the main checkout into each worktree, so a lock-named symlink is
+/// an expected real-world shape here, not a hazard. The walk instead uses
+/// plain `std::fs::read_dir` with `symlink_metadata` on each entry: it
+/// never follows a symlink and never descends into a symlinked directory,
+/// and a matching lock-named symlink is removed as a directory entry
+/// (`remove_file`, i.e. `unlink`) — the link only, never whatever it
+/// points at.
+///
+/// Any I/O error hit while walking or removing becomes a doctor finding
+/// (pushed onto `findings`, forcing exit 1) instead of aborting the audit
+/// early: doctor's job is to report the repository's health, and one
+/// unreadable or unremovable stray file must never suppress every other
+/// finding.
+///
 /// Non-existence of the span root is not an error here — a repository with
 /// no `.span/` directory yet has nothing to clean.
-fn clean_legacy_lock_files(repo: &gix::Repository, span_root: &str) -> Result<Vec<String>> {
-    let Some(authority) = SpanRootAuthority::open_optional(crate::git::work_dir(repo)?, span_root)?
-    else {
+fn clean_legacy_lock_files(
+    repo: &gix::Repository,
+    span_root: &str,
+    findings: &mut Vec<String>,
+) -> Result<Vec<String>> {
+    let root = crate::git::work_dir(repo)?.join(span_root);
+    if !root.exists() {
         return Ok(Vec::new());
-    };
-    let root = authority.root()?;
-
-    let mut entries = root.regular_file_names()?;
-    entries.sort();
+    }
 
     let mut removed = Vec::new();
-    for relative in entries {
-        let Some(name) = relative.file_name().and_then(|n| n.to_str()) else {
-            continue;
+    let mut stack = vec![(root, PathBuf::new())];
+    while let Some((dir, relative)) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(e) => {
+                findings.push(format!(
+                    "could not clean legacy lock file `{span_root}/{}`: {e}",
+                    relative.display()
+                ));
+                continue;
+            }
         };
-        if !is_legacy_lock_name(name) {
-            continue;
+        let mut children = Vec::new();
+        for entry in entries {
+            match entry {
+                Ok(entry) => children.push(entry),
+                Err(e) => findings.push(format!(
+                    "could not clean legacy lock file `{span_root}/{}`: {e}",
+                    relative.display()
+                )),
+            }
         }
-        let parent_dir = match relative.parent() {
-            Some(p) if !p.as_os_str().is_empty() => root.descend(p, DirectoryPolicy::Existing)?,
-            _ => root.try_clone()?,
-        };
-        parent_dir.unlink(OsStr::new(name))?;
-        parent_dir.sync()?;
-        removed.push(format!("{span_root}/{}", relative.display()));
+        children.sort_by_key(std::fs::DirEntry::file_name);
+
+        for entry in children {
+            let name = entry.file_name();
+            let entry_relative = relative.join(&name);
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            let metadata = match entry.path().symlink_metadata() {
+                Ok(m) => m,
+                Err(e) => {
+                    findings.push(format!(
+                        "could not clean legacy lock file `{span_root}/{}`: {e}",
+                        entry_relative.display()
+                    ));
+                    continue;
+                }
+            };
+            if metadata.is_dir() {
+                // Never descend into a symlinked directory — only a real
+                // directory can hold further legacy artifacts.
+                if !metadata.file_type().is_symlink() {
+                    stack.push((entry.path(), entry_relative));
+                }
+                continue;
+            }
+            if !is_legacy_lock_name(name) {
+                continue;
+            }
+            if let Err(e) = std::fs::remove_file(entry.path()) {
+                findings.push(format!(
+                    "could not clean legacy lock file `{span_root}/{}`: {e}",
+                    entry_relative.display()
+                ));
+                continue;
+            }
+            removed.push(format!("{span_root}/{}", entry_relative.display()));
+        }
     }
+    removed.sort();
     Ok(removed)
 }
 
