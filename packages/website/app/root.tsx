@@ -8,7 +8,7 @@ import { Links, Meta, Outlet, Scripts, ScrollRestoration, useLocation } from 're
 import { Footer } from '~/components/Footer';
 import { Header } from '~/components/Header';
 import { getDiscoveryLinks } from '~/lib/discovery-links';
-import { buildRouteMeta, DEFAULT_TITLE } from '~/lib/meta';
+import { buildRouteMeta, DEFAULT_DESCRIPTION, DEFAULT_TITLE } from '~/lib/meta';
 import globalStyles from '~/styles/global.css?url';
 
 export const links: LinksFunction = () => [
@@ -22,7 +22,7 @@ export const links: LinksFunction = () => [
 // entirely rather than merging with it, so any route that doesn't define its own `meta`
 // (current or future) inherits this array verbatim via `buildRouteMeta`.
 export const meta: MetaFunction = ({ location }) =>
-  buildRouteMeta({ title: DEFAULT_TITLE, pathname: location.pathname });
+  buildRouteMeta({ title: DEFAULT_TITLE, description: DEFAULT_DESCRIPTION, pathname: location.pathname });
 
 /**
  * The discovery relations for the active pathname as `<link>` elements —

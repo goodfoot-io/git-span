@@ -77,6 +77,16 @@ function rewriteCallouts(processed: string): string {
 /** A stringifier heading-id suffix token: `## Global options [#global-options]`. */
 const HEADING_ID = /^(#{1,6})\s+(.+?)\s+\[#[a-z0-9_-]+\]$/;
 
+/**
+ * Quote a value as a YAML double-quoted scalar, escaping the only two
+ * characters that style escapes: backslash and double quote. The Markdown
+ * representation's frontmatter description is then the same string the HTML
+ * meta description carries, byte for byte.
+ */
+function yamlDoubleQuote(value: string): string {
+  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
 /** A CommonMark fence line: up to three leading spaces, then a run of three
  * or more backticks or tildes. */
 const FENCE = /^ {0,3}(`{3,}|~{3,})/;
@@ -124,10 +134,15 @@ function stripHeadingIds(processed: string): string {
  * The body is the processed markdown with the stringifier's frontmatter
  * preamble stripped, `<Callout>` blocks rewritten as GFM alerts, heading-id
  * suffix tokens removed, and any leading blank lines the stringifier left
- * dropped, prefixed with the page title and canonical URL.
+ * dropped. When the page carries a description, the document opens with a
+ * two-line YAML frontmatter preamble carrying it, then the page title and
+ * canonical URL fold into the H1 — the Markdown representation and the HTML
+ * meta description then share one string by construction. A page without a
+ * description gets no preamble (the identity guard makes that case
+ * unreachable for the docs tree).
  *
  * @param page - The resolved docs page, or `undefined` when none matched.
- * @returns Markdown prefixed with the page title and canonical URL.
+ * @returns Markdown prefixed with the description preamble, page title, and canonical URL.
  * @summary LLM text for one docs page.
  */
 export async function getLLMText(page: DocsPage): Promise<string> {
@@ -135,5 +150,7 @@ export async function getLLMText(page: DocsPage): Promise<string> {
   const processed = await page.data.getText('processed');
   if (!processed) throw new Response('Processed text unavailable', { status: 500 });
   const body = stripHeadingIds(rewriteCallouts(stripFrontmatterPreamble(processed))).replace(/^\n+/, '');
-  return `# ${page.data.title} (${page.url})\n\n${body}`;
+  const description = page.data.description;
+  const preamble = description === undefined ? '' : `---\ndescription: ${yamlDoubleQuote(description)}\n---\n\n`;
+  return `${preamble}# ${page.data.title} (${page.url})\n\n${body}`;
 }
