@@ -1073,8 +1073,16 @@ mod unix {
                         path == definition
                             || (path.parent() == definition.parent()
                                 && path.file_name().is_some_and(|leaf| {
-                                    let leaf = leaf.to_string_lossy();
-                                    leaf.starts_with(".context-") || leaf.ends_with(".context.lock")
+                                    // Repair's own temp-file staging pattern
+                                    // (`.context-<operation_id>-<index>.tmp`,
+                                    // see context_repair.rs) is the only
+                                    // sibling churn expected alongside a
+                                    // watched definition file; per-entry
+                                    // `.context.lock` files were deleted in
+                                    // favor of the single repository-wide
+                                    // recovery-domain lock, so that suffix
+                                    // no longer appears here.
+                                    leaf.to_string_lossy().starts_with(".context-")
                                 }))
                     })
                 });
