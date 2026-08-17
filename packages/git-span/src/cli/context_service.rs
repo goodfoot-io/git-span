@@ -4,13 +4,13 @@ use super::ContextServiceArgs;
 use super::context::{
     CONTEXT_SCHEMA_VERSION, ContextAnchorIdentity, ContextDocument, ContextMutation,
     ContextOverlap, ContextOverlapBasis, ContextScope, ContextSpan, MAX_CONTEXT_JSON_BYTES,
-    build_service_seed, context_intersection, normalize_service_scopes,
+    build_service_seed, context_intersection,
 };
-use anyhow::{Context, Result, anyhow, bail, ensure};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::path::PathBuf;
+use std::time::Duration;
 
 const PROTOCOL_VERSION: u32 = 1;
 const MAX_REQUEST_BYTES: usize = 256 * 1024;
@@ -205,6 +205,8 @@ impl Generation {
 #[cfg(target_os = "linux")]
 mod unix {
     use super::*;
+    use super::super::context::normalize_service_scopes;
+    use anyhow::ensure;
     use fs4::fs_std::FileExt;
     use std::ffi::CString;
     use std::fs::File;
@@ -213,10 +215,12 @@ mod unix {
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::{UnixListener, UnixStream};
+    use std::path::Path;
     use std::process::{Command, Stdio};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::thread;
+    use std::time::Instant;
 
     #[derive(Debug)]
     struct WatchDrain {

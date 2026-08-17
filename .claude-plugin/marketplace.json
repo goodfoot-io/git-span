@@ -12,7 +12,7 @@
       "name": "git-span",
       "source": "./plugins-claude/git-span",
       "description": "Anchor implicit semantic dependencies between line ranges (or whole files) in code or prose, each carrying compact decision-relevant context shared by its anchors.",
-      "version": "1.1.6",
+      "version": "1.1.7",
       "category": "git",
       "keywords": [
         "git",

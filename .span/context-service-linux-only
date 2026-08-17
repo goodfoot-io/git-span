@@ -1,0 +1,4 @@
+packages/git-span/README.md#L19-L19 rk64:918499672751a618
+packages/git-span/src/cli/context_service.rs#L205-L205 rk64:b23bd384775ff310
+
+The private context service is gated to Linux because it depends on inotify; README's warm-query performance claims and acceptance-harness description hold only under this gate, so widening or narrowing it must update the doc in the same change.

@@ -168,7 +168,11 @@ impl RetainedDirectory {
                         };
                         let component_c = component_c_string(component)?;
                         let result = unsafe {
-                            libc::mkdirat(current.as_raw_fd(), component_c.as_ptr(), mode)
+                            libc::mkdirat(
+                                current.as_raw_fd(),
+                                component_c.as_ptr(),
+                                mode as libc::mode_t,
+                            )
                         };
                         if result < 0 {
                             let mkdir_error = std::io::Error::last_os_error();
