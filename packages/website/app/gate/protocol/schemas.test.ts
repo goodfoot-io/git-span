@@ -9,7 +9,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import { readGateServerInfo } from '~/gate/globalSetup';
 import { SITE_URL } from '~/lib/meta';
 
@@ -26,13 +26,21 @@ const manifest = new Map(
     })
 );
 
+/** Every resource this suite promises to verify, independent of what actually ran. */
+const EXPECTED_RESOURCES = [...manifest.keys()];
+
+/** Per-resource outcome, keyed by filename, filled in as cases run. */
+const outcomes = new Map<string, string>();
+
 describe('published CLI JSON Schemas', () => {
   it('has a manifest listing schemas to check', () => {
     expect(manifest.size).toBeGreaterThan(0);
   });
 
-  it.each([...manifest.keys()])('GET /schemas/cli/v1/%s', async (filename) => {
+  it.each(EXPECTED_RESOURCES)('GET /schemas/cli/v1/%s', async (filename) => {
     const urlPath = `/schemas/cli/v1/${filename}`;
+    outcomes.set(filename, `FAIL — did not complete verification of ${urlPath}`);
+
     const response = await fetch(`${baseUrl}${urlPath}`);
     expect(response.status).toBe(200);
     expect(response.headers.get('Content-Type')).toBe('application/json');
@@ -49,5 +57,20 @@ describe('published CLI JSON Schemas', () => {
     expect(idResponse.status).toBe(200);
     const idBytes = Buffer.from(await idResponse.arrayBuffer());
     expect(Buffer.compare(idBytes, bytes), `${filename}: $id does not resolve to identical bytes`).toBe(0);
+
+    outcomes.set(filename, `VERIFIED — sha256 matches manifest, $id resolves to identical bytes`);
+  });
+
+  // Printed on every run, pass or fail — see code-equivalence.test.ts for the
+  // rationale. `process.stdout.write`, not `console.log`: vitest swallows
+  // test-side `console` output on a passing run.
+  afterAll(() => {
+    const lines = [`Published CLI JSON Schemas: ${EXPECTED_RESOURCES.length} resource(s) against ${baseUrl}`];
+    for (const filename of EXPECTED_RESOURCES) {
+      lines.push(
+        `  /schemas/cli/v1/${filename}: ${outcomes.get(filename) ?? 'NOT REACHED — case did not record an outcome'}`
+      );
+    }
+    process.stdout.write(`${lines.join('\n')}\n`);
   });
 });

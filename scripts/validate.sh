@@ -34,10 +34,14 @@ exec 9>"$lock_path"
 
 acquire_lock() {
   if flock -x -n 9; then
-    # Record the holder (pid, host, worktree, start time) so blocked runs can
-    # point at the worktree in question. Written atomically via tmp + mv while
-    # the lock is held, so readers always see a complete record.
-    printf '%s\n' "$$" "${HOSTNAME:-unknown}" "$PWD" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$owner_path.tmp"
+    # Record the holder (pid, host, worktree, start time, kind) so blocked
+    # runs can point at the worktree in question and name what actually holds
+    # the lock. Written atomically via tmp + mv while the lock is held, so
+    # readers always see a complete record. "kind" is "validate" here, and
+    # "gate" when scripts/../packages/website/scripts/with-gate-lock.sh is the
+    # writer — the two scripts share this lock and this owner-file format, so
+    # a reader must not assume its own kind is the one that wrote the file.
+    printf '%s\n' "$$" "${HOSTNAME:-unknown}" "$PWD" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "validate" > "$owner_path.tmp"
     mv "$owner_path.tmp" "$owner_path"
     return 0
   fi
@@ -45,14 +49,19 @@ acquire_lock() {
 }
 
 holder_info() {
-  local pid="" host="" worktree="" started=""
+  local pid="" host="" worktree="" started="" kind=""
   if [ -f "$owner_path" ]; then
     pid="$(sed -n '1p' "$owner_path")"
     host="$(sed -n '2p' "$owner_path")"
     worktree="$(sed -n '3p' "$owner_path")"
     started="$(sed -n '4p' "$owner_path")"
+    kind="$(sed -n '5p' "$owner_path")"
   fi
-  echo "another validation is already running (pid ${pid:-unknown} on ${host:-unknown}, started ${started:-unknown})"
+  if [ "$kind" = "gate" ]; then
+    echo "a website gate run is using this worktree's build (pid ${pid:-unknown} on ${host:-unknown}, started ${started:-unknown})"
+  else
+    echo "another validation is already running (pid ${pid:-unknown} on ${host:-unknown}, started ${started:-unknown})"
+  fi
   [ -n "$worktree" ] && echo "  worktree: $worktree"
 }
 

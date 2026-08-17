@@ -36,25 +36,31 @@ gate_owner_path="$common_dir/website-gate.lock.owner"
 validate_lock_path="$common_dir/validate.lock"
 validate_owner_path="$common_dir/validate.lock.owner"
 
-# Record the holder (pid, host, worktree, start time) so blocked runs can point
-# at the worktree in question. Written atomically via tmp + mv while the lock is
-# held, so readers always see a complete record. Same line format as
-# scripts/validate.sh writes, so either owner file reads the same way.
+# Record the holder (pid, host, worktree, start time, kind) so blocked runs
+# can point at the worktree in question and name what actually holds the
+# lock. Written atomically via tmp + mv while the lock is held, so readers
+# always see a complete record. Same line format as scripts/validate.sh
+# writes (including the trailing "kind" line), so either owner file reads the
+# same way regardless of which script wrote it — a validate.lock.owner
+# written here carries kind "gate", not "validate", so validate.sh's refusal
+# message names the actual holder instead of assuming it's always another
+# validation.
 claim_owner() {
-  printf '%s\n' "$$" "${HOSTNAME:-unknown}" "$PWD" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$1.tmp"
+  printf '%s\n' "$$" "${HOSTNAME:-unknown}" "$PWD" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "gate" > "$1.tmp"
   mv "$1.tmp" "$1"
 }
 
 report_holder() {
   local owner_file="$1"
-  local pid="" host="" worktree="" started=""
+  local pid="" host="" worktree="" started="" kind=""
   if [ -f "$owner_file" ]; then
     pid="$(sed -n '1p' "$owner_file")"
     host="$(sed -n '2p' "$owner_file")"
     worktree="$(sed -n '3p' "$owner_file")"
     started="$(sed -n '4p' "$owner_file")"
+    kind="$(sed -n '5p' "$owner_file")"
   fi
-  echo "  holder: pid ${pid:-unknown} on ${host:-unknown}, started ${started:-unknown}" >&2
+  echo "  holder: ${kind:-unknown} run, pid ${pid:-unknown} on ${host:-unknown}, started ${started:-unknown}" >&2
   [ -n "$worktree" ] && echo "  worktree: $worktree" >&2
   return 0
 }

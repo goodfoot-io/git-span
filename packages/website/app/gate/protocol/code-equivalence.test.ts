@@ -89,11 +89,28 @@ describe('HTML/Markdown code-sample equivalence', () => {
   // bypasses the interception and reaches stdout unconditionally.
   afterAll(() => {
     const lines = [`HTML/Markdown code-sample equivalence: ${pages.length} page(s) against ${baseUrl}`];
+    let verifiedCount = 0;
+    let failedCount = 0;
+    let skippedCount = 0;
+    let notReachedCount = 0;
     for (const page of pages) {
-      lines.push(`  ${page.url}: ${outcomes.get(page.url) ?? 'NOT REACHED — case did not record an outcome'}`);
+      const outcome = outcomes.get(page.url) ?? 'NOT REACHED — case did not record an outcome';
+      lines.push(`  ${page.url}: ${outcome}`);
+      // Tally by the verdict the case actually recorded, not by extraction
+      // non-emptiness: a page that produced samples on both sides but then
+      // failed drift must not count toward "verified" — a summary line built
+      // from the wrong signal reads as reassuring on a run where the drift
+      // check found real breakage.
+      if (outcome.startsWith('VERIFIED')) verifiedCount++;
+      else if (outcome.startsWith('FAIL')) failedCount++;
+      else if (outcome.startsWith('SKIP')) skippedCount++;
+      else notReachedCount++;
     }
-    const verified = [...sampleCounts].filter(([, counts]) => counts.html > 0 && counts.markdown > 0).length;
-    lines.push(`  ${verified} of ${pages.length} page(s) verified with at least one code sample on both sides`);
+    lines.push(
+      `  ${verifiedCount} verified, ${failedCount} failed, ${skippedCount} skipped` +
+        (notReachedCount > 0 ? `, ${notReachedCount} not reached` : '') +
+        ` — ${pages.length} page(s) total`
+    );
     process.stdout.write(`${lines.join('\n')}\n`);
   });
 
