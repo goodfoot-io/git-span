@@ -187,6 +187,15 @@ fn direct_sync_child_stamps_the_store() -> Result<()> {
         |row| row.get(0),
     )?;
     assert_eq!(version, "9.9.9", "the cli finding must record the newer tag");
+
+    // The child also appends its one diagnostic line to the log beside the
+    // store — the audit trail that separates "up to date" from "check
+    // silently broken".
+    let log = std::fs::read_to_string(db.with_extension("log"))?;
+    assert!(
+        log.contains("checked at") && log.contains("cli=9.9.9"),
+        "the child must log its outcome with the findings; log:\n{log}"
+    );
     Ok(())
 }
 

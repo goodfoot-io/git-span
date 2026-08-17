@@ -24,9 +24,11 @@
 //! ```
 //!
 //! One findings row per tool keeps "a third tool is a new implementation"
-//! true at the schema level too — no column churn. Writes: the child stamps
-//! `last_checked_at` (always) plus findings (success only); the foreground
-//! stamps `last_reminded_at`. Concurrent opens are safe by WAL + a 1s busy
+//! true at the schema level too — no column churn. Writes: the child claims
+//! the check slot before fetching (stamps `last_checked_at` alone,
+//! preserving findings and the reminder stamp), then stamps `last_checked_at`
+//! plus findings (success only); the foreground claims the print slot
+//! (`last_reminded_at`). Concurrent opens are safe by WAL + a 1s busy
 //! timeout.
 
 use std::collections::BTreeMap;
@@ -195,24 +197,55 @@ impl UpdateCheckStore {
         tx.commit().ok()
     }
 
-    /// Stamp `last_reminded_at`. Called by the foreground immediately after
-    /// printing the note.
-    pub fn write_reminded(&self, now: i64) -> Option<()> {
+    /// Stamp `last_checked_at` alone — the child's pre-fetch claim.
+    /// Findings and `last_reminded_at` are untouched (the `ON CONFLICT`
+    /// updates `last_checked_at` only, and no findings rows are written), so
+    /// a claim can never destroy a stored finding or reset a reminder stamp.
+    pub fn stamp_checked(&self, now: i64) -> Option<()> {
         self.conn
             .execute(
                 "INSERT INTO update_check (id, last_checked_at, last_reminded_at) \
-                 VALUES (1, 0, ?1) \
-                 ON CONFLICT(id) DO UPDATE SET last_reminded_at = excluded.last_reminded_at",
+                 VALUES (1, ?1, 0) \
+                 ON CONFLICT(id) DO UPDATE SET last_checked_at = excluded.last_checked_at",
                 [now],
             )
             .ok()?;
         Some(())
+    }
+
+    /// Atomically claim the reminder print slot: set `last_reminded_at` to
+    /// `now` only when it still equals `expected` — the value the reminder
+    /// decision was computed from. Returns `Some(true)` when this caller won
+    /// the claim (and must print) and `Some(false)` when a concurrent TTY
+    /// run claimed first (print nothing). The single conditional `UPDATE` is
+    /// atomic in SQLite, so exactly one of the racers sees a changed row —
+    /// this is what actually closes the two-concurrent-TTY double-print
+    /// window; a print-then-stamp order leaves it open between the read and
+    /// the stamp. The row exists whenever a reminder can fire (the decision
+    /// requires stored findings, which `write_checked` wrote alongside the
+    /// row), so an `UPDATE` suffices — no `INSERT … ON CONFLICT` fallback.
+    pub fn claim_reminded(&self, expected: i64, now: i64) -> Option<bool> {
+        let changed = self
+            .conn
+            .execute(
+                "UPDATE update_check SET last_reminded_at = ?1 \
+                 WHERE id = 1 AND last_reminded_at = ?2",
+                [now, expected],
+            )
+            .ok()?;
+        Some(changed == 1)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Serializes the env-mutating cases in this module: `set_var` /
+    /// `remove_var` mutate process-global state, and the test harness runs
+    /// cases in parallel — two cases racing on the same variables would
+    /// flake nondeterministically. Env-touching cases take this lock.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn findings(tools: &[(&str, &str)]) -> BTreeMap<String, Version> {
         tools
@@ -228,12 +261,68 @@ mod tests {
         assert!(store.read_state().is_none(), "fresh store has no state");
 
         let _ = store.write_checked(1_700_000_000, &findings(&[("cli", "1.1.4")]));
-        let _ = store.write_reminded(1_700_000_100);
+        let claimed = store.claim_reminded(0, 1_700_000_100).expect("claim");
+        assert!(claimed, "the first claim against a fresh row must win");
 
         let state = store.read_state().expect("state after writes");
         assert_eq!(state.last_checked_at, 1_700_000_000);
         assert_eq!(state.last_reminded_at, 1_700_000_100);
         assert_eq!(state.findings.get("cli"), Some(&Version::new(1, 1, 4)));
+    }
+
+    #[test]
+    fn concurrent_reminder_claim_only_one_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = UpdateCheckStore::open_at(&dir.path().join(DB_BASENAME)).expect("open");
+        let _ = store.write_checked(1_700_000_000, &findings(&[("cli", "1.1.4")]));
+
+        // Two foregrounds read the same state (last_reminded_at = 0) and
+        // race to claim the print slot. Exactly one wins; the loser must not
+        // print.
+        let first = store.claim_reminded(0, 1_700_000_100).expect("claim");
+        let second = store.claim_reminded(0, 1_700_000_101).expect("claim");
+        assert!(first, "one racer wins");
+        assert!(!second, "the second racer must lose against the same expected value");
+
+        let state = store.read_state().expect("state");
+        assert_eq!(state.last_reminded_at, 1_700_000_100, "the winner's stamp holds");
+    }
+
+    #[test]
+    fn stamp_checked_creates_the_row_on_a_fresh_store() {
+        // The fresh-install burst: the first child claims the check slot
+        // BEFORE fetching, so invocations that arrive while the fetch is in
+        // flight see a same-day stamp and spawn nothing further.
+        let dir = tempfile::tempdir().unwrap();
+        let store = UpdateCheckStore::open_at(&dir.path().join(DB_BASENAME)).expect("open");
+        assert!(store.read_state().is_none(), "fresh store has no state");
+
+        let _ = store.stamp_checked(1_700_000_000).expect("stamp");
+        let state = store.read_state().expect("state");
+        assert_eq!(state.last_checked_at, 1_700_000_000);
+        assert_eq!(state.last_reminded_at, 0);
+        assert!(state.findings.is_empty());
+    }
+
+    #[test]
+    fn stamp_checked_preserves_findings_and_reminder() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = UpdateCheckStore::open_at(&dir.path().join(DB_BASENAME)).expect("open");
+        let _ = store.write_checked(1_700_000_000, &findings(&[("cli", "1.1.4")]));
+        let _ = store.claim_reminded(0, 1_700_000_100);
+
+        let _ = store.stamp_checked(1_700_000_200).expect("stamp");
+        let state = store.read_state().expect("state");
+        assert_eq!(state.last_checked_at, 1_700_000_200, "the claim refreshes the check");
+        assert_eq!(
+            state.last_reminded_at, 1_700_000_100,
+            "the reminder stamp survives the pre-fetch claim"
+        );
+        assert_eq!(
+            state.findings.get("cli"),
+            Some(&Version::new(1, 1, 4)),
+            "stored findings survive the pre-fetch claim"
+        );
     }
 
     #[test]
@@ -270,6 +359,7 @@ mod tests {
 
     #[test]
     fn no_home_disables() {
+        let _guard = ENV_LOCK.lock().unwrap();
         unsafe {
             std::env::remove_var("GIT_SPAN_UPDATE_CHECK_DB");
             std::env::remove_var("GIT_SPAN_CACHE_HOME");
@@ -286,6 +376,7 @@ mod tests {
 
     #[test]
     fn db_path_precedence() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let explicit_dir = tempfile::tempdir().unwrap();
         let explicit = explicit_dir.path().join("explicit.db");
         let cache_home_dir = tempfile::tempdir().unwrap();

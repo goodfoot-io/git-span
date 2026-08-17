@@ -8,9 +8,11 @@
 //!   the agent hooks.
 //! * `machine_flags` — the parsed command's *effective output format* is
 //!   machine-readable: `list --porcelain` / `--oneline`; `drift` / `add` /
-//!   `replace` / `why` / `resolve` / `tree` / `history` with `--format`
-//!   other than human; `context` always (its `ContextFormat` has only a
-//!   `Json` variant); `merge-driver` always (git's own protocol).
+//!   `replace` / `why` (write mode) / `resolve` / `tree` / `history` with
+//!   `--format` other than human — `why` in read mode always prints prose,
+//!   so an interactive read-mode invocation stays interactive; `context`
+//!   always (its `ContextFormat` has only a `Json` variant);
+//!   `merge-driver` always (git's own protocol).
 //! * `stdout_is_tty` — false when stdout is not a terminal (extension,
 //!   mini-swe-agent, scripts, git-hook invocations); the fail-closed
 //!   backstop for anything the typed match misses.
@@ -51,7 +53,10 @@ fn is_machine_output(command: &Commands) -> bool {
         Commands::Drift(args) => args.format != DriftFormat::Human,
         Commands::Add(args) => args.format != AddFormat::Human,
         Commands::Replace(args) => args.format != ReplaceFormat::Human,
-        Commands::Why(args) => args.format != WhyFormat::Human,
+        // `--format` applies to the write mode only — read mode always
+        // prints prose, so a read-mode `why --format json` is an
+        // interactive human invocation and must not suppress the note.
+        Commands::Why(args) => args.why_text.is_some() && args.format != WhyFormat::Human,
         Commands::Resolve(args) => args.format != ResolveFormat::Human,
         Commands::Tree(args) => args.format != TreeFormat::Human,
         Commands::History(args) => args.format != HistoryFormat::Human,
@@ -103,6 +108,12 @@ mod tests {
     use super::*;
     use clap::Parser;
 
+    /// Serializes the env-mutating cases in this module: `set_var` /
+    /// `remove_var` mutate process-global state, and the test harness runs
+    /// cases in parallel — two cases racing on the same variables would
+    /// flake nondeterministically. Env-touching cases take this lock.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// Parse argv (with the leading binary name) and compute the signals.
     fn signals_for_argv(argv: &[&str], tty: bool) -> SuppressionSignals {
         let cli = Cli::try_parse_from(argv).expect("argv must parse");
@@ -111,6 +122,7 @@ mod tests {
 
     #[test]
     fn env_disable_var_suppresses_interactive_use() {
+        let _guard = ENV_LOCK.lock().unwrap();
         unsafe {
             std::env::set_var("GIT_SPAN_DISABLE_UPDATE_CHECK", "1");
         }
@@ -121,6 +133,7 @@ mod tests {
 
     #[test]
     fn non_tty_stdout_suppresses() {
+        let _guard = ENV_LOCK.lock().unwrap();
         unsafe {
             std::env::remove_var("GIT_SPAN_DISABLE_UPDATE_CHECK");
         }
@@ -131,6 +144,7 @@ mod tests {
 
     #[test]
     fn list_porcelain_is_machine_output() {
+        let _guard = ENV_LOCK.lock().unwrap();
         unsafe {
             std::env::remove_var("GIT_SPAN_DISABLE_UPDATE_CHECK");
         }
@@ -219,6 +233,7 @@ mod tests {
 
     #[test]
     fn human_formats_are_not_machine_output() {
+        let _guard = ENV_LOCK.lock().unwrap();
         unsafe {
             std::env::remove_var("GIT_SPAN_DISABLE_UPDATE_CHECK");
         }
@@ -230,6 +245,10 @@ mod tests {
             &["git-span", "remove", "s", "f.txt"][..],
             &["git-span", "replace", "s", "a.txt", "b.txt"][..],
             &["git-span", "why", "s"][..],
+            // Read-mode `why` always prints prose even with `--format json`
+            // — the flag applies to the write mode only, so the invocation
+            // stays interactive and must not suppress the note.
+            &["git-span", "why", "s", "--format", "json"][..],
             &["git-span", "delete", "s"][..],
             &["git-span", "doctor"][..],
             &["git-span", "tree", "f.txt"][..],
@@ -245,6 +264,7 @@ mod tests {
 
     #[test]
     fn interactive_happy_path_is_not_suppressed() {
+        let _guard = ENV_LOCK.lock().unwrap();
         unsafe {
             std::env::remove_var("GIT_SPAN_DISABLE_UPDATE_CHECK");
         }

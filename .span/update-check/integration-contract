@@ -1,0 +1,12 @@
+packages/git-span/src/cli/update_check.rs rk64:fedc72e928f39239
+packages/git-span/src/main.rs#L21-L39 rk64:fdfcd7d53468917f
+packages/git-span/src/update_check/message.rs#L40-L40 rk64:96eee8be3fdbee69
+packages/git-span/src/update_check/mod.rs#L139-L190 rk64:77fe7373aa5264bf
+packages/git-span/src/update_check/mod.rs#L273-L283 rk64:1daaa3cde354c22c
+packages/git-span/src/update_check/mod.rs#L289-L314 rk64:fee7d3366ca7d28c
+packages/git-span/src/update_check/store.rs#L12-L24 rk64:4d900497cbd71cde
+packages/git-span/src/update_check/suppress.rs#L91-L104 rk64:290bf05bd693bccc
+packages/git-span/tests/cases/update_check.rs rk64:5c6a1411e2e5b1b6
+packages/git-span/tests/fixtures/update-check-releases.json rk64:aa7a436abc6e38c1
+
+The integration cases are the pinned no-mock contract for the update check: NOTE_HEADING must equal the heading message::render emits, the synthetic payload must stay faithful to the committed GitHub Releases fixture, the direct-sync case pins the child's stamp-and-log behavior against the store schema and the log-line format, and the env seams they set must name exactly the variables GIT_SPAN_UPDATE_CHECK_URL, GIT_SPAN_UPDATE_CHECK_DB, GIT_SPAN_PLUGIN_CACHE_ROOT, and GIT_SPAN_DISABLE_UPDATE_CHECK that the check resolves; the PTY cases verify each suppression layer and the TTY cadence end-to-end, the hidden __update-check case pins the child's synchronous exit-0 handler, and the exit-code case pins that the check never shifts the 0/1/2 split main.rs fixes.

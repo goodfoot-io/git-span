@@ -10,10 +10,15 @@
 //! install-time marketplace version (or `local` on some Codex builds) —
 //! never truth. Each checker therefore reads every cached copy's own
 //! `plugin.json` (`name == "git-span"`), parses `version` as semver, and
-//! reports the max. Unparseable or absent copies are ignored (fail-closed:
-//! no finding rather than a wrong one). Scan roots honor
-//! `CLAUDE_CONFIG_DIR` / `CODEX_HOME` when set;
-//! `GIT_SPAN_PLUGIN_CACHE_ROOT` overrides the base for tests.
+//! reports the max **among copies marked in use** — a copy whose version
+//! dir carries an `.in_use` marker is the one the host actually runs;
+//! orphaned newer copies would otherwise both misstate the version the
+//! user is on and mask real staleness. When no copy is marked in use
+//! (fresh installs, hosts that never orphan), the max over all copies is
+//! the fallback. Unparseable or absent copies are ignored (fail-closed: no
+//! finding rather than a wrong one). Scan roots honor `CLAUDE_CONFIG_DIR` /
+//! `CODEX_HOME` when set; `GIT_SPAN_PLUGIN_CACHE_ROOT` overrides the base
+//! for tests.
 
 use std::path::Path;
 
@@ -38,13 +43,15 @@ struct PluginMeta {
 
 /// Bounded depth-first walk of `cache_root` for cached plugin copies,
 /// returning the highest semver among copies whose manifest names
-/// `git-span`. `None` on an absent root, no matching copy, or any read /
-/// parse failure along the way (fail-closed: no finding rather than a
-/// wrong one).
+/// `git-span`, preferring copies marked in use (an `.in_use` entry in the
+/// version dir) — see the module docs. `None` on an absent root, no
+/// matching copy, or any read / parse failure along the way (fail-closed:
+/// no finding rather than a wrong one).
 fn find_cached_plugin_version(cache_root: &Path) -> Option<Version> {
-    let mut best: Option<Version> = None;
-    walk_plugin_copies(cache_root, MAX_DEPTH, &mut best);
-    best
+    let mut best_in_use: Option<Version> = None;
+    let mut best_any: Option<Version> = None;
+    walk_plugin_copies(cache_root, MAX_DEPTH, &mut best_in_use, &mut best_any);
+    best_in_use.or(best_any)
 }
 
 /// Recursive walk body. Files named exactly `plugin.json` whose grandparent
@@ -52,8 +59,15 @@ fn find_cached_plugin_version(cache_root: &Path) -> Option<Version> {
 /// manifests; directory names are never used as the *reported* version —
 /// the manifest's own `version` field is the only truth. A non-semver
 /// version dir (`local`, from local-path marketplaces) gates the whole copy
-/// out: it is the user's own dev snapshot, never an update target.
-fn walk_plugin_copies(dir: &Path, depth: usize, best: &mut Option<Version>) {
+/// out: it is the user's own dev snapshot, never an update target. Copies
+/// with an `.in_use` entry in their version dir feed `best_in_use`; every
+/// copy feeds `best_any`.
+fn walk_plugin_copies(
+    dir: &Path,
+    depth: usize,
+    best_in_use: &mut Option<Version>,
+    best_any: &mut Option<Version>,
+) {
     if depth == 0 {
         return;
     }
@@ -69,7 +83,7 @@ fn walk_plugin_copies(dir: &Path, depth: usize, best: &mut Option<Version>) {
         }
         let path = entry.path();
         if file_type.is_dir() {
-            walk_plugin_copies(&path, depth - 1, best);
+            walk_plugin_copies(&path, depth - 1, best_in_use, best_any);
         } else if path.file_name().is_some_and(|name| name == "plugin.json") {
             let Some(version_dir) = path.parent().and_then(Path::parent) else {
                 continue;
@@ -81,10 +95,19 @@ fn walk_plugin_copies(dir: &Path, depth: usize, best: &mut Option<Version>) {
             if Version::parse(version_dir_name).is_err() {
                 continue;
             }
-            if let Some(version) = read_cached_plugin_version(&path)
-                && best.as_ref().is_none_or(|current| version > *current)
+            let Some(version) = read_cached_plugin_version(&path) else {
+                continue;
+            };
+            if best_any.as_ref().is_none_or(|current| version > *current) {
+                *best_any = Some(version.clone());
+            }
+            // The `.in_use` marker is an entry (a directory on observed
+            // hosts) directly inside the version dir; existence is the
+            // signal, not its type.
+            if version_dir.join(".in_use").exists()
+                && best_in_use.as_ref().is_none_or(|current| version > *current)
             {
-                *best = Some(version);
+                *best_in_use = Some(version);
             }
         }
     }
@@ -173,6 +196,51 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_plugin_copy(dir.path(), ".claude-plugin", "1.0.134", "git-span", "1.0.134");
         write_plugin_copy(dir.path(), ".claude-plugin", "1.0.145", "git-span", "1.0.145");
+        assert_eq!(
+            ClaudeCodeChecker.find_cached_version(dir.path()),
+            Some(Version::new(1, 0, 145))
+        );
+    }
+
+    #[test]
+    fn in_use_copy_beats_orphaned_newer_copy() {
+        // The observed real-machine state: the older copy (1.0.134) carries
+        // the `.in_use` marker — it is the one the host runs — while a newer
+        // orphan (1.0.145) sits alongside. The in-use copy's version is the
+        // user's truth; the orphan must not mask staleness.
+        let dir = tempfile::tempdir().unwrap();
+        write_plugin_copy(dir.path(), ".claude-plugin", "1.0.145", "git-span", "1.0.145");
+        write_plugin_copy(dir.path(), ".claude-plugin", "1.0.134", "git-span", "1.0.134");
+        fs::create_dir(
+            dir.path()
+                .join("git-span")
+                .join("git-span")
+                .join("1.0.134")
+                .join(".in_use"),
+        )
+        .unwrap();
+        assert_eq!(
+            ClaudeCodeChecker.find_cached_version(dir.path()),
+            Some(Version::new(1, 0, 134))
+        );
+    }
+
+    #[test]
+    fn orphaned_at_alone_does_not_count_as_in_use() {
+        // `.orphaned_at` marks a copy as orphaned, never active — with no
+        // `.in_use` anywhere, the max-over-all fallback applies.
+        let dir = tempfile::tempdir().unwrap();
+        write_plugin_copy(dir.path(), ".claude-plugin", "1.0.145", "git-span", "1.0.145");
+        write_plugin_copy(dir.path(), ".claude-plugin", "1.0.134", "git-span", "1.0.134");
+        fs::write(
+            dir.path()
+                .join("git-span")
+                .join("git-span")
+                .join("1.0.134")
+                .join(".orphaned_at"),
+            b"1700000000",
+        )
+        .unwrap();
         assert_eq!(
             ClaudeCodeChecker.find_cached_version(dir.path()),
             Some(Version::new(1, 0, 145))

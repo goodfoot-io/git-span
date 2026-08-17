@@ -1,0 +1,7 @@
+packages/git-span/src/cli/context_service.rs#L763-L791 rk64:d4d5cb373e95ef4a
+packages/git-span/src/cli/mod.rs#L668-L672 rk64:00eea0bd49c31c5d
+packages/git-span/src/cli/mod.rs#L736-L741 rk64:4844e9c978107ce7
+packages/git-span/src/update_check/mod.rs#L60-L128 rk64:2d8da38270df9a51
+packages/git-span/src/update_check/mod.rs#L212-L272 rk64:ac9a9ad45ed1f676
+
+dispatch() engages the check only after span-root resolution and the recovery-domain guard and reminds only on a command's Ok path, so a command failing before that point neither spawns the detached child nor prints a note, and spawn_detached_child mirrors the context-service spawn shape (current exe, hidden subcommand, stdin null, stdout+stderr appended to the run log, setsid session detach); a change to either the placement or the spawn shape must land identically on both surfaces.

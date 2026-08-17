@@ -30,12 +30,14 @@ fn update_command(tool: &str) -> Option<&'static str> {
 /// Render the reminder note: what is behind, the version each tool is on,
 /// and the exact command that brings it current. Doctor-style plain
 /// markdown (see `cli/doctor.rs`): a `#` heading, a `## Findings` section,
-/// one `- ERROR —`-shaped bullet per finding, no ANSI, no width wrapping.
+/// one plain bullet per finding (no fault-tone prefix — this is an
+/// informational notice, not a drift report), no ANSI, no width wrapping.
+/// A leading blank line separates the note from the command's own output.
 /// `latest` is the latest release — the version the bullet names as the
 /// update target.
 pub fn render(reminder: &Reminder, latest: &Version) -> String {
     let mut note = String::new();
-    note.push_str("# Update available\n\n");
+    note.push_str("\n# Update available\n\n");
     note.push_str(
         "The git-span CLI or one of its bundled integrations is behind the \
          latest release.\n\n",
@@ -46,7 +48,7 @@ pub fn render(reminder: &Reminder, latest: &Version) -> String {
             continue;
         };
         note.push_str(&format!(
-            "- ERROR — `{tool}` is on `{observed}`; the latest release is `{latest}`. \
+            "- `{tool}` is on `{observed}`; the latest release is `{latest}`. \
              Update with `{command}`.\n"
         ));
     }
@@ -76,6 +78,14 @@ mod tests {
         assert!(
             note.contains("1.1.4") && note.contains("1.1.5"),
             "the note must name both the version the CLI is on and the latest release; {note}"
+        );
+        assert!(
+            note.starts_with('\n'),
+            "the note must open with a blank line so it never glues onto the command's own output; {note:?}"
+        );
+        assert!(
+            !note.contains("ERROR"),
+            "an informational update notice must not borrow drift's fault-tone prefix; {note}"
         );
     }
 

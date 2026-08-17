@@ -17,14 +17,17 @@
 //! payload, scans the Claude and Codex plugin caches, and stamps
 //! `last_checked_at` unconditionally — with an empty findings map on fetch
 //! failure, so an offline machine pays one failed attempt per day. The child
-//! never prints. On a command's `Ok` path, [`maybe_remind`] runs the
+//! never prints to stdout; it appends one diagnostic line per run to
+//! `update-check.log`, the same sink its stdio is redirected to when
+//! detached. On a command's `Ok` path, [`maybe_remind`] runs the
 //! suppression gate again, re-reads the state immediately before printing,
 //! and when the 24h reminder cadence has elapsed and something is behind the
-//! stored latest release prints the note (the stored `cli` finding *is* the
-//! latest release — the child records the fetched release version) and
-//! stamps `last_reminded_at` immediately after, closing the
-//! two-concurrent-TTY double-print window. Every failure at any step is a
-//! silent no-op; the note never changes a command's exit code.
+//! stored latest release claims the print slot with an atomic conditional
+//! stamp ([`store::UpdateCheckStore::claim_reminded`]) — of two concurrent
+//! TTY runs that both decided to remind, exactly one wins and prints (the
+//! stored `cli` finding *is* the latest release — the child records the
+//! fetched release version). Every failure at any step is a silent no-op;
+//! the note never changes a command's exit code.
 
 pub mod decide;
 pub mod message;
@@ -34,7 +37,7 @@ pub mod store;
 pub mod suppress;
 
 use std::collections::BTreeMap;
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -74,9 +77,9 @@ pub fn maybe_engage(cli: &Cli) {
 }
 
 /// Foreground seam, called on a command's `Ok` path: read the stored
-/// findings and the reminder cadence, print the note when something is
-/// behind, and stamp `last_reminded_at`. Never affects the command's output
-/// beyond the note or its exit code.
+/// findings and the reminder cadence, atomically claim the print slot, and
+/// print the note when something is behind and the claim wins. Never
+/// affects the command's output beyond the note or its exit code.
 pub fn maybe_remind(cli: &Cli) {
     if suppress::signals_for(cli, std::io::stdout().is_terminal()).suppressed() {
         return;
@@ -104,11 +107,24 @@ pub fn maybe_remind(cli: &Cli) {
     let Some(latest) = state.findings.get("cli") else {
         return;
     };
+    // Claim the print slot atomically BEFORE printing: the conditional stamp
+    // compares against the `last_reminded_at` this decision was computed
+    // from, so of two concurrent TTY runs that both decided to remind,
+    // exactly one wins the claim — the other prints nothing. (The naive
+    // print-then-stamp order leaves the window open: both can read the old
+    // stamp and print before either writes.)
+    let Some(claimed) = store.claim_reminded(state.last_reminded_at, now) else {
+        return;
+    };
+    if !claimed {
+        return;
+    }
     let note = message::render(&reminder, latest);
-    print!("{note}");
-    // Stamp immediately after printing — the mirror of the child's
-    // re-check, closing the two-concurrent-TTY double-print window.
-    let _ = store.write_reminded(now);
+    // The note is informational: a write failure (dead PTY — the invoking
+    // shell exited mid-run) silently drops it. It must never panic (a
+    // `print!` on a dead PTY panics with exit 101) or change the command's
+    // exit code.
+    let _ = std::io::stdout().write_all(note.as_bytes());
 }
 
 /// The `__update-check` child body: re-read `last_checked_at` at start
@@ -116,7 +132,10 @@ pub fn maybe_remind(cli: &Cli) {
 /// invocation spawn race then degrades to a harmless no-op), fetch the
 /// releases payload, scan the plugin caches, and stamp `last_checked_at`
 /// unconditionally with the findings on success only (an empty map on fetch
-/// failure — one failed attempt per day). Never prints.
+/// failure — one failed attempt per day). Never prints to stdout: its one
+/// diagnostic line per run is appended to `update-check.log`, the same sink
+/// the detached spawn redirects its stdio to — a silent failure is then
+/// still distinguishable from a clean check by looking at the log.
 pub fn run_update_check_child() {
     let Some(store) = UpdateCheckStore::open() else {
         return;
@@ -131,8 +150,43 @@ pub fn run_update_check_child() {
         // A parallel spawn won the race and refreshed the state meanwhile.
         return;
     }
+    // Claim the check slot BEFORE fetching: a fresh install's first few
+    // invocations each see an empty store and decide the check is due, so
+    // several children can spawn and fetch before the first one stamps.
+    // Pre-stamping collapses the burst — the next invocation reads a
+    // same-day stamp and spawns nothing, even while this fetch is in
+    // flight. Findings and the reminder stamp are untouched (the
+    // `ON CONFLICT` updates `last_checked_at` only).
+    let _ = store.stamp_checked(now);
     let findings = fetch_findings();
     let _ = store.write_checked(now, &findings);
+    append_child_log_line(now, &findings);
+}
+
+/// Append the child's one diagnostic line to `update-check.log` beside the
+/// store: the stamp time, the outcome, and the stored findings. Failures
+/// are silent no-ops — diagnostics must never take down the check.
+fn append_child_log_line(now: i64, findings: &BTreeMap<String, Version>) {
+    let Some(db_path) = store::db_path() else {
+        return;
+    };
+    let Ok(mut log) = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(db_path.with_extension("log"))
+    else {
+        return;
+    };
+    if findings.is_empty() {
+        let _ = writeln!(log, "checked at {now}: fetch failed");
+    } else {
+        let summary = findings
+            .iter()
+            .map(|(tool, version)| format!("{tool}={version}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = writeln!(log, "checked at {now}: {summary}");
+    }
 }
 
 /// Unix seconds now — the cadence stamp convention shared with the store.

@@ -11,6 +11,8 @@ The old commit-triggered pipeline this replaced (a `Stop` hook writing a touch j
 
 To get started, run `yarn install` to install dependencies, then `yarn build` to compile the hooks into each harness's `hooks.json`. Point your Claude Code settings (or Codex plugin config) at the generated output, and the hooks run automatically. Edit the files in `src/` to customize behavior, and use `yarn test` to verify your changes work correctly.
 
+`yarn build` writes both the `hooks.json` manifests and the compiled `.mjs` bundles beside them (under `plugins-claude/`, `plugins-codex/`, and `packages/mini-swe-agent/`), and those bundles are checked in — hosts load them straight from the plugin directory, so they are the shipped behavior, not a build cache. They are generated artifacts, not sources: after editing `src/`, rebuild and commit the sources and their bundles together. A source edit that lands without its rebuilt bundle ships the previous behavior to every host until the next build.
+
 ## Suppressing span references per path
 
 Some spans are noise in certain parts of the tree — wiki or marketing spans that anchor prose add little when you are reading source. A repo can hold them back with a `.span/.hookignore` file at its root. Each non-comment line is a gitignore-style path pattern, a single space, then a comma-separated list of span slug **prefixes** to suppress for anchors under matching paths:
