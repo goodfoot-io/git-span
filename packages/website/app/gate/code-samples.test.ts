@@ -96,6 +96,36 @@ console.log(1);
 \`\`\`\`
 `;
 
+/**
+ * Openers CommonMark allows but a purely-alphanumeric info-string grammar
+ * rejects: a fumadocs `title=` attribute, a hyphenated language id, and a
+ * language id followed by highlight metadata.
+ */
+const INFO_STRING_MARKDOWN = `\`\`\`bash title="Install"
+yarn add git-span
+\`\`\`
+
+\`\`\`ts {1} showLineNumbers
+const foo = 1;
+\`\`\`
+
+\`\`\`objective-c
+@implementation Foo @end
+\`\`\`
+`;
+
+/** Tilde fences, whose info strings carry no backtick restriction at all. */
+const TILDE_FENCE_MARKDOWN = `~~~md
+\`\`\`
+nested
+\`\`\`
+~~~
+
+~~~
+plain tilde body
+~~~
+`;
+
 describe('extractHtmlCodeSamples', () => {
   it('extracts the text content of every pre > code block, joined line by line', () => {
     expect(extractHtmlCodeSamples(MATCHING_HTML)).toEqual([
@@ -116,6 +146,18 @@ describe('extractMarkdownFences', () => {
   it('does not close a fence on a shorter backtick run inside its body', () => {
     const fences = extractMarkdownFences(BACKTICK_MARKER_MARKDOWN);
     expect(fences).toEqual(['Example fenced block:\n\n```js\nconsole.log(1);\n```']);
+  });
+
+  it('recognizes an opener carrying a fumadocs-style info string attribute', () => {
+    expect(extractMarkdownFences(INFO_STRING_MARKDOWN)).toEqual([
+      'yarn add git-span',
+      'const foo = 1;',
+      '@implementation Foo @end'
+    ]);
+  });
+
+  it('recognizes a tilde fence, including one whose body contains backticks', () => {
+    expect(extractMarkdownFences(TILDE_FENCE_MARKDOWN)).toEqual(['```\nnested\n```', 'plain tilde body']);
   });
 });
 

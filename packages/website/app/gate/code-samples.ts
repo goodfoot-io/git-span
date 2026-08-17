@@ -76,11 +76,12 @@ export function extractHtmlCodeSamples(html: string): string[] {
 
 /**
  * Extract the body of every fenced code block from Markdown, following
- * CommonMark's fence rules: an opener is three or more backticks followed
- * by an optional alphanumeric language id; a closer is a bare run of
- * backticks at least as long as the opener, alone on its own line. A shorter
- * backtick run inside the fence body does not close the block, so fence
- * content containing its own (shorter) backtick runs survives verbatim.
+ * CommonMark's fence rules: an opener is three or more backticks or tildes
+ * followed by a free-form info string (`bash title="Install"`, `objective-c`);
+ * a closer is a bare run of the same character, at least as long as the
+ * opener, alone on its own line. A shorter run inside the fence body does not
+ * close the block, so fence content containing its own (shorter) runs survives
+ * verbatim.
  *
  * Mirrors the fence-tracking rules already encoded in
  * [`get-llm-text.ts`](../lib/get-llm-text.ts)'s `stripHeadingIds` and in
@@ -91,13 +92,19 @@ export function extractHtmlCodeSamples(html: string): string[] {
  * @summary Extract fenced code block bodies from Markdown.
  */
 /** A CommonMark backtick fence opener: up to three leading spaces, a run of
- * three or more backticks, then an optional alphanumeric language id and
- * nothing else on the line. */
-const FENCE_OPEN = /^ {0,3}(`{3,})([A-Za-z0-9]*)[ \t]*$/;
+ * three or more backticks, then a free-form info string. CommonMark forbids a
+ * backtick anywhere in a backtick fence's info string — that restriction is
+ * what keeps an inline code span from being read as a fence opener. */
+const BACKTICK_FENCE_OPEN = /^ {0,3}(`{3,})[^`]*$/;
 
-/** A CommonMark backtick fence closer: up to three leading spaces, then a
- * bare run of backticks and nothing else on the line. */
-const FENCE_CLOSE = /^ {0,3}(`{3,})[ \t]*$/;
+/** A CommonMark tilde fence opener: up to three leading spaces, a run of three
+ * or more tildes, then an info string with no character restriction at all. */
+const TILDE_FENCE_OPEN = /^ {0,3}(~{3,})/;
+
+/** A CommonMark fence closer: up to three leading spaces, then a bare run of
+ * backticks or tildes and nothing else on the line. The run's character must
+ * match the opener's, and its length must be at least the opener's. */
+const FENCE_CLOSE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/;
 
 /**
  * A Markdown blockquote's per-line marker (e.g. the fence inside a
@@ -110,12 +117,12 @@ const BLOCKQUOTE_PREFIX = /^> ?/;
 export function extractMarkdownFences(markdown: string): string[] {
   const lines = markdown.split('\n');
   const fences: string[] = [];
-  let fence: { length: number; body: string[]; blockquote: boolean } | null = null;
+  let fence: { marker: string; length: number; body: string[]; blockquote: boolean } | null = null;
   for (const rawLine of lines) {
     if (fence) {
       const line = fence.blockquote ? rawLine.replace(BLOCKQUOTE_PREFIX, '') : rawLine;
       const close = FENCE_CLOSE.exec(line);
-      if (close && close[1].length >= fence.length) {
+      if (close && close[1][0] === fence.marker && close[1].length >= fence.length) {
         fences.push(fence.body.join('\n'));
         fence = null;
         continue;
@@ -125,9 +132,9 @@ export function extractMarkdownFences(markdown: string): string[] {
     }
     const blockquote = BLOCKQUOTE_PREFIX.test(rawLine);
     const line = blockquote ? rawLine.replace(BLOCKQUOTE_PREFIX, '') : rawLine;
-    const open = FENCE_OPEN.exec(line);
+    const open = BACKTICK_FENCE_OPEN.exec(line) ?? TILDE_FENCE_OPEN.exec(line);
     if (open) {
-      fence = { length: open[1].length, body: [], blockquote };
+      fence = { marker: open[1][0], length: open[1].length, body: [], blockquote };
     }
   }
   if (fence) fences.push(fence.body.join('\n'));

@@ -30,12 +30,12 @@ export default defineConfig(async () => ({
     // `.tsx` tests colocated with components were silently never collected;
     // the include glob must cover both extensions.
     include: ['app/**/*.test.ts', 'app/**/*.test.tsx'],
-    // The gate suites boot a real Worker (and, for the agentic leg, a real
-    // browser) — excluded here so the hermetic default suite, which runs
-    // under `yarn validate`'s lock, never spawns a server or collects the
-    // gate's files. The gate configs below opt back into `app/gate/**`
-    // directly via their own `include` globs.
-    exclude: ['app/gate/**'],
+    // Only the two gate suites that boot a real Worker (and, for the agentic
+    // leg, a real browser) are excluded, so the hermetic default suite never
+    // spawns a server. The gate's pure-unit contracts — evaluate.test.ts and
+    // code-samples.test.ts — belong here: excluding the whole directory left
+    // them running under no command at all.
+    exclude: ['app/gate/protocol/**', 'app/gate/gate.agentic.test.ts'],
     globals: false,
     // The first test of the first file to run pays the cold ESM transform and
     // import of the full website module chain. Under the root `yarn test`

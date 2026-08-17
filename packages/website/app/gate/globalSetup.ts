@@ -1,5 +1,6 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -56,8 +57,35 @@ function waitForReady(url: string, timeoutMs: number): Promise<void> {
   })();
 }
 
+/**
+ * Proves the port is ours to take by binding it ourselves. An HTTP probe
+ * cannot do this job: it accepts *any* responder, so a stale, foreign, or
+ * concurrent server on 4310 reads as "ready" and the whole gate then audits
+ * content it never built. Binding fails closed instead.
+ */
+function assertPortFree(port: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const probe = createServer();
+    probe.once('error', (error: NodeJS.ErrnoException) => {
+      reject(
+        new Error(
+          `gate globalSetup: port ${port} is already in use (${error.code ?? error.message}). ` +
+            `The gate must own this port to be sure it audits the site it just built. ` +
+            `Find the holder with \`lsof -i :${port}\` and stop it, then re-run.`
+        )
+      );
+    });
+    probe.once('listening', () => {
+      probe.close(() => resolve());
+    });
+    probe.listen(port, '127.0.0.1');
+  });
+}
+
 export default async function setup(): Promise<() => Promise<void>> {
   mkdirSync(SERVER_INFO_DIR, { recursive: true });
+
+  await assertPortFree(PORT);
 
   // `detached: true` makes this process the leader of a new process group,
   // so teardown can kill the whole group in one signal — `vite preview`'s own

@@ -117,6 +117,33 @@ describe('evaluateAgenticReport', () => {
     expect(evaluation.failures).toContain('llms-txt is unexpectedly not applicable');
   });
 
+  it('labels a low-scoring numeric audit distinctly from a passing binary audit', () => {
+    const withFractionalCls = report();
+    withFractionalCls.audits = withFractionalCls.audits.map((a) =>
+      a.id === 'cumulative-layout-shift' ? audit('cumulative-layout-shift', 0.54, 'numeric') : a
+    );
+    const evaluation = evaluateAgenticReport(withFractionalCls, OPTIONS);
+    expect(evaluation.output).toContain('cumulative-layout-shift — cumulative-layout-shift: SCORED (LOW) (0.540)');
+    expect(evaluation.output).not.toContain('cumulative-layout-shift: PASS');
+  });
+
+  it('labels a healthy numeric audit as SCORED rather than PASS', () => {
+    const evaluation = evaluateAgenticReport(report(), OPTIONS);
+    expect(evaluation.output).toContain('cumulative-layout-shift — cumulative-layout-shift: SCORED (1.000)');
+    expect(evaluation.output).toContain('llms-txt — llms-txt: PASS (1.000)');
+  });
+
+  it('names the dragging numeric audit in the category-score failure', () => {
+    const dragged = report({ categoryScore: 0.5 });
+    dragged.audits = dragged.audits.map((a) =>
+      a.id === 'cumulative-layout-shift' ? audit('cumulative-layout-shift', 0.54, 'numeric') : a
+    );
+    const evaluation = evaluateAgenticReport(dragged, OPTIONS);
+    expect(evaluation.failures).toContain(
+      'category score 0.500 is below threshold 0.900 — pulled down by cumulative-layout-shift (0.540)'
+    );
+  });
+
   it('does not fail a non-required audit that is notApplicable', () => {
     const withNotApplicable = report();
     withNotApplicable.audits = withNotApplicable.audits.map((a) =>

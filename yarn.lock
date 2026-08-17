@@ -1926,7 +1926,6 @@ __metadata:
     "@types/react": "npm:^19.2.18"
     "@types/react-dom": "npm:^19.2.4"
     "@types/three": "npm:^0.185.4"
-    chrome-launcher: "npm:1.0.0"
     fumadocs-core: "npm:^16.14.4"
     fumadocs-mdx: "npm:^15.2.3"
     fumadocs-ui: "npm:^16.14.4"
@@ -5943,20 +5942,6 @@ __metadata:
   version: 3.0.0
   resolution: "chownr@npm:3.0.0"
   checksum: 10c0/43925b87700f7e3893296c8e9c56cc58f926411cce3a6e5898136daaf08f08b9a8eb76d37d3267e707d0dcc17aed2e2ebdf5848c0c3ce95cf910a919935c1b10
-  languageName: node
-  linkType: hard
-
-"chrome-launcher@npm:1.0.0":
-  version: 1.0.0
-  resolution: "chrome-launcher@npm:1.0.0"
-  dependencies:
-    "@types/node": "npm:*"
-    escape-string-regexp: "npm:^4.0.0"
-    is-wsl: "npm:^2.2.0"
-    lighthouse-logger: "npm:^2.0.1"
-  bin:
-    print-chrome-path: bin/print-chrome-path.js
-  checksum: 10c0/cf6eb36ab222f09f303bbffa49c1a3dd4050d567cec717934f32df89dd734b3803045bba164c9d4cb7f3a5e6ca5decc6426f2e88460d1250c4b2e190d28db722
   languageName: node
   linkType: hard
 

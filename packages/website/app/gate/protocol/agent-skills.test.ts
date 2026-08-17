@@ -24,14 +24,19 @@ describe(`GET ${AGENT_SKILLS_INDEX_PATH}`, () => {
 });
 
 describe('GET /.well-known/agent-skills/*', () => {
-  it('serves a known skill file referenced in the index', async () => {
-    const [firstEntry] = agentSkillsPublication.index.skills;
-    expect(firstEntry).toBeDefined();
-    const response = await fetch(`${baseUrl}${firstEntry.url}`);
-    expect(response.status).toBe(200);
-    const body = await response.text();
-    expect(body.length).toBeGreaterThan(0);
+  it('advertises at least one skill to check', () => {
+    expect(agentSkillsPublication.index.skills.length).toBeGreaterThan(0);
   });
+
+  it.each(agentSkillsPublication.index.skills.map((skill) => [skill.url, skill] as const))(
+    'serves the skill file advertised at %s',
+    async (_url, skill) => {
+      const response = await fetch(`${baseUrl}${skill.url}`);
+      expect(response.status, `skill fetch failed for ${skill.url}`).toBe(200);
+      const body = await response.text();
+      expect(body.length, `skill file is empty for ${skill.url}`).toBeGreaterThan(0);
+    }
+  );
 
   it('404s an unknown skill key', async () => {
     const response = await fetch(`${baseUrl}/.well-known/agent-skills/not-a-real-skill/SKILL.md`);

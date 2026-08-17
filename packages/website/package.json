@@ -11,14 +11,14 @@
     "generate:artifacts": "node scripts/generate-artifacts.mjs",
     "artifacts:check": "node scripts/generate-artifacts.mjs --check",
     "generate:images": "node scripts/generate-metadata-images.mjs",
-    "deploy": "yarn gate && wrangler deploy",
+    "deploy": "yarn build && wrangler deploy",
     "lint": "biome check --write --unsafe --max-diagnostics 500",
     "fumadocs:generate": "node ../../scripts/ensure-worktree-local-generated.mjs packages/website && fumadocs-mdx",
     "typecheck": "yarn fumadocs:generate && react-router typegen && tsc --noEmit",
     "test": "node ../../scripts/ensure-worktree-local-generated.mjs packages/website && fumadocs-mdx && vitest run",
-    "gate:protocol": "yarn build && vitest run --config vitest.gate-protocol.config.ts",
-    "gate:agentic": "yarn build && vitest run --config vitest.agentic-gate.config.ts",
-    "gate": "yarn build && flock \"$(git rev-parse --path-format=absolute --git-common-dir)/validate.lock\" -c \"vitest run --config vitest.gate-protocol.config.ts && vitest run --config vitest.agentic-gate.config.ts\""
+    "gate:protocol": "bash scripts/with-gate-lock.sh 'yarn build && vitest run --config vitest.gate-protocol.config.ts'",
+    "gate:agentic": "bash scripts/with-gate-lock.sh 'yarn build && vitest run --config vitest.agentic-gate.config.ts'",
+    "gate": "bash scripts/with-gate-lock.sh 'yarn build && vitest run --config vitest.gate-protocol.config.ts && vitest run --config vitest.agentic-gate.config.ts'"
   },
   "dependencies": {
     "@fontsource-variable/ibm-plex-sans": "^5.3.0",
@@ -44,7 +44,6 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@types/three": "^0.185.4",
-    "chrome-launcher": "1.0.0",
     "fumadocs-mdx": "^15.2.3",
     "jsdom": "^29.1.1",
     "lighthouse": "13.4.1",

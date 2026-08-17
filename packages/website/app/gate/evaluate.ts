@@ -40,15 +40,41 @@ export interface EvaluationOptions {
 
 const REQUIRED_AUDITS = new Set<AgenticAuditId>(['agent-accessibility-tree', 'cumulative-layout-shift', 'llms-txt']);
 
+/**
+ * A numeric audit at or above this is not worth naming as a drag on the
+ * category score; below it, it is a plausible reason the category fell short.
+ */
+const NUMERIC_DRAG_CEILING = 0.9;
+
 function formatScore(score: number | null): string {
   return score === null ? 'n/a' : score.toFixed(3);
 }
 
+/**
+ * Gating classification. `numeric` audits never fail individually — they
+ * reach the verdict only through the category threshold.
+ */
 function status(audit: AgenticAuditResult): string {
   if (audit.scoreDisplayMode === 'error') return 'ERROR';
   if (audit.scoreDisplayMode === 'notApplicable' || audit.score === null) return 'N/A';
   if (audit.scoreDisplayMode === 'numeric') return 'PASS';
   return audit.score >= 1 ? 'PASS' : 'FAIL';
+}
+
+/**
+ * Human-readable label, deliberately not the gating classification: printing
+ * `PASS` next to a 0.540 CLS hid the one audit responsible for a failing
+ * target. `SCORED`/`SCORED (LOW)` says "counted toward the category, not a
+ * verdict of its own" without touching what {@link status} decides.
+ */
+function reportLabel(audit: AgenticAuditResult): string {
+  const auditStatus = status(audit);
+  if (auditStatus !== 'PASS' || audit.scoreDisplayMode !== 'numeric') return auditStatus;
+  return isDragging(audit) ? 'SCORED (LOW)' : 'SCORED';
+}
+
+function isDragging(audit: AgenticAuditResult): boolean {
+  return audit.scoreDisplayMode === 'numeric' && audit.score !== null && audit.score < NUMERIC_DRAG_CEILING;
 }
 
 export function evaluateAgenticReport(report: AgenticReport, options: EvaluationOptions): Evaluation {
@@ -64,8 +90,16 @@ export function evaluateAgenticReport(report: AgenticReport, options: Evaluation
   }
   if (report.categoryScore === null) failures.push('category score is unavailable');
   else if (report.categoryScore < options.threshold) {
+    // Name the numeric audits that pulled the category down: they are the only
+    // audits that can fail a target without producing a failure line of their
+    // own, so without this the report says a score is too low and nothing else.
+    const dragging = report.audits.filter(isDragging);
+    const contributors =
+      dragging.length > 0
+        ? ` — pulled down by ${dragging.map((audit) => `${audit.id} (${formatScore(audit.score)})`).join(', ')}`
+        : '';
     failures.push(
-      `category score ${report.categoryScore.toFixed(3)} is below threshold ${options.threshold.toFixed(3)}`
+      `category score ${report.categoryScore.toFixed(3)} is below threshold ${options.threshold.toFixed(3)}${contributors}`
     );
   }
   const actualIds = new Set(report.audits.map(({ id }) => id));
@@ -83,7 +117,7 @@ export function evaluateAgenticReport(report: AgenticReport, options: Evaluation
     const auditStatus = status(audit);
     const detail = audit.explanation ?? audit.displayValue;
     lines.push(
-      `  ${audit.id} — ${audit.title}: ${auditStatus} (${formatScore(audit.score)})${detail ? ` — ${detail}` : ''}`
+      `  ${audit.id} — ${audit.title}: ${reportLabel(audit)} (${formatScore(audit.score)})${detail ? ` — ${detail}` : ''}`
     );
     if (auditStatus === 'ERROR') failures.push(`${audit.id} errored${detail ? `: ${detail}` : ''}`);
     else if (auditStatus === 'FAIL') failures.push(`${audit.id} failed${detail ? `: ${detail}` : ''}`);

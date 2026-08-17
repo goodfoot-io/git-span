@@ -1,4 +1,4 @@
-import { readdirSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { launch } from 'chrome-launcher';
@@ -48,7 +48,9 @@ class NodeVersionError extends Error {
 /**
  * Resolves the Playwright-cached Chromium binary. The cache path includes a
  * version-specific revision directory (`chromium-1228`, etc.) so the exact
- * name can't be hardcoded — find whichever `chromium-*` entry is installed.
+ * name can't be hardcoded. A Playwright bump leaves the old revision in place,
+ * so the highest revision number is picked deliberately — `readdirSync` order
+ * would otherwise decide which Chrome the gate audits with.
  */
 function cachedChromiumPath(): string {
   const cacheRoot = path.join(os.homedir(), '.cache', 'ms-playwright');
@@ -58,13 +60,24 @@ function cachedChromiumPath(): string {
   } catch (error) {
     throw new Error(`agentic gate: unable to read Playwright cache at ${cacheRoot}: ${String(error)}`);
   }
-  const revision = entries.find((entry) => entry.startsWith('chromium-') && !entry.includes('headless_shell'));
+  const revision = entries
+    .filter((entry) => /^chromium-\d+$/.test(entry))
+    .sort((a, b) => Number(a.slice('chromium-'.length)) - Number(b.slice('chromium-'.length)))
+    .at(-1);
   if (!revision) {
     throw new Error(
-      `agentic gate: no chromium-* revision found under ${cacheRoot}; run \`npx playwright install chromium\``
+      `agentic gate: no chromium-* revision found under ${cacheRoot}; run \`npx playwright install chromium\`, ` +
+        `or point CHROME_PATH at an existing Chrome binary`
     );
   }
-  return path.join(cacheRoot, revision, 'chrome-linux', 'chrome');
+  const chromePath = path.join(cacheRoot, revision, 'chrome-linux', 'chrome');
+  if (!existsSync(chromePath)) {
+    throw new Error(
+      `agentic gate: Playwright revision ${revision} has no Chrome binary at ${chromePath} ` +
+        `(re-run \`npx playwright install chromium\`, or point CHROME_PATH at an existing Chrome binary)`
+    );
+  }
+  return chromePath;
 }
 
 /** Recursively flattens `details.items` string leaves, joined with `'; '`. */
