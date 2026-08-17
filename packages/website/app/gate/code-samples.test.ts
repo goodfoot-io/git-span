@@ -52,6 +52,29 @@ yarn build
 \`\`\`
 `;
 
+/** Same as \`MATCHING_HTML\` but the rendered page is missing the second sample. */
+const MISSING_BLOCK_HTML = `
+<article>
+  <p>Install the package, then log something.</p>
+  <figure data-rehype-pretty-code-figure>
+    <pre data-language="bash" data-theme="github-dark"><code data-language="bash"><span data-line><span style="color:#79B8FF">yarn</span> add git-span</span>
+<span data-line><span style="color:#79B8FF">yarn</span> build</span></code></pre>
+  </figure>
+</article>
+`;
+
+/**
+ * A count mismatch that is *not* a clean prefix: the Markdown carries only the
+ * second of the HTML's two samples, so the sequences diverge at index 0.
+ */
+const REORDERED_SHORT_MARKDOWN = `# Getting started
+
+\`\`\`ts
+const foo = 1;
+console.log(foo);
+\`\`\`
+`;
+
 /** Same HTML as \`MATCHING_HTML\` but the Markdown alternate's second fence content differs. */
 const DIFFERING_MARKDOWN = `# Getting started
 
@@ -169,13 +192,37 @@ describe('equivalentCodeSamples', () => {
   it('names the missing block when the Markdown alternate drops a code sample present in the HTML', () => {
     const result = equivalentCodeSamples(MATCHING_HTML, MISSING_BLOCK_MARKDOWN);
     expect(result.equivalent).toBe(false);
-    expect(result.mismatch).toMatch(/count/);
+    // Counts alone are unactionable — the message must locate the offender.
+    expect(result.mismatch).toMatch(/count differs: HTML has 2, Markdown has 1/);
+    expect(result.mismatch).toMatch(/index 1/);
+    expect(result.mismatch).toMatch(/only in HTML/);
+    expect(result.mismatch).toContain('const foo = 1;');
+  });
+
+  it('names the extra block when the Markdown alternate carries a code sample the HTML lacks', () => {
+    const result = equivalentCodeSamples(MISSING_BLOCK_HTML, MATCHING_MARKDOWN);
+    expect(result.equivalent).toBe(false);
+    expect(result.mismatch).toMatch(/count differs: HTML has 1, Markdown has 2/);
+    expect(result.mismatch).toMatch(/index 1/);
+    expect(result.mismatch).toMatch(/only in Markdown/);
+    expect(result.mismatch).toContain('const foo = 1;');
+  });
+
+  it('names where the sequences diverge when a count mismatch is not a clean prefix', () => {
+    const result = equivalentCodeSamples(MATCHING_HTML, REORDERED_SHORT_MARKDOWN);
+    expect(result.equivalent).toBe(false);
+    expect(result.mismatch).toMatch(/diverge at index 0/);
+    expect(result.mismatch).toContain('yarn add git-span');
+    expect(result.mismatch).toContain('const foo = 1;');
   });
 
   it('names the differing index when content diverges between HTML and Markdown', () => {
     const result = equivalentCodeSamples(MATCHING_HTML, DIFFERING_MARKDOWN);
     expect(result.equivalent).toBe(false);
     expect(result.mismatch).toMatch(/index 1/);
+    expect(result.mismatch).toMatch(/line 1/);
+    expect(result.mismatch).toContain('const foo = 1;');
+    expect(result.mismatch).toContain('const foo = 2;');
   });
 
   it('is equivalent when a fence with an embedded shorter backtick run matches the HTML', () => {

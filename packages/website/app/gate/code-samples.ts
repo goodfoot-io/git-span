@@ -169,22 +169,68 @@ function normalize(sample: string): string {
     .replace(/\n*$/, '')}\n`;
 }
 
+/** How much of a block's opening line to quote when naming it in a mismatch. */
+const EXCERPT_LIMIT = 80;
+
+/**
+ * A one-line handle on a code sample: its first non-blank line, clipped, so a
+ * mismatch message identifies *which* block drifted rather than only how many
+ * blocks each side had. Counting alone is actively misleading — a developer
+ * told "HTML has 16, Markdown has 15" can only hand-diff sixteen blocks, and
+ * may "fix" it by duplicating one that was already correct.
+ */
+function excerpt(sample: string): string {
+  const firstLine =
+    sample
+      .split('\n')
+      .find((line) => line.trim().length > 0)
+      ?.trim() ?? '';
+  if (firstLine.length === 0) return '(blank)';
+  return `"${firstLine.length > EXCERPT_LIMIT ? `${firstLine.slice(0, EXCERPT_LIMIT)}…` : firstLine}"`;
+}
+
+/** The first index at which the two sequences stop agreeing, sharing-prefix style. */
+function firstDivergence(htmlSamples: string[], markdownSamples: string[]): number {
+  const shared = Math.min(htmlSamples.length, markdownSamples.length);
+  let index = 0;
+  while (index < shared && htmlSamples[index] === markdownSamples[index]) index++;
+  return index;
+}
+
 export function equivalentCodeSamples(html: string, markdown: string): { equivalent: boolean; mismatch?: string } {
   const htmlSamples = extractHtmlCodeSamples(html).map(normalize);
   const markdownSamples = extractMarkdownFences(markdown).map(normalize);
 
   if (htmlSamples.length !== markdownSamples.length) {
+    const counts = `code sample count differs: HTML has ${htmlSamples.length}, Markdown has ${markdownSamples.length}`;
+    const index = firstDivergence(htmlSamples, markdownSamples);
+    const shared = Math.min(htmlSamples.length, markdownSamples.length);
+    if (index === shared) {
+      // The shorter side is a prefix of the longer one, so the extra block sits
+      // exactly at `index` on whichever side is longer.
+      const longerSide = htmlSamples.length > markdownSamples.length ? 'HTML' : 'Markdown';
+      const shorterSide = longerSide === 'HTML' ? 'Markdown' : 'HTML';
+      const block = (longerSide === 'HTML' ? htmlSamples : markdownSamples)[index];
+      return {
+        equivalent: false,
+        mismatch: `${counts}; the first ${index} sample(s) match, so the block at index ${index} is present only in ${longerSide} and missing from ${shorterSide}: ${excerpt(block)}`
+      };
+    }
     return {
       equivalent: false,
-      mismatch: `code sample count differs: HTML has ${htmlSamples.length}, Markdown has ${markdownSamples.length}`
+      mismatch: `${counts}; the sequences first diverge at index ${index}, where HTML has ${excerpt(htmlSamples[index])} and Markdown has ${excerpt(markdownSamples[index])}`
     };
   }
 
   for (let i = 0; i < htmlSamples.length; i++) {
     if (htmlSamples[i] !== markdownSamples[i]) {
+      const htmlLines = htmlSamples[i].split('\n');
+      const markdownLines = markdownSamples[i].split('\n');
+      let line = 0;
+      while (line < htmlLines.length && line < markdownLines.length && htmlLines[line] === markdownLines[line]) line++;
       return {
         equivalent: false,
-        mismatch: `code sample at index ${i} differs between HTML and Markdown`
+        mismatch: `code sample at index ${i} differs between HTML and Markdown at line ${line + 1}: HTML has ${excerpt(htmlLines[line] ?? '')} and Markdown has ${excerpt(markdownLines[line] ?? '')}`
       };
     }
   }

@@ -17,7 +17,7 @@
  *
  * @summary HTML vs. Markdown code-sample drift, asserted over real HTTP
  */
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import { equivalentCodeSamples, extractHtmlCodeSamples, extractMarkdownFences } from '~/gate/code-samples';
 import { readGateServerInfo } from '~/gate/globalSetup';
 import { source } from '~/lib/source';
@@ -27,6 +27,16 @@ const pages = source.getPages();
 
 /** Per-page extracted sample counts, filled in as the equivalence cases run. */
 const sampleCounts = new Map<string, { html: number; markdown: number }>();
+
+/**
+ * Per-page outcome line, keyed by URL. A green run that prints only
+ * `Tests 69 passed` names no resource, so a run that verified nine pages and a
+ * run that verified nothing render identically. The roster is printed
+ * unconditionally after the cases run, mirroring how the agentic leg's
+ * `evaluateAgenticReport` emits every audit's status before aggregating a
+ * verdict.
+ */
+const outcomes = new Map<string, string>();
 
 describe('HTML/Markdown code-sample equivalence', () => {
   it('has at least one page to check', () => {
@@ -41,6 +51,10 @@ describe('HTML/Markdown code-sample equivalence', () => {
       fetch(`${baseUrl}${page.url}`),
       fetch(`${baseUrl}${page.url}.md`)
     ]);
+    outcomes.set(
+      page.url,
+      `FAIL — HTML fetch ${htmlResponse.status}, Markdown fetch ${markdownResponse.status}; expected 200 for both`
+    );
     expect(htmlResponse.status, `HTML fetch failed for ${page.url}`).toBe(200);
     expect(markdownResponse.status, `Markdown fetch failed for ${page.url}`).toBe(200);
 
@@ -49,11 +63,38 @@ describe('HTML/Markdown code-sample equivalence', () => {
     sampleCounts.set(page.url, counts);
 
     if (counts.html === 0 && counts.markdown === 0) {
-      ctx.skip(`${page.url}: no code samples extracted from either representation — not verified`);
+      const reason = 'no code samples extracted from either representation — not verified';
+      outcomes.set(page.url, `SKIP — ${reason}`);
+      ctx.skip(`${page.url}: ${reason}`);
     }
 
     const result = equivalentCodeSamples(html, markdown);
+    outcomes.set(
+      page.url,
+      result.equivalent
+        ? `VERIFIED — ${counts.html} HTML sample(s), ${counts.markdown} Markdown fence(s)`
+        : `FAIL — ${result.mismatch ?? 'unknown mismatch'}`
+    );
     expect(result.equivalent, `${page.url}: ${result.mismatch ?? 'unknown mismatch'}`).toBe(true);
+  });
+
+  // Printed on every run, pass or fail: the roster is the only evidence that
+  // distinguishes "nine pages compared" from "nothing compared, and equality
+  // held vacuously".
+  //
+  // `process.stdout.write`, not `console.log`: vitest intercepts test-side
+  // `console` and the gate's default reporter prints those records only for
+  // failing files, so a `console.log` roster would be invisible on exactly the
+  // passing run it exists to make auditable. Writing to the stream directly
+  // bypasses the interception and reaches stdout unconditionally.
+  afterAll(() => {
+    const lines = [`HTML/Markdown code-sample equivalence: ${pages.length} page(s) against ${baseUrl}`];
+    for (const page of pages) {
+      lines.push(`  ${page.url}: ${outcomes.get(page.url) ?? 'NOT REACHED — case did not record an outcome'}`);
+    }
+    const verified = [...sampleCounts].filter(([, counts]) => counts.html > 0 && counts.markdown > 0).length;
+    lines.push(`  ${verified} of ${pages.length} page(s) verified with at least one code sample on both sides`);
+    process.stdout.write(`${lines.join('\n')}\n`);
   });
 
   it('verified code samples on at least one page', () => {
