@@ -1,6 +1,8 @@
 packages/git-span/src/cli/mod.rs#L1-L33 rk64:2aa8f4733e623e44
+packages/git-span/src/main.rs#L49-L156 rk64:f68cb492e3bca190
 packages/git-span/src/main.rs#L49-L157 rk64:36fd8f3d0e38d645
 packages/git-span/src/validation.rs#L7-L37 rk64:67a4e8c157035cee
+wiki/meta/git-span-documentation-touchpoints.md#L220-L222 rk64:9eaaa49417b09c80
 wiki/meta/git-span-documentation-touchpoints.md#L232-L234 rk64:9eaaa49417b09c80
 
 The touchpoints reference list provides direct navigation to the canonical why guide and the CLI behavior sources discussed by the page.
