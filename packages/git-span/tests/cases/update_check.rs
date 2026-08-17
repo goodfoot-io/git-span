@@ -86,17 +86,29 @@ fn env_refs(env: &[(String, String)]) -> Vec<(&str, &str)> {
     env.iter().map(|(key, value)| (key.as_str(), value.as_str())).collect()
 }
 
-/// Run `command` inside a real PTY (`script -qec`) so git-span observes a
-/// TTY stdout. Returns `Ok(None)` when `script` is not available on this
-/// host — the `which` guard the plan requires.
+/// The binary under test. `run_pty` invokes it explicitly — a bare
+/// `git span` inside the PTY shell would resolve through PATH and could
+/// pick up a stale install (e.g. an npm-global release) instead of the
+/// build these cases must exercise.
+const BIN: &str = env!("CARGO_BIN_EXE_git-span");
+
+/// Single-quote `value` for embedding in the `script` command string.
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r#"'\''"#))
+}
+
+/// Run the binary under test with `args` inside a real PTY (`script -qec`)
+/// so git-span observes a TTY stdout. Returns `Ok(None)` when `script` is
+/// not available on this host — the `which` guard the plan requires.
 fn run_pty(
     repo: &TestRepo,
     env: &[(&str, &str)],
-    command: &str,
+    args: &str,
 ) -> Result<Option<std::process::Output>> {
     let Ok(script) = which::which("script") else {
         return Ok(None);
     };
+    let command = format!("{} {args}", shell_quote(BIN));
     let mut cmd = std::process::Command::new(script);
     cmd.current_dir(repo.path());
     for (key, value) in env {
@@ -118,7 +130,7 @@ fn first_tty_run_prints_nothing_and_only_spawns() -> Result<()> {
     let env = update_env(port, &db_dir.path().join("update-check.db"), cache_dir.path());
     let env = env_refs(&env);
 
-    let Some(out) = run_pty(&repo, &env, "git span list")? else {
+    let Some(out) = run_pty(&repo, &env, "list")? else {
         return Ok(()); // no PTY runner on this host — nothing to assert
     };
     assert_eq!(
@@ -193,10 +205,16 @@ fn tty_first_run_prints_note_second_run_prints_nothing() -> Result<()> {
     let out = repo.run_span_with_envs(["__update-check"], &env)?;
     assert_eq!(out.status.code(), Some(0));
 
-    let Some(first) = run_pty(&repo, &env, "git span list")? else {
+    let Some(first) = run_pty(&repo, &env, "list")? else {
         return Ok(());
     };
-    assert_eq!(first.status.code(), Some(0));
+    assert_eq!(
+        first.status.code(),
+        Some(0),
+        "stderr:\n{}\nstdout:\n{}",
+        String::from_utf8_lossy(&first.stderr),
+        String::from_utf8_lossy(&first.stdout)
+    );
     let stdout = String::from_utf8(first.stdout)?;
     assert!(
         stdout.contains(NOTE_HEADING),
@@ -205,10 +223,16 @@ fn tty_first_run_prints_note_second_run_prints_nothing() -> Result<()> {
 
     // The reminder stamped last_reminded_at; a second run the same day
     // prints nothing.
-    let Some(second) = run_pty(&repo, &env, "git span list")? else {
+    let Some(second) = run_pty(&repo, &env, "list")? else {
         return Ok(());
     };
-    assert_eq!(second.status.code(), Some(0));
+    assert_eq!(
+        second.status.code(),
+        Some(0),
+        "stderr:\n{}\nstdout:\n{}",
+        String::from_utf8_lossy(&second.stderr),
+        String::from_utf8_lossy(&second.stdout)
+    );
     let stdout = String::from_utf8(second.stdout)?;
     assert!(
         !stdout.contains(NOTE_HEADING),
@@ -226,7 +250,7 @@ fn porcelain_invocation_prints_nothing() -> Result<()> {
     let env = update_env(port, &db_dir.path().join("update-check.db"), cache_dir.path());
     let env = env_refs(&env);
 
-    let Some(out) = run_pty(&repo, &env, "git span list --porcelain")? else {
+    let Some(out) = run_pty(&repo, &env, "list --porcelain")? else {
         return Ok(());
     };
     assert_eq!(out.status.code(), Some(0));
@@ -272,7 +296,7 @@ fn disable_env_var_prints_nothing() -> Result<()> {
     ));
     let env = env_refs(&env);
 
-    let Some(out) = run_pty(&repo, &env, "git span list")? else {
+    let Some(out) = run_pty(&repo, &env, "list")? else {
         return Ok(());
     };
     assert_eq!(out.status.code(), Some(0));
