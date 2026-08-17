@@ -8088,6 +8088,11 @@ async function runLayeredBashTouches(command, cwd, sessionId, toolUseId, toolRes
   return blocks;
 }
 
+// src/common/update-check-env.ts
+function disableUpdateCheck() {
+  process.env.GIT_SPAN_DISABLE_UPDATE_CHECK = "1";
+}
+
 // src/common/advisor-core.ts
 import { execFileSync as execFileSync6 } from "node:child_process";
 import { createHash as createHash3 } from "node:crypto";
@@ -9281,11 +9286,6 @@ function createDiskAdvisorMemoState(cwd) {
       }
     }
   };
-}
-
-// src/common/update-check-env.ts
-function disableUpdateCheck() {
-  process.env.GIT_SPAN_DISABLE_UPDATE_CHECK = "1";
 }
 
 // src/codex/advisor.ts

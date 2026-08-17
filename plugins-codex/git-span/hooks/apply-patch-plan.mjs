@@ -8088,6 +8088,11 @@ async function runLayeredBashTouches(command, cwd, sessionId, toolUseId, toolRes
   return blocks;
 }
 
+// src/common/update-check-env.ts
+function disableUpdateCheck() {
+  process.env.GIT_SPAN_DISABLE_UPDATE_CHECK = "1";
+}
+
 // src/codex/apply-patch.ts
 import * as fs7 from "node:fs";
 var END_PATCH_MARKER = "*** End Patch";
@@ -9525,11 +9530,6 @@ function createDiskAdvisorMemoState(cwd) {
       }
     }
   };
-}
-
-// src/common/update-check-env.ts
-function disableUpdateCheck() {
-  process.env.GIT_SPAN_DISABLE_UPDATE_CHECK = "1";
 }
 
 // src/codex/advisor.ts
