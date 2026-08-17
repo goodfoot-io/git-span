@@ -3,14 +3,14 @@ import { Link, useLocation } from 'react-router';
 import { DownloadIcon, GithubAltIcon, LibraryIcon } from '~/components/icons';
 import { HERO } from '~/components/marketing/story/copy';
 
-// "GS" ring-and-span mark (see public/logo-negative.svg for the source asset -- the same mark
-// public/favicon.svg uses, recolored here to the page's accent purple via currentColor).
+// git-span ring-and-span mark (see public/logo-positive.svg for the source asset -- the same
+// mark public/favicon.svg uses, recolored here to the page's accent purple via currentColor).
 export function LogoMark({ size = 20 }: { size?: number }) {
   return (
     <svg
       width={size}
       height={size}
-      viewBox="0 0 1024 1024"
+      viewBox="0 0 512 512"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
       aria-hidden="true"
@@ -18,15 +18,11 @@ export function LogoMark({ size = 20 }: { size?: number }) {
       className="shrink-0 text-accent"
     >
       <path
-        d="M1024 207H442.502C411.417 153.199 353.32 117 286.777 117C187.489 117 107 197.589 107 297C107 396.411 187.489 477 286.777 477C353.32 477 411.417 440.801 442.502 387H1024V1028H0V821H581.498C612.583 874.801 670.68 911 737.223 911C836.511 911 917 830.411 917 731C917 631.589 836.511 551 737.223 551C670.68 551 612.583 587.199 581.498 641H0V4H1024V207Z"
+        d="M512 329.143C512 228.154 430.314 146.286 329.55 146.286H174.468C154.315 146.286 137.978 162.659 137.978 182.857C137.978 203.055 154.315 219.429 174.468 219.429H329.55C390.009 219.429 439.02 268.549 439.02 329.143C439.02 389.737 390.009 438.857 329.55 438.857H0V512H329.55C430.314 512 512 430.132 512 329.143Z"
         fill="currentColor"
       />
       <path
-        d="M737.223 641C786.867 641 827.111 681.295 827.111 731C827.111 780.706 786.867 821 737.223 821C687.578 821 647.334 780.706 647.334 731C647.334 681.294 687.579 641 737.223 641Z"
-        fill="currentColor"
-      />
-      <path
-        d="M286.777 207C336.422 207 376.666 247.294 376.666 297C376.666 346.706 336.421 387 286.777 387C237.133 387 196.889 346.705 196.889 297C196.889 247.294 237.133 207 286.777 207Z"
+        d="M182.45 73.1429L512 73.1429V0L182.45 8.29697e-05C81.6856 8.29697e-05 0 81.868 0 182.857C0 283.846 81.6856 365.714 182.45 365.714H337.532C357.685 365.714 374.022 349.341 374.022 329.143C374.022 308.945 357.685 292.572 337.532 292.572H182.45C121.991 292.572 72.98 243.451 72.98 182.857C72.98 122.264 121.991 73.1429 182.45 73.1429Z"
         fill="currentColor"
       />
     </svg>
