@@ -163,3 +163,65 @@ fn doctor_omits_cleanup_section_when_nothing_is_stale() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn concurrent_doctor_runs_never_report_a_lost_delete_race_as_a_finding() -> Result<()> {
+    // `doctor` dispatches under `Mode::Shared`, so concurrent `git span
+    // doctor` invocations run at the same time rather than serializing
+    // through the repository lock — unlike a mutating command. Two runs
+    // can both enumerate the same stale legacy-lock file; whichever loses
+    // the delete race must observe the file already gone (`NotFound`) and
+    // treat that as confirmation the cleanup already happened, not as
+    // damage. Before the fix, the loser reported "could not clean legacy
+    // lock file" as a finding and exited 1 for an otherwise perfectly
+    // healthy repository.
+    //
+    // The race window is short and process startup dominates, so repeat
+    // several times rather than relying on a single interleaving.
+    for attempt in 0..20 {
+        let repo = TestRepo::seeded()?;
+        repo.run_span(["add", "test/span", "file1.txt"])?;
+        repo.write_file(".span/.race.lock", "")?;
+
+        let path_a = repo.path().to_path_buf();
+        let a = std::thread::spawn(move || -> Result<std::process::Output> {
+            let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_git-span"));
+            cmd.current_dir(&path_a);
+            cmd.args(["doctor"]);
+            Ok(cmd.output()?)
+        });
+
+        let path_b = repo.path().to_path_buf();
+        let b = std::thread::spawn(move || -> Result<std::process::Output> {
+            let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_git-span"));
+            cmd.current_dir(&path_b);
+            cmd.args(["doctor"]);
+            Ok(cmd.output()?)
+        });
+
+        let out_a = a.join().unwrap()?;
+        let out_b = b.join().unwrap()?;
+
+        assert!(
+            out_a.status.success(),
+            "attempt {attempt}: doctor A must exit 0 even if it lost the delete \
+             race to doctor B;\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&out_a.stdout),
+            String::from_utf8_lossy(&out_a.stderr)
+        );
+        assert!(
+            out_b.status.success(),
+            "attempt {attempt}: doctor B must exit 0 even if it lost the delete \
+             race to doctor A;\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&out_b.stdout),
+            String::from_utf8_lossy(&out_b.stderr)
+        );
+        assert!(
+            !repo.path().join(".span/.race.lock").exists(),
+            "attempt {attempt}: the legacy lock file must be gone regardless \
+             of which process actually removed it"
+        );
+    }
+
+    Ok(())
+}

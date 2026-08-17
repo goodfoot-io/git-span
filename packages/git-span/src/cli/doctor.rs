@@ -167,6 +167,14 @@ fn is_legacy_lock_name(name: &str) -> bool {
 /// unreadable or unremovable stray file must never suppress every other
 /// finding.
 ///
+/// One exception: `doctor` dispatches under `Mode::Shared`, so concurrent
+/// `git span doctor` runs can enumerate the same stale entry — the loser's
+/// `symlink_metadata`/`remove_file` then races the winner's `remove_file`
+/// and observes `NotFound`. That is not damage, it is confirmation the
+/// entry is already gone, so a `NotFound` from either call is treated as
+/// benign and skipped silently: not counted as removed by this process,
+/// and never turned into a finding.
+///
 /// Non-existence of the span root is not an error here — a repository with
 /// no `.span/` directory yet has nothing to clean.
 fn clean_legacy_lock_files(
@@ -212,6 +220,14 @@ fn clean_legacy_lock_files(
             };
             let metadata = match entry.path().symlink_metadata() {
                 Ok(m) => m,
+                // Doctor runs under `Mode::Shared` (readers may run
+                // concurrently), so two `git span doctor` processes can
+                // both enumerate the same stale entry; the loser's `stat`
+                // races the winner's `remove_file` below and observes
+                // `NotFound`. That is not damage — it is confirmation the
+                // file is already gone — so it is silently skipped rather
+                // than reported as a finding.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(e) => {
                     findings.push(format!(
                         "could not clean legacy lock file `{span_root}/{}`: {e}",
@@ -232,10 +248,18 @@ fn clean_legacy_lock_files(
                 continue;
             }
             if let Err(e) = std::fs::remove_file(entry.path()) {
-                findings.push(format!(
-                    "could not clean legacy lock file `{span_root}/{}`: {e}",
-                    entry_relative.display()
-                ));
+                // Same benign race as the `symlink_metadata` case above: a
+                // concurrent `git span doctor` run already removed this
+                // exact entry between our `read_dir` and our `unlink`. The
+                // repository ends up in the state this function wants
+                // either way, so this is not reported as removed (we did
+                // not remove it) nor as a finding (nothing is wrong).
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    findings.push(format!(
+                        "could not clean legacy lock file `{span_root}/{}`: {e}",
+                        entry_relative.display()
+                    ));
+                }
                 continue;
             }
             removed.push(format!("{span_root}/{}", entry_relative.display()));

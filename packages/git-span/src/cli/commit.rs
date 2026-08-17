@@ -714,7 +714,8 @@ pub(crate) fn content_identity_pairings(
     pairings
 }
 
-pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result<i32> {
+/// Caller must hold the exclusive repository recovery-domain lock; `dispatch` does.
+pub(super) fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result<i32> {
     crate::validation::validate_span_name(&args.name)?;
 
     // Parse every address first; fail-closed with no partial state.
@@ -1349,7 +1350,8 @@ pub fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) -> Result
 // remove
 // ---------------------------------------------------------------------------
 
-pub fn run_remove(repo: &gix::Repository, args: RemoveArgs, span_root: &str) -> Result<i32> {
+/// Caller must hold the exclusive repository recovery-domain lock; `dispatch` does.
+pub(super) fn run_remove(repo: &gix::Repository, args: RemoveArgs, span_root: &str) -> Result<i32> {
     crate::validation::validate_span_name(&args.name)?;
 
     // Parse every address first; fail-closed with no partial state.
@@ -1430,7 +1432,8 @@ pub fn run_remove(repo: &gix::Repository, args: RemoveArgs, span_root: &str) -> 
 // replace
 // ---------------------------------------------------------------------------
 
-pub fn run_replace(repo: &gix::Repository, args: ReplaceArgs, span_root: &str) -> Result<i32> {
+/// Caller must hold the exclusive repository recovery-domain lock; `dispatch` does.
+pub(super) fn run_replace(repo: &gix::Repository, args: ReplaceArgs, span_root: &str) -> Result<i32> {
     crate::validation::validate_span_name(&args.name)?;
 
     // Parse both addresses first; fail-closed with no partial state.
@@ -1761,7 +1764,8 @@ pub fn run_replace(repo: &gix::Repository, args: ReplaceArgs, span_root: &str) -
 // why
 // ---------------------------------------------------------------------------
 
-pub fn run_why(repo: &gix::Repository, args: WhyArgs, span_root: &str) -> Result<i32> {
+/// Caller must hold the exclusive repository recovery-domain lock; `dispatch` does.
+pub(super) fn run_why(repo: &gix::Repository, args: WhyArgs, span_root: &str) -> Result<i32> {
     let WhyArgs {
         name,
         why_text,

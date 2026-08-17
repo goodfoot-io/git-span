@@ -42,9 +42,7 @@
 use crate::support;
 
 use anyhow::Result;
-use git_span::cli::AddArgs;
-use git_span::cli::AddFormat;
-use git_span::cli::commit::run_add;
+use git_span::cli::{AddArgs, AddFormat, Commands};
 use git_span::{index_entries_call_count, reset_index_entries_call_count};
 use support::TestRepo;
 
@@ -67,7 +65,14 @@ fn run_add_calls_index_entries_exactly_once() -> Result<()> {
         format: AddFormat::Human,
     };
 
-    run_add(&gix_repo, args, ".span")?;
+    // `run_add` is `pub(super)` — mutating handlers are reachable only
+    // through `cli::dispatch`, which acquires the exclusive recovery-domain
+    // lock before calling them (see the precondition doc comment on
+    // `run_add`). Drive it through dispatch, exactly as `main.rs` does, so
+    // the in-process index-load counter still observes a single `run_add`
+    // invocation under its real caller.
+    let exit = git_span::cli::dispatch(&gix_repo, Commands::Add(args), None)?;
+    assert_eq!(exit, 0, "dispatching `add` for this fixture must succeed");
 
     let count = index_entries_call_count();
     assert_eq!(
@@ -75,7 +80,10 @@ fn run_add_calls_index_entries_exactly_once() -> Result<()> {
         "index_entries called {count} times — expected exactly 5 for this \
          fixture (1 mutation-pipeline snapshot + 2 reconcile-check span \
          reads + 2 whole-file layer probes × 1 whole-file anchor). \
-         The index is being re-materialized per anchor instead of once."
+         The index is being re-materialized per anchor instead of once. \
+         (Dispatch's own lock acquisition and span-root resolution do not \
+         touch the git index, so the count is unchanged from a direct \
+         `run_add` call.)"
     );
 
     Ok(())
