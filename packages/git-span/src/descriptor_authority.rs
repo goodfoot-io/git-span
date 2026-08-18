@@ -9,6 +9,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(test)]
 thread_local! {
@@ -91,6 +92,22 @@ fn open_directory_at(parent: &File, component: &OsStr) -> Result<File> {
         return Err(std::io::Error::last_os_error()).context("open retained directory component");
     }
     Ok(unsafe { File::from_raw_fd(descriptor) })
+}
+
+/// Warn once per process when a mount forces the directory-fsync durability
+/// barrier to degrade to best-effort. The downgrade is a property of the
+/// mount, not of individual operations, so repeating it per mutation (one
+/// warning per anchor update during `git span drift --fix`) would drown out
+/// every real diagnostic.
+static DIRECTORY_FSYNC_UNSUPPORTED_WARNED: AtomicBool = AtomicBool::new(false);
+
+fn warn_once_directory_fsync_unsupported() {
+    if !DIRECTORY_FSYNC_UNSUPPORTED_WARNED.swap(true, Ordering::Relaxed) {
+        eprintln!(
+            "warning: this filesystem rejects fsync on directories; \
+             .span metadata writes are not crash-durable on this mount"
+        );
+    }
 }
 
 /// A directory inode retained independently of the pathname used to find it.
@@ -502,11 +519,31 @@ impl RetainedDirectory {
         }
     }
 
+    /// Whether a mount rejected fsync(2) on a directory descriptor with a
+    /// recognized "sync unsupported for this fd type" errno. virtiofs and
+    /// other FUSE-family backends report EBADF for directory fsync even on a
+    /// perfectly valid descriptor; EINVAL and ENOTSUP are the conventional
+    /// responses of filesystems without directory-fsync support. The entry
+    /// mutation itself has already landed by the time sync() runs, so these
+    /// errnos downgrade the durability barrier rather than fail the command.
+    /// Every other error keeps the fail-closed behavior.
+    fn is_directory_fsync_unsupported(error: &std::io::Error) -> bool {
+        matches!(
+            error.raw_os_error(),
+            Some(libc::EBADF | libc::EINVAL | libc::ENOTSUP)
+        )
+    }
+
     /// Persist directory-entry changes made through this authority.
     pub fn sync(&self) -> Result<()> {
-        self.descriptor
-            .sync_all()
-            .context("fsync retained directory")
+        match self.descriptor.sync_all() {
+            Ok(()) => Ok(()),
+            Err(error) if Self::is_directory_fsync_unsupported(&error) => {
+                warn_once_directory_fsync_unsupported();
+                Ok(())
+            }
+            Err(error) => Err(error).context("fsync retained directory"),
+        }
     }
 
     /// Duplicate the retained descriptor without consulting its old path.
