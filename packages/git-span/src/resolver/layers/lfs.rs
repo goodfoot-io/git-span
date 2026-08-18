@@ -203,6 +203,7 @@ pub(crate) fn resolve_lfs_anchor(
             content_equivalent: false,
             locus: None,
             fuzzy_successors: vec![],
+            moved_uncommitted: false,
         };
     }
 
@@ -266,6 +267,7 @@ pub(crate) fn resolve_lfs_anchor(
             content_equivalent: false,
             locus: None,
             fuzzy_successors: vec![],
+            moved_uncommitted: false,
         };
     }
 
@@ -330,6 +332,7 @@ pub(crate) fn resolve_lfs_anchor(
         content_equivalent: false,
         locus: None,
         fuzzy_successors: vec![],
+        moved_uncommitted: false,
     }
 }
 
@@ -351,5 +354,6 @@ fn lfs_terminal(
         content_equivalent: false,
         locus: None,
         fuzzy_successors: vec![],
+        moved_uncommitted: false,
     }
 }

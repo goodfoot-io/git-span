@@ -519,6 +519,7 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
                     layer_sources: vec![],
                     locus: None,
                     fuzzy_successors: vec![],
+                    moved_uncommitted: false,
                 }],
                 follow_moves: false,
             });
@@ -814,6 +815,7 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
                                 current: r.current.clone(),
                                 locus: r.locus.clone(),
                                 fuzzy_successors: r.fuzzy_successors.clone(),
+                                moved_uncommitted: r.moved_uncommitted,
                             }]
                         } else {
                             // Emit one Finding per drifting layer.
@@ -833,6 +835,7 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
                                         None
                                     },
                                     fuzzy_successors: r.fuzzy_successors.clone(),
+                                    moved_uncommitted: r.moved_uncommitted,
                                 })
                                 .collect()
                         }
@@ -1862,6 +1865,7 @@ fn fresh_anchor_resolved(
         layer_sources: Vec::new(),
         locus: None,
         fuzzy_successors: vec![],
+        moved_uncommitted: false,
     }
 }
 
@@ -1901,6 +1905,7 @@ fn render_human(
                         current: r.current.clone(),
                         locus: None,
                         fuzzy_successors: vec![],
+                        moved_uncommitted: false,
                     }]
                 } else {
                     // Collapse per-layer expansions to a single row per

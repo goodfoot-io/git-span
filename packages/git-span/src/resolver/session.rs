@@ -616,6 +616,18 @@ pub(crate) struct ConcurrentSession {
     /// silently break every downstream Jaccard comparison that assumes id
     /// equality means line equality).
     pub(crate) jaccard_corpus: Mutex<JaccardCorpus>,
+    /// Lazily-built map of untracked worktree path → blob OID, computed
+    /// once per scan on the first anchor that triggers the worktree-blob
+    /// fallback (card main-264). `Some(map)` when the untracked
+    /// enumeration succeeded; `None` when it failed — the fallback is
+    /// disabled for the rest of the scan (fail-closed, existing behavior
+    /// preserved). `OnceLock`-wrapped: the enumeration runs at most once
+    /// per session, and concurrent fallback triggers block on
+    /// `get_or_init` instead of re-running it. The moved-directory shape
+    /// (26 anchors in the incident) is exactly the case where per-anchor
+    /// re-enumeration would be wasteful.
+    pub(crate) worktree_move_cache:
+        OnceLock<Option<HashMap<std::path::PathBuf, gix::ObjectId>>>,
 }
 
 /// Session-scoped Jaccard interner and per-`(path, layer)` interned-line
@@ -694,6 +706,7 @@ impl ConcurrentSession {
             history_blob_memo: RwLock::new(HashMap::new()),
             history_fingerprint_memo: RwLock::new(HashMap::new()),
             jaccard_corpus: Mutex::new(JaccardCorpus::default()),
+            worktree_move_cache: OnceLock::new(),
         }
     }
 

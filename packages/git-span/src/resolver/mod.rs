@@ -28,6 +28,7 @@ pub(crate) mod session;
 pub(crate) mod store;
 pub(crate) mod timeline;
 pub(crate) mod walker;
+pub(crate) mod worktree_move;
 
 pub(crate) use engine::{
     SourceLayers, anchor_status_is_drift, build_source_layers, resolve_loaded_spans,

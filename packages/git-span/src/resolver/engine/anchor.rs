@@ -508,6 +508,7 @@ pub(crate) fn resolve_anchor_inner(
             layer_sources: vec![],
             locus: None,
             fuzzy_successors: vec![],
+            moved_uncommitted: false,
         });
     }
 
@@ -564,6 +565,7 @@ pub(crate) fn resolve_anchor_inner(
                 layer_sources: vec![],
                 locus: None,
                 fuzzy_successors: vec![],
+                moved_uncommitted: false,
             });
         }
     }
@@ -882,6 +884,7 @@ pub(crate) fn resolve_anchor_inner(
                 layer_sources: vec![],
                 locus: None,
                 fuzzy_successors: vec![],
+                moved_uncommitted: false,
             });
         }
     }
@@ -1495,6 +1498,7 @@ pub(crate) fn resolve_anchor_inner(
         layer_sources,
         locus: None,
         fuzzy_successors,
+        moved_uncommitted: false,
     })
 }
 
@@ -1844,6 +1848,7 @@ fn unavailable(
         layer_sources: vec![],
         locus: None,
         fuzzy_successors: vec![],
+        moved_uncommitted: false,
     }
 }
 
@@ -1912,6 +1917,7 @@ fn clean_head_fast_path(
         layer_sources: vec![],
         locus: None,
         fuzzy_successors: vec![],
+        moved_uncommitted: false,
     }))
 }
 

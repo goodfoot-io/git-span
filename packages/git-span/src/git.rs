@@ -1408,6 +1408,21 @@ pub fn hash_blob(bytes: &[u8]) -> Result<ObjectId> {
         .map_err(|e| Error::Git(format!("hash-object: {e}")))
 }
 
+/// Enumerate the worktree's untracked files via
+/// `git ls-files --others --exclude-standard -z` (card main-264).
+///
+/// Untracked enumeration delegated to git itself so ignore-rule parity
+/// with the drift scan holds by construction — the drift scan already
+/// delegates ignore handling to git via the `git status --porcelain=v1 -z
+/// -uno` subprocess in [`read_layer_status`].
+// TODO(card main-264 phase 3): remove this attribute once the classification
+// arms call the helper.
+#[allow(dead_code)]
+pub(crate) fn untracked_worktree_files(repo: &gix::Repository) -> Result<Vec<std::path::PathBuf>> {
+    let _ = repo;
+    Ok(vec![])
+}
+
 /// Resolve a single `.gitattributes` attribute for `rel_path` relative to
 /// the repo's worktree root. Returns:
 ///

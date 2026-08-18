@@ -1808,6 +1808,7 @@ fn deleted_placeholder(anchor_id: &str) -> AnchorResolved {
         layer_sources: vec![],
         locus: None,
         fuzzy_successors: vec![],
+        moved_uncommitted: false,
     }
 }
 
@@ -1838,6 +1839,7 @@ mod tests {
                     layer_sources: vec![],
                     locus: None,
                     fuzzy_successors: vec![],
+                    moved_uncommitted: false,
                 })
                 .collect(),
             follow_moves: false,

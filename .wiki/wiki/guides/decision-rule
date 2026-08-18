@@ -1,6 +1,6 @@
 packages/git-span/src/cli/mod.rs#L332-L338 rk64:e928522314eb2a9c
 packages/git-span/src/cli/mod.rs#L332-L340 rk64:4f615bcedd43b9ff
 packages/git-span/src/cli/mod.rs#L332-L342 rk64:071528346ca6e2cf
-packages/git-span/src/types.rs#L223-L234 rk64:0f55dff100bfb139
+packages/git-span/src/types.rs#L232-L243 rk64:0f55dff100bfb139
 wiki/guides/reconciliation-authority.md#L32-L59 rk64:f04ced9ea0c4d849
 

@@ -181,6 +181,7 @@ pub(crate) fn resolve_whole_file(
             content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
             locus: None,
             fuzzy_successors: vec![],
+            moved_uncommitted: false,
         });
     }
 
@@ -205,6 +206,7 @@ pub(crate) fn resolve_whole_file(
             content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
             locus: None,
             fuzzy_successors: vec![],
+            moved_uncommitted: false,
         });
     }
 
@@ -254,6 +256,7 @@ pub(crate) fn resolve_whole_file(
             content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
             locus: None,
             fuzzy_successors: vec![],
+            moved_uncommitted: false,
         });
     }
 
@@ -457,6 +460,7 @@ pub(crate) fn resolve_whole_file(
                         content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
                         locus: None,
                         fuzzy_successors: vec![],
+                        moved_uncommitted: false,
                     });
                 }
                 None if head_path_absent => {
@@ -485,6 +489,7 @@ pub(crate) fn resolve_whole_file(
                         content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
                         locus: None,
                         fuzzy_successors: vec![],
+                        moved_uncommitted: false,
                     });
                 }
                 None => {
@@ -510,6 +515,7 @@ pub(crate) fn resolve_whole_file(
                         content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
                         locus: None,
                         fuzzy_successors: vec![],
+                        moved_uncommitted: false,
                     });
                 }
             }
@@ -635,6 +641,7 @@ pub(crate) fn resolve_whole_file(
         content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
         locus: None,
         fuzzy_successors: vec![],
+        moved_uncommitted: false,
     })
 }
 

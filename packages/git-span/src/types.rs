@@ -214,6 +214,15 @@ pub struct AnchorResolved {
     /// finds candidates above the noise floor (0.50). Empty for all statuses
     /// except `Moved` that came from the fuzzy fallback.
     pub fuzzy_successors: Vec<FuzzySuccessor>,
+    /// True when this anchor was classified by the worktree-blob fallback
+    /// (card main-264): the anchored path is gone from the worktree, its
+    /// last-known blob still exists at HEAD, and an untracked file with
+    /// identical content was found. Distinguishes the fallback's findings
+    /// (a `Moved` with a unique match, or an ambiguous `Changed` carrying a
+    /// ranked proposal) from staged/committed moves and ordinary deletions.
+    /// Deliberately not serialized into `FindingDoc` — the drift JSON
+    /// contract stays unchanged (main-207).
+    pub moved_uncommitted: bool,
 }
 
 /// Locus emitted by the HEAD-history walk in `resolver::attribution`.
@@ -709,6 +718,11 @@ pub struct Finding {
     /// above the noise floor. Corresponds to
     /// `AnchorResolved.fuzzy_successors`.
     pub fuzzy_successors: Vec<FuzzySuccessor>,
+    /// True when the finding was classified by the worktree-blob fallback
+    /// for an unstaged move (see [`AnchorResolved::moved_uncommitted`]).
+    /// Renders the `(uncommitted)` provenance marker and, on the ambiguous
+    /// multi-candidate case, the explicit destinations proposal.
+    pub moved_uncommitted: bool,
 }
 
 /// Engine invocation options. See plan §B3/§B4.

@@ -341,6 +341,7 @@ impl TryFrom<AnchorResolvedDto> for AnchorResolved {
             layer_sources: d.layer_sources.into_iter().map(Into::into).collect(),
             locus,
             fuzzy_successors: d.fuzzy_successors.iter().map(Into::into).collect(),
+            moved_uncommitted: false,
         })
     }
 }
