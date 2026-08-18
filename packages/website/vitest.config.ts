@@ -11,14 +11,28 @@ export default defineConfig(async () => ({
   // `collections` aliases through vite.config.ts — vitest reads only this file,
   // so both aliases must be mirrored here for colocated tests to resolve at all.
   resolve: {
-    alias: {
-      '~': path.resolve(import.meta.dirname, './app'),
-      collections: path.resolve(import.meta.dirname, './.source'),
+    alias: [
+      { find: '~', replacement: path.resolve(import.meta.dirname, './app') },
+      { find: 'collections', replacement: path.resolve(import.meta.dirname, './.source') },
       // The worker imports the server build through this virtual module at
       // module scope; no build emits it under vitest, so resolve it to a stub
       // that exists only for import resolution (see app/test/__stubs__).
-      'virtual:react-router/server-build': path.resolve(import.meta.dirname, './app/test/__stubs__/server-build.ts')
-    }
+      {
+        find: 'virtual:react-router/server-build',
+        replacement: path.resolve(import.meta.dirname, './app/test/__stubs__/server-build.ts')
+      },
+      // root.tsx preloads the font faces through vite's asset pipeline (`?url`
+      // imports of fontsource package files, see app/root.tsx FONT_PRELOADS).
+      // Under jsdom, vitest transforms assets and then denies the resolved
+      // file: node_modules is a symlink farm whose realpaths (the hoisted
+      // store) fall outside server.fs.allow. The URLs only feed the `links`
+      // export no test reads, so the imports resolve to a stub (see
+      // app/test/__stubs__/font-url.ts).
+      {
+        find: /^@fontsource(-variable)?\/[^/]+\/files\/[^/]+\.woff2\?url$/,
+        replacement: path.resolve(import.meta.dirname, './app/test/__stubs__/font-url.ts')
+      }
+    ]
   },
   test: {
     // jsdom for the whole package. Scoping the DOM per file via
