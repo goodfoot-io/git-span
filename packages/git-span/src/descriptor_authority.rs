@@ -856,7 +856,9 @@ mod tests {
     };
     use anyhow::Result;
     use std::ffi::OsStr;
+    use std::fs::File;
     use std::io::{Read, Write};
+    use std::os::fd::FromRawFd;
     use std::os::unix::fs::symlink;
     use std::path::Path;
 
@@ -996,6 +998,39 @@ mod tests {
         assert_eq!(std::fs::read(retained.join("value"))?, b"stable journal");
         assert!(!attacker.join("value").exists());
         assert!(recovery.validate_bindings().is_err());
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn mounts_that_reject_directory_fsync_do_not_fail_sync() -> Result<()> {
+        // FUSE-family mounts (virtiofs on Docker Desktop, among others)
+        // reject fsync(2) on a directory descriptor with EBADF even though the
+        // directory-entry mutation itself landed. An O_PATH descriptor hits the
+        // same syscall and errno deterministically: operations that need an
+        // open file description, fsync included, fail with EBADF. The
+        // durability barrier must degrade to best-effort instead of failing
+        // the command.
+        let temp = tempfile::tempdir()?;
+        let canonical = temp.path().canonicalize()?;
+        let encoded = std::ffi::CString::new(canonical.as_os_str().as_encoded_bytes())?;
+        let descriptor = unsafe {
+            libc::open(
+                encoded.as_ptr(),
+                libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            )
+        };
+        assert!(descriptor >= 0, "open O_PATH directory descriptor");
+        let authority = RetainedDirectory {
+            ancestors: Vec::new(),
+            descriptor: unsafe { File::from_raw_fd(descriptor) },
+            display_path: canonical,
+        };
+        let result = authority.sync();
+        assert!(
+            result.is_ok(),
+            "directory-fsync EBADF must be best-effort, got: {result:?}"
+        );
         Ok(())
     }
 
