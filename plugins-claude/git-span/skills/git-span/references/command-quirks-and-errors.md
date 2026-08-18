@@ -2,7 +2,7 @@
 
 A span is a tracked plain-text file under `.span/<name>`. `git span add` /
 `remove` / `why` edit that file in the working tree; you persist edits with
-`git add .span && git commit`. There is no staging area and no
+`git add .span && git commit -o .span`. There is no staging area and no
 `git span commit` step.
 
 ## A span edit is not in history
@@ -13,7 +13,7 @@ only touch the working-tree file:
 
 ```bash
 git status .span            # the edited span file shows as modified
-git add .span && git commit -m "Update <name> span"
+git add .span && git commit -o .span -m "Update <name> span"
 ```
 
 `git span show <name>` reflects the working-tree file immediately; teammates

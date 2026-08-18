@@ -38,7 +38,7 @@ ls path/to/file1 path/to/file2   # check existence
    - Several spans need this at once → `references/triage.md`.
 4. **Verify and persist:** require `git span drift <name>` to exit 0, then
    ```bash
-   git add .span && git commit -m "Re-anchor <name>"
+   git add <changed-paths> .span && git commit -o <changed-paths> .span -m "Re-anchor <name>"
    ```
 
 A user instruction like *"just re-add the anchors"* does not remove the
@@ -81,7 +81,7 @@ git span remove <name> '<submodule-path>/inner/file.ts#L10-L20'
 # Either: whole-file pin on the submodule root
 git span add <name> <submodule-path>
 # Or: pin a parent-repo path that witnesses the same relationship
-git add .span && git commit -m "Re-anchor <name> off submodule internals"
+git add .span && git commit -o .span -m "Re-anchor <name> off submodule internals"
 ```
 
 Whole-file anchors on a submodule *root* (the gitlink path) are supported — the

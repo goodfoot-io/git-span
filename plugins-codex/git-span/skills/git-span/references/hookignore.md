@@ -35,7 +35,7 @@ suppresses the slug `wiki` and `wiki/onboarding`, but not `wikileaks`.
 
 ```text
 # Hold wiki and marketing spans back while reading hook source.
-packages/agent-hooks/src   wiki,marketing
+src/hooks   wiki,marketing
 
 # Anywhere under docs/, suppress wiki spans.
 docs/   wiki
@@ -78,7 +78,7 @@ advisor has no per-span-slug suppression concept.
 
 ```text
 # Generated output and vendored code never need a span.
-packages/agent-hooks/generated/**
+dist/**
 vendor/
 ```
 
@@ -105,5 +105,5 @@ to the advisor's unconditional `.span/**` exclusion.
 cat <<'EOF' > .span/.advisorignore
 vendor/
 EOF
-git add .span/.advisorignore && git commit -m "Exclude vendored code from the advisor's uncovered-writes nudge"
+git add .span/.advisorignore && git commit -o .span/.advisorignore -m "Exclude vendored code from the advisor's uncovered-writes nudge"
 ```

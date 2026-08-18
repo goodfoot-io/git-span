@@ -11,8 +11,8 @@ default; configurable via `--span-dir`, `GIT_SPAN_DIR`, or
 that file, not separate objects:
 
 ```text
-packages/agent-hooks/src/pre-tool-use.ts#L34-L34 rk64:4441b3fb2a19c0d4
-packages/git-span/src/span.rs#L1-L40 rk64:a9f2c3105e7b8f16
+packages/foo/src/Bar.ts#L34-L34 rk64:0123456789abcdef
+packages/foo/src/Baz.ts#L1-L40 rk64:fdecba9876543210
 
 <the span "why" prose>
 ```

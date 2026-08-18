@@ -12,7 +12,7 @@ distinct steps, none of which happen automatically.
 
 The bundled hooks shell out to `git span list` and `git span drift`. Codex
 does not install or manage this binary — build or install the `git-span`
-CLI (`packages/git-span`) and confirm it resolves before going further:
+CLI and confirm it resolves before going further:
 
 ```bash
 git span --version

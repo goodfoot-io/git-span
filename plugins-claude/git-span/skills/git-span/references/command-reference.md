@@ -3,7 +3,7 @@
 A span is an ordinary tracked plain-text file under the span root (default
 `.span/<name>`, overridable with the `GIT_SPAN_DIR` environment variable or
 `git config git-span.dir`). `git span add` / `remove` / `why` edit that file
-directly; `git add .span && git commit` persists it. There is no staging area,
+directly; `git add .span && git commit -o .span` persists it. There is no staging area,
 no span refs, and no `git span commit` step.
 
 ## Anchor grammar
@@ -121,9 +121,8 @@ not share service state.
 
 `--perf`/`GIT_SPAN_PERF=1` keeps JSON alone on stdout and reports service RPC,
 watcher, repository/corpus, generation/resolver, selection, rewrite, and
-latency counters on stderr. The released-binary acceptance harness is
-[packages/git-span/scripts/context-acceptance.py](./packages/git-span/scripts/context-acceptance.py):
-it uses 31 samples per clean, moved, semantic, no-overlap, multi-span, and
+latency counters on stderr. The released-binary acceptance harness
+uses 31 samples per clean, moved, semantic, no-overlap, multi-span, and
 multi-path cell and fails unless every warm cell improves at least 30% at p50
 and 20% at p95 over the legacy fix/list/drift/why process lifecycle.
 
@@ -185,7 +184,7 @@ git span remove <name> <anchor>...                    # remove anchors from .spa
 git span replace <name> <old-anchor> <new-anchor>     # atomic swap: retire old, install new, or nothing
 git span why <name>                                   # print current why
 git span why <name> [<text>] [--format human|json] # write a new why into .span/<name> (json = write mode only)
-git add .span && git commit                           # persist the edits
+git add .span && git commit -o .span              # persist the edits
 ```
 
 `git span add` without `--at` hashes each anchor against the file content in the
@@ -277,7 +276,7 @@ git span delete <name>            # remove .span/<name>
 ```
 
 This removes the span file from the working tree; commit the result with
-`git add .span && git commit`. There is no `git span move`/`rename`
+`git add .span && git commit -o .span`. There is no `git span move`/`rename`
 subcommand — to rename a span, use `git mv .span/<old> .span/<new>` and
 commit. To restore a prior span state, use ordinary git —
 `git checkout <commit-ish> -- .span/<name>` or `git revert`.

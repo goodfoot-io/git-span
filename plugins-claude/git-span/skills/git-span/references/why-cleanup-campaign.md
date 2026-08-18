@@ -1,7 +1,13 @@
 # Corpus-wide why cleanup campaign
 
-Apply the why standard in `wiki/guides/writing-span-whys.md` across `.span/**`
-— one or two complete, present-tense clauses carrying decisive nonlocal facts.
+Apply the why standard across `.span/**`: one or two complete, present-tense
+clauses stating the shared relationship plus its decisive nonlocal facts —
+authority, intentional difference, invariant, lifecycle state, completion
+gate, focused verification — with clear modal or evidentiary force. Labels are
+optional but must introduce complete clauses. Prefer a stronger enforceable
+mechanism (type, schema, test, lint, CI) over a span when one covers the
+requirement. Keep the smallest decision-preserving statement, roughly 15–35
+body tokens.
 Work has two phases: the main agent triages and partitions; forked subagents
 execute — the same fork-per-component mechanism as the reconcile skill. Only
 the main agent commits.
@@ -141,7 +147,7 @@ agent gathered in Phase 1:
 <parameter name="description" string="true">Clean up <label> why cluster</parameter>
 <parameter name="subagent_type" string="true">fork</parameter>
 <parameter name="prompt" string="true">
-Bring these <N> spans' whys up to the writing-span-whys standard (component: <label> — connected via <shared-file>). Do not commit.
+Bring these <N> spans' whys up to the why standard inlined above (component: <label> — connected via <shared-file>). Do not commit.
 
 ## <name-1>
 - Class: <list-tier class from triage>
@@ -165,12 +171,13 @@ For each assigned span:
    reads: check the header/doc comment plus `grep` for the why's specific nouns
    (function/counter names) instead of reading it all. Run
    `git span history <name>` once only when provenance is unclear.
-2. **Verify and draft.** Apply the validation checklist in
-   `wiki/guides/writing-span-whys.md`. Verify every clause against current
-   anchors or the evidence a gate names. Draft one or two complete,
-   present-tense clauses (roughly 15–35 body tokens; labels optional but must
-   introduce complete clauses; smallest decision-preserving statement). Stop if
-   a claim cannot be confirmed — report instead.
+2. **Verify and draft.** Verify every clause against current anchors or the
+   evidence a gate names, and confirm: each label introduces a complete
+   clause, every named source or command exists and is current, no stronger
+   mechanism should replace the span, and activation from any anchor preserves
+   the decision and leaves meaning and anchors accurate. Draft per the
+   standard inlined above. Stop if a claim cannot be confirmed — report
+   instead.
 3. **Apply.** All `git span why <name> "..."` writes in one chained command,
    then comment edits, then re-anchoring (comments before re-anchoring so one
    pass covers both). A comment edit that shifts an anchor's line count needs
@@ -195,7 +202,7 @@ corresponding `git-span:git-span` section.
 git span drift     # must exit 0 with "0 drift"
 git span doctor    # must report "no findings"
 git add <changed-anchor-paths> .span
-git commit -m "Bring span whys up to the writing standard"
+git commit -o .span <changed-anchor-paths> -m "Bring span whys up to the writing standard"
 ```
 Omit content paths when no anchor changed. Run repository validation for every
 behavior change and surface every anchor diff and rewritten why in the report.
@@ -260,7 +267,7 @@ file touched, including source files touched only for comment retrofits.
 When resolving spans in a shared worktree, restrict to: `git span …`, edits to
 assigned anchors when a confirmed authority or satisfied gate decides them,
 required tests, `git add .span[/<name>]`, `git add <assigned-anchor>`,
-`git commit -m` (never `-a` or `--amend`),
+`git commit -o .span[/<name>] <assigned-anchor> -m` (never `-a` or `--amend`),
 `git checkout <commit-ish> -- .span/<name>`, and read-only
 `git status`/`git diff`/`git log`/`git show`. Never touch unrelated paths or
 rewind HEAD.

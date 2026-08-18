@@ -4,12 +4,19 @@ Match the question to the command, don't reflexively mutate:
 
 - Existence / what's currently anchored → `git span list [<target>...]` (all spans if no
   target; `--oneline` for terse `<span-name> <path>#Lx-Ly` rows) or `git span show <name>`
-  (== bare `git span <name>`) for one span's full anchors+why+config.
+  (== bare `git span <name>`) for one span's full anchors, why, resolution audit, and config.
 - Rationale / definition → `git span why <name>` (bare, just prints the why).
 - Timeline / when something changed → `git span history <name>` — newest-first
   git-log-style text by default, `--format json` for JSON.
 - Drift check without fixing anything → `git span drift [<name-or-path>]` — read-only
   unless `--fix` is passed; omit `--fix` here.
+
+In `git span show <name>`, each `[[resolved]]` entry records a human decision
+that retired an unverified duplicate-identity sentinel. Read `state = "current"`
+as “the same identity still carries the recorded hash” and `state = "stale"`
+as “the hash changed or the identity disappeared.” A stale record is durable
+provenance, not an actionable drift finding; do not delete or refresh it merely
+to make the inspection look clean.
 
 **`drift --format json` is one JSON object** — `{"findings": [...], "schema_version": 3,
 "span": "...", "clean": true|false}`, `findings` holding every drifting anchor. Parse as

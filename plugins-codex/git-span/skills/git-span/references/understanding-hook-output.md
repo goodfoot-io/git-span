@@ -82,7 +82,7 @@ directory holding a single entry folds onto that entry's line, so a branch
 only ever appears where two or more anchors actually share a prefix. A
 whole-file anchor is a bare path with no range column; where the same file
 also carries line ranges, it takes `(whole file)` in the range column so its
-own drift label can never be read as belonging to a neighbouring range. Only genuine
+own drift label can never be read as belonging to a neighboring range. Only genuine
 (semantic or terminal) drift earns a suffix (` — changed`, ` — deleted`, …); positional
 drift never does — see below. The header scales with what drifted: `<file>
 has implicit dependencies:` (naming the touched file) when nothing did, the
@@ -378,7 +378,7 @@ latency, subprocess count, and whether dependency context surfaced. Unresolved
 static intent never creates a transcript warning by itself; the safe result is
 simply no attribution.
 
-## Failure behaviour
+## Failure behavior
 
 Both hooks fail open on everything that decides *whether* there is something
 to say: a missing `git span` binary, a timeout, a failed scan, or a
