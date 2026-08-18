@@ -1,4 +1,4 @@
 packages/git-span/src/resolver/layers/diff.rs#L566-L590 rk64:ee958908383efc2a
-packages/git-span/src/resolver/worktree_move.rs rk64:b31f0edb44b68ce3
+packages/git-span/src/resolver/worktree_move.rs rk64:ba4ca91028483473
 
 The fallback hashes the anchor's HEAD blob and searches a lazily-built map of untracked-file blob OIDs, so a path missing from the worktree with a unique identical untracked copy classifies as an unstaged move — several identical copies fail closed into a ranked proposal and zero copies leave the fuzzy scan unchanged — with per-entry faults skipped, filter-cleaner and symlink semantics honored, and an enumeration failure collapsing to no candidates, never partial knowledge.
