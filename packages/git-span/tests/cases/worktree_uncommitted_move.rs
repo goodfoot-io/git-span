@@ -354,7 +354,6 @@ fn whole_file_unstaged_rename_reports_moved_uncommitted_and_fix_reanchors() -> R
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "card main-264 phase 3: worktree-blob fallback not yet implemented"]
 fn skip_worktree_missing_path_never_triggers_fallback() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;
@@ -389,7 +388,6 @@ fn skip_worktree_missing_path_never_triggers_fallback() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "card main-264 phase 3: worktree-blob fallback not yet implemented"]
 fn nested_repo_and_unreadable_candidate_never_abort_scan() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;

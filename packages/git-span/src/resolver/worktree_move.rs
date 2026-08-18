@@ -191,8 +191,7 @@ mod tests {
     /// No untracked file matches the anchor's blob → `None` (today's
     /// behavior, unchanged).
     #[test]
-    #[ignore = "card main-264 phase 3: worktree-blob fallback not yet implemented"]
-    fn no_matching_candidate_is_none() {
+        fn no_matching_candidate_is_none() {
         let set = candidates(&[("a.txt", OID_A), ("b.txt", OID_B)]);
         assert_eq!(decide_worktree_move(&set, oid(OID_C)), WorktreeMove::None);
         assert_eq!(
@@ -203,8 +202,7 @@ mod tests {
 
     /// Exactly one untracked file matches → `Unique`, that path.
     #[test]
-    #[ignore = "card main-264 phase 3: worktree-blob fallback not yet implemented"]
-    fn single_matching_candidate_is_unique() {
+        fn single_matching_candidate_is_unique() {
         let set = candidates(&[("a.txt", OID_A), ("b.txt", OID_B)]);
         assert_eq!(
             decide_worktree_move(&set, oid(OID_B)),
@@ -217,8 +215,7 @@ mod tests {
     /// Several identical-content candidates → `Ambiguous` with the paths in
     /// deterministic path order, regardless of hash-map iteration order.
     #[test]
-    #[ignore = "card main-264 phase 3: worktree-blob fallback not yet implemented"]
-    fn multiple_matching_candidates_are_ambiguous_in_path_order() {
+        fn multiple_matching_candidates_are_ambiguous_in_path_order() {
         let set = candidates(&[
             ("b.txt", OID_A),
             ("a.txt", OID_A),
