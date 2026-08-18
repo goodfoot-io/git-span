@@ -45,6 +45,7 @@ pub mod dirty_source_content_key;
 pub mod dirty_store_clean_read_parity;
 pub mod doctor_deletion_tombstone;
 pub mod doctor_legacy_lock_cleanup;
+pub mod doctor_list_malformed_span;
 pub mod drift_bare_scan_actionable_drift;
 pub mod drift_bloom_integration;
 pub mod drift_collapsed_sentinel_annotation;
