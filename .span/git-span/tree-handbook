@@ -1,4 +1,4 @@
 packages/git-span/src/cli/tree.rs#L1-L80 rk64:90bd8b7ab1623066
-plugins-claude/git-span/skills/git-span/references/command-reference.md#L139-L151 rk64:3e0bfdff5886d586
+plugins-claude/git-span/skills/git-span/references/command-reference.md#L138-L150 rk64:3e0bfdff5886d586
 
 The handbook's tree section documents the impact-tree behavior the tree command implements — glob-only fail-closed roots, clique grouping, the depth bound, and the human and JSON output shapes.

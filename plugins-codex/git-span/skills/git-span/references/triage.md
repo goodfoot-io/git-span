@@ -18,9 +18,9 @@
 | Changed; the file shrank below the anchored end but the region still exists | `remove <old-anchor>` then `add <new-anchor>` with the new extent equal to the file's current line count — an identity change, not a narrowing |
 | One anchor lags a confirmed authority | Conform it, validate any code change, then re-anchor |
 | Lifecycle gate satisfied | Make the authorized change, revise or retire the why, and reconcile or retire superseded anchors |
-| Authority unclear or no intentional change explains drift | Follow `wiki/guides/reconciliation-authority.md`; stop if ambiguity remains |
+| Authority unclear or no intentional change explains drift | Decide which side is authoritative — a doc drifting behind deliberate, committed code is wrong; a code change with no coherent commit story may be a regression. Conform the non-authoritative side; stop if ambiguity remains |
 | Coupling gone | `git span delete <name>`; do not re-anchor unrelated bytes |
 | No drift finding | Declare an undeclared coupling only if it meets the parent skill's eligibility rule |
 
 4. Require scoped zero drift after each span and full zero drift before commit.
-5. `git add .span && git commit -m "..."`.
+5. `git add <changed-paths> .span && git commit -o <changed-paths> .span -m "..."`.

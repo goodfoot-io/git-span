@@ -18,7 +18,7 @@ loaded skill for commands and workflow.
 - Coordinate overlapping ranges when spans share a file.
 - Verify scoped zero drift after each span.
 - Preserve an anchor's exact shape when refreshing it: whole-file stays whole-file and a range keeps its boundaries unless the logical region moved; retire the exact old address only for a genuine identity change.
-- Commit only `.span/` files with `git add .span`; never use `commit -a` or `--amend`.
+- Commit only `.span/` files: `git add .span && git commit -o .span`; never use `commit -a` or `--amend`.
 
 ## Whys
 

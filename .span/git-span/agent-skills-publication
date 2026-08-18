@@ -1,5 +1,5 @@
 packages/website/scripts/generate-agent-skills.mjs rk64:3bbcf99029d6defa
-plugins-claude/git-span/skills/git-span/SKILL.md rk64:c4da040caf91ced3
+plugins-claude/git-span/skills/git-span/SKILL.md rk64:efa146e779977fa8
 
 
 The Claude plugin skill tree is the generator's sole input: buildPublication walks every skill directory and the published files serve byte-identically to the tree, so scripts/generate-agent-skills.mjs must move with the tree. The git-span SKILL.md stands for the whole tree per the too-large-to-enumerate convention; the contract suite in app/routes/agent-skills.test.ts is the fine-grained gate, comparing the committed artifact against a fresh generator run on every test.

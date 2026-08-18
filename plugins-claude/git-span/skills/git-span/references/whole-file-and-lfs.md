@@ -11,7 +11,7 @@ git span add brand-refresh marketing/hero.png
 git span add api-contract-v2 vendor/openapi-spec
 git span add diagram-refs docs/architecture.drawio
 git span add charge-msa legal/msa.md
-git add .span && git commit -m "Anchor brand and contract assets"
+git add .span && git commit -o .span -m "Anchor brand and contract assets"
 ```
 
 Use a whole-file anchor when the file is **consumed as a unit by name or
@@ -71,5 +71,5 @@ re-anchor (last-write-wins) — it rewrites the recorded hash in `.span/<name>`.
 
 ```bash
 git span add brand-refresh marketing/hero.png
-git add .span && git commit -m "Re-anchor brand-refresh"
+git add .span && git commit -o .span -m "Re-anchor brand-refresh"
 ```

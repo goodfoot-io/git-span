@@ -15,7 +15,7 @@ git span delete <name>                   # whole span gone; NAME only, no anchor
 git span list [<target>...] [--oneline]  # positional filter on name or path
 git span show <name>                     # == bare `git span <name>`
 ```
-After any `add`/`replace`/`remove`/`why`/`delete`: `git add .span && git commit -m "..."`.
+After any `add`/`replace`/`remove`/`why`/`delete`: `git add .span && git commit -o .span -m "..."` — `-o` commits only the listed paths; drop it only for a deliberate mixed commit (`git add -A` class).
 
 ## Same-commit workflow
 
@@ -23,7 +23,7 @@ The `PostToolUse` touch hook heals positional drift (a pure line-shift) inline; 
 reconcile commit is needed for it. Semantic drift — content no longer matching what a
 span asserts — needs your action: conform the lagging artifact when a confirmed authority
 or satisfied gate decides it; otherwise ask. Fold the fix, with the `.span/`
-refresh, into the **same commit** as the code change, never a follow-up. Before `git commit`/`git push` a `PreToolUse` advisor
+refresh, into the **same commit** as the code change, never a follow-up — list the fix's paths alongside `.span` in the commit's `-o`. Before `git commit`/`git push` a `PreToolUse` advisor
 re-checks the changeset and holds the command once if real span debt remains; see
 `references/understanding-hook-output.md` § "Resolving a held commit".
 
@@ -76,7 +76,7 @@ locate a changed anchor's new extent; `history` does not report that destination
 ```
 git span add <name> <anchor>...
 git span why <name> "<complete present-tense clauses carrying decisive nonlocal context>"
-git add .span && git commit -m "..."
+git add .span && git commit -o .span -m "..."
 ```
 Before `add`: name one edit at one anchor that silently breaks or falsifies another — code
 behavior, doc accuracy, or a review obligation — with no compiler, test, or build catching
@@ -100,7 +100,7 @@ git span history <name>                   # if intent or authority is unclear; c
 git span replace <name> <old-anchor> <new-anchor>   # only if path or range actually changed; validates <new-anchor> like add (wc -l <path> first)
 git span why <name> "..."              # if relationship/lifecycle meaning changed
 git span drift <name>                     # must exit 0 before commit
-git add .span && git commit -m "..."
+git add <changed-paths> .span && git commit -o <changed-paths> .span -m "..."
 ```
 
 ### Value update, keep spans consistent (a coupled code+doc value changes)
@@ -108,7 +108,7 @@ git add .span && git commit -m "..."
 # edit the code value AND the doc sentence the span couples it to
 git span add <name> <anchor>...           # same anchor(s); refreshes the stored hash
 git span drift <name>                     # must exit 0
-git add .span && git commit -m "..."
+git add <changed-paths> .span && git commit -o <changed-paths> .span -m "..."
 ```
 If the edit shifted the file's line count, treat it as Re-anchor above instead (recount
 with `wc -l` and write the new range).
