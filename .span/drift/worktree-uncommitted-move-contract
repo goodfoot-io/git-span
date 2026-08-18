@@ -1,3 +1,3 @@
-packages/git-span/tests/cases/worktree_uncommitted_move.rs rk64:69db4ed5cd9126c2
+packages/git-span/tests/cases/worktree_uncommitted_move.rs rk64:23e7822b53fd5bf4
 
 The acceptance checks seed a committed span, shell-move the anchored file, and assert drift classifies Moved (uncommitted) on cold and warm runs alike, that --fix re-anchors the span in one pass, that ambiguity fails closed with a ranked proposal leaving the span byte-unchanged, that skip-worktree paths never trigger the fallback, and that the JSON contract carries the worktree source.

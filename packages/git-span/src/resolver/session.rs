@@ -616,18 +616,23 @@ pub(crate) struct ConcurrentSession {
     /// silently break every downstream Jaccard comparison that assumes id
     /// equality means line equality).
     pub(crate) jaccard_corpus: Mutex<JaccardCorpus>,
-    /// Lazily-built map of untracked worktree path → blob OID, computed
-    /// once per scan on the first anchor that triggers the worktree-blob
-    /// fallback (card main-264). `Some(map)` when the untracked
-    /// enumeration succeeded; `None` when it failed — the fallback is
-    /// disabled for the rest of the scan (fail-closed, existing behavior
-    /// preserved). `OnceLock`-wrapped: the enumeration runs at most once
-    /// per session, and concurrent fallback triggers block on
-    /// `get_or_init` instead of re-running it. The moved-directory shape
-    /// (26 anchors in the incident) is exactly the case where per-anchor
-    /// re-enumeration would be wasteful.
+    /// Lazily-built per-anchor-conversion-rule-context maps of untracked
+    /// worktree path → blob OID, computed once per scan on the first anchor
+    /// that triggers the worktree-blob fallback (card main-264). The
+    /// anchor-rule keys depend on the querying anchor's conversion rule
+    /// context — the effective state of the four conversion attributes at
+    /// the anchor path — so one map is built per distinct context, at most
+    /// once per context per scan, never once per anchor (a whole-directory
+    /// move inside one attribute scope is exactly one build, the
+    /// moved-directory incident shape; unconverted anchors share the one
+    /// raw-only map). A failed enumeration disables the fallback for the
+    /// rest of the scan (fail-closed, existing behavior preserved).
+    /// `OnceLock`-wrapped with a `Mutex` guard: the map for each context is
+    /// built at most once per session, concurrent fallback triggers
+    /// serialize on the lock instead of racing the build, and the decision
+    /// is made inside the guard so no candidate map outlives its lock.
     pub(crate) worktree_move_cache:
-        OnceLock<Option<HashMap<std::path::PathBuf, gix::ObjectId>>>,
+        OnceLock<Mutex<crate::resolver::worktree_move::WorktreeMoveCache>>,
 }
 
 /// Session-scoped Jaccard interner and per-`(path, layer)` interned-line
