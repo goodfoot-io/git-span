@@ -1,4 +1,4 @@
-packages/git-span/src/resolver/engine/anchor.rs#L460-L1495 rk64:82d938c38859e546
+packages/git-span/src/resolver/engine/anchor.rs#L460-L1495 rk64:18a748f0a25955dd
 packages/git-span/src/resolver/engine/anchor.rs#L1936-L2000 rk64:8e3a20d302f6833c
 wiki/guides/profiling-git-span-drift.md#L50-L64 rk64:a9b7b3cad90e1db0
 
