@@ -58,7 +58,13 @@ function runProbe(probeDir: string): string {
     output += execFileSync(vitestCli, ['run', path.relative(packageRoot, probeDir), '--reporter=verbose'], {
       cwd: packageRoot,
       encoding: 'utf8',
-      timeout: 25_000,
+      // The nested vitest pays the fumadocs-mdx startup cost before collecting
+      // anything ([MDX] generation runs ~7.5s solo). The 25s budget was
+      // exceeded under full-suite parallel load (root `yarn test` runs this
+      // suite alongside seven other workspaces), killing the run mid-startup
+      // and failing the collection assertion on truncated output — a load
+      // race, not a collection failure. 60s is 6x the solo inner-run cost.
+      timeout: 60_000,
       maxBuffer: 16 * 1024 * 1024,
       env: { ...process.env, DOM_PROBE_DELIBERATE_FAILURE: '1' }
     });
