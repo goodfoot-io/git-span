@@ -8,10 +8,7 @@
 //! untracked copy is a move; several identical copies surface a ranked
 //! proposal and stay drifted; zero copies leave every existing branch
 //! (staged/committed renames, deletions, the JSON contract, exit codes)
-//! running exactly as before. Every check here is `#[ignore]`d until
-//! Phase 3 implements the fallback — a skipped check that does not
-//! compile is still broken, so this file compiles against the Phase 1
-//! stubs (which return "no match" everywhere, i.e. today's behavior).
+//! running exactly as before — pinned by controls C/C′/D below.
 
 use crate::support;
 
@@ -154,7 +151,6 @@ fn ambiguous_identical_candidates_fail_closed_with_ranked_proposal() -> Result<(
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "card main-264 phase 3: worktree-blob fallback not yet implemented"]
 fn plain_removal_without_candidate_stays_deleted_in_worktree() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;
@@ -191,7 +187,6 @@ fn plain_removal_without_candidate_stays_deleted_in_worktree() -> Result<()> {
 }
 
 #[test]
-#[ignore = "card main-264 phase 3: worktree-blob fallback not yet implemented"]
 fn staged_removal_without_candidate_stays_deleted_in_index() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;
@@ -231,7 +226,6 @@ fn staged_removal_without_candidate_stays_deleted_in_index() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "card main-264 phase 3: worktree-blob fallback not yet implemented"]
 fn staged_git_mv_keeps_moved_label_without_uncommitted_marker() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;
@@ -251,7 +245,6 @@ fn staged_git_mv_keeps_moved_label_without_uncommitted_marker() -> Result<()> {
 }
 
 #[test]
-#[ignore = "card main-264 phase 3: worktree-blob fallback not yet implemented"]
 fn committed_git_mv_keeps_moved_label_without_uncommitted_marker() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;
