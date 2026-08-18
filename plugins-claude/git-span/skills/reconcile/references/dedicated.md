@@ -17,16 +17,18 @@ Only step 1 may mutate `.span/`; the remaining research is read-only.
 `--fix` is global — run it once before partitioning. First scan the bare drift
 output for `deleted in the working tree` anchors that are renames in progress:
 a deletion at the old path plus a new file in `git status --short`, matched by
-content (`git hash-object <new>` = `git rev-parse HEAD:<old>`). When no
-review-before-commit gate forbids it, commit the move first — its paths in the
-commit's `-o` — so `--fix` reports `moved to <path>` and clears it; left
-uncommitted it needs a manual re-anchor to the new path. A deletion is never
-cleared by `--fix` — step 4's STOP case governs either way — but committing
-first makes its classification authoritative (`deleted in <commit>` rather than
-the ambiguous worktree form). Under a review-before-commit gate, moves stay
-worktree-only: expect the manual pass (or the R1 fallback when it ships).
-Confirm `--fix`'s `moved to` destination when another same-content file exists
-— it matches by content and may pick the wrong copy.
+content (`git hash-object <new>` = `git rev-parse HEAD:<old>`). Stage both
+halves (`git add <new> <old>`) — the resolver sees a staged rename as `moved
+to <path>` and `--fix` clears it without a commit — and commit it when no
+review-before-commit gate forbids; left unstaged it is invisible to the
+resolver (an untracked destination has no git data) and needs a manual
+re-anchor. A deletion is never cleared by `--fix` — step 4's STOP case governs
+either way — but staging first makes its classification authoritative (`deleted
+in the index`; committed, it names the commit). Under a review-before-commit
+gate, staging still resolves the move; only a read-only worktree forces the
+manual pass (or the R1 fallback when it ships). Confirm `--fix`'s `moved to`
+destination when another same-content file exists — it matches by content and
+may pick the wrong copy.
 
 ```bash
 git span drift --fix
