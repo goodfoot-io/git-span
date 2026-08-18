@@ -1799,6 +1799,7 @@ mod tests {
             history_blob_memo: RwLock::new(HashMap::new()),
             history_fingerprint_memo: RwLock::new(HashMap::new()),
             jaccard_corpus: Mutex::new(JaccardCorpus::default()),
+            worktree_move_cache: OnceLock::new(),
         };
 
         let total = session.anchors_total();
@@ -1865,6 +1866,7 @@ mod tests {
             history_blob_memo: RwLock::new(HashMap::new()),
             history_fingerprint_memo: RwLock::new(HashMap::new()),
             jaccard_corpus: Mutex::new(JaccardCorpus::default()),
+            worktree_move_cache: OnceLock::new(),
         };
 
         let total = session.anchors_total();

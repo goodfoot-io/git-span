@@ -458,6 +458,26 @@ pub fn make_writable(path: &Path) -> std::io::Result<()> {
     std::fs::set_permissions(path, perms)
 }
 
+/// Make `path` unreadable to its owner (mode 0o000). POSIX-only; a no-op on
+/// Windows where read permission is not a file-mode bit. Used to verify that
+/// scans which encounter an unreadable candidate skip it instead of aborting.
+/// Restore permissions with [`make_writable`] before the fixture is torn down
+/// so the tempdir can be removed.
+#[allow(dead_code)]
+#[cfg(unix)]
+pub fn make_unreadable(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = std::fs::metadata(path)?.permissions();
+    perms.set_mode(0o000);
+    std::fs::set_permissions(path, perms)
+}
+
+/// Make `path` unreadable. No-op on Windows.
+#[cfg(windows)]
+pub fn make_unreadable(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
 /// The signal that terminated `status`, if any. Always `None` on Windows,
 /// where processes are not signal-terminated.
 #[allow(dead_code)]
