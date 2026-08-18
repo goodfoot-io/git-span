@@ -20,9 +20,9 @@ a deletion at the old path plus a new file in `git status --short`, matched by
 content (`git hash-object <new>` = `git rev-parse HEAD:<old>`). Stage both
 halves (`git add <new> <old>`) — the resolver sees a staged rename as `moved
 to <path>` and `--fix` clears it without a commit — and commit it when no
-review-before-commit gate forbids; left unstaged it is invisible to the
-resolver (an untracked destination has no git data) and needs a manual
-re-anchor. A deletion is never cleared by `--fix` — step 4's STOP case governs
+review-before-commit gate forbids; left unstaged it is invisible to today's
+rename detection — no git data records the untracked destination — and needs
+a manual re-anchor (or the R1 worktree-fallback when it ships). A deletion is never cleared by `--fix` — step 4's STOP case governs
 either way — but staging first makes its classification authoritative (`deleted
 in the index`; committed, it names the commit). Under a review-before-commit
 gate, staging still resolves the move; only a read-only worktree forces the
