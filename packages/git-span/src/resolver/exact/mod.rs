@@ -113,7 +113,13 @@ mod tests;
 /// existing `ChangedAt`/`OrphanedAt` commit loci. The encoded shape of every
 /// stored `locus` field changed, so old rows must miss and rebuild rather
 /// than be misdecoded against the new variant set.
-pub(crate) const SUMMARY_VERSION: u32 = 3;
+///
+/// Version 4 (card main-264): `AnchorResolvedDto` gained `moved_uncommitted`,
+/// the worktree-blob-fallback provenance flag. The version bump is what
+/// invalidates summaries published before the flag existed — a serde default
+/// alone would keep a stale marker-less row serving forever, silently
+/// violating the warm-hit ≡ cold-build render invariant.
+pub(crate) const SUMMARY_VERSION: u32 = 4;
 
 /// Max entries in the bounded in-process memo. Small and explicit: this is a
 /// per-process working-set cache for repeated same-key `drift` calls within one

@@ -1650,6 +1650,8 @@ fn collapsed_duplicate_description(f: &Finding, available: &AddAvailability) -> 
 /// - "changed"
 /// - "changed in HEAD"
 /// - "moved to new/path#L1-L10"
+/// - "moved to new/path (uncommitted)" — unstaged shell move found by
+///   exact-content match (card main-264)
 /// - "deleted in HEAD (path no longer exists)"
 fn describe_finding_lower(f: &Finding, available: &AddAvailability) -> String {
     // Derived once, from the record, before anything looks at the status:
@@ -1681,8 +1683,13 @@ fn describe_finding_lower(f: &Finding, available: &AddAvailability) -> String {
             // mislabeled "in the working tree".
             if let Some(cur) = &f.current {
                 let dest = render_path_extent_plain(&cur.path, cur.extent);
-                // If this was a fuzzy match, append the confidence.
-                if let Some(best) = f.fuzzy_successors.first() {
+                // An unstaged shell move found by exact-content match
+                // (card main-264) carries the uncommitted marker so the
+                // operator knows the destination is not yet tracked.
+                if f.moved_uncommitted {
+                    format!("moved to {dest} (uncommitted)")
+                } else if let Some(best) = f.fuzzy_successors.first() {
+                    // If this was a fuzzy match, append the confidence.
                     let pct = (best.confidence * 100.0).round() as u32;
                     format!("moved to {dest} ({pct}% match)")
                 } else {
@@ -1757,21 +1764,38 @@ fn describe_finding_lower(f: &Finding, available: &AddAvailability) -> String {
 
     // When fuzzy successors exist but the status was NOT reclassified as
     // MOVED (candidates below auto-fix threshold), surface the best match
-    // so the operator sees there are candidates to review.
-    if f.status != AnchorStatus::Moved
-        && let Some(best) = f.fuzzy_successors.first()
-    {
-        let pct = (best.confidence * 100.0).round() as u32;
-        let path_extent = AnchorLocation {
-            path: std::path::PathBuf::from(&best.path),
-            extent: AnchorExtent::LineRange {
-                start: best.start,
-                end: best.end,
-            },
-            blob: None,
-        };
-        let dest = render_path_extent_plain(&path_extent.path, path_extent.extent);
-        format!("{base} — possible match: {dest} ({pct}% similar)")
+    // so the operator sees there are candidates to review. When the
+    // worktree-blob fallback found several identical-content candidates
+    // (card main-264), every candidate is listed bare — that is a
+    // fail-closed ranked proposal, never a best-match guess.
+    if f.status != AnchorStatus::Moved && !f.fuzzy_successors.is_empty() {
+        if f.moved_uncommitted {
+            // Identical-content ambiguity: bare paths in deterministic
+            // path order (the fallback sorts them before rendering).
+            let dests: Vec<&str> = f
+                .fuzzy_successors
+                .iter()
+                .map(|s| s.path.as_str())
+                .collect();
+            format!(
+                "{base} — multiple possible destinations: {}",
+                dests.join(", ")
+            )
+        } else if let Some(best) = f.fuzzy_successors.first() {
+            let pct = (best.confidence * 100.0).round() as u32;
+            let path_extent = AnchorLocation {
+                path: std::path::PathBuf::from(&best.path),
+                extent: AnchorExtent::LineRange {
+                    start: best.start,
+                    end: best.end,
+                },
+                blob: None,
+            };
+            let dest = render_path_extent_plain(&path_extent.path, path_extent.extent);
+            format!("{base} — possible match: {dest} ({pct}% similar)")
+        } else {
+            base
+        }
     } else {
         base
     }

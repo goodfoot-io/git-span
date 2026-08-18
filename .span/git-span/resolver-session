@@ -1,4 +1,4 @@
 packages/git-span/src/resolver/engine/mod.rs#L407-L426 rk64:66c2955892705385
-packages/git-span/src/resolver/session.rs#L11-L2013 rk64:0732d4059fb8912e
+packages/git-span/src/resolver/session.rs#L11-L2028 rk64:098e2d27ac0f440d
 
 The drift engine constructs one ConcurrentSession per resolve run and threads it through every resolve_anchor_inner call; anchor resolutions must consume its reverse-walk output and cached line indexes rather than rebuild them per anchor.

@@ -90,6 +90,10 @@ pub(crate) struct LayerObservationCore {
     pub(crate) current: Option<LocationCore>,
     pub(crate) content_equivalent: bool,
     pub(crate) fuzzy_successors: Vec<FuzzySuccessorCore>,
+    /// Set only when this layer's Moved/Changed classification came from
+    /// the worktree-blob fallback (card main-264): the anchor's content
+    /// was found verbatim in an untracked worktree file.
+    pub(crate) moved_uncommitted: bool,
 }
 
 impl LayerObservationCore {

@@ -298,6 +298,13 @@ pub(crate) struct AnchorResolvedDto {
     /// without error.
     #[serde(default)]
     pub(crate) fuzzy_successors: Vec<FuzzySuccessorDto>,
+    /// Worktree-blob-fallback provenance (card main-264): the Moved/Changed
+    /// classification came from an exact-content match against an untracked
+    /// worktree file. `SUMMARY_VERSION` gates reads, so older summaries
+    /// never reach this struct; the default mirrors the other additive
+    /// fields' hygiene anyway.
+    #[serde(default)]
+    pub(crate) moved_uncommitted: bool,
 }
 
 impl From<&AnchorResolved> for AnchorResolvedDto {
@@ -314,6 +321,7 @@ impl From<&AnchorResolved> for AnchorResolvedDto {
             layer_sources: a.layer_sources.iter().copied().map(Into::into).collect(),
             locus: a.locus.clone().map(Into::into),
             fuzzy_successors: a.fuzzy_successors.iter().map(Into::into).collect(),
+            moved_uncommitted: a.moved_uncommitted,
         }
     }
 }
@@ -341,7 +349,7 @@ impl TryFrom<AnchorResolvedDto> for AnchorResolved {
             layer_sources: d.layer_sources.into_iter().map(Into::into).collect(),
             locus,
             fuzzy_successors: d.fuzzy_successors.iter().map(Into::into).collect(),
-            moved_uncommitted: false,
+            moved_uncommitted: d.moved_uncommitted,
         })
     }
 }

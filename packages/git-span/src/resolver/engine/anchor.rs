@@ -6,6 +6,7 @@ use super::super::core::resolution::{
 };
 use super::super::layers::{read_worktree_normalized, resolve_lfs_anchor};
 use super::super::session::{ConcurrentSession, resolve_at_head_shared};
+use super::super::worktree_move::{WorktreeMove, find_worktree_move};
 use super::super::walker::{Tracked, apply_hunks_to_range};
 use super::whole_file::resolve_whole_file;
 use super::{EngineLocal, SharedEngineContext};
@@ -770,6 +771,10 @@ pub(crate) fn resolve_anchor_inner(
     // `false` everywhere else (Fresh, Moved, Deleted, current==None).
     let mut content_equivalent = false;
     let mut fuzzy_successors: Vec<FuzzySuccessor> = vec![];
+    // Set true only on the worktree-blob fallback arms (card main-264):
+    // the anchor's content was found verbatim in an untracked worktree
+    // file, so the Moved finding carries the "(uncommitted)" marker.
+    let mut moved_uncommitted = false;
 
     // Phase 3: Detect ResolvedPendingCommit — file-backed anchor whose
     // stored_hash matches the worktree content but does NOT match HEAD
@@ -952,10 +957,12 @@ pub(crate) fn resolve_anchor_inner(
             //    rendered "deleted in the working tree/index".
             // A removal is never mislabeled "changed in …".
             let file_backed = !r.stored_hash.is_empty() && r.blob.is_empty();
-            let head_path_absent = file_backed
-                && concurrent
-                    .head_blob_at(repo, &shared.head_sha, &r.path)?
-                    .is_none();
+            let head_blob_oid = if file_backed {
+                concurrent.head_blob_at(repo, &shared.head_sha, &r.path)?
+            } else {
+                None
+            };
+            let head_path_absent = file_backed && head_blob_oid.is_none();
             if file_backed {
                 let extent = (anchored_end as usize).saturating_sub(anchored_start as usize) + 1;
                 let relocated = find_relocated_range_in_paths(
@@ -1036,73 +1043,145 @@ pub(crate) fn resolve_anchor_inner(
                         }
                     }
                 } else {
-                    // Fuzzy-similarity fallback: exact-match relocation found
-                    // nothing, so try a content-similarity scan over candidate
-                    // files. A candidate above the auto-fix threshold
-                    // (shared.fuzzy_threshold, default 0.95) is treated as
-                    // MOVED; candidates below threshold are still reported in
-                    // fuzzy_successors for the operator to review.
-                    let fuzzy_found = find_similar_ranges(
-                        repo,
-                        shared,
-                        concurrent,
-                        deepest_layer,
-                        &anchored_text,
-                        extent,
-                        &r.path,
-                    );
-                    let best_confidence = fuzzy_found.first().map(|b| b.confidence).unwrap_or(-1.0);
-                    if !fuzzy_found.is_empty() {
-                        fuzzy_successors = fuzzy_found;
-                    }
-                    if best_confidence >= shared.fuzzy_threshold {
-                        status = AnchorStatus::Moved;
-                        source = Some(deepest_layer);
-                        layer_sources = vec![deepest_layer];
-                        // SAFETY: confidence >= threshold implies first exists.
-                        let best = fuzzy_successors.first().unwrap();
-                        current_loc = Some(AnchorLocation {
-                            path: PathBuf::from(&best.path),
-                            extent: AnchorExtent::LineRange {
-                                start: best.start,
-                                end: best.end,
-                            },
-                            blob: None,
-                        });
-                    } else if !fuzzy_successors.is_empty() {
-                        // Candidates exist but none clear the auto-fix
-                        // threshold: report them for operator review but
-                        // keep the terminal status. Not head_path_absent,
-                        // so use Changed with layer attribution.
-                        status = AnchorStatus::Changed;
-                        source = computed_layer_sources
-                            .first()
-                            .copied()
-                            .or(Some(deepest_layer));
-                        current_loc = None;
-                        layer_sources = if computed_layer_sources.is_empty() {
-                            vec![deepest_layer]
+                    // Worktree-blob fallback (card main-264): the anchored
+                    // path is missing only from the worktree — still at
+                    // HEAD, no index/history rename — so search the
+                    // worktree's untracked files for an exact-content match
+                    // to the anchor's blob. A unique match is an unstaged
+                    // shell move; several identical copies fail closed into
+                    // a ranked proposal; no match falls through to the
+                    // fuzzy-similarity scan exactly as before.
+                    // The fallback is an `Option<WorktreeMove>` — rather
+                    // than a runtime `skip_fuzzy` bool — so the compiler
+                    // can verify the classification assignments in the
+                    // match below are mutually exclusive with the
+                    // fuzzy-similarity arm's.
+                    let worktree_move = if local.layers.worktree
+                        && !git::is_skip_worktree(repo, &r.path)?
+                    {
+                        // head_path_absent is false on this arm, so the
+                        // blob exists at HEAD and `head_blob_oid` is Some.
+                        if let Some(last_hex) = &head_blob_oid {
+                            let last_oid = oid_from_hex(last_hex)?;
+                            Some(find_worktree_move(repo, concurrent, &r.path, last_oid)?)
                         } else {
-                            computed_layer_sources
-                        };
+                            None
+                        }
                     } else {
-                        // Removed only in the index/worktree (still at
-                        // HEAD). Keep the per-layer attribution from
-                        // `compute_layer_sources` so the drift-label
-                        // formatter renders "deleted in the index" vs
-                        // "deleted in the working tree" correctly; with
-                        // `current = None` it never reads "changed in …".
-                        status = AnchorStatus::Changed;
-                        source = computed_layer_sources
-                            .first()
-                            .copied()
-                            .or(Some(deepest_layer));
-                        current_loc = None;
-                        layer_sources = if computed_layer_sources.is_empty() {
-                            vec![deepest_layer]
+                        None
+                    };
+                    match worktree_move {
+                        Some(WorktreeMove::Unique { path }) => {
+                            status = AnchorStatus::Moved;
+                            source = Some(deepest_layer);
+                            layer_sources = vec![deepest_layer];
+                            current_loc = Some(AnchorLocation {
+                                path,
+                                extent: AnchorExtent::LineRange {
+                                    start: anchored_start,
+                                    end: anchored_end,
+                                },
+                                blob: None,
+                            });
+                            moved_uncommitted = true;
+                        }
+                        Some(WorktreeMove::Ambiguous { candidates }) => {
+                            // Identical-content ambiguity: report
+                            // every candidate at full confidence and
+                            // stay drifted (Changed) — never guess.
+                            fuzzy_successors = candidates
+                                .iter()
+                                .map(|candidate| FuzzySuccessor {
+                                    path: candidate.to_string_lossy().into_owned(),
+                                    start: anchored_start,
+                                    end: anchored_end,
+                                    confidence: 1.0,
+                                })
+                                .collect();
+                            status = AnchorStatus::Changed;
+                            source = computed_layer_sources
+                                .first()
+                                .copied()
+                                .or(Some(deepest_layer));
+                            current_loc = None;
+                            layer_sources = if computed_layer_sources.is_empty() {
+                                vec![deepest_layer]
+                            } else {
+                                computed_layer_sources
+                            };
+                            moved_uncommitted = true;
+                        }
+                        Some(WorktreeMove::None) | None => {
+                        // Fuzzy-similarity fallback: exact-match relocation found
+                        // nothing, so try a content-similarity scan over candidate
+                        // files. A candidate above the auto-fix threshold
+                        // (shared.fuzzy_threshold, default 0.95) is treated as
+                        // MOVED; candidates below threshold are still reported in
+                        // fuzzy_successors for the operator to review.
+                        let fuzzy_found = find_similar_ranges(
+                            repo,
+                            shared,
+                            concurrent,
+                            deepest_layer,
+                            &anchored_text,
+                            extent,
+                            &r.path,
+                        );
+                        let best_confidence =
+                            fuzzy_found.first().map(|b| b.confidence).unwrap_or(-1.0);
+                        if !fuzzy_found.is_empty() {
+                            fuzzy_successors = fuzzy_found;
+                        }
+                        if best_confidence >= shared.fuzzy_threshold {
+                            status = AnchorStatus::Moved;
+                            source = Some(deepest_layer);
+                            layer_sources = vec![deepest_layer];
+                            // SAFETY: confidence >= threshold implies first exists.
+                            let best = fuzzy_successors.first().unwrap();
+                            current_loc = Some(AnchorLocation {
+                                path: PathBuf::from(&best.path),
+                                extent: AnchorExtent::LineRange {
+                                    start: best.start,
+                                    end: best.end,
+                                },
+                                blob: None,
+                            });
+                        } else if !fuzzy_successors.is_empty() {
+                            // Candidates exist but none clear the auto-fix
+                            // threshold: report them for operator review but
+                            // keep the terminal status. Not head_path_absent,
+                            // so use Changed with layer attribution.
+                            status = AnchorStatus::Changed;
+                            source = computed_layer_sources
+                                .first()
+                                .copied()
+                                .or(Some(deepest_layer));
+                            current_loc = None;
+                            layer_sources = if computed_layer_sources.is_empty() {
+                                vec![deepest_layer]
+                            } else {
+                                computed_layer_sources
+                            };
                         } else {
-                            computed_layer_sources
-                        };
+                            // Removed only in the index/worktree (still at
+                            // HEAD). Keep the per-layer attribution from
+                            // `compute_layer_sources` so the drift-label
+                            // formatter renders "deleted in the index" vs
+                            // "deleted in the working tree" correctly; with
+                            // `current = None` it never reads "changed in …".
+                            status = AnchorStatus::Changed;
+                            source = computed_layer_sources
+                                .first()
+                                .copied()
+                                .or(Some(deepest_layer));
+                            current_loc = None;
+                            layer_sources = if computed_layer_sources.is_empty() {
+                                vec![deepest_layer]
+                            } else {
+                                computed_layer_sources
+                            };
+                        }
+                        }
                     }
                 }
             } else if head_path_absent {
@@ -1498,7 +1577,7 @@ pub(crate) fn resolve_anchor_inner(
         layer_sources,
         locus: None,
         fuzzy_successors,
-        moved_uncommitted: false,
+        moved_uncommitted,
     })
 }
 
@@ -1553,6 +1632,7 @@ fn observation_from(run: &AnchorResolved) -> LayerObservationCore {
         current: run.current.as_ref().map(location_core),
         content_equivalent: run.content_equivalent,
         fuzzy_successors: fuzzy_cores(&run.fuzzy_successors),
+        moved_uncommitted: run.moved_uncommitted,
     }
 }
 
@@ -1566,6 +1646,7 @@ fn fresh_observation(anchored: &LocationCore) -> LayerObservationCore {
         current: Some(anchored.clone()),
         content_equivalent: false,
         fuzzy_successors: Vec::new(),
+        moved_uncommitted: false,
     }
 }
 
@@ -1744,6 +1825,10 @@ fn effective_from_clean_head(head: &LayerObservationCore) -> LayerObservationCor
         }),
         content_equivalent: head.content_equivalent,
         fuzzy_successors: head.fuzzy_successors.clone(),
+        // A layer-clean anchor never moved uncommitted: the fallback only
+        // fires on a worktree-missing path, which `capture_clean_derivable`
+        // excludes by construction.
+        moved_uncommitted: false,
     }
 }
 

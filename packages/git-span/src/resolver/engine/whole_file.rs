@@ -3,11 +3,12 @@
 //! recorded blob/SHA.
 
 use super::super::session::{ConcurrentSession, follow_path_to_head_shared};
+use super::super::worktree_move::{WorktreeMove, find_worktree_move};
 use super::{EngineLocal, SharedEngineContext};
 use crate::git;
 use crate::types::{
-    Anchor, AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, DriftSource, SpanConfig,
-    SubmoduleKind, submodule_classify,
+    Anchor, AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, DriftSource,
+    FuzzySuccessor, SpanConfig, SubmoduleKind, submodule_classify,
 };
 use crate::{Error, Result};
 use git_span_core::{RK64_ALGORITHM, cheap_fingerprint_with_extent, rk64_to_hex};
@@ -421,10 +422,12 @@ pub(crate) fn resolve_whole_file(
             // read must error, never classify as relocated/deleted; only
             // the candidate-scan probes below tolerate read failures (see
             // `find_relocated_whole_file`).
-            let head_path_absent = file_backed
-                && concurrent
-                    .head_blob_at(repo, &shared.head_sha, &r.path)?
-                    .is_none();
+            let head_blob_oid = if file_backed {
+                concurrent.head_blob_at(repo, &shared.head_sha, &r.path)?
+            } else {
+                None
+            };
+            let head_path_absent = file_backed && head_blob_oid.is_none();
             let relocated = if file_backed {
                 find_relocated_whole_file(
                     repo,
@@ -493,6 +496,64 @@ pub(crate) fn resolve_whole_file(
                     });
                 }
                 None => {
+                    // Worktree-blob fallback (card main-264): the anchored
+                    // path is missing only from the worktree — still at
+                    // HEAD, no index/history rename — so search untracked
+                    // worktree files for an exact-content match to the
+                    // anchor's blob. A unique match is an unstaged shell
+                    // move (Moved, early return); several identical copies
+                    // fail closed into a ranked proposal; no match falls
+                    // through to the Changed attribution below.
+                    let mut fuzzy_successors: Vec<FuzzySuccessor> = vec![];
+                    let mut moved_uncommitted = false;
+                    if local.layers.worktree && !git::is_skip_worktree(repo, &r.path)? {
+                        // head_path_absent is false on this arm, so the
+                        // blob exists at HEAD and `head_blob_oid` is Some.
+                        if let Some(last_hex) = head_blob_oid {
+                            let last_oid = oid_from_hex(&last_hex)?;
+                            match find_worktree_move(repo, concurrent, &r.path, last_oid)? {
+                                WorktreeMove::None => {}
+                                WorktreeMove::Unique { path } => {
+                                    return Ok(AnchorResolved {
+                                        anchor_id: anchor_id.into(),
+                                        anchor_sha: r.anchor_sha,
+                                        stored_hash: r.stored_hash,
+                                        anchored,
+                                        current: Some(AnchorLocation {
+                                            path,
+                                            extent: AnchorExtent::WholeFile,
+                                            blob: None,
+                                        }),
+                                        status: AnchorStatus::Moved,
+                                        source: Some(deepest),
+                                        layer_sources: vec![deepest],
+                                        content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
+                                        locus: None,
+                                        fuzzy_successors: vec![],
+                                        moved_uncommitted: true,
+                                    });
+                                }
+                                WorktreeMove::Ambiguous { candidates } => {
+                                    // Identical-content ambiguity: report
+                                    // every candidate at full confidence and
+                                    // stay drifted (Changed) — never guess.
+                                    fuzzy_successors = candidates
+                                        .iter()
+                                        .map(|candidate| FuzzySuccessor {
+                                            path: candidate.to_string_lossy().into_owned(),
+                                            // Whole-file anchors have no line
+                                            // extent; the 0-0 sentinel mirrors
+                                            // the whole-file mesh convention.
+                                            start: 0,
+                                            end: 0,
+                                            confidence: 1.0,
+                                        })
+                                        .collect();
+                                    moved_uncommitted = true;
+                                }
+                            }
+                        }
+                    }
                     // Removed only in the index/worktree (path still at
                     // HEAD). Attribute to the shallowest drifting layer
                     // so the formatter renders "deleted in the index"
@@ -514,8 +575,8 @@ pub(crate) fn resolve_whole_file(
                         layer_sources: vec![removed_layer],
                         content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
                         locus: None,
-                        fuzzy_successors: vec![],
-                        moved_uncommitted: false,
+                        fuzzy_successors,
+                        moved_uncommitted,
                     });
                 }
             }

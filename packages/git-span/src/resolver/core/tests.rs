@@ -518,6 +518,7 @@ fn fresh_observation(anchored: &LocationCore) -> LayerObservationCore {
         current: Some(anchored.clone()),
         content_equivalent: false,
         fuzzy_successors: Vec::new(),
+        moved_uncommitted: false,
     }
 }
 
@@ -659,12 +660,14 @@ fn effective_projection_preserves_working_tree_qualifier_for_committed_drift() {
         current: Some(head_current),
         content_equivalent: false,
         fuzzy_successors: Vec::new(),
+        moved_uncommitted: false,
     };
     let worktree = LayerObservationCore {
         status: AnchorStatus::Changed,
         current: Some(worktree_current),
         content_equivalent: false,
         fuzzy_successors: Vec::new(),
+        moved_uncommitted: false,
     };
     let index = fresh_observation(&anchored);
 

@@ -82,7 +82,7 @@ fn project_anchor(
         layer_sources,
         locus,
         fuzzy_successors: to_fuzzy_successors(&obs.fuzzy_successors),
-        moved_uncommitted: false,
+        moved_uncommitted: obs.moved_uncommitted,
     }
 }
 

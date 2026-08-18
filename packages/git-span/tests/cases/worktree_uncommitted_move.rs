@@ -38,7 +38,6 @@ fn seed_span(repo: &TestRepo, name: &str, anchor: &str, why: &str) -> Result<()>
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "card main-264 phase 3: worktree-blob fallback not yet implemented"]
 fn unstaged_rename_reports_moved_uncommitted_and_fix_reanchors() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;
@@ -60,6 +59,15 @@ fn unstaged_rename_reports_moved_uncommitted_and_fix_reanchors() -> Result<()> {
     assert!(
         !pre.contains("orphan"),
         "an unstaged move must never read as orphaned; drift=\n{pre}"
+    );
+
+    // A second read-only scan on the same state renders from the warm store
+    // summary, not a fresh resolution — the moved_uncommitted marker must
+    // survive that round trip (card main-264 store-schema bump).
+    let pre2 = repo.span_stdout(["drift", "--no-exit-code"])?;
+    assert!(
+        pre2.contains("moved to renamed.txt#L1-L5 (uncommitted)"),
+        "warm cache hit must keep the (uncommitted) marker; drift=\n{pre2}"
     );
 
     // --fix retires the old address and installs the new one in one pass.
@@ -269,7 +277,6 @@ fn committed_git_mv_keeps_moved_label_without_uncommitted_marker() -> Result<()>
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "card main-264 phase 3: worktree-blob fallback not yet implemented"]
 fn json_contract_reports_moved_worktree_source_and_schema() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;

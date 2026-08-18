@@ -8,6 +8,7 @@ use crate::{Error, Result};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::process::Command;
 use std::str::FromStr;
 
 use gix::ObjectId;
@@ -1415,12 +1416,27 @@ pub fn hash_blob(bytes: &[u8]) -> Result<ObjectId> {
 /// with the drift scan holds by construction — the drift scan already
 /// delegates ignore handling to git via the `git status --porcelain=v1 -z
 /// -uno` subprocess in [`read_layer_status`].
-// TODO(card main-264 phase 3): remove this attribute once the classification
-// arms call the helper.
-#[allow(dead_code)]
+///
+/// Nested git repositories surface as a single directory entry with a
+/// trailing slash; callers skip directories before hashing.
 pub(crate) fn untracked_worktree_files(repo: &gix::Repository) -> Result<Vec<std::path::PathBuf>> {
-    let _ = repo;
-    Ok(vec![])
+    let workdir = work_dir(repo)?;
+    let out = Command::new("git")
+        .arg("ls-files")
+        .arg("--others")
+        .arg("--exclude-standard")
+        .arg("-z")
+        .current_dir(workdir)
+        .output()?;
+    if !out.status.success() {
+        return Err(Error::Git("git ls-files --others failed".into()));
+    }
+    Ok(out
+        .stdout
+        .split(|b| *b == 0)
+        .filter(|b| !b.is_empty())
+        .map(|b| std::path::PathBuf::from(String::from_utf8_lossy(b).into_owned()))
+        .collect())
 }
 
 /// Resolve a single `.gitattributes` attribute for `rel_path` relative to

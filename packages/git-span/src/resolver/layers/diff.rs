@@ -559,14 +559,18 @@ fn worktree_change_to_entry(
 /// attribute lookup that failed. The last one is deliberately lumped in with
 /// the others — if we cannot establish that a driver is involved, we must not
 /// use "a driver is involved" as grounds for dropping a failed read.
-fn filter_driver_for(repo: &gix::Repository, rel: &str) -> Option<String> {
+///
+/// `pub(crate)` for the worktree-blob fallback (card main-264): untracked
+/// candidates carrying a non-core filter must be hashed through the clean
+/// filter pipeline, and only they.
+pub(crate) fn filter_driver_for(repo: &gix::Repository, rel: &str) -> Option<String> {
     match crate::types::path_filter_attribute_with_repo(repo, std::path::Path::new(rel)) {
         Ok(Some(name)) if !crate::types::is_core_filter(&name) => Some(name),
         _ => None,
     }
 }
 
-fn read_worktree_cleaned(
+pub(crate) fn read_worktree_cleaned(
     repo: &gix::Repository,
     abs: &std::path::Path,
     rel: &str,

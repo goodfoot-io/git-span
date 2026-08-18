@@ -44,14 +44,101 @@ pub(crate) enum WorktreeMove {
 /// The untracked path→blob-OID map is computed once per scan on first
 /// trigger and held in [`ConcurrentSession::worktree_move_cache`], shared
 /// across every missing anchor in the run.
+///
+/// `path` is the anchored path the search is explaining. It is part of the
+/// contract surface so a call site that later needs to exclude it (or
+/// surface it in diagnostics) can do so without a signature change; the
+/// search itself is purely content-addressed, and a tracked path never
+/// appears in the untracked candidate set anyway.
 pub(crate) fn find_worktree_move(
     repo: &gix::Repository,
     concurrent: &ConcurrentSession,
     path: &str,
     last_blob_oid: ObjectId,
 ) -> Result<WorktreeMove> {
-    let _ = (repo, concurrent, path, last_blob_oid);
-    Ok(WorktreeMove::None)
+    let _ = path;
+    // Enumeration (or workdir resolution) failure collapses to `None` —
+    // fail closed: no candidate knowledge, cached so the scan does not
+    // retry the subprocess per anchor.
+    let candidates = match concurrent.worktree_move_cache.get_or_init(|| {
+        build_untracked_blob_map(repo).unwrap_or_default()
+    }) {
+        Some(map) => map,
+        None => return Ok(WorktreeMove::None),
+    };
+    Ok(decide_worktree_move(candidates, last_blob_oid))
+}
+
+/// Hash every untracked worktree file to its blob OID, once per scan.
+///
+/// Returns `Ok(None)` when the underlying `git ls-files` enumeration fails
+/// (fail-closed: the fallback knows nothing and every existing branch runs
+/// as today). Per-entry failures — unreadable files, broken symlinks,
+/// directories including nested-repo entries — skip the entry and never
+/// abort the scan.
+fn build_untracked_blob_map(
+    repo: &gix::Repository,
+) -> Result<Option<std::collections::HashMap<std::path::PathBuf, ObjectId>>> {
+    let files = match crate::git::untracked_worktree_files(repo) {
+        Ok(files) => files,
+        Err(_) => return Ok(None),
+    };
+    let workdir = crate::git::work_dir(repo)?;
+    let mut map = std::collections::HashMap::with_capacity(files.len());
+    for rel in files {
+        let abs = workdir.join(&rel);
+        // `git ls-files -z` output is bytes; the lossy conversion in
+        // `untracked_worktree_files` guarantees the resulting string is
+        // valid, so the lossy view here is exact.
+        let rel_str = rel.to_string_lossy();
+        if let Ok(Some(oid)) = hash_untracked_entry(repo, &abs, &rel_str) {
+            map.insert(rel, oid);
+        }
+    }
+    Ok(Some(map))
+}
+
+/// Blob-OID of one untracked worktree file, `None` when the entry must be
+/// skipped (directory, unreadable, broken symlink).
+///
+/// Hashing mirrors how git stores the file: raw bytes first, symlinks as
+/// their target string, and paths carrying a non-core `filter=<name>`
+/// attribute through the clean-filter pipeline ([`read_worktree_cleaned`])
+/// so a clean-filtered file's untracked copy hashes to the same blob git
+/// would compute for it.
+fn hash_untracked_entry(
+    repo: &gix::Repository,
+    abs: &std::path::Path,
+    rel: &str,
+) -> Result<Option<ObjectId>> {
+    let md = match std::fs::symlink_metadata(abs) {
+        Ok(m) => m,
+        Err(_) => return Ok(None),
+    };
+    // Directories — including the trailing-slash directory entries that
+    // nested git repositories surface as — are never candidates.
+    if md.file_type().is_dir() {
+        return Ok(None);
+    }
+    let bytes = if md.file_type().is_symlink() {
+        // A symlink's blob is its target string, not the target's content.
+        let target = match std::fs::read_link(abs) {
+            Ok(t) => t,
+            Err(_) => return Ok(None),
+        };
+        target.to_string_lossy().into_owned().into_bytes()
+    } else if super::layers::diff::filter_driver_for(repo, rel).is_some() {
+        match super::layers::diff::read_worktree_cleaned(repo, abs, rel) {
+            Ok(Some(b)) => b,
+            _ => return Ok(None),
+        }
+    } else {
+        match std::fs::read(abs) {
+            Ok(b) => b,
+            Err(_) => return Ok(None),
+        }
+    };
+    Ok(Some(crate::git::hash_blob(&bytes)?))
 }
 
 /// Pure decision over the untracked candidate map: how many untracked
