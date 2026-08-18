@@ -105,7 +105,6 @@ fn unstaged_rename_reports_moved_uncommitted_and_fix_reanchors() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "card main-264 phase 3: worktree-blob fallback not yet implemented"]
 fn ambiguous_identical_candidates_fail_closed_with_ranked_proposal() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;
@@ -115,7 +114,11 @@ fn ambiguous_identical_candidates_fail_closed_with_ranked_proposal() -> Result<(
     repo.write_file("copy/renamed.txt", &content)?;
 
     let before = read_span(&repo, "m")?;
-    let out = repo.run_span(["drift", "--no-exit-code"])?;
+    // Plain `drift` (no `--no-exit-code`): the flag's documented contract is
+    // to suppress the drift exit code, so asserting exit 1 requires the
+    // suppression-free invocation — the ambiguous case must still count as
+    // drift (main-207 exit-code contract, out of scope for this card).
+    let out = repo.run_span(["drift"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     let after = read_span(&repo, "m")?;
 
@@ -302,7 +305,6 @@ fn json_contract_reports_moved_worktree_source_and_schema() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "card main-264 phase 3: worktree-blob fallback not yet implemented"]
 fn whole_file_unstaged_rename_reports_moved_uncommitted_and_fix_reanchors() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_span(&repo, "m", "file1.txt", "why")?;
