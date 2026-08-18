@@ -54,7 +54,13 @@ pub type LoadedSpans = (
 /// Returns [`LoadedSpans`]. Conflicted spans (those in a Git conflict
 /// state — unmerged index entry or textual conflict markers) are excluded
 /// from the loaded set and returned separately so callers can surface them
-/// without a second corpus scan.
+/// without a second corpus scan. Spans whose content fails to *parse*
+/// (malformed lines, a corrupted hash) are likewise excluded, silently —
+/// the load contract is that one poisoned span never blanks the corpus;
+/// such spans are surfaced by the dedicated parse-reporting paths
+/// (e.g. `git span doctor`'s per-span findings, `git span show`'s
+/// structured error). Only hard errors — git or I/O infrastructure
+/// failures — abort the load.
 pub fn load_all_spans_in(repo: &gix::Repository, span_root: &str) -> Result<LoadedSpans> {
     let _perf = crate::perf::span("span.load-all-corpus");
     let reader = SpanFileReader::new(repo, span_root.to_string());
@@ -120,6 +126,11 @@ enum LoadSlot {
     /// `Ok(None)` → name is tombstoned in the effective view; contributes
     /// nothing to either output vector.
     Tombstoned,
+    /// `Err(InvalidSpanFile)` → the span's content is not a valid span. The
+    /// corpus-load contract skips unparseable spans (the dedicated
+    /// parse-reporting paths surface them), so this contributes nothing to
+    /// either output vector, like a tombstone.
+    Unparseable,
     /// `Err(SpanConflict)` → name is in a Git conflict state; surfaced in the
     /// separate `conflicted` list rather than the loaded set, tagged with the
     /// kind so the caller can tell an unmerged stage from marker text.
@@ -131,8 +142,11 @@ enum LoadSlot {
 /// order. Output is byte-identical to a serial loop over `names`:
 ///
 /// * `(loaded, conflicted)` are both ordered by the input (sorted) name order.
-/// * The first hard error in sorted order wins and is returned (matching the
-///   serial `?` early-exit; concurrency only changes which error is *observed*
+/// * A span whose content fails to parse is skipped, exactly as the serial
+///   loop skips it — one poisoned span never blanks the corpus.
+/// * The first hard error (git or I/O failure, not a per-span parse
+///   failure) in sorted order wins and is returned (matching the serial
+///   `?` early-exit; concurrency only changes which error is *observed*
 ///   first, never which one is *reported*).
 ///
 /// `gix::Repository` is `!Sync` (it holds a `RefCell` buffer free-list), so a
@@ -200,6 +214,13 @@ fn read_effective_parallel(
                         Err(Error::SpanConflict { kind, .. }) => {
                             local.push((i, LoadSlot::Conflicted(kind)));
                         }
+                        // A malformed span file is a per-span data problem,
+                        // not a corpus failure: skip it like a tombstone so
+                        // one poisoned span never blanks the whole load
+                        // (matches `read_effective_serial`).
+                        Err(Error::InvalidSpanFile(_)) => {
+                            local.push((i, LoadSlot::Unparseable));
+                        }
                         Err(e) => {
                             fatal.lock().unwrap().get_or_insert(e);
                             break;
@@ -230,6 +251,7 @@ fn read_effective_parallel(
                 out.push((name, span));
             }
             LoadSlot::Tombstoned => {}
+            LoadSlot::Unparseable => {}
             LoadSlot::Conflicted(kind) => conflicted.push((name, kind)),
         }
     }
@@ -350,6 +372,11 @@ fn read_effective_serial(
             }
             Ok(None) => {}
             Err(Error::SpanConflict { kind, .. }) => conflicted.push((name.clone(), kind)),
+            // A malformed span file is a per-span data problem, not a
+            // corpus failure: skip it so one poisoned span never blanks
+            // the whole load (the dedicated parse-reporting paths — e.g.
+            // doctor's per-span findings — surface it).
+            Err(Error::InvalidSpanFile(_)) => {}
             Err(e) => return Err(e),
         }
     }
