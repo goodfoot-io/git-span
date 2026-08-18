@@ -1051,6 +1051,12 @@ pub(crate) fn resolve_anchor_inner(
                     // shell move; several identical copies fail closed into
                     // a ranked proposal; no match falls through to the
                     // fuzzy-similarity scan exactly as before.
+                    // Two gates decide whether the fallback may fire: the
+                    // path must not be sparse-excluded (skip-worktree), and
+                    // the index must still record the anchored path — an
+                    // index-absent path reaching this arm is a staged
+                    // deletion by construction, and the fallback must not
+                    // override the operator's recorded intent.
                     // The fallback is an `Option<WorktreeMove>` — rather
                     // than a runtime `skip_fuzzy` bool — so the compiler
                     // can verify the classification assignments in the
@@ -1058,6 +1064,7 @@ pub(crate) fn resolve_anchor_inner(
                     // fuzzy-similarity arm's.
                     let worktree_move = if local.layers.worktree
                         && !git::is_skip_worktree(repo, &r.path)?
+                        && git::index_tracks_path(repo, &r.path)
                     {
                         // head_path_absent is false on this arm, so the
                         // blob exists at HEAD and `head_blob_oid` is Some.

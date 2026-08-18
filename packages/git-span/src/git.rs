@@ -1389,6 +1389,34 @@ pub(crate) fn is_skip_worktree(repo: &gix::Repository, path: &str) -> Result<boo
     Ok(false)
 }
 
+/// Whether the index still records an entry at `path` (card main-264).
+///
+/// The worktree-blob fallback fires only for an unstaged shell move, whose
+/// distinguishing signature against a staged deletion is the index record:
+/// `git rm` removes the entry, an unstaged `mv` leaves it in place. An
+/// index-absent path that reaches the fallback is therefore a staged
+/// deletion by construction (a path never tracked at HEAD has no blob at
+/// HEAD, and staged/committed renames resolve in earlier scan arms), so the
+/// fallback gates on this record and never overrides a recorded deletion.
+///
+/// Fails closed on an unloadable index — `false` disables the fallback, the
+/// same collapse [`crate::resolver::worktree_move::find_worktree_move`]
+/// applies to a failed untracked-file enumeration. Unlike [`is_skip_worktree`]
+/// this returns a plain `bool` rather than `Result`: before the fallback
+/// existed an index-absent path simply classified as deleted, and an index
+/// load failure must preserve exactly that behavior instead of newly
+/// aborting a run.
+pub(crate) fn index_tracks_path(repo: &gix::Repository, path: &str) -> bool {
+    let idx = match repo.index_or_load_from_head() {
+        Ok(i) => i,
+        Err(_) => return false,
+    };
+    let file = &*idx;
+    file.entries()
+        .iter()
+        .any(|entry| entry.path(file) == path)
+}
+
 /// Check whether the repository has promisor pack files (partial clone
 /// markers in `objects/info/`), indicating that some blobs referenced by
 /// the commit graph may not be locally available.

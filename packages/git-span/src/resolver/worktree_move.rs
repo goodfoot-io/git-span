@@ -69,7 +69,7 @@ pub(crate) fn find_worktree_move(
     Ok(decide_worktree_move(candidates, last_blob_oid))
 }
 
-/// Hash every untracked worktree file to its blob OID, once per scan.
+/// Hash every untracked worktree file to its blob OID(s), once per scan.
 ///
 /// Returns `Ok(None)` when the underlying `git ls-files` enumeration fails
 /// (fail-closed: the fallback knows nothing and every existing branch runs
@@ -84,6 +84,9 @@ fn build_untracked_blob_map(
         Err(_) => return Ok(None),
     };
     let workdir = crate::git::work_dir(repo)?;
+    // Repo-level line-ending config does not vary per path; probe once per
+    // map build instead of once per entry.
+    let repo_converted = repo_has_conversion_config(repo);
     let mut map = std::collections::HashMap::with_capacity(files.len());
     for rel in files {
         let abs = workdir.join(&rel);
@@ -91,26 +94,43 @@ fn build_untracked_blob_map(
         // `untracked_worktree_files` guarantees the resulting string is
         // valid, so the lossy view here is exact.
         let rel_str = rel.to_string_lossy();
-        if let Ok(Some(oid)) = hash_untracked_entry(repo, &abs, &rel_str) {
-            map.insert(rel, oid);
+        if let Ok(Some((raw_oid, cleaned_oid))) =
+            hash_untracked_entry(repo, &abs, &rel_str, repo_converted)
+        {
+            map.insert(rel.clone(), raw_oid);
+            if let Some(cleaned_oid) = cleaned_oid {
+                map.insert(rel, cleaned_oid);
+            }
         }
     }
     Ok(Some(map))
 }
 
-/// Blob-OID of one untracked worktree file, `None` when the entry must be
-/// skipped (directory, unreadable, broken symlink).
+/// Blob-OID(s) of one untracked worktree file, `None` when the entry must
+/// be skipped (directory, unreadable, broken symlink).
 ///
-/// Hashing mirrors how git stores the file: raw bytes first, symlinks as
-/// their target string, and paths carrying a non-core `filter=<name>`
-/// attribute through the clean-filter pipeline ([`read_worktree_cleaned`])
-/// so a clean-filtered file's untracked copy hashes to the same blob git
-/// would compute for it.
+/// The first OID is the file hashed the way git stores it when no content
+/// conversion applies: raw bytes for a regular file, the target string for
+/// a symlink, and the clean pipeline ([`read_worktree_cleaned`]) for paths
+/// carrying a non-core `filter=<name>` attribute. The second OID is present
+/// only when the path also carries a line-ending/ident/encoding conversion
+/// (`text`, `eol`, `ident`, `working-tree-encoding`) — or the repo has
+/// `core.autocrlf` / `core.eol` conversion — and the clean pipeline (the
+/// conversion git runs on `git add`) produced a *different* blob than the
+/// raw read. The map is keyed under both OIDs then, so an untracked copy
+/// matches both a normalized HEAD blob (via the cleaned key) and a blob
+/// stored with conversion off (via the raw key).
+///
+/// Dual keying stays fail-closed: either key is a form git could store for
+/// this exact path. When the attribute probe fails, the cleaned pass is
+/// skipped (raw key only, exactly today's behavior); when the cleaned read
+/// fails, the entry keeps its raw key rather than being dropped.
 fn hash_untracked_entry(
     repo: &gix::Repository,
     abs: &std::path::Path,
     rel: &str,
-) -> Result<Option<ObjectId>> {
+    repo_converted: bool,
+) -> Result<Option<(ObjectId, Option<ObjectId>)>> {
     let md = match std::fs::symlink_metadata(abs) {
         Ok(m) => m,
         Err(_) => return Ok(None),
@@ -120,25 +140,114 @@ fn hash_untracked_entry(
     if md.file_type().is_dir() {
         return Ok(None);
     }
-    let bytes = if md.file_type().is_symlink() {
-        // A symlink's blob is its target string, not the target's content.
+    if md.file_type().is_symlink() {
+        // A symlink's blob is its target string, not the target's content;
+        // git never applies text/ident conversion to symlinks.
         let target = match std::fs::read_link(abs) {
             Ok(t) => t,
             Err(_) => return Ok(None),
         };
-        target.to_string_lossy().into_owned().into_bytes()
-    } else if super::layers::diff::filter_driver_for(repo, rel).is_some() {
-        match super::layers::diff::read_worktree_cleaned(repo, abs, rel) {
-            Ok(Some(b)) => b,
-            _ => return Ok(None),
-        }
-    } else {
-        match std::fs::read(abs) {
-            Ok(b) => b,
-            Err(_) => return Ok(None),
-        }
+        let oid = crate::git::hash_blob(&target.to_string_lossy().into_owned().into_bytes())?;
+        return Ok(Some((oid, None)));
+    }
+    if super::layers::diff::filter_driver_for(repo, rel).is_some() {
+        // A non-core filter driver owns the stored form; the clean pipeline
+        // is the only hash git could store for this path.
+        return match super::layers::diff::read_worktree_cleaned(repo, abs, rel) {
+            Ok(Some(b)) => Ok(Some((crate::git::hash_blob(&b)?, None))),
+            _ => Ok(None),
+        };
+    }
+    let raw_bytes = match std::fs::read(abs) {
+        Ok(b) => b,
+        Err(_) => return Ok(None),
     };
-    Ok(Some(crate::git::hash_blob(&bytes)?))
+    let raw_oid = crate::git::hash_blob(&raw_bytes)?;
+    // Line-ending/ident/encoding conversion is not a filter driver, so it
+    // needs its own probe: on a converted repo the raw bytes hash to a
+    // different OID than the anchor's HEAD blob (stored normalized), and
+    // without the cleaned key the fallback never fires.
+    if !repo_converted && !path_carries_conversion(repo, rel) {
+        return Ok(Some((raw_oid, None)));
+    }
+    match super::layers::diff::read_worktree_cleaned(repo, abs, rel) {
+        Ok(Some(b)) => {
+            let cleaned_oid = crate::git::hash_blob(&b)?;
+            Ok(Some((
+                raw_oid,
+                (cleaned_oid != raw_oid).then_some(cleaned_oid),
+            )))
+        }
+        // The cleaned pass failed; the raw key alone is exactly what the
+        // pre-fallback code would have produced for this entry.
+        _ => Ok(Some((raw_oid, None))),
+    }
+}
+
+/// Whether git would run content conversion on `rel` when committing it, so
+/// the raw worktree bytes could differ from the stored blob.
+///
+/// Probes the per-path conversion attributes — `text`, `eol`, `ident`,
+/// `working-tree-encoding` — in a single attribute-stack pass. Repo-level
+/// line-ending config ([`repo_has_conversion_config`]) is the other half of
+/// the probe; the caller hoists it since it does not vary per path.
+///
+/// A failed lookup reports `false`: the caller then keeps only the raw
+/// hash — today's behavior — rather than guessing which blob the pipeline
+/// would produce.
+fn path_carries_conversion(repo: &gix::Repository, rel: &str) -> bool {
+    let index = match repo.index_or_load_from_head() {
+        Ok(i) => i,
+        Err(_) => return false,
+    };
+    let mut stack = match repo.attributes(
+        &index,
+        gix::worktree::stack::state::attributes::Source::WorktreeThenIdMapping,
+        gix::worktree::stack::state::ignore::Source::WorktreeThenIdMappingIfNotSkipped,
+        None,
+    ) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let mut outcome =
+        stack.selected_attribute_matches(["text", "eol", "ident", "working-tree-encoding"]);
+    let platform = match stack.at_entry(std::path::Path::new(rel), None) {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    if !platform.matching_attributes(&mut outcome) {
+        return false;
+    }
+    // Set (`text`, `ident`) or valued (`eol=crlf`, `working-tree-encoding=…`)
+    // attributes convert; `-text` / `-eol` / unspecified opt out.
+    outcome.iter_selected().any(|m| {
+        matches!(
+            m.assignment.state,
+            gix::attrs::StateRef::Set | gix::attrs::StateRef::Value(_)
+        )
+    })
+}
+
+/// Whether repository-level line-ending config can make worktree bytes
+/// differ from stored blobs: `core.autocrlf` (`true` or `input`) converts
+/// on commit, and a non-default `core.eol` (`crlf`/`lf`) applies to
+/// `text`-marked files. Checked once per map build, not per entry.
+fn repo_has_conversion_config(repo: &gix::Repository) -> bool {
+    let snap = repo.config_snapshot();
+    if snap
+        .string("core.autocrlf")
+        .map(|v| {
+            let v = v.to_string();
+            v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("input")
+        })
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    snap.string("core.eol").is_some_and(|v| {
+        let v = v.to_string();
+        v.eq_ignore_ascii_case("crlf") || v.eq_ignore_ascii_case("lf")
+    })
 }
 
 /// Pure decision over the untracked candidate map: how many untracked

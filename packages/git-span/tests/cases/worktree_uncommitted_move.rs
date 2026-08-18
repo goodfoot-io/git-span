@@ -420,3 +420,209 @@ fn nested_repo_and_unreadable_candidate_never_abort_scan() -> Result<()> {
     let _ = support::make_writable(&unreadable);
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Control I (F1): line-ending-converted repos — the fallback must hash
+// untracked candidates through the clean pipeline, or an unstaged move of
+// a CRLF worktree copy against an LF-normalized blob reads as a plain
+// deletion and the card's headline feature is silently inert.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn converted_repo_unstaged_move_reports_moved_uncommitted_and_fix_reanchors() -> Result<()> {
+    let repo = TestRepo::new()?;
+    // Commit the conversion attributes before any content exists, so every
+    // blob below is stored normalized.
+    repo.write_file(".gitattributes", "* text eol=crlf\n")?;
+    repo.commit_all("gitattributes: convert all text to crlf")?;
+
+    // The anchored file is written with CRLF bytes on disk; `git add` runs
+    // the clean pipeline and stores the LF-normalized blob. If this fixture
+    // were an identity repo (no real conversion), the blob would keep the
+    // CRLF bytes and the byte assertions below would fail.
+    repo.write_file_bytes(
+        "file1.txt",
+        b"line1\r\nline2\r\nline3\r\nline4\r\nline5\r\nline6\r\nline7\r\nline8\r\nline9\r\nline10\r\n",
+    )?;
+    repo.commit_all("convert file1.txt")?;
+
+    // Byte-level proof the fixture exercises real conversion: the worktree
+    // copy on disk is CRLF while the stored blob is LF-only, and the two
+    // are distinct byte sequences.
+    let worktree_bytes = std::fs::read(repo.path().join("file1.txt"))?;
+    assert!(
+        worktree_bytes.windows(2).any(|w| w == b"\r\n"),
+        "worktree file1.txt must be CRLF on disk; got {worktree_bytes:?}"
+    );
+    let blob_out = repo.run_git(["cat-file", "blob", "HEAD:file1.txt"])?;
+    assert!(
+        !blob_out.stdout.contains(&b'\r'),
+        "stored blob must be LF-normalized; got {:?}",
+        blob_out.stdout
+    );
+    assert_ne!(
+        worktree_bytes, blob_out.stdout,
+        "fixture is an identity repo: worktree bytes equal the stored blob, \
+         so no line-ending conversion is being exercised"
+    );
+
+    seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;
+
+    // A shell move: rename on disk, nothing staged. The worktree copy still
+    // carries CRLF bytes; the anchor's HEAD blob is LF-normalized.
+    std::fs::rename(repo.path().join("file1.txt"), repo.path().join("renamed.txt"))?;
+
+    // The read-only scan surfaces it as Moved (uncommitted) — the fallback
+    // must recognize the converted copy, never read it as a deletion.
+    let pre = repo.span_stdout(["drift", "--no-exit-code"])?;
+    assert!(
+        pre.contains("moved to renamed.txt#L1-L5 (uncommitted)"),
+        "converted-repo unstaged rename must surface as Moved (uncommitted); drift=\n{pre}"
+    );
+    assert!(
+        !pre.contains("deleted"),
+        "a converted unstaged move must never read as a deletion; drift=\n{pre}"
+    );
+
+    // A second read-only scan renders from the warm store summary — the
+    // moved_uncommitted marker must survive that round trip here too.
+    let pre2 = repo.span_stdout(["drift", "--no-exit-code"])?;
+    assert!(
+        pre2.contains("moved to renamed.txt#L1-L5 (uncommitted)"),
+        "warm cache hit must keep the (uncommitted) marker; drift=\n{pre2}"
+    );
+
+    // --fix retires the old address and installs the new one in one pass.
+    let out = repo.run_span(["drift", "--fix", "--no-exit-code"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("Reconciled 1 span, 1 anchor (1 updated, 0 removed)."),
+        "expected --fix to reconcile the converted unstaged move; stdout=\n{stdout}"
+    );
+
+    let span = read_span(&repo, "m")?;
+    assert!(
+        span.contains("renamed.txt#L1-L5 rk64:"),
+        "span must be rewritten to the renamed path; got:\n{span}"
+    );
+    assert!(
+        !span.contains("file1.txt#L1-L5"),
+        "old anchor address must be gone; got:\n{span}"
+    );
+
+    // A following read-only `drift` must now be clean.
+    let post = repo.run_span(["drift"])?;
+    assert_eq!(
+        post.status.code(),
+        Some(0),
+        "drift must be clean after --fix reconciled the converted unstaged move; stdout={}",
+        String::from_utf8_lossy(&post.stdout)
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Control J (F4a): staged removal with an identical untracked copy — the
+// fallback must NOT fire. The index record is the distinguishing signal:
+// an unstaged shell move leaves the anchored path in the index, a staged
+// `git rm` removes it, so an index-absent path reaching the fallback is a
+// staged deletion by construction. The identical untracked copy must not
+// be read as a move — that would override the operator's recorded intent.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn staged_removal_with_identical_untracked_copy_stays_deleted_in_index() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;
+
+    // A deliberate staged removal (`git rm`, no commit), plus an identical
+    // untracked copy at a new path — the one-candidate sibling of control
+    // C′. With the index entry gone, the fallback is suppressed and the
+    // classification must match the zero-candidate case exactly.
+    let content = std::fs::read_to_string(repo.path().join("file1.txt"))?;
+    repo.run_git(["rm", "file1.txt"])?;
+    repo.write_file("copy/file1.txt", &content)?;
+
+    let drift = repo.span_stdout(["drift", "--no-exit-code"])?;
+    assert!(
+        drift.contains("deleted in the index"),
+        "a staged deletion with an identical untracked copy must stay deleted-in-index; \
+         drift=\n{drift}"
+    );
+    assert!(
+        !drift.contains("moved to"),
+        "a staged deletion must never be labeled a move, even with an identical untracked \
+         copy; drift=\n{drift}"
+    );
+    assert!(
+        !drift.contains("(uncommitted)"),
+        "a staged deletion must not carry the uncommitted marker; drift=\n{drift}"
+    );
+
+    // --fix refuses: the anchor is still listed, the span is byte-unchanged,
+    // and the exit code stays non-zero.
+    let before = read_span(&repo, "m")?;
+    let out = repo.run_span(["drift", "--fix"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let after = read_span(&repo, "m")?;
+    assert_eq!(
+        before, after,
+        "staged-deletion anchor must not be rewritten"
+    );
+    assert!(
+        stdout.contains("file1.txt#L1-L5"),
+        "anchor still listed; stdout=\n{stdout}"
+    );
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "non-zero exit for remaining drift"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Control K (F4b): `--fix` on the ambiguous state — 0 rewrites, the
+// multi-candidate proposal stays listed, the span is byte-unchanged, and
+// the exit code stays non-zero.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fix_on_ambiguous_candidates_is_a_zero_rewrite_noop() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed_span(&repo, "m", "file1.txt#L1-L5", "why")?;
+
+    let content = std::fs::read_to_string(repo.path().join("file1.txt"))?;
+    std::fs::rename(repo.path().join("file1.txt"), repo.path().join("renamed.txt"))?;
+    repo.write_file("copy/renamed.txt", &content)?;
+
+    let before = read_span(&repo, "m")?;
+    let out = repo.run_span(["drift", "--fix"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let after = read_span(&repo, "m")?;
+
+    assert_eq!(
+        before, after,
+        "--fix on an ambiguous finding must never rewrite the span; got:\n{after}"
+    );
+    assert!(
+        stdout.contains("Updated 0 anchors (0 updated, 0 removed)"),
+        "--fix must report the zero-rewrite outcome; stdout=\n{stdout}"
+    );
+    assert!(
+        stdout.contains("— multiple possible destinations:"),
+        "the multi-candidate proposal must still be listed after --fix; stdout=\n{stdout}"
+    );
+    for candidate in ["renamed.txt", "copy/renamed.txt"] {
+        assert!(
+            stdout.contains(candidate),
+            "proposal must still list {candidate} after --fix; stdout=\n{stdout}"
+        );
+    }
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "remaining ambiguous drift must exit non-zero after --fix"
+    );
+    Ok(())
+}

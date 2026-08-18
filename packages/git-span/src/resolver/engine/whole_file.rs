@@ -504,9 +504,18 @@ pub(crate) fn resolve_whole_file(
                     // move (Moved, early return); several identical copies
                     // fail closed into a ranked proposal; no match falls
                     // through to the Changed attribution below.
+                    // Two gates decide whether the fallback may fire: the
+                    // path must not be sparse-excluded (skip-worktree), and
+                    // the index must still record the anchored path — an
+                    // index-absent path reaching this arm is a staged
+                    // deletion by construction, and the fallback must not
+                    // override the operator's recorded intent.
                     let mut fuzzy_successors: Vec<FuzzySuccessor> = vec![];
                     let mut moved_uncommitted = false;
-                    if local.layers.worktree && !git::is_skip_worktree(repo, &r.path)? {
+                    if local.layers.worktree
+                        && !git::is_skip_worktree(repo, &r.path)?
+                        && git::index_tracks_path(repo, &r.path)
+                    {
                         // head_path_absent is false on this arm, so the
                         // blob exists at HEAD and `head_blob_oid` is Some.
                         if let Some(last_hex) = head_blob_oid {
