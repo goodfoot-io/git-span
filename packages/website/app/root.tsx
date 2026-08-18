@@ -2,8 +2,17 @@ import '@fontsource-variable/ibm-plex-sans';
 import '@fontsource/ibm-plex-mono/400.css';
 import '@fontsource/ibm-plex-mono/500.css';
 import '@fontsource/ibm-plex-mono/600.css';
+import plexMono400 from '@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-400-normal.woff2?url';
+import plexMono500 from '@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-500-normal.woff2?url';
+import plexMono600 from '@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-600-normal.woff2?url';
+// The latin faces' woff2 URLs, resolved through vite's asset pipeline so the
+// preload fetches land on the same hashed URLs the bundled fontsource CSS
+// references — a second fetch of a differently-named file would leave the
+// swap race intact. See root.tsx `links` below.
+import plexSansWghtItalic from '@fontsource-variable/ibm-plex-sans/files/ibm-plex-sans-latin-wght-italic.woff2?url';
+import plexSansWghtNormal from '@fontsource-variable/ibm-plex-sans/files/ibm-plex-sans-latin-wght-normal.woff2?url';
 import { RootProvider } from 'fumadocs-ui/provider/react-router';
-import type { LinksFunction, MetaFunction } from 'react-router';
+import type { LinkDescriptor, LinksFunction, MetaFunction } from 'react-router';
 import { Links, Meta, Outlet, Scripts, ScrollRestoration, useLocation } from 'react-router';
 import { Footer } from '~/components/Footer';
 import { Header } from '~/components/Header';
@@ -11,8 +20,34 @@ import { getDiscoveryLinks } from '~/lib/discovery-links';
 import { buildRouteMeta, DEFAULT_DESCRIPTION, DEFAULT_TITLE } from '~/lib/meta';
 import globalStyles from '~/styles/global.css?url';
 
+// Font preloads: fontsource's `font-display: swap` paints text with a
+// fallback font and reflows when the webfont lands; when that lands just
+// after first paint the reflow registers as Cumulative Layout Shift — the
+// regression measured on three docs pages by the agentic gate. Kicking the
+// fetch off at navigation (instead of at CSSOM parse, where the bundled
+// fontsource rules sit late in the stylesheet) makes the fonts win the race
+// against first paint. `crossOrigin` is required for the preload cache entry
+// to be reusable by the CORS-mode font fetch the CSS triggers — without it
+// the preload is a wasted fetch that leaves the swap intact.
+const FONT_PRELOADS = [
+  { href: plexSansWghtNormal, type: 'font/woff2' },
+  { href: plexSansWghtItalic, type: 'font/woff2' },
+  { href: plexMono400, type: 'font/woff2' },
+  { href: plexMono500, type: 'font/woff2' },
+  { href: plexMono600, type: 'font/woff2' }
+] as const;
+
 export const links: LinksFunction = () => [
   { rel: 'stylesheet', href: globalStyles },
+  ...FONT_PRELOADS.map(
+    ({ href, type }): LinkDescriptor => ({
+      rel: 'preload',
+      href,
+      as: 'font',
+      type,
+      crossOrigin: 'anonymous'
+    })
+  ),
   { rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' },
   { rel: 'icon', type: 'image/png', href: '/favicon.png' },
   { rel: 'apple-touch-icon', href: '/apple-touch-icon.png' }
