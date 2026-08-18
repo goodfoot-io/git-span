@@ -221,8 +221,11 @@ fn head_source_does_not_claim_a_worktree_only_reanchor_was_committed() -> Result
     );
 
     let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    // The reconcile-skill restructure split the old single references/reconcile.md
+    // into per-audience references; the inline reconciler workflow now lives in
+    // dedicated.md, which carries this guidance verbatim.
     let guidance = std::fs::read_to_string(
-        workspace.join("plugins-claude/git-span/skills/reconcile/references/reconcile.md"),
+        workspace.join("plugins-claude/git-span/skills/reconcile/references/dedicated.md"),
     )?;
     let guidance = guidance.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
