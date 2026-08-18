@@ -1,6 +1,6 @@
 packages/website/vite.config.ts#L38-L44 rk64:1b5617fb7c412bbe
 packages/website/vitest.agentic-gate.config.ts#L12-L17 rk64:79de34377106ca10
-packages/website/vitest.config.ts#L13-L22 rk64:e10b3f4bef840f71
+packages/website/vitest.config.ts#L13-L38 rk64:33527f838243a8ad
 packages/website/vitest.gate-protocol.config.ts#L11-L16 rk64:79de34377106ca10
 
-vitest reads only its own config while app code resolves ~ and collections through vite.config.ts, so every vitest config that touches app code -- the default suite and the two gate configs alike -- must mirror the vite aliases or tests resolve differently than the build; the default suite's vitest-only virtual:react-router/server-build stub alias is the sole permitted difference, and the gate configs omit it since they never import the worker's server-build module directly.
+vitest reads only its own config while app code resolves ~ and collections through vite.config.ts, so every vitest config that touches app code -- the default suite and the two gate configs alike -- must mirror the vite aliases or tests resolve differently than the build; the default suite vitest-only stubs -- virtual:react-router/server-build and the font-url stub for root.tsx ?url asset imports (see app/test/__stubs__/font-url.ts) -- are the sole permitted differences, and the gate configs omit them since they never import the worker server-build module or root.tsx directly.
