@@ -50,10 +50,12 @@ the network. See `./ci-and-sync.md` for the CI/sync workflow.
 Registering a merge driver makes git collapse the easy majority of `.span/`
 conflicts in place during `git merge`, so they never surface. This is the one
 piece of git *config* spans can use — and it is entirely optional. Skipping it
-costs nothing: `.span/**` falls back to git's line merge, and `git span drift
+breaks nothing: `.span/**` falls back to git's line merge, and `git span drift
 --fix` resolves the result afterward to the identical clean state (see
-SKILL.md's `drift --fix` gotcha). Registration has two parts, because git
-distributes one and not the other:
+SKILL.md's `drift --fix` gotcha). The one cost is a standing `git span doctor`
+finding: each missing half is reported with the exact line or block to add,
+and doctor exits 1 until both are in place. Registration has two parts,
+because git distributes one and not the other:
 
 ```gitattributes
 # committed and shared with the repo
@@ -70,7 +72,12 @@ distributes one and not the other:
 There is **no auto-installer** — registration is manual by design, but
 `git span doctor` checks for both parts and reports each missing one as a
 finding quoting the exact rule or block to add from the snippets above
-(verified: on a repo with neither part, doctor prints both findings; on a
-fully registered repo it reports nothing). Never run `git span merge-driver`
-by hand; git invokes it with the temp-file arguments shown above. Until a
-clone adds the `.git/config` block, conflicts simply fall back to `--fix`.
+(verified: on a repo with neither part, doctor prints both findings and exits
+1; on a fully registered repo it reports nothing). The rule check measures
+the *committed* repository-root `.gitattributes` — an uncommitted paste does
+not count, because the rule must be committed to be shared with other clones
+— and both checks are skipped while the span root does not exist, since a
+repo with no `.span/` directory cannot receive `.span/` conflicts. Never run
+`git span merge-driver` by hand; git invokes it with the temp-file arguments
+shown above. Until a clone adds the `.git/config` block, conflicts simply
+fall back to `--fix`.

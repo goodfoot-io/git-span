@@ -62,8 +62,12 @@ fn doctor_reports_both_findings_when_nothing_is_registered() -> Result<()> {
         out.status.code()
     );
     assert!(
-        stdout.contains("`.span/** merge=span` rule in the repository-root `.gitattributes`"),
-        "stdout must quote the missing `.gitattributes` rule;\nstdout:\n{stdout}"
+        stdout.contains("no `merge=span` for `.span/**` in the committed repository-root `.gitattributes`"),
+        "stdout must name the missing rule and its committed state;\nstdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("commit it: `.span/** merge=span`"),
+        "stdout must quote the exact line to add;\nstdout:\n{stdout}"
     );
     assert!(
         stdout.contains("merge.span.driver"),
@@ -76,6 +80,10 @@ fn doctor_reports_both_findings_when_nothing_is_registered() -> Result<()> {
     assert!(
         stdout.contains("driver = git span merge-driver %O %A %B %L"),
         "stdout must quote the driver command;\nstdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("files under `.span/`"),
+        "the prose must name the resolved span root, not a hardcoded path;\nstdout:\n{stdout}"
     );
 
     Ok(())
@@ -101,7 +109,7 @@ fn doctor_reports_only_the_rule_when_the_config_block_is_registered() -> Result<
         out.status.code()
     );
     assert!(
-        stdout.contains("`.span/** merge=span` rule in the repository-root `.gitattributes`"),
+        stdout.contains("no `merge=span` for `.span/**` in the committed repository-root `.gitattributes`"),
         "stdout must quote the missing `.gitattributes` rule;\nstdout:\n{stdout}"
     );
     assert!(
@@ -162,8 +170,12 @@ fn doctor_keys_the_rule_off_the_resolved_span_root() -> Result<()> {
         out.status.code()
     );
     assert!(
-        stdout.contains("`meta/span/** merge=span` rule"),
+        stdout.contains("`meta/span/** merge=span`"),
         "the finding must quote the resolved span root, not `.span`;\nstdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("files under `meta/span/`"),
+        "the prose must name the resolved span root, not a hardcoded `.span`;\nstdout:\n{stdout}"
     );
 
     // With the resolved-root rule plus the driver block, doctor is silent.
@@ -231,9 +243,184 @@ fn doctor_accepts_equivalent_rules_and_rejects_unsets() -> Result<()> {
         out.status.code()
     );
     assert!(
-        stdout.contains("`.span/** merge=span` rule"),
-        "stdout must still quote the missing rule;\nstdout:\n{stdout}"
+        stdout.contains("no `merge=span` for `.span/**`"),
+        "stdout must still report the missing rule;\nstdout:\n{stdout}"
     );
+
+    Ok(())
+}
+
+/// A repo with no `.span/` directory cannot receive `.span/` conflicts from
+/// any merge, so the merge-driver checks are vacuous — the same existence
+/// gate the legacy-lock cleanup uses. Doctor stays silent and exits 0.
+#[test]
+fn doctor_is_silent_on_a_repo_without_a_span_root() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+
+    let out = doctor_isolated(&repo)?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(
+        out.status.success(),
+        "a span-less repo must exit 0;\nexit: {:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        out.status.code()
+    );
+    assert!(
+        stdout.contains("no findings"),
+        "a span-less repo must report no findings;\nstdout:\n{stdout}"
+    );
+
+    Ok(())
+}
+
+/// The root-anchored form `/{span_root}/**` is git-equivalent to
+/// `{span_root}/**` in a repository-root file — git applies it to the same
+/// paths — so it must count as registered.
+#[test]
+fn doctor_accepts_the_root_anchored_rule_form() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.run_span(["add", "test/foo", "file1.txt"])?;
+    repo.write_file(".gitattributes", "/.span/** merge=span\n")?;
+    repo.commit_all("register the root-anchored rule")?;
+    repo.run_git([
+        "config",
+        "merge.span.driver",
+        "git span merge-driver %O %A %B %L",
+    ])?;
+
+    let out = repo.run_span(["doctor"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "`/.span/** merge=span` must count as registered;\nexit: {:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        out.status.code()
+    );
+
+    Ok(())
+}
+
+/// Git evaluates `.gitattributes` patterns in order with last-match-wins
+/// semantics: a later `-merge` line for the same pattern unsets the
+/// attribute, so doctor must still report the gap — the merges will not
+/// collapse.
+#[test]
+fn doctor_rejects_a_later_negating_line() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.run_span(["add", "test/foo", "file1.txt"])?;
+    repo.write_file(".gitattributes", ".span/** merge=span\n.span/** -merge\n")?;
+    repo.commit_all("register then unset the rule")?;
+    repo.run_git([
+        "config",
+        "merge.span.driver",
+        "git span merge-driver %O %A %B %L",
+    ])?;
+
+    let out = repo.run_span(["doctor"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "a later `-merge` line unsets the attribute, so doctor must exit 1;\n\
+         exit: {:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        out.status.code()
+    );
+    assert!(
+        stdout.contains("in the committed repository-root `.gitattributes`"),
+        "the gitattributes finding must persist;\nstdout:\n{stdout}"
+    );
+
+    Ok(())
+}
+
+/// A later matching line that does not mention `merge` leaves the attribute
+/// set — git only lets the last line that *mentions* the attribute decide.
+#[test]
+fn doctor_keeps_registration_when_a_later_matching_line_mentions_no_merge() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.run_span(["add", "test/foo", "file1.txt"])?;
+    repo.write_file(".gitattributes", ".span/** merge=span\n.span/** text\n")?;
+    repo.commit_all("register with a later non-merge attribute line")?;
+    repo.run_git([
+        "config",
+        "merge.span.driver",
+        "git span merge-driver %O %A %B %L",
+    ])?;
+
+    let out = repo.run_span(["doctor"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "a matching line without a `merge` token must not unset the rule;\n\
+         exit: {:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        out.status.code()
+    );
+
+    Ok(())
+}
+
+/// Registration is a *committed* rule: an uncommitted paste must not certify
+/// the repo healthy, or the finding's own advice ("add … and commit it")
+/// would lie to the paste-then-verify loop.
+#[test]
+fn doctor_ignores_an_uncommitted_rule() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.run_span(["add", "test/foo", "file1.txt"])?;
+    // Written but never staged or committed.
+    repo.write_file(".gitattributes", ".span/** merge=span\n")?;
+    repo.run_git([
+        "config",
+        "merge.span.driver",
+        "git span merge-driver %O %A %B %L",
+    ])?;
+
+    let out = repo.run_span(["doctor"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "an uncommitted rule must not count as registered;\n\
+         exit: {:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        out.status.code()
+    );
+    assert!(
+        stdout.contains("in the committed repository-root `.gitattributes`"),
+        "the finding must name the committed state;\nstdout:\n{stdout}"
+    );
+
+    Ok(())
+}
+
+/// A span root that cannot appear verbatim in a `.gitattributes` pattern
+/// (`#`, `!`, whitespace, globs, a trailing slash) would make the quoted fix
+/// a git no-op or unsatisfiable, so resolution must reject it up front —
+/// fail closed rather than issue a dead recommendation.
+#[test]
+fn doctor_rejects_span_roots_that_would_break_the_quoted_rule() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+
+    for (root, expected) in [
+        ("#span", "span root must not contain"),
+        ("!span", "span root must not contain"),
+        ("span dir", "span root must not contain"),
+        ("span*", "span root must not contain"),
+        ("span[", "span root must not contain"),
+        ("meta/span/", "span root must not end with `/`"),
+    ] {
+        let out = repo.run_span_with_envs(["doctor"], &[("GIT_SPAN_DIR", root)])?;
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !out.status.success(),
+            "span root `{root}` must be rejected;\nexit: {:?}\nstderr:\n{stderr}",
+            out.status.code()
+        );
+        assert!(
+            stderr.contains(expected),
+            "rejection for `{root}` must say why;\nstderr:\n{stderr}"
+        );
+    }
 
     Ok(())
 }

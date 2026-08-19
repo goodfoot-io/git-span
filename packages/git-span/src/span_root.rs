@@ -52,8 +52,31 @@ pub fn resolve_span_root(
 /// - Paths containing `..`
 /// - Paths inside `.git` (starting with `.git`, containing `/.git/`,
 ///   or ending with `/.git`)
+/// - Paths that cannot appear verbatim in a `.gitattributes` pattern —
+///   `#` (comment), `!` (negation), `*`/`?`/`[`/`]` (globs), `\` (escape),
+///   whitespace (token separator), or a trailing `/` — because `git span
+///   doctor` quotes `<span_root>/** merge=span` as its fix, and a root
+///   carrying any of those would make the quoted rule a git no-op (or
+///   unsatisfiable). Fail closed at resolution time rather than ever issue a
+///   dead recommendation. Span *names* are unaffected: they go through
+///   [`validate_repo_relative_path`] only, and filesystem names have no
+///   gitattributes encoding.
 fn validate_span_root(dir: &str) -> Result<()> {
-    validate_repo_relative_path("span root", dir)
+    validate_repo_relative_path("span root", dir)?;
+    for c in dir.chars() {
+        if c.is_whitespace() || matches!(c, '#' | '!' | '*' | '?' | '[' | ']' | '\\') {
+            return Err(Error::InvalidSpanFile(format!(
+                "span root must not contain `#`, `!`, `*`, `?`, `[`, `]`, `\\`, or whitespace \
+                 (unsafe in a `.gitattributes` pattern), got: `{dir}`"
+            )));
+        }
+    }
+    if dir.ends_with('/') {
+        return Err(Error::InvalidSpanFile(format!(
+            "span root must not end with `/`, got: `{dir}`"
+        )));
+    }
+    Ok(())
 }
 
 /// Validate that `path` is a safe repo-relative path.

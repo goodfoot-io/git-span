@@ -5,7 +5,7 @@ use crate::cli::{CliError, DeleteArgs, DoctorArgs, NextStep};
 use crate::span::structural::delete_span_in;
 use crate::span_file_reader::SpanFileReader;
 use anyhow::Result;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub fn run_delete(repo: &gix::Repository, args: DeleteArgs, span_root: &str) -> Result<i32> {
     delete_span_in(repo, &args.name, span_root).map_err(|e| CliError {
@@ -79,17 +79,23 @@ pub fn run_doctor(repo: &gix::Repository, _args: DoctorArgs, span_root: &str) ->
     }
 
     // Merge-driver registration checks: `.span/` conflicts collapse in place
-    // during `git merge` only when the repository-root `.gitattributes`
-    // carries `<span_root>/** merge=span` *and* the per-clone git config
-    // names the driver. The two are independent — git distributes one and
-    // not the other — so each missing half is its own finding. Both are
-    // report-only: doctor surfaces the gap but never writes these files;
-    // registration stays manual by design (see storage-model.md).
-    if let Some(finding) = missing_merge_span_gitattributes_finding(repo, span_root)? {
-        findings.push(finding);
-    }
-    if let Some(finding) = missing_merge_span_driver_finding(repo) {
-        findings.push(finding);
+    // during `git merge` only when the committed repository-root
+    // `.gitattributes` effectively sets `merge=span` for `<span_root>/**`
+    // *and* the per-clone git config names the driver. The two are
+    // independent — git distributes one and not the other — so each missing
+    // half is its own finding. Both are report-only: doctor surfaces the gap
+    // but never writes these files; registration stays manual by design (see
+    // storage-model.md). Both checks are vacuous when the span root does not
+    // exist — the same gate the legacy-lock cleanup uses — because a repo
+    // with no `.span/` directory cannot receive `.span/` conflicts, so there
+    // is nothing to register for.
+    if crate::git::work_dir(repo)?.join(span_root).exists() {
+        if let Some(finding) = missing_merge_span_gitattributes_finding(repo, span_root)? {
+            findings.push(finding);
+        }
+        if let Some(finding) = missing_merge_span_driver_finding(repo, span_root) {
+            findings.push(finding);
+        }
     }
 
     // Legacy lock cleanup: older builds of git-span serialized mutations
@@ -149,42 +155,78 @@ pub fn run_doctor(repo: &gix::Repository, _args: DoctorArgs, span_root: &str) ->
     Ok(exit)
 }
 
-/// Report a missing `<span_root>/** merge=span` rule in the repository-root
-/// `.gitattributes`, or `None` when an equivalent rule is present: a line
-/// whose pattern token (after trimming, with no `!` negation) is exactly
-/// `<span_root>/**` and whose attribute tokens include `merge=span`. Extra
-/// attributes (`merge=span text`) count; the trailing-slash directory form
-/// and any other driver value do not. The missing file reads as no rule.
+/// Report a missing `<span_root>/** merge=span` rule in the committed
+/// repository-root `.gitattributes`, or `None` when the rule is effectively
+/// in force.
 ///
-/// This is the repo-root file — the one git consults for the `merge`
-/// attribute during merges. The span-root `.gitattributes` git-span itself
-/// manages (`* text eol=lf` only) is a different file and never satisfies
-/// the check. Doctor only reports; it never writes this file.
+/// "Committed" is the measured truth, not the worktree: the card defines
+/// registration as a committed, shared rule, so an uncommitted paste does
+/// not count — the finding (and its advice, "add … and commit it") stays
+/// until the rule reaches HEAD. The file is read from the HEAD tree via
+/// [`crate::git::tree_entry_at`]; an unborn HEAD or a missing file reads as
+/// no rule.
+///
+/// The scan mirrors git's attribute precedence within this one file:
+/// patterns are evaluated in order and the *last* matching line that
+/// mentions `merge` decides the attribute — `-merge` unsets it, `merge=…`
+/// sets it, and a matching line that does not mention `merge` leaves it
+/// untouched. Both the plain and root-anchored pattern forms
+/// (`{span_root}/**` and `/{span_root}/**`) count: git treats them as
+/// equivalent in a repository-root file. A `!`-negated pattern never
+/// applies its attributes, so such lines are skipped, as are the
+/// trailing-slash directory form and any other pattern shape (they match
+/// nothing git would consult for files under the root).
+///
+/// Scope note: git also consults `$GIT_DIR/info/attributes`, global
+/// attributes files, and `.gitattributes` files deeper in the tree (e.g.
+/// the span-root file git-span itself manages with `* text eol=lf`). The
+/// card scopes this check to the repository-root file — the distributed
+/// half — so those sources are deliberately not read: a per-clone
+/// registration or a deeper-file override is a different configuration
+/// state, not the shared rule this finding exists to enforce. Doctor only
+/// reports; it never writes this file.
 fn missing_merge_span_gitattributes_finding(
     repo: &gix::Repository,
     span_root: &str,
 ) -> Result<Option<String>> {
-    let path = crate::git::work_dir(repo)?.join(".gitattributes");
-    let contents = std::fs::read_to_string(&path).unwrap_or_default();
+    let contents = match crate::git::tree_entry_at(repo, "HEAD", Path::new(".gitattributes"))? {
+        Some((_mode, oid)) => crate::git::read_git_text(repo, &oid.to_string())?,
+        None => String::new(),
+    };
     let pattern = format!("{span_root}/**");
-    let registered = contents.lines().any(|line| {
+    let anchored_pattern = format!("/{span_root}/**");
+    // Last matching line that mentions `merge` wins: None — no matching line
+    // has mentioned it yet; Some(None) — the deciding line unsets it;
+    // Some(Some(value)) — the deciding line sets it to `value`.
+    let mut merge_state: Option<Option<&str>> = None;
+    for line in contents.lines() {
         let mut tokens = line.split_whitespace();
-        match tokens.next() {
-            Some(pattern_token) => {
-                !pattern_token.starts_with('!')
-                    && pattern_token == pattern
-                    && tokens.any(|token| token == "merge=span")
-            }
-            None => false,
+        let Some(pattern_token) = tokens.next() else {
+            continue;
+        };
+        if pattern_token.starts_with('!') {
+            // A negated pattern never applies its attributes.
+            continue;
         }
-    });
-    if registered {
+        if pattern_token != pattern && pattern_token != anchored_pattern {
+            continue;
+        }
+        for token in tokens {
+            if token == "-merge" {
+                merge_state = Some(None);
+            } else if let Some(value) = token.strip_prefix("merge=") {
+                merge_state = Some(Some(value));
+            }
+        }
+    }
+    if matches!(merge_state, Some(Some("span"))) {
         return Ok(None);
     }
     Ok(Some(format!(
-        "no `{pattern} merge=span` rule in the repository-root `.gitattributes`, so git merges \
-         `.span/` conflicts with its line merge instead of collapsing them — add that rule to \
-         `.gitattributes` and commit it"
+        "no `merge=span` for `{pattern}` in the committed repository-root `.gitattributes`, so \
+         git merges files under `{span_root}/` with its line merge instead of collapsing them — \
+         add this line to `.gitattributes` and commit it: `{pattern} merge=span` (registration \
+         is optional; without it, `git span drift --fix` restores the same state after a merge)"
     )))
 }
 
@@ -194,17 +236,19 @@ fn missing_merge_span_gitattributes_finding(
 /// registered in global config collapses conflicts exactly as well as one in
 /// the local file, so only total absence is a finding. Doctor only reports;
 /// it never writes `.git/config`.
-fn missing_merge_span_driver_finding(repo: &gix::Repository) -> Option<String> {
+fn missing_merge_span_driver_finding(repo: &gix::Repository, span_root: &str) -> Option<String> {
     if crate::git::config_string(repo, "merge.span.driver").is_some() {
         return None;
     }
-    Some(
-        "the `merge.span.driver` git config key is not set, so git merges `.span/` conflicts \
-         with its line merge instead of collapsing them — add this block to `.git/config`:\n\n\
+    Some(format!(
+        "the `merge.span.driver` git config key is not set, so git merges files under \
+         `{span_root}/` with its line merge instead of collapsing them — add this block to \
+         `.git/config`:\n\n\
          [merge \"span\"]\n    name = git-span structural span merge\n    driver = git span \
-         merge-driver %O %A %B %L"
-            .to_string(),
-    )
+         merge-driver %O %A %B %L\n\n\
+         (registration is optional; without it, `git span drift --fix` restores the same state \
+         after a merge)"
+    ))
 }
 
 /// A file is legacy lock residue iff its basename matches `.span-lock-*`
