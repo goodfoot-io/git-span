@@ -795,7 +795,13 @@ fn context_test_checkpoint(_repo: &gix::Repository, checkpoint: &str) -> Result<
     let token = uuid::Uuid::new_v4().to_string();
     std::fs::write(directory.join(format!("{checkpoint}.ready")), &token)?;
     let release = directory.join(format!("{checkpoint}.release"));
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    // The release-wait budget must comfortably exceed the test side's
+    // ready-poll deadline (`wait_for_checkpoint` uses 30s): the test's wall-
+    // clock polling can be starved by the rest of the suite while this
+    // process's budget burns, so an equal or tight budget turns load into
+    // spurious "checkpoint timed out" failures. 60s absorbs scheduling
+    // starvation without turning a genuinely hung test into a 60s stall.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while std::time::Instant::now() < deadline {
         if std::fs::read_to_string(&release).ok().as_deref() == Some(token.as_str()) {
             return Ok(());
