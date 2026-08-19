@@ -21,4 +21,4 @@ Or from the `mini-extra` benchmark runner (ProgramBench):
         --environment-class minisweagent_gitspan.environment.HookedDockerEnvironment
 """
 
-__version__ = "1.1.11"
+__version__ = "1.1.12"
