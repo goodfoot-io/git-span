@@ -236,6 +236,15 @@ fn missing_merge_span_gitattributes_finding(
 /// registered in global config collapses conflicts exactly as well as one in
 /// the local file, so only total absence is a finding. Doctor only reports;
 /// it never writes `.git/config`.
+///
+/// Paste-safety: the quoted `[merge "span"]` block is the *last* copyable
+/// thing in the finding — the optionality note lives in the prose above it,
+/// so a user selecting from the block to the end of the output pastes
+/// exactly the block and nothing that `.git/config` would misparse. That is
+/// load-bearing: the prose contains backticked tokens with `=` (e.g.
+/// `` `merge=span` ``) that git config would read as a key/value, and a bare
+/// line after the block would be an unexpected token that invalidates the
+/// entire config, breaking every git command until hand-repair.
 fn missing_merge_span_driver_finding(repo: &gix::Repository, span_root: &str) -> Option<String> {
     if crate::git::config_string(repo, "merge.span.driver").is_some() {
         return None;
@@ -243,11 +252,10 @@ fn missing_merge_span_driver_finding(repo: &gix::Repository, span_root: &str) ->
     Some(format!(
         "the `merge.span.driver` git config key is not set, so git merges files under \
          `{span_root}/` with its line merge instead of collapsing them — add this block to \
-         `.git/config`:\n\n\
+         `.git/config` (registration is optional; without it, `git span drift --fix` restores \
+         the same state after a merge):\n\n\
          [merge \"span\"]\n    name = git-span structural span merge\n    driver = git span \
-         merge-driver %O %A %B %L\n\n\
-         (registration is optional; without it, `git span drift --fix` restores the same state \
-         after a merge)"
+         merge-driver %O %A %B %L"
     ))
 }
 

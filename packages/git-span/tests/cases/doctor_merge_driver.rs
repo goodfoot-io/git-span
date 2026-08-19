@@ -424,3 +424,76 @@ fn doctor_rejects_span_roots_that_would_break_the_quoted_rule() -> Result<()> {
 
     Ok(())
 }
+
+/// The config finding's quoted `[merge "span"]` block must be the *last*
+/// copyable thing in the finding: a user who selects from the block to the
+/// end of the output pastes exactly the block, and a `.git/config` that
+/// receives that paste must still parse. This is load-bearing — the finding's
+/// prose above the block contains backticked tokens with `=` that git config
+/// would read as a key/value, and any trailing line would be an unexpected
+/// token that invalidates the entire config, breaking every git command
+/// until hand-repair.
+#[test]
+fn doctor_pasted_config_finding_never_corrupts_git_config() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.run_span(["add", "test/foo", "file1.txt"])?;
+    repo.write_file(".gitattributes", ".span/** merge=span\n")?;
+    repo.commit_all("register the span merge driver rule")?;
+
+    // Only the config half is missing, so the finding's block is the last
+    // copyable region in the output.
+    let out = doctor_isolated(&repo)?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !out.status.success(),
+        "an unregistered repo must exit 1;\nstdout:\n{stdout}"
+    );
+
+    // Extract from `[merge "span"]` to the end of the finding (the `## Store`
+    // section that follows is not part of the finding).
+    let block_start = stdout
+        .find("[merge \"span\"]")
+        .expect("finding must quote the config block;\nstdout:\n{stdout}");
+    let block_end = stdout[block_start..]
+        .find("\n## ")
+        .map(|i| block_start + i)
+        .unwrap_or(stdout.len());
+    let pasted = stdout[block_start..block_end].trim_end();
+
+    // Simulate the paste: append the selected text to the existing config.
+    let config_path = repo.path().join(".git/config");
+    let existing = std::fs::read_to_string(&config_path)?;
+    std::fs::write(&config_path, format!("{existing}\n{pasted}\n"))?;
+
+    // The config must still parse, the driver must be registered, and doctor
+    // must converge — the witness that the paste never corrupts the repo.
+    let list = repo.run_git(["config", "--list"])?;
+    assert!(
+        list.status.success(),
+        "pasting the finding into `.git/config` must leave it parseable;\n\
+         stderr:\n{}",
+        String::from_utf8_lossy(&list.stderr)
+    );
+    let driver = repo.run_git(["config", "merge.span.driver"])?;
+    assert_eq!(
+        String::from_utf8_lossy(&driver.stdout).trim(),
+        "git span merge-driver %O %A %B %L",
+        "the pasted block must register the driver"
+    );
+
+    let out = doctor_isolated(&repo)?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "doctor must converge to exit 0 after the paste;\n\
+         exit: {:?}\nstdout:\n{stdout}\nstderr:\n{}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("no findings"),
+        "doctor must report no findings after the paste;\nstdout:\n{stdout}"
+    );
+
+    Ok(())
+}
