@@ -221,18 +221,31 @@ fn head_source_does_not_claim_a_worktree_only_reanchor_was_committed() -> Result
     );
 
     let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    // The reconcile-skill restructure split the old single references/reconcile.md
-    // into per-audience references; the inline reconciler workflow now lives in
-    // dedicated.md, which carries this guidance verbatim.
-    let guidance = std::fs::read_to_string(
-        workspace.join("plugins-claude/git-span/skills/reconcile/references/dedicated.md"),
-    )?;
-    let guidance = guidance.split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(
-        guidance.contains(
-            "If only the declaration changed, inspect it and either commit or revert it rather than searching timeline entries"
-        ),
-        "reconciliation guidance must direct a worktree-only declaration edit toward inspect/commit/revert"
+    // Which reference file carries this guidance is the skill's business, not
+    // this test's: the reconcile skill has been re-split before, and pinning a
+    // path made a prose reorganisation look like a behaviour regression. Assert
+    // instead that exactly one reference carries it -- absent means the trap
+    // below is undocumented, duplicated means two copies free to drift apart.
+    let references = workspace.join("plugins-claude/git-span/skills/reconcile/references");
+    let carriers = std::fs::read_dir(&references)?
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            (path.extension()? == "md").then_some(path)
+        })
+        .filter(|path| {
+            std::fs::read_to_string(path)
+                .map(|text| {
+                    text.split_whitespace().collect::<Vec<_>>().join(" ").contains(
+                        "If only the declaration changed, inspect it and either commit or revert it rather than searching timeline entries"
+                    )
+                })
+                .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        carriers.len(),
+        1,
+        "exactly one reconcile reference must direct a worktree-only declaration edit toward inspect/commit/revert; found {carriers:?}"
     );
     Ok(())
 }

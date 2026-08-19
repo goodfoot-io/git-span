@@ -1,4 +1,4 @@
-packages/git-span/tests/cases/cli_history/documented_contract.rs#L223-L236 rk64:80e62bb2ab83340f
-plugins-claude/git-span/skills/reconcile/references/dedicated.md#L118-L119 rk64:e29c7e2d32e05823
+packages/git-span/tests/cases/cli_history/documented_contract.rs#L223-L249 rk64:39274fd7c2e8c47c
+plugins-claude/git-span/skills/reconcile/references/procedure.md#L98-L100 rk64:705357e78dff0ddb
 
-The Claude-tree reconcile references file carries the normative reconciliation guidance, and the renderer contract test pins its worktree-only-declaration sentence as the documented contract; a reworded guidance sentence falsifies the pinned test with no compiler or build catching it.
+The reconcile skill's procedure reference carries the normative worktree-only-declaration guidance, and the renderer contract test asserts exactly one reconcile reference carries that sentence; rewording it, dropping it, or copying it into a second reference falsifies the test with no compiler or build catching it.
