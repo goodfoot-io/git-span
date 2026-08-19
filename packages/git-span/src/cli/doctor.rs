@@ -165,10 +165,7 @@ fn missing_merge_span_gitattributes_finding(
     span_root: &str,
 ) -> Result<Option<String>> {
     let path = crate::git::work_dir(repo)?.join(".gitattributes");
-    let contents = match std::fs::read_to_string(&path) {
-        Ok(contents) => contents,
-        Err(_) => String::new(),
-    };
+    let contents = std::fs::read_to_string(&path).unwrap_or_default();
     let pattern = format!("{span_root}/**");
     let registered = contents.lines().any(|line| {
         let mut tokens = line.split_whitespace();
@@ -201,12 +198,13 @@ fn missing_merge_span_driver_finding(repo: &gix::Repository) -> Option<String> {
     if crate::git::config_string(repo, "merge.span.driver").is_some() {
         return None;
     }
-    Some(format!(
+    Some(
         "the `merge.span.driver` git config key is not set, so git merges `.span/` conflicts \
          with its line merge instead of collapsing them — add this block to `.git/config`:\n\n\
          [merge \"span\"]\n    name = git-span structural span merge\n    driver = git span \
          merge-driver %O %A %B %L"
-    ))
+            .to_string(),
+    )
 }
 
 /// A file is legacy lock residue iff its basename matches `.span-lock-*`

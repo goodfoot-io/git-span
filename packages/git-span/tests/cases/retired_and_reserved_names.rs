@@ -278,6 +278,10 @@ fn reserved_prefix_under_a_hierarchy_is_not_a_finding() -> Result<()> {
         "A hierarchical span whose first segment matches a subcommand.",
     )?;
 
+    // Register the merge driver so doctor's merge-driver checks stay silent
+    // and the exit code is about the name alone.
+    repo.register_span_merge_driver()?;
+
     let out = repo.run_span(["doctor"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(out.status.code(), Some(0), "stdout: {stdout}");
