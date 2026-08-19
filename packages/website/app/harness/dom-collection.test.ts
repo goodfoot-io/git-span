@@ -85,11 +85,12 @@ describe('website test harness', () => {
     rmSync(probeDir, { recursive: true, force: true });
   });
 
-  it('collects and executes a .tsx test against a DOM', // and under full-suite parallel load (root `yarn test`, validate.sh) the // The nested vitest pays the fumadocs-mdx startup cost inside this test,
+  // The nested vitest pays the fumadocs-mdx startup cost inside this test,
+  // and under full-suite parallel load (root `yarn test`, validate.sh) the
   // inner run stretches well past vitest's 30s default — the execFileSync
   // budget below is 60s, so the outer test must outlast it. 120s is twice
   // that budget and 4x the 31.8s inner run observed under load.
-  { timeout: 120_000 }, () => {
+  it('collects and executes a .tsx test against a DOM', { timeout: 120_000 }, () => {
     expect(vitestCli, 'the vitest CLI could not be resolved from the website package or the repo root').toBeDefined();
     writeFileSync(path.join(probeDir, 'probe.test.tsx'), probeContent);
     const output = runProbe(probeDir);
