@@ -54,6 +54,7 @@ pub mod drift_fix_residue_preservation;
 pub mod drift_fix_uncommitted_moved;
 pub mod drift_label;
 pub mod drift_positional_matches_full_scan;
+pub mod drift_relocation_nonunique;
 pub mod drift_relocation_scan_amortized;
 pub mod drift_resolved_pending_commit;
 pub mod drift_span_integration;
