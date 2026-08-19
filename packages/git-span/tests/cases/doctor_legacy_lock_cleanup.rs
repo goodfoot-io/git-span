@@ -18,6 +18,10 @@ fn doctor_removes_legacy_lock_files_and_reports_them() -> Result<()> {
     // Create a hierarchical span so `.span/team/` exists.
     repo.run_span(["add", "team/member", "file1.txt"])?;
 
+    // Register the merge driver so doctor's merge-driver checks stay silent
+    // and the exit code is about the lock residue alone.
+    repo.register_span_merge_driver()?;
+
     // Pre-seed legacy lock artifacts: a hierarchical-span lock at the span
     // root, a flat-span lock at the root, and a context-repair lock nested
     // under a subdirectory.
@@ -85,6 +89,7 @@ fn doctor_removes_a_legacy_lock_symlink_without_following_it() -> Result<()> {
 
     let repo = TestRepo::seeded()?;
     repo.run_span(["add", "team/member", "file1.txt"])?;
+    repo.register_span_merge_driver()?;
 
     // Cards worktree provisioning symlinks untracked files — including
     // legacy lock files — from the main checkout into a worktree, so a
@@ -146,6 +151,7 @@ fn doctor_omits_cleanup_section_when_nothing_is_stale() -> Result<()> {
     let repo = TestRepo::seeded()?;
 
     repo.run_span(["add", "test/foo", "file1.txt"])?;
+    repo.register_span_merge_driver()?;
 
     let out = repo.run_span(["doctor"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -181,6 +187,7 @@ fn concurrent_doctor_runs_never_report_a_lost_delete_race_as_a_finding() -> Resu
     for attempt in 0..20 {
         let repo = TestRepo::seeded()?;
         repo.run_span(["add", "test/span", "file1.txt"])?;
+        repo.register_span_merge_driver()?;
         repo.write_file(".span/.race.lock", "")?;
 
         let path_a = repo.path().to_path_buf();

@@ -25,6 +25,10 @@ fn doctor_skips_deletion_tombstone() -> Result<()> {
     repo.run_git(["add", "-A"])?;
     repo.run_git(["commit", "-m", "add test/foo span"])?;
 
+    // Register the merge driver so doctor's merge-driver checks stay silent
+    // and the exit code is about the tombstone alone.
+    repo.register_span_merge_driver()?;
+
     // Delete the span — removes the worktree file, creates a tombstone.
     let del = repo.run_span(["delete", "test/foo"])?;
     assert!(

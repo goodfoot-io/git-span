@@ -78,6 +78,20 @@ pub fn run_doctor(repo: &gix::Repository, _args: DoctorArgs, span_root: &str) ->
         findings.push(d.report_block(span_root));
     }
 
+    // Merge-driver registration checks: `.span/` conflicts collapse in place
+    // during `git merge` only when the repository-root `.gitattributes`
+    // carries `<span_root>/** merge=span` *and* the per-clone git config
+    // names the driver. The two are independent — git distributes one and
+    // not the other — so each missing half is its own finding. Both are
+    // report-only: doctor surfaces the gap but never writes these files;
+    // registration stays manual by design (see storage-model.md).
+    if let Some(finding) = missing_merge_span_gitattributes_finding(repo, span_root)? {
+        findings.push(finding);
+    }
+    if let Some(finding) = missing_merge_span_driver_finding(repo) {
+        findings.push(finding);
+    }
+
     // Legacy lock cleanup: older builds of git-span serialized mutations
     // with one advisory lock per span (`.span-lock-<hash>` at a
     // hierarchical span's parent, `.<name>.lock` for a flat span, or
@@ -133,6 +147,66 @@ pub fn run_doctor(repo: &gix::Repository, _args: DoctorArgs, span_root: &str) ->
     println!();
     report_store_diagnostics(repo);
     Ok(exit)
+}
+
+/// Report a missing `<span_root>/** merge=span` rule in the repository-root
+/// `.gitattributes`, or `None` when an equivalent rule is present: a line
+/// whose pattern token (after trimming, with no `!` negation) is exactly
+/// `<span_root>/**` and whose attribute tokens include `merge=span`. Extra
+/// attributes (`merge=span text`) count; the trailing-slash directory form
+/// and any other driver value do not. The missing file reads as no rule.
+///
+/// This is the repo-root file — the one git consults for the `merge`
+/// attribute during merges. The span-root `.gitattributes` git-span itself
+/// manages (`* text eol=lf` only) is a different file and never satisfies
+/// the check. Doctor only reports; it never writes this file.
+fn missing_merge_span_gitattributes_finding(
+    repo: &gix::Repository,
+    span_root: &str,
+) -> Result<Option<String>> {
+    let path = crate::git::work_dir(repo)?.join(".gitattributes");
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(_) => String::new(),
+    };
+    let pattern = format!("{span_root}/**");
+    let registered = contents.lines().any(|line| {
+        let mut tokens = line.split_whitespace();
+        match tokens.next() {
+            Some(pattern_token) => {
+                !pattern_token.starts_with('!')
+                    && pattern_token == pattern
+                    && tokens.any(|token| token == "merge=span")
+            }
+            None => false,
+        }
+    });
+    if registered {
+        return Ok(None);
+    }
+    Ok(Some(format!(
+        "no `{pattern} merge=span` rule in the repository-root `.gitattributes`, so git merges \
+         `.span/` conflicts with its line merge instead of collapsing them — add that rule to \
+         `.gitattributes` and commit it"
+    )))
+}
+
+/// Report a missing `merge.span.driver` git config key, or `None` when the
+/// driver is registered anywhere git would see it. The merged snapshot
+/// (system + global + local) is deliberately the source of truth: a driver
+/// registered in global config collapses conflicts exactly as well as one in
+/// the local file, so only total absence is a finding. Doctor only reports;
+/// it never writes `.git/config`.
+fn missing_merge_span_driver_finding(repo: &gix::Repository) -> Option<String> {
+    if crate::git::config_string(repo, "merge.span.driver").is_some() {
+        return None;
+    }
+    Some(format!(
+        "the `merge.span.driver` git config key is not set, so git merges `.span/` conflicts \
+         with its line merge instead of collapsing them — add this block to `.git/config`:\n\n\
+         [merge \"span\"]\n    name = git-span structural span merge\n    driver = git span \
+         merge-driver %O %A %B %L"
+    ))
 }
 
 /// A file is legacy lock residue iff its basename matches `.span-lock-*`

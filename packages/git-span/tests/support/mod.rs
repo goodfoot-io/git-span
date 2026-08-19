@@ -126,6 +126,28 @@ impl TestRepo {
         self.head_sha()
     }
 
+    /// Register the optional `.span/` merge driver exactly as the
+    /// storage-model docs prescribe: a committed repository-root
+    /// `.gitattributes` rule plus a per-repo `merge.span.driver` config key.
+    /// Registration is manual by design and `doctor` reports each missing
+    /// half, so fixtures that want a clean bill of health — or a real
+    /// driver-backed merge — must provide it.
+    pub fn register_span_merge_driver(&self) -> Result<()> {
+        self.write_file(".gitattributes", ".span/** merge=span\n")?;
+        self.run_git([
+            "config",
+            "merge.span.name",
+            "git-span structural span merge",
+        ])?;
+        self.run_git([
+            "config",
+            "merge.span.driver",
+            "git span merge-driver %O %A %B %L",
+        ])?;
+        self.commit_all("register the span merge driver")?;
+        Ok(())
+    }
+
     /// Stage and commit a file in one shot, returning the new HEAD sha.
     pub fn commit_file(&self, rel: &str, contents: &str, msg: &str) -> Result<String> {
         self.write_file(rel, contents)?;
