@@ -1767,15 +1767,31 @@ fn describe_finding_lower(f: &Finding, available: &AddAvailability) -> String {
     // so the operator sees there are candidates to review. When the
     // worktree-blob fallback found several identical-content candidates
     // (card main-264), every candidate is listed bare — that is a
-    // fail-closed ranked proposal, never a best-match guess.
+    // fail-closed ranked proposal, never a best-match guess. When a
+    // relocation scan's match set is non-unique (card main-269), every
+    // candidate is listed with its similarity — no destination may be
+    // asserted for the operator.
     if f.status != AnchorStatus::Moved && !f.fuzzy_successors.is_empty() {
         if f.moved_uncommitted {
             // Identical-content ambiguity: bare paths in deterministic
             // path order (the fallback sorts them before rendering).
-            let dests: Vec<&str> = f
+            let dests: Vec<&str> = f.fuzzy_successors.iter().map(|s| s.path.as_str()).collect();
+            format!(
+                "{base} — multiple possible destinations: {}",
+                dests.join(", ")
+            )
+        } else if f.fuzzy_successors.len() >= 2 {
+            // Non-unique relocation: several candidates cleared the
+            // match threshold, so the scan can assert no destination.
+            // List every candidate with its similarity and let the
+            // operator pick — or leave the anchor drifted.
+            let dests: Vec<String> = f
                 .fuzzy_successors
                 .iter()
-                .map(|s| s.path.as_str())
+                .map(|s| {
+                    let pct = (s.confidence * 100.0).round() as u32;
+                    format!("{} ({pct}% similar)", s.path)
+                })
                 .collect();
             format!(
                 "{base} — multiple possible destinations: {}",
@@ -2495,7 +2511,10 @@ pub enum StatusDoc {
     // Variant fields are declared in the *serialized* order the hand-built
     // json! produced after BTreeMap sorting: `code`, `detail`, `reason`.
     ContentUnavailable {
-        #[schemars(required, schema_with = "crate::schemas::nullable_schema::<StatusDetailDoc>")]
+        #[schemars(
+            required,
+            schema_with = "crate::schemas::nullable_schema::<StatusDetailDoc>"
+        )]
         detail: Option<StatusDetailDoc>,
         reason: UnavailableReasonCodeDoc,
     },

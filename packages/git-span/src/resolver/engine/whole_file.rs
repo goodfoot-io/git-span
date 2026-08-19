@@ -4,6 +4,7 @@
 
 use super::super::session::{ConcurrentSession, follow_path_to_head_shared};
 use super::super::worktree_move::{WorktreeMove, find_worktree_move};
+use super::anchor::sole_basename_preserving;
 use super::{EngineLocal, SharedEngineContext};
 use crate::git;
 use crate::types::{
@@ -53,7 +54,10 @@ fn canonical_layer_bytes(repo: &gix::Repository, oid_hex: &str, gitlink: bool) -
 /// canonical content hashes to `stored_hash`. Used when the anchored
 /// whole-file path no longer resolves: if the exact stored content now
 /// lives at a different path the anchor `Moved`; otherwise it is
-/// `Deleted`. Returns the relocated path on a hit.
+/// `Deleted`. Returns every relocated path, sorted by path, so the caller
+/// can distinguish a unique destination from a non-unique match set (card
+/// main-269: several files holding the same content cannot be resolved to
+/// one destination).
 ///
 /// `deepest` selects the content source:
 /// - `Head`/`Index`: hash the blob recorded in HEAD's tree / the index.
@@ -77,8 +81,9 @@ fn find_relocated_whole_file(
     stored_hash: &str,
     exclude: &str,
     anchored_absent_at_head: bool,
-) -> Option<String> {
-    let entries = git::index_entries(repo).ok()?;
+) -> Vec<String> {
+    let entries = git::index_entries(repo).ok().unwrap_or_default();
+    let mut results: Vec<String> = Vec::new();
     for en in entries {
         if en.stage != gix::index::entry::Stage::Unconflicted {
             continue;
@@ -135,10 +140,11 @@ fn find_relocated_whole_file(
             ))
         );
         if computed == stored_hash {
-            return Some(en.path);
+            results.push(en.path);
         }
     }
-    None
+    results.sort_unstable();
+    results
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -309,6 +315,7 @@ pub(crate) fn resolve_whole_file(
     let status: AnchorStatus;
     let source: Option<DriftSource>;
     let layer_sources: Vec<DriftSource>;
+    let mut fuzzy_successors: Vec<FuzzySuccessor> = vec![];
 
     // Determine which layers independently show drift (blob OID != anchor blob,
     // or rk64 of current content != stored_hash).
@@ -428,7 +435,7 @@ pub(crate) fn resolve_whole_file(
                 None
             };
             let head_path_absent = file_backed && head_blob_oid.is_none();
-            let relocated = if file_backed {
+            let relocated: Vec<String> = if file_backed {
                 find_relocated_whole_file(
                     repo,
                     shared,
@@ -440,10 +447,10 @@ pub(crate) fn resolve_whole_file(
                     head_path_absent,
                 )
             } else {
-                None
+                Vec::new()
             };
-            match relocated {
-                Some(new_path) => {
+            match relocated.as_slice() {
+                [new_path] => {
                     status = AnchorStatus::Moved;
                     source = Some(deepest);
                     layer_sources = vec![deepest];
@@ -453,7 +460,7 @@ pub(crate) fn resolve_whole_file(
                         stored_hash: r.stored_hash,
                         anchored,
                         current: Some(AnchorLocation {
-                            path: PathBuf::from(&new_path),
+                            path: PathBuf::from(new_path),
                             extent: AnchorExtent::WholeFile,
                             blob: None,
                         }),
@@ -466,7 +473,7 @@ pub(crate) fn resolve_whole_file(
                         moved_uncommitted: false,
                     });
                 }
-                None if head_path_absent => {
+                [] if head_path_absent => {
                     // Directory promoted to submodule: the anchored path
                     // lives inside a gitlink and cannot resolve at HEAD.
                     let is_submodule = git::index_entries(repo)
@@ -495,7 +502,7 @@ pub(crate) fn resolve_whole_file(
                         moved_uncommitted: false,
                     });
                 }
-                None => {
+                [] => {
                     // Worktree-blob fallback (card main-264): the anchored
                     // path is missing only from the worktree — still at
                     // HEAD, no index/history rename — so search untracked
@@ -588,6 +595,107 @@ pub(crate) fn resolve_whole_file(
                         moved_uncommitted,
                     });
                 }
+                _ => {
+                    // Non-unique match set (card main-269): several tracked
+                    // files hold the exact stored content, so no destination
+                    // can be asserted from content alone. Surface every
+                    // candidate at full confidence and classify exactly as
+                    // the no-destination arms above do — submodule/`Deleted`
+                    // when the anchored path is gone from HEAD, otherwise
+                    // `Changed` with the removal attribution — never a
+                    // guess.
+                    // Directory-rename shape (see the line-range twin in
+                    // `anchor.rs`): exactly one candidate preserving the
+                    // anchored basename is the move's continuation → Moved.
+                    if let Some(winner) =
+                        sole_basename_preserving(&r.path, relocated.iter().map(String::as_str))
+                    {
+                        return Ok(AnchorResolved {
+                            anchor_id: anchor_id.into(),
+                            anchor_sha: r.anchor_sha,
+                            stored_hash: r.stored_hash,
+                            anchored,
+                            current: Some(AnchorLocation {
+                                path: PathBuf::from(winner),
+                                extent: AnchorExtent::WholeFile,
+                                blob: None,
+                            }),
+                            status: AnchorStatus::Moved,
+                            source: Some(deepest),
+                            layer_sources: vec![deepest],
+                            content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
+                            locus: None,
+                            fuzzy_successors: vec![],
+                            moved_uncommitted: false,
+                        });
+                    }
+                    let fuzzy_successors: Vec<FuzzySuccessor> = relocated
+                        .iter()
+                        .map(|p| FuzzySuccessor {
+                            path: p.clone(),
+                            // Whole-file anchors have no line extent; the
+                            // 0-0 sentinel mirrors the whole-file mesh
+                            // convention.
+                            start: 0,
+                            end: 0,
+                            confidence: 1.0,
+                        })
+                        .collect();
+                    if head_path_absent {
+                        let is_submodule = git::index_entries(repo)
+                            .ok()
+                            .map(|entries| {
+                                !matches!(
+                                    submodule_classify(&entries, &r.path),
+                                    SubmoduleKind::None,
+                                )
+                            })
+                            .unwrap_or(false);
+                        let status = if is_submodule {
+                            AnchorStatus::Submodule
+                        } else {
+                            AnchorStatus::Deleted
+                        };
+                        return Ok(AnchorResolved {
+                            anchor_id: anchor_id.into(),
+                            anchor_sha: r.anchor_sha,
+                            stored_hash: r.stored_hash,
+                            anchored,
+                            current: None,
+                            status,
+                            source: None,
+                            layer_sources: vec![],
+                            content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
+                            locus: None,
+                            fuzzy_successors,
+                            moved_uncommitted: false,
+                        });
+                    }
+                    // Removed only in the index/worktree (path still at
+                    // HEAD). Attribute to the shallowest drifting layer so
+                    // the formatter renders "deleted in the index" vs
+                    // "deleted in the working tree" correctly; `current =
+                    // None` keeps it from reading "changed".
+                    let removed_layer = if index_drifts && !worktree_drifts {
+                        DriftSource::Index
+                    } else {
+                        deepest
+                    };
+                    return Ok(AnchorResolved {
+                        anchor_id: anchor_id.into(),
+                        anchor_sha: r.anchor_sha,
+                        stored_hash: r.stored_hash,
+                        anchored,
+                        current: None,
+                        status: AnchorStatus::Changed,
+                        source: Some(removed_layer),
+                        layer_sources: vec![removed_layer],
+                        content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
+                        locus: None,
+                        fuzzy_successors,
+                        moved_uncommitted: false,
+                    });
+                }
             }
         }
         Some(cur) => {
@@ -648,13 +756,13 @@ pub(crate) fn resolve_whole_file(
                 status = AnchorStatus::Fresh;
                 source = None;
                 layer_sources = vec![];
-            } else if let Some(new_path) = {
+            } else {
                 // Cross-path relocation: the stored whole-file content
                 // was duplicated verbatim to a different tracked path
                 // (staged copy-then-replace, or a committed `git mv` the
                 // follow-walk did not pick up). Scan before `Changed`.
                 let file_backed = !r.stored_hash.is_empty();
-                if file_backed {
+                let relocated: Vec<String> = if file_backed {
                     let anchored_absent_at_head = concurrent
                         .head_blob_at(repo, &shared.head_sha, &r.path)?
                         .is_none();
@@ -669,18 +777,51 @@ pub(crate) fn resolve_whole_file(
                         anchored_absent_at_head,
                     )
                 } else {
-                    None
-                }
-            } {
+                    Vec::new()
+                };
+                if relocated.len() == 1 {
+                    // Unique destination: assert the move.
                 status = AnchorStatus::Moved;
                 source = Some(deepest);
                 layer_sources = vec![deepest];
                 current_loc = Some(AnchorLocation {
-                    path: PathBuf::from(new_path),
+                        path: PathBuf::from(&relocated[0]),
+                        extent: AnchorExtent::WholeFile,
+                        blob: None,
+                    });
+                } else {
+                    // Directory-rename shape (see the whole-file
+                    // relocation arm above): exactly one candidate
+                    // preserving the anchored basename is the move's
+                    // continuation → Moved. Otherwise no destination can be
+                    // asserted (card main-269): surface every candidate and
+                    // classify `Changed` in place — never a guess.
+                    if let Some(winner) =
+                        sole_basename_preserving(&r.path, relocated.iter().map(String::as_str))
+                    {
+                        status = AnchorStatus::Moved;
+                        source = Some(deepest);
+                        layer_sources = vec![deepest];
+                        current_loc = Some(AnchorLocation {
+                            path: PathBuf::from(winner),
                     extent: AnchorExtent::WholeFile,
                     blob: None,
                 });
             } else {
+                        if relocated.len() >= 2 {
+                            fuzzy_successors = relocated
+                                .iter()
+                                .map(|p| FuzzySuccessor {
+                                    path: p.clone(),
+                                    // Whole-file anchors have no line extent;
+                                    // the 0-0 sentinel mirrors the whole-file
+                                    // mesh convention.
+                                    start: 0,
+                                    end: 0,
+                                    confidence: 1.0,
+                                })
+                                .collect();
+                        }
                 status = AnchorStatus::Changed;
                 source = Some(deepest);
                 // Collect all drifting layers in I → W → H order.
@@ -698,6 +839,8 @@ pub(crate) fn resolve_whole_file(
             }
         }
     }
+        }
+    }
 
     Ok(AnchorResolved {
         anchor_id: anchor_id.into(),
@@ -710,7 +853,7 @@ pub(crate) fn resolve_whole_file(
         layer_sources,
         content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
         locus: None,
-        fuzzy_successors: vec![],
+        fuzzy_successors,
         moved_uncommitted: false,
     })
 }

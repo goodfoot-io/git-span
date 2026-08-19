@@ -56,7 +56,7 @@ Writes one CSV row per resolved anchor to `/tmp/trace.csv`. The flag ([`src/cli/
 | `anchor_sha` | hex | Commit SHA the anchor is pinned to |
 | `path` | string | File path the anchor references |
 | `wall_us` | u128 | Wall-clock microseconds spent in [`resolve_anchor_inner`](../../packages/git-span/src/resolver/engine/anchor.rs#L460-L1495) |
-| `fast_path` | bool | `true` if the anchor returned via [`clean_head_fast_path`](../../packages/git-span/src/resolver/engine/anchor.rs#L1936-L2000) |
+| `fast_path` | bool | `true` if the anchor returned via [`clean_head_fast_path`](../../packages/git-span/src/resolver/engine/anchor.rs#L2163-L2227) |
 | `status` | enum | One of `Fresh`, `Moved`, `Changed`, `Orphaned`, `MergeConflict`, `Submodule`, `ContentUnavailable` |
 
 Values containing `,`, `"`, newline (`\n`), or carriage return (`\r`) are RFC-4180-escaped (wrapped in `"`, internal `"` doubled).
