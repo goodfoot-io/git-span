@@ -527,11 +527,17 @@ impl RetainedDirectory {
     /// mutation itself has already landed by the time sync() runs, so these
     /// errnos downgrade the durability barrier rather than fail the command.
     /// Every other error keeps the fail-closed behavior.
+    #[cfg(unix)]
     fn is_directory_fsync_unsupported(error: &std::io::Error) -> bool {
         matches!(
             error.raw_os_error(),
             Some(libc::EBADF | libc::EINVAL | libc::ENOTSUP)
         )
+    }
+
+    #[cfg(not(unix))]
+    fn is_directory_fsync_unsupported(_error: &std::io::Error) -> bool {
+        false
     }
 
     /// Persist directory-entry changes made through this authority.
