@@ -67,8 +67,10 @@ distributes one and not the other:
     driver = git span merge-driver %O %A %B %L
 ```
 
-There is **no auto-installer** — registration is manual by design, and
-`git span doctor` does not check for it (verified: its output never mentions
-merge-driver state, registered or not). Never run `git span merge-driver` by
-hand; git invokes it with the temp-file arguments shown above. Until a clone
-adds the `.git/config` block, conflicts simply fall back to `--fix`.
+There is **no auto-installer** — registration is manual by design, but
+`git span doctor` checks for both parts and reports each missing one as a
+finding quoting the exact rule or block to add from the snippets above
+(verified: on a repo with neither part, doctor prints both findings; on a
+fully registered repo it reports nothing). Never run `git span merge-driver`
+by hand; git invokes it with the temp-file arguments shown above. Until a
+clone adds the `.git/config` block, conflicts simply fall back to `--fix`.
