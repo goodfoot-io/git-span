@@ -1587,7 +1587,11 @@ fn strict_tombstone_and_definition_capture() -> Result<()> {
     let raced = child.wait_with_output()?;
     assert!(!raced.status.success());
     assert!(raced.stdout.is_empty());
-    assert!(String::from_utf8(raced.stderr)?.contains("span definitions changed"));
+    let stderr = String::from_utf8(raced.stderr)?;
+    assert!(
+        stderr.contains("span definitions changed"),
+        "the racy child must report the mid-run definition change; its stderr was:\n{stderr}"
+    );
     Ok(())
 }
 
