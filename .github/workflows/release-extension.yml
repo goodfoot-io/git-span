@@ -42,6 +42,13 @@ jobs:
             exit 1
           fi
           BASE_URL="https://github.com/goodfoot-io/git-span/releases/download/${{ inputs.release_tag }}"
+          # A release's tag-to-asset mapping on releases/download is eventually
+          # consistent for a few minutes after the release job finalizes, so a
+          # just-created release can briefly 404. Poll each asset until it
+          # resolves or a shared deadline passes: a transient propagation gap
+          # must not fail the release, while a genuinely missing asset still
+          # fails the step with the offending URL.
+          deadline=$((SECONDS + 180))
           for asset in \
             git-span-cli-checksums.json \
             git-span-linux-x64 \
@@ -50,7 +57,14 @@ jobs:
             git-span-darwin-arm64 \
             git-span-win32-x64.exe
           do
-            curl -fsI "${BASE_URL}/${asset}" > /dev/null
+            while ! curl -fsI "${BASE_URL}/${asset}" > /dev/null 2>&1; do
+              if [ $SECONDS -ge $deadline ]; then
+                echo "ERROR: CLI release asset still unavailable after polling: ${BASE_URL}/${asset}" >&2
+                exit 1
+              fi
+              echo "Waiting for ${asset} to become available on the release..."
+              sleep 5
+            done
           done
 
       - name: Production build

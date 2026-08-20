@@ -51,7 +51,6 @@ jobs:
           target: ${{ matrix.target }}
           working-directory: packages/git-span
           args: --release --locked
-          cache-workspaces: packages/git-span
         env:
           # cross-rs's musl containers have neither mold nor cc.mold-wrapper
           # on PATH, which .cargo/config.toml pins as the host-target linker
