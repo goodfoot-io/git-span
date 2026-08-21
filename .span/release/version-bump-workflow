@@ -1,5 +1,7 @@
 package.json#L29-L29 rk64:9ed9e94c793e83d7
+packages/mini-swe-agent/src/minisweagent_gitspan/__init__.py#L24-L24 rk64:d67cf65e9094ef57
 scripts/bump.sh#L37-L43 rk64:06b3f2199dbf9b32
 scripts/sync-versions.sh#L54-L76 rk64:05e35dd805df9756
+scripts/sync-versions.sh#L110-L132 rk64:51ee1b9d356005b5
 
-packages/git-span/package.json is the authoritative version source; bump.sh rewrites it, then sync-versions.sh aligns the CLI's optionalDependencies and yarn install refreshes the lockfile, so version changes must run through the yarn bump script.
+packages/git-span/package.json is the authoritative version source; bump.sh and sync-versions.sh align workspace manifests, CLI optionalDependencies, and the mini-swe-agent Python attribute that pyproject.toml publishes, so version changes run through yarn bump.
