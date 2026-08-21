@@ -105,7 +105,9 @@ async function withRepoEnv<T>(repo: RealBundleRepo, fn: () => Promise<T>): Promi
 /** Run a batch of touches through the singleton compatibility path. */
 async function runPerFile(repo: RealBundleRepo, touches: TouchInput[]): Promise<(string | null)[]> {
   return withRepoEnv(repo, async () => {
-    const executors = createDefaultTouchExecutors().forInvocation?.() ?? createDefaultTouchExecutors();
+    const executors =
+      createDefaultTouchExecutors(SUBPROCESS_TIMEOUT_MS).forInvocation?.() ??
+      createDefaultTouchExecutors(SUBPROCESS_TIMEOUT_MS);
     const memo = createMemoStore();
     const probe = createRealityProbeCache([]);
     const out: (string | null)[] = [];
@@ -119,7 +121,7 @@ async function runPerFile(repo: RealBundleRepo, touches: TouchInput[]): Promise<
 /** Run the same batch through the plural context-query path. */
 async function runBatched(repo: RealBundleRepo, touches: TouchInput[]): Promise<(string | null)[]> {
   return withRepoEnv(repo, async () => {
-    const base = createDefaultTouchExecutors();
+    const base = createDefaultTouchExecutors(SUBPROCESS_TIMEOUT_MS);
     const executors = base.forInvocation?.() ?? base;
     const memo = createMemoStore();
     const probe = createRealityProbeCache([]);
@@ -136,6 +138,17 @@ async function runBatched(repo: RealBundleRepo, touches: TouchInput[]): Promise<
  * bound, so harness load cannot turn a passing check into a timeout.
  */
 const INSTALLED_SMOKE_TIMEOUT_MS = 180_000;
+
+/**
+ * Subprocess budget handed to the real `git span` children. The production
+ * default (2s) is tuned for interactive hook latency; under the root
+ * `yarn test` foreach harness seven workspaces run in parallel and a cold
+ * CLI invocation can legitimately exceed it, which fails the executor open
+ * to null on one side of a batched-vs-per-file comparison and flakes the
+ * parity property red. The property under test is independent of the exact
+ * budget, so both paths get the same generous one.
+ */
+const SUBPROCESS_TIMEOUT_MS = 30_000;
 
 let PATH_DIR: string;
 

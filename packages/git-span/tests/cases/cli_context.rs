@@ -1778,7 +1778,14 @@ fn production_perf_counters_and_acceptance_harness() -> Result<()> {
     }
     for _ in 0..31 {
         let started = std::time::Instant::now();
-        assert!(repo.run_span(["drift", "--fix"])?.status.success());
+        let fix = repo.run_span(["drift", "--fix"])?;
+        assert!(
+            fix.status.success(),
+            "drift --fix failed: {:?}\nstdout:\n{}\nstderr:\n{}",
+            fix.status,
+            String::from_utf8_lossy(&fix.stdout),
+            String::from_utf8_lossy(&fix.stderr)
+        );
         assert!(
             repo.run_span(["list", "file1.txt#L2-L3", "--porcelain"])?
                 .status
