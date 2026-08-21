@@ -101,12 +101,20 @@ impl SharedExeDigestStore {
             std::fs::create_dir_all(parent).ok()?;
         }
         let conn = Connection::open(path).ok()?;
-        // First pragma, before any other — mirrors `store::schema`'s WAL
-        // ordering rationale: an unset busy timeout on a contended WAL switch
-        // surfaces as a spurious lock error instead of a bounded wait.
+        // First pragma, before any other — an unset busy timeout on a
+        // contended journal switch surfaces as a spurious lock error instead
+        // of a bounded wait.
         conn.busy_timeout(Duration::from_millis(BUSY_TIMEOUT_MS))
             .ok()?;
-        conn.pragma_update(None, "journal_mode", "WAL").ok()?;
+        // Rollback journal, not WAL: WAL unconditionally mmaps the shared
+        // -memory wal-index (`-shm`) and serializes access with POSIX advisory
+        // locks. On filesystems where either primitive is unreliable — network
+        // mounts, virtiofs `$HOME`s — one process's open/recovery truncates
+        // the `-shm` under another process's live mapping and the CLI dies
+        // with SIGBUS instead of failing closed. This memo is a tiny idempotent
+        // key-value table re-hashed on any miss; it has no read-modify-write
+        // transactions that need WAL's reader/writer overlap.
+        conn.pragma_update(None, "journal_mode", "DELETE").ok()?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS exe_digest (
                path     TEXT PRIMARY KEY,
@@ -265,6 +273,25 @@ mod tests {
             ino: 1,
             dev: 1,
         }
+    }
+
+    /// The shared store must never run WAL: WAL's mandatory shared-memory
+    /// wal-index (`-shm`) is mmap'd by every connection and serialized only by
+    /// POSIX advisory locks, which filesystems like virtiofs/network mounts do
+    /// not honor coherently — one process's open/recovery then truncates the
+    /// `-shm` under another's live mapping and the CLI dies with SIGBUS
+    /// instead of failing closed. Pinned so reintroducing WAL here requires
+    /// re-litigating that trade-off deliberately.
+    #[test]
+    fn open_at_pins_rollback_journal_mode() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = SharedExeDigestStore::open_at(&dir.path().join(DB_BASENAME))
+            .expect("open shared store");
+        let mode: String = store
+            .conn
+            .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+            .expect("journal_mode pragma");
+        assert_eq!(mode, "delete");
     }
 
     /// A digest memoized under one stat identity is returned as-is when

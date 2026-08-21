@@ -28,8 +28,12 @@
 //! the check slot before fetching (stamps `last_checked_at` alone,
 //! preserving findings and the reminder stamp), then stamps `last_checked_at`
 //! plus findings (success only); the foreground claims the print slot
-//! (`last_reminded_at`). Concurrent opens are safe by WAL + a 1s busy
-//! timeout.
+//! (`last_reminded_at`). Concurrent opens are safe by a rollback journal + a
+//! 1s busy timeout (WAL is deliberately avoided here — see
+//! `exe_digest_store`'s open rationale: its mandatory shared-memory wal-index
+//! mmap dies with SIGBUS on filesystems whose advisory locks and mmap
+//! coherence cannot serialize `-shm` recovery, such as virtiofs/network
+//! `$HOME`s).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -98,9 +102,8 @@ impl UpdateCheckStore {
     }
 
     /// Open (creating the parent directory and file as needed) and ensure
-    /// the schema exists, exe-digest bootstrap shape: busy timeout first,
-    /// then WAL, then `CREATE TABLE IF NOT EXISTS … STRICT`. `None` on any
-    /// failure.
+    /// the schema exists: busy timeout first, then the journal mode, then
+    /// `CREATE TABLE IF NOT EXISTS … STRICT`. `None` on any failure.
     pub fn open_at(path: &Path) -> Option<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).ok()?;
@@ -108,14 +111,19 @@ impl UpdateCheckStore {
         let conn = Connection::open(path).ok()?;
         // Busy timeout first, before any other pragma — mirrors the
         // exe-digest store's ordering rationale: an unset busy timeout on a
-        // contended WAL switch surfaces as a spurious lock error instead of
-        // a bounded wait. rusqlite opens lazily, so the journal-mode pragma
+        // contended journal switch surfaces as a spurious lock error instead
+        // of a bounded wait. rusqlite opens lazily, so the journal-mode pragma
         // (the first statement that touches the file) is also what makes a
         // corrupt database fail here, at bootstrap, rather than at first
         // read.
         conn.busy_timeout(Duration::from_millis(BUSY_TIMEOUT_MS))
             .ok()?;
-        conn.pragma_update(None, "journal_mode", "WAL").ok()?;
+        // Rollback journal, not WAL — see exe_digest_store's rationale: WAL's
+        // mandatory wal-index shared-memory mmap dies with SIGBUS on
+        // filesystems (virtiofs/network `$HOME`s) whose advisory locks and
+        // mmap coherence cannot serialize `-shm` recovery. This stamp table
+        // has no transactions that need WAL's concurrency.
+        conn.pragma_update(None, "journal_mode", "DELETE").ok()?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS update_check (
                id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -252,6 +260,24 @@ mod tests {
             .iter()
             .map(|(tool, version)| (tool.to_string(), Version::parse(version).unwrap()))
             .collect()
+    }
+
+    /// The store must never run WAL: WAL's mandatory shared-memory wal-index
+    /// (`-shm`) is mmap'd by every connection and serialized only by POSIX
+    /// advisory locks, which filesystems like virtiofs/network mounts do not
+    /// honor coherently — one process's open/recovery then truncates the
+    /// `-shm` under another's live mapping and the CLI dies with SIGBUS
+    /// instead of failing closed. Pinned so reintroducing WAL here requires
+    /// re-litigating that trade-off deliberately.
+    #[test]
+    fn open_at_pins_rollback_journal_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = UpdateCheckStore::open_at(&dir.path().join(DB_BASENAME)).expect("open");
+        let mode: String = store
+            .conn
+            .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+            .expect("journal_mode pragma");
+        assert_eq!(mode, "delete");
     }
 
     #[test]
