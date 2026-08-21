@@ -39,7 +39,7 @@ covered here).
   the same package. Rebuild with, from `packages/mini-swe-agent/`:
   `yarn build:hooks` → delegates to
   `yarn workspace agent-hooks run build:hooks:mswea` → runs
-  `claude-code-hooks -i "src/mswea/**/*.ts" -o "../../packages/mini-swe-agent/src/minisweagent_gitspan/hooks/hooks.json"`
+  `claude-code-hooks -i "src/mswea/{advisor,static-plan,post-tool-use,post-tool-use-failure,session-end}.ts" -o "../../packages/mini-swe-agent/src/minisweagent_gitspan/hooks/hooks.json"`
   from `packages/agent-hooks/`. Then `uv build` to embed the fresh bundles
   in the wheel — see `build-and-vendor.md` §1.
 - `experiment/` — everything scoped to one pinned canary/batch: `Dockerfile`,

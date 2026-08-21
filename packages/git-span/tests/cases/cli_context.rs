@@ -345,6 +345,97 @@ fn prepared_repair_recovers_across_service_identity_environment_changes() -> Res
 }
 
 #[test]
+fn no_op_repair_never_prepares_recovery_and_replays_after_repository_changes() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    assert!(
+        repo.run_span(["add", "a", "file1.txt#L1-L2"])?
+            .status
+            .success()
+    );
+    let operation = uuid::Uuid::new_v4().to_string();
+    let args = [
+        "context",
+        "file1.txt#L1-L2",
+        "--format",
+        "json",
+        "--fix",
+        "--operation-id",
+        &operation,
+    ];
+    let fixed = repo.run_span_with_envs(args, &[("GIT_SPAN_CONTEXT_DISABLE_SERVICE", "1")])?;
+    assert!(fixed.status.success(), "{}", String::from_utf8_lossy(&fixed.stderr));
+    let document: serde_json::Value = serde_json::from_slice(&fixed.stdout)?;
+    assert_eq!(document["mutation"]["rewritten"], false);
+    assert!(!repo.path().join(".git/span/recovery.pending").exists());
+
+    repo.write_file("file1.txt", "changed\nmeaning\nnow\n")?;
+    let replay = repo.run_span_with_envs(args, &[("GIT_SPAN_CONTEXT_DISABLE_SERVICE", "1")])?;
+    assert!(replay.status.success(), "{}", String::from_utf8_lossy(&replay.stderr));
+    assert_eq!(replay.stdout, fixed.stdout);
+    assert!(!repo.path().join(".git/span/recovery.pending").exists());
+    Ok(())
+}
+
+#[test]
+fn reader_clears_legacy_prepared_no_op_after_repository_changes() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    assert!(
+        repo.run_span(["add", "a", "file1.txt#L1-L2"])?
+            .status
+            .success()
+    );
+    let operation = uuid::Uuid::new_v4().to_string();
+    let fixed = repo.run_span_with_envs(
+        [
+            "context",
+            "file1.txt#L1-L2",
+            "--format",
+            "json",
+            "--fix",
+            "--operation-id",
+            &operation,
+        ],
+        &[("GIT_SPAN_CONTEXT_DISABLE_SERVICE", "1")],
+    )?;
+    assert!(fixed.status.success(), "{}", String::from_utf8_lossy(&fixed.stderr));
+
+    let journal_path = repo
+        .path()
+        .join(format!(".git/span/context/recovery/journal/operation-{operation}.json"));
+    let mut journal: serde_json::Value = serde_json::from_slice(&std::fs::read(&journal_path)?)?;
+    assert_eq!(journal["entries"].as_array().map(Vec::len), Some(0));
+    journal["state"] = serde_json::Value::String("prepared".into());
+    std::fs::write(&journal_path, serde_json::to_vec(&journal)?)?;
+    let marker = serde_json::json!({
+        "version": 3,
+        "operation_id": operation,
+        "scope_digest": journal["scope_digest"],
+        "span_root": ".span",
+        "temporaries": []
+    });
+    std::fs::write(
+        repo.path().join(".git/span/recovery.pending"),
+        serde_json::to_vec(&marker)?,
+    )?;
+    repo.write_file("file1.txt", "changed\nmeaning\nnow\n")?;
+
+    let observed = repo.run_span_with_env(
+        ["list", "--oneline"],
+        "GIT_SPAN_CONTEXT_DISABLE_SERVICE",
+        "1",
+    )?;
+    assert!(
+        observed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&observed.stderr)
+    );
+    assert!(!repo.path().join(".git/span/recovery.pending").exists());
+    let recovered: serde_json::Value = serde_json::from_slice(&std::fs::read(journal_path)?)?;
+    assert_eq!(recovered["state"], "committed");
+    Ok(())
+}
+
+#[test]
 fn marker_without_journal_aborts_cleanly_before_reader_or_writer() -> Result<()> {
     for writer in [false, true] {
         let name = if writer {
@@ -534,6 +625,21 @@ fn service_identity_bootstrap_and_strict_fallback() -> Result<()> {
         diagnostics.contains("context.service-resolver-passes 0"),
         "{diagnostics}"
     );
+    let environment_variant = repo.run_span_with_env(
+        args,
+        "GIT_SPAN_AGENT_SESSION_ID",
+        "a-different-agent-session",
+    )?;
+    assert!(
+        environment_variant.status.success(),
+        "{}",
+        String::from_utf8_lossy(&environment_variant.stderr)
+    );
+    let environment_diagnostics = String::from_utf8(environment_variant.stderr)?;
+    assert!(
+        environment_diagnostics.contains("context.service-generation-hits 1"),
+        "volatile agent metadata created a cold service: {environment_diagnostics}"
+    );
     let default_service_leaf = std::fs::read_dir(repo.path().join(".git/span/context"))?
         .find_map(|entry| {
             entry
@@ -676,6 +782,37 @@ fn service_identity_bootstrap_and_strict_fallback() -> Result<()> {
         assert_eq!(swapped.stdout, strict_after_edit.stdout);
         assert_eq!(std::fs::read_dir(attacker.path())?.count(), 0);
     }
+    Ok(())
+}
+
+#[test]
+fn context_warm_starts_service_without_an_address_or_document() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    assert!(
+        repo.run_span(["add", "served", "file1.txt#L1-L3"])?
+            .status
+            .success()
+    );
+
+    let warmup = repo.run_span(["context", "--warm"])?;
+    assert!(
+        warmup.status.success(),
+        "{}",
+        String::from_utf8_lossy(&warmup.stderr)
+    );
+    assert!(warmup.stdout.is_empty());
+
+    let query = repo.run_span(["--perf", "context", "file1.txt#L1-L3", "--format", "json"])?;
+    assert!(
+        query.status.success(),
+        "{}",
+        String::from_utf8_lossy(&query.stderr)
+    );
+    let diagnostics = String::from_utf8(query.stderr)?;
+    assert!(
+        diagnostics.contains("context.service-generation-hits 1"),
+        "warm-up did not leave a reusable generation: {diagnostics}"
+    );
     Ok(())
 }
 #[test]

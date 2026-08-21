@@ -428,8 +428,12 @@ pub enum ContextFormat {
 #[derive(Debug, Clone, clap::Args)]
 pub struct ContextArgs {
     /// Repository-relative paths or inclusive `<path>#L<start>-L<end>` ranges.
-    #[arg(required = true, num_args = 1..=4096)]
+    #[arg(required_unless_present = "warm", num_args = 1..=4096)]
     pub addresses: Vec<String>,
+
+    /// Start or connect to the context service without rendering a document.
+    #[arg(long, hide = true, conflicts_with_all = ["addresses", "fix", "operation_id"])]
+    pub warm: bool,
 
     /// Output format (`json` — the versioned context document is the only
     /// shape).

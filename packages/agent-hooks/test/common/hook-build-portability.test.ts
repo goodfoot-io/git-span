@@ -170,7 +170,7 @@ describe('generated hook bin portability', () => {
         [
           'codex-hooks',
           '-i',
-          'src/codex/{advisor,static-plan,apply-patch-plan,post-tool-use,stop}.ts',
+          'src/codex/{session-start,advisor,static-plan,apply-patch-plan,post-tool-use,stop}.ts',
           '-o',
           join(outDir, 'hooks.json'),
           '--plugin-root'
@@ -178,7 +178,8 @@ describe('generated hook bin portability', () => {
         { stdio: 'pipe' }
       );
       const out = readHooksJson(outDir);
-      expect(Object.keys(out.hooks)).toEqual(['PreToolUse', 'PostToolUse', 'Stop']);
+      expect(Object.keys(out.hooks)).toEqual(['SessionStart', 'PreToolUse', 'PostToolUse', 'Stop']);
+      expect(groupFor(out, 'SessionStart', 'session-start.mjs')).not.toBeNull();
       expect(out.hooks['PreToolUse']?.map(groupBundle)).toEqual([
         'advisor.mjs',
         'static-plan.mjs',
@@ -225,18 +226,26 @@ describe('generated hook bin portability', () => {
         [
           'claude-code-hooks',
           '-i',
-          'src/claude/{advisor,static-plan,post-tool-use,post-tool-use-failure,session-end}.ts',
+          'src/claude/{session-start,advisor,static-plan,post-tool-use,post-tool-use-failure,session-end}.ts',
           '-o',
           join(outDir, 'hooks.json')
         ],
         { stdio: 'pipe' }
       );
       const out = readHooksJson(outDir);
-      expect(Object.keys(out.hooks)).toEqual(['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'SessionEnd']);
+      expect(Object.keys(out.hooks)).toEqual([
+        'SessionStart',
+        'PreToolUse',
+        'PostToolUse',
+        'PostToolUseFailure',
+        'SessionEnd'
+      ]);
+      expect(groupFor(out, 'SessionStart', 'session-start.mjs')).not.toBeNull();
       expect(
         out.hooks['PreToolUse']?.[0]?.hooks.map(({ command }) => command.match(/([A-Za-z0-9-]+\.mjs)\b/)?.[1])
       ).toEqual(['advisor.mjs', 'static-plan.mjs']);
       expect(out.__generated?.files).toEqual([
+        'session-start.mjs',
         'advisor.mjs',
         'static-plan.mjs',
         'post-tool-use.mjs',
@@ -594,12 +603,14 @@ describe('mandatory installed-artifact static attribution smoke', () => {
       'post-tool-use-failure.mjs',
       'post-tool-use.mjs',
       'session-end.mjs',
+      'session-start.mjs',
       'static-plan.mjs'
     ]);
     expect(emittedBundleNames(bundles.codexHooksDir)).toEqual([
       'advisor.mjs',
       'apply-patch-plan.mjs',
       'post-tool-use.mjs',
+      'session-start.mjs',
       'static-plan.mjs',
       'stop.mjs'
     ]);

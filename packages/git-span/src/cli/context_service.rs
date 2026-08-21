@@ -630,26 +630,26 @@ mod unix {
             hasher.update(&(bytes.len() as u64).to_le_bytes());
             hasher.update(bytes);
         }
+        // The service inherits the spawning client's environment, but its identity must
+        // vary only for values that can change repository contents or Git configuration.
+        // Agent/session metadata is both volatile and output-irrelevant; hashing the whole
+        // environment gives each hook process a private cold service.
         let mut environment = std::env::vars_os()
             .filter(|(name, _)| {
-                if name
-                    .to_str()
-                    .is_some_and(|name| name.starts_with("GIT_SPAN_CONTEXT_TEST_"))
-                {
-                    return false;
-                }
-                !matches!(
+                matches!(
                     name.to_str(),
                     Some(
-                        "GIT_SPAN_PERF"
-                            | "GIT_SPAN_CONTEXT_DISABLE_SERVICE"
-                            | "GIT_SPAN_CONTEXT_TEST_HOOK_DIR"
-                            | "PWD"
-                            | "OLDPWD"
-                            | "SHLVL"
-                            | "_"
+                        "GIT_INDEX_FILE"
+                            | "GIT_OBJECT_DIRECTORY"
+                            | "GIT_ALTERNATE_OBJECT_DIRECTORIES"
+                            | "GIT_CONFIG_SYSTEM"
+                            | "GIT_CONFIG_GLOBAL"
+                            | "GIT_CONFIG_NOSYSTEM"
+                            | "GIT_CONFIG_COUNT"
                     )
-                )
+                ) || name
+                    .to_str()
+                    .is_some_and(|name| name.starts_with("GIT_CONFIG_KEY_") || name.starts_with("GIT_CONFIG_VALUE_"))
             })
             .collect::<Vec<_>>();
         environment.sort();

@@ -28,7 +28,7 @@ export function buildRealHookBundles(): BuiltRealHookBundles {
       [
         'claude-code-hooks',
         '-i',
-        'src/claude/{advisor,static-plan,post-tool-use,post-tool-use-failure,session-end}.ts',
+        'src/claude/{session-start,advisor,static-plan,post-tool-use,post-tool-use-failure,session-end}.ts',
         '-o',
         join(claudeRoot, 'hooks.json'),
         '--no-sourcemap'
@@ -40,7 +40,7 @@ export function buildRealHookBundles(): BuiltRealHookBundles {
       [
         'codex-hooks',
         '-i',
-        'src/codex/{advisor,static-plan,apply-patch-plan,post-tool-use,stop}.ts',
+        'src/codex/{session-start,advisor,static-plan,apply-patch-plan,post-tool-use,stop}.ts',
         '-o',
         join(codexRoot, 'hooks.json'),
         '--plugin-root',

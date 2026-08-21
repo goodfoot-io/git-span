@@ -1321,7 +1321,8 @@ export async function runTouchHook(
 // Default subprocess-backed executors
 // ---------------------------------------------------------------------------
 
-const DEFAULT_TIMEOUT_MS = 10_000;
+const DEFAULT_TIMEOUT_MS = 2_000;
+const HOOK_CONTEXT_LOCK_WAIT_SECS = '1';
 
 /**
  * The production execution surface: one strict subprocess-backed context
@@ -1337,6 +1338,7 @@ export function createDefaultTouchExecutors(timeoutMs: number = DEFAULT_TIMEOUT_
       try {
         stdout = execFileSync('git', args, {
           cwd: request.repoRoot,
+          env: { ...process.env, GIT_SPAN_LOCK_WAIT_SECS: HOOK_CONTEXT_LOCK_WAIT_SECS },
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'pipe'],
           timeout: timeoutMs,

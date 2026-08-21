@@ -35,7 +35,7 @@ function emptyDocument(requested: boolean): ContextDocument {
 }
 
 describe('default context executor', () => {
-  it('uses the exact batched read and repair argv with the shared ten-second timeout', async () => {
+  it('leaves recovery time inside the outer hook deadline and bounds repository lock waits', async () => {
     const executors = createDefaultTouchExecutors();
     if (!('context' in executors)) throw new Error('default executors must expose context');
     capture.stdout = JSON.stringify(emptyDocument(false));
@@ -43,7 +43,13 @@ describe('default context executor', () => {
     expect(capture.calls[0]).toMatchObject({
       file: 'git',
       args: ['span', 'context', 'src/a.ts#L2-L4', '--format', 'json'],
-      options: { cwd: '/repo', timeout: 10_000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }
+      options: {
+        cwd: '/repo',
+        timeout: 2_000,
+        env: expect.objectContaining({ GIT_SPAN_LOCK_WAIT_SECS: '1' }),
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe']
+      }
     });
 
     capture.stdout = JSON.stringify(emptyDocument(true));

@@ -1,5 +1,16 @@
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/hooks/session-start.mjs\"",
+            "timeout": 1
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "Bash|shell|exec|local_shell",

@@ -1,5 +1,16 @@
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PLUGIN_ROOT\"/hooks/bin/session-start.mjs",
+            "timeout": 1000
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "hooks": [
@@ -55,12 +66,13 @@
   },
   "__generated": {
     "files": [
+      "session-start.mjs",
       "advisor.mjs",
       "static-plan.mjs",
       "post-tool-use.mjs",
       "post-tool-use-failure.mjs",
       "session-end.mjs"
     ],
-    "timestamp": "2026-08-13T22:29:13.356Z"
+    "timestamp": "2026-08-21T02:18:04.244Z"
   }
 }

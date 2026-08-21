@@ -1,0 +1,6 @@
+packages/git-span/src/cli/context_repair.rs#L117-L193 rk64:ec654bc9ed4e4f38
+packages/git-span/src/cli/context_repair.rs#L195-L260 rk64:b2310c4c3a4ea949
+packages/git-span/src/cli/context_repair.rs#L340-L400 rk64:e9972058b93b4261
+packages/git-span/tests/cases/cli_context.rs#L347-L436 rk64:19e1d7f0ba3880a3
+
+A no-op repair commits without a recovery marker and remains replayable after repository changes, while legacy prepared no-op journals are finalized without validating a historical response; the CLI integration cases are the evidence gate for both lifecycle paths.

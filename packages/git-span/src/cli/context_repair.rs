@@ -131,8 +131,10 @@ pub(super) fn execute(
         );
         match journal.state {
             JournalState::Committed | JournalState::Delivered => {
-                verify_persisted_response(repo, span_root, addresses, &journal.response)?;
-                publish(&journal.response)?;
+                if !journal.entries.is_empty() {
+                    verify_persisted_response(repo, span_root, addresses, &journal.response)?;
+                    publish(&journal.response)?;
+                }
                 authority.validate_bindings()?;
                 validate_publication_runtime(publication_runtime)?;
                 recovery.validate_bindings()?;
@@ -145,6 +147,20 @@ pub(super) fn execute(
                 return Ok(journal.response);
             }
             JournalState::Prepared => {
+                if journal.entries.is_empty() {
+                    journal.state = JournalState::Committed;
+                    persist_journal(&journal_directory, &journal_leaf, &journal)?;
+                    authority.validate_bindings()?;
+                    validate_publication_runtime(publication_runtime)?;
+                    recovery.validate_bindings()?;
+                    clear_recovery_pending(
+                        &recovery_directory,
+                        operation_id,
+                        recovery.scope_digest(),
+                        span_root,
+                    )?;
+                    return Ok(journal.response);
+                }
                 recover_prepared(
                     repo,
                     span_root,
@@ -219,6 +235,14 @@ pub(super) fn execute(
         entries,
         response,
     };
+    if journal.entries.is_empty() {
+        journal.state = JournalState::Committed;
+        persist_journal(&journal_directory, &journal_leaf, &journal)?;
+        authority.validate_bindings()?;
+        validate_publication_runtime(publication_runtime)?;
+        recovery.validate_bindings()?;
+        return Ok(journal.response);
+    }
     mark_recovery_pending(
         &recovery_directory,
         operation_id,
@@ -351,7 +375,10 @@ pub(super) fn recover_pending_locked(
             && marker.temporaries == marker_temporaries(&journal.entries),
         "context recovery marker does not match its stable journal"
     );
-    if journal.state == JournalState::Prepared {
+    if journal.state == JournalState::Prepared && journal.entries.is_empty() {
+        journal.state = JournalState::Committed;
+        persist_journal(&journal_directory, &leaf, &journal)?;
+    } else if journal.state == JournalState::Prepared {
         recover_prepared(
             repo,
             span_root,

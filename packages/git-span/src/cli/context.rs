@@ -856,6 +856,10 @@ pub(super) fn run_context_read_only(
 }
 
 pub fn run_context(repo: &gix::Repository, args: ContextArgs, span_root: &str) -> Result<i32> {
+    if args.warm {
+        let _ = super::context_service::query(repo, span_root, &[])?;
+        return Ok(0);
+    }
     if args.fix {
         let operation_id = args.operation_id.unwrap_or_else(uuid::Uuid::new_v4);
         if args.operation_id.is_none() {
