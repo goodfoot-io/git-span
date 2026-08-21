@@ -1,20 +1,22 @@
 ---
 title: Agent integration
-description: What the Claude Code and Codex plugins wire up — the touch hook, the commit advisor, the skills, and the expert subagent.
+description: What the Claude Code and Codex plugins wire up — workflow hooks, three skills, and the expert subagent.
 ---
 
-The git-span plugin is how an agent operates git-span without being told the command syntax on every turn. Once installed (see [Getting started](/docs/getting-started)), it ships four things:
+The git-span plugin is how an agent operates git-span without being told the command syntax on every turn. Once installed (see [Getting started](/docs/getting-started)), it ships four groups of capabilities:
 
-- **A touch hook** — fires after every file read/edit/write, healing positional drift inline.
+- **A touch hook** — fires after supported tool calls that can touch tracked files, healing positional drift inline.
 - **A commit advisor** — fires before `git commit`/`git push`, holding the command once when the changeset carries real span debt, and reports (without holding) on a plain `git status`.
-- **Two skills** — `git-span` (command syntax, recipes, handling an advisory hold) and `reconcile` (the multi-span triage workflow), loaded into context when the agent's task matches.
+- **Three skills** — `git-span` for everyday declaration, inspection, and focused reconciliation; `reconcile` for multi-span triage; and `hook-effect-analysis` for measuring whether hook emissions earn their context cost. Skills load when the task matches; the measurement skill is not part of ordinary span maintenance.
 - **An expert subagent** — a dedicated agent for span work: creating, reconciling, and inspecting spans, with judgment about when a coupling is real and when a span should be deleted rather than patched.
 
 The CLI itself doesn't change: every capability the plugin uses is a plain `git span` invocation, scriptable the same way in a terminal or CI.
 
+The bundles also include lifecycle and planning hooks that attribute shell or patch writes reliably, clean up per-session state, and check CLI/plugin compatibility. Their exact event names differ between Claude Code and Codex; the touch hook and advisor are the two user-facing workflows.
+
 ## Touch hook + advisor
 
-- **Touch hook** (`PostToolUse`) — fires synchronously right after each file read/edit/write. It re-anchors pure positional drift (a line-shift from the edit) against the file's real post-edit content, silently — no output, nothing in the transcript, because there's nothing left to act on. If genuine semantic drift survives that heal (the anchored content no longer matches what a span asserts), it injects a bounded context block naming the span, its status, and what to do. Each `(span, status)` pair surfaces at most once per session.
+- **Touch hook** (`PostToolUse`) — fires synchronously after supported file-affecting tool calls. Claude Code covers `Read`, `Edit`, `Write`, and `Bash`; Codex covers `apply_patch` and its shell/exec tool family. It re-anchors pure positional drift (a line-shift from the edit) against the file's real post-edit content, silently — no output, nothing in the transcript, because there's nothing left to act on. If genuine semantic drift survives that heal (the anchored content no longer matches what a span asserts), it injects a bounded context block naming the span, its status, and what to do. Each `(span, status)` pair surfaces at most once per session.
 - **Advisor** (`PreToolUse` on the shell tool) — fires before `git commit`/`git push`/`git status` runs. It resolves the actual changeset (staged files, plus tracked-modified files under `-a`/`-am`; for `git status`, staged plus tracked-modified, the same working-tree picture `git status` itself prints), reruns a scoped `git span drift --fix`, and classifies what's left. For `git commit`/`git push`, real span debt — semantic drift, or a changed file no span covers — holds the command with a checklist once per distinct debt state, so the report gets read; an identical retry proceeds. The advisor reports rather than enforces, so a `git commit`/`git push` whose exact debt state a prior `git status` already surfaced in full also proceeds, without holding on a state the agent has already been shown. `git status` is never held: its first preview shows the same checklist as advisory context, later previews show only newly discovered paths or drift rows, and an unchanged preview stays silent. Positional drift never causes a hold; the touch hook already healed it. If the scan itself fails to complete, the advisor holds nothing on that account — it warns that span debt wasn't verified and lets the command proceed, carrying the failed command's own stderr as a delimited `<git-span-error>` block inside the warning so the raw diagnostic is clearly bounded.
 
 <Callout type="info">

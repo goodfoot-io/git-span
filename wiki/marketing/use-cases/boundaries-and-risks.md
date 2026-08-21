@@ -30,7 +30,7 @@ Sourcegraph, Swimm, and enterprise traceability platforms emphasize cross-reposi
 
 ## The current UI and integration surface are early
 
-The current VS Code extension is intentionally a lightweight binary and command manager ([`package.json`](/packages/extension/package.json#L1-L25)) and does not yet provide visualization, search, or a custom webview. Agent integrations currently focus on Claude Code and Codex, and Codex hooks are disabled on Windows ([`agent-integration.mdx`](/packages/website/content/docs/agent-integration.mdx#L118-L118)).
+The current VS Code extension is intentionally a lightweight binary and command manager ([`package.json`](/packages/extension/package.json#L1-L25)) and does not yet provide visualization, search, or a custom webview. Agent integrations currently focus on Claude Code and Codex, and Codex hooks are disabled on Windows ([`agent-integration.mdx`](/packages/website/content/docs/agent-integration.mdx#L120-L120)).
 
 That is sufficient for technical pilots, but a commercial team product needs a repository-hosting and browser-based workflow that does not depend on every developer installing or trusting local hooks.
 

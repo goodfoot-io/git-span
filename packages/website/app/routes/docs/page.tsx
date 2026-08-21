@@ -76,7 +76,7 @@ export default function DocsRoute() {
   return (
     <DocsLayout
       tree={tree}
-      nav={{ title: 'git-span', enabled: false }}
+      nav={{ title: 'Documentation', enabled: false }}
       // The sidebar's built-in sun/moon toggle switches next-themes' theme, but RootProvider
       // (root.tsx) has theme.enabled: false -- this is a single-theme (light-only) site with no
       // ThemeProvider mounted, so the control is a dead no-op. Disable it rather than ship a

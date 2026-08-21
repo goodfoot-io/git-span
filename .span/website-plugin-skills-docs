@@ -1,0 +1,7 @@
+packages/website/content/docs/agent-integration.mdx#L1-L15 rk64:fcb43825f3065cf5
+packages/website/content/docs/getting-started.mdx#L28-L46 rk64:440fb34527bcc6f9
+plugins-claude/git-span/skills/git-span/SKILL.md rk64:efa146e779977fa8
+plugins-claude/git-span/skills/hook-effect-analysis/SKILL.md rk64:154f4b9f51f7f704
+plugins-claude/git-span/skills/reconcile/SKILL.md rk64:eb91e3fb050a6310
+
+The Claude plugin skill directories are the hand-authored inventory, and the website names every shipped skill and its role; Codex skill files are generated mirrors.

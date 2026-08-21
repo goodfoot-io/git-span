@@ -22,8 +22,8 @@ import { getLLMText } from '~/lib/get-llm-text';
 const PREAMBLE = `***
 
 title: Agent integration
-description: What the Claude Code and Codex plugins wire up — the touch hook, the commit advisor, the skills, and the expert subagent.
-${'-'.repeat(134)}
+description: What the Claude Code and Codex plugins wire up — workflow hooks, three skills, and the expert subagent.
+${'-'.repeat(116)}
 
 `;
 
