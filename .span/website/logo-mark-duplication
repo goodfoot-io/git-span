@@ -1,7 +1,10 @@
-packages/website/app/components/Header.tsx#L8-L30 rk64:7eb2cdcb98f3fb5c
-packages/website/public/favicon.svg rk64:0d60980e3d9431c0
-packages/website/public/logo-accent.svg rk64:50f3696538e662ff
-packages/website/public/logo-negative.svg rk64:98cfe45326077fea
-packages/website/scripts/generate-metadata-images.mjs rk64:20c931fd6c978da9
+packages/website/app/components/Header.tsx#L8-L30 rk64:f8c64c31265eeabc
+packages/website/package.json#L13-L13 rk64:8bc5d549007ed671
+packages/website/public/favicon.png rk64:2e5666c3003532d9
+packages/website/public/favicon.svg rk64:f65506fa5683cbf1
+packages/website/public/logo-accent.svg rk64:35b0a2f7789c8077
+packages/website/public/logo-negative.svg rk64:48acbdfc4044dff5
+packages/website/public/logo-positive.svg rk64:48acbdfc4044dff5
+packages/website/scripts/generate-favicon.mjs rk64:7c645ad0f7aae9be
 
-The header's inline logo mark hardcodes the same ring-and-span path data as the negative logo's mark, and the favicon recolors the identical geometry, so redrawing the mark means copying the new path data into all three by hand.
+The header inline mark and the positive, negative, accent, and favicon SVG assets share the same untouched geometry. Invoked first by generate:images, the fail-closed favicon generator requires the 512x464 logo-positive.svg structure, wraps its geometry in translate(0 24) under a 512x512 viewport for favicon.svg, then rasterizes that SVG with ImageMagick to a transparent 48x48 favicon.png.

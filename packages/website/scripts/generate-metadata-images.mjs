@@ -2,7 +2,7 @@
 
 /**
  * Renders parameterized metadata PNGs (OG/Twitter share image, apple-touch-icon,
- * favicon PNG fallback) from a shared HTML/CSS template using Playwright.
+ * and touch icon) from a shared HTML/CSS template using Playwright.
  *
  * The template is a plain flex-centered layout: the mark image, plus an optional
  * tagline (icon-only renders omit it). Fonts are loaded via `@font-face` pointing
@@ -416,18 +416,6 @@ const IMAGE_SETS = [
     backgroundColor: GROUND,
     inkColor: INK_PRIMARY,
     outputPath: path.join(PUBLIC_DIR, 'apple-touch-icon.png'),
-  },
-  {
-    name: 'favicon',
-    // .ico generation is out of scope for this script -- a PNG fallback satisfies
-    // the card's requirement without adding an ico-conversion dependency.
-    width: 48,
-    height: 48,
-    logoSrc: logoAccentUrl,
-    tagline: '',
-    backgroundColor: GROUND,
-    inkColor: INK_PRIMARY,
-    outputPath: path.join(PUBLIC_DIR, 'favicon.png'),
   },
 ];
 

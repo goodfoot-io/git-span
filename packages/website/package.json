@@ -1,6 +1,6 @@
 {
   "name": "@goodfoot/git-span-website",
-  "version": "1.1.13",
+  "version": "1.1.14",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,7 +10,7 @@
     "build": "node ../../scripts/ensure-worktree-local-generated.mjs packages/website && node scripts/generate-artifacts.mjs && react-router build",
     "generate:artifacts": "node scripts/generate-artifacts.mjs",
     "artifacts:check": "node scripts/generate-artifacts.mjs --check",
-    "generate:images": "node scripts/generate-metadata-images.mjs",
+    "generate:images": "node scripts/generate-favicon.mjs && node scripts/generate-metadata-images.mjs",
     "deploy": "yarn build && wrangler deploy",
     "lint": "biome check --write --unsafe --max-diagnostics 500",
     "fumadocs:generate": "node ../../scripts/ensure-worktree-local-generated.mjs packages/website && fumadocs-mdx",
