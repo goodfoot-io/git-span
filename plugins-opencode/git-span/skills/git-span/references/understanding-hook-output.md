@@ -361,13 +361,17 @@ plans between turns, and `session.deleted` — plus a final `dispose()` sweep at
 shutdown — eagerly retire the session memo and any remaining plans;
 opportunistic 30-day cleanup covers crashed sessions.
 
-A failed command surfaces nothing under OpenCode — the after hook never fires
-on a failed tool call, so even a failure carrying decisive post-state evidence,
-such as an expected replacement result, goes unattributed. This is the
-degraded-parity caveat documented in `references/codex-install-and-trust.md`.
-Inconclusive writes and interrupted calls stay silent. Response-derived reads
-remain a separate pass and share only the session memo, so a later read can
-surface context without duplicating command-derived output.
+A command that merely exits nonzero attributes normally under OpenCode — the
+bash tool returns with a numeric `exit`, and exit-gated join semantics apply
+(a short-circuited `&&` attributes nothing because its write never ran). Only
+host-level failures (invalid arguments, denied permission, spawn errors) skip
+the after hook entirely — such a call surfaces nothing, so even one carrying
+decisive post-state evidence, such as an expected replacement result, goes
+unattributed. This is the degraded-parity caveat documented in
+`references/codex-install-and-trust.md`. Inconclusive writes and interrupted
+calls (an `exit: null` result suppresses like an interruption) stay silent.
+Response-derived reads remain a separate pass and share only the session memo,
+so a later read can surface context without duplicating command-derived output.
 
 The parser's candidate ceiling is 32 and is all-or-nothing: a bounded set is
 attributed completely or rejected before any touch. Planned records allow at
@@ -397,7 +401,8 @@ switch — a stalled scan delays the tool call briefly, then resolves to
 silence. Writes outside the effective repository,
 untracked writes, and unsupported dynamic intent are silent by design. The
 `bash` tool's `workdir` argument selects the effective repository for both
-planning and attribution. A tool call that itself fails never reaches the
+planning and attribution. A tool call that fails at the host level (invalid
+arguments, denied permission, spawn error) never reaches the
 after hook at all, so it surfaces nothing — the degraded-parity caveat in
 `references/codex-install-and-trust.md`. The one noisy case is the advisor's
 own scoped scan failing to complete (see "The advisor: what a held command

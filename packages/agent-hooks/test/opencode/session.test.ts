@@ -4,20 +4,40 @@
  * (stashed reports, patch plans, shell cwd frames, pending bash planned-touch
  * records) and never the surfaced-span memo on disk; `session.deleted` runs
  * the full cleanup; `dispose()` backstops every tracked session. Also covers
- * the call-state stash's consume-on-read semantics.
+ * the call-state stash's consume-on-read semantics and the assembled plugin's
+ * `shell.env` guard against immortal `''`-keyed cwd frames.
  */
 
 import { existsSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createDefaultPlannedTouchStore } from '../../src/common/bash-attribution.js';
 import { createDiskMemoStore } from '../../src/common/span-surface.js';
+import { assemblePlugin } from '../../src/opencode/index.js';
 import { createDisposeHandler, createEventHandler } from '../../src/opencode/session.js';
+import type { OpencodeCallState } from '../../src/opencode/stash.js';
 import { createOpencodeCallState } from '../../src/opencode/stash.js';
 import { makeTempLayout } from '../session-layout-helpers.js';
 
 function silentLogger() {
   return { warn: () => undefined };
 }
+
+const { captured } = vi.hoisted(() => ({
+  captured: { last: null as OpencodeCallState | null }
+}));
+
+/** Hold a reference to each stash the assembled plugin creates internally. */
+vi.mock('../../src/opencode/stash.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/opencode/stash.js')>();
+  return {
+    ...actual,
+    createOpencodeCallState: (...args: Parameters<typeof actual.createOpencodeCallState>) => {
+      const state = actual.createOpencodeCallState(...args);
+      captured.last = state;
+      return state;
+    }
+  };
+});
 
 describe('opencode call state (stash)', () => {
   it('report blocks and patch plans consume-on-read', () => {
@@ -153,6 +173,39 @@ describe('opencode lifecycle split (decision 8)', () => {
       expect(sessions.size).toBe(0);
     } finally {
       temp.cleanup();
+    }
+  });
+});
+
+describe('opencode plugin shell.env wiring', () => {
+  function assembleOverScratch() {
+    const temp = makeTempLayout();
+    const hooks = assemblePlugin({ directory: '/repo', layout: temp.layout, logger: silentLogger() });
+    if (captured.last === null) throw new Error('plugin did not create a call-state stash');
+    return { hooks, stash: captured.last, cleanup: () => temp.cleanup() };
+  }
+
+  it('a shell.env without sessionID records no cwd frame — an empty key would survive every prune', async () => {
+    const { hooks, stash, cleanup } = assembleOverScratch();
+    try {
+      await hooks['shell.env']!({ callID: 'ghost-call', cwd: '/ghost-frame' }, { env: {} });
+      // Decision 8 scopes pruning to real sessionIDs; a ''-keyed frame would
+      // sit outside every session.idle/deleted prune's reach forever.
+      expect(stash.peekShellCwd('', 'ghost-call')).toBeNull();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('a shell.env with sessionID records the frame and idle prunes it at the turn boundary', async () => {
+    const { hooks, stash, cleanup } = assembleOverScratch();
+    try {
+      await hooks['shell.env']!({ sessionID: 'sess', callID: 'real-call', cwd: '/frame' }, { env: {} });
+      expect(stash.peekShellCwd('sess', 'real-call')).toBe('/frame');
+      await hooks.event!({ event: { type: 'session.idle', properties: { sessionID: 'sess' } } });
+      expect(stash.peekShellCwd('sess', 'real-call')).toBeNull();
+    } finally {
+      cleanup();
     }
   });
 });

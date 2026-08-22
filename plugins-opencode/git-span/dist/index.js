@@ -1827,11 +1827,25 @@ disableUpdateCheck();
 // src/opencode/logger.ts
 import { appendFileSync } from "node:fs";
 var OPENCODE_LOG_FILE_ENV = "OPENCODE_GIT_SPAN_LOG_FILE";
+function serializeValue(value) {
+  if (value instanceof Error) {
+    const out = { message: value.message, stack: value.stack };
+    for (const [key2, own] of Object.entries(value)) out[key2] = serializeValue(own);
+    return out;
+  }
+  if (Array.isArray(value)) return value.map(serializeValue);
+  if (value !== null && typeof value === "object") {
+    const out = {};
+    for (const [key2, own] of Object.entries(value)) out[key2] = serializeValue(own);
+    return out;
+  }
+  return value;
+}
 function appendRecord(logFile, level, message, context) {
   try {
     const entry = { ts: (/* @__PURE__ */ new Date()).toISOString(), level, message };
     if (context !== void 0) {
-      for (const [key2, value] of Object.entries(context)) entry[key2] = value;
+      for (const [key2, value] of Object.entries(context)) entry[key2] = serializeValue(value);
     }
     appendFileSync(logFile, `${JSON.stringify(entry)}
 `);
@@ -9906,9 +9920,8 @@ function assemblePlugin(deps = {}) {
     },
     "shell.env": async (input, _output) => {
       try {
-        if (typeof input?.callID === "string" && input.callID.length > 0 && typeof input.cwd === "string") {
-          const sessionId = typeof input.sessionID === "string" ? input.sessionID : "";
-          callState.trackShellCwd(sessionId, input.callID, input.cwd);
+        if (typeof input?.sessionID === "string" && input.sessionID.length > 0 && typeof input?.callID === "string" && input.callID.length > 0 && typeof input.cwd === "string") {
+          callState.trackShellCwd(input.sessionID, input.callID, input.cwd);
         }
       } catch (err) {
         logger.warn("git-span opencode shell.env tracking failed open", { err });

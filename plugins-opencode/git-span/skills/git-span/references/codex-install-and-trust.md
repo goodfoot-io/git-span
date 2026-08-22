@@ -62,14 +62,19 @@ held `git commit`/`git push` surfaces its checklist once as the tool error,
 and a bare retry passes — so rely on `git span drift` in CI (see
 `references/ci-and-sync.md`) as the enforcement backstop either way.
 
-## Caveat: failed tool calls get no attribution
+## Caveat: host-level failures get no attribution
 
-OpenCode's after hook fires only after a tool executes successfully — it
-never fires on a failed tool call. A command that exits nonzero gets no touch
-attribution, no positional-drift heal, and no advisor report for what it
-wrote, and any report stashed for it is dropped silently. Writes sitting
-unattributed behind a failed command still surface later, through the next
-successful read/edit that touches them. Don't count on failure-path
-attribution; rely on `git span drift` in CI (see
-`references/ci-and-sync.md`) as the real backstop, and see
-`references/understanding-hook-output.md` for what the hooks do cover.
+OpenCode's after hook fires only after a tool executes successfully — and only
+host-level failures skip it (invalid arguments, denied permission, a spawn
+error). Those calls get no touch attribution, no positional-drift heal, and no
+advisor report for what they attempted, and any report stashed for them is
+dropped silently; writes sitting behind such a failure still surface later,
+through the next successful read/edit that touches them. A command that merely
+exits nonzero is different: the bash tool returns normally with a numeric
+`exit`, the after hook fires, and normal exit-gated attribution applies (a
+short-circuited `&&` attributes nothing because its write never ran). Aborts
+and timeouts surface as `exit: null` and suppress attribution exactly like
+interrupted rows. Don't count on attribution across host-level failures; rely
+on `git span drift` in CI (see `references/ci-and-sync.md`) as the real
+backstop, and see `references/understanding-hook-output.md` for what the hooks
+do cover.

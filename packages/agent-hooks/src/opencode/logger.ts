@@ -22,11 +22,32 @@ export interface CreateOpencodeLoggerOptions {
   logFile?: string;
 }
 
+/**
+ * Replace Errors with plain objects carrying their non-enumerable `message`
+ * and `stack` plus every enumerable own property — `JSON.stringify` alone
+ * renders an Error as `{}`. Recurses through arrays and plain objects so a
+ * nested error keeps its detail too.
+ */
+function serializeValue(value: unknown): unknown {
+  if (value instanceof Error) {
+    const out: Record<string, unknown> = { message: value.message, stack: value.stack };
+    for (const [key, own] of Object.entries(value)) out[key] = serializeValue(own);
+    return out;
+  }
+  if (Array.isArray(value)) return value.map(serializeValue);
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [key, own] of Object.entries(value)) out[key] = serializeValue(own);
+    return out;
+  }
+  return value;
+}
+
 function appendRecord(logFile: string, level: 'warn' | 'info', message: string, context?: Record<string, unknown>) {
   try {
     const entry: Record<string, unknown> = { ts: new Date().toISOString(), level, message };
     if (context !== undefined) {
-      for (const [key, value] of Object.entries(context)) entry[key] = value;
+      for (const [key, value] of Object.entries(context)) entry[key] = serializeValue(value);
     }
     appendFileSync(logFile, `${JSON.stringify(entry)}\n`);
   } catch {

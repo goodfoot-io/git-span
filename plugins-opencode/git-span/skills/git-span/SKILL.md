@@ -19,11 +19,11 @@ After any `add`/`replace`/`remove`/`why`/`delete`: `git add .span && git commit 
 
 ## Same-commit workflow
 
-The `PostToolUse` touch hook heals positional drift (a pure line-shift) inline; no
+The `tool.execute.after` touch hook heals positional drift (a pure line-shift) inline; no
 reconcile commit is needed for it. Semantic drift — content no longer matching what a
 span asserts — needs your action: conform the lagging artifact when a confirmed authority
 or satisfied gate decides it; otherwise ask. Fold the fix, with the `.span/`
-refresh, into the **same commit** as the code change, never a follow-up — list the fix's paths alongside `.span` in the commit's `-o`. Before `git commit`/`git push` a `PreToolUse` advisor
+refresh, into the **same commit** as the code change, never a follow-up — list the fix's paths alongside `.span` in the commit's `-o`. Before `git commit`/`git push` a `tool.execute.before` advisor
 re-checks the changeset and holds the command once if real span debt remains; see
 `references/understanding-hook-output.md` § "Resolving a held commit".
 

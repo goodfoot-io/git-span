@@ -45,6 +45,19 @@ describe('createOpencodeLogger', () => {
     expect(() => unset.warn('dropped')).not.toThrow();
   });
 
+  it('an Error context value serializes with its message, stack, and enumerable own props', () => {
+    const logger = createOpencodeLogger({ logFile: scratch });
+    const err = new Error('shell.env tracking exploded') as Error & { code: string };
+    err.code = 'EACCES';
+    logger.warn('git-span opencode shell.env tracking failed open', { err });
+    const parsed = JSON.parse(readFileSync(scratch, 'utf8').trim()) as Record<string, unknown>;
+    const serialized = parsed.err as Record<string, unknown>;
+    expect(serialized.message).toBe('shell.env tracking exploded');
+    expect(typeof serialized.stack).toBe('string');
+    expect(serialized.stack).toContain('Error: shell.env tracking exploded');
+    expect(serialized.code).toBe('EACCES');
+  });
+
   it('an unwritable destination degrades to silence instead of throwing', () => {
     const logger = createOpencodeLogger({ logFile: join(scratch, 'nested', 'missing.jsonl') });
     expect(() => logger.warn('no such directory')).not.toThrow();

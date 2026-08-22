@@ -1,6 +1,6 @@
 ---
 title: Agent integration
-description: What the Claude Code and Codex plugins wire up — workflow hooks, three skills, and the expert subagent.
+description: What the Claude Code, Codex, and OpenCode plugins wire up — workflow hooks, three skills, and the expert subagent.
 ---
 
 The git-span plugin is how an agent operates git-span without being told the command syntax on every turn. Once installed (see [Getting started](/docs/getting-started)), it ships four groups of capabilities:
@@ -127,7 +127,7 @@ OpenCode loads the plugin from the npm package (see [Getting started](/docs/gett
 
 - **A hold is a thrown error.** There's no deny decision and no separate system message: when the advisor holds `git commit`/`git push`, the before-hook throws, the command never runs, and the thrown checklist is the error the model sees verbatim. The hold is still advisory and one-time — a bare retry passes.
 - **Injection appends to tool output.** `<git-span>` blocks and `git status` previews are appended to the tool result after execution, never rewritten or held back.
-- **Failed tool calls get no attribution (degraded parity).** OpenCode's after hook fires only on successful execution, so a failed command's writes are neither healed nor attributed until a later successful read/edit touches those paths, and any report stashed for it is dropped silently. As everywhere, `git span drift` in CI ([The enforcement backstop](#the-enforcement-backstop)) is what catches what the hooks miss.
+- **Host-level failures get no attribution (degraded parity).** OpenCode's after hook fires only on successful execution, and only host-level failures skip it — invalid arguments, denied permission, a spawn error. Those calls' writes are neither healed nor attributed until a later successful read/edit touches those paths, and any report stashed for them is dropped silently. A command that merely exits nonzero still runs the after hook: the bash tool returns a numeric `exit`, attribution applies normally, and join semantics gate each write on that exit (a short-circuited `&&` attributes nothing because its write never ran). Aborts and timeouts surface as `exit: null`, suppressing attribution exactly like the twins' interrupted rows. As everywhere, `git span drift` in CI ([The enforcement backstop](#the-enforcement-backstop)) is what catches what the hooks miss.
 - **No per-hook timeouts.** OpenCode doesn't kill slow hooks, and plugins run in-process — an advisor scan briefly blocks the host loop — so the plugin bounds its own `git span` subprocesses with tighter timeouts than the other twins' hosts impose.
 - **Coverage.** The hooks cover the `bash`, `read`, `edit`, and `write` tools, plus `apply_patch` on gpt models (where it replaces `edit`/`write`). OpenCode's experimental code-mode `execute` tool is excluded from both hooks in v1 — commands issued through it bypass attribution and advisory checks.
 - **Vocabulary in closings.** Hold checklists dispatch follow-up work through the Task tool (`task` with `subagent_type`) and address skills by bare directory names (`reconcile`, `git-span`) via the skill tool — rather than the Claude or Codex spellings shown in the examples above.

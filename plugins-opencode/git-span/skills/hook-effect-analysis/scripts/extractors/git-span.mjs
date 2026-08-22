@@ -12,7 +12,7 @@
 //   tree (current): box-drawing anchors, folded to a shared directory
 //     prefix — "├─ packages/\n│  └─ agent-hooks/src/x.ts #L1-L2"
 //
-// See plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md
+// See the git-span skill's references/understanding-hook-output.md
 // for the tree-rendering rules this mirrors: a directory holding a single
 // entry folds onto that entry's line, so a branch only appears where two or
 // more anchors actually share a prefix.

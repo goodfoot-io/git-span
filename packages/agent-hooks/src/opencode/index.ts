@@ -135,9 +135,17 @@ export function assemblePlugin(deps: PluginDeps = {}): GitSpanOpencodeHooks {
     },
     'shell.env': async (input: OpencodeShellEnvInput, _output: OpencodeShellEnvOutput) => {
       try {
-        if (typeof input?.callID === 'string' && input.callID.length > 0 && typeof input.cwd === 'string') {
-          const sessionId = typeof input.sessionID === 'string' ? input.sessionID : '';
-          callState.trackShellCwd(sessionId, input.callID, input.cwd);
+        // Skip when sessionID is absent/empty like the sibling guards: a
+        // ''-keyed frame would sit outside every session.idle/deleted prune's
+        // reach (decision 8 scopes pruning to real sessionIDs) and leak forever.
+        if (
+          typeof input?.sessionID === 'string' &&
+          input.sessionID.length > 0 &&
+          typeof input?.callID === 'string' &&
+          input.callID.length > 0 &&
+          typeof input.cwd === 'string'
+        ) {
+          callState.trackShellCwd(input.sessionID, input.callID, input.cwd);
         }
       } catch (err) {
         logger.warn('git-span opencode shell.env tracking failed open', { err });
