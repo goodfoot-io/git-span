@@ -180,9 +180,7 @@ fn collect_tree_index_changes(
     let head_tree = repo
         .head_tree_id_or_empty()
         .map_err(|e| Error::Git(format!("resolve HEAD tree: {e}")))?;
-    let worktree_index = repo
-        .index_or_load_from_head_or_empty()
-        .map_err(|e| Error::Git(format!("load index: {e}")))?;
+    let worktree_index = git::load_index_or_empty(repo)?;
 
     let renames = if track_renames {
         gix::status::tree_index::TrackRenames::Given(default_rewrites())
@@ -351,9 +349,7 @@ fn collect_index_worktree_changes(
     track_renames: bool,
     path_filter: Option<&HashSet<String>>,
 ) -> Result<Vec<DiffEntry>> {
-    let index = repo
-        .index_or_load_from_head_or_empty()
-        .map_err(|e| Error::Git(format!("load index: {e}")))?;
+    let index = git::load_index_or_empty(repo)?;
     let workdir = git::work_dir(repo)?.to_path_buf();
 
     // First pass: per-tracked-file modification + deletion check, hashing

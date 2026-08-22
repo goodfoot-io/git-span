@@ -323,7 +323,7 @@ mod tests {
         let store = UpdateCheckStore::open_at(&dir.path().join(DB_BASENAME)).expect("open");
         assert!(store.read_state().is_none(), "fresh store has no state");
 
-        let _ = store.stamp_checked(1_700_000_000).expect("stamp");
+        store.stamp_checked(1_700_000_000).expect("stamp");
         let state = store.read_state().expect("state");
         assert_eq!(state.last_checked_at, 1_700_000_000);
         assert_eq!(state.last_reminded_at, 0);
@@ -337,7 +337,7 @@ mod tests {
         let _ = store.write_checked(1_700_000_000, &findings(&[("cli", "1.1.4")]));
         let _ = store.claim_reminded(0, 1_700_000_100);
 
-        let _ = store.stamp_checked(1_700_000_200).expect("stamp");
+        store.stamp_checked(1_700_000_200).expect("stamp");
         let state = store.read_state().expect("state");
         assert_eq!(state.last_checked_at, 1_700_000_200, "the claim refreshes the check");
         assert_eq!(

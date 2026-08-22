@@ -169,10 +169,7 @@ impl<'repo> SpanFileReader<'repo> {
     /// of HEAD (index deletion tombstone).
     pub fn read_staged(&self, name: &str) -> Result<Option<SpanFile>> {
         let span_path = self.span_path(name);
-        let index = self
-            .repo
-            .index_or_load_from_head()
-            .map_err(|e| Error::Git(format!("load index: {e}")))?;
+        let index = crate::git::load_index(self.repo)?;
         for entry in index.entries() {
             let ep = entry.path(&index).to_string();
             if ep == span_path {
@@ -323,10 +320,7 @@ impl<'repo> SpanFileReader<'repo> {
     /// Check whether a file path exists in the index.
     fn exists_in_index(&self, name: &str) -> Result<bool> {
         let span_path = self.span_path(name);
-        let index = self
-            .repo
-            .index_or_load_from_head()
-            .map_err(|e| Error::Git(format!("load index: {e}")))?;
+        let index = crate::git::load_index(self.repo)?;
         Ok(index
             .entries()
             .iter()
@@ -410,7 +404,7 @@ impl<'repo> SpanFileReader<'repo> {
 
     /// Collect span names from the index, filtering by span root prefix.
     fn collect_index_names(&self, names: &mut BTreeSet<String>) -> Result<()> {
-        let index = match self.repo.index_or_load_from_head() {
+        let index = match crate::git::load_index(self.repo) {
             Ok(i) => i,
             Err(_) => return Ok(()),
         };

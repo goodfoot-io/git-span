@@ -422,7 +422,20 @@ fn load_committed(repo: &gix::Repository, span_root: &str) -> Result<CommittedSp
                 blob: oid.to_string(),
             });
         }
-        let file = reader.read_head_blob(name, *oid)?;
+        let file = match reader.read_head_blob(name, *oid) {
+            Ok(file) => file,
+            // A partial clone holds HEAD's trees but not necessarily its
+            // blobs (`--filter=blob:none`, `tree:<n>`); git fetches those
+            // lazily on demand while gix never does. A declaration whose
+            // blob cannot be read is *unavailable*, not absent: exclude it
+            // from the committed corpus exactly as a parse-poisoned span is
+            // excluded — one unreadable span never blanks the corpus — and
+            // let the effective-view loaders answer for it from whatever
+            // layers they can read. Gated on the repository's own promisor
+            // markers so a genuinely damaged store still fails loudly.
+            Err(_) if crate::git::promisor_active(repo) => continue,
+            Err(e) => return Err(e),
+        };
         spans.push(crate::types::span_from_file(name, &file));
     }
     Ok(CommittedSpans { blobs, spans })

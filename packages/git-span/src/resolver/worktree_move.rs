@@ -411,7 +411,7 @@ fn conversion_context(
         repo_converted,
         attrs: [None, None, None, None],
     };
-    let index = match repo.index_or_load_from_head() {
+    let index = match crate::git::load_index(repo) {
         Ok(i) => i,
         Err(_) => return no_rules,
     };

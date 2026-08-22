@@ -1342,6 +1342,149 @@ pub fn index_entries_call_count() -> usize {
     INDEX_ENTRIES_CALL_COUNT.load(std::sync::atomic::Ordering::SeqCst)
 }
 
+// ---------------------------------------------------------------------------
+// Worktree-index loading with a git-backed reconstruction fallback.
+//
+// When `$GIT_DIR/index` does not exist, gix synthesizes an in-memory index
+// by recursively walking every tree under `HEAD^{tree}`
+// (`Repository::index_from_tree` → `gix_index::State::from_tree`). That walk
+// is all-or-nothing: one unavailable tree object anywhere under HEAD aborts
+// the whole load. Real git never materializes an index from HEAD for reads —
+// a missing index behaves as empty — and where it does need those trees (a
+// partial clone's lazy fetch) it reports the promisor remote, not object
+// corruption. The loaders below keep gix's fast path, and when (and only
+// when) the synthesis is what failed, rebuild the same listing with git
+// itself (`git read-tree <HEAD^{tree}>` into a temporary `GIT_INDEX_FILE`),
+// which exercises git's own validation and promisor fetching. The user's
+// real index is never written; every other failure class — an unborn HEAD,
+// a corrupt on-disk index — propagates exactly as before.
+// ---------------------------------------------------------------------------
+
+use gix::worktree::IndexPersistedOrInMemory;
+
+/// Load the worktree index for read-only consumption, preferring the
+/// on-disk `$GIT_DIR/index`.
+///
+/// An unborn HEAD still fails here with the same error text callers curate
+/// today; use [`load_index_or_empty`] where an absent HEAD means "no staged
+/// state" instead.
+pub fn load_index(repo: &gix::Repository) -> Result<IndexPersistedOrInMemory> {
+    match repo.index_or_load_from_head() {
+        Ok(index) => Ok(index),
+        Err(
+            e @ gix::repository::index_or_load_from_head::Error::TraverseTree(_),
+        ) => rebuild_after_synthesis_failure(repo, e),
+        Err(e) => Err(Error::Git(format!("load index: {e}"))),
+    }
+}
+
+/// [`load_index`], but an unborn HEAD yields an empty in-memory index —
+/// the shape the layer collectors need so an unborn repository diffs as
+/// "nothing staged" rather than failing.
+pub(crate) fn load_index_or_empty(repo: &gix::Repository) -> Result<IndexPersistedOrInMemory> {
+    match repo.index_or_load_from_head_or_empty() {
+        Ok(index) => Ok(index),
+        Err(
+            e @ gix::repository::index_or_load_from_head_or_empty::Error::TraverseTree(_),
+        ) => rebuild_after_synthesis_failure(repo, e),
+        Err(e) => Err(Error::Git(format!("load index: {e}"))),
+    }
+}
+
+/// Run the git-backed rebuild after gix's from-tree synthesis failed, and
+/// fold both halves of the story into the surfaced error when it cannot
+/// help either: the original synthesis failure names what broke, the
+/// rebuild failure names why git could not repair it (typically a promisor
+/// remote that could not be fetched).
+fn rebuild_after_synthesis_failure(
+    repo: &gix::Repository,
+    e: impl std::fmt::Display,
+) -> Result<IndexPersistedOrInMemory> {
+    match rebuild_index_from_head(repo) {
+        Ok(file) => Ok(IndexPersistedOrInMemory::InMemory(file)),
+        Err(rebuild_error) => Err(Error::Git(format!(
+            "load index: {e}. No on-disk index exists, and rebuilding one \
+             from HEAD^{{tree}} with `git read-tree` failed too: {rebuild_error}"
+        ))),
+    }
+}
+
+/// Rebuild the HEAD listing as an index file by asking git itself to write
+/// `read-tree` output into a temporary `GIT_INDEX_FILE`, then loading that
+/// file back through gix. On success the temporary file is removed
+/// (best-effort); the repository's own index is never touched.
+///
+/// Fails with a bare diagnostic string — the caller embeds it in a single
+/// prefixed [`Error::Git`], so nesting one here would double the `git:`
+/// prefix in rendered output.
+fn rebuild_index_from_head(repo: &gix::Repository) -> std::result::Result<gix::index::File, String> {
+    // The from-tree synthesis only fails after HEAD resolved to a readable
+    // commit, so this re-resolution mirrors an already-taken path; any
+    // surprise here surfaces as a plain rebuild failure.
+    let head_tree = repo
+        .head_commit()
+        .map_err(|e| format!("resolve HEAD tree: {e}"))?;
+    let head_tree = head_tree
+        .tree_id()
+        .map_err(|e| format!("resolve HEAD tree: {e}"))?
+        .detach();
+
+    let workdir = work_dir(repo)
+        .map_err(|_| "no working tree: a bare repository has no index to rebuild".to_string())?;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let temp =
+        std::env::temp_dir().join(format!("git-span-read-tree-{}-{nanos}", std::process::id()));
+
+    let output = Command::new("git")
+        .arg("read-tree")
+        .arg(head_tree.to_string())
+        .env("GIT_INDEX_FILE", &temp)
+        .current_dir(workdir)
+        .output()
+        .map_err(|e| format!("spawn `git read-tree`: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "`git read-tree` failed: {}",
+            first_stderr_line(&output.stderr)
+        ));
+    }
+
+    let loaded = gix::index::File::at(
+        &temp,
+        repo.object_hash(),
+        false,
+        gix::index::decode::Options::default(),
+    )
+    .map_err(|e| format!("load rebuilt index: {e}"));
+    // The loaded file reads through a private copy-on-write mapping of the
+    // temp file, so unlinking it now is safe on POSIX; on Windows the
+    // unlink may lose the race with the mapping — ignore that, the OS temp
+    // directory is where such residue belongs.
+    let _ = std::fs::remove_file(&temp);
+    loaded
+}
+
+/// First non-empty stderr line, trimmed, bounded — enough to name the real
+/// blocker ("could not fetch … from promisor remote") without dumping a
+/// full diagnostic transcript into the rendered error.
+fn first_stderr_line(bytes: &[u8]) -> String {
+    const MAX_CHARS: usize = 200;
+    let text = String::from_utf8_lossy(bytes);
+    let line = text
+        .lines()
+        .map(str::trim_start)
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or_default();
+    let mut bounded: String = line.chars().take(MAX_CHARS).collect();
+    if line.chars().count() > MAX_CHARS {
+        bounded.push('…');
+    }
+    bounded
+}
+
 /// Load the worktree index (or synthesize it from `HEAD^{tree}` if there
 /// is no on-disk index yet) and return one snapshot per entry.
 ///
@@ -1350,9 +1493,7 @@ pub fn index_entries_call_count() -> usize {
 pub fn index_entries(repo: &gix::Repository) -> Result<Vec<IndexEntrySnapshot>> {
     INDEX_ENTRIES_CALL_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-    let idx = repo
-        .index_or_load_from_head()
-        .map_err(|e| Error::Git(format!("load index: {e}")))?;
+    let idx = load_index(repo)?;
     let state = &*idx;
     let mut out = Vec::with_capacity(state.entries().len());
     for entry in state.entries() {
@@ -1375,9 +1516,7 @@ pub fn index_entries(repo: &gix::Repository) -> Result<Vec<IndexEntrySnapshot>> 
 /// indicating the path is excluded by sparse-checkout and should not be
 /// expected on disk.
 pub(crate) fn is_skip_worktree(repo: &gix::Repository, path: &str) -> Result<bool> {
-    let idx = repo
-        .index_or_load_from_head()
-        .map_err(|e| Error::Git(format!("load index: {e}")))?;
+    let idx = load_index(repo)?;
     let file = &*idx;
     for entry in file.entries() {
         if entry.path(file) == path {
@@ -1407,7 +1546,7 @@ pub(crate) fn is_skip_worktree(repo: &gix::Repository, path: &str) -> Result<boo
 /// load failure must preserve exactly that behavior instead of newly
 /// aborting a run.
 pub(crate) fn index_tracks_path(repo: &gix::Repository, path: &str) -> bool {
-    let idx = match repo.index_or_load_from_head() {
+    let idx = match load_index(repo) {
         Ok(i) => i,
         Err(_) => return false,
     };
@@ -1417,17 +1556,37 @@ pub(crate) fn index_tracks_path(repo: &gix::Repository, path: &str) -> bool {
         .any(|entry| entry.path(file) == path)
 }
 
-/// Check whether the repository has promisor pack files (partial clone
-/// markers in `objects/info/`), indicating that some blobs referenced by
-/// the commit graph may not be locally available.
+/// Check whether the repository is a partial clone whose object store is
+/// backed by a promisor remote, indicating that some blobs (or trees)
+/// referenced by HEAD may not be locally available.
+///
+/// Two markers exist in the wild: the `objects/info/promisor*` marker file,
+/// and — written by every filtered clone and fetch since filters shipped —
+/// a `*.promisor` sidecar next to each pack that was fetched partially.
+/// Both live under the common dir, so linked worktrees see them too.
 pub(crate) fn promisor_active(repo: &gix::Repository) -> bool {
     let od = common_dir(repo).join("objects");
-    std::fs::read_dir(od.join("info"))
+    let dir_marks = |sub: &str, suffix: &str| {
+        std::fs::read_dir(od.join(sub))
+            .map(|rd| {
+                rd.flatten()
+                    .any(|e| e.file_name().to_string_lossy().ends_with(suffix))
+            })
+            .unwrap_or(false)
+    };
+    // `info/promisor` starts with the marker; packs carry a `.promisor`
+    // extension. One predicate per directory keeps each check readable
+    // while matching both layouts.
+    if std::fs::read_dir(od.join("info"))
         .map(|rd| {
             rd.flatten()
                 .any(|e| e.file_name().to_string_lossy().starts_with("promisor"))
         })
         .unwrap_or(false)
+    {
+        return true;
+    }
+    dir_marks("pack", ".promisor")
 }
 
 /// Compute the SHA-1 a blob with `bytes` would have, without writing it
@@ -1482,9 +1641,7 @@ pub fn attr_for(
     name: &str,
 ) -> Result<Option<gix::bstr::BString>> {
     crate::perf::record_attr_for_call();
-    let index = repo
-        .index_or_load_from_head()
-        .map_err(|e| Error::Git(format!("load index: {e}")))?;
+    let index = load_index(repo)?;
     let mut stack = repo
         .attributes(
             &index,
@@ -1520,9 +1677,7 @@ pub fn attr_for(
 /// Mirrors `git check-ignore`'s pattern evaluation via gix's exclude
 /// stack. Returns `Ok(false)` when the path matches no rule.
 pub fn path_is_ignored(repo: &gix::Repository, rel_path: &Path) -> Result<bool> {
-    let index = repo
-        .index_or_load_from_head()
-        .map_err(|e| Error::Git(format!("load index: {e}")))?;
+    let index = load_index(repo)?;
     let mut stack = repo
         .excludes(
             &index,

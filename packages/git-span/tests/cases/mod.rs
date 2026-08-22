@@ -65,6 +65,7 @@ pub mod editmsg_orphan_enumerated;
 pub mod filter_driver_failure;
 pub mod head_read_failures;
 pub mod incremental_differential;
+pub mod index_reconstruction;
 pub mod interior_anchor_parity;
 pub mod json_fixtures;
 pub mod json_golden;

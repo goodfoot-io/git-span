@@ -77,7 +77,7 @@ fn robust_median_ms(samples: &[f64]) -> f64 {
     let mut measured = samples[1..].to_vec();
     measured.sort_by(|a, b| a.partial_cmp(b).expect("duration cannot be NaN"));
     let middle = measured.len() / 2;
-    if measured.len() % 2 == 0 {
+    if measured.len().is_multiple_of(2) {
         (measured[middle - 1] + measured[middle]) / 2.0
     } else {
         measured[middle]

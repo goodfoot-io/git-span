@@ -12,8 +12,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(test)]
+type TestBoundaryHook = Box<dyn FnMut(&str)>;
+
+#[cfg(test)]
 thread_local! {
-    static TEST_BOUNDARY_HOOK: std::cell::RefCell<Option<Box<dyn FnMut(&str)>>> =
+    static TEST_BOUNDARY_HOOK: std::cell::RefCell<Option<TestBoundaryHook>> =
         std::cell::RefCell::new(None);
 }
 
