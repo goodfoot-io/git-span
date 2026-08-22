@@ -157,6 +157,21 @@ Override the target root via `GIT_SPAN_CARGO_TARGET_ROOT`:
 GIT_SPAN_CARGO_TARGET_ROOT=/tmp/my-target yarn test
 ```
 
+**Python venv relocation (uv):**
+
+The mini-swe-agent workspace's uv-managed virtual environment is relocated the
+same way, to `/var/cache/git-span/uv-envs/mini-swe-agent`. The default
+in-tree `.venv` path lands on whatever filesystem hosts the checkout — and on
+virtiofs mounts (the devcontainer's host-mounted worktrees), uv's editable-wheel
+installer fails deterministically with `No such file or directory` while copying
+into its staging directory. Placing the environment on container-native storage
+avoids that, and shares one built environment across all worktrees instead of
+re-syncing per worktree. Override via `GIT_SPAN_UV_PROJECT_ENVIRONMENT`:
+
+```bash
+GIT_SPAN_UV_PROJECT_ENVIRONMENT=/tmp/my-venv yarn workspace mini-swe-agent run test
+```
+
 Note: `yarn build:clean` cleans only the `git-span/build` subdirectory of the
 shared target root. Running it while another worktree is building waits for that
 build (it takes the exclusive target-root lock) rather than corrupting it.

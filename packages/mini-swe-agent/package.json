@@ -6,8 +6,8 @@
   "scripts": {
     "build": "yarn build:hooks",
     "build:hooks": "yarn workspace agent-hooks run build:hooks:mswea",
-    "test": "uv run --group dev pytest -q",
-    "lint": "uv run ruff check ."
+    "test": "UV_PROJECT_ENVIRONMENT=\"${GIT_SPAN_UV_PROJECT_ENVIRONMENT:-/var/cache/git-span/uv-envs/mini-swe-agent}\" uv run --group dev pytest -q",
+    "lint": "UV_PROJECT_ENVIRONMENT=\"${GIT_SPAN_UV_PROJECT_ENVIRONMENT:-/var/cache/git-span/uv-envs/mini-swe-agent}\" uv run ruff check ."
   },
   "devDependencies": {
     "agent-hooks": "workspace:*"
