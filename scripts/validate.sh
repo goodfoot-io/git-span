@@ -145,7 +145,24 @@ build_dir="$target_root/git-span/build"
   # in the failure-summary tail even when later steps fail too.
   yarn workspace @goodfoot/git-span-website artifacts:check &&
   yarn test &&
-  SKIP_INSTALL=1 yarn build &&
+  {
+    # The website's rolldown-vite build has an upstream out-dir creation race:
+    # vite's JS prepareOutDir and rolldown's native chunk writer both ensure
+    # dist/server exists, and when the loser's mkdir lands second it surfaces
+    # as "[UNHANDLEABLE_ERROR] … File exists (os error 17)". The window opens
+    # almost exclusively right after the parallel test phase (IO latency on
+    # virtiofs worktree mounts), killing an otherwise-green gate. One retry,
+    # gated on that exact signature, keeps every other build failure
+    # fail-closed on first occurrence.
+    if ! SKIP_INSTALL=1 yarn build; then
+      if tail -n 400 "$log_path" 2>/dev/null | grep -q 'Could not create directory for output chunks'; then
+        echo "known rolldown out-dir race (EEXIST) after test phase — retrying build once" >&2
+        SKIP_INSTALL=1 yarn build
+      else
+        exit 1
+      fi
+    fi
+  } &&
   (
     if ! git diff --exit-code -- plugins-claude/git-span/hooks plugins-codex/git-span/hooks plugins-opencode/git-span/dist; then
       echo "ERROR: rebuild produced uncommitted bundle changes — commit the rebuilt plugin bundles" >&2
