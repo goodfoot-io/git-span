@@ -147,7 +147,7 @@ build_dir="$target_root/git-span/build"
   yarn test &&
   SKIP_INSTALL=1 yarn build &&
   (
-    if ! git diff --exit-code -- plugins-claude/git-span/hooks plugins-codex/git-span/hooks; then
+    if ! git diff --exit-code -- plugins-claude/git-span/hooks plugins-codex/git-span/hooks plugins-opencode/git-span/dist; then
       echo "ERROR: rebuild produced uncommitted bundle changes — commit the rebuilt plugin bundles" >&2
       exit 1
     fi

@@ -40,6 +40,7 @@ const HEADING_INVENTORY: Record<string, string[]> = {
     'install-the-cli',
     'install-the-claude-code-plugin',
     'install-the-codex-plugin',
+    'install-the-opencode-plugin',
     'verify',
     'where-to-go-next'
   ],
@@ -49,6 +50,7 @@ const HEADING_INVENTORY: Record<string, string[]> = {
     'suppression',
     'resolving-a-held-commit',
     'codex-specifics',
+    'opencode-specifics',
     'the-enforcement-backstop'
   ],
   '/docs/concepts': ['span', 'anchor', 'the-why', 'the-span-directory', 'drift', 'automation-lifecycle'],

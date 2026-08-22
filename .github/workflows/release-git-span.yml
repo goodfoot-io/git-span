@@ -149,6 +149,29 @@ jobs:
           "
           npm publish --access public --provenance
 
+      # The opencode plugin ships its bundled dist/ checked in, so publish it
+      # from a rebuild of the tagged sources and refuse if the committed bundle
+      # is stale — same freshness contract as scripts/validate.sh.
+      - name: Enable Yarn 4 via corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: yarn install --immutable
+
+      - name: Rebuild OpenCode plugin bundle
+        run: yarn workspace agent-hooks build:opencode
+
+      - name: Guard committed OpenCode plugin bundle freshness
+        run: |
+          if ! git diff --exit-code -- plugins-opencode/git-span/dist; then
+            echo "ERROR: rebuild produced uncommitted bundle changes — commit the rebuilt plugins-opencode/git-span/dist" >&2
+            exit 1
+          fi
+
+      - name: Publish OpenCode plugin package
+        working-directory: plugins-opencode/git-span
+        run: npm publish --access public --provenance
+
   github-release:
     needs: build
     runs-on: ubuntu-latest

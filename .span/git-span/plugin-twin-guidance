@@ -8,5 +8,10 @@ plugins-codex/git-span/skills/git-span/SKILL.md#L48-L51 rk64:208d10a605282398
 plugins-codex/git-span/skills/git-span/references/triage.md rk64:136609565e73834a
 plugins-codex/git-span/skills/git-span/references/whole-file-and-lfs.md rk64:508c516ac3d22a0a
 plugins-codex/git-span/skills/reconcile/SKILL.md rk64:eb91e3fb050a6310
+plugins-opencode/git-span/agents/expert.md rk64:c1f0a3155790dfdc
+plugins-opencode/git-span/skills/git-span/SKILL.md#L48-L51 rk64:208d10a605282398
+plugins-opencode/git-span/skills/git-span/references/triage.md rk64:136609565e73834a
+plugins-opencode/git-span/skills/git-span/references/whole-file-and-lfs.md rk64:508c516ac3d22a0a
+plugins-opencode/git-span/skills/reconcile/SKILL.md rk64:eb91e3fb050a6310
 
-The Claude plugin tree is the normative source for the expert, triage, whole-file-anchor, and reconcile guidance and the core skill's never-narrow gotcha bullet, and the Codex tree mirrors it; an edit to one side lands identically on the other, harness-specific fork-dispatch sections excepted.
+The Claude plugin tree is the normative source for the expert, triage, whole-file-anchor, and reconcile guidance and the core skill's never-narrow gotcha bullet; the Codex and OpenCode trees mirror it, and an edit to one lands identically on the others — harness-specific fork-dispatch sections excepted, and in the OpenCode tree the expert and install pointer are additionally forked (OpenCode's agent schema has no `skills:` key and addresses skills by bare name, so its expert forks frontmatter plus body skill addresses, and its core-skill install item describes the npm plugin-array and npx-installer flow).

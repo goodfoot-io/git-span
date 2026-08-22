@@ -9,6 +9,6 @@ plugins-claude/git-span/skills/git-span/references/finding-span-candidates.md#L3
 plugins-codex/git-span/skills/git-span/SKILL.md#L3-L3 rk64:e1e4079fca0b76c9
 plugins-codex/git-span/skills/git-span/SKILL.md#L60-L62 rk64:49329a258490ff35
 plugins-codex/git-span/skills/git-span/references/finding-span-candidates.md#L3-L5 rk64:0a7e232df6ed507e
-wiki/meta/git-span-documentation-touchpoints.md#L150-L168 rk64:a07c6b4f7c3f33f3
+wiki/meta/git-span-documentation-touchpoints.md#L153-L171 rk64:a07c6b4f7c3f33f3
 
 The span-eligibility clause excludes generated and build output from coupling; the reference surfaces each restate it in their own register, while the Codex plugin tree mirrors the normative Claude-tree skill surfaces.

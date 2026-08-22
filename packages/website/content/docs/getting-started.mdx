@@ -1,6 +1,6 @@
 ---
 title: Getting started
-description: Install the git-span CLI, then wire it into Claude Code or OpenAI Codex.
+description: Install the git-span CLI, then wire it into Claude Code, OpenAI Codex, or OpenCode.
 ---
 
 git-span is a CLI. Day to day, it's your coding agent that runs it — declaring spans, checking `git span drift`, reconciling drift — while you review the results. Install the binary first, then install the plugin for whichever agent runtime you use.
@@ -22,7 +22,7 @@ git-span 1.1.15
 ```
 
 <Callout type="info">
-The Claude Code and Codex plugins don't install this binary — they call `git span` on `PATH`. Install the CLI first, on any machine or container an agent session runs in.
+The Claude Code, Codex, and OpenCode plugins don't install this binary — they call `git span` on `PATH`. Install the CLI first, on any machine or container an agent session runs in.
 </Callout>
 
 ## Install the Claude Code plugin
@@ -65,6 +65,25 @@ Launch `codex` and run `/hooks` to review the git-span hook definitions and trus
 On Windows, hooks are disabled entirely — there's no partial fallback. `--dangerously-bypass-hook-trust` exists for CI or other one-off, non-interactive runs where a trust prompt can't be answered; avoid it for normal interactive use.
 </Callout>
 
+## Install the OpenCode plugin
+
+Add the npm package to the `plugin` array in your OpenCode config (`opencode.jsonc` or `opencode.json`):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["opencode-git-span"]
+}
+```
+
+An npm plugin can't contribute skills or agents, so the package ships an installer that materializes them on disk. Run it once per checkout — add `--global` to target your user-level directories instead of the project's:
+
+```bash
+npx opencode-git-span install --global
+```
+
+This wires the touch hook, the commit advisor, three skills (`git-span`, `reconcile`, and `hook-effect-analysis`), and an expert subagent — see [Agent integration](/docs/agent-integration) for what each piece does.
+
 ## Verify
 
 ```bash
@@ -77,7 +96,13 @@ or
 codex plugin list
 ```
 
-should show `git-span`. Independently of either plugin, confirm the CLI itself is healthy:
+or
+
+```bash
+ls .opencode/skills
+```
+
+should show `git-span`. Independently of any plugin, confirm the CLI itself is healthy:
 
 ```bash
 git span doctor

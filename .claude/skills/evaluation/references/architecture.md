@@ -32,8 +32,8 @@ covered here).
 - `src/minisweagent_gitspan/hooks/bin/*.mjs` — the compiled hook bundles.
   **Do not edit these directly** — they're generated. Editable sources:
   `packages/agent-hooks/src/common/advisor-core.ts` (shared logic behind
-  `advisor.mjs`, and behind `src/claude`/`src/codex`'s advisors too — a
-  change here affects all three targets) and `packages/agent-hooks/src/mswea/advisor.ts`
+  `advisor.mjs`, and behind `src/claude`/`src/codex`/`src/opencode`'s advisors
+  too — a change here affects all four targets) and `packages/agent-hooks/src/mswea/advisor.ts`
   (the thin mswea-specific wrapper actually compiled for this bundle). The
   other four `ALL_HOOKS` bundles have equivalent `src/mswea/*.ts` sources in
   the same package. Rebuild with, from `packages/mini-swe-agent/`:

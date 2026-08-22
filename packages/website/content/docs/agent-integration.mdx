@@ -121,6 +121,19 @@ The trust flow in [Getting started](/docs/getting-started) is what actually turn
 
 None of this affects Claude Code, which has no separate trust step.
 
+## OpenCode specifics
+
+OpenCode loads the plugin from the npm package (see [Getting started](/docs/getting-started)) with no trust-review step, and runs its hooks in-process. The touch hook and advisor behave as described above, with these differences:
+
+- **A hold is a thrown error.** There's no deny decision and no separate system message: when the advisor holds `git commit`/`git push`, the before-hook throws, the command never runs, and the thrown checklist is the error the model sees verbatim. The hold is still advisory and one-time — a bare retry passes.
+- **Injection appends to tool output.** `<git-span>` blocks and `git status` previews are appended to the tool result after execution, never rewritten or held back.
+- **Failed tool calls get no attribution (degraded parity).** OpenCode's after hook fires only on successful execution, so a failed command's writes are neither healed nor attributed until a later successful read/edit touches those paths, and any report stashed for it is dropped silently. As everywhere, `git span drift` in CI ([The enforcement backstop](#the-enforcement-backstop)) is what catches what the hooks miss.
+- **No per-hook timeouts.** OpenCode doesn't kill slow hooks, and plugins run in-process — an advisor scan briefly blocks the host loop — so the plugin bounds its own `git span` subprocesses with tighter timeouts than the other twins' hosts impose.
+- **Coverage.** The hooks cover the `bash`, `read`, `edit`, and `write` tools, plus `apply_patch` on gpt models (where it replaces `edit`/`write`). OpenCode's experimental code-mode `execute` tool is excluded from both hooks in v1 — commands issued through it bypass attribution and advisory checks.
+- **Vocabulary in closings.** Hold checklists dispatch follow-up work through the Task tool (`task` with `subagent_type`) and address skills by bare directory names (`reconcile`, `git-span`) via the skill tool — rather than the Claude or Codex spellings shown in the examples above.
+
+Set `OPENCODE_GIT_SPAN_LOG_FILE` to a path when you need the JSONL hook log — the churn-suppression records described under [Suppression](#suppression) go there under OpenCode.
+
 ## The enforcement backstop
 
 The touch hook and advisor only run inside a hooked agent session. A human-authored commit, a session with hooks disabled, or a Codex `permissionDecision: 'deny'` that doesn't actually block can all still land span debt. [CI & git integration](/docs/ci) covers `git span drift` as the backstop that catches what the in-session hooks miss.

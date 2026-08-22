@@ -200,11 +200,13 @@ if [ -f "$manpage" ] && [ -f "$cargo_toml" ]; then
   fi
 fi
 
-# Update plugin manifests: plugins-claude/*/.claude-plugin/plugin.json and
-# plugins-codex/*/.codex-plugin/plugin.json
+# Update plugin manifests: plugins-claude/*/.claude-plugin/plugin.json,
+# plugins-codex/*/.codex-plugin/plugin.json, and the opencode npm packages
+# plugins-opencode/*/package.json
 for plugin_json in \
   "$REPO_ROOT"/plugins-claude/*/.claude-plugin/plugin.json \
-  "$REPO_ROOT"/plugins-codex/*/.codex-plugin/plugin.json; do
+  "$REPO_ROOT"/plugins-codex/*/.codex-plugin/plugin.json \
+  "$REPO_ROOT"/plugins-opencode/*/package.json; do
   if [ -f "$plugin_json" ]; then
     current=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$plugin_json','utf8')).version || '')")
     if [ -n "$current" ] && [ "$current" != "$VERSION" ]; then

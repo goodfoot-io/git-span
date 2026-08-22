@@ -1,4 +1,4 @@
-packages/agent-hooks/package.json#L10-L11 rk64:ce3d2a254ec6a2fa
+packages/agent-hooks/package.json#L11-L12 rk64:ce3d2a254ec6a2fa
 packages/agent-hooks/test/common/hook-build-portability.test.ts#L158-L271 rk64:7037115e28d52203
 packages/agent-hooks/test/real-bundle-helpers.ts#L18-L50 rk64:71fedf83487d16c0
 

@@ -1,0 +1,40 @@
+{
+  "name": "opencode-git-span",
+  "version": "1.1.15",
+  "description": "In-session git-span for OpenCode: silent span-drift healing behind shell/read/edit/write/patch calls, a hold-once git commit/push advisor, and an installer for the git-span skills and expert agent.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "bin": {
+    "opencode-git-span": "bin/opencode-git-span.mjs"
+  },
+  "files": [
+    "dist",
+    "bin",
+    "skills",
+    "agents"
+  ],
+  "author": {
+    "name": "goodfoot",
+    "url": "https://github.com/goodfoot-io"
+  },
+  "homepage": "https://github.com/goodfoot-io/git-span",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/goodfoot-io/git-span.git"
+  },
+  "keywords": [
+    "git",
+    "span",
+    "dependencies",
+    "semantic",
+    "coupling",
+    "documentation",
+    "drift",
+    "audit",
+    "opencode",
+    "plugin"
+  ]
+}

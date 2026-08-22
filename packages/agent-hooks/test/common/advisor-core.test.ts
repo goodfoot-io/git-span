@@ -2027,7 +2027,7 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
         drift: async (): Promise<DriftPorcelainRow[]> => []
       });
 
-      for (const harness of ['generic', 'claude', 'codex'] as const) {
+      for (const harness of ['generic', 'claude', 'codex', 'opencode'] as const) {
         // The first may-hold pass holds with the harness-specific closing; the
         // retry on the same debt state collapses to the harness-free
         // allow/already-presented decision, which never reads `harness`.
@@ -2114,6 +2114,97 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
         'Dispatch a forked subagent to determine if this file carries implicit dependencies and to then use `git span` to document them:'
       );
       expect(result.reason).toContain('Load the `git-span:git-span` skill in the fork.');
+    });
+
+    it("a semantic-drift hold with harness 'opencode' directs a Task-tool subagent and names the bare reconcile skill", async () => {
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+        drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'CHANGED' })]
+      });
+
+      const result = await evaluateAdvisor(
+        ['src/app.ts'],
+        REPO_ROOT,
+        executors,
+        memo,
+        'may-hold',
+        undefined,
+        'opencode'
+      );
+
+      expect(result.decision).toBe('hold');
+      if (result.kind !== 'semantic-drift') throw new Error('unreachable');
+      // OpenCode dispatches via its Task tool (`task` with `subagent_type`) and
+      // addresses skills by bare directory name — never the namespaced
+      // `git-span:<skill>` form.
+      expect(result.reason).toContain(
+        'Dispatch a subagent with the `task` tool to bring the coupled files back into agreement (follow confirmed authority)'
+      );
+      expect(result.reason).toContain('Then retry.');
+      expect(result.reason).toContain('Load the `reconcile` skill via the skill tool in the subagent.');
+      expect(result.reason).not.toContain('git-span:reconcile');
+      expect(result.reason).not.toContain('spawn_agent');
+      // Full-string pin of the complete closing, exactly as the opencode
+      // adapter throws it: Task-tool dispatch leads, followed by the
+      // reconciliation order, retry, and the bare-name skill line.
+      expect(result.reason).toContain(
+        'Dispatch a subagent with the `task` tool to bring the coupled files back into agreement (follow confirmed authority) — preserve anchor shape; if an address changed, swap the old anchor for the new one with `git span replace`; update or retire the why only if its meaning changed; require `git span drift billing/checkout-request-flow` to report zero. Then retry. Load the `reconcile` skill via the skill tool in the subagent. The hold will not fire again for the same debt state. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.'
+      );
+    });
+
+    it("a 'report-only' status preview with harness 'opencode' directs a Task-tool subagent but never says retry", async () => {
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+        drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'CHANGED' })]
+      });
+
+      const result = await evaluateAdvisor(
+        ['src/app.ts'],
+        REPO_ROOT,
+        executors,
+        memo,
+        'report-only',
+        undefined,
+        'opencode'
+      );
+
+      expect(result.decision).toBe('allow');
+      if (result.kind !== 'semantic-drift-report') throw new Error('unreachable');
+      expect(result.reason).toContain(
+        'Dispatch a subagent with the `task` tool to bring the coupled files back into agreement (follow confirmed authority)'
+      );
+      expect(result.reason).toContain('Load the `reconcile` skill via the skill tool in the subagent.');
+      expect(result.reason).not.toContain('Then retry.');
+      expect(result.reason).not.toContain('then retry');
+    });
+
+    it("an uncovered-writes hold with harness 'opencode' names the Task-tool subagent and swaps the skill line to the bare git-span name", async () => {
+      const memo = createMemoryAdvisorMemoState();
+      const executors = createFakeAdvisorExecutors({
+        list: async (): Promise<PorcelainRow[]> => [],
+        drift: async (): Promise<DriftPorcelainRow[]> => []
+      });
+
+      const result = await evaluateAdvisor(
+        ['src/new-module.ts', 'src/other.ts'],
+        REPO_ROOT,
+        executors,
+        memo,
+        'may-hold',
+        undefined,
+        'opencode'
+      );
+
+      expect(result.decision).toBe('hold');
+      if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
+      expect(result.reason).toContain(
+        'Dispatch a subagent with the `task` tool to determine if these files carry implicit dependencies and to then use `git span` to document them:'
+      );
+      expect(result.reason).toContain('Load the `git-span` skill via the skill tool in the subagent.');
+      expect(result.reason).not.toContain('git-span:git-span');
+      expect(result.reason).toContain('If none exist, retry the command to proceed (one-time check).');
     });
   });
 

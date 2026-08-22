@@ -15,8 +15,8 @@ Update the authoritative source, then its consumers. See [[Wiki Organization]] a
 - **CLI behavior:** Clap declarations and handlers.
 - **Hook text:** shared TypeScript hook cores.
 - **Generated:** man page, published schemas, command-reference page, and hook bundles; regenerate, never patch.
-- **Plugins:** `plugins-claude/` is normative; mirror to `plugins-codex/` while preserving
-  harness-specific sections.
+- **Plugins:** `plugins-claude/` is normative; mirror to `plugins-codex/` and
+  `plugins-opencode/` while preserving harness-specific sections.
 - **Historical research:** preserve outcomes. Change only live instructions or specs.
 
 For a span joining plugin trees, name the Claude-to-Codex direction in its why.
@@ -107,6 +107,8 @@ judgment. Claude and Codex router branches may differ by harness.
 - [.claude-plugin/marketplace.json](/.claude-plugin/marketplace.json)
 - [Claude manifest](/plugins-claude/git-span/.claude-plugin/plugin.json)
 - [Codex manifest](/plugins-codex/git-span/.codex-plugin/plugin.json)
+- [OpenCode manifest](/plugins-opencode/git-span/package.json) — a `package.json`,
+  not a plugin manifest
 
 ### Live reports
 
@@ -137,6 +139,7 @@ Run `yarn build` in `packages/agent-hooks` to regenerate:
 - `plugins-claude/git-span/hooks/hooks.json`
 - `plugins-codex/git-span/hooks/{advisor,post-tool-use}.mjs`
 - `plugins-codex/git-span/hooks/hooks.json`
+- `plugins-opencode/git-span/dist/index.js`
 
 Keep text marked verbatim exact in the website integration page and both
 `understanding-hook-output.md` files. Reconciliation text must say:

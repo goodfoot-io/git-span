@@ -1,4 +1,4 @@
-packages/agent-hooks/package.json#L12-L12 rk64:ad5e421bf4c94701
+packages/agent-hooks/package.json#L13-L13 rk64:ad5e421bf4c94701
 packages/mini-swe-agent/.gitignore#L7-L7 rk64:6778edd3b747850c
 packages/mini-swe-agent/src/minisweagent_gitspan/bridge.py#L39-L46 rk64:46c087e7a0719782
 scripts/ensure-worktree-local-generated.mjs#L86-L86 rk64:d38b81aa896da551

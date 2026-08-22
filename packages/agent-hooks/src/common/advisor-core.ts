@@ -779,14 +779,17 @@ export type AdvisorMode = 'may-hold' | 'report-only';
  * Which harness's agent the closing instruction is written for. The action-
  * oriented closings of {@link renderDriftReason} and
  * {@link renderUncoveredReason} direct the agent to do the work inline by
- * default (`'generic'`, the pre-harness prose, unchanged); `'claude'` and
- * `'codex'` instead direct it to dispatch a forked subagent — Claude's
- * `Agent` tool with `subagent_type: "fork"`, Codex's `spawn_agent` with
- * `fork_turns: "all"` — since the research/reconcile task is self-contained
- * and benefits from isolation. Environmental and scan-failed messages do not
- * read this value.
+ * default (`'generic'`, the pre-harness prose, unchanged); `'claude'`,
+ * `'codex'`, and `'opencode'` instead direct it to dispatch a forked subagent
+ * — Claude's `Agent` tool with `subagent_type: "fork"`, Codex's `spawn_agent`
+ * with `fork_turns: "all"`, OpenCode's Task tool (`task` with
+ * `subagent_type`) — since the research/reconcile task is self-contained
+ * and benefits from isolation. OpenCode additionally addresses skills by bare
+ * directory name through its skill tool, where Claude/Codex use the
+ * `git-span:<skill>` namespaced form. Environmental and scan-failed messages
+ * do not read this value.
  */
-export type AdvisorHarness = 'claude' | 'codex' | 'generic';
+export type AdvisorHarness = 'claude' | 'codex' | 'opencode' | 'generic';
 
 /**
  * Evaluate the advisor for a resolved changeset: report the span debt the
@@ -1597,7 +1600,7 @@ function annotateBlocks(blocksText: string, rows: DriftPorcelainRow[]): string {
  * then retry" in `'report-only'` mode: a `status` check never held anything, so
  * there is nothing to retry. The `harness` selects who the closing directs to
  * do the work: inline (`'generic'`, unchanged), or a forked subagent
- * (`'claude'`/`'codex'`).
+ * (`'claude'`/`'codex'`/`'opencode'`).
  */
 function renderDriftReason(
   findings: DriftPorcelainRow[],
@@ -1611,8 +1614,9 @@ function renderDriftReason(
   const action = `preserve anchor shape; if an address changed, swap the old anchor for the new one with \`git span replace\`; update or retire the why only if its meaning changed; require \`git span drift ${name}\` to report zero`;
   // Who the closing directs to do the work: inline by default (`'generic'`, the
   // pre-harness prose, unchanged); a forked subagent for `'claude'` (Claude's
-  // `Agent` tool with `subagent_type: "fork"`) and `'codex'` (`spawn_agent`
-  // with `fork_turns: "all"`), since the reconcile task is self-contained and
+  // `Agent` tool with `subagent_type: "fork"`), `'codex'` (`spawn_agent`
+  // with `fork_turns: "all"`), and `'opencode'` (the Task tool with
+  // `subagent_type`), since the reconcile task is self-contained and
   // benefits from isolation while the parent session continues. The mode still
   // controls the retry framing: a `'report-only'` status check never held
   // anything, so there is nothing to retry.
@@ -1621,15 +1625,24 @@ function renderDriftReason(
       ? 'Dispatch a forked subagent to bring the coupled files back into agreement (follow confirmed authority)'
       : harness === 'codex'
         ? 'Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to bring the coupled files back into agreement (follow confirmed authority)'
-        : 'Bring the coupled files back into agreement (follow confirmed authority)';
+        : harness === 'opencode'
+          ? 'Dispatch a subagent with the `task` tool to bring the coupled files back into agreement (follow confirmed authority)'
+          : 'Bring the coupled files back into agreement (follow confirmed authority)';
+  // OpenCode addresses skills by bare directory name through its skill tool,
+  // and its subagent is dispatched via the Task tool rather than forked — so
+  // both the skill name and the location phrase differ from the twins.
+  const skillLine =
+    harness === 'opencode'
+      ? 'Load the `reconcile` skill via the skill tool in the subagent.'
+      : 'Load the `git-span:reconcile` skill in the fork.';
   const tail =
     harness === 'generic'
       ? mode === 'may-hold'
         ? `then reconcile: ${action}. Retry the command; the hold will not fire again for the same debt state. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.`
         : `then reconcile: ${action}. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.`
       : mode === 'may-hold'
-        ? `— ${action}. Then retry. Load the \`git-span:reconcile\` skill in the fork. The hold will not fire again for the same debt state. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.`
-        : `— ${action}. Load the \`git-span:reconcile\` skill in the fork. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.`;
+        ? `— ${action}. Then retry. ${skillLine} The hold will not fire again for the same debt state. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.`
+        : `— ${action}. ${skillLine} Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.`;
   const closing = `${lead}${harness === 'generic' ? ',' : ''} ${tail}`;
   return [
     `This change leaves ${subject} out of date:`,
@@ -1929,7 +1942,7 @@ function renderRelatedSpansSection(
  * context about the changeset, not itself part of what's flagged or
  * consider-once'd. The `harness` selects who the action line directs to do the
  * work: inline (`'generic'`, unchanged), or a forked subagent
- * (`'claude'`/`'codex'`).
+ * (`'claude'`/`'codex'`/`'opencode'`).
  */
 function renderUncoveredReason(
   uncovered: string[],
@@ -1945,7 +1958,9 @@ function renderUncoveredReason(
       ? `Determine if ${subject} implicit dependencies, then use \`git span\` to document them:`
       : harness === 'claude'
         ? `Dispatch a forked subagent to determine if ${subject} implicit dependencies and to then use \`git span\` to document them:`
-        : `Spawn a forked subagent with \`spawn_agent\`, setting \`fork_turns: "all"\`, to determine if ${subject} implicit dependencies and to then use \`git span\` to document them:`;
+        : harness === 'codex'
+          ? `Spawn a forked subagent with \`spawn_agent\`, setting \`fork_turns: "all"\`, to determine if ${subject} implicit dependencies and to then use \`git span\` to document them:`
+          : `Dispatch a subagent with the \`task\` tool to determine if ${subject} implicit dependencies and to then use \`git span\` to document them:`;
   const body = [
     '<git-span>',
     ...lines,
@@ -1965,7 +1980,9 @@ function renderUncoveredReason(
     '',
     harness === 'generic'
       ? 'Load the `git-span:git-span` skill for guidance.'
-      : 'Load the `git-span:git-span` skill in the fork.',
+      : harness === 'opencode'
+        ? 'Load the `git-span` skill via the skill tool in the subagent.'
+        : 'Load the `git-span:git-span` skill in the fork.',
     '</git-span>'
   );
   return body.join('\n');

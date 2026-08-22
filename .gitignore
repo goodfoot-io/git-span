@@ -98,3 +98,6 @@ packages/website/.dev.vars
 
 # Vendored third-party code
 vendor/
+
+# opencode plugin ships its esbuild bundle checked in (published npm package)
+!plugins-opencode/git-span/dist/

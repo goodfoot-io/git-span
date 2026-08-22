@@ -1,13 +1,14 @@
 /**
  * Cross-adapter contract (plan §9): the same shell command produces the same
  * `runTouchHook` call sequence — filePath, offset, limit, and the cwd each
- * touch was resolved against — through the Claude Bash adapter and every Codex
- * envelope (Bash, classic `exec_command` with `workdir`, code-mode `exec` with
- * `workdir`).
+ * touch was resolved against — through the Claude Bash adapter, every Codex
+ * envelope (Bash, classic `exec_command` with `workdir`, code-mode `exec`
+ * with `workdir`), and the OpenCode after-hook adapter (`bash`, decision-10
+ * response mapping).
  *
  * `runTouchHook` is mocked to record its calls; the adapters otherwise run
  * their real narrowing and scope logic. The shared fixture table drives all
- * four envelopes from one hook cwd and asserts identical recorded sequences.
+ * envelopes from one hook cwd and asserts identical recorded sequences.
  * The workdir fixtures then pin the effective-frame rules: a classic
  * `workdir` wins over hook cwd; a relative `workdir` absolutizes against the
  * envelope's own `input.cwd`; `workdir` + `cd` compose; `git -C` resolves
@@ -38,6 +39,7 @@ import type { TouchInput } from '../../src/common/touch-core.js';
 import { createHandler as createMiniHandler } from '../../src/mswea/post-tool-use.js';
 import { createHandler as createMiniFailureHandler } from '../../src/mswea/post-tool-use-failure.js';
 import { createHandler as createMiniPlanHandler } from '../../src/mswea/static-plan.js';
+import { assemblePlugin } from '../../src/opencode/index.js';
 import { makeTempRepo } from '../helpers.js';
 import { makeTempLayout } from '../session-layout-helpers.js';
 
@@ -194,6 +196,34 @@ describe('cross-adapter contract — identical touch call sequences (Phase 3)', 
     );
   }
 
+  /**
+   * The OpenCode leg drives the assembled plugin's after hook directly (the
+   * same wiring the bundled plugin exposes). No `shell.env` cwd is recorded,
+   * so the effective frame falls back to the resolved workdir/init directory —
+   * here the plugin `directory` itself. The after output defaults to a
+   * successful empty bash result in the host's shape (`metadata.exit`); the
+   * response-shape rows pass explicit host shapes instead of the twins' tool
+   * responses.
+   */
+  let opencodeCallSeq = 0;
+  async function runOpencodeBash(cwd: string, command: string, afterOutput?: unknown): Promise<void> {
+    const hooks = assemblePlugin({
+      directory: cwd,
+      layout,
+      memoFactory: inMemoryMemoFactory(),
+      logger: { warn: () => undefined }
+    });
+    await hooks['tool.execute.after']!(
+      {
+        sessionID: 'oc-sess',
+        callID: `call-${opencodeCallSeq++}`,
+        tool: 'bash',
+        args: { command }
+      },
+      (afterOutput ?? { output: '', metadata: { output: '', exit: 0 } }) as never
+    );
+  }
+
   /** One expected touch, relative to a base dir (absolutized inside each test). */
   interface ExpectedCall {
     rel: string;
@@ -243,7 +273,7 @@ describe('cross-adapter contract — identical touch call sequences (Phase 3)', 
   ];
 
   it.each(SHARED_FIXTURES.filter((f) => f.skipReason === undefined))(
-    '$cmd — identical touches across Claude Bash / Codex Bash / classic exec_command / code-mode exec',
+    '$cmd — identical touches across Claude Bash / Codex Bash / classic exec_command / code-mode exec / OpenCode bash',
     async (fixture) => {
       const expected = fixture.expected.map((c) => ({
         filePath: join(repoA.root, c.rel),
@@ -256,7 +286,10 @@ describe('cross-adapter contract — identical touch call sequences (Phase 3)', 
         () => runMiniBash(repoA.root, fixture.cmd),
         () => runCodexBash(repoA.root, fixture.cmd),
         () => runCodexExecCommand(repoA.root, fixture.cmd, repoA.root),
-        () => runCodexCodeModeExec(repoA.root, fixture.cmd, repoA.root)
+        () => runCodexCodeModeExec(repoA.root, fixture.cmd, repoA.root),
+        // SKIPPED-first bootstrap row: unskipped once the opencode adapter
+        // implemented its after-hook routing to green.
+        () => runOpencodeBash(repoA.root, fixture.cmd)
       ];
       for (const run of runners) {
         recorded.calls.length = 0;
@@ -328,51 +361,78 @@ describe('cross-adapter contract — identical touch call sequences (Phase 3)', 
       name: 'short-circuited &&',
       command: 'false && cat f',
       response: { output: '', exitStatus: 1 },
+      // Host shape: the tool executed; the command's own exit is 1.
+      hostAfter: { output: '', metadata: { output: '', exit: 1 } },
       expected: []
     },
     {
       name: 'taken || branch',
       command: 'false || cat f',
       response: { output: '', exitStatus: 0 },
+      hostAfter: { output: '', metadata: { output: '', exit: 0 } },
       expected: [{ filePath: '', cwd: '', offset: 1, limit: TOTAL }]
     },
     {
       name: 'interrupted',
       command: 'cat f',
       response: { output: '', interrupted: true },
+      // Host shape: decision 10 — abort/timeout surface as exit null, which
+      // maps to interrupted and suppresses attribution like the twins' row.
+      hostAfter: { output: '', metadata: { output: '', exit: null } },
       expected: []
     },
     {
       name: 'nullable timeout',
       command: 'cat f',
       response: { output: '', exitStatus: 0, timedOutAfterMs: null },
+      hostAfter: { output: '', metadata: { output: '', exit: 0 } },
       expected: [{ filePath: '', cwd: '', offset: 1, limit: TOTAL }]
     },
-    { name: 'untracked read', command: 'cat untracked', response: { output: '', exitStatus: 0 }, expected: [] }
-  ])('$name has the same join/interruption/tracking result in Claude, mini-swe, and Codex', async (fixture) => {
-    writeFileSync(join(repoA.root, 'untracked'), 'not in the index\n');
-    const expected = fixture.expected.map((call) => ({
-      ...call,
-      filePath: join(repoA.root, 'f'),
-      cwd: repoA.root
-    }));
-    for (const run of [runClaudeBash, runMiniBash, runCodexBash]) {
+    {
+      name: 'untracked read',
+      command: 'cat untracked',
+      response: { output: '', exitStatus: 0 },
+      hostAfter: { output: '', metadata: { output: '', exit: 0 } },
+      expected: []
+    }
+  ])(
+    '$name has the same join/interruption/tracking result in Claude, mini-swe, Codex, and OpenCode',
+    async (fixture) => {
+      writeFileSync(join(repoA.root, 'untracked'), 'not in the index\n');
+      const expected = fixture.expected.map((call) => ({
+        ...call,
+        filePath: join(repoA.root, 'f'),
+        cwd: repoA.root
+      }));
+      for (const run of [runClaudeBash, runMiniBash, runCodexBash]) {
+        recorded.calls.length = 0;
+        await run(repoA.root, fixture.command, fixture.response);
+        expect(recorded.calls).toEqual(expected);
+      }
       recorded.calls.length = 0;
-      await run(repoA.root, fixture.command, fixture.response);
+      await runOpencodeBash(repoA.root, fixture.command, fixture.hostAfter);
       expect(recorded.calls).toEqual(expected);
     }
-  });
+  );
 
   it('keeps response-derived reads as a distinct, cross-host pass', async () => {
     const response = { output: 'f:2:needle\n', exitStatus: 0 };
+    const hostAfter = { output: 'f:2:needle\n', metadata: { output: 'f:2:needle\n', exit: 0 } };
     const expected = [{ filePath: join(repoA.root, 'f'), cwd: repoA.root, offset: 2, limit: 1 }];
     for (const run of [runClaudeBash, runMiniBash, runCodexBash]) {
       recorded.calls.length = 0;
       await run(repoA.root, 'rg -n needle .', response);
       expect(recorded.calls).toEqual(expected);
     }
+    recorded.calls.length = 0;
+    await runOpencodeBash(repoA.root, 'rg -n needle .', hostAfter);
+    expect(recorded.calls).toEqual(expected);
   });
 
+  // OpenCode deliberately does NOT join this row: the command exits nonzero,
+  // and OpenCode's after hook never fires on a failed tool call (spike S2) —
+  // failure-path attribution is documented degraded parity there, so there is
+  // no opencode sequence to compare.
   it('attributes a verified failed substitution identically through Claude, mini-swe, and Codex events', async () => {
     const command = "sed -i 's/line 7/changed/' f; false";
     const cases = [
