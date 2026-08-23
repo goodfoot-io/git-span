@@ -43,8 +43,8 @@ echo "Using editor CLI: $EDITOR_CLI"
 
 # Install the extension
 echo "Installing extension..."
-INSTALL_OUTPUT=$("$EDITOR_CLI" --install-extension "$VSIX_FILE" --force 2>&1)
-INSTALL_EXIT_CODE=$?
+INSTALL_EXIT_CODE=0
+INSTALL_OUTPUT=$("$EDITOR_CLI" --install-extension "$VSIX_FILE" --force 2>&1) || INSTALL_EXIT_CODE=$?
 
 echo "$INSTALL_OUTPUT"
 
