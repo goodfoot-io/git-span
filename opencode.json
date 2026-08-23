@@ -4,5 +4,6 @@
     "*": {
       "*": "allow"
     }
-  }
+  },
+  "plugin": ["opencode-git-span"]
 }
