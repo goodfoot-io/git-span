@@ -461,8 +461,13 @@ pub const RK64_ALGORITHM: &str = "rk64";
 /// the collapse depends on for exactly the population that most needs it.
 /// The all-`f` value has no such structural preimage; only real content can
 /// reach it, at the disclosed 1-in-2^64 odds.
+/// The hash bytes behind [`rk64_unmatched_sentinel`], exposed as a `&str`
+/// so comparisons (e.g. [`span_file::carried_sentinel`]) can recognize the
+/// sentinel without allocating a fresh `String` per probe.
+pub const RK64_UNMATCHED_SENTINEL_HASH: &str = "ffffffffffffffff";
+
 pub fn rk64_unmatched_sentinel() -> String {
-    "f".repeat(16)
+    RK64_UNMATCHED_SENTINEL_HASH.to_string()
 }
 
 /// Canonical hex encoding of an rk64 fingerprint for the stored

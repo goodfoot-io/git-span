@@ -45,11 +45,11 @@ fn span_with(n: usize) -> SpanFile {
     let mut anchors = Vec::with_capacity(n);
     for i in 1..=n as u32 {
         anchors.push(AnchorRecord {
-            path: "src/main.rs".to_string(),
+            path: "src/main.rs".into(),
             start_line: i,
             end_line: i + 5,
-            algorithm: "rk64".to_string(),
-            content_hash: format!("{i:016x}"),
+            algorithm: "rk64".into(),
+            content_hash: format!("{i:016x}").into(),
         });
     }
     SpanFile {

@@ -15,4 +15,4 @@ serde = ["dep:serde"]
 
 [dependencies]
 thiserror = "2.0.9"
-serde = { version = "1.0.228", optional = true, features = ["derive"] }
+serde = { version = "1.0.228", optional = true, features = ["derive", "rc"] }

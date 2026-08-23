@@ -47,6 +47,7 @@ use crate::{cheap_fingerprint_with_extent, rk64_to_hex, AnchorExtent, RK64_ALGOR
 use crate::error::{Error, Result};
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::Arc;
 
 /// A single anchor record within a span file.
 ///
@@ -55,15 +56,15 @@ use std::fmt;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AnchorRecord {
     /// Repository-relative, slash-separated file path.
-    pub path: String,
+    pub path: Arc<str>,
     /// 1-based start line; 0 for whole-file anchors.
     pub start_line: u32,
     /// 1-based end line (inclusive); 0 for whole-file anchors.
     pub end_line: u32,
     /// Hash algorithm name (e.g. `"sha256"`).
-    pub algorithm: String,
+    pub algorithm: Arc<str>,
     /// Hex content hash produced by the algorithm.
-    pub content_hash: String,
+    pub content_hash: Arc<str>,
 }
 
 impl fmt::Display for AnchorRecord {
@@ -201,29 +202,29 @@ pub struct ResolvedRecord {
     pub command: ResolveCommand,
     /// Repository-relative, slash-separated file path of the resolved
     /// identity.
-    pub path: String,
+    pub path: Arc<str>,
     /// 1-based start line; 0 for whole-file identities.
     pub start_line: u32,
     /// 1-based end line (inclusive); 0 for whole-file identities.
     pub end_line: u32,
     /// Hash algorithm name (e.g. `"rk64"`).
-    pub algorithm: String,
+    pub algorithm: Arc<str>,
     /// Hex content hash the identity carried at resolution time.
-    pub content_hash: String,
+    pub content_hash: Arc<str>,
 }
 
 impl ResolvedRecord {
     /// The record's identity: the `(path, start, end)` triple shared with
     /// anchor records at the same address.
     pub fn identity(&self) -> (&str, u32, u32) {
-        (&self.path, self.start_line, self.end_line)
+        (&*self.path, self.start_line, self.end_line)
     }
 
     /// The address portion of the record line (`<path>` or
     /// `<path>#L<start>-L<end>`), matching `AnchorRecord`'s display form.
     fn address(&self) -> String {
         if self.start_line == 0 && self.end_line == 0 {
-            self.path.clone()
+            self.path.to_string()
         } else {
             format!("{}#L{}-L{}", self.path, self.start_line, self.end_line)
         }
@@ -350,11 +351,11 @@ fn parse_resolved_record_line(line: &str) -> std::result::Result<ResolvedRecord,
     Ok(ResolvedRecord {
         timestamp: timestamp.to_string(),
         command,
-        path,
+        path: path.into(),
         start_line,
         end_line,
-        algorithm: algorithm.to_string(),
-        content_hash: content_hash.to_string(),
+        algorithm: algorithm.into(),
+        content_hash: content_hash.into(),
     })
 }
 
@@ -630,7 +631,7 @@ pub struct CollapsedIdentity {
 /// do when it did not.
 pub fn collapse_duplicate_identities(anchors: &mut Vec<AnchorRecord>) -> Vec<CollapsedIdentity> {
     anchors.sort_by(|a, b| {
-        (a.path.as_str(), a.start_line, a.end_line).cmp(&(b.path.as_str(), b.start_line, b.end_line))
+        (&*a.path, a.start_line, a.end_line).cmp(&(&*b.path, b.start_line, b.end_line))
     });
 
     let mut collapsed = Vec::new();
@@ -653,12 +654,12 @@ pub fn collapse_duplicate_identities(anchors: &mut Vec<AnchorRecord>) -> Vec<Col
                 .iter()
                 .all(|a| a.algorithm == first.algorithm && a.content_hash == first.content_hash);
             let agreed_hash = if agreed {
-                Some((first.algorithm.clone(), first.content_hash.clone()))
+                Some((first.algorithm.to_string(), first.content_hash.to_string()))
             } else {
                 None
             };
             collapsed.push(CollapsedIdentity {
-                path: first.path.clone(),
+                path: first.path.to_string(),
                 start_line: first.start_line,
                 end_line: first.end_line,
                 records_before,
@@ -688,7 +689,7 @@ pub fn collapse_duplicate_identities(anchors: &mut Vec<AnchorRecord>) -> Vec<Col
 /// collapse and cross-side preserve) and every reader that must recognize
 /// it (`drift` output) goes through it, so there is one place to be right.
 pub fn carried_sentinel(a: &AnchorRecord) -> bool {
-    a.algorithm == RK64_ALGORITHM && a.content_hash == crate::rk64_unmatched_sentinel()
+    *a.algorithm == *RK64_ALGORITHM && *a.content_hash == *crate::RK64_UNMATCHED_SENTINEL_HASH
 }
 
 /// Parse the lines of a `[config]` block (everything after the `[config]`
@@ -867,11 +868,11 @@ fn parse_anchor_line(line: &str) -> Result<AnchorRecord> {
     };
 
     Ok(AnchorRecord {
-        path,
+        path: path.into(),
         start_line,
         end_line,
-        algorithm,
-        content_hash,
+        algorithm: algorithm.into(),
+        content_hash: content_hash.into(),
     })
 }
 
@@ -1154,8 +1155,8 @@ pub fn merge_span_files(
             path: anchor.path.clone(),
             start_line: anchor.start_line,
             end_line: anchor.end_line,
-            algorithm: RK64_ALGORITHM.to_string(),
-            content_hash: rk64_to_hex(fp),
+            algorithm: RK64_ALGORITHM.into(),
+            content_hash: rk64_to_hex(fp).into(),
         }
     }
 
@@ -1174,10 +1175,10 @@ pub fn merge_span_files(
     let mut theirs_map: HashMap<(&str, u32, u32), &AnchorRecord> = HashMap::new();
 
     for a in &ours_anchors {
-        ours_map.insert((a.path.as_str(), a.start_line, a.end_line), a);
+        ours_map.insert((&*a.path, a.start_line, a.end_line), a);
     }
     for a in &theirs_anchors {
-        theirs_map.insert((a.path.as_str(), a.start_line, a.end_line), a);
+        theirs_map.insert((&*a.path, a.start_line, a.end_line), a);
     }
 
     let mut merged_anchors: Vec<AnchorRecord> = Vec::new();
@@ -1322,11 +1323,11 @@ fn collapse_side(
     for c in collapse_duplicate_identities(anchors) {
         if c.agreed_hash.is_none()
             && let Some(survivor) = anchors.iter_mut().find(|a| {
-                a.path == c.path && a.start_line == c.start_line && a.end_line == c.end_line
+                *a.path == *c.path && a.start_line == c.start_line && a.end_line == c.end_line
             })
         {
-            survivor.algorithm = RK64_ALGORITHM.to_string();
-            survivor.content_hash = crate::rk64_unmatched_sentinel();
+            survivor.algorithm = RK64_ALGORITHM.into();
+            survivor.content_hash = crate::RK64_UNMATCHED_SENTINEL_HASH.into();
         }
         out.push((side, c));
     }
@@ -1347,7 +1348,7 @@ fn debug_assert_merge_disjoint(merged: &[AnchorRecord], unresolved: &[Unresolved
     {
         let merged_ids: std::collections::HashSet<(&str, u32, u32)> = merged
             .iter()
-            .map(|a| (a.path.as_str(), a.start_line, a.end_line))
+            .map(|a| (&*a.path, a.start_line, a.end_line))
             .collect();
         let unresolved_ids: std::collections::HashSet<(&str, u32, u32)> = unresolved
             .iter()
@@ -1453,14 +1454,14 @@ pub fn resolve_resolved_section(
     fn identities(records: &[ResolvedRecord]) -> impl Iterator<Item = Identity> + '_ {
         records
             .iter()
-            .map(|r| (r.path.clone(), r.start_line, r.end_line))
+            .map(|r| (r.path.to_string(), r.start_line, r.end_line))
     }
 
     fn index(records: &[ResolvedRecord]) -> HashMap<(&str, u32, u32), &ResolvedRecord> {
         let mut index = HashMap::new();
         for record in records {
             index
-                .entry((record.path.as_str(), record.start_line, record.end_line))
+                .entry((&*record.path, record.start_line, record.end_line))
                 .or_insert(record);
         }
         index
@@ -1550,11 +1551,11 @@ mod tests {
         let input = "path/to/file.txt sha256:abc123\n\n";
         let span = SpanFile::parse(input).unwrap();
         assert_eq!(span.anchors.len(), 1);
-        assert_eq!(span.anchors[0].path, "path/to/file.txt");
+        assert_eq!(&*span.anchors[0].path, "path/to/file.txt");
         assert_eq!(span.anchors[0].start_line, 0);
         assert_eq!(span.anchors[0].end_line, 0);
-        assert_eq!(span.anchors[0].algorithm, "sha256");
-        assert_eq!(span.anchors[0].content_hash, "abc123");
+        assert_eq!(&*span.anchors[0].algorithm, "sha256");
+        assert_eq!(&*span.anchors[0].content_hash, "abc123");
         assert_eq!(span.why, "");
     }
 
@@ -1563,7 +1564,7 @@ mod tests {
         let input = "src/lib.rs#L10-L35 sha256:def456\n\n";
         let span = SpanFile::parse(input).unwrap();
         assert_eq!(span.anchors.len(), 1);
-        assert_eq!(span.anchors[0].path, "src/lib.rs");
+        assert_eq!(&*span.anchors[0].path, "src/lib.rs");
         assert_eq!(span.anchors[0].start_line, 10);
         assert_eq!(span.anchors[0].end_line, 35);
     }
@@ -1601,9 +1602,9 @@ mod tests {
         let crlf = SpanFile::parse("a.txt sha256:111\r\n\r\nwhy text\r\n").unwrap();
         assert_eq!(crlf, lf);
         assert_eq!(crlf.anchors.len(), 1);
-        assert_eq!(crlf.anchors[0].path, "a.txt");
-        assert_eq!(crlf.anchors[0].algorithm, "sha256");
-        assert_eq!(crlf.anchors[0].content_hash, "111");
+        assert_eq!(&*crlf.anchors[0].path, "a.txt");
+        assert_eq!(&*crlf.anchors[0].algorithm, "sha256");
+        assert_eq!(&*crlf.anchors[0].content_hash, "111");
         assert_eq!(crlf.why, "why text");
     }
 
@@ -1729,14 +1730,14 @@ mod tests {
         // `parse_address` does at the CLI boundary, so it resolves against the
         // forward-slash git tree on every platform.
         let span = SpanFile::parse("sub\\dir\\file.txt#L1-L3 sha256:abc\n").unwrap();
-        assert_eq!(span.anchors[0].path, "sub/dir/file.txt");
+        assert_eq!(&*span.anchors[0].path, "sub/dir/file.txt");
         assert_eq!(
             parse_address("sub\\dir\\file.txt#L1-L3").unwrap().0,
-            span.anchors[0].path,
+            &*span.anchors[0].path,
         );
 
         let whole = SpanFile::parse("sub\\dir\\file.txt sha256:abc\n").unwrap();
-        assert_eq!(whole.anchors[0].path, "sub/dir/file.txt");
+        assert_eq!(&*whole.anchors[0].path, "sub/dir/file.txt");
     }
 
     #[test]
@@ -2060,8 +2061,8 @@ mod tests {
         let (records, diverged) = resolve_resolved_section(None, &ours, &theirs);
         assert!(!diverged);
         assert_eq!(records.len(), 2);
-        assert_eq!(records[0].path, "a.rs");
-        assert_eq!(records[1].path, "b.rs");
+        assert_eq!(&*records[0].path, "a.rs");
+        assert_eq!(&*records[1].path, "b.rs");
     }
 
     #[test]
@@ -2215,7 +2216,7 @@ mod tests {
             &first,
             &AnchorExtent::LineRange { start: 1, end: 2 },
         ));
-        assert_eq!(result.merged.anchors[0].content_hash, expected);
+        assert_eq!(result.merged.anchors[0].content_hash.as_ref(), expected);
         assert!(result.unresolved.is_empty());
     }
 
@@ -2263,7 +2264,7 @@ mod tests {
             .merged
             .anchors
             .iter()
-            .filter(|a| a.path == path && a.start_line == start && a.end_line == end)
+            .filter(|a| *a.path == *path && a.start_line == start && a.end_line == end)
             .collect()
     }
 
@@ -2296,8 +2297,8 @@ mod tests {
         // No source to adjudicate the cross-side divergence: still unresolved.
         assert_eq!(result.unresolved.len(), 1);
         assert_eq!(
-            result.unresolved[0].ours.content_hash,
-            crate::rk64_unmatched_sentinel()
+            result.unresolved[0].ours.content_hash.as_ref(),
+            crate::RK64_UNMATCHED_SENTINEL_HASH
         );
         assert!(merged_at(&result, "a.txt", 1, 2).is_empty());
     }
@@ -2320,7 +2321,7 @@ mod tests {
         // without a report, and not duplicated into the merged output.
         let survivors = merged_at(&result, "b.txt", 4, 6);
         assert_eq!(survivors.len(), 1);
-        assert_eq!(survivors[0].content_hash, crate::rk64_unmatched_sentinel());
+        assert_eq!(survivors[0].content_hash.as_ref(), crate::RK64_UNMATCHED_SENTINEL_HASH);
         assert_eq!(result.sentinel_preserved, vec![("b.txt".to_string(), 4, 6)]);
     }
 
@@ -2344,7 +2345,7 @@ mod tests {
         );
         let survivors = merged_at(&result, "c.txt", 2, 3);
         assert_eq!(survivors.len(), 1);
-        assert_eq!(survivors[0].content_hash, "abcd");
+        assert_eq!(&*survivors[0].content_hash, "abcd");
         assert!(result.sentinel_preserved.is_empty());
     }
 
@@ -2360,8 +2361,8 @@ mod tests {
         // at untouched coordinates, and the real hash is discarded.
         let survivors = merged_at(&result, "a.txt", 1, 2);
         assert_eq!(survivors.len(), 1);
-        assert_eq!(survivors[0].content_hash, crate::rk64_unmatched_sentinel());
-        assert_eq!(survivors[0].algorithm, RK64_ALGORITHM);
+        assert_eq!(survivors[0].content_hash.as_ref(), crate::RK64_UNMATCHED_SENTINEL_HASH);
+        assert_eq!(&*survivors[0].algorithm, RK64_ALGORITHM);
         assert_eq!(result.sentinel_preserved, vec![("a.txt".to_string(), 1, 2)]);
         assert!(result.unresolved.is_empty());
     }
@@ -2377,7 +2378,7 @@ mod tests {
 
         let survivors = merged_at(&result, "a.txt", 1, 2);
         assert_eq!(survivors.len(), 1);
-        assert_eq!(survivors[0].content_hash, crate::rk64_unmatched_sentinel());
+        assert_eq!(survivors[0].content_hash.as_ref(), crate::RK64_UNMATCHED_SENTINEL_HASH);
         assert_eq!(survivors[0].start_line, 1);
         assert_eq!(survivors[0].end_line, 2);
         assert_eq!(result.sentinel_preserved, vec![("a.txt".to_string(), 1, 2)]);
@@ -2395,7 +2396,7 @@ mod tests {
         assert_eq!(result.sentinel_preserved, vec![("a.txt".to_string(), 1, 2)]);
         let survivors = merged_at(&result, "a.txt", 1, 2);
         assert_eq!(survivors.len(), 1);
-        assert_eq!(survivors[0].content_hash, crate::rk64_unmatched_sentinel());
+        assert_eq!(survivors[0].content_hash.as_ref(), crate::RK64_UNMATCHED_SENTINEL_HASH);
         assert!(result.unresolved.is_empty());
     }
 
@@ -2408,7 +2409,7 @@ mod tests {
         assert_eq!(result.sentinel_preserved, vec![("b.txt".to_string(), 3, 4)]);
         let survivors = merged_at(&result, "b.txt", 3, 4);
         assert_eq!(survivors.len(), 1);
-        assert_eq!(survivors[0].content_hash, crate::rk64_unmatched_sentinel());
+        assert_eq!(survivors[0].content_hash.as_ref(), crate::RK64_UNMATCHED_SENTINEL_HASH);
         assert!(result.unresolved.is_empty());
     }
 
@@ -2583,8 +2584,8 @@ mod tests {
         let collapsed_a = collapse_duplicate_identities(&mut order_a_first);
         let collapsed_b = collapse_duplicate_identities(&mut order_b_first);
         assert_eq!(order_a_first, order_b_first);
-        assert_eq!(order_a_first[0].content_hash, "a-1111");
-        assert_eq!(order_a_first[1].content_hash, "b-1111");
+        assert_eq!(&*order_a_first[0].content_hash, "a-1111");
+        assert_eq!(&*order_a_first[1].content_hash, "b-1111");
         assert_eq!(collapsed_a.len(), 2);
         assert_eq!(collapsed_b.len(), 2);
         assert_eq!(collapsed_a, collapsed_b);
@@ -2737,9 +2738,9 @@ mod tests {
         assert_eq!(result.merged.anchors.len(), 3);
         // Canonical: (path, start_line, end_line) ascending.
         assert_eq!(result.merged.anchors[0], a);
-        assert_eq!(result.merged.anchors[1].path, "a.rs");
+        assert_eq!(&*result.merged.anchors[1].path, "a.rs");
         assert_eq!(result.merged.anchors[1].start_line, 10);
-        assert_eq!(result.merged.anchors[2].path, "z.rs");
+        assert_eq!(&*result.merged.anchors[2].path, "z.rs");
     }
 
     #[test]
