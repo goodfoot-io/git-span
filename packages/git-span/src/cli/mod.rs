@@ -17,6 +17,7 @@
 //!   `Show` handler.
 
 pub mod commit;
+pub mod config;
 pub mod context;
 pub(crate) mod context_repair;
 pub(crate) mod context_service;
@@ -378,6 +379,35 @@ pub enum Commands {
     /// The result is written to the worktree and never staged — review it with
     /// `git diff` and stage what you agree with.
     Resolve(ResolveArgs),
+
+    /// Read or set a span's resolver configuration — the span file's
+    /// trailing `[config]` block.
+    ///
+    /// Bare `git span config <name>` prints the span's effective
+    /// configuration: all three keys with their current values, defaults
+    /// included, so the output answers what the span is actually doing
+    /// rather than what the file happens to say.
+    ///
+    /// `git span config <name> <key> <value>` sets one key and reports
+    /// the transition it made. The accepted vocabulary is the parser's
+    /// vocabulary: keys are `copy_detection`, `ignore_whitespace`, and
+    /// `follow_moves`; values are the documented wire names (`off`,
+    /// `same-commit`, `any-file-in-commit`, `any-file-in-repo`) for
+    /// `copy_detection` and `true`/`false` for the two flags. An unknown
+    /// key or an out-of-vocabulary value is rejected before any file
+    /// I/O, and the span file is left byte-identical.
+    ///
+    /// Writes go through the same serializer as every other mutating
+    /// command, under the exclusive repository lock: a span whose
+    /// configuration returns to the documented defaults
+    /// (`same-commit` / `false` / `false`) loses its `[config]` block
+    /// entirely, and a no-op write says so while rewriting nothing. A
+    /// span whose file does not parse — including a Git-conflict-markered
+    /// one — is still refused; recovery for such spans is `git span
+    /// resolve`'s job.
+    ///
+    /// Stage and commit the change with `git add .span && git commit`.
+    Config(ConfigArgs),
 }
 
 /// `git span <name>` / `git span show <name>`.
@@ -737,6 +767,23 @@ pub struct HistoryArgs {
     pub limit: Option<usize>,
 }
 
+/// Arguments for `git span config <name> [<key> <value>]`.
+#[derive(Debug, Clone, clap::Args)]
+pub struct ConfigArgs {
+    /// Span whose configuration to read or modify.
+    pub name: String,
+
+    /// Configuration key to set (`copy_detection`, `ignore_whitespace`, or
+    /// `follow_moves`). Omit together with `value` to read the effective
+    /// configuration instead.
+    #[arg(requires = "value")]
+    pub key: Option<String>,
+
+    /// Value to store. Required whenever `key` is present.
+    #[arg(requires = "key")]
+    pub value: Option<String>,
+}
+
 /// Parse a `<path>#L<start>-L<end>` anchor address.
 ///
 /// Utility lives here (rather than `validation.rs`) because it's a CLI
@@ -860,6 +907,10 @@ pub fn dispatch(
         Commands::Resolve(args) => {
             let _perf = crate::perf::span("command.resolve");
             resolve::run_resolve(repo, args, span_root)
+        }
+        Commands::Config(args) => {
+            let _perf = crate::perf::span("command.config");
+            config::run_config(repo, args, span_root)
         }
     };
 

@@ -24,6 +24,7 @@ pub(crate) fn command_mode(command: &Commands) -> Option<Mode> {
         Commands::Context(_) | Commands::ContextService(_) | Commands::UpdateCheck => None,
         Commands::Drift(args) if args.fix => Some(Mode::Exclusive),
         Commands::Why(args) if args.why_text.is_some() => Some(Mode::Exclusive),
+        Commands::Config(args) if args.value.is_some() => Some(Mode::Exclusive),
         Commands::Resolve(args) if !args.dry_run => Some(Mode::Exclusive),
         Commands::Add(_)
         | Commands::Remove(_)
@@ -34,6 +35,7 @@ pub(crate) fn command_mode(command: &Commands) -> Option<Mode> {
         | Commands::List(_)
         | Commands::Drift(_)
         | Commands::Why(_)
+        | Commands::Config(_)
         | Commands::Doctor(_)
         | Commands::Tree(_)
         | Commands::History(_)
