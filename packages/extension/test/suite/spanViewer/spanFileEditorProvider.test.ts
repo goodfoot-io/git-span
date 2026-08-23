@@ -140,6 +140,11 @@ describe('spanFileEditorProvider (end-to-end)', () => {
       !outcome.message.includes('Failed to load span history'),
       `Expected no error message, got: ${outcome.message}`
     );
+    assert.strictEqual(
+      testOnlyWatcherCoalescingStats.get(uri.toString())?.debouncedRenders ?? 0,
+      0,
+      'Expected the open-time render to be immediate, not routed through the watcher debounce'
+    );
 
     const posted = await waitForPostedDocument(uri);
     assert.strictEqual(posted.spanName, 'fixture-span-test');
@@ -497,9 +502,10 @@ describe('spanFileEditorProvider (end-to-end)', () => {
 
     // The stats entry is created on first observed event; the open-time
     // render never touches it, so baseline counters start at zero.
-    const baseline = { coalescedEvents: 0, debouncedRenders: 0 };
+    const baseline = { observedEvents: 0, coalescedEvents: 0, debouncedRenders: 0 };
     const statsBefore = testOnlyWatcherCoalescingStats.get(uri.toString());
     if (statsBefore !== undefined) {
+      baseline.observedEvents = statsBefore.observedEvents;
       baseline.coalescedEvents = statsBefore.coalescedEvents;
       baseline.debouncedRenders = statsBefore.debouncedRenders;
     }
@@ -530,7 +536,7 @@ describe('spanFileEditorProvider (end-to-end)', () => {
 
     const statsAfter = testOnlyWatcherCoalescingStats.get(uri.toString());
     assert.ok(statsAfter !== undefined, 'Expected watcher coalescing stats to be recorded for the document');
-    const observedDelta = statsAfter.observedEvents - (statsBefore?.observedEvents ?? 0);
+    const observedDelta = statsAfter.observedEvents - baseline.observedEvents;
     const coalescedDelta = statsAfter.coalescedEvents - baseline.coalescedEvents;
     const rendersDelta = statsAfter.debouncedRenders - baseline.debouncedRenders;
     // VS Code does not guarantee one watcher event per write (it may drop or

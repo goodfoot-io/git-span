@@ -1297,8 +1297,9 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
     /**
      * Run one render pass and register watchers for every path it reports,
      * so a render that discovers newly-referenced anchor files starts
-     * watching them. The completion path shared by the open-time render's
-     * watcher bootstrap and every debounced re-render.
+     * watching them. Called only from the debounce timer callback in
+     * `scheduleWatcherRender`; the open-time render awaits `render()`
+     * directly and registers its watchers inline in `resolveCustomEditor`.
      *
      * @returns Nothing.
      * @throws Never.
