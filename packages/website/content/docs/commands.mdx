@@ -88,6 +88,22 @@ Key flags:
 |------|-------------|
 | `--format <human\|json>` | Output format for the write-mode result (`human` or `json`). <br /> Applies to the write mode; read mode always prints prose. |
 
+### config
+
+```bash
+git span config <NAME> [KEY] [VALUE]
+```
+
+Read or set a span's resolver configuration — the span file's trailing `[config]` block.
+
+Bare `git span config <name>` prints the span's effective configuration: all three keys with their current values, defaults included, so the output answers what the span is actually doing rather than what the file happens to say.
+
+`git span config <name> <key> <value>` sets one key and reports the transition it made. The accepted vocabulary is the parser's vocabulary: keys are `copy_detection`, `ignore_whitespace`, and `follow_moves`; values are the documented wire names (`off`, `same-commit`, `any-file-in-commit`, `any-file-in-repo`) for `copy_detection` and `true`/`false` for the two flags. An unknown key or an out-of-vocabulary value is rejected before any file I/O, and the span file is left byte-identical.
+
+Writes go through the same serializer as every other mutating command, under the exclusive repository lock: a span whose configuration returns to the documented defaults (`same-commit` / `false` / `false`) loses its `[config]` block entirely, and a no-op write says so while rewriting nothing. A span whose file does not parse — including a Git-conflict-markered one — is still refused; recovery for such spans is `git span resolve`'s job.
+
+Stage and commit the change with `git add .span && git commit`.
+
 ### delete
 
 ```bash

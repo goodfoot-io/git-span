@@ -296,7 +296,7 @@ Bare `git span` with no arguments prints help and exits 0 — it does not list e
 const SECTION_GROUPS: &[(&str, &[&str])] = &[
     (
         "Declare and edit",
-        &["add", "remove", "replace", "why", "delete"],
+        &["add", "remove", "replace", "why", "config", "delete"],
     ),
     ("Inspect", &["show", "list", "tree", "history", "context"]),
     (

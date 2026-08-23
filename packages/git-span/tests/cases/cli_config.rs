@@ -41,7 +41,6 @@ fn span_bytes(repo: &TestRepo, name: &str) -> Result<Vec<u8>> {
 /// three keys printed, nothing omitted — so the output answers what the
 /// resolver is actually doing.
 #[test]
-#[ignore]
 fn read_prints_all_three_keys_including_defaults() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.span_stdout(["add", "plain", "file1.txt#L1-L3"])?;
@@ -61,7 +60,6 @@ fn read_prints_all_three_keys_including_defaults() -> Result<()> {
 /// Written values are what the read form reports — the command answers the
 /// effective configuration, not the absence of a hand-written block.
 #[test]
-#[ignore]
 fn read_reflects_written_block_values() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_with_tail(
@@ -89,7 +87,6 @@ fn read_reflects_written_block_values() -> Result<()> {
 /// A span that does not exist is refused, pointing at the enumeration
 /// command — reading configuration of a typo must not invent output.
 #[test]
-#[ignore]
 fn read_missing_span_refuses_naming_list() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let out = repo.run_span(["config", "nope"])?;
@@ -110,7 +107,6 @@ fn read_missing_span_refuses_naming_list() -> Result<()> {
 /// A conflict-markered span file is refused with the same remediation other
 /// readers attach — `config` is not a repair tool.
 #[test]
-#[ignore]
 fn read_conflicted_span_refuses_with_resolve_remediation() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_with_tail(&repo, "conflicted", "A why sentence.\n")?;
@@ -134,28 +130,30 @@ fn read_conflicted_span_refuses_with_resolve_remediation() -> Result<()> {
     Ok(())
 }
 
-/// The read view is the effective one: a span whose worktree file is absent
-/// but whose declaration is committed still answers from INDEX/HEAD, like
-/// `show` and `why` do — instead of lying with "no span named".
+/// The read view is the effective one, tombstones included: a span whose
+/// worktree file was removed while committed is refused exactly like `show`
+/// refuses it — one answer per state across reading commands.
 #[test]
-#[ignore]
-fn read_answers_from_the_effective_view_when_worktree_file_is_absent() -> Result<()> {
+fn read_tombstoned_span_is_refused_like_show() -> Result<()> {
     let repo = TestRepo::seeded()?;
-    seed_with_tail(
-        &repo,
-        "committed",
-        "why\n\n[config]\ncopy_detection = \"off\"\nfollow_moves = true\n",
-    )?;
+    seed_with_tail(&repo, "committed", "why\n")?;
     std::fs::remove_file(repo.path().join(".span").join("committed"))?;
 
-    let out = repo.span_stdout(["config", "committed"])?;
-    assert_eq!(
-        out,
-        "Span `committed` config:\n\
-         copy_detection = \"off\"\n\
-         ignore_whitespace = false\n\
-         follow_moves = true\n",
-        "absent block keys must read as their documented defaults"
+    let out = repo.run_span(["config", "committed"])?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "stderr: {stderr}");
+    assert!(
+        stderr.contains("no span named `committed`"),
+        "a worktree-deleted span is an effective-view absence; stderr: {stderr}"
+    );
+
+    // Parity is the point: show answers the same state the same way.
+    let shown = repo.run_span(["show", "committed"])?;
+    let show_stderr = String::from_utf8_lossy(&shown.stderr);
+    assert_eq!(shown.status.code(), Some(1));
+    assert!(
+        show_stderr.contains("no span named `committed`"),
+        "show must agree with config on the tombstoned state; stderr: {show_stderr}"
     );
     Ok(())
 }
@@ -166,7 +164,6 @@ fn read_answers_from_the_effective_view_when_worktree_file_is_absent() -> Result
 /// block — all three keys explicit, in serialize()'s shape — and reports the
 /// transition with the previous value.
 #[test]
-#[ignore]
 fn write_creates_canonical_trailing_block_on_span_without_one() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.span_stdout(["add", "fresh", "file1.txt#L1-L3"])?;
@@ -214,7 +211,6 @@ fn write_creates_canonical_trailing_block_on_span_without_one() -> Result<()> {
 /// Updating one key of an existing block keeps the other two keys' stored
 /// values — a single-key write is not a reset of the block.
 #[test]
-#[ignore]
 fn write_updates_one_key_preserving_others() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_with_tail(
@@ -245,25 +241,24 @@ fn write_updates_one_key_preserving_others() -> Result<()> {
 /// Returning the last non-default key to its default removes the whole
 /// block rather than leaving an empty `[config]` header behind.
 #[test]
-#[ignore]
 fn write_back_to_default_removes_the_entire_block() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_with_tail(
         &repo,
-        "revert",
+        "restore-defaults",
         "why\n\n[config]\ncopy_detection = \"same-commit\"\nignore_whitespace = true\nfollow_moves = false\n",
     )?;
 
-    repo.span_stdout(["config", "revert", "ignore_whitespace", "false"])?;
+    repo.span_stdout(["config", "restore-defaults", "ignore_whitespace", "false"])?;
 
-    let text = String::from_utf8(span_bytes(&repo, "revert")?)?;
+    let text = String::from_utf8(span_bytes(&repo, "restore-defaults")?)?;
     assert!(
         !text.contains("[config]"),
         "a default-equal configuration must serialize without a block; file:\n{text}"
     );
 
     // Round-trip parity: the parser agrees the span is back to defaults.
-    let shown = repo.span_stdout(["show", "revert"])?;
+    let shown = repo.span_stdout(["show", "restore-defaults"])?;
     let doc = shown.parse::<toml::Value>()?;
     assert_eq!(doc["config"]["ignore_whitespace"].as_bool(), Some(false));
     assert_eq!(doc["config"]["copy_detection"].as_str(), Some("same-commit"));
@@ -273,7 +268,6 @@ fn write_back_to_default_removes_the_entire_block() -> Result<()> {
 /// Setting a key to the value it already holds says so explicitly and
 /// rewrites nothing — byte-identity is unconditional for no-ops.
 #[test]
-#[ignore]
 fn noop_write_reports_already_set_and_never_touches_the_file() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_with_tail(
@@ -302,7 +296,6 @@ fn noop_write_reports_already_set_and_never_touches_the_file() -> Result<()> {
 /// An unknown key is rejected with the full accepted set named, and the
 /// span file is left byte-identical.
 #[test]
-#[ignore]
 fn unknown_key_is_rejected_before_io_with_accepted_set_named() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.span_stdout(["add", "guard", "file1.txt#L1-L3"])?;
@@ -333,7 +326,6 @@ fn unknown_key_is_rejected_before_io_with_accepted_set_named() -> Result<()> {
 /// An out-of-vocabulary `copy_detection` value is rejected with the
 /// documented wire names enumerated.
 #[test]
-#[ignore]
 fn invalid_copy_detection_value_is_rejected_before_io() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.span_stdout(["add", "bogusval", "file1.txt#L1-L3"])?;
@@ -360,7 +352,6 @@ fn invalid_copy_detection_value_is_rejected_before_io() -> Result<()> {
 /// Booleans accept only `true`/`false` — the parser's rule, not clap's
 /// bool coercion (`yes`/`1` must fail).
 #[test]
-#[ignore]
 fn invalid_bool_value_is_rejected_before_io() -> Result<()> {
     let repo = TestRepo::seeded()?;
     repo.span_stdout(["add", "yesno", "file1.txt#L1-L3"])?;
@@ -378,12 +369,12 @@ fn invalid_bool_value_is_rejected_before_io() -> Result<()> {
     Ok(())
 }
 
-/// A span that exists only in INDEX/HEAD cannot be written: the refusal
-/// must say the worktree file is missing — never the misleading "no span
-/// named", which would contradict `git span list`.
+/// A tombstoned span (worktree file removed while committed) cannot be
+/// written: the refusal is the show-style no-span-named — and critically,
+/// no anchor-less replacement file may materialize, since that would
+/// destroy the committed declaration on the next commit.
 #[test]
-#[ignore]
-fn write_refuses_worktree_absent_span_without_claiming_it_does_not_exist() -> Result<()> {
+fn write_tombstoned_span_refuses_without_creating_a_replacement() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_with_tail(&repo, "ghost", "why\n")?;
     std::fs::remove_file(repo.path().join(".span").join("ghost"))?;
@@ -393,32 +384,30 @@ fn write_refuses_worktree_absent_span_without_claiming_it_does_not_exist() -> Re
 
     assert_eq!(out.status.code(), Some(1), "stderr: {stderr}");
     assert!(
-        !stderr.contains("no span named"),
-        "refusal must not claim the span is missing while list shows it; stderr: {stderr}"
+        stderr.contains("no span named `ghost`"),
+        "refusal must match show's answer for the tombstoned state; stderr: {stderr}"
     );
     assert!(
-        stderr.contains(".span/ghost"),
-        "refusal must name the absent worktree file; stderr: {stderr}"
-    );
-    assert!(
-        stderr.contains("git span list") || stderr.contains("restore"),
-        "refusal must carry a recovery next step; stderr: {stderr}"
+        !repo.path().join(".span").join("ghost").exists(),
+        "a refused write must not materialize an anchor-less span file"
     );
     Ok(())
 }
 
 // --- Grammar -------------------------------------------------------------
 
-/// Exactly-one of the two positionals is a usage error owned by clap.
+/// Exactly-one of the two positionals cannot be expressed — trailing
+/// positionals fill left to right, so `config <name>` with no more
+/// arguments *is* the read form. What clap owns: a missing `<name>`, a key
+/// without its value, and any surplus argument.
 #[test]
-#[ignore]
 fn one_sided_positionals_are_usage_errors() -> Result<()> {
     let repo = TestRepo::seeded()?;
 
     for args in [
         vec!["config"],
-        vec!["config", "s"],
         vec!["config", "s", "copy_detection"],
+        vec!["config", "s", "copy_detection", "off", "surplus"],
     ] {
         let out = repo.run_span(&args)?;
         let stderr = String::from_utf8_lossy(&out.stderr);
@@ -446,7 +435,6 @@ fn stdout_of(out: &std::process::Output) -> String {
 /// the explicit `show` spelling — adding the subcommand must not strand
 /// legacy declarations.
 #[test]
-#[ignore]
 fn pre_reservation_span_named_config_still_reads_via_show() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let gix = repo.gix_repo()?;
