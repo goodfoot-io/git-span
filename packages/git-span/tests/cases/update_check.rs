@@ -100,6 +100,13 @@ fn shell_quote(value: &str) -> String {
 /// Run the binary under test with `args` inside a real PTY (`script -qec`)
 /// so git-span observes a TTY stdout. Returns `Ok(None)` when `script` is
 /// not available on this host — the `which` guard the plan requires.
+///
+/// The child inherits this harness's environment, and the session running
+/// the tests may itself be an automated caller that exports
+/// `GIT_SPAN_DISABLE_UPDATE_CHECK` (the agent hooks do). These cases
+/// simulate an unsuppressed human TTY, so the ambient off-switch is removed
+/// *before* the per-case overrides are applied — cases that want suppression
+/// (`disable_env_var_prints_nothing`) set the variable explicitly.
 fn run_pty(
     repo: &TestRepo,
     env: &[(&str, &str)],
@@ -111,6 +118,7 @@ fn run_pty(
     let command = format!("{} {args}", shell_quote(BIN));
     let mut cmd = std::process::Command::new(script);
     cmd.current_dir(repo.path());
+    cmd.env_remove("GIT_SPAN_DISABLE_UPDATE_CHECK");
     for (key, value) in env {
         cmd.env(key, value);
     }
