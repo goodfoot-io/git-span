@@ -117,6 +117,7 @@ fn run_pty(
     };
     let command = format!("{} {args}", shell_quote(BIN));
     let mut cmd = std::process::Command::new(script);
+    support::strip_inherited_span_env(&mut cmd);
     cmd.current_dir(repo.path());
     cmd.env_remove("GIT_SPAN_DISABLE_UPDATE_CHECK");
     for (key, value) in env {

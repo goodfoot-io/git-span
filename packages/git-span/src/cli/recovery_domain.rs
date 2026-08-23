@@ -55,6 +55,40 @@ fn try_acquire(file: &File, mode: Mode) -> std::io::Result<bool> {
     }
 }
 
+/// Open (creating if needed) the repository lock file under a freshly
+/// descended `<git-dir>/span` directory.
+///
+/// On the shared virtiofs worktree mount, an `openat(O_CREAT)` against a
+/// retained directory fd can misreport `NotFound` for an entry it
+/// nevertheless materializes — observed natively at roughly even odds — and
+/// retrying on the same descriptor keeps failing because the stale negative
+/// entry stays bound to that descriptor chain. Re-descending from the
+/// trusted git-directory root forces a fresh directory walk, which does see
+/// the created file. The round bound keeps a genuinely absent parent
+/// erroring instead of looping; every other errno fails immediately.
+fn acquire_lock_file(git_directory: &RetainedDirectory) -> Result<File> {
+    const NOT_FOUND_ROUNDS: usize = 3;
+    for round in 0..=NOT_FOUND_ROUNDS {
+        let lock_directory = git_directory.descend(
+            std::path::Path::new("span"),
+            DirectoryPolicy::Create { mode: 0o755 },
+        )?;
+        match lock_directory.open_or_create_file(OsStr::new("recovery-domain.lock"), 0o600) {
+            Ok(file) => return Ok(file),
+            Err(error)
+                if round < NOT_FOUND_ROUNDS
+                    && error
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(error) => return Err(error).context("open repository recovery-domain lock"),
+        }
+    }
+    unreachable!("the loop body returns Ok or Err on every path")
+}
+
 /// Acquire the repository-wide recovery-domain lock at
 /// `<git_dir>/span/recovery-domain.lock`, shared or exclusive per `mode`.
 ///
@@ -71,14 +105,11 @@ fn try_acquire(file: &File, mode: Mode) -> std::io::Result<bool> {
 /// repository, not a stale artifact.
 pub(crate) fn acquire(repo: &gix::Repository, mode: Mode) -> Result<Guard> {
     let git_directory = RetainedDirectory::open_canonical(crate::git::git_dir(repo))?;
-    let lock_directory = git_directory.descend(
-        std::path::Path::new("span"),
-        DirectoryPolicy::Create { mode: 0o755 },
-    )?;
-    let file = lock_directory
-        .open_or_create_file(OsStr::new("recovery-domain.lock"), 0o600)
-        .context("open repository recovery-domain lock")?;
-    let lock_path = lock_directory.display_path().join("recovery-domain.lock");
+    let file = acquire_lock_file(&git_directory)?;
+    let lock_path = git_directory
+        .display_path()
+        .join("span")
+        .join("recovery-domain.lock");
 
     // Fast path: uncontended, which is every ordinary invocation.
     if try_acquire(&file, mode).context("acquire repository recovery-domain lock")? {

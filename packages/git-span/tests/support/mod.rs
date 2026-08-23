@@ -28,6 +28,27 @@ use std::process::{Command, Output};
 ///
 /// This is diagnosis, not a fix: it makes the race legible, it does not
 /// prevent it. Deliberately no retry — the flake should stay visible.
+
+/// Strip every inherited `GIT_SPAN_*` variable from `cmd`'s environment.
+///
+/// Sessions that drive these suites export knobs of their own — agent
+/// harnesses set `GIT_SPAN_DISABLE_UPDATE_CHECK=1`, CI runners may set
+/// others. A leaked knob silently rewrites what a contract case observes:
+/// the update-check note cases asserted a note the ambient variable
+/// suppressed, failing everywhere those variables exist and passing
+/// nowhere else. Each spawn therefore starts from an environment carrying
+/// no `GIT_SPAN_*` at all; cases opt back in explicitly through the env
+/// parameters of the `run_span_*` entry points below.
+pub(crate) fn strip_inherited_span_env(cmd: &mut Command) {
+    let leaked: Vec<std::ffi::OsString> = std::env::vars_os()
+        .map(|(key, _)| key)
+        .filter(|key| key.to_string_lossy().starts_with("GIT_SPAN_"))
+        .collect();
+    for key in leaked {
+        cmd.env_remove(key);
+    }
+}
+
 fn capture(cmd: &mut Command) -> Result<Output> {
     let program = cmd.get_program().to_string_lossy().into_owned();
     match cmd.output() {
@@ -242,6 +263,7 @@ impl TestRepo {
         S: AsRef<str>,
     {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_git-span"));
+        strip_inherited_span_env(&mut cmd);
         cmd.current_dir(self.dir.path());
         for a in args {
             cmd.arg(a.as_ref());
@@ -315,6 +337,7 @@ impl TestRepo {
         S: AsRef<str>,
     {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_git-span"));
+        strip_inherited_span_env(&mut cmd);
         cmd.current_dir(self.dir.path());
         for (key, val) in env {
             cmd.env(key, val);
@@ -333,6 +356,7 @@ impl TestRepo {
         S: AsRef<str>,
     {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_git-span"));
+        strip_inherited_span_env(&mut cmd);
         cmd.current_dir(cwd);
         // Point git-span at this repo by setting GIT_DIR / GIT_WORK_TREE.
         cmd.env("GIT_DIR", self.dir.path().join(".git"));
