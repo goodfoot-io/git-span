@@ -85,6 +85,7 @@ const HEADING_INVENTORY: Record<string, string[]> = {
     'remove',
     'replace',
     'why',
+    'config',
     'delete',
     'inspect',
     'show',
