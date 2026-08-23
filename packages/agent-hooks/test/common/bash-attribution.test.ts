@@ -20,11 +20,11 @@ import { contextExecutors } from '../touch-context-fake.js';
 const SESSION_ID = 'static-attribution-lifecycle';
 
 function memo(): MemoStore {
-  const surfaced = new Set<string>();
+  let surfaced = new Set<string>();
   return {
     getSurfaced: () => new Set(surfaced),
-    addSurfaced: (_sessionId, names) => {
-      for (const name of names) surfaced.add(name);
+    addSurfaced: (_sessionId, names, known) => {
+      surfaced = new Set([...known, ...names]);
     }
   };
 }

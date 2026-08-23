@@ -158,7 +158,7 @@ describe('opencode lifecycle split (decision 8)', () => {
     try {
       const logger = silentLogger();
       const memo = createDiskMemoStore(logger, temp.layout);
-      memo.addSurfaced('sess', ['billing/checkout-request-flow']);
+      memo.addSurfaced('sess', ['billing/checkout-request-flow'], new Set());
       const store = createDefaultPlannedTouchStore(temp.layout);
       store.put({
         version: 1,
@@ -199,7 +199,7 @@ describe('opencode lifecycle split (decision 8)', () => {
     const temp = makeTempLayout();
     try {
       const memo = createDiskMemoStore(silentLogger(), temp.layout);
-      memo.addSurfaced('gone', ['a-span']);
+      memo.addSurfaced('gone', ['a-span'], new Set());
       const memoFile = temp.layout.memoFile('gone');
       expect(existsSync(memoFile)).toBe(true);
 
@@ -232,9 +232,9 @@ describe('opencode lifecycle split (decision 8)', () => {
     const temp = makeTempLayout();
     try {
       const memoA = createDiskMemoStore(silentLogger(), temp.layout);
-      memoA.addSurfaced('a', ['span-a']);
+      memoA.addSurfaced('a', ['span-a'], new Set());
       const memoB = createDiskMemoStore(silentLogger(), temp.layout);
-      memoB.addSurfaced('b', ['span-b']);
+      memoB.addSurfaced('b', ['span-b'], new Set());
       const sessions = new Set(['a', 'b']);
       const callState = createOpencodeCallState();
 

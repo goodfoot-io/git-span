@@ -16,10 +16,8 @@ function memoStore(): MemoStore {
   const surfaced = new Map<string, Set<string>>();
   return {
     getSurfaced: (sessionId) => new Set(surfaced.get(sessionId) ?? []),
-    addSurfaced: (sessionId, names) => {
-      const values = surfaced.get(sessionId) ?? new Set<string>();
-      for (const name of names) values.add(name);
-      surfaced.set(sessionId, values);
+    addSurfaced: (sessionId, names, known) => {
+      surfaced.set(sessionId, new Set([...known, ...names]));
     }
   };
 }

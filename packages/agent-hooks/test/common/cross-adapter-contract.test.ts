@@ -101,10 +101,8 @@ function inMemoryMemoFactory(): MemoFactory {
   const store = new Map<string, Set<string>>();
   return (_logger: MemoLogger): MemoStore => ({
     getSurfaced: (sid) => new Set(store.get(sid) ?? []),
-    addSurfaced: (sid, names) => {
-      const s = store.get(sid) ?? new Set<string>();
-      for (const n of names) s.add(n);
-      store.set(sid, s);
+    addSurfaced: (sid, names, known) => {
+      store.set(sid, new Set([...known, ...names]));
     }
   });
 }

@@ -56,7 +56,7 @@ describe('MemoStore location', () => {
   it('writes the memo under the layout it was constructed with', () => {
     const id = sid('location');
     const store = createDiskMemoStore(logger, layout);
-    store.addSurfaced(id, ['some-span']);
+    store.addSurfaced(id, ['some-span'], new Set());
 
     const dir = layout.dir(id);
     expect(dir.startsWith(layout.base)).toBe(true);
@@ -68,26 +68,41 @@ describe('MemoStore location', () => {
     // The memo and plan stores can each create a session dir first; either
     // arrival order must retain the restrictive mode.
     const id = sid('mode');
-    createDiskMemoStore(logger, layout).addSurfaced(id, ['some-span']);
+    createDiskMemoStore(logger, layout).addSurfaced(id, ['some-span'], new Set());
     expect(fs.statSync(layout.dir(id)).mode & 0o777).toBe(0o700);
   });
 
   it('round-trips surfaced names through the relocated store', () => {
     const id = sid('roundtrip');
     const store = createDiskMemoStore(logger, layout);
-    expect([...store.getSurfaced(id)]).toEqual([]);
+    const known = store.getSurfaced(id);
+    expect([...known]).toEqual([]);
 
-    store.addSurfaced(id, ['span-a', 'span-b']);
+    store.addSurfaced(id, ['span-a', 'span-b'], known);
     const surfaced = store.getSurfaced(id);
     expect(surfaced.has('span-a')).toBe(true);
     expect(surfaced.has('span-b')).toBe(true);
+  });
+
+  it('addSurfaced writes the caller-known merge without re-reading the memo file', () => {
+    const id = sid('single-pass');
+    const store = createDiskMemoStore(logger, layout);
+    store.addSurfaced(id, ['span-a'], new Set());
+
+    const known = store.getSurfaced(id); // {span-a}
+    fs.rmSync(layout.memoFile(id)); // a re-read inside addSurfaced would find nothing
+    store.addSurfaced(id, ['span-b'], known);
+
+    // The write merged into the caller's read — proof there was no second
+    // disk read on the record path.
+    expect(store.getSurfaced(id)).toEqual(new Set(['span-a', 'span-b']));
   });
 });
 
 describe('cleanupSessionState', () => {
   it('eagerly retires both memo and planned-touch state and is idempotent', () => {
     const id = sid('cleanup');
-    createDiskMemoStore(logger, layout).addSurfaced(id, ['some-span']);
+    createDiskMemoStore(logger, layout).addSurfaced(id, ['some-span'], new Set());
     fs.mkdirSync(layout.plannedTouchesDir(id), { recursive: true, mode: 0o700 });
     fs.writeFileSync(layout.plannedTouchRecordFile(id, 'tool-1'), '{}', { mode: 0o600 });
 
@@ -168,7 +183,7 @@ describe('pruneStaleSessions', () => {
     }
   });
 
-  it('addSurfaced/getSurfaced opportunistically prune stale sessions as a side effect', () => {
+  it('getSurfaced opportunistically prunes stale sessions as a side effect', () => {
     const staleId = sid('side-effect-stale');
     const staleDir = layout.dir(staleId);
     fs.mkdirSync(staleDir, { recursive: true });

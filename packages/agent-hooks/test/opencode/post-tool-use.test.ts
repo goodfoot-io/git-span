@@ -54,10 +54,8 @@ function inMemoryMemoFactory() {
   const store = new Map<string, Set<string>>();
   return () => ({
     getSurfaced: (sid: string) => new Set(store.get(sid) ?? []),
-    addSurfaced: (sid: string, names: string[]) => {
-      const s = store.get(sid) ?? new Set<string>();
-      for (const n of names) s.add(n);
-      store.set(sid, s);
+    addSurfaced: (sid: string, names: string[], known: ReadonlySet<string>) => {
+      store.set(sid, new Set([...known, ...names]));
     }
   });
 }

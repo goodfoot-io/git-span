@@ -100,7 +100,15 @@ export function createDefaultDriftExecutor(timeoutMs = 10_000): DriftExecutor {
 
 export interface MemoStore {
   getSurfaced(sessionId: string): Set<string>;
-  addSurfaced(sessionId: string, names: string[]): void;
+  /**
+   * Record `names` as surfaced, merging into `known` — the set the caller
+   * read via {@link getSurfaced} earlier in the same pipeline. The caller's
+   * read is authoritative: implementations must write the merge without
+   * re-reading the memo, so one rendered block costs one read (the caller's)
+   * and one write. Requiring the parameter keeps that freshness contract a
+   * type error to bypass.
+   */
+  addSurfaced(sessionId: string, names: string[], known: ReadonlySet<string>): void;
 }
 
 export type MemoLogger = CoreLogger;
@@ -126,9 +134,13 @@ export function createDiskMemoStore(logger: MemoLogger, layout: SessionLayout): 
       }
       return new Set();
     },
-    addSurfaced(sessionId, names) {
-      pruneStaleSessionsThrottled(layout);
-      const existing = this.getSurfaced(sessionId);
+    addSurfaced(sessionId, names, known) {
+      // The caller's just-read set is authoritative — merging into it instead
+      // of re-reading keeps one surface pipeline at one memo read (the
+      // caller's) and one write. The read-modify-write window this opens is
+      // the gap between the caller's getSurfaced and here: adjacent statements
+      // in the live render pipeline.
+      const existing = new Set(known);
       for (const n of names) existing.add(n);
       const memoDir = layout.dir(sessionId);
       const memoPath = layout.memoFile(sessionId);
@@ -286,8 +298,9 @@ export function surfaceOverlappingSpans(
 
   const wrapped = `\n<git-span>\n${renderStdout}${driftHint}\n</git-span>\n`;
 
-  // Update memo
-  memo.addSurfaced(sessionId, toSurface);
+  // Update memo — `surfaced` was read above, before the render and drift
+  // probes; recording merges into it rather than re-reading.
+  memo.addSurfaced(sessionId, toSurface, surfaced);
 
   return wrapped;
 }

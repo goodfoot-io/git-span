@@ -58,10 +58,8 @@ function createMemoryMemoStore(): MemoStore {
     getSurfaced(sessionId: string): Set<string> {
       return new Set(bySession.get(sessionId) ?? []);
     },
-    addSurfaced(sessionId: string, names: string[]): void {
-      const existing = bySession.get(sessionId) ?? new Set<string>();
-      for (const n of names) existing.add(n);
-      bySession.set(sessionId, existing);
+    addSurfaced(sessionId: string, names: string[], known: ReadonlySet<string>): void {
+      bySession.set(sessionId, new Set([...known, ...names]));
     }
   };
 }

@@ -1117,7 +1117,7 @@ function renderContextTouch(
     for (const status of unsurfacedDebt) toRecord.push(driftKey(span.name, status));
   }
   if (sections.length === 0) return null;
-  memo.addSurfaced(input.sessionId, toRecord);
+  memo.addSurfaced(input.sessionId, toRecord, surfaced);
   const fileName = basename(input.filePath);
   const header = driftedNames.length > 0 ? driftHeader(driftedNames.length, input.kind) : cleanHeader(fileName);
   const footer = driftedNames.length > 0 ? driftFooter(driftedNames) : cleanFooter(fileName);
