@@ -56,6 +56,37 @@ describe('patchReconstruction', () => {
       assert.strictEqual(preImage, 'alpha\nbeta\ngamma\n');
     });
 
+    it("reconstructs whole-file extents larger than V8's spread-argument limit in both directions", () => {
+      // A whole-file anchor over a large generated file pushes entire
+      // untouched spans through the splice. Spread calls
+      // (`out.push(...slice)`) throw RangeError past V8's argument-count
+      // limit -- callers catch everything as truncation, so the user-visible
+      // symptom was silently unavailable history, not an error.
+      const total = 300_000;
+      const lines = Array.from({ length: total }, (_, i) => `line ${i + 1}`);
+      // Current state on disk: the final line was rewritten from its
+      // anchored original.
+      const postImage = `${lines.join('\n')}\n`;
+      const preImage = `${lines.slice(0, -1).join('\n')}\nline ${total} ORIGINAL\n`;
+
+      const diff = [
+        'diff --git a/f.txt b/f.txt',
+        'index rk64:aaaa..rk64:bbbb',
+        '--- a/f.txt',
+        '+++ b/f.txt',
+        `@@ -${total - 1},2 +${total - 1},2 @@`,
+        ` line ${total - 1}`,
+        `-line ${total} ORIGINAL`,
+        `+line ${total}`
+      ].join('\n');
+
+      // Reverse: post-image back to the pre-image.
+      assert.strictEqual(reconstructOriginal(diff, postImage, 1), preImage);
+      // Forward: the reconstructed pre-image must round-trip to the
+      // post-image through the same splice machinery.
+      assert.strictEqual(applyDiffForward(diff, preImage, 1), postImage);
+    });
+
     it('reverse-applies multiple hunks in one diff', () => {
       const diff = [
         'diff --git a/f.txt b/f.txt',

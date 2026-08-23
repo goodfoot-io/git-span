@@ -353,7 +353,7 @@ export function reconstructOriginal(
   let lastPreLineMarked = false;
   for (const hunk of hunks) {
     const newStart = hunk.newStart - rebase;
-    out.push(...postLines.slice(cursor, newStart - 1));
+    pushSlice(out, postLines, cursor, newStart - 1);
     for (const line of hunk.body) {
       if (line.kind === 'new') {
         continue;
@@ -364,13 +364,26 @@ export function reconstructOriginal(
     }
     cursor = newStart - 1 + hunk.newCount;
   }
-  out.push(...postLines.slice(cursor));
+  pushSlice(out, postLines, cursor, postLines.length);
 
   if (out.length === 0) {
     return '';
   }
   const trailingNewline = lastFromPreRegion ? !lastPreLineMarked : postTrailingNewline;
   return out.join('\n') + (trailingNewline ? '\n' : '');
+}
+
+/**
+ * Append `lines[from, to)` to `out` by iteration, never by spread. Spread
+ * pushes (`out.push(...slice)`) throw `RangeError` past V8's argument-count
+ * limit -- for whole-file anchors over large files that converted a valid
+ * reconstruction into a caught-as-truncation failure. Iterating keeps the
+ * splice correct at any size.
+ */
+function pushSlice(out: string[], lines: readonly string[], from: number, to: number): void {
+  for (const line of lines.slice(from, to)) {
+    out.push(line);
+  }
 }
 
 /**
@@ -559,7 +572,7 @@ export function applyDiffForward(
   let lastPostLineMarked = false;
   for (const hunk of hunks) {
     const oldStart = hunk.oldStart - originalRebase;
-    out.push(...preLines.slice(cursor, oldStart - 1));
+    pushSlice(out, preLines, cursor, oldStart - 1);
     for (const line of hunk.body) {
       if (line.kind === 'old') {
         continue;
@@ -570,7 +583,7 @@ export function applyDiffForward(
     }
     cursor = oldStart - 1 + hunk.oldCount;
   }
-  out.push(...preLines.slice(cursor));
+  pushSlice(out, preLines, cursor, preLines.length);
 
   if (out.length === 0) {
     return '';
