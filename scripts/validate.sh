@@ -146,17 +146,20 @@ build_dir="$target_root/git-span/build"
   yarn workspace @goodfoot/git-span-website artifacts:check &&
   yarn test &&
   {
-    # The website's rolldown-vite build has an upstream out-dir creation race:
-    # vite's JS prepareOutDir and rolldown's native chunk writer both ensure
-    # dist/server exists, and when the loser's mkdir lands second it surfaces
-    # as "[UNHANDLEABLE_ERROR] … File exists (os error 17)". The window opens
-    # almost exclusively right after the parallel test phase (IO latency on
-    # virtiofs worktree mounts), killing an otherwise-green gate. One retry,
-    # gated on that exact signature, keeps every other build failure
-    # fail-closed on first occurrence.
+    # The website's rolldown-vite build carries two upstream races that open
+    # almost exclusively when the machine is still hot from the parallel test
+    # phase, where virtiofs worktree mounts stretch IO latency:
+    #   1. vite's JS prepareOutDir and rolldown's native chunk writer both
+    #      ensure dist/server exists; the loser's mkdir surfaces as
+    #      "[UNHANDLEABLE_ERROR] … File exists (os error 17)".
+    #   2. vite bundles vite.config.ts into node_modules/.vite-temp/ and
+    #      dynamic-imports it; on this mount the import can lose a just-written
+    #      timestamped file — ERR_MODULE_NOT_FOUND naming .vite-temp.
+    # One retry gated on those exact signatures keeps every other build
+    # failure fail-closed on first occurrence.
     if ! SKIP_INSTALL=1 yarn build; then
-      if tail -n 400 "$log_path" 2>/dev/null | grep -q 'Could not create directory for output chunks'; then
-        echo "known rolldown out-dir race (EEXIST) after test phase — retrying build once" >&2
+      if tail -n 400 "$log_path" 2>/dev/null | grep -q -e 'Could not create directory for output chunks' -e 'ERR_MODULE_NOT_FOUND.*\.vite-temp'; then
+        echo "known website-toolchain race after test phase — retrying build once" >&2
         SKIP_INSTALL=1 yarn build
       else
         exit 1
