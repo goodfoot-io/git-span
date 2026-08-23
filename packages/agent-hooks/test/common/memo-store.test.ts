@@ -14,8 +14,14 @@
 
 import * as fs from 'node:fs';
 import * as nodePath from 'node:path';
-import { afterAll, afterEach, describe, expect, it } from 'vitest';
-import { cleanupSessionState, pruneStaleSessions } from '../../src/common/agent-hooks-common.js';
+import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  cleanupSessionState,
+  PRUNE_THROTTLE_WINDOW_MS,
+  pruneStaleSessions,
+  pruneStaleSessionsThrottled,
+  resetPruneThrottleForTests
+} from '../../src/common/agent-hooks-common.js';
 import { createDiskMemoStore } from '../../src/common/span-surface.js';
 import { makeAbsentLayout, makeTempLayout } from '../session-layout-helpers.js';
 
@@ -29,6 +35,13 @@ const layout = temp.layout;
 afterEach(() => {
   fs.rmSync(layout.base, { recursive: true, force: true });
   fs.rmSync(layout.trashDir, { recursive: true, force: true });
+});
+
+// The throttle gate is module-level state shared by every store in this file;
+// without a reset, an early case's sweep would close the gate under a later
+// case that pins prune-as-a-side-effect.
+beforeEach(() => {
+  resetPruneThrottleForTests();
 });
 
 afterAll(() => temp.cleanup());
@@ -168,5 +181,39 @@ describe('pruneStaleSessions', () => {
     store.getSurfaced(sid('trigger'));
 
     expect(fs.existsSync(staleDir)).toBe(false);
+  });
+});
+
+describe('pruneStaleSessionsThrottled', () => {
+  it('prunes on the first call, then holds the gate closed within the window', () => {
+    const now = Date.now();
+    pruneStaleSessionsThrottled(layout, now);
+
+    const staleId = sid('throttled');
+    const dir = layout.dir(staleId);
+    fs.mkdirSync(dir, { recursive: true });
+    const THIRTY_ONE_DAYS_AGO = (now - 31 * 24 * 60 * 60 * 1000) / 1000;
+    fs.utimesSync(dir, THIRTY_ONE_DAYS_AGO, THIRTY_ONE_DAYS_AGO);
+
+    pruneStaleSessionsThrottled(layout, now + 1000);
+    expect(fs.existsSync(dir)).toBe(true);
+
+    pruneStaleSessionsThrottled(layout, now + PRUNE_THROTTLE_WINDOW_MS);
+    expect(fs.existsSync(dir)).toBe(false);
+  });
+
+  it('re-opens the gate after the test reset seam', () => {
+    const now = Date.now();
+    pruneStaleSessionsThrottled(layout, now);
+    resetPruneThrottleForTests();
+
+    const staleId = sid('reset-seam');
+    const dir = layout.dir(staleId);
+    fs.mkdirSync(dir, { recursive: true });
+    const THIRTY_ONE_DAYS_AGO = (now - 31 * 24 * 60 * 60 * 1000) / 1000;
+    fs.utimesSync(dir, THIRTY_ONE_DAYS_AGO, THIRTY_ONE_DAYS_AGO);
+
+    pruneStaleSessionsThrottled(layout, now + 1000);
+    expect(fs.existsSync(dir)).toBe(false);
   });
 });

@@ -12,7 +12,7 @@ import {
   canonicalizePath,
   isInsideSpanRoot,
   type LineRange,
-  pruneStaleSessions,
+  pruneStaleSessionsThrottled,
   resolveRepoRoot,
   resolveSpanRoot,
   type SessionLayout,
@@ -2558,7 +2558,7 @@ export function createPlannedTouchStore(layout: SessionLayout, budgets: PlannedT
     | { readonly status: 'record'; readonly record: PlannedTouchRecord }
     | { readonly status: 'missing' }
     | { readonly status: 'consumed' } => {
-    pruneStaleSessions(layout);
+    pruneStaleSessionsThrottled(layout);
     const paths = recordPaths(sessionId, toolUseId);
     makeRestrictiveDir(paths.dir);
     if (!claim(paths.consumed)) return { status: 'consumed' };
@@ -2583,7 +2583,7 @@ export function createPlannedTouchStore(layout: SessionLayout, budgets: PlannedT
 
   return {
     put(record) {
-      pruneStaleSessions(layout);
+      pruneStaleSessionsThrottled(layout);
       const normalized = normalizePlannedTouchRecord(record, budgets);
       const paths = recordPaths(normalized.sessionId, normalized.toolUseId);
       makeRestrictiveDir(paths.dir);
@@ -2611,7 +2611,7 @@ export function createPlannedTouchStore(layout: SessionLayout, budgets: PlannedT
     },
     take,
     discard(sessionId, toolUseId) {
-      pruneStaleSessions(layout);
+      pruneStaleSessionsThrottled(layout);
       const paths = recordPaths(sessionId, toolUseId);
       makeRestrictiveDir(paths.dir);
       claim(paths.consumed);

@@ -111,8 +111,25 @@ export const SPAN_ROOT = '.span';
  * The returned value is a POSIX-style path with no trailing slash.
  * Fail-safe: any resolution error falls back to ".span" so the hook never
  * crashes.
+ *
+ * The result is cached per repo root for the life of the process, mirroring
+ * {@link repoRootCache} — including cached fallbacks, so a repo whose config
+ * key is absent pays at most one `git config` spawn per process. Caveat: a
+ * long-lived host that re-resolves across tool calls (the in-process opencode
+ * plugin) keeps serving the cached root after a mid-session `git-span.dir`
+ * edit — exactly the exposure repoRootCache already carries for repo roots.
  */
+const spanRootCache = new Map<string, string>();
+
 export function resolveSpanRoot(repoRoot: string): string {
+  const cached = spanRootCache.get(repoRoot);
+  if (cached !== undefined) return cached;
+  const resolved = resolveSpanRootUncached(repoRoot);
+  spanRootCache.set(repoRoot, resolved);
+  return resolved;
+}
+
+function resolveSpanRootUncached(repoRoot: string): string {
   const envDir = process.env['GIT_SPAN_DIR'];
   if (envDir && envDir.trim().length > 0) {
     return toPosix(envDir.trim()).replace(/\/+$/, '');
@@ -534,6 +551,42 @@ export function pruneStaleSessions(
       void err;
     }
   }
+}
+
+/**
+ * Window between opportunistic retention sweeps, matched to the
+ * {@link SESSION_TRASH_TTL_MS} scale. One-shot hook processes prune on their
+ * first memo/store access and exit; only a long-lived host defers trash
+ * unlink by up to one extra window.
+ */
+export const PRUNE_THROTTLE_WINDOW_MS = SESSION_TRASH_TTL_MS;
+
+let lastOpportunisticPruneAt = Number.NEGATIVE_INFINITY;
+
+/**
+ * Run {@link pruneStaleSessions} at most once per wall-clock window per
+ * process; otherwise a no-op. The sweep is two directory walks plus a stat
+ * per entry whose cost grows with accumulated sessions, and hot paths (memo
+ * reads/writes, planned-touch put/take/discard) call it several times per
+ * invocation — the gate collapses that to at most one sweep per window while
+ * retention behavior (>30-day retirement, trash rename + TTL unlink,
+ * never-throw) stays exactly what the raw function implements.
+ *
+ * `now` is injectable so tests can open and close the gate deterministically.
+ */
+export function pruneStaleSessionsThrottled(layout: SessionLayout, now: number = Date.now()): void {
+  if (now - lastOpportunisticPruneAt < PRUNE_THROTTLE_WINDOW_MS) return;
+  lastOpportunisticPruneAt = now;
+  pruneStaleSessions(layout, now);
+}
+
+/**
+ * Re-open the throttle gate. Test-isolation seam: vitest isolates module
+ * state per test file, not per test, so a file running multiple store-level
+ * cases calls this between them instead of sleeping out the window.
+ */
+export function resetPruneThrottleForTests(): void {
+  lastOpportunisticPruneAt = Number.NEGATIVE_INFINITY;
 }
 
 /**

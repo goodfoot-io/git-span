@@ -24,7 +24,7 @@ import {
   type PorcelainRow,
   parseDriftPorcelain,
   parsePorcelain,
-  pruneStaleSessions,
+  pruneStaleSessionsThrottled,
   rangesIntersect,
   relativeToRepo,
   resolveRepoRoot,
@@ -114,7 +114,7 @@ export type MemoLogger = CoreLogger;
 export function createDiskMemoStore(logger: MemoLogger, layout: SessionLayout): MemoStore {
   return {
     getSurfaced(sessionId) {
-      pruneStaleSessions(layout);
+      pruneStaleSessionsThrottled(layout);
       try {
         const raw = fs.readFileSync(layout.memoFile(sessionId), 'utf8');
         const parsed = JSON.parse(raw) as { surfaced?: unknown };
@@ -127,7 +127,7 @@ export function createDiskMemoStore(logger: MemoLogger, layout: SessionLayout): 
       return new Set();
     },
     addSurfaced(sessionId, names) {
-      pruneStaleSessions(layout);
+      pruneStaleSessionsThrottled(layout);
       const existing = this.getSurfaced(sessionId);
       for (const n of names) existing.add(n);
       const memoDir = layout.dir(sessionId);

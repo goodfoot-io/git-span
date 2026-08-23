@@ -225,4 +225,24 @@ describe('resolveSpanRoot', () => {
       repo.cleanup();
     }
   });
+
+  it('caches per repo root for the life of the process', () => {
+    const repo = makeTempRepo();
+    try {
+      const original = process.env['GIT_SPAN_DIR'];
+      delete process.env['GIT_SPAN_DIR'];
+      try {
+        execFileSync('git', ['-C', repo.root, 'config', 'git-span.dir', 'docs/span'], { stdio: 'ignore' });
+        expect(resolveSpanRoot(repo.root)).toBe('docs/span');
+        // A later config edit must not be observed: the spawn is paid once
+        // per repo root per process, mirroring resolveRepoRoot's cache.
+        execFileSync('git', ['-C', repo.root, 'config', 'git-span.dir', 'other/dir'], { stdio: 'ignore' });
+        expect(resolveSpanRoot(repo.root)).toBe('docs/span');
+      } finally {
+        if (original !== undefined) process.env['GIT_SPAN_DIR'] = original;
+      }
+    } finally {
+      repo.cleanup();
+    }
+  });
 });
