@@ -131,8 +131,8 @@ fn apply_planned_reanchors(
             None
         } else {
             span_file.anchors.iter().find(|record| {
-                (record.path.as_str(), record.start_line, record.end_line)
-                    == (destination.0.as_str(), destination.1, destination.2)
+                (&*record.path, record.start_line, record.end_line)
+                    == (&*destination.0, destination.1, destination.2)
             })
         };
         let participant_count = plan_indexes.len() + usize::from(stationary.is_some());
@@ -142,7 +142,7 @@ fn apply_planned_reanchors(
             .iter()
             .all(|&index| plans[index].content_hash == expected_hash);
         let stationary_agrees = stationary.is_none_or(|record| {
-            record.algorithm == RK64_ALGORITHM && record.content_hash == expected_hash
+            *record.algorithm == *RK64_ALGORITHM && *record.content_hash == *expected_hash
         });
         let hashes_agree = plans_agree && stationary_agrees;
         let address = format_anchor_address(
@@ -187,17 +187,17 @@ fn apply_planned_reanchors(
 
     let mut rewritten = Vec::with_capacity(span_file.anchors.len());
     for mut record in span_file.anchors.drain(..) {
-        let source = (record.path.clone(), record.start_line, record.end_line);
+        let source = (record.path.to_string(), record.start_line, record.end_line);
         match mutations.remove(&source) {
             Some(ReanchorMutation::Update {
                 destination,
                 content_hash,
             }) => {
-                record.path = destination.0;
+                record.path = destination.0.into();
                 record.start_line = destination.1;
                 record.end_line = destination.2;
-                record.algorithm = RK64_ALGORITHM.to_string();
-                record.content_hash = content_hash;
+                record.algorithm = RK64_ALGORITHM.into();
+                record.content_hash = content_hash.into();
                 fix.anchors_updated += 1;
                 rewritten.push(record);
             }
@@ -480,7 +480,7 @@ pub(crate) fn read_clean_source_files(
     let mut seen: HashSet<String> = HashSet::new();
 
     for anchor in ours.anchors.iter().chain(theirs.anchors.iter()) {
-        if !seen.insert(anchor.path.clone()) {
+        if !seen.insert(anchor.path.to_string()) {
             continue;
         }
         let bytes = match crate::git::read_worktree_bytes(repo, &anchor.path) {
@@ -508,7 +508,7 @@ pub(crate) fn read_clean_source_files(
             }
         }
 
-        files.push((anchor.path.clone(), bytes));
+        files.push((anchor.path.to_string(), bytes));
     }
 
     Ok(files)
@@ -548,12 +548,12 @@ fn prune_unreadable_renamed_orphans(
     let ours_keys: HashSet<(&str, u32, u32)> = ours
         .anchors
         .iter()
-        .map(|a| (a.path.as_str(), a.start_line, a.end_line))
+        .map(|a| (&*a.path, a.start_line, a.end_line))
         .collect();
     let theirs_keys: HashSet<(&str, u32, u32)> = theirs
         .anchors
         .iter()
-        .map(|a| (a.path.as_str(), a.start_line, a.end_line))
+        .map(|a| (&*a.path, a.start_line, a.end_line))
         .collect();
 
     // Orphans: anchors present on only one side (key absent from the other).
@@ -561,14 +561,14 @@ fn prune_unreadable_renamed_orphans(
         .anchors
         .iter()
         .enumerate()
-        .filter(|(_, a)| !theirs_keys.contains(&(a.path.as_str(), a.start_line, a.end_line)))
+        .filter(|(_, a)| !theirs_keys.contains(&(&*a.path, a.start_line, a.end_line)))
         .map(|(i, _)| i)
         .collect();
     let theirs_orphans: Vec<usize> = theirs
         .anchors
         .iter()
         .enumerate()
-        .filter(|(_, a)| !ours_keys.contains(&(a.path.as_str(), a.start_line, a.end_line)))
+        .filter(|(_, a)| !ours_keys.contains(&(&*a.path, a.start_line, a.end_line)))
         .map(|(i, _)| i)
         .collect();
 
@@ -634,7 +634,7 @@ fn plan_orphan_removals(
 
     for &i in own_orphans {
         let anchor = &own_anchors[i];
-        if readable.contains(anchor.path.as_str()) {
+        if readable.contains(&*anchor.path) {
             continue;
         }
         let candidates: Vec<&AnchorRecord> = other_orphans
@@ -644,7 +644,7 @@ fn plan_orphan_removals(
                 c.start_line == anchor.start_line
                     && c.end_line == anchor.end_line
                     && c.path != anchor.path
-                    && readable.contains(c.path.as_str())
+                    && readable.contains(&*c.path)
             })
             .collect();
 
@@ -662,10 +662,10 @@ fn plan_orphan_removals(
             }
             1 => {
                 let c = candidates[0];
-                chosen.push((i, (c.path.clone(), c.start_line, c.end_line)));
+                chosen.push((i, (c.path.to_string(), c.start_line, c.end_line)));
             }
             _ => {
-                let names: Vec<&str> = candidates.iter().map(|c| c.path.as_str()).collect();
+                let names: Vec<&str> = candidates.iter().map(|c| &*c.path).collect();
                 return Err(ConflictFixBlocked {
                     blocker: FixBlocker::RenameByHand,
                     detail: format!(
@@ -1248,11 +1248,11 @@ pub(crate) fn apply_fix(
         for c in &collapsed {
             if collapse_is_unverified(c)
                 && let Some(survivor) = span_file.anchors.iter_mut().find(|a| {
-                    a.path == c.path && a.start_line == c.start_line && a.end_line == c.end_line
+                    *a.path == *c.path && a.start_line == c.start_line && a.end_line == c.end_line
                 })
             {
-                survivor.algorithm = RK64_ALGORITHM.to_string();
-                survivor.content_hash = rk64_unmatched_sentinel();
+                survivor.algorithm = RK64_ALGORITHM.into();
+                survivor.content_hash = rk64_unmatched_sentinel().into();
             }
             println!("  {}", format_identity_collapsed(&m.name, c, &available));
             fix.identities_collapsed.push(c.clone());
@@ -1301,7 +1301,7 @@ pub(crate) fn apply_fix(
             // must never write its `content_hash` — see the sentinel branch
             // below.
             let record_carries_sentinel = span_file.anchors.iter().any(|r| {
-                r.path == anc_path
+                *r.path == *anc_path
                     && r.start_line == anc_start
                     && r.end_line == anc_end
                     && carried_sentinel(r)
@@ -1397,11 +1397,11 @@ pub(crate) fn apply_fix(
                     .anchors
                     .iter()
                     .find(|r| {
-                        r.path == anc_path && r.start_line == anc_start && r.end_line == anc_end
+                        *r.path == *anc_path && r.start_line == anc_start && r.end_line == anc_end
                     })
                     .map(|r| r.content_hash.clone())
                 {
-                    Some(h) => h,
+                    Some(h) => h.to_string(),
                     None => continue,
                 }
             } else {
@@ -1671,7 +1671,7 @@ fn coalesce_line_ranges(
         if r.start_line == 0 && r.end_line == 0 {
             continue;
         }
-        groups.entry(r.path.clone()).or_default().push(i);
+        groups.entry(r.path.to_string()).or_default().push(i);
     }
 
     // A merged run emits its anchor at the lowest original index among its
@@ -1706,11 +1706,11 @@ fn coalesce_line_ranges(
             replacement.insert(
                 emit_at,
                 AnchorRecord {
-                    path: path.clone(),
+                    path: path.as_str().into(),
                     start_line: start,
                     end_line: end,
-                    algorithm: RK64_ALGORITHM.to_string(),
-                    content_hash,
+                    algorithm: RK64_ALGORITHM.into(),
+                    content_hash: content_hash.into(),
                 },
             );
             for &i in &members {
@@ -1733,7 +1733,7 @@ fn coalesce_line_ranges(
             // Asking the record itself closes that for every orientation and
             // every future way an identity might reach `mergeable_keys`.
             let is_mergeable = !carried_sentinel(r)
-                && mergeable_keys.contains(&(r.path.clone(), r.start_line, r.end_line));
+                && mergeable_keys.contains(&(r.path.to_string(), r.start_line, r.end_line));
 
             if !is_mergeable {
                 // Barrier: a record that is not worktree-fresh (terminal or
@@ -2005,11 +2005,11 @@ fn track_sentinel_position(
         let Some(record) = span_file
             .anchors
             .iter_mut()
-            .find(|r| r.path == anc_path && r.start_line == anc_start && r.end_line == anc_end)
+            .find(|r| *r.path == *anc_path && r.start_line == anc_start && r.end_line == anc_end)
         else {
             return;
         };
-        record.path = new_path.clone();
+        record.path = new_path.as_str().into();
         record.start_line = new_start;
         record.end_line = new_end;
         // `algorithm`/`content_hash` are deliberately untouched.

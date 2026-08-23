@@ -336,7 +336,7 @@ fn duplicates_in(
         std::collections::BTreeMap::new();
     for a in anchors {
         groups
-            .entry((a.path.as_str(), a.start_line, a.end_line))
+            .entry((&*a.path, a.start_line, a.end_line))
             .or_default()
             .push(a);
     }
@@ -350,7 +350,7 @@ fn duplicates_in(
                 .all(|a| a.algorithm == first.algorithm && a.content_hash == first.content_hash);
             DuplicateIdentity {
                 span_name: span_name.to_string(),
-                path: path.to_string(),
+                path: path.into(),
                 address: address_for(path, start, end),
                 records: group.len(),
                 hashes_agree,
@@ -377,11 +377,11 @@ mod tests {
 
     fn record(path: &str, start: u32, end: u32, hash: &str) -> AnchorRecord {
         AnchorRecord {
-            path: path.to_string(),
+            path: path.into(),
             start_line: start,
             end_line: end,
-            algorithm: "rk64".to_string(),
-            content_hash: hash.to_string(),
+            algorithm: "rk64".into(),
+            content_hash: hash.into(),
         }
     }
 

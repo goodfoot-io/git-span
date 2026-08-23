@@ -1283,7 +1283,7 @@ fn address(path: &str, start_line: u32, end_line: u32) -> String {
 }
 
 fn anchor_key(anchor: &AnchorRecord) -> (&str, u32, u32) {
-    (anchor.path.as_str(), anchor.start_line, anchor.end_line)
+    (&*anchor.path, anchor.start_line, anchor.end_line)
 }
 
 /// Evaluate one side end-to-end without propagating any failure: every
@@ -1552,7 +1552,7 @@ fn unverifiable_anchor_failures(
     let mut failures = BTreeSet::new();
     for anchor in ours.anchors.iter().chain(theirs.anchors.iter()) {
         let key = anchor_key(anchor);
-        if readable.contains(anchor.path.as_str()) {
+        if readable.contains(&*anchor.path) {
             continue;
         }
         let addr = address(&anchor.path, anchor.start_line, anchor.end_line);
@@ -1626,8 +1626,8 @@ fn renamed_anchor_candidates(
     let readable: HashSet<&str> = source_files.iter().map(|(p, _)| p.as_str()).collect();
     let union: Vec<&AnchorRecord> = ours.anchors.iter().chain(theirs.anchors.iter()).collect();
     let mut pairs = BTreeSet::new();
-    for dead in union.iter().filter(|a| !readable.contains(a.path.as_str())) {
-        for live in union.iter().filter(|a| readable.contains(a.path.as_str())) {
+    for dead in union.iter().filter(|a| !readable.contains(&*a.path)) {
+        for live in union.iter().filter(|a| readable.contains(&*a.path)) {
             if live.path != dead.path
                 && live.start_line == dead.start_line
                 && live.end_line == dead.end_line
@@ -1654,7 +1654,7 @@ fn unverified_anchor_warning(merged: &SpanFile, dead: &BTreeSet<String>) -> Opti
     let listed: Vec<String> = merged
         .anchors
         .iter()
-        .filter(|a| dead.contains(a.path.as_str()))
+        .filter(|a| dead.contains(&*a.path))
         .map(|a| address(&a.path, a.start_line, a.end_line))
         .collect();
     if listed.is_empty() {
@@ -1676,7 +1676,7 @@ fn dead_source_paths(repo: &gix::Repository, merged: &SpanFile) -> BTreeSet<Stri
     merged
         .anchors
         .iter()
-        .map(|a| a.path.clone())
+        .map(|a| a.path.to_string())
         .collect::<BTreeSet<String>>()
         .into_iter()
         .filter(|path| crate::git::read_worktree_bytes(repo, path).is_err())
@@ -1795,7 +1795,7 @@ fn build_entries(
                 }
                 (None, None) => "resolved".to_string(),
             };
-            let outcome = if unverified.contains(a.path.as_str()) {
+            let outcome = if unverified.contains(&*a.path) {
                 match settled.as_str() {
                     "unchanged" => "unverified — both sides carried the same hash, and there is \
                                     no readable source to check it against"

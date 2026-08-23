@@ -364,7 +364,7 @@ fn remove_all_at_identity(
 ) -> Vec<AnchorRecord> {
     let mut removed = Vec::new();
     anchors.retain(|a| {
-        if a.path == path && a.start_line == start && a.end_line == end {
+        if *a.path == *path && a.start_line == start && a.end_line == end {
             removed.push(a.clone());
             false
         } else {
@@ -530,7 +530,7 @@ pub(crate) fn supersession_conflict(
 
         // Against the span's existing records.
         for r in existing {
-            if r.path != *path {
+            if *r.path != *path {
                 continue;
             }
             let existing_whole = record_is_whole_file(r);
@@ -674,10 +674,10 @@ pub(crate) fn content_identity_pairings(
     for c in computed {
         let (start_line, end_line) = extent_identity(&c.extent);
         for r in existing {
-            if r.path != c.path || (r.start_line, r.end_line) == (start_line, end_line) {
+            if *r.path != *c.path || (r.start_line, r.end_line) == (start_line, end_line) {
                 continue;
             }
-            if r.algorithm != c.algorithm || carried_sentinel(r) || r.content_hash != c.content_hash {
+            if *r.algorithm != *c.algorithm || carried_sentinel(r) || *r.content_hash != *c.content_hash {
                 continue;
             }
             pairings.push(ContentIdentityPairing {
@@ -905,8 +905,8 @@ pub(super) fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) ->
         .iter()
         .map(|a| {
             (
-                (a.path.clone(), a.start_line, a.end_line),
-                a.content_hash.clone(),
+                (a.path.to_string(), a.start_line, a.end_line),
+                a.content_hash.to_string(),
             )
         })
         .collect();
@@ -1069,7 +1069,7 @@ pub(super) fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) ->
                 .anchors
                 .iter()
                 .filter(|a| {
-                    a.path == c.path && a.start_line == start_line && a.end_line == end_line
+                    *a.path == *c.path && a.start_line == start_line && a.end_line == end_line
                 })
                 .count();
             // `add` does not run the shared collapse primitive, and does not
@@ -1108,21 +1108,21 @@ pub(super) fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) ->
                     ResolvedRecord {
                         timestamp: resolution_timestamp(),
                         command: ResolveCommand::Add,
-                        path: c.path.clone(),
+                        path: c.path.as_str().into(),
                         start_line,
                         end_line,
-                        algorithm: c.algorithm.clone(),
-                        content_hash: c.content_hash.clone(),
+                        algorithm: c.algorithm.as_str().into(),
+                        content_hash: c.content_hash.as_str().into(),
                     },
                 );
             }
 
             span_file.anchors.push(AnchorRecord {
-                path: c.path.clone(),
+                path: c.path.as_str().into(),
                 start_line,
                 end_line,
-                algorithm: c.algorithm.clone(),
-                content_hash: c.content_hash.clone(),
+                algorithm: c.algorithm.as_str().into(),
+                content_hash: c.content_hash.as_str().into(),
             });
 
             let kind = match matching_before {
@@ -1386,7 +1386,7 @@ pub(super) fn run_remove(repo: &gix::Repository, args: RemoveArgs, span_root: &s
 
             let before = span_file.anchors.len();
             span_file.anchors.retain(|a| {
-                !(a.path == *path && a.start_line == start_line && a.end_line == end_line)
+                !(*a.path == **path && a.start_line == start_line && a.end_line == end_line)
             });
 
             if span_file.anchors.len() == before {
@@ -1619,7 +1619,7 @@ pub(super) fn run_replace(repo: &gix::Repository, args: ReplaceArgs, span_root: 
     // the old identity retired above. Retiring the old anchor on its own is
     // the one-command path.
     if span_file.anchors.iter().any(|a| {
-        a.path == new_path && a.start_line == new_start && a.end_line == new_end
+        *a.path == *new_path && a.start_line == new_start && a.end_line == new_end
     }) {
         return Err(CliError {
             subcommand: "replace",
@@ -1653,21 +1653,21 @@ pub(super) fn run_replace(repo: &gix::Repository, args: ReplaceArgs, span_root: 
             ResolvedRecord {
                 timestamp: resolution_timestamp(),
                 command: ResolveCommand::Replace,
-                path: new_path.clone(),
+                path: new_path.as_str().into(),
                 start_line: new_start,
                 end_line: new_end,
-                algorithm: algorithm.clone(),
-                content_hash: content_hash.clone(),
+                algorithm: algorithm.as_str().into(),
+                content_hash: content_hash.as_str().into(),
             },
         );
     }
     {
         span_file.anchors.push(AnchorRecord {
-            path: new_path.clone(),
+            path: new_path.as_str().into(),
             start_line: new_start,
             end_line: new_end,
-            algorithm,
-            content_hash,
+            algorithm: algorithm.into(),
+            content_hash: content_hash.into(),
         });
     }
 
@@ -2187,7 +2187,7 @@ fn anchor_record_extent(a: &AnchorRecord) -> AnchorExtent {
 /// - disjoint same-path ranges, partial overlaps, and any cross-path pair are
 ///   never supersession.
 pub fn is_superseded(old: &AnchorRecord, new_path: &str, new_extent: &AnchorExtent) -> bool {
-    if old.path != new_path {
+    if *old.path != *new_path {
         return false;
     }
     let old_extent = anchor_record_extent(old);
@@ -2273,7 +2273,7 @@ pub fn run_reconcile_check(
         pre_write_anchors
             .iter()
             .filter(|old| touched.iter().any(|(p, e)| is_superseded(old, p, e)))
-            .map(|old| (old.path.clone(), anchor_record_extent(old)))
+            .map(|old| (old.path.to_string(), anchor_record_extent(old)))
             .collect();
     let touched_keys: std::collections::HashSet<(String, AnchorExtent)> =
         touched.iter().cloned().collect();

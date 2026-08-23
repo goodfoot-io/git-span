@@ -379,13 +379,13 @@ pub fn run_show(repo: &gix::Repository, args: ShowArgs, span_root: &str) -> Resu
                     AnchorExtent::WholeFile => (0, 0),
                     AnchorExtent::LineRange { start, end } => (start, end),
                 };
-                anchor.path == record.path
+                *anchor.path == *record.path
                     && start == record.start_line
                     && end == record.end_line
                     && anchor.stored_hash == expected_hash
             });
             let address = if record.start_line == 0 && record.end_line == 0 {
-                record.path.clone()
+                record.path.to_string()
             } else {
                 format!(
                     "{}#L{}-L{}",

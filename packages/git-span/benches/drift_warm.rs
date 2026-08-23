@@ -103,11 +103,11 @@ fn build_fixture() -> Fixture {
             let fp = git_span_core::cheap_fingerprint_with_extent(&body, &extent);
             let hash = git_span_core::rk64_to_hex(fp);
             records.push(git_span::span_file::AnchorRecord {
-                path: filename,
+                path: filename.into(),
                 start_line: *start,
                 end_line: *end,
                 algorithm: git_span_core::RK64_ALGORITHM.into(),
-                content_hash: hash,
+                content_hash: hash.into(),
             });
         }
 

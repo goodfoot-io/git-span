@@ -565,7 +565,7 @@ fn plan_span(
         };
         let content_hash = match anchor.status {
             AnchorStatus::Moved if anchor.fuzzy_successors.is_empty() => {
-                record.content_hash.clone()
+                record.content_hash.to_string()
             }
             _ => repair_hash(repo, anchor)?,
         };
@@ -597,7 +597,7 @@ fn plan_span(
             .map(|ordinal| {
                 plans[*ordinal]
                     .as_ref()
-                    .map_or(file.anchors[*ordinal].content_hash.as_str(), |plan| {
+                    .map_or(&*file.anchors[*ordinal].content_hash, |plan| {
                         plan.content_hash.as_str()
                     })
             })
@@ -626,13 +626,13 @@ fn plan_span(
         }
         if let Some(plan) = &plans[ordinal]
             && (record_identity(&record) != plan.destination
-                || record.content_hash != plan.content_hash)
+                || *record.content_hash != *plan.content_hash)
         {
-            record.path = plan.destination.0.clone();
+            record.path = plan.destination.0.as_str().into();
             record.start_line = plan.destination.1;
             record.end_line = plan.destination.2;
-            record.algorithm = RK64_ALGORITHM.to_owned();
-            record.content_hash = plan.content_hash.clone();
+            record.algorithm = RK64_ALGORITHM.into();
+            record.content_hash = plan.content_hash.as_str().into();
             counts.updated += 1;
         }
         rewritten.push(record);
@@ -708,7 +708,7 @@ fn validate_extent(bytes: &[u8], extent: &AnchorExtent) -> Result<()> {
 }
 
 fn record_identity(record: &crate::span_file::AnchorRecord) -> (String, u32, u32) {
-    (record.path.clone(), record.start_line, record.end_line)
+    (record.path.to_string(), record.start_line, record.end_line)
 }
 
 fn location_identity(location: &crate::types::AnchorLocation) -> (String, u32, u32) {

@@ -61,11 +61,11 @@ fn build_fixture() -> Fixture {
         let hash = git_span_core::rk64_to_hex(fp);
         let mf = git_span::span_file::SpanFile {
             anchors: vec![git_span::span_file::AnchorRecord {
-                path: filename.clone(),
+                path: filename.as_str().into(),
                 start_line: 1,
                 end_line: 5,
                 algorithm: git_span_core::RK64_ALGORITHM.into(),
-                content_hash: hash,
+                content_hash: hash.into(),
             }],
             why: "bench".to_string(),
             resolved: Vec::new(),

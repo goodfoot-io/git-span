@@ -54,11 +54,11 @@ fn write_span(workdir: &Path, name: &str, anchors: &[(&str, u32, u32)], why: &st
         };
         let fp = cheap_fingerprint_with_extent(&bytes, &extent);
         records.push(crate::span_file::AnchorRecord {
-            path: path.to_string(),
+            path: (*path).into(),
             start_line: *start,
             end_line: *end,
-            algorithm: RK64_ALGORITHM.to_string(),
-            content_hash: rk64_to_hex(fp),
+            algorithm: RK64_ALGORITHM.into(),
+            content_hash: rk64_to_hex(fp).into(),
         });
     }
     let sf = crate::span_file::SpanFile {

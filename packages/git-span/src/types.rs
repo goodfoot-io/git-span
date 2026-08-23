@@ -71,7 +71,7 @@ pub fn span_from_file(name: &str, file: &SpanFile) -> Span {
                 Anchor {
                     anchor_sha: String::new(),
                     created_at: String::new(),
-                    path: a.path.clone(),
+                    path: a.path.to_string(),
                     extent: if a.start_line == 0 && a.end_line == 0 {
                         AnchorExtent::WholeFile
                     } else {

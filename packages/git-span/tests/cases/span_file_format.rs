@@ -15,17 +15,17 @@ Stripe-backed server.
     let span = SpanFile::parse(input).unwrap();
     assert_eq!(span.anchors.len(), 3);
 
-    assert_eq!(span.anchors[0].path, "packages/extension/src/foo.ts");
+    assert_eq!(&*span.anchors[0].path, "packages/extension/src/foo.ts");
     assert_eq!(span.anchors[0].start_line, 10);
     assert_eq!(span.anchors[0].end_line, 35);
-    assert_eq!(span.anchors[0].algorithm, "rk64");
-    assert_eq!(span.anchors[0].content_hash, "0123456789abcdef");
+    assert_eq!(&*span.anchors[0].algorithm, "rk64");
+    assert_eq!(&*span.anchors[0].content_hash, "0123456789abcdef");
 
-    assert_eq!(span.anchors[1].path, "packages/extension/src/bar.ts");
+    assert_eq!(&*span.anchors[1].path, "packages/extension/src/bar.ts");
     assert_eq!(span.anchors[1].start_line, 0);
     assert_eq!(span.anchors[1].end_line, 0);
 
-    assert_eq!(span.anchors[2].path, "packages/extension/src/baz.ts");
+    assert_eq!(&*span.anchors[2].path, "packages/extension/src/baz.ts");
     assert_eq!(span.anchors[2].start_line, 80);
     assert_eq!(span.anchors[2].end_line, 80);
 
@@ -166,7 +166,7 @@ fn multiple_blank_lines_in_anchor_section() {
     let input = "a.txt rk64:111\n\n\nb.txt rk64:222\n\nwhy\n";
     let span = SpanFile::parse(input).unwrap();
     assert_eq!(span.anchors.len(), 1);
-    assert_eq!(span.anchors[0].path, "a.txt");
+    assert_eq!(&*span.anchors[0].path, "a.txt");
     // The why contains the remaining content after the first blank line.
     assert!(span.why.contains("b.txt rk64:222"));
     assert!(span.why.contains("why"));

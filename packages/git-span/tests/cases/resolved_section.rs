@@ -249,7 +249,7 @@ fn divergent_sections_fail_rehash_and_resolve_with_ours() -> Result<()> {
     assert!(ours_out.status.success(), "{}", String::from_utf8_lossy(&ours_out.stderr));
     let settled = read_span(&repo, "audit")?;
     assert_eq!(settled.resolved.len(), 1);
-    assert_eq!(settled.resolved[0].content_hash, "ours");
+    assert_eq!(&*settled.resolved[0].content_hash, "ours");
     Ok(())
 }
 
@@ -310,7 +310,7 @@ fn anchorless_tail_residue_round_trips_from_driver_to_resolve() -> Result<()> {
         assert!(settled.anchors.is_empty());
         assert_eq!(settled.why, expected_why);
         assert_eq!(settled.resolved.len(), 1);
-        assert_eq!(settled.resolved[0].content_hash, "ours");
+        assert_eq!(&*settled.resolved[0].content_hash, "ours");
     }
     Ok(())
 }
@@ -365,7 +365,7 @@ fn one_sided_why_edit_stays_settled_while_records_cross_driver_drift_and_resolve
     let settled = read_span(&repo, "audit")?;
     assert_eq!(settled.why, "settled why edit");
     assert_eq!(settled.resolved.len(), 1);
-    assert_eq!(settled.resolved[0].content_hash, "ours");
+    assert_eq!(&*settled.resolved[0].content_hash, "ours");
     Ok(())
 }
 
@@ -402,6 +402,6 @@ fn drift_fix_preserves_divergent_sections_as_residue_then_resolves() -> Result<(
     assert!(ours.status.success(), "{}", String::from_utf8_lossy(&ours.stderr));
     let settled = read_span(&repo, "audit")?;
     assert_eq!(settled.resolved.len(), 1);
-    assert_eq!(settled.resolved[0].content_hash, "ours");
+    assert_eq!(&*settled.resolved[0].content_hash, "ours");
     Ok(())
 }

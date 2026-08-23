@@ -27,11 +27,11 @@ fn record(side: &str, index: usize) -> ResolvedRecord {
     ResolvedRecord {
         timestamp: "2026-08-14T00:00:00Z".into(),
         command: ResolveCommand::Add,
-        path: format!("src/{side}-{index:05}.rs"),
+        path: format!("src/{side}-{index:05}.rs").into(),
         start_line: index as u32 + 1,
         end_line: index as u32 + 1,
         algorithm: "rk64".into(),
-        content_hash: format!("{index:016x}"),
+        content_hash: format!("{index:016x}").into(),
     }
 }
 

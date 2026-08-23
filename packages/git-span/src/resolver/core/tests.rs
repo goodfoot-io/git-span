@@ -356,11 +356,11 @@ fn commit_span(dir: &std::path::Path, name: &str, anchors: &[(&str, u32, u32)], 
             git_span_core::cheap_fingerprint_with_extent(&bytes, &extent),
         );
         records.push(crate::span_file::AnchorRecord {
-            path: (*path).to_string(),
+            path: (*path).into(),
             start_line: *start,
             end_line: *end,
-            algorithm: git_span_core::RK64_ALGORITHM.to_string(),
-            content_hash,
+            algorithm: git_span_core::RK64_ALGORITHM.into(),
+            content_hash: content_hash.into(),
         });
     }
     let mf = crate::span_file::SpanFile {

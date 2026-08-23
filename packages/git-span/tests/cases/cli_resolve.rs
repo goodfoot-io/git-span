@@ -599,11 +599,11 @@ fn resolve_config_conflict_settlement_unit_test() -> Result<()> {
     let gix_repo = repo.gix_repo()?;
 
     let anchor = |hash: &str| AnchorRecord {
-        path: "file1.txt".to_string(),
+        path: "file1.txt".into(),
         start_line: 1,
         end_line: 5,
-        algorithm: "rk64".to_string(),
-        content_hash: hash.to_string(),
+        algorithm: "rk64".into(),
+        content_hash: hash.into(),
     };
     let h1 = line_slice_hash(ORIGINAL, 1, 5);
     let ours_config = SpanConfig {
@@ -1475,7 +1475,7 @@ fn resolve_round_trips_url_ending_why_prose_the_old_gate_refused() -> Result<()>
     // anchor would show up here as an extra record.
     let parsed = SpanFile::parse(&span)?;
     assert_eq!(parsed.anchors.len(), 1, "exactly one anchor; span:\n{span}");
-    assert_eq!(parsed.anchors[0].path, "file1.txt");
+    assert_eq!(&*parsed.anchors[0].path, "file1.txt");
     assert_eq!(parsed.why.trim(), "docs at https://example.com");
     Ok(())
 }
@@ -3014,7 +3014,7 @@ fn resolve_still_settles_a_genuine_anchor_record_before_the_separator() -> Resul
             parsed
                 .anchors
                 .iter()
-                .any(|a| a.path == expected_path && a.content_hash == OTHER_HASH),
+                .any(|a| *a.path == *expected_path && *a.content_hash == *OTHER_HASH),
             "ours' side of the contested anchor must be tracked; span:\n{span}"
         );
     }

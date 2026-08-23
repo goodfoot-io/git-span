@@ -51,7 +51,7 @@ fn read_head_present() {
         .unwrap()
         .expect("should exist");
     assert_eq!(span.anchors.len(), 1);
-    assert_eq!(span.anchors[0].path, "file1.txt");
+    assert_eq!(&*span.anchors[0].path, "file1.txt");
     assert_eq!(span.why, "test span");
 }
 

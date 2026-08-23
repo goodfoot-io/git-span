@@ -217,11 +217,11 @@ fn setup_interior_anchor_repo() -> BenchRepo {
     fs::create_dir_all(p.join(".span")).expect("create .span");
     let target_mf = git_span::span_file::SpanFile {
         anchors: vec![git_span::span_file::AnchorRecord {
-            path: "src.txt".to_string(),
+            path: "src.txt".into(),
             start_line: 1,
             end_line: 5,
             algorithm: git_span_core::RK64_ALGORITHM.into(),
-            content_hash: mk_hash(src_body.as_bytes()),
+            content_hash: mk_hash(src_body.as_bytes()).into(),
         }],
         why: "interior-anchor corpus: ordinary target span".to_string(),
         resolved: Vec::new(),
@@ -239,11 +239,11 @@ fn setup_interior_anchor_repo() -> BenchRepo {
     let target_bytes = fs::read(p.join(".span").join("target")).expect("read target span");
     let interior_mf = git_span::span_file::SpanFile {
         anchors: vec![git_span::span_file::AnchorRecord {
-            path: ".span/target".to_string(),
+            path: ".span/target".into(),
             start_line: 1,
             end_line: 5,
             algorithm: git_span_core::RK64_ALGORITHM.into(),
-            content_hash: mk_hash(&target_bytes),
+            content_hash: mk_hash(&target_bytes).into(),
         }],
         why: "interior-anchor corpus: anchor points inside .span/".to_string(),
         resolved: Vec::new(),
