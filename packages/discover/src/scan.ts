@@ -252,7 +252,7 @@ function computeCompiledSiblings(candidates: readonly string[]): Set<string> {
  * @param literal - Raw text with no wildcard meaning.
  * @returns `literal`, safe to embed in a `RegExp` source string.
  */
-function escapeRegExp(literal: string): string {
+export function escapeRegExp(literal: string): string {
   return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 

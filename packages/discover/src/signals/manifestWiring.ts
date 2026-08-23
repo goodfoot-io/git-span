@@ -11,6 +11,7 @@
  * @summary Detects manifest-declared ids wired up in registrar source files.
  */
 
+import { escapeRegExp } from '../scan.js';
 import type { Candidate, DiscoverConfig, Loc, RepoHistory, RepoScan, Signal } from '../types.js';
 
 const SIGNAL_NAME = 'manifest-wiring';
@@ -92,10 +93,6 @@ function collectContributedIds(contributes: Record<string, unknown>): string[] {
   collectArrayIds(contributes['keybindings'], 'command', ids);
   collectContainerMapIds(contributes['menus'], 'command', ids);
   return [...ids].sort();
-}
-
-function escapeRegExp(literal: string): string {
-  return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 interface IdMatch {

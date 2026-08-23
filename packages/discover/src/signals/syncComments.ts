@@ -8,6 +8,7 @@
 
 import type { PathRef } from '../paths.js';
 import { buildPathExtractor } from '../paths.js';
+import { escapeRegExp } from '../scan.js';
 import type { Candidate, DiscoverConfig, Loc, RepoHistory, RepoScan, Signal } from '../types.js';
 
 const SIGNAL_NAME = 'sync-comments';
@@ -321,13 +322,18 @@ function firstNonSelfFiles(postings: readonly IdentHit[] | undefined, sourceFile
  * matches are known; excluding one requester's file afterwards still leaves
  * enough entries to apply the match cap.
  *
+ * The identifier is matched as its literal text: it is escaped before
+ * interpolation (the grammar admits `$` and `.`), and bounded by
+ * token-boundary lookarounds instead of `\b`, because `$` is not a word
+ * character and `\b` therefore cannot bound an identifier edged by `$`.
+ *
  * @param scan - Working-tree snapshot to search.
  * @param ident - Identifier to search for as a whole word.
  * @returns Matching files in scan order with their first-occurrence line,
  *   capped just past the rejection threshold.
  */
 function scanWholeWordMatches(scan: RepoScan, ident: string): IdentHit[] {
-  const wordRe = new RegExp(`\\b${ident}\\b`);
+  const wordRe = new RegExp(`(?<![\\w$])${escapeRegExp(ident)}(?![\\w$])`);
   const hits: IdentHit[] = [];
   for (const otherFile of scan.files) {
     const otherLines = scan.lines.get(otherFile);
