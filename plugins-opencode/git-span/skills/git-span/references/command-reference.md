@@ -184,6 +184,8 @@ git span remove <name> <anchor>...                    # remove anchors from .spa
 git span replace <name> <old-anchor> <new-anchor>     # atomic swap: retire old, install new, or nothing
 git span why <name>                                   # print current why
 git span why <name> [<text>] [--format human|json] # write a new why into .span/<name> (json = write mode only)
+git span config <name>                                # print the effective [config]: all three keys, defaults included
+git span config <name> <key> <value>                  # set one key; back to defaults removes the whole block
 git add .span && git commit -o .span              # persist the edits
 ```
 
@@ -224,6 +226,16 @@ unknown name prints `` `<name>` has no why recorded. `` at exit 0, and
 a positional argument on an unknown name silently **creates** a new, anchor-less span with that
 why. If a `why` you expected to update instead reads as freshly created,
 double-check the span name for typos with `git span list`.
+
+`git span config` is the opposite of `why`: it never creates. The accepted keys are exactly
+the parser's — `copy_detection`, `ignore_whitespace`, `follow_moves`; values the wire names
+(`off`, `same-commit`, `any-file-in-commit`, `any-file-in-repo`) or `true`/`false`. Rejected
+keys and values exit 1 naming the accepted set, before any file I/O, so the span stays
+byte-identical. A write reports key, previous value, and new value; setting a key to its
+current value says nothing changed and rewrites nothing; and when every stored key equals its
+documented default (`same-commit`/`false`/`false`) the whole `[config]` block disappears,
+because that is what the serializer emits. A span whose file does not parse is refused —
+recovery for such spans is `git span resolve`'s job.
 
 ## Resolution audit records
 

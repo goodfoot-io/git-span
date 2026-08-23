@@ -34,6 +34,7 @@ Common command shape:
 git span doctor
 git span add checkout-request-flow src/client.ts#L10-L40 src/server.ts#L20-L64
 git span why checkout-request-flow "The browser initiates the charge request that the Stripe-backed server validates; the server contract is authoritative for accepted fields."
+git span config checkout-request-flow copy_detection any-file-in-repo   # set one resolver knob; bare `git span config <name>` reads all three
 git add .span && git commit -m "Record checkout-request-flow span"
 git span drift checkout-request-flow
 git span replace checkout-request-flow src/client.ts#L10-L40 src/client.ts#L12-L42   # atomic swap: retire the old anchor, install the new, or nothing
