@@ -36,19 +36,30 @@ if [[ "$BRANCH" != "main" ]]; then
   exit 1
 fi
 
+# --- Origin sync check ---
+git -C "$REPO_ROOT" fetch origin main
+LOCAL_HEAD=$(git -C "$REPO_ROOT" rev-parse HEAD)
+ORIGIN_MAIN=$(git -C "$REPO_ROOT" rev-parse origin/main)
+if [[ "$LOCAL_HEAD" != "$ORIGIN_MAIN" ]]; then
+  echo "ERROR: Local 'main' ($LOCAL_HEAD) does not match origin/main ($ORIGIN_MAIN)." >&2
+  echo "       Fast-forward or rebase local main onto origin/main before releasing." >&2
+  exit 1
+fi
+
 # --- Tag existence check ---
 if git -C "$REPO_ROOT" rev-parse "$TAG" >/dev/null 2>&1; then
   echo "ERROR: Tag '$TAG' already exists locally." >&2
   exit 1
 fi
-if git -C "$REPO_ROOT" ls-remote --tags origin "$TAG" | grep -q "$TAG"; then
+REMOTE_TAGS=$(git -C "$REPO_ROOT" ls-remote --tags origin "refs/tags/$TAG")
+if [[ -n "$REMOTE_TAGS" ]]; then
   echo "ERROR: Tag '$TAG' already exists on remote." >&2
   exit 1
 fi
 
-# --- Uncommitted changes check ---
-if ! git -C "$REPO_ROOT" diff --quiet || ! git -C "$REPO_ROOT" diff --cached --quiet; then
-  echo "ERROR: There are uncommitted changes. Commit or stash them before releasing." >&2
+# --- Uncommitted changes check (tracked and untracked) ---
+if [[ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]]; then
+  echo "ERROR: There are uncommitted or untracked changes. Commit or stash them before releasing." >&2
   exit 1
 fi
 
