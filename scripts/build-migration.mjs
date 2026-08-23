@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+
 // Bundle scripts/span-ref-to-tracked-file.mjs into a single self-contained
 // CommonJS file. rkyv-js is not published to npm and ships TypeScript sources
 // with no built `dist/`, so esbuild compiles its `src/` and inlines it. The
@@ -8,11 +9,11 @@
 //   node scripts/build-migration.mjs            # build only
 //   node scripts/build-migration.mjs --run ...  # build, then run with args
 
-import { build } from 'esbuild';
-import { fileURLToPath } from 'node:url';
-import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { build } from 'esbuild';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..');
@@ -33,10 +34,10 @@ await build({
   alias: { 'rkyv-js': join(rkyvPkgRoot, 'src', 'index.ts') },
   // Node builtins stay external; everything else (rkyv-js src) is inlined.
   packages: 'bundle',
-  logLevel: 'info',
+  logLevel: 'info'
 });
 
-console.log(`built ${outfile.replace(repoRoot + '/', '')}`);
+console.log(`built ${outfile.replace(`${repoRoot}/`, '')}`);
 
 const runIdx = process.argv.indexOf('--run');
 if (runIdx !== -1) {

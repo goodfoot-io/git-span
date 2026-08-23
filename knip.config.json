@@ -1,13 +1,13 @@
 {
   "workspaces": {
     ".": {
-      "entry": [".claude/**/*.{js,mjs,ts}", ".devcontainer/**/*.{js,mjs,ts}"],
-      "project": [".claude/**/*.{js,mjs,ts}", ".devcontainer/**/*.{js,mjs,ts}"],
+      "entry": [".claude/**/*.{js,mjs,ts}", ".devcontainer/**/*.{js,mjs,ts}", "scripts/*.mjs"],
+      "project": [".claude/**/*.{js,mjs,ts}", ".devcontainer/**/*.{js,mjs,ts}", "scripts/*.mjs"],
       "ignore": [".worktrees/**"]
     },
     "packages/*": {
-      "entry": ["src/**/*.ts", "src/**/*.tsx", "test/**/*.{ts,tsx}", "scripts/**/*.{js,ts}"],
-      "project": ["src/**/*.ts", "src/**/*.tsx", "test/**/*.{ts,tsx}", "scripts/**/*.{js,ts}"],
+      "entry": ["src/**/*.ts", "src/**/*.tsx", "test/**/*.{ts,tsx}", "scripts/**/*.{js,mjs,ts}"],
+      "project": ["src/**/*.ts", "src/**/*.tsx", "test/**/*.{ts,tsx}", "scripts/**/*.{js,mjs,ts}"],
       "ignore": ["node_modules/**", "dist/**", "build/**", "test/fixtures/**"]
     },
     "packages/mini-swe-agent": {

@@ -116,7 +116,7 @@ if (isStop) {
 // If there's an existing PID file, stop first
 const existingPid = readPid();
 if (existingPid) {
-  log('Existing dev process found (PID', existingPid + '). Stopping first.');
+  log('Existing dev process found (PID', `${existingPid}). Stopping first.`);
   stop();
   // Give it time to release ports
   await new Promise((r) => setTimeout(r, 1000));
@@ -134,7 +134,7 @@ if (!existsSync(SOURCE_DIR)) {
   log('.source/ directory not found; running fumadocs:generate...');
   const generate = spawn('yarn', ['run', 'fumadocs:generate'], {
     stdio: 'inherit',
-    cwd: path.resolve(__dirname, '..'),
+    cwd: path.resolve(__dirname, '..')
   });
   await new Promise((resolve, reject) => {
     generate.on('exit', (code) =>
@@ -155,10 +155,7 @@ const children = [vite];
 // Tunnel health check and respawn helpers
 function scheduleTunnelRestart() {
   if (shuttingDown) return;
-  const delay = Math.min(
-    TUNNEL_BACKOFF_MIN_MS * Math.pow(2, restartAttempt),
-    TUNNEL_BACKOFF_MAX_MS
-  );
+  const delay = Math.min(TUNNEL_BACKOFF_MIN_MS * 2 ** restartAttempt, TUNNEL_BACKOFF_MAX_MS);
   restartAttempt++;
   log(`Scheduling tunnel restart in ${delay}ms (attempt ${restartAttempt})`);
   restartTimer = setTimeout(() => {
@@ -172,7 +169,7 @@ async function checkTunnelHealth() {
   try {
     await fetch('https://local.git-span.com/', {
       signal: AbortSignal.timeout(TUNNEL_HEALTH_FETCH_TIMEOUT_MS),
-      redirect: 'manual',
+      redirect: 'manual'
     });
     // Any HTTP response means the tunnel is forwarding
     consecutiveHealthFails = 0;
@@ -195,7 +192,7 @@ function spawnTunnel() {
   if (shuttingDown) return;
   tunnel = spawn('cloudflared', ['tunnel', 'run', '--token', tunnelToken], {
     stdio: 'inherit',
-    detached: true,
+    detached: true
   });
   children.push(tunnel);
 
@@ -208,7 +205,9 @@ function spawnTunnel() {
 
   tunnel.on('error', (errMsg) => {
     err('cloudflared tunnel error:', errMsg.message);
-    err('Is cloudflared installed? See https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/');
+    err(
+      'Is cloudflared installed? See https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/'
+    );
     if (!shuttingDown) {
       scheduleTunnelRestart();
     }
@@ -222,7 +221,7 @@ if (tunnelToken) {
 
 const pgid = vite.pid;
 writePid(pgid);
-log('Dev server started (PID', pgid + '). Vite running on http://localhost:' + VITE_PORT);
+log('Dev server started (PID', `${pgid}). Vite running on http://localhost:${VITE_PORT}`);
 
 // Graceful shutdown handler
 function shutdown() {

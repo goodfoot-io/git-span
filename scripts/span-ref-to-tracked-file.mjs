@@ -27,10 +27,10 @@
 //                  refs/spans-index/v1/*).
 
 import { execFileSync } from 'node:child_process';
-import { parseArgs } from 'node:util';
 import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { join, dirname, isAbsolute, normalize } from 'node:path';
+import { dirname, isAbsolute, join, normalize } from 'node:path';
+import { parseArgs } from 'node:util';
 import * as r from 'rkyv-js';
 
 // --- Legacy SpanArchive schema (rkyv 0.8), in field-declaration order --------
@@ -39,31 +39,31 @@ import * as r from 'rkyv-js';
 // NOT serialized, so it is absent here.
 const AnchorExtent = r.taggedEnum({
   WholeFile: r.unit,
-  LineRange: r.struct({ start: r.u32, end: r.u32 }),
+  LineRange: r.struct({ start: r.u32, end: r.u32 })
 });
 const AnchorEntry = r.struct({
   anchor_sha: r.string,
   created_at: r.string,
   path: r.string,
   extent: AnchorExtent,
-  blob: r.string,
+  blob: r.string
 });
 const CopyDetection = r.taggedEnum({
   Off: r.unit,
   SameCommit: r.unit,
   AnyFileInCommit: r.unit,
-  AnyFileInRepo: r.unit,
+  AnyFileInRepo: r.unit
 });
 const SpanConfig = r.struct({
   copy_detection: CopyDetection,
   ignore_whitespace: r.bool,
-  follow_moves: r.bool,
+  follow_moves: r.bool
 });
 const SpanArchive = r.struct({
   name: r.string,
   anchors_v2: r.vec(r.tuple(r.string, AnchorEntry)),
   message: r.string,
-  config: SpanConfig,
+  config: SpanConfig
 });
 
 const FORMAT_VERSION = 0x00;
@@ -74,8 +74,8 @@ const { values } = parseArgs({
   options: {
     'dry-run': { type: 'boolean', default: false },
     'span-dir': { type: 'string' },
-    'prune-refs': { type: 'boolean', default: false },
-  },
+    'prune-refs': { type: 'boolean', default: false }
+  }
 });
 const dryRun = values['dry-run'];
 
@@ -83,7 +83,7 @@ function git(args, { buffer = false, input } = {}) {
   return execFileSync('git', args, {
     input,
     encoding: buffer ? 'buffer' : 'utf8',
-    maxBuffer: 512 * 1024 * 1024,
+    maxBuffer: 512 * 1024 * 1024
   });
 }
 function gitTry(args) {
@@ -98,11 +98,7 @@ const repoRoot = git(['rev-parse', '--show-toplevel']).trim();
 
 // --- span root resolution + validation (main-78) ----------------------------
 function resolveSpanRoot() {
-  const candidate =
-    values['span-dir'] ??
-    process.env.GIT_SPAN_DIR ??
-    gitTry(['config', 'git-span.dir']) ??
-    '.span';
+  const candidate = values['span-dir'] ?? process.env.GIT_SPAN_DIR ?? gitTry(['config', 'git-span.dir']) ?? '.span';
   if (isAbsolute(candidate)) {
     throw new Error(`span root must be repo-relative, got absolute: ${candidate}`);
   }
@@ -173,7 +169,7 @@ function extentSha256(blobOid, extent) {
     if (startByte === null) startByte = buf.length;
     slice = buf.subarray(startByte, endByte);
   }
-  return 'sha256:' + createHash('sha256').update(slice).digest('hex');
+  return `sha256:${createHash('sha256').update(slice).digest('hex')}`;
 }
 
 function anchorAddress(a) {
@@ -221,13 +217,11 @@ for (const { name, oid } of blobs) {
   written++;
 }
 
-console.log(
-  `${dryRun ? '[dry-run] ' : ''}${written}/${blobs.length} span file(s) under ${spanRoot}/`,
-);
+console.log(`${dryRun ? '[dry-run] ' : ''}${written}/${blobs.length} span file(s) under ${spanRoot}/`);
 console.log(
   dryRun
     ? '[dry-run] after a real run: git add the span root and commit.'
-    : `Next: git add ${spanRoot} && git commit -m "Migrate spans to tracked files"`,
+    : `Next: git add ${spanRoot} && git commit -m "Migrate spans to tracked files"`
 );
 
 // --- optional: prune legacy ref namespaces ----------------------------------
@@ -244,7 +238,7 @@ if (values['prune-refs']) {
     console.log(`[dry-run] would delete ${refs.length} legacy ref(s):`);
     for (const ref of refs) console.log(`  ${ref}`);
   } else {
-    git(['update-ref', '--stdin'], { input: refs.map((ref) => `delete ${ref}`).join('\n') + '\n' });
+    git(['update-ref', '--stdin'], { input: `${refs.map((ref) => `delete ${ref}`).join('\n')}\n` });
     console.log(`Deleted ${refs.length} legacy ref(s).`);
   }
 }

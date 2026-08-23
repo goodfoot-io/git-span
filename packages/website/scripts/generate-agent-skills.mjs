@@ -202,7 +202,8 @@ export const agentSkillsPublication: AgentSkillsPublication = ${json};
 // The direct-invocation guard compares realpaths, not URL strings: on
 // case-insensitive filesystems two spellings of one path must still compare
 // equal, and a symlinked invocation is the same script.
-const invokedDirectly = process.argv[1] !== undefined && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+const invokedDirectly =
+  process.argv[1] !== undefined && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
 
 if (invokedDirectly) {
   emit(buildPublication(defaultSkillsRoot));

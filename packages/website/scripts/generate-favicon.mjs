@@ -19,15 +19,11 @@ if (!source.startsWith(`${openingTag}\n`) || !source.endsWith('</svg>\n')) {
 const squareSvg = source
   .replace(
     openingTag,
-    '<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">\n<g transform="translate(0 24)">',
+    '<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">\n<g transform="translate(0 24)">'
   )
   .replace('</svg>\n', '</g>\n</svg>\n');
 writeFileSync(svgPath, squareSvg);
-execFileSync(
-  'magick',
-  ['-background', 'none', svgPath, '-resize', '48x48', pngPath],
-  { stdio: 'inherit' },
-);
+execFileSync('magick', ['-background', 'none', svgPath, '-resize', '48x48', pngPath], { stdio: 'inherit' });
 
 console.log(`Wrote ${svgPath} with the logo centered in a square viewport`);
 console.log(`Wrote ${pngPath} as a 48x48 transparent raster`);

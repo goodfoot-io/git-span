@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { isAbsolute, join, matchesGlob, normalize, relative, sep } from 'node:path';
 
 function fail(message) {
@@ -22,8 +22,7 @@ function gitTry(args) {
 }
 
 function resolveSpanRoot(repoRoot) {
-  const configured =
-    process.env.GIT_SPAN_DIR || gitTry(['config', '--get', 'git-span.dir']) || '.span';
+  const configured = process.env.GIT_SPAN_DIR || gitTry(['config', '--get', 'git-span.dir']) || '.span';
   if (isAbsolute(configured)) {
     fail(`span root must be repository-relative: ${configured}`);
   }
@@ -161,7 +160,7 @@ function maximalCliques(graph, candidates) {
       search(
         new Set(included).add(vertex),
         new Set([...remaining].filter((n) => adjacency.has(n))),
-        new Set([...excluded].filter((n) => adjacency.has(n))),
+        new Set([...excluded].filter((n) => adjacency.has(n)))
       );
       remaining.delete(vertex);
       excluded.add(vertex);
@@ -180,9 +179,7 @@ function orderMembers(graph, clique) {
     for (const other of clique) if (other !== path) sum += edges.get(other) ?? 0;
     return sum;
   };
-  return [...clique].sort(
-    (left, right) => internalWeight(right) - internalWeight(left) || left.localeCompare(right),
-  );
+  return [...clique].sort((left, right) => internalWeight(right) - internalWeight(left) || left.localeCompare(right));
 }
 
 // Expand a clique into a subtree. The clique's children are the maximal cliques
@@ -205,9 +202,7 @@ function expandClique(graph, members, ancestors, depth, maxDepth) {
   }
   if (candidates.size === 0) return node;
 
-  const childCliques = maximalCliques(graph, [...candidates].sort()).map((clique) =>
-    orderMembers(graph, clique),
-  );
+  const childCliques = maximalCliques(graph, [...candidates].sort()).map((clique) => orderMembers(graph, clique));
 
   // Order child cliques by the strongest edge linking them back to this clique.
   const linkWeight = (clique) => {
@@ -218,9 +213,7 @@ function expandClique(graph, members, ancestors, depth, maxDepth) {
     }
     return best;
   };
-  childCliques.sort(
-    (left, right) => linkWeight(right) - linkWeight(left) || left[0].localeCompare(right[0]),
-  );
+  childCliques.sort((left, right) => linkWeight(right) - linkWeight(left) || left[0].localeCompare(right[0]));
 
   for (const clique of childCliques) {
     node.children.push(expandClique(graph, clique, nextAncestors, depth + 1, maxDepth));
@@ -281,9 +274,7 @@ const graph = buildGraph(listSpanFiles(spanRoot));
 const roots = findRoots([...graph.keys()].sort(), repoRelativePatterns(repoRoot, patterns));
 
 // The matched roots are themselves grouped into cliques before expansion.
-const rootCliques = maximalCliques(graph, [...roots].sort()).map((clique) =>
-  orderMembers(graph, clique),
-);
+const rootCliques = maximalCliques(graph, [...roots].sort()).map((clique) => orderMembers(graph, clique));
 const internalWeight = (clique) => {
   let sum = 0;
   for (const left of clique) {
@@ -292,9 +283,7 @@ const internalWeight = (clique) => {
   }
   return sum;
 };
-rootCliques.sort(
-  (left, right) => internalWeight(right) - internalWeight(left) || left[0].localeCompare(right[0]),
-);
+rootCliques.sort((left, right) => internalWeight(right) - internalWeight(left) || left[0].localeCompare(right[0]));
 const forest = rootCliques.map((clique) => expandClique(graph, clique, new Set(), 0, maxDepth));
 
 console.log(forest.flatMap((node) => renderNode(node)).join('\n'));

@@ -65,19 +65,8 @@ const GENERATED_PATHS = {
     'node_modules/.vite',
     'node_modules/.vite-temp'
   ],
-  'packages/discover': [
-    'build',
-    'tsconfig.tsbuildinfo',
-    'node_modules/.vite',
-    'node_modules/.vite-temp'
-  ],
-  'packages/extension': [
-    'dist',
-    'out',
-    'tsconfig.tsbuildinfo',
-    'node_modules/.vite',
-    'node_modules/.vite-temp'
-  ],
+  'packages/discover': ['build', 'tsconfig.tsbuildinfo', 'node_modules/.vite', 'node_modules/.vite-temp'],
+  'packages/extension': ['dist', 'out', 'tsconfig.tsbuildinfo', 'node_modules/.vite', 'node_modules/.vite-temp'],
   // src/minisweagent_gitspan/hooks/ holds the hook bundles built from
   // packages/agent-hooks sources (`yarn build:hooks:mswea`) — they ship inside
   // the Python package so the wheel is self-contained; .venv is the package's
@@ -92,8 +81,7 @@ const GENERATED_PATHS = {
 // slot it expects; everything else is left absent for the tool to write fresh.
 const FILE_SUFFIXES = ['.tsbuildinfo'];
 
-const isFileArtifact = (relativePath) =>
-  FILE_SUFFIXES.some((suffix) => relativePath.endsWith(suffix));
+const isFileArtifact = (relativePath) => FILE_SUFFIXES.some((suffix) => relativePath.endsWith(suffix));
 
 const usage = () => {
   const scopes = Object.keys(GENERATED_PATHS).sort().join('\n  ');

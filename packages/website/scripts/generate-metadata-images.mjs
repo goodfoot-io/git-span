@@ -64,9 +64,7 @@ function renderTemplate({ logoSrc, tagline, backgroundColor, inkColor, width, he
   }
 
   const logoSize = Math.round(Math.min(width, height) * 0.32);
-  const taglineMarkup = tagline
-    ? `<p class="tagline">${escapeHtml(tagline)}</p>`
-    : '';
+  const taglineMarkup = tagline ? `<p class="tagline">${escapeHtml(tagline)}</p>` : '';
 
   const html = `<!doctype html>
 <html>
@@ -371,8 +369,8 @@ function renderLeftLockupTemplate({ logoSrc, tagline, backgroundColor, inkColor,
       tagline: Boolean(tagline),
       taglineColumnWidth: Math.round(taglineColumnWidth * TAGLINE_SCALE),
       taglineFontSize: Math.round(taglineFontSize * TAGLINE_SCALE),
-      shiftLeftPx: Math.round(width * TITLE_SHIFT_LEFT_RATIO),
-    },
+      shiftLeftPx: Math.round(width * TITLE_SHIFT_LEFT_RATIO)
+    }
   };
 }
 
@@ -405,7 +403,7 @@ const IMAGE_SETS = [
     backgroundColor: GROUND,
     inkColor: INK_PRIMARY,
     layout: 'left-lockup',
-    outputPath: path.join(PUBLIC_DIR, 'og-image.png'),
+    outputPath: path.join(PUBLIC_DIR, 'og-image.png')
   },
   {
     name: 'apple-touch-icon',
@@ -415,8 +413,8 @@ const IMAGE_SETS = [
     tagline: '',
     backgroundColor: GROUND,
     inkColor: INK_PRIMARY,
-    outputPath: path.join(PUBLIC_DIR, 'apple-touch-icon.png'),
-  },
+    outputPath: path.join(PUBLIC_DIR, 'apple-touch-icon.png')
+  }
 ];
 
 /**
@@ -497,7 +495,7 @@ async function main() {
     for (const set of IMAGE_SETS) {
       const page = await browser.newPage({
         viewport: { width: set.width, height: set.height },
-        deviceScaleFactor: 1,
+        deviceScaleFactor: 1
       });
       try {
         const htmlPath = path.join(workDir, `${set.name}.html`);
@@ -526,7 +524,7 @@ async function main() {
 
       const page = await browser.newPage({
         viewport: { width: 1200, height: 630 },
-        deviceScaleFactor: 1,
+        deviceScaleFactor: 1
       });
       try {
         const htmlPath = path.join(workDir, `doc-${slug.replace(/\//g, '-')}.html`);
@@ -539,7 +537,7 @@ async function main() {
             inkColor: INK_PRIMARY,
             width: 1200,
             height: 630,
-            layout: 'left-lockup',
+            layout: 'left-lockup'
           },
           htmlPath
         );

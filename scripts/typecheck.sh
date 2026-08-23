@@ -54,6 +54,17 @@ done
 # everything concurrently is safe. Every job runs to completion; the script
 # fails if any of them did.
 EXIT=0
+
+# Root release/migration tooling (scripts/*.mjs) has no package of its own;
+# typecheck it through the repo-root program scoped to those entry points.
+if [ -f "$WORKSPACE_ROOT/tsconfig.scripts.json" ]; then
+  echo "Running root scripts typecheck..."
+  (cd "$WORKSPACE_ROOT" && yarn tsc --noEmit -p tsconfig.scripts.json) &
+  PIDS+=($!)
+else
+  echo "Warning: tsconfig.scripts.json not found, skipping root scripts typecheck." >&2
+fi
+
 for PID in "${PIDS[@]}"; do
   wait "$PID" || EXIT=1
 done
