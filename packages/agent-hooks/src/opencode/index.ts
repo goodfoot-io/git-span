@@ -117,7 +117,9 @@ export function assemblePlugin(deps: PluginDeps = {}): GitSpanOpencodeHooks {
 
   return {
     dispose,
-    event: async ({ event }: { event: OpencodeEvent }) => {
+    // Default-destructured so a missing/undefined argument fails open like
+    // every adapter body instead of rejecting on destructure.
+    event: async ({ event }: { event?: OpencodeEvent } = {}) => {
       if (typeof event?.properties?.sessionID === 'string' && event.properties.sessionID.length > 0) {
         sessions.add(event.properties.sessionID);
       }

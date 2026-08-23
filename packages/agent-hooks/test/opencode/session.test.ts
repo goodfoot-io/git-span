@@ -275,6 +275,15 @@ describe('opencode plugin shell.env wiring', () => {
     }
   });
 
+  it('an undefined event argument resolves without acting — the assembled boundary fails open', async () => {
+    const { hooks, cleanup } = assembleOverScratch();
+    try {
+      await expect(hooks.event!(undefined as never)).resolves.toBeUndefined();
+    } finally {
+      cleanup();
+    }
+  });
+
   it('a shell.env with sessionID records the frame and idle prunes it at the turn boundary', async () => {
     const { hooks, stash, cleanup } = assembleOverScratch();
     try {
