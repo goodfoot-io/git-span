@@ -433,7 +433,10 @@ fn stdout_of(out: &std::process::Output) -> String {
 
 /// A pre-reservation span literally named `config` stays readable through
 /// the explicit `show` spelling — adding the subcommand must not strand
-/// legacy declarations.
+/// legacy declarations. The subcommand owns the bare token (`git span
+/// config` alone is a usage error about <NAME>), and naming the legacy span
+/// through the command hits the create-time reserved-name rule: exit 1,
+/// refused — never an implicit read or write of the legacy declaration.
 #[test]
 fn pre_reservation_span_named_config_still_reads_via_show() -> Result<()> {
     let repo = TestRepo::seeded()?;
@@ -449,9 +452,105 @@ fn pre_reservation_span_named_config_still_reads_via_show() -> Result<()> {
     let doc = shown.parse::<toml::Value>()?;
     assert_eq!(doc["name"].as_str(), Some("config"));
 
-    // The subcommand owns the bare token: `git span config` alone is a usage
-    // error about <NAME>, not an implicit read of the legacy span.
     let bare = repo.run_span(["config"])?;
     assert_eq!(bare.status.code(), Some(2));
+
+    let refused = repo.run_span(["config", "config"])?;
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert_eq!(
+        refused.status.code(),
+        Some(1),
+        "the reserved name must be refused, not read; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("reserved"),
+        "refusal must state the name is reserved; stderr: {stderr}"
+    );
+    Ok(())
+}
+
+// --- Witness matrix (failure-mode evaluation round 1) ----------------------
+
+/// The write form refuses a conflict-markered span exactly like the read
+/// form: conflict diagnosis, recovery step, and a byte-identical file — no
+/// replacement may materialize.
+#[test]
+fn write_conflicted_span_refuses_without_touching_the_file() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    seed_with_tail(&repo, "wconflict", "A why sentence.\n")?;
+    let span_path = repo.path().join(".span").join("wconflict");
+    let poisoned =
+        "<<<<<<< HEAD\na.txt sha256:111\n=======\nb.txt sha256:222\n>>>>>>> other\n";
+    std::fs::write(&span_path, poisoned)?;
+
+    let out = repo.run_span(["config", "wconflict", "copy_detection", "off"])?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "stderr: {stderr}");
+    assert!(
+        stderr.contains("conflict") && stderr.contains("git status"),
+        "write refusal must carry the conflict diagnosis and recovery step; stderr: {stderr}"
+    );
+    assert_eq!(
+        span_bytes(&repo, "wconflict")?,
+        poisoned.as_bytes(),
+        "a refused write must leave the poisoned file byte-identical"
+    );
+    Ok(())
+}
+
+/// Hierarchical names take the whole surface end-to-end: read, write into
+/// the nested file, and the tombstone refusal matching show's answer.
+#[test]
+fn hierarchical_names_read_write_and_tombstone_like_flat_ones() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.span_stdout(["add", "cat/slug", "file1.txt#L1-L3"])?;
+
+    let out = repo.span_stdout(["config", "cat/slug"])?;
+    assert!(
+        out.starts_with("Span `cat/slug` config:\ncopy_detection = \"same-commit\""),
+        "read form must address the hierarchical span; got: {out}"
+    );
+
+    repo.span_stdout(["config", "cat/slug", "ignore_whitespace", "true"])?;
+    let text = String::from_utf8(span_bytes(&repo, "cat/slug")?)?;
+    assert!(
+        text.contains("[config]\ncopy_detection = \"same-commit\"\nignore_whitespace = true"),
+        "write must land the canonical block in the nested span file; file:\n{text}"
+    );
+
+    std::fs::remove_file(repo.path().join(".span").join("cat").join("slug"))?;
+    let out = repo.run_span(["config", "cat/slug"])?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "stderr: {stderr}");
+    assert!(
+        stderr.contains("no span named `cat/slug`"),
+        "tombstoned hierarchical span must refuse like show; stderr: {stderr}"
+    );
+    Ok(())
+}
+
+/// A no-op against a defaults-only span reports already-set, leaves the
+/// file byte-identical, and materializes no `[config]` block.
+#[test]
+fn noop_write_on_blockless_span_creates_no_block() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    repo.span_stdout(["add", "bare", "file1.txt#L1-L3"])?;
+    let before = span_bytes(&repo, "bare")?;
+
+    let out = repo.span_stdout(["config", "bare", "copy_detection", "same-commit"])?;
+    assert_eq!(
+        out,
+        "copy_detection is already \"same-commit\" on span `bare`; nothing changed.\n"
+    );
+    assert_eq!(
+        span_bytes(&repo, "bare")?,
+        before,
+        "no-op must not rewrite the file"
+    );
+    let text = String::from_utf8(before)?;
+    assert!(
+        !text.contains("[config]"),
+        "no-op must not fabricate a block on a blockless span; file:\n{text}"
+    );
     Ok(())
 }
