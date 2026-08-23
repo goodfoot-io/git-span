@@ -51,6 +51,17 @@ import type {
 export const SPAN_FILE_VIEW_TYPE = 'gitSpan.spanFileViewer';
 
 /**
+ * Quiet window, in milliseconds, coalescing watcher-event bursts into one
+ * trailing re-render. A save written in chunks or a build touching many
+ * anchors' files fires the filesystem watcher once per event; without
+ * coalescing each event pays a full render pipeline (span-file read, anchor
+ * stats, `git span history` spawn). Every event reschedules this timer, so
+ * exactly one render runs after the storm passes -- reading the final on-disk
+ * state. The initial open-time render never waits on it.
+ */
+const WATCHER_RENDER_DEBOUNCE_MS = 300;
+
+/**
  * The outcome of a single `render()` pass, keyed by span document URI in
  * {@linkcode testOnlyRenderOutcomes}. Exists purely so end-to-end tests can
  * assert the render's outcome (as opposed to only that a
@@ -116,6 +127,47 @@ export const testOnlyLastPostedDocument: Map<string, PostedDocument> = ((): Map<
   }
   const created = new Map<string, PostedDocument>();
   globalRecord[TEST_ONLY_LAST_POSTED_DOCUMENT_GLOBAL_KEY] = created;
+  return created;
+})();
+
+/**
+ * Per-document watcher-coalescing counters. Fields are mutated in place by
+ * the provider's debounce; the map is the test's read side.
+ */
+export interface SpanWatcherCoalescingStats {
+  /** Watcher events observed for this document, coalesced or not. */
+  observedEvents: number;
+  /** Events absorbed because a debounced render was already scheduled within the quiet window. */
+  coalescedEvents: number;
+  /** Renders actually started by the debounce timer (excludes the immediate open-time render). */
+  debouncedRenders: number;
+}
+
+/**
+ * Key under which {@linkcode testOnlyWatcherCoalescingStats}'s backing `Map`
+ * is stashed on `globalThis`, for the same per-bundle sharing reason as
+ * {@linkcode TEST_ONLY_RENDER_OUTCOMES_GLOBAL_KEY}.
+ */
+const TEST_ONLY_WATCHER_COALESCING_STATS_GLOBAL_KEY = '__gitSpanSpanViewerTestOnlyWatcherCoalescingStats__';
+
+/**
+ * Test-only hook counting watcher events and how many renders the debounce
+ * actually started for each open span document, keyed by `uri.toString()`.
+ * Redundant-render behavior is otherwise invisible: every pipeline runs
+ * off-screen and only its posted result (or its suppression by the
+ * generation guard) can be observed. Not read by any production code path.
+ */
+export const testOnlyWatcherCoalescingStats: Map<string, SpanWatcherCoalescingStats> = ((): Map<
+  string,
+  SpanWatcherCoalescingStats
+> => {
+  const globalRecord = globalThis as unknown as Record<string, Map<string, SpanWatcherCoalescingStats> | undefined>;
+  const existing = globalRecord[TEST_ONLY_WATCHER_COALESCING_STATS_GLOBAL_KEY];
+  if (existing !== undefined) {
+    return existing;
+  }
+  const created = new Map<string, SpanWatcherCoalescingStats>();
+  globalRecord[TEST_ONLY_WATCHER_COALESCING_STATS_GLOBAL_KEY] = created;
   return created;
 })();
 
@@ -889,9 +941,19 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
     let renderGeneration = 0;
     /** The last successfully-built document, re-posted when the webview signals ready. */
     let lastPosted: PostedDocument | null = null;
+    /** Pending trailing-debounce timer for watcher-triggered re-renders, or `null` when idle. */
+    let watcherRenderTimer: ReturnType<typeof setTimeout> | null = null;
+    /** Cancel any pending debounced re-render so teardown never renders into a dead panel. */
+    const cancelPendingWatcherRender = (): void => {
+      if (watcherRenderTimer !== null) {
+        clearTimeout(watcherRenderTimer);
+        watcherRenderTimer = null;
+      }
+    };
     document.addDisposable(
       webviewPanel.onDidDispose(() => {
         disposed = true;
+        cancelPendingWatcherRender();
         inFlightController?.abort();
       })
     );
@@ -1233,9 +1295,62 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
     };
 
     /**
+     * Run one render pass and register watchers for every path it reports,
+     * so a render that discovers newly-referenced anchor files starts
+     * watching them. The completion path shared by the open-time render's
+     * watcher bootstrap and every debounced re-render.
+     *
+     * @returns Nothing.
+     * @throws Never.
+     */
+    const startRender = (): void => {
+      void render().then((renderedPaths) => {
+        if (renderedPaths !== null) {
+          for (const renderedPath of renderedPaths) {
+            ensureWatcher(renderedPath);
+          }
+        }
+      });
+    };
+
+    /**
+     * Coalesce a watcher event into the trailing-debounce timer: every event
+     * reschedules the quiet window, so a burst of events -- a chunked save, a
+     * build touching many anchors' files -- costs one render pipeline after
+     * the burst settles instead of one per event. The final state always
+     * renders because `render()` re-reads the span file and anchor content
+     * from disk when the timer fires.
+     *
+     * @returns Nothing.
+     * @throws Never.
+     */
+    const scheduleWatcherRender = (): void => {
+      let stats = testOnlyWatcherCoalescingStats.get(document.uri.toString());
+      if (stats === undefined) {
+        stats = { observedEvents: 0, coalescedEvents: 0, debouncedRenders: 0 };
+        testOnlyWatcherCoalescingStats.set(document.uri.toString(), stats);
+      }
+      stats.observedEvents++;
+      if (watcherRenderTimer !== null) {
+        clearTimeout(watcherRenderTimer);
+        stats.coalescedEvents++;
+      }
+      watcherRenderTimer = setTimeout(() => {
+        watcherRenderTimer = null;
+        if (disposed) {
+          // Fail-closed against teardown paths that ran without cancelling
+          // the timer: never render into a dead panel.
+          return;
+        }
+        stats.debouncedRenders++;
+        startRender();
+      }, WATCHER_RENDER_DEBOUNCE_MS);
+    };
+
+    /**
      * Add a filesystem watcher for `watchedPath` if one isn't already
-     * tracked, wiring it to trigger `render` and registering its disposal
-     * with `document`.
+     * tracked, wiring it to schedule a debounced re-render and registering
+     * its disposal with `document`.
      *
      * @param watchedPath - The filesystem path to watch.
      * @returns Nothing.
@@ -1246,26 +1361,23 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
         return;
       }
       const watcher = vscode.workspace.createFileSystemWatcher(watchedPath);
-      const onChange = (): void => {
-        void render().then((renderedPaths) => {
-          if (renderedPaths !== null) {
-            for (const renderedPath of renderedPaths) {
-              ensureWatcher(renderedPath);
-            }
-          }
-        });
-      };
-      watcher.onDidChange(onChange);
-      watcher.onDidCreate(onChange);
-      watcher.onDidDelete(onChange);
+      watcher.onDidChange(scheduleWatcherRender);
+      watcher.onDidCreate(scheduleWatcherRender);
+      watcher.onDidDelete(scheduleWatcherRender);
       watchers.set(watchedPath, watcher);
       document.addDisposable(watcher);
     };
 
     document.addDisposable(
       new vscode.Disposable(() => {
+        // Document teardown must not leave a debounced re-render pending:
+        // the timer would fire into a closed panel. Also drop this
+        // document's watcher-coalescing counters alongside the other
+        // per-document test hooks.
+        cancelPendingWatcherRender();
         testOnlyRenderOutcomes.delete(document.uri.toString());
         testOnlyLastPostedDocument.delete(document.uri.toString());
+        testOnlyWatcherCoalescingStats.delete(document.uri.toString());
       })
     );
 
