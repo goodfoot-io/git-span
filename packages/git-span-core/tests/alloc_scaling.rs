@@ -71,7 +71,6 @@ fn merge_allocations(n: usize) -> usize {
 }
 
 #[test]
-#[ignore = "baseline is linear (~15 allocs/anchor) until the Arc<str> switch lands"]
 fn merge_allocations_scale_with_distinct_strings_not_anchor_count() {
     // Warmup settles lazy per-thread allocator/RandomState initialization
     // so its one-time cost cannot pollute either measurement.
