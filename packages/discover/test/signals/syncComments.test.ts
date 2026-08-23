@@ -126,4 +126,93 @@ describe('syncCommentsSignal', () => {
     expect(candidates).toHaveLength(1);
     expect(candidates[0]?.score).toBe(0.86);
   });
+
+  it('resolves an identifier to the first line where it occurs in the target file', () => {
+    const scan = makeScan(['packages/a/one.ts', 'packages/a/two.ts'], {
+      'packages/a/one.ts': ['// must match `computeChecksum` exactly', 'export const one = 1;'].join('\n'),
+      'packages/a/two.ts': [
+        '// helper utilities',
+        'export function computeChecksum() { return 0; }',
+        'export const alias = computeChecksum;'
+      ].join('\n')
+    });
+
+    const candidates = syncCommentsSignal.run(scan, history, config);
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.locs[1]).toEqual({ path: 'packages/a/two.ts', start: 2, end: 2 });
+  });
+
+  it('excludes the comment file from identifier matches even when it sorts before them', () => {
+    const scan = makeScan(['packages/a-one.ts', 'packages/b-two.ts', 'packages/c-three.ts', 'packages/d-four.ts'], {
+      'packages/a-one.ts': ['// must match `sharedHelper` exactly', 'const sharedHelper = 1;'].join('\n'),
+      'packages/b-two.ts': 'const sharedHelper = 2;',
+      'packages/c-three.ts': 'const sharedHelper = 3;',
+      'packages/d-four.ts': 'const sharedHelper = 4;'
+    });
+
+    const candidates = syncCommentsSignal.run(scan, history, config);
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.locs.map((l) => l.path)).toEqual([
+      'packages/a-one.ts',
+      'packages/b-two.ts',
+      'packages/c-three.ts',
+      'packages/d-four.ts'
+    ]);
+  });
+
+  it('still couples a hyphenated identifier mentioned inside a longer compound', () => {
+    const scan = makeScan(['packages/a/one.ts', 'packages/a/two.ts'], {
+      'packages/a/one.ts': ['// must match `foo-bar` exactly', 'export const one = 1;'].join('\n'),
+      'packages/a/two.ts': 'export const fooBar = readConfig("foo-bar-baz");'
+    });
+
+    const candidates = syncCommentsSignal.run(scan, history, config);
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.score).toBe(0.6);
+    expect(candidates[0]?.locs.map((l) => l.path)).toEqual(['packages/a/one.ts', 'packages/a/two.ts']);
+  });
+
+  it('emits an earlier identifier candidate before a later path-target candidate', () => {
+    const scan = makeScan(['packages/a/one.ts', 'packages/a/two.ts'], {
+      'packages/a/one.ts': [
+        '// must match `computeChecksum` exactly',
+        'export const one = 1;',
+        'export const padding = 2;',
+        'export const morePadding = 3;',
+        'export const lastPadding = 4;',
+        '// keep this in sync with packages/a/two.ts'
+      ].join('\n'),
+      'packages/a/two.ts': ['export function computeChecksum() { return 0; }', 'export const two = 1;'].join('\n')
+    });
+
+    const candidates = syncCommentsSignal.run(scan, history, config);
+
+    expect(candidates.map((c) => c.score)).toEqual([0.6, 0.86]);
+    expect(candidates.map((c) => c.evidence)).toEqual([['sync:packages/a/one.ts#L1'], ['sync:packages/a/one.ts#L6']]);
+  });
+
+  it('serves repeated identifier requests with each commenter file excluded', () => {
+    const scan = makeScan(['packages/a/one.ts', 'packages/b/two.md', 'packages/c/three.ts'], {
+      'packages/a/one.ts': ['// must match `dupHelper` exactly', 'export const dupHelper = 1;'].join('\n'),
+      'packages/b/two.md': ['remember to update `dupHelper`', 'done'].join('\n'),
+      'packages/c/three.ts': 'export function dupHelper() { return 3; }'
+    });
+
+    const candidates = syncCommentsSignal.run(scan, history, config);
+
+    expect(candidates).toHaveLength(2);
+    expect(candidates[0]?.locs.map((l) => l.path)).toEqual([
+      'packages/a/one.ts',
+      'packages/b/two.md',
+      'packages/c/three.ts'
+    ]);
+    expect(candidates[1]?.locs.map((l) => l.path)).toEqual([
+      'packages/b/two.md',
+      'packages/a/one.ts',
+      'packages/c/three.ts'
+    ]);
+  });
 });
