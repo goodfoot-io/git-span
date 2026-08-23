@@ -67,7 +67,10 @@ export function createStaticPlanHandler(
 
       if (input?.tool === 'bash') {
         const narrowed = narrowBashArgs(args);
-        if (narrowed === null || callId.length === 0) return;
+        // Degraded ids skip planning symmetrically with the call-state stash's
+        // ingress guard: a ''-keyed session is outside every prune's reach,
+        // and the disk-backed planned-touch store rejects empty ids loudly.
+        if (narrowed === null || sessionId.length === 0 || callId.length === 0) return;
         const frame = resolveFrame(workdir, deps.directory);
         planBashTouches(narrowed.command, frame, sessionId, callId, logger, createDefaultPlannedTouchStore(layout));
         deps.trackPlannedCall(sessionId, callId);
@@ -76,7 +79,7 @@ export function createStaticPlanHandler(
 
       if (input?.tool === 'apply_patch') {
         const patchText = narrowApplyPatchText(args);
-        if (patchText === null || callId.length === 0) return;
+        if (patchText === null || sessionId.length === 0 || callId.length === 0) return;
         const cwd = resolveFrame(workdir, deps.directory);
         const repoRoot = resolveRepoRoot(cwd);
         if (repoRoot === null) return;

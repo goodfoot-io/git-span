@@ -57,6 +57,7 @@ interface RecordedTouch {
   cwd: string;
   offset?: number;
   limit?: number;
+  written?: string;
 }
 
 const { recorded } = vi.hoisted(() => ({ recorded: { calls: [] as RecordedTouch[] } }));
@@ -68,7 +69,8 @@ vi.mock('../../src/common/touch-core.js', async (importOriginal) => {
       filePath: input.filePath,
       cwd: input.cwd,
       offset: 'offset' in input ? input.offset : undefined,
-      limit: 'limit' in input ? input.limit : undefined
+      limit: 'limit' in input ? input.limit : undefined,
+      written: 'written' in input ? input.written : undefined
     });
   };
   return {
@@ -222,6 +224,19 @@ describe('cross-adapter contract — identical touch call sequences (Phase 3)', 
       },
       (afterOutput ?? { output: '', metadata: { output: '', exit: 0 } }) as never
     );
+  }
+
+  /** Drive the assembled plugin's after hook for a structured (non-bash) tool call. */
+  async function runOpencodeToolAfter(input: { tool: string; args: Record<string, unknown> }): Promise<void> {
+    const hooks = assemblePlugin({
+      directory: repoA.root,
+      layout,
+      memoFactory: inMemoryMemoFactory(),
+      logger: { warn: () => undefined }
+    });
+    await hooks['tool.execute.after']!({ sessionID: 'oc-structured', callID: `call-${opencodeCallSeq++}`, ...input }, {
+      output: ''
+    } as never);
   }
 
   /** One expected touch, relative to a base dir (absolutized inside each test). */
@@ -476,7 +491,7 @@ describe('cross-adapter contract — identical touch call sequences (Phase 3)', 
       await fixture.post(input as never, { logger: testLogger } as never);
       expect(warnings, fixture.sessionId).toEqual([]);
       expect(recorded.calls, fixture.sessionId).toEqual([
-        { filePath: join(repoA.root, 'f'), cwd: repoA.root, offset: undefined, limit: undefined }
+        { filePath: join(repoA.root, 'f'), cwd: repoA.root, offset: undefined, limit: undefined, written: '' }
       ]);
     }
 
@@ -506,7 +521,74 @@ describe('cross-adapter contract — identical touch call sequences (Phase 3)', 
       } as never
     );
     expect(recorded.calls).toEqual([
-      { filePath: join(repoA.root, 'f'), cwd: repoA.root, offset: undefined, limit: undefined }
+      { filePath: join(repoA.root, 'f'), cwd: repoA.root, offset: undefined, limit: undefined, written: '' }
     ]);
+  });
+
+  /**
+   * Empty write payloads (evaluation F3): `Write` with `content: ''` and an
+   * `Edit` collapsing to `newString: ''` are deletion-style writes — the
+   * Claude twin records `written: ''` for them, so OpenCode's narrows must
+   * not drop the touch at the argument edge.
+   */
+  /**
+   * Empty write payloads (evaluation F3): `Write` with `content: ''` and an
+   * `Edit` collapsing to `newString: ''` are deletion-style writes — the
+   * Claude twin records `written: ''` for them, so OpenCode's narrows must
+   * not drop the touch at the argument edge. Computed lazily: repoA exists
+   * only after the shared beforeAll.
+   */
+  const emptyPayloadExpected = () => [
+    { filePath: join(repoA.root, 'f'), cwd: repoA.root, offset: undefined, limit: undefined, written: '' }
+  ];
+
+  it('a write with empty content records the identical touch through Claude and OpenCode', async () => {
+    recorded.calls.length = 0;
+    await createClaudeHandler(
+      undefined,
+      inMemoryMemoFactory(),
+      layout
+    )(
+      {
+        session_id: 'empty-write',
+        cwd: repoA.root,
+        tool_name: 'Write',
+        tool_input: { file_path: join(repoA.root, 'f'), content: '' }
+      } as never,
+      { logger: claudeLogger } as never
+    );
+    expect(recorded.calls).toEqual(emptyPayloadExpected());
+
+    recorded.calls.length = 0;
+    await runOpencodeToolAfter({
+      tool: 'write',
+      args: { filePath: join(repoA.root, 'f'), content: '' }
+    });
+    expect(recorded.calls).toEqual(emptyPayloadExpected());
+  });
+
+  it('an edit collapsing to an empty newString records the identical touch through Claude and OpenCode', async () => {
+    recorded.calls.length = 0;
+    await createClaudeHandler(
+      undefined,
+      inMemoryMemoFactory(),
+      layout
+    )(
+      {
+        session_id: 'empty-edit',
+        cwd: repoA.root,
+        tool_name: 'Edit',
+        tool_input: { file_path: join(repoA.root, 'f'), old_string: 'line 1', new_string: '' }
+      } as never,
+      { logger: claudeLogger } as never
+    );
+    expect(recorded.calls).toEqual(emptyPayloadExpected());
+
+    recorded.calls.length = 0;
+    await runOpencodeToolAfter({
+      tool: 'edit',
+      args: { filePath: join(repoA.root, 'f'), oldString: 'line 1', newString: '' }
+    });
+    expect(recorded.calls).toEqual(emptyPayloadExpected());
   });
 });

@@ -361,17 +361,21 @@ plans between turns, and `session.deleted` — plus a final `dispose()` sweep at
 shutdown — eagerly retire the session memo and any remaining plans;
 opportunistic 30-day cleanup covers crashed sessions.
 
-A command that merely exits nonzero attributes normally under OpenCode — the
-bash tool returns with a numeric `exit`, and exit-gated join semantics apply
-(a short-circuited `&&` attributes nothing because its write never ran). Only
-host-level failures (invalid arguments, denied permission, spawn errors) skip
-the after hook entirely — such a call surfaces nothing, so even one carrying
-decisive post-state evidence, such as an expected replacement result, goes
+A command that merely exits nonzero still reaches the after hook under
+OpenCode — the bash tool returns with a numeric `exit`, and exit-gated join
+semantics apply (a short-circuited `&&` attributes nothing because its write
+never ran) — but like the twins' failed commands it can surface a write only
+when the parse provides decisive post-state evidence, such as an expected
+replacement result; an inconclusive write goes silent under a nonzero exit
+rather than firing as an existence-gated advisory. Only host-level failures
+(invalid arguments, denied permission, spawn errors) skip the after hook
+entirely — such a call surfaces nothing, so even one carrying decisive
+post-state evidence, such as an expected replacement result, goes
 unattributed. This is the degraded-parity caveat documented in
-`references/codex-install-and-trust.md`. Inconclusive writes and interrupted
-calls (an `exit: null` result suppresses like an interruption) stay silent.
-Response-derived reads remain a separate pass and share only the session memo,
-so a later read can surface context without duplicating command-derived output.
+`references/codex-install-and-trust.md`. Interrupted calls (an `exit: null`
+result suppresses like an interruption) stay silent. Response-derived reads
+remain a separate pass and share only the session memo, so a later read
+can surface context without duplicating command-derived output.
 
 The parser's candidate ceiling is 32 and is all-or-nothing: a bounded set is
 attributed completely or rejected before any touch. Planned records allow at

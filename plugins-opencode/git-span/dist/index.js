@@ -945,16 +945,16 @@ async function resolveChangesetUnfiltered(kind, all, cwd, git, paths) {
     return { paths: outgoing, range: base === null ? { kind: "unresolvable" } : { kind: "commits", base } };
   }
   if (kind === "status") {
-    const [staged2, tracked2] = await Promise.all([git.stagedPaths(cwd), git.trackedModifiedPaths(cwd)]);
-    return { paths: mergeUniquePaths(staged2, tracked2), range: { kind: "worktree" } };
+    const [staged2, tracked3] = await Promise.all([git.stagedPaths(cwd), git.trackedModifiedPaths(cwd)]);
+    return { paths: mergeUniquePaths(staged2, tracked3), range: { kind: "worktree" } };
   }
   if (paths && paths.length > 0) {
     return { paths: await git.pathspecPaths(paths, cwd), range: { kind: "worktree" } };
   }
   const staged = await git.stagedPaths(cwd);
   if (!all) return { paths: staged, range: { kind: "staged" } };
-  const tracked = await git.trackedModifiedPaths(cwd);
-  return { paths: mergeUniquePaths(staged, tracked), range: { kind: "worktree" } };
+  const tracked2 = await git.trackedModifiedPaths(cwd);
+  return { paths: mergeUniquePaths(staged, tracked2), range: { kind: "worktree" } };
 }
 async function resolveChangeset(kind, all, cwd, git, paths) {
   const changeset = await resolveChangesetUnfiltered(kind, all, cwd, git, paths);
@@ -1785,6 +1785,7 @@ function createAdvisorHandler(deps) {
       if (command === null) return;
       const sessionId = typeof input.sessionID === "string" ? input.sessionID : "";
       const callId = typeof input.callID === "string" ? input.callID : "";
+      const stashable = sessionId.length > 0 && callId.length > 0;
       const workdir = typeof args.workdir === "string" ? args.workdir : void 0;
       const cwd = resolveFrame(workdir, deps.directory);
       const parsed = parseGitCommand(command);
@@ -1809,7 +1810,7 @@ function createAdvisorHandler(deps) {
           if (result.kind === "environmental" || result.kind === "scan-failed") {
             logger.warn("git-span advisor allowed with an unresolved condition", { reason: result.reason });
           }
-          deps.stashReport(sessionId, callId, wrapGitSpanContext(result.reason));
+          if (stashable) deps.stashReport(sessionId, callId, wrapGitSpanContext(result.reason));
         }
       } catch (err) {
         if (err instanceof GitSpanHoldError) throw err;
@@ -7284,10 +7285,10 @@ function filterTrackedEligibility(candidates, options) {
   const query = options.queryTrackedFiles ?? queryTrackedFiles;
   for (const [repoRoot, group] of byRepo) {
     const paths = [...new Set(group.map(({ repoRelativePath }) => repoRelativePath))];
-    let tracked;
+    let tracked2;
     trackedQueryCount += 1;
     try {
-      tracked = query(repoRoot, paths);
+      tracked2 = query(repoRoot, paths);
     } catch (error) {
       errors.push({
         kind: "tracked-files-query-failed",
@@ -7297,7 +7298,7 @@ function filterTrackedEligibility(candidates, options) {
       dropped.push(...group.map(({ candidate }) => ({ candidate, reason: "eligibility-query-failed" })));
       continue;
     }
-    const normalizedTracked = new Set([...tracked].map(toPosix));
+    const normalizedTracked = new Set([...tracked2].map(toPosix));
     for (const scoped of group) {
       if (normalizedTracked.has(scoped.repoRelativePath)) eligible.push(scoped.candidate);
       else dropped.push({ candidate: scoped.candidate, reason: "untracked-path" });
@@ -9175,30 +9176,30 @@ function planBashTouches(command, cwd, sessionId, toolUseId, logger, store) {
   const candidates = parsed.resolved.filter(
     ({ span }) => span.operation === "delete" || requested.has(planGroupKey(span))
   );
-  const tracked = filterTrackedEligibility(
+  const tracked2 = filterTrackedEligibility(
     candidates.map((value) => ({ absolutePath: value.span.absolutePath, value })),
     { cwd }
   );
-  if (tracked.eligible.length === 0) {
+  if (tracked2.eligible.length === 0) {
     logger.info?.("git-span static attribution pre-plan", {
       resolved: parsed.resolved.length,
       unresolved: parsed.unresolved.length,
       unresolvedByIdiom: countBy(parsed.unresolved.map(({ idiom }) => idiom)),
       unresolvedByReason: countBy(parsed.unresolved.map(({ reasonCode }) => reasonCode)),
       planned: 0,
-      trackedDrops: tracked.dropped.length,
+      trackedDrops: tracked2.dropped.length,
       executionGateDrops: 0,
       parserLatencyMs: performance.now() - started,
-      ignoreQueryCount: tracked.ignoreQueryCount,
-      trackedQueryCount: tracked.trackedQueryCount,
-      eligibilityErrors: tracked.errors
+      ignoreQueryCount: tracked2.ignoreQueryCount,
+      trackedQueryCount: tracked2.trackedQueryCount,
+      eligibilityErrors: tracked2.errors
     });
     return;
   }
   const repoRoot = resolveRepoRoot(cwd);
   if (repoRoot === null) return;
   const groups = /* @__PURE__ */ new Map();
-  for (const { value } of tracked.eligible) {
+  for (const { value } of tracked2.eligible) {
     const key2 = planGroupKey(value.span);
     const group = groups.get(key2) ?? [];
     group.push(value);
@@ -9227,12 +9228,12 @@ function planBashTouches(command, cwd, sessionId, toolUseId, logger, store) {
     unresolvedByIdiom: countBy(parsed.unresolved.map(({ idiom }) => idiom)),
     unresolvedByReason: countBy(parsed.unresolved.map(({ reasonCode }) => reasonCode)),
     planned: touches.length,
-    trackedDrops: tracked.dropped.length,
+    trackedDrops: tracked2.dropped.length,
     executionGateDrops: 0,
     parserLatencyMs: performance.now() - started,
-    ignoreQueryCount: tracked.ignoreQueryCount,
-    trackedQueryCount: tracked.trackedQueryCount,
-    eligibilityErrors: tracked.errors
+    ignoreQueryCount: tracked2.ignoreQueryCount,
+    trackedQueryCount: tracked2.trackedQueryCount,
+    eligibilityErrors: tracked2.errors
   });
 }
 function plannedSpans(record2, cwd, logger) {
@@ -9450,6 +9451,11 @@ function stringField2(args, field) {
   const value = args[field];
   return typeof value === "string" && value.length > 0 ? value : void 0;
 }
+function writtenContentField(args, field) {
+  if (args === null || typeof args !== "object" || !(field in args)) return void 0;
+  const value = args[field];
+  return typeof value === "string" ? value : void 0;
+}
 function positiveIntField(args, field) {
   if (args === null || typeof args !== "object" || !(field in args)) return void 0;
   const value = args[field];
@@ -9470,13 +9476,13 @@ function narrowReadArgs(args) {
 }
 function narrowEditArgs(args) {
   const filePath = stringField2(args, "filePath");
-  const written = stringField2(args, "newString");
+  const written = writtenContentField(args, "newString");
   if (filePath === void 0 || written === void 0) return null;
   return { filePath, written };
 }
 function narrowWriteArgs(args) {
   const filePath = stringField2(args, "filePath");
-  const written = stringField2(args, "content");
+  const written = writtenContentField(args, "content");
   if (filePath === void 0 || written === void 0) return null;
   return { filePath, written };
 }
@@ -9518,11 +9524,11 @@ async function runPatchTouches(patchText, cwd, sessionId, stashed, executors, me
     })
   ).filter(({ absolutePath }) => !plannedPaths.has(absolutePath));
   const candidates = [...planned, ...fallback];
-  const tracked = filterTrackedEligibility(
+  const tracked2 = filterTrackedEligibility(
     candidates.map((value) => ({ absolutePath: value.absolutePath, value })),
     { cwd }
   );
-  const eligible = new Set(tracked.eligible.map(({ value }) => value));
+  const eligible = new Set(tracked2.eligible.map(({ value }) => value));
   for (const candidate of candidates) if (candidate.preTrackedDelete) eligible.add(candidate);
   const touches = [];
   for (const candidate of candidates) {
@@ -9556,8 +9562,14 @@ function createAfterHandler(deps) {
       const callId = typeof input?.callID === "string" ? input.callID : "";
       const args = input?.args ?? {};
       const forwarded = deps.takeReport(sessionId, callId);
+      if (forwarded !== null && output !== null && typeof output === "object") {
+        const part = `
+${forwarded.replace(/^\n+/, "")}`;
+        output.output = `${typeof output.output === "string" ? output.output : ""}${part}`;
+      }
       let blocks = [];
-      if (input?.tool === "bash") {
+      const idsUsable = sessionId.length > 0 && callId.length > 0;
+      if (idsUsable && input?.tool === "bash") {
         const narrowed = narrowBashArgs(args);
         if (narrowed !== null) {
           const shellCwd = deps.peekShellCwd(sessionId, callId);
@@ -9577,7 +9589,7 @@ function createAfterHandler(deps) {
           );
         }
         deps.forgetCall(sessionId, callId);
-      } else if (input?.tool === "read") {
+      } else if (idsUsable && input?.tool === "read") {
         const narrowed = narrowReadArgs(args);
         if (narrowed !== null) {
           const cwd = deps.directory;
@@ -9597,7 +9609,7 @@ function createAfterHandler(deps) {
             if (result.additionalContext !== null) blocks = [result.additionalContext];
           }
         }
-      } else if (input?.tool === "edit" || input?.tool === "write") {
+      } else if (idsUsable && (input?.tool === "edit" || input?.tool === "write")) {
         const narrowed = input.tool === "edit" ? narrowEditArgs(args) : narrowWriteArgs(args);
         if (narrowed !== null) {
           const cwd = deps.directory;
@@ -9617,7 +9629,7 @@ function createAfterHandler(deps) {
             if (result.additionalContext !== null) blocks = [result.additionalContext];
           }
         }
-      } else if (input?.tool === "apply_patch") {
+      } else if (idsUsable && input?.tool === "apply_patch") {
         const patchText = narrowApplyPatchText(args);
         if (patchText !== null) {
           const cwd = deps.directory;
@@ -9634,7 +9646,7 @@ function createAfterHandler(deps) {
         }
         deps.forgetCall(sessionId, callId);
       }
-      const combined = [...forwarded === null ? [] : [forwarded], ...blocks].map((part) => `
+      const combined = blocks.map((part) => `
 ${part.replace(/^\n+/, "")}`).join("");
       if (combined.length > 0 && output !== null && typeof output === "object") {
         output.output = (typeof output.output === "string" ? output.output : "") + combined;
@@ -9710,6 +9722,9 @@ function createDisposeHandler(deps) {
 function key(sessionId, callId) {
   return `${sessionId}:${callId}`;
 }
+function tracked(sessionId, callId) {
+  return sessionId.length > 0 && callId.length > 0;
+}
 function createOpencodeCallState() {
   const entries = /* @__PURE__ */ new Map();
   const bySession = /* @__PURE__ */ new Map();
@@ -9736,6 +9751,7 @@ function createOpencodeCallState() {
   }
   return {
     stashReport(sessionId, callId, block) {
+      if (!tracked(sessionId, callId)) return;
       const k = key(sessionId, callId);
       entryFor(k).report = block;
       indexOfSession(sessionId).add(k);
@@ -9748,6 +9764,7 @@ function createOpencodeCallState() {
       return typeof report === "string" ? report : null;
     },
     stashPatchPlan(sessionId, callId, plan) {
+      if (!tracked(sessionId, callId)) return;
       const k = key(sessionId, callId);
       entryFor(k).patchPlan = [...plan];
       indexOfSession(sessionId).add(k);
@@ -9760,6 +9777,7 @@ function createOpencodeCallState() {
       return Array.isArray(plan) ? plan : null;
     },
     trackShellCwd(sessionId, callId, cwd) {
+      if (!tracked(sessionId, callId)) return;
       const k = key(sessionId, callId);
       entryFor(k).shellCwd = cwd;
       indexOfSession(sessionId).add(k);
@@ -9769,6 +9787,7 @@ function createOpencodeCallState() {
       return typeof cwd === "string" ? cwd : null;
     },
     trackPlannedCall(sessionId, callId) {
+      if (!tracked(sessionId, callId)) return;
       const k = key(sessionId, callId);
       planned.add(k);
       indexOfSession(sessionId).add(k);
@@ -9815,7 +9834,7 @@ function createStaticPlanHandler(deps) {
       const workdir = typeof args.workdir === "string" ? args.workdir : void 0;
       if (input?.tool === "bash") {
         const narrowed = narrowBashArgs(args);
-        if (narrowed === null || callId.length === 0) return;
+        if (narrowed === null || sessionId.length === 0 || callId.length === 0) return;
         const frame = resolveFrame(workdir, deps.directory);
         planBashTouches(narrowed.command, frame, sessionId, callId, logger, createDefaultPlannedTouchStore(layout));
         deps.trackPlannedCall(sessionId, callId);
@@ -9823,7 +9842,7 @@ function createStaticPlanHandler(deps) {
       }
       if (input?.tool === "apply_patch") {
         const patchText = narrowApplyPatchText(args);
-        if (patchText === null || callId.length === 0) return;
+        if (patchText === null || sessionId.length === 0 || callId.length === 0) return;
         const cwd = resolveFrame(workdir, deps.directory);
         const repoRoot = resolveRepoRoot(cwd);
         if (repoRoot === null) return;
@@ -9832,11 +9851,11 @@ function createStaticPlanHandler(deps) {
           logger.warn("git-span apply_patch pre-plan resolved no anchors", { callId });
           return;
         }
-        const tracked = filterTrackedEligibility(
+        const tracked2 = filterTrackedEligibility(
           anchors.map((anchor) => ({ absolutePath: abspathAgainst(cwd, anchor.path), value: anchor })),
           { cwd }
         );
-        const planTouches = tracked.eligible.map(({ absolutePath, value: anchor }) => ({
+        const planTouches = tracked2.eligible.map(({ absolutePath, value: anchor }) => ({
           absolutePath,
           operation: anchor.absent ? "delete" : anchor.kind === "create" ? "create-overwrite" : "modify",
           ranges: anchor.range === void 0 ? [] : [anchor.range],
@@ -9844,10 +9863,10 @@ function createStaticPlanHandler(deps) {
         }));
         logger.info?.("git-span apply_patch pre-plan", {
           planned: planTouches.length,
-          trackedDrops: tracked.dropped.length,
-          ignoreQueryCount: tracked.ignoreQueryCount,
-          trackedQueryCount: tracked.trackedQueryCount,
-          eligibilityErrors: tracked.errors
+          trackedDrops: tracked2.dropped.length,
+          ignoreQueryCount: tracked2.ignoreQueryCount,
+          trackedQueryCount: tracked2.trackedQueryCount,
+          eligibilityErrors: tracked2.errors
         });
         if (planTouches.length > 0) deps.stashPatchPlan(sessionId, callId, planTouches);
       }

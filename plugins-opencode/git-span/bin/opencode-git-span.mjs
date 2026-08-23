@@ -9,8 +9,11 @@
  *   opencode-git-span --help
  *
  * Default target is `.opencode/` under the current working directory;
- * `--global` targets `.opencode/` under the user's home directory. Existing
- * files are overwritten, so re-running after an upgrade is safe.
+ * `--global` targets OpenCode's XDG config directory — `$XDG_CONFIG_HOME/opencode`
+ * when that variable is set, else `~/.config/opencode` — the location
+ * OpenCode actually scans for user-level skills and agents (upstream PR
+ * #6132 canonicalized it over `~/.opencode`). Existing files are
+ * overwritten, so re-running after an upgrade is safe.
  */
 
 import { cpSync, readdirSync, statSync } from 'node:fs';
@@ -24,7 +27,8 @@ Usage:
   npx opencode-git-span install [--global]
 
 Options:
-  --global   Install into <homedir>/.opencode/ instead of <cwd>/.opencode/
+  --global   Install into ~/.config/opencode (or $XDG_CONFIG_HOME/opencode)
+             instead of <cwd>/.opencode/
   -h, --help Show this help
 
 Copies:
@@ -77,7 +81,19 @@ if (command !== 'install') {
   fail(`missing required "install" command\n\n${USAGE}`);
 }
 
-const target = global ? resolve(homedir(), '.opencode') : resolve(process.cwd(), '.opencode');
+/**
+ * OpenCode's own global discovery resolves its config directory XDG-first:
+ * `$XDG_CONFIG_HOME/opencode` when the variable is set and non-empty, else
+ * `~/.config/opencode`. Matching it keeps the installer's output where the
+ * host actually scans.
+ */
+function globalTarget() {
+  const xdg = process.env.XDG_CONFIG_HOME;
+  const base = typeof xdg === 'string' && xdg.length > 0 ? xdg : join(homedir(), '.config');
+  return resolve(base, 'opencode');
+}
+
+const target = global ? globalTarget() : resolve(process.cwd(), '.opencode');
 
 const skillsSource = join(packageRoot, 'skills');
 const agentSource = join(packageRoot, 'agents', 'expert.md');
@@ -125,6 +141,17 @@ try {
 }
 console.log(`installed ${agentDestination}`);
 
+/**
+ * The destination named in the success summary: absolute for `--global`
+ * (a relative path from an unrelated cwd would be confusing ../.. noise),
+ * otherwise relative to the cwd when it stays inside it.
+ */
+function displayTarget() {
+  if (global) return target;
+  const rel = relative(process.cwd(), target);
+  return rel.length > 0 && !rel.startsWith('..') ? rel : target;
+}
+
 console.log(
-  `opencode-git-span: ${skillNames.length} skill${skillNames.length === 1 ? '' : 's'} + expert agent installed into ${relative(process.cwd(), target) || target}`
+  `opencode-git-span: ${skillNames.length} skill${skillNames.length === 1 ? '' : 's'} + expert agent installed into ${displayTarget()}`
 );

@@ -193,6 +193,35 @@ describe('opencode after hook — injection appends', () => {
     expect(output.output).toBe('\n<git-span>SCAN FAILED</git-span>');
   });
 
+  it('a consumed report lands even when a later stage throws — reports are never swallowed', async () => {
+    const repo = makeTrackedRepo();
+    try {
+      const sessionId = 'swallow';
+      const reports = new Map([[`${sessionId}:c`, '<git-span>ENV ADVISORY</git-span>']]);
+      const { handler } = createHandler({
+        directory: repo.root,
+        takeReport: (sid: string, callId: string) => reports.get(`${sid}:${callId}`) ?? null,
+        // Any thrower positioned after the consumption point stands in for the
+        // evaluated composition (planned-touch take on degraded ids): the
+        // already-consumed advisory must survive it.
+        memoFactory: (() => {
+          throw new Error('memo exploded');
+        }) as never
+      });
+      const output: { output?: string; metadata?: unknown } = {
+        output: 'result text',
+        metadata: { output: '', exit: 0 }
+      };
+      await expect(
+        handler({ tool: 'bash', sessionID: sessionId, callID: 'c', args: { command: 'echo hi' } }, output)
+      ).resolves.toBeUndefined();
+      expect(output.output).toContain('ENV ADVISORY');
+      expect((output.output ?? '').startsWith('result text')).toBe(true);
+    } finally {
+      repo.cleanup();
+    }
+  });
+
   it('never throws on garbage input shapes', async () => {
     const { handler } = createHandler();
     await expect(handler(undefined as never, undefined as never)).resolves.toBeUndefined();

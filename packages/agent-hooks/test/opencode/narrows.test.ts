@@ -64,6 +64,22 @@ describe('narrowEditArgs / narrowWriteArgs', () => {
     });
     expect(narrowWriteArgs({ content: 'body' })).toBeNull();
   });
+  it('empty written content is a real write touch, not an unusable shape (cross-adapter parity)', () => {
+    // The Claude twin records `written: ''` for identical inputs; dropping the
+    // touch at the narrow would lose deletion-style edits/writes.
+    expect(narrowEditArgs({ filePath: '/r/f.ts', oldString: 'a', newString: '' })).toEqual({
+      filePath: '/r/f.ts',
+      written: ''
+    });
+    expect(narrowWriteArgs({ content: '', filePath: '/r/f.ts' })).toEqual({ filePath: '/r/f.ts', written: '' });
+  });
+  it('absent or non-string written fields still narrow to null', () => {
+    expect(narrowEditArgs({ filePath: '/r/f.ts', oldString: 'a', newString: 42 })).toBeNull();
+    expect(narrowWriteArgs({ content: null, filePath: '/r/f.ts' })).toBeNull();
+    expect(narrowWriteArgs({ filePath: '/r/f.ts' })).toBeNull();
+    expect(narrowEditArgs(null)).toBeNull();
+    expect(narrowWriteArgs(undefined)).toBeNull();
+  });
 });
 
 describe('narrowApplyPatchText', () => {

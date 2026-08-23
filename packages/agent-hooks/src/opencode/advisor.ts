@@ -86,6 +86,11 @@ export function createAdvisorHandler(
       if (command === null) return;
       const sessionId = typeof input.sessionID === 'string' ? input.sessionID : '';
       const callId = typeof input.callID === 'string' ? input.callID : '';
+      // Symmetric with the shell.env guard and the call-state stash's ingress
+      // refusal: ids outside the prunable keyspace cannot carry a stashed
+      // report, so no report kind is computed for them. Holds still throw —
+      // blocking enforcement never depends on call state.
+      const stashable = sessionId.length > 0 && callId.length > 0;
       const workdir = typeof args.workdir === 'string' ? args.workdir : undefined;
       const cwd = resolveFrame(workdir, deps.directory);
 
@@ -126,7 +131,7 @@ export function createAdvisorHandler(
           if (result.kind === 'environmental' || result.kind === 'scan-failed') {
             logger.warn('git-span advisor allowed with an unresolved condition', { reason: result.reason });
           }
-          deps.stashReport(sessionId, callId, wrapGitSpanContext(result.reason));
+          if (stashable) deps.stashReport(sessionId, callId, wrapGitSpanContext(result.reason));
         }
       } catch (err) {
         if (err instanceof GitSpanHoldError) throw err;

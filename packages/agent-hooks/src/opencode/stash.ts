@@ -20,6 +20,13 @@
  * A per-session index of calls with planned bash touches lets idle pruning
  * discard the disk-backed records without touching any other session. Pure
  * in-memory Maps: process-local by design, bun/node-safe.
+ *
+ * Guard family (symmetric with the `shell.env` handler's guard): every
+ * ingress refuses an empty sessionID or callID. Decision 8 scopes pruning to
+ * real sessionIDs (`session.idle` handlers early-return on empty), so a
+ * degraded-key entry would sit outside every prune's reach forever — the
+ * stash refuses it at the boundary instead, making immortality structurally
+ * impossible for any current or future ingress.
  */
 
 /** A pre-parsed apply_patch candidate, ready for the touch pipeline. */
@@ -68,6 +75,16 @@ function key(sessionId: string, callId: string): string {
   return `${sessionId}:${callId}`;
 }
 
+/**
+ * Whether a (sessionId, callId) pair is inside the prunable keyspace: the
+ * same non-empty test the `shell.env` handler applies before tracking. Every
+ * ingress runs this before touching the maps; egress lookups need no guard
+ * (a degraded-key lookup simply misses).
+ */
+function tracked(sessionId: string, callId: string): boolean {
+  return sessionId.length > 0 && callId.length > 0;
+}
+
 export function createOpencodeCallState(): OpencodeCallState {
   const entries = new Map<string, CallEntry>();
   // sessionId -> keys registered in `entries` for that session, so pruning
@@ -100,6 +117,7 @@ export function createOpencodeCallState(): OpencodeCallState {
 
   return {
     stashReport(sessionId, callId, block) {
+      if (!tracked(sessionId, callId)) return;
       const k = key(sessionId, callId);
       entryFor(k).report = block;
       indexOfSession(sessionId).add(k);
@@ -112,6 +130,7 @@ export function createOpencodeCallState(): OpencodeCallState {
       return typeof report === 'string' ? report : null;
     },
     stashPatchPlan(sessionId, callId, plan) {
+      if (!tracked(sessionId, callId)) return;
       const k = key(sessionId, callId);
       entryFor(k).patchPlan = [...plan];
       indexOfSession(sessionId).add(k);
@@ -124,6 +143,7 @@ export function createOpencodeCallState(): OpencodeCallState {
       return Array.isArray(plan) ? plan : null;
     },
     trackShellCwd(sessionId, callId, cwd) {
+      if (!tracked(sessionId, callId)) return;
       const k = key(sessionId, callId);
       entryFor(k).shellCwd = cwd;
       indexOfSession(sessionId).add(k);
@@ -133,6 +153,7 @@ export function createOpencodeCallState(): OpencodeCallState {
       return typeof cwd === 'string' ? cwd : null;
     },
     trackPlannedCall(sessionId, callId) {
+      if (!tracked(sessionId, callId)) return;
       const k = key(sessionId, callId);
       planned.add(k);
       indexOfSession(sessionId).add(k);

@@ -23,6 +23,11 @@
  *
  * Never throws: the whole body is fail-open, because an uncaught after-hook
  * error would block an already-executed tool call on the fail-closed host.
+ * Two orderings keep that fail-open net honest: a consumed forwarded report
+ * is appended BEFORE any touch-pipeline work runs (a later-stage failure can
+ * never swallow an already-consumed advisory), and degraded
+ * session/call ids skip the pipelines entirely, symmetric with the call
+ * state's ingress guard — nothing keys outside the prunable universe.
  */
 
 import { parseApplyPatch } from '../codex/apply-patch.js';
@@ -149,12 +154,23 @@ export function createAfterHandler(
       const sessionId = typeof input?.sessionID === 'string' ? input.sessionID : '';
       const callId = typeof input?.callID === 'string' ? input.callID : '';
       const args = (input?.args ?? {}) as Record<string, unknown>;
-      // Forwarded report-kind checklist stashed by the before hook (decision 3):
-      // appended ahead of any touch blocks so the report reads first.
+      // Forwarded report-kind checklist stashed by the before hook (decision 3).
       const forwarded = deps.takeReport(sessionId, callId);
+      // Report kinds must not be swallowed: a consumed report lands BEFORE
+      // any touch-pipeline work runs, so a failure in a later stage can never
+      // erase an already-consumed advisory into the fail-open catch.
+      if (forwarded !== null && output !== null && typeof output === 'object') {
+        const part = `\n${forwarded.replace(/^\n+/, '')}`;
+        output.output = `${typeof output.output === 'string' ? output.output : ''}${part}`;
+      }
       let blocks: string[] = [];
+      // Degraded ids skip every touch pipeline symmetrically with the call
+      // state's ingress guard: ''-keyed session/call lookups and the planned
+      // store's empty-id take would otherwise throw past report consumption,
+      // and touches keyed outside the prune universe must never exist.
+      const idsUsable = sessionId.length > 0 && callId.length > 0;
 
-      if (input?.tool === 'bash') {
+      if (idsUsable && input?.tool === 'bash') {
         const narrowed = narrowBashArgs(args);
         if (narrowed !== null) {
           const shellCwd = deps.peekShellCwd(sessionId, callId);
@@ -174,7 +190,7 @@ export function createAfterHandler(
           );
         }
         deps.forgetCall(sessionId, callId);
-      } else if (input?.tool === 'read') {
+      } else if (idsUsable && input?.tool === 'read') {
         const narrowed = narrowReadArgs(args);
         if (narrowed !== null) {
           const cwd = deps.directory;
@@ -194,7 +210,7 @@ export function createAfterHandler(
             if (result.additionalContext !== null) blocks = [result.additionalContext];
           }
         }
-      } else if (input?.tool === 'edit' || input?.tool === 'write') {
+      } else if (idsUsable && (input?.tool === 'edit' || input?.tool === 'write')) {
         const narrowed = input.tool === 'edit' ? narrowEditArgs(args) : narrowWriteArgs(args);
         if (narrowed !== null) {
           const cwd = deps.directory;
@@ -214,7 +230,7 @@ export function createAfterHandler(
             if (result.additionalContext !== null) blocks = [result.additionalContext];
           }
         }
-      } else if (input?.tool === 'apply_patch') {
+      } else if (idsUsable && input?.tool === 'apply_patch') {
         const patchText = narrowApplyPatchText(args);
         if (patchText !== null) {
           const cwd = deps.directory;
@@ -232,12 +248,11 @@ export function createAfterHandler(
         deps.forgetCall(sessionId, callId);
       }
 
-      // Every appended part sits on its own line after the tool result text:
-      // strip leading newlines and re-add exactly one, whether the part came
-      // from the core's renderer (already `\n`-prefixed) or a stashed report.
-      const combined = [...(forwarded === null ? [] : [forwarded]), ...blocks]
-        .map((part) => `\n${part.replace(/^\n+/, '')}`)
-        .join('');
+      // Every touch block sits on its own line after the tool result text
+      // (forwarded reports already landed above, ahead of these): strip
+      // leading newlines and re-add exactly one, whether the part came from
+      // the core's renderer (already `\n`-prefixed) or not.
+      const combined = blocks.map((part) => `\n${part.replace(/^\n+/, '')}`).join('');
       if (combined.length > 0 && output !== null && typeof output === 'object') {
         output.output = (typeof output.output === 'string' ? output.output : '') + combined;
       }

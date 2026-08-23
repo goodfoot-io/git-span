@@ -38,6 +38,19 @@ function stringField(args: unknown, field: string): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
+/**
+ * Like {@link stringField} but accepts the empty string: written-content
+ * fields (`edit.newString`, `write.content`) describe a real write even when
+ * it collapses content to nothing (deletion-style edits/writes). The Claude
+ * twin records `written: ''` for identical inputs. Absent or wrong-typed
+ * values still narrow to `undefined`.
+ */
+function writtenContentField(args: unknown, field: string): string | undefined {
+  if (args === null || typeof args !== 'object' || !(field in args)) return undefined;
+  const value = (args as Record<string, unknown>)[field];
+  return typeof value === 'string' ? value : undefined;
+}
+
 function positiveIntField(args: unknown, field: string): number | undefined {
   if (args === null || typeof args !== 'object' || !(field in args)) return undefined;
   const value = (args as Record<string, unknown>)[field];
@@ -64,7 +77,7 @@ export function narrowReadArgs(args: unknown): OpencodeReadArgs | null {
 /** Narrow `edit` into a write touch (the new string is what was written). */
 export function narrowEditArgs(args: unknown): OpencodeWriteArgs | null {
   const filePath = stringField(args, 'filePath');
-  const written = stringField(args, 'newString');
+  const written = writtenContentField(args, 'newString');
   if (filePath === undefined || written === undefined) return null;
   return { filePath, written };
 }
@@ -72,7 +85,7 @@ export function narrowEditArgs(args: unknown): OpencodeWriteArgs | null {
 /** Narrow `write` into a write touch (full content replacement). */
 export function narrowWriteArgs(args: unknown): OpencodeWriteArgs | null {
   const filePath = stringField(args, 'filePath');
-  const written = stringField(args, 'content');
+  const written = writtenContentField(args, 'content');
   if (filePath === undefined || written === undefined) return null;
   return { filePath, written };
 }

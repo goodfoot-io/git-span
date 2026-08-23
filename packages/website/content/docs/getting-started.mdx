@@ -76,7 +76,7 @@ Add the npm package to the `plugin` array in your OpenCode config (`opencode.jso
 }
 ```
 
-An npm plugin can't contribute skills or agents, so the package ships an installer that materializes them on disk. Run it once per checkout — add `--global` to target your user-level directories instead of the project's:
+An npm plugin can't contribute skills or agents, so the package ships an installer that materializes them on disk. Run it once per checkout — add `--global` to target your user-level directories (`~/.config/opencode`) instead of the project's `.opencode/`:
 
 ```bash
 npx opencode-git-span install --global

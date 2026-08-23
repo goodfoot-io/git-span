@@ -40,16 +40,19 @@ advisor are active from the next session on.
 
 An npm plugin cannot contribute skills or agents — OpenCode loads those only
 from filesystem directories. Run the package's installer once per checkout
-(add `--global` to target your user-level directories instead of the
-project's):
+(add `--global` to target your user-level `~/.config/opencode/` directories
+instead of the project's `.opencode/`):
 
 ```bash
 npx opencode-git-span install --global
 ```
 
 This copies the three skills (`git-span`, `hook-effect-analysis`, and
-`reconcile`) into `.opencode/skills/<name>/` and the expert agent into
-`.opencode/agents/expert.md`, echoing every path it writes. Skills are then
+`reconcile`) into the project's `.opencode/skills/<name>/` and the expert
+agent into `.opencode/agents/expert.md`; with `--global` the same layout lands
+under `~/.config/opencode/` instead (`~/.config/opencode/skills/<name>/`,
+`~/.config/opencode/agents/expert.md`). Either way the installer echoes every
+path it writes. Skills are then
 addressed by their bare directory names through the skill tool, and re-run
 the installer after upgrading the package to refresh the copies.
 
@@ -71,10 +74,13 @@ advisor report for what they attempted, and any report stashed for them is
 dropped silently; writes sitting behind such a failure still surface later,
 through the next successful read/edit that touches them. A command that merely
 exits nonzero is different: the bash tool returns normally with a numeric
-`exit`, the after hook fires, and normal exit-gated attribution applies (a
-short-circuited `&&` attributes nothing because its write never ran). Aborts
-and timeouts surface as `exit: null` and suppress attribution exactly like
-interrupted rows. Don't count on attribution across host-level failures; rely
+`exit`, the after hook fires, and exit-gated attribution applies (a
+short-circuited `&&` attributes nothing because its write never ran) — but,
+as with the twins' failed commands, it can still surface a write only when
+the parse provides decisive post-state evidence, such as an expected
+replacement result; an inconclusive write stays silent under a nonzero exit.
+Aborts and timeouts surface as `exit: null` and suppress attribution exactly
+like interrupted rows. Don't count on attribution across host-level failures; rely
 on `git span drift` in CI (see `references/ci-and-sync.md`) as the real
 backstop, and see `references/understanding-hook-output.md` for what the hooks
 do cover.
