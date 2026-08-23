@@ -16,7 +16,11 @@ import * as assert from 'node:assert';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { testOnlyLastPostedDocument, testOnlyRenderOutcomes } from '../../../src/spanViewer/spanFileEditorProvider.js';
+import {
+  testOnlyLastPostedDocument,
+  testOnlyRenderOutcomes,
+  testOnlyWatcherCoalescingStats
+} from '../../../src/spanViewer/spanFileEditorProvider.js';
 import type { PostedDocument } from '../../../src/spanViewer/types.js';
 
 const SPAN_FILE_VIEW_TYPE = 'gitSpan.spanFileViewer';
@@ -476,6 +480,72 @@ describe('spanFileEditorProvider (end-to-end)', () => {
     fs.writeFileSync(path.join(workspacePath, 'missing-file.ts'), 'recovered content\n');
     const reRendered = await waitFor(() => testOnlyLastPostedDocument.get(uri.toString()) !== firstPosted);
     assert.ok(reRendered, 'Expected the watcher-triggered render to post a fresh document into the webview');
+  });
+
+  it('coalesces a burst of anchor-file writes into one trailing re-render showing the final content', async () => {
+    // A chunked save fires the watcher once per chunk; without coalescing
+    // each event pays a full render pipeline. Six rapid writes must produce
+    // at most a couple of debounced renders (the trailing one wins), and the
+    // posted document must show the final write's content -- proving no
+    // trailing event was dropped by the coalescing.
+    const churnPath = path.join(workspacePath, 'churn-target.ts');
+    fs.writeFileSync(churnPath, 'burst 0\n');
+    const uri = await openSpan('fixture-span-churn', 'churn-target.ts rk64:deadbeef\n\nWhy.\n');
+    await waitForSuccessfulOutcome(uri);
+    const firstPosted = await waitForPostedDocument(uri);
+    assert.strictEqual(firstPosted.anchors[0]?.kind, 'clean', 'Expected the pre-burst anchor to be clean');
+
+    // The stats entry is created on first observed event; the open-time
+    // render never touches it, so baseline counters start at zero.
+    const baseline = { coalescedEvents: 0, debouncedRenders: 0 };
+    const statsBefore = testOnlyWatcherCoalescingStats.get(uri.toString());
+    if (statsBefore !== undefined) {
+      baseline.coalescedEvents = statsBefore.coalescedEvents;
+      baseline.debouncedRenders = statsBefore.debouncedRenders;
+    }
+
+    const burstContents = ['burst 1\n', 'burst 2\n', 'burst 3\n', 'burst 4\n', 'burst 5\n', 'burst 6\n'];
+    // Spaced, not synchronous: the filesystem layer merges same-instant
+    // writes into one change event, which would collapse the burst before
+    // the provider ever saw it. ~80ms gaps stay well inside the 300ms
+    // debounce window while surfacing as distinct events.
+    for (const content of burstContents) {
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      fs.writeFileSync(churnPath, content);
+    }
+    const finalContent = burstContents[burstContents.length - 1];
+
+    // Wait for the trailing re-render and assert it carries the final
+    // state, not an intermediate chunk.
+    const reRendered = await waitFor(() => {
+      const document = testOnlyLastPostedDocument.get(uri.toString());
+      return (
+        document !== undefined &&
+        document !== firstPosted &&
+        document.anchors[0]?.kind === 'clean' &&
+        document.anchors[0]?.content === finalContent
+      );
+    });
+    assert.ok(reRendered, 'Expected a trailing re-render posting the final burst content');
+
+    const statsAfter = testOnlyWatcherCoalescingStats.get(uri.toString());
+    assert.ok(statsAfter !== undefined, 'Expected watcher coalescing stats to be recorded for the document');
+    const observedDelta = statsAfter.observedEvents - (statsBefore?.observedEvents ?? 0);
+    const coalescedDelta = statsAfter.coalescedEvents - baseline.coalescedEvents;
+    const rendersDelta = statsAfter.debouncedRenders - baseline.debouncedRenders;
+    // VS Code does not guarantee one watcher event per write (it may drop or
+    // merge some), so these are bounds, not exact counts. The burst must
+    // actually reach the provider as multiple events; most of them are then
+    // absorbed by the debounce; and far fewer renders ran than the
+    // un-debounced cost of one pipeline per event. The upper bound tolerates
+    // late stragglers scheduling one extra trailing render beyond the
+    // burst's own.
+    assert.ok(observedDelta >= 3, `Expected the burst to surface as several watcher events, got ${observedDelta}`);
+    assert.ok(coalescedDelta >= 2, `Expected most burst events to be coalesced, got ${coalescedDelta} coalesced`);
+    assert.ok(
+      rendersDelta >= 1 && rendersDelta <= 2,
+      `Expected at most two debounced renders for the six-write burst, got ${rendersDelta}`
+    );
   });
 
   it('posts the uncommitted declaration edit card from current.span_diff', async () => {

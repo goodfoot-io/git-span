@@ -283,6 +283,26 @@ if (args[0] === 'history' && args[2] === '--format' && args[3] === 'json') {
     process.exit(0);
   }
 
+  if (spanName === 'fixture-span-churn') {
+    // One commit anchoring churn-target.ts: lineage membership alone makes
+    // the address clean, so the watcher-coalescing test can rewrite the
+    // file's bytes freely and still get a clean card whose content is read
+    // from disk at render time.
+    writeJson({
+      schema_version: 2,
+      span: spanName,
+      commits: [
+        {
+          hash: 'c3c3c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5',
+          date: '2024-01-06T00:00:00Z',
+          summary: 'Add churn target anchor',
+          anchors: [{ path: 'churn-target.ts', content: 'burst 0' }]
+        }
+      ]
+    });
+    process.exit(0);
+  }
+
   if (spanName === 'fixture-span-drifted') {
     // A 10-line extent: the newest commit edits line 2 (hunk @@ -1,5 +1,5 @@,
     // context lines 1-5 only), while the worktree drift is at line 8 -- outside
