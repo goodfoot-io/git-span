@@ -24,9 +24,8 @@ use crate::types::{AnchorExtent, AnchorStatus, DriftSource, SpanResolved};
 use anyhow::Result;
 use git_span_core::span_file::merge_span_files;
 use git_span_core::{
-    CollapsedIdentity, RK64_ALGORITHM, SpanConfig, SpanMergeResult, carried_sentinel,
-    cheap_fingerprint_with_extent, collapse_duplicate_identities, rk64_to_hex,
-    rk64_unmatched_sentinel,
+    CollapsedIdentity, RK64_ALGORITHM, RK64_UNMATCHED_SENTINEL_HASH, SpanConfig, SpanMergeResult,
+    carried_sentinel, cheap_fingerprint_with_extent, collapse_duplicate_identities, rk64_to_hex,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -1252,7 +1251,7 @@ pub(crate) fn apply_fix(
                 })
             {
                 survivor.algorithm = RK64_ALGORITHM.into();
-                survivor.content_hash = rk64_unmatched_sentinel().into();
+                survivor.content_hash = RK64_UNMATCHED_SENTINEL_HASH.into();
             }
             println!("  {}", format_identity_collapsed(&m.name, c, &available));
             fix.identities_collapsed.push(c.clone());
