@@ -1,6 +1,6 @@
-packages/git-span/src/cli/mod.rs#L153-L160 rk64:d67bf9a2a42f53db
-packages/git-span/src/cli/mod.rs#L399-L411 rk64:a90b98969eb919da
-packages/git-span/src/cli/mod.rs#L414-L426 rk64:c2db2ae33c75af7e
+packages/git-span/src/cli/mod.rs#L154-L161 rk64:d67bf9a2a42f53db
+packages/git-span/src/cli/mod.rs#L429-L441 rk64:a90b98969eb919da
+packages/git-span/src/cli/mod.rs#L444-L456 rk64:c2db2ae33c75af7e
 packages/git-span/src/update_check/suppress.rs#L1-L20 rk64:a87002d6c575dbae
 
 The suppression layer's machine-output classification is a typed reading of the Clap declarations' effective formats: context stays machine-readable while ContextFormat has only the Json variant, the list --porcelain/--oneline flags and the format-enum variants are the open set the matrix enumerates, and the hidden internal commands are classified internal so the child cannot recurse; the matrix's unit cases are the evidence gate, and a declaration change (a new format variant, machine flag, or hidden command) must be mirrored in the classification and its tests.
