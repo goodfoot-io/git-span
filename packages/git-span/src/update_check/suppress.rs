@@ -254,6 +254,11 @@ mod tests {
             &["git-span", "tree", "f.txt"][..],
             &["git-span", "history", "s"][..],
             &["git-span", "resolve", "s"][..],
+            // `config` is human-only in both modes: a read prints the
+            // effective configuration, and a write reports the transition —
+            // neither has a machine format to suppress on.
+            &["git-span", "config", "s"][..],
+            &["git-span", "config", "s", "copy_detection", "off"][..],
         ] {
             let signals = signals_for_argv(argv, true);
             assert!(!signals.machine_flags, "{argv:?}");

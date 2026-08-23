@@ -11,6 +11,7 @@ pub mod cargo_config_layout;
 pub mod cargo_config_linker_worktree_invariance;
 pub mod cargo_target_missing_stamp_preserves_cache;
 pub mod cargo_target_test_lock;
+pub mod cli_config;
 pub mod cli_context;
 pub mod cli_drift_fix;
 pub mod cli_drift_fix_convergence;
