@@ -654,7 +654,15 @@ function resolveRepoRootUncached(dir) {
   }
 }
 var SPAN_ROOT = ".span";
+var spanRootCache = /* @__PURE__ */ new Map();
 function resolveSpanRoot(repoRoot) {
+  const cached = spanRootCache.get(repoRoot);
+  if (cached !== void 0) return cached;
+  const resolved = resolveSpanRootUncached(repoRoot);
+  spanRootCache.set(repoRoot, resolved);
+  return resolved;
+}
+function resolveSpanRootUncached(repoRoot) {
   const envDir = process.env["GIT_SPAN_DIR"];
   if (envDir && envDir.trim().length > 0) {
     return toPosix(envDir.trim()).replace(/\/+$/, "");
@@ -775,6 +783,13 @@ function pruneStaleSessions(layout, now = Date.now(), maxAgeMs = THIRTY_DAYS_MS)
     } catch (err) {
     }
   }
+}
+var PRUNE_THROTTLE_WINDOW_MS = SESSION_TRASH_TTL_MS;
+var lastOpportunisticPruneAt = Number.NEGATIVE_INFINITY;
+function pruneStaleSessionsThrottled(layout, now = Date.now()) {
+  if (now - lastOpportunisticPruneAt < PRUNE_THROTTLE_WINDOW_MS) return;
+  lastOpportunisticPruneAt = now;
+  pruneStaleSessions(layout, now);
 }
 
 // src/common/bash-attribution.ts
@@ -5623,7 +5638,7 @@ function createPlannedTouchStore(layout, budgets) {
     }
   };
   const take = (sessionId, toolUseId) => {
-    pruneStaleSessions(layout);
+    pruneStaleSessionsThrottled(layout);
     const paths = recordPaths(sessionId, toolUseId);
     makeRestrictiveDir(paths.dir);
     if (!claim(paths.consumed)) return { status: "consumed" };
@@ -5645,7 +5660,7 @@ function createPlannedTouchStore(layout, budgets) {
   };
   return {
     put(record) {
-      pruneStaleSessions(layout);
+      pruneStaleSessionsThrottled(layout);
       const normalized = normalizePlannedTouchRecord(record, budgets);
       const paths = recordPaths(normalized.sessionId, normalized.toolUseId);
       makeRestrictiveDir(paths.dir);
@@ -5672,7 +5687,7 @@ function createPlannedTouchStore(layout, budgets) {
     },
     take,
     discard(sessionId, toolUseId) {
-      pruneStaleSessions(layout);
+      pruneStaleSessionsThrottled(layout);
       const paths = recordPaths(sessionId, toolUseId);
       makeRestrictiveDir(paths.dir);
       claim(paths.consumed);

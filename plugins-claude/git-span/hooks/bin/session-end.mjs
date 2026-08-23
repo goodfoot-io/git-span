@@ -659,6 +659,7 @@ var DEFAULT_SESSION_LAYOUT = createSessionLayout(
 );
 var THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1e3;
 var SESSION_TRASH_MARKER = ".trash-session-";
+var lastOpportunisticPruneAt = Number.NEGATIVE_INFINITY;
 function cleanupSessionState(layout, sessionId, now = Date.now()) {
   const dirPath = layout.dir(sessionId);
   try {

@@ -544,6 +544,7 @@ var DEFAULT_SESSION_LAYOUT = createSessionLayout(
   nodePath3.join(os.homedir(), ".cache", "git-span", "session")
 );
 var THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1e3;
+var lastOpportunisticPruneAt = Number.NEGATIVE_INFINITY;
 function resolveGitCommonDir(repoRoot) {
   const out = execFileSync("git", ["-C", repoRoot, "rev-parse", "--git-common-dir"], {
     stdio: ["ignore", "pipe", "ignore"],
