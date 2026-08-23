@@ -112,6 +112,44 @@ describe('syncCommentsSignal', () => {
     expect(candidates).toHaveLength(0);
   });
 
+  it('couples a sync comment with an identifier containing `$` found in another file', () => {
+    const scan = makeScan(['packages/a/one.ts', 'packages/a/two.ts'], {
+      'packages/a/one.ts': ['// must match `shared$value` exactly', 'export const one = 1;'].join('\n'),
+      'packages/a/two.ts': 'export const shared$value = compute();'
+    });
+
+    const candidates = syncCommentsSignal.run(scan, history, config);
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.score).toBe(0.6);
+    expect(candidates[0]?.locs.map((l) => l.path)).toEqual(['packages/a/one.ts', 'packages/a/two.ts']);
+  });
+
+  it('couples a sync comment with an identifier ending in `$` as a whole word', () => {
+    const scan = makeScan(['packages/a/one.ts', 'packages/a/two.ts'], {
+      'packages/a/one.ts': ['// must match `signal$` exactly', 'export const one = 1;'].join('\n'),
+      'packages/a/two.ts': 'export const signal$ = ref(null);'
+    });
+
+    const candidates = syncCommentsSignal.run(scan, history, config);
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.locs.map((l) => l.path)).toEqual(['packages/a/one.ts', 'packages/a/two.ts']);
+  });
+
+  it('matches a dot-containing identifier only at its literal spelling', () => {
+    const scan = makeScan(['packages/a/one.ts', 'packages/a/two.ts', 'packages/a/three.ts'], {
+      'packages/a/one.ts': ['// must match `alpha.beta` exactly', 'export const one = 1;'].join('\n'),
+      'packages/a/two.ts': 'export const alphaxbeta = readAlphaxbeta();',
+      'packages/a/three.ts': 'const x = settings.alpha.beta;'
+    });
+
+    const candidates = syncCommentsSignal.run(scan, history, config);
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.locs.map((l) => l.path)).toEqual(['packages/a/one.ts', 'packages/a/three.ts']);
+  });
+
   it('prefers a resolved path target over the identifier fallback on the same line', () => {
     const scan = makeScan(['packages/a/one.ts', 'packages/a/two.ts'], {
       'packages/a/one.ts': [
