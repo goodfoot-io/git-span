@@ -507,6 +507,61 @@ const PYTHON_INTERPRETER = /^(?:python|python3(?:\.\d+)?)$/;
 const PYTHON_STRING_SOURCE = String.raw`(?:'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")`;
 const PYTHON_NAME_SOURCE = `[A-Za-z_][A-Za-z0-9_]*`;
 
+const compiledPatternCache = new Map<string, RegExp>();
+
+/** Compile a runtime-built recognizer pattern once per distinct source, so hot loops never recompile. */
+function compileOnce(source: string, flags?: string): RegExp {
+  const key = `${flags ?? ''}\0${source}`;
+  let pattern = compiledPatternCache.get(key);
+  if (pattern === undefined) {
+    pattern = new RegExp(source, flags);
+    compiledPatternCache.set(key, pattern);
+  }
+  return pattern;
+}
+
+const PYTHON_PATH_LITERAL_PATTERN = new RegExp(
+  `^(${PYTHON_NAME_SOURCE})\\s*=\\s*(?:Path|pathlib\\.Path)\\((${PYTHON_STRING_SOURCE})\\)$`
+);
+const PYTHON_STRING_BINDING_PATTERN = new RegExp(`^(${PYTHON_NAME_SOURCE})\\s*=\\s*(${PYTHON_STRING_SOURCE})$`);
+const PYTHON_NAME_ALIAS_PATTERN = new RegExp(`^(${PYTHON_NAME_SOURCE})\\s*=\\s*(${PYTHON_NAME_SOURCE})$`);
+const PYTHON_TEXT_READ_PATTERN = new RegExp(
+  `^(${PYTHON_NAME_SOURCE})\\s*=\\s*(${PYTHON_NAME_SOURCE})\\.read_text\\(([^)]*)\\)$`
+);
+const PYTHON_REPLACE_BINDING_PATTERN = new RegExp(
+  `^(${PYTHON_NAME_SOURCE})\\s*=\\s*(${PYTHON_NAME_SOURCE})\\.replace\\((${PYTHON_STRING_SOURCE})\\s*,\\s*(${PYTHON_STRING_SOURCE})(?:\\s*,\\s*(\\d+))?\\)$`
+);
+const PYTHON_COUNT_ASSERT_PATTERN = new RegExp(
+  `^assert\\s+(${PYTHON_NAME_SOURCE})\\.count\\((${PYTHON_STRING_SOURCE})\\)\\s*==\\s*(\\d+)$`
+);
+const PYTHON_INDEX_ANCHOR_PATTERN = new RegExp(
+  `^(${PYTHON_NAME_SOURCE})\\s*=\\s*(${PYTHON_NAME_SOURCE})\\.index\\((${PYTHON_STRING_SOURCE})\\)$`
+);
+const PYTHON_LINE_ARRAY_PATTERN = new RegExp(
+  `^(${PYTHON_NAME_SOURCE})\\s*=\\s*(${PYTHON_NAME_SOURCE})\\.read_text\\(\\)\\.splitlines\\(\\)$`
+);
+const PYTHON_LINE_EDIT_PATTERN = new RegExp(`^(${PYTHON_NAME_SOURCE})\\[(\\d+)\\]\\s*=\\s*(${PYTHON_STRING_SOURCE})$`);
+const PYTHON_STRUCTURED_LOAD_PATTERN = new RegExp(
+  `^(${PYTHON_NAME_SOURCE})\\s*=\\s*(json|tomllib|yaml)\\.(?:loads|safe_load)\\((${PYTHON_NAME_SOURCE})\\.read_text\\(\\)\\)$`
+);
+const PYTHON_STRUCTURED_ASSIGN_PATTERN = new RegExp(
+  `^(${PYTHON_NAME_SOURCE})((?:\\[${PYTHON_STRING_SOURCE}\\])+?)\\s*=\\s*(?:True|False|None|-?\\d+(?:\\.\\d+)?|${PYTHON_STRING_SOURCE})$`
+);
+const PYTHON_STRUCTURED_KEY_SCAN_PATTERN = new RegExp(`\\[(${PYTHON_STRING_SOURCE})\\]`, 'g');
+const PYTHON_APPEND_PATTERN = new RegExp(
+  `^(${PYTHON_NAME_SOURCE})\\.open\\((${PYTHON_STRING_SOURCE})\\)\\.write\\((${PYTHON_STRING_SOURCE})\\)$`
+);
+const PYTHON_WRITE_TARGET_PATTERN = new RegExp(`^(${PYTHON_NAME_SOURCE})\\.write_text\\((.+)\\)$`);
+const PYTHON_DIRECT_REPLACE_PATTERN = new RegExp(
+  `^(${PYTHON_NAME_SOURCE})\\.replace\\((${PYTHON_STRING_SOURCE})\\s*,\\s*(${PYTHON_STRING_SOURCE})(?:\\s*,\\s*(\\d+))?\\)$`
+);
+const PYTHON_ANCHOR_SLICE_PATTERN = new RegExp(
+  `^(${PYTHON_NAME_SOURCE})\\[:(${PYTHON_NAME_SOURCE})\\]\\s*\\+\\s*(${PYTHON_STRING_SOURCE})\\s*\\+\\s*\\1\\[\\2\\s*\\+\\s*(\\d+):\\]$`
+);
+const PYTHON_LINE_JOIN_PATTERN = new RegExp(
+  `^(${PYTHON_STRING_SOURCE})\\.join\\((${PYTHON_NAME_SOURCE})\\)(?:\\s*\\+\\s*(${PYTHON_STRING_SOURCE}))?$`
+);
+
 /** Decode the deliberately small common subset of Python string literals used by authoring commands. */
 function decodePythonString(raw: string): string | null {
   if (raw.length < 2 || (raw[0] !== "'" && raw[0] !== '"') || raw.at(-1) !== raw[0]) return null;
@@ -641,10 +696,10 @@ function structuredKeyRanges(content: string, format: PythonStructuredValue['for
   const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const pattern =
     format === 'json'
-      ? new RegExp(`^[ \\t]*["']${escaped}["'][ \\t]*:`, 'm')
+      ? compileOnce(`^[ \\t]*["']${escaped}["'][ \\t]*:`, 'm')
       : format === 'toml'
-        ? new RegExp(`^[ \\t]*(?:["']${escaped}["']|${escaped})[ \\t]*=`, 'm')
-        : new RegExp(`^[ \\t]*(?:["']${escaped}["']|${escaped})[ \\t]*:`, 'm');
+        ? compileOnce(`^[ \\t]*(?:["']${escaped}["']|${escaped})[ \\t]*=`, 'm')
+        : compileOnce(`^[ \\t]*(?:["']${escaped}["']|${escaped})[ \\t]*:`, 'm');
   const ranges: LineRange[] = [];
   let offset = 0;
   for (const line of content.split(/(?<=\n)/)) {
@@ -795,23 +850,21 @@ function parsePythonAttribution(command: string, options: LayeredParseOptions): 
       return reject('unsupported-dataflow', 'control flow is outside the bounded Python recognizer');
     }
 
-    let match = statement.match(
-      new RegExp(`^(${PYTHON_NAME_SOURCE})\\s*=\\s*(?:Path|pathlib\\.Path)\\((${PYTHON_STRING_SOURCE})\\)$`)
-    );
+    let match = statement.match(PYTHON_PATH_LITERAL_PATTERN);
     if (match !== null) {
       const path = decodePythonString(match[2]);
       if (path === null) return reject('unsupported-syntax', 'Python path literal uses an unsupported escape');
       paths.set(match[1], { path, depth: 0 });
       continue;
     }
-    match = statement.match(new RegExp(`^(${PYTHON_NAME_SOURCE})\\s*=\\s*(${PYTHON_STRING_SOURCE})$`));
+    match = statement.match(PYTHON_STRING_BINDING_PATTERN);
     if (match !== null) {
       const path = decodePythonString(match[2]);
       if (path === null) return reject('unsupported-syntax', 'Python string literal uses an unsupported escape');
       paths.set(match[1], { path, depth: 0 });
       continue;
     }
-    match = statement.match(new RegExp(`^(${PYTHON_NAME_SOURCE})\\s*=\\s*(${PYTHON_NAME_SOURCE})$`));
+    match = statement.match(PYTHON_NAME_ALIAS_PATTERN);
     if (match !== null) {
       const source = paths.get(match[2]);
       if (source === undefined || source.depth !== 0) {
@@ -821,9 +874,7 @@ function parsePythonAttribution(command: string, options: LayeredParseOptions): 
       continue;
     }
 
-    match = statement.match(
-      new RegExp(`^(${PYTHON_NAME_SOURCE})\\s*=\\s*(${PYTHON_NAME_SOURCE})\\.read_text\\(([^)]*)\\)$`)
-    );
+    match = statement.match(PYTHON_TEXT_READ_PATTERN);
     if (match !== null) {
       const binding = paths.get(match[2]);
       if (binding === undefined) return reject('dynamic-path', 'Python read target is not a literal path binding');
@@ -834,11 +885,7 @@ function parsePythonAttribution(command: string, options: LayeredParseOptions): 
       continue;
     }
 
-    match = statement.match(
-      new RegExp(
-        `^(${PYTHON_NAME_SOURCE})\\s*=\\s*(${PYTHON_NAME_SOURCE})\\.replace\\((${PYTHON_STRING_SOURCE})\\s*,\\s*(${PYTHON_STRING_SOURCE})(?:\\s*,\\s*(\\d+))?\\)$`
-      )
-    );
+    match = statement.match(PYTHON_REPLACE_BINDING_PATTERN);
     if (match !== null) {
       if (!texts.has(match[2]))
         return reject('unsupported-dataflow', 'Python replace source is not a direct text read');
@@ -852,9 +899,7 @@ function parsePythonAttribution(command: string, options: LayeredParseOptions): 
       continue;
     }
 
-    match = statement.match(
-      new RegExp(`^assert\\s+(${PYTHON_NAME_SOURCE})\\.count\\((${PYTHON_STRING_SOURCE})\\)\\s*==\\s*(\\d+)$`)
-    );
+    match = statement.match(PYTHON_COUNT_ASSERT_PATTERN);
     if (match !== null) {
       const literal = decodePythonString(match[2]);
       if (literal === null || literal.length === 0 || !texts.has(match[1])) {
@@ -864,9 +909,7 @@ function parsePythonAttribution(command: string, options: LayeredParseOptions): 
       continue;
     }
 
-    match = statement.match(
-      new RegExp(`^(${PYTHON_NAME_SOURCE})\\s*=\\s*(${PYTHON_NAME_SOURCE})\\.index\\((${PYTHON_STRING_SOURCE})\\)$`)
-    );
+    match = statement.match(PYTHON_INDEX_ANCHOR_PATTERN);
     if (match !== null) {
       const literal = decodePythonString(match[3]);
       if (literal === null || literal.length === 0 || !texts.has(match[2])) {
@@ -876,16 +919,14 @@ function parsePythonAttribution(command: string, options: LayeredParseOptions): 
       continue;
     }
 
-    match = statement.match(
-      new RegExp(`^(${PYTHON_NAME_SOURCE})\\s*=\\s*(${PYTHON_NAME_SOURCE})\\.read_text\\(\\)\\.splitlines\\(\\)$`)
-    );
+    match = statement.match(PYTHON_LINE_ARRAY_PATTERN);
     if (match !== null) {
       const binding = paths.get(match[2]);
       if (binding === undefined) return reject('dynamic-path', 'Python line-array target is not literal');
       lines.set(match[1], { path: binding.path, edits: new Map() });
       continue;
     }
-    match = statement.match(new RegExp(`^(${PYTHON_NAME_SOURCE})\\[(\\d+)\\]\\s*=\\s*(${PYTHON_STRING_SOURCE})$`));
+    match = statement.match(PYTHON_LINE_EDIT_PATTERN);
     if (match !== null) {
       const array = lines.get(match[1]);
       const value = decodePythonString(match[3]);
@@ -895,11 +936,7 @@ function parsePythonAttribution(command: string, options: LayeredParseOptions): 
       continue;
     }
 
-    match = statement.match(
-      new RegExp(
-        `^(${PYTHON_NAME_SOURCE})\\s*=\\s*(json|tomllib|yaml)\\.(?:loads|safe_load)\\((${PYTHON_NAME_SOURCE})\\.read_text\\(\\)\\)$`
-      )
-    );
+    match = statement.match(PYTHON_STRUCTURED_LOAD_PATTERN);
     if (match !== null) {
       const binding = paths.get(match[3]);
       if (binding === undefined) return reject('dynamic-path', 'structured Python load target is not literal');
@@ -907,15 +944,9 @@ function parsePythonAttribution(command: string, options: LayeredParseOptions): 
       structured.set(match[1], { format, path: binding.path, keys: [] });
       continue;
     }
-    match = statement.match(
-      new RegExp(
-        `^(${PYTHON_NAME_SOURCE})((?:\\[${PYTHON_STRING_SOURCE}\\])+?)\\s*=\\s*(?:True|False|None|-?\\d+(?:\\.\\d+)?|${PYTHON_STRING_SOURCE})$`
-      )
-    );
+    match = statement.match(PYTHON_STRUCTURED_ASSIGN_PATTERN);
     if (match !== null && structured.has(match[1])) {
-      const keys = [...match[2].matchAll(new RegExp(`\\[(${PYTHON_STRING_SOURCE})\\]`, 'g'))].map((key) =>
-        decodePythonString(key[1])
-      );
+      const keys = [...match[2].matchAll(PYTHON_STRUCTURED_KEY_SCAN_PATTERN)].map((key) => decodePythonString(key[1]));
       if (keys.length === 0 || keys.some((key) => key === null)) {
         return reject('unsupported-expression', 'structured Python mutation requires literal string keys');
       }
@@ -923,11 +954,7 @@ function parsePythonAttribution(command: string, options: LayeredParseOptions): 
       continue;
     }
 
-    match = statement.match(
-      new RegExp(
-        `^(${PYTHON_NAME_SOURCE})\\.open\\((${PYTHON_STRING_SOURCE})\\)\\.write\\((${PYTHON_STRING_SOURCE})\\)$`
-      )
-    );
+    match = statement.match(PYTHON_APPEND_PATTERN);
     if (match !== null) {
       const binding = paths.get(match[1]);
       const mode = decodePythonString(match[2]);
@@ -965,7 +992,7 @@ function parsePythonAttribution(command: string, options: LayeredParseOptions): 
       continue;
     }
 
-    match = statement.match(new RegExp(`^(${PYTHON_NAME_SOURCE})\\.write_text\\((.+)\\)$`));
+    match = statement.match(PYTHON_WRITE_TARGET_PATTERN);
     if (match !== null) {
       const binding = paths.get(match[1]);
       if (binding === undefined) return reject('dynamic-path', 'Python write target is not literal');
@@ -987,11 +1014,7 @@ function parsePythonAttribution(command: string, options: LayeredParseOptions): 
         });
         continue;
       }
-      const directReplace = expression.match(
-        new RegExp(
-          `^(${PYTHON_NAME_SOURCE})\\.replace\\((${PYTHON_STRING_SOURCE})\\s*,\\s*(${PYTHON_STRING_SOURCE})(?:\\s*,\\s*(\\d+))?\\)$`
-        )
-      );
+      const directReplace = expression.match(PYTHON_DIRECT_REPLACE_PATTERN);
       const replacement =
         directReplace === null
           ? replacements.get(expression)
@@ -1007,11 +1030,7 @@ function parsePythonAttribution(command: string, options: LayeredParseOptions): 
         continue;
       }
 
-      const slice = expression.match(
-        new RegExp(
-          `^(${PYTHON_NAME_SOURCE})\\[:(${PYTHON_NAME_SOURCE})\\]\\s*\\+\\s*(${PYTHON_STRING_SOURCE})\\s*\\+\\s*\\1\\[\\2\\s*\\+\\s*(\\d+):\\]$`
-        )
-      );
+      const slice = expression.match(PYTHON_ANCHOR_SLICE_PATTERN);
       if (slice !== null) {
         const anchor = anchors.get(slice[2]);
         const read = texts.get(slice[1]);
@@ -1057,11 +1076,7 @@ function parsePythonAttribution(command: string, options: LayeredParseOptions): 
         continue;
       }
 
-      const lineJoin = expression.match(
-        new RegExp(
-          `^(${PYTHON_STRING_SOURCE})\\.join\\((${PYTHON_NAME_SOURCE})\\)(?:\\s*\\+\\s*(${PYTHON_STRING_SOURCE}))?$`
-        )
-      );
+      const lineJoin = expression.match(PYTHON_LINE_JOIN_PATTERN);
       if (lineJoin !== null) {
         const delimiter = decodePythonString(lineJoin[1]);
         const array = lines.get(lineJoin[2]);
@@ -1204,6 +1219,29 @@ interface NodeStructuredValue {
 
 const NODE_STRING_SOURCE = String.raw`(?:'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")`;
 const NODE_NAME_SOURCE = `[A-Za-z_$][A-Za-z0-9_$]*`;
+
+const NODE_FS_MEMBER_PATTERN = new RegExp(`^(${NODE_NAME_SOURCE})\\.(readFileSync|writeFileSync|appendFileSync)$`);
+const NODE_REQUIRE_FS_PATTERN = new RegExp(
+  `^(?:const|let|var)\\s+(${NODE_NAME_SOURCE})\\s*=\\s*require\\((['"])(?:node:)?fs\\2\\)$`
+);
+const NODE_STRING_DECL_PATTERN = new RegExp(
+  `^(?:const|let|var)\\s+(${NODE_NAME_SOURCE})\\s*=\\s*(${NODE_STRING_SOURCE})$`
+);
+const NODE_NAME_ALIAS_PATTERN = new RegExp(
+  `^(?:const|let|var)\\s+(${NODE_NAME_SOURCE})\\s*=\\s*(${NODE_NAME_SOURCE})$`
+);
+const NODE_GENERIC_DECL_PATTERN = new RegExp(`^(?:const|let|var)\\s+(${NODE_NAME_SOURCE})\\s*=\\s*(.+)$`);
+const NODE_REPLACE_CALL_PATTERN = new RegExp(
+  `^(${NODE_NAME_SOURCE})\\.(replace|replaceAll)\\((${NODE_STRING_SOURCE})\\s*,\\s*(${NODE_STRING_SOURCE})\\)$`
+);
+const NODE_JSON_PARSE_PATTERN = new RegExp(`^JSON\\.parse\\((${NODE_NAME_SOURCE})\\)$`);
+const NODE_STRUCTURED_ASSIGN_PATTERN = new RegExp(
+  `^(${NODE_NAME_SOURCE})((?:(?:\\.${NODE_NAME_SOURCE})|(?:\\[${NODE_STRING_SOURCE}\\]))+)\\s*=\\s*(.+)$`
+);
+const NODE_KEY_SEGMENT_SCAN_PATTERN = new RegExp(`\\.(${NODE_NAME_SOURCE})|\\[(${NODE_STRING_SOURCE})\\]`, 'g');
+const NODE_COUNT_GUARD_PATTERN = new RegExp(
+  `^if\\s*\\(\\s*(${NODE_NAME_SOURCE})\\.split\\((${NODE_STRING_SOURCE})\\)\\.length\\s*-\\s*1\\s*!==?\\s*(\\d+)\\s*\\)\\s*throw\\b.+$`
+);
 
 /** Decode the small, unambiguous subset of JavaScript string literals used by authoring one-liners. */
 function decodeNodeString(raw: string): string | null {
@@ -1451,7 +1489,7 @@ function parseNodeAttribution(command: string, options: LayeredParseOptions): La
   const fsMethod = (callee: string): 'readFileSync' | 'writeFileSync' | 'appendFileSync' | null => {
     const bare = fsFunctions.get(callee);
     if (bare !== undefined) return bare;
-    const member = callee.match(new RegExp(`^(${NODE_NAME_SOURCE})\\.(readFileSync|writeFileSync|appendFileSync)$`));
+    const member = callee.match(NODE_FS_MEMBER_PATTERN);
     if (member !== null && fsNamespaces.has(member[1])) {
       return member[2] as 'readFileSync' | 'writeFileSync' | 'appendFileSync';
     }
@@ -1531,9 +1569,7 @@ function parseNodeAttribution(command: string, options: LayeredParseOptions): La
       );
     }
 
-    let match = statement.match(
-      new RegExp(`^(?:const|let|var)\\s+(${NODE_NAME_SOURCE})\\s*=\\s*require\\((['"])(?:node:)?fs\\2\\)$`)
-    );
+    let match = statement.match(NODE_REQUIRE_FS_PATTERN);
     if (match !== null) {
       fsNamespaces.add(match[1]);
       continue;
@@ -1551,14 +1587,14 @@ function parseNodeAttribution(command: string, options: LayeredParseOptions): La
       continue;
     }
 
-    match = statement.match(new RegExp(`^(?:const|let|var)\\s+(${NODE_NAME_SOURCE})\\s*=\\s*(${NODE_STRING_SOURCE})$`));
+    match = statement.match(NODE_STRING_DECL_PATTERN);
     if (match !== null) {
       const path = decodeNodeString(match[2]);
       if (path === null) return reject('unsupported-syntax', 'Node string literal uses an unsupported escape');
       paths.set(match[1], { path, depth: 0 });
       continue;
     }
-    match = statement.match(new RegExp(`^(?:const|let|var)\\s+(${NODE_NAME_SOURCE})\\s*=\\s*(${NODE_NAME_SOURCE})$`));
+    match = statement.match(NODE_NAME_ALIAS_PATTERN);
     if (match !== null) {
       const source = paths.get(match[2]);
       if (source === undefined || source.depth !== 0) {
@@ -1568,7 +1604,7 @@ function parseNodeAttribution(command: string, options: LayeredParseOptions): La
       continue;
     }
 
-    match = statement.match(new RegExp(`^(?:const|let|var)\\s+(${NODE_NAME_SOURCE})\\s*=\\s*(.+)$`));
+    match = statement.match(NODE_GENERIC_DECL_PATTERN);
     if (match !== null) {
       const name = match[1];
       const expression = match[2].trim();
@@ -1586,11 +1622,7 @@ function parseNodeAttribution(command: string, options: LayeredParseOptions): La
         continue;
       }
 
-      const replacement = expression.match(
-        new RegExp(
-          `^(${NODE_NAME_SOURCE})\\.(replace|replaceAll)\\((${NODE_STRING_SOURCE})\\s*,\\s*(${NODE_STRING_SOURCE})\\)$`
-        )
-      );
+      const replacement = expression.match(NODE_REPLACE_CALL_PATTERN);
       if (replacement !== null) {
         if (!texts.has(replacement[1]))
           return reject('unsupported-dataflow', 'Node replace source is not a direct text read');
@@ -1608,7 +1640,7 @@ function parseNodeAttribution(command: string, options: LayeredParseOptions): La
         continue;
       }
 
-      const parsedJson = expression.match(new RegExp(`^JSON\\.parse\\((${NODE_NAME_SOURCE})\\)$`));
+      const parsedJson = expression.match(NODE_JSON_PARSE_PATTERN);
       if (parsedJson !== null) {
         const text = texts.get(parsedJson[1]);
         if (text === undefined) return reject('unsupported-dataflow', 'JSON.parse source is not a direct text read');
@@ -1633,15 +1665,9 @@ function parseNodeAttribution(command: string, options: LayeredParseOptions): La
       return reject('unsupported-dataflow', 'Node variable initializer is outside the bounded allowlist');
     }
 
-    match = statement.match(
-      new RegExp(
-        `^(${NODE_NAME_SOURCE})((?:(?:\\.${NODE_NAME_SOURCE})|(?:\\[${NODE_STRING_SOURCE}\\]))+)\\s*=\\s*(.+)$`
-      )
-    );
+    match = statement.match(NODE_STRUCTURED_ASSIGN_PATTERN);
     if (match !== null && structured.has(match[1])) {
-      const keySegments = [
-        ...match[2].matchAll(new RegExp(`\\.(${NODE_NAME_SOURCE})|\\[(${NODE_STRING_SOURCE})\\]`, 'g'))
-      ];
+      const keySegments = [...match[2].matchAll(NODE_KEY_SEGMENT_SCAN_PATTERN)];
       const keys = keySegments.map((segment) => segment[1] ?? decodeNodeString(segment[2]));
       if (keys.length === 0 || keys.some((key) => key === null)) {
         return reject('unsupported-expression', 'structured Node mutation requires literal property keys');
@@ -1653,11 +1679,7 @@ function parseNodeAttribution(command: string, options: LayeredParseOptions): La
       continue;
     }
 
-    match = statement.match(
-      new RegExp(
-        `^if\\s*\\(\\s*(${NODE_NAME_SOURCE})\\.split\\((${NODE_STRING_SOURCE})\\)\\.length\\s*-\\s*1\\s*!==?\\s*(\\d+)\\s*\\)\\s*throw\\b.+$`
-      )
-    );
+    match = statement.match(NODE_COUNT_GUARD_PATTERN);
     if (match !== null) {
       const literal = decodeNodeString(match[2]);
       if (literal === null || literal.length === 0 || !texts.has(match[1])) {
@@ -1727,11 +1749,7 @@ function parseNodeAttribution(command: string, options: LayeredParseOptions): La
         });
         continue;
       }
-      const directReplacement = expression.match(
-        new RegExp(
-          `^(${NODE_NAME_SOURCE})\\.(replace|replaceAll)\\((${NODE_STRING_SOURCE})\\s*,\\s*(${NODE_STRING_SOURCE})\\)$`
-        )
-      );
+      const directReplacement = expression.match(NODE_REPLACE_CALL_PATTERN);
       const replacement =
         directReplacement === null
           ? replacements.get(expression)
