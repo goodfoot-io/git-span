@@ -146,7 +146,7 @@ build_dir="$target_root/git-span/build"
   yarn workspace @goodfoot/git-span-website artifacts:check &&
   yarn test &&
   {
-    # The website's rolldown-vite build carries two upstream races that open
+    # The website's rolldown-vite build carries three upstream races that open
     # almost exclusively when the machine is still hot from the parallel test
     # phase, where virtiofs worktree mounts stretch IO latency:
     #   1. vite's JS prepareOutDir and rolldown's native chunk writer both
@@ -155,10 +155,14 @@ build_dir="$target_root/git-span/build"
     #   2. vite bundles vite.config.ts into node_modules/.vite-temp/ and
     #      dynamic-imports it; on this mount the import can lose a just-written
     #      timestamped file — ERR_MODULE_NOT_FOUND naming .vite-temp.
+    #   3. fumadocs-mdx's postinstall mkdirs packages/website/.source; on this
+    #      mount the fresh-entry create intermittently reports ENOENT while
+    #      materializing the directory anyway — the same misreport the
+    #      recovery-domain lock creation hits (see recovery_domain.rs).
     # One retry gated on those exact signatures keeps every other build
     # failure fail-closed on first occurrence.
     if ! SKIP_INSTALL=1 yarn build; then
-      if tail -n 400 "$log_path" 2>/dev/null | grep -q -e 'Could not create directory for output chunks' -e 'ERR_MODULE_NOT_FOUND.*\.vite-temp'; then
+      if tail -n 400 "$log_path" 2>/dev/null | grep -q -e 'Could not create directory for output chunks' -e 'ERR_MODULE_NOT_FOUND.*\.vite-temp' -e "no such file or directory, mkdir .*packages/website/\.source"; then
         echo "known website-toolchain race after test phase — retrying build once" >&2
         SKIP_INSTALL=1 yarn build
       else
