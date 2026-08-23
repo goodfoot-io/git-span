@@ -2,6 +2,6 @@ packages/website/app/components/marketing/story/engine/highlights.ts#L161-L180 r
 packages/website/app/components/marketing/story/engine/highlights.ts#L175-L190 rk64:c0e7e89e4e3b5db5
 packages/website/app/components/marketing/story/engine/highlights.ts#L192-L204 rk64:0e4bd40dc4e2d5eb
 packages/website/app/components/marketing/story/engine/highlights.ts#L229-L283 rk64:3e7dfad3f2ee3bdb
-wiki/architecture/homepage-engine-animation.md#L440-L472 rk64:205477c35a8cfa57
+wiki/architecture/homepage-engine-animation.md#L440-L472 rk64:af4ba2a978af7a17
 
 highlights.ts's updateHighlights: the diffuse+emissive fix for washed-out highlight colors, mixing material.color itself toward the active stage's identity hue (not just adding emissive on top) so the surface survives ACES tone mapping's highlight rolloff.

@@ -1,5 +1,5 @@
 packages/website/app/components/marketing/story/engine/beats.ts#L127-L129 rk64:0b76c4a2ed4e0b44
 packages/website/app/components/marketing/story/engine/beats.ts#L137-L225 rk64:910d05a6d513d493
-wiki/architecture/homepage-engine-animation.md#L285-L333 rk64:e6c8f3e664692138
+wiki/architecture/homepage-engine-animation.md#L285-L333 rk64:c763bfd2eefb1e9b
 
 The mismatch story's color/scale/box timeline, built as composed pure functions of the raw timeline t in beats.ts rather than per-phase switches, so each beat is pinned to an exact scroll position.

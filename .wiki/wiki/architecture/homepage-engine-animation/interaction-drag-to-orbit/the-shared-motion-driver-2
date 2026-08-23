@@ -1,4 +1,4 @@
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L998-L1080 rk64:b29a1e07901ad820
-wiki/architecture/homepage-engine-animation.md#L669-L695 rk64:1fd166212266a88f
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L1009-L1091 rk64:b29a1e07901ad820
+wiki/architecture/homepage-engine-animation.md#L669-L695 rk64:5db0b3fb79794b94
 
 The shared motion driver advances idle spin, drag snap-back, and the highlight heartbeat in one self-perpetuating rAF loop; it stops itself once each motion settles, with reduced-motion gating whether the heartbeat counts toward settled.

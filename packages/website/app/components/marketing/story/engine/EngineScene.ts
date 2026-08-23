@@ -278,6 +278,17 @@ export class EngineScene {
   // Scratch vector for the per-part wobble offset in updatePartTransforms -- reused every part,
   // every frame, so laying out ~129 parts' wobble never allocates a Vector3 per part per frame.
   private readonly wobbleScratch = new THREE.Vector3();
+  // Scratch objects for updatePartTransforms's per-part beat pose (basePos/baseQuat/baseScale,
+  // their scaleFactor-multiplied finalScale, and the two scaling-branch intermediates) -- reused
+  // every part, every frame, so the motion loop allocates zero objects. Each is fully overwritten
+  // (copy/set/subVectors at the head of its chain) before any read, so nothing leaks between
+  // parts; they are never read across iterations.
+  private readonly beatPosScratch = new THREE.Vector3();
+  private readonly beatQuatScratch = new THREE.Quaternion();
+  private readonly beatScaleScratch = new THREE.Vector3();
+  private readonly finalScaleScratch = new THREE.Vector3();
+  private readonly pivotDeltaScratch = new THREE.Vector3();
+  private readonly centerOffsetScratch = new THREE.Vector3();
   // The crank centerline (see mismatchBox.ts's WorldLine), derived once in load() from the
   // crankshaft's own geometry -- feeds computeMismatchBoxBounds's bore-axis-relative box
   // orientation (see mismatchBox.ts's computeBoreAxis).
@@ -1086,12 +1097,12 @@ export class EngineScene {
     for (let index = 0; index < this.parts.length; index++) {
       const part = this.parts[index];
       const k = part.isFrontDrive ? frame.frontDriveExplode : frame.explode;
-      const basePos = part.assembled.position.clone().lerp(part.exploded.position, k);
-      const baseQuat = part.assembled.quaternion.clone().slerp(part.exploded.quaternion, k);
-      const baseScale = part.assembled.scale.clone().lerp(part.exploded.scale, k);
+      const basePos = this.beatPosScratch.copy(part.assembled.position).lerp(part.exploded.position, k);
+      const baseQuat = this.beatQuatScratch.copy(part.assembled.quaternion).slerp(part.exploded.quaternion, k);
+      const baseScale = this.beatScaleScratch.copy(part.assembled.scale).lerp(part.exploded.scale, k);
 
       const scaleFactor = part.isFrontDrive ? frame.frontDriveScale : part.isMount ? frame.mountScale : 1;
-      const finalScale = baseScale.clone().multiplyScalar(scaleFactor);
+      const finalScale = this.finalScaleScratch.copy(baseScale).multiplyScalar(scaleFactor);
 
       if (scaleFactor !== 1 && this.frontDriveScalePivot) {
         // scaleFactor is only ever non-1 for isFrontDrive/isMount parts (see its computation
@@ -1109,16 +1120,17 @@ export class EngineScene {
         // scaling every vertex of the part about that world pivot, regardless of where the part's
         // own local origin sits. Their separation from the shared pivot -- and hence from each
         // other -- therefore grows by exactly scaleFactor, never converging faster on one side.
-        part.mesh.position
-          .copy(this.frontDriveScalePivot)
-          .addScaledVector(basePos.clone().sub(this.frontDriveScalePivot), scaleFactor);
+        this.pivotDeltaScratch.subVectors(basePos, this.frontDriveScalePivot);
+        part.mesh.position.copy(this.frontDriveScalePivot).addScaledVector(this.pivotDeltaScratch, scaleFactor);
       } else if (scaleFactor !== 1) {
         // Fallback for the untested-in-practice case there's no crank line (and hence no shared
         // pivot) to derive -- scale about the mesh's own local origin instead, compensating so the
         // resize reads as growth about the part's own center rather than a translation.
         const center = part.localSphere.center;
-        const centerScaled = new THREE.Vector3(center.x * baseScale.x, center.y * baseScale.y, center.z * baseScale.z);
-        const offset = centerScaled.multiplyScalar(1 - scaleFactor).applyQuaternion(baseQuat);
+        const offset = this.centerOffsetScratch
+          .set(center.x * baseScale.x, center.y * baseScale.y, center.z * baseScale.z)
+          .multiplyScalar(1 - scaleFactor)
+          .applyQuaternion(baseQuat);
         part.mesh.position.copy(basePos).add(offset);
       } else {
         part.mesh.position.copy(basePos);

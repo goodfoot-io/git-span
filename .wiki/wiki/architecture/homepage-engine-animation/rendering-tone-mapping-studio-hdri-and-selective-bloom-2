@@ -1,7 +1,7 @@
 packages/website/app/components/marketing/story/engine/EngineScene.ts#L215-L276 rk64:636a191eb0ee9c18
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L335-L345 rk64:42642c4bf6672eb7
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L436-L468 rk64:045988683ffc46d9
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L815-L836 rk64:122350f1b3c432a5
-packages/website/app/components/marketing/story/engine/EngineScene.ts#L889-L902 rk64:346c2ce0702e6fff
-wiki/architecture/homepage-engine-animation.md#L443-L498 rk64:6b3372aa97ff80ba
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L346-L356 rk64:42642c4bf6672eb7
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L447-L479 rk64:045988683ffc46d9
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L826-L847 rk64:122350f1b3c432a5
+packages/website/app/components/marketing/story/engine/EngineScene.ts#L900-L913 rk64:346c2ce0702e6fff
+wiki/architecture/homepage-engine-animation.md#L443-L498 rk64:f5fa41de0499be6e
 

@@ -199,7 +199,7 @@ staging positions (not a clean "pulled back along its axis" pose), and they fly 
 assembled seat one after another as the clip plays. Naively sampling frame 0 as "exploded" and the
 last frame as "assembled" renders a scattered speck cloud, not an engine.
 
-[`EngineScene.load()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L330-L584)
+[`EngineScene.load()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L341-L595)
 handles this in two steps:
 
 1. **Bake assembled poses from the last frame.** The `AnimationMixer` must be set to
@@ -287,9 +287,9 @@ pan (`#3f4247`, roughness 0.65/metalness 0.8, the darkest — a sand-cast part),
 block, `engineBackCover`, and the unmatched-name fallback (`#4a4d52`, 0.6/0.85), and `castIronLight`
 for the side covers (`#54575d`, 0.55/0.85). All families still share the GLB's normal, roughness,
 and AO detail maps (loaded in
-[`EngineScene.load()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L438-L452)
+[`EngineScene.load()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L449-L463)
 and wired into each family's material in
-[`materialFor()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L596-L611))
+[`materialFor()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L607-L622))
 for surface realism — only the color layer is synthetic. The studio HDRI environment map (see
 [Rendering](#rendering-tone-mapping-studio-hdri-and-selective-bloom)) is what most recently changed
 how these families actually read on screen, but the family/color assignment itself is unaffected.
@@ -443,7 +443,7 @@ bloom](#rendering-tone-mapping-studio-hdri-and-selective-bloom) for the exact se
 ## Rendering: tone mapping, studio HDRI, and selective bloom
 
 **Tone mapping.** The constructor sets
-[`this.renderer.toneMapping = THREE.ACESFilmicToneMapping`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L335-L345)
+[`this.renderer.toneMapping = THREE.ACESFilmicToneMapping`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L346-L356)
 with `toneMappingExposure = 1.15`. This replaced an earlier `AgXToneMapping` pick once the
 emissive/bloom highlight pass (below) existed: AgX rolls off highlights hard by design, which
 crushed exactly the brightness range `UnrealBloomPass`'s threshold needs to read cleanly to tell
@@ -458,7 +458,7 @@ out" bug, and how the fix required both a lower emissive magnitude and direct di
 **Studio HDRI environment.** An equirectangular HDRI —
 [`studio_small_08_1k.hdr`](../../packages/website/app/assets/engine/) (Poly Haven, CC0), loaded via
 `RGBELoader` and converted through `THREE.PMREMGenerator` into a PMREM environment map
-([`EngineScene.load()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L436-L468)).
+([`EngineScene.load()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L447-L479)).
 This gives real softbox/rim gradients across the machined faces (ring gear, cylinder-head covers)
 instead of a flat ambient wash. `scene.environmentIntensity` is `1.1` and
 `scene.environmentRotation` is `new THREE.Euler(0, Math.PI * 0.35, 0)` — both tuned against
@@ -479,11 +479,11 @@ The constructor builds two `EffectComposer`s
 `bloomComposer` renders the full scene through the same camera, with every mesh not on
 `BLOOM_LAYER` (`= 1`) temporarily swapped to a flat black `DARK_MATERIAL` (`fog: false`, so
 distant/fogged parts can't accidentally cross the bloom threshold on their own — see
-[`darkenNonBloomed`/`restoreMaterial`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L889-L902)),
+[`darkenNonBloomed`/`restoreMaterial`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L900-L913)),
 through `UnrealBloomPass(new THREE.Vector2(1, 1), 0.45, 0.35, 0.92)` (threshold/strength/radius);
 `composer` does the normal full-scene render and a custom `mixPass` `ShaderPass` adds the bloom
 texture back on top additively, followed by `OutputPass` for the final sRGB conversion.
-[`render()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L815-L836)
+[`render()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L826-L847)
 runs both passes every frame in sequence, with the [mismatch bounding
 box](#the-mismatch-bounding-box) handled specially: hide the box group outright (not merely
 darkened — see [the bloom-pass opacity bug](#the-mismatch-bounding-box) for why an opaque
@@ -513,7 +513,7 @@ request; see the [Related pages](#related-pages) history if reconstructing that 
 
 Highlightable parts (`isFrontDrive || isMount || isOrangeEmphasis`) get their own material clone
 rather than the family's shared instance
-([`EngineScene.load()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L715-L719))
+([`EngineScene.load()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L726-L730))
 — `updateHighlights` drives emissive/color directly on each one, and a shared material would leak
 one part's glow onto every other part of the same family.
 [`buildHighlightRecords()`](../../packages/website/app/components/marketing/story/engine/highlights.ts#L171-L221)
@@ -577,11 +577,11 @@ so scrubbing/wrapping never pops. This is layered on top of whatever intensity `
 already computed; it never changes *whether* a part is glowing, only how hot it glows while it is.
 `pulseCycle`/`pulseWeight` are advanced every tick of the [shared motion
 driver](#the-shared-motion-driver) (`motionTick`,
-[`EngineScene.ts#L998-L1080`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L998-L1080)),
+[`EngineScene.ts#L998-L1080`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L1009-L1091)),
 entirely independent of scroll position — the heartbeat keeps beating at a constant real-time rate
 regardless of scrub direction or speed. It's pinned to 0 (no accumulation) under
 `prefers-reduced-motion` (`setReducedMotion`,
-[`EngineScene.ts#L552-L561`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L611-L620)).
+[`EngineScene.ts#L552-L561`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L622-L631)).
 [`blackbodyColor(base, heat)`](../../packages/website/app/components/marketing/story/engine/highlights.ts#L161-L180)
 is the color ramp itself: for `heat` in `[0, 0.5]` it rises from a dim ember of `base`'s own hue
 toward that hue's natural lightness with only a mild warm-hue nudge (so each kind's identity reads
@@ -595,7 +595,7 @@ glow reads as a vivid hot color rather than washing out.
 The page's framing rule is that the engine must never touch the media frame's edges, at any beat,
 including fully exploded (when the model's footprint is largest). This is solved mathematically
 rather than by hand-tuning per-beat camera shots:
-[`fitCameraToFrame()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L845-L883)
+[`fitCameraToFrame()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L856-L894)
 computes the union bounding sphere of every part's current world position each frame
 (`sphereUnion`, a standard two-sphere merge,
 [`EngineScene.ts#L96-L111`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L110-L125)),
@@ -653,7 +653,7 @@ decayed back to rest — was removed outright in an earlier pass; there is no re
 anywhere in the current source.)
 
 **Drag-to-orbit** (all phases). Pointer events on the canvas
-([`EngineScene.ts#L948-L995`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L948-L995)) —
+([`EngineScene.ts#L948-L995`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L959-L1006)) —
 `setPointerCapture` on down, `touch-action: pan-y` and `grab`/`grabbing` cursor styling set on the
 canvas element in the constructor — accumulate clamped azimuth/elevation offsets
 (`DRAG_SENSITIVITY`, `DRAG_AZIMUTH_LIMIT`, `DRAG_ELEVATION_TOTAL_LIMIT`,
@@ -672,7 +672,7 @@ Idle spin, drag snap-back, and the highlight heartbeat pulse are all genuinely t
 purely scroll-driven) motions, and used to risk competing `requestAnimationFrame` loops (a fourth,
 the scroll-impulse decay, existed before that motion was removed entirely — see above). They share
 one: `ensureMotionLoop()`/`motionTick()`
-([`EngineScene.ts#L998-L1080`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L998-L1080)).
+([`EngineScene.ts#L998-L1080`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L1009-L1091)).
 Any of them starting (hero idle turning on, a drag ending, or `setReducedMotion(false)`) calls
 `ensureMotionLoop()`, which starts the loop if it isn't already running. Each tick advances all
 three (accumulating idle rotation if `heroIdle`, easing drag offsets toward zero if not dragging,
@@ -736,7 +736,7 @@ driver](#the-shared-motion-driver)) accumulates at `HERO_IDLE_RATE` (one turn pe
 ramping back to 1 over `RETURN_TO_NORMAL_START_T..END_T`, `t = 93-100`, so the idle turntable
 resumes right where the engine ends up fully assembled again) blends that accumulated offset into
 the camera azimuth
-([`fitCameraToFrame()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L1068-L1068))
+([`fitCameraToFrame()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L1079-L1079))
 so the first scroll movement smoothly absorbs whatever rotation had accumulated instead of snapping
 the camera back to the base azimuth — this is distinct from (and narrower than) the drag-to-orbit
 offset, which is *not* weighted by `idleWeight` and applies in every phase. `EngineStage.tsx` calls
