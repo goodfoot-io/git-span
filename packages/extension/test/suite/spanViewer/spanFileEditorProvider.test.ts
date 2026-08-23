@@ -330,6 +330,77 @@ describe('spanFileEditorProvider (end-to-end)', () => {
     });
   });
 
+  it('reads same-file anchors once and concurrently, slicing extents equivalently and failing closed on a bare-CR final line', async () => {
+    // Five clean anchors across four files -- two sharing multi.txt -- so the
+    // path-deduped read pass backs both multi.txt cards with one trusted
+    // read. nl/nonl pin the slice equivalence at the last line with and
+    // without a trailing newline; cr.txt ends with a bare '\\r' final split
+    // element whose three-line claim must yield the "content changed" card
+    // (the pre-fix mapped pop dropped it; a raw-empty-only pop would render).
+    fs.writeFileSync(path.join(workspacePath, 'multi.txt'), 'alpha\nbeta\ngamma\ndelta\nepsilon\nzeta\n');
+    fs.writeFileSync(path.join(workspacePath, 'nl.txt'), 'alpha\nbeta\ngamma\n');
+    fs.writeFileSync(path.join(workspacePath, 'nonl.txt'), 'alpha\nbeta\ngamma');
+    fs.writeFileSync(path.join(workspacePath, 'cr.txt'), 'alpha\nbeta\n\r');
+    const declaration = [
+      'multi.txt#L1-L2 rk64:aaaaaa01',
+      'multi.txt#L5-L6 rk64:bbbbbb02',
+      'nl.txt#L1-L3 rk64:cccccc03',
+      'nonl.txt#L1-L3 rk64:dddddd04',
+      'cr.txt#L1-L3 rk64:eeeeee05',
+      '',
+      'Why these anchors share files.'
+    ].join('\n');
+    const uri = await openSpan('fixture-span-multi', declaration);
+
+    await waitForSuccessfulOutcome(uri);
+    const posted = await waitForPostedDocument(uri);
+
+    assert.strictEqual(posted.anchors.length, 5, 'Expected one card per declared anchor');
+    const [firstShared, secondShared, withNewline, withoutNewline, bareCr] = posted.anchors;
+    assert.ok(firstShared?.kind === 'clean', `Expected a clean card, got: ${JSON.stringify(firstShared)}`);
+    assert.strictEqual(firstShared.content, 'alpha\nbeta\n');
+    assert.ok(secondShared?.kind === 'clean', `Expected a clean card, got: ${JSON.stringify(secondShared)}`);
+    assert.strictEqual(
+      secondShared.content,
+      'epsilon\nzeta\n',
+      'Expected the second same-file anchor to slice its own extent from the shared read'
+    );
+    assert.ok(withNewline?.kind === 'clean', `Expected a clean card, got: ${JSON.stringify(withNewline)}`);
+    assert.strictEqual(withNewline.content, 'alpha\nbeta\ngamma\n');
+    assert.ok(withoutNewline?.kind === 'clean', `Expected a clean card, got: ${JSON.stringify(withoutNewline)}`);
+    assert.strictEqual(
+      withoutNewline.content,
+      'alpha\nbeta\ngamma\n',
+      'Expected a no-trailing-newline source to slice identically to its newline-terminated twin'
+    );
+    assert.ok(
+      bareCr !== undefined && bareCr.kind === 'changed',
+      `Expected the bare-CR final line to fail closed to "changed", got: ${JSON.stringify(bareCr)}`
+    );
+
+    // The single fixture commit carries every address's content block, so the
+    // accordion keeps one entry per address -- including both same-file
+    // addresses, whose cleanContents seeds fed the ladder exactly as before.
+    assert.strictEqual(posted.history.length, 1, 'Expected one accordion entry for the single fixture commit');
+    const blocks = posted.history[0]?.blocks;
+    assert.ok(blocks !== undefined, 'Expected history blocks for the fixture commit');
+    const firstSharedBlocks = blocks.filter((block) => block.path === 'multi.txt#L1-L2');
+    assert.ok(
+      firstSharedBlocks[0]?.pair !== undefined,
+      `Expected the shared address to keep its content block, got: ${JSON.stringify(firstSharedBlocks)}`
+    );
+    assert.deepStrictEqual(firstSharedBlocks[0].pair, {
+      original: '',
+      modified: 'alpha\nbeta\n',
+      originalStartLine: 1,
+      modifiedStartLine: 1
+    });
+    assert.ok(
+      blocks.some((block) => block.path === 'multi.txt#L5-L6'),
+      'Expected the second same-file address to keep its own accordion block'
+    );
+  });
+
   it('posts the "content changed" status card when the anchor file is edited between the CLI spawn and the disk read, and still posts the history accordion entry', async () => {
     // The fixture binary appends to race-target.ts during the CLI spawn, so
     // the provider's pre-spawn stat (original size) disagrees with its

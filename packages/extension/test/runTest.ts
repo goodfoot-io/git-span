@@ -327,6 +327,36 @@ if (args[0] === 'history' && args[2] === '--format' && args[3] === 'json') {
     process.exit(0);
   }
 
+  if (spanName === 'fixture-span-multi') {
+    // Five clean anchors across four files -- two sharing multi.txt -- so the
+    // provider's path-deduped concurrent read pass has real work: one trusted
+    // read of multi.txt backs both of its anchors, and the sliced extents
+    // feed both the posted cards and the ladder seeds. cr.txt ends with a
+    // bare carriage return (its last split element is '\\r'), whose anchor
+    // claims three lines: the CLI-certified content had three lines, so the
+    // reader must fail closed to a "changed" card, never render the stripped
+    // empty line.
+    writeJson({
+      schema_version: 2,
+      span: spanName,
+      commits: [
+        {
+          hash: 'c1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4',
+          date: '2024-01-03T00:00:00Z',
+          summary: 'Add multi anchors',
+          anchors: [
+            { path: 'multi.txt#L1-L2', content: 'alpha\\nbeta\\n' },
+            { path: 'multi.txt#L5-L6', content: 'epsilon\\nzeta\\n' },
+            { path: 'nl.txt#L1-L3', content: 'alpha\\nbeta\\ngamma\\n' },
+            { path: 'nonl.txt#L1-L3', content: 'alpha\\nbeta\\ngamma' },
+            { path: 'cr.txt#L1-L3', content: 'alpha\\nbeta\\n' }
+          ]
+        }
+      ]
+    });
+    process.exit(0);
+  }
+
   if (spanName === 'fixture-span-rebind-edit') {
     // One commit that rebinds the address's token and edits the content in the
     // same change: two timeline anchors at the same path -- a header-only

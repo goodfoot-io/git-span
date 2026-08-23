@@ -379,6 +379,12 @@ export function reconstructOriginal(
  * limit -- for whole-file anchors over large files that converted a valid
  * reconstruction into a caught-as-truncation failure. Iterating keeps the
  * splice correct at any size.
+ *
+ * @param out - The accumulator array the splice builds.
+ * @param lines - The image being spliced (post-lines in reverse application,
+ *   pre-lines forward).
+ * @param from - First index to copy, inclusive.
+ * @param to - Last index to copy, exclusive.
  */
 function pushSlice(out: string[], lines: readonly string[], from: number, to: number): void {
   for (const line of lines.slice(from, to)) {

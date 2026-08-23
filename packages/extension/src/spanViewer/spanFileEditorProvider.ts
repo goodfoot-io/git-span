@@ -483,41 +483,42 @@ function sliceLineRange(text: string, range: { start: number; end: number } | nu
   if (range === null) {
     return text;
   }
-  const lines = text.split('\n').map((line) => line.replace(/\r$/, ''));
-  if (lines.length > 0 && lines[lines.length - 1] === '') {
-    lines.pop();
+  const lines = text.split('\n');
+  // Mirror Rust `str::lines()`: the final element is dropped when it is empty
+  // after `\r`-stripping, which includes a bare `'\r'`. Counting without
+  // mapping keeps the guard O(1) over large files; only the sliced extent is
+  // mapped below.
+  let lineCount = lines.length;
+  if (lineCount > 0) {
+    const last = lines[lineCount - 1];
+    if (last === '' || last === '\r') {
+      lineCount -= 1;
+    }
   }
-  if (lines.length < range.end) {
+  if (lineCount < range.end) {
     // The CLI certified this anchor clean, so its own read had at least
     // `range.end` lines; fewer here means the file changed in the gap.
     return null;
   }
   return lines
     .slice(range.start - 1, range.end)
-    .map((line) => `${line}\n`)
+    .map((line) => `${line.replace(/\r$/, '')}\n`)
     .join('');
 }
 
 /**
- * Read one `clean`-plan anchor's extent from disk and verify the read did not
- * race the CLI's own read: `fs.stat` immediately after the read must equal
- * the pre-spawn stat. A read failure, a stat mismatch, or a file shorter
- * than the declared extent all return `null` (the "content changed" card) --
- * never a fabricated empty preview, since an empty result must mean
- * "genuinely empty extent".
+ * Read one anchor file from disk and verify the read did not race the CLI's
+ * own read: `fs.stat` immediately after the read must equal the pre-spawn
+ * stat. A read failure or a stat mismatch returns `null` (the "content
+ * changed" card) -- never a fabricated preview. Per-path, so several anchors
+ * on one file share a single trusted read.
  *
- * @param anchor - The live anchor to read.
+ * @param fsPath - The absolute filesystem path to read.
  * @param preSpawnStats - The pre-spawn stat map, keyed by filesystem path.
- * @param repoRoot - The repository root the anchor's path resolves against.
- * @returns The sliced extent, or `null` when the read cannot be trusted.
+ * @returns The raw file text, or `null` when the read cannot be trusted.
  * @throws Never.
  */
-async function readCleanContent(
-  anchor: LiveAnchor,
-  preSpawnStats: Map<string, PreSpawnStat>,
-  repoRoot: string
-): Promise<string | null> {
-  const fsPath = path.join(repoRoot, anchor.path);
+async function readCleanRaw(fsPath: string, preSpawnStats: Map<string, PreSpawnStat>): Promise<string | null> {
   let raw: string;
   try {
     raw = await fs.readFile(fsPath, 'utf-8');
@@ -529,7 +530,55 @@ async function readCleanContent(
   if (!statsEqual(preSpawnStats.get(fsPath), postStat)) {
     return null;
   }
-  return sliceLineRange(raw, anchor.range);
+  return raw;
+}
+
+/**
+ * Read every distinct path's content once and concurrently, then slice each
+ * clean anchor's extent from its path's trusted raw text. Replaces the
+ * per-anchor sequential full-file reads: N anchors on one file cost one
+ * read, and paths resolve independently of each other. A path whose read
+ * cannot be trusted yields `null` for every anchor on it -- exactly what the
+ * per-anchor loop produced -- so both consumers (the posted card's content
+ * and the ladder seed map) see unchanged values.
+ *
+ * @param entries - One entry per clean-plan anchor, in posted order.
+ * @param preSpawnStats - The pre-spawn stat map, keyed by filesystem path.
+ * @param repoRoot - The repository root the anchor paths resolve against.
+ * @returns Per-entry sliced content, index-aligned with `entries`.
+ * @throws Never.
+ */
+async function readCleanContents(
+  entries: readonly { anchor: LiveAnchor }[],
+  preSpawnStats: Map<string, PreSpawnStat>,
+  repoRoot: string
+): Promise<(string | null)[]> {
+  const byFsPath = new Map<string, number[]>();
+  entries.forEach((entry, index) => {
+    const fsPath = path.join(repoRoot, entry.anchor.path);
+    const indices = byFsPath.get(fsPath);
+    if (indices === undefined) {
+      byFsPath.set(fsPath, [index]);
+    } else {
+      indices.push(index);
+    }
+  });
+  const rawByIndex: (string | null)[] = new Array(entries.length);
+  await Promise.allSettled(
+    [...byFsPath.entries()].map(async ([fsPath, indices]) => {
+      const raw = await readCleanRaw(fsPath, preSpawnStats);
+      for (const index of indices) {
+        rawByIndex[index] = raw;
+      }
+    })
+  );
+  return entries.map((entry, index) => {
+    const raw = rawByIndex[index];
+    if (raw === null || raw === undefined) {
+      return null;
+    }
+    return sliceLineRange(raw, entry.anchor.range);
+  });
 }
 
 /**
@@ -1278,6 +1327,18 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
     let changed = 0;
     let dangling = 0;
 
+    // Clean-plan content resolves in one concurrent, path-deduped pass: every
+    // anchor on a file shares that file's single trusted read (see
+    // readCleanContents), and the sliced extents land in both consumers --
+    // the posted card's content and the ladder-seed map below -- exactly as
+    // the per-anchor sequential loop produced them.
+    const cleanEntries: {
+      slot: number;
+      anchor: LiveAnchor;
+      address: string;
+      base: { address: string; path: string; range: { start: number; end: number } | null };
+    }[] = [];
+
     for (let index = 0; index < liveAnchors.length; index++) {
       const anchor = liveAnchors[index];
       const plan = plans[index];
@@ -1291,17 +1352,10 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
           dangling++;
           anchors.push({ ...base, kind: 'dangling' });
           break;
-        case 'clean': {
-          const content = await readCleanContent(anchor, preSpawnStats, repoRoot);
-          if (content === null) {
-            changed++;
-            anchors.push({ ...base, kind: 'changed' });
-          } else {
-            cleanContents.set(address, content);
-            anchors.push({ ...base, kind: 'clean', content });
-          }
+        case 'clean':
+          cleanEntries.push({ slot: anchors.length, anchor, address, base });
+          anchors.push({ ...base, kind: 'clean', content: '' });
           break;
-        }
         case 'drifted':
         case 'reconciled':
           drifted++;
@@ -1324,6 +1378,25 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
           break;
       }
     }
+
+    const cleanResults = await readCleanContents(
+      cleanEntries.map(({ anchor }) => ({ anchor })),
+      preSpawnStats,
+      repoRoot
+    );
+    cleanEntries.forEach((entry, i) => {
+      const content = cleanResults[i];
+      if (content === null || content === undefined) {
+        changed++;
+        anchors[entry.slot] = { ...entry.base, kind: 'changed' };
+      } else {
+        cleanContents.set(entry.address, content);
+        const posted = anchors[entry.slot];
+        if (posted !== undefined && posted.kind === 'clean') {
+          posted.content = content;
+        }
+      }
+    });
 
     const spanRelativePath = `.span/${spanName}`;
 
