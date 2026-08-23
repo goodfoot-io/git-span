@@ -17,7 +17,13 @@ const SIGNALS_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../src/sig
 
 const TEXT_CLASSIFIED_SOURCES = ['cochange.ts', 'sharedLiterals.ts'] as const;
 
-/** Unescape a subset of JS string escapes (`\uXXXX`, `\xXX`, `\\`, `\n`, `\t`) to its runtime value. */
+/**
+ * Unescape a subset of JS string escapes (`\uXXXX`, `\xXX`, `\\`, `\n`, `\t`)
+ * to its runtime value.
+ *
+ * @param source - Literal-body text possibly containing escape sequences.
+ * @returns The runtime string the escapes denote.
+ */
 function unescapeJs(source: string): string {
   return source.replace(/\\(u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|[\s\S])/g, (_match, esc: string) => {
     if (esc.startsWith('u')) return String.fromCharCode(Number.parseInt(esc.slice(1), 16));
