@@ -6,6 +6,7 @@ import {
   createTokenizeScan,
   emitRedirect,
   finishScan,
+  finishTokenizeScan,
   flushWord,
   rejectEmptyConstructList,
   skipTopLevelComment,
@@ -19,7 +20,11 @@ import {
   stepHereString,
   stepParen,
   stepQuote,
-  stepRedirectToken
+  stepRedirectToken,
+  stepTokenizerAmpersand,
+  stepTokenizerEscape,
+  stepTokenizerQuote,
+  stepTokenizerRedirect
 } from '../../src/common/shell-split-machines.js';
 
 /** Drive one machine step with the cursor parked at `at`. */
@@ -635,5 +640,127 @@ describe('tokenizer redirect emission', () => {
     expect(t.tokens).toEqual([]);
     expect(t.buf).toBe('2');
     expect(t.i).toBe(1);
+  });
+});
+
+describe('tokenizer quote step', () => {
+  it('consumes the quoted section into the word buffer and marks the word quoted', () => {
+    const t = createTokenizeScan("a'b c'");
+    t.buf = 'a';
+    t.i = 1;
+    expect(stepTokenizerQuote(t)).toBe(true);
+    expect(t.buf).toBe('ab c');
+    expect(t.quoted).toBe(true);
+    expect(t.i).toBe(6);
+  });
+
+  it('declines on any non-quote character without touching state', () => {
+    const t = createTokenizeScan('x"y"');
+    expect(stepTokenizerQuote(t)).toBe(false);
+    expect(t.i).toBe(0);
+    expect(t.buf).toBe('');
+  });
+
+  it('fails the scan on an unbalanced quote', () => {
+    const t = createTokenizeScan("'open");
+    expect(stepTokenizerQuote(t)).toBe(true);
+    expect(t.failed).toBe(true);
+  });
+});
+
+describe('tokenizer escape step', () => {
+  it('consumes the escape pair into the word buffer and marks the word quoted', () => {
+    const t = createTokenizeScan('a\\$b');
+    t.i = 1;
+    expect(stepTokenizerEscape(t)).toBe(true);
+    expect(t.buf).toBe('$');
+    expect(t.quoted).toBe(true);
+    expect(t.i).toBe(3);
+  });
+
+  it('declines on a plain character and on a trailing lone backslash', () => {
+    const t = createTokenizeScan('x\\');
+    expect(stepTokenizerEscape(t)).toBe(false);
+    t.i = 1;
+    expect(stepTokenizerEscape(t)).toBe(false);
+    expect(t.i).toBe(1);
+  });
+});
+
+describe('tokenizer redirect step', () => {
+  it.each([
+    ['<<<', 3],
+    ['<<-', 3],
+    ['<<', 2],
+    ['<', 1],
+    ['>>', 2],
+    ['>', 1]
+  ])('spells %s as the longest operator at the cursor and consumes its attached target', (operator, width) => {
+    const t = createTokenizeScan(`${operator}out`);
+    expect(stepTokenizerRedirect(t)).toBe(true);
+    expect(t.tokens).toEqual([{ text: `${operator}out`, quoted: false, isRedirect: true }]);
+    expect(t.i).toBe(width + 3);
+    expect(t.buf).toBe('');
+  });
+
+  it('ends a mid-word before emitting, but keeps an IO_NUMBER digit run as the prefix', () => {
+    const midWord = createTokenizeScan('echo a>b');
+    midWord.i = 6;
+    midWord.buf = 'a';
+    expect(stepTokenizerRedirect(midWord)).toBe(true);
+    expect(midWord.tokens).toEqual([
+      { text: 'a', quoted: false, isRedirect: false },
+      { text: '>b', quoted: false, isRedirect: true }
+    ]);
+
+    const ioNumber = createTokenizeScan('2>err tail');
+    ioNumber.i = 1;
+    ioNumber.buf = '2';
+    expect(stepTokenizerRedirect(ioNumber)).toBe(true);
+    expect(ioNumber.tokens).toEqual([{ text: '2>err', quoted: false, isRedirect: true }]);
+  });
+
+  it('declines on any non-redirect character and fails on an unbalanced target quote', () => {
+    const t = createTokenizeScan('x>y');
+    expect(stepTokenizerRedirect(t)).toBe(false);
+    const bad = createTokenizeScan(">'open");
+    expect(stepTokenizerRedirect(bad)).toBe(true);
+    expect(bad.failed).toBe(true);
+  });
+});
+
+describe('tokenizer ampersand step', () => {
+  it('emits &> and &>> as stdout+stderr redirects with attached targets', () => {
+    const stdoutErr = createTokenizeScan('&>all.log');
+    expect(stepTokenizerAmpersand(stdoutErr)).toBe(true);
+    expect(stdoutErr.tokens).toEqual([{ text: '&>all.log', quoted: false, isRedirect: true }]);
+
+    const appendBoth = createTokenizeScan('&>>both.log');
+    expect(stepTokenizerAmpersand(appendBoth)).toBe(true);
+    expect(appendBoth.tokens).toEqual([{ text: '&>>both.log', quoted: false, isRedirect: true }]);
+  });
+
+  it('treats a bare & as an ordinary word character and declines on non-ampersand input', () => {
+    const bare = createTokenizeScan('&1');
+    expect(stepTokenizerAmpersand(bare)).toBe(true);
+    expect(bare.tokens).toEqual([]);
+    expect(bare.buf).toBe('&');
+    expect(bare.i).toBe(1);
+
+    expect(stepTokenizerAmpersand(createTokenizeScan('|'))).toBe(false);
+  });
+});
+
+describe('finishTokenizeScan', () => {
+  it('flushes the final word and returns the token stream', () => {
+    const t = createTokenizeScan('hi');
+    t.buf = 'hi';
+    expect(finishTokenizeScan(t)).toEqual([{ text: 'hi', quoted: false, isRedirect: false }]);
+  });
+
+  it('returns null for a failed walk instead of a token stream', () => {
+    const t = createTokenizeScan("'open");
+    t.failed = true;
+    expect(finishTokenizeScan(t)).toBeNull();
   });
 });

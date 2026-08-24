@@ -1004,6 +1004,11 @@ export interface TokenizeScan {
   quoted: boolean;
   /** Completed tokens, in order. */
   tokens: Token[];
+  /**
+   * Set when the walk hit unbalanced quotes; the scan stops at it and
+   * [finishTokenizeScan] yields null instead of a token stream.
+   */
+  failed?: boolean;
 }
 
 /** Initialize the tokenizer scan state for `src` at the very start of a walk. */
@@ -1090,4 +1095,96 @@ export function emitRedirect(t: TokenizeScan, operator: string, attachedStart: n
   t.quoted = false;
   t.i = attached.next;
   return true;
+}
+
+/**
+ * Consume a quoted section opening at the cursor into the word buffer,
+ * marking the word quoted. Declines on any other character. Unbalanced
+ * quotes set [TokenizeScan.failed].
+ */
+export function stepTokenizerQuote(t: TokenizeScan): boolean {
+  const c = t.src[t.i];
+  if (c !== "'" && c !== '"') return false;
+  t.quoted = true;
+  const section = appendQuotedContent(t, t.buf, t.i);
+  if (section === null) {
+    t.failed = true;
+    return true;
+  }
+  t.buf = section.out;
+  t.i = section.next;
+  return true;
+}
+
+/**
+ * Consume a backslash escape pair into the word buffer, marking the word
+ * quoted. Declines on any other character — including a trailing backslash
+ * with nothing after it, which falls through to the ordinary word path.
+ */
+export function stepTokenizerEscape(t: TokenizeScan): boolean {
+  if (t.src[t.i] !== '\\' || t.i + 1 >= t.n) return false;
+  t.quoted = true;
+  t.buf += t.src[t.i + 1];
+  t.i += 2;
+  return true;
+}
+
+/** The redirect operator spelled at the cursor: the longest of `<<<`, `<<-`, `<<`, `<`, `>>`, `>`. */
+function readRedirectOperator(t: TokenizeScan): string {
+  const two = t.src.slice(t.i, t.i + 2);
+  const three = t.src.slice(t.i, t.i + 3);
+  if (t.src[t.i] === '<') {
+    if (three === '<<<') return '<<<';
+    if (three === '<<-') return '<<-';
+    if (two === '<<') return '<<';
+    return '<';
+  }
+  return two === '>>' ? '>>' : '>';
+}
+
+/**
+ * Consume a `<`/`>` redirect operator and its attached target. Mid-word the
+ * operator ends the current word first (`echo a>b` → words `echo`, `a`;
+ * redirect `>b`); an IO_NUMBER digit run is kept as the token's prefix
+ * (`2>`). Declines on any other character. Unbalanced quotes in the target
+ * set [TokenizeScan.failed].
+ */
+export function stepTokenizerRedirect(t: TokenizeScan): boolean {
+  const c = t.src[t.i];
+  if (c !== '<' && c !== '>') return false;
+  if (t.buf !== '' && !/^\d+$/.test(t.buf)) flushWord(t);
+  const operator = readRedirectOperator(t);
+  if (!emitRedirect(t, operator, t.i + operator.length)) t.failed = true;
+  return true;
+}
+
+/**
+ * Consume `&>`/`&>>` — the stdout+stderr redirect kept together by
+ * [splitTopLevel] — or append a bare `&` as an ordinary word char (`&1` in
+ * `2>&1`, which the attached-target scan consumed anyway). Declines only on
+ * a non-`&` character. Unbalanced quotes in the target set
+ * [TokenizeScan.failed].
+ */
+export function stepTokenizerAmpersand(t: TokenizeScan): boolean {
+  if (t.src[t.i] !== '&') return false;
+  if (t.src[t.i + 1] === '>') {
+    flushWord(t);
+    const operator = t.src.slice(t.i, t.i + 3) === '&>>' ? '&>>' : '&>';
+    if (!emitRedirect(t, operator, t.i + operator.length)) t.failed = true;
+  } else {
+    t.buf += '&';
+    t.i += 1;
+  }
+  return true;
+}
+
+/**
+ * End-of-input verdict for the tokenizer walk: null when unbalanced quotes
+ * failed the scan mid-walk, otherwise the completed tokens after one final
+ * word flush.
+ */
+export function finishTokenizeScan(t: TokenizeScan): Token[] | null {
+  if (t.failed) return null;
+  flushWord(t);
+  return t.tokens;
 }

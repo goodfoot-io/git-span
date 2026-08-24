@@ -13,11 +13,10 @@
  */
 
 import {
-  appendQuotedContent,
   createScan,
   createTokenizeScan,
-  emitRedirect,
   finishScan,
+  finishTokenizeScan,
   flushWord,
   rejectEmptyConstructList,
   skipTopLevelComment,
@@ -29,7 +28,11 @@ import {
   stepHeredocDelimiterNewline,
   stepParen,
   stepQuote,
-  stepRedirectToken
+  stepRedirectToken,
+  stepTokenizerAmpersand,
+  stepTokenizerEscape,
+  stepTokenizerQuote,
+  stepTokenizerRedirect
 } from './shell-split-machines.js';
 
 /**
@@ -179,63 +182,20 @@ export interface Token {
  */
 export function tokenize(s: string): Token[] | null {
   const t = createTokenizeScan(s);
-  while (t.i < t.n) {
-    const c = t.src[t.i];
-    if (/\s/.test(c)) {
+  while (t.i < t.n && !t.failed) {
+    if (/\s/.test(t.src[t.i])) {
       flushWord(t);
       t.i += 1;
       continue;
     }
-    if (c === "'" || c === '"') {
-      t.quoted = true;
-      const section = appendQuotedContent(t, t.buf, t.i);
-      if (section === null) return null;
-      t.buf = section.out;
-      t.i = section.next;
-      continue;
-    }
-    if (c === '\\' && t.i + 1 < t.n) {
-      t.quoted = true;
-      t.buf += t.src[t.i + 1];
-      t.i += 2;
-      continue;
-    }
-    if (c === '<' || c === '>') {
-      // A `<`/`>` is a redirect operator at a word boundary, or after an
-      // IO_NUMBER digit run (`1>`, `2>`); mid-word it ends the current word
-      // first (`echo a>b` → words `echo`, `a`; redirect `>b`).
-      if (t.buf !== '' && !/^\d+$/.test(t.buf)) flushWord(t);
-      let operator: string;
-      if (c === '<') {
-        if (t.src.slice(t.i, t.i + 3) === '<<<') operator = '<<<';
-        else if (t.src.slice(t.i, t.i + 3) === '<<-') operator = '<<-';
-        else if (t.src.slice(t.i, t.i + 2) === '<<') operator = '<<';
-        else operator = '<';
-      } else {
-        operator = t.src.slice(t.i, t.i + 2) === '>>' ? '>>' : '>';
-      }
-      if (!emitRedirect(t, operator, t.i + operator.length)) return null;
-      continue;
-    }
-    if (c === '&') {
-      // `&>`/`&>>` — the stdout+stderr redirect (kept together by
-      // splitTopLevel). A bare `&` here is an ordinary word char (`&1` in
-      // `2>&1`, which the attached-target scan above consumed anyway).
-      if (t.src[t.i + 1] === '>') {
-        flushWord(t);
-        const operator = t.src.slice(t.i, t.i + 3) === '&>>' ? '&>>' : '&>';
-        if (!emitRedirect(t, operator, t.i + operator.length)) return null;
-        continue;
-      }
-      t.buf += c;
-      t.i += 1;
-      continue;
-    }
-    t.buf += c;
+    if (stepTokenizerQuote(t)) continue;
+    if (stepTokenizerEscape(t)) continue;
+    if (stepTokenizerRedirect(t)) continue;
+    if (stepTokenizerAmpersand(t)) continue;
+    t.buf += t.src[t.i];
     t.i += 1;
   }
-  flushWord(t);
-  return t.tokens;
+  return finishTokenizeScan(t);
 }
 
 /**
