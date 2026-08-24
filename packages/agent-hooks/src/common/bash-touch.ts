@@ -266,6 +266,43 @@ function joinOfCommand(
 }
 
 /**
+ * Phase D - command grouping and ordering: resolved spans group by simple
+ * command index in walker first-appearance order; span-less guard commands
+ * (`false`/`true`/`:`) join the order with no group - their deterministic
+ * exit status drives the join filter and they never touch anything. The
+ * final order is ascending command index.
+ */
+export function orderCommands(
+  resolved: readonly ResolvedMatch[],
+  guards: readonly GuardMatch[]
+): {
+  readonly groups: Map<number, ResolvedMatch[]>;
+  readonly guardByIndex: Map<number, GuardMatch>;
+  readonly order: number[];
+} {
+  const groups = new Map<number, ResolvedMatch[]>();
+  const guardByIndex = new Map<number, GuardMatch>();
+  const order: number[] = [];
+  for (const m of resolved) {
+    const idx = m.span.simpleCommandIndex;
+    const list = groups.get(idx);
+    if (list !== undefined) {
+      list.push(m);
+    } else {
+      groups.set(idx, [m]);
+      order.push(idx);
+    }
+  }
+  for (const g of guards) {
+    if (groups.has(g.simpleCommandIndex) || guardByIndex.has(g.simpleCommandIndex)) continue;
+    guardByIndex.set(g.simpleCommandIndex, g);
+    order.push(g.simpleCommandIndex);
+  }
+  order.sort((a, b) => a - b);
+  return { groups, guardByIndex, order };
+}
+
+/**
  * Phase C - probe-cache seeding (plan Â§3 step 1c): derive every absent target
  * and cp/install source of the compound, plus the later-recreate scope (the
  * delete paths a later command can re-create with a file-producing write),
@@ -362,28 +399,9 @@ export async function runBashTouches(
   // Probe-cache seeding (phase C): one shared cache for the whole invocation.
   const probeCache = seedProbeCache(resolved);
 
-  // Group by simple command in walker order. Span-less guard commands
-  // (`false`/`true`/`:`) join the order with no group: their deterministic
-  // exit status drives the join filter, and they never touch anything.
-  const groups = new Map<number, ResolvedMatch[]>();
-  const guardByIndex = new Map<number, GuardMatch>();
-  const commandOrder: number[] = [];
-  for (const m of resolved) {
-    const idx = m.span.simpleCommandIndex;
-    const list = groups.get(idx);
-    if (list !== undefined) {
-      list.push(m);
-    } else {
-      groups.set(idx, [m]);
-      commandOrder.push(idx);
-    }
-  }
-  for (const g of guards) {
-    if (groups.has(g.simpleCommandIndex) || guardByIndex.has(g.simpleCommandIndex)) continue;
-    guardByIndex.set(g.simpleCommandIndex, g);
-    commandOrder.push(g.simpleCommandIndex);
-  }
-  commandOrder.sort((a, b) => a - b);
+  // Command grouping (phase D): walker order by simple command index;
+  // span-less guards join the order with no group.
+  const { groups, guardByIndex, order: commandOrder } = orderCommands(resolved, guards);
 
   // Pass A: translate every span once and evaluate its gate, pairing
   // cp/install sources with destinations and mv deletes with rename-copies by

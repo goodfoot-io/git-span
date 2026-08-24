@@ -56,3 +56,41 @@ describe('bashGatePrelude', () => {
     expect(bashGatePrelude(matches, {}).kind).toBe('proceed');
   });
 });
+
+import { orderCommands } from '../../src/common/bash-touch.js';
+
+describe('orderCommands', () => {
+  it('groups spans by simple command index in first-appearance walker order', () => {
+    const { groups, guardByIndex, order } = orderCommands(
+      [
+        resolvedMatch({ simpleCommandIndex: 2 }),
+        resolvedMatch({ simpleCommandIndex: 0 }),
+        resolvedMatch({ simpleCommandIndex: 2 })
+      ],
+      []
+    );
+    expect([...groups.keys()]).toEqual([2, 0]);
+    expect(groups.get(2)).toHaveLength(2);
+    expect(order).toEqual([0, 2]);
+    expect(guardByIndex.size).toBe(0);
+  });
+
+  it('appends span-less guards to the order without groups and dedups repeats', () => {
+    const guard = (index: number) => ({ status: 'builtin-guard', simpleCommandIndex: index, exitStatus: 1 });
+    const { groups, guardByIndex, order } = orderCommands([resolvedMatch({ simpleCommandIndex: 3 })], [
+      guard(5),
+      guard(5),
+      guard(1)
+    ] as never[]);
+    expect(order).toEqual([1, 3, 5]);
+    expect(groups.has(5)).toBe(false);
+    expect(guardByIndex.get(5)).toBeDefined();
+    expect(guardByIndex.size).toBe(2);
+  });
+
+  it('never lets a guard overwrite an existing span group at the same index', () => {
+    const guard = { status: 'builtin-guard', simpleCommandIndex: 0, exitStatus: 0 };
+    const { guardByIndex } = orderCommands([resolvedMatch({ simpleCommandIndex: 0 })], [guard as never]);
+    expect(guardByIndex.size).toBe(0);
+  });
+});
