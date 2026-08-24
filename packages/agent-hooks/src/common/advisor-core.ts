@@ -41,6 +41,8 @@ import {
   parseDriftPorcelain,
   parsePorcelain,
   resolveRepoRoot,
+  resolveSpanRoot,
+  SPAN_ROOT,
   toPosix
 } from './agent-hooks-common.js';
 import { collapseByPath, type RangeLabel, renderAnchorTree } from './anchor-tree.js';
@@ -1020,10 +1022,10 @@ export async function evaluateAdvisor(
       };
     }
 
-    // Uncovered writes: changed paths with zero covering span, minus `.span/**`
-    // (span repairs ride the same commit and must never self-trigger the advisor)
-    // and paths the repo's user-owned `.span/.advisorignore` excludes. Gitignored
-    // paths never reach here — git does not stage/publish them.
+    // Uncovered writes: changed paths with zero covering span, minus the
+    // configured span root (span repairs ride the same commit and must never
+    // self-trigger the advisor) and paths the repo's user-owned `.span/.advisorignore`
+    // excludes. Gitignored paths never reach here — git does not stage/publish them.
     const { uncovered, covering } = await computeUncoveredPaths(paths, cwd, executors, churn);
     if (uncovered.length === 0) {
       // A retry that fell through past an already-presented semantic-drift
@@ -1106,7 +1108,7 @@ export async function evaluateAdvisor(
  * anchor, in any span, whose path is one of the paths passed in — the CLI
  * itself returns matching spans whole, so that narrowing happens in
  * {@link computeUncoveredPaths} rather than being free. `covering` is never empty only
- * when `uncovered` is; the two partition the changeset (minus `.span/**`/
+ * when `uncovered` is; the two partition the changeset (minus configured-span-root/
  * advisor-ignored paths, which appear in neither). Kept together so a caller
  * needing both (the uncovered-writes reason, which now also names spans
  * already covering the changeset's other files — see
@@ -1118,7 +1120,8 @@ interface ChangesetCoverage {
 }
 
 /**
- * The changed paths with zero covering span — minus `.span/**` (span repairs
+ * The changed paths with zero covering span — minus the configured span root
+ * (`GIT_SPAN_DIR` / git config `git-span.dir`, default `.span`; span repairs
  * ride the same commit and must never self-trigger the advisor) and paths the
  * repo's user-owned `.span/.advisorignore` excludes (fail-open when absent/
  * unreadable). Shared by `evaluateAdvisor`'s `'may-hold'` and `'report-only'` branches,
@@ -1161,8 +1164,15 @@ async function computeUncoveredPaths(
   const covered = new Set(covering.map((row) => row.path));
   const repoRoot = resolveRepoRoot(cwd);
   const advisorIgnoreRules = repoRoot ? loadAdvisorIgnore(repoRoot) : [];
+  // Resolved exactly once per evaluation (this helper runs at most once per
+  // `evaluateAdvisor` call) so the exclusion matches the root every touch-side
+  // consumer uses — `GIT_SPAN_DIR` / git config `git-span.dir`, defaulting to
+  // `.span`. Filtering with the bare default left span-document edits in the
+  // changeset at any relocated root, and the advisor held on its own repairs.
+  // No repo root → no config to consult; keep the default-root filter.
+  const spanRoot = repoRoot === null ? SPAN_ROOT : resolveSpanRoot(repoRoot);
   let uncovered = paths.filter(
-    (path) => !covered.has(path) && !isInsideSpanRoot(path) && !isAdvisorIgnored(advisorIgnoreRules, path)
+    (path) => !covered.has(path) && !isInsideSpanRoot(path, spanRoot) && !isAdvisorIgnored(advisorIgnoreRules, path)
   );
 
   // Mechanical-churn suppression: filter the already-uncovered set down to the

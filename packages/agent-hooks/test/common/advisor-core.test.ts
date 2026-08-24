@@ -16,6 +16,7 @@
  * work around.
  */
 
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as nodePath from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -1156,6 +1157,109 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       } finally {
         repo.cleanup();
       }
+    });
+
+    // CARD main-345: the span-root exclusion must honor the configured root
+    // (GIT_SPAN_DIR / git config `git-span.dir`), not just the default `.span`,
+    // so span-document repairs never self-trigger the advisor at any root.
+    describe('uncovered-writes span-root exclusion (configured root)', () => {
+      const originalGitSpanDir = process.env['GIT_SPAN_DIR'];
+
+      afterEach(() => {
+        if (originalGitSpanDir === undefined) delete process.env['GIT_SPAN_DIR'];
+        else process.env['GIT_SPAN_DIR'] = originalGitSpanDir;
+      });
+
+      function uncoveredExecutors(): AdvisorExecutors {
+        return createFakeAdvisorExecutors({
+          list: async (): Promise<PorcelainRow[]> => [],
+          drift: async (): Promise<DriftPorcelainRow[]> => []
+        });
+      }
+
+      it('GIT_SPAN_DIR: a pure span-repair changeset at the relocated root never holds — no self-trigger', async () => {
+        const repo = makeTempRepo();
+        try {
+          process.env['GIT_SPAN_DIR'] = 'docs/span-docs';
+          const result = await evaluateAdvisor(
+            ['docs/span-docs/wiki/reference/a.md', 'docs/span-docs/codex/b.md'],
+            repo.root,
+            uncoveredExecutors(),
+            createMemoryAdvisorMemoState()
+          );
+
+          expect(result).toEqual({ decision: 'allow', kind: 'silent' });
+        } finally {
+          repo.cleanup();
+        }
+      });
+
+      it('GIT_SPAN_DIR: a mixed changeset excludes only the span doc and names the genuinely uncovered source path', async () => {
+        const repo = makeTempRepo();
+        try {
+          process.env['GIT_SPAN_DIR'] = 'docs/span-docs';
+          const result = await evaluateAdvisor(
+            ['docs/span-docs/wiki/a.md', 'src/uncovered.ts'],
+            repo.root,
+            uncoveredExecutors(),
+            createMemoryAdvisorMemoState()
+          );
+
+          expect(result.decision).toBe('hold');
+          expect(result.kind).toBe('uncovered-writes');
+          if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
+          expect(result.uncovered).toEqual(['src/uncovered.ts']);
+        } finally {
+          repo.cleanup();
+        }
+      });
+
+      it('git config git-span.dir: span-document writes at the configured root are excluded there too', async () => {
+        const repo = makeTempRepo();
+        try {
+          delete process.env['GIT_SPAN_DIR'];
+          execFileSync('git', ['-C', repo.root, 'config', 'git-span.dir', 'notes/spans'], { stdio: 'ignore' });
+          const result = await evaluateAdvisor(
+            ['notes/spans/wiki/a.md', 'notes/spans/codex/b.md'],
+            repo.root,
+            uncoveredExecutors(),
+            createMemoryAdvisorMemoState()
+          );
+
+          expect(result).toEqual({ decision: 'allow', kind: 'silent' });
+        } finally {
+          repo.cleanup();
+        }
+      });
+
+      it('default root unchanged: .span writes stay excluded — and only .span, not prefix-sibling directories', async () => {
+        const repo = makeTempRepo();
+        try {
+          delete process.env['GIT_SPAN_DIR'];
+          const executors = uncoveredExecutors();
+
+          const spanRepair = await evaluateAdvisor(
+            ['.span/wiki/a.md', '.span/codex/b.md'],
+            repo.root,
+            executors,
+            createMemoryAdvisorMemoState()
+          );
+          expect(spanRepair).toEqual({ decision: 'allow', kind: 'silent' });
+
+          const siblings = await evaluateAdvisor(
+            ['.spans/x.md', '.span-notes/y.md'],
+            repo.root,
+            executors,
+            createMemoryAdvisorMemoState()
+          );
+          expect(siblings.decision).toBe('hold');
+          expect(siblings.kind).toBe('uncovered-writes');
+          if (siblings.kind !== 'uncovered-writes') throw new Error('unreachable');
+          expect(siblings.uncovered).toEqual(['.spans/x.md', '.span-notes/y.md']);
+        } finally {
+          repo.cleanup();
+        }
+      });
     });
 
     it('MOVED/RESOLVED_PENDING_COMMIT-only drift never denies, regardless of memoState state', async () => {
