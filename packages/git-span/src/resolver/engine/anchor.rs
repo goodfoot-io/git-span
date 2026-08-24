@@ -224,6 +224,152 @@ pub(super) fn sole_basename_preserving<'a>(
     }
 }
 
+/// The anchored text read by [`resolve_anchor_inner`]: the pinned blob when
+/// the span pins one, else the HEAD blob at the anchored path.
+enum AnchoredText {
+    Text(String),
+    /// Promisor-active read failure: the caller renders the same fail-closed
+    /// `ContentUnavailable(PromisorMissing)` resolution the duplicated inline
+    /// read blocks produced.
+    Unavailable,
+}
+
+/// Shared anchored-text read for [`resolve_anchor_inner`] — previously a
+/// verbatim-duplicated block in each arm of the `current` match. Pinned-blob
+/// text when `r.blob` is set, else the HEAD blob at `r.path`; promisor
+/// failures surface as [`AnchoredText::Unavailable`] instead of an error so
+/// the per-anchor fail-closed contract is preserved.
+fn read_anchored_text(
+    repo: &gix::Repository,
+    shared: &SharedEngineContext,
+    concurrent: &ConcurrentSession,
+    r: &Anchor,
+) -> Result<AnchoredText> {
+    if !r.blob.is_empty() {
+        match git::read_git_text(repo, &r.blob) {
+            Ok(t) => Ok(AnchoredText::Text(t)),
+            Err(_) if crate::git::promisor_active(repo) => Ok(AnchoredText::Unavailable),
+            Err(e) => Err(e),
+        }
+    } else {
+        match concurrent.head_blob_at(repo, &shared.head_sha, &r.path)? {
+            Some(oid) => match git::read_git_text(repo, &oid) {
+                Ok(t) => Ok(AnchoredText::Text(t)),
+                Err(_) if crate::git::promisor_active(repo) => Ok(AnchoredText::Unavailable),
+                Err(_) => Ok(AnchoredText::Text(String::new())),
+            },
+            None => Ok(AnchoredText::Text(String::new())),
+        }
+    }
+}
+
+/// Verdict for one relocation match set run through
+/// [`classify_relocation_set`].
+enum RelocationVerdict {
+    /// The set asserts exactly one destination: a sole at-threshold
+    /// candidate, or — with the directory-rename tiebreak enabled — the sole
+    /// basename-preserving candidate among several (card main-269's
+    /// directory-rename shape).
+    Moved(FuzzySuccessor),
+    /// Several candidates cleared the threshold and none uniquely preserves
+    /// the anchored basename: no destination can be asserted. Surface every
+    /// candidate for operator review and classify the anchor with
+    /// [`RelocationClassification::terminal_deleted`].
+    Ambiguous,
+    /// Nothing reached the threshold.
+    Missing,
+}
+
+/// Outcome of the shared relocation-classification ladder.
+struct RelocationClassification {
+    verdict: RelocationVerdict,
+    /// Drift status when `verdict` asserts no destination: `true` → terminal
+    /// `Deleted` (anchored path absent from HEAD, i.e. committed deletion),
+    /// `false` → `Changed` rendered as a layer deletion.
+    terminal_deleted: bool,
+}
+
+/// The single relocation-classification ladder behind every match-set
+/// interpretation site in [`resolve_anchor_inner`] — exact-relocation →
+/// basename tiebreak → fuzzy-threshold filter → ambiguity surfacing with a
+/// terminal drift recommendation — so new rules land in exactly one place
+/// and the two arms cannot diverge again (card main-281).
+///
+/// Exact scans feed their hits with `confidence: 1.0`; the fuzzy scan feeds
+/// its Jaccard confidences. Candidate results are sorted by confidence
+/// descending, so a sole at-threshold candidate is also the best candidate
+/// overall.
+///
+/// Parameters encoding intentional arm differences (do not silently unify):
+/// - `head_path_absent`: whether the anchored path is gone from HEAD. Feeds
+///   only `terminal_deleted`. The `current == Some` arm ignores that field:
+///   with content still present at the tracked position, its terminal split
+///   is decided by a truncation probe, not by HEAD presence.
+/// - `directory_rename_tiebreak`: the gated fuzzy site (worktree-blob
+///   fallback miss, cards main-264/main-269) passes `false`. There the
+///   masquerade gate already excluded HEAD-present files, and the surviving
+///   identical-copy ambiguity is copy noise rather than a rename, so several
+///   eligible candidates must stay `Changed` even when one preserves the
+///   anchored basename.
+fn classify_relocation_set(
+    candidates: &[FuzzySuccessor],
+    anchored_path: &str,
+    head_path_absent: bool,
+    threshold: f64,
+    directory_rename_tiebreak: bool,
+) -> RelocationClassification {
+    let at_threshold: Vec<&FuzzySuccessor> = candidates
+        .iter()
+        .filter(|b| b.confidence >= threshold)
+        .collect();
+    let destination = match at_threshold.as_slice() {
+        [best] => Some((*best).clone()),
+        _ if directory_rename_tiebreak => {
+            sole_basename_preserving(
+                anchored_path,
+                at_threshold.iter().map(|b| b.path.as_str()),
+            )
+            .and_then(|winner| at_threshold.iter().find(|b| b.path == winner).map(|b| (*b).clone()))
+        }
+        _ => None,
+    };
+    RelocationClassification {
+        verdict: match destination {
+            Some(best) => RelocationVerdict::Moved(best),
+            None if at_threshold.len() >= 2 => RelocationVerdict::Ambiguous,
+            None => RelocationVerdict::Missing,
+        },
+        terminal_deleted: head_path_absent,
+    }
+}
+
+/// Apply a classifier [`RelocationVerdict::Moved`] verdict: `Moved` status
+/// attributed solely to the deepest drifting layer, pointing at the asserted
+/// destination.
+fn relocated_to(
+    best: &FuzzySuccessor,
+    deepest_layer: DriftSource,
+) -> (
+    AnchorStatus,
+    Option<DriftSource>,
+    Vec<DriftSource>,
+    Option<AnchorLocation>,
+) {
+    (
+        AnchorStatus::Moved,
+        Some(deepest_layer),
+        vec![deepest_layer],
+        Some(AnchorLocation {
+            path: PathBuf::from(&best.path),
+            extent: AnchorExtent::LineRange {
+                start: best.start,
+                end: best.end,
+            },
+            blob: None,
+        }),
+    )
+}
+
 /// Cross-file `Moved` relocation scan for line anchors whose anchored
 /// path no longer resolves at the deepest layer (e.g. `git rm`, or a
 /// verbatim copy to a new path + remove of the original).
@@ -934,34 +1080,15 @@ pub(crate) fn resolve_anchor_inner(
 
     match current {
         None => {
-            let anchored_text = if !r.blob.is_empty() {
-                match git::read_git_text(repo, &r.blob) {
-                    Ok(t) => t,
-                    Err(_) if crate::git::promisor_active(repo) => {
-                        return Ok(unavailable(
-                            anchor_id,
-                            &r,
-                            anchored,
-                            UnavailableReason::PromisorMissing,
-                        ));
-                    }
-                    Err(e) => return Err(e),
-                }
-            } else {
-                match concurrent.head_blob_at(repo, &shared.head_sha, &r.path)? {
-                    Some(oid) => match git::read_git_text(repo, &oid) {
-                        Ok(t) => t,
-                        Err(_) if crate::git::promisor_active(repo) => {
-                            return Ok(unavailable(
-                                anchor_id,
-                                &r,
-                                anchored,
-                                UnavailableReason::PromisorMissing,
-                            ));
-                        }
-                        Err(_) => String::new(),
-                    },
-                    None => String::new(),
+            let anchored_text = match read_anchored_text(repo, shared, concurrent, &r)? {
+                AnchoredText::Text(text) => text,
+                AnchoredText::Unavailable => {
+                    return Ok(unavailable(
+                        anchor_id,
+                        &r,
+                        anchored,
+                        UnavailableReason::PromisorMissing,
+                    ));
                 }
             };
             let anchored_lines: Vec<&str> = anchored_text.lines().collect();
@@ -1013,67 +1140,42 @@ pub(crate) fn resolve_anchor_inner(
                     &r.path,
                     head_path_absent,
                 );
-                if relocated.len() == 1 {
-                    let (new_path, rs, re) = &relocated[0];
-                    status = AnchorStatus::Moved;
-                    source = Some(deepest_layer);
-                    layer_sources = vec![deepest_layer];
-                    current_loc = Some(AnchorLocation {
-                        path: PathBuf::from(new_path),
-                        extent: AnchorExtent::LineRange {
-                            start: *rs,
-                            end: *re,
-                        },
-                        blob: None,
-                    });
-                } else if relocated.len() >= 2 {
-                    // Non-unique relocation (card main-269): several
-                    // tracked paths hold the stored content, so no
-                    // destination can be asserted from content alone.
-                    // Surface every candidate at full confidence and stay
-                    // drifted — terminal `Deleted` when the anchored path
-                    // is gone from HEAD, terminal `Changed` (rendered as a
-                    // layer deletion) otherwise. `--fix` refuses either
-                    // way; the operator picks, or the anchor stays
-                    // drifted.
-                    // Directory-rename shape: a committed `git mv` of a
-                    // parent directory renames parents, not files — when
-                    // exactly one candidate preserves the anchored
-                    // basename it is the move's continuation, not a copy,
-                    // so the match set resolves `Moved` to it (the
-                    // rename-heavy changeset in drift_span_integration).
-                    if let Some(winner) = sole_basename_preserving(
-                        &r.path,
-                        relocated.iter().map(|(p, _, _)| p.as_str()),
-                    ) {
-                        let (new_path, rs, re) = relocated
-                            .iter()
-                            .find(|(p, _, _)| p == winner)
-                            // SAFETY: `winner` was produced by iterating
-                            // `relocated`, so the find always succeeds.
-                            .unwrap();
-                    status = AnchorStatus::Moved;
-                    source = Some(deepest_layer);
-                    layer_sources = vec![deepest_layer];
-                    current_loc = Some(AnchorLocation {
-                        path: PathBuf::from(new_path),
-                            extent: AnchorExtent::LineRange {
-                                start: *rs,
-                                end: *re,
-                            },
-                        blob: None,
-                    });
-                    } else {
-                        fuzzy_successors = relocated
-                            .iter()
-                            .map(|(p, s, e)| FuzzySuccessor {
-                                path: p.clone(),
-                                start: *s,
-                                end: *e,
-                                confidence: 1.0,
-                            })
-                            .collect();
-                        if head_path_absent {
+                // Exact stored-content hits are full-confidence candidates:
+                // each matched the stored hash verbatim, and confidence 1.0
+                // always clears the fuzzy threshold.
+                let exact_candidates: Vec<FuzzySuccessor> = relocated
+                    .iter()
+                    .map(|(p, s, e)| FuzzySuccessor {
+                        path: p.clone(),
+                        start: *s,
+                        end: *e,
+                        confidence: 1.0,
+                    })
+                    .collect();
+                let classified = classify_relocation_set(
+                    &exact_candidates,
+                    &r.path,
+                    head_path_absent,
+                    shared.fuzzy_threshold,
+                    true,
+                );
+                match &classified.verdict {
+                    RelocationVerdict::Moved(best) => {
+                        (status, source, layer_sources, current_loc) =
+                            relocated_to(best, deepest_layer);
+                    }
+                    RelocationVerdict::Ambiguous => {
+                        // Non-unique relocation (card main-269): several
+                        // tracked paths hold the stored content, so no
+                        // destination can be asserted from content alone.
+                        // Surface every candidate at full confidence and stay
+                        // drifted — terminal `Deleted` when the anchored path
+                        // is gone from HEAD, terminal `Changed` (rendered as a
+                        // layer deletion) otherwise. `--fix` refuses either
+                        // way; the operator picks, or the anchor stays
+                        // drifted.
+                        fuzzy_successors = exact_candidates;
+                        if classified.terminal_deleted {
                             status = AnchorStatus::Deleted;
                             source = None;
                             layer_sources = vec![];
@@ -1091,288 +1193,259 @@ pub(crate) fn resolve_anchor_inner(
                         }
                         current_loc = None;
                     }
-                } else if head_path_absent {
-                    // Directory promoted to submodule: the anchored path
-                    // lives inside a gitlink and cannot resolve at HEAD.
-                    let is_submodule = git::index_entries(repo)
-                        .ok()
-                        .map(|entries| {
-                            !matches!(submodule_classify(&entries, &r.path), SubmoduleKind::None,)
-                        })
-                        .unwrap_or(false);
-                    if is_submodule {
-                        status = AnchorStatus::Submodule;
-                        source = None;
-                        current_loc = None;
-                        layer_sources = vec![];
-                    } else {
-                        // Fuzzy-similarity fallback: exact-match relocation found
-                        // nothing, so try a content-similarity scan over candidate
-                        // files. A candidate above the auto-fix threshold
-                        // (shared.fuzzy_threshold, default 0.95) is treated as
-                        // MOVED; candidates below threshold are still reported in
-                        // fuzzy_successors for the operator to review. When
-                        // several candidates clear the threshold (card
-                        // main-269), the match set is non-unique — picking
-                        // the first would be a guess, so every candidate is
-                        // surfaced and the anchor stays drifted.
-                        let fuzzy_found = find_similar_ranges(
-                            repo,
-                            shared,
-                            concurrent,
-                            deepest_layer,
-                            &anchored_text,
-                            extent,
-                            &r.path,
-                        );
-                        let best_confidence =
-                            fuzzy_found.first().map(|b| b.confidence).unwrap_or(-1.0);
-                        if !fuzzy_found.is_empty() {
-                            fuzzy_successors = fuzzy_found;
-                        }
-                        // Non-unique ≥threshold match set: no destination
-                        // can be asserted. Path absent from HEAD → terminal
-                        // `Deleted` with every candidate surfaced.
-                        let at_threshold = fuzzy_successors
-                            .iter()
-                            .filter(|b| b.confidence >= shared.fuzzy_threshold)
-                            .count();
-                        if at_threshold >= 2 {
-                            // Directory-rename shape (see the exact-scan
-                            // arm above): exactly one at-threshold
-                            // candidate preserving the anchored basename
-                            // is the move's continuation → Moved.
-                            if let Some(winner) = sole_basename_preserving(
-                                &r.path,
-                                fuzzy_successors
-                                    .iter()
-                                    .filter(|b| b.confidence >= shared.fuzzy_threshold)
-                                    .map(|b| b.path.as_str()),
-                            ) {
-                                status = AnchorStatus::Moved;
-                                source = Some(deepest_layer);
-                                layer_sources = vec![deepest_layer];
-                                let best = fuzzy_successors
-                                    .iter()
-                                    .find(|b| b.path == winner)
-                                    // SAFETY: `winner` was produced by
-                                    // iterating `fuzzy_successors`, so the
-                                    // find always succeeds.
-                                    .unwrap();
-                                current_loc = Some(AnchorLocation {
-                                    path: PathBuf::from(&best.path),
-                                    extent: AnchorExtent::LineRange {
-                                        start: best.start,
-                                        end: best.end,
-                                    },
-                                    blob: None,
-                                });
-                            } else {
-                                status = AnchorStatus::Deleted;
+                    RelocationVerdict::Missing => {
+                        if head_path_absent {
+                            // Directory promoted to submodule: the anchored path
+                            // lives inside a gitlink and cannot resolve at HEAD.
+                            let is_submodule = git::index_entries(repo)
+                                .ok()
+                                .map(|entries| {
+                                    !matches!(
+                                        submodule_classify(&entries, &r.path),
+                                        SubmoduleKind::None,
+                                    )
+                                })
+                                .unwrap_or(false);
+                            if is_submodule {
+                                status = AnchorStatus::Submodule;
                                 source = None;
                                 current_loc = None;
                                 layer_sources = vec![];
-                            }
-                        } else if best_confidence >= shared.fuzzy_threshold {
-                            status = AnchorStatus::Moved;
-                            source = Some(deepest_layer);
-                            layer_sources = vec![deepest_layer];
-                            // SAFETY: confidence >= threshold implies first exists.
-                            let best = fuzzy_successors.first().unwrap();
-                            current_loc = Some(AnchorLocation {
-                                path: PathBuf::from(&best.path),
-                                extent: AnchorExtent::LineRange {
-                                    start: best.start,
-                                    end: best.end,
-                                },
-                                blob: None,
-                            });
-                        } else {
-                            // Candidates exist below threshold (reported for
-                            // review) or none found — terminal Deleted either way.
-                            status = AnchorStatus::Deleted;
-                            source = None;
-                            current_loc = None;
-                            layer_sources = vec![];
-                        }
-                    }
-                } else {
-                    // Worktree-blob fallback (card main-264): the anchored
-                    // path is missing only from the worktree — still at
-                    // HEAD, no index/history rename — so search the
-                    // worktree's untracked files for an exact-content match
-                    // to the anchor's blob. A unique match is an unstaged
-                    // shell move; several identical copies fail closed into
-                    // a ranked proposal; no match falls through to the
-                    // fuzzy-similarity scan exactly as before.
-                    // Two gates decide whether the fallback may fire: the
-                    // path must not be sparse-excluded (skip-worktree), and
-                    // the index must still record the anchored path — an
-                    // index-absent path reaching this arm is a staged
-                    // deletion by construction, and the fallback must not
-                    // override the operator's recorded intent.
-                    // The fallback is an `Option<WorktreeMove>` — rather
-                    // than a runtime `skip_fuzzy` bool — so the compiler
-                    // can verify the classification assignments in the
-                    // match below are mutually exclusive with the
-                    // fuzzy-similarity arm's.
-                    let worktree_move = if local.layers.worktree
-                        && !git::is_skip_worktree(repo, &r.path)?
-                        && git::index_tracks_path(repo, &r.path)
-                    {
-                        // head_path_absent is false on this arm, so the
-                        // blob exists at HEAD and `head_blob_oid` is Some.
-                        if let Some(last_hex) = &head_blob_oid {
-                            let last_oid = oid_from_hex(last_hex)?;
-                            Some(find_worktree_move(repo, concurrent, &r.path, last_oid)?)
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    };
-                    match worktree_move {
-                        Some(WorktreeMove::Unique { path }) => {
-                            status = AnchorStatus::Moved;
-                            source = Some(deepest_layer);
-                            layer_sources = vec![deepest_layer];
-                            current_loc = Some(AnchorLocation {
-                                path,
-                                extent: AnchorExtent::LineRange {
-                                    start: anchored_start,
-                                    end: anchored_end,
-                                },
-                                blob: None,
-                            });
-                            moved_uncommitted = true;
-                        }
-                        Some(WorktreeMove::Ambiguous { candidates }) => {
-                            // Identical-content ambiguity: report
-                            // every candidate at full confidence and
-                            // stay drifted (Changed) — never guess.
-                            fuzzy_successors = candidates
-                                .iter()
-                                .map(|candidate| FuzzySuccessor {
-                                    path: candidate.to_string_lossy().into_owned(),
-                                    start: anchored_start,
-                                    end: anchored_end,
-                                    confidence: 1.0,
-                                })
-                                .collect();
-                            status = AnchorStatus::Changed;
-                            source = computed_layer_sources
-                                .first()
-                                .copied()
-                                .or(Some(deepest_layer));
-                            current_loc = None;
-                            layer_sources = if computed_layer_sources.is_empty() {
-                                vec![deepest_layer]
                             } else {
-                                computed_layer_sources
-                            };
-                            moved_uncommitted = true;
-                        }
-                        Some(WorktreeMove::None) | None => {
-                        // Fuzzy-similarity fallback: exact-match relocation found
-                        // nothing, so try a content-similarity scan over candidate
-                        // files. A candidate above the auto-fix threshold
-                        // (shared.fuzzy_threshold, default 0.95) is treated as
-                        // MOVED; candidates below threshold are still reported in
-                        // fuzzy_successors for the operator to review.
-                            //
-                            // Worktree-only-removal gate (card main-269): when the
-                            // fallback ran — the index still records the anchored
-                            // path — a HEAD-present tracked file matching the
-                            // content is a masquerade, not a destination (the same
-                            // exclusion the exact scan's rename-target gate
-                            // applies). Untracked shell moves are the fallback's
-                            // domain and were already searched; the operator's
-                            // only recorded intent is that the file still belongs
-                            // at the anchored path. A staged deletion (index no
-                            // longer tracks the path) records the intent to
-                            // remove, so HEAD-present candidates count there and
-                            // the staged fuzzy-Moved behavior stays unchanged.
-                            let fallback_ran = local.layers.worktree
-                                && !git::is_skip_worktree(repo, &r.path)?
-                                && git::index_tracks_path(repo, &r.path);
-                        let fuzzy_found = find_similar_ranges(
-                            repo,
-                            shared,
-                            concurrent,
-                            deepest_layer,
-                            &anchored_text,
-                            extent,
-                            &r.path,
-                        );
-                        if !fuzzy_found.is_empty() {
-                            fuzzy_successors = fuzzy_found;
-                        }
-                            // At-threshold candidates eligible for the Moved
-                            // decision — HEAD-present files excluded when the
-                            // fallback ran (see the gate above). Owned clones
-                            // so the reorder below can mutate
-                            // `fuzzy_successors` without fighting the borrow.
-                            let eligible: Vec<FuzzySuccessor> = fuzzy_successors
-                                .iter()
-                                .filter(|b| b.confidence >= shared.fuzzy_threshold)
-                                .filter(|b| {
-                                    !(fallback_ran
-                                        && concurrent
-                                            .head_blob_at(repo, &shared.head_sha, &b.path)
-                                            .ok()
-                                            .flatten()
-                                            .is_some())
-                                })
-                                .cloned()
-                                .collect();
-                            if eligible.len() == 1 {
-                                // Unique at-threshold destination → Moved. Surface
-                                // the destination first so the renderer's
-                                // best-match annotation names the actual
-                                // destination when a blocked candidate outranks
-                                // it.
-                                if fuzzy_successors.first().map(|b| &b.path)
-                                    != Some(&eligible[0].path)
-                                {
-                                    fuzzy_successors.retain(|b| b.path != eligible[0].path);
-                                    fuzzy_successors.insert(0, eligible[0].clone());
+                                // Fuzzy-similarity fallback: exact-match relocation found
+                                // nothing, so try a content-similarity scan over candidate
+                                // files. A candidate above the auto-fix threshold
+                                // (shared.fuzzy_threshold, default 0.95) is treated as
+                                // MOVED; candidates below threshold are still reported in
+                                // fuzzy_successors for the operator to review. When several
+                                // candidates clear the threshold (card main-269), the match
+                                // set is non-unique — picking the first would be a guess, so
+                                // every candidate is surfaced and the anchor stays drifted.
+                                // This arm runs under `head_path_absent`, so every
+                                // non-destination outcome is terminal `Deleted`.
+                                let fuzzy_found = find_similar_ranges(
+                                    repo,
+                                    shared,
+                                    concurrent,
+                                    deepest_layer,
+                                    &anchored_text,
+                                    extent,
+                                    &r.path,
+                                );
+                                let classified = classify_relocation_set(
+                                    &fuzzy_found,
+                                    &r.path,
+                                    true,
+                                    shared.fuzzy_threshold,
+                                    true,
+                                );
+                                if !fuzzy_found.is_empty() {
+                                    fuzzy_successors = fuzzy_found;
                                 }
-                            status = AnchorStatus::Moved;
-                            source = Some(deepest_layer);
-                            layer_sources = vec![deepest_layer];
-                                let best = &eligible[0];
-                            current_loc = Some(AnchorLocation {
-                                path: PathBuf::from(&best.path),
-                                extent: AnchorExtent::LineRange {
-                                    start: best.start,
-                                    end: best.end,
-                                },
-                                blob: None,
-                            });
+                                match &classified.verdict {
+                                    RelocationVerdict::Moved(best) => {
+                                        (status, source, layer_sources, current_loc) =
+                                            relocated_to(best, deepest_layer);
+                                    }
+                                    RelocationVerdict::Ambiguous | RelocationVerdict::Missing => {
+                                        // Candidates exist below threshold (reported
+                                        // for review), a non-unique ≥threshold set failed
+                                        // the basename tiebreak, or nothing reached the
+                                        // threshold — terminal Deleted either way.
+                                        status = AnchorStatus::Deleted;
+                                        source = None;
+                                        current_loc = None;
+                                        layer_sources = vec![];
+                                    }
+                                }
+                            }
                         } else {
-                                // Either nothing cleared the bar (below
-                                // threshold, or every at-threshold candidate was
-                                // a HEAD-present masquerade blocked by the gate)
-                                // or several did (non-unique match set, card
-                                // main-269). Either way the anchor stays drifted:
-                                // report every candidate found for operator
-                                // review and keep the per-layer attribution from
-                            // `compute_layer_sources` so the drift-label
-                            // formatter renders "deleted in the index" vs
-                            // "deleted in the working tree" correctly; with
-                            // `current = None` it never reads "changed in …".
-                            status = AnchorStatus::Changed;
-                            source = computed_layer_sources
-                                .first()
-                                .copied()
-                                .or(Some(deepest_layer));
-                            current_loc = None;
-                            layer_sources = if computed_layer_sources.is_empty() {
-                                vec![deepest_layer]
+                            // Worktree-blob fallback (card main-264): the anchored
+                            // path is missing only from the worktree — still at
+                            // HEAD, no index/history rename — so search the
+                            // worktree's untracked files for an exact-content match
+                            // to the anchor's blob. A unique match is an unstaged
+                            // shell move; several identical copies fail closed into
+                            // a ranked proposal; no match falls through to the
+                            // fuzzy-similarity scan exactly as before.
+                            // Two gates decide whether the fallback may fire: the
+                            // path must not be sparse-excluded (skip-worktree), and
+                            // the index must still record the anchored path — an
+                            // index-absent path reaching this arm is a staged
+                            // deletion by construction, and the fallback must not
+                            // override the operator's recorded intent.
+                            // The fallback is an `Option<WorktreeMove>` — rather
+                            // than a runtime `skip_fuzzy` bool — so the compiler
+                            // can verify the classification assignments in the
+                            // match below are mutually exclusive with the
+                            // fuzzy-similarity arm's.
+                            let worktree_move = if local.layers.worktree
+                                && !git::is_skip_worktree(repo, &r.path)?
+                                && git::index_tracks_path(repo, &r.path)
+                            {
+                                // head_path_absent is false on this arm, so the
+                                // blob exists at HEAD and `head_blob_oid` is Some.
+                                if let Some(last_hex) = &head_blob_oid {
+                                    let last_oid = oid_from_hex(last_hex)?;
+                                    Some(find_worktree_move(repo, concurrent, &r.path, last_oid)?)
+                                } else {
+                                    None
+                                }
                             } else {
-                                computed_layer_sources
+                                None
                             };
-                        }
+                            match worktree_move {
+                                Some(WorktreeMove::Unique { path }) => {
+                                    status = AnchorStatus::Moved;
+                                    source = Some(deepest_layer);
+                                    layer_sources = vec![deepest_layer];
+                                    current_loc = Some(AnchorLocation {
+                                        path,
+                                        extent: AnchorExtent::LineRange {
+                                            start: anchored_start,
+                                            end: anchored_end,
+                                        },
+                                        blob: None,
+                                    });
+                                    moved_uncommitted = true;
+                                }
+                                Some(WorktreeMove::Ambiguous { candidates }) => {
+                                    // Identical-content ambiguity: report every
+                                    // candidate at full confidence and stay drifted
+                                    // (Changed) — never guess.
+                                    fuzzy_successors = candidates
+                                        .iter()
+                                        .map(|candidate| FuzzySuccessor {
+                                            path: candidate.to_string_lossy().into_owned(),
+                                            start: anchored_start,
+                                            end: anchored_end,
+                                            confidence: 1.0,
+                                        })
+                                        .collect();
+                                    status = AnchorStatus::Changed;
+                                    source = computed_layer_sources
+                                        .first()
+                                        .copied()
+                                        .or(Some(deepest_layer));
+                                    current_loc = None;
+                                    layer_sources = if computed_layer_sources.is_empty() {
+                                        vec![deepest_layer]
+                                    } else {
+                                        computed_layer_sources
+                                    };
+                                    moved_uncommitted = true;
+                                }
+                                Some(WorktreeMove::None) | None => {
+                                    // Fuzzy-similarity fallback: exact-match relocation found
+                                    // nothing, so try a content-similarity scan over candidate
+                                    // files. A candidate above the auto-fix threshold
+                                    // (shared.fuzzy_threshold, default 0.95) is treated as
+                                    // MOVED; candidates below threshold are still reported in
+                                    // fuzzy_successors for the operator to review.
+                                    //
+                                    // Worktree-only-removal gate (card main-269): when the
+                                    // fallback ran — the index still records the anchored
+                                    // path — a HEAD-present tracked file matching the
+                                    // content is a masquerade, not a destination (the same
+                                    // exclusion the exact scan's rename-target gate
+                                    // applies). Untracked shell moves are the fallback's
+                                    // domain and were already searched; the operator's
+                                    // only recorded intent is that the file still belongs
+                                    // at the anchored path. A staged deletion (index no
+                                    // longer tracks the path) records the intent to
+                                    // remove, so HEAD-present candidates count there and
+                                    // the staged fuzzy-Moved behavior stays unchanged.
+                                    let fallback_ran = local.layers.worktree
+                                        && !git::is_skip_worktree(repo, &r.path)?
+                                        && git::index_tracks_path(repo, &r.path);
+                                    let fuzzy_found = find_similar_ranges(
+                                        repo,
+                                        shared,
+                                        concurrent,
+                                        deepest_layer,
+                                        &anchored_text,
+                                        extent,
+                                        &r.path,
+                                    );
+                                    if !fuzzy_found.is_empty() {
+                                        fuzzy_successors = fuzzy_found;
+                                    }
+                                    // At-threshold candidates eligible for the Moved
+                                    // decision — HEAD-present files excluded when the
+                                    // fallback ran (see the gate above). Owned clones
+                                    // so the reorder below can mutate
+                                    // `fuzzy_successors` without fighting the borrow.
+                                    let eligible: Vec<FuzzySuccessor> = fuzzy_successors
+                                        .iter()
+                                        .filter(|b| b.confidence >= shared.fuzzy_threshold)
+                                        .filter(|b| {
+                                            !(fallback_ran
+                                                && concurrent
+                                                    .head_blob_at(repo, &shared.head_sha, &b.path)
+                                                    .ok()
+                                                    .flatten()
+                                                    .is_some())
+                                        })
+                                        .cloned()
+                                        .collect();
+                                    // Intentional divergences threaded through the
+                                    // shared classifier (see its doc): the masquerade
+                                    // gate stands in for the directory-rename tiebreak
+                                    // (`false`), because the surviving identical-copy
+                                    // ambiguity is copy noise, not a rename; and
+                                    // `head_path_absent` is false here, so the shared
+                                    // terminal recommendation is the `Changed`
+                                    // disposition this arm applies.
+                                    let classified = classify_relocation_set(
+                                        &eligible,
+                                        &r.path,
+                                        false,
+                                        shared.fuzzy_threshold,
+                                        false,
+                                    );
+                                    match &classified.verdict {
+                                        RelocationVerdict::Moved(best) => {
+                                            // Unique at-threshold destination → Moved.
+                                            // Surface the destination first so the
+                                            // renderer's best-match annotation names the
+                                            // actual destination when a blocked candidate
+                                            // outranks it.
+                                            if fuzzy_successors.first().map(|b| &b.path)
+                                                != Some(&best.path)
+                                            {
+                                                fuzzy_successors.retain(|b| b.path != best.path);
+                                                fuzzy_successors.insert(0, best.clone());
+                                            }
+                                            (status, source, layer_sources, current_loc) =
+                                                relocated_to(best, deepest_layer);
+                                        }
+                                        RelocationVerdict::Ambiguous | RelocationVerdict::Missing => {
+                                            // Either nothing cleared the bar (below
+                                            // threshold, or every at-threshold candidate was
+                                            // a HEAD-present masquerade blocked by the gate)
+                                            // or several did (non-unique match set, card
+                                            // main-269). Either way the anchor stays drifted:
+                                            // report every candidate found for operator
+                                            // review and keep the per-layer attribution from
+                                            // `compute_layer_sources` so the drift-label
+                                            // formatter renders "deleted in the index" vs
+                                            // "deleted in the working tree" correctly; with
+                                            // `current = None` it never reads "changed in …".
+                                            status = AnchorStatus::Changed;
+                                            source = computed_layer_sources
+                                                .first()
+                                                .copied()
+                                                .or(Some(deepest_layer));
+                                            current_loc = None;
+                                            layer_sources = if computed_layer_sources.is_empty() {
+                                                vec![deepest_layer]
+                                            } else {
+                                                computed_layer_sources
+                                            };
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -1411,34 +1484,15 @@ pub(crate) fn resolve_anchor_inner(
             }
         }
         Some((t, cur_text, cur_blob)) => {
-            let anchored_text = if !r.blob.is_empty() {
-                match git::read_git_text(repo, &r.blob) {
-                    Ok(t) => t,
-                    Err(_) if crate::git::promisor_active(repo) => {
-                        return Ok(unavailable(
-                            anchor_id,
-                            &r,
-                            anchored,
-                            UnavailableReason::PromisorMissing,
-                        ));
-                    }
-                    Err(e) => return Err(e),
-                }
-            } else {
-                match concurrent.head_blob_at(repo, &shared.head_sha, &r.path)? {
-                    Some(oid) => match git::read_git_text(repo, &oid) {
-                        Ok(t) => t,
-                        Err(_) if crate::git::promisor_active(repo) => {
-                            return Ok(unavailable(
-                                anchor_id,
-                                &r,
-                                anchored,
-                                UnavailableReason::PromisorMissing,
-                            ));
-                        }
-                        Err(_) => String::new(),
-                    },
-                    None => String::new(),
+            let anchored_text = match read_anchored_text(repo, shared, concurrent, &r)? {
+                AnchoredText::Text(text) => text,
+                AnchoredText::Unavailable => {
+                    return Ok(unavailable(
+                        anchor_id,
+                        &r,
+                        anchored,
+                        UnavailableReason::PromisorMissing,
+                    ));
                 }
             };
             let anchored_lines: Vec<&str> = anchored_text.lines().collect();
@@ -1581,11 +1635,11 @@ pub(crate) fn resolve_anchor_inner(
             // anchored range still resolves but no longer matches, scan
             // other tracked paths for the exact stored content before
             // classifying `Changed`.
+            let mut anchored_absent_at_head = false;
             let relocated_path: Vec<(String, u32, u32)> =
                 if !equal && file_backed && relocated.is_none() {
-                    let anchored_absent_at_head = concurrent
-                        .head_blob_at(repo, &shared.head_sha, &r.path)?
-                        .is_none();
+                    anchored_absent_at_head =
+                        concurrent.head_blob_at(repo, &shared.head_sha, &r.path)?.is_none();
                     find_relocated_range_in_paths(
                         repo,
                         shared,
@@ -1661,146 +1715,139 @@ pub(crate) fn resolve_anchor_inner(
                     },
                     blob: cur_blob_oid,
                 });
-            } else if relocated_path.len() == 1 {
-                // Exact stored content found verbatim at a single other
-                // path → Moved.
-                let (rpath, rstart, rend) = &relocated_path[0];
-                status = AnchorStatus::Moved;
-                source = Some(deepest_layer);
-                layer_sources = vec![deepest_layer];
-                current_loc = Some(AnchorLocation {
-                    path: PathBuf::from(rpath),
-                    extent: AnchorExtent::LineRange {
-                        start: *rstart,
-                        end: *rend,
-                    },
-                    blob: None,
-                });
             } else {
-                // Directory-rename shape (see the file-absent arm above):
-                // exactly one cross-path candidate preserving the anchored
-                // basename is the move's continuation → Moved. Otherwise
-                // either no cross-path destination, or several (card
-                // main-269): a non-unique match set can assert no
-                // destination, so surface every candidate and classify
-                // exactly as the no-destination path below does — the
-                // in-place `Changed` (or the truncated-region `Deleted`)
-                // — never a guess.
-                if let Some(winner) = sole_basename_preserving(
-                    &r.path,
-                    relocated_path.iter().map(|(p, _, _)| p.as_str()),
-                ) {
-                    let (rpath, rstart, rend) = relocated_path
-                        .iter()
-                        .find(|(p, _, _)| p == winner)
-                        // SAFETY: `winner` was produced by iterating
-                        // `relocated_path`, so the find always succeeds.
-                        .unwrap();
-                    status = AnchorStatus::Moved;
-                    source = Some(deepest_layer);
-                    layer_sources = vec![deepest_layer];
-                    current_loc = Some(AnchorLocation {
-                        path: PathBuf::from(rpath),
-                        extent: AnchorExtent::LineRange {
-                            start: *rstart,
-                            end: *rend,
-                        },
-                        blob: None,
-                    });
-                } else {
-                    if relocated_path.len() >= 2 {
-                        fuzzy_successors = relocated_path
-                            .iter()
-                            .map(|(p, s, e)| FuzzySuccessor {
-                                path: p.clone(),
-                                start: *s,
-                                end: *e,
-                                confidence: 1.0,
-                            })
-                            .collect();
-                    }
-                    if file_backed && current_lines.len() < anchored_start as usize {
-                // The tracked range no longer exists: the current file is
-                // shorter than the anchored range's start line, so the
-                // anchored content was not changed-in-place — it was
-                // deleted (the file was truncated past where the anchor
-                // pointed). No in-file or cross-path relocation matched
-                // the stored content, so this is a genuine deletion of
-                // the tracked region, not a `Changed`. Per the card's
-                // distinct state vocabulary this is `Deleted`.
-                status = AnchorStatus::Deleted;
-                source = None;
-                layer_sources = vec![];
-                current_loc = None;
-            } else {
-                status = AnchorStatus::Changed;
-                source = inferred_source.or(Some(deepest_layer));
-                layer_sources = if computed_layer_sources.is_empty() {
-                    vec![deepest_layer]
-                } else {
-                    computed_layer_sources
-                };
-                // Content-equivalence gate for `--fix`. `content_equivalent`
-                // is true only when the current slice is a whitespace-only
-                // reshaping of the *genuine* original anchored slice. For
-                // file-backed anchors `a_slice` reads the HEAD blob, which may
-                // already carry the change (HEAD-layer drift); verify it is
-                // the true original by hashing it against `stored_hash`.
-                // Pinned-blob anchors read `a_slice` from the anchored blob,
-                // so it is the original by construction.
-                        let anchored_is_original = if !r.stored_hash.is_empty() && r.blob.is_empty()
-                        {
-                    let a_joined = a_slice.join("\n");
-                    format!(
-                        "{RK64_ALGORITHM}:{}",
-                        rk64_to_hex(cheap_fingerprint_with_extent(
-                            a_joined.as_bytes(),
-                            &AnchorExtent::WholeFile,
-                        ))
-                    ) == r.stored_hash
-                } else {
-                    !r.blob.is_empty()
-                };
-                content_equivalent = if anchored_is_original {
-                    lines_equal(a_slice, c_slice, true)
-                } else if !r.stored_hash.is_empty() && r.blob.is_empty() {
-                    // HEAD no longer carries the genuine original — the drift
-                    // was committed, so `a_slice` (read from HEAD) is already
-                    // the edited content and can never hash-match
-                    // `stored_hash`. The only remaining evidence of the true
-                    // original is `stored_hash` itself: walk bounded,
-                    // strictly-before-HEAD history for the last blob whose
-                    // recorded line range still hashes to it, and check
-                    // *that* content for whitespace-equivalence. A rename,
-                    // deletion, or exhausted walk along the way leaves the
-                    // anchor drifting exactly as before — fail-closed.
-                    find_original_line_slice_in_history(
-                        repo,
-                        concurrent,
-                        &t.path,
-                        anchored_start,
-                        anchored_end,
-                        &r.stored_hash,
-                    )
-                    .is_some_and(|original| {
-                        let original_refs: Vec<&str> =
-                            original.iter().map(String::as_str).collect();
-                        lines_equal(&original_refs, c_slice, true)
+                // Cross-path exact-match set through the shared relocation
+                // ladder (uniqueness → basename tiebreak → ambiguity
+                // surfacing). Candidates carry full confidence: the scan
+                // matched the stored hash verbatim.
+                let cross_candidates: Vec<FuzzySuccessor> = relocated_path
+                    .iter()
+                    .map(|(p, s, e)| FuzzySuccessor {
+                        path: p.clone(),
+                        start: *s,
+                        end: *e,
+                        confidence: 1.0,
                     })
+                    .collect();
+                // Intentional divergence (documented on
+                // `classify_relocation_set`): the shared `terminal_deleted`
+                // recommendation is ignored here. With content still present
+                // at the tracked position `t`, the terminal split is decided
+                // by the truncation probe below — HEAD presence alone cannot
+                // distinguish a committed deletion from a layer deletion once
+                // a `current` exists.
+                let classified = classify_relocation_set(
+                    &cross_candidates,
+                    &r.path,
+                    anchored_absent_at_head,
+                    shared.fuzzy_threshold,
+                    true,
+                );
+                match &classified.verdict {
+                    RelocationVerdict::Moved(best) => {
+                        // Exact stored content found verbatim at a single other
+                        // path, or a unique basename-preserving directory-rename
+                        // continuation → Moved.
+                        (status, source, layer_sources, current_loc) =
+                            relocated_to(best, deepest_layer);
+                    }
+                    verdict @ (RelocationVerdict::Ambiguous | RelocationVerdict::Missing) => {
+                        // Directory-rename shape (see the file-absent arm above):
+                        // exactly one cross-path candidate preserving the anchored
+                        // basename is the move's continuation → Moved (the
+                        // classifier's tiebreak). Otherwise either no cross-path
+                        // destination, or several (card main-269): a non-unique
+                        // match set can assert no destination, so surface every
+                        // candidate and classify exactly as the no-destination path
+                        // below does — the in-place `Changed` (or the
+                        // truncated-region `Deleted`) — never a guess.
+                        if matches!(verdict, RelocationVerdict::Ambiguous) {
+                            fuzzy_successors = cross_candidates;
+                        }
+
+                        if file_backed && current_lines.len() < anchored_start as usize {
+                    // The tracked range no longer exists: the current file is
+                    // shorter than the anchored range's start line, so the
+                    // anchored content was not changed-in-place — it was
+                    // deleted (the file was truncated past where the anchor
+                    // pointed). No in-file or cross-path relocation matched
+                    // the stored content, so this is a genuine deletion of
+                    // the tracked region, not a `Changed`. Per the card's
+                    // distinct state vocabulary this is `Deleted`.
+                    status = AnchorStatus::Deleted;
+                    source = None;
+                    layer_sources = vec![];
+                    current_loc = None;
                 } else {
-                    false
-                };
-                current_loc = Some(AnchorLocation {
-                    path: PathBuf::from(t.path.clone()),
-                    extent: AnchorExtent::LineRange {
-                        start: t.start,
-                        end: t.end,
-                    },
-                    blob: cur_blob_oid,
-                });
+                    status = AnchorStatus::Changed;
+                    source = inferred_source.or(Some(deepest_layer));
+                    layer_sources = if computed_layer_sources.is_empty() {
+                        vec![deepest_layer]
+                    } else {
+                        computed_layer_sources
+                    };
+                    // Content-equivalence gate for `--fix`. `content_equivalent`
+                    // is true only when the current slice is a whitespace-only
+                    // reshaping of the *genuine* original anchored slice. For
+                    // file-backed anchors `a_slice` reads the HEAD blob, which may
+                    // already carry the change (HEAD-layer drift); verify it is
+                    // the true original by hashing it against `stored_hash`.
+                    // Pinned-blob anchors read `a_slice` from the anchored blob,
+                    // so it is the original by construction.
+                            let anchored_is_original = if !r.stored_hash.is_empty() && r.blob.is_empty()
+                            {
+                        let a_joined = a_slice.join("\n");
+                        format!(
+                            "{RK64_ALGORITHM}:{}",
+                            rk64_to_hex(cheap_fingerprint_with_extent(
+                                a_joined.as_bytes(),
+                                &AnchorExtent::WholeFile,
+                            ))
+                        ) == r.stored_hash
+                    } else {
+                        !r.blob.is_empty()
+                    };
+                    content_equivalent = if anchored_is_original {
+                        lines_equal(a_slice, c_slice, true)
+                    } else if !r.stored_hash.is_empty() && r.blob.is_empty() {
+                        // HEAD no longer carries the genuine original — the drift
+                        // was committed, so `a_slice` (read from HEAD) is already
+                        // the edited content and can never hash-match
+                        // `stored_hash`. The only remaining evidence of the true
+                        // original is `stored_hash` itself: walk bounded,
+                        // strictly-before-HEAD history for the last blob whose
+                        // recorded line range still hashes to it, and check
+                        // *that* content for whitespace-equivalence. A rename,
+                        // deletion, or exhausted walk along the way leaves the
+                        // anchor drifting exactly as before — fail-closed.
+                        find_original_line_slice_in_history(
+                            repo,
+                            concurrent,
+                            &t.path,
+                            anchored_start,
+                            anchored_end,
+                            &r.stored_hash,
+                        )
+                        .is_some_and(|original| {
+                            let original_refs: Vec<&str> =
+                                original.iter().map(String::as_str).collect();
+                            lines_equal(&original_refs, c_slice, true)
+                        })
+                    } else {
+                        false
+                    };
+                    current_loc = Some(AnchorLocation {
+                        path: PathBuf::from(t.path.clone()),
+                        extent: AnchorExtent::LineRange {
+                            start: t.start,
+                            end: t.end,
+                        },
+                        blob: cur_blob_oid,
+                    });
+                }
+                    }
+                }
             }
-        }
-    }
         }
     }
 
