@@ -25,7 +25,7 @@ import {
   type ResolvedSpan,
   type SpanMatch
 } from './parse-command.js';
-import { argvOf, splitTopLevel } from './shell-split.js';
+import { argvOf, type SplitResult, splitTopLevel } from './shell-split.js';
 
 /** Stable machine-readable classifications for candidates the parser refuses. */
 export const UNRESOLVED_REASON_CODES = [
@@ -2141,6 +2141,88 @@ function rejectOverBudget(
   };
 }
 
+/**
+ * The compound-stage machine: a top-level multi-stage command (`&&`, `||`,
+ * `;`, `|`, newlines) parsed stage-by-stage with per-stage
+ * `simpleCommandIndex` and gating-operator bookkeeping. Declines (returns
+ * `null`) unless the split is well-formed, has more than one stage, and
+ * either carries no pipeline or hosts a layered-recognizable pipeline stage;
+ * a directory-changing compound declines outright because substitution
+ * targets cannot be resolved safely across a `cd`. In a pipeline, shell
+ * stages keep only their resolved reads; layered stages contribute reads
+ * after them and every write, reconciled in place so read-before-write
+ * attribution order is preserved. Stage recursion receives the caller's
+ * [options] object unchanged — `maxCandidates` forwarding stays at the
+ * [parseCommandLayered] entry alone.
+ */
+export function parseCompoundStages(
+  command: string,
+  split: SplitResult,
+  options: LayeredParseOptions,
+  maxCandidates: number,
+  parse: (command: string, nextOptions: LayeredParseOptions) => LayeredParseResult
+): LayeredParseResult | null {
+  const hasPipeline = split.stages.some((stage) => stage.precededBy === 'pipe');
+  const hasLayeredPipelineStage = split.stages.some((stage) => {
+    const stageText = stage.text.trimStart();
+    return /^(?:python(?:3(?:\.\d+)?)?|node|for)\b/.test(stageText) || parsePatternCommand(stage.text) !== null;
+  });
+  if (!(split.malformed === undefined && split.stages.length > 1 && (!hasPipeline || hasLayeredPipelineStage))) {
+    return null;
+  }
+  if (split.stages.some((stage) => argvOf(stage.text)?.[0] === 'cd')) {
+    return {
+      resolved: [],
+      unresolved: [
+        unresolved(
+          'pattern-substitution',
+          'compound-command',
+          'dynamic-path',
+          'a directory-changing compound cannot safely resolve substitution targets'
+        )
+      ],
+      preStateRequests: []
+    };
+  }
+  const resolved: LayeredResolvedMatch[] = [];
+  const unresolvedMatches: UnresolvedAttribution[] = [];
+  const preStateRequests: PreStateRequest[] = [];
+  for (let index = 0; index < split.stages.length; index += 1) {
+    const stage = split.stages[index];
+    const child = parse(stage.text, options);
+    const join: ResolvedSpan['join'] = stage.precededBy === 'and' ? '&&' : stage.precededBy === 'or' ? '||' : undefined;
+    resolved.push(
+      ...child.resolved.map((match) => ({
+        ...match,
+        span: { ...match.span, simpleCommandIndex: index, join }
+      }))
+    );
+    unresolvedMatches.push(...child.unresolved.map((match) => ({ ...match, simpleCommandIndex: index })));
+    preStateRequests.push(...child.preStateRequests.map((request) => ({ ...request, simpleCommandIndex: index })));
+  }
+  if (hasPipeline) {
+    const pipelineDetailed = parseCommandDetailed(command, options);
+    const pipelineReads = pipelineDetailed.flatMap<LayeredResolvedMatch>((match) =>
+      match.status === 'resolved' && match.span.operation === 'read'
+        ? [{ status: 'resolved', layer: 'shell', idiom: match.idiom, span: match.span }]
+        : []
+    );
+    const pipelineUnresolved = pipelineDetailed.flatMap<UnresolvedAttribution>((match) =>
+      match.status === 'unresolved'
+        ? [unresolved('shell', match.idiom, stableReason(match), match.reason, match.fileArg)]
+        : []
+    );
+    const layeredReads = resolved.filter(({ layer, span }) => layer !== 'shell' && span.operation === 'read');
+    const writes = resolved.filter(({ span }) => span.operation !== 'read');
+    resolved.splice(0, resolved.length, ...pipelineReads, ...layeredReads, ...writes);
+    const layeredUnresolved = unresolvedMatches.filter(({ layer }) => layer !== 'shell');
+    unresolvedMatches.splice(0, unresolvedMatches.length, ...pipelineUnresolved, ...layeredUnresolved);
+  }
+  const overBudget = rejectOverBudget(resolved, 'shell', 'compound-command', 'compound', maxCandidates);
+  if (overBudget !== null) return overBudget;
+  return { resolved, unresolved: unresolvedMatches, preStateRequests };
+}
+
 export function parseCommandLayered(command: string, options: LayeredParseOptions = {}): LayeredParseResult {
   const cwd = options.cwd ?? process.cwd();
   const maxCandidates = options.maxCandidates ?? DEFAULT_MAX_ATTRIBUTION_CANDIDATES;
@@ -2296,65 +2378,8 @@ export function parseCommandLayered(command: string, options: LayeredParseOption
   }
 
   const split = splitTopLevel(command);
-  const hasPipeline = split.stages.some((stage) => stage.precededBy === 'pipe');
-  const hasLayeredPipelineStage = split.stages.some((stage) => {
-    const stageText = stage.text.trimStart();
-    return /^(?:python(?:3(?:\.\d+)?)?|node|for)\b/.test(stageText) || parsePatternCommand(stage.text) !== null;
-  });
-  if (split.malformed === undefined && split.stages.length > 1 && (!hasPipeline || hasLayeredPipelineStage)) {
-    if (split.stages.some((stage) => argvOf(stage.text)?.[0] === 'cd')) {
-      return {
-        resolved: [],
-        unresolved: [
-          unresolved(
-            'pattern-substitution',
-            'compound-command',
-            'dynamic-path',
-            'a directory-changing compound cannot safely resolve substitution targets'
-          )
-        ],
-        preStateRequests: []
-      };
-    }
-    const resolved: LayeredResolvedMatch[] = [];
-    const unresolvedMatches: UnresolvedAttribution[] = [];
-    const preStateRequests: PreStateRequest[] = [];
-    for (let index = 0; index < split.stages.length; index += 1) {
-      const stage = split.stages[index];
-      const child = parseCommandLayered(stage.text, options);
-      const join: ResolvedSpan['join'] =
-        stage.precededBy === 'and' ? '&&' : stage.precededBy === 'or' ? '||' : undefined;
-      resolved.push(
-        ...child.resolved.map((match) => ({
-          ...match,
-          span: { ...match.span, simpleCommandIndex: index, join }
-        }))
-      );
-      unresolvedMatches.push(...child.unresolved.map((match) => ({ ...match, simpleCommandIndex: index })));
-      preStateRequests.push(...child.preStateRequests.map((request) => ({ ...request, simpleCommandIndex: index })));
-    }
-    if (hasPipeline) {
-      const pipelineDetailed = parseCommandDetailed(command, options);
-      const pipelineReads = pipelineDetailed.flatMap<LayeredResolvedMatch>((match) =>
-        match.status === 'resolved' && match.span.operation === 'read'
-          ? [{ status: 'resolved', layer: 'shell', idiom: match.idiom, span: match.span }]
-          : []
-      );
-      const pipelineUnresolved = pipelineDetailed.flatMap<UnresolvedAttribution>((match) =>
-        match.status === 'unresolved'
-          ? [unresolved('shell', match.idiom, stableReason(match), match.reason, match.fileArg)]
-          : []
-      );
-      const layeredReads = resolved.filter(({ layer, span }) => layer !== 'shell' && span.operation === 'read');
-      const writes = resolved.filter(({ span }) => span.operation !== 'read');
-      resolved.splice(0, resolved.length, ...pipelineReads, ...layeredReads, ...writes);
-      const layeredUnresolved = unresolvedMatches.filter(({ layer }) => layer !== 'shell');
-      unresolvedMatches.splice(0, unresolvedMatches.length, ...pipelineUnresolved, ...layeredUnresolved);
-    }
-    const overBudget = rejectOverBudget(resolved, 'shell', 'compound-command', 'compound', maxCandidates);
-    if (overBudget !== null) return overBudget;
-    return { resolved, unresolved: unresolvedMatches, preStateRequests };
-  }
+  const compound = parseCompoundStages(command, split, options, maxCandidates, parseCommandLayered);
+  if (compound !== null) return compound;
   const patternCommand =
     split.malformed === undefined && split.stages.length === 1 ? parsePatternCommand(split.stages[0].text) : null;
   if (patternCommand !== null) {

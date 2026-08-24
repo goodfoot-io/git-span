@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { resolveNumericSed, resolvePatternSubstitution } from '../../src/common/static-attribution.js';
+import { splitTopLevel } from '../../src/common/shell-split.js';
+import {
+  type LayeredParseOptions,
+  type LayeredParseResult,
+  type LayeredResolvedMatch,
+  parseCompoundStages,
+  resolveNumericSed,
+  resolvePatternSubstitution,
+  type UnresolvedAttribution
+} from '../../src/common/static-attribution.js';
 
 type SpanView = { span: Record<string, unknown> };
 function spanOf(match: unknown): Record<string, unknown> {
@@ -279,5 +288,170 @@ describe('resolveNumericSed', () => {
     );
     expect(result.resolved).toEqual([]);
     expect(lastDetail(result.unresolved)).toBe('numeric substitution produced 1 candidates; the limit is 0');
+  });
+});
+
+describe('parseCompoundStages', () => {
+  const OPTIONS: LayeredParseOptions = { cwd: '/repo' };
+
+  function resolvedSpan(overrides: Record<string, unknown> = {}): LayeredResolvedMatch {
+    return {
+      status: 'resolved',
+      layer: 'node',
+      idiom: 'node-fs',
+      span: {
+        absolutePath: '/repo/x.txt',
+        operation: 'write',
+        simpleCommandIndex: 0,
+        ...overrides
+      }
+    } as unknown as LayeredResolvedMatch;
+  }
+
+  function unresolvedMatch(overrides: Partial<UnresolvedAttribution> = {}): UnresolvedAttribution {
+    return {
+      status: 'unresolved',
+      layer: 'node',
+      idiom: 'node-fs',
+      reasonCode: 'dynamic-path',
+      detail: 'd',
+      ...overrides
+    };
+  }
+
+  /** Stub stage recursor returning the same canned child result for every stage. */
+  function stubParse(result: Partial<LayeredParseResult>) {
+    const calls: { command: string; options: LayeredParseOptions }[] = [];
+    const parse = (command: string, options: LayeredParseOptions): LayeredParseResult => {
+      calls.push({ command, options });
+      return { resolved: [], unresolved: [], preStateRequests: [], ...result };
+    };
+    return { calls, parse };
+  }
+
+  it('declines single-stage, malformed, and shell-only pipeline splits with null', () => {
+    expect(
+      parseCompoundStages('sed -i s/a/b/ f.txt', splitTopLevel('sed -i s/a/b/ f.txt'), OPTIONS, 32, () => ({
+        resolved: [],
+        unresolved: [],
+        preStateRequests: []
+      }))
+    ).toBeNull();
+
+    const malformed = {
+      stages: [
+        { text: 'a1', precededBy: 'start' },
+        { text: 'b2', precededBy: 'and' }
+      ],
+      malformed: 'unclosed-paren'
+    };
+    expect(
+      parseCompoundStages('a1 && b2', malformed as never, OPTIONS, 32, () => ({
+        resolved: [],
+        unresolved: [],
+        preStateRequests: []
+      }))
+    ).toBeNull();
+
+    expect(
+      parseCompoundStages(
+        'cat a.txt | grep beta c.txt',
+        splitTopLevel('cat a.txt | grep beta c.txt'),
+        OPTIONS,
+        32,
+        () => ({ resolved: [], unresolved: [], preStateRequests: [] })
+      )
+    ).toBeNull();
+  });
+
+  it('rejects a directory-changing compound outright without recursing into any stage', () => {
+    const command = 'cd /tmp && sed -i s/beta/BETA/ a.txt';
+    const { parse } = stubParse({});
+    const result = parseCompoundStages(command, splitTopLevel(command), OPTIONS, 32, parse);
+    expect(result).toEqual({
+      resolved: [],
+      unresolved: [
+        {
+          status: 'unresolved',
+          layer: 'pattern-substitution',
+          idiom: 'compound-command',
+          reasonCode: 'dynamic-path',
+          detail: 'a directory-changing compound cannot safely resolve substitution targets',
+          fileArg: undefined,
+          simpleCommandIndex: 0
+        }
+      ],
+      preStateRequests: []
+    });
+  });
+
+  it('stamps simpleCommandIndex and gating joins from the stage list onto every child candidate', () => {
+    const command = 'node write.js && node mix.js || node tail.js';
+    const child: Partial<LayeredParseResult> = {
+      resolved: [resolvedSpan()],
+      unresolved: [unresolvedMatch({ layer: 'shell', idiom: 'shell-read', reasonCode: 'dynamic-path' })],
+      preStateRequests: [
+        { absolutePath: '/repo/x.txt', operation: 'write', requirement: 'match-locations', simpleCommandIndex: 99 }
+      ]
+    };
+    const { calls, parse } = stubParse(child);
+    const result = parseCompoundStages(command, splitTopLevel(command), OPTIONS, 32, parse) as LayeredParseResult;
+    expect(calls.map((call) => call.command)).toEqual(['node write.js', 'node mix.js', 'node tail.js']);
+    expect(spanOf(result.resolved[0]).simpleCommandIndex).toBe(0);
+    expect(spanOf(result.resolved[1]).simpleCommandIndex).toBe(1);
+    expect(spanOf(result.resolved[2]).simpleCommandIndex).toBe(2);
+    expect([spanOf(result.resolved[0]).join, spanOf(result.resolved[1]).join, spanOf(result.resolved[2]).join]).toEqual(
+      [undefined, '&&', '||']
+    );
+    expect(result.unresolved.map((match) => match.simpleCommandIndex)).toEqual([0, 1, 2]);
+    expect(result.preStateRequests.map((request) => request.simpleCommandIndex)).toEqual([0, 1, 2]);
+  });
+
+  it('hands the caller options object unchanged to every stage — no maxCandidates injection on the compound path', () => {
+    const command = 'sed -i s/beta/BETA/ a.txt && node write.js';
+    const callerOptions: LayeredParseOptions = { cwd: '/repo', maxCandidates: 7 };
+    const { calls, parse } = stubParse({});
+    parseCompoundStages(command, splitTopLevel(command), callerOptions, 32, parse);
+    expect(calls).toHaveLength(2);
+    for (const call of calls) expect(call.options).toBe(callerOptions);
+  });
+
+  it('reconciles a pipeline in place: layered reads before writes, pipeline refusals before layered refusals', () => {
+    const child: Partial<LayeredParseResult> = {
+      resolved: [resolvedSpan({ operation: 'read' }), resolvedSpan()],
+      unresolved: [unresolvedMatch({ layer: 'node' })]
+    };
+    const command = 'cat notes.txt | python3 rewrite.py';
+    const result = parseCompoundStages(command, splitTopLevel(command), OPTIONS, 32, stubParse(child).parse);
+    expect(result.resolved.map((match) => ({ layer: match.layer, operation: spanOf(match).operation }))).toEqual([
+      { layer: 'node', operation: 'read' },
+      { layer: 'node', operation: 'read' },
+      { layer: 'node', operation: 'write' },
+      { layer: 'node', operation: 'write' }
+    ]);
+    expect(result.unresolved.map((match) => match.simpleCommandIndex)).toEqual([0, 1]);
+
+    const shellPipeline = 'cat notes.txt | sed -i s/beta/BETA/ a.txt';
+    const shellResult = parseCompoundStages(
+      shellPipeline,
+      splitTopLevel(shellPipeline),
+      OPTIONS,
+      32,
+      stubParse({ unresolved: [unresolvedMatch({ layer: 'node' })] }).parse
+    );
+    expect(shellResult.unresolved[0].layer).toBe('shell');
+    const lastRefusal = shellResult.unresolved[shellResult.unresolved.length - 1];
+    expect(lastRefusal.layer).toBe('node');
+    expect(lastRefusal.simpleCommandIndex).toBe(1);
+  });
+
+  it('rejects over-budget resolution with the compound count noun', () => {
+    const command = 'node a.js && node b.js';
+    const child: Partial<LayeredParseResult> = { resolved: [resolvedSpan(), resolvedSpan()] };
+    const result = parseCompoundStages(command, splitTopLevel(command), OPTIONS, 3, stubParse(child).parse);
+    expect(result.resolved).toEqual([]);
+    expect(result.unresolved[0].reasonCode).toBe('candidate-budget-exceeded');
+    expect(lastDetail(result.unresolved)).toBe('compound produced 4 candidates; the limit is 3');
+    expect(result.preStateRequests).toEqual([]);
   });
 });
