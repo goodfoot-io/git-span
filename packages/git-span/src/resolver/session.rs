@@ -85,6 +85,13 @@ impl CachedLineIndex {
 /// nesting (vs. a flat tuple-keyed map) matters.
 pub(crate) type BlobOidMemo = HashMap<String, HashMap<String, Option<String>>>;
 
+/// Candidate-text memo shape backing
+/// [`ConcurrentSession::relocation_text_memo`]: `(path, layer)` → read result,
+/// where a `None` value caches an unreadable path (see the field's doc
+/// comment). Values are shared behind `Arc<str>` (card main-306) so memo hits
+/// clone the handle, not the text.
+type RelocationTextMemo = RwLock<HashMap<(String, crate::types::DriftSource), Option<Arc<str>>>>;
+
 /// Per-key single-flight memo shape (card main-162 staged-rollout step 3):
 /// the outer `RwLock<HashMap>` maps a string key to an `Arc<OnceLock<V>>`
 /// cell, and the value `V` is computed exactly once via
@@ -498,9 +505,11 @@ pub(crate) struct ConcurrentSession {
     /// `None` value means the read was attempted and failed (e.g. worktree
     /// `fs::read` error); subsequent lookups for that key short-circuit without
     /// retrying. Only counts toward `relocation_candidate_reads` on memo miss.
-    /// `RwLock`-wrapped (card main-162 staged-rollout step 2).
-    pub(crate) relocation_text_memo:
-        RwLock<HashMap<(String, crate::types::DriftSource), Option<String>>>,
+    /// `RwLock`-wrapped (card main-162 staged-rollout step 2). Values are
+    /// shared behind `Arc<str>` (card main-306) so every memo hit clones the
+    /// reference-counted handle instead of copying the full candidate text —
+    /// same discipline as `worktree_bytes_memo`/`blob_text_memo`.
+    pub(crate) relocation_text_memo: RelocationTextMemo,
     /// Session-scoped line-index cache keyed by `(path, layer)`.  Each
     /// distinct `(path, layer)` pair is read once and indexed once
     /// regardless of how many anchors touch that file.  Values are
@@ -1107,12 +1116,12 @@ impl ConcurrentSession {
     }
 
     /// Get or build a [`CachedLineIndex`] for `(path, layer)`, building it
-    /// from `bytes` on first access (the miss path).  Subsequent calls for
-    /// the same key return the pre-built index directly (hit path; `bytes`
-    /// is dropped unused).
+    /// from `build_bytes` on first access (the miss path).  Subsequent calls for
+    /// the same key return the pre-built index directly (hit path; the closure
+    /// is never invoked, so callers holding shared handles pay no copy).
     pub(crate) fn get_or_build_line_index(
         &self,
-        bytes: Vec<u8>,
+        build_bytes: impl FnOnce() -> Vec<u8>,
         path: &str,
         layer: DriftSource,
     ) -> Arc<CachedLineIndex> {
@@ -1127,7 +1136,7 @@ impl ConcurrentSession {
             return existing;
         }
         self.line_index_misses.fetch_add(1, Ordering::Relaxed);
-        let entry = Arc::new(CachedLineIndex::new(bytes));
+        let entry = Arc::new(CachedLineIndex::new(build_bytes()));
         self.line_index_cache
             .write()
             .unwrap()

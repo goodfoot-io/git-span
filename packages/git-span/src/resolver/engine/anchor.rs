@@ -311,19 +311,20 @@ fn find_relocated_range_in_paths(
             .unwrap()
             .get(&memo_key)
             .cloned();
-        let text: String = match cached {
+        let text: Arc<str> = match cached {
             Some(Some(t)) => t,
             Some(None) => continue, // previously unreadable
             None => {
                 concurrent
                     .relocation_candidate_reads
                     .fetch_add(1, Ordering::Relaxed);
-                let read: Option<String> = match deepest {
+                let read: Option<Arc<str>> = match deepest {
                     DriftSource::Worktree => std::fs::read(workdir.join(&en.path))
                         .ok()
-                        .map(|b| string_from_utf8_lossy(&b)),
+                        .map(|b| string_from_utf8_lossy(&b))
+                        .map(Arc::from),
                     DriftSource::Index | DriftSource::Head => {
-                        Some(read_blob_text(repo, &en.oid.to_string()))
+                        Some(Arc::from(read_blob_text(repo, &en.oid.to_string())))
                     }
                 };
                 concurrent
@@ -340,8 +341,11 @@ fn find_relocated_range_in_paths(
         // Tier 2: reuse (or build) the session's per-`(path, layer)` line
         // index instead of re-scanning raw bytes — the same amortization
         // `resolve_anchor_inner`'s in-place freshness check already relies
-        // on, now shared with the cross-path relocation scan.
-        let cached_idx = concurrent.get_or_build_line_index(text.into_bytes(), &en.path, deepest);
+        // on, now shared with the cross-path relocation scan. The bytes are
+        // materialized from the shared handle only when the index cache
+        // actually misses (card main-306).
+        let cached_idx =
+            concurrent.get_or_build_line_index(|| text.to_string().into_bytes(), &en.path, deepest);
         let file_idx: &LineIndex = cached_idx.get();
         if let Some((s, e)) = find_relocated_range_indexed(file_idx, extent, stored_hash, 1) {
             results.push((en.path, s, e));
@@ -430,16 +434,17 @@ fn find_similar_ranges(
             .unwrap()
             .get(&memo_key)
             .cloned();
-        let text: String = match cached {
+        let text: Arc<str> = match cached {
             Some(Some(t)) => t,
             Some(None) => continue,
             None => {
-                let read: Option<String> = match deepest {
+                let read: Option<Arc<str>> = match deepest {
                     DriftSource::Worktree => std::fs::read(workdir.join(&en.path))
                         .ok()
-                        .map(|b| string_from_utf8_lossy(&b)),
+                        .map(|b| string_from_utf8_lossy(&b))
+                        .map(Arc::from),
                     DriftSource::Index | DriftSource::Head => {
-                        Some(read_blob_text(repo, &en.oid.to_string()))
+                        Some(Arc::from(read_blob_text(repo, &en.oid.to_string())))
                     }
                 };
                 concurrent
@@ -1458,7 +1463,7 @@ pub(crate) fn resolve_anchor_inner(
             // released before compute_layer_sources takes &mut state.
             let (equal, worktree_recorded_fresh) = {
                 let cached_idx = concurrent.get_or_build_line_index(
-                    cur_text.clone().into_bytes(),
+                    || cur_text.clone().into_bytes(),
                     &t.path,
                     deepest_layer,
                 );
