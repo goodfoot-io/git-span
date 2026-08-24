@@ -7913,6 +7913,7 @@ __metadata:
     monaco-editor: "npm:^0.56.0"
     tsx: "npm:^4.23.12"
     typescript: "npm:^7.0.2"
+    vitest: "npm:^4.1.10"
   languageName: unknown
   linkType: soft
 

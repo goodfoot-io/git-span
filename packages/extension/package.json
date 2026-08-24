@@ -47,6 +47,7 @@
     "build": "node ../../scripts/ensure-worktree-local-generated.mjs packages/extension && vsce package --no-dependencies --follow-symlinks && { [ -n \"${SKIP_INSTALL:-}\" ] || bash scripts/install-vsix.sh; }",
     "build:testing": "node ../../scripts/ensure-worktree-local-generated.mjs packages/extension && node scripts/build/build-testing.js",
     "test": "node ../../scripts/ensure-worktree-local-generated.mjs packages/extension && node --import tsx test/runTest.ts",
+    "test:unit": "vitest run",
     "lint": "biome check --write --unsafe --max-diagnostics 500 ./src ./test ./scripts && jsdoczoom -l",
     "typecheck": "node ../../scripts/ensure-worktree-local-generated.mjs packages/extension && tsgo --noEmit",
     "clean": "rm -rf dist out dist-test-* *.vsix tsconfig.tsbuildinfo"
@@ -64,7 +65,8 @@
     "jsdoczoom": "^1.2.6",
     "mocha": "^11.8.0",
     "tsx": "^4.23.12",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
   },
   "repository": {
     "type": "git",

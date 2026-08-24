@@ -35,7 +35,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { resolveGitSpanBinaryOnPath, runGitSpanCommand } from '../utils/gitSpanBinary.js';
-import { getRepositoryForUri } from './gitRepository.js';
+import { getRepositoryForUri, repositoryResolutionFailureMessage } from './gitRepository.js';
 import { type ParsedSpanFile, parseSpanFile } from './spanFileGrammar.js';
 import {
   type RunGitSpanCommandFn,
@@ -521,12 +521,13 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
       return;
     }
 
-    const repository = await getRepositoryForUri(document.uri);
+    const resolution = await getRepositoryForUri(document.uri);
     if (session.disposed) {
       return;
     }
     const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
-    let repoRoot = repository?.rootUri.fsPath ?? workspaceFolder?.uri.fsPath ?? null;
+    let repoRoot =
+      resolution.status === 'resolved' ? resolution.repository.rootUri.fsPath : (workspaceFolder?.uri.fsPath ?? null);
     if (repoRoot === null) {
       // Neither vscode.git nor a workspace folder can place this span file in
       // a repository (e.g. the workspace does not contain the repo): walk up
@@ -537,11 +538,7 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
       return;
     }
     if (repoRoot === null) {
-      renderPanel(
-        webviewPanel.webview,
-        'Could not determine the git repository containing this span file (no ".git" directory found above it); cannot load its history.',
-        []
-      );
+      renderPanel(webviewPanel.webview, repositoryResolutionFailureMessage(resolution), []);
       return;
     }
 
