@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   createScan,
+  finishScan,
   rejectEmptyConstructList,
+  skipTopLevelComment,
+  stepBoundaryOperator,
   stepBraceContent,
   stepCaseRegion,
   stepConstructWord,
@@ -10,7 +13,8 @@ import {
   stepHeredocOpen,
   stepHereString,
   stepParen,
-  stepQuote
+  stepQuote,
+  stepRedirectToken
 } from '../../src/common/shell-split-machines.js';
 
 /** Drive one machine step with the cursor parked at `at`. */
@@ -435,6 +439,95 @@ describe('nesting machine', () => {
       unarmed.levels[0].push({ kind: 'if', body: true });
       unarmed.afterKeyword = false;
       expect(rejectEmptyConstructList(unarmed)).toBe(false);
+    });
+  });
+});
+
+describe('boundary-operator machine', () => {
+  it('&& flushes the buffered stage under the and operator', () => {
+    const s = scanAt('rm -rf x && echo done', 9);
+    s.buf = 'rm -rf x';
+    expect(stepBoundaryOperator(s)).toBe(true);
+    expect(s.parts).toEqual([{ text: 'rm -rf x', precededBy: 'start' }]);
+    expect(s.pendingOp).toBe('and');
+    expect(s.i).toBe(11);
+  });
+
+  it('a newline after an unconsumed pipe is a continuation, not a separator', () => {
+    const s = scanAt('cat f |\nsed', 7);
+    s.buf = '';
+    s.pendingOp = 'pipe';
+    expect(stepBoundaryOperator(s)).toBe(true);
+    expect(s.parts).toHaveLength(0);
+    expect(s.pendingOp).toBe('pipe');
+    expect(s.i).toBe(8);
+  });
+
+  it('& inside a dup redirect token is text, not a background operator', () => {
+    const dup = scanAt('cat f 2>&1', 8);
+    dup.buf = 'cat f 2>';
+    expect(stepBoundaryOperator(dup)).toBe(true);
+    expect(dup.buf).toBe('cat f 2>&');
+    expect(dup.parts).toHaveLength(0);
+  });
+
+  it('declines inside a paren level', () => {
+    const s = scanAt('( a && b )', 4);
+    s.depth = 1;
+    s.buf = 'a ';
+    expect(stepBoundaryOperator(s)).toBe(false);
+  });
+});
+
+describe('redirect-token machine and comment skip', () => {
+  it('rejects two redirect tokens in a row mid-stage', () => {
+    const s = scanAt('cat > > out', 6);
+    s.buf = 'cat > ';
+    expect(stepRedirectToken(s)).toBe(true);
+    expect(s.malformed).toBe('dangling-operator');
+  });
+
+  it('${ opens brace opacity; the machine declines other chars at depth', () => {
+    const open = scanAt('echo ${x}', 5);
+    open.buf = 'echo ';
+    expect(stepRedirectToken(open)).toBe(true);
+    expect(open.braceDepth).toBe(1);
+
+    const plain = scanAt('echo hi', 5);
+    plain.buf = 'echo ';
+    expect(stepRedirectToken(plain)).toBe(false);
+  });
+
+  it('# comments run to end of line only at word starts and depth 0', () => {
+    const comment = scanAt('echo # trailing\nnext', 5);
+    comment.buf = 'echo ';
+    expect(skipTopLevelComment(comment)).toBe(true);
+    expect(comment.i).toBe(15);
+    const midWord = scanAt('a#b', 1);
+    midWord.buf = 'a';
+    expect(skipTopLevelComment(midWord)).toBe(false);
+  });
+});
+
+describe('finishScan', () => {
+  it('emits verdicts in bash order — unclosed quote before dangling operator', () => {
+    const s = createScan("echo 'x |");
+    s.i = s.n;
+    s.inSquote = true;
+    s.pendingOp = 'pipe';
+    expect(finishScan(s)).toEqual({ stages: [], malformed: 'unclosed-quote' });
+  });
+
+  it('an unterminated heredoc flushes the delimiter stage as the partial', () => {
+    const s = createScan('cat <<EOF');
+    s.i = s.n;
+    s.heredocs.push({ close: /^EOF[ \t]*$/ });
+    s.buf = 'cat';
+    // The delimiter operator registered earlier marked the buffered stage.
+    s.bufHeredoc = true;
+    expect(finishScan(s)).toEqual({
+      stages: [{ text: 'cat', precededBy: 'start', heredoc: true }],
+      malformed: 'unterminated-heredoc'
     });
   });
 });

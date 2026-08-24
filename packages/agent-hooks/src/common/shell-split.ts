@@ -13,23 +13,19 @@
  */
 
 import {
-  appendStage,
-  bufferEndsInDanglingRedirect,
   createScan,
+  finishScan,
   rejectEmptyConstructList,
-  rejectList,
-  startsRedirectAt,
+  skipTopLevelComment,
+  stepBoundaryOperator,
   stepBraceContent,
   stepCaseRegion,
   stepConstructWord,
   stepHeredocBody,
   stepHeredocDelimiterNewline,
-  stepHeredocOpen,
-  stepHereString,
   stepParen,
   stepQuote,
-  unconsumedPipeOp,
-  wordStart
+  stepRedirectToken
 } from './shell-split-machines.js';
 
 /**
@@ -89,204 +85,58 @@ export interface SplitResult {
  * (plan §1) come back as a `malformed` verdict with the stage list truncated
  * at the rejecting list.
  *
- * Phase 2 (plan §3) adds three machines:
+ * The walk itself is a dispatcher: each iteration offers the cursor to the
+ * state machines in [shell-split-machines] — quoting, ${…} opacity, heredoc
+ * body/delimiter-newline/opening and here-strings, top-level comments, case
+ * regions, parens, construct keywords, the empty-construct-list guard,
+ * redirect tokens, and finally the boundary operators — and the first machine
+ * that consumes input wins; a character no machine claims joins the stage
+ * buffer. Three of those machines carry the interesting grammar:
  *
- * - The kind-matched construct stack: `if`/`while`/`until`/`for`/`select`/
- *   `{`/`}`/`function` open construct frames at command position, context
- *   keywords (`do`, `then`, `else`, `elif`, `in`) and closers (`fi`, `done`,
- *   `esac`, `}`) require a matching opener on top of the stack (with the
- *   right body state), and while a construct is open at depth 0 the boundary
- *   operators are text — the construct folds to one stage. Each `(` pushes a
- *   fresh stack and each `)` fires 'unclosed-construct' when its level is
- *   non-empty (fire-before-restore).
+ * - The kind-matched construct stack ([stepParen], [stepConstructWord]):
+ *   `if`/`while`/`until`/`for`/`select`/`{`/`}`/`function` open construct
+ *   frames at command position, context keywords (`do`, `then`, `else`,
+ *   `elif`, `in`) and closers (`fi`, `done`, `esac`, `}`) require a matching
+ *   opener on top of the stack (with the right body state), and while a
+ *   construct is open at depth 0 the boundary operators are text — the
+ *   construct folds to one stage. Each `(` pushes a fresh stack and each `)`
+ *   fires 'unclosed-construct' when its level is non-empty
+ *   (fire-before-restore).
  *
- * - The case-region machine: `case` in command position opens a region closed
- *   by a matching `esac`. The region's content is opaque — pattern `)`s and
- *   `|`s are pattern syntax, not parens/pipes — with its own paren depth
- *   (the global depth freezes while open), `;;`/`;&`/`;;&` returning to
- *   pattern-start and `)`, `;`, `&`, and newlines to command start. A region
- *   open at EOF is 'unclosed-case'.
+ * - The case-region machine ([stepCaseRegion]): `case` in command position
+ *   opens a region closed by a matching `esac`. The region's content is
+ *   opaque — pattern `)`s and `|`s are pattern syntax, not parens/pipes —
+ *   with its own paren depth (the global depth freezes while open),
+ *   `;;`/`;&`/`;;&` returning to pattern-start and `)`, `;`, `&`, and
+ *   newlines to command start. A region open at EOF is 'unclosed-case'.
  *
- * - The heredoc machinery: `<<`/`<<-` at depth 0 with a delimiter word strips
- *   the operator+delimiter from the stage text (the stage keeps a plain argv)
- *   and scans body lines raw until the delimiter line; an unterminated
- *   heredoc is the 'unterminated-heredoc' partial — the delimiter's line (and
- *   everything before it) analyzes normally and the body produces no stages.
- *   The stripped stage carries the `heredoc` flag so consumers can see that
- *   its stdin is the body, not a pipe or a file.
+ * - The heredoc machinery ([stepHeredocOpen], [stepHeredocBody],
+ *   [stepHeredocDelimiterNewline]): `<<`/`<<-` at depth 0 with a delimiter
+ *   word strips the operator+delimiter from the stage text (the stage keeps a
+ *   plain argv) and scans body lines raw until the delimiter line; an
+ *   unterminated heredoc is the 'unterminated-heredoc' partial — the
+ *   delimiter's line (and everything before it) analyzes normally and the
+ *   body produces no stages. The stripped stage carries the `heredoc` flag so
+ *   consumers can see that its stdin is the body, not a pipe or a file.
  */
 export function splitTopLevel(cmd: string): SplitResult {
   const s = createScan(cmd);
-  const { cmd: input, n } = s;
-  while (s.i < n) {
-    const c = input[s.i];
-    const { buf } = s;
+  while (s.i < s.n) {
     if (stepQuote(s)) continue;
-    // `${…}` content is opaque (plan §1): nested expansions nest, and while
-    // the brace depth is positive nothing inside counts parens, splits
-    // operators, starts comments, or recognizes constructs — `${x%)}`,
-    // `${x//(/}`, and `${x:-$(echo y)}` are all valid.
     if (stepBraceContent(s)) continue;
     if (stepHeredocBody(s)) continue;
     if (stepHeredocDelimiterNewline(s)) continue;
-    // `#` begins a comment when it starts a word at depth 0 (empty buffer or
-    // preceded by whitespace); comments run to the newline, keeping the buffer
-    // empty for the continuation rule. Mid-word and quoted `#` are text, and
-    // comments inside parens are opaque like everything else there (plan §1).
-    if (c === '#' && s.depth === 0 && wordStart(buf)) {
-      while (s.i < n && input[s.i] !== '\n') s.i += 1;
-      continue;
-    }
+    if (skipTopLevelComment(s)) continue;
     if (stepCaseRegion(s)) continue;
     if (stepParen(s)) continue;
     if (stepConstructWord(s)) continue;
     if (rejectEmptyConstructList(s)) continue;
-    if (s.depth === 0) {
-      // A redirect token with no target word, immediately followed by another
-      // redirect token mid-stage, is a parse error: `cat f > > out`,
-      // `cat f > 2>&1`, `cat f > &>out`, `cat f > <<< x` (plan §1).
-      if (wordStart(buf) && bufferEndsInDanglingRedirect(buf) && startsRedirectAt(s)) {
-        rejectList(s, 'dangling-operator');
-        break;
-      }
-      if (c === '$' && input[s.i + 1] === '{') {
-        s.braceDepth += 1;
-        s.buf += c;
-        s.i += 1;
-        continue;
-      }
-      if (stepHereString(s)) continue;
-      if (stepHeredocOpen(s)) continue;
-      // While a construct is open at depth 0 the boundary operators are text —
-      // the construct is one stage.
-      if (s.caseRegion === null && s.levels[s.levels.length - 1].length === 0) {
-        if (input.slice(s.i, s.i + 2) === '&&') {
-          if (unconsumedPipeOp(s) || bufferEndsInDanglingRedirect(buf)) {
-            rejectList(s, 'dangling-operator');
-            break;
-          }
-          appendStage(s, 'and');
-          s.i += 2;
-          continue;
-        }
-        if (input.slice(s.i, s.i + 2) === '||') {
-          if (unconsumedPipeOp(s) || bufferEndsInDanglingRedirect(buf)) {
-            rejectList(s, 'dangling-operator');
-            break;
-          }
-          appendStage(s, 'or');
-          s.i += 2;
-          continue;
-        }
-        if (input.slice(s.i, s.i + 2) === '|&') {
-          if (unconsumedPipeOp(s) || bufferEndsInDanglingRedirect(buf)) {
-            rejectList(s, 'dangling-operator');
-            break;
-          }
-          appendStage(s, 'pipe');
-          s.i += 2;
-          continue;
-        }
-        if (c === ';') {
-          if (unconsumedPipeOp(s) || bufferEndsInDanglingRedirect(buf)) {
-            rejectList(s, 'dangling-operator');
-            break;
-          }
-          appendStage(s, 'semicolon');
-          s.i += 1;
-          continue;
-        }
-        if (c === '|') {
-          if (unconsumedPipeOp(s) || bufferEndsInDanglingRedirect(buf)) {
-            rejectList(s, 'dangling-operator');
-            break;
-          }
-          appendStage(s, 'pipe');
-          s.i += 1;
-          continue;
-        }
-        if (c === '\n') {
-          // A newline is a line continuation — not a statement separator — when
-          // a pipe/and/or operator is pending with a whitespace-only buffer
-          // since it (`cat a.txt |\nsed ...`, `false &&\nsed ...`). `cat f | head -1\ncat g`
-          // is therefore two lists, and a redirect target never continues onto
-          // a later line (plan §1).
-          if (unconsumedPipeOp(s)) {
-            s.i += 1;
-            continue;
-          }
-          if (bufferEndsInDanglingRedirect(buf)) {
-            rejectList(s, 'dangling-operator');
-            break;
-          }
-          appendStage(s, 'newline');
-          s.listStart = s.parts.length;
-          s.i += 1;
-          continue;
-        }
-        if (c === '&') {
-          // A bare `&` is a background operator only when it is not part of a
-          // redirect token: the next character is `>` (`&>`/`&>>`), or the
-          // buffer's last character is `>` or `<` (`2>&1`, `>& file`, `3<&0`).
-          // Splitting inside those tokens would produce junk stages. A `>`
-          // counts as a dup-redirect prefix only at a token boundary (start,
-          // or after whitespace/digits) — `a>b&c` still backgrounds the
-          // `a>b` redirect.
-          const next = input[s.i + 1];
-          const last = buf[buf.length - 1];
-          const trimmed = buf.trimEnd();
-          let dupRedirect = false;
-          if (trimmed.endsWith('>')) {
-            const before = trimmed.length >= 2 ? trimmed[trimmed.length - 2] : '';
-            dupRedirect = trimmed.length === 1 || /\s|\d/.test(before);
-          }
-          if (next === '>' || dupRedirect || last === '<') {
-            s.buf += c;
-            s.i += 1;
-            continue;
-          }
-          if (unconsumedPipeOp(s) || bufferEndsInDanglingRedirect(buf)) {
-            rejectList(s, 'dangling-operator');
-            break;
-          }
-          appendStage(s, 'background');
-          s.i += 1;
-          continue;
-        }
-      }
-    }
-    s.buf += c;
+    if (stepRedirectToken(s)) continue;
+    if (stepBoundaryOperator(s)) continue;
+    s.buf += s.cmd[s.i];
     s.i += 1;
   }
-
-  // End of input: the EOF-state verdicts — an unclosed quote, brace, case
-  // region, paren level, or construct — then the unconsumed-operator checks,
-  // then the unterminated-heredoc partial, then the final flush. A verdict
-  // set mid-scan already dropped the rejecting list and ended the loop, so
-  // `parts` is exactly the completed earlier lists here.
-  if (s.malformed) return { stages: s.parts, malformed: s.malformed };
-  if (s.inSquote || s.inDquote) {
-    rejectList(s, 'unclosed-quote');
-  } else if (s.braceDepth > 0) {
-    rejectList(s, 'unclosed-brace');
-  } else if (s.caseRegion !== null) {
-    rejectList(s, 'unclosed-case');
-  } else if (s.depth > 0) {
-    rejectList(s, 'unbalanced-paren');
-  } else if (s.levels[s.levels.length - 1].length > 0) {
-    rejectList(s, 'unclosed-construct');
-  } else if (unconsumedPipeOp(s) || bufferEndsInDanglingRedirect(s.buf)) {
-    rejectList(s, 'dangling-operator');
-  } else if (s.inBody || s.heredocs.length > 0) {
-    // Unterminated heredoc — bash warns, runs the delimiter's line, and
-    // treats the tail as body: the partial. The delimiter's-line stage(s)
-    // analyze as-is; the body produces no stages (plan §3).
-    appendStage(s, 'newline');
-    s.malformed = 'unterminated-heredoc';
-  } else {
-    appendStage(s, 'newline');
-  }
-  return { stages: s.parts, malformed: s.malformed };
+  return finishScan(s);
 }
 
 const LEADING_ASSIGNMENT = /^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/;

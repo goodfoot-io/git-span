@@ -9,7 +9,7 @@
  * testable in isolation from the dispatcher that schedules it.
  */
 
-import type { MalformedVerdict, Operator, SimpleCommand } from './shell-split.js';
+import type { MalformedVerdict, Operator, SimpleCommand, SplitResult } from './shell-split.js';
 
 /** The construct kinds the kind-matched stack tracks (plan §3). */
 export type ConstructKind = 'if' | 'loop' | 'for' | 'select' | 'brace';
@@ -796,4 +796,168 @@ export function rejectEmptyConstructList(s: SplitScan): boolean {
     return true;
   }
   return false;
+}
+
+/**
+ * `#` begins a comment when it starts a word at depth 0 (empty buffer or
+ * preceded by whitespace); comments run to the newline, keeping the buffer
+ * empty for the continuation rule. Mid-word and quoted `#` are text, and
+ * comments inside parens are opaque like everything else there — the depth
+ * guard covers them (plan §1).
+ */
+export function skipTopLevelComment(s: SplitScan): boolean {
+  if (s.cmd[s.i] !== '#' || s.depth !== 0 || !wordStart(s.buf)) return false;
+  while (s.i < s.n && s.cmd[s.i] !== '\n') s.i += 1;
+  return true;
+}
+
+/**
+ * Redirect-token machine at top level: reject a dangling operator followed by
+ * another redirect token mid-stage, open `${…}` opacity, recognize
+ * here-strings, then heredocs. Everything here is depth-gated — redirects
+ * inside parens are opaque like all other syntax there.
+ */
+export function stepRedirectToken(s: SplitScan): boolean {
+  if (s.depth !== 0) return false;
+  const c = s.cmd[s.i];
+  // A redirect token with no target word, immediately followed by another
+  // redirect token mid-stage, is a parse error: `cat f > > out`,
+  // `cat f > 2>&1`, `cat f > &>out`, `cat f > <<< x` (plan §1).
+  if (wordStart(s.buf) && bufferEndsInDanglingRedirect(s.buf) && startsRedirectAt(s)) {
+    rejectList(s, 'dangling-operator');
+    return true;
+  }
+  if (c === '$' && s.cmd[s.i + 1] === '{') {
+    s.braceDepth += 1;
+    s.buf += c;
+    s.i += 1;
+    return true;
+  }
+  if (stepHereString(s)) return true;
+  return stepHeredocOpen(s);
+}
+
+/**
+ * Boundary-operator machine — the list splitter itself. At depth 0 with no
+ * construct frame and no case region open, `&&`/`||`/`|&`/`;`/`|`/newline/`&`
+ * flush the buffered stage under the matching operator; anywhere else they are
+ * plain text for the generic buffer. A newline after an unconsumed pipe/and/or
+ * is a line continuation instead of a separator, and completing a list via
+ * newline advances [SplitScan.listStart].
+ */
+export function stepBoundaryOperator(s: SplitScan): boolean {
+  if (s.depth !== 0) return false;
+  if (s.caseRegion !== null) return false;
+  if (s.levels[s.levels.length - 1].length > 0) return false;
+  const c = s.cmd[s.i];
+  const two = s.cmd.slice(s.i, s.i + 2);
+  if (two === '&&') {
+    flushBoundaryOrReject(s, 'and');
+    s.i += 2;
+    return true;
+  }
+  if (two === '||') {
+    flushBoundaryOrReject(s, 'or');
+    s.i += 2;
+    return true;
+  }
+  if (two === '|&') {
+    flushBoundaryOrReject(s, 'pipe');
+    s.i += 2;
+    return true;
+  }
+  if (c === ';') {
+    flushBoundaryOrReject(s, 'semicolon');
+    s.i += 1;
+    return true;
+  }
+  if (c === '|') {
+    flushBoundaryOrReject(s, 'pipe');
+    s.i += 1;
+    return true;
+  }
+  if (c === '\n') {
+    // A newline is a line continuation — not a statement separator — when
+    // a pipe/and/or operator is pending with a whitespace-only buffer
+    // since it (`cat a.txt |\nsed ...`, `false &&\nsed ...`). `cat f | head -1\ncat g`
+    // is therefore two lists, and a redirect target never continues onto
+    // a later line (plan §1).
+    if (unconsumedPipeOp(s)) {
+      s.i += 1;
+      return true;
+    }
+    if (bufferEndsInDanglingRedirect(s.buf)) {
+      rejectList(s, 'dangling-operator');
+      return true;
+    }
+    appendStage(s, 'newline');
+    s.listStart = s.parts.length;
+    s.i += 1;
+    return true;
+  }
+  if (c === '&') {
+    // A bare `&` is a background operator only when it is not part of a
+    // redirect token (`&>`, `2>&1`, `>& file`) — splitting inside those
+    // tokens would produce junk stages.
+    if (ampersandIsRedirectText(s)) {
+      s.buf += c;
+      s.i += 1;
+      return true;
+    }
+    flushBoundaryOrReject(s, 'background');
+    s.i += 1;
+    return true;
+  }
+  return false;
+}
+
+/** Flush the buffered stage under `nextOp`, unless the buffer leaves the operator unconsumed or a redirect target dangling — both Bash parse errors ('dangling-operator'). */
+function flushBoundaryOrReject(s: SplitScan, nextOp: Operator): void {
+  if (unconsumedPipeOp(s) || bufferEndsInDanglingRedirect(s.buf)) {
+    rejectList(s, 'dangling-operator');
+    return;
+  }
+  appendStage(s, nextOp);
+}
+
+/** Whether the `&` at [SplitScan.i] is redirect text rather than the background operator. A `>` counts as a dup-redirect prefix only at a token boundary (start, or after whitespace/digits) — `a>b&c` still backgrounds the `a>b` redirect. */
+function ampersandIsRedirectText(s: SplitScan): boolean {
+  if (s.cmd[s.i + 1] === '>') return true; // `&>` / `&>>`
+  if (s.buf[s.buf.length - 1] === '<') return true; // `3<&0`
+  const trimmed = s.buf.trimEnd();
+  if (!trimmed.endsWith('>')) return false;
+  const before = trimmed.length >= 2 ? trimmed[trimmed.length - 2] : '';
+  return trimmed.length === 1 || /\s|\d/.test(before);
+}
+
+/**
+ * End-of-input verdicts, in bash's own order: an unclosed quote, brace, case
+ * region, paren level, or construct; then the unconsumed-operator checks;
+ * then the unterminated-heredoc partial (bash warns, runs the delimiter's
+ * line, and treats the tail as body — the delimiter's-line stage(s) analyze
+ * as-is and the body produces no stages, plan §3); finally the closing flush.
+ * A verdict set mid-scan already dropped the rejecting list and ended the
+ * loop, so `parts` is exactly the completed earlier lists here.
+ */
+export function finishScan(s: SplitScan): SplitResult {
+  if (s.malformed) return { stages: s.parts, malformed: s.malformed };
+  if (s.inSquote || s.inDquote) {
+    rejectList(s, 'unclosed-quote');
+  } else if (s.braceDepth > 0) {
+    rejectList(s, 'unclosed-brace');
+  } else if (s.caseRegion !== null) {
+    rejectList(s, 'unclosed-case');
+  } else if (s.depth > 0) {
+    rejectList(s, 'unbalanced-paren');
+  } else if (s.levels[s.levels.length - 1].length > 0) {
+    rejectList(s, 'unclosed-construct');
+  } else if (unconsumedPipeOp(s) || bufferEndsInDanglingRedirect(s.buf)) {
+    rejectList(s, 'dangling-operator');
+  } else if (s.inBody || s.heredocs.length > 0) {
+    appendStage(s, 'newline');
+    s.malformed = 'unterminated-heredoc';
+  } else {
+    appendStage(s, 'newline');
+  }
+  return { stages: s.parts, malformed: s.malformed };
 }
