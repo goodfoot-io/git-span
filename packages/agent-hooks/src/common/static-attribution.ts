@@ -2154,6 +2154,78 @@ function emitNodeStructuredDump(
  * without a match-locations request. Every path returns a complete
  * [LayeredParseResult].
  */
+/**
+ * One numeric-sed file operand: dynamic operands refuse, everything else
+ * resolves one modify span over the addressed range with expected post-state
+ * content (undefined - and no match-locations request - for unreadable or
+ * binary pre-state), plus a create-overwrite backup span when a suffix is
+ * present. Appends to the caller's accumulating sets.
+ */
+function numericSedForFile(
+  patternCommand: PatternCommand,
+  substitution: LiteralSubstitution,
+  start: number,
+  end: number,
+  file: string,
+  options: LayeredParseOptions,
+  cwd: string,
+  resolved: LayeredResolvedMatch[],
+  unresolvedMatches: UnresolvedAttribution[],
+  preStateRequests: PreStateRequest[]
+): void {
+  const reason = classifyDynamicWord(file);
+  if (reason !== null) {
+    unresolvedMatches.push(unresolved('shell', 'sed-inplace', reason, 'target path is dynamic', file));
+    return;
+  }
+  const absolutePath = nodePath.resolve(cwd, file);
+  const content = options.readPreState?.(absolutePath) ?? null;
+  const expectedContent =
+    content === null || content.includes('\0')
+      ? undefined
+      : content
+          .split(/(?<=\n)/)
+          .map((line, index) =>
+            index + 1 >= start && index + 1 <= end
+              ? replaceLiteral(line, substitution.pattern, substitution.replacement, substitution.global)
+              : line
+          )
+          .join('');
+  resolved.push({
+    status: 'resolved',
+    layer: 'shell',
+    idiom: 'sed-inplace',
+    span: {
+      operation: 'modify',
+      absolutePath,
+      lineStart: start,
+      lineEnd: end,
+      expectedContent,
+      simpleCommandIndex: patternCommand.simpleCommandIndex
+    }
+  });
+  if (expectedContent !== undefined) {
+    preStateRequests.push({
+      absolutePath,
+      operation: 'modify',
+      requirement: 'match-locations',
+      simpleCommandIndex: patternCommand.simpleCommandIndex
+    });
+  }
+  if (patternCommand.backupSuffix !== undefined && patternCommand.backupSuffix !== '') {
+    resolved.push({
+      status: 'resolved',
+      layer: 'shell',
+      idiom: 'sed-inplace',
+      span: {
+        operation: 'create-overwrite',
+        absolutePath: `${nodePath.resolve(cwd, file)}${patternCommand.backupSuffix}`,
+        simpleCommandIndex: patternCommand.simpleCommandIndex
+      }
+    });
+  }
+}
+
 export function resolveNumericSed(
   patternCommand: PatternCommand,
   numericMatch: RegExpMatchArray,
@@ -2191,57 +2263,18 @@ export function resolveNumericSed(
   const unresolvedMatches: UnresolvedAttribution[] = [];
   const preStateRequests: PreStateRequest[] = [];
   for (const file of patternCommand.files) {
-    const reason = classifyDynamicWord(file);
-    if (reason !== null) {
-      unresolvedMatches.push(unresolved('shell', 'sed-inplace', reason, 'target path is dynamic', file));
-      continue;
-    }
-    const absolutePath = nodePath.resolve(cwd, file);
-    const content = options.readPreState?.(absolutePath) ?? null;
-    const expectedContent =
-      content === null || content.includes('\0')
-        ? undefined
-        : content
-            .split(/(?<=\n)/)
-            .map((line, index) =>
-              index + 1 >= start && index + 1 <= end
-                ? replaceLiteral(line, substitution.pattern, substitution.replacement, substitution.global)
-                : line
-            )
-            .join('');
-    resolved.push({
-      status: 'resolved',
-      layer: 'shell',
-      idiom: 'sed-inplace',
-      span: {
-        operation: 'modify',
-        absolutePath,
-        lineStart: start,
-        lineEnd: end,
-        expectedContent,
-        simpleCommandIndex: patternCommand.simpleCommandIndex
-      }
-    });
-    if (expectedContent !== undefined) {
-      preStateRequests.push({
-        absolutePath,
-        operation: 'modify',
-        requirement: 'match-locations',
-        simpleCommandIndex: patternCommand.simpleCommandIndex
-      });
-    }
-    if (patternCommand.backupSuffix !== undefined && patternCommand.backupSuffix !== '') {
-      resolved.push({
-        status: 'resolved',
-        layer: 'shell',
-        idiom: 'sed-inplace',
-        span: {
-          operation: 'create-overwrite',
-          absolutePath: `${nodePath.resolve(cwd, file)}${patternCommand.backupSuffix}`,
-          simpleCommandIndex: patternCommand.simpleCommandIndex
-        }
-      });
-    }
+    numericSedForFile(
+      patternCommand,
+      substitution,
+      start,
+      end,
+      file,
+      options,
+      cwd,
+      resolved,
+      unresolvedMatches,
+      preStateRequests
+    );
   }
   if (unresolvedMatches.length > 0) return { resolved: [], unresolved: unresolvedMatches, preStateRequests: [] };
   const overBudget = rejectOverBudget(resolved, 'shell', 'sed-inplace', 'numeric substitution', maxCandidates);
