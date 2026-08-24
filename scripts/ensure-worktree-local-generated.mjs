@@ -51,6 +51,15 @@ import { fileURLToPath } from 'node:url';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
+// Platform package scopes are discovered at runtime rather than hardcoded: .gitignore ignores
+// every `npm/git-span-*/bin` path, present and future, and hardcoding just the host platform
+// left the other targets free to pack the primary checkout's binary from a worktree (main-324).
+const platformPackageScopes = fs
+  .readdirSync(path.join(repoRoot, 'npm'), { withFileTypes: true })
+  .filter((dirent) => dirent.isDirectory() && dirent.name.startsWith('git-span-'))
+  .map((dirent) => `npm/${dirent.name}`)
+  .sort();
+
 // Repo-relative scope -> the generated paths that scope owns, relative to the scope.
 // Each entry is gitignored, which is what exposes it to the provisioner. Entries are listed
 // whether or not they exist right now: a path absent from the primary checkout today gets
@@ -74,7 +83,7 @@ const GENERATED_PATHS = {
   // content-addressed caches.
   'packages/mini-swe-agent': ['src/minisweagent_gitspan/hooks', '.venv'],
   scripts: ['dist'],
-  'npm/git-span-linux-arm64': ['bin']
+  ...Object.fromEntries(platformPackageScopes.map((scope) => [scope, ['bin']]))
 };
 
 // Paths whose basename says "directory" get recreated as one so the producing tool finds the
@@ -103,6 +112,10 @@ if (unknown.length > 0) {
   process.exit(1);
 }
 
+// Platform bin repair is never skippable: the local-materialization invariant spans every
+// platform target, so it is enforced on every invocation, not just --all or explicit scopes.
+const visited = [...new Set([...scopes, ...platformPackageScopes])];
+
 /** True when `candidate` is `root` itself or lives underneath it. */
 const isInside = (root, candidate) => {
   const relative = path.relative(root, candidate);
@@ -111,7 +124,7 @@ const isInside = (root, candidate) => {
 
 const repaired = [];
 
-for (const scope of scopes) {
+for (const scope of visited) {
   const scopeRoot = path.join(repoRoot, scope);
 
   for (const relativePath of GENERATED_PATHS[scope]) {
@@ -121,8 +134,14 @@ for (const scope of scopes) {
     try {
       stats = fs.lstatSync(linkPath);
     } catch (error) {
-      if (error.code === 'ENOENT') continue;
-      throw error;
+      if (error.code !== 'ENOENT') throw error;
+      // Absent platform bin dirs are still materialized: the regression guard below demands
+      // every gitignored platform bin path exist as a local directory, so an unbuilt platform
+      // gets an empty local slot instead of relying on absence to mean safety.
+      if (platformPackageScopes.includes(scope)) {
+        fs.mkdirSync(linkPath, { recursive: true });
+      }
+      continue;
     }
 
     if (!stats.isSymbolicLink()) continue;
@@ -144,4 +163,39 @@ if (repaired.length > 0) {
       .map((entry) => `  ${entry}\n`)
       .join('')}`
   );
+}
+
+// Regression guard for the repair pass (main-324): every gitignored npm platform bin path must
+// be materialized inside this checkout — a real directory, or a symlink resolving back inside
+// it. Checked across all discovered platform scopes regardless of which scopes were requested,
+// so a future platform cannot regress into sharing the primary checkout's binary.
+const unmaterialized = [];
+for (const scope of platformPackageScopes) {
+  const scopeRoot = path.join(repoRoot, scope);
+  const linkPath = path.join(scopeRoot, 'bin');
+
+  let stats;
+  try {
+    stats = fs.lstatSync(linkPath);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    unmaterialized.push(`${scope}/bin (missing)`);
+    continue;
+  }
+
+  if (!stats.isSymbolicLink()) continue;
+
+  const target = path.resolve(scopeRoot, fs.readlinkSync(linkPath));
+  if (isInside(scopeRoot, target)) continue;
+
+  unmaterialized.push(`${scope}/bin (still -> ${target})`);
+}
+
+if (unmaterialized.length > 0) {
+  process.stderr.write(
+    `ensure-worktree-local-generated: gitignored npm platform bin path(s) not materialized in this checkout:\n${unmaterialized
+      .map((entry) => `  ${entry}\n`)
+      .join('')}`
+  );
+  process.exit(1);
 }
