@@ -1,7 +1,7 @@
-packages/git-span/src/git.rs#L1512-L1522 rk64:86b75392e4d70cf4
-packages/git-span/src/resolver/engine/anchor.rs#L702-L795 rk64:76fc7f54774b4da5
+packages/git-span/src/git.rs#L1565-L1575 rk64:86b75392e4d70cf4
+packages/git-span/src/resolver/engine/anchor.rs#L859-L952 rk64:76fc7f54774b4da5
 packages/git-span/tests/cases/drift_sparse_checkout.rs#L7-L112 rk64:c9dcac6d4768387e
-packages/git-span/tests/cases/mod.rs#L80-L80 rk64:99b2d70273f3a7cd
+packages/git-span/tests/cases/mod.rs#L81-L81 rk64:99b2d70273f3a7cd
 packages/git-span/tests/cases/promisor_missing_reproduction.rs rk64:36472a7d290666c5
 
 The drift resolver consults skip-worktree flags and promisor-marker files to distinguish SparseExcluded and PromisorMissing from Deleted; the integration tests verify each unavailable reason surfaces correctly.

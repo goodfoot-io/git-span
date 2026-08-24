@@ -1,6 +1,6 @@
 packages/agent-hooks/package.json#L13-L13 rk64:ad5e421bf4c94701
 packages/mini-swe-agent/.gitignore#L7-L7 rk64:6778edd3b747850c
-packages/mini-swe-agent/src/minisweagent_gitspan/bridge.py#L39-L46 rk64:46c087e7a0719782
-scripts/ensure-worktree-local-generated.mjs#L84-L84 rk64:d38b81aa896da551
+packages/mini-swe-agent/src/minisweagent_gitspan/bridge.py#L51-L58 rk64:46c087e7a0719782
+scripts/ensure-worktree-local-generated.mjs#L85-L85 rk64:d38b81aa896da551
 
 agent-hooks' build:hooks:mswea compiles the bundles into src/minisweagent_gitspan/hooks/, the exact directory default_hooks_dir() serves and this package's .gitignore and the ensure-worktree-local-generated script treat as generated; moving the output path, the lookup, or either ignore entry in isolation strands or regenerates the other.
