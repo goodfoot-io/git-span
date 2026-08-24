@@ -449,7 +449,7 @@ function insideOpenRegion(s: SplitScan): boolean {
  */
 export function stepCaseRegion(s: SplitScan): boolean {
   const r = s.caseRegion;
-  if (!r || r.localDepth !== 0) return false;
+  if (r?.localDepth !== 0) return false;
   if (stepCasePunct(s, r)) return true;
   return stepCaseWord(s, r);
 }
@@ -535,4 +535,265 @@ function stepCaseWord(s: SplitScan, r: CaseRegion): boolean {
 function bufferEndsInRedirectChar(buf: string): boolean {
   const last = buf[buf.length - 1];
   return last === '>' || last === '<';
+}
+
+/**
+ * Nesting machine, parens half: `(` bumps the global depth and pushes a fresh
+ * (empty) construct level — or, inside an open case region, the region's own
+ * local depth instead, keeping the global depth frozen. A stray `)` at depth
+ * 0 is 'unbalanced-paren'; a `)` closing a subshell whose construct stack is
+ * non-empty fires 'unclosed-construct' before the pop (fire-before-restore —
+ * an unclosed construct cannot outlive the subshell that closed).
+ */
+export function stepParen(s: SplitScan): boolean {
+  const c = s.cmd[s.i];
+  if (c !== '(' && c !== ')') return false;
+  if (c === '(') {
+    if (s.caseRegion) {
+      s.caseRegion.localDepth += 1;
+    } else {
+      // A subshell starts a command — `if true; then ( echo hi ); fi` is
+      // valid while `if true; then; fi` is not; the same subshell counts as
+      // a body word for an enclosing brace group (`{ ( echo hi ); }`).
+      markEnclosingBraceBody(s);
+      s.depth += 1;
+      s.levels.push([]);
+    }
+    s.afterKeyword = false;
+    s.buf += c;
+    s.i += 1;
+    return true;
+  }
+  if (s.caseRegion) {
+    // At local depth 0 a `)` is the pattern terminator (or the end of a
+    // list item) — the region owns it and the global depth stays frozen.
+    if (s.caseRegion.localDepth === 0) {
+      s.caseRegion.pos = 'command';
+      s.caseRegion.cmdEmpty = true;
+    } else {
+      s.caseRegion.localDepth -= 1;
+    }
+  } else {
+    // A stray `)` at depth 0 (and brace depth 0, outside quotes) is a parse
+    // error — `echo x) && …` (plan §1). `)` inside quotes, `${…}`, and
+    // heredoc bodies never reaches this machine.
+    if (s.depth === 0) {
+      rejectList(s, 'unbalanced-paren');
+      return true;
+    }
+    if (s.levels[s.levels.length - 1].length > 0) {
+      rejectList(s, 'unclosed-construct');
+      return true;
+    }
+    s.depth -= 1;
+    s.levels.pop();
+  }
+  s.buf += c;
+  s.i += 1;
+  return true;
+}
+
+/**
+ * Nesting machine, keywords half: recognize construct keywords and the
+ * case-region opener at word starts at any paren depth (constructs track
+ * through subshells), outside quotes, `${…}`, heredoc bodies, and open case
+ * regions (the case machine owns those words). Word-end chars (`;`, `&`,
+ * `|`, `<`, `>`) never begin a word here. The consumed word always joins the
+ * stage text; what changes is the frame stacks around it.
+ */
+export function stepConstructWord(s: SplitScan): boolean {
+  if (!startsConstructWord(s)) return false;
+  let j = s.i;
+  while (j < s.n && !WORD_END.test(s.cmd[j])) j += 1;
+  const w = s.cmd.slice(s.i, j);
+  const top = topFrame(s.levels);
+  const atCommand = commandPosition(s.buf);
+  if (w === 'in' && top !== undefined && (top.kind === 'for' || top.kind === 'select')) {
+    // The for/select word-list separator — recognized wherever it appears
+    // while a for/select is open (`for i in a b`, `select x in a`).
+  } else if (w === '{' && (atCommand || fnNameShapeIsPending(s.buf) || (s.functionSeen && s.nameSeen))) {
+    // `{` opens a brace group at command position, or right after a
+    // function name (`f() {`, `f(){`, `function f {`). `{cat` is a word.
+    openBraceGroup(s);
+  } else if (w === '}' && atCommand) {
+    closeBraceGroup(s);
+  } else if (atCommand) {
+    if (!applyCommandKeyword(s, w)) ordinaryConstructWord(s);
+  } else {
+    // An argument-position word: nothing opens, the empty-body flag
+    // clears, and the function-name handoff advances.
+    ordinaryArgumentWord(s);
+  }
+  s.buf += w;
+  s.i = j;
+  return true;
+}
+
+/** Whether a construct/case-opener word begins at [SplitScan.i]. */
+function startsConstructWord(s: SplitScan): boolean {
+  if (s.caseRegion) return false;
+  const c = s.cmd[s.i];
+  if (WORD_END.test(c)) return false;
+  if (!wordStart(s.buf) && !/[()]$/.test(s.buf)) return false;
+  // `${` is expansion syntax, not a construct word.
+  return !(c === '$' && s.cmd[s.i + 1] === '{');
+}
+
+/** Push one construct frame, crediting any enclosing brace group's body and arming the empty-list guard. */
+function pushConstruct(s: SplitScan, kind: ConstructKind): void {
+  markEnclosingBraceBody(s);
+  s.levels[s.levels.length - 1].push({ kind, body: false });
+  s.afterKeyword = true;
+}
+
+/** Validate the top frame against `kinds` (+ optional started body), rejecting the list as 'unclosed-construct' when it does not match. */
+function requireTopOf(s: SplitScan, kinds: readonly ConstructKind[], requireBody: boolean): OpenConstruct | null {
+  const t = topFrame(s.levels);
+  if (t === undefined || !kinds.includes(t.kind) || (requireBody && !t.body)) {
+    rejectList(s, 'unclosed-construct');
+    return null;
+  }
+  return t;
+}
+
+/** Pop a validated closer frame and disarm the empty-list guard. */
+function closeConstruct(s: SplitScan, kinds: readonly ConstructKind[]): void {
+  if (requireTopOf(s, kinds, true) === null) return;
+  s.levels[s.levels.length - 1].pop();
+  s.afterKeyword = false;
+}
+
+/** `{` opens a brace group: the function-name handoff (if pending) completes here. */
+function openBraceGroup(s: SplitScan): void {
+  if (s.functionSeen && s.nameSeen) {
+    s.functionSeen = false;
+    s.nameSeen = false;
+  }
+  pushConstruct(s, 'brace');
+}
+
+/** `}` closes a brace group that has a body; an opener directly before it (or no brace at all) is 'unclosed-construct'. */
+function closeBraceGroup(s: SplitScan): void {
+  const t = topFrame(s.levels);
+  if (s.afterKeyword || t === undefined || t.kind !== 'brace' || !t.body) {
+    rejectList(s, 'unclosed-construct');
+    return;
+  }
+  s.levels[s.levels.length - 1].pop();
+  s.afterKeyword = false;
+}
+
+/** else/elif require an if-frame with a body already — an empty if-list is an error; neither starts a body itself. */
+function requireIfBranch(s: SplitScan): void {
+  if (requireTopOf(s, ['if'], true) !== null) s.afterKeyword = true;
+}
+
+/** The command-position construct keywords, one tiny transition each. (A Map rather than a literal: bash's `then` keyword must not become a thenable.) */
+const CONSTRUCT_KEYWORDS = new Map<string, (s: SplitScan) => void>([
+  [
+    'case',
+    (s) => {
+      s.caseRegion = { pos: 'subject', cmdEmpty: false, localDepth: 0 };
+      s.afterKeyword = false;
+    }
+  ],
+  [
+    'function',
+    (s) => {
+      s.functionSeen = true;
+      s.nameSeen = false;
+      s.afterKeyword = false;
+    }
+  ],
+  ['if', (s) => pushConstruct(s, 'if')],
+  ['while', (s) => pushConstruct(s, 'loop')],
+  ['until', (s) => pushConstruct(s, 'loop')],
+  ['for', (s) => pushConstruct(s, 'for')],
+  ['select', (s) => pushConstruct(s, 'select')],
+  [
+    'do',
+    (s) => {
+      const t = requireTopOf(s, ['for', 'loop', 'select'], false);
+      if (t !== null) {
+        t.body = true;
+        s.afterKeyword = true;
+      }
+    }
+  ],
+  [
+    'then',
+    (s) => {
+      const t = requireTopOf(s, ['if'], false);
+      if (t !== null) {
+        t.body = true;
+        s.afterKeyword = true;
+      }
+    }
+  ],
+  ['else', (s) => requireIfBranch(s)],
+  ['elif', (s) => requireIfBranch(s)],
+  // `in` only validates the for/select frame — it arms nothing and starts no body.
+  ['in', (s) => void requireTopOf(s, ['for', 'select'], false)],
+  ['fi', (s) => closeConstruct(s, ['if'])],
+  ['done', (s) => closeConstruct(s, ['for', 'loop', 'select'])],
+  // No open region — a stray esac is a parse error.
+  ['esac', (s) => rejectList(s, 'unclosed-construct')]
+]);
+
+/** Apply the command-position keyword `w`; false when it is an ordinary word. */
+function applyCommandKeyword(s: SplitScan, w: string): boolean {
+  const kw = CONSTRUCT_KEYWORDS.get(w);
+  if (kw === undefined) return false;
+  kw(s);
+  return true;
+}
+
+/** The top construct frame on the current paren level, or undefined when the level is bare. */
+function topFrame(levels: OpenConstruct[][]): OpenConstruct | undefined {
+  const lv = levels[levels.length - 1];
+  return lv.length > 0 ? lv[lv.length - 1] : undefined;
+}
+
+/** Credit an enclosing brace group's body — any command word (including a subshell) counts. */
+function markEnclosingBraceBody(s: SplitScan): void {
+  const t = topFrame(s.levels);
+  if (t?.kind === 'brace') t.body = true;
+}
+
+/** An ordinary word at command position: nothing opens, the empty-body flag clears, and the function-name handoff advances. */
+function ordinaryConstructWord(s: SplitScan): void {
+  s.afterKeyword = false;
+  markEnclosingBraceBody(s);
+  advanceFunctionNameHandoff(s);
+}
+
+/** An argument-position word: identical bookkeeping to [ordinaryConstructWord] minus the brace-body mark. */
+function ordinaryArgumentWord(s: SplitScan): void {
+  s.afterKeyword = false;
+  advanceFunctionNameHandoff(s);
+}
+
+/** `function f …`: the first following word is the name, the one after it closes the handoff. */
+function advanceFunctionNameHandoff(s: SplitScan): void {
+  if (!s.functionSeen) return;
+  if (s.nameSeen) {
+    s.functionSeen = false;
+    s.nameSeen = false;
+  } else {
+    s.nameSeen = true;
+  }
+}
+
+/**
+ * A `;`/`&` directly after an opener or body keyword is an empty-list parse
+ * error at any depth (`if true; then; fi`, `{ ; }`, `for i in a b; do; done`,
+ * `( if true; then; fi )`). Returns whether the list was rejected.
+ */
+export function rejectEmptyConstructList(s: SplitScan): boolean {
+  const c = s.cmd[s.i];
+  if (s.caseRegion === null && s.levels[s.levels.length - 1].length > 0 && (c === ';' || c === '&') && s.afterKeyword) {
+    rejectList(s, 'unclosed-construct');
+    return true;
+  }
+  return false;
 }

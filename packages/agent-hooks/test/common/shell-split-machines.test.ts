@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
   createScan,
+  rejectEmptyConstructList,
   stepBraceContent,
   stepCaseRegion,
+  stepConstructWord,
   stepHeredocBody,
   stepHeredocDelimiterNewline,
   stepHeredocOpen,
   stepHereString,
+  stepParen,
   stepQuote
 } from '../../src/common/shell-split-machines.js';
 
@@ -293,5 +296,145 @@ describe('case-region machine', () => {
   it('a paren falls through so the nesting machine can bump the local depth', () => {
     const paren = caseAt('(x', 0, 'pattern');
     expect(stepCaseRegion(paren)).toBe(false);
+  });
+});
+
+describe('nesting machine', () => {
+  describe('stepParen', () => {
+    it('pushes a fresh construct level per ( and pops it on ), crediting an enclosing brace body', () => {
+      const s = scanAt('{ ( echo ) }', 0);
+      s.levels[0].push({ kind: 'brace', body: false });
+      s.i = 2;
+      expect(stepParen(s)).toBe(true);
+      expect(s.depth).toBe(1);
+      expect(s.levels[0][0].body).toBe(true);
+      expect(s.levels).toHaveLength(2);
+      s.i = 9;
+      expect(stepParen(s)).toBe(true);
+      expect(s.depth).toBe(0);
+      expect(s.levels).toHaveLength(1);
+    });
+
+    it('a stray ) at depth 0 rejects as unbalanced-paren', () => {
+      const s = scanAt('echo x)', 6);
+      expect(stepParen(s)).toBe(true);
+      expect(s.malformed).toBe('unbalanced-paren');
+      expect(s.parts).toHaveLength(0);
+    });
+
+    it(') over a non-empty construct level fires unclosed-construct before restoring', () => {
+      const s = scanAt('( if true; fi )', 14);
+      s.depth = 1;
+      s.levels.push([{ kind: 'if', body: true }]);
+      expect(stepParen(s)).toBe(true);
+      expect(s.malformed).toBe('unclosed-construct');
+      // The rejecting list's stages are gone but the frame was NOT popped
+      // first — fire-before-restore.
+      expect(s.depth).toBe(1);
+    });
+
+    it('inside a case region, parens move the region-local depth only', () => {
+      const s = scanAt('case $(x) in', 6);
+      s.caseRegion = { pos: 'pattern', cmdEmpty: false, localDepth: 0 };
+      expect(stepParen(s)).toBe(true);
+      expect(s.caseRegion.localDepth).toBe(1);
+      expect(s.depth).toBe(0);
+      s.i = 8;
+      expect(stepParen(s)).toBe(true);
+      // The close went through the region-local depth (no global pop), and a
+      // depth-decrementing ) leaves the position state untouched.
+      expect(s.caseRegion.localDepth).toBe(0);
+      expect(s.caseRegion.pos).toBe('pattern');
+    });
+  });
+
+  describe('stepConstructWord', () => {
+    it('if/then/fi drive a kind-matched stack with the empty-list guard armed between', () => {
+      const s = scanAt('if true; then true; fi', 0);
+      expect(stepConstructWord(s)).toBe(true);
+      expect(s.levels[0]).toEqual([{ kind: 'if', body: false }]);
+      expect(s.afterKeyword).toBe(true);
+      // `then` arrives at command position (the buffer ends with `; `).
+      s.buf = 'if true; ';
+      s.i = 9;
+      expect(stepConstructWord(s)).toBe(true);
+      expect(s.levels[0]).toEqual([{ kind: 'if', body: true }]);
+      s.buf = 'if true; then true; ';
+      s.i = 20;
+      expect(stepConstructWord(s)).toBe(true);
+      expect(s.levels[0]).toHaveLength(0);
+      expect(s.afterKeyword).toBe(false);
+    });
+
+    it('fi without an open if rejects', () => {
+      const s = scanAt('echo; fi', 6);
+      expect(stepConstructWord(s)).toBe(true);
+      expect(s.malformed).toBe('unclosed-construct');
+    });
+
+    it('case opens a case-region frame and disarms the empty-list guard', () => {
+      const s = scanAt('case $x in', 0);
+      s.afterKeyword = false;
+      expect(stepConstructWord(s)).toBe(true);
+      expect(s.caseRegion).toEqual({ pos: 'subject', cmdEmpty: false, localDepth: 0 });
+      expect(s.afterKeyword).toBe(false);
+    });
+
+    it('{ opens a brace group at command position or after a function name; {cat is a word', () => {
+      const fnShape = scanAt('f() { :; }', 4);
+      fnShape.buf = 'f()';
+      fnShape.i = 4;
+      expect(stepConstructWord(fnShape)).toBe(true);
+      expect(fnShape.levels[0]).toEqual([{ kind: 'brace', body: false }]);
+
+      const word = scanAt('cat {a}', 4);
+      word.buf = 'cat ';
+      word.i = 4;
+      expect(stepConstructWord(word)).toBe(true);
+      expect(word.levels[0]).toHaveLength(0);
+      expect(word.buf).toBe('cat {a}');
+    });
+
+    it('an argument-position ordinary word advances the function-name handoff without opening frames', () => {
+      const s = scanAt('function f g', 9);
+      s.functionSeen = true;
+      s.nameSeen = false;
+      s.afterKeyword = true;
+      s.buf = 'function f ';
+      expect(stepConstructWord(s)).toBe(true);
+      expect(s.nameSeen).toBe(true);
+      expect(s.afterKeyword).toBe(false);
+      expect(s.levels[0]).toHaveLength(0);
+    });
+
+    it('declines when a case region is open or the char is a metachar', () => {
+      const inCase = scanAt('esac)', 0);
+      inCase.caseRegion = { pos: 'pattern-start', cmdEmpty: false, localDepth: 0 };
+      expect(stepConstructWord(inCase)).toBe(false);
+
+      const meta = scanAt('a && b', 2);
+      meta.buf = 'a ';
+      expect(stepConstructWord(meta)).toBe(false);
+    });
+  });
+
+  describe('rejectEmptyConstructList', () => {
+    it('rejects ; / & right after an opener keyword inside a construct', () => {
+      const s = scanAt('if ; fi', 3);
+      s.levels[0].push({ kind: 'if', body: false });
+      s.afterKeyword = true;
+      expect(rejectEmptyConstructList(s)).toBe(true);
+      expect(s.malformed).toBe('unclosed-construct');
+    });
+
+    it('leaves operators alone outside constructs or when no keyword precedes', () => {
+      const outside = scanAt('a; b', 1);
+      outside.buf = 'a';
+      expect(rejectEmptyConstructList(outside)).toBe(false);
+      const unarmed = scanAt('if true;', 8);
+      unarmed.levels[0].push({ kind: 'if', body: true });
+      unarmed.afterKeyword = false;
+      expect(rejectEmptyConstructList(unarmed)).toBe(false);
+    });
   });
 });

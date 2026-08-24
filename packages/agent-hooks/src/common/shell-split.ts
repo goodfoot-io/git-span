@@ -15,22 +15,20 @@
 import {
   appendStage,
   bufferEndsInDanglingRedirect,
-  commandPosition,
   createScan,
-  fnNameShapeIsPending,
-  type OpenConstruct,
+  rejectEmptyConstructList,
   rejectList,
-  type SplitScan,
   startsRedirectAt,
   stepBraceContent,
   stepCaseRegion,
+  stepConstructWord,
   stepHeredocBody,
   stepHeredocDelimiterNewline,
   stepHeredocOpen,
   stepHereString,
+  stepParen,
   stepQuote,
   unconsumedPipeOp,
-  WORD_END,
   wordStart
 } from './shell-split-machines.js';
 
@@ -140,187 +138,9 @@ export function splitTopLevel(cmd: string): SplitResult {
       continue;
     }
     if (stepCaseRegion(s)) continue;
-    if (c === '(') {
-      if (s.caseRegion) {
-        s.caseRegion.localDepth += 1;
-      } else {
-        // A subshell starts a command — `if true; then ( echo hi ); fi` is
-        // valid while `if true; then; fi` is not; the same subshell counts as
-        // a body word for an enclosing brace group (`{ ( echo hi ); }`).
-        const t = topFrame(s.levels);
-        if (t?.kind === 'brace') t.body = true;
-        s.depth += 1;
-        s.levels.push([]);
-      }
-      s.afterKeyword = false;
-      s.buf += c;
-      s.i += 1;
-      continue;
-    }
-    if (c === ')') {
-      if (s.caseRegion) {
-        // At local depth 0 a `)` is the pattern terminator (or the end of a
-        // list item) — the region owns it and the global depth stays frozen.
-        if (s.caseRegion.localDepth === 0) {
-          s.caseRegion.pos = 'command';
-          s.caseRegion.cmdEmpty = true;
-        } else {
-          s.caseRegion.localDepth -= 1;
-        }
-      } else {
-        // A stray `)` at depth 0 (and brace depth 0, outside quotes) is a parse
-        // error — `echo x) && …` (plan §1). `)` inside quotes, `${…}`, and
-        // heredoc bodies never reaches this branch.
-        if (s.depth === 0) {
-          rejectList(s, 'unbalanced-paren');
-          break;
-        }
-        // Fire-before-restore: an unclosed construct on the closing level
-        // cannot outlive the subshell (plan §3).
-        if (s.levels[s.levels.length - 1].length > 0) {
-          rejectList(s, 'unclosed-construct');
-          break;
-        }
-        s.depth -= 1;
-        s.levels.pop();
-      }
-      s.buf += c;
-      s.i += 1;
-      continue;
-    }
-    // Construct keywords and the case-region opener: recognized at word
-    // starts at any paren depth (constructs track through subshells), outside
-    // quotes, ${…}, heredoc bodies, and open case regions (the region scan
-    // above owns those words). Word-end chars (`;`, `&`, `|`, `<`, `>`)
-    // never begin a word here.
-    if (
-      !s.caseRegion &&
-      !WORD_END.test(c) &&
-      (wordStart(buf) || /[()]$/.test(buf)) &&
-      !(c === '$' && input[s.i + 1] === '{')
-    ) {
-      let j = s.i;
-      while (j < n && !WORD_END.test(input[j])) j += 1;
-      const w = input.slice(s.i, j);
-      if (w === 'in' && topFrame(s.levels) !== undefined && ['for', 'select'].includes(topFrame(s.levels)!.kind)) {
-        // The for/select word-list separator — recognized wherever it appears
-        // while a for/select is open (`for i in a b`, `select x in a`).
-      } else if (w === '{' && (commandPosition(buf) || fnNameShapeIsPending(buf) || (s.functionSeen && s.nameSeen))) {
-        // `{` opens a brace group at command position, or right after a
-        // function name (`f() {`, `f(){`, `function f {`). `{cat` is a word.
-        if (s.functionSeen && s.nameSeen) {
-          s.functionSeen = false;
-          s.nameSeen = false;
-        }
-        if (topFrame(s.levels)?.kind === 'brace') topFrame(s.levels)!.body = true;
-        s.levels[s.levels.length - 1].push({ kind: 'brace', body: false });
-        s.afterKeyword = true;
-      } else if (w === '}' && commandPosition(buf)) {
-        const t = topFrame(s.levels);
-        if (s.afterKeyword || t === undefined || t.kind !== 'brace' || !t.body) {
-          rejectList(s, 'unclosed-construct');
-          break;
-        }
-        s.levels[s.levels.length - 1].pop();
-        s.afterKeyword = false;
-      } else if (commandPosition(buf)) {
-        if (w === 'case') {
-          s.caseRegion = { pos: 'subject', cmdEmpty: false, localDepth: 0 };
-          s.afterKeyword = false;
-        } else if (w === 'function') {
-          s.functionSeen = true;
-          s.nameSeen = false;
-          s.afterKeyword = false;
-        } else if (w === 'if') {
-          if (topFrame(s.levels)?.kind === 'brace') topFrame(s.levels)!.body = true;
-          s.levels[s.levels.length - 1].push({ kind: 'if', body: false });
-          s.afterKeyword = true;
-        } else if (w === 'while' || w === 'until') {
-          if (topFrame(s.levels)?.kind === 'brace') topFrame(s.levels)!.body = true;
-          s.levels[s.levels.length - 1].push({ kind: 'loop', body: false });
-          s.afterKeyword = true;
-        } else if (w === 'for') {
-          if (topFrame(s.levels)?.kind === 'brace') topFrame(s.levels)!.body = true;
-          s.levels[s.levels.length - 1].push({ kind: 'for', body: false });
-          s.afterKeyword = true;
-        } else if (w === 'select') {
-          if (topFrame(s.levels)?.kind === 'brace') topFrame(s.levels)!.body = true;
-          s.levels[s.levels.length - 1].push({ kind: 'select', body: false });
-          s.afterKeyword = true;
-        } else if (w === 'do') {
-          const t = topFrame(s.levels);
-          if (t === undefined || !['for', 'loop', 'select'].includes(t.kind)) {
-            rejectList(s, 'unclosed-construct');
-            break;
-          }
-          t.body = true;
-          s.afterKeyword = true;
-        } else if (w === 'then') {
-          const t = topFrame(s.levels);
-          if (t === undefined || t.kind !== 'if') {
-            rejectList(s, 'unclosed-construct');
-            break;
-          }
-          t.body = true;
-          s.afterKeyword = true;
-        } else if (w === 'else' || w === 'elif') {
-          // else/elif require a body already — an empty if-list is an error.
-          const t = topFrame(s.levels);
-          if (t === undefined || t.kind !== 'if' || !t.body) {
-            rejectList(s, 'unclosed-construct');
-            break;
-          }
-          s.afterKeyword = true;
-        } else if (w === 'in') {
-          const t = topFrame(s.levels);
-          if (t === undefined || !['for', 'select'].includes(t.kind)) {
-            rejectList(s, 'unclosed-construct');
-            break;
-          }
-        } else if (w === 'fi') {
-          const t = topFrame(s.levels);
-          if (t === undefined || t.kind !== 'if' || !t.body) {
-            rejectList(s, 'unclosed-construct');
-            break;
-          }
-          s.levels[s.levels.length - 1].pop();
-          s.afterKeyword = false;
-        } else if (w === 'done') {
-          const t = topFrame(s.levels);
-          if (t === undefined || !['for', 'loop', 'select'].includes(t.kind) || !t.body) {
-            rejectList(s, 'unclosed-construct');
-            break;
-          }
-          s.levels[s.levels.length - 1].pop();
-          s.afterKeyword = false;
-        } else if (w === 'esac') {
-          // No open region — a stray esac is a parse error.
-          rejectList(s, 'unclosed-construct');
-          break;
-        } else {
-          ordinaryConstructWord(s);
-        }
-      } else {
-        // An argument-position word: nothing opens, the empty-body flag
-        // clears, and the function-name handoff advances.
-        ordinaryArgumentWord(s);
-      }
-      s.buf += w;
-      s.i = j;
-      continue;
-    }
-    // A `;`/`&` directly after an opener or body keyword is an empty-list
-    // parse error at any depth (`if true; then; fi`, `{ ; }`,
-    // `for i in a b; do; done`, `( if true; then; fi )`).
-    if (
-      s.caseRegion === null &&
-      s.levels[s.levels.length - 1].length > 0 &&
-      (c === ';' || c === '&') &&
-      s.afterKeyword
-    ) {
-      rejectList(s, 'unclosed-construct');
-      break;
-    }
+    if (stepParen(s)) continue;
+    if (stepConstructWord(s)) continue;
+    if (rejectEmptyConstructList(s)) continue;
     if (s.depth === 0) {
       // A redirect token with no target word, immediately followed by another
       // redirect token mid-stage, is a parse error: `cat f > > out`,
@@ -467,36 +287,6 @@ export function splitTopLevel(cmd: string): SplitResult {
     appendStage(s, 'newline');
   }
   return { stages: s.parts, malformed: s.malformed };
-}
-
-/** The top construct frame on the current paren level, or undefined when the level is bare. */
-function topFrame(levels: OpenConstruct[][]): OpenConstruct | undefined {
-  const lv = levels[levels.length - 1];
-  return lv.length > 0 ? lv[lv.length - 1] : undefined;
-}
-
-/** An ordinary word at command position: nothing opens, the empty-body flag clears, and the function-name handoff advances. */
-function ordinaryConstructWord(s: SplitScan): void {
-  s.afterKeyword = false;
-  if (topFrame(s.levels)?.kind === 'brace') topFrame(s.levels)!.body = true;
-  advanceFunctionNameHandoff(s);
-}
-
-/** An argument-position word: identical bookkeeping to [ordinaryConstructWord] minus the brace-body mark. */
-function ordinaryArgumentWord(s: SplitScan): void {
-  s.afterKeyword = false;
-  advanceFunctionNameHandoff(s);
-}
-
-/** `function f …`: the first following word is the name, the one after it closes the handoff. */
-function advanceFunctionNameHandoff(s: SplitScan): void {
-  if (!s.functionSeen) return;
-  if (s.nameSeen) {
-    s.functionSeen = false;
-    s.nameSeen = false;
-  } else {
-    s.nameSeen = true;
-  }
 }
 
 const LEADING_ASSIGNMENT = /^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/;
