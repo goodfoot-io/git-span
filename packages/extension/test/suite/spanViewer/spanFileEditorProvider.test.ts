@@ -20,7 +20,7 @@ import {
   testOnlyLastPostedDocument,
   testOnlyRenderOutcomes,
   testOnlyWatcherCoalescingStats
-} from '../../../src/spanViewer/spanFileEditorProvider.js';
+} from '../../../src/spanViewer/spanRenderSession.js';
 import type { PostedDocument } from '../../../src/spanViewer/types.js';
 
 const SPAN_FILE_VIEW_TYPE = 'gitSpan.spanFileViewer';

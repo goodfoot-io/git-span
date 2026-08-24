@@ -11,4 +11,5 @@ export * from './historyClient.js';
 export * from './historySnapshotLadder.js';
 export * from './patchReconstruction.js';
 export * from './spanFileGrammar.js';
+export * from './spanRenderSession.js';
 export * from './types.js';

@@ -77,6 +77,13 @@ export function runGitSpanCommand(
   cwd?: string
 ): Promise<GitSpanCommandResult> {
   return new Promise((resolve, reject) => {
+    // An already-aborted signal can never deliver its 'abort' event to a
+    // listener registered below, so the child would run to completion with no
+    // way to cancel it. Refuse to spawn instead of leaking the process.
+    if (signal?.aborted) {
+      reject(new Error('Aborted before spawn'));
+      return;
+    }
     const child = spawn(binaryPath, args, { stdio: ['ignore', 'pipe', 'pipe'], cwd });
     let stdout = '';
     let stderr = '';

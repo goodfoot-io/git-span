@@ -19,5 +19,6 @@ export * from './historySnapshotLadder.test.js';
 export * from './patchReconstruction.test.js';
 export * from './spanFileEditorProvider.test.js';
 export * from './spanFileGrammar.test.js';
+export * from './spanRenderSession.test.js';
 export * from './spanTimestamp.test.js';
 export * from './themeColor.test.js';
