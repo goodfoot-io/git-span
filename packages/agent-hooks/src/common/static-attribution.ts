@@ -2807,6 +2807,26 @@ export function parseCompoundStages(
 }
 
 /**
+ * The pattern stage: single-stage commands whose text parses as a sed/perl
+ * in-place substitution route to the numeric-sed machine when the script
+ * carries a leading line-number address, and to the general substitution
+ * machine otherwise. Returns null when the command hosts no pattern stage.
+ */
+function resolvePatternStage(
+  split: SplitResult,
+  options: LayeredParseOptions,
+  cwd: string,
+  maxCandidates: number
+): LayeredParseResult | null {
+  const patternCommand =
+    split.malformed === undefined && split.stages.length === 1 ? parsePatternCommand(split.stages[0].text) : null;
+  if (patternCommand === null) return null;
+  const numericMatch = patternCommand.kind === 'sed' ? patternCommand.script.match(/^(\d+)(?:,(\d+))?s\W/) : null;
+  if (numericMatch !== null) return resolveNumericSed(patternCommand, numericMatch, options, cwd, maxCandidates);
+  return resolvePatternSubstitution(patternCommand, options, cwd, maxCandidates);
+}
+
+/**
  * History-changing and generator commands have no bounded file intent; they
  * refuse outright before the shell fallback runs.
  */
@@ -2898,13 +2918,8 @@ export function parseCommandLayered(command: string, options: LayeredParseOption
   const split = splitTopLevel(command);
   const compound = parseCompoundStages(command, split, options, maxCandidates, parseCommandLayered);
   if (compound !== null) return compound;
-  const patternCommand =
-    split.malformed === undefined && split.stages.length === 1 ? parsePatternCommand(split.stages[0].text) : null;
-  if (patternCommand !== null) {
-    const numericMatch = patternCommand.kind === 'sed' ? patternCommand.script.match(/^(\d+)(?:,(\d+))?s\W/) : null;
-    if (numericMatch !== null) return resolveNumericSed(patternCommand, numericMatch, options, cwd, maxCandidates);
-    return resolvePatternSubstitution(patternCommand, options, cwd, maxCandidates);
-  }
+  const patternResult = resolvePatternStage(split, options, cwd, maxCandidates);
+  if (patternResult !== null) return patternResult;
 
   const argv = argvOf(command.trim());
   if (argv !== null) {
