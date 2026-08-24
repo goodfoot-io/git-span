@@ -1,5 +1,5 @@
 .devcontainer/Dockerfile#L7-L47 rk64:b679dedd2f6bceab
-.devcontainer/docker-compose.yml rk64:09323eddf2ba9fd4
+.devcontainer/docker-compose.yml rk64:6485219886054a64
 README.md#L104-L125 rk64:bbaa1a77f4927b97
 packages/git-span-core/.cargo/config.toml rk64:e32205845bfaad98
 packages/git-span/.cargo/config.toml#L19-L32 rk64:c0ac7ed9e795fed4
