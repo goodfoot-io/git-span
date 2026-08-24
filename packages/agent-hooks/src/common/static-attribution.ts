@@ -2667,6 +2667,37 @@ export function parseLiteralListLoop(
  * [options] object unchanged — `maxCandidates` forwarding stays at the
  * [parseCommandLayered] entry alone.
  */
+
+/**
+ * Pipeline reconciliation: shell stages keep only their resolved reads;
+ * layered stages contribute reads after them and every write, spliced in
+ * place so read-before-write attribution order is preserved. Refusals
+ * concatenate pipeline-first, layered-non-shell-second.
+ */
+function reconcilePipelineStages(
+  command: string,
+  options: LayeredParseOptions,
+  resolved: LayeredResolvedMatch[],
+  unresolvedMatches: UnresolvedAttribution[]
+): void {
+  const pipelineDetailed = parseCommandDetailed(command, options);
+  const pipelineReads = pipelineDetailed.flatMap<LayeredResolvedMatch>((match) =>
+    match.status === 'resolved' && match.span.operation === 'read'
+      ? [{ status: 'resolved', layer: 'shell', idiom: match.idiom, span: match.span }]
+      : []
+  );
+  const pipelineUnresolved = pipelineDetailed.flatMap<UnresolvedAttribution>((match) =>
+    match.status === 'unresolved'
+      ? [unresolved('shell', match.idiom, stableReason(match), match.reason, match.fileArg)]
+      : []
+  );
+  const layeredReads = resolved.filter(({ layer, span }) => layer !== 'shell' && span.operation === 'read');
+  const writes = resolved.filter(({ span }) => span.operation !== 'read');
+  resolved.splice(0, resolved.length, ...pipelineReads, ...layeredReads, ...writes);
+  const layeredUnresolved = unresolvedMatches.filter(({ layer }) => layer !== 'shell');
+  unresolvedMatches.splice(0, unresolvedMatches.length, ...pipelineUnresolved, ...layeredUnresolved);
+}
+
 export function parseCompoundStages(
   command: string,
   split: SplitResult,
@@ -2712,24 +2743,8 @@ export function parseCompoundStages(
     unresolvedMatches.push(...child.unresolved.map((match) => ({ ...match, simpleCommandIndex: index })));
     preStateRequests.push(...child.preStateRequests.map((request) => ({ ...request, simpleCommandIndex: index })));
   }
-  if (hasPipeline) {
-    const pipelineDetailed = parseCommandDetailed(command, options);
-    const pipelineReads = pipelineDetailed.flatMap<LayeredResolvedMatch>((match) =>
-      match.status === 'resolved' && match.span.operation === 'read'
-        ? [{ status: 'resolved', layer: 'shell', idiom: match.idiom, span: match.span }]
-        : []
-    );
-    const pipelineUnresolved = pipelineDetailed.flatMap<UnresolvedAttribution>((match) =>
-      match.status === 'unresolved'
-        ? [unresolved('shell', match.idiom, stableReason(match), match.reason, match.fileArg)]
-        : []
-    );
-    const layeredReads = resolved.filter(({ layer, span }) => layer !== 'shell' && span.operation === 'read');
-    const writes = resolved.filter(({ span }) => span.operation !== 'read');
-    resolved.splice(0, resolved.length, ...pipelineReads, ...layeredReads, ...writes);
-    const layeredUnresolved = unresolvedMatches.filter(({ layer }) => layer !== 'shell');
-    unresolvedMatches.splice(0, unresolvedMatches.length, ...pipelineUnresolved, ...layeredUnresolved);
-  }
+  if (hasPipeline) reconcilePipelineStages(command, options, resolved, unresolvedMatches);
+
   const overBudget = rejectOverBudget(resolved, 'shell', 'compound-command', 'compound', maxCandidates);
   if (overBudget !== null) return overBudget;
   return { resolved, unresolved: unresolvedMatches, preStateRequests };
