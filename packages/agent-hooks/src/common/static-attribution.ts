@@ -1829,6 +1829,34 @@ function parseNodeAttribution(command: string, options: LayeredParseOptions): La
 }
 
 /** Parse explicit authoring intent through deterministic and bounded recognizers. */
+/**
+ * The shared candidate-budget tail: under the limit this declines (null) so
+ * the caller proceeds, over the limit it produces the layer's
+ * budget-exceeded rejection. `noun` names the producer in the detail string,
+ * preserving each call site's exact wording.
+ */
+function rejectOverBudget(
+  resolved: LayeredResolvedMatch[],
+  layer: AttributionLayer,
+  idiom: string,
+  noun: string,
+  maxCandidates: number
+): LayeredParseResult | null {
+  if (resolved.length <= maxCandidates) return null;
+  return {
+    resolved: [],
+    unresolved: [
+      unresolved(
+        layer,
+        idiom,
+        'candidate-budget-exceeded',
+        `${noun} produced ${resolved.length} candidates; the limit is ${maxCandidates}`
+      )
+    ],
+    preStateRequests: []
+  };
+}
+
 export function parseCommandLayered(command: string, options: LayeredParseOptions = {}): LayeredParseResult {
   const cwd = options.cwd ?? process.cwd();
   const maxCandidates = options.maxCandidates ?? DEFAULT_MAX_ATTRIBUTION_CANDIDATES;
@@ -1962,20 +1990,14 @@ export function parseCommandLayered(command: string, options: LayeredParseOption
       preStateRequests.push(...result.preStateRequests);
     }
     if (unresolvedMatches.length > 0) return { resolved: [], unresolved: unresolvedMatches, preStateRequests: [] };
-    if (resolved.length > maxCandidates) {
-      return {
-        resolved: [],
-        unresolved: [
-          unresolved(
-            'literal-loop',
-            'literal-list-loop',
-            'candidate-budget-exceeded',
-            `literal expansion produced ${resolved.length} candidates; the limit is ${maxCandidates}`
-          )
-        ],
-        preStateRequests: []
-      };
-    }
+    const overBudget = rejectOverBudget(
+      resolved,
+      'literal-loop',
+      'literal-list-loop',
+      'literal expansion',
+      maxCandidates
+    );
+    if (overBudget !== null) return overBudget;
     for (const match of resolved) {
       if (match.span.operation !== 'modify') continue;
       if (preStateRequests.some((request) => request.absolutePath === match.span.absolutePath)) continue;
@@ -2045,20 +2067,8 @@ export function parseCommandLayered(command: string, options: LayeredParseOption
       const layeredUnresolved = unresolvedMatches.filter(({ layer }) => layer !== 'shell');
       unresolvedMatches.splice(0, unresolvedMatches.length, ...pipelineUnresolved, ...layeredUnresolved);
     }
-    if (resolved.length > maxCandidates) {
-      return {
-        resolved: [],
-        unresolved: [
-          unresolved(
-            'shell',
-            'compound-command',
-            'candidate-budget-exceeded',
-            `compound produced ${resolved.length} candidates; the limit is ${maxCandidates}`
-          )
-        ],
-        preStateRequests: []
-      };
-    }
+    const overBudget = rejectOverBudget(resolved, 'shell', 'compound-command', 'compound', maxCandidates);
+    if (overBudget !== null) return overBudget;
     return { resolved, unresolved: unresolvedMatches, preStateRequests };
   }
   const patternCommand =
@@ -2155,20 +2165,8 @@ export function parseCommandLayered(command: string, options: LayeredParseOption
         }
       }
       if (unresolvedMatches.length > 0) return { resolved: [], unresolved: unresolvedMatches, preStateRequests: [] };
-      if (resolved.length > maxCandidates) {
-        return {
-          resolved: [],
-          unresolved: [
-            unresolved(
-              'shell',
-              'sed-inplace',
-              'candidate-budget-exceeded',
-              `numeric substitution produced ${resolved.length} candidates; the limit is ${maxCandidates}`
-            )
-          ],
-          preStateRequests: []
-        };
-      }
+      const overBudget = rejectOverBudget(resolved, 'shell', 'sed-inplace', 'numeric substitution', maxCandidates);
+      if (overBudget !== null) return overBudget;
       return { resolved, unresolved: [], preStateRequests };
     }
     if (!numericSed) {
@@ -2329,20 +2327,14 @@ export function parseCommandLayered(command: string, options: LayeredParseOption
         }
       }
       if (unresolvedMatches.length > 0) return { resolved: [], unresolved: unresolvedMatches, preStateRequests };
-      if (resolved.length > maxCandidates) {
-        return {
-          resolved: [],
-          unresolved: [
-            unresolved(
-              'pattern-substitution',
-              patternCommand.kind === 'sed' ? 'sed-inplace' : 'perl-inplace',
-              'candidate-budget-exceeded',
-              `substitution produced ${resolved.length} candidates; the limit is ${maxCandidates}`
-            )
-          ],
-          preStateRequests: []
-        };
-      }
+      const overBudget = rejectOverBudget(
+        resolved,
+        'pattern-substitution',
+        patternCommand.kind === 'sed' ? 'sed-inplace' : 'perl-inplace',
+        'substitution',
+        maxCandidates
+      );
+      if (overBudget !== null) return overBudget;
       return { resolved, unresolved: [], preStateRequests };
     }
   }
@@ -2386,20 +2378,8 @@ export function parseCommandLayered(command: string, options: LayeredParseOption
       ? [unresolved('shell', match.idiom, stableReason(match), match.reason, match.fileArg)]
       : []
   );
-  if (resolved.length > maxCandidates) {
-    return {
-      resolved: [],
-      unresolved: [
-        unresolved(
-          'shell',
-          'deterministic-shell',
-          'candidate-budget-exceeded',
-          `command produced ${resolved.length} candidates; the limit is ${maxCandidates}`
-        )
-      ],
-      preStateRequests: []
-    };
-  }
+  const overBudget = rejectOverBudget(resolved, 'shell', 'deterministic-shell', 'command', maxCandidates);
+  if (overBudget !== null) return overBudget;
   return { resolved, unresolved: unresolvedMatches, preStateRequests: [] };
 }
 
