@@ -54,9 +54,10 @@ git add .span && git commit -m "Move checkout-request-flow anchor after the hand
 
 `git span drift` overlays its own §10.4 contract on top of this:
 exit 1 when drift is found, exit 0 with `--no-exit-code`. There is no
-`pre-commit` subcommand; span coverage is instead enforced by the
-`.githooks/pre-commit.wiki.sh` hook, which runs `wiki check` as a
-fail-closed gate.
+`pre-commit` subcommand; span coverage is instead created by the
+`.githooks/pre-commit.wiki.sh` hook, which runs `wiki check --fix` as an
+advisory best-effort pass (it never aborts the commit) and never stages
+files that were already dirty before the hook ran.
 
 ## VS Code Extension
 

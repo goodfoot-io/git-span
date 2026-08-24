@@ -28,7 +28,7 @@ the run loop — no business logic. Order is behavior; preserve it.
 | Sub-script                    | Purpose                                                              | Blocks commit?                              |
 | ----------------------------- | -------------------------------------------------------------------- | ------------------------------------------- |
 | `pre-commit.version-lock.sh`  | Lock package/plugin/Cargo manifest versions to the highest semver    | Yes, if node/yarn fails                      |
-| `pre-commit.wiki.sh`          | Phase 1: `wiki check --fix` auto-fixes drifted links/anchors AND creates git-span coverage for uncovered fragment links, re-stages the fixed `*.md` already staged for this commit (never unstaged pages) and exactly the spans touched (`--print-applied`). Phase 2: re-runs `wiki check` (no `--fix`) as a fail-closed gate | Yes, if `wiki check --fix` errors, or if phase 2 finds unresolved validation errors |
+| `pre-commit.wiki.sh`          | Single pass: `wiki check --fix --print-applied --no-exit-code --source=worktree` auto-fixes drifted links/anchors AND creates/extends `.wiki` mesh coverage for uncovered fragment links. Re-stages fix deltas of tracked `.md` files that were **clean before the hook ran** (pre-fix worktree hash == index hash); files already dirty before the hook are never staged — they are named in a warning and left unstaged for their owner. Scaffolded meshes are staged only when every page they anchor was clean before the hook; otherwise warned and skipped | No — advisory (`--no-exit-code`); the hook never aborts the commit |
 | `pre-commit.biome.sh`         | `biome check --fix` on staged TS/JS, re-stage fixes                  | Yes, on Biome errors it cannot autofix       |
 
 Each sub-script:
@@ -40,20 +40,28 @@ Each sub-script:
 - Is independently runnable and `bash -n`-clean. Debug one by hand:
   `.githooks/pre-commit.biome.sh`.
 
-Span coverage is no longer deferred to `post-commit`. The wiki hook's two
-phases both run in `pre-commit`: phase 1 runs `wiki check --fix
---print-applied --source=worktree`, which in this CLI version both
-auto-repairs fixable link/anchor drift AND creates git-span coverage for any
-uncovered fragment links in a single pass, then re-stages the fixed `*.md`
-pages **that are already part of this commit** (a fix to a page the committer
-never staged is left in the worktree for its owner, so the commit cannot
-silently absorb an unstaged page) and exactly the spans the run created or
-extended. Phase 2 re-runs
-`wiki check` (no `--fix`) as a fail-closed gate that aborts the commit on any
-residual validation error or unrepairable uncovered fragment link. Only a
-pre-commit hook can stage those freshly-created `.span/` files into the commit
-being made and abort the commit when coverage cannot be created, so the gate
-is fail-closed there rather than advisory.
+Span coverage is no longer deferred to `post-commit`. The wiki hook runs in
+`pre-commit`: it invokes `wiki check --fix --print-applied
+--source=worktree`, which in this CLI version both auto-repairs fixable
+link/anchor drift AND creates git-span coverage for any uncovered fragment
+links in a single pass. Only a pre-commit hook can stage those
+freshly-created `.wiki/` mesh files into the commit being made.
+
+Because several agent sessions share one checkout, the hook must never sweep
+another session's in-progress edits into a stranger's commit, and `git add`
+is whole-file — a content hash alone cannot distinguish "changed only by
+--fix" from "dirty before the hook and also fixed". So before `--fix` runs,
+the hook snapshots each tracked `.md` as {worktree-hash, index-hash}:
+
+- **Clean before the hook** (worktree hash == index hash): if `--fix` rewrote
+  it, its fix delta is re-staged.
+- **Already dirty before the hook** (worktree hash != index hash): never
+  staged, even when `--fix` touched it — named in a stderr warning instead,
+  and left unstaged in the worktree for its owner.
+- **Scaffolded meshes** (`--print-applied` paths): staged only when every
+  `.md` page the mesh anchors was clean before the hook; otherwise warned and
+  skipped, so meshes coupled to another session's uncommitted page stay out.
+  A mesh whose file cannot be read is skipped too (fail closed).
 
 ## post-checkout (advisory)
 
