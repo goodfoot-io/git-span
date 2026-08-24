@@ -136,6 +136,10 @@ build_dir="$target_root/git-span/build"
   PATH="$build_dir/debug:$PATH" git span drift &&
   yarn typecheck &&
   yarn lint &&
+  # rkyv-js must stay resolvable through its own package exports (card
+  # main-386): Node resolves every declared target, tsc binds the bare
+  # specifier without paths entries, and no alias workaround creeps back.
+  node scripts/check-rkyv-resolution.mjs &&
   # The artifact drift gate runs before the test suites, never after: after
   # `yarn build` the build would have rewritten the committed file and the
   # check would trivially pass, and after `yarn test` the website contract

@@ -19,8 +19,13 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..');
 const require = createRequire(import.meta.url);
 
+/** @type {string[]} */
 const failures = [];
 
+/**
+ * @param {string} name
+ * @param {() => void} fn
+ */
 function check(name, fn) {
   try {
     fn();
@@ -31,6 +36,10 @@ function check(name, fn) {
   }
 }
 
+/**
+ * @param {string} specifier
+ * @returns {string}
+ */
 function assertResolvesToExistingFile(specifier) {
   const resolved = fileURLToPath(import.meta.resolve(specifier));
   if (!existsSync(resolved)) {
@@ -68,8 +77,8 @@ check('tsc resolution: bare specifier binds in a fresh consumer program', () => 
 check('no repo-local workarounds for rkyv-js remain', () => {
   for (const config of ['tsconfig.json', 'tsconfig.scripts.json']) {
     const text = readConfig(join(repoRoot, config));
-    if (/rkyv-js/.test(text)) {
-      throw new Error(`${config} still references rkyv-js — remove the mapping`);
+    if (/"paths"\s*:\s*\{[^{}]*rkyv-js/.test(text)) {
+      throw new Error(`${config} still maps rkyv-js through a paths entry`);
     }
   }
   const buildScript = readConfig(join(repoRoot, 'scripts', 'build-migration.mjs'));
@@ -77,6 +86,10 @@ check('no repo-local workarounds for rkyv-js remain', () => {
     throw new Error('scripts/build-migration.mjs still carries the esbuild alias workaround');
   }
 
+  /**
+   * @param {string} path
+   * @returns {string}
+   */
   function readConfig(path) {
     return existsSync(path) ? readFileSync(path, 'utf8') : '';
   }

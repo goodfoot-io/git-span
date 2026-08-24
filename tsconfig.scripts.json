@@ -16,16 +16,12 @@
     // Node globals/builtins must be loaded explicitly: automatic @types
     // inclusion does not kick in under typeRoots here.
     "types": ["node"],
-    // rkyv-js's package exports point at a dist/ that its GitHub snapshot
-    // never builds (see card main-383), so bare resolution fails. Map the
-    // specifier to the shipped TypeScript sources for type purposes only;
-    // bundling still goes through the esbuild alias in
-    // scripts/build-migration.mjs. Its internal imports use explicit .ts
-    // extensions, which require this flag (safe here: noEmit).
-    "allowImportingTsExtensions": true,
-    "paths": {
-      "rkyv-js": ["./node_modules/rkyv-js/src/index.ts"]
-    }
+    // rkyv-js resolves through its own package exports (a Yarn patch points
+    // its manifest entrypoints at the shipped TypeScript sources, card
+    // main-386), so bare-specifier imports need no mapping here. Those
+    // sources use explicit .ts extensions on their internal imports, which
+    // require this flag once they join the program (safe here: noEmit).
+    "allowImportingTsExtensions": true
   },
   "include": ["./scripts/*.mjs"]
 }
