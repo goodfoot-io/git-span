@@ -599,6 +599,34 @@ function readPythonPreState(
   return content;
 }
 
+/**
+ * Python replacement pre-state needs: match-locations always, plus
+ * deleted-text when the replacement is empty or changes the newline count -
+ * the derivation Node deliberately lacks.
+ */
+function pythonReplacementRequirements(transformation: PythonReplacement): PreStateRequirement[] {
+  const requirements: PreStateRequirement[] = ['match-locations'];
+  if (
+    transformation.replacement.length === 0 ||
+    (transformation.pattern.match(/\n/g)?.length ?? 0) !== (transformation.replacement.match(/\n/g)?.length ?? 0)
+  ) {
+    requirements.push('deleted-text');
+  }
+  return requirements;
+}
+
+/** The expected post-state body: global replace-all, else count-bounded sequential first-occurrence replaces. */
+function expectedPythonReplacement(content: string, transformation: PythonReplacement, occurrences: number): string {
+  if (transformation.count === undefined) {
+    return content.split(transformation.pattern).join(transformation.replacement);
+  }
+  let expected = content;
+  for (let index = 0; index < Math.min(transformation.count, occurrences); index += 1) {
+    expected = replaceLiteral(expected, transformation.pattern, transformation.replacement, false);
+  }
+  return expected;
+}
+
 function emitPythonReplace(
   ctx: PythonRecognizerContext,
   absolutePath: string,
@@ -608,14 +636,7 @@ function emitPythonReplace(
   if (read === undefined || nodePath.resolve(ctx.cwd, read.path) !== absolutePath) {
     return rejectPython('unsupported-dataflow', 'Python read and write paths are not provably identical', absolutePath);
   }
-  const requirements: PreStateRequirement[] = ['match-locations'];
-  if (
-    transformation.replacement.length === 0 ||
-    (transformation.pattern.match(/\n/g)?.length ?? 0) !== (transformation.replacement.match(/\n/g)?.length ?? 0)
-  ) {
-    requirements.push('deleted-text');
-  }
-  const content = readPythonPreState(ctx, absolutePath, requirements);
+  const content = readPythonPreState(ctx, absolutePath, pythonReplacementRequirements(transformation));
   if (typeof content !== 'string') return content;
   const assertion = ctx.countAssertions.get(`${transformation.source}\0${transformation.pattern}`);
   const occurrences = countLiteralOccurrences(content, transformation.pattern);
@@ -637,14 +658,7 @@ function emitPythonReplace(
       ctx.preStateRequests
     );
   }
-  let expected = content;
-  if (transformation.count === undefined)
-    expected = content.split(transformation.pattern).join(transformation.replacement);
-  else {
-    for (let index = 0; index < Math.min(transformation.count, occurrences); index += 1) {
-      expected = replaceLiteral(expected, transformation.pattern, transformation.replacement, false);
-    }
-  }
+  const expected = expectedPythonReplacement(content, transformation, occurrences);
   for (const range of ranges) {
     ctx.resolved.push({
       status: 'resolved',
