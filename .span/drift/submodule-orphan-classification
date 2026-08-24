@@ -1,5 +1,5 @@
-packages/git-span/src/resolver/engine/anchor.rs#L992-L1406 rk64:b368bb1a6c66f903
-packages/git-span/src/resolver/engine/whole_file.rs#L425-L699 rk64:519925b9df468139
+packages/git-span/src/resolver/engine/anchor.rs#L992-L1406 rk64:c2fb5a0101f0ce2f
+packages/git-span/src/resolver/engine/whole_file.rs#L425-L699 rk64:8de75b8752c5de4c
 packages/git-span/src/types.rs#L958-L976 rk64:1e059d5d546213b1
 packages/git-span/tests/cases/drift_span_integration.rs#L638-L645 rk64:e7fa41bd8da6562b
 
