@@ -2735,17 +2735,43 @@ export function parseCompoundStages(
   return { resolved, unresolved: unresolvedMatches, preStateRequests };
 }
 
-export function parseCommandLayered(command: string, options: LayeredParseOptions = {}): LayeredParseResult {
-  const cwd = options.cwd ?? process.cwd();
-  const maxCandidates = options.maxCandidates ?? DEFAULT_MAX_ATTRIBUTION_CANDIDATES;
-  if (!Number.isSafeInteger(maxCandidates) || maxCandidates < 1) {
-    throw new Error('maxCandidates must be a positive safe integer');
+/**
+ * History-changing and generator commands have no bounded file intent; they
+ * refuse outright before the shell fallback runs.
+ */
+function historyOrGeneratorRefusal(argv: readonly string[]): LayeredParseResult | null {
+  if (argv[0] === 'git' && ['rebase', 'merge', 'cherry-pick', 'reset'].includes(argv[1] ?? '')) {
+    return {
+      resolved: [],
+      unresolved: [
+        unresolved('shell', 'history-operation', 'history-operation', 'history-changing commands have no file intent')
+      ],
+      preStateRequests: []
+    };
   }
+  if (['yarn', 'npm', 'pnpm', 'make'].includes(argv[0]) && /(?:generate|build|install)/.test(argv.slice(1).join(' '))) {
+    return {
+      resolved: [],
+      unresolved: [
+        unresolved(
+          'shell',
+          'generator-operation',
+          'generator-operation',
+          'generators have no bounded static output set'
+        )
+      ],
+      preStateRequests: []
+    };
+  }
+  return null;
+}
 
-  if (!canCarryStaticIntent(command)) return { resolved: [], unresolved: [], preStateRequests: [] };
-
-  // Cheap interpreter sentinel precedes the bounded Python lexical/dataflow
-  // recognizer, keeping ordinary Bash commands on the existing fast path.
+/**
+ * The interpreter sentinel: cheap prefix tests precede the bounded Python and
+ * Node lexical/dataflow recognizers, keeping ordinary Bash commands on the
+ * existing fast path. Returns null when neither interpreter leads.
+ */
+function parseInterpreterAttribution(command: string, options: LayeredParseOptions): LayeredParseResult | null {
   const trimmed = command.trimStart();
   if (/^python(?:3(?:\.\d+)?)?\b/.test(trimmed)) {
     const python = parsePythonAttribution(command, options);
@@ -2755,6 +2781,42 @@ export function parseCommandLayered(command: string, options: LayeredParseOption
     const node = parseNodeAttribution(command, options);
     if (node !== null) return node;
   }
+  return null;
+}
+
+/** The deterministic shell fallback for commands no layered machine claims. */
+function parseShellFallback(command: string, options: LayeredParseOptions, maxCandidates: number): LayeredParseResult {
+  const detailed = parseCommandDetailed(command, options);
+  const resolved = detailed.flatMap<LayeredResolvedMatch>((match) =>
+    match.status === 'resolved' ? [{ status: 'resolved', layer: 'shell', idiom: match.idiom, span: match.span }] : []
+  );
+  const unresolvedMatches = detailed.flatMap<UnresolvedAttribution>((match) =>
+    match.status === 'unresolved'
+      ? [unresolved('shell', match.idiom, stableReason(match), match.reason, match.fileArg)]
+      : []
+  );
+  const overBudget = rejectOverBudget(resolved, 'shell', 'deterministic-shell', 'command', maxCandidates);
+  if (overBudget !== null) return overBudget;
+  return { resolved, unresolved: unresolvedMatches, preStateRequests: [] };
+}
+
+/**
+ * The layered scheduler: entry budget validation, then interpreter sentinels,
+ * the literal-list loop and compound-stage machines, the pattern stage
+ * (numeric sed before general substitution), history/generator refusals, and
+ * finally the deterministic shell fallback.
+ */
+export function parseCommandLayered(command: string, options: LayeredParseOptions = {}): LayeredParseResult {
+  const cwd = options.cwd ?? process.cwd();
+  const maxCandidates = options.maxCandidates ?? DEFAULT_MAX_ATTRIBUTION_CANDIDATES;
+  if (!Number.isSafeInteger(maxCandidates) || maxCandidates < 1) {
+    throw new Error('maxCandidates must be a positive safe integer');
+  }
+
+  if (!canCarryStaticIntent(command)) return { resolved: [], unresolved: [], preStateRequests: [] };
+
+  const interpreted = parseInterpreterAttribution(command, options);
+  if (interpreted !== null) return interpreted;
 
   const loop = command
     .trim()
@@ -2775,46 +2837,10 @@ export function parseCommandLayered(command: string, options: LayeredParseOption
 
   const argv = argvOf(command.trim());
   if (argv !== null) {
-    if (argv[0] === 'git' && ['rebase', 'merge', 'cherry-pick', 'reset'].includes(argv[1] ?? '')) {
-      return {
-        resolved: [],
-        unresolved: [
-          unresolved('shell', 'history-operation', 'history-operation', 'history-changing commands have no file intent')
-        ],
-        preStateRequests: []
-      };
-    }
-    if (
-      ['yarn', 'npm', 'pnpm', 'make'].includes(argv[0]) &&
-      /(?:generate|build|install)/.test(argv.slice(1).join(' '))
-    ) {
-      return {
-        resolved: [],
-        unresolved: [
-          unresolved(
-            'shell',
-            'generator-operation',
-            'generator-operation',
-            'generators have no bounded static output set'
-          )
-        ],
-        preStateRequests: []
-      };
-    }
+    const refusal = historyOrGeneratorRefusal(argv);
+    if (refusal !== null) return refusal;
   }
-
-  const detailed = parseCommandDetailed(command, options);
-  const resolved = detailed.flatMap<LayeredResolvedMatch>((match) =>
-    match.status === 'resolved' ? [{ status: 'resolved', layer: 'shell', idiom: match.idiom, span: match.span }] : []
-  );
-  const unresolvedMatches = detailed.flatMap<UnresolvedAttribution>((match) =>
-    match.status === 'unresolved'
-      ? [unresolved('shell', match.idiom, stableReason(match), match.reason, match.fileArg)]
-      : []
-  );
-  const overBudget = rejectOverBudget(resolved, 'shell', 'deterministic-shell', 'command', maxCandidates);
-  if (overBudget !== null) return overBudget;
-  return { resolved, unresolved: unresolvedMatches, preStateRequests: [] };
+  return parseShellFallback(command, options, maxCandidates);
 }
 
 /** Aggregate counters emitted once per tool invocation and never sent to the model. */
