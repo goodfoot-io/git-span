@@ -230,3 +230,66 @@ export function rejectList(s: SplitScan, v: MalformedVerdict): void {
   s.parts.length = s.listStart;
   s.i = s.n;
 }
+
+/**
+ * Quoting machine: consume the next character(s) while a quote span is open,
+ * open a span at `'`/`"`, or copy a backslash escape as the verbatim pair.
+ * Returns false when the character is unquoted text for the next machine —
+ * single-quote content is literal until the closing `'`, double-quote
+ * content honors `\"`-style escapes of `"`, `\`, `$`, and backtick, and an
+ * escaped character never operates regardless of which machine follows.
+ */
+export function stepQuote(s: SplitScan): boolean {
+  const c = s.cmd[s.i];
+  if (s.inSquote) {
+    s.buf += c;
+    if (c === "'") s.inSquote = false;
+    s.i += 1;
+    return true;
+  }
+  if (s.inDquote) {
+    s.buf += c;
+    if (c === '\\' && s.i + 1 < s.n) {
+      s.buf += s.cmd[s.i + 1];
+      s.i += 2;
+      return true;
+    }
+    if (c === '"') s.inDquote = false;
+    s.i += 1;
+    return true;
+  }
+  if (c === "'") {
+    s.inSquote = true;
+    s.buf += c;
+    s.i += 1;
+    return true;
+  }
+  if (c === '"') {
+    s.inDquote = true;
+    s.buf += c;
+    s.i += 1;
+    return true;
+  }
+  if (c === '\\' && s.i + 1 < s.n) {
+    s.buf += c + s.cmd[s.i + 1];
+    s.i += 2;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Brace-expansion opacity machine: while [SplitScan.braceDepth] is positive
+ * the current character is `${…}` content — consumed opaquely, with a `}`
+ * closing one nesting level. Nested expansions nest, so nothing inside counts
+ * parens, splits operators, starts comments, or recognizes constructs —
+ * `${x%)}`, `${x//(/}`, and `${x:-$(echo y)}` are all valid.
+ */
+export function stepBraceContent(s: SplitScan): boolean {
+  if (s.braceDepth === 0) return false;
+  const c = s.cmd[s.i];
+  if (c === '}') s.braceDepth -= 1;
+  s.buf += c;
+  s.i += 1;
+  return true;
+}

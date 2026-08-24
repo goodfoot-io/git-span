@@ -23,6 +23,8 @@ import {
   rejectList,
   type SplitScan,
   startsRedirectAt,
+  stepBraceContent,
+  stepQuote,
   unconsumedPipeOp,
   WORD_END,
   wordStart
@@ -117,50 +119,12 @@ export function splitTopLevel(cmd: string): SplitResult {
   while (s.i < n) {
     const c = input[s.i];
     const { buf } = s;
-    if (s.inSquote) {
-      s.buf += c;
-      if (c === "'") s.inSquote = false;
-      s.i += 1;
-      continue;
-    }
-    if (s.inDquote) {
-      s.buf += c;
-      if (c === '\\' && s.i + 1 < n) {
-        s.buf += input[s.i + 1];
-        s.i += 2;
-        continue;
-      }
-      if (c === '"') s.inDquote = false;
-      s.i += 1;
-      continue;
-    }
-    if (c === "'") {
-      s.inSquote = true;
-      s.buf += c;
-      s.i += 1;
-      continue;
-    }
-    if (c === '"') {
-      s.inDquote = true;
-      s.buf += c;
-      s.i += 1;
-      continue;
-    }
-    if (c === '\\' && s.i + 1 < n) {
-      s.buf += c + input[s.i + 1];
-      s.i += 2;
-      continue;
-    }
+    if (stepQuote(s)) continue;
     // `${…}` content is opaque (plan §1): nested expansions nest, and while
     // the brace depth is positive nothing inside counts parens, splits
     // operators, starts comments, or recognizes constructs — `${x%)}`,
     // `${x//(/}`, and `${x:-$(echo y)}` are all valid.
-    if (s.braceDepth > 0) {
-      if (c === '}') s.braceDepth -= 1;
-      s.buf += c;
-      s.i += 1;
-      continue;
-    }
+    if (stepBraceContent(s)) continue;
     // Heredoc body mode: scan lines raw until the first pending heredoc's
     // close line (a line that is exactly the delimiter, optionally tab-
     // prefixed for `<<-`, with optional trailing whitespace). The body is
