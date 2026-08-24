@@ -45,7 +45,7 @@ describe('default context executor', () => {
       args: ['span', 'context', 'src/a.ts#L2-L4', '--format', 'json'],
       options: {
         cwd: '/repo',
-        timeout: 2_000,
+        timeout: 5_000,
         env: expect.objectContaining({ GIT_SPAN_LOCK_WAIT_SECS: '1' }),
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe']
