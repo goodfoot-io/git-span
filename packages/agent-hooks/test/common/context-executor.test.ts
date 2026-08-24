@@ -86,4 +86,28 @@ describe('default context executor', () => {
     capture.stdout = JSON.stringify(emptyDocument(true));
     expect(await executors.context(request)).toMatchObject({ ok: false, failure: 'schema_rejected' });
   });
+
+  it('parses the context output exactly once per invocation', async () => {
+    const executors = createDefaultTouchExecutors();
+    if (!('context' in executors)) throw new Error('default executors must expose context');
+    const request: ContextQueryRequest = { repoRoot: '/repo', addresses: ['src/a.ts'], repair: false };
+    capture.stdout = JSON.stringify(emptyDocument(false));
+    const parseSpy = vi.spyOn(JSON, 'parse');
+    try {
+      await executors.context(request);
+      expect(parseSpy.mock.calls.length).toBe(1);
+
+      capture.stdout = '{';
+      await executors.context(request);
+      expect(parseSpy.mock.calls.length).toBe(2);
+      expect(await executors.context(request)).toEqual({
+        ok: false,
+        failure: 'malformed_json',
+        elapsedMs: expect.any(Number)
+      });
+      expect(parseSpy.mock.calls.length).toBe(3);
+    } finally {
+      parseSpy.mockRestore();
+    }
+  });
 });

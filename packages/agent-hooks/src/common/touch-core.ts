@@ -1397,18 +1397,17 @@ export function createDefaultTouchExecutors(timeoutMs: number = DEFAULT_TIMEOUT_
         return { ok: false, failure: 'empty_output', elapsedMs: performance.now() - started };
       }
       try {
-        JSON.parse(stdout);
-      } catch {
-        return { ok: false, failure: 'malformed_json', elapsedMs: performance.now() - started };
-      }
-      try {
         const document = decodeContextDocument(stdout);
         if (document.mutation.requested !== request.repair || (document.mutation.rewritten && !request.repair)) {
           throw new Error('context mutation does not match the requested mode');
         }
         return { ok: true, document, elapsedMs: performance.now() - started };
-      } catch {
-        return { ok: false, failure: 'schema_rejected', elapsedMs: performance.now() - started };
+      } catch (error) {
+        return {
+          ok: false,
+          failure: error instanceof SyntaxError ? 'malformed_json' : 'schema_rejected',
+          elapsedMs: performance.now() - started
+        };
       }
     },
     forInvocation: () => executors
