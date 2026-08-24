@@ -97,6 +97,9 @@ jobs:
             cp -r artifacts/$pkg/* npm/$pkg/
             chmod +x npm/$pkg/bin/git-span* 2>/dev/null || true
           done
+          # Render every platform README.md from the shared template so the
+          # five registry pages stay equivalent (card main-335).
+          node scripts/generate-platform-readmes.mjs
 
       - name: Publish platform packages
         run: |

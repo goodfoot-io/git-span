@@ -10,7 +10,7 @@ keywords: [agent, pull request, review, touch hook, commit advisor, CI, MCP]
 
 This is the strongest horizontal commercial product.
 
-The buyer's problem is not that an agent cannot write the local edit. It is that the agent can produce a locally plausible change before discovering all of the nonlocal evidence needed to finish it. Git-span's current touch hook ([`touch-core.ts`](/packages/agent-hooks/src/common/touch-core.ts#L3-L16)), commit advisor ([`advisor-core.ts`](/packages/agent-hooks/src/common/advisor-core.ts#L1-L24)), and CI check ([`ci.yml`](/.github/workflows/ci.yml#L131-L134)) already form the outline of a change-assurance workflow:
+The buyer's problem is not that an agent cannot write the local edit. It is that the agent can produce a locally plausible change before discovering all of the nonlocal evidence needed to finish it. Git-span's current touch hook ([`touch-core.ts`](/packages/agent-hooks/src/common/touch-core.ts#L3-L16)), commit advisor ([`advisor-core.ts`](/packages/agent-hooks/src/common/advisor-core.ts#L1-L24)), and CI check ([`ci.yml`](/.github/workflows/ci.yml#L137-L140)) already form the outline of a change-assurance workflow:
 
 1. The agent touches a protected region.
 2. Git-span surfaces the connected regions and the relevant nonlocal fact.

@@ -115,6 +115,12 @@ jobs:
         with:
           node-version: "24"
 
+      # The five npm platform packages ship READMEs rendered from one template
+      # (card main-335); a hand edit to any committed copy must fail PR CI
+      # before the next release silently reverts it.
+      - name: Check platform package READMEs match template
+        run: node scripts/generate-platform-readmes.mjs --check
+
       - name: Enable Corepack
         run: corepack enable
 
