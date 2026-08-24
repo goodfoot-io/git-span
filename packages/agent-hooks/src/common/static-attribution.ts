@@ -2035,7 +2035,7 @@ function parseNodeAttribution(command: string, options: LayeredParseOptions): La
     return rejectNode('candidate-budget-exceeded', 'the Node program exceeds the statement budget');
 
   const ctx = createNodeContext(options);
-  const { cwd, resolved, preStateRequests } = ctx;
+  const { resolved, preStateRequests } = ctx;
 
   for (const statement of statements) {
     if (/^['"]use strict['"]$/.test(statement)) continue;
