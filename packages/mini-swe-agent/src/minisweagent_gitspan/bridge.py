@@ -18,6 +18,7 @@ import os
 import re
 import subprocess
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -145,15 +146,39 @@ class HookBridge:
             self._finish_event(event, started)
             logger.error(message)
             raise RequiredHookError(message)
-        try:
-            result = subprocess.run(
+        return self._handle_hook_result(
+            name,
+            envelope,
+            event,
+            started,
+            lambda: subprocess.run(
                 [self.node_bin, str(hook)],
                 input=json.dumps(envelope),
                 capture_output=True,
                 text=True,
                 timeout=self.timeout_ms / 1000,
                 env=self.env,
-            )
+            ),
+        )
+
+    def _handle_hook_result(
+        self,
+        name: str,
+        envelope: dict[str, Any],
+        event: dict[str, Any],
+        started: float,
+        spawn: Callable[[], subprocess.CompletedProcess[str]],
+    ) -> dict[str, Any] | None:
+        """Interpret the outcome of one spawned hook process.
+
+        The single failure taxonomy — timeout, launch error, nonzero exit,
+        clean no-op, malformed output — for every environment: subclasses
+        differ only in how ``spawn`` invokes the bundle, so a taxonomy fix
+        (status strings, wording, required-mode escalation) cannot drift
+        between host and container event streams.
+        """
+        try:
+            result = spawn()
         except subprocess.TimeoutExpired as e:
             self._fail(
                 event,
@@ -314,53 +339,16 @@ class DockerHookBridge(HookBridge):
         for key, value in self.env_pairs.items():
             cmd.extend(["-e", f"{key}={value}"])
         cmd.extend([self.container_id, self.node_bin, str(self.hooks_dir / f"{name}.mjs")])
-        try:
-            result = subprocess.run(
+        return self._handle_hook_result(
+            name,
+            envelope,
+            event,
+            started,
+            lambda: subprocess.run(
                 cmd,
                 input=json.dumps(envelope),
                 capture_output=True,
                 text=True,
                 timeout=self.timeout_ms / 1000,
-            )
-        except subprocess.TimeoutExpired as e:
-            self._fail(
-                event,
-                "timeout",
-                f"git-span hook {name} timed out after {self.timeout_ms}ms in the container: {e}",
-                started=started,
-            )
-            return None
-        except (OSError, subprocess.SubprocessError) as e:
-            self._fail(event, "launch-error", f"git-span hook {name} failed open: {e}", started=started)
-            return None
-        event["exit_code"] = result.returncode
-        event["stderr"] = result.stderr
-        if result.returncode != 0:
-            self._fail(
-                event,
-                "nonzero-exit",
-                f"git-span hook {name} exited {result.returncode} in the container, failing open",
-                started=started,
-                exit_code=result.returncode,
-            )
-            return None
-        if not result.stdout.strip():
-            # No output is a normal no-op: the hook runtime only writes stdout
-            # when the hook produced a decision, so an empty reply is a clean
-            # "nothing to say" — not an error.
-            event["status"] = "clean-noop"
-            self._finish_event(event, started)
-            return {}
-        try:
-            output = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            self._fail(
-                event,
-                "malformed-output",
-                f"git-span hook {name} wrote unparsable output, failing open",
-                started=started,
-            )
-            return None
-        event["status"] = "success"
-        self._finish_event(event, started)
-        return output
+            ),
+        )

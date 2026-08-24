@@ -1,4 +1,9 @@
-"""Hermetic tests of the HookBridge: envelope construction, deny, fail-open."""
+"""Hermetic tests of the HookBridge: envelope construction, deny, fail-open.
+
+The fixture matrix at the bottom pins BOTH bridge classes to identical
+classifications of every subprocess outcome: the environments differ only in
+how hook bundles are invoked, never in how results are interpreted.
+"""
 
 import logging
 import os
@@ -6,14 +11,20 @@ import os
 import pytest
 from conftest import read_record
 
-from minisweagent_gitspan.bridge import DockerHookBridge, HookBridge, RequiredHookError, default_hooks_dir
+from minisweagent_gitspan.bridge import (
+    DockerHookBridge,
+    HookBridge,
+    PreToolUseResult,
+    RequiredHookError,
+    default_hooks_dir,
+)
 
 
-def make_bridge(stub_hooks, **kwargs):
+def make_bridge(stub_hooks, *, node_bin="python3", **kwargs):
     return HookBridge(
         session_id="sess-1",
         hooks_dir=str(stub_hooks["dir"]),
-        node_bin="python3",
+        node_bin=node_bin,
         env={**os.environ, "MSWEA_TEST_RECORD": str(stub_hooks["record"])},
         **kwargs,
     )
@@ -188,10 +199,10 @@ def test_context_is_rewritten_for_the_mini_agent_and_recorded(stub_hooks, monkey
     assert event["duration_ms"] >= 0
 
 
-def make_docker_bridge(stub_hooks, fake_docker, **kwargs):
+def make_docker_bridge(stub_hooks, fake_docker, *, executable=None, **kwargs):
     return DockerHookBridge(
         session_id="sess-d",
-        executable=str(fake_docker["path"]),
+        executable=executable or str(fake_docker["path"]),
         container_id="fake-container-1",
         hooks_dir=str(stub_hooks["dir"]),
         node_bin="python3",
@@ -241,3 +252,58 @@ def test_docker_bridge_missing_executable_fails_open(stub_hooks, tmp_path, monke
 
     assert not result.denied
     assert "failed open" in caplog.text
+
+
+# One taxonomy of subprocess outcomes, shared by every environment: timeout,
+# OSError on spawn, nonzero exit, clean no-op, malformed JSON. Each case lists
+# the stub env that produces it, the event status both bridges must record,
+# and a fragment of the error message (absent for the clean no-op). The
+# launch-error case instead breaks the launcher binary itself, which is
+# environment-specific (host node vs docker executable).
+HOOK_RESULT_MATRIX = [
+    {"stub_env": {"MSWEA_STUB_EXIT": "2"}, "status": "nonzero-exit", "error": "exited 2"},
+    {"stub_env": {"MSWEA_STUB_EMPTY": "1"}, "status": "clean-noop"},
+    {"stub_env": {"MSWEA_STUB_RAW": '{"hookSpecificOutput": '}, "status": "malformed-output", "error": "unparsable"},
+    {"stub_env": {"MSWEA_STUB_SLEEP": "10"}, "status": "timeout", "error": "timed out after 250ms"},
+    {"stub_env": {}, "status": "launch-error", "error": "failed open", "break_launcher": True},
+]
+
+
+@pytest.mark.parametrize("bridge_kind", ["host", "docker"])
+@pytest.mark.parametrize("case", HOOK_RESULT_MATRIX, ids=lambda case: case["status"])
+def test_result_taxonomy_identical_across_environments(
+    case, bridge_kind, stub_hooks, fake_docker, tmp_path, monkeypatch
+):
+    """Both bridge classes classify every subprocess outcome identically."""
+    for key, value in case["stub_env"].items():
+        monkeypatch.setenv(key, value)
+    broken = case.get("break_launcher", False)
+    host_kwargs = {"node_bin": str(tmp_path / "no-such-node")} if broken else {}
+    docker_kwargs = {"executable": str(tmp_path / "no-such-docker")} if broken else {}
+
+    def make(kind, required):
+        common = {"timeout_ms": 250, "required": required}
+        if kind == "host":
+            return make_bridge(stub_hooks, **common, **host_kwargs)
+        return make_docker_bridge(stub_hooks, fake_docker, **common, **docker_kwargs)
+
+    # A real cwd: `docker exec -w` fails on a nonexistent workdir, which would
+    # mask the hook outcome under test.
+    cwd = str(tmp_path)
+
+    # Fail-open default: no denial, no context — for failures and clean no-ops alike.
+    bridge = make(bridge_kind, required=False)
+    assert bridge.pre_tool_use("echo hi", cwd, f"tu-m-{bridge_kind}") == PreToolUseResult()
+    event = bridge.events[-1]
+    assert event["hook"] == "advisor"
+    assert event["status"] == case["status"]
+    assert case.get("error", "") in (event.get("error") or "")
+
+    # Required mode escalates every failure; a clean no-op stays a success.
+    if case["status"] == "clean-noop":
+        assert make(bridge_kind, required=True).pre_tool_use("echo hi", cwd, f"tu-r-{bridge_kind}") == (
+            PreToolUseResult()
+        )
+    else:
+        with pytest.raises(RequiredHookError, match=case["error"]):
+            make(bridge_kind, required=True).pre_tool_use("echo hi", cwd, f"tu-r-{bridge_kind}")

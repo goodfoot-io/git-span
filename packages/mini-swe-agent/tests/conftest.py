@@ -17,6 +17,7 @@ STUB_HOOK_TEMPLATE = r"""#!/usr/bin/env python3
 import json
 import os
 import sys
+import time
 
 envelope = json.load(sys.stdin)
 name = os.path.basename(sys.argv[0])
@@ -25,6 +26,8 @@ if record:
     with open(record, "a") as f:
         f.write(json.dumps({"hook": name, "envelope": envelope}) + "\n")
 cmd = envelope.get("tool_input", {}).get("command", "")
+if sleep := os.environ.get("MSWEA_STUB_SLEEP"):
+    time.sleep(float(sleep))
 out = {}
 if name == "advisor.mjs" and os.environ.get("MSWEA_STUB_DENY") and os.environ["MSWEA_STUB_DENY"] in cmd:
     out = {
