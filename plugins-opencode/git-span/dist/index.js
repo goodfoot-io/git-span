@@ -2787,6 +2787,124 @@ function finishScan(s) {
   }
   return { stages: s.parts, malformed: s.malformed };
 }
+function createTokenizeScan(src) {
+  return { src, n: src.length, i: 0, buf: "", quoted: false, tokens: [] };
+}
+function flushWord(t) {
+  if (t.buf.length === 0) return;
+  t.tokens.push({ text: t.buf, quoted: t.quoted, isRedirect: false });
+  t.buf = "";
+  t.quoted = false;
+}
+function appendQuotedContent(t, out, start) {
+  const quote = t.src[start];
+  let j = start + 1;
+  while (j < t.n) {
+    const c = t.src[j];
+    if (quote === "'") {
+      if (c === "'") return { out, next: j + 1 };
+      out += c;
+      j += 1;
+      continue;
+    }
+    if (c === "\\" && j + 1 < t.n && '"\\$`'.includes(t.src[j + 1])) {
+      out += t.src[j + 1];
+      j += 2;
+      continue;
+    }
+    if (c === '"') return { out, next: j + 1 };
+    out += c;
+    j += 1;
+  }
+  return null;
+}
+function appendAttachedTarget(t, out, start) {
+  let j = start;
+  while (j < t.n) {
+    const c = t.src[j];
+    if (/\s/.test(c) || c === "<" || c === ">") return { out, next: j };
+    if (c === "'" || c === '"') {
+      const section = appendQuotedContent(t, "", j);
+      if (section === null) return null;
+      out += t.src.slice(j, section.next);
+      j = section.next;
+      continue;
+    }
+    if (c === "\\" && j + 1 < t.n) {
+      out += c + t.src[j + 1];
+      j += 2;
+      continue;
+    }
+    out += c;
+    j += 1;
+  }
+  return { out, next: j };
+}
+function emitRedirect(t, operator, attachedStart) {
+  const attached = appendAttachedTarget(t, "", attachedStart);
+  if (attached === null) return false;
+  t.tokens.push({ text: t.buf + operator + attached.out, quoted: false, isRedirect: true });
+  t.buf = "";
+  t.quoted = false;
+  t.i = attached.next;
+  return true;
+}
+function stepTokenizerQuote(t) {
+  const c = t.src[t.i];
+  if (c !== "'" && c !== '"') return false;
+  t.quoted = true;
+  const section = appendQuotedContent(t, t.buf, t.i);
+  if (section === null) {
+    t.failed = true;
+    return true;
+  }
+  t.buf = section.out;
+  t.i = section.next;
+  return true;
+}
+function stepTokenizerEscape(t) {
+  if (t.src[t.i] !== "\\" || t.i + 1 >= t.n) return false;
+  t.quoted = true;
+  t.buf += t.src[t.i + 1];
+  t.i += 2;
+  return true;
+}
+function readRedirectOperator(t) {
+  const two = t.src.slice(t.i, t.i + 2);
+  const three = t.src.slice(t.i, t.i + 3);
+  if (t.src[t.i] === "<") {
+    if (three === "<<<") return "<<<";
+    if (three === "<<-") return "<<-";
+    if (two === "<<") return "<<";
+    return "<";
+  }
+  return two === ">>" ? ">>" : ">";
+}
+function stepTokenizerRedirect(t) {
+  const c = t.src[t.i];
+  if (c !== "<" && c !== ">") return false;
+  if (t.buf !== "" && !/^\d+$/.test(t.buf)) flushWord(t);
+  const operator = readRedirectOperator(t);
+  if (!emitRedirect(t, operator, t.i + operator.length)) t.failed = true;
+  return true;
+}
+function stepTokenizerAmpersand(t) {
+  if (t.src[t.i] !== "&") return false;
+  if (t.src[t.i + 1] === ">") {
+    flushWord(t);
+    const operator = t.src.slice(t.i, t.i + 3) === "&>>" ? "&>>" : "&>";
+    if (!emitRedirect(t, operator, t.i + operator.length)) t.failed = true;
+  } else {
+    t.buf += "&";
+    t.i += 1;
+  }
+  return true;
+}
+function finishTokenizeScan(t) {
+  if (t.failed) return null;
+  flushWord(t);
+  return t.tokens;
+}
 
 // src/common/shell-split.ts
 function splitTopLevel(cmd) {
@@ -2813,121 +2931,21 @@ function stripLeadingAssignments(simpleCmd) {
   return simpleCmd.replace(LEADING_ASSIGNMENT, "");
 }
 function tokenize2(s) {
-  const tokens = [];
-  let buf = "";
-  let quoted = false;
-  let i = 0;
-  const n = s.length;
-  const flushWord = () => {
-    if (buf.length === 0) return;
-    tokens.push({ text: buf, quoted, isRedirect: false });
-    buf = "";
-    quoted = false;
-  };
-  const appendQuotedContent = (out, start) => {
-    const quote = s[start];
-    let j = start + 1;
-    while (j < n) {
-      const c = s[j];
-      if (quote === "'") {
-        if (c === "'") return { out, next: j + 1 };
-        out += c;
-        j += 1;
-        continue;
-      }
-      if (c === "\\" && j + 1 < n && '"\\$`'.includes(s[j + 1])) {
-        out += s[j + 1];
-        j += 2;
-        continue;
-      }
-      if (c === '"') return { out, next: j + 1 };
-      out += c;
-      j += 1;
-    }
-    return null;
-  };
-  const appendAttachedTarget = (out, start) => {
-    let j = start;
-    while (j < n) {
-      const c = s[j];
-      if (/\s/.test(c) || c === "<" || c === ">") return { out, next: j };
-      if (c === "'" || c === '"') {
-        const section = appendQuotedContent("", j);
-        if (section === null) return null;
-        out += s.slice(j, section.next);
-        j = section.next;
-        continue;
-      }
-      if (c === "\\" && j + 1 < n) {
-        out += c + s[j + 1];
-        j += 2;
-        continue;
-      }
-      out += c;
-      j += 1;
-    }
-    return { out, next: j };
-  };
-  const emitRedirect = (operator, attachedStart) => {
-    const attached = appendAttachedTarget("", attachedStart);
-    if (attached === null) return false;
-    tokens.push({ text: buf + operator + attached.out, quoted: false, isRedirect: true });
-    buf = "";
-    quoted = false;
-    i = attached.next;
-    return true;
-  };
-  while (i < n) {
-    const c = s[i];
-    if (/\s/.test(c)) {
-      flushWord();
-      i += 1;
+  const t = createTokenizeScan(s);
+  while (t.i < t.n && !t.failed) {
+    if (/\s/.test(t.src[t.i])) {
+      flushWord(t);
+      t.i += 1;
       continue;
     }
-    if (c === "'" || c === '"') {
-      quoted = true;
-      const section = appendQuotedContent(buf, i);
-      if (section === null) return null;
-      buf = section.out;
-      i = section.next;
-      continue;
-    }
-    if (c === "\\" && i + 1 < n) {
-      quoted = true;
-      buf += s[i + 1];
-      i += 2;
-      continue;
-    }
-    if (c === "<" || c === ">") {
-      if (buf !== "" && !/^\d+$/.test(buf)) flushWord();
-      let operator;
-      if (c === "<") {
-        if (s.slice(i, i + 3) === "<<<") operator = "<<<";
-        else if (s.slice(i, i + 3) === "<<-") operator = "<<-";
-        else if (s.slice(i, i + 2) === "<<") operator = "<<";
-        else operator = "<";
-      } else {
-        operator = s.slice(i, i + 2) === ">>" ? ">>" : ">";
-      }
-      if (!emitRedirect(operator, i + operator.length)) return null;
-      continue;
-    }
-    if (c === "&") {
-      if (s[i + 1] === ">") {
-        flushWord();
-        const operator = s.slice(i, i + 3) === "&>>" ? "&>>" : "&>";
-        if (!emitRedirect(operator, i + operator.length)) return null;
-        continue;
-      }
-      buf += c;
-      i += 1;
-      continue;
-    }
-    buf += c;
-    i += 1;
+    if (stepTokenizerQuote(t)) continue;
+    if (stepTokenizerEscape(t)) continue;
+    if (stepTokenizerRedirect(t)) continue;
+    if (stepTokenizerAmpersand(t)) continue;
+    t.buf += t.src[t.i];
+    t.i += 1;
   }
-  flushWord();
-  return tokens;
+  return finishTokenizeScan(t);
 }
 function redirectAttachedTarget(text) {
   const match = text.match(/^(\d*)(<<<|<<-|&>>|<<|>>|&>|>&|<|>)(.*)$/);
@@ -5367,6 +5385,110 @@ function stableReason(match) {
   if (match.reason.includes("working directory")) return "dynamic-path";
   return "unsupported-expression";
 }
+function createPythonContext(options) {
+  return {
+    cwd: options.cwd ?? process.cwd(),
+    options,
+    paths: /* @__PURE__ */ new Map(),
+    texts: /* @__PURE__ */ new Map(),
+    replacements: /* @__PURE__ */ new Map(),
+    anchors: /* @__PURE__ */ new Map(),
+    lines: /* @__PURE__ */ new Map(),
+    structured: /* @__PURE__ */ new Map(),
+    countAssertions: /* @__PURE__ */ new Map(),
+    resolved: [],
+    preStateRequests: []
+  };
+}
+function rejectPython(reasonCode, detail, fileArg, preStateRequests = []) {
+  return {
+    resolved: [],
+    unresolved: [unresolved("python", "python-edit", reasonCode, detail, fileArg)],
+    preStateRequests
+  };
+}
+function requestPythonPreState(ctx, absolutePath, operation, requirement) {
+  if (!ctx.preStateRequests.some(
+    (entry) => entry.absolutePath === absolutePath && entry.operation === operation && entry.requirement === requirement
+  )) {
+    ctx.preStateRequests.push({ absolutePath, operation, requirement, simpleCommandIndex: 0 });
+  }
+}
+function readPythonPreState(ctx, absolutePath, requirements) {
+  for (const requirement of requirements) requestPythonPreState(ctx, absolutePath, "modify", requirement);
+  const content = ctx.options.readPreState?.(absolutePath) ?? null;
+  if (content === null)
+    return rejectPython(
+      "missing-pre-state",
+      "Python range recovery requires pre-command text",
+      absolutePath,
+      ctx.preStateRequests
+    );
+  if (content.includes("\0"))
+    return rejectPython(
+      "binary-content",
+      "Python range recovery does not accept binary content",
+      absolutePath,
+      ctx.preStateRequests
+    );
+  return content;
+}
+function emitPythonReplace(ctx, absolutePath, transformation) {
+  const read = ctx.texts.get(transformation.source);
+  if (read === void 0 || nodePath5.resolve(ctx.cwd, read.path) !== absolutePath) {
+    return rejectPython("unsupported-dataflow", "Python read and write paths are not provably identical", absolutePath);
+  }
+  const requirements = ["match-locations"];
+  if (transformation.replacement.length === 0 || (transformation.pattern.match(/\n/g)?.length ?? 0) !== (transformation.replacement.match(/\n/g)?.length ?? 0)) {
+    requirements.push("deleted-text");
+  }
+  const content = readPythonPreState(ctx, absolutePath, requirements);
+  if (typeof content !== "string") return content;
+  const assertion = ctx.countAssertions.get(`${transformation.source}\0${transformation.pattern}`);
+  const occurrences = countLiteralOccurrences(content, transformation.pattern);
+  if (assertion !== void 0 && occurrences !== assertion) {
+    return rejectPython(
+      "evidence-mismatch",
+      "Python count assertion does not match pre-state",
+      absolutePath,
+      ctx.preStateRequests
+    );
+  }
+  const count = transformation.count ?? occurrences;
+  const ranges = literalOccurrenceRanges(content, transformation.pattern).slice(0, count);
+  if (ranges.length === 0) {
+    return rejectPython(
+      "evidence-mismatch",
+      "Python replacement literal is absent from pre-state",
+      absolutePath,
+      ctx.preStateRequests
+    );
+  }
+  let expected = content;
+  if (transformation.count === void 0)
+    expected = content.split(transformation.pattern).join(transformation.replacement);
+  else {
+    for (let index = 0; index < Math.min(transformation.count, occurrences); index += 1) {
+      expected = replaceLiteral(expected, transformation.pattern, transformation.replacement, false);
+    }
+  }
+  for (const range of ranges) {
+    ctx.resolved.push({
+      status: "resolved",
+      layer: "python",
+      idiom: "python-replace",
+      span: {
+        operation: "modify",
+        absolutePath,
+        lineStart: range.start,
+        lineEnd: range.end,
+        expectedContent: expected,
+        simpleCommandIndex: 0
+      }
+    });
+  }
+  return null;
+}
 var PYTHON_INTERPRETER = /^(?:python|python3(?:\.\d+)?)$/;
 var PYTHON_STRING_SOURCE = String.raw`(?:'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")`;
 var PYTHON_NAME_SOURCE = `[A-Za-z_][A-Za-z0-9_]*`;
@@ -5551,115 +5673,185 @@ function structuredKeyRanges(content, format, key2) {
   }
   return ranges;
 }
+function consumeUnmatchedPython(statement) {
+  if (/sys\.argv|os\.(?:environ|getenv)|input\s*\(/.test(statement)) {
+    return rejectPython("dynamic-path", "Python target depends on runtime input");
+  }
+  return rejectPython(
+    /(?:\.write|open\s*\(|Path\s*\()/.test(statement) ? "unsupported-dataflow" : "unsupported-syntax",
+    "Python statement is outside the bounded lexical/dataflow allowlist"
+  );
+}
+function consumePythonStatement(statement, ctx) {
+  let match = statement.match(PYTHON_PATH_LITERAL_PATTERN);
+  if (match !== null) {
+    const path = decodePythonString(match[2]);
+    if (path === null) return rejectPython("unsupported-syntax", "Python path literal uses an unsupported escape");
+    ctx.paths.set(match[1], { path, depth: 0 });
+    return void 0;
+  }
+  match = statement.match(PYTHON_STRING_BINDING_PATTERN);
+  if (match !== null) {
+    const path = decodePythonString(match[2]);
+    if (path === null) return rejectPython("unsupported-syntax", "Python string literal uses an unsupported escape");
+    ctx.paths.set(match[1], { path, depth: 0 });
+    return void 0;
+  }
+  match = statement.match(PYTHON_NAME_ALIAS_PATTERN);
+  if (match !== null) {
+    const source = ctx.paths.get(match[2]);
+    if (source === void 0 || source.depth !== 0) {
+      return rejectPython("unsupported-dataflow", "Python path aliases are limited to one literal hop");
+    }
+    ctx.paths.set(match[1], { path: source.path, depth: 1 });
+    return void 0;
+  }
+  match = statement.match(PYTHON_TEXT_READ_PATTERN);
+  if (match !== null) {
+    const binding = ctx.paths.get(match[2]);
+    if (binding === void 0) return rejectPython("dynamic-path", "Python read target is not a literal path binding");
+    if (match[3].trim() !== "" && !/^encoding\s*=\s*['"]utf-?8['"]$/.test(match[3].trim())) {
+      return rejectPython(
+        "unsupported-encoding",
+        "only default or UTF-8 Python text reads are supported",
+        binding.path
+      );
+    }
+    ctx.texts.set(match[1], { path: binding.path });
+    return void 0;
+  }
+  match = statement.match(PYTHON_REPLACE_BINDING_PATTERN);
+  if (match !== null) {
+    if (!ctx.texts.has(match[2]))
+      return rejectPython("unsupported-dataflow", "Python replace source is not a direct text read");
+    const pattern = decodePythonString(match[3]);
+    const replacement = decodePythonString(match[4]);
+    const count = match[5] === void 0 ? void 0 : Number.parseInt(match[5], 10);
+    if (pattern === null || pattern.length === 0 || replacement === null || count === 0) {
+      return rejectPython(
+        "unsupported-expression",
+        "Python replace requires non-empty literal input and a positive count"
+      );
+    }
+    ctx.replacements.set(match[1], { source: match[2], pattern, replacement, count });
+    return void 0;
+  }
+  match = statement.match(PYTHON_COUNT_ASSERT_PATTERN);
+  if (match !== null) {
+    const literal = decodePythonString(match[2]);
+    if (literal === null || literal.length === 0 || !ctx.texts.has(match[1])) {
+      return rejectPython("unsupported-dataflow", "Python count assertion is not tied to a direct text read");
+    }
+    ctx.countAssertions.set(`${match[1]}\0${literal}`, Number.parseInt(match[3], 10));
+    return void 0;
+  }
+  match = statement.match(PYTHON_INDEX_ANCHOR_PATTERN);
+  if (match !== null) {
+    const literal = decodePythonString(match[3]);
+    if (literal === null || literal.length === 0 || !ctx.texts.has(match[2])) {
+      return rejectPython("unsupported-dataflow", "Python index anchor is not tied to a direct text read");
+    }
+    ctx.anchors.set(match[1], { source: match[2], literal });
+    return void 0;
+  }
+  match = statement.match(PYTHON_LINE_ARRAY_PATTERN);
+  if (match !== null) {
+    const binding = ctx.paths.get(match[2]);
+    if (binding === void 0) return rejectPython("dynamic-path", "Python line-array target is not literal");
+    ctx.lines.set(match[1], { path: binding.path, edits: /* @__PURE__ */ new Map() });
+    return void 0;
+  }
+  match = statement.match(PYTHON_LINE_EDIT_PATTERN);
+  if (match !== null) {
+    const array = ctx.lines.get(match[1]);
+    const value = decodePythonString(match[3]);
+    if (array === void 0 || value === null)
+      return rejectPython("unsupported-dataflow", "line edit is not a bounded literal array edit");
+    array.edits.set(Number.parseInt(match[2], 10), value);
+    return void 0;
+  }
+  match = statement.match(PYTHON_STRUCTURED_LOAD_PATTERN);
+  if (match !== null) {
+    const binding = ctx.paths.get(match[3]);
+    if (binding === void 0) return rejectPython("dynamic-path", "structured Python load target is not literal");
+    const format = match[2] === "tomllib" ? "toml" : match[2];
+    ctx.structured.set(match[1], { format, path: binding.path, keys: [] });
+    return void 0;
+  }
+  match = statement.match(PYTHON_STRUCTURED_ASSIGN_PATTERN);
+  if (match !== null && ctx.structured.has(match[1])) {
+    const keys = [...match[2].matchAll(PYTHON_STRUCTURED_KEY_SCAN_PATTERN)].map((key2) => decodePythonString(key2[1]));
+    if (keys.length === 0 || keys.some((key2) => key2 === null)) {
+      return rejectPython("unsupported-expression", "structured Python mutation requires literal string keys");
+    }
+    ctx.structured.get(match[1]).keys.push(keys);
+    return void 0;
+  }
+  match = statement.match(PYTHON_APPEND_PATTERN);
+  if (match !== null) {
+    const binding = ctx.paths.get(match[1]);
+    const mode = decodePythonString(match[2]);
+    const written = decodePythonString(match[3]);
+    if (binding === void 0) return rejectPython("dynamic-path", "Python append target is not literal");
+    if (mode !== "a" || written === null)
+      return rejectPython("unsupported-expression", "only literal text append mode is supported");
+    const absolutePath = nodePath5.resolve(ctx.cwd, binding.path);
+    requestPythonPreState(ctx, absolutePath, "append", "pre-command-eof");
+    const content = ctx.options.readPreState?.(absolutePath) ?? null;
+    if (content === null)
+      return rejectPython(
+        "missing-pre-state",
+        "Python append range requires pre-command text",
+        absolutePath,
+        ctx.preStateRequests
+      );
+    if (content.includes("\0"))
+      return rejectPython(
+        "binary-content",
+        "Python append does not accept binary content",
+        absolutePath,
+        ctx.preStateRequests
+      );
+    const line = pythonLineAtOffset(content, content.length);
+    ctx.resolved.push({
+      status: "resolved",
+      layer: "python",
+      idiom: "python-append",
+      span: {
+        operation: "append",
+        absolutePath,
+        lineStart: line,
+        lineEnd: line,
+        written,
+        expectedContent: `${content}${written}`,
+        simpleCommandIndex: 0
+      }
+    });
+    return void 0;
+  }
+  match = statement.match(PYTHON_WRITE_TARGET_PATTERN);
+  if (match !== null) {
+    const binding = ctx.paths.get(match[1]);
+    if (binding === void 0) return rejectPython("dynamic-path", "Python write target is not literal");
+    const absolutePath = nodePath5.resolve(ctx.cwd, binding.path);
+    return resolvePythonWriteSink(ctx, match[2].trim(), absolutePath);
+  }
+  return "unmatched";
+}
 function parsePythonAttribution(command, options) {
   const extracted = extractPythonProgram(command);
   if (extracted === null) return null;
-  const reject = (reasonCode, detail, fileArg, preStateRequests2 = []) => ({
-    resolved: [],
-    unresolved: [unresolved("python", "python-edit", reasonCode, detail, fileArg)],
-    preStateRequests: preStateRequests2
-  });
   if (extracted.program === void 0) {
-    return reject(extracted.reason ?? "unsupported-syntax", extracted.detail ?? "unsupported Python invocation");
+    return rejectPython(extracted.reason ?? "unsupported-syntax", extracted.detail ?? "unsupported Python invocation");
   }
   const statements = splitPythonStatements(extracted.program);
   if (statements === null || statements.length === 0) {
-    return reject("unsupported-syntax", "the Python program is incomplete or cannot be tokenized");
+    return rejectPython("unsupported-syntax", "the Python program is incomplete or cannot be tokenized");
   }
   if (statements.length > 64)
-    return reject("candidate-budget-exceeded", "the Python program exceeds the statement budget");
-  const cwd = options.cwd ?? process.cwd();
-  const paths = /* @__PURE__ */ new Map();
-  const texts = /* @__PURE__ */ new Map();
-  const replacements = /* @__PURE__ */ new Map();
-  const anchors = /* @__PURE__ */ new Map();
-  const lines = /* @__PURE__ */ new Map();
-  const structured = /* @__PURE__ */ new Map();
-  const countAssertions = /* @__PURE__ */ new Map();
-  const resolved = [];
-  const preStateRequests = [];
-  const request = (absolutePath, operation, requirement) => {
-    if (!preStateRequests.some(
-      (entry) => entry.absolutePath === absolutePath && entry.operation === operation && entry.requirement === requirement
-    )) {
-      preStateRequests.push({ absolutePath, operation, requirement, simpleCommandIndex: 0 });
-    }
-  };
-  const readPreState = (absolutePath, requirements) => {
-    for (const requirement of requirements) request(absolutePath, "modify", requirement);
-    const content = options.readPreState?.(absolutePath) ?? null;
-    if (content === null)
-      return reject(
-        "missing-pre-state",
-        "Python range recovery requires pre-command text",
-        absolutePath,
-        preStateRequests
-      );
-    if (content.includes("\0"))
-      return reject(
-        "binary-content",
-        "Python range recovery does not accept binary content",
-        absolutePath,
-        preStateRequests
-      );
-    return content;
-  };
-  const emitReplace = (absolutePath, transformation) => {
-    const read = texts.get(transformation.source);
-    if (read === void 0 || nodePath5.resolve(cwd, read.path) !== absolutePath) {
-      return reject("unsupported-dataflow", "Python read and write paths are not provably identical", absolutePath);
-    }
-    const requirements = ["match-locations"];
-    if (transformation.replacement.length === 0 || (transformation.pattern.match(/\n/g)?.length ?? 0) !== (transformation.replacement.match(/\n/g)?.length ?? 0)) {
-      requirements.push("deleted-text");
-    }
-    const content = readPreState(absolutePath, requirements);
-    if (typeof content !== "string") return content;
-    const assertion = countAssertions.get(`${transformation.source}\0${transformation.pattern}`);
-    const occurrences = countLiteralOccurrences(content, transformation.pattern);
-    if (assertion !== void 0 && occurrences !== assertion) {
-      return reject(
-        "evidence-mismatch",
-        "Python count assertion does not match pre-state",
-        absolutePath,
-        preStateRequests
-      );
-    }
-    const count = transformation.count ?? occurrences;
-    const ranges = literalOccurrenceRanges(content, transformation.pattern).slice(0, count);
-    if (ranges.length === 0) {
-      return reject(
-        "evidence-mismatch",
-        "Python replacement literal is absent from pre-state",
-        absolutePath,
-        preStateRequests
-      );
-    }
-    let expected = content;
-    if (transformation.count === void 0)
-      expected = content.split(transformation.pattern).join(transformation.replacement);
-    else {
-      for (let index = 0; index < Math.min(transformation.count, occurrences); index += 1) {
-        expected = replaceLiteral(expected, transformation.pattern, transformation.replacement, false);
-      }
-    }
-    for (const range of ranges) {
-      resolved.push({
-        status: "resolved",
-        layer: "python",
-        idiom: "python-replace",
-        span: {
-          operation: "modify",
-          absolutePath,
-          lineStart: range.start,
-          lineEnd: range.end,
-          expectedContent: expected,
-          simpleCommandIndex: 0
-        }
-      });
-    }
-    return null;
-  };
+    return rejectPython("candidate-budget-exceeded", "the Python program exceeds the statement budget");
+  const ctx = createPythonContext(options);
+  const { resolved, preStateRequests } = ctx;
   for (const statement of statements) {
     if (/^(?:from\s+pathlib\s+import\s+Path|import\s+(?:pathlib|json|tomllib|tomli_w|toml|yaml|sys)(?:\s*,\s*(?:pathlib|json|tomllib|tomli_w|toml|yaml|sys))*)$/.test(
       statement
@@ -5667,317 +5859,17 @@ function parsePythonAttribution(command, options) {
       continue;
     }
     if (/^(?:for|while|if|def|class|with|try)\b/.test(statement)) {
-      return reject("unsupported-dataflow", "control flow is outside the bounded Python recognizer");
+      return rejectPython("unsupported-dataflow", "control flow is outside the bounded Python recognizer");
     }
-    let match = statement.match(PYTHON_PATH_LITERAL_PATTERN);
-    if (match !== null) {
-      const path = decodePythonString(match[2]);
-      if (path === null) return reject("unsupported-syntax", "Python path literal uses an unsupported escape");
-      paths.set(match[1], { path, depth: 0 });
-      continue;
-    }
-    match = statement.match(PYTHON_STRING_BINDING_PATTERN);
-    if (match !== null) {
-      const path = decodePythonString(match[2]);
-      if (path === null) return reject("unsupported-syntax", "Python string literal uses an unsupported escape");
-      paths.set(match[1], { path, depth: 0 });
-      continue;
-    }
-    match = statement.match(PYTHON_NAME_ALIAS_PATTERN);
-    if (match !== null) {
-      const source = paths.get(match[2]);
-      if (source === void 0 || source.depth !== 0) {
-        return reject("unsupported-dataflow", "Python path aliases are limited to one literal hop");
-      }
-      paths.set(match[1], { path: source.path, depth: 1 });
-      continue;
-    }
-    match = statement.match(PYTHON_TEXT_READ_PATTERN);
-    if (match !== null) {
-      const binding = paths.get(match[2]);
-      if (binding === void 0) return reject("dynamic-path", "Python read target is not a literal path binding");
-      if (match[3].trim() !== "" && !/^encoding\s*=\s*['"]utf-?8['"]$/.test(match[3].trim())) {
-        return reject("unsupported-encoding", "only default or UTF-8 Python text reads are supported", binding.path);
-      }
-      texts.set(match[1], { path: binding.path });
-      continue;
-    }
-    match = statement.match(PYTHON_REPLACE_BINDING_PATTERN);
-    if (match !== null) {
-      if (!texts.has(match[2]))
-        return reject("unsupported-dataflow", "Python replace source is not a direct text read");
-      const pattern = decodePythonString(match[3]);
-      const replacement = decodePythonString(match[4]);
-      const count = match[5] === void 0 ? void 0 : Number.parseInt(match[5], 10);
-      if (pattern === null || pattern.length === 0 || replacement === null || count === 0) {
-        return reject("unsupported-expression", "Python replace requires non-empty literal input and a positive count");
-      }
-      replacements.set(match[1], { source: match[2], pattern, replacement, count });
-      continue;
-    }
-    match = statement.match(PYTHON_COUNT_ASSERT_PATTERN);
-    if (match !== null) {
-      const literal = decodePythonString(match[2]);
-      if (literal === null || literal.length === 0 || !texts.has(match[1])) {
-        return reject("unsupported-dataflow", "Python count assertion is not tied to a direct text read");
-      }
-      countAssertions.set(`${match[1]}\0${literal}`, Number.parseInt(match[3], 10));
-      continue;
-    }
-    match = statement.match(PYTHON_INDEX_ANCHOR_PATTERN);
-    if (match !== null) {
-      const literal = decodePythonString(match[3]);
-      if (literal === null || literal.length === 0 || !texts.has(match[2])) {
-        return reject("unsupported-dataflow", "Python index anchor is not tied to a direct text read");
-      }
-      anchors.set(match[1], { source: match[2], literal });
-      continue;
-    }
-    match = statement.match(PYTHON_LINE_ARRAY_PATTERN);
-    if (match !== null) {
-      const binding = paths.get(match[2]);
-      if (binding === void 0) return reject("dynamic-path", "Python line-array target is not literal");
-      lines.set(match[1], { path: binding.path, edits: /* @__PURE__ */ new Map() });
-      continue;
-    }
-    match = statement.match(PYTHON_LINE_EDIT_PATTERN);
-    if (match !== null) {
-      const array = lines.get(match[1]);
-      const value = decodePythonString(match[3]);
-      if (array === void 0 || value === null)
-        return reject("unsupported-dataflow", "line edit is not a bounded literal array edit");
-      array.edits.set(Number.parseInt(match[2], 10), value);
-      continue;
-    }
-    match = statement.match(PYTHON_STRUCTURED_LOAD_PATTERN);
-    if (match !== null) {
-      const binding = paths.get(match[3]);
-      if (binding === void 0) return reject("dynamic-path", "structured Python load target is not literal");
-      const format = match[2] === "tomllib" ? "toml" : match[2];
-      structured.set(match[1], { format, path: binding.path, keys: [] });
-      continue;
-    }
-    match = statement.match(PYTHON_STRUCTURED_ASSIGN_PATTERN);
-    if (match !== null && structured.has(match[1])) {
-      const keys = [...match[2].matchAll(PYTHON_STRUCTURED_KEY_SCAN_PATTERN)].map((key2) => decodePythonString(key2[1]));
-      if (keys.length === 0 || keys.some((key2) => key2 === null)) {
-        return reject("unsupported-expression", "structured Python mutation requires literal string keys");
-      }
-      structured.get(match[1]).keys.push(keys);
-      continue;
-    }
-    match = statement.match(PYTHON_APPEND_PATTERN);
-    if (match !== null) {
-      const binding = paths.get(match[1]);
-      const mode = decodePythonString(match[2]);
-      const written = decodePythonString(match[3]);
-      if (binding === void 0) return reject("dynamic-path", "Python append target is not literal");
-      if (mode !== "a" || written === null)
-        return reject("unsupported-expression", "only literal text append mode is supported");
-      const absolutePath = nodePath5.resolve(cwd, binding.path);
-      request(absolutePath, "append", "pre-command-eof");
-      const content = options.readPreState?.(absolutePath) ?? null;
-      if (content === null)
-        return reject(
-          "missing-pre-state",
-          "Python append range requires pre-command text",
-          absolutePath,
-          preStateRequests
-        );
-      if (content.includes("\0"))
-        return reject("binary-content", "Python append does not accept binary content", absolutePath, preStateRequests);
-      const line = pythonLineAtOffset(content, content.length);
-      resolved.push({
-        status: "resolved",
-        layer: "python",
-        idiom: "python-append",
-        span: {
-          operation: "append",
-          absolutePath,
-          lineStart: line,
-          lineEnd: line,
-          written,
-          expectedContent: `${content}${written}`,
-          simpleCommandIndex: 0
-        }
-      });
-      continue;
-    }
-    match = statement.match(PYTHON_WRITE_TARGET_PATTERN);
-    if (match !== null) {
-      const binding = paths.get(match[1]);
-      if (binding === void 0) return reject("dynamic-path", "Python write target is not literal");
-      const absolutePath = nodePath5.resolve(cwd, binding.path);
-      const expression = match[2].trim();
-      const literal = decodePythonString(expression);
-      if (literal !== null) {
-        resolved.push({
-          status: "resolved",
-          layer: "python",
-          idiom: "python-write",
-          span: {
-            operation: "create-overwrite",
-            absolutePath,
-            written: literal,
-            expectedContent: literal,
-            simpleCommandIndex: 0
-          }
-        });
-        continue;
-      }
-      const directReplace = expression.match(PYTHON_DIRECT_REPLACE_PATTERN);
-      const replacement = directReplace === null ? replacements.get(expression) : {
-        source: directReplace[1],
-        pattern: decodePythonString(directReplace[2]) ?? "",
-        replacement: decodePythonString(directReplace[3]) ?? "",
-        count: directReplace[4] === void 0 ? void 0 : Number.parseInt(directReplace[4], 10)
-      };
-      if (replacement !== void 0) {
-        const rejected = emitReplace(absolutePath, replacement);
-        if (rejected !== null) return rejected;
-        continue;
-      }
-      const slice = expression.match(PYTHON_ANCHOR_SLICE_PATTERN);
-      if (slice !== null) {
-        const anchor = anchors.get(slice[2]);
-        const read = texts.get(slice[1]);
-        const replacementText = decodePythonString(slice[3]);
-        if (anchor === void 0 || read === void 0 || anchor.source !== slice[1] || replacementText === null || Number.parseInt(slice[4], 10) !== anchor.literal.length || nodePath5.resolve(cwd, read.path) !== absolutePath) {
-          return reject(
-            "unsupported-dataflow",
-            "Python slice reconstruction is not tied to one literal anchor",
-            absolutePath
-          );
-        }
-        const content = readPreState(absolutePath, ["match-locations", "deleted-text"]);
-        if (typeof content !== "string") return content;
-        const offset = content.indexOf(anchor.literal);
-        if (offset < 0)
-          return reject(
-            "evidence-mismatch",
-            "Python slice anchor is absent from pre-state",
-            absolutePath,
-            preStateRequests
-          );
-        const range = literalOccurrenceRanges(content, anchor.literal)[0];
-        resolved.push({
-          status: "resolved",
-          layer: "python",
-          idiom: "python-anchor-slice",
-          span: {
-            operation: "modify",
-            absolutePath,
-            lineStart: range.start,
-            lineEnd: range.end,
-            expectedContent: `${content.slice(0, offset)}${replacementText}${content.slice(offset + anchor.literal.length)}`,
-            simpleCommandIndex: 0
-          }
-        });
-        continue;
-      }
-      const lineJoin = expression.match(PYTHON_LINE_JOIN_PATTERN);
-      if (lineJoin !== null) {
-        const delimiter = decodePythonString(lineJoin[1]);
-        const array = lines.get(lineJoin[2]);
-        const suffix = lineJoin[3] === void 0 ? "" : decodePythonString(lineJoin[3]);
-        if (delimiter !== "\n" || array === void 0 || suffix === null || suffix !== "" && suffix !== "\n") {
-          return reject("unsupported-expression", "line-array writes require a literal newline join", absolutePath);
-        }
-        if (nodePath5.resolve(cwd, array.path) !== absolutePath || array.edits.size === 0) {
-          return reject(
-            "unsupported-dataflow",
-            "line-array read and write paths are not provably identical",
-            absolutePath
-          );
-        }
-        const content = readPreState(absolutePath, ["deleted-text"]);
-        if (typeof content !== "string") return content;
-        if (content.includes("\r"))
-          return reject("unsupported-encoding", "line-array edits require LF text", absolutePath, preStateRequests);
-        const sourceLines = content.split("\n");
-        if (sourceLines.at(-1) === "") sourceLines.pop();
-        for (const [index, value] of array.edits) {
-          if (index >= sourceLines.length)
-            return reject("evidence-mismatch", "line-array index is outside pre-state", absolutePath, preStateRequests);
-          sourceLines[index] = value;
-        }
-        const expectedContent = `${sourceLines.join("\n")}${suffix}`;
-        for (const index of array.edits.keys()) {
-          resolved.push({
-            status: "resolved",
-            layer: "python",
-            idiom: "python-line-array",
-            span: {
-              operation: "modify",
-              absolutePath,
-              lineStart: index + 1,
-              lineEnd: index + 1,
-              expectedContent,
-              simpleCommandIndex: 0
-            }
-          });
-        }
-        continue;
-      }
-      const structuredSink = expression.match(
-        /^(json|tomli_w|toml|yaml)\.(dumps|safe_dump)\(([A-Za-z_][A-Za-z0-9_]*)\)$/
-      );
-      if (structuredSink !== null) {
-        const value = structured.get(structuredSink[3]);
-        const sinkFormat = structuredSink[1] === "json" ? "json" : structuredSink[1] === "yaml" ? "yaml" : "toml";
-        if (value === void 0 || value.format !== sinkFormat || nodePath5.resolve(cwd, value.path) !== absolutePath || value.keys.length === 0) {
-          return reject(
-            "unsupported-dataflow",
-            "structured read, literal-key mutation, and write are not linked",
-            absolutePath
-          );
-        }
-        const content = readPreState(absolutePath, ["match-locations"]);
-        if (typeof content !== "string") return content;
-        for (const keyPath of value.keys) {
-          const key2 = keyPath.at(-1);
-          const ranges = structuredKeyRanges(content, value.format, key2);
-          if (ranges.length !== 1) {
-            return reject(
-              "unsupported-expression",
-              "structured literal key is absent or ambiguous in pre-state",
-              absolutePath,
-              preStateRequests
-            );
-          }
-          resolved.push({
-            status: "resolved",
-            layer: "python",
-            idiom: `python-${value.format}`,
-            span: {
-              operation: "modify",
-              absolutePath,
-              lineStart: ranges[0].start,
-              lineEnd: ranges[0].end,
-              simpleCommandIndex: 0
-            }
-          });
-        }
-        continue;
-      }
-      return reject("unsupported-dataflow", "Python write expression is outside the bounded allowlist", absolutePath);
-    }
-    if (/sys\.argv|os\.(?:environ|getenv)|input\s*\(/.test(statement)) {
-      return reject("dynamic-path", "Python target depends on runtime input");
-    }
-    return reject(
-      /(?:\.write|open\s*\(|Path\s*\()/.test(statement) ? "unsupported-dataflow" : "unsupported-syntax",
-      "Python statement is outside the bounded lexical/dataflow allowlist"
-    );
+    const verdict = consumePythonStatement(statement, ctx);
+    if (verdict === void 0) continue;
+    return verdict === "unmatched" ? consumeUnmatchedPython(statement) : verdict;
   }
-  if (resolved.length === 0) return reject("unsupported-dataflow", "Python program has no supported authoring sink");
+  if (resolved.length === 0)
+    return rejectPython("unsupported-dataflow", "Python program has no supported authoring sink");
   const maxCandidates = options.maxCandidates ?? DEFAULT_MAX_ATTRIBUTION_CANDIDATES;
-  if (resolved.length > maxCandidates) {
-    return reject(
-      "candidate-budget-exceeded",
-      `Python program produced ${resolved.length} candidates; the limit is ${maxCandidates}`
-    );
-  }
+  const overBudget = rejectOverBudget(resolved, "python", "python-edit", "Python program", maxCandidates);
+  if (overBudget !== null) return overBudget;
   return { resolved, unresolved: [], preStateRequests };
 }
 var NODE_STRING_SOURCE = String.raw`(?:'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")`;
@@ -6157,385 +6049,1007 @@ function splitNodeArguments(source) {
   if (argument.trim() !== "" || arguments_.length > 0) arguments_.push(argument.trim());
   return arguments_;
 }
+function emitPythonAnchorSlice(ctx, expression, absolutePath) {
+  const slice = expression.match(PYTHON_ANCHOR_SLICE_PATTERN);
+  if (slice === null) return "unmatched";
+  const anchor = ctx.anchors.get(slice[2]);
+  const read = ctx.texts.get(slice[1]);
+  const replacementText = decodePythonString(slice[3]);
+  if (anchor === void 0 || read === void 0 || anchor.source !== slice[1] || replacementText === null || Number.parseInt(slice[4], 10) !== anchor.literal.length || nodePath5.resolve(ctx.cwd, read.path) !== absolutePath) {
+    return rejectPython(
+      "unsupported-dataflow",
+      "Python slice reconstruction is not tied to one literal anchor",
+      absolutePath
+    );
+  }
+  const content = readPythonPreState(ctx, absolutePath, ["match-locations", "deleted-text"]);
+  if (typeof content !== "string") return content;
+  const offset = content.indexOf(anchor.literal);
+  if (offset < 0)
+    return rejectPython(
+      "evidence-mismatch",
+      "Python slice anchor is absent from pre-state",
+      absolutePath,
+      ctx.preStateRequests
+    );
+  const range = literalOccurrenceRanges(content, anchor.literal)[0];
+  ctx.resolved.push({
+    status: "resolved",
+    layer: "python",
+    idiom: "python-anchor-slice",
+    span: {
+      operation: "modify",
+      absolutePath,
+      lineStart: range.start,
+      lineEnd: range.end,
+      expectedContent: `${content.slice(0, offset)}${replacementText}${content.slice(offset + anchor.literal.length)}`,
+      simpleCommandIndex: 0
+    }
+  });
+  return void 0;
+}
+function emitPythonLineJoin(ctx, expression, absolutePath) {
+  const lineJoin = expression.match(PYTHON_LINE_JOIN_PATTERN);
+  if (lineJoin === null) return "unmatched";
+  const delimiter = decodePythonString(lineJoin[1]);
+  const array = ctx.lines.get(lineJoin[2]);
+  const suffix = lineJoin[3] === void 0 ? "" : decodePythonString(lineJoin[3]);
+  if (delimiter !== "\n" || array === void 0 || suffix === null || suffix !== "" && suffix !== "\n") {
+    return rejectPython("unsupported-expression", "line-array writes require a literal newline join", absolutePath);
+  }
+  if (nodePath5.resolve(ctx.cwd, array.path) !== absolutePath || array.edits.size === 0) {
+    return rejectPython(
+      "unsupported-dataflow",
+      "line-array read and write paths are not provably identical",
+      absolutePath
+    );
+  }
+  const content = readPythonPreState(ctx, absolutePath, ["deleted-text"]);
+  if (typeof content !== "string") return content;
+  if (content.includes("\r"))
+    return rejectPython("unsupported-encoding", "line-array edits require LF text", absolutePath, ctx.preStateRequests);
+  const sourceLines = content.split("\n");
+  if (sourceLines.at(-1) === "") sourceLines.pop();
+  for (const [index, value] of array.edits) {
+    if (index >= sourceLines.length)
+      return rejectPython(
+        "evidence-mismatch",
+        "line-array index is outside pre-state",
+        absolutePath,
+        ctx.preStateRequests
+      );
+    sourceLines[index] = value;
+  }
+  const expectedContent = `${sourceLines.join("\n")}${suffix}`;
+  for (const index of array.edits.keys()) {
+    ctx.resolved.push({
+      status: "resolved",
+      layer: "python",
+      idiom: "python-line-array",
+      span: {
+        operation: "modify",
+        absolutePath,
+        lineStart: index + 1,
+        lineEnd: index + 1,
+        expectedContent,
+        simpleCommandIndex: 0
+      }
+    });
+  }
+  return void 0;
+}
+function emitPythonStructuredDump(ctx, expression, absolutePath) {
+  const structuredSink = expression.match(/^(json|tomli_w|toml|yaml)\.(dumps|safe_dump)\(([A-Za-z_][A-Za-z0-9_]*)\)$/);
+  if (structuredSink === null) return "unmatched";
+  const value = ctx.structured.get(structuredSink[3]);
+  const sinkFormat = structuredSink[1] === "json" ? "json" : structuredSink[1] === "yaml" ? "yaml" : "toml";
+  if (value === void 0 || value.format !== sinkFormat || nodePath5.resolve(ctx.cwd, value.path) !== absolutePath || value.keys.length === 0) {
+    return rejectPython(
+      "unsupported-dataflow",
+      "structured read, literal-key mutation, and write are not linked",
+      absolutePath
+    );
+  }
+  const content = readPythonPreState(ctx, absolutePath, ["match-locations"]);
+  if (typeof content !== "string") return content;
+  for (const keyPath of value.keys) {
+    const key2 = keyPath.at(-1);
+    const ranges = structuredKeyRanges(content, value.format, key2);
+    if (ranges.length !== 1) {
+      return rejectPython(
+        "unsupported-expression",
+        "structured literal key is absent or ambiguous in pre-state",
+        absolutePath,
+        ctx.preStateRequests
+      );
+    }
+    ctx.resolved.push({
+      status: "resolved",
+      layer: "python",
+      idiom: `python-${value.format}`,
+      span: {
+        operation: "modify",
+        absolutePath,
+        lineStart: ranges[0].start,
+        lineEnd: ranges[0].end,
+        simpleCommandIndex: 0
+      }
+    });
+  }
+  return void 0;
+}
+function resolvePythonWriteSink(ctx, expression, absolutePath) {
+  const literal = decodePythonString(expression);
+  if (literal !== null) {
+    ctx.resolved.push({
+      status: "resolved",
+      layer: "python",
+      idiom: "python-write",
+      span: {
+        operation: "create-overwrite",
+        absolutePath,
+        written: literal,
+        expectedContent: literal,
+        simpleCommandIndex: 0
+      }
+    });
+    return void 0;
+  }
+  const directReplace = expression.match(PYTHON_DIRECT_REPLACE_PATTERN);
+  const replacement = directReplace === null ? ctx.replacements.get(expression) : {
+    source: directReplace[1],
+    pattern: decodePythonString(directReplace[2]) ?? "",
+    replacement: decodePythonString(directReplace[3]) ?? "",
+    count: directReplace[4] === void 0 ? void 0 : Number.parseInt(directReplace[4], 10)
+  };
+  if (replacement !== void 0) {
+    const rejected = emitPythonReplace(ctx, absolutePath, replacement);
+    if (rejected !== null) return rejected;
+    return void 0;
+  }
+  for (const sink of [emitPythonAnchorSlice, emitPythonLineJoin, emitPythonStructuredDump]) {
+    const outcome = sink(ctx, expression, absolutePath);
+    if (outcome !== "unmatched") return outcome;
+  }
+  return rejectPython("unsupported-dataflow", "Python write expression is outside the bounded allowlist", absolutePath);
+}
+function createNodeContext(options) {
+  return {
+    cwd: options.cwd ?? process.cwd(),
+    options,
+    fsNamespaces: /* @__PURE__ */ new Set(),
+    fsFunctions: /* @__PURE__ */ new Map(),
+    paths: /* @__PURE__ */ new Map(),
+    texts: /* @__PURE__ */ new Map(),
+    replacements: /* @__PURE__ */ new Map(),
+    structured: /* @__PURE__ */ new Map(),
+    countAssertions: /* @__PURE__ */ new Map(),
+    resolved: [],
+    preStateRequests: []
+  };
+}
+function rejectNode(reasonCode, detail, fileArg, preStateRequests = []) {
+  return {
+    resolved: [],
+    unresolved: [unresolved("node", "node-edit", reasonCode, detail, fileArg)],
+    preStateRequests
+  };
+}
+function requestNodePreState(ctx, absolutePath, operation, requirement) {
+  if (!ctx.preStateRequests.some(
+    (entry) => entry.absolutePath === absolutePath && entry.operation === operation && entry.requirement === requirement
+  )) {
+    ctx.preStateRequests.push({ absolutePath, operation, requirement, simpleCommandIndex: 0 });
+  }
+}
+function readNodePreState(ctx, absolutePath, operation, requirements) {
+  for (const requirement of requirements) requestNodePreState(ctx, absolutePath, operation, requirement);
+  const content = ctx.options.readPreState?.(absolutePath) ?? null;
+  if (content === null)
+    return rejectNode(
+      "missing-pre-state",
+      "Node range recovery requires pre-command text",
+      absolutePath,
+      ctx.preStateRequests
+    );
+  if (content.includes("\0"))
+    return rejectNode(
+      "binary-content",
+      "Node range recovery does not accept binary content",
+      absolutePath,
+      ctx.preStateRequests
+    );
+  return content;
+}
+function nodeResolvePathExpression(ctx, expression) {
+  const literal = decodeNodeString(expression.trim());
+  if (literal !== null) return { path: literal, depth: 0 };
+  return ctx.paths.get(expression.trim()) ?? null;
+}
+function nodeFsMethod(ctx, callee) {
+  const bare = ctx.fsFunctions.get(callee);
+  if (bare !== void 0) return bare;
+  const member = callee.match(NODE_FS_MEMBER_PATTERN);
+  if (member !== null && ctx.fsNamespaces.has(member[1])) {
+    return member[2];
+  }
+  const required = callee.match(/^require\((['"])(?:node:)?fs\1\)\.(readFileSync|writeFileSync|appendFileSync)$/);
+  return required?.[2] ?? null;
+}
+function nodeParseCall(ctx, expression) {
+  const call = expression.trim().match(/^(require\((['"])(?:node:)?fs\2\)\.(?:readFileSync|writeFileSync|appendFileSync))\(([\s\S]*)\)$/) ?? expression.trim().match(/^([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)?)\(([\s\S]*)\)$/);
+  if (call === null) return null;
+  const method = nodeFsMethod(ctx, call[1].trim());
+  if (method === null) return null;
+  const args = splitNodeArguments(call.length === 4 ? call[3] : call[2]);
+  return args === null ? null : { method, args };
+}
+function emitNodeReplacement(ctx, absolutePath, replacement) {
+  const read = ctx.texts.get(replacement.source);
+  if (read === void 0 || nodePath5.resolve(ctx.cwd, read.path) !== absolutePath) {
+    return rejectNode(
+      "unsupported-dataflow",
+      "Node replacement read and write paths are not provably identical",
+      absolutePath
+    );
+  }
+  const content = readNodePreState(ctx, absolutePath, "modify", ["match-locations"]);
+  if (typeof content !== "string") return content;
+  const occurrences = countLiteralOccurrences(content, replacement.pattern);
+  const assertion = ctx.countAssertions.get(`${replacement.source}\0${replacement.pattern}`);
+  if (assertion !== void 0 && occurrences !== assertion) {
+    return rejectNode(
+      "evidence-mismatch",
+      "Node count assertion does not match pre-state",
+      absolutePath,
+      ctx.preStateRequests
+    );
+  }
+  const ranges = literalOccurrenceRanges(content, replacement.pattern);
+  if (ranges.length === 0) {
+    return rejectNode(
+      "evidence-mismatch",
+      "Node replacement literal is absent from pre-state",
+      absolutePath,
+      ctx.preStateRequests
+    );
+  }
+  const affected = replacement.global ? ranges : ranges.slice(0, 1);
+  const expectedContent = replaceLiteral(content, replacement.pattern, replacement.replacement, replacement.global);
+  for (const range of affected) {
+    ctx.resolved.push({
+      status: "resolved",
+      layer: "node",
+      idiom: "node-replace",
+      span: {
+        operation: "modify",
+        absolutePath,
+        lineStart: range.start,
+        lineEnd: range.end,
+        expectedContent,
+        simpleCommandIndex: 0
+      }
+    });
+  }
+  return null;
+}
+function consumeNodeStatement(statement, ctx) {
+  let match = statement.match(NODE_REQUIRE_FS_PATTERN);
+  if (match !== null) {
+    ctx.fsNamespaces.add(match[1]);
+    return void 0;
+  }
+  match = statement.match(/^const\s+\{([^}]+)\}\s*=\s*require\((['"])(?:node:)?fs\2\)$/);
+  if (match !== null) {
+    for (const entry of match[1].split(",")) {
+      const binding = entry.trim().match(/^(readFileSync|writeFileSync|appendFileSync)(?:\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*))?$/);
+      if (binding === null)
+        return rejectNode("unsupported-syntax", "Node fs destructuring contains an unsupported binding");
+      ctx.fsFunctions.set(binding[2] ?? binding[1], binding[1]);
+    }
+    return void 0;
+  }
+  match = statement.match(NODE_STRING_DECL_PATTERN);
+  if (match !== null) {
+    const path = decodeNodeString(match[2]);
+    if (path === null) return rejectNode("unsupported-syntax", "Node string literal uses an unsupported escape");
+    ctx.paths.set(match[1], { path, depth: 0 });
+    return void 0;
+  }
+  match = statement.match(NODE_NAME_ALIAS_PATTERN);
+  if (match !== null) {
+    const source = ctx.paths.get(match[2]);
+    if (source === void 0 || source.depth !== 0) {
+      return rejectNode("unsupported-dataflow", "Node path aliases are limited to one literal hop");
+    }
+    ctx.paths.set(match[1], { path: source.path, depth: 1 });
+    return void 0;
+  }
+  match = statement.match(NODE_GENERIC_DECL_PATTERN);
+  if (match !== null) {
+    const name = match[1];
+    const expression = match[2].trim();
+    const call2 = nodeParseCall(ctx, expression);
+    if (call2?.method === "readFileSync") {
+      const binding = call2.args[0] === void 0 ? null : nodeResolvePathExpression(ctx, call2.args[0]);
+      if (binding === null) return rejectNode("dynamic-path", "Node read target is not a literal path binding");
+      const encoding = call2.args[1] === void 0 ? null : decodeNodeString(call2.args[1]);
+      if (encoding !== "utf8" && encoding !== "utf-8") {
+        return rejectNode("unsupported-encoding", "Node text reads require an explicit UTF-8 encoding", binding.path);
+      }
+      if (call2.args.length !== 2)
+        return rejectNode("unsupported-syntax", "Node readFileSync call has unsupported arguments");
+      ctx.texts.set(name, { path: binding.path });
+      return void 0;
+    }
+    const replacement = expression.match(NODE_REPLACE_CALL_PATTERN);
+    if (replacement !== null) {
+      if (!ctx.texts.has(replacement[1]))
+        return rejectNode("unsupported-dataflow", "Node replace source is not a direct text read");
+      const pattern = decodeNodeString(replacement[3]);
+      const replacementText = decodeNodeString(replacement[4]);
+      if (pattern === null || pattern.length === 0 || replacementText === null || replacementText.includes("$")) {
+        return rejectNode("unsupported-expression", "Node replace requires non-empty literal input");
+      }
+      ctx.replacements.set(name, {
+        source: replacement[1],
+        pattern,
+        replacement: replacementText,
+        global: replacement[2] === "replaceAll"
+      });
+      return void 0;
+    }
+    const parsedJson = expression.match(NODE_JSON_PARSE_PATTERN);
+    if (parsedJson !== null) {
+      const text = ctx.texts.get(parsedJson[1]);
+      if (text === void 0) return rejectNode("unsupported-dataflow", "JSON.parse source is not a direct text read");
+      ctx.structured.set(name, { path: text.path, keys: [] });
+      return void 0;
+    }
+    const directJson = expression.match(/^JSON\.parse\((.+)\)$/);
+    if (directJson !== null) {
+      const read = nodeParseCall(ctx, directJson[1]);
+      if (read?.method !== "readFileSync" || read.args[0] === void 0) {
+        return rejectNode("unsupported-dataflow", "JSON.parse source is not a direct Node text read");
+      }
+      const binding = nodeResolvePathExpression(ctx, read.args[0]);
+      const encoding = read.args[1] === void 0 ? null : decodeNodeString(read.args[1]);
+      if (binding === null) return rejectNode("dynamic-path", "Node JSON target is not a literal path binding");
+      if (encoding !== "utf8" && encoding !== "utf-8") {
+        return rejectNode("unsupported-encoding", "Node JSON reads require an explicit UTF-8 encoding", binding.path);
+      }
+      ctx.structured.set(name, { path: binding.path, keys: [] });
+      return void 0;
+    }
+    return rejectNode("unsupported-dataflow", "Node variable initializer is outside the bounded allowlist");
+  }
+  match = statement.match(NODE_STRUCTURED_ASSIGN_PATTERN);
+  if (match !== null && ctx.structured.has(match[1])) {
+    const keySegments = [...match[2].matchAll(NODE_KEY_SEGMENT_SCAN_PATTERN)];
+    const keys = keySegments.map((segment) => segment[1] ?? decodeNodeString(segment[2]));
+    if (keys.length === 0 || keys.some((key2) => key2 === null)) {
+      return rejectNode("unsupported-expression", "structured Node mutation requires literal property keys");
+    }
+    if (!/^(?:true|false|null|-?\d+(?:\.\d+)?|(?:'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"))$/.test(match[3].trim())) {
+      return rejectNode("unsupported-expression", "structured Node mutation requires a literal value");
+    }
+    ctx.structured.get(match[1]).keys.push(keys);
+    return void 0;
+  }
+  match = statement.match(NODE_COUNT_GUARD_PATTERN);
+  if (match !== null) {
+    const literal = decodeNodeString(match[2]);
+    if (literal === null || literal.length === 0 || !ctx.texts.has(match[1])) {
+      return rejectNode("unsupported-dataflow", "Node count guard is not tied to a direct text read");
+    }
+    ctx.countAssertions.set(`${match[1]}\0${literal}`, Number.parseInt(match[3], 10));
+    return void 0;
+  }
+  const call = nodeParseCall(ctx, statement);
+  if (call?.method === "appendFileSync") {
+    const binding = call.args[0] === void 0 ? null : nodeResolvePathExpression(ctx, call.args[0]);
+    if (binding === null) return rejectNode("dynamic-path", "Node append target is not a literal path binding");
+    const written = call.args[1] === void 0 ? null : decodeNodeString(call.args[1]);
+    const encoding = call.args[2] === void 0 ? "utf8" : decodeNodeString(call.args[2]);
+    if (written === null)
+      return rejectNode("unsupported-expression", "Node append content must be literal", binding.path);
+    if (encoding !== "utf8" && encoding !== "utf-8") {
+      return rejectNode("unsupported-encoding", "Node append requires default or UTF-8 encoding", binding.path);
+    }
+    if (call.args.length < 2 || call.args.length > 3)
+      return rejectNode("unsupported-syntax", "Node appendFileSync call has unsupported arguments", binding.path);
+    const absolutePath = nodePath5.resolve(ctx.cwd, binding.path);
+    const content = readNodePreState(ctx, absolutePath, "append", ["pre-command-eof"]);
+    if (typeof content !== "string") return content;
+    const line = pythonLineAtOffset(content, content.length);
+    ctx.resolved.push({
+      status: "resolved",
+      layer: "node",
+      idiom: "node-append",
+      span: {
+        operation: "append",
+        absolutePath,
+        lineStart: line,
+        lineEnd: line,
+        written,
+        expectedContent: `${content}${written}`,
+        simpleCommandIndex: 0
+      }
+    });
+    return void 0;
+  }
+  if (call?.method === "writeFileSync") {
+    const binding = call.args[0] === void 0 ? null : nodeResolvePathExpression(ctx, call.args[0]);
+    if (binding === null) return rejectNode("dynamic-path", "Node write target is not a literal path binding");
+    if (call.args.length < 2 || call.args.length > 3)
+      return rejectNode("unsupported-syntax", "Node writeFileSync call has unsupported arguments", binding.path);
+    const encoding = call.args[2] === void 0 ? "utf8" : decodeNodeString(call.args[2]);
+    if (encoding !== "utf8" && encoding !== "utf-8") {
+      return rejectNode("unsupported-encoding", "Node write requires default or UTF-8 encoding", binding.path);
+    }
+    const absolutePath = nodePath5.resolve(ctx.cwd, binding.path);
+    return resolveNodeWriteSink(ctx, call.args[1], absolutePath);
+  }
+  return "unmatched";
+}
+function consumeUnmatchedNode(statement) {
+  if (/\b(?:readFile|writeFile|appendFile)\s*\(/.test(statement) || /\bPromise\b|\.then\s*\(/.test(statement)) {
+    return rejectNode("unsupported-dataflow", "asynchronous Node filesystem APIs are outside the bounded recognizer");
+  }
+  return rejectNode(
+    /(?:writeFile|appendFile|readFile|require\s*\()/.test(statement) ? "unsupported-dataflow" : "unsupported-syntax",
+    "Node statement is outside the bounded lexical/dataflow allowlist"
+  );
+}
 function parseNodeAttribution(command, options) {
   const extracted = extractNodeProgram(command);
   if (extracted === null) return null;
-  const reject = (reasonCode, detail, fileArg, preStateRequests2 = []) => ({
-    resolved: [],
-    unresolved: [unresolved("node", "node-edit", reasonCode, detail, fileArg)],
-    preStateRequests: preStateRequests2
-  });
   if (extracted.program === void 0) {
-    return reject(extracted.reason ?? "unsupported-syntax", extracted.detail ?? "unsupported Node invocation");
+    return rejectNode(extracted.reason ?? "unsupported-syntax", extracted.detail ?? "unsupported Node invocation");
   }
   if (/\b(?:process\.(?:argv|env)|require\s*\(\s*[^'"]|import\s*\()/.test(extracted.program)) {
-    return reject("dynamic-path", "Node target depends on runtime input or a computed import");
+    return rejectNode("dynamic-path", "Node target depends on runtime input or a computed import");
   }
   const statements = splitNodeStatements(extracted.program);
   if (statements === null || statements.length === 0) {
-    return reject("unsupported-syntax", "the Node program is incomplete or cannot be tokenized");
+    return rejectNode("unsupported-syntax", "the Node program is incomplete or cannot be tokenized");
   }
   if (statements.length > 64)
-    return reject("candidate-budget-exceeded", "the Node program exceeds the statement budget");
-  const cwd = options.cwd ?? process.cwd();
-  const fsNamespaces = /* @__PURE__ */ new Set();
-  const fsFunctions = /* @__PURE__ */ new Map();
-  const paths = /* @__PURE__ */ new Map();
-  const texts = /* @__PURE__ */ new Map();
-  const replacements = /* @__PURE__ */ new Map();
-  const structured = /* @__PURE__ */ new Map();
-  const countAssertions = /* @__PURE__ */ new Map();
-  const resolved = [];
-  const preStateRequests = [];
-  const request = (absolutePath, operation, requirement) => {
-    if (!preStateRequests.some(
-      (entry) => entry.absolutePath === absolutePath && entry.operation === operation && entry.requirement === requirement
-    )) {
-      preStateRequests.push({ absolutePath, operation, requirement, simpleCommandIndex: 0 });
-    }
-  };
-  const readPreState = (absolutePath, operation, requirements) => {
-    for (const requirement of requirements) request(absolutePath, operation, requirement);
-    const content = options.readPreState?.(absolutePath) ?? null;
-    if (content === null)
-      return reject(
-        "missing-pre-state",
-        "Node range recovery requires pre-command text",
-        absolutePath,
-        preStateRequests
-      );
-    if (content.includes("\0"))
-      return reject(
-        "binary-content",
-        "Node range recovery does not accept binary content",
-        absolutePath,
-        preStateRequests
-      );
-    return content;
-  };
-  const resolvePathExpression = (expression) => {
-    const literal = decodeNodeString(expression.trim());
-    if (literal !== null) return { path: literal, depth: 0 };
-    return paths.get(expression.trim()) ?? null;
-  };
-  const fsMethod = (callee) => {
-    const bare = fsFunctions.get(callee);
-    if (bare !== void 0) return bare;
-    const member = callee.match(NODE_FS_MEMBER_PATTERN);
-    if (member !== null && fsNamespaces.has(member[1])) {
-      return member[2];
-    }
-    const required = callee.match(/^require\((['"])(?:node:)?fs\1\)\.(readFileSync|writeFileSync|appendFileSync)$/);
-    return required?.[2] ?? null;
-  };
-  const parseCall = (expression) => {
-    const call = expression.trim().match(/^(require\((['"])(?:node:)?fs\2\)\.(?:readFileSync|writeFileSync|appendFileSync))\(([\s\S]*)\)$/) ?? expression.trim().match(/^([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)?)\(([\s\S]*)\)$/);
-    if (call === null) return null;
-    const method = fsMethod(call[1].trim());
-    if (method === null) return null;
-    const args = splitNodeArguments(call.length === 4 ? call[3] : call[2]);
-    return args === null ? null : { method, args };
-  };
-  const emitReplacement = (absolutePath, replacement) => {
-    const read = texts.get(replacement.source);
-    if (read === void 0 || nodePath5.resolve(cwd, read.path) !== absolutePath) {
-      return reject(
+    return rejectNode("candidate-budget-exceeded", "the Node program exceeds the statement budget");
+  const ctx = createNodeContext(options);
+  const { resolved, preStateRequests } = ctx;
+  for (const statement of statements) {
+    if (/^['"]use strict['"]$/.test(statement)) continue;
+    if (/^(?:for|while|do|switch|function|class|async|await|try|with|import)\b/.test(statement)) {
+      return rejectNode(
         "unsupported-dataflow",
-        "Node replacement read and write paths are not provably identical",
-        absolutePath
+        "control flow, asynchronous code, and imports are outside the Node recognizer"
       );
     }
-    const content = readPreState(absolutePath, "modify", ["match-locations"]);
-    if (typeof content !== "string") return content;
-    const occurrences = countLiteralOccurrences(content, replacement.pattern);
-    const assertion = countAssertions.get(`${replacement.source}\0${replacement.pattern}`);
-    if (assertion !== void 0 && occurrences !== assertion) {
-      return reject(
-        "evidence-mismatch",
-        "Node count assertion does not match pre-state",
+    const verdict = consumeNodeStatement(statement, ctx);
+    if (verdict === void 0) continue;
+    return verdict === "unmatched" ? consumeUnmatchedNode(statement) : verdict;
+  }
+  if (resolved.length === 0) return rejectNode("unsupported-dataflow", "Node program has no supported authoring sink");
+  const maxCandidates = options.maxCandidates ?? DEFAULT_MAX_ATTRIBUTION_CANDIDATES;
+  const overBudget = rejectOverBudget(resolved, "node", "node-edit", "Node program", maxCandidates);
+  if (overBudget !== null) return overBudget;
+  return { resolved, unresolved: [], preStateRequests };
+}
+function resolveNodeWriteSink(ctx, expression, absolutePath) {
+  const literal = decodeNodeString(expression);
+  if (literal !== null) {
+    ctx.resolved.push({
+      status: "resolved",
+      layer: "node",
+      idiom: "node-write",
+      span: {
+        operation: "create-overwrite",
         absolutePath,
-        preStateRequests
-      );
+        written: literal,
+        expectedContent: literal,
+        simpleCommandIndex: 0
+      }
+    });
+    return void 0;
+  }
+  const directReplacement = expression.match(NODE_REPLACE_CALL_PATTERN);
+  const replacement = directReplacement === null ? ctx.replacements.get(expression) : {
+    source: directReplacement[1],
+    pattern: decodeNodeString(directReplacement[3]) ?? "",
+    replacement: decodeNodeString(directReplacement[4]) ?? "",
+    global: directReplacement[2] === "replaceAll"
+  };
+  if (replacement !== void 0) {
+    if (replacement.pattern.length === 0 || replacement.replacement.includes("$")) {
+      return rejectNode("unsupported-expression", "Node replace requires non-empty literal input", absolutePath);
     }
-    const ranges = literalOccurrenceRanges(content, replacement.pattern);
-    if (ranges.length === 0) {
-      return reject(
-        "evidence-mismatch",
-        "Node replacement literal is absent from pre-state",
+    const rejected = emitNodeReplacement(ctx, absolutePath, replacement);
+    if (rejected !== null) return rejected;
+    return void 0;
+  }
+  const dumped = emitNodeStructuredDump(ctx, expression, absolutePath);
+  if (dumped !== "unmatched") return dumped;
+  return rejectNode("unsupported-dataflow", "Node write expression is outside the bounded allowlist", absolutePath);
+}
+function emitNodeStructuredDump(ctx, expression, absolutePath) {
+  const serialized = expression.match(/^JSON\.stringify\(([A-Za-z_$][A-Za-z0-9_$]*)(?:\s*,\s*null\s*,\s*\d+)?\)$/);
+  if (serialized === null) return "unmatched";
+  const value = ctx.structured.get(serialized[1]);
+  if (value === void 0 || nodePath5.resolve(ctx.cwd, value.path) !== absolutePath || value.keys.length === 0) {
+    return rejectNode(
+      "unsupported-dataflow",
+      "JSON read, literal-key mutation, and write are not linked",
+      absolutePath
+    );
+  }
+  const content = readNodePreState(ctx, absolutePath, "modify", ["match-locations"]);
+  if (typeof content !== "string") return content;
+  for (const keyPath of value.keys) {
+    const key2 = keyPath.at(-1);
+    const ranges = structuredKeyRanges(content, "json", key2);
+    if (ranges.length !== 1) {
+      return rejectNode(
+        "unsupported-expression",
+        "structured literal key is absent or ambiguous in pre-state",
         absolutePath,
-        preStateRequests
+        ctx.preStateRequests
       );
     }
-    const affected = replacement.global ? ranges : ranges.slice(0, 1);
-    const expectedContent = replaceLiteral(content, replacement.pattern, replacement.replacement, replacement.global);
-    for (const range of affected) {
+    ctx.resolved.push({
+      status: "resolved",
+      layer: "node",
+      idiom: "node-json",
+      span: {
+        operation: "modify",
+        absolutePath,
+        lineStart: ranges[0].start,
+        lineEnd: ranges[0].end,
+        simpleCommandIndex: 0
+      }
+    });
+  }
+  return void 0;
+}
+function resolveNumericSed(patternCommand, numericMatch, options, cwd, maxCandidates) {
+  if (patternCommand.files.length === 0) {
+    return {
+      resolved: [],
+      unresolved: [
+        unresolved("shell", "sed-inplace", "unsupported-syntax", "numeric in-place substitution has no file operand")
+      ],
+      preStateRequests: []
+    };
+  }
+  const start = Number.parseInt(numericMatch[1], 10);
+  const end = Number.parseInt(numericMatch[2] ?? numericMatch[1], 10);
+  const substitution = parseLiteralSubstitution(patternCommand.script.slice(numericMatch[0].indexOf("s")));
+  if (substitution === null) {
+    return {
+      resolved: [],
+      unresolved: [
+        unresolved(
+          "pattern-substitution",
+          "sed-inplace",
+          "unsupported-expression",
+          "numeric substitutions require a literal pattern and replacement for post-state verification"
+        )
+      ],
+      preStateRequests: []
+    };
+  }
+  const resolved = [];
+  const unresolvedMatches = [];
+  const preStateRequests = [];
+  for (const file of patternCommand.files) {
+    const reason = classifyDynamicWord(file);
+    if (reason !== null) {
+      unresolvedMatches.push(unresolved("shell", "sed-inplace", reason, "target path is dynamic", file));
+      continue;
+    }
+    const absolutePath = nodePath5.resolve(cwd, file);
+    const content = options.readPreState?.(absolutePath) ?? null;
+    const expectedContent = content === null || content.includes("\0") ? void 0 : content.split(/(?<=\n)/).map(
+      (line, index) => index + 1 >= start && index + 1 <= end ? replaceLiteral(line, substitution.pattern, substitution.replacement, substitution.global) : line
+    ).join("");
+    resolved.push({
+      status: "resolved",
+      layer: "shell",
+      idiom: "sed-inplace",
+      span: {
+        operation: "modify",
+        absolutePath,
+        lineStart: start,
+        lineEnd: end,
+        expectedContent,
+        simpleCommandIndex: patternCommand.simpleCommandIndex
+      }
+    });
+    if (expectedContent !== void 0) {
+      preStateRequests.push({
+        absolutePath,
+        operation: "modify",
+        requirement: "match-locations",
+        simpleCommandIndex: patternCommand.simpleCommandIndex
+      });
+    }
+    if (patternCommand.backupSuffix !== void 0 && patternCommand.backupSuffix !== "") {
       resolved.push({
         status: "resolved",
-        layer: "node",
-        idiom: "node-replace",
+        layer: "shell",
+        idiom: "sed-inplace",
+        span: {
+          operation: "create-overwrite",
+          absolutePath: `${nodePath5.resolve(cwd, file)}${patternCommand.backupSuffix}`,
+          simpleCommandIndex: patternCommand.simpleCommandIndex
+        }
+      });
+    }
+  }
+  if (unresolvedMatches.length > 0) return { resolved: [], unresolved: unresolvedMatches, preStateRequests: [] };
+  const overBudget = rejectOverBudget(resolved, "shell", "sed-inplace", "numeric substitution", maxCandidates);
+  if (overBudget !== null) return overBudget;
+  return { resolved, unresolved: [], preStateRequests };
+}
+function resolvePatternSubstitution(patternCommand, options, cwd, maxCandidates) {
+  let addressLiteral = null;
+  let substitutionSource = patternCommand.script;
+  if (patternCommand.kind === "sed" && substitutionSource.startsWith("/")) {
+    const address = readDelimitedField(substitutionSource, 1, "/");
+    if (address === null) substitutionSource = "";
+    else {
+      addressLiteral = decodeLiteralField(address.raw, "/", false);
+      if (addressLiteral === "") addressLiteral = null;
+      substitutionSource = substitutionSource.slice(address.next);
+    }
+  }
+  const substitution = parseLiteralSubstitution(substitutionSource);
+  const patternNewlines = substitution?.pattern.match(/\n/g)?.length ?? 0;
+  const replacementNewlines = substitution?.replacement.match(/\n/g)?.length ?? 0;
+  if (substitution === null || patternNewlines !== replacementNewlines || patternCommand.kind !== "perl-zero" && patternNewlines > 0) {
+    return {
+      resolved: [],
+      unresolved: [
+        unresolved(
+          "pattern-substitution",
+          patternCommand.kind === "sed" ? "sed-inplace" : "perl-inplace",
+          "unsupported-expression",
+          "only literal line-count-preserving substitutions are supported"
+        )
+      ],
+      preStateRequests: []
+    };
+  }
+  if (patternCommand.files.length === 0) {
+    return {
+      resolved: [],
+      unresolved: [
+        unresolved(
+          "pattern-substitution",
+          patternCommand.kind === "sed" ? "sed-inplace" : "perl-inplace",
+          "unsupported-syntax",
+          "in-place substitution has no literal file operand"
+        )
+      ],
+      preStateRequests: []
+    };
+  }
+  if (addressLiteral === null && patternCommand.kind === "sed" && patternCommand.script.startsWith("/")) {
+    return {
+      resolved: [],
+      unresolved: [
+        unresolved(
+          "pattern-substitution",
+          "sed-inplace",
+          "unsupported-expression",
+          "sed address is not a literal pattern"
+        )
+      ],
+      preStateRequests: []
+    };
+  }
+  const resolved = [];
+  const unresolvedMatches = [];
+  const preStateRequests = [];
+  for (const file of patternCommand.files) {
+    const reason = classifyDynamicWord(file);
+    if (reason !== null) {
+      unresolvedMatches.push(
+        unresolved(
+          "pattern-substitution",
+          patternCommand.kind === "sed" ? "sed-inplace" : "perl-inplace",
+          reason,
+          "target path is dynamic",
+          file
+        )
+      );
+      continue;
+    }
+    const absolutePath = nodePath5.resolve(cwd, file);
+    preStateRequests.push({
+      absolutePath,
+      operation: "modify",
+      requirement: "match-locations",
+      simpleCommandIndex: patternCommand.simpleCommandIndex
+    });
+    if (patternCommand.kind === "perl-zero") {
+      preStateRequests.push({
+        absolutePath,
+        operation: "modify",
+        requirement: "deleted-text",
+        simpleCommandIndex: patternCommand.simpleCommandIndex
+      });
+    }
+    const content = options.readPreState?.(absolutePath) ?? null;
+    if (content === null) {
+      unresolvedMatches.push(
+        unresolved(
+          "pattern-substitution",
+          patternCommand.kind === "sed" ? "sed-inplace" : "perl-inplace",
+          "missing-pre-state",
+          "literal substitution range requires pre-command text",
+          absolutePath
+        )
+      );
+      continue;
+    }
+    if (content.includes("\0")) {
+      unresolvedMatches.push(
+        unresolved(
+          "pattern-substitution",
+          patternCommand.kind === "sed" ? "sed-inplace" : "perl-inplace",
+          "binary-content",
+          "substitution range recovery does not accept NUL-delimited content",
+          absolutePath
+        )
+      );
+      continue;
+    }
+    let ranges = literalOccurrenceRanges(content, substitution.pattern);
+    if (addressLiteral !== null) {
+      const addressedLines = new Set(literalOccurrenceRanges(content, addressLiteral).map(({ start }) => start));
+      ranges = ranges.filter(({ start, end }) => start === end && addressedLines.has(start));
+    }
+    if (patternCommand.kind === "perl" && ranges.length > 1) {
+      ranges = [{ start: ranges[0].start, end: ranges[ranges.length - 1].end }];
+    } else if (patternCommand.kind === "perl-zero" && !substitution.global) {
+      ranges = ranges.slice(0, 1);
+    }
+    const expectedContent = expectedSubstitutionContent(content, substitution, patternCommand.kind, addressLiteral);
+    for (const range of ranges) {
+      resolved.push({
+        status: "resolved",
+        layer: "pattern-substitution",
+        idiom: patternCommand.kind === "sed" ? "sed-inplace" : "perl-inplace",
         span: {
           operation: "modify",
           absolutePath,
           lineStart: range.start,
           lineEnd: range.end,
           expectedContent,
-          simpleCommandIndex: 0
+          simpleCommandIndex: patternCommand.simpleCommandIndex
         }
       });
     }
-    return null;
-  };
-  for (const statement of statements) {
-    if (/^['"]use strict['"]$/.test(statement)) continue;
-    if (/^(?:for|while|do|switch|function|class|async|await|try|with|import)\b/.test(statement)) {
-      return reject(
-        "unsupported-dataflow",
-        "control flow, asynchronous code, and imports are outside the Node recognizer"
-      );
-    }
-    let match = statement.match(NODE_REQUIRE_FS_PATTERN);
-    if (match !== null) {
-      fsNamespaces.add(match[1]);
-      continue;
-    }
-    match = statement.match(/^const\s+\{([^}]+)\}\s*=\s*require\((['"])(?:node:)?fs\2\)$/);
-    if (match !== null) {
-      for (const entry of match[1].split(",")) {
-        const binding = entry.trim().match(/^(readFileSync|writeFileSync|appendFileSync)(?:\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*))?$/);
-        if (binding === null)
-          return reject("unsupported-syntax", "Node fs destructuring contains an unsupported binding");
-        fsFunctions.set(binding[2] ?? binding[1], binding[1]);
-      }
-      continue;
-    }
-    match = statement.match(NODE_STRING_DECL_PATTERN);
-    if (match !== null) {
-      const path = decodeNodeString(match[2]);
-      if (path === null) return reject("unsupported-syntax", "Node string literal uses an unsupported escape");
-      paths.set(match[1], { path, depth: 0 });
-      continue;
-    }
-    match = statement.match(NODE_NAME_ALIAS_PATTERN);
-    if (match !== null) {
-      const source = paths.get(match[2]);
-      if (source === void 0 || source.depth !== 0) {
-        return reject("unsupported-dataflow", "Node path aliases are limited to one literal hop");
-      }
-      paths.set(match[1], { path: source.path, depth: 1 });
-      continue;
-    }
-    match = statement.match(NODE_GENERIC_DECL_PATTERN);
-    if (match !== null) {
-      const name = match[1];
-      const expression = match[2].trim();
-      const call2 = parseCall(expression);
-      if (call2?.method === "readFileSync") {
-        const binding = call2.args[0] === void 0 ? null : resolvePathExpression(call2.args[0]);
-        if (binding === null) return reject("dynamic-path", "Node read target is not a literal path binding");
-        const encoding = call2.args[1] === void 0 ? null : decodeNodeString(call2.args[1]);
-        if (encoding !== "utf8" && encoding !== "utf-8") {
-          return reject("unsupported-encoding", "Node text reads require an explicit UTF-8 encoding", binding.path);
-        }
-        if (call2.args.length !== 2)
-          return reject("unsupported-syntax", "Node readFileSync call has unsupported arguments");
-        texts.set(name, { path: binding.path });
-        continue;
-      }
-      const replacement = expression.match(NODE_REPLACE_CALL_PATTERN);
-      if (replacement !== null) {
-        if (!texts.has(replacement[1]))
-          return reject("unsupported-dataflow", "Node replace source is not a direct text read");
-        const pattern = decodeNodeString(replacement[3]);
-        const replacementText = decodeNodeString(replacement[4]);
-        if (pattern === null || pattern.length === 0 || replacementText === null || replacementText.includes("$")) {
-          return reject("unsupported-expression", "Node replace requires non-empty literal input");
-        }
-        replacements.set(name, {
-          source: replacement[1],
-          pattern,
-          replacement: replacementText,
-          global: replacement[2] === "replaceAll"
-        });
-        continue;
-      }
-      const parsedJson = expression.match(NODE_JSON_PARSE_PATTERN);
-      if (parsedJson !== null) {
-        const text = texts.get(parsedJson[1]);
-        if (text === void 0) return reject("unsupported-dataflow", "JSON.parse source is not a direct text read");
-        structured.set(name, { path: text.path, keys: [] });
-        continue;
-      }
-      const directJson = expression.match(/^JSON\.parse\((.+)\)$/);
-      if (directJson !== null) {
-        const read = parseCall(directJson[1]);
-        if (read?.method !== "readFileSync" || read.args[0] === void 0) {
-          return reject("unsupported-dataflow", "JSON.parse source is not a direct Node text read");
-        }
-        const binding = resolvePathExpression(read.args[0]);
-        const encoding = read.args[1] === void 0 ? null : decodeNodeString(read.args[1]);
-        if (binding === null) return reject("dynamic-path", "Node JSON target is not a literal path binding");
-        if (encoding !== "utf8" && encoding !== "utf-8") {
-          return reject("unsupported-encoding", "Node JSON reads require an explicit UTF-8 encoding", binding.path);
-        }
-        structured.set(name, { path: binding.path, keys: [] });
-        continue;
-      }
-      return reject("unsupported-dataflow", "Node variable initializer is outside the bounded allowlist");
-    }
-    match = statement.match(NODE_STRUCTURED_ASSIGN_PATTERN);
-    if (match !== null && structured.has(match[1])) {
-      const keySegments = [...match[2].matchAll(NODE_KEY_SEGMENT_SCAN_PATTERN)];
-      const keys = keySegments.map((segment) => segment[1] ?? decodeNodeString(segment[2]));
-      if (keys.length === 0 || keys.some((key2) => key2 === null)) {
-        return reject("unsupported-expression", "structured Node mutation requires literal property keys");
-      }
-      if (!/^(?:true|false|null|-?\d+(?:\.\d+)?|(?:'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"))$/.test(match[3].trim())) {
-        return reject("unsupported-expression", "structured Node mutation requires a literal value");
-      }
-      structured.get(match[1]).keys.push(keys);
-      continue;
-    }
-    match = statement.match(NODE_COUNT_GUARD_PATTERN);
-    if (match !== null) {
-      const literal = decodeNodeString(match[2]);
-      if (literal === null || literal.length === 0 || !texts.has(match[1])) {
-        return reject("unsupported-dataflow", "Node count guard is not tied to a direct text read");
-      }
-      countAssertions.set(`${match[1]}\0${literal}`, Number.parseInt(match[3], 10));
-      continue;
-    }
-    const call = parseCall(statement);
-    if (call?.method === "appendFileSync") {
-      const binding = call.args[0] === void 0 ? null : resolvePathExpression(call.args[0]);
-      if (binding === null) return reject("dynamic-path", "Node append target is not a literal path binding");
-      const written = call.args[1] === void 0 ? null : decodeNodeString(call.args[1]);
-      const encoding = call.args[2] === void 0 ? "utf8" : decodeNodeString(call.args[2]);
-      if (written === null)
-        return reject("unsupported-expression", "Node append content must be literal", binding.path);
-      if (encoding !== "utf8" && encoding !== "utf-8") {
-        return reject("unsupported-encoding", "Node append requires default or UTF-8 encoding", binding.path);
-      }
-      if (call.args.length < 2 || call.args.length > 3)
-        return reject("unsupported-syntax", "Node appendFileSync call has unsupported arguments", binding.path);
-      const absolutePath = nodePath5.resolve(cwd, binding.path);
-      const content = readPreState(absolutePath, "append", ["pre-command-eof"]);
-      if (typeof content !== "string") return content;
-      const line = pythonLineAtOffset(content, content.length);
+    if (patternCommand.backupSuffix !== void 0 && patternCommand.backupSuffix !== "") {
       resolved.push({
         status: "resolved",
-        layer: "node",
-        idiom: "node-append",
+        layer: "pattern-substitution",
+        idiom: "sed-inplace",
         span: {
-          operation: "append",
-          absolutePath,
-          lineStart: line,
-          lineEnd: line,
-          written,
-          expectedContent: `${content}${written}`,
-          simpleCommandIndex: 0
+          operation: "create-overwrite",
+          absolutePath: `${absolutePath}${patternCommand.backupSuffix}`,
+          simpleCommandIndex: patternCommand.simpleCommandIndex
         }
       });
-      continue;
     }
-    if (call?.method === "writeFileSync") {
-      const binding = call.args[0] === void 0 ? null : resolvePathExpression(call.args[0]);
-      if (binding === null) return reject("dynamic-path", "Node write target is not a literal path binding");
-      if (call.args.length < 2 || call.args.length > 3)
-        return reject("unsupported-syntax", "Node writeFileSync call has unsupported arguments", binding.path);
-      const encoding = call.args[2] === void 0 ? "utf8" : decodeNodeString(call.args[2]);
-      if (encoding !== "utf8" && encoding !== "utf-8") {
-        return reject("unsupported-encoding", "Node write requires default or UTF-8 encoding", binding.path);
-      }
-      const absolutePath = nodePath5.resolve(cwd, binding.path);
-      const expression = call.args[1];
-      const literal = decodeNodeString(expression);
-      if (literal !== null) {
-        resolved.push({
-          status: "resolved",
-          layer: "node",
-          idiom: "node-write",
-          span: {
-            operation: "create-overwrite",
-            absolutePath,
-            written: literal,
-            expectedContent: literal,
-            simpleCommandIndex: 0
-          }
-        });
-        continue;
-      }
-      const directReplacement = expression.match(NODE_REPLACE_CALL_PATTERN);
-      const replacement = directReplacement === null ? replacements.get(expression) : {
-        source: directReplacement[1],
-        pattern: decodeNodeString(directReplacement[3]) ?? "",
-        replacement: decodeNodeString(directReplacement[4]) ?? "",
-        global: directReplacement[2] === "replaceAll"
-      };
-      if (replacement !== void 0) {
-        if (replacement.pattern.length === 0 || replacement.replacement.includes("$")) {
-          return reject("unsupported-expression", "Node replace requires non-empty literal input", absolutePath);
-        }
-        const rejected = emitReplacement(absolutePath, replacement);
-        if (rejected !== null) return rejected;
-        continue;
-      }
-      const serialized = expression.match(/^JSON\.stringify\(([A-Za-z_$][A-Za-z0-9_$]*)(?:\s*,\s*null\s*,\s*\d+)?\)$/);
-      if (serialized !== null) {
-        const value = structured.get(serialized[1]);
-        if (value === void 0 || nodePath5.resolve(cwd, value.path) !== absolutePath || value.keys.length === 0) {
-          return reject(
-            "unsupported-dataflow",
-            "JSON read, literal-key mutation, and write are not linked",
-            absolutePath
-          );
-        }
-        const content = readPreState(absolutePath, "modify", ["match-locations"]);
-        if (typeof content !== "string") return content;
-        for (const keyPath of value.keys) {
-          const key2 = keyPath.at(-1);
-          const ranges = structuredKeyRanges(content, "json", key2);
-          if (ranges.length !== 1) {
-            return reject(
-              "unsupported-expression",
-              "structured literal key is absent or ambiguous in pre-state",
-              absolutePath,
-              preStateRequests
-            );
-          }
-          resolved.push({
-            status: "resolved",
-            layer: "node",
-            idiom: "node-json",
-            span: {
-              operation: "modify",
-              absolutePath,
-              lineStart: ranges[0].start,
-              lineEnd: ranges[0].end,
-              simpleCommandIndex: 0
-            }
-          });
-        }
-        continue;
-      }
-      return reject("unsupported-dataflow", "Node write expression is outside the bounded allowlist", absolutePath);
-    }
-    if (/\b(?:readFile|writeFile|appendFile)\s*\(/.test(statement) || /\bPromise\b|\.then\s*\(/.test(statement)) {
-      return reject("unsupported-dataflow", "asynchronous Node filesystem APIs are outside the bounded recognizer");
-    }
-    return reject(
-      /(?:writeFile|appendFile|readFile|require\s*\()/.test(statement) ? "unsupported-dataflow" : "unsupported-syntax",
-      "Node statement is outside the bounded lexical/dataflow allowlist"
-    );
   }
-  if (resolved.length === 0) return reject("unsupported-dataflow", "Node program has no supported authoring sink");
-  const maxCandidates = options.maxCandidates ?? DEFAULT_MAX_ATTRIBUTION_CANDIDATES;
-  if (resolved.length > maxCandidates) {
-    return reject(
-      "candidate-budget-exceeded",
-      `Node program produced ${resolved.length} candidates; the limit is ${maxCandidates}`
-    );
+  if (unresolvedMatches.length > 0) return { resolved: [], unresolved: unresolvedMatches, preStateRequests };
+  const overBudget = rejectOverBudget(
+    resolved,
+    "pattern-substitution",
+    patternCommand.kind === "sed" ? "sed-inplace" : "perl-inplace",
+    "substitution",
+    maxCandidates
+  );
+  if (overBudget !== null) return overBudget;
+  return { resolved, unresolved: [], preStateRequests };
+}
+function rejectOverBudget(resolved, layer, idiom, noun, maxCandidates) {
+  if (resolved.length <= maxCandidates) return null;
+  return {
+    resolved: [],
+    unresolved: [
+      unresolved(
+        layer,
+        idiom,
+        "candidate-budget-exceeded",
+        `${noun} produced ${resolved.length} candidates; the limit is ${maxCandidates}`
+      )
+    ],
+    preStateRequests: []
+  };
+}
+function parseLiteralListLoop(variable, listSource, body, options, maxCandidates, parse) {
+  if (body.includes("for ") || body.includes("while ") || body.includes("until ")) {
+    return {
+      resolved: [],
+      unresolved: [
+        unresolved("literal-loop", "literal-list-loop", "unsupported-syntax", "nested loop bodies are not supported")
+      ],
+      preStateRequests: []
+    };
+  }
+  if (listSource.includes("$(") || listSource.includes("`")) {
+    return {
+      resolved: [],
+      unresolved: [
+        unresolved("literal-loop", "literal-list-loop", "command-substitution", "loop list uses command substitution")
+      ],
+      preStateRequests: []
+    };
+  }
+  if (GLOB_META.test(listSource)) {
+    return {
+      resolved: [],
+      unresolved: [unresolved("literal-loop", "literal-list-loop", "glob-path", "loop list uses glob expansion")],
+      preStateRequests: []
+    };
+  }
+  if (SHELL_EXPANSION.test(listSource)) {
+    return {
+      resolved: [],
+      unresolved: [unresolved("literal-loop", "literal-list-loop", "dynamic-list", "loop list is not a literal list")],
+      preStateRequests: []
+    };
+  }
+  const bindings = argvOf(listSource);
+  if (bindings === null || bindings.length === 0) {
+    return {
+      resolved: [],
+      unresolved: [
+        unresolved("literal-loop", "literal-list-loop", "unsupported-syntax", "loop list cannot be tokenized")
+      ],
+      preStateRequests: []
+    };
+  }
+  if (bindings.length > maxCandidates) {
+    return {
+      resolved: [],
+      unresolved: [
+        unresolved(
+          "literal-loop",
+          "literal-list-loop",
+          "candidate-budget-exceeded",
+          `literal list has ${bindings.length} bindings; the limit is ${maxCandidates}`
+        )
+      ],
+      preStateRequests: []
+    };
+  }
+  const resolved = [];
+  const unresolvedMatches = [];
+  const preStateRequests = [];
+  for (const binding of bindings) {
+    const dynamic = classifyDynamicWord(binding);
+    if (dynamic !== null) {
+      return {
+        resolved: [],
+        unresolved: [unresolved("literal-loop", "literal-list-loop", dynamic, "loop binding is not literal", binding)],
+        preStateRequests: []
+      };
+    }
+    const expanded = expandLiteralLoopVariable(body, variable, binding);
+    if (expanded.unsafeUnquoted) {
+      return {
+        resolved: [],
+        unresolved: [
+          unresolved(
+            "literal-loop",
+            "literal-list-loop",
+            "unsupported-dataflow",
+            "unquoted loop expansion would perform shell field splitting"
+          )
+        ],
+        preStateRequests: []
+      };
+    }
+    if (expanded.replacements === 0) {
+      return {
+        resolved: [],
+        unresolved: [
+          unresolved(
+            "literal-loop",
+            "literal-list-loop",
+            "unsupported-dataflow",
+            "loop variable is not used in an expandable shell context"
+          )
+        ],
+        preStateRequests: []
+      };
+    }
+    const result = parse(expanded.command, { ...options, maxCandidates });
+    resolved.push(...result.resolved.map((match) => ({ ...match, layer: "literal-loop" })));
+    unresolvedMatches.push(...result.unresolved.map((match) => ({ ...match, layer: "literal-loop" })));
+    preStateRequests.push(...result.preStateRequests);
+  }
+  if (unresolvedMatches.length > 0) return { resolved: [], unresolved: unresolvedMatches, preStateRequests: [] };
+  const overBudget = rejectOverBudget(
+    resolved,
+    "literal-loop",
+    "literal-list-loop",
+    "literal expansion",
+    maxCandidates
+  );
+  if (overBudget !== null) return overBudget;
+  for (const match of resolved) {
+    if (match.span.operation !== "modify") continue;
+    if (preStateRequests.some((request) => request.absolutePath === match.span.absolutePath)) continue;
+    preStateRequests.push({
+      absolutePath: match.span.absolutePath,
+      operation: match.span.operation,
+      requirement: "match-locations",
+      simpleCommandIndex: match.span.simpleCommandIndex
+    });
   }
   return { resolved, unresolved: [], preStateRequests };
+}
+function parseCompoundStages(command, split, options, maxCandidates, parse) {
+  const hasPipeline = split.stages.some((stage) => stage.precededBy === "pipe");
+  const hasLayeredPipelineStage = split.stages.some((stage) => {
+    const stageText = stage.text.trimStart();
+    return /^(?:python(?:3(?:\.\d+)?)?|node|for)\b/.test(stageText) || parsePatternCommand(stage.text) !== null;
+  });
+  if (!(split.malformed === void 0 && split.stages.length > 1 && (!hasPipeline || hasLayeredPipelineStage))) {
+    return null;
+  }
+  if (split.stages.some((stage) => argvOf(stage.text)?.[0] === "cd")) {
+    return {
+      resolved: [],
+      unresolved: [
+        unresolved(
+          "pattern-substitution",
+          "compound-command",
+          "dynamic-path",
+          "a directory-changing compound cannot safely resolve substitution targets"
+        )
+      ],
+      preStateRequests: []
+    };
+  }
+  const resolved = [];
+  const unresolvedMatches = [];
+  const preStateRequests = [];
+  for (let index = 0; index < split.stages.length; index += 1) {
+    const stage = split.stages[index];
+    const child = parse(stage.text, options);
+    const join9 = stage.precededBy === "and" ? "&&" : stage.precededBy === "or" ? "||" : void 0;
+    resolved.push(
+      ...child.resolved.map((match) => ({
+        ...match,
+        span: { ...match.span, simpleCommandIndex: index, join: join9 }
+      }))
+    );
+    unresolvedMatches.push(...child.unresolved.map((match) => ({ ...match, simpleCommandIndex: index })));
+    preStateRequests.push(...child.preStateRequests.map((request) => ({ ...request, simpleCommandIndex: index })));
+  }
+  if (hasPipeline) {
+    const pipelineDetailed = parseCommandDetailed(command, options);
+    const pipelineReads = pipelineDetailed.flatMap(
+      (match) => match.status === "resolved" && match.span.operation === "read" ? [{ status: "resolved", layer: "shell", idiom: match.idiom, span: match.span }] : []
+    );
+    const pipelineUnresolved = pipelineDetailed.flatMap(
+      (match) => match.status === "unresolved" ? [unresolved("shell", match.idiom, stableReason(match), match.reason, match.fileArg)] : []
+    );
+    const layeredReads = resolved.filter(({ layer, span }) => layer !== "shell" && span.operation === "read");
+    const writes = resolved.filter(({ span }) => span.operation !== "read");
+    resolved.splice(0, resolved.length, ...pipelineReads, ...layeredReads, ...writes);
+    const layeredUnresolved = unresolvedMatches.filter(({ layer }) => layer !== "shell");
+    unresolvedMatches.splice(0, unresolvedMatches.length, ...pipelineUnresolved, ...layeredUnresolved);
+  }
+  const overBudget = rejectOverBudget(resolved, "shell", "compound-command", "compound", maxCandidates);
+  if (overBudget !== null) return overBudget;
+  return { resolved, unresolved: unresolvedMatches, preStateRequests };
 }
 function parseCommandLayered(command, options = {}) {
   const cwd = options.cwd ?? process.cwd();
@@ -6554,479 +7068,16 @@ function parseCommandLayered(command, options = {}) {
     if (node !== null) return node;
   }
   const loop = command.trim().match(/^for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+([\s\S]*?)\s*;\s*do\s+([\s\S]*?)\s*;\s*done\s*$/);
-  if (loop !== null) {
-    const [, variable, listSource, body] = loop;
-    if (body.includes("for ") || body.includes("while ") || body.includes("until ")) {
-      return {
-        resolved: [],
-        unresolved: [
-          unresolved("literal-loop", "literal-list-loop", "unsupported-syntax", "nested loop bodies are not supported")
-        ],
-        preStateRequests: []
-      };
-    }
-    if (listSource.includes("$(") || listSource.includes("`")) {
-      return {
-        resolved: [],
-        unresolved: [
-          unresolved("literal-loop", "literal-list-loop", "command-substitution", "loop list uses command substitution")
-        ],
-        preStateRequests: []
-      };
-    }
-    if (GLOB_META.test(listSource)) {
-      return {
-        resolved: [],
-        unresolved: [unresolved("literal-loop", "literal-list-loop", "glob-path", "loop list uses glob expansion")],
-        preStateRequests: []
-      };
-    }
-    if (SHELL_EXPANSION.test(listSource)) {
-      return {
-        resolved: [],
-        unresolved: [
-          unresolved("literal-loop", "literal-list-loop", "dynamic-list", "loop list is not a literal list")
-        ],
-        preStateRequests: []
-      };
-    }
-    const bindings = argvOf(listSource);
-    if (bindings === null || bindings.length === 0) {
-      return {
-        resolved: [],
-        unresolved: [
-          unresolved("literal-loop", "literal-list-loop", "unsupported-syntax", "loop list cannot be tokenized")
-        ],
-        preStateRequests: []
-      };
-    }
-    if (bindings.length > maxCandidates) {
-      return {
-        resolved: [],
-        unresolved: [
-          unresolved(
-            "literal-loop",
-            "literal-list-loop",
-            "candidate-budget-exceeded",
-            `literal list has ${bindings.length} bindings; the limit is ${maxCandidates}`
-          )
-        ],
-        preStateRequests: []
-      };
-    }
-    const resolved2 = [];
-    const unresolvedMatches2 = [];
-    const preStateRequests = [];
-    for (const binding of bindings) {
-      const dynamic = classifyDynamicWord(binding);
-      if (dynamic !== null) {
-        return {
-          resolved: [],
-          unresolved: [
-            unresolved("literal-loop", "literal-list-loop", dynamic, "loop binding is not literal", binding)
-          ],
-          preStateRequests: []
-        };
-      }
-      const expanded = expandLiteralLoopVariable(body, variable, binding);
-      if (expanded.unsafeUnquoted) {
-        return {
-          resolved: [],
-          unresolved: [
-            unresolved(
-              "literal-loop",
-              "literal-list-loop",
-              "unsupported-dataflow",
-              "unquoted loop expansion would perform shell field splitting"
-            )
-          ],
-          preStateRequests: []
-        };
-      }
-      if (expanded.replacements === 0) {
-        return {
-          resolved: [],
-          unresolved: [
-            unresolved(
-              "literal-loop",
-              "literal-list-loop",
-              "unsupported-dataflow",
-              "loop variable is not used in an expandable shell context"
-            )
-          ],
-          preStateRequests: []
-        };
-      }
-      const result = parseCommandLayered(expanded.command, { ...options, maxCandidates });
-      resolved2.push(...result.resolved.map((match) => ({ ...match, layer: "literal-loop" })));
-      unresolvedMatches2.push(...result.unresolved.map((match) => ({ ...match, layer: "literal-loop" })));
-      preStateRequests.push(...result.preStateRequests);
-    }
-    if (unresolvedMatches2.length > 0) return { resolved: [], unresolved: unresolvedMatches2, preStateRequests: [] };
-    if (resolved2.length > maxCandidates) {
-      return {
-        resolved: [],
-        unresolved: [
-          unresolved(
-            "literal-loop",
-            "literal-list-loop",
-            "candidate-budget-exceeded",
-            `literal expansion produced ${resolved2.length} candidates; the limit is ${maxCandidates}`
-          )
-        ],
-        preStateRequests: []
-      };
-    }
-    for (const match of resolved2) {
-      if (match.span.operation !== "modify") continue;
-      if (preStateRequests.some((request) => request.absolutePath === match.span.absolutePath)) continue;
-      preStateRequests.push({
-        absolutePath: match.span.absolutePath,
-        operation: match.span.operation,
-        requirement: "match-locations",
-        simpleCommandIndex: match.span.simpleCommandIndex
-      });
-    }
-    return { resolved: resolved2, unresolved: [], preStateRequests };
-  }
+  if (loop !== null)
+    return parseLiteralListLoop(loop[1], loop[2], loop[3], options, maxCandidates, parseCommandLayered);
   const split = splitTopLevel(command);
-  const hasPipeline = split.stages.some((stage) => stage.precededBy === "pipe");
-  const hasLayeredPipelineStage = split.stages.some((stage) => {
-    const stageText = stage.text.trimStart();
-    return /^(?:python(?:3(?:\.\d+)?)?|node|for)\b/.test(stageText) || parsePatternCommand(stage.text) !== null;
-  });
-  if (split.malformed === void 0 && split.stages.length > 1 && (!hasPipeline || hasLayeredPipelineStage)) {
-    if (split.stages.some((stage) => argvOf(stage.text)?.[0] === "cd")) {
-      return {
-        resolved: [],
-        unresolved: [
-          unresolved(
-            "pattern-substitution",
-            "compound-command",
-            "dynamic-path",
-            "a directory-changing compound cannot safely resolve substitution targets"
-          )
-        ],
-        preStateRequests: []
-      };
-    }
-    const resolved2 = [];
-    const unresolvedMatches2 = [];
-    const preStateRequests = [];
-    for (let index = 0; index < split.stages.length; index += 1) {
-      const stage = split.stages[index];
-      const child = parseCommandLayered(stage.text, options);
-      const join9 = stage.precededBy === "and" ? "&&" : stage.precededBy === "or" ? "||" : void 0;
-      resolved2.push(
-        ...child.resolved.map((match) => ({
-          ...match,
-          span: { ...match.span, simpleCommandIndex: index, join: join9 }
-        }))
-      );
-      unresolvedMatches2.push(...child.unresolved.map((match) => ({ ...match, simpleCommandIndex: index })));
-      preStateRequests.push(...child.preStateRequests.map((request) => ({ ...request, simpleCommandIndex: index })));
-    }
-    if (hasPipeline) {
-      const pipelineDetailed = parseCommandDetailed(command, options);
-      const pipelineReads = pipelineDetailed.flatMap(
-        (match) => match.status === "resolved" && match.span.operation === "read" ? [{ status: "resolved", layer: "shell", idiom: match.idiom, span: match.span }] : []
-      );
-      const pipelineUnresolved = pipelineDetailed.flatMap(
-        (match) => match.status === "unresolved" ? [unresolved("shell", match.idiom, stableReason(match), match.reason, match.fileArg)] : []
-      );
-      const layeredReads = resolved2.filter(({ layer, span }) => layer !== "shell" && span.operation === "read");
-      const writes = resolved2.filter(({ span }) => span.operation !== "read");
-      resolved2.splice(0, resolved2.length, ...pipelineReads, ...layeredReads, ...writes);
-      const layeredUnresolved = unresolvedMatches2.filter(({ layer }) => layer !== "shell");
-      unresolvedMatches2.splice(0, unresolvedMatches2.length, ...pipelineUnresolved, ...layeredUnresolved);
-    }
-    if (resolved2.length > maxCandidates) {
-      return {
-        resolved: [],
-        unresolved: [
-          unresolved(
-            "shell",
-            "compound-command",
-            "candidate-budget-exceeded",
-            `compound produced ${resolved2.length} candidates; the limit is ${maxCandidates}`
-          )
-        ],
-        preStateRequests: []
-      };
-    }
-    return { resolved: resolved2, unresolved: unresolvedMatches2, preStateRequests };
-  }
+  const compound = parseCompoundStages(command, split, options, maxCandidates, parseCommandLayered);
+  if (compound !== null) return compound;
   const patternCommand = split.malformed === void 0 && split.stages.length === 1 ? parsePatternCommand(split.stages[0].text) : null;
   if (patternCommand !== null) {
     const numericMatch = patternCommand.kind === "sed" ? patternCommand.script.match(/^(\d+)(?:,(\d+))?s\W/) : null;
-    const numericSed = numericMatch !== null;
-    if (numericMatch !== null) {
-      if (patternCommand.files.length === 0) {
-        return {
-          resolved: [],
-          unresolved: [
-            unresolved(
-              "shell",
-              "sed-inplace",
-              "unsupported-syntax",
-              "numeric in-place substitution has no file operand"
-            )
-          ],
-          preStateRequests: []
-        };
-      }
-      const start = Number.parseInt(numericMatch[1], 10);
-      const end = Number.parseInt(numericMatch[2] ?? numericMatch[1], 10);
-      const substitution = parseLiteralSubstitution(patternCommand.script.slice(numericMatch[0].indexOf("s")));
-      if (substitution === null) {
-        return {
-          resolved: [],
-          unresolved: [
-            unresolved(
-              "pattern-substitution",
-              "sed-inplace",
-              "unsupported-expression",
-              "numeric substitutions require a literal pattern and replacement for post-state verification"
-            )
-          ],
-          preStateRequests: []
-        };
-      }
-      const resolved2 = [];
-      const unresolvedMatches2 = [];
-      const preStateRequests = [];
-      for (const file of patternCommand.files) {
-        const reason = classifyDynamicWord(file);
-        if (reason !== null) {
-          unresolvedMatches2.push(unresolved("shell", "sed-inplace", reason, "target path is dynamic", file));
-          continue;
-        }
-        const absolutePath = nodePath5.resolve(cwd, file);
-        const content = options.readPreState?.(absolutePath) ?? null;
-        const expectedContent = content === null || content.includes("\0") ? void 0 : content.split(/(?<=\n)/).map(
-          (line, index) => index + 1 >= start && index + 1 <= end ? replaceLiteral(line, substitution.pattern, substitution.replacement, substitution.global) : line
-        ).join("");
-        resolved2.push({
-          status: "resolved",
-          layer: "shell",
-          idiom: "sed-inplace",
-          span: {
-            operation: "modify",
-            absolutePath,
-            lineStart: start,
-            lineEnd: end,
-            expectedContent,
-            simpleCommandIndex: patternCommand.simpleCommandIndex
-          }
-        });
-        if (expectedContent !== void 0) {
-          preStateRequests.push({
-            absolutePath,
-            operation: "modify",
-            requirement: "match-locations",
-            simpleCommandIndex: patternCommand.simpleCommandIndex
-          });
-        }
-        if (patternCommand.backupSuffix !== void 0 && patternCommand.backupSuffix !== "") {
-          resolved2.push({
-            status: "resolved",
-            layer: "shell",
-            idiom: "sed-inplace",
-            span: {
-              operation: "create-overwrite",
-              absolutePath: `${nodePath5.resolve(cwd, file)}${patternCommand.backupSuffix}`,
-              simpleCommandIndex: patternCommand.simpleCommandIndex
-            }
-          });
-        }
-      }
-      if (unresolvedMatches2.length > 0) return { resolved: [], unresolved: unresolvedMatches2, preStateRequests: [] };
-      if (resolved2.length > maxCandidates) {
-        return {
-          resolved: [],
-          unresolved: [
-            unresolved(
-              "shell",
-              "sed-inplace",
-              "candidate-budget-exceeded",
-              `numeric substitution produced ${resolved2.length} candidates; the limit is ${maxCandidates}`
-            )
-          ],
-          preStateRequests: []
-        };
-      }
-      return { resolved: resolved2, unresolved: [], preStateRequests };
-    }
-    if (!numericSed) {
-      let addressLiteral = null;
-      let substitutionSource = patternCommand.script;
-      if (patternCommand.kind === "sed" && substitutionSource.startsWith("/")) {
-        const address = readDelimitedField(substitutionSource, 1, "/");
-        if (address === null) substitutionSource = "";
-        else {
-          addressLiteral = decodeLiteralField(address.raw, "/", false);
-          if (addressLiteral === "") addressLiteral = null;
-          substitutionSource = substitutionSource.slice(address.next);
-        }
-      }
-      const substitution = parseLiteralSubstitution(substitutionSource);
-      const patternNewlines = substitution?.pattern.match(/\n/g)?.length ?? 0;
-      const replacementNewlines = substitution?.replacement.match(/\n/g)?.length ?? 0;
-      if (substitution === null || patternNewlines !== replacementNewlines || patternCommand.kind !== "perl-zero" && patternNewlines > 0) {
-        return {
-          resolved: [],
-          unresolved: [
-            unresolved(
-              "pattern-substitution",
-              patternCommand.kind === "sed" ? "sed-inplace" : "perl-inplace",
-              "unsupported-expression",
-              "only literal line-count-preserving substitutions are supported"
-            )
-          ],
-          preStateRequests: []
-        };
-      }
-      if (patternCommand.files.length === 0) {
-        return {
-          resolved: [],
-          unresolved: [
-            unresolved(
-              "pattern-substitution",
-              patternCommand.kind === "sed" ? "sed-inplace" : "perl-inplace",
-              "unsupported-syntax",
-              "in-place substitution has no literal file operand"
-            )
-          ],
-          preStateRequests: []
-        };
-      }
-      if (addressLiteral === null && patternCommand.kind === "sed" && patternCommand.script.startsWith("/")) {
-        return {
-          resolved: [],
-          unresolved: [
-            unresolved(
-              "pattern-substitution",
-              "sed-inplace",
-              "unsupported-expression",
-              "sed address is not a literal pattern"
-            )
-          ],
-          preStateRequests: []
-        };
-      }
-      const resolved2 = [];
-      const unresolvedMatches2 = [];
-      const preStateRequests = [];
-      for (const file of patternCommand.files) {
-        const reason = classifyDynamicWord(file);
-        if (reason !== null) {
-          unresolvedMatches2.push(
-            unresolved(
-              "pattern-substitution",
-              patternCommand.kind === "sed" ? "sed-inplace" : "perl-inplace",
-              reason,
-              "target path is dynamic",
-              file
-            )
-          );
-          continue;
-        }
-        const absolutePath = nodePath5.resolve(cwd, file);
-        preStateRequests.push({
-          absolutePath,
-          operation: "modify",
-          requirement: "match-locations",
-          simpleCommandIndex: patternCommand.simpleCommandIndex
-        });
-        if (patternCommand.kind === "perl-zero") {
-          preStateRequests.push({
-            absolutePath,
-            operation: "modify",
-            requirement: "deleted-text",
-            simpleCommandIndex: patternCommand.simpleCommandIndex
-          });
-        }
-        const content = options.readPreState?.(absolutePath) ?? null;
-        if (content === null) {
-          unresolvedMatches2.push(
-            unresolved(
-              "pattern-substitution",
-              patternCommand.kind === "sed" ? "sed-inplace" : "perl-inplace",
-              "missing-pre-state",
-              "literal substitution range requires pre-command text",
-              absolutePath
-            )
-          );
-          continue;
-        }
-        if (content.includes("\0")) {
-          unresolvedMatches2.push(
-            unresolved(
-              "pattern-substitution",
-              patternCommand.kind === "sed" ? "sed-inplace" : "perl-inplace",
-              "binary-content",
-              "substitution range recovery does not accept NUL-delimited content",
-              absolutePath
-            )
-          );
-          continue;
-        }
-        let ranges = literalOccurrenceRanges(content, substitution.pattern);
-        if (addressLiteral !== null) {
-          const addressedLines = new Set(literalOccurrenceRanges(content, addressLiteral).map(({ start }) => start));
-          ranges = ranges.filter(({ start, end }) => start === end && addressedLines.has(start));
-        }
-        if (patternCommand.kind === "perl" && ranges.length > 1) {
-          ranges = [{ start: ranges[0].start, end: ranges[ranges.length - 1].end }];
-        } else if (patternCommand.kind === "perl-zero" && !substitution.global) {
-          ranges = ranges.slice(0, 1);
-        }
-        const expectedContent = expectedSubstitutionContent(content, substitution, patternCommand.kind, addressLiteral);
-        for (const range of ranges) {
-          resolved2.push({
-            status: "resolved",
-            layer: "pattern-substitution",
-            idiom: patternCommand.kind === "sed" ? "sed-inplace" : "perl-inplace",
-            span: {
-              operation: "modify",
-              absolutePath,
-              lineStart: range.start,
-              lineEnd: range.end,
-              expectedContent,
-              simpleCommandIndex: patternCommand.simpleCommandIndex
-            }
-          });
-        }
-        if (patternCommand.backupSuffix !== void 0 && patternCommand.backupSuffix !== "") {
-          resolved2.push({
-            status: "resolved",
-            layer: "pattern-substitution",
-            idiom: "sed-inplace",
-            span: {
-              operation: "create-overwrite",
-              absolutePath: `${absolutePath}${patternCommand.backupSuffix}`,
-              simpleCommandIndex: patternCommand.simpleCommandIndex
-            }
-          });
-        }
-      }
-      if (unresolvedMatches2.length > 0) return { resolved: [], unresolved: unresolvedMatches2, preStateRequests };
-      if (resolved2.length > maxCandidates) {
-        return {
-          resolved: [],
-          unresolved: [
-            unresolved(
-              "pattern-substitution",
-              patternCommand.kind === "sed" ? "sed-inplace" : "perl-inplace",
-              "candidate-budget-exceeded",
-              `substitution produced ${resolved2.length} candidates; the limit is ${maxCandidates}`
-            )
-          ],
-          preStateRequests: []
-        };
-      }
-      return { resolved: resolved2, unresolved: [], preStateRequests };
-    }
+    if (numericMatch !== null) return resolveNumericSed(patternCommand, numericMatch, options, cwd, maxCandidates);
+    return resolvePatternSubstitution(patternCommand, options, cwd, maxCandidates);
   }
   const argv = argvOf(command.trim());
   if (argv !== null) {
@@ -7061,20 +7112,8 @@ function parseCommandLayered(command, options = {}) {
   const unresolvedMatches = detailed.flatMap(
     (match) => match.status === "unresolved" ? [unresolved("shell", match.idiom, stableReason(match), match.reason, match.fileArg)] : []
   );
-  if (resolved.length > maxCandidates) {
-    return {
-      resolved: [],
-      unresolved: [
-        unresolved(
-          "shell",
-          "deterministic-shell",
-          "candidate-budget-exceeded",
-          `command produced ${resolved.length} candidates; the limit is ${maxCandidates}`
-        )
-      ],
-      preStateRequests: []
-    };
-  }
+  const overBudget = rejectOverBudget(resolved, "shell", "deterministic-shell", "command", maxCandidates);
+  if (overBudget !== null) return overBudget;
   return { resolved, unresolved: unresolvedMatches, preStateRequests: [] };
 }
 var DEFAULT_PLANNED_TOUCH_BUDGETS = Object.freeze({
@@ -8089,7 +8128,7 @@ async function runTouchHook(input, executors, memo, probeCache, logger) {
   }
   return batch.outputs[0];
 }
-var DEFAULT_TIMEOUT_MS2 = 2e3;
+var DEFAULT_TIMEOUT_MS2 = 5e3;
 var HOOK_CONTEXT_LOCK_WAIT_SECS = "1";
 function createDefaultTouchExecutors(timeoutMs = DEFAULT_TIMEOUT_MS2) {
   const executors = {
@@ -8339,65 +8378,9 @@ function joinOfCommand(idx, groups, guardByIndex) {
   }
   return guardByIndex.get(idx)?.join;
 }
-async function runBashTouches(matches, sessionId, cwd, toolResponse, executors, memo, warn = console.warn, scopeAlreadyResolved = false, reportDiagnostics = () => void 0, invocationId = null) {
-  const resolved = matches.filter((m) => m.status === "resolved");
-  if (bashResponseInterrupted(toolResponse)) {
-    reportDiagnostics({ executionGateDrops: resolved.length });
-    return [];
-  }
-  const exitCode = bashResponseExitCode(toolResponse);
-  const guards = matches.filter((m) => m.status === "builtin-guard");
-  if (resolved.length === 0) {
-    reportDiagnostics({ executionGateDrops: 0 });
-    return [];
-  }
-  if (resolved.length > DEFAULT_MAX_ATTRIBUTION_CANDIDATES) {
-    warn(
-      `Bash candidate budget exceeded: ${resolved.length} candidates (limit ${DEFAULT_MAX_ATTRIBUTION_CANDIDATES}); rejecting the complete touch set`
-    );
-    reportDiagnostics({ executionGateDrops: resolved.length });
-    return [];
-  }
-  const probePaths = [];
-  const fileProducingByPath = /* @__PURE__ */ new Map();
-  for (const m of resolved) {
-    if (m.span.operation === "delete") probePaths.push(m.span.absolutePath);
-    else if ((m.idiom === "cp-write" || m.idiom === "install-write") && m.span.operation === "read") {
-      probePaths.push(m.span.absolutePath);
-    } else if (FILE_PRODUCING_OPS.has(m.span.operation)) {
-      const list = fileProducingByPath.get(m.span.absolutePath);
-      if (list !== void 0) list.push(m.span.simpleCommandIndex);
-      else fileProducingByPath.set(m.span.absolutePath, [m.span.simpleCommandIndex]);
-    }
-  }
-  const recreateProbePaths = [];
-  for (const m of resolved) {
-    if (m.span.operation !== "delete") continue;
-    const later = (fileProducingByPath.get(m.span.absolutePath) ?? []).some((i) => i > m.span.simpleCommandIndex);
-    if (later) recreateProbePaths.push(m.span.absolutePath);
-  }
-  const probeCache = createRealityProbeCache(probePaths, recreateProbePaths);
-  const groups = /* @__PURE__ */ new Map();
-  const guardByIndex = /* @__PURE__ */ new Map();
-  const commandOrder = [];
-  for (const m of resolved) {
-    const idx = m.span.simpleCommandIndex;
-    const list = groups.get(idx);
-    if (list !== void 0) {
-      list.push(m);
-    } else {
-      groups.set(idx, [m]);
-      commandOrder.push(idx);
-    }
-  }
-  for (const g of guards) {
-    if (groups.has(g.simpleCommandIndex) || guardByIndex.has(g.simpleCommandIndex)) continue;
-    guardByIndex.set(g.simpleCommandIndex, g);
-    commandOrder.push(g.simpleCommandIndex);
-  }
-  commandOrder.sort((a, b) => a - b);
+function translateAndGateSpans(groups, order, sessionId, cwd, scopeAlreadyResolved, probeCache) {
   const evals = /* @__PURE__ */ new Map();
-  for (const idx of commandOrder) {
+  for (const idx of order) {
     const spans = groups.get(idx);
     if (spans === void 0) continue;
     const readPaths = spans.filter((m) => (m.idiom === "cp-write" || m.idiom === "install-write") && m.span.operation === "read").map((m) => m.span.absolutePath);
@@ -8439,8 +8422,11 @@ async function runBashTouches(matches, sessionId, cwd, toolResponse, executors, 
     }
     evals.set(idx, list);
   }
+  return evals;
+}
+function buildPassByPath(evals, order) {
   const passByPath = /* @__PURE__ */ new Map();
-  for (const idx of commandOrder) {
+  for (const idx of order) {
     const list = evals.get(idx);
     if (list === void 0) continue;
     for (const e of list) {
@@ -8450,7 +8436,10 @@ async function runBashTouches(matches, sessionId, cwd, toolResponse, executors, 
       }
     }
   }
-  for (const idx of commandOrder) {
+  return passByPath;
+}
+function reconcileAgainstPassMap(evals, order, passByPath) {
+  for (const idx of order) {
     const list = evals.get(idx);
     if (list === void 0) continue;
     for (const e of list) {
@@ -8463,8 +8452,10 @@ async function runBashTouches(matches, sessionId, cwd, toolResponse, executors, 
       }
     }
   }
+}
+function explainLaterRecreates(evals, order, probeCache, cwd) {
   const recreateByPath = /* @__PURE__ */ new Map();
-  for (const idx of commandOrder) {
+  for (const idx of order) {
     const list = evals.get(idx);
     if (list === void 0) continue;
     for (const e of list) {
@@ -8476,7 +8467,7 @@ async function runBashTouches(matches, sessionId, cwd, toolResponse, executors, 
     }
   }
   if (recreateByPath.size > 0) {
-    for (const idx of commandOrder) {
+    for (const idx of order) {
       const list = evals.get(idx);
       if (list === void 0) continue;
       for (const e of list) {
@@ -8489,8 +8480,10 @@ async function runBashTouches(matches, sessionId, cwd, toolResponse, executors, 
       }
     }
   }
+}
+function computeVerdicts(order, evals, guardByIndex) {
   const computed = /* @__PURE__ */ new Map();
-  for (const idx of commandOrder) {
+  for (const idx of order) {
     const list = evals.get(idx);
     if (list === void 0) {
       const guard = guardByIndex.get(idx);
@@ -8505,10 +8498,13 @@ async function runBashTouches(matches, sessionId, cwd, toolResponse, executors, 
     }
     computed.set(idx, failed ? "failed" : passed ? "succeeded" : "unknown");
   }
+  return computed;
+}
+function applyJoinFilter(order, groups, guardByIndex, computed) {
   const effective = /* @__PURE__ */ new Map();
   const skipped = /* @__PURE__ */ new Set();
   let prevIndex = null;
-  for (const idx of commandOrder) {
+  for (const idx of order) {
     const join9 = joinOfCommand(idx, groups, guardByIndex);
     const prevVerdict = prevIndex !== null ? effective.get(prevIndex) : void 0;
     if (prevVerdict !== void 0 && join9 !== void 0) {
@@ -8522,9 +8518,67 @@ async function runBashTouches(matches, sessionId, cwd, toolResponse, executors, 
     effective.set(idx, computed.get(idx));
     prevIndex = idx;
   }
+  return { effective, skipped };
+}
+function orderCommands(resolved, guards) {
+  const groups = /* @__PURE__ */ new Map();
+  const guardByIndex = /* @__PURE__ */ new Map();
+  const order = [];
+  for (const m of resolved) {
+    const idx = m.span.simpleCommandIndex;
+    const list = groups.get(idx);
+    if (list !== void 0) {
+      list.push(m);
+    } else {
+      groups.set(idx, [m]);
+      order.push(idx);
+    }
+  }
+  for (const g of guards) {
+    if (groups.has(g.simpleCommandIndex) || guardByIndex.has(g.simpleCommandIndex)) continue;
+    guardByIndex.set(g.simpleCommandIndex, g);
+    order.push(g.simpleCommandIndex);
+  }
+  order.sort((a, b) => a - b);
+  return { groups, guardByIndex, order };
+}
+function seedProbeCache(resolved) {
+  const probePaths = [];
+  const fileProducingByPath = /* @__PURE__ */ new Map();
+  for (const m of resolved) {
+    if (m.span.operation === "delete") probePaths.push(m.span.absolutePath);
+    else if ((m.idiom === "cp-write" || m.idiom === "install-write") && m.span.operation === "read") {
+      probePaths.push(m.span.absolutePath);
+    } else if (FILE_PRODUCING_OPS.has(m.span.operation)) {
+      const list = fileProducingByPath.get(m.span.absolutePath);
+      if (list !== void 0) list.push(m.span.simpleCommandIndex);
+      else fileProducingByPath.set(m.span.absolutePath, [m.span.simpleCommandIndex]);
+    }
+  }
+  const recreateProbePaths = [];
+  for (const m of resolved) {
+    if (m.span.operation !== "delete") continue;
+    const later = (fileProducingByPath.get(m.span.absolutePath) ?? []).some((i) => i > m.span.simpleCommandIndex);
+    if (later) recreateProbePaths.push(m.span.absolutePath);
+  }
+  return createRealityProbeCache(probePaths, recreateProbePaths);
+}
+function bashGatePrelude(matches, toolResponse) {
+  const resolved = matches.filter((m) => m.status === "resolved");
+  if (bashResponseInterrupted(toolResponse)) return { kind: "stop", drops: resolved.length };
+  if (resolved.length === 0) return { kind: "stop", drops: 0 };
+  if (resolved.length > DEFAULT_MAX_ATTRIBUTION_CANDIDATES) {
+    return {
+      kind: "stop",
+      drops: resolved.length,
+      warn: `Bash candidate budget exceeded: ${resolved.length} candidates (limit ${DEFAULT_MAX_ATTRIBUTION_CANDIDATES}); rejecting the complete touch set`
+    };
+  }
+  return { kind: "proceed", resolved, exitCode: bashResponseExitCode(toolResponse) };
+}
+function selectSurvivors(order, evals, skipped, exitCode) {
   const touches = [];
-  const invocationExecutors = executors.forInvocation?.() ?? executors;
-  for (const idx of commandOrder) {
+  for (const idx of order) {
     if (skipped.has(idx)) continue;
     const list = evals.get(idx);
     if (list === void 0) continue;
@@ -8537,6 +8591,27 @@ async function runBashTouches(matches, sessionId, cwd, toolResponse, executors, 
       touches.push(e.touch);
     }
   }
+  return touches;
+}
+async function runBashTouches(matches, sessionId, cwd, toolResponse, executors, memo, warn = console.warn, scopeAlreadyResolved = false, reportDiagnostics = () => void 0, invocationId = null) {
+  const prelude = bashGatePrelude(matches, toolResponse);
+  if (prelude.kind === "stop") {
+    if (prelude.warn !== void 0) warn(prelude.warn);
+    reportDiagnostics({ executionGateDrops: prelude.drops });
+    return [];
+  }
+  const { resolved, exitCode } = prelude;
+  const guards = matches.filter((m) => m.status === "builtin-guard");
+  const probeCache = seedProbeCache(resolved);
+  const { groups, guardByIndex, order: commandOrder } = orderCommands(resolved, guards);
+  const evals = translateAndGateSpans(groups, commandOrder, sessionId, cwd, scopeAlreadyResolved, probeCache);
+  const passByPath = buildPassByPath(evals, commandOrder);
+  reconcileAgainstPassMap(evals, commandOrder, passByPath);
+  explainLaterRecreates(evals, commandOrder, probeCache, cwd);
+  const computed = computeVerdicts(commandOrder, evals, guardByIndex);
+  const { skipped } = applyJoinFilter(commandOrder, groups, guardByIndex, computed);
+  const touches = selectSurvivors(commandOrder, evals, skipped, exitCode);
+  const invocationExecutors = executors.forInvocation?.() ?? executors;
   const batch = await runTouchHooks(touches, invocationExecutors, memo, invocationId, probeCache, { warn });
   const blocks = batch.outputs.flatMap(
     (output) => output.additionalContext === null ? [] : [output.additionalContext]
