@@ -16,6 +16,9 @@ import { fileURLToPath } from 'node:url';
 const npmDir = join(dirname(fileURLToPath(import.meta.url)), '..', 'npm');
 const checkOnly = process.argv.includes('--check');
 
+// OS display labels keyed by each package manifest's single os guard value;
+// an unrecognized guard fails closed in discoverPlatformPackages below.
+/** @type {Record<string, string>} */
 const OS_LABELS = { linux: 'Linux', darwin: 'macOS', win32: 'Windows' };
 
 // The platform list is derived from the packages on disk (npm/git-span-*), and
@@ -30,7 +33,8 @@ function discoverPlatformPackages() {
       try {
         manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
       } catch (error) {
-        throw new Error(`npm/${entry.name}/package.json is missing or unparseable: ${error.message}`);
+        const reason = error instanceof Error ? error.message : String(error);
+        throw new Error(`npm/${entry.name}/package.json is missing or unparseable: ${reason}`);
       }
       const os = Array.isArray(manifest.os) && typeof manifest.os[0] === 'string' ? manifest.os[0] : null;
       const cpu = Array.isArray(manifest.cpu) && typeof manifest.cpu[0] === 'string' ? manifest.cpu[0] : null;
@@ -44,6 +48,9 @@ function discoverPlatformPackages() {
     });
 }
 
+/**
+ * @param {{ name: string, dir: string, os: string, cpu: string }} pkg
+ */
 function renderReadme({ name, os, cpu }) {
   return `# ${name}
 

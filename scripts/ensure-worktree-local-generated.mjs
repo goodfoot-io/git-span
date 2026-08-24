@@ -64,6 +64,7 @@ const platformPackageScopes = fs
 // Each entry is gitignored, which is what exposes it to the provisioner. Entries are listed
 // whether or not they exist right now: a path absent from the primary checkout today gets
 // linked as soon as somebody creates it there.
+/** @type {Record<string, string[]>} */
 const GENERATED_PATHS = {
   'packages/website': [
     '.source',
@@ -90,6 +91,10 @@ const GENERATED_PATHS = {
 // slot it expects; everything else is left absent for the tool to write fresh.
 const FILE_SUFFIXES = ['.tsbuildinfo'];
 
+/**
+ * @param {string} relativePath
+ * @returns {boolean}
+ */
 const isFileArtifact = (relativePath) => FILE_SUFFIXES.some((suffix) => relativePath.endsWith(suffix));
 
 const usage = () => {
@@ -116,7 +121,13 @@ if (unknown.length > 0) {
 // platform target, so it is enforced on every invocation, not just --all or explicit scopes.
 const visited = [...new Set([...scopes, ...platformPackageScopes])];
 
-/** True when `candidate` is `root` itself or lives underneath it. */
+/**
+ * True when `candidate` is `root` itself or lives underneath it.
+ *
+ * @param {string} root
+ * @param {string} candidate
+ * @returns {boolean}
+ */
 const isInside = (root, candidate) => {
   const relative = path.relative(root, candidate);
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
@@ -134,7 +145,7 @@ for (const scope of visited) {
     try {
       stats = fs.lstatSync(linkPath);
     } catch (error) {
-      if (error.code !== 'ENOENT') throw error;
+      if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
       // Absent platform bin dirs are still materialized: the regression guard below demands
       // every gitignored platform bin path exist as a local directory, so an unbuilt platform
       // gets an empty local slot instead of relying on absence to mean safety.
@@ -178,7 +189,7 @@ for (const scope of platformPackageScopes) {
   try {
     stats = fs.lstatSync(linkPath);
   } catch (error) {
-    if (error.code !== 'ENOENT') throw error;
+    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
     unmaterialized.push(`${scope}/bin (missing)`);
     continue;
   }

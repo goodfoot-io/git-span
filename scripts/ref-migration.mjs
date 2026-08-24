@@ -10,10 +10,20 @@ const {
   }
 });
 
+/**
+ * @param {string} cmd
+ * @param {string} [input]
+ * @returns {string}
+ */
 function run(cmd, input) {
   return execSync(cmd, { input, encoding: 'utf8' }).trim();
 }
 
+/**
+ * @param {string} cmd
+ * @param {string} [input]
+ * @returns {string | null}
+ */
 function tryRun(cmd, input) {
   try {
     return run(cmd, input);
@@ -22,11 +32,20 @@ function tryRun(cmd, input) {
   }
 }
 
+/**
+ * @param {string} content
+ * @returns {boolean}
+ */
 function isEmbeddedAnchorsContent(content) {
   const firstLine = content.split('\n').find((l) => l.length > 0);
   return !!firstLine && firstLine.startsWith('id ');
 }
 
+/**
+ * @param {string} spanName
+ * @param {string[]} ids
+ * @returns {string}
+ */
 function buildEmbeddedFromLegacyIds(spanName, ids) {
   let out = '';
   for (const id of ids) {
@@ -44,6 +63,12 @@ function buildEmbeddedFromLegacyIds(spanName, ids) {
   return out;
 }
 
+/**
+ * @param {string} spanRef
+ * @param {string} newAnchorsBlob
+ * @param {string | null} configBlobId
+ * @param {string} originalCommitId
+ */
 function rewriteSpan(spanRef, newAnchorsBlob, configBlobId, originalCommitId) {
   let mktreeInput = `100644 blob ${newAnchorsBlob}\tanchors\n`;
   if (configBlobId) {

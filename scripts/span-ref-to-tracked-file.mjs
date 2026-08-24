@@ -66,6 +66,15 @@ const SpanArchive = r.struct({
   config: SpanConfig
 });
 
+/**
+ * Decoded values of the codecs above, derived from the rkyv-js codec generics
+ * instead of restated by hand.
+ *
+ * @typedef {r.Infer<typeof AnchorExtent>} AnchorExtentValue
+ * @typedef {r.Infer<typeof AnchorEntry>} AnchorEntryValue
+ * @typedef {r.Infer<typeof SpanArchive>} SpanArchiveValue
+ */
+
 const FORMAT_VERSION = 0x00;
 const HEADER_LEN = 8;
 
@@ -79,6 +88,26 @@ const { values } = parseArgs({
 });
 const dryRun = values['dry-run'];
 
+/**
+ * Run git and capture stdout. Text mode by default; `buffer: true` returns the
+ * raw bytes (needed for binary blob contents).
+ *
+ * @overload
+ * @param {string[]} args
+ * @param {{ buffer?: false, input?: string }} [options]
+ * @returns {string}
+ */
+/**
+ * @overload
+ * @param {string[]} args
+ * @param {{ buffer: true, input?: string }} [options]
+ * @returns {Buffer}
+ */
+/**
+ * @param {string[]} args
+ * @param {{ buffer?: boolean, input?: string }} [options]
+ * @returns {string | Buffer}
+ */
 function git(args, { buffer = false, input } = {}) {
   return execFileSync('git', args, {
     input,
@@ -86,6 +115,11 @@ function git(args, { buffer = false, input } = {}) {
     maxBuffer: 512 * 1024 * 1024
   });
 }
+
+/**
+ * @param {string[]} args
+ * @returns {string | null}
+ */
 function gitTry(args) {
   try {
     return git(args).trim();
@@ -132,6 +166,10 @@ function catalogSpanBlobs() {
   return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/**
+ * @param {string} oid
+ * @returns {SpanArchiveValue}
+ */
 function decodeSpan(oid) {
   const buf = git(['cat-file', 'blob', oid], { buffer: true });
   if (buf.length < HEADER_LEN || buf[0] !== FORMAT_VERSION) {
@@ -146,6 +184,11 @@ function decodeSpan(oid) {
 // blob OID; we hash the exact bytes of the extent from that blob (raw, not
 // normalized). The new binary owns normalization and will reclassify as
 // `Changed` if its normalization differs — acceptable for the test installs.
+/**
+ * @param {string} blobOid
+ * @param {AnchorExtentValue} extent
+ * @returns {string}
+ */
 function extentSha256(blobOid, extent) {
   const buf = git(['cat-file', 'blob', blobOid], { buffer: true });
   let slice;
@@ -172,11 +215,19 @@ function extentSha256(blobOid, extent) {
   return `sha256:${createHash('sha256').update(slice).digest('hex')}`;
 }
 
+/**
+ * @param {AnchorEntryValue} a
+ * @returns {string}
+ */
 function anchorAddress(a) {
   if (a.extent.tag === 'WholeFile') return a.path;
   return `${a.path}#L${a.extent.value.start}-L${a.extent.value.end}`;
 }
 
+/**
+ * @param {SpanArchiveValue} span
+ * @returns {string}
+ */
 function renderSpanFile(span) {
   const lines = span.anchors_v2.map(([, a]) => `${anchorAddress(a)} ${extentSha256(a.blob, a.extent)}`);
   const why = span.message.replace(/\s+$/, '');
