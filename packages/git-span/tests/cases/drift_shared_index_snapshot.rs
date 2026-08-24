@@ -211,3 +211,114 @@ fn layer_source_reads_hit_the_session_blob_memo() -> Result<()> {
     }
     Ok(())
 }
+
+/// Whole-file twin of [`seed_multi_file_fixture`]: one span named `m`
+/// holding ONE whole-file anchor per seeded file (no line extent), every
+/// file then removed from the worktree. Every anchor takes the full
+/// whole-file resolution path — index-layer entry probe, gitlink probe,
+/// cross-path relocation scan — each of which used to call
+/// `git::index_entries` per anchor before the session snapshot covered
+/// `whole_file.rs`.
+///
+/// With `committed_delete`, the files are `git rm`ed and committed
+/// instead: anchors additionally fall into the absent-at-HEAD arm whose
+/// submodule probe is the fourth whole-file snapshot consumer.
+fn seed_multi_file_fixture_whole(repo: &TestRepo, k: usize, committed_delete: bool) -> Result<()> {
+    for i in 0..k {
+        repo.write_file(&format!("src/file{i:02}.txt"), &body(i))?;
+    }
+    repo.commit_all("seed files")?;
+    let mut add_args = vec!["add".to_string(), "m".to_string()];
+    for i in 0..k {
+        add_args.push(format!("src/file{i:02}.txt"));
+    }
+    repo.run_span(&add_args)?;
+    repo.run_span(["why", "m", "seed"])?;
+    repo.run_git(["add", ".span"])?;
+    repo.run_git(["commit", "-m", "seed spans"])?;
+    if committed_delete {
+        for i in 0..k {
+            repo.run_git(["rm", &format!("src/file{i:02}.txt")])?;
+        }
+        repo.run_git(["commit", "-m", "delete seeded files"])?;
+    }
+    repo.write_commit_graph()?;
+    if !committed_delete {
+        for i in 0..k {
+            std::fs::remove_file(repo.path().join(format!("src/file{i:02}.txt")))?;
+        }
+    }
+    Ok(())
+}
+
+/// Card main-300 whole-file follow-up, invariant 1 (in-process): the
+/// number of `git::index_entries` materializations during one
+/// `resolve_span` over K drifted WHOLE-FILE anchors must not scale with K.
+/// Pre-follow-up this is `1 + 3·K` for worktree-deleted anchors (one
+/// span-read conflict probe + an index-entry/gitlink/relocation-scan
+/// materialization triple per anchor); post-follow-up it is exactly 2.
+#[test]
+fn whole_file_index_snapshot_loads_do_not_scale_with_drifted_anchor_count() -> Result<()> {
+    for (committed_delete, expected) in [(false, 2usize), (true, 2)] {
+        for k in [3usize, 7] {
+            let repo = TestRepo::new()?;
+            seed_multi_file_fixture_whole(&repo, k, committed_delete)?;
+
+            reset_index_entries_call_count();
+            let mr = resolve_span(&repo.gix_repo()?, ".span", "m", EngineOptions::full())?;
+
+            assert_eq!(mr.anchors.len(), k, "all anchors resolved");
+            let expected_status = if committed_delete {
+                AnchorStatus::Deleted
+            } else {
+                AnchorStatus::Changed
+            };
+            for anchor in &mr.anchors {
+                assert_eq!(
+                    anchor.status, expected_status,
+                    "drifted whole-file anchor {} must classify {expected_status:?}",
+                    anchor.anchor_id
+                );
+            }
+
+            let count = index_entries_call_count();
+            assert_eq!(
+                count, expected,
+                "index_entries called {count} times for K={k} \
+                 (committed_delete={committed_delete}) — expected {expected} \
+                 (1 span-read conflict probe + 1 session-wide index snapshot). \
+                 The whole-file path is re-materializing the index instead of \
+                 sharing the session snapshot."
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Card main-300 whole-file follow-up, invariant 1 (perf-counter surface):
+/// a drift run over K worktree-deleted whole-file anchors reports exactly
+/// one session index snapshot materialization regardless of K.
+#[test]
+fn whole_file_session_reports_one_index_snapshot_per_run() -> Result<()> {
+    for k in [3usize, 7] {
+        let repo = TestRepo::new()?;
+        seed_multi_file_fixture_whole(&repo, k, false)?;
+        let (stdout, stderr) = run_drift_with_perf(&repo)?;
+
+        for i in 0..k {
+            let path = format!("src/file{i:02}.txt");
+            assert!(
+                stdout.contains(&path),
+                "anchor on {path} must render a drift row; stdout=\n{stdout}\nstderr=\n{stderr}"
+            );
+        }
+
+        let loads = parse_counter(&stderr, "session.index-snapshot-loads");
+        assert_eq!(
+            loads, 1,
+            "session.index-snapshot-loads must be 1 per run (K={k}) — got \
+             {loads}; the whole-file path is rematerializing the index.\nstderr=\n{stderr}"
+        );
+    }
+    Ok(())
+}

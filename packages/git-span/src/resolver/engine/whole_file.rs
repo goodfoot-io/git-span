@@ -23,14 +23,15 @@ fn oid_from_hex(hex: &str) -> Result<gix::ObjectId> {
 /// True when `path` is a submodule gitlink (recorded with mode 160000 in
 /// the index or HEAD-derived index). Gitlinks have no readable blob
 /// content; their identity is the recorded commit OID.
-fn is_gitlink_path(repo: &gix::Repository, path: &str) -> bool {
-    crate::git::index_entries(repo)
-        .map(|entries| {
-            entries
-                .iter()
-                .any(|en| en.path == path && en.mode.is_commit())
-        })
-        .unwrap_or(false)
+///
+/// Card main-300 (whole-file follow-up): reads the session-wide index
+/// snapshot instead of rematerializing it per anchor; a load failure
+/// degrades to "not a gitlink" exactly as the previous `.unwrap_or(false)`
+/// handling did.
+fn is_gitlink_path(concurrent: &ConcurrentSession, repo: &gix::Repository, path: &str) -> bool {
+    concurrent
+        .index_entries(repo)
+        .is_some_and(|entries| entries.iter().any(|en| en.path == path && en.mode.is_commit()))
 }
 
 /// Canonical content bytes for a whole-file anchor at a resolved layer
@@ -82,9 +83,15 @@ fn find_relocated_whole_file(
     exclude: &str,
     anchored_absent_at_head: bool,
 ) -> Vec<String> {
-    let entries = git::index_entries(repo).ok().unwrap_or_default();
+    // Card main-300 (whole-file follow-up): one session-wide index
+    // snapshot shared by every drifted-anchor scan, instead of a fresh
+    // materialization per anchor. A load failure degrades to "no
+    // candidates" exactly as the previous per-anchor `.ok()` handling did.
+    let Some(entries) = concurrent.index_entries(repo) else {
+        return Vec::new();
+    };
     let mut results: Vec<String> = Vec::new();
-    for en in entries {
+    for en in entries.iter() {
         if en.stage != gix::index::entry::Stage::Unconflicted {
             continue;
         }
@@ -140,7 +147,7 @@ fn find_relocated_whole_file(
             ))
         );
         if computed == stored_hash {
-            results.push(en.path);
+            results.push(en.path.clone());
         }
     }
     results.sort_unstable();
@@ -268,7 +275,7 @@ pub(crate) fn resolve_whole_file(
     }
 
     let index_blob: Option<String> = if local.layers.index {
-        if let Some((_mode, sha)) = index_entry_for(repo, &current_path) {
+        if let Some((_mode, sha)) = index_entry_for(concurrent, repo, &current_path) {
             Some(sha)
         } else {
             head_blob.clone() // no index entry → same as HEAD
@@ -311,7 +318,7 @@ pub(crate) fn resolve_whole_file(
     };
 
     let _ = cfg;
-    let is_gitlink = is_gitlink_path(repo, &current_path);
+    let is_gitlink = is_gitlink_path(concurrent, repo, &current_path);
     let status: AnchorStatus;
     let source: Option<DriftSource>;
     let layer_sources: Vec<DriftSource>;
@@ -476,12 +483,13 @@ pub(crate) fn resolve_whole_file(
                 [] if head_path_absent => {
                     // Directory promoted to submodule: the anchored path
                     // lives inside a gitlink and cannot resolve at HEAD.
-                    let is_submodule = git::index_entries(repo)
-                        .ok()
-                        .map(|entries| {
+                    // Card main-300 (whole-file follow-up): session-wide
+                    // index snapshot.
+                    let is_submodule = concurrent
+                        .index_entries(repo)
+                        .is_some_and(|entries| {
                             !matches!(submodule_classify(&entries, &r.path), SubmoduleKind::None,)
-                        })
-                        .unwrap_or(false);
+                        });
                     let status = if is_submodule {
                         AnchorStatus::Submodule
                     } else {
@@ -642,15 +650,16 @@ pub(crate) fn resolve_whole_file(
                         })
                         .collect();
                     if head_path_absent {
-                        let is_submodule = git::index_entries(repo)
-                            .ok()
-                            .map(|entries| {
+                        // Card main-300 (whole-file follow-up): session-wide
+                        // index snapshot.
+                        let is_submodule = concurrent
+                            .index_entries(repo)
+                            .is_some_and(|entries| {
                                 !matches!(
                                     submodule_classify(&entries, &r.path),
                                     SubmoduleKind::None,
                                 )
-                            })
-                            .unwrap_or(false);
+                            });
                         let status = if is_submodule {
                             AnchorStatus::Submodule
                         } else {
@@ -858,10 +867,17 @@ pub(crate) fn resolve_whole_file(
     })
 }
 
-fn index_entry_for(repo: &gix::Repository, path: &str) -> Option<(String, String)> {
-    let entries = git::index_entries(repo).ok()?;
+fn index_entry_for(
+    concurrent: &ConcurrentSession,
+    repo: &gix::Repository,
+    path: &str,
+) -> Option<(String, String)> {
+    // Card main-300 (whole-file follow-up): session-wide index snapshot; a
+    // failed load degrades to "no index entry" (fall back to the HEAD blob)
+    // exactly as the previous `.ok()?` handling did.
+    let entries = concurrent.index_entries(repo)?;
     let entry = entries
-        .into_iter()
+        .iter()
         .find(|e| e.path == path && e.stage == gix::index::entry::Stage::Unconflicted)?;
     let mut buf = [0u8; 6];
     let mode_str = entry.mode.as_bytes(&mut buf).to_string();

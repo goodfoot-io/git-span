@@ -2,7 +2,7 @@
 //! and opens the repository ~4 times per anchor instead of once.
 //!
 //! The invariant this test enforces: for its fixture (1 whole-file + 2
-//! line-range anchors), `index_entries` is called exactly **5** times during
+//! line-range anchors), `index_entries` is called exactly **4** times during
 //! a single `run_add` invocation. Before the fix, `run_add` called it per
 //! anchor in the existence probe, twice inside `validate_add_target` (via
 //! `submodule_classify` and `is_tracked_path`), and once inside
@@ -23,16 +23,18 @@
 //!    (`read_effective_each_parallel`) and once in the per-span resolve.
 //!    Each `read_effective` probes the index once for an unmerged span
 //!    entry (`is_unmerged_in_index`).
-//! 3. **Whole-file layer probes** — 2 loads per whole-file anchor
-//!    (`index_entry_for` + `is_gitlink_path`): the file-backed span model
-//!    records no blob OID, so the resolver's whole-file Fresh fast path
-//!    (which needs `head_blob == r.blob`) can never fire; the two probes
-//!    are intrinsic to whole-file layer comparison. Line-range anchors add
-//!    no loads.
+//! 3. **Whole-file session snapshot** — 1 load: the reconcile resolution
+//!    of the whole-file anchor probes the index in `index_entry_for` +
+//!    `is_gitlink_path` (the file-backed span model records no blob OID,
+//!    so the whole-file Fresh fast path can never fire). Since card
+//!    main-300's whole-file follow-up those probes read the resolver
+//!    session's shared snapshot (`ConcurrentSession::index_entries`),
+//!    materializing it once per resolution instead of once per probe.
+//!    Line-range anchors add no loads.
 //!
-//! Total for this fixture: 1 + 2 + 2·1 = 5. Adding whole-file anchors
-//! costs exactly 2 each; adding line-range anchors costs 0. The index is
-//! never re-materialized per anchor.
+//! Total for this fixture: 1 + 2 + 1 = 4. Whole-file anchors share one
+//! session snapshot per resolution; adding line-range anchors costs 0.
+//! The index is never re-materialized per anchor or per probe.
 //!
 //! (The two whole-file anchors of the original fixture became one: the
 //! supersession preflight rejects a whole-file anchor beside a same-path
@@ -80,11 +82,11 @@ fn run_add_calls_index_entries_exactly_once() -> Result<()> {
 
     let count = index_entries_call_count();
     assert_eq!(
-        count, 5,
-        "index_entries called {count} times — expected exactly 5 for this \
+        count, 4,
+        "index_entries called {count} times — expected exactly 4 for this \
          fixture (1 mutation-pipeline snapshot + 2 reconcile-check span \
-         reads + 2 whole-file layer probes × 1 whole-file anchor). \
-         The index is being re-materialized per anchor instead of once. \
+         reads + 1 session-wide whole-file snapshot). The index is being \
+         re-materialized per anchor or per probe instead of once. \
          (Dispatch's own lock acquisition and span-root resolution do not \
          touch the git index, so the count is unchanged from a direct \
          `run_add` call.)"
