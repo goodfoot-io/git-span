@@ -257,7 +257,13 @@ function makeBuildPhaseOptions(): HarnessOptions {
       anchors: [{ path: 'src/anchor.ts', range: null, algorithm: 'sha256', contentHash: 'f'.repeat(64) }],
       why: ''
     },
-    commandResult: { stdout: makeMatchedHistoryStdout(), stderr: '', exitCode: 0 }
+    commandResult: {
+      stdout: makeMatchedHistoryStdout(),
+      stderr: '',
+      exitCode: 0,
+      stdoutTruncated: false,
+      stderrTruncated: false
+    }
   };
 }
 

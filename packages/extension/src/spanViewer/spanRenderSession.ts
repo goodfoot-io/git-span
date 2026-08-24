@@ -30,6 +30,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type { GitSpanCommandResult } from '../utils/gitSpanBinary.js';
+import { describeGitSpanOutputTruncation } from '../utils/gitSpanBinary.js';
 import { type LineageMatch, matchAllAnchors, walkAddressLineage } from './anchorMatcher.js';
 import { escapeGlobPattern } from './globEscape.js';
 import { HistoryFormatError, parseHistoryJson } from './historyClient.js';
@@ -778,8 +779,9 @@ async function loadSpanHistory(inputs: SpanLoadInputs, signal: AbortSignal): Pro
     );
   });
 
+  let result: GitSpanCommandResult | undefined;
   try {
-    const result = await inputs.runCommand(
+    result = await inputs.runCommand(
       inputs.binaryPath,
       ['history', inputs.spanName, '--format', 'json'],
       signal,
@@ -792,9 +794,13 @@ async function loadSpanHistory(inputs: SpanLoadInputs, signal: AbortSignal): Pro
     }
     return { kind: 'loaded', text, parsed, liveAnchors, preSpawnStats, history: parseHistoryJson(result.stdout) };
   } catch (error) {
+    // Truncated output is a failure cause the raw message cannot name: a cap
+    // hit mid-JSON or mid-stderr reads as a parse failure or an empty string
+    // unless the metadata says otherwise.
+    const truncation = result === undefined ? '' : describeGitSpanOutputTruncation(result);
     return {
       kind: 'error',
-      message: `Failed to load span history: ${error instanceof Error ? error.message : String(error)}`
+      message: `Failed to load span history: ${error instanceof Error ? error.message : String(error)}${truncation}`
     };
   }
 }

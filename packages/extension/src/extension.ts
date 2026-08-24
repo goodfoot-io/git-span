@@ -10,6 +10,7 @@
 import * as vscode from 'vscode';
 import { SPAN_FILE_VIEW_TYPE, SpanFileEditorProvider } from './spanViewer/spanFileEditorProvider.js';
 import {
+  describeGitSpanOutputTruncation,
   GitSpanBinaryError,
   getGitSpanBinaryErrorMessage,
   resolveGitSpanBinaryOnPath,
@@ -42,7 +43,9 @@ export function activate(context: vscode.ExtensionContext): void {
         }
         const result = await runGitSpanCommand(binaryPath, ['--version']);
         if (result.exitCode !== 0) {
-          throw new Error(result.stderr.trim() || `git-span --version exited with code ${result.exitCode}.`);
+          throw new Error(
+            `${result.stderr.trim() || `git-span --version exited with code ${result.exitCode}.`}${describeGitSpanOutputTruncation(result)}`
+          );
         }
         void vscode.window.showInformationMessage(result.stdout.trim());
       } catch (error) {
