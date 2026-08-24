@@ -1651,6 +1651,373 @@ function readNodePreState(
   return content;
 }
 
+/** Resolves an argument expression to a literal path or one-hop alias binding. */
+function nodeResolvePathExpression(ctx: NodeRecognizerContext, expression: string): NodePathBinding | null {
+  const literal = decodeNodeString(expression.trim());
+  if (literal !== null) return { path: literal, depth: 0 };
+  return ctx.paths.get(expression.trim()) ?? null;
+}
+
+/** Resolves a callee expression to one of the three allowlisted sync fs methods. */
+function nodeFsMethod(
+  ctx: NodeRecognizerContext,
+  callee: string
+): 'readFileSync' | 'writeFileSync' | 'appendFileSync' | null {
+  const bare = ctx.fsFunctions.get(callee);
+  if (bare !== undefined) return bare;
+  const member = callee.match(NODE_FS_MEMBER_PATTERN);
+  if (member !== null && ctx.fsNamespaces.has(member[1])) {
+    return member[2] as 'readFileSync' | 'writeFileSync' | 'appendFileSync';
+  }
+  const required = callee.match(/^require\((['"])(?:node:)?fs\1\)\.(readFileSync|writeFileSync|appendFileSync)$/);
+  return (required?.[2] as 'readFileSync' | 'writeFileSync' | 'appendFileSync' | undefined) ?? null;
+}
+
+/** Parses an fs call shape into method + split arguments, or null when not an allowlisted call. */
+function nodeParseCall(
+  ctx: NodeRecognizerContext,
+  expression: string
+): { readonly method: ReturnType<typeof nodeFsMethod>; readonly args: readonly string[] } | null {
+  const call =
+    expression
+      .trim()
+      .match(/^(require\((['"])(?:node:)?fs\2\)\.(?:readFileSync|writeFileSync|appendFileSync))\(([\s\S]*)\)$/) ??
+    expression.trim().match(/^([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)?)\(([\s\S]*)\)$/);
+  if (call === null) return null;
+  const method = nodeFsMethod(ctx, call[1].trim());
+  if (method === null) return null;
+  const args = splitNodeArguments(call.length === 4 ? call[3] : call[2]);
+  return args === null ? null : { method, args };
+}
+
+/**
+ * The Node replacement sink: rewrites literal occurrences on the provably
+ * identical read path. Requests match-locations only — unlike Python, no
+ * deleted-text derivation even when the newline count changes.
+ */
+function emitNodeReplacement(
+  ctx: NodeRecognizerContext,
+  absolutePath: string,
+  replacement: NodeReplacement
+): LayeredParseResult | null {
+  const read = ctx.texts.get(replacement.source);
+  if (read === undefined || nodePath.resolve(ctx.cwd, read.path) !== absolutePath) {
+    return rejectNode(
+      'unsupported-dataflow',
+      'Node replacement read and write paths are not provably identical',
+      absolutePath
+    );
+  }
+  const content = readNodePreState(ctx, absolutePath, 'modify', ['match-locations']);
+  if (typeof content !== 'string') return content;
+  const occurrences = countLiteralOccurrences(content, replacement.pattern);
+  const assertion = ctx.countAssertions.get(`${replacement.source}\0${replacement.pattern}`);
+  if (assertion !== undefined && occurrences !== assertion) {
+    return rejectNode(
+      'evidence-mismatch',
+      'Node count assertion does not match pre-state',
+      absolutePath,
+      ctx.preStateRequests
+    );
+  }
+  const ranges = literalOccurrenceRanges(content, replacement.pattern);
+  if (ranges.length === 0) {
+    return rejectNode(
+      'evidence-mismatch',
+      'Node replacement literal is absent from pre-state',
+      absolutePath,
+      ctx.preStateRequests
+    );
+  }
+  const affected = replacement.global ? ranges : ranges.slice(0, 1);
+  const expectedContent = replaceLiteral(content, replacement.pattern, replacement.replacement, replacement.global);
+  for (const range of affected) {
+    ctx.resolved.push({
+      status: 'resolved',
+      layer: 'node',
+      idiom: 'node-replace',
+      span: {
+        operation: 'modify',
+        absolutePath,
+        lineStart: range.start,
+        lineEnd: range.end,
+        expectedContent,
+        simpleCommandIndex: 0
+      }
+    });
+  }
+  return null;
+}
+
+/**
+ * One pass of the Node statement machines over a single statement, in
+ * fixed left-to-right order: fs require tables, path/string bindings with
+ * their alias-depth flags, generic declarations (text reads, replacements,
+ * structured loads), structured key assignments, count guards, and the
+ * append/write call machines. Returns `undefined` when the statement was
+ * consumed, the complete rejection when it fails the program, or
+ * `'unmatched'` when no machine claims it.
+ */
+function consumeNodeStatement(
+  statement: string,
+  ctx: NodeRecognizerContext
+): LayeredParseResult | 'unmatched' | undefined {
+  let match = statement.match(NODE_REQUIRE_FS_PATTERN);
+  if (match !== null) {
+    ctx.fsNamespaces.add(match[1]);
+    return undefined;
+  }
+  match = statement.match(/^const\s+\{([^}]+)\}\s*=\s*require\((['"])(?:node:)?fs\2\)$/);
+  if (match !== null) {
+    for (const entry of match[1].split(',')) {
+      const binding = entry
+        .trim()
+        .match(/^(readFileSync|writeFileSync|appendFileSync)(?:\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*))?$/);
+      if (binding === null)
+        return rejectNode('unsupported-syntax', 'Node fs destructuring contains an unsupported binding');
+      ctx.fsFunctions.set(binding[2] ?? binding[1], binding[1] as 'readFileSync' | 'writeFileSync' | 'appendFileSync');
+    }
+    return undefined;
+  }
+
+  match = statement.match(NODE_STRING_DECL_PATTERN);
+  if (match !== null) {
+    const path = decodeNodeString(match[2]);
+    if (path === null) return rejectNode('unsupported-syntax', 'Node string literal uses an unsupported escape');
+    ctx.paths.set(match[1], { path, depth: 0 });
+    return undefined;
+  }
+  match = statement.match(NODE_NAME_ALIAS_PATTERN);
+  if (match !== null) {
+    const source = ctx.paths.get(match[2]);
+    if (source === undefined || source.depth !== 0) {
+      return rejectNode('unsupported-dataflow', 'Node path aliases are limited to one literal hop');
+    }
+    ctx.paths.set(match[1], { path: source.path, depth: 1 });
+    return undefined;
+  }
+
+  match = statement.match(NODE_GENERIC_DECL_PATTERN);
+  if (match !== null) {
+    const name = match[1];
+    const expression = match[2].trim();
+    const call = nodeParseCall(ctx, expression);
+    if (call?.method === 'readFileSync') {
+      const binding = call.args[0] === undefined ? null : nodeResolvePathExpression(ctx, call.args[0]);
+      if (binding === null) return rejectNode('dynamic-path', 'Node read target is not a literal path binding');
+      const encoding = call.args[1] === undefined ? null : decodeNodeString(call.args[1]);
+      if (encoding !== 'utf8' && encoding !== 'utf-8') {
+        return rejectNode('unsupported-encoding', 'Node text reads require an explicit UTF-8 encoding', binding.path);
+      }
+      if (call.args.length !== 2)
+        return rejectNode('unsupported-syntax', 'Node readFileSync call has unsupported arguments');
+      ctx.texts.set(name, { path: binding.path });
+      return undefined;
+    }
+
+    const replacement = expression.match(NODE_REPLACE_CALL_PATTERN);
+    if (replacement !== null) {
+      if (!ctx.texts.has(replacement[1]))
+        return rejectNode('unsupported-dataflow', 'Node replace source is not a direct text read');
+      const pattern = decodeNodeString(replacement[3]);
+      const replacementText = decodeNodeString(replacement[4]);
+      if (pattern === null || pattern.length === 0 || replacementText === null || replacementText.includes('$')) {
+        return rejectNode('unsupported-expression', 'Node replace requires non-empty literal input');
+      }
+      ctx.replacements.set(name, {
+        source: replacement[1],
+        pattern,
+        replacement: replacementText,
+        global: replacement[2] === 'replaceAll'
+      });
+      return undefined;
+    }
+
+    const parsedJson = expression.match(NODE_JSON_PARSE_PATTERN);
+    if (parsedJson !== null) {
+      const text = ctx.texts.get(parsedJson[1]);
+      if (text === undefined) return rejectNode('unsupported-dataflow', 'JSON.parse source is not a direct text read');
+      ctx.structured.set(name, { path: text.path, keys: [] });
+      return undefined;
+    }
+    const directJson = expression.match(/^JSON\.parse\((.+)\)$/);
+    if (directJson !== null) {
+      const read = nodeParseCall(ctx, directJson[1]);
+      if (read?.method !== 'readFileSync' || read.args[0] === undefined) {
+        return rejectNode('unsupported-dataflow', 'JSON.parse source is not a direct Node text read');
+      }
+      const binding = nodeResolvePathExpression(ctx, read.args[0]);
+      const encoding = read.args[1] === undefined ? null : decodeNodeString(read.args[1]);
+      if (binding === null) return rejectNode('dynamic-path', 'Node JSON target is not a literal path binding');
+      if (encoding !== 'utf8' && encoding !== 'utf-8') {
+        return rejectNode('unsupported-encoding', 'Node JSON reads require an explicit UTF-8 encoding', binding.path);
+      }
+      ctx.structured.set(name, { path: binding.path, keys: [] });
+      return undefined;
+    }
+    return rejectNode('unsupported-dataflow', 'Node variable initializer is outside the bounded allowlist');
+  }
+
+  match = statement.match(NODE_STRUCTURED_ASSIGN_PATTERN);
+  if (match !== null && ctx.structured.has(match[1])) {
+    const keySegments = [...match[2].matchAll(NODE_KEY_SEGMENT_SCAN_PATTERN)];
+    const keys = keySegments.map((segment) => segment[1] ?? decodeNodeString(segment[2]));
+    if (keys.length === 0 || keys.some((key) => key === null)) {
+      return rejectNode('unsupported-expression', 'structured Node mutation requires literal property keys');
+    }
+    if (!/^(?:true|false|null|-?\d+(?:\.\d+)?|(?:'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"))$/.test(match[3].trim())) {
+      return rejectNode('unsupported-expression', 'structured Node mutation requires a literal value');
+    }
+    ctx.structured.get(match[1])!.keys.push(keys as string[]);
+    return undefined;
+  }
+
+  match = statement.match(NODE_COUNT_GUARD_PATTERN);
+  if (match !== null) {
+    const literal = decodeNodeString(match[2]);
+    if (literal === null || literal.length === 0 || !ctx.texts.has(match[1])) {
+      return rejectNode('unsupported-dataflow', 'Node count guard is not tied to a direct text read');
+    }
+    ctx.countAssertions.set(`${match[1]}\0${literal}`, Number.parseInt(match[3], 10));
+    return undefined;
+  }
+
+  const call = nodeParseCall(ctx, statement);
+  if (call?.method === 'appendFileSync') {
+    const binding = call.args[0] === undefined ? null : nodeResolvePathExpression(ctx, call.args[0]);
+    if (binding === null) return rejectNode('dynamic-path', 'Node append target is not a literal path binding');
+    const written = call.args[1] === undefined ? null : decodeNodeString(call.args[1]);
+    const encoding = call.args[2] === undefined ? 'utf8' : decodeNodeString(call.args[2]);
+    if (written === null)
+      return rejectNode('unsupported-expression', 'Node append content must be literal', binding.path);
+    if (encoding !== 'utf8' && encoding !== 'utf-8') {
+      return rejectNode('unsupported-encoding', 'Node append requires default or UTF-8 encoding', binding.path);
+    }
+    if (call.args.length < 2 || call.args.length > 3)
+      return rejectNode('unsupported-syntax', 'Node appendFileSync call has unsupported arguments', binding.path);
+    const absolutePath = nodePath.resolve(ctx.cwd, binding.path);
+    const content = readNodePreState(ctx, absolutePath, 'append', ['pre-command-eof']);
+    if (typeof content !== 'string') return content;
+    const line = pythonLineAtOffset(content, content.length);
+    ctx.resolved.push({
+      status: 'resolved',
+      layer: 'node',
+      idiom: 'node-append',
+      span: {
+        operation: 'append',
+        absolutePath,
+        lineStart: line,
+        lineEnd: line,
+        written,
+        expectedContent: `${content}${written}`,
+        simpleCommandIndex: 0
+      }
+    });
+    return undefined;
+  }
+  if (call?.method === 'writeFileSync') {
+    const binding = call.args[0] === undefined ? null : nodeResolvePathExpression(ctx, call.args[0]);
+    if (binding === null) return rejectNode('dynamic-path', 'Node write target is not a literal path binding');
+    if (call.args.length < 2 || call.args.length > 3)
+      return rejectNode('unsupported-syntax', 'Node writeFileSync call has unsupported arguments', binding.path);
+    const encoding = call.args[2] === undefined ? 'utf8' : decodeNodeString(call.args[2]);
+    if (encoding !== 'utf8' && encoding !== 'utf-8') {
+      return rejectNode('unsupported-encoding', 'Node write requires default or UTF-8 encoding', binding.path);
+    }
+    const absolutePath = nodePath.resolve(ctx.cwd, binding.path);
+    const expression = call.args[1];
+    const literal = decodeNodeString(expression);
+    if (literal !== null) {
+      ctx.resolved.push({
+        status: 'resolved',
+        layer: 'node',
+        idiom: 'node-write',
+        span: {
+          operation: 'create-overwrite',
+          absolutePath,
+          written: literal,
+          expectedContent: literal,
+          simpleCommandIndex: 0
+        }
+      });
+      return undefined;
+    }
+    const directReplacement = expression.match(NODE_REPLACE_CALL_PATTERN);
+    const replacement =
+      directReplacement === null
+        ? ctx.replacements.get(expression)
+        : {
+            source: directReplacement[1],
+            pattern: decodeNodeString(directReplacement[3]) ?? '',
+            replacement: decodeNodeString(directReplacement[4]) ?? '',
+            global: directReplacement[2] === 'replaceAll'
+          };
+    if (replacement !== undefined) {
+      if (replacement.pattern.length === 0 || replacement.replacement.includes('$')) {
+        return rejectNode('unsupported-expression', 'Node replace requires non-empty literal input', absolutePath);
+      }
+      const rejected = emitNodeReplacement(ctx, absolutePath, replacement);
+      if (rejected !== null) return rejected;
+      return undefined;
+    }
+    const serialized = expression.match(/^JSON\.stringify\(([A-Za-z_$][A-Za-z0-9_$]*)(?:\s*,\s*null\s*,\s*\d+)?\)$/);
+    if (serialized !== null) {
+      const value = ctx.structured.get(serialized[1]);
+      if (value === undefined || nodePath.resolve(ctx.cwd, value.path) !== absolutePath || value.keys.length === 0) {
+        return rejectNode(
+          'unsupported-dataflow',
+          'JSON read, literal-key mutation, and write are not linked',
+          absolutePath
+        );
+      }
+      const content = readNodePreState(ctx, absolutePath, 'modify', ['match-locations']);
+      if (typeof content !== 'string') return content;
+      for (const keyPath of value.keys) {
+        const key = keyPath.at(-1)!;
+        const ranges = structuredKeyRanges(content, 'json', key);
+        if (ranges.length !== 1) {
+          return rejectNode(
+            'unsupported-expression',
+            'structured literal key is absent or ambiguous in pre-state',
+            absolutePath,
+            ctx.preStateRequests
+          );
+        }
+        ctx.resolved.push({
+          status: 'resolved',
+          layer: 'node',
+          idiom: 'node-json',
+          span: {
+            operation: 'modify',
+            absolutePath,
+            lineStart: ranges[0].start,
+            lineEnd: ranges[0].end,
+            simpleCommandIndex: 0
+          }
+        });
+      }
+      return undefined;
+    }
+    return rejectNode('unsupported-dataflow', 'Node write expression is outside the bounded allowlist', absolutePath);
+  }
+  return 'unmatched';
+}
+
+/**
+ * Fallbacks for statements no Node machine claims: async fs APIs and
+ * promise plumbing are rejected as such; everything else by allowlist
+ * shape.
+ */
+function consumeUnmatchedNode(statement: string): LayeredParseResult {
+  if (/\b(?:readFile|writeFile|appendFile)\s*\(/.test(statement) || /\bPromise\b|\.then\s*\(/.test(statement)) {
+    return rejectNode('unsupported-dataflow', 'asynchronous Node filesystem APIs are outside the bounded recognizer');
+  }
+  return rejectNode(
+    /(?:writeFile|appendFile|readFile|require\s*\()/.test(statement) ? 'unsupported-dataflow' : 'unsupported-syntax',
+    'Node statement is outside the bounded lexical/dataflow allowlist'
+  );
+}
+
 function parseNodeAttribution(command: string, options: LayeredParseOptions): LayeredParseResult | null {
   const extracted = extractNodeProgram(command);
   if (extracted === null) return null;
@@ -1670,85 +2037,6 @@ function parseNodeAttribution(command: string, options: LayeredParseOptions): La
   const ctx = createNodeContext(options);
   const { cwd, resolved, preStateRequests } = ctx;
 
-  const resolvePathExpression = (expression: string): NodePathBinding | null => {
-    const literal = decodeNodeString(expression.trim());
-    if (literal !== null) return { path: literal, depth: 0 };
-    return ctx.paths.get(expression.trim()) ?? null;
-  };
-  const fsMethod = (callee: string): 'readFileSync' | 'writeFileSync' | 'appendFileSync' | null => {
-    const bare = ctx.fsFunctions.get(callee);
-    if (bare !== undefined) return bare;
-    const member = callee.match(NODE_FS_MEMBER_PATTERN);
-    if (member !== null && ctx.fsNamespaces.has(member[1])) {
-      return member[2] as 'readFileSync' | 'writeFileSync' | 'appendFileSync';
-    }
-    const required = callee.match(/^require\((['"])(?:node:)?fs\1\)\.(readFileSync|writeFileSync|appendFileSync)$/);
-    return (required?.[2] as 'readFileSync' | 'writeFileSync' | 'appendFileSync' | undefined) ?? null;
-  };
-  const parseCall = (
-    expression: string
-  ): { readonly method: ReturnType<typeof fsMethod>; readonly args: readonly string[] } | null => {
-    const call =
-      expression
-        .trim()
-        .match(/^(require\((['"])(?:node:)?fs\2\)\.(?:readFileSync|writeFileSync|appendFileSync))\(([\s\S]*)\)$/) ??
-      expression.trim().match(/^([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)?)\(([\s\S]*)\)$/);
-    if (call === null) return null;
-    const method = fsMethod(call[1].trim());
-    if (method === null) return null;
-    const args = splitNodeArguments(call.length === 4 ? call[3] : call[2]);
-    return args === null ? null : { method, args };
-  };
-  const emitReplacement = (absolutePath: string, replacement: NodeReplacement): LayeredParseResult | null => {
-    const read = ctx.texts.get(replacement.source);
-    if (read === undefined || nodePath.resolve(cwd, read.path) !== absolutePath) {
-      return rejectNode(
-        'unsupported-dataflow',
-        'Node replacement read and write paths are not provably identical',
-        absolutePath
-      );
-    }
-    const content = readNodePreState(ctx, absolutePath, 'modify', ['match-locations']);
-    if (typeof content !== 'string') return content;
-    const occurrences = countLiteralOccurrences(content, replacement.pattern);
-    const assertion = ctx.countAssertions.get(`${replacement.source}\0${replacement.pattern}`);
-    if (assertion !== undefined && occurrences !== assertion) {
-      return rejectNode(
-        'evidence-mismatch',
-        'Node count assertion does not match pre-state',
-        absolutePath,
-        preStateRequests
-      );
-    }
-    const ranges = literalOccurrenceRanges(content, replacement.pattern);
-    if (ranges.length === 0) {
-      return rejectNode(
-        'evidence-mismatch',
-        'Node replacement literal is absent from pre-state',
-        absolutePath,
-        preStateRequests
-      );
-    }
-    const affected = replacement.global ? ranges : ranges.slice(0, 1);
-    const expectedContent = replaceLiteral(content, replacement.pattern, replacement.replacement, replacement.global);
-    for (const range of affected) {
-      resolved.push({
-        status: 'resolved',
-        layer: 'node',
-        idiom: 'node-replace',
-        span: {
-          operation: 'modify',
-          absolutePath,
-          lineStart: range.start,
-          lineEnd: range.end,
-          expectedContent,
-          simpleCommandIndex: 0
-        }
-      });
-    }
-    return null;
-  };
-
   for (const statement of statements) {
     if (/^['"]use strict['"]$/.test(statement)) continue;
     if (/^(?:for|while|do|switch|function|class|async|await|try|with|import)\b/.test(statement)) {
@@ -1757,257 +2045,9 @@ function parseNodeAttribution(command: string, options: LayeredParseOptions): La
         'control flow, asynchronous code, and imports are outside the Node recognizer'
       );
     }
-
-    let match = statement.match(NODE_REQUIRE_FS_PATTERN);
-    if (match !== null) {
-      ctx.fsNamespaces.add(match[1]);
-      continue;
-    }
-    match = statement.match(/^const\s+\{([^}]+)\}\s*=\s*require\((['"])(?:node:)?fs\2\)$/);
-    if (match !== null) {
-      for (const entry of match[1].split(',')) {
-        const binding = entry
-          .trim()
-          .match(/^(readFileSync|writeFileSync|appendFileSync)(?:\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*))?$/);
-        if (binding === null)
-          return rejectNode('unsupported-syntax', 'Node fs destructuring contains an unsupported binding');
-        ctx.fsFunctions.set(
-          binding[2] ?? binding[1],
-          binding[1] as 'readFileSync' | 'writeFileSync' | 'appendFileSync'
-        );
-      }
-      continue;
-    }
-
-    match = statement.match(NODE_STRING_DECL_PATTERN);
-    if (match !== null) {
-      const path = decodeNodeString(match[2]);
-      if (path === null) return rejectNode('unsupported-syntax', 'Node string literal uses an unsupported escape');
-      ctx.paths.set(match[1], { path, depth: 0 });
-      continue;
-    }
-    match = statement.match(NODE_NAME_ALIAS_PATTERN);
-    if (match !== null) {
-      const source = ctx.paths.get(match[2]);
-      if (source === undefined || source.depth !== 0) {
-        return rejectNode('unsupported-dataflow', 'Node path aliases are limited to one literal hop');
-      }
-      ctx.paths.set(match[1], { path: source.path, depth: 1 });
-      continue;
-    }
-
-    match = statement.match(NODE_GENERIC_DECL_PATTERN);
-    if (match !== null) {
-      const name = match[1];
-      const expression = match[2].trim();
-      const call = parseCall(expression);
-      if (call?.method === 'readFileSync') {
-        const binding = call.args[0] === undefined ? null : resolvePathExpression(call.args[0]);
-        if (binding === null) return rejectNode('dynamic-path', 'Node read target is not a literal path binding');
-        const encoding = call.args[1] === undefined ? null : decodeNodeString(call.args[1]);
-        if (encoding !== 'utf8' && encoding !== 'utf-8') {
-          return rejectNode('unsupported-encoding', 'Node text reads require an explicit UTF-8 encoding', binding.path);
-        }
-        if (call.args.length !== 2)
-          return rejectNode('unsupported-syntax', 'Node readFileSync call has unsupported arguments');
-        ctx.texts.set(name, { path: binding.path });
-        continue;
-      }
-
-      const replacement = expression.match(NODE_REPLACE_CALL_PATTERN);
-      if (replacement !== null) {
-        if (!ctx.texts.has(replacement[1]))
-          return rejectNode('unsupported-dataflow', 'Node replace source is not a direct text read');
-        const pattern = decodeNodeString(replacement[3]);
-        const replacementText = decodeNodeString(replacement[4]);
-        if (pattern === null || pattern.length === 0 || replacementText === null || replacementText.includes('$')) {
-          return rejectNode('unsupported-expression', 'Node replace requires non-empty literal input');
-        }
-        ctx.replacements.set(name, {
-          source: replacement[1],
-          pattern,
-          replacement: replacementText,
-          global: replacement[2] === 'replaceAll'
-        });
-        continue;
-      }
-
-      const parsedJson = expression.match(NODE_JSON_PARSE_PATTERN);
-      if (parsedJson !== null) {
-        const text = ctx.texts.get(parsedJson[1]);
-        if (text === undefined)
-          return rejectNode('unsupported-dataflow', 'JSON.parse source is not a direct text read');
-        ctx.structured.set(name, { path: text.path, keys: [] });
-        continue;
-      }
-      const directJson = expression.match(/^JSON\.parse\((.+)\)$/);
-      if (directJson !== null) {
-        const read = parseCall(directJson[1]);
-        if (read?.method !== 'readFileSync' || read.args[0] === undefined) {
-          return rejectNode('unsupported-dataflow', 'JSON.parse source is not a direct Node text read');
-        }
-        const binding = resolvePathExpression(read.args[0]);
-        const encoding = read.args[1] === undefined ? null : decodeNodeString(read.args[1]);
-        if (binding === null) return rejectNode('dynamic-path', 'Node JSON target is not a literal path binding');
-        if (encoding !== 'utf8' && encoding !== 'utf-8') {
-          return rejectNode('unsupported-encoding', 'Node JSON reads require an explicit UTF-8 encoding', binding.path);
-        }
-        ctx.structured.set(name, { path: binding.path, keys: [] });
-        continue;
-      }
-      return rejectNode('unsupported-dataflow', 'Node variable initializer is outside the bounded allowlist');
-    }
-
-    match = statement.match(NODE_STRUCTURED_ASSIGN_PATTERN);
-    if (match !== null && ctx.structured.has(match[1])) {
-      const keySegments = [...match[2].matchAll(NODE_KEY_SEGMENT_SCAN_PATTERN)];
-      const keys = keySegments.map((segment) => segment[1] ?? decodeNodeString(segment[2]));
-      if (keys.length === 0 || keys.some((key) => key === null)) {
-        return rejectNode('unsupported-expression', 'structured Node mutation requires literal property keys');
-      }
-      if (!/^(?:true|false|null|-?\d+(?:\.\d+)?|(?:'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"))$/.test(match[3].trim())) {
-        return rejectNode('unsupported-expression', 'structured Node mutation requires a literal value');
-      }
-      ctx.structured.get(match[1])!.keys.push(keys as string[]);
-      continue;
-    }
-
-    match = statement.match(NODE_COUNT_GUARD_PATTERN);
-    if (match !== null) {
-      const literal = decodeNodeString(match[2]);
-      if (literal === null || literal.length === 0 || !ctx.texts.has(match[1])) {
-        return rejectNode('unsupported-dataflow', 'Node count guard is not tied to a direct text read');
-      }
-      ctx.countAssertions.set(`${match[1]}\0${literal}`, Number.parseInt(match[3], 10));
-      continue;
-    }
-
-    const call = parseCall(statement);
-    if (call?.method === 'appendFileSync') {
-      const binding = call.args[0] === undefined ? null : resolvePathExpression(call.args[0]);
-      if (binding === null) return rejectNode('dynamic-path', 'Node append target is not a literal path binding');
-      const written = call.args[1] === undefined ? null : decodeNodeString(call.args[1]);
-      const encoding = call.args[2] === undefined ? 'utf8' : decodeNodeString(call.args[2]);
-      if (written === null)
-        return rejectNode('unsupported-expression', 'Node append content must be literal', binding.path);
-      if (encoding !== 'utf8' && encoding !== 'utf-8') {
-        return rejectNode('unsupported-encoding', 'Node append requires default or UTF-8 encoding', binding.path);
-      }
-      if (call.args.length < 2 || call.args.length > 3)
-        return rejectNode('unsupported-syntax', 'Node appendFileSync call has unsupported arguments', binding.path);
-      const absolutePath = nodePath.resolve(cwd, binding.path);
-      const content = readNodePreState(ctx, absolutePath, 'append', ['pre-command-eof']);
-      if (typeof content !== 'string') return content;
-      const line = pythonLineAtOffset(content, content.length);
-      resolved.push({
-        status: 'resolved',
-        layer: 'node',
-        idiom: 'node-append',
-        span: {
-          operation: 'append',
-          absolutePath,
-          lineStart: line,
-          lineEnd: line,
-          written,
-          expectedContent: `${content}${written}`,
-          simpleCommandIndex: 0
-        }
-      });
-      continue;
-    }
-    if (call?.method === 'writeFileSync') {
-      const binding = call.args[0] === undefined ? null : resolvePathExpression(call.args[0]);
-      if (binding === null) return rejectNode('dynamic-path', 'Node write target is not a literal path binding');
-      if (call.args.length < 2 || call.args.length > 3)
-        return rejectNode('unsupported-syntax', 'Node writeFileSync call has unsupported arguments', binding.path);
-      const encoding = call.args[2] === undefined ? 'utf8' : decodeNodeString(call.args[2]);
-      if (encoding !== 'utf8' && encoding !== 'utf-8') {
-        return rejectNode('unsupported-encoding', 'Node write requires default or UTF-8 encoding', binding.path);
-      }
-      const absolutePath = nodePath.resolve(cwd, binding.path);
-      const expression = call.args[1];
-      const literal = decodeNodeString(expression);
-      if (literal !== null) {
-        resolved.push({
-          status: 'resolved',
-          layer: 'node',
-          idiom: 'node-write',
-          span: {
-            operation: 'create-overwrite',
-            absolutePath,
-            written: literal,
-            expectedContent: literal,
-            simpleCommandIndex: 0
-          }
-        });
-        continue;
-      }
-      const directReplacement = expression.match(NODE_REPLACE_CALL_PATTERN);
-      const replacement =
-        directReplacement === null
-          ? ctx.replacements.get(expression)
-          : {
-              source: directReplacement[1],
-              pattern: decodeNodeString(directReplacement[3]) ?? '',
-              replacement: decodeNodeString(directReplacement[4]) ?? '',
-              global: directReplacement[2] === 'replaceAll'
-            };
-      if (replacement !== undefined) {
-        if (replacement.pattern.length === 0 || replacement.replacement.includes('$')) {
-          return rejectNode('unsupported-expression', 'Node replace requires non-empty literal input', absolutePath);
-        }
-        const rejected = emitReplacement(absolutePath, replacement);
-        if (rejected !== null) return rejected;
-        continue;
-      }
-      const serialized = expression.match(/^JSON\.stringify\(([A-Za-z_$][A-Za-z0-9_$]*)(?:\s*,\s*null\s*,\s*\d+)?\)$/);
-      if (serialized !== null) {
-        const value = ctx.structured.get(serialized[1]);
-        if (value === undefined || nodePath.resolve(cwd, value.path) !== absolutePath || value.keys.length === 0) {
-          return rejectNode(
-            'unsupported-dataflow',
-            'JSON read, literal-key mutation, and write are not linked',
-            absolutePath
-          );
-        }
-        const content = readNodePreState(ctx, absolutePath, 'modify', ['match-locations']);
-        if (typeof content !== 'string') return content;
-        for (const keyPath of value.keys) {
-          const key = keyPath.at(-1)!;
-          const ranges = structuredKeyRanges(content, 'json', key);
-          if (ranges.length !== 1) {
-            return rejectNode(
-              'unsupported-expression',
-              'structured literal key is absent or ambiguous in pre-state',
-              absolutePath,
-              preStateRequests
-            );
-          }
-          resolved.push({
-            status: 'resolved',
-            layer: 'node',
-            idiom: 'node-json',
-            span: {
-              operation: 'modify',
-              absolutePath,
-              lineStart: ranges[0].start,
-              lineEnd: ranges[0].end,
-              simpleCommandIndex: 0
-            }
-          });
-        }
-        continue;
-      }
-      return rejectNode('unsupported-dataflow', 'Node write expression is outside the bounded allowlist', absolutePath);
-    }
-
-    if (/\b(?:readFile|writeFile|appendFile)\s*\(/.test(statement) || /\bPromise\b|\.then\s*\(/.test(statement)) {
-      return rejectNode('unsupported-dataflow', 'asynchronous Node filesystem APIs are outside the bounded recognizer');
-    }
-    return rejectNode(
-      /(?:writeFile|appendFile|readFile|require\s*\()/.test(statement) ? 'unsupported-dataflow' : 'unsupported-syntax',
-      'Node statement is outside the bounded lexical/dataflow allowlist'
-    );
+    const verdict = consumeNodeStatement(statement, ctx);
+    if (verdict === undefined) continue;
+    return verdict === 'unmatched' ? consumeUnmatchedNode(statement) : verdict;
   }
 
   if (resolved.length === 0) return rejectNode('unsupported-dataflow', 'Node program has no supported authoring sink');
