@@ -2414,13 +2414,8 @@ export function resolvePatternSubstitution(
       preStateRequests
     );
   }
-  const overBudget = rejectOverBudget(
-    resolved,
-    'pattern-substitution',
-    patternCommand.kind === 'sed' ? 'sed-inplace' : 'perl-inplace',
-    'substitution',
-    maxCandidates
-  );
+  if (unresolvedMatches.length > 0) return { resolved: [], unresolved: unresolvedMatches, preStateRequests };
+  const overBudget = rejectOverBudget(resolved, 'pattern-substitution', idiom, 'substitution', maxCandidates);
   if (overBudget !== null) return overBudget;
   return { resolved, unresolved: [], preStateRequests };
 }
