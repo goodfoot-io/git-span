@@ -2041,22 +2041,26 @@ function createHandler(git = createDefaultGitExecutor(), executors = createDefau
       if (result.decision !== "hold") {
         if (result.kind === "environmental" || result.kind === "scan-failed") {
           ctx.logger.warn("git-span advisor allowed with an unresolved condition", { reason: result.reason });
-          return preToolUseOutput({ additionalContext: wrapGitSpanContext(result.reason) });
+          const wrapped2 = wrapGitSpanContext(result.reason);
+          return preToolUseOutput({ additionalContext: wrapped2, systemMessage: wrapped2 });
         }
         if (result.kind === "semantic-drift-report" || result.kind === "uncovered-writes-report") {
-          return preToolUseOutput({ additionalContext: wrapGitSpanContext(result.reason) });
+          const wrapped2 = wrapGitSpanContext(result.reason);
+          return preToolUseOutput({ additionalContext: wrapped2, systemMessage: wrapped2 });
         }
         return void 0;
       }
       if (hardDeny) {
         return preToolUseOutput({
           permissionDecision: "deny",
-          permissionDecisionReason: result.reason
+          permissionDecisionReason: result.reason,
+          systemMessage: result.reason
         });
       }
       const warning = `Could not block this command \u2014 the issue below still needs resolving:
 ${result.reason}`;
-      return preToolUseOutput({ additionalContext: wrapGitSpanContext(warning) });
+      const wrapped = wrapGitSpanContext(warning);
+      return preToolUseOutput({ additionalContext: wrapped, systemMessage: wrapped });
     } catch (err) {
       ctx.logger.warn("git-span advisor failed open on an uncaught error", { err });
       return void 0;

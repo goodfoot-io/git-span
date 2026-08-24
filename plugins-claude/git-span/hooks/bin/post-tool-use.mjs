@@ -8603,7 +8603,11 @@ function createHandler2(executors = createDefaultTouchExecutors(), memoFactory =
         createDefaultPlannedTouchStore(layout)
       );
       if (blocks.length === 0) return null;
-      return postToolUseOutput({ hookSpecificOutput: { additionalContext: blocks.join("") } });
+      const combined = blocks.join("");
+      return postToolUseOutput({
+        hookSpecificOutput: { additionalContext: combined },
+        systemMessage: combined
+      });
     }
     const toolInput = input.tool_input ?? {};
     const absolutePath = derivePath(toolInput, cwd);
@@ -8619,7 +8623,10 @@ function createHandler2(executors = createDefaultTouchExecutors(), memoFactory =
     if (touch === null || postTrackedValue(absolutePath, touch, cwd) === null) return null;
     const output = await runTouchHook(touch, executors, memo, void 0, ctx.logger);
     if (!output.additionalContext) return null;
-    return postToolUseOutput({ hookSpecificOutput: { additionalContext: output.additionalContext } });
+    return postToolUseOutput({
+      hookSpecificOutput: { additionalContext: output.additionalContext },
+      systemMessage: output.additionalContext
+    });
   };
 }
 disableUpdateCheck();

@@ -9600,22 +9600,26 @@ function createHandler(git = createDefaultGitExecutor(), executors = createDefau
       if (result.decision !== "hold") {
         if (result.kind === "environmental" || result.kind === "scan-failed") {
           ctx.logger.warn("git-span advisor allowed with an unresolved condition", { reason: result.reason });
-          return preToolUseOutput({ additionalContext: wrapGitSpanContext(result.reason) });
+          const wrapped2 = wrapGitSpanContext(result.reason);
+          return preToolUseOutput({ additionalContext: wrapped2, systemMessage: wrapped2 });
         }
         if (result.kind === "semantic-drift-report" || result.kind === "uncovered-writes-report") {
-          return preToolUseOutput({ additionalContext: wrapGitSpanContext(result.reason) });
+          const wrapped2 = wrapGitSpanContext(result.reason);
+          return preToolUseOutput({ additionalContext: wrapped2, systemMessage: wrapped2 });
         }
         return void 0;
       }
       if (hardDeny) {
         return preToolUseOutput({
           permissionDecision: "deny",
-          permissionDecisionReason: result.reason
+          permissionDecisionReason: result.reason,
+          systemMessage: result.reason
         });
       }
       const warning = `Could not block this command \u2014 the issue below still needs resolving:
 ${result.reason}`;
-      return preToolUseOutput({ additionalContext: wrapGitSpanContext(warning) });
+      const wrapped = wrapGitSpanContext(warning);
+      return preToolUseOutput({ additionalContext: wrapped, systemMessage: wrapped });
     } catch (err) {
       ctx.logger.warn("git-span advisor failed open on an uncaught error", { err });
       return void 0;
@@ -10040,7 +10044,8 @@ function createHandler2(executors = createDefaultTouchExecutors(), memoFactory =
         createDefaultPlannedTouchStore(layout)
       );
       if (blocks2.length === 0) return void 0;
-      return postToolUseOutput({ additionalContext: blocks2.join("") });
+      const shellCombined = blocks2.join("");
+      return postToolUseOutput({ additionalContext: shellCombined, systemMessage: shellCombined });
     }
     const command = narrowApplyPatchCommand(input.tool_input);
     if (command === null) return void 0;
@@ -10065,7 +10070,8 @@ function createHandler2(executors = createDefaultTouchExecutors(), memoFactory =
       ctx.logger
     );
     if (blocks.length === 0) return void 0;
-    return postToolUseOutput({ additionalContext: blocks.join("") });
+    const combined = blocks.join("");
+    return postToolUseOutput({ additionalContext: combined, systemMessage: combined });
   };
 }
 disableUpdateCheck();

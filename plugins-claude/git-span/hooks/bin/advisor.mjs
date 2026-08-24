@@ -7801,7 +7801,8 @@ function createHandler2(git = createDefaultGitExecutor(), executors = createDefa
             permissionDecision: "deny",
             permissionDecisionReason: result.reason,
             ...result.skillRef ? { skillRef: result.skillRef } : {}
-          }
+          },
+          systemMessage: result.reason
         });
       }
       if (result.kind === "environmental" || result.kind === "scan-failed") {
