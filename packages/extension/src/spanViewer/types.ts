@@ -4,8 +4,13 @@
  * Every type here is consumed by the pure modules under `spanViewer/`
  * (`spanFileGrammar.ts`, `historyClient.ts`, `anchorMatcher.ts`,
  * `patchReconstruction.ts`, `historySnapshotLadder.ts`) and by their
- * integration-layer callers. Nothing in this file imports `vscode` -- these
- * are plain data shapes.
+ * integration-layer callers -- including the webview bundle, which imports
+ * the posted-document shapes and the webview-boundary message unions. Both
+ * sides of the custom-editor boundary type their traffic from this one
+ * module, so renaming or deleting a field on either side breaks both
+ * bundles' builds instead of silently dead-ending a message at runtime.
+ * Nothing in this file imports `vscode` -- these are plain data shapes plus
+ * the small pure guards that narrow untrusted postMessage payloads.
  *
  * @summary Shared types for the span viewer's pure logic layer.
  * @module spanViewer/types
@@ -256,6 +261,164 @@ export interface PostedDocument {
   uncommittedEdit?: PostedUncommittedEdit | 'unavailable';
   /** Collapsed-by-default history accordion entries. */
   history: PostedHistoryCommit[];
+}
+
+/**
+ * The Monaco built-in base themes the viewer's theme bridge can target,
+ * matched by the webview `<body>`'s `data-vscode-theme` attribute and the
+ * {@linkcode MESSAGE_TYPES.themeChanged} postMessage's `kind`. The bridge
+ * covers editor chrome from the injected `--vscode-*` variables, but `base`
+ * still decides the token palette Monaco falls back to for syntax colors
+ * (never bridged -- the accepted tradeoff), so a light/high-contrast-light
+ * workbench theme must not resolve to a dark base.
+ */
+export const MONACO_BASE_THEMES = ['vs', 'vs-dark', 'hc-black', 'hc-light'] as const;
+
+/** A Monaco built-in base theme name. */
+export type MonacoBaseTheme = (typeof MONACO_BASE_THEMES)[number];
+
+/**
+ * Narrow an unknown value to a {@linkcode MonacoBaseTheme}.
+ *
+ * @param value - The value to test.
+ * @returns Whether `value` is one of the four Monaco base theme names.
+ * @throws Never.
+ */
+export function isMonacoBaseTheme(value: unknown): value is MonacoBaseTheme {
+  return typeof value === 'string' && (MONACO_BASE_THEMES as readonly unknown[]).includes(value);
+}
+
+/**
+ * The message-type discriminators crossing the custom-editor boundary, in
+ * one table. The extension host and the Monaco webview bundle import it, and
+ * the fallback panel's inline script -- interpolated HTML that cannot import
+ * these types -- receives the same values via `JSON.stringify`, so its
+ * hardcoded strings can never drift from the unions they must match.
+ */
+export const MESSAGE_TYPES = {
+  document: 'document',
+  goToFile: 'goToFile',
+  openCommit: 'openCommit',
+  ready: 'ready',
+  reload: 'reload',
+  reopenAsText: 'reopenAsText',
+  themeChanged: 'themeChanged'
+} as const;
+
+/**
+ * One message the webview side posts to the extension host: the Monaco
+ * bundle's lifecycle/interaction messages plus the fallback panel's reload
+ * handshake. Discriminated by `type`; the host narrows incoming payloads
+ * with {@linkcode isWebviewToHostMessage} before switching on it.
+ */
+export type WebviewToHostMessage =
+  /** The Monaco webview's load handshake; the host re-posts its last document. */
+  | { type: typeof MESSAGE_TYPES.ready }
+  /**
+   * The fallback panel's answer to catching a late `'document'` post it
+   * cannot render: the host swaps the panel back to the webview template,
+   * whose fresh load posts {@linkcode WebviewToHostMessage.ready}.
+   */
+  | { type: typeof MESSAGE_TYPES.reload }
+  /** Open the `.span` file itself in VS Code's default text editor. */
+  | { type: typeof MESSAGE_TYPES.reopenAsText }
+  /**
+   * Open a repository-relative file, optionally selecting its declared
+   * 1-based inclusive line range.
+   */
+  | { type: typeof MESSAGE_TYPES.goToFile; path: string; range: { start: number; end: number } | null }
+  /** Open a commit in VS Code's native commit view. */
+  | { type: typeof MESSAGE_TYPES.openCommit; hash: string };
+
+/**
+ * One message the extension host posts to a webview: either the fully
+ * resolved document render or a workbench theme relay. Discriminated by
+ * `type`; the webview narrows incoming payloads with
+ * {@linkcode isHostToWebviewMessage} before switching on them.
+ */
+export type HostToWebviewMessage =
+  /** Replace the webview DOM with this posted document's render. */
+  | { type: typeof MESSAGE_TYPES.document; document: PostedDocument }
+  /** The active workbench theme changed; re-bridge Monaco from this base. */
+  | { type: typeof MESSAGE_TYPES.themeChanged; kind: MonacoBaseTheme };
+
+/**
+ * Whether `value` is a non-null object, the only shape that can carry a
+ * message's named fields.
+ *
+ * @param value - The value to test.
+ * @returns Whether `value` can carry named fields.
+ * @throws Never.
+ */
+function isMessageRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+/**
+ * Whether `value` is a well-formed 1-based inclusive line range.
+ *
+ * @param value - The value to test.
+ * @returns Whether `value` carries numeric `start` and `end`.
+ * @throws Never.
+ */
+function isLineRange(value: unknown): value is { start: number; end: number } {
+  if (!isMessageRecord(value)) {
+    return false;
+  }
+  return typeof value['start'] === 'number' && typeof value['end'] === 'number';
+}
+
+/**
+ * Runtime guard narrowing a postMessage payload received by the extension
+ * host to a {@linkcode WebviewToHostMessage}. Every payload field a handler
+ * reads is validated here, so a malformed post is dropped at the boundary
+ * instead of reaching a handler half-typed.
+ *
+ * @param value - The received message payload.
+ * @returns Whether `value` is a well-formed webview-to-host message.
+ * @throws Never.
+ */
+export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMessage {
+  if (!isMessageRecord(value)) {
+    return false;
+  }
+  switch (value['type']) {
+    case MESSAGE_TYPES.ready:
+    case MESSAGE_TYPES.reload:
+    case MESSAGE_TYPES.reopenAsText:
+      return true;
+    case MESSAGE_TYPES.goToFile:
+      return typeof value['path'] === 'string' && (value['range'] === null || isLineRange(value['range']));
+    case MESSAGE_TYPES.openCommit:
+      return typeof value['hash'] === 'string';
+    default:
+      return false;
+  }
+}
+
+/**
+ * Runtime guard narrowing a postMessage payload received by a webview to a
+ * {@linkcode HostToWebviewMessage}. The posted document is only checked to
+ * be an object here -- its deep shape is guaranteed by construction on the
+ * host side ({@linkcode PostedDocument}) -- while every primitive payload
+ * field is validated so malformed posts are dropped at the boundary.
+ *
+ * @param value - The received message payload.
+ * @returns Whether `value` is a well-formed host-to-webview message.
+ * @throws Never.
+ */
+export function isHostToWebviewMessage(value: unknown): value is HostToWebviewMessage {
+  if (!isMessageRecord(value)) {
+    return false;
+  }
+  switch (value['type']) {
+    case MESSAGE_TYPES.document:
+      return isMessageRecord(value['document']);
+    case MESSAGE_TYPES.themeChanged:
+      return isMonacoBaseTheme(value['kind']);
+    default:
+      return false;
+  }
 }
 
 /**

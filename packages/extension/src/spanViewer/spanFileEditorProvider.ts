@@ -43,6 +43,7 @@ import {
   testOnlyRenderOutcomes,
   testOnlyWatcherCoalescingStats
 } from './spanRenderSession.js';
+import { type HostToWebviewMessage, isWebviewToHostMessage, MESSAGE_TYPES, type MonacoBaseTheme } from './types.js';
 
 /** The `viewType` this provider is registered under in `package.json`'s `customEditors`. */
 export const SPAN_FILE_VIEW_TYPE = 'gitSpan.spanFileViewer';
@@ -109,24 +110,13 @@ function makeNonce(): string {
 }
 
 /**
- * The Monaco built-in base themes the theme bridge can target, matched by the
- * webview `<body>`'s `data-vscode-theme` attribute and the `themeChanged`
- * postMessage's `kind`. The bridge covers editor chrome from the injected
- * `--vscode-*` variables, but `base` still decides the token palette Monaco
- * falls back to for syntax colors (never bridged -- the plan's accepted
- * tradeoff), so a light/high-contrast-light workbench theme must not resolve
- * to a dark base.
- */
-type MonacoThemeKind = 'vs' | 'vs-dark' | 'hc-black' | 'hc-light';
-
-/**
  * Map a VS Code theme kind to the closest Monaco built-in base theme.
  *
  * @param kind - The active `vscode.ColorThemeKind`.
  * @returns The Monaco base theme name.
  * @throws Never.
  */
-function monacoThemeKind(kind: vscode.ColorThemeKind): MonacoThemeKind {
+function monacoThemeKind(kind: vscode.ColorThemeKind): MonacoBaseTheme {
   switch (kind) {
     case vscode.ColorThemeKind.Dark:
       return 'vs-dark';
@@ -181,9 +171,12 @@ function renderPanel(webview: vscode.Webview, message: string, warnings: string[
   ${warningsHtml}
   <button id="reopen-as-text">Reopen as Text</button>
   <script nonce="${nonce}">
+    // Interpolated from the shared MESSAGE_TYPES table: the panel cannot
+    // import the message unions, so the constants come to it verbatim.
+    const MESSAGE_TYPES = ${JSON.stringify(MESSAGE_TYPES)};
     const vscode = acquireVsCodeApi();
     document.getElementById('reopen-as-text').addEventListener('click', () => {
-      vscode.postMessage({ type: 'reopenAsText' });
+      vscode.postMessage({ type: MESSAGE_TYPES.reopenAsText });
     });
     // A 'document' message reaching this panel means a render succeeded after
     // this error panel was shown -- swap back to the Monaco webview, which
@@ -192,8 +185,8 @@ function renderPanel(webview: vscode.Webview, message: string, warnings: string[
     // tab stuck on the error until the user reopens it.
     window.addEventListener('message', (event) => {
       const message = event.data;
-      if (message !== null && typeof message === 'object' && message.type === 'document') {
-        vscode.postMessage({ type: 'reload' });
+      if (message !== null && typeof message === 'object' && message.type === MESSAGE_TYPES.document) {
+        vscode.postMessage({ type: MESSAGE_TYPES.reload });
       }
     });
   </script>
@@ -230,7 +223,7 @@ const WEBVIEW_DIR = path.join(__dirname, 'webview');
  * @returns The HTML document string.
  * @throws Never.
  */
-function renderWebviewHtml(webview: vscode.Webview, themeKind: MonacoThemeKind): string {
+function renderWebviewHtml(webview: vscode.Webview, themeKind: MonacoBaseTheme): string {
   const nonce = makeNonce();
   const mainJsUri = webview.asWebviewUri(vscode.Uri.file(path.join(WEBVIEW_DIR, 'main.js')));
   const mainCssUri = webview.asWebviewUri(vscode.Uri.file(path.join(WEBVIEW_DIR, 'main.css')));
@@ -404,12 +397,17 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
       webviewPanel.webview,
       monacoThemeKind(vscode.window.activeColorTheme.kind)
     );
+    // Every host-to-webview post goes through this typed channel: the
+    // compiler rejects any payload that is not a `HostToWebviewMessage`.
+    const postToWebview = (message: HostToWebviewMessage): void => {
+      void webviewPanel.webview.postMessage(message);
+    };
     // The webview cannot observe workbench theme changes itself -- VS Code
     // only re-injects the `--vscode-*` variables -- so every change is relayed
     // and the webview re-bridges its Monaco theme. Disposed with the document.
     document.addDisposable(
       vscode.window.onDidChangeActiveColorTheme((theme) => {
-        webviewPanel.webview.postMessage({ type: 'themeChanged', kind: monacoThemeKind(theme.kind) });
+        postToWebview({ type: MESSAGE_TYPES.themeChanged, kind: monacoThemeKind(theme.kind) });
       })
     );
 
@@ -428,7 +426,7 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
         renderPanel(webviewPanel.webview, message, []);
       },
       postDocument: (posted) => {
-        void webviewPanel.webview.postMessage({ type: 'document', document: posted });
+        postToWebview({ type: MESSAGE_TYPES.document, document: posted });
       }
     });
     document.addDisposable(
@@ -506,59 +504,49 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
     session.configure({ binaryPath, spanName, repoRoot });
 
     webviewPanel.webview.onDidReceiveMessage((message: unknown) => {
-      if (typeof message !== 'object' || message === null) {
+      if (!isWebviewToHostMessage(message)) {
         return;
       }
-      const received = message as { type?: unknown };
-      if (received.type === 'ready') {
-        if (session.lastPosted !== null) {
-          void webviewPanel.webview.postMessage({ type: 'document', document: session.lastPosted });
-        }
-        return;
-      }
-      if (received.type === 'reload') {
-        // The error/fallback panel caught a 'document' post but cannot render
-        // Monaco: swap back to the webview template. The fresh webview posts
-        // 'ready' on load and the host re-posts `lastPosted` -- the document
-        // the panel was handed.
-        webviewPanel.webview.html = renderWebviewHtml(
-          webviewPanel.webview,
-          monacoThemeKind(vscode.window.activeColorTheme.kind)
-        );
-        return;
-      }
-      if (received.type === 'reopenAsText') {
-        void vscode.commands.executeCommand('vscode.openWith', document.uri, 'default');
-        return;
-      }
-      if (received.type === 'goToFile') {
-        const goTo = received as { path?: unknown; range?: unknown };
-        if (typeof goTo.path !== 'string') {
+      switch (message.type) {
+        case MESSAGE_TYPES.ready:
+          if (session.lastPosted !== null) {
+            postToWebview({ type: MESSAGE_TYPES.document, document: session.lastPosted });
+          }
+          return;
+        case MESSAGE_TYPES.reload:
+          // The error/fallback panel caught a 'document' post but cannot render
+          // Monaco: swap back to the webview template. The fresh webview posts
+          // 'ready' on load and the host re-posts `lastPosted` -- the document
+          // the panel was handed.
+          webviewPanel.webview.html = renderWebviewHtml(
+            webviewPanel.webview,
+            monacoThemeKind(vscode.window.activeColorTheme.kind)
+          );
+          return;
+        case MESSAGE_TYPES.reopenAsText:
+          void vscode.commands.executeCommand('vscode.openWith', document.uri, 'default');
+          return;
+        case MESSAGE_TYPES.goToFile: {
+          const fileUri = vscode.Uri.file(path.join(repoRoot, message.path));
+          if (message.range !== null) {
+            const selection = new vscode.Range(message.range.start - 1, 0, message.range.end - 1, 0);
+            void vscode.window.showTextDocument(fileUri, { selection, preview: true });
+          } else {
+            void vscode.window.showTextDocument(fileUri, { preview: true });
+          }
           return;
         }
-        const fileUri = vscode.Uri.file(path.join(repoRoot, goTo.path));
-        const range = goTo.range as { start?: unknown; end?: unknown } | null;
-        if (range !== null && typeof range.start === 'number' && typeof range.end === 'number') {
-          const selection = new vscode.Range(range.start - 1, 0, range.end - 1, 0);
-          void vscode.window.showTextDocument(fileUri, { selection, preview: true });
-        } else {
-          void vscode.window.showTextDocument(fileUri, { preview: true });
-        }
-        return;
-      }
-      if (received.type === 'openCommit') {
-        const open = received as { hash?: unknown };
-        if (typeof open.hash !== 'string') {
+        case MESSAGE_TYPES.openCommit: {
+          // VS Code's native commit navigation: the git extension's `git:`
+          // scheme URI, resolved from the repository's root path.
+          const uri = vscode.Uri.from({
+            scheme: 'git',
+            path: document.uri.fsPath,
+            query: JSON.stringify({ path: document.uri.fsPath, ref: message.hash })
+          });
+          void vscode.commands.executeCommand('vscode.open', uri);
           return;
         }
-        // VS Code's native commit navigation: the git extension's `git:`
-        // scheme URI, resolved from the repository's root path.
-        const uri = vscode.Uri.from({
-          scheme: 'git',
-          path: document.uri.fsPath,
-          query: JSON.stringify({ path: document.uri.fsPath, ref: open.hash })
-        });
-        void vscode.commands.executeCommand('vscode.open', uri);
       }
     });
 

@@ -60,7 +60,16 @@ import 'monaco-editor/languages/definitions/yaml/register.js';
 import '@vscode/codicons/dist/codicon.css';
 import './main.css';
 
-import type { PostedAnchor, PostedDocument, PostedHistoryCommit, UnavailableReason } from '../types.js';
+import {
+  isHostToWebviewMessage,
+  MESSAGE_TYPES,
+  type MonacoBaseTheme,
+  type PostedAnchor,
+  type PostedDocument,
+  type PostedHistoryCommit,
+  type UnavailableReason,
+  type WebviewToHostMessage
+} from '../types.js';
 import { addressStartLine } from './addressStartLine.js';
 import { anchorRangeLabel } from './anchorRangeLabel.js';
 import { hasStatusDot, statusDotLabel } from './anchorStatusDot.js';
@@ -146,15 +155,6 @@ self.MonacoEnvironment = {
 };
 
 /**
- * The Monaco built-in base themes the bridge can target, matched by the
- * provider's `data-vscode-theme` attribute and `themeChanged` message kind.
- * `base` decides the token palette Monaco falls back to for syntax colors;
- * chrome colors come from the bridged `--vscode-*` variables (the accepted
- * tradeoff -- TextMate token colors are never bridged).
- */
-type ThemeKind = 'vs' | 'vs-dark' | 'hc-black' | 'hc-light';
-
-/**
  * Detect the active Monaco base theme: the provider's `data-vscode-theme`
  * attribute first (authoritative -- it mirrors `activeColorTheme.kind` at
  * open time), then VS Code's own injected `vscode-*` body classes.
@@ -162,7 +162,7 @@ type ThemeKind = 'vs' | 'vs-dark' | 'hc-black' | 'hc-light';
  * @returns The detected base theme.
  * @throws Never.
  */
-function detectThemeKind(): ThemeKind {
+function detectThemeKind(): MonacoBaseTheme {
   const data = document.body.dataset['vscodeTheme'];
   if (data === 'vs-dark' || data === 'hc-black' || data === 'hc-light') {
     return data;
@@ -206,7 +206,7 @@ function detectThemeKind(): ThemeKind {
  * @param kind - The Monaco base theme to bridge from.
  * @throws Never.
  */
-function defineGitSpanTheme(kind: ThemeKind): void {
+function defineGitSpanTheme(kind: MonacoBaseTheme): void {
   const style = getComputedStyle(document.body);
   const read = (name: string): string => style.getPropertyValue(`--vscode-${name}`);
   const colors: Record<string, string> = {};
@@ -254,17 +254,20 @@ function defineGitSpanTheme(kind: ThemeKind): void {
 defineGitSpanTheme(detectThemeKind());
 
 /**
- * Post a message back to the extension host.
+ * Post a message back to the extension host. The parameter type is the
+ * shared `WebviewToHostMessage` union, so a sender referencing a missing or
+ * misspelled field fails this bundle's build instead of posting a payload
+ * the host silently drops.
  *
  * @param message - The message payload, matched by `type` in the host.
  * @throws Never.
  */
-function post(message: unknown): void {
+function post(message: WebviewToHostMessage): void {
   vscode.postMessage(message);
 }
 
 /** Tell the host this webview is alive; it re-posts the last document. */
-post({ type: 'ready' });
+post({ type: MESSAGE_TYPES.ready });
 
 /** The most recently posted document, for the History accordion's labels. */
 let currentDocument: PostedDocument | null = null;
@@ -794,7 +797,7 @@ function createAnchorCard(anchor: PostedAnchor): HTMLElement {
   goButton.addEventListener('click', (event) => {
     event.preventDefault();
     event.stopPropagation();
-    post({ type: 'goToFile', path: anchor.path, range: anchor.range });
+    post({ type: MESSAGE_TYPES.goToFile, path: anchor.path, range: anchor.range });
   });
   summary.appendChild(goButton);
   details.appendChild(summary);
@@ -883,7 +886,7 @@ function createUncommittedCard(edit: Exclude<PostedDocument['uncommittedEdit'], 
     goButton.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
-      post({ type: 'goToFile', path: edit.path, range: null });
+      post({ type: MESSAGE_TYPES.goToFile, path: edit.path, range: null });
     });
     summary.appendChild(goButton);
   }
@@ -930,7 +933,7 @@ function createCommitEntry(commit: PostedHistoryCommit): HTMLElement {
   hashLink.addEventListener('click', (event) => {
     event.preventDefault();
     event.stopPropagation();
-    post({ type: 'openCommit', hash: commit.hash });
+    post({ type: MESSAGE_TYPES.openCommit, hash: commit.hash });
   });
   summary.appendChild(hashLink);
   details.appendChild(summary);
@@ -1057,7 +1060,7 @@ function renderDocument(posted: PostedDocument): void {
   editButton.setAttribute('aria-label', 'Open in text editor');
   editButton.appendChild(el('i', 'codicon codicon-edit'));
   editButton.addEventListener('click', () => {
-    post({ type: 'reopenAsText' });
+    post({ type: MESSAGE_TYPES.reopenAsText });
   });
   titlebar.appendChild(editButton);
 
@@ -1092,18 +1095,19 @@ function renderDocument(posted: PostedDocument): void {
 }
 
 window.addEventListener('message', (event: MessageEvent<unknown>) => {
-  const message = event.data as { type?: unknown };
-  if (message?.type === 'themeChanged') {
-    const kind = (message as { kind?: unknown }).kind;
-    if (kind === 'vs' || kind === 'vs-dark' || kind === 'hc-black' || kind === 'hc-light') {
-      // Keep the attribute in step with the active theme so detection stays
-      // consistent with the provider's view.
-      document.body.dataset['vscodeTheme'] = kind;
-      defineGitSpanTheme(kind);
-    }
+  const message = event.data;
+  if (!isHostToWebviewMessage(message)) {
     return;
   }
-  if (message?.type === 'document') {
-    renderDocument((message as { document: PostedDocument }).document);
+  switch (message.type) {
+    case MESSAGE_TYPES.themeChanged:
+      // Keep the attribute in step with the active theme so detection stays
+      // consistent with the provider's view.
+      document.body.dataset['vscodeTheme'] = message.kind;
+      defineGitSpanTheme(message.kind);
+      break;
+    case MESSAGE_TYPES.document:
+      renderDocument(message.document);
+      break;
   }
 });
