@@ -38,7 +38,7 @@ import {
   type SessionLayout
 } from '../common/agent-hooks-common.js';
 import { createDefaultPlannedTouchStore, runLayeredBashTouches } from '../common/bash-attribution.js';
-import { createDiskMemoStore, type MemoFactory, type MemoLogger } from '../common/span-surface.js';
+import { type CoreLogger, createDiskMemoStore, type MemoFactory, type MemoLogger } from '../common/span-surface.js';
 import { filterTrackedEligibility } from '../common/static-attribution.js';
 import {
   createDefaultTouchExecutors,
@@ -84,7 +84,8 @@ async function runPatchTouches(
   stashed: readonly PatchPlanTouch[] | null,
   executors: TouchExecutors,
   memo: ReturnType<MemoFactory>,
-  invocationId: string | null
+  invocationId: string | null,
+  logger: CoreLogger
 ): Promise<string[]> {
   const planned = stashed !== null ? stashedPlanCandidates(stashed) : [];
   const plannedPaths = new Set(planned.map(({ absolutePath }) => absolutePath));
@@ -125,7 +126,7 @@ async function runPatchTouches(
       });
     }
   }
-  const batch = await runTouchHooks(touches, executors, memo, invocationId);
+  const batch = await runTouchHooks(touches, executors, memo, invocationId, undefined, logger);
   return batch.outputs.flatMap((output) => (output.additionalContext === null ? [] : [output.additionalContext]));
 }
 
@@ -206,7 +207,7 @@ export function createAfterHandler(
             ...(narrowed.limit === undefined ? {} : { limit: narrowed.limit })
           };
           if (postTracked(touch, cwd)) {
-            const result = await runTouchHook(touch, executors, memo);
+            const result = await runTouchHook(touch, executors, memo, undefined, logger);
             if (result.additionalContext !== null) blocks = [result.additionalContext];
           }
         }
@@ -226,7 +227,7 @@ export function createAfterHandler(
             targetState: 'exists'
           };
           if (postTracked(touch, cwd)) {
-            const result = await runTouchHook(touch, executors, memo);
+            const result = await runTouchHook(touch, executors, memo, undefined, logger);
             if (result.additionalContext !== null) blocks = [result.additionalContext];
           }
         }
@@ -242,7 +243,8 @@ export function createAfterHandler(
             stashed,
             executors,
             memoFactory(logger, layout),
-            callId.length > 0 ? `${sessionId}:${callId}` : null
+            callId.length > 0 ? `${sessionId}:${callId}` : null,
+            logger
           );
         }
         deps.forgetCall(sessionId, callId);

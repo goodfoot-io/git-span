@@ -92,7 +92,11 @@ export function createHandler(
           // the agent-facing output of a suppression is nothing at all.
           logger: ctx.logger
         },
-        harness
+        harness,
+        undefined,
+        // Core defects (non-advisor-error throws) warn here instead of vanishing
+        // into evaluateAdvisor's fail-open catch.
+        ctx.logger
       );
       if (result.decision === 'hold') {
         // `hold` → the harness's own vocabulary. Claude has no "hold", so the

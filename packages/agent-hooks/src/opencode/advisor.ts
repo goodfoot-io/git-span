@@ -112,7 +112,11 @@ export function createAdvisorHandler(
           memoFactory(cwd),
           mode,
           { git, range: changeset.range, logger },
-          'opencode'
+          'opencode',
+          undefined,
+          // Core defects (non-advisor-error throws) warn here instead of
+          // vanishing into evaluateAdvisor's fail-open catch.
+          logger
         );
         if (result.decision === 'hold') {
           // Decision 1: hold = throw. The memo recorded the debt state inside

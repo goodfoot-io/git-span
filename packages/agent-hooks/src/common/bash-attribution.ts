@@ -364,7 +364,8 @@ async function runResponseReadTouches(
   sessionId: string,
   executors: TouchExecutors,
   memo: MemoStore,
-  invocationId: string
+  invocationId: string,
+  logger: CoreLogger
 ): Promise<{ blocks: string[]; diagnostics: TouchBatchDiagnostics }> {
   const touches: TouchInput[] = spans.map(
     (span) =>
@@ -377,7 +378,7 @@ async function runResponseReadTouches(
         limit: span.lineEnd - span.lineStart + 1
       }) satisfies TouchInput
   );
-  const batch = await runTouchHooks(touches, executors, memo, invocationId);
+  const batch = await runTouchHooks(touches, executors, memo, invocationId, undefined, logger);
   return {
     blocks: batch.outputs.flatMap((output) => (output.additionalContext === null ? [] : [output.additionalContext])),
     diagnostics: batch.diagnostics
@@ -479,7 +480,8 @@ export async function runLayeredBashTouches(
     sessionId,
     executors,
     memo,
-    `${sessionId}:${toolUseId ?? createHash('sha256').update(command).digest('hex')}:response`
+    `${sessionId}:${toolUseId ?? createHash('sha256').update(command).digest('hex')}:response`,
+    logger
   );
   const blocks = [...commandBlocks, ...responseBatch.blocks];
   logger.info?.('git-span static attribution post', {

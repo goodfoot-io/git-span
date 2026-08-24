@@ -232,6 +232,32 @@ describe('claude post-tool-use touch signal', () => {
     expect(result.stdout.hookSpecificOutput?.additionalContext).toBeUndefined();
   });
 
+  it('warns through ctx.logger when the structured context query fails (main-349)', async () => {
+    // Every executor rejects → the core's context query resolves ok:false with
+    // a failure category. The structured path renders nothing, so this warn is
+    // the only trace the degradation leaves on the hook log.
+    const { executors } = makeExecutors({ reject: true });
+    const handler = createHandler(executors, inMemoryMemoFactory(), layout);
+    const warns: Array<[string, Record<string, unknown>]> = [];
+    const ctxLogger = {
+      warn: (...args: unknown[]) => warns.push(args as [string, Record<string, unknown>]),
+      info: () => undefined
+    };
+    const input = postInput({
+      cwd: repo.root,
+      tool_name: 'Read',
+      tool_input: { file_path: join(repo.root, 'app.ts') }
+    });
+
+    const result = toResult(await handler(input as never, { logger: ctxLogger } as never));
+    expect(result.stdout.hookSpecificOutput?.additionalContext).toBeUndefined(); // still fail-open
+    expect(warns).toHaveLength(1);
+    const [message, context] = warns[0]!;
+    expect(message).toContain('structured touch context failed');
+    expect(context.failure).toBe('schema_rejected');
+    expect(context.filePath).toBe(join(repo.root, 'app.ts'));
+  });
+
   it('does not run the touch core for an out-of-repo cwd', async () => {
     const { executors, calls } = makeExecutors({ list: [porcelainRow()], drift: [driftRow('CHANGED')] });
     const handler = createHandler(executors, inMemoryMemoFactory(), layout);

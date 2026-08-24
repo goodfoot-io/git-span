@@ -32,7 +32,7 @@ import {
   resolveRepoRoot
 } from './agent-hooks-common.js';
 import { collapseByPath, type RangeLabel, renderAnchorTree } from './anchor-tree.js';
-import type { MemoStore } from './span-surface.js';
+import type { CoreLogger, MemoStore } from './span-surface.js';
 
 // ---------------------------------------------------------------------------
 // Post-edit range recovery
@@ -1191,13 +1191,23 @@ function deterministicOperationId(invocationId: string, repoRoot: string, addres
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-/** Query repository/mutation partitions once, then replay logical touches in their original order. */
+/**
+ * Query repository/mutation partitions once, then replay logical touches in
+ * their original order.
+ *
+ * `logger` is the optional core logger (see {@link CoreLogger}): a render
+ * defect is swallowed per touch (fail-open — one broken rendering must never
+ * take the whole hook down), but the swallow may not be invisible, so it warns
+ * through this logger when one is threaded. Omitting it loses the breadcrumb,
+ * not the behavior.
+ */
 export async function runTouchHooks(
   inputs: readonly TouchInput[],
   executors: TouchExecutors,
   memo: MemoStore,
   invocationId: string | null,
-  probeCache?: RealityProbeCache
+  probeCache?: RealityProbeCache,
+  logger?: CoreLogger
 ): Promise<TouchBatchOutput> {
   const outputs = inputs.map<TouchOutput>(() => ({ additionalContext: null, treeModified: false }));
   const prepared: PreparedTouch[] = [];
@@ -1289,7 +1299,16 @@ export async function runTouchHooks(
     try {
       const additionalContext = renderContextTouch(touch.input, document, touch.repoPath, touch.ranges, memo);
       outputs[touch.index] = { additionalContext, treeModified: singleTouchMutation };
-    } catch {
+    } catch (err) {
+      // Fail-open per touch — one broken rendering must never take the whole
+      // hook down — but never silently: this catch is an internal defect
+      // disabling that touch's surfacing with nothing else to show for it, so
+      // warn through the threaded logger. Omitting it loses the breadcrumb,
+      // not the behavior.
+      logger?.warn('git-span touch render failed open on an unexpected error', {
+        filePath: touch.input.filePath,
+        err
+      });
       outputs[touch.index] = { additionalContext: null, treeModified: singleTouchMutation };
     }
   }
@@ -1307,13 +1326,30 @@ export async function runTouchHooks(
   };
 }
 
+/**
+ * The structured (single-touch) Read/Edit/Write path: run one touch through
+ * {@link runTouchHooks} and return its output. Unlike the Bash path — which
+ * folds `batch.diagnostics` into the attribution breadcrumb it logs anyway —
+ * this path has no other record of a context failure, so a non-null
+ * `diagnostics.failure` (CLI absent, timeout, nonzero exit, …) is warned here
+ * through the threaded logger: without it, an environmental degradation that
+ * silently disables every surfacing is invisible. Omitting the logger loses
+ * the breadcrumb, not the behavior.
+ */
 export async function runTouchHook(
   input: TouchInput,
   executors: TouchExecutors,
   memo: MemoStore,
-  probeCache?: RealityProbeCache
+  probeCache?: RealityProbeCache,
+  logger?: CoreLogger
 ): Promise<TouchOutput> {
-  const batch = await runTouchHooks([input], executors, memo, input.invocationId ?? null, probeCache);
+  const batch = await runTouchHooks([input], executors, memo, input.invocationId ?? null, probeCache, logger);
+  if (batch.diagnostics.failure !== null) {
+    logger?.warn('git-span structured touch context failed', {
+      filePath: input.filePath,
+      failure: batch.diagnostics.failure
+    });
+  }
   return batch.outputs[0];
 }
 

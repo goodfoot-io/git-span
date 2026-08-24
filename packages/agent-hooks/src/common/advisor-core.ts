@@ -938,6 +938,12 @@ export type AdvisorHarness = 'claude' | 'codex' | 'opencode' | 'generic';
  *   executors stop being invoked, and the result is fail-open
  *   `allow`/`scan-failed`/`'deadline-exceeded'` — an advisory-or-warning is
  *   always returned, never silence.
+ * @param logger The optional core logger (see {@link CoreLogger}). The
+ *   documented fail-open kinds (`scan-failed`, environmental, silent allows)
+ *   stay quiet — the adapters surface those themselves — but a throw that is
+ *   none of the mapped advisor errors is an internal defect silently
+ *   disabling holds, so it is warned here when a logger is threaded.
+ *   Omitting it loses the breadcrumb, not the fail-open behavior.
  */
 export async function evaluateAdvisor(
   paths: string[],
@@ -947,7 +953,8 @@ export async function evaluateAdvisor(
   mode: AdvisorMode = 'may-hold',
   churn?: ChurnSuppression,
   harness: AdvisorHarness = 'generic',
-  deadlineMs: number = EVALUATION_DEADLINE_MS
+  deadlineMs: number = EVALUATION_DEADLINE_MS,
+  logger?: CoreLogger
 ): Promise<AdvisorResult> {
   if (paths.length === 0) return { decision: 'allow', kind: 'silent' };
   // One cancellation scope per evaluation. Aborted when the deadline fires —
@@ -1170,7 +1177,13 @@ export async function evaluateAdvisor(
           };
         }
         // Fail open: any other internal/CLI error resolves to allow. The advisor must
-        // never brick a commit on its own failure.
+        // never brick a commit on its own failure. This branch is exactly the
+        // non-advisor-error case — scan/incompatible-cli/deadline failures are
+        // mapped above — so what reaches it is an internal defect silently
+        // disabling holds: warn through the threaded logger so the
+        // permanently-disabled hold is diagnosable rather than invisible.
+        // Omitting the logger loses the breadcrumb, not the behavior.
+        logger?.warn('git-span advisor evaluation failed open on an unexpected error', { err });
         return { decision: 'allow', kind: 'silent' };
       }
     })();

@@ -124,7 +124,11 @@ export function createHandler(
           // the agent-facing output of a suppression is nothing at all.
           logger: ctx.logger
         },
-        'codex'
+        'codex',
+        undefined,
+        // Core defects (non-advisor-error throws) warn here instead of vanishing
+        // into evaluateAdvisor's fail-open catch.
+        ctx.logger
       );
       if (result.decision !== 'hold') {
         // Environmental drift and a failed drift scan both allow

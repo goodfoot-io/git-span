@@ -105,7 +105,10 @@ export function createHandler(
       input.tool_use_id === undefined ? undefined : `${sessionId}:${input.tool_use_id}`
     );
     if (touch === null || postTrackedValue(absolutePath, touch, cwd) === null) return null;
-    const output = await runTouchHook(touch, executors, memo);
+    // ctx.logger doubles as the core logger: render defects warn inside the
+    // core, and a non-null diagnostics failure (the structured path's only
+    // record of a degraded context query) is surfaced on the hook log.
+    const output = await runTouchHook(touch, executors, memo, undefined, ctx.logger);
     if (!output.additionalContext) return null;
     return postToolUseOutput({ hookSpecificOutput: { additionalContext: output.additionalContext } });
   };

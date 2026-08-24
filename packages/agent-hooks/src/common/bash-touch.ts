@@ -576,7 +576,9 @@ export async function runBashTouches(
       touches.push(e.touch);
     }
   }
-  const batch = await runTouchHooks(touches, invocationExecutors, memo, invocationId, probeCache);
+  // The `warn` channel doubles as the touch core's logger: a render defect
+  // warns there instead of vanishing into the per-touch swallow.
+  const batch = await runTouchHooks(touches, invocationExecutors, memo, invocationId, probeCache, { warn });
   const blocks = batch.outputs.flatMap((output) =>
     output.additionalContext === null ? [] : [output.additionalContext]
   );

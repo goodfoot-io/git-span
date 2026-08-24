@@ -14,7 +14,7 @@ import {
   normalizeBashResponse,
   runLayeredBashTouches
 } from '../common/bash-attribution.js';
-import { createDiskMemoStore, type MemoFactory } from '../common/span-surface.js';
+import { type CoreLogger, createDiskMemoStore, type MemoFactory } from '../common/span-surface.js';
 import { filterTrackedEligibility, type PlannedTouchRecord } from '../common/static-attribution.js';
 import {
   createDefaultTouchExecutors,
@@ -154,7 +154,8 @@ async function runApplyPatchTouches(
   record: PlannedTouchRecord | null,
   executors: TouchExecutors,
   memo: ReturnType<MemoFactory>,
-  invocationId: string | null
+  invocationId: string | null,
+  logger: CoreLogger
 ): Promise<string[]> {
   const planned = plannedPatchCandidates(record, cwd);
   const plannedPaths = new Set(planned.map(({ absolutePath }) => absolutePath));
@@ -194,7 +195,7 @@ async function runApplyPatchTouches(
       });
     }
   }
-  const batch = await runTouchHooks(touches, executors, memo, invocationId);
+  const batch = await runTouchHooks(touches, executors, memo, invocationId, undefined, logger);
   return batch.outputs.flatMap((output) => (output.additionalContext === null ? [] : [output.additionalContext]));
 }
 
@@ -260,7 +261,8 @@ export function createHandler(
       record,
       executors,
       memo,
-      input.tool_use_id === undefined ? null : `${sessionId}:${input.tool_use_id}`
+      input.tool_use_id === undefined ? null : `${sessionId}:${input.tool_use_id}`,
+      ctx.logger
     );
     if (blocks.length === 0) return undefined;
     return postToolUseOutput({ additionalContext: blocks.join('') });
