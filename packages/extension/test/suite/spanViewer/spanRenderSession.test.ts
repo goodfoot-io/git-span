@@ -44,12 +44,29 @@ interface TestHarness {
   readonly session: SpanRenderSession;
   /** One entry per CLI spawn, in start order. */
   readonly signals: AbortSignal[];
+  /**
+   * One entry per updatedAt query, in start order -- the signals handed to
+   * the injected `readCommittedDate`, i.e. the ones threading through
+   * `resolveSpanUpdatedAt`.
+   */
+  readonly timestampSignals: AbortSignal[];
   /** One entry per `createWatcher` call, in creation order. */
   readonly watchers: CreatedWatcher[];
   /** Messages handed to `showFallback`, in order. */
   readonly fallbackMessages: string[];
   /** Documents handed to `postDocument`, in order. */
   readonly postedDocuments: unknown[];
+}
+
+/** Optional overrides for one test's harness. */
+interface HarnessOptions {
+  /** The span file the fake `readSpanFile` returns; defaults to zero anchors. */
+  readonly parsed?: ParsedSpanFile;
+  /**
+   * When set, each CLI spawn resolves immediately with this result instead of
+   * hanging, letting a render reach its build phase.
+   */
+  readonly commandResult?: GitSpanCommandResult;
 }
 
 /** Distinguishes concurrent harnesses' entries in the shared test-hook maps. */
@@ -76,23 +93,27 @@ function makeFakeWatcher(): FakeWatcher {
 
 /**
  * Create a session wired to fakes: the "CLI" hangs forever until its signal
- * aborts, the span file parses to zero anchors, and every sink records its
- * inputs.
+ * aborts (or resolves immediately with `options.commandResult`), the injected
+ * committed-date reader hangs the same way, the span file parses per
+ * `options.parsed`, and every sink records its inputs.
  *
+ * @param options - Per-test overrides; defaults keep every spawn hanging and
+ *   the span file at zero anchors.
  * @returns A fresh session harness backed by recording fakes.
  */
-function makeHarness(): TestHarness {
+function makeHarness(options: HarnessOptions = {}): TestHarness {
   const signals: AbortSignal[] = [];
+  const timestampSignals: AbortSignal[] = [];
   const watchers: CreatedWatcher[] = [];
   const fallbackMessages: string[] = [];
   const postedDocuments: unknown[] = [];
   const uriKey = `file:///test/.span/unit-render-session-${harnessCounter}`;
-  const parsed: ParsedSpanFile = { anchors: [], why: '' };
+  const parsed: ParsedSpanFile = options.parsed ?? { anchors: [], why: '' };
   const session = new SpanRenderSession({
     uri: { fsPath: `/test/.span/unit-render-session-${harnessCounter}` },
     uriKey,
     runCommand: (_binaryPath, _args, signal) =>
-      new Promise<GitSpanCommandResult>((_resolve, reject) => {
+      new Promise<GitSpanCommandResult>((resolve, reject) => {
         if (signal === undefined) {
           reject(new Error('test harness requires a signal'));
           return;
@@ -101,6 +122,24 @@ function makeHarness(): TestHarness {
         // A real spawn wrapper refuses to start against an already-aborted
         // signal -- an 'abort' listener added after the event fired never
         // delivers.
+        if (signal.aborted) {
+          reject(new Error('Aborted'));
+          return;
+        }
+        signal.addEventListener('abort', () => {
+          reject(new Error('Aborted'));
+        });
+        if (options.commandResult !== undefined) {
+          resolve(options.commandResult);
+        }
+      }),
+    readCommittedDate: (_repoRoot, _relativePath, signal) =>
+      new Promise<string | null>((_resolve, reject) => {
+        if (signal === undefined) {
+          reject(new Error('test harness requires a signal'));
+          return;
+        }
+        timestampSignals.push(signal);
         if (signal.aborted) {
           reject(new Error('Aborted'));
           return;
@@ -124,7 +163,7 @@ function makeHarness(): TestHarness {
     debounceMs: 15
   });
   harnessCounter += 1;
-  return { uriKey, session, signals, watchers, fallbackMessages, postedDocuments };
+  return { uriKey, session, signals, timestampSignals, watchers, fallbackMessages, postedDocuments };
 }
 
 /**
@@ -162,6 +201,66 @@ async function sleep(ms: number): Promise<void> {
   });
 }
 
+/**
+ * Poll until `predicate` holds or a deadline lapses. Reaching the build
+ * phase's updatedAt query crosses several real filesystem operations (anchor
+ * stat, clean read, mtime fallback), which no fixed microtask drain observes
+ * deterministically.
+ *
+ * @param predicate - The awaited condition.
+ * @param what - Human-readable description for the timeout error.
+ * @returns Nothing.
+ */
+async function waitFor(predicate: () => boolean, what: string): Promise<void> {
+  const deadline = Date.now() + 2000;
+  while (!predicate()) {
+    if (Date.now() > deadline) {
+      throw new Error(`timed out waiting for ${what}`);
+    }
+    await sleep(5);
+  }
+}
+
+/**
+ * A schema-v2 history document whose single commit carries a content block at
+ * `src/anchor.ts`, so that address matches with lineage and the render's
+ * build phase runs -- past the all-dangling shortcut, into the updatedAt
+ * resolution under test.
+ *
+ * @returns The JSON stdout handed back by the fake CLI spawn.
+ */
+function makeMatchedHistoryStdout(): string {
+  return JSON.stringify({
+    schema_version: 2,
+    span: 'unit-render-session',
+    commits: [
+      {
+        hash: 'a'.repeat(40),
+        date: '2026-08-23T00:00:00Z',
+        summary: 'add src/anchor.ts',
+        anchors: [{ path: 'src/anchor.ts', content: 'export const anchor = 1;\n' }]
+      }
+    ]
+  });
+}
+
+/**
+ * Options putting a harness on the build-phase path: one live anchor matched
+ * by history, and a CLI spawn that resolves so the pass reaches its updatedAt
+ * query.
+ *
+ * @returns Harness options for the cancellation tests.
+ */
+function makeBuildPhaseOptions(): HarnessOptions {
+  return {
+    parsed: {
+      anchors: [{ path: 'src/anchor.ts', range: null, algorithm: 'sha256', contentHash: 'f'.repeat(64) }],
+      why: ''
+    },
+    commandResult: { stdout: makeMatchedHistoryStdout(), stderr: '', exitCode: 0 }
+  };
+}
+
 describe('SpanRenderSession (unit)', () => {
   const touchedUriKeys: string[] = [];
 
@@ -195,6 +294,64 @@ describe('SpanRenderSession (unit)', () => {
 
     harness.session.dispose();
     assert.strictEqual(await second, null);
+  });
+
+  it("cancels a superseded render's updatedAt git-log spawn at the moment of supersession", async () => {
+    const harness = makeHarness(makeBuildPhaseOptions());
+    touchedUriKeys.push(harness.uriKey);
+    harness.session.configure(makeEnvironment());
+
+    const first = harness.session.start();
+    await waitFor(() => harness.timestampSignals.length === 1, 'the first render reaching its updatedAt query');
+    assert.strictEqual(
+      harness.timestampSignals[0],
+      harness.signals[0],
+      'the history spawn and the updatedAt query of one pass must ride the same controller'
+    );
+
+    const second = harness.session.start();
+    await waitFor(() => harness.timestampSignals.length === 2, 'the second render reaching its own updatedAt query');
+    assert.strictEqual(
+      harness.timestampSignals[0]?.aborted,
+      true,
+      'supersession must cancel the prior pass in-flight git-log query'
+    );
+    assert.strictEqual(harness.signals[1]?.aborted, false, 'the newest pass must stay live');
+    assert.strictEqual(harness.timestampSignals[1]?.aborted, false, 'the newest pass must stay live');
+
+    assert.strictEqual(await first, null, 'the superseded render must post nothing');
+    assert.strictEqual(
+      harness.postedDocuments.length + harness.fallbackMessages.length,
+      0,
+      'a superseded render must neither post a document nor render the fallback pane'
+    );
+
+    harness.session.dispose();
+    await second;
+  });
+
+  it('cancels the updatedAt git-log spawn when the session is disposed mid-build', async () => {
+    const harness = makeHarness(makeBuildPhaseOptions());
+    touchedUriKeys.push(harness.uriKey);
+    harness.session.configure(makeEnvironment());
+
+    const pending = harness.session.start();
+    await waitFor(() => harness.timestampSignals.length === 1, 'the render reaching its updatedAt query');
+    assert.strictEqual(harness.timestampSignals[0]?.aborted, false);
+
+    harness.session.dispose();
+
+    assert.strictEqual(
+      harness.timestampSignals[0]?.aborted,
+      true,
+      'dispose must cancel the in-flight git-log query -- nothing may outlive the panel'
+    );
+    assert.strictEqual(await pending, null, 'a disposed pass must post nothing');
+    assert.strictEqual(
+      harness.postedDocuments.length + harness.fallbackMessages.length,
+      0,
+      'a disposed render must neither post a document nor render the fallback pane'
+    );
   });
 
   it('increases the generation monotonically across renders', async () => {

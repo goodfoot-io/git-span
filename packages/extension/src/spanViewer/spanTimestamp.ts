@@ -34,10 +34,16 @@ import { runGitSpanCommand } from '../utils/gitSpanBinary.js';
  *
  * @param repoRoot - Absolute repository root to run the query in.
  * @param relativePath - Repository-relative, slash-separated path to query.
+ * @param signal - Optional abort signal firing on supersession or disposal;
+ *   kills the spawned `git log` instead of leaving it running to completion.
  * @returns The ISO committer date, or `null` when the path is untracked, has
  *   no commits, or the query could not be run at all.
  */
-export type CommittedDateReader = (repoRoot: string, relativePath: string) => Promise<string | null>;
+export type CommittedDateReader = (
+  repoRoot: string,
+  relativePath: string,
+  signal?: AbortSignal
+) => Promise<string | null>;
 
 /**
  * Reads a file's modification time.
@@ -62,19 +68,16 @@ export type MtimeReader = (filePath: string) => Promise<string | null>;
  *
  * @param repoRoot - Absolute repository root to run `git log` in.
  * @param relativePath - Repository-relative, slash-separated path to query.
+ * @param signal - Optional abort signal; aborting kills the spawned `git log`
+ *   and resolves `null`.
  * @returns The ISO committer date, or `null`.
- * @throws Never -- a missing `git`, a non-repository cwd, and a non-zero exit
- *   all resolve to `null`.
+ * @throws Never -- a missing `git`, a non-repository cwd, an aborted signal,
+ *   and a non-zero exit all resolve to `null`.
  */
-export const readCommittedDate: CommittedDateReader = async (repoRoot, relativePath) => {
+export const readCommittedDate: CommittedDateReader = async (repoRoot, relativePath, signal) => {
   try {
     // `--` keeps a path that looks like a ref from being parsed as one.
-    const result = await runGitSpanCommand(
-      'git',
-      ['log', '-1', '--format=%cI', '--', relativePath],
-      undefined,
-      repoRoot
-    );
+    const result = await runGitSpanCommand('git', ['log', '-1', '--format=%cI', '--', relativePath], signal, repoRoot);
     if (result.exitCode !== 0) {
       return null;
     }
@@ -116,6 +119,8 @@ export const readMtime: MtimeReader = async (filePath) => {
  * @param options.dirty - Whether the declaration differs from HEAD in the
  *   worktree, i.e. whether the provider produced an uncommitted-edit card. The
  *   committed date is drifted by construction when this is true.
+ * @param options.signal - Optional abort signal forwarded to the committed-date
+ *   reader so a superseded or disposed render's `git log` spawn is killed.
  * @param options.readCommittedDate - Injected git reader; defaults to
  *   {@linkcode readCommittedDate}.
  * @param options.readMtime - Injected stat reader; defaults to
@@ -127,6 +132,7 @@ export async function resolveSpanUpdatedAt(options: {
   repoRoot: string;
   relativePath: string;
   dirty: boolean;
+  signal?: AbortSignal;
   readCommittedDate?: CommittedDateReader;
   readMtime?: MtimeReader;
 }): Promise<string | undefined> {
@@ -134,13 +140,14 @@ export async function resolveSpanUpdatedAt(options: {
     repoRoot,
     relativePath,
     dirty,
+    signal,
     readCommittedDate: readCommitted = readCommittedDate,
     readMtime: readModified = readMtime
   } = options;
 
   const absolutePath = path.join(repoRoot, relativePath);
   const fromWorktree = (): Promise<string | null> => readModified(absolutePath);
-  const fromGit = (): Promise<string | null> => readCommitted(repoRoot, relativePath);
+  const fromGit = (): Promise<string | null> => readCommitted(repoRoot, relativePath, signal);
 
   const [leading, trailing] = dirty ? [fromWorktree, fromGit] : [fromGit, fromWorktree];
   return (await leading()) ?? (await trailing()) ?? undefined;

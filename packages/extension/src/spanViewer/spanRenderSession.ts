@@ -13,8 +13,11 @@
  *
  * One full render pass is split into pure steps -- load (`loadSpanHistory`),
  * match (`matchAnchors`), build (`buildPostedDocument`) -- each returning its
- * result for the thin posting layer at the end of `start()`, which applies
- * the disposed/superseded guards and hands outcomes to injected sinks. The
+ * result for the thin posting layer at the end of `runPass()`, which applies
+ * the disposed/superseded guards and hands outcomes to injected sinks. A
+ * pass's abort controller stays registered for its whole lifetime, so a
+ * superseded or disposed session cancels not only the history fetch but also
+ * the build phase's `git log` updatedAt query. The
  * module is deliberately pure: it imports no `vscode`, and every side effect
  * (reading the span file, spawning the CLI, creating watchers, posting to
  * the webview) arrives as an injected function, so session lifecycle is
@@ -33,7 +36,7 @@ import { HistoryFormatError, parseHistoryJson } from './historyClient.js';
 import { buildHistorySnapshotLadder, type LadderRung } from './historySnapshotLadder.js';
 import { reconstructOriginal } from './patchReconstruction.js';
 import { formatAnchorAddress, type ParsedSpanFile } from './spanFileGrammar.js';
-import { resolveSpanUpdatedAt } from './spanTimestamp.js';
+import { type CommittedDateReader, resolveSpanUpdatedAt } from './spanTimestamp.js';
 import type {
   AnchorPlan,
   HistoryDocument,
@@ -271,6 +274,12 @@ export interface SpanRenderSessionOptions {
   readonly showFallback: ShowFallbackFn;
   /** Posts a resolved document to the webview. */
   readonly postDocument: PostDocumentFn;
+  /**
+   * Reads the committed date backing the posted document's updatedAt stamp.
+   * Injectable so the build phase's `git log` spawn is substitutable in unit
+   * tests; defaults to {@linkcode readCommittedDate} when omitted.
+   */
+  readonly readCommittedDate?: CommittedDateReader;
   /** Debounce quiet window override (tests); defaults to {@linkcode WATCHER_RENDER_DEBOUNCE_MS}. */
   readonly debounceMs?: number;
 }
@@ -878,6 +887,10 @@ function buildAllDanglingDocument(parsed: ParsedSpanFile, plans: AnchorPlan[], s
  * @param options.why - The span's why prose, as parsed from the file.
  * @param options.preSpawnStats - The pre-spawn stat map, keyed by path.
  * @param options.repoRoot - The repository root anchor paths resolve against.
+ * @param options.signal - The render pass's abort signal; forwarded to the
+ *   updatedAt resolution so supersession/disposal kills its `git log` spawn.
+ * @param options.readCommittedDate - Injected committed-date reader for the
+ *   updatedAt resolution; `undefined` uses the module default.
  * @returns The document to post to the webview.
  * @throws Never -- every failure path yields a status card or
  *   `'unavailable'` marker, never a fabricated preview.
@@ -891,6 +904,8 @@ async function buildPostedDocument(options: {
   why: string;
   preSpawnStats: Map<string, PreSpawnStat>;
   repoRoot: string;
+  signal: AbortSignal;
+  readCommittedDate?: CommittedDateReader;
 }): Promise<PostedDocument> {
   const { liveAnchors, plans, history, spanName, text, why, preSpawnStats, repoRoot } = options;
 
@@ -991,7 +1006,9 @@ async function buildPostedDocument(options: {
   const updatedAt = await resolveSpanUpdatedAt({
     repoRoot,
     relativePath: spanRelativePath,
-    dirty: uncommittedEdit !== undefined
+    dirty: uncommittedEdit !== undefined,
+    signal: options.signal,
+    readCommittedDate: options.readCommittedDate
   });
 
   const ladderInfos = resolveLadders(history, liveAnchors, plans, cleanContents);
@@ -1044,8 +1061,10 @@ async function buildPostedDocument(options: {
  *
  * - **Supersession**: starting a render aborts every still-live prior
  *   controller, so a superseded spawn stops paying for work whose result can
- *   never be posted; only the most recently initiated render may reach the
- *   webview (generation guard).
+ *   never be posted -- the load phase's `git span history` fetch and, when
+ *   supersession lands mid-build, the build phase's `git log` updatedAt query
+ *   alike; only the most recently initiated render may reach the webview
+ *   (generation guard).
  * - **Debounce**: watcher events land in `scheduleRender()`, which coalesces
  *   bursts into one trailing render after the quiet window; teardown cancels
  *   the pending timer so no render ever fires into a dead panel.
@@ -1076,7 +1095,7 @@ export class SpanRenderSession {
   private lastPostedDocument: PostedDocument | null = null;
   /** Pending trailing-debounce timer for watcher-triggered re-renders, or `null` when idle. */
   private watcherRenderTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Controllers of renders whose load phase has not settled yet. */
+  /** Controllers of render passes that have not settled yet (load and build phases alike). */
   private readonly liveControllers = new Set<AbortController>();
   /** Filesystem paths already watched, so re-renders only add watchers for newly-seen paths. */
   private readonly watchers = new Map<string, SpanRenderWatcher>();
@@ -1136,21 +1155,16 @@ export class SpanRenderSession {
   }
 
   /**
-   * Run one render pass: load (re-read the span file, stat anchors, fetch and
-   * parse history), match, build, and -- if this pass is neither disposed nor
-   * superseded -- post the resulting `PostedDocument` (or render the
-   * explanatory fallback). Re-invoked by file watchers via
+   * Run one render pass: allocate its generation, register its abort
+   * controller for the pass's whole lifetime, and delegate to
+   * {@linkcode runPass}. Re-invoked by file watchers via
    * {@linkcode scheduleRender}.
    *
-   * Every invocation first re-reads and re-parses the span file from disk,
-   * so a watcher-triggered re-render (e.g. the user saved an edit in a
-   * "Reopen as Text" tab) matches anchors and reconstructs `span_diff`s
-   * against the current text -- never the open-time snapshot, which would
-   * post drifted addresses and degrade every diff card to 'unavailable'.
-   *
-   * Starting a pass aborts any still-live prior controller: a superseded
-   * render's spawn is cancelled rather than left running toward a result
-   * only the newer pass could post.
+   * Starting a pass aborts any still-live prior controller. The new pass's
+   * own controller stays registered in {@linkcode liveControllers} until the
+   * entire pass settles -- the build phase included -- so supersession and
+   * disposal can cancel not just a superseded render's `git span history`
+   * spawn but also its build-phase `git log` updatedAt query.
    *
    * @returns The set of filesystem paths this render covered (the span file
    *   plus every anchor's real file, dangling or not), or `null` when the
@@ -1171,6 +1185,44 @@ export class SpanRenderSession {
     const generation = this.renderGeneration;
     const controller = new AbortController();
     this.liveControllers.add(controller);
+    try {
+      return await this.runPass(environment, generation, controller);
+    } finally {
+      this.liveControllers.delete(controller);
+    }
+  }
+
+  /**
+   * Execute one render pass against an already-registered controller: load
+   * (re-read the span file, stat anchors, fetch and parse history), match,
+   * build, and -- if this pass is neither disposed nor superseded -- post the
+   * resulting `PostedDocument` (or render the explanatory fallback).
+   *
+   * Every invocation first re-reads and re-parses the span file from disk,
+   * so a watcher-triggered re-render (e.g. the user saved an edit in a
+   * "Reopen as Text" tab) matches anchors and reconstructs `span_diff`s
+   * against the current text -- never the open-time snapshot, which would
+   * post drifted addresses and degrade every diff card to 'unavailable'.
+   *
+   * The controller's signal governs the whole pass: the history spawn rides
+   * it under the load-phase timeout, and the build phase forwards it into the
+   * updatedAt resolution so a superseded or disposed pass's `git log` spawn
+   * is killed rather than left running toward a result only the newer pass
+   * could post.
+   *
+   * @param environment - The preamble-resolved render environment.
+   * @param generation - This pass's generation, allocated by {@linkcode start}.
+   * @param controller - The pass's abort controller, already registered in
+   *   {@linkcode liveControllers}; removed by the caller when this settles.
+   * @returns The set of filesystem paths this render covered, or `null` per
+   *   {@linkcode start}'s contract.
+   * @throws Never -- failures render as a pane rather than propagating.
+   */
+  private async runPass(
+    environment: SpanRenderEnvironment,
+    generation: number,
+    controller: AbortController
+  ): Promise<Set<string> | null> {
     const timeout = setTimeout(() => controller.abort(), SPAN_RENDER_TIMEOUT_MS);
 
     let loaded: SpanLoadOutcome;
@@ -1188,7 +1240,6 @@ export class SpanRenderSession {
       );
     } finally {
       clearTimeout(timeout);
-      this.liveControllers.delete(controller);
     }
 
     if (loaded.kind === 'error') {
@@ -1253,7 +1304,9 @@ export class SpanRenderSession {
         text: loaded.text,
         why: loaded.parsed.why,
         preSpawnStats: loaded.preSpawnStats,
-        repoRoot: environment.repoRoot
+        repoRoot: environment.repoRoot,
+        signal: controller.signal,
+        readCommittedDate: this.options.readCommittedDate
       });
       if (this.tornDown || generation !== this.renderGeneration) {
         return null;
