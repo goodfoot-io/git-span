@@ -59,6 +59,7 @@ pub mod drift_positional_matches_full_scan;
 pub mod drift_relocation_nonunique;
 pub mod drift_relocation_scan_amortized;
 pub mod drift_resolved_pending_commit;
+pub mod drift_shared_index_snapshot;
 pub mod drift_span_integration;
 pub mod drift_sparse_checkout;
 pub mod duplicate_identity;

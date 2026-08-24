@@ -577,6 +577,44 @@ pub(crate) struct ConcurrentSession {
     /// `RwLock<HashMap<K, V>>` inserting only on success (card main-162
     /// staged-rollout step 3), for the same retry-on-failure reason.
     pub(crate) blob_text_memo: RwLock<HashMap<String, Arc<str>>>,
+    /// Counters: `blob_text` memo hits (subsequent reads of an
+    /// already-decoded OID) and misses (first read of an OID, i.e. one ODB
+    /// decompress-and-decode each). Card main-300: `compute_layer_sources`
+    /// routes through this memo, so these counters make layer-source reads'
+    /// amortization visible via the perf-counter interface.
+    pub(crate) blob_text_hits: AtomicU64,
+    pub(crate) blob_text_misses: AtomicU64,
+    /// Session-scoped snapshot of the git index (card main-300).
+    ///
+    /// The drifted-anchor scans (`find_relocated_range_in_paths`,
+    /// `find_similar_ranges`, and both submodule-classification probes in
+    /// `resolve_anchor_inner`) used to call `git::index_entries` per drifted
+    /// anchor, rematerializing an immutable-for-the-run snapshot once per
+    /// scan. This cell materializes it at most once per session instead:
+    /// the first caller pays the load inside the `OnceLock`, every later
+    /// caller (racing or serial) clones the same `Arc` handle.
+    ///
+    /// Lives on the session rather than as an eager
+    /// [`SharedEngineContext`](crate::resolver::engine::SharedEngineContext)
+    /// field so clean runs never pay a full index materialization they do
+    /// not need — the same lazy-warming discipline as
+    /// [`warm_head_blob_memo`](Self::warm_head_blob_memo). The index is
+    /// treated as immutable for the run exactly like every other session
+    /// memo; genuine mid-run index changes are caught by the engine's
+    /// index-trailer check and reported at `finish`.
+    ///
+    /// A failed load is cached as `None` for the rest of the session (no
+    /// retry): re-materializing per anchor on a persistently unreadable
+    /// index is precisely the cost this memo removes, and a transiently
+    /// unreadable index mid-run leaves the run indeterminate anyway (the
+    /// trailer check fires). Scan sites degrade a `None` to "no candidates"
+    /// / "not a submodule", byte-identical to their previous `.ok()`
+    /// handling.
+    index_entries_memo: OnceLock<Option<Arc<[crate::git::IndexEntrySnapshot]>>>,
+    /// Counter: index snapshot materializations this session. Constant (0
+    /// or 1) per run regardless of drifted-anchor count — card main-300's
+    /// acceptance signal.
+    pub(crate) index_snapshot_loads: AtomicU64,
     /// Lazily-built, session-scoped first-parent ancestor chain from HEAD,
     /// used by [`first_parent_ancestor`](Self::first_parent_ancestor).
     /// `chain[i - 1]` is `HEAD~i`. Built incrementally: extended only as far
@@ -716,6 +754,10 @@ impl ConcurrentSession {
             before_tree_paths_memo: RwLock::new(HashMap::new()),
             worktree_bytes_memo: RwLock::new(HashMap::new()),
             blob_text_memo: RwLock::new(HashMap::new()),
+            blob_text_hits: AtomicU64::new(0),
+            blob_text_misses: AtomicU64::new(0),
+            index_entries_memo: OnceLock::new(),
+            index_snapshot_loads: AtomicU64::new(0),
             first_parent_chain: Mutex::new(None),
             history_blob_memo: RwLock::new(HashMap::new()),
             history_fingerprint_memo: RwLock::new(HashMap::new()),
@@ -960,14 +1002,42 @@ impl ConcurrentSession {
         // caller retries (card main-162 staged-rollout step 3).
         let cached = self.blob_text_memo.read().unwrap().get(oid).cloned();
         if let Some(cached) = cached {
+            self.blob_text_hits.fetch_add(1, Ordering::Relaxed);
             return Ok(cached);
         }
+        self.blob_text_misses.fetch_add(1, Ordering::Relaxed);
         let text: Arc<str> = git::read_git_text(repo, oid)?.into();
         self.blob_text_memo
             .write()
             .unwrap()
             .insert(oid.to_string(), text.clone());
         Ok(text)
+    }
+
+    /// The session's single index snapshot (card main-300), materialized on
+    /// first use and shared by every later caller.
+    ///
+    /// `None` means the index could not be loaded; the failure is cached for
+    /// the session so a persistently unreadable index costs one load per run,
+    /// not one per drifted anchor. Callers degrade `None` exactly as their
+    /// previous `.ok()` handling did — scans see no candidates and submodule
+    /// probes report "not a submodule".
+    ///
+    /// Single-flight via the `OnceLock` (same discipline as
+    /// [`warm_head_blob_memo`](Self::warm_head_blob_memo)): concurrent
+    /// callers block on the first caller's load instead of racing duplicate
+    /// materializations. The snapshot is immutable once built, so sharing
+    /// one `Arc` across anchors is exact, not approximate.
+    pub(crate) fn index_entries(
+        &self,
+        repo: &gix::Repository,
+    ) -> Option<Arc<[crate::git::IndexEntrySnapshot]>> {
+        self.index_entries_memo
+            .get_or_init(|| {
+                self.index_snapshot_loads.fetch_add(1, Ordering::Relaxed);
+                git::index_entries(repo).ok().map(Arc::from)
+            })
+            .clone()
     }
 
     /// `HEAD~i`'s commit OID, via a session-scoped first-parent ancestor
@@ -1810,6 +1880,10 @@ mod tests {
             before_tree_paths_memo: RwLock::new(HashMap::new()),
             worktree_bytes_memo: RwLock::new(HashMap::new()),
             blob_text_memo: RwLock::new(HashMap::new()),
+            blob_text_hits: AtomicU64::new(0),
+            blob_text_misses: AtomicU64::new(0),
+            index_entries_memo: OnceLock::new(),
+            index_snapshot_loads: AtomicU64::new(0),
             first_parent_chain: Mutex::new(None),
             history_blob_memo: RwLock::new(HashMap::new()),
             history_fingerprint_memo: RwLock::new(HashMap::new()),
@@ -1877,6 +1951,10 @@ mod tests {
             before_tree_paths_memo: RwLock::new(HashMap::new()),
             worktree_bytes_memo: RwLock::new(HashMap::new()),
             blob_text_memo: RwLock::new(HashMap::new()),
+            blob_text_hits: AtomicU64::new(0),
+            blob_text_misses: AtomicU64::new(0),
+            index_entries_memo: OnceLock::new(),
+            index_snapshot_loads: AtomicU64::new(0),
             first_parent_chain: Mutex::new(None),
             history_blob_memo: RwLock::new(HashMap::new()),
             history_fingerprint_memo: RwLock::new(HashMap::new()),

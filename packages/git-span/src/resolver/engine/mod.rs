@@ -1178,6 +1178,20 @@ fn emit_session_walk_counters(session: &ConcurrentSession) {
         "session.line-index-misses",
         session.line_index_misses.load(Ordering::Relaxed),
     );
+    // Card main-300: blob-text memo engagement (compute_layer_sources reads)
+    // and index-snapshot materializations per session.
+    crate::perf::counter(
+        "session.blob-text-hits",
+        session.blob_text_hits.load(Ordering::Relaxed),
+    );
+    crate::perf::counter(
+        "session.blob-text-misses",
+        session.blob_text_misses.load(Ordering::Relaxed),
+    );
+    crate::perf::counter(
+        "session.index-snapshot-loads",
+        session.index_snapshot_loads.load(Ordering::Relaxed),
+    );
     crate::resolver::timeline::emit_counters();
     emit_timeline_cache_counters(session);
     crate::resolver::linemap::emit_counters();
@@ -1435,6 +1449,21 @@ fn drift_spans_inner(
     crate::perf::counter(
         "session.line-index-misses",
         state.concurrent.line_index_misses.load(Ordering::Relaxed),
+    );
+    // Card main-300: blob-text memo engagement (compute_layer_sources
+    // reads) and index-snapshot materializations — the snapshot count is
+    // constant per run regardless of drifted-anchor count.
+    crate::perf::counter(
+        "session.blob-text-hits",
+        state.concurrent.blob_text_hits.load(Ordering::Relaxed),
+    );
+    crate::perf::counter(
+        "session.blob-text-misses",
+        state.concurrent.blob_text_misses.load(Ordering::Relaxed),
+    );
+    crate::perf::counter(
+        "session.index-snapshot-loads",
+        state.concurrent.index_snapshot_loads.load(Ordering::Relaxed),
     );
     crate::perf::counter(
         "session.drift-locus-hits",

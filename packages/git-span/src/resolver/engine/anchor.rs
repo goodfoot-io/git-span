@@ -396,7 +396,11 @@ fn find_relocated_range_in_paths(
     exclude: &str,
     anchored_absent_at_head: bool,
 ) -> Vec<(String, u32, u32)> {
-    let Some(entries) = git::index_entries(repo).ok() else {
+    // Card main-300: one session-wide index snapshot shared by every
+    // drifted-anchor scan, instead of a fresh materialization per anchor.
+    // A load failure degrades to "no candidates" exactly as the previous
+    // per-anchor `.ok()` handling did.
+    let Some(entries) = concurrent.index_entries(repo) else {
         return vec![];
     };
     let Ok(workdir) = git::work_dir(repo) else {
@@ -417,7 +421,7 @@ fn find_relocated_range_in_paths(
     // per-candidate tree probe are session-memoized: every deleted anchor
     // sharing `exclude` (the anchored path) reuses the same walk, and every
     // repeated `(before_commit, candidate)` probe reuses its cached verdict.
-    for en in entries {
+    for en in entries.iter() {
         if en.stage != gix::index::entry::Stage::Unconflicted {
             continue;
         }
@@ -494,7 +498,7 @@ fn find_relocated_range_in_paths(
             concurrent.get_or_build_line_index(|| text.to_string().into_bytes(), &en.path, deepest);
         let file_idx: &LineIndex = cached_idx.get();
         if let Some((s, e)) = find_relocated_range_indexed(file_idx, extent, stored_hash, 1) {
-            results.push((en.path, s, e));
+            results.push((en.path.clone(), s, e));
         }
     }
     // Deterministic path order so a non-unique match set renders the same
@@ -541,7 +545,9 @@ fn find_similar_ranges(
         return vec![];
     }
 
-    let Some(entries) = crate::git::index_entries(repo).ok() else {
+    // Card main-300: the session-wide index snapshot (see
+    // `find_relocated_range_in_paths`).
+    let Some(entries) = concurrent.index_entries(repo) else {
         return vec![];
     };
     let Ok(workdir) = crate::git::work_dir(repo) else {
@@ -561,7 +567,7 @@ fn find_similar_ranges(
     let mut results: Vec<FuzzySuccessor> = Vec::new();
     let mut candidates_scanned = 0usize;
 
-    for en in entries {
+    for en in entries.iter() {
         if en.stage != gix::index::entry::Stage::Unconflicted {
             continue;
         }
@@ -1197,15 +1203,15 @@ pub(crate) fn resolve_anchor_inner(
                         if head_path_absent {
                             // Directory promoted to submodule: the anchored path
                             // lives inside a gitlink and cannot resolve at HEAD.
-                            let is_submodule = git::index_entries(repo)
-                                .ok()
-                                .map(|entries| {
+                            // Card main-300: session-wide index snapshot.
+                            let is_submodule = concurrent
+                                .index_entries(repo)
+                                .is_some_and(|entries| {
                                     !matches!(
                                         submodule_classify(&entries, &r.path),
                                         SubmoduleKind::None,
                                     )
-                                })
-                                .unwrap_or(false);
+                                });
                             if is_submodule {
                                 status = AnchorStatus::Submodule;
                                 source = None;
@@ -1452,12 +1458,12 @@ pub(crate) fn resolve_anchor_inner(
             } else if head_path_absent {
                 // Directory promoted to submodule: the anchored path
                 // lives inside a gitlink and cannot resolve at HEAD.
-                let is_submodule = git::index_entries(repo)
-                    .ok()
-                    .map(|entries| {
+                // Card main-300: session-wide index snapshot.
+                let is_submodule = concurrent
+                    .index_entries(repo)
+                    .is_some_and(|entries| {
                         !matches!(submodule_classify(&entries, &r.path), SubmoduleKind::None,)
-                    })
-                    .unwrap_or(false);
+                    });
                 if is_submodule {
                     status = AnchorStatus::Submodule;
                     source = None;
@@ -2307,6 +2313,19 @@ fn clean_head_fast_path(
 /// - Head vs Anchor: HEAD drifts when (a) the path is absent from HEAD or
 ///   (b) HEAD's slice differs from the anchored slice.
 ///
+/// Layer text reads route through [`ConcurrentSession::blob_text`], the
+/// session's OID-keyed memo (card main-300): anchors sharing a path/blob —
+/// and each anchor's own HEAD-vs-index-vs-worktree comparisons, which
+/// usually name the same content — pay one ODB decompress-and-decode
+/// instead of one per layer per anchor. The memo propagates read failures
+/// rather than substituting empty text: every OID read here is
+/// known-present at its tree/index position, so an unreadable object is a
+/// genuine failure and surfaces as an error instead of silently
+/// re-classifying the anchor against phantom-empty bytes (the same
+/// fail-closed convention card main-280 established for the remap and
+/// hunk paths). Genuinely absent sides (`oid == None`) still read as
+/// empty text.
+///
 /// The `source` returned by the caller is the first (shallowest) entry of
 /// the resulting list; `layer_sources` is the full list. Both follow the
 /// shallow-to-deep order Worktree → Index → Head.
@@ -2333,7 +2352,7 @@ fn compute_layer_sources(
 
     // Read each layer's content as text, scoped to the layer's tracked
     // path. `None` represents "path absent at this layer".
-    let head_text: Option<(String, Tracked)> = match head_tracked.as_ref() {
+    let head_text: Option<(Arc<str>, Tracked)> = match head_tracked.as_ref() {
         None => None,
         Some(t) => {
             if concurrent.filter_short_circuit(repo, &t.path)?.is_some() {
@@ -2341,17 +2360,16 @@ fn compute_layer_sources(
                 // comparisons surface drift.
                 None
             } else {
-                let oid = concurrent.head_blob_at(repo, &shared.head_sha, &t.path)?;
-                let txt = match &oid {
-                    Some(o) => git::read_git_text(repo, o).unwrap_or_default(),
-                    None => String::new(),
+                let txt = match concurrent.head_blob_at(repo, &shared.head_sha, &t.path)? {
+                    Some(o) => concurrent.blob_text(repo, &o)?,
+                    None => Arc::from(""),
                 };
                 Some((txt, t.clone()))
             }
         }
     };
 
-    let index_text: Option<(String, Tracked)> = if layer_index {
+    let index_text: Option<(Arc<str>, Tracked)> = if layer_index {
         match index_tracked.as_ref() {
             None => None,
             Some(t) => {
@@ -2364,8 +2382,8 @@ fn compute_layer_sources(
                     concurrent.head_blob_at(repo, &shared.head_sha, &t.path)?
                 };
                 let txt = match &oid {
-                    Some(o) => read_blob_text(repo, o),
-                    None => String::new(),
+                    Some(o) => concurrent.blob_text(repo, o)?,
+                    None => Arc::from(""),
                 };
                 Some((txt, t.clone()))
             }
@@ -2374,13 +2392,13 @@ fn compute_layer_sources(
         head_text.clone()
     };
 
-    let worktree_text: Option<(String, Tracked)> = if layer_worktree {
+    let worktree_text: Option<(Arc<str>, Tracked)> = if layer_worktree {
         match worktree_tracked.as_ref() {
             None => None,
             Some(t) => {
                 if worktree_hunk_applied {
                     match read_worktree_normalized(repo, &mut local.custom_filters, &t.path) {
-                        Ok(bytes) => Some((string_from_utf8_lossy(&bytes), t.clone())),
+                        Ok(bytes) => Some((string_from_utf8_lossy(&bytes).into(), t.clone())),
                         Err(_) => None,
                     }
                 } else {
@@ -2389,8 +2407,8 @@ fn compute_layer_sources(
                         None => concurrent.head_blob_at(repo, &shared.head_sha, &t.path)?,
                     };
                     let txt = match &oid {
-                        Some(o) => read_blob_text(repo, o),
-                        None => String::new(),
+                        Some(o) => concurrent.blob_text(repo, o)?,
+                        None => Arc::from(""),
                     };
                     Some((txt, t.clone()))
                 }
