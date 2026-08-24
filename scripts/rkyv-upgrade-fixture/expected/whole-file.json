@@ -1,0 +1,30 @@
+{
+  "name": "simple",
+  "value": {
+    "name": "simple",
+    "anchors_v2": [
+      [
+        "a1",
+        {
+          "anchor_sha": "abc123",
+          "created_at": "2025-01-01T00:00:00Z",
+          "path": "src/checkout.rs",
+          "extent": {
+            "tag": "WholeFile",
+            "value": null
+          },
+          "blob": "82076700c01d29c04c8bd1b92c6d402463d0be2a"
+        }
+      ]
+    ],
+    "message": "A simple span",
+    "config": {
+      "copy_detection": {
+        "tag": "SameCommit",
+        "value": null
+      },
+      "ignore_whitespace": false,
+      "follow_moves": false
+    }
+  }
+}

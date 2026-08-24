@@ -1,0 +1,33 @@
+{
+  "name": "billing/checkout-request-flow",
+  "value": {
+    "name": "billing/checkout-request-flow",
+    "anchors_v2": [
+      [
+        "a1",
+        {
+          "anchor_sha": "abc123",
+          "created_at": "2025-01-01T00:00:00Z",
+          "path": "src/checkout.rs",
+          "extent": {
+            "tag": "LineRange",
+            "value": {
+              "start": 10,
+              "end": 20
+            }
+          },
+          "blob": "7d11284dfbdafb16f47be360ace06ec37d88f973"
+        }
+      ]
+    ],
+    "message": "Checkout request flow",
+    "config": {
+      "copy_detection": {
+        "tag": "AnyFileInRepo",
+        "value": null
+      },
+      "ignore_whitespace": true,
+      "follow_moves": true
+    }
+  }
+}

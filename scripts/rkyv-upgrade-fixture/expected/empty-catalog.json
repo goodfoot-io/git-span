@@ -1,0 +1,16 @@
+{
+  "name": "empty",
+  "value": {
+    "name": "empty",
+    "anchors_v2": [],
+    "message": "",
+    "config": {
+      "copy_detection": {
+        "tag": "AnyFileInCommit",
+        "value": null
+      },
+      "ignore_whitespace": false,
+      "follow_moves": false
+    }
+  }
+}

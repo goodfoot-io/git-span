@@ -140,6 +140,14 @@ build_dir="$target_root/git-span/build"
   # main-386): Node resolves every declared target, tsc binds the bare
   # specifier without paths entries, and no alias workaround creeps back.
   node scripts/check-rkyv-resolution.mjs &&
+  # Migration-bundle proof (card main-386-1): validate must build the bundle
+  # itself — scripts/dist/ is gitignored and worktree-provisioned as a shared
+  # symlink, so a fresh checkout has nothing at that path. The golden gate then
+  # holds dry-run output byte-equal to the pre-upgrade bundle's, and the compat
+  # scan keeps the node20 target honest about runtime APIs esbuild won't catch.
+  yarn build:migration &&
+  node scripts/check-migration-golden.mjs &&
+  node scripts/check-migration-bundle-compat.mjs &&
   # The artifact drift gate runs before the test suites, never after: after
   # `yarn build` the build would have rewritten the committed file and the
   # check would trivially pass, and after `yarn test` the website contract

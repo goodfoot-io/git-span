@@ -1,0 +1,15 @@
+--- [dry-run] would write .span/line-range ---
+src/checkout.rs#L10-L20 sha256:0ef0ba95b1d0c6ac7135f9447be8ff986f6625b56c9893c7fb55af9ed841e172
+
+Checkout request flow
+--- [dry-run] would write .span/multi-anchor ---
+ünicode/pathé.rs sha256:6cfac4ff47c4b9775d181d4f8e97dbb255884b275822ea21cb15d4b0f9322d0c
+src/main.rs#L4294967295-L7 sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+Multi-anchor with trailing spaces
+--- [dry-run] would write .span/whole-file ---
+src/checkout.rs sha256:96fcbb138e1de293575b8cfdc9b996ad912c79424c1d42339f8c43ff55dde8a7
+
+A simple span
+[dry-run] 3/4 span file(s) under .span/
+[dry-run] after a real run: git add the span root and commit.

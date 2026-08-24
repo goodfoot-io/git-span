@@ -1,0 +1,3 @@
+multi whole
+content lines
+for hashing

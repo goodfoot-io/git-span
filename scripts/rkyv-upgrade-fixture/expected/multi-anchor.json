@@ -1,0 +1,46 @@
+{
+  "name": "café/flow",
+  "value": {
+    "name": "café/flow",
+    "anchors_v2": [
+      [
+        "a1",
+        {
+          "anchor_sha": "aaa",
+          "created_at": "2025-06-01T12:30:00Z",
+          "path": "ünicode/pathé.rs",
+          "extent": {
+            "tag": "WholeFile",
+            "value": null
+          },
+          "blob": "33f2be832c051cc7c06f5fd365ee55f65c98389d"
+        }
+      ],
+      [
+        "a2",
+        {
+          "anchor_sha": "ccc",
+          "created_at": "2025-06-02T09:00:00Z",
+          "path": "src/main.rs",
+          "extent": {
+            "tag": "LineRange",
+            "value": {
+              "start": 4294967295,
+              "end": 7
+            }
+          },
+          "blob": "45a3b5a3c052e4bf8e83822dbb088114abcd182c"
+        }
+      ]
+    ],
+    "message": "Multi-anchor with trailing spaces   ",
+    "config": {
+      "copy_detection": {
+        "tag": "Off",
+        "value": null
+      },
+      "ignore_whitespace": false,
+      "follow_moves": true
+    }
+  }
+}
