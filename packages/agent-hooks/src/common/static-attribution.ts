@@ -1976,25 +1976,45 @@ function consumeUnmatchedNode(statement: string): LayeredParseResult {
   );
 }
 
-function parseNodeAttribution(command: string, options: LayeredParseOptions): LayeredParseResult | null {
+/** Extract and split a Node -e/heredoc program into budget-checked statements. `'unrecognized'` means the command is not a Node invocation in this layer's shapes - the caller returns null for the dispatcher to try other layers - distinct from `'rejected'`, a complete fail-closed verdict. */
+function prepareNodeStatements(
+  command: string
+):
+  | { readonly kind: 'unrecognized' }
+  | { readonly kind: 'rejected'; readonly result: LayeredParseResult }
+  | { readonly kind: 'ready'; readonly statements: readonly string[] } {
   const extracted = extractNodeProgram(command);
-  if (extracted === null) return null;
+  if (extracted === null) return { kind: 'unrecognized' };
   if (extracted.program === undefined) {
-    return rejectNode(extracted.reason ?? 'unsupported-syntax', extracted.detail ?? 'unsupported Node invocation');
+    return {
+      kind: 'rejected',
+      result: rejectNode(extracted.reason ?? 'unsupported-syntax', extracted.detail ?? 'unsupported Node invocation')
+    };
   }
   if (/\b(?:process\.(?:argv|env)|require\s*\(\s*[^'"]|import\s*\()/.test(extracted.program)) {
-    return rejectNode('dynamic-path', 'Node target depends on runtime input or a computed import');
+    return {
+      kind: 'rejected',
+      result: rejectNode('dynamic-path', 'Node target depends on runtime input or a computed import')
+    };
   }
   const statements = splitNodeStatements(extracted.program);
   if (statements === null || statements.length === 0) {
-    return rejectNode('unsupported-syntax', 'the Node program is incomplete or cannot be tokenized');
+    return {
+      kind: 'rejected',
+      result: rejectNode('unsupported-syntax', 'the Node program is incomplete or cannot be tokenized')
+    };
   }
-  if (statements.length > 64)
-    return rejectNode('candidate-budget-exceeded', 'the Node program exceeds the statement budget');
+  if (statements.length > 64) {
+    return {
+      kind: 'rejected',
+      result: rejectNode('candidate-budget-exceeded', 'the Node program exceeds the statement budget')
+    };
+  }
+  return { kind: 'ready', statements };
+}
 
-  const ctx = createNodeContext(options);
-  const { resolved, preStateRequests } = ctx;
-
+/** Run the per-statement machines in order; returns the terminal rejection, or null when all consumed. */
+function runNodeStatements(statements: readonly string[], ctx: NodeRecognizerContext): LayeredParseResult | null {
   for (const statement of statements) {
     if (/^['"]use strict['"]$/.test(statement)) continue;
     if (/^(?:for|while|do|switch|function|class|async|await|try|with|import)\b/.test(statement)) {
@@ -2007,12 +2027,24 @@ function parseNodeAttribution(command: string, options: LayeredParseOptions): La
     if (verdict === undefined) continue;
     return verdict === 'unmatched' ? consumeUnmatchedNode(statement) : verdict;
   }
+  return null;
+}
 
-  if (resolved.length === 0) return rejectNode('unsupported-dataflow', 'Node program has no supported authoring sink');
+function parseNodeAttribution(command: string, options: LayeredParseOptions): LayeredParseResult | null {
+  const prepared = prepareNodeStatements(command);
+  if (prepared.kind === 'unrecognized') return null;
+  if (prepared.kind === 'rejected') return prepared.result;
+
+  const ctx = createNodeContext(options);
+  const rejected = runNodeStatements(prepared.statements, ctx);
+  if (rejected !== null) return rejected;
+
+  if (ctx.resolved.length === 0)
+    return rejectNode('unsupported-dataflow', 'Node program has no supported authoring sink');
   const maxCandidates = options.maxCandidates ?? DEFAULT_MAX_ATTRIBUTION_CANDIDATES;
-  const overBudget = rejectOverBudget(resolved, 'node', 'node-edit', 'Node program', maxCandidates);
+  const overBudget = rejectOverBudget(ctx.resolved, 'node', 'node-edit', 'Node program', maxCandidates);
   if (overBudget !== null) return overBudget;
-  return { resolved, unresolved: [], preStateRequests };
+  return { resolved: ctx.resolved, unresolved: [], preStateRequests: ctx.preStateRequests };
 }
 
 /** Parse explicit authoring intent through deterministic and bounded recognizers. */
