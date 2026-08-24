@@ -5,9 +5,6 @@
     "incremental": false,
     // Type-check the .mjs probe under the inherited strict settings.
     "checkJs": true,
-    // rkyv-js's sources join this program through the bare specifier and use
-    // explicit .ts extensions on their internal imports; safe here (noEmit).
-    "allowImportingTsExtensions": true,
     // Automatic @types inclusion does not kick in under inherited typeRoots.
     "types": ["node"]
   },

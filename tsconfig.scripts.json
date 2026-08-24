@@ -15,13 +15,7 @@
     "useUnknownInCatchVariables": false,
     // Node globals/builtins must be loaded explicitly: automatic @types
     // inclusion does not kick in under typeRoots here.
-    "types": ["node"],
-    // rkyv-js resolves through its own package exports (a Yarn patch points
-    // its manifest entrypoints at the shipped TypeScript sources, card
-    // main-386), so bare-specifier imports need no mapping here. Those
-    // sources use explicit .ts extensions on their internal imports, which
-    // require this flag once they join the program (safe here: noEmit).
-    "allowImportingTsExtensions": true
+    "types": ["node"]
   },
   "include": ["./scripts/*.mjs"]
 }

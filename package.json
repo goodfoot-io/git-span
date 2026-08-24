@@ -37,7 +37,7 @@
     "@types/node": "24.x",
     "esbuild": "^0.28.2",
     "knip": "^6.32.2",
-    "rkyv-js": "patch:rkyv-js@https%3A//github.com/cometkim/rkyv-js.git%23commit=2c3fc14860535eb9b8075f1db7547a45dbd8fa6e#~/.yarn/patches/rkyv-js-https-0624042b43.patch",
+    "rkyv-js": "^0.3.0",
     "typescript": "^7.0.2"
   },
   "dependencies": {

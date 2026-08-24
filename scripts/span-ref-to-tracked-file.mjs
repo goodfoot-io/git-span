@@ -34,12 +34,12 @@ import { parseArgs } from 'node:util';
 import * as r from 'rkyv-js';
 
 // --- Legacy SpanArchive schema (rkyv 0.8), in field-declaration order --------
-// Mirrors packages/git-span/src/span/archive.rs at commit ce4060e. The
+// Mirrors packages/git-mesh/src/mesh/archive.rs at commit ce4060e. The
 // compatibility `anchors: Vec<String>` field is reconstructed on read and is
 // NOT serialized, so it is absent here.
 const AnchorExtent = r.taggedEnum({
-  WholeFile: r.unit,
-  LineRange: r.struct({ start: r.u32, end: r.u32 })
+  WholeFile: null,
+  LineRange: { start: r.u32, end: r.u32 }
 });
 const AnchorEntry = r.struct({
   anchor_sha: r.string,
@@ -49,10 +49,10 @@ const AnchorEntry = r.struct({
   blob: r.string
 });
 const CopyDetection = r.taggedEnum({
-  Off: r.unit,
-  SameCommit: r.unit,
-  AnyFileInCommit: r.unit,
-  AnyFileInRepo: r.unit
+  Off: null,
+  SameCommit: null,
+  AnyFileInCommit: null,
+  AnyFileInRepo: null
 });
 const SpanConfig = r.struct({
   copy_detection: CopyDetection,
@@ -176,7 +176,7 @@ function decodeSpan(oid) {
     throw new Error(`unexpected span blob header for ${oid} (byte0=${buf[0]})`);
   }
   const payload = buf.subarray(HEADER_LEN); // raw rkyv 0.8 buffer, root at end
-  return r.decode(SpanArchive, payload);
+  return SpanArchive.decode(payload);
 }
 
 // --- content hashing of the anchored extent ---------------------------------

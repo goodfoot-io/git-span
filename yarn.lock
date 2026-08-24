@@ -1903,7 +1903,7 @@ __metadata:
     esbuild: "npm:^0.28.2"
     knip: "npm:^6.32.2"
     puppeteer-core: "npm:^25.7.0"
-    rkyv-js: "patch:rkyv-js@https%3A//github.com/cometkim/rkyv-js.git%23commit=2c3fc14860535eb9b8075f1db7547a45dbd8fa6e#~/.yarn/patches/rkyv-js-https-0624042b43.patch"
+    rkyv-js: "npm:^0.3.0"
     typescript: "npm:^7.0.2"
   languageName: unknown
   linkType: soft
@@ -11858,17 +11858,10 @@ __metadata:
   languageName: node
   linkType: hard
 
-"rkyv-js@https://github.com/cometkim/rkyv-js.git#commit=2c3fc14860535eb9b8075f1db7547a45dbd8fa6e":
-  version: 0.1.0
-  resolution: "rkyv-js@https://github.com/cometkim/rkyv-js.git#commit=2c3fc14860535eb9b8075f1db7547a45dbd8fa6e"
-  checksum: 10c0/7743bd821a0d45f1c41f2eda7d9cddf5b0b998d68eda915da1ba700974f09844880ac4500bd92f098f9df34a9d23ee7afcf6ea5538358a1d77f96b17abea1dbd
-  languageName: node
-  linkType: hard
-
-"rkyv-js@patch:rkyv-js@https%3A//github.com/cometkim/rkyv-js.git%23commit=2c3fc14860535eb9b8075f1db7547a45dbd8fa6e#~/.yarn/patches/rkyv-js-https-0624042b43.patch":
-  version: 0.1.0
-  resolution: "rkyv-js@patch:rkyv-js@https%3A//github.com/cometkim/rkyv-js.git%23commit=2c3fc14860535eb9b8075f1db7547a45dbd8fa6e#~/.yarn/patches/rkyv-js-https-0624042b43.patch::version=0.1.0&hash=5f8461"
-  checksum: 10c0/403663e25d9458bcdad52236b004bbbde02c2422b0cce9c3ba2e1b3b58338ee89cae032e7d0a46cba022e1f36839c7c3a2b718bdecd66322242011c52fcf2e54
+"rkyv-js@npm:^0.3.0":
+  version: 0.3.0
+  resolution: "rkyv-js@npm:0.3.0"
+  checksum: 10c0/d4e90ee2b7910851cc6c9dae4b90adec0802997118df632b594fdca6c993575ad101df73a3cbe480b403611263f60c5499945baf15b869f103d87e7ffa021e75
   languageName: node
   linkType: hard
 
