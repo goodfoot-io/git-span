@@ -524,12 +524,35 @@ fn line_similarity(a: &str, b: &str) -> f64 {
     intersection as f64 / union as f64
 }
 
+// ---------------------------------------------------------------------------
+// Call counter for blob_text's ODB read attempt — used by the regression
+// test for card main-283 (match_copies_from_pool re-read every candidate
+// blob once per added path; the single-pass preload must pay ~one read per
+// distinct pool blob instead of added×pool). Always compiled; the
+// thread-local increment on a hot path has negligible cost.
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    static BLOB_TEXT_READ_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Reset the call counter.
+pub(crate) fn reset_blob_text_read_count() {
+    BLOB_TEXT_READ_COUNT.with(|c| c.set(0));
+}
+
+/// Read the call count.
+pub(crate) fn blob_text_read_count() -> usize {
+    BLOB_TEXT_READ_COUNT.with(|c| c.get())
+}
+
 /// Read a blob OID as text, returning empty string on failure.
 fn blob_text(repo: &gix::Repository, blob_oid: &str) -> String {
     use std::str::FromStr;
     let Ok(oid) = gix::ObjectId::from_str(blob_oid) else {
         return String::new();
     };
+    BLOB_TEXT_READ_COUNT.with(|c| c.set(c.get() + 1));
     let Ok(obj) = repo.find_object(oid) else {
         return String::new();
     };
@@ -575,34 +598,59 @@ fn match_copies_from_pool(
         })
         .collect();
 
-    // For each candidate, read text once; then compare against each added.
-    // Greedy: first candidate that beats threshold wins (stable ordering from pool).
+    // Card main-283: preload each distinct candidate blob's text once,
+    // before the added-path loop. The inner loop used to call `blob_text`
+    // per (added path × candidate) pair — A×pool ODB reads per qualifying
+    // commit under AnyFileInRepo — and re-tokenized each candidate every
+    // time; now the pool costs ~pool reads regardless of A, and
+    // comparisons run off shared `Arc<str>` handles (same convention as
+    // the session's `blob_text_memo`). The session memo itself does not
+    // fit here: it propagates read failures, while pool matching must keep
+    // degrading an unreadable candidate (gitlink, non-UTF-8) to a skip.
+    // Candidates whose text is empty or unreadable are simply absent from
+    // this map, exactly the candidates the comparison loop used to skip.
+    let mut texts_by_oid: std::collections::HashMap<&str, std::sync::Arc<str>> =
+        std::collections::HashMap::with_capacity(candidates.len());
+    let candidates: Vec<(&str, std::sync::Arc<str>)> = candidates
+        .iter()
+        .filter_map(|(cand_path, cand_blob_oid)| {
+            if let Some(text) = texts_by_oid.get(cand_blob_oid.as_str()) {
+                return Some((cand_path.as_str(), std::sync::Arc::clone(text)));
+            }
+            let text: std::sync::Arc<str> = std::sync::Arc::from(blob_text(repo, cand_blob_oid));
+            if text.is_empty() {
+                return None;
+            }
+            texts_by_oid.insert(cand_blob_oid.as_str(), std::sync::Arc::clone(&text));
+            Some((cand_path.as_str(), text))
+        })
+        .collect();
+
+    // For each added path, compare against the preloaded candidate texts.
+    // Greedy: first candidate that beats threshold wins (stable ordering
+    // from pool).
     for (added_path, added_blob_oid) in &added_blobs {
         let added_text = blob_text(repo, added_blob_oid);
         if added_text.is_empty() {
             continue;
         }
         let mut best_sim = 0.0f64;
-        let mut best_src: Option<String> = None;
-        for (cand_path, cand_blob_oid) in candidates {
+        let mut best_src: Option<&str> = None;
+        for (cand_path, cand_text) in &candidates {
             // Skip if candidate is the same path as the added file.
             // (Identical blob OIDs from different paths are valid copy sources.)
-            if cand_path == added_path {
+            if *cand_path == added_path.as_str() {
                 continue;
             }
-            let cand_text = blob_text(repo, cand_blob_oid);
-            if cand_text.is_empty() {
-                continue;
-            }
-            let sim = line_similarity(&cand_text, &added_text);
+            let sim = line_similarity(cand_text, &added_text);
             if sim >= 0.5 && sim > best_sim {
                 best_sim = sim;
-                best_src = Some(cand_path.clone());
+                best_src = Some(cand_path);
             }
         }
         if let Some(src) = best_src {
             out.push(NS::Copied {
-                from: src,
+                from: src.to_string(),
                 to: added_path.clone(),
             });
         }
@@ -817,6 +865,79 @@ mod scope_tests {
             "Expected Copied{{from=a.ts,to=b.ts}}; entries count={}, warnings={:?}",
             entries.len(),
             warnings
+        );
+    }
+
+    /// Regression (main-283): pool matching must read each distinct
+    /// candidate blob once per call, not once per (added path × candidate)
+    /// pair. The fixture copies 3 files out of a 5-file pool, so the
+    /// pre-fix inner loop paid 3×5=15 candidate reads plus 3 added-side
+    /// reads; the single-pass preload pays 5+3, i.e. ~pool size
+    /// regardless of A. Both widening modes funnel into the same
+    /// `match_copies_from_pool`, so `AnyFileInCommit` pins the shared
+    /// codepath.
+    #[test]
+    fn wide_copy_pool_reads_each_candidate_once() {
+        let td = tempdir().unwrap();
+        let dir = td.path();
+        run_git(dir, &["init", "--initial-branch=main"]);
+        run_git(dir, &["config", "user.email", "t@t"]);
+        run_git(dir, &["config", "user.name", "t"]);
+        run_git(dir, &["config", "commit.gpgsign", "false"]);
+
+        // Pool: five distinct 20-line blobs.
+        for i in 1..=5 {
+            let content: String = (1..=20).map(|j| format!("c{i}_line_{j}\n")).collect();
+            std::fs::write(dir.join(format!("c{i}.txt")), &content).unwrap();
+        }
+        run_git(dir, &["add", "."]);
+        run_git(dir, &["commit", "-m", "pool"]);
+        let parent = rev_parse(dir, "HEAD");
+
+        // Three exact copies out of that pool. The sources are unmodified
+        // in this commit, so phase-1 rewrite tracking cannot pair them and
+        // the widened pool search is what attributes the copies.
+        for i in 1..=3 {
+            let content = std::fs::read_to_string(dir.join(format!("c{i}.txt"))).unwrap();
+            std::fs::write(dir.join(format!("a{i}.txt")), &content).unwrap();
+        }
+        run_git(dir, &["add", "."]);
+        run_git(dir, &["commit", "-m", "wide copy"]);
+        let commit = rev_parse(dir, "HEAD");
+
+        let repo = gix::open(dir).unwrap();
+        reset_blob_text_read_count();
+        let mut warnings = Vec::new();
+        let entries = name_status(
+            &repo,
+            &parent,
+            &commit,
+            crate::types::CopyDetection::AnyFileInCommit,
+            &mut warnings,
+        )
+        .unwrap();
+
+        // Behavior is unchanged: every added file is attributed to its
+        // exact-copy source.
+        for i in 1..=3 {
+            let src = format!("c{i}.txt");
+            let dst = format!("a{i}.txt");
+            assert!(
+                entries
+                    .iter()
+                    .any(|e| matches!(e, NS::Copied { from, to } if from == &src && to == &dst)),
+                "expected Copied{{from={src},to={dst}}}; entries count={}; warnings={warnings:?}",
+                entries.len(),
+            );
+        }
+
+        // Counter evidence: 5 distinct candidate reads + 3 added-side
+        // reads. The pre-fix inner loop paid 3×5 + 3 = 18 here, and
+        // A×pool + A in general.
+        assert_eq!(
+            blob_text_read_count(),
+            8,
+            "candidate texts must be preloaded once (~pool size), not re-read per added path"
         );
     }
 
