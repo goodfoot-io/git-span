@@ -397,12 +397,8 @@ export function reconcileAgainstPassMap(
  * letting an rm that failed on a dirty path fire advisory - same bounded
  * harm as the plan's documented join corner.
  */
-export function explainLaterRecreates(
-  evals: ReadonlyMap<number, SpanEval[]>,
-  order: readonly number[],
-  probeCache: RealityProbeCache,
-  cwd: string
-): void {
+/** The later-recreate scope: the highest command index whose file-producing write passed (or held) on each path. */
+function buildRecreateByPath(evals: ReadonlyMap<number, SpanEval[]>, order: readonly number[]): Map<string, number> {
   const recreateByPath = new Map<string, number>();
   for (const idx of order) {
     const list = evals.get(idx);
@@ -415,17 +411,31 @@ export function explainLaterRecreates(
       if (prev === undefined || idx > prev) recreateByPath.set(e.path, idx);
     }
   }
-  if (recreateByPath.size > 0) {
-    for (const idx of order) {
-      const list = evals.get(idx);
-      if (list === undefined) continue;
-      for (const e of list) {
-        if (e.outcome !== 'decisiveFail' || e.explained) continue;
-        if (e.touch === null || e.touch.kind !== 'write' || e.touch.targetState !== 'absent') continue;
-        const recreateIdx = recreateByPath.get(e.path);
-        if (recreateIdx !== undefined && recreateIdx > e.commandIndex && workingTreeChanged(probeCache, cwd, e.path)) {
-          e.explained = true;
-        }
+  return recreateByPath;
+}
+
+/**
+ * Phase H driver: build the later-recreate scope, then mark any delete
+ * decisiveFail whose path a later command re-created while the working tree
+ * shows tracked change.
+ */
+export function explainLaterRecreates(
+  evals: ReadonlyMap<number, SpanEval[]>,
+  order: readonly number[],
+  probeCache: RealityProbeCache,
+  cwd: string
+): void {
+  const recreateByPath = buildRecreateByPath(evals, order);
+  if (recreateByPath.size === 0) return;
+  for (const idx of order) {
+    const list = evals.get(idx);
+    if (list === undefined) continue;
+    for (const e of list) {
+      if (e.outcome !== 'decisiveFail' || e.explained) continue;
+      if (e.touch === null || e.touch.kind !== 'write' || e.touch.targetState !== 'absent') continue;
+      const recreateIdx = recreateByPath.get(e.path);
+      if (recreateIdx !== undefined && recreateIdx > e.commandIndex && workingTreeChanged(probeCache, cwd, e.path)) {
+        e.explained = true;
       }
     }
   }
