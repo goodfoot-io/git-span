@@ -70,11 +70,13 @@ ENV NODE_OPTIONS=--max-old-space-size=4096
 RUN npm install -g @anthropic-ai/claude-code @openai/codex && \
   npm install -g tsx dotenv-cli @ast-grep/cli jsdoczoom agent-browser git-span
 
-# Guarantee the opencode data dir exists node-owned in the final image even if
-# built against a stale devcontainer-base (see base commit bcc1d2e): fresh
-# opencode-data named volumes initialize content and ownership from this image
-# path, and a root-owned mountpoint would break opencode (uid 1000) on first run.
+# Guarantee the named-volume mountpoints exist node-owned in the final image
+# even if built against a stale devcontainer-base: fresh volumes initialize
+# content and ownership from these image paths, and a root-owned mountpoint
+# would break opencode/cards (uid 1000) on first run. Top-level paths, not
+# nested in /home/node: libkrun attaches the home virtiofs bind after start,
+# shadowing nested mounts; the base entrypoint symlinks the home paths here.
 USER root
-RUN mkdir -p /home/node/.local/share/opencode /home/node/.cards/worktrees \
-  && chown -R node:node /home/node/.local /home/node/.cards
+RUN mkdir -p /var/lib/coaxial/opencode /var/lib/coaxial/cards-worktrees \
+  && chown -R node:node /var/lib/coaxial
 USER node

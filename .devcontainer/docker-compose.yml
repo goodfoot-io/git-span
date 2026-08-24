@@ -24,14 +24,13 @@ services:
       # to it and fixes permissions at container start.
       - /var/run/docker.sock:/var/run/docker-host.sock:cached
       - ${HOME}/devcontainer/git-span:/home/node:cached
-      # opencode's SQLite DB (WAL mode) + logs must not live on virtiofs: WAL
-      # commits over the host boundary generate constant sync-write disk load
-      # and fsevent storms. Container-native named volume shadows just this dir.
-      - opencode-data:/home/node/.local/share/opencode
-      # Card worktrees: the heaviest virtiofs writers (vitest/cargo/esbuild churn)
-      # move to container-native ext4. The Mac deliberately loses direct
-      # visibility into worktree contents.
-      - cards-worktrees:/home/node/.cards/worktrees
+      # opencode data (WAL-mode SQLite + logs) and card worktrees are the heavy
+      # virtiofs writers; both move to container-native named volumes. Mounted at
+      # top-level /var/lib/coaxial paths — NOT nested inside /home/node — because
+      # libkrun attaches the home virtiofs bind after start, silently shadowing
+      # nested mounts. The base entrypoint symlinks the home paths here.
+      - opencode-data:/var/lib/coaxial/opencode
+      - cards-worktrees:/var/lib/coaxial/cards-worktrees
       - claude-code-bashhistory:/commandhistory
       - git-span-cargo-target:/var/cache/git-span/cargo-target
     env_file:
