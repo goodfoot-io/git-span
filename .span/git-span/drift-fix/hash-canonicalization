@@ -1,5 +1,5 @@
 packages/git-span/src/cli/commit.rs#L91-L230 rk64:b9d9e2cb0eeb28f3
-packages/git-span/src/cli/drift_fix.rs#L1166-L1352 rk64:db78586e0d96fe0a
-packages/git-span/src/cli/drift_fix.rs#L1381-L1507 rk64:a6f33fb792b81ddf
+packages/git-span/src/cli/drift_fix.rs#L1166-L1352 rk64:cc91aba2d96c0259
+packages/git-span/src/cli/drift_fix.rs#L1381-L1507 rk64:f4894c955f9e6cc3
 
 Add-time hashing and drift --fix's per-layer recomputation share the resolver's single git-normalized canonicalization, so a freshly added anchor never reads Changed or Moved in repos with EOL normalization or clean/smudge filters.
