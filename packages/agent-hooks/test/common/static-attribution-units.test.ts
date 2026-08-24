@@ -433,8 +433,8 @@ describe('parseCompoundStages', () => {
     expect(result.resolved.map((match) => ({ layer: match.layer, operation: spanOf(match).operation }))).toEqual([
       { layer: 'node', operation: 'read' },
       { layer: 'node', operation: 'read' },
-      { layer: 'node', operation: 'write' },
-      { layer: 'node', operation: 'write' }
+      { layer: 'node', operation: 'modify' },
+      { layer: 'node', operation: 'modify' }
     ]);
     expect(result.unresolved.map((match) => match.simpleCommandIndex)).toEqual([0, 1]);
 

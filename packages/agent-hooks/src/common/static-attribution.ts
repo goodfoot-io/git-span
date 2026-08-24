@@ -503,6 +503,102 @@ interface PythonStructuredValue {
   readonly keys: string[][];
 }
 
+/**
+ * Shared recognizer state threaded through every Python statement machine:
+ * one map per binding family, the accumulating resolved set, and the
+ * deduplicated pre-state requests. Free functions over this context replace
+ * per-parse closures so each machine stays directly testable.
+ */
+interface PythonRecognizerContext {
+  readonly cwd: string;
+  readonly options: LayeredParseOptions;
+  readonly paths: Map<string, PythonPathBinding>;
+  readonly texts: Map<string, PythonTextBinding>;
+  readonly replacements: Map<string, PythonReplacement>;
+  readonly anchors: Map<string, { source: string; literal: string }>;
+  readonly lines: Map<string, PythonLineArray>;
+  readonly structured: Map<string, PythonStructuredValue>;
+  readonly countAssertions: Map<string, number>;
+  readonly resolved: LayeredResolvedMatch[];
+  readonly preStateRequests: PreStateRequest[];
+}
+
+function createPythonContext(options: LayeredParseOptions): PythonRecognizerContext {
+  return {
+    cwd: options.cwd ?? process.cwd(),
+    options,
+    paths: new Map(),
+    texts: new Map(),
+    replacements: new Map(),
+    anchors: new Map(),
+    lines: new Map(),
+    structured: new Map(),
+    countAssertions: new Map(),
+    resolved: [],
+    preStateRequests: []
+  };
+}
+
+function rejectPython(
+  reasonCode: UnresolvedReasonCode,
+  detail: string,
+  fileArg?: string,
+  preStateRequests: readonly PreStateRequest[] = []
+): LayeredParseResult {
+  return {
+    resolved: [],
+    unresolved: [unresolved('python', 'python-edit', reasonCode, detail, fileArg)],
+    preStateRequests
+  };
+}
+
+/** Records one pre-state need; duplicates by (path, operation, requirement) are absorbed. */
+function requestPythonPreState(
+  ctx: PythonRecognizerContext,
+  absolutePath: string,
+  operation: Operation,
+  requirement: PreStateRequirement
+): void {
+  if (
+    !ctx.preStateRequests.some(
+      (entry) =>
+        entry.absolutePath === absolutePath && entry.operation === operation && entry.requirement === requirement
+    )
+  ) {
+    ctx.preStateRequests.push({ absolutePath, operation, requirement, simpleCommandIndex: 0 });
+  }
+}
+
+/**
+ * Reads the caller-supplied pre-state snapshot, first registering every
+ * missing requirement against operation `'modify'` — Python range recovery
+ * always rewrites in place. Returns the content, or a complete rejection
+ * when it is missing or binary.
+ */
+function readPythonPreState(
+  ctx: PythonRecognizerContext,
+  absolutePath: string,
+  requirements: readonly PreStateRequirement[]
+): string | LayeredParseResult {
+  for (const requirement of requirements) requestPythonPreState(ctx, absolutePath, 'modify', requirement);
+  const content = ctx.options.readPreState?.(absolutePath) ?? null;
+  if (content === null)
+    return rejectPython(
+      'missing-pre-state',
+      'Python range recovery requires pre-command text',
+      absolutePath,
+      ctx.preStateRequests
+    );
+  if (content.includes('\0'))
+    return rejectPython(
+      'binary-content',
+      'Python range recovery does not accept binary content',
+      absolutePath,
+      ctx.preStateRequests
+    );
+  return content;
+}
+
 const PYTHON_INTERPRETER = /^(?:python|python3(?:\.\d+)?)$/;
 const PYTHON_STRING_SOURCE = String.raw`(?:'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")`;
 const PYTHON_NAME_SOURCE = `[A-Za-z_][A-Za-z0-9_]*`;
@@ -715,73 +811,27 @@ function structuredKeyRanges(content: string, format: PythonStructuredValue['for
 function parsePythonAttribution(command: string, options: LayeredParseOptions): LayeredParseResult | null {
   const extracted = extractPythonProgram(command);
   if (extracted === null) return null;
-  const reject = (
-    reasonCode: UnresolvedReasonCode,
-    detail: string,
-    fileArg?: string,
-    preStateRequests: readonly PreStateRequest[] = []
-  ): LayeredParseResult => ({
-    resolved: [],
-    unresolved: [unresolved('python', 'python-edit', reasonCode, detail, fileArg)],
-    preStateRequests
-  });
   if (extracted.program === undefined) {
-    return reject(extracted.reason ?? 'unsupported-syntax', extracted.detail ?? 'unsupported Python invocation');
+    return rejectPython(extracted.reason ?? 'unsupported-syntax', extracted.detail ?? 'unsupported Python invocation');
   }
   const statements = splitPythonStatements(extracted.program);
   if (statements === null || statements.length === 0) {
-    return reject('unsupported-syntax', 'the Python program is incomplete or cannot be tokenized');
+    return rejectPython('unsupported-syntax', 'the Python program is incomplete or cannot be tokenized');
   }
   if (statements.length > 64)
-    return reject('candidate-budget-exceeded', 'the Python program exceeds the statement budget');
+    return rejectPython('candidate-budget-exceeded', 'the Python program exceeds the statement budget');
 
-  const cwd = options.cwd ?? process.cwd();
-  const paths = new Map<string, PythonPathBinding>();
-  const texts = new Map<string, PythonTextBinding>();
-  const replacements = new Map<string, PythonReplacement>();
-  const anchors = new Map<string, { source: string; literal: string }>();
-  const lines = new Map<string, PythonLineArray>();
-  const structured = new Map<string, PythonStructuredValue>();
-  const countAssertions = new Map<string, number>();
-  const resolved: LayeredResolvedMatch[] = [];
-  const preStateRequests: PreStateRequest[] = [];
+  const ctx = createPythonContext(options);
+  const { cwd, resolved, preStateRequests } = ctx;
 
-  const request = (absolutePath: string, operation: Operation, requirement: PreStateRequirement): void => {
-    if (
-      !preStateRequests.some(
-        (entry) =>
-          entry.absolutePath === absolutePath && entry.operation === operation && entry.requirement === requirement
-      )
-    ) {
-      preStateRequests.push({ absolutePath, operation, requirement, simpleCommandIndex: 0 });
-    }
-  };
-  const readPreState = (
-    absolutePath: string,
-    requirements: readonly PreStateRequirement[]
-  ): string | LayeredParseResult => {
-    for (const requirement of requirements) request(absolutePath, 'modify', requirement);
-    const content = options.readPreState?.(absolutePath) ?? null;
-    if (content === null)
-      return reject(
-        'missing-pre-state',
-        'Python range recovery requires pre-command text',
-        absolutePath,
-        preStateRequests
-      );
-    if (content.includes('\0'))
-      return reject(
-        'binary-content',
-        'Python range recovery does not accept binary content',
-        absolutePath,
-        preStateRequests
-      );
-    return content;
-  };
   const emitReplace = (absolutePath: string, transformation: PythonReplacement): LayeredParseResult | null => {
-    const read = texts.get(transformation.source);
+    const read = ctx.texts.get(transformation.source);
     if (read === undefined || nodePath.resolve(cwd, read.path) !== absolutePath) {
-      return reject('unsupported-dataflow', 'Python read and write paths are not provably identical', absolutePath);
+      return rejectPython(
+        'unsupported-dataflow',
+        'Python read and write paths are not provably identical',
+        absolutePath
+      );
     }
     const requirements: PreStateRequirement[] = ['match-locations'];
     if (
@@ -790,12 +840,12 @@ function parsePythonAttribution(command: string, options: LayeredParseOptions): 
     ) {
       requirements.push('deleted-text');
     }
-    const content = readPreState(absolutePath, requirements);
+    const content = readPythonPreState(ctx, absolutePath, requirements);
     if (typeof content !== 'string') return content;
-    const assertion = countAssertions.get(`${transformation.source}\0${transformation.pattern}`);
+    const assertion = ctx.countAssertions.get(`${transformation.source}\0${transformation.pattern}`);
     const occurrences = countLiteralOccurrences(content, transformation.pattern);
     if (assertion !== undefined && occurrences !== assertion) {
-      return reject(
+      return rejectPython(
         'evidence-mismatch',
         'Python count assertion does not match pre-state',
         absolutePath,
@@ -805,7 +855,7 @@ function parsePythonAttribution(command: string, options: LayeredParseOptions): 
     const count = transformation.count ?? occurrences;
     const ranges = literalOccurrenceRanges(content, transformation.pattern).slice(0, count);
     if (ranges.length === 0) {
-      return reject(
+      return rejectPython(
         'evidence-mismatch',
         'Python replacement literal is absent from pre-state',
         absolutePath,
@@ -847,133 +897,146 @@ function parsePythonAttribution(command: string, options: LayeredParseOptions): 
       continue;
     }
     if (/^(?:for|while|if|def|class|with|try)\b/.test(statement)) {
-      return reject('unsupported-dataflow', 'control flow is outside the bounded Python recognizer');
+      return rejectPython('unsupported-dataflow', 'control flow is outside the bounded Python recognizer');
     }
 
     let match = statement.match(PYTHON_PATH_LITERAL_PATTERN);
     if (match !== null) {
       const path = decodePythonString(match[2]);
-      if (path === null) return reject('unsupported-syntax', 'Python path literal uses an unsupported escape');
-      paths.set(match[1], { path, depth: 0 });
+      if (path === null) return rejectPython('unsupported-syntax', 'Python path literal uses an unsupported escape');
+      ctx.paths.set(match[1], { path, depth: 0 });
       continue;
     }
     match = statement.match(PYTHON_STRING_BINDING_PATTERN);
     if (match !== null) {
       const path = decodePythonString(match[2]);
-      if (path === null) return reject('unsupported-syntax', 'Python string literal uses an unsupported escape');
-      paths.set(match[1], { path, depth: 0 });
+      if (path === null) return rejectPython('unsupported-syntax', 'Python string literal uses an unsupported escape');
+      ctx.paths.set(match[1], { path, depth: 0 });
       continue;
     }
     match = statement.match(PYTHON_NAME_ALIAS_PATTERN);
     if (match !== null) {
-      const source = paths.get(match[2]);
+      const source = ctx.paths.get(match[2]);
       if (source === undefined || source.depth !== 0) {
-        return reject('unsupported-dataflow', 'Python path aliases are limited to one literal hop');
+        return rejectPython('unsupported-dataflow', 'Python path aliases are limited to one literal hop');
       }
-      paths.set(match[1], { path: source.path, depth: 1 });
+      ctx.paths.set(match[1], { path: source.path, depth: 1 });
       continue;
     }
 
     match = statement.match(PYTHON_TEXT_READ_PATTERN);
     if (match !== null) {
-      const binding = paths.get(match[2]);
-      if (binding === undefined) return reject('dynamic-path', 'Python read target is not a literal path binding');
+      const binding = ctx.paths.get(match[2]);
+      if (binding === undefined)
+        return rejectPython('dynamic-path', 'Python read target is not a literal path binding');
       if (match[3].trim() !== '' && !/^encoding\s*=\s*['"]utf-?8['"]$/.test(match[3].trim())) {
-        return reject('unsupported-encoding', 'only default or UTF-8 Python text reads are supported', binding.path);
+        return rejectPython(
+          'unsupported-encoding',
+          'only default or UTF-8 Python text reads are supported',
+          binding.path
+        );
       }
-      texts.set(match[1], { path: binding.path });
+      ctx.texts.set(match[1], { path: binding.path });
       continue;
     }
 
     match = statement.match(PYTHON_REPLACE_BINDING_PATTERN);
     if (match !== null) {
-      if (!texts.has(match[2]))
-        return reject('unsupported-dataflow', 'Python replace source is not a direct text read');
+      if (!ctx.texts.has(match[2]))
+        return rejectPython('unsupported-dataflow', 'Python replace source is not a direct text read');
       const pattern = decodePythonString(match[3]);
       const replacement = decodePythonString(match[4]);
       const count = match[5] === undefined ? undefined : Number.parseInt(match[5], 10);
       if (pattern === null || pattern.length === 0 || replacement === null || count === 0) {
-        return reject('unsupported-expression', 'Python replace requires non-empty literal input and a positive count');
+        return rejectPython(
+          'unsupported-expression',
+          'Python replace requires non-empty literal input and a positive count'
+        );
       }
-      replacements.set(match[1], { source: match[2], pattern, replacement, count });
+      ctx.replacements.set(match[1], { source: match[2], pattern, replacement, count });
       continue;
     }
 
     match = statement.match(PYTHON_COUNT_ASSERT_PATTERN);
     if (match !== null) {
       const literal = decodePythonString(match[2]);
-      if (literal === null || literal.length === 0 || !texts.has(match[1])) {
-        return reject('unsupported-dataflow', 'Python count assertion is not tied to a direct text read');
+      if (literal === null || literal.length === 0 || !ctx.texts.has(match[1])) {
+        return rejectPython('unsupported-dataflow', 'Python count assertion is not tied to a direct text read');
       }
-      countAssertions.set(`${match[1]}\0${literal}`, Number.parseInt(match[3], 10));
+      ctx.countAssertions.set(`${match[1]}\0${literal}`, Number.parseInt(match[3], 10));
       continue;
     }
 
     match = statement.match(PYTHON_INDEX_ANCHOR_PATTERN);
     if (match !== null) {
       const literal = decodePythonString(match[3]);
-      if (literal === null || literal.length === 0 || !texts.has(match[2])) {
-        return reject('unsupported-dataflow', 'Python index anchor is not tied to a direct text read');
+      if (literal === null || literal.length === 0 || !ctx.texts.has(match[2])) {
+        return rejectPython('unsupported-dataflow', 'Python index anchor is not tied to a direct text read');
       }
-      anchors.set(match[1], { source: match[2], literal });
+      ctx.anchors.set(match[1], { source: match[2], literal });
       continue;
     }
 
     match = statement.match(PYTHON_LINE_ARRAY_PATTERN);
     if (match !== null) {
-      const binding = paths.get(match[2]);
-      if (binding === undefined) return reject('dynamic-path', 'Python line-array target is not literal');
-      lines.set(match[1], { path: binding.path, edits: new Map() });
+      const binding = ctx.paths.get(match[2]);
+      if (binding === undefined) return rejectPython('dynamic-path', 'Python line-array target is not literal');
+      ctx.lines.set(match[1], { path: binding.path, edits: new Map() });
       continue;
     }
     match = statement.match(PYTHON_LINE_EDIT_PATTERN);
     if (match !== null) {
-      const array = lines.get(match[1]);
+      const array = ctx.lines.get(match[1]);
       const value = decodePythonString(match[3]);
       if (array === undefined || value === null)
-        return reject('unsupported-dataflow', 'line edit is not a bounded literal array edit');
+        return rejectPython('unsupported-dataflow', 'line edit is not a bounded literal array edit');
       array.edits.set(Number.parseInt(match[2], 10), value);
       continue;
     }
 
     match = statement.match(PYTHON_STRUCTURED_LOAD_PATTERN);
     if (match !== null) {
-      const binding = paths.get(match[3]);
-      if (binding === undefined) return reject('dynamic-path', 'structured Python load target is not literal');
+      const binding = ctx.paths.get(match[3]);
+      if (binding === undefined) return rejectPython('dynamic-path', 'structured Python load target is not literal');
       const format = match[2] === 'tomllib' ? 'toml' : (match[2] as 'json' | 'yaml');
-      structured.set(match[1], { format, path: binding.path, keys: [] });
+      ctx.structured.set(match[1], { format, path: binding.path, keys: [] });
       continue;
     }
     match = statement.match(PYTHON_STRUCTURED_ASSIGN_PATTERN);
-    if (match !== null && structured.has(match[1])) {
+    if (match !== null && ctx.structured.has(match[1])) {
       const keys = [...match[2].matchAll(PYTHON_STRUCTURED_KEY_SCAN_PATTERN)].map((key) => decodePythonString(key[1]));
       if (keys.length === 0 || keys.some((key) => key === null)) {
-        return reject('unsupported-expression', 'structured Python mutation requires literal string keys');
+        return rejectPython('unsupported-expression', 'structured Python mutation requires literal string keys');
       }
-      structured.get(match[1])!.keys.push(keys as string[]);
+      ctx.structured.get(match[1])!.keys.push(keys as string[]);
       continue;
     }
 
     match = statement.match(PYTHON_APPEND_PATTERN);
     if (match !== null) {
-      const binding = paths.get(match[1]);
+      const binding = ctx.paths.get(match[1]);
       const mode = decodePythonString(match[2]);
       const written = decodePythonString(match[3]);
-      if (binding === undefined) return reject('dynamic-path', 'Python append target is not literal');
+      if (binding === undefined) return rejectPython('dynamic-path', 'Python append target is not literal');
       if (mode !== 'a' || written === null)
-        return reject('unsupported-expression', 'only literal text append mode is supported');
+        return rejectPython('unsupported-expression', 'only literal text append mode is supported');
       const absolutePath = nodePath.resolve(cwd, binding.path);
-      request(absolutePath, 'append', 'pre-command-eof');
+      requestPythonPreState(ctx, absolutePath, 'append', 'pre-command-eof');
       const content = options.readPreState?.(absolutePath) ?? null;
       if (content === null)
-        return reject(
+        return rejectPython(
           'missing-pre-state',
           'Python append range requires pre-command text',
           absolutePath,
           preStateRequests
         );
       if (content.includes('\0'))
-        return reject('binary-content', 'Python append does not accept binary content', absolutePath, preStateRequests);
+        return rejectPython(
+          'binary-content',
+          'Python append does not accept binary content',
+          absolutePath,
+          preStateRequests
+        );
       const line = pythonLineAtOffset(content, content.length);
       resolved.push({
         status: 'resolved',
@@ -994,8 +1057,8 @@ function parsePythonAttribution(command: string, options: LayeredParseOptions): 
 
     match = statement.match(PYTHON_WRITE_TARGET_PATTERN);
     if (match !== null) {
-      const binding = paths.get(match[1]);
-      if (binding === undefined) return reject('dynamic-path', 'Python write target is not literal');
+      const binding = ctx.paths.get(match[1]);
+      if (binding === undefined) return rejectPython('dynamic-path', 'Python write target is not literal');
       const absolutePath = nodePath.resolve(cwd, binding.path);
       const expression = match[2].trim();
       const literal = decodePythonString(expression);
@@ -1017,7 +1080,7 @@ function parsePythonAttribution(command: string, options: LayeredParseOptions): 
       const directReplace = expression.match(PYTHON_DIRECT_REPLACE_PATTERN);
       const replacement =
         directReplace === null
-          ? replacements.get(expression)
+          ? ctx.replacements.get(expression)
           : {
               source: directReplace[1],
               pattern: decodePythonString(directReplace[2]) ?? '',
@@ -1032,8 +1095,8 @@ function parsePythonAttribution(command: string, options: LayeredParseOptions): 
 
       const slice = expression.match(PYTHON_ANCHOR_SLICE_PATTERN);
       if (slice !== null) {
-        const anchor = anchors.get(slice[2]);
-        const read = texts.get(slice[1]);
+        const anchor = ctx.anchors.get(slice[2]);
+        const read = ctx.texts.get(slice[1]);
         const replacementText = decodePythonString(slice[3]);
         if (
           anchor === undefined ||
@@ -1043,17 +1106,17 @@ function parsePythonAttribution(command: string, options: LayeredParseOptions): 
           Number.parseInt(slice[4], 10) !== anchor.literal.length ||
           nodePath.resolve(cwd, read.path) !== absolutePath
         ) {
-          return reject(
+          return rejectPython(
             'unsupported-dataflow',
             'Python slice reconstruction is not tied to one literal anchor',
             absolutePath
           );
         }
-        const content = readPreState(absolutePath, ['match-locations', 'deleted-text']);
+        const content = readPythonPreState(ctx, absolutePath, ['match-locations', 'deleted-text']);
         if (typeof content !== 'string') return content;
         const offset = content.indexOf(anchor.literal);
         if (offset < 0)
-          return reject(
+          return rejectPython(
             'evidence-mismatch',
             'Python slice anchor is absent from pre-state',
             absolutePath,
@@ -1079,27 +1142,41 @@ function parsePythonAttribution(command: string, options: LayeredParseOptions): 
       const lineJoin = expression.match(PYTHON_LINE_JOIN_PATTERN);
       if (lineJoin !== null) {
         const delimiter = decodePythonString(lineJoin[1]);
-        const array = lines.get(lineJoin[2]);
+        const array = ctx.lines.get(lineJoin[2]);
         const suffix = lineJoin[3] === undefined ? '' : decodePythonString(lineJoin[3]);
         if (delimiter !== '\n' || array === undefined || suffix === null || (suffix !== '' && suffix !== '\n')) {
-          return reject('unsupported-expression', 'line-array writes require a literal newline join', absolutePath);
+          return rejectPython(
+            'unsupported-expression',
+            'line-array writes require a literal newline join',
+            absolutePath
+          );
         }
         if (nodePath.resolve(cwd, array.path) !== absolutePath || array.edits.size === 0) {
-          return reject(
+          return rejectPython(
             'unsupported-dataflow',
             'line-array read and write paths are not provably identical',
             absolutePath
           );
         }
-        const content = readPreState(absolutePath, ['deleted-text']);
+        const content = readPythonPreState(ctx, absolutePath, ['deleted-text']);
         if (typeof content !== 'string') return content;
         if (content.includes('\r'))
-          return reject('unsupported-encoding', 'line-array edits require LF text', absolutePath, preStateRequests);
+          return rejectPython(
+            'unsupported-encoding',
+            'line-array edits require LF text',
+            absolutePath,
+            preStateRequests
+          );
         const sourceLines = content.split('\n');
         if (sourceLines.at(-1) === '') sourceLines.pop();
         for (const [index, value] of array.edits) {
           if (index >= sourceLines.length)
-            return reject('evidence-mismatch', 'line-array index is outside pre-state', absolutePath, preStateRequests);
+            return rejectPython(
+              'evidence-mismatch',
+              'line-array index is outside pre-state',
+              absolutePath,
+              preStateRequests
+            );
           sourceLines[index] = value;
         }
         const expectedContent = `${sourceLines.join('\n')}${suffix}`;
@@ -1125,7 +1202,7 @@ function parsePythonAttribution(command: string, options: LayeredParseOptions): 
         /^(json|tomli_w|toml|yaml)\.(dumps|safe_dump)\(([A-Za-z_][A-Za-z0-9_]*)\)$/
       );
       if (structuredSink !== null) {
-        const value = structured.get(structuredSink[3]);
+        const value = ctx.structured.get(structuredSink[3]);
         const sinkFormat = structuredSink[1] === 'json' ? 'json' : structuredSink[1] === 'yaml' ? 'yaml' : 'toml';
         if (
           value === undefined ||
@@ -1133,19 +1210,19 @@ function parsePythonAttribution(command: string, options: LayeredParseOptions): 
           nodePath.resolve(cwd, value.path) !== absolutePath ||
           value.keys.length === 0
         ) {
-          return reject(
+          return rejectPython(
             'unsupported-dataflow',
             'structured read, literal-key mutation, and write are not linked',
             absolutePath
           );
         }
-        const content = readPreState(absolutePath, ['match-locations']);
+        const content = readPythonPreState(ctx, absolutePath, ['match-locations']);
         if (typeof content !== 'string') return content;
         for (const keyPath of value.keys) {
           const key = keyPath.at(-1)!;
           const ranges = structuredKeyRanges(content, value.format, key);
           if (ranges.length !== 1) {
-            return reject(
+            return rejectPython(
               'unsupported-expression',
               'structured literal key is absent or ambiguous in pre-state',
               absolutePath,
@@ -1167,26 +1244,27 @@ function parsePythonAttribution(command: string, options: LayeredParseOptions): 
         }
         continue;
       }
-      return reject('unsupported-dataflow', 'Python write expression is outside the bounded allowlist', absolutePath);
+      return rejectPython(
+        'unsupported-dataflow',
+        'Python write expression is outside the bounded allowlist',
+        absolutePath
+      );
     }
 
     if (/sys\.argv|os\.(?:environ|getenv)|input\s*\(/.test(statement)) {
-      return reject('dynamic-path', 'Python target depends on runtime input');
+      return rejectPython('dynamic-path', 'Python target depends on runtime input');
     }
-    return reject(
+    return rejectPython(
       /(?:\.write|open\s*\(|Path\s*\()/.test(statement) ? 'unsupported-dataflow' : 'unsupported-syntax',
       'Python statement is outside the bounded lexical/dataflow allowlist'
     );
   }
 
-  if (resolved.length === 0) return reject('unsupported-dataflow', 'Python program has no supported authoring sink');
+  if (resolved.length === 0)
+    return rejectPython('unsupported-dataflow', 'Python program has no supported authoring sink');
   const maxCandidates = options.maxCandidates ?? DEFAULT_MAX_ATTRIBUTION_CANDIDATES;
-  if (resolved.length > maxCandidates) {
-    return reject(
-      'candidate-budget-exceeded',
-      `Python program produced ${resolved.length} candidates; the limit is ${maxCandidates}`
-    );
-  }
+  const overBudget = rejectOverBudget(resolved, 'python', 'python-edit', 'Python program', maxCandidates);
+  if (overBudget !== null) return overBudget;
   return { resolved, unresolved: [], preStateRequests };
 }
 
