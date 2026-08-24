@@ -223,12 +223,16 @@ fn collect_tree_index_changes(
                     location,
                     previous_id,
                     id,
+                    previous_entry_mode,
+                    entry_mode,
                     ..
                 } => {
                     raw.push(RawIndexChange::Modified {
                         path: bstr_to_string(&location),
                         old_blob: previous_id.to_hex().to_string(),
                         new_blob: id.to_hex().to_string(),
+                        old_readable: is_blob_mode(previous_entry_mode),
+                        new_readable: is_blob_mode(entry_mode),
                     });
                 }
                 ChangeRef::Rewrite {
@@ -236,6 +240,8 @@ fn collect_tree_index_changes(
                     location,
                     source_id,
                     id,
+                    source_entry_mode,
+                    entry_mode,
                     ..
                 } => {
                     raw.push(RawIndexChange::Rewrite {
@@ -243,6 +249,8 @@ fn collect_tree_index_changes(
                         new_path: bstr_to_string(&location),
                         old_blob: source_id.to_hex().to_string(),
                         new_blob: id.to_hex().to_string(),
+                        old_readable: is_blob_mode(source_entry_mode),
+                        new_readable: is_blob_mode(entry_mode),
                     });
                 }
             }
@@ -271,12 +279,19 @@ enum RawIndexChange {
         path: String,
         old_blob: String,
         new_blob: String,
+        /// True when that side's entry mode carries readable blob content.
+        /// A gitlink (`Commit`) names a commit in another repository whose
+        /// object is legitimately absent here; a `Tree` names no content.
+        old_readable: bool,
+        new_readable: bool,
     },
     Rewrite {
         old_path: String,
         new_path: String,
         old_blob: String,
         new_blob: String,
+        old_readable: bool,
+        new_readable: bool,
     },
 }
 
@@ -306,8 +321,19 @@ fn materialize_index_entry(repo: &gix::Repository, change: RawIndexChange) -> Re
             path,
             old_blob,
             new_blob,
+            old_readable,
+            new_readable,
         } => {
-            let hunks = compute_blob_hunks(repo, &old_blob, &new_blob)?;
+            let hunks = if old_readable && new_readable {
+                compute_blob_hunks(repo, &path, &old_blob, &new_blob)?
+            } else {
+                // A side whose entry mode carries no blob content (gitlink
+                // or tree) has no comparable lines; its object is not merely
+                // hard to read, it does not live in this repository at all.
+                // No hunks — and never a readable-side read degraded to empty
+                // bytes, which would fabricate whole-file hunks (main-280).
+                Vec::new()
+            };
             Ok(DiffEntry {
                 new_path: path.clone(),
                 old_path: path,
@@ -322,11 +348,17 @@ fn materialize_index_entry(repo: &gix::Repository, change: RawIndexChange) -> Re
             new_path,
             old_blob,
             new_blob,
+            old_readable,
+            new_readable,
         } => {
             let hunks = if old_blob == new_blob {
                 Vec::new()
+            } else if old_readable && new_readable {
+                compute_blob_hunks(repo, &new_path, &old_blob, &new_blob)?
             } else {
-                compute_blob_hunks(repo, &old_blob, &new_blob)?
+                // See the `Modified` arm: gitlink/tree sides have no
+                // comparable content in this repository.
+                Vec::new()
             };
             Ok(DiffEntry {
                 new_path,
@@ -520,8 +552,13 @@ fn worktree_change_to_entry(
         }),
         Some(new_id) => {
             let new_bytes = new_bytes.unwrap_or_default();
-            let old_bytes =
-                git::read_blob_bytes(repo, &old_blob.to_hex().to_string()).unwrap_or_default();
+            // The index blob is known-present (it is this entry's recorded
+            // id), so a failed read must not degrade the old side to empty
+            // bytes — that would fabricate a full-file insert and shift
+            // every tracked range by whole-file lengths (main-280).
+            let old_hex = old_blob.to_hex().to_string();
+            let old_bytes = git::read_blob_bytes(repo, &old_hex)
+                .map_err(|e| Error::Git(format!("read old blob of `{path}` (`{old_hex}`): {e}")))?;
             let hunks = compute_hunks_from_bytes(&old_bytes, &new_bytes);
             // Worktree layer historically doesn't fill `new_blob` (the
             // old text parser only populated it for the index layer
@@ -619,11 +656,18 @@ pub(crate) fn read_worktree_cleaned(
 
 fn compute_blob_hunks(
     repo: &gix::Repository,
+    path: &str,
     old_blob_hex: &str,
     new_blob_hex: &str,
 ) -> Result<Vec<(u32, u32, u32, u32)>> {
-    let old_bytes = git::read_blob_bytes(repo, old_blob_hex).unwrap_or_default();
-    let new_bytes = git::read_blob_bytes(repo, new_blob_hex).unwrap_or_default();
+    // Both OIDs are known-present here (Modification/Rewrite pairs), so a
+    // failed read must not degrade either side to empty bytes: that would
+    // fabricate whole-file hunks and shift tracked ranges by file lengths
+    // while reporting success (main-280). The error propagates instead.
+    let old_bytes = git::read_blob_bytes(repo, old_blob_hex)
+        .map_err(|e| Error::Git(format!("read old blob of `{path}` (`{old_blob_hex}`): {e}")))?;
+    let new_bytes = git::read_blob_bytes(repo, new_blob_hex)
+        .map_err(|e| Error::Git(format!("read new blob of `{path}` (`{new_blob_hex}`): {e}")))?;
     Ok(compute_hunks_from_bytes(&old_bytes, &new_bytes))
 }
 
@@ -759,7 +803,104 @@ fn is_unmerged_status(x: u8, y: u8) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_status_bytes;
+    use super::*;
+    use std::process::Command;
+    use tempfile::tempdir;
+
+    fn run_git(dir: &std::path::Path, args: &[&str]) {
+        let out = Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    fn committed_blob_hex(dir: &std::path::Path) -> String {
+        String::from_utf8(
+            Command::new("git")
+                .current_dir(dir)
+                .args(["rev-parse", "HEAD:f.txt"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string()
+    }
+
+    /// Regression (main-280): both OIDs passed to `compute_blob_hunks` are
+    /// known-present, so an unreadable object must surface as an error
+    /// naming the file instead of degrading that side to empty bytes and
+    /// fabricating whole-file hunks.
+    #[test]
+    fn compute_blob_hunks_fails_closed_on_unreadable_blob() {
+        let td = tempdir().unwrap();
+        let dir = td.path();
+        run_git(dir, &["init", "--initial-branch=main"]);
+        run_git(dir, &["config", "user.email", "t@t"]);
+        run_git(dir, &["config", "user.name", "t"]);
+        run_git(dir, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(dir.join("f.txt"), b"a\nb\nc\n").unwrap();
+        run_git(dir, &["add", "."]);
+        run_git(dir, &["commit", "-m", "init"]);
+        let old_hex = committed_blob_hex(dir);
+        let repo = gix::open(dir).unwrap();
+
+        let missing = "0".repeat(40);
+        let err = compute_blob_hunks(&repo, "f.txt", &old_hex, &missing)
+            .expect_err("unreadable new blob must fail hunk computation");
+        assert!(
+            err.to_string().contains("new blob of `f.txt`"),
+            "error must name the file and side: {err}"
+        );
+
+        let err = compute_blob_hunks(&repo, "f.txt", &missing, &old_hex)
+            .expect_err("unreadable old blob must fail hunk computation");
+        assert!(
+            err.to_string().contains("old blob of `f.txt`"),
+            "error must name the file and side: {err}"
+        );
+    }
+
+    /// Regression (main-280): the worktree layer's old side comes from the
+    /// index entry itself, so a failed read of that known-present blob must
+    /// propagate rather than become empty bytes.
+    #[test]
+    fn worktree_old_blob_read_failure_propagates() {
+        let td = tempdir().unwrap();
+        let dir = td.path();
+        run_git(dir, &["init", "--initial-branch=main"]);
+        run_git(dir, &["config", "user.email", "t@t"]);
+        run_git(dir, &["config", "user.name", "t"]);
+        run_git(dir, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(dir.join("f.txt"), b"a\nb\nc\n").unwrap();
+        run_git(dir, &["add", "."]);
+        run_git(dir, &["commit", "-m", "init"]);
+        let hex = committed_blob_hex(dir);
+        let repo = gix::open(dir).unwrap();
+
+        let missing = gix::ObjectId::from_hex("0".repeat(40).as_bytes()).unwrap();
+        let present = gix::ObjectId::from_hex(hex.as_bytes()).unwrap();
+        let err = worktree_change_to_entry(
+            &repo,
+            "f.txt".to_string(),
+            missing,
+            Some(present),
+            Some(b"a\nb\nc\n".to_vec()),
+        )
+        .expect_err("unreadable index blob must fail the entry");
+        assert!(
+            err.to_string().contains("read old blob of `f.txt`"),
+            "error must name the file: {err}"
+        );
+    }
 
     #[test]
     fn parse_status_empty_is_clean() {

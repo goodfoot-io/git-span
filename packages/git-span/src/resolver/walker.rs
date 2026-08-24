@@ -141,17 +141,45 @@ pub(crate) fn compute_new_range(
     let old_blob_oid = blob_oid_at(repo, parent, &loc.path, blob_oid_memo.as_deref_mut());
     let new_blob_oid = blob_oid_at(repo, commit, new_path, blob_oid_memo);
 
-    let old_text = old_blob_oid
-        .as_deref()
-        .and_then(|b| git::read_git_text(repo, b).ok())
-        .unwrap_or_default();
-    let new_text = new_blob_oid
-        .as_deref()
-        .and_then(|b| git::read_git_text(repo, b).ok())
-        .unwrap_or_default();
+    let old_text = blob_text_present(repo, old_blob_oid.as_deref(), parent, &loc.path)?;
+    let new_text = blob_text_present(repo, new_blob_oid.as_deref(), commit, new_path)?;
     let hunks = compute_hunks(&old_text, &new_text);
 
     Ok(apply_hunks_to_range(&hunks, loc.start, loc.end))
+}
+
+/// Read one side of a remap diff as UTF-8 text.
+///
+/// `None` means the path has no blob at that side of the diff (the file was
+/// added or deleted), where empty text is the honest representation. A
+/// *present* blob that cannot be read back as UTF-8 — binary content, a
+/// legacy encoding, a corrupt object — is never collapsed to empty text:
+/// doing so fabricates a full-file insert/delete whose hunk math shifts
+/// every tracked range by whole-file lengths while reporting success.
+/// The read failure propagates instead (main-280).
+///
+/// One failure is not a failure: a gitlink (or tree) entry names an object
+/// outside this repository's blob store — a submodule bump on a pinned
+/// path. Its OID resolves in the tree but cannot be read here *by
+/// design*, so that side is honestly empty and classification happens by
+/// OID comparison upstream. The mode probe runs only on the failure path,
+/// keeping the happy path one tree walk per side.
+pub(crate) fn blob_text_present(
+    repo: &gix::Repository,
+    blob_oid: Option<&str>,
+    commit: &str,
+    path: &str,
+) -> Result<String> {
+    let Some(oid) = blob_oid else {
+        return Ok(String::new());
+    };
+    match git::read_git_text(repo, oid) {
+        Ok(text) => Ok(text),
+        Err(read_err) => match git::path_entry_mode_at(repo, commit, path)? {
+            Some(mode) if !mode.is_blob_or_symlink() => Ok(String::new()),
+            _ => Err(Error::Git(format!("read `{path} @ {commit}`: {read_err}"))),
+        },
+    }
 }
 
 pub(crate) fn compute_hunks(old: &str, new: &str) -> Vec<(u32, u32, u32, u32)> {
@@ -790,5 +818,147 @@ mod scope_tests {
             entries.len(),
             warnings
         );
+    }
+
+    fn rev_parse(dir: &std::path::Path, rev: &str) -> String {
+        String::from_utf8(
+            Command::new("git")
+                .current_dir(dir)
+                .args(["rev-parse", rev])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string()
+    }
+
+    /// Regression (main-280): a commit replacing an anchored file's blob
+    /// with non-UTF-8 content must fail the remap instead of degrading the
+    /// new side to empty text — which fabricated a full-file insert and
+    /// shifted every tracked range by whole-file lengths while reporting
+    /// success.
+    #[test]
+    fn non_utf8_blob_fails_remap_fail_closed() {
+        let td = tempdir().unwrap();
+        let dir = td.path();
+        run_git(dir, &["init", "--initial-branch=main"]);
+        run_git(dir, &["config", "user.email", "t@t"]);
+        run_git(dir, &["config", "user.name", "t"]);
+        run_git(dir, &["config", "commit.gpgsign", "false"]);
+
+        let utf8_content: String = (1..=10).map(|i| format!("line_{i}\n")).collect();
+        std::fs::write(dir.join("f.txt"), &utf8_content).unwrap();
+        run_git(dir, &["add", "."]);
+        run_git(dir, &["commit", "-m", "utf8"]);
+        let parent = rev_parse(dir, "HEAD");
+
+        let binary: Vec<u8> = [vec![0xFF, 0xFE, b'\n'], vec![0x80, 0x81, b'\n']].concat();
+        std::fs::write(dir.join("f.txt"), &binary).unwrap();
+        run_git(dir, &["add", "."]);
+        run_git(dir, &["commit", "-m", "binary"]);
+        let commit = rev_parse(dir, "HEAD");
+
+        let repo = gix::open(dir).unwrap();
+        let loc = Tracked {
+            path: "f.txt".to_string(),
+            start: 5,
+            end: 7,
+        };
+        let err = compute_new_range(&repo, &parent, &commit, &loc, "f.txt", None)
+            .expect_err("non-UTF-8 blob must fail the remap");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("utf-8") && msg.contains("f.txt"),
+            "error must name the file and the decode failure: {msg}"
+        );
+    }
+
+    /// A gitlink side (pinned submodule bumped by a *committed* SHA change)
+    /// names an object in another repository: legitimately unreadable here,
+    /// so the remap stays silent and unmoved instead of failing closed.
+    #[test]
+    fn committed_gitlink_bump_is_empty_side_not_an_error() {
+        let td = tempdir().unwrap();
+        let dir = td.path();
+        run_git(dir, &["init", "--initial-branch=main"]);
+        run_git(dir, &["config", "user.email", "t@t"]);
+        run_git(dir, &["config", "user.name", "t"]);
+        run_git(dir, &["config", "commit.gpgsign", "false"]);
+
+        // Inner repository whose commits become gitlink targets.
+        let inner = td.path().join("inner");
+        std::fs::create_dir(&inner).unwrap();
+        run_git(&inner, &["init", "--initial-branch=main"]);
+        run_git(&inner, &["config", "user.email", "t@t"]);
+        run_git(&inner, &["config", "user.name", "t"]);
+        run_git(&inner, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(inner.join("f.txt"), b"v1\n").unwrap();
+        run_git(&inner, &["add", "."]);
+        run_git(&inner, &["commit", "-m", "v1"]);
+        let sha1 = rev_parse(&inner, "HEAD");
+        std::fs::write(inner.join("f.txt"), b"v2\n").unwrap();
+        run_git(&inner, &["add", "."]);
+        run_git(&inner, &["commit", "-m", "v2"]);
+        let sha2 = rev_parse(&inner, "HEAD");
+
+        // Stage the gitlink twice in the outer repo.
+        run_git(
+            dir,
+            &["update-index", "--add", "--cacheinfo", &format!("160000,{sha1},sub")],
+        );
+        run_git(dir, &["commit", "-m", "pin submodule"]);
+        let parent = rev_parse(dir, "HEAD");
+        run_git(
+            dir,
+            &["update-index", "--add", "--cacheinfo", &format!("160000,{sha2},sub")],
+        );
+        run_git(dir, &["commit", "-m", "bump submodule"]);
+        let commit = rev_parse(dir, "HEAD");
+
+        let repo = gix::open(dir).unwrap();
+        let loc = Tracked {
+            path: "sub".to_string(),
+            start: 1,
+            end: 1,
+        };
+        let range =
+            compute_new_range(&repo, &parent, &commit, &loc, "sub", None)
+                .expect("gitlink bump must not fail the remap");
+        assert_eq!(range, (1, 1), "no comparable content: position unmoved");
+    }
+
+    /// Guard for `blob_text_present`: a genuinely absent blob (the file is
+    /// added by this commit) is still honestly empty on the old side — the
+    /// fail-closed rule covers present-but-unreadable blobs only.
+    #[test]
+    fn absent_old_blob_side_remains_empty_text() {
+        let td = tempdir().unwrap();
+        let dir = td.path();
+        run_git(dir, &["init", "--initial-branch=main"]);
+        run_git(dir, &["config", "user.email", "t@t"]);
+        run_git(dir, &["config", "user.name", "t"]);
+        run_git(dir, &["config", "commit.gpgsign", "false"]);
+
+        std::fs::write(dir.join("other.txt"), b"unrelated\n").unwrap();
+        run_git(dir, &["add", "."]);
+        run_git(dir, &["commit", "-m", "init"]);
+        let parent = rev_parse(dir, "HEAD");
+
+        std::fs::write(dir.join("f.txt"), b"a\nb\nc\n").unwrap();
+        run_git(dir, &["add", "."]);
+        run_git(dir, &["commit", "-m", "add f.txt"]);
+        let commit = rev_parse(dir, "HEAD");
+
+        let repo = gix::open(dir).unwrap();
+        let loc = Tracked {
+            path: "f.txt".to_string(),
+            start: 1,
+            end: 2,
+        };
+        // Old side absent → no error; the range math itself is unchanged
+        // behavior for added files.
+        assert!(compute_new_range(&repo, &parent, &commit, &loc, "f.txt", None).is_ok());
     }
 }

@@ -28,7 +28,7 @@ use std::process::{Command, Output};
 ///
 /// This is diagnosis, not a fix: it makes the race legible, it does not
 /// prevent it. Deliberately no retry — the flake should stay visible.
-
+///
 /// Strip every inherited `GIT_SPAN_*` variable from `cmd`'s environment.
 ///
 /// Sessions that drive these suites export knobs of their own — agent

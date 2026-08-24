@@ -18,7 +18,7 @@ use crate::git;
 use crate::perf;
 use crate::resolver::linemap::LineMap;
 use crate::resolver::session::{BlobOidMemo, CommitDelta};
-use crate::resolver::walker::{Tracked, apply_hunks_to_range, compute_hunks};
+use crate::resolver::walker::{Tracked, apply_hunks_to_range, blob_text_present, compute_hunks};
 use crate::types::CopyDetection;
 use crate::{Error, Result};
 use std::collections::HashMap;
@@ -348,14 +348,9 @@ pub(crate) fn build_timeline(
         let old_blob_oid = blob_oid_at(repo, parent_sha, &cur_path_str, Some(blob_oid_memo));
         let new_blob_oid = blob_oid_at(repo, commit_sha, &new_path_str, Some(blob_oid_memo));
 
-        let old_text = old_blob_oid
-            .as_deref()
-            .and_then(|b| git::read_git_text(repo, b).ok())
-            .unwrap_or_default();
-        let new_text = new_blob_oid
-            .as_deref()
-            .and_then(|b| git::read_git_text(repo, b).ok())
-            .unwrap_or_default();
+        let old_text = blob_text_present(repo, old_blob_oid.as_deref(), parent_sha, &cur_path_str)?;
+        let new_text =
+            blob_text_present(repo, new_blob_oid.as_deref(), commit_sha, &new_path_str)?;
         let old_line_count = old_text.lines().count() as u32;
         let new_line_count = new_text.lines().count() as u32;
         let hunks_vec = compute_hunks(&old_text, &new_text);
@@ -798,5 +793,50 @@ mod parity_tests {
         let repo = gix::open(dir).unwrap();
         let deltas = collect_deltas(&repo, &anchor_sha, &head_sha, CopyDetection::Off);
         assert_parity(&repo, &deltas, "f.txt", 5, 7, CopyDetection::Off);
+    }
+
+    /// Regression (main-280): a commit that replaces an anchored file's
+    /// blob with non-UTF-8 content must fail `build_timeline` instead of
+    /// degrading the new side to empty text — which fabricated a full-file
+    /// insert delta and shifted every projected range by whole-file lengths
+    /// while reporting success.
+    #[test]
+    fn build_timeline_errors_on_non_utf8_blob() {
+        let td = tempdir().unwrap();
+        let dir = td.path();
+        init_repo(dir);
+        let initial: Vec<String> = (1..=10).map(|i| format!("L{i}")).collect();
+        let initial_refs: Vec<&str> = initial.iter().map(|s| s.as_str()).collect();
+        write_lines(&dir.join("f.txt"), &initial_refs);
+        run_git(dir, &["add", "."]);
+        run_git(dir, &["commit", "-m", "init"]);
+        let anchor_sha = rev_parse(dir, "HEAD");
+
+        let binary: Vec<u8> = [vec![0xFF, 0xFE, b'\n'], vec![0x80, 0x81, b'\n']].concat();
+        std::fs::write(dir.join("f.txt"), &binary).unwrap();
+        run_git(dir, &["add", "."]);
+        run_git(dir, &["commit", "-m", "binary"]);
+        let head_sha = rev_parse(dir, "HEAD");
+
+        let repo = gix::open(dir).unwrap();
+        let deltas = collect_deltas(&repo, &anchor_sha, &head_sha, CopyDetection::Off);
+        assert_eq!(deltas.len(), 1, "one modifying commit on the path");
+        let interner = Mutex::new(PathInterner::new());
+        let memo = RwLock::new(HashMap::new());
+        let err = build_timeline(
+            &repo,
+            b"f.txt",
+            &deltas,
+            None,
+            CopyDetection::Off,
+            &interner,
+            &memo,
+        )
+        .expect_err("non-UTF-8 blob must fail timeline construction");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("utf-8") && msg.contains("f.txt"),
+            "error must name the file and the decode failure: {msg}"
+        );
     }
 }
