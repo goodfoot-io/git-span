@@ -31,6 +31,7 @@ import * as vscode from 'vscode';
 import { type GitSpanCommandResult, resolveGitSpanBinaryOnPath, runGitSpanCommand } from '../utils/gitSpanBinary.js';
 import { type LineageMatch, matchAllAnchors, walkAddressLineage } from './anchorMatcher.js';
 import { getRepositoryForUri } from './gitRepository.js';
+import { escapeGlobPattern } from './globEscape.js';
 import { HistoryFormatError, parseHistoryJson } from './historyClient.js';
 import { buildHistorySnapshotLadder, type LadderRung } from './historySnapshotLadder.js';
 import { reconstructOriginal } from './patchReconstruction.js';
@@ -1353,7 +1354,14 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
      * tracked, wiring it to schedule a debounced re-render and registering
      * its disposal with `document`.
      *
-     * @param watchedPath - The filesystem path to watch.
+     * `watchedPath` is a literal filesystem path, but
+     * `createFileSystemWatcher` reads its argument as a GlobPattern, so it is
+     * glob-escaped first -- otherwise an anchored path like
+     * `src/[generated]/api.ts` parses as a character class and the watcher
+     * silently never fires. Watchers stay keyed by the raw path so repeated
+     * renders dedupe against the unescaped form.
+     *
+     * @param watchedPath - The literal filesystem path to watch.
      * @returns Nothing.
      * @throws Never.
      */
@@ -1361,7 +1369,7 @@ export class SpanFileEditorProvider implements vscode.CustomReadonlyEditorProvid
       if (watchers.has(watchedPath)) {
         return;
       }
-      const watcher = vscode.workspace.createFileSystemWatcher(watchedPath);
+      const watcher = vscode.workspace.createFileSystemWatcher(escapeGlobPattern(watchedPath));
       watcher.onDidChange(scheduleWatcherRender);
       watcher.onDidCreate(scheduleWatcherRender);
       watcher.onDidDelete(scheduleWatcherRender);

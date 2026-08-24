@@ -6,6 +6,7 @@
  */
 
 export * from './anchorMatcher.js';
+export * from './globEscape.js';
 export * from './historyClient.js';
 export * from './historySnapshotLadder.js';
 export * from './patchReconstruction.js';
