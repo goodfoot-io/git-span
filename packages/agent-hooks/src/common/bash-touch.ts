@@ -266,6 +266,37 @@ function joinOfCommand(
 }
 
 /**
+ * Phase A+B - the gate prelude: match triage into resolved spans and guards,
+ * the whole-command interruption drop (a command that did not complete
+ * produces no touches whatever its spans), the empty-set exit, and the
+ * atomic candidate budget. Returns `'stop'` with the drop count - plus an
+ * optional warning line - or the surviving resolved set and the
+ * harness-supplied exit code for later phases.
+ */
+export function bashGatePrelude(
+  matches: readonly BashTouchMatch[],
+  toolResponse: unknown
+):
+  | { readonly kind: 'stop'; readonly drops: number; readonly warn?: string }
+  | {
+      readonly kind: 'proceed';
+      readonly resolved: readonly ResolvedMatch[];
+      readonly exitCode: number | undefined;
+    } {
+  const resolved = matches.filter((m): m is ResolvedMatch => m.status === 'resolved');
+  if (bashResponseInterrupted(toolResponse)) return { kind: 'stop', drops: resolved.length };
+  if (resolved.length === 0) return { kind: 'stop', drops: 0 };
+  if (resolved.length > DEFAULT_MAX_ATTRIBUTION_CANDIDATES) {
+    return {
+      kind: 'stop',
+      drops: resolved.length,
+      warn: `Bash candidate budget exceeded: ${resolved.length} candidates (limit ${DEFAULT_MAX_ATTRIBUTION_CANDIDATES}); rejecting the complete touch set`
+    };
+  }
+  return { kind: 'proceed', resolved, exitCode: bashResponseExitCode(toolResponse) };
+}
+
+/**
  * Shared Bash driver (plan §3 step 2): owns the per-command verdict thread —
  * pass A `evaluateWriteGate` sweep (every span, before any join decision),
  * the explanation map, per-command verdicts, the join filter with chained
@@ -287,30 +318,15 @@ export async function runBashTouches(
   reportDiagnostics: (diagnostics: BashTouchDiagnostics) => void = () => undefined,
   invocationId: string | null = null
 ): Promise<string[]> {
-  const resolved = matches.filter((m): m is ResolvedMatch => m.status === 'resolved');
-  // A command that did not complete produces no touches, whatever its spans.
-  if (bashResponseInterrupted(toolResponse)) {
-    reportDiagnostics({ executionGateDrops: resolved.length });
+  // Gate prelude (phases A+B): triage, interruption drop, candidate budget.
+  const prelude = bashGatePrelude(matches, toolResponse);
+  if (prelude.kind === 'stop') {
+    if (prelude.warn !== undefined) warn(prelude.warn);
+    reportDiagnostics({ executionGateDrops: prelude.drops });
     return [];
   }
-  const exitCode = bashResponseExitCode(toolResponse);
+  const { resolved, exitCode } = prelude;
   const guards = matches.filter((m): m is GuardMatch => m.status === 'builtin-guard');
-  if (resolved.length === 0) {
-    reportDiagnostics({ executionGateDrops: 0 });
-    return [];
-  }
-
-  // Candidate sets are atomic at the safety boundary. The previous driver
-  // executed the first 32 touches and silently discarded the rest, which
-  // made attribution depend on operand order. Reject the invocation before
-  // any probes, gates, or touch executors run instead.
-  if (resolved.length > DEFAULT_MAX_ATTRIBUTION_CANDIDATES) {
-    warn(
-      `Bash candidate budget exceeded: ${resolved.length} candidates (limit ${DEFAULT_MAX_ATTRIBUTION_CANDIDATES}); rejecting the complete touch set`
-    );
-    reportDiagnostics({ executionGateDrops: resolved.length });
-    return [];
-  }
 
   // Seed the per-command probe cache (plan §3 step 1c) with every absent
   // target and cp/install source of the compound; the first gate that needs
