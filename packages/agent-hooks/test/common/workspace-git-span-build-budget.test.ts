@@ -12,10 +12,11 @@
  * fault; the helper must convert an over-budget build into an error that
  * names the cache state, the measured elapsed time, and the remediation.
  *
- * The 1ms budget makes the kill deterministic: no cargo invocation completes
- * in ≤1ms, so the watchdog path fires on every machine, while the orphaned
- * build (with-target-lock.sh's documented accepted-orphan semantics) simply
- * finishes its incremental work harmlessly against the shared lock.
+ * The injected `command` is a long-running no-op: it makes the kill
+ * deterministic on every machine while keeping the gate hermetic — no real
+ * cargo is spawned, so nothing relinks the shared `debug/git-span` underneath
+ * concurrently-running portability suites, and the orphan left by the kill is
+ * a harmless sleep instead of a build.
  */
 import { describe, expect, it } from 'vitest';
 import { buildWorkspaceGitSpan } from '../real-bundle-helpers.js';
@@ -24,7 +25,7 @@ describe('workspace git-span build budget watchdog', () => {
   it('diagnoses shared-cache fingerprint invalidation instead of aborting silently when over budget', () => {
     let caught: unknown;
     try {
-      buildWorkspaceGitSpan({ budgetMs: 1 });
+      buildWorkspaceGitSpan({ budgetMs: 1, command: ['sleep', '30'] });
     } catch (error) {
       caught = error;
     }

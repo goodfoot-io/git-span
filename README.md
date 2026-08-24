@@ -159,6 +159,20 @@ Override the target root via `GIT_SPAN_CARGO_TARGET_ROOT`:
 GIT_SPAN_CARGO_TARGET_ROOT=/tmp/my-target yarn test
 ```
 
+**Cross-worktree cache states:** because cargo fingerprints embed absolute
+source paths, the shared root is only fully warm for the worktree that built
+into it most recently — registry dependencies stay shared across worktrees,
+but a workspace's own crates (`git-span`, `git-span-core`) rebuild whenever a
+*different* worktree built last (seconds idle, up to ~2 minutes on a loaded
+machine). Test suites that build the git-span binary budget for this:
+[buildWorkspaceGitSpan()](packages/agent-hooks/test/real-bundle-helpers.ts)
+enforces its own `GIT_SPAN_CARGO_BUILD_BUDGET_MS` deadline (default 480s,
+under the portability suites' 600s hook timeouts) and turns an over-budget
+build into an error naming the invalidation, the elapsed time, and the
+remediation paths (`$GIT_SPAN_CARGO_TARGET_ROOT/.fingerprint-tripwire/`
+captures written automatically by slow invalidating builds) instead of dying
+as a bare hook timeout.
+
 **Python venv relocation (uv):**
 
 The mini-swe-agent workspace's uv-managed virtual environment is relocated the

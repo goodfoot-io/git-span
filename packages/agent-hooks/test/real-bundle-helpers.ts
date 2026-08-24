@@ -60,14 +60,54 @@ export function buildRealHookBundles(): BuiltRealHookBundles {
   };
 }
 
-/** Build and return the workspace Rust binary that installed-artifact tests must put first on PATH. */
-export function buildWorkspaceGitSpan(): { binary: string; pathDir: string } {
+export interface WorkspaceGitSpanBuildOptions {
+  /**
+   * Kill the cargo build after this long and throw a diagnostic naming
+   * shared-cache cross-workspace fingerprint invalidation. Defaults to
+   * `GIT_SPAN_CARGO_BUILD_BUDGET_MS`, else 480s — deliberately under the
+   * portability suites' 600s hook budgets, so an over-budget build surfaces
+   * as this diagnosis instead of a bare vitest hook timeout.
+   */
+  readonly budgetMs?: number;
+  /**
+   * Replaces the wrapped cargo invocation wholesale (watchdog-contract fault
+   * injection). The budget gate tests drive this with a long-running no-op so
+   * the kill path fires deterministically without spawning a real cargo that
+   * would relink `debug/git-span` underneath concurrently-running portability
+   * suites.
+   */
+  readonly command?: readonly string[];
+}
+
+/** Default build budget: 480s, overridable for slower hosts without editing suites. */
+const DEFAULT_BUILD_BUDGET_MS = Number.parseInt(process.env['GIT_SPAN_CARGO_BUILD_BUDGET_MS'] ?? '', 10) || 480_000;
+
+/**
+ * Build and return the workspace Rust binary that installed-artifact tests must put first on PATH.
+ *
+ * The build runs against the shared cargo volume, whose fingerprints embed
+ * absolute source paths: when a sibling card worktree built last, every local
+ * unit goes fingerprint-dirty and pays a full local-graph rebuild before any
+ * bundling starts. The budget converts that worst case into an actionable
+ * failure instead of letting it die as an unexplained hook timeout.
+ */
+export function buildWorkspaceGitSpan(options: WorkspaceGitSpanBuildOptions = {}): {
+  binary: string;
+  pathDir: string;
+} {
   const targetRoot = process.env['GIT_SPAN_CARGO_TARGET_ROOT'] ?? '/var/cache/git-span/cargo-target';
   const targetDir = join(targetRoot, 'git-span', 'build');
   const packageRoot = join(WORKSPACE_ROOT, 'packages', 'git-span');
-  execFileSync(
-    'bash',
-    [
+  const budgetMs = options.budgetMs ?? DEFAULT_BUILD_BUDGET_MS;
+  const startedAtMs = Date.now();
+  // spawnSync rather than execFileSync: a budget kill must come back as a
+  // typed result (error.code ETIMEDOUT) we diagnose below, not a generic
+  // exception. A kill terminates only the bash wrapper — the wrapped cargo
+  // keeps running orphaned under the inherited flock (with-target-lock.sh's
+  // documented accepted-orphan semantics) and finishes its incremental work.
+  const wrapped =
+    options.command ??
+    ([
       'scripts/with-target-lock.sh',
       'shared',
       'env',
@@ -78,9 +118,27 @@ export function buildWorkspaceGitSpan(): { binary: string; pathDir: string } {
       '--locked',
       '--bin',
       'git-span'
-    ],
-    { cwd: packageRoot, stdio: 'pipe' }
-  );
+    ] as const);
+  const result = spawnSync('bash', [...wrapped], { cwd: packageRoot, stdio: 'pipe', timeout: budgetMs });
+  const errorCode = result.error === undefined ? undefined : (result.error as NodeJS.ErrnoException).code;
+  if (errorCode === 'ETIMEDOUT') {
+    const elapsedS = ((Date.now() - startedAtMs) / 1000).toFixed(1);
+    throw new Error(
+      `workspace git-span build exceeded its ${Math.round(budgetMs / 1000)}s budget (killed after ${elapsedS}s). ` +
+        `A rebuild this slow usually means cross-workspace cargo fingerprint invalidation: another card worktree ` +
+        `built into ${targetDir} most recently, so every local unit of this workspace is fingerprint-dirty and ` +
+        `rebuilds from scratch (rerun-if-changed lists embed the building worktree's absolute paths). ` +
+        `Inspect recent captures under ${join(targetRoot, '.fingerprint-tripwire')}, pre-warm from this workspace ` +
+        `(cd packages/git-span && bash scripts/with-target-lock.sh shared env CARGO_TARGET_DIR=${targetDir} cargo build --quiet --locked --bin git-span), ` +
+        `or raise the budget via GIT_SPAN_CARGO_BUILD_BUDGET_MS if this machine is genuinely that slow.`
+    );
+  }
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(
+      `workspace git-span build failed with status ${String(result.status)}${result.signal ? ` (${result.signal})` : ''}: ${String(result.stderr)}`
+    );
+  }
   const pathDir = join(targetDir, 'debug');
   const binary = join(pathDir, process.platform === 'win32' ? 'git-span.exe' : 'git-span');
   const version = execFileSync(binary, ['--version'], { encoding: 'utf8' }).trim();

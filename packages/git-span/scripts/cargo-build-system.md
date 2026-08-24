@@ -70,6 +70,39 @@ The root is **shared across all worktrees on the machine** — a build started i
 one worktree reuses dependency compilation done by a sibling. This is the whole
 reason for a per-user root rather than per-worktree `target/` directories.
 
+### Cross-worktree fingerprint invalidation
+
+The sharing above is asymmetric by construction: cargo fingerprints embed
+absolute paths of the *building* worktree. Registry dependencies compile from
+`~/.cargo/registry` (identical paths from every worktree), so their units stay
+shared — but each workspace's own crates record `rerun-if-changed` lists under
+the building worktree's absolute root. Whichever worktree built into
+`git-span/build` most recently owns the fingerprints; building from any other
+worktree dirties every local unit (`RerunIfChangedOutputPathsChanged { new:
+[.../cards/<sibling>/...] }`) and pays a full rebuild of `git-span-core` +
+`git-span`. Measured cost: seconds on an idle machine, ~2 minutes under a
+loaded parallel validation harness — recurring "interest" on every worktree
+switch, not a one-time cold cost.
+
+Three cache states, and how tooling treats them:
+
+| State | Outcome |
+|---|---|
+| Warm for this worktree | Incremental no-op build |
+| Cold (fresh root) | Full dependency graph compile — budget via `GIT_SPAN_CARGO_BUILD_BUDGET_MS`, see below |
+| Warm but fingerprinted for a sibling | Local-graph rebuild, then green |
+
+Slow builds are diagnosed, never silent: the portability suites' test helper
+([buildWorkspaceGitSpan()](../../agent-hooks/test/real-bundle-helpers.ts))
+enforces its own budget (`GIT_SPAN_CARGO_BUILD_BUDGET_MS`, default 480s —
+deliberately under those suites' 600s hook timeouts) and converts an
+over-budget kill into an error naming invalidation, elapsed time, and this
+document's remediation. Independently, [with-target-lock.sh](with-target-lock.sh)
+persists cargo's own fingerprint-invalidation log for any build slower than
+`GIT_SPAN_FINGERPRINT_THRESHOLD` (default 15s) into
+`$GIT_SPAN_CARGO_TARGET_ROOT/.fingerprint-tripwire/`, so the stale input is
+on disk even when nobody was watching.
+
 ### Flag consistency within a group
 
 Within each group every invocation uses identical `RUSTFLAGS`, so cargo never

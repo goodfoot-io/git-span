@@ -9,7 +9,7 @@ Greenfield Yarn 4.x monorepo, packages in `./packages/`. Use Yarn, never `npm`; 
 </workspace>
 
 <build>
-Cargo builds write to the shared root `/var/cache/git-span/cargo-target` (a container-native named volume in the devcontainer). That default root is root-owned on hosts, plain Docker, and pre-rebuild containers — set `GIT_SPAN_CARGO_TARGET_ROOT` to a writable path there (see README "Per-user Cargo target directory").
+Cargo builds write to the shared root `/var/cache/git-span/cargo-target` (a container-native named volume in the devcontainer). That default root is root-owned on hosts, plain Docker, and pre-rebuild containers — set `GIT_SPAN_CARGO_TARGET_ROOT` to a writable path there (see README "Per-user Cargo target directory"). Fingerprints embed absolute worktree paths, so the root is fully warm only for the worktree that built last: switching card worktrees rebuilds the local crates (seconds idle, ~2min loaded). Test suites budget for this — an over-budget git-span build fails with a named invalidation diagnosis (`GIT_SPAN_CARGO_BUILD_BUDGET_MS`), never a bare timeout.
 </build>
 
 <tools>
