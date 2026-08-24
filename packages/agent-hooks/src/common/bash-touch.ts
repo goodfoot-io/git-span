@@ -274,7 +274,6 @@ function joinOfCommand(
  * existence-only.
  */
 export function translateAndGateSpans(
-  resolved: readonly ResolvedMatch[],
   groups: Map<number, ResolvedMatch[]>,
   order: readonly number[],
   sessionId: string,
@@ -517,7 +516,7 @@ export async function runBashTouches(
   const { groups, guardByIndex, order: commandOrder } = orderCommands(resolved, guards);
 
   // Pass A (phase E): one translation and gate evaluation per span.
-  const evals = translateAndGateSpans(resolved, groups, commandOrder, sessionId, cwd, scopeAlreadyResolved, probeCache);
+  const evals = translateAndGateSpans(groups, commandOrder, sessionId, cwd, scopeAlreadyResolved, probeCache);
   // Explanation map (phase F), then pending/explained reconciliation (G).
   const passByPath = buildPassByPath(evals, commandOrder);
   reconcileAgainstPassMap(evals, commandOrder, passByPath);

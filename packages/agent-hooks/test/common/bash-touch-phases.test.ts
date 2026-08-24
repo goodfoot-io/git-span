@@ -134,7 +134,6 @@ describe('translateAndGateSpans', () => {
       [3, [m3a, m3b]]
     ]);
     const evals = translateAndGateSpans(
-      [m0, m3a, m3b] as never,
       groups as never,
       [0, 3],
       'sess',
