@@ -215,3 +215,15 @@ def test_zero_wheels_refused_with_build_hint(sandbox: Sandbox):
     assert "mini_swe_agent_git_span-*.whl" in combined, f"error must show the glob pattern:\n{combined}"
     assert "build" in combined.lower(), f"error must point at the build step:\n{combined}"
 
+
+def test_clean_case_pin_matches_single_wheel_still_repins(sandbox: Sandbox):
+    current = sandbox.make_wheel(CURRENT_VERSION)
+    sandbox.write_manifest(f"dist/{current.name}", hashlib.sha256(current.read_bytes()).hexdigest())
+
+    proc = sandbox.repin()
+
+    assert proc.returncode == 0, f"documented clean flow must keep working:\n{proc.stderr}"
+    span = sandbox.manifest()["mini_swe_agent_git_span"]
+    assert span["wheel_sha256"] == hashlib.sha256(current.read_bytes()).hexdigest()
+    assert span["wheel_path"] == f"dist/{current.name}"
+

@@ -30,6 +30,14 @@
 # Refuses to write if the wheel's embedded bundles differ from the on-disk
 # bundles -- that mismatch means the wheel is stale and the pins would attest
 # to something the container will never contain.
+#
+# Like build-image.sh, the wheel is resolved by globbing
+# dist/mini_swe_agent_git_span-*.whl with strict cardinality (fail on zero or
+# multiple hits), never via the manifest's pinned filename -- after a version
+# bump that pin names a stale wheel, and re-hashing it would silently attest
+# old treatment code against new results. The resolved canonical path is
+# recorded back into manifest.json so verify-artifact-hashes.sh re-checks the
+# exact bytes that were attested.
 set -euo pipefail
 
 CONFIRM=0
@@ -123,7 +131,25 @@ all_hooks = [
 bundle_hashes = {name: sha256_file(hooks_bin / name) for name in all_hooks}
 hooks_json_hash = sha256_file(hooks_root / "hooks.json")
 
-wheel_path = pkg_dir / manifest["mini_swe_agent_git_span"]["wheel_path"]
+# Resolve the candidate wheel by versioned glob with fail-closed cardinality,
+# mirroring build-image.sh's resolve_wheel: a pinned filename goes stale at
+# every version bump and would re-attest whatever old wheel still sits in
+# gitignored dist/.
+wheel_glob = "dist/mini_swe_agent_git_span-*.whl"
+matches = sorted((pkg_dir / "dist").glob("mini_swe_agent_git_span-*.whl"))
+if not matches:
+    sys.exit(
+        f"ERROR: no wheel matching {wheel_glob}.\n"
+        "       Build the current one first: yarn build in packages/mini-swe-agent\n"
+        "       (build:hooks bundles the hook JS, build:wheel runs uv build)."
+    )
+if len(matches) > 1:
+    listing = "".join(f"\n       {match}" for match in matches)
+    sys.exit(
+        f"ERROR: {len(matches)} wheels match {wheel_glob}; refusing to guess:{listing}\n"
+        "       Prune dist/ so only the current wheel remains, then rebuild."
+    )
+wheel_path = matches[0]
 wheel_hash = sha256_file(wheel_path)
 
 # Guard: the wheel is what actually lands in the image. If its embedded
@@ -162,6 +188,12 @@ def note(label, old, new):
 
 
 # ---- manifest.json -------------------------------------------------------
+# Record the resolved canonical filename, not just its hash: verify-artifact-hashes.sh
+# re-hashes whatever wheel_path names, so it must name the attested bytes.
+resolved_wheel_rel = wheel_path.relative_to(pkg_dir).as_posix()
+note("wheel_path", manifest["mini_swe_agent_git_span"]["wheel_path"], resolved_wheel_rel)
+manifest["mini_swe_agent_git_span"]["wheel_path"] = resolved_wheel_rel
+
 note("wheel_sha256", manifest["mini_swe_agent_git_span"]["wheel_sha256"], wheel_hash)
 manifest["mini_swe_agent_git_span"]["wheel_sha256"] = wheel_hash
 
