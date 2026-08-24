@@ -293,3 +293,144 @@ export function stepBraceContent(s: SplitScan): boolean {
   s.i += 1;
   return true;
 }
+
+/**
+ * Heredoc body machine: while a heredoc body is open ([SplitScan.inBody]),
+ * scan whole lines raw until the first pending heredoc's close line (a line
+ * that is exactly the delimiter, optionally tab-prefixed for `<<-`, with
+ * optional trailing whitespace). The body is opaque — it produces no stages —
+ * and unterminated bodies end at EOF.
+ */
+export function stepHeredocBody(s: SplitScan): boolean {
+  if (!s.inBody) return false;
+  const lineEnd = s.cmd.indexOf('\n', s.i);
+  const line = lineEnd === -1 ? s.cmd.slice(s.i) : s.cmd.slice(s.i, lineEnd);
+  if (s.heredocs[0].close.test(line)) {
+    s.heredocs.shift();
+    if (s.heredocs.length === 0) s.inBody = false;
+  }
+  if (insideOpenRegion(s)) {
+    // Inside an open construct the body line folds into the construct's
+    // interior text (a newline inside an open construct is not a
+    // boundary, plan §1) — the interior re-split re-scans it as body.
+    s.buf += line;
+    if (lineEnd !== -1) s.buf += '\n';
+  }
+  s.i = lineEnd === -1 ? s.n : lineEnd + 1;
+  return true;
+}
+
+/**
+ * The newline right after a heredoc's delimiter line ends the delimiter's
+ * line — it splits normally (a completed list, but without advancing
+ * [SplitScan.listStart]: a completeness violation that rejects later drops
+ * the delimiter's-line stage too) — and starts the body. Inside an open
+ * construct the newline is not a boundary: the delimiter's line, the body,
+ * and the close line all fold into the construct's one stage, and the walk's
+ * interior re-split applies the same heredoc machinery there.
+ */
+export function stepHeredocDelimiterNewline(s: SplitScan): boolean {
+  if (s.cmd[s.i] !== '\n' || s.heredocs.length === 0) return false;
+  if (insideOpenRegion(s)) {
+    s.buf += '\n';
+    s.inBody = true;
+    s.i += 1;
+    return true;
+  }
+  if (unconsumedPipeOp(s) || bufferEndsInDanglingRedirect(s.buf)) {
+    rejectList(s, 'dangling-operator');
+    return true;
+  }
+  appendStage(s, 'newline');
+  s.inBody = true;
+  s.i += 1;
+  return true;
+}
+
+/**
+ * Here-string recognition: `<<<` (exactly three `<`s, not fd-prefixed) is a
+ * two-token operator — `<<<` plus the word it feeds to stdin — NOT a heredoc.
+ * The heredoc machine would otherwise fire at the SECOND `<` (its
+ * `cmd[i+2] !== '<'` test passes on the following word), register that word
+ * as a delimiter, and mark the whole command an unterminated heredoc — so
+ * valid bash here-strings (`cat <<<hello`, `rg -n needle 1 2 <<< 'x'`) were
+ * rejected and failed closed. The operator stays in the stage text (nothing
+ * strips it), so the quote-aware hasUnquotedRedirect scan still applies the
+ * stdin-redirect gate; consuming all three characters keeps the walk from
+ * re-recognizing a heredoc at the second `<`. Longer `<` runs (`<<<<`) and
+ * fd-prefixed forms (`2<<<`) are not here-strings to bash (syntax error /
+ * fd-heredoc misinterpretation) and fall through to the heredoc misfire,
+ * which keeps them malformed and fail-closed.
+ */
+export function stepHereString(s: SplitScan): boolean {
+  if (s.depth !== 0) return false;
+  const { i } = s;
+  if (s.cmd[i] !== '<' || s.cmd[i + 1] !== '<' || s.cmd[i + 2] !== '<') return false;
+  if (s.cmd[i + 3] === '<' || s.cmd[i - 1] === '<') return false;
+  s.buf += '<<<';
+  s.i += 3;
+  return true;
+}
+
+/**
+ * Heredoc recognition (plan §3): `<<`/`<<-` (not `<<<`) at depth 0 with a
+ * delimiter word registers the pending close-line matcher and marks the
+ * buffered stage as heredoc-fed. The operator+delimiter are stripped from
+ * the stage text at top level — the stage keeps a plain argv (`cat f` stays
+ * `cat f`) — but stay in the text inside an open construct, where the walk's
+ * interior re-split re-recognizes the heredoc there (plan §3).
+ */
+export function stepHeredocOpen(s: SplitScan): boolean {
+  if (s.depth !== 0) return false;
+  const { i } = s;
+  if (s.cmd[i] !== '<' || s.cmd[i + 1] !== '<' || s.cmd[i + 2] === '<') return false;
+  const scanned = scanHeredocDelimiter(s);
+  if (scanned.delim === '') return false;
+  s.heredocs.push({
+    close: new RegExp(`^${scanned.allowTabs ? '\t*' : ''}${escapeRegExp(scanned.delim)}[ \\t]*$`)
+  });
+  // The operator+delimiter leave the stage text below, so mark the stage:
+  // its stdin comes from the heredoc body, and consumers that read `<` from
+  // the text would otherwise never see the redirect.
+  s.bufHeredoc = true;
+  if (insideOpenRegion(s)) {
+    // Inside an open construct the operator+delimiter stay in the stage text.
+    s.buf += s.cmd.slice(i, scanned.next);
+  }
+  s.i = scanned.next;
+  return true;
+}
+
+/** The delimiter parse of a heredoc operator at [SplitScan.i]: `-` tab flag, whitespace skip, then quoted or bare word. */
+interface ScannedDelimiter {
+  /** The delimiter word ('' when there is none — the operator dangles). */
+  delim: string;
+  /** Whether `<<-` was spelled with the dash (the close line may be tab-indented). */
+  allowTabs: boolean;
+  /** The index just past the consumed operator+delimiter spelling. */
+  next: number;
+}
+
+/** Scan the delimiter word following `<<`/`<<-` from [SplitScan.i]. */
+function scanHeredocDelimiter(s: SplitScan): ScannedDelimiter {
+  let j = s.i + 2;
+  let allowTabs = false;
+  if (s.cmd[j] === '-') {
+    allowTabs = true;
+    j += 1;
+  }
+  while (s.cmd[j] === ' ' || s.cmd[j] === '\t') j += 1;
+  if (s.cmd[j] === "'" || s.cmd[j] === '"') {
+    const q = s.cmd.indexOf(s.cmd[j], j + 1);
+    if (q === -1) return { delim: s.cmd.slice(j + 1), allowTabs, next: s.n };
+    return { delim: s.cmd.slice(j + 1, q), allowTabs, next: q + 1 };
+  }
+  const delimStart = j;
+  while (j < s.n && !WORD_END.test(s.cmd[j])) j += 1;
+  return { delim: s.cmd.slice(delimStart, j), allowTabs, next: j };
+}
+
+/** Whether the cursor sits inside an open construct frame or case region — regions where boundaries are text and content folds into one stage. */
+function insideOpenRegion(s: SplitScan): boolean {
+  return s.levels[s.levels.length - 1].length > 0 || s.caseRegion !== null;
+}

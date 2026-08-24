@@ -17,13 +17,16 @@ import {
   bufferEndsInDanglingRedirect,
   commandPosition,
   createScan,
-  escapeRegExp,
   fnNameShapeIsPending,
   type OpenConstruct,
   rejectList,
   type SplitScan,
   startsRedirectAt,
   stepBraceContent,
+  stepHeredocBody,
+  stepHeredocDelimiterNewline,
+  stepHeredocOpen,
+  stepHereString,
   stepQuote,
   unconsumedPipeOp,
   WORD_END,
@@ -125,50 +128,8 @@ export function splitTopLevel(cmd: string): SplitResult {
     // operators, starts comments, or recognizes constructs — `${x%)}`,
     // `${x//(/}`, and `${x:-$(echo y)}` are all valid.
     if (stepBraceContent(s)) continue;
-    // Heredoc body mode: scan lines raw until the first pending heredoc's
-    // close line (a line that is exactly the delimiter, optionally tab-
-    // prefixed for `<<-`, with optional trailing whitespace). The body is
-    // opaque — it produces no stages — and unterminated bodies end at EOF.
-    if (s.inBody) {
-      const lineEnd = input.indexOf('\n', s.i);
-      const line = lineEnd === -1 ? input.slice(s.i) : input.slice(s.i, lineEnd);
-      if (s.heredocs[0].close.test(line)) {
-        s.heredocs.shift();
-        if (s.heredocs.length === 0) s.inBody = false;
-      }
-      if (s.levels[s.levels.length - 1].length > 0 || s.caseRegion !== null) {
-        // Inside an open construct the body line folds into the construct's
-        // interior text (a newline inside an open construct is not a
-        // boundary, plan §1) — the interior re-split re-scans it as body.
-        s.buf += line;
-        if (lineEnd !== -1) s.buf += '\n';
-      }
-      s.i = lineEnd === -1 ? n : lineEnd + 1;
-      continue;
-    }
-    // The newline right after a heredoc's delimiter line ends the delimiter's
-    // line — it splits normally (a completed list, but without advancing
-    // `listStart`: a completeness violation that rejects later drops the
-    // delimiter's-line stage too) — and starts the body. Inside an open
-    // construct the newline is not a boundary: the delimiter's line, the
-    // body, and the close line all fold into the construct's one stage, and
-    // the walk's interior re-split applies the same heredoc machinery there.
-    if (c === '\n' && s.heredocs.length > 0) {
-      if (s.levels[s.levels.length - 1].length > 0 || s.caseRegion !== null) {
-        s.buf += c;
-        s.inBody = true;
-        s.i += 1;
-        continue;
-      }
-      if (unconsumedPipeOp(s) || bufferEndsInDanglingRedirect(buf)) {
-        rejectList(s, 'dangling-operator');
-        break;
-      }
-      appendStage(s, 'newline');
-      s.inBody = true;
-      s.i += 1;
-      continue;
-    }
+    if (stepHeredocBody(s)) continue;
+    if (stepHeredocDelimiterNewline(s)) continue;
     // `#` begins a comment when it starts a word at depth 0 (empty buffer or
     // preceded by whitespace); comments run to the newline, keeping the buffer
     // empty for the continuation rule. Mid-word and quoted `#` are text, and
@@ -446,76 +407,8 @@ export function splitTopLevel(cmd: string): SplitResult {
         s.i += 1;
         continue;
       }
-      // Here-string recognition: `<<<` (exactly three `<`s, not fd-prefixed)
-      // is a two-token operator — `<<<` plus the word it feeds to stdin —
-      // NOT a heredoc. The heredoc branch below would otherwise fire at the
-      // SECOND `<` (its `cmd[i+2] !== '<'` test passes on the following
-      // word), register that word as a delimiter, and mark the whole
-      // command an unterminated heredoc — so valid bash here-strings
-      // (`cat <<<hello`, `rg -n needle 1 2 <<< 'x'`) were rejected and
-      // failed closed. The operator stays in the stage text (nothing
-      // strips it), so the quote-aware hasUnquotedRedirect scan still
-      // applies the stdin-redirect gate; consuming all three characters
-      // keeps the walk from re-recognizing a heredoc at the second `<`.
-      // Longer `<` runs (`<<<<`) and fd-prefixed forms (`2<<<`) are not
-      // here-strings to bash (syntax error / fd-heredoc misinterpretation)
-      // and fall through to the heredoc misfire, which keeps them
-      // malformed and fail-closed.
-      if (
-        c === '<' &&
-        input[s.i + 1] === '<' &&
-        input[s.i + 2] === '<' &&
-        input[s.i + 3] !== '<' &&
-        input[s.i - 1] !== '<'
-      ) {
-        s.buf += '<<<';
-        s.i += 3;
-        continue;
-      }
-      // Heredoc recognition (plan §3): `<<`/`<<-` (not `<<<`) at depth 0 with
-      // a delimiter word. The operator+delimiter are stripped from the stage
-      // text — the stage keeps a plain argv (`cat f` stays `cat f`).
-      if (c === '<' && input[s.i + 1] === '<' && input[s.i + 2] !== '<') {
-        let j = s.i + 2;
-        let allowTabs = false;
-        if (input[j] === '-') {
-          allowTabs = true;
-          j += 1;
-        }
-        while (input[j] === ' ' || input[j] === '\t') j += 1;
-        let delim = '';
-        if (input[j] === "'" || input[j] === '"') {
-          const q = input.indexOf(input[j], j + 1);
-          if (q === -1) {
-            delim = input.slice(j + 1);
-            j = n;
-          } else {
-            delim = input.slice(j + 1, q);
-            j = q + 1;
-          }
-        } else {
-          const delimStart = j;
-          while (j < n && !WORD_END.test(input[j])) j += 1;
-          delim = input.slice(delimStart, j);
-        }
-        if (delim !== '') {
-          s.heredocs.push({
-            close: new RegExp(`^${allowTabs ? '\t*' : ''}${escapeRegExp(delim)}[ \\t]*$`)
-          });
-          // The operator+delimiter leave the stage text below, so mark the
-          // stage: its stdin comes from the heredoc body, and consumers that
-          // read `<` from the text would otherwise never see the redirect.
-          s.bufHeredoc = true;
-          if (s.levels[s.levels.length - 1].length > 0 || s.caseRegion !== null) {
-            // Inside an open construct the operator+delimiter stay in the
-            // stage text — the walk's interior re-split re-recognizes the
-            // heredoc there (plan §3).
-            s.buf += input.slice(s.i, j);
-          }
-          s.i = j;
-          continue;
-        }
-      }
+      if (stepHereString(s)) continue;
+      if (stepHeredocOpen(s)) continue;
       // While a construct is open at depth 0 the boundary operators are text —
       // the construct is one stage.
       if (s.caseRegion === null && s.levels[s.levels.length - 1].length === 0) {
