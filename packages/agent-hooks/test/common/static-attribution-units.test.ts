@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { splitTopLevel } from '../../src/common/shell-split.js';
 import {
+  createPythonContext,
   type LayeredParseOptions,
   type LayeredParseResult,
   type LayeredResolvedMatch,
@@ -8,6 +9,7 @@ import {
   parseLiteralListLoop,
   resolveNumericSed,
   resolvePatternSubstitution,
+  resolvePythonWriteSink,
   type UnresolvedAttribution
 } from '../../src/common/static-attribution.js';
 
@@ -634,5 +636,104 @@ describe('parseLiteralListLoop', () => {
 
   it('never re-validates maxCandidates inside the machine — entry validation stays in parseCommandLayered', () => {
     expect(() => loopResult('f', 'a.txt', 'sed -i s/x/y/ $f', stubParse({}).parse, 0)).not.toThrow();
+  });
+});
+
+describe('resolvePythonWriteSink', () => {
+  function pythonContext(overrides: Partial<LayeredParseOptions> = {}): ReturnType<typeof createPythonContext> {
+    return createPythonContext({ cwd: '/repo', ...overrides });
+  }
+
+  function sink(ctx: ReturnType<typeof createPythonContext>, expression: string, path = 'a.txt') {
+    return resolvePythonWriteSink(ctx, expression, `/repo/${path}`);
+  }
+
+  it('resolves a literal overwrite as create-overwrite with identical written and expected content', () => {
+    const ctx = pythonContext();
+    expect(sink(ctx, "'alpha\\n'")).toBeUndefined();
+    const span = spanOf(ctx.resolved[0]);
+    expect(span.operation).toBe('create-overwrite');
+    expect(span.written).toBe('alpha\n');
+    expect(span.expectedContent).toBe('alpha\n');
+  });
+
+  it('requests only match-locations for a newline-preserving named replacement', () => {
+    const ctx = pythonContext({
+      readPreState: (path) => (path.endsWith('/repo/a.txt') ? 'alpha\nbeta\nbeta\n' : null)
+    });
+    ctx.texts.set('t', { path: 'a.txt' });
+    ctx.replacements.set('r', { source: 't', pattern: 'beta', replacement: 'BETA' });
+    expect(sink(ctx, 'r')).toBeUndefined();
+    expect(ctx.preStateRequests.map((request) => request.requirement)).toEqual(['match-locations']);
+    expect(spanOf(ctx.resolved[0]).expectedContent).toBe('alpha\nBETA\nBETA\n');
+  });
+
+  it('derives deleted-text when the replacement changes the newline count — the python-side asymmetry', () => {
+    const ctx = pythonContext({
+      readPreState: (path) => (path.endsWith('/repo/a.txt') ? 'alpha\nbeta\n' : null)
+    });
+    ctx.texts.set('t', { path: 'a.txt' });
+    expect(sink(ctx, "t.replace('beta', '')")).toBeUndefined();
+    expect(ctx.preStateRequests.map((request) => request.requirement)).toEqual(['match-locations', 'deleted-text']);
+    expect(ctx.resolved[0].idiom).toBe('python-replace');
+  });
+
+  it('rewrites exactly the anchored occurrence via the anchor-slice shape and refuses absent anchors', () => {
+    const content = 'alpha\nANCHOR\nomega\n';
+    const ctx = pythonContext({ readPreState: (path) => (path.endsWith('/repo/a.txt') ? content : null) });
+    ctx.texts.set('t', { path: 'a.txt' });
+    ctx.anchors.set('i', { source: 't', literal: 'ANCHOR' });
+    expect(sink(ctx, "t[:i] + 'NEWVAL' + t[i+6:]")).toBeUndefined();
+    const sliceSpan = spanOf(ctx.resolved[0]);
+    expect(ctx.resolved[0].idiom).toBe('python-anchor-slice');
+    expect(sliceSpan.expectedContent).toBe('alpha\nNEWVAL\nomega\n');
+
+    const missing = pythonContext({ readPreState: () => 'nothing here\n' });
+    missing.texts.set('t', { path: 'a.txt' });
+    missing.anchors.set('i', { source: 't', literal: 'ANCHOR' });
+    const rejected = sink(missing, "t[:i] + 'NEWVAL' + t[i+6:]");
+    expect(rejected).not.toBeNull();
+    expect((rejected as LayeredParseResult).unresolved[0].reasonCode).toBe('evidence-mismatch');
+  });
+
+  it('joins edited line arrays with LF and emits one modify span per edited index', () => {
+    const ctx = pythonContext({
+      readPreState: (path) => (path.endsWith('/repo/a.txt') ? 'one\ntwo\nthree\n' : null)
+    });
+    ctx.lines.set('lines', {
+      path: 'a.txt',
+      edits: new Map([
+        [1, 'TWO'],
+        [2, 'THREE']
+      ])
+    });
+    expect(sink(ctx, "'\\n'.join(lines) + '\\n'")).toBeUndefined();
+    const spans = ctx.resolved.map((match) => spanOf(match));
+    expect(spans.map((span) => span.lineStart)).toEqual([2, 3]);
+    for (const span of spans) expect(span.expectedContent).toBe('one\nTWO\nTHREE\n');
+    expect(ctx.preStateRequests.map((request) => request.requirement)).toEqual(['deleted-text']);
+  });
+
+  it('rejects structured dumps whose load path, format, or keys do not link', () => {
+    const ctx = pythonContext({
+      readPreState: (path) => (path.endsWith('/repo/a.txt') ? '"name": "old"\n' : null)
+    });
+    ctx.structured.set('data', { format: 'json', path: 'a.txt', keys: [['name']] });
+    expect(sink(ctx, 'json.dumps(data)')).toBeUndefined();
+    expect(ctx.resolved).toHaveLength(1);
+
+    const unlinked = pythonContext({ readPreState: () => '"name": "old"\n' });
+    unlinked.structured.set('data', { format: 'yaml', path: 'a.txt', keys: [] });
+    const rejected = sink(unlinked, 'json.dumps(data)');
+    expect(rejected).not.toBeNull();
+    expect((rejected as LayeredParseResult).unresolved[0].reasonCode).toBe('unsupported-dataflow');
+  });
+
+  it('falls back to the allowlist rejection for write expressions outside every sink', () => {
+    const rejected = sink(pythonContext(), "t.replace(x, 'y')");
+    expect(rejected).not.toBeNull();
+    expect((rejected as LayeredParseResult).unresolved[0].detail).toBe(
+      'Python write expression is outside the bounded allowlist'
+    );
   });
 });

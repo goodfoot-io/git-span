@@ -523,7 +523,7 @@ interface PythonRecognizerContext {
   readonly preStateRequests: PreStateRequest[];
 }
 
-function createPythonContext(options: LayeredParseOptions): PythonRecognizerContext {
+export function createPythonContext(options: LayeredParseOptions): PythonRecognizerContext {
   return {
     cwd: options.cwd ?? process.cwd(),
     options,
@@ -1061,191 +1061,7 @@ function consumePythonStatement(
     const binding = ctx.paths.get(match[1]);
     if (binding === undefined) return rejectPython('dynamic-path', 'Python write target is not literal');
     const absolutePath = nodePath.resolve(ctx.cwd, binding.path);
-    const expression = match[2].trim();
-    const literal = decodePythonString(expression);
-    if (literal !== null) {
-      ctx.resolved.push({
-        status: 'resolved',
-        layer: 'python',
-        idiom: 'python-write',
-        span: {
-          operation: 'create-overwrite',
-          absolutePath,
-          written: literal,
-          expectedContent: literal,
-          simpleCommandIndex: 0
-        }
-      });
-      return undefined;
-    }
-    const directReplace = expression.match(PYTHON_DIRECT_REPLACE_PATTERN);
-    const replacement =
-      directReplace === null
-        ? ctx.replacements.get(expression)
-        : {
-            source: directReplace[1],
-            pattern: decodePythonString(directReplace[2]) ?? '',
-            replacement: decodePythonString(directReplace[3]) ?? '',
-            count: directReplace[4] === undefined ? undefined : Number.parseInt(directReplace[4], 10)
-          };
-    if (replacement !== undefined) {
-      const rejected = emitPythonReplace(ctx, absolutePath, replacement);
-      if (rejected !== null) return rejected;
-      return undefined;
-    }
-
-    const slice = expression.match(PYTHON_ANCHOR_SLICE_PATTERN);
-    if (slice !== null) {
-      const anchor = ctx.anchors.get(slice[2]);
-      const read = ctx.texts.get(slice[1]);
-      const replacementText = decodePythonString(slice[3]);
-      if (
-        anchor === undefined ||
-        read === undefined ||
-        anchor.source !== slice[1] ||
-        replacementText === null ||
-        Number.parseInt(slice[4], 10) !== anchor.literal.length ||
-        nodePath.resolve(ctx.cwd, read.path) !== absolutePath
-      ) {
-        return rejectPython(
-          'unsupported-dataflow',
-          'Python slice reconstruction is not tied to one literal anchor',
-          absolutePath
-        );
-      }
-      const content = readPythonPreState(ctx, absolutePath, ['match-locations', 'deleted-text']);
-      if (typeof content !== 'string') return content;
-      const offset = content.indexOf(anchor.literal);
-      if (offset < 0)
-        return rejectPython(
-          'evidence-mismatch',
-          'Python slice anchor is absent from pre-state',
-          absolutePath,
-          ctx.preStateRequests
-        );
-      const range = literalOccurrenceRanges(content, anchor.literal)[0];
-      ctx.resolved.push({
-        status: 'resolved',
-        layer: 'python',
-        idiom: 'python-anchor-slice',
-        span: {
-          operation: 'modify',
-          absolutePath,
-          lineStart: range.start,
-          lineEnd: range.end,
-          expectedContent: `${content.slice(0, offset)}${replacementText}${content.slice(offset + anchor.literal.length)}`,
-          simpleCommandIndex: 0
-        }
-      });
-      return undefined;
-    }
-
-    const lineJoin = expression.match(PYTHON_LINE_JOIN_PATTERN);
-    if (lineJoin !== null) {
-      const delimiter = decodePythonString(lineJoin[1]);
-      const array = ctx.lines.get(lineJoin[2]);
-      const suffix = lineJoin[3] === undefined ? '' : decodePythonString(lineJoin[3]);
-      if (delimiter !== '\n' || array === undefined || suffix === null || (suffix !== '' && suffix !== '\n')) {
-        return rejectPython('unsupported-expression', 'line-array writes require a literal newline join', absolutePath);
-      }
-      if (nodePath.resolve(ctx.cwd, array.path) !== absolutePath || array.edits.size === 0) {
-        return rejectPython(
-          'unsupported-dataflow',
-          'line-array read and write paths are not provably identical',
-          absolutePath
-        );
-      }
-      const content = readPythonPreState(ctx, absolutePath, ['deleted-text']);
-      if (typeof content !== 'string') return content;
-      if (content.includes('\r'))
-        return rejectPython(
-          'unsupported-encoding',
-          'line-array edits require LF text',
-          absolutePath,
-          ctx.preStateRequests
-        );
-      const sourceLines = content.split('\n');
-      if (sourceLines.at(-1) === '') sourceLines.pop();
-      for (const [index, value] of array.edits) {
-        if (index >= sourceLines.length)
-          return rejectPython(
-            'evidence-mismatch',
-            'line-array index is outside pre-state',
-            absolutePath,
-            ctx.preStateRequests
-          );
-        sourceLines[index] = value;
-      }
-      const expectedContent = `${sourceLines.join('\n')}${suffix}`;
-      for (const index of array.edits.keys()) {
-        ctx.resolved.push({
-          status: 'resolved',
-          layer: 'python',
-          idiom: 'python-line-array',
-          span: {
-            operation: 'modify',
-            absolutePath,
-            lineStart: index + 1,
-            lineEnd: index + 1,
-            expectedContent,
-            simpleCommandIndex: 0
-          }
-        });
-      }
-      return undefined;
-    }
-
-    const structuredSink = expression.match(
-      /^(json|tomli_w|toml|yaml)\.(dumps|safe_dump)\(([A-Za-z_][A-Za-z0-9_]*)\)$/
-    );
-    if (structuredSink !== null) {
-      const value = ctx.structured.get(structuredSink[3]);
-      const sinkFormat = structuredSink[1] === 'json' ? 'json' : structuredSink[1] === 'yaml' ? 'yaml' : 'toml';
-      if (
-        value === undefined ||
-        value.format !== sinkFormat ||
-        nodePath.resolve(ctx.cwd, value.path) !== absolutePath ||
-        value.keys.length === 0
-      ) {
-        return rejectPython(
-          'unsupported-dataflow',
-          'structured read, literal-key mutation, and write are not linked',
-          absolutePath
-        );
-      }
-      const content = readPythonPreState(ctx, absolutePath, ['match-locations']);
-      if (typeof content !== 'string') return content;
-      for (const keyPath of value.keys) {
-        const key = keyPath.at(-1)!;
-        const ranges = structuredKeyRanges(content, value.format, key);
-        if (ranges.length !== 1) {
-          return rejectPython(
-            'unsupported-expression',
-            'structured literal key is absent or ambiguous in pre-state',
-            absolutePath,
-            ctx.preStateRequests
-          );
-        }
-        ctx.resolved.push({
-          status: 'resolved',
-          layer: 'python',
-          idiom: `python-${value.format}`,
-          span: {
-            operation: 'modify',
-            absolutePath,
-            lineStart: ranges[0].start,
-            lineEnd: ranges[0].end,
-            simpleCommandIndex: 0
-          }
-        });
-      }
-      return undefined;
-    }
-    return rejectPython(
-      'unsupported-dataflow',
-      'Python write expression is outside the bounded allowlist',
-      absolutePath
-    );
+    return resolvePythonWriteSink(ctx, match[2].trim(), absolutePath);
   }
 
   return 'unmatched';
@@ -1510,6 +1326,231 @@ function splitNodeArguments(source: string): readonly string[] | null {
   if (quote !== null || escaped || depth !== 0) return null;
   if (argument.trim() !== '' || arguments_.length > 0) arguments_.push(argument.trim());
   return arguments_;
+}
+
+/**
+ * Anchor-slice sink: rewrites exactly the one literal-anchored occurrence,
+ * requiring the replacement to preserve the anchor's length.
+ * Returns `undefined` when consumed, a complete rejection on dataflow or
+ * evidence failure, `'unmatched'` when the shape does not apply.
+ */
+
+function emitPythonAnchorSlice(
+  ctx: PythonRecognizerContext,
+  expression: string,
+  absolutePath: string
+): LayeredParseResult | 'unmatched' | undefined {
+  const slice = expression.match(PYTHON_ANCHOR_SLICE_PATTERN);
+  if (slice === null) return 'unmatched';
+  const anchor = ctx.anchors.get(slice[2]);
+  const read = ctx.texts.get(slice[1]);
+  const replacementText = decodePythonString(slice[3]);
+  if (
+    anchor === undefined ||
+    read === undefined ||
+    anchor.source !== slice[1] ||
+    replacementText === null ||
+    Number.parseInt(slice[4], 10) !== anchor.literal.length ||
+    nodePath.resolve(ctx.cwd, read.path) !== absolutePath
+  ) {
+    return rejectPython(
+      'unsupported-dataflow',
+      'Python slice reconstruction is not tied to one literal anchor',
+      absolutePath
+    );
+  }
+  const content = readPythonPreState(ctx, absolutePath, ['match-locations', 'deleted-text']);
+  if (typeof content !== 'string') return content;
+  const offset = content.indexOf(anchor.literal);
+  if (offset < 0)
+    return rejectPython(
+      'evidence-mismatch',
+      'Python slice anchor is absent from pre-state',
+      absolutePath,
+      ctx.preStateRequests
+    );
+  const range = literalOccurrenceRanges(content, anchor.literal)[0];
+  ctx.resolved.push({
+    status: 'resolved',
+    layer: 'python',
+    idiom: 'python-anchor-slice',
+    span: {
+      operation: 'modify',
+      absolutePath,
+      lineStart: range.start,
+      lineEnd: range.end,
+      expectedContent: `${content.slice(0, offset)}${replacementText}${content.slice(offset + anchor.literal.length)}`,
+      simpleCommandIndex: 0
+    }
+  });
+  return undefined;
+}
+
+/**
+ * Line-array sink: joins the edited array with a literal newline and writes
+ * back only provably same-path arrays with at least one bounded edit.
+ * Tri-state like the other sinks.
+ */
+
+function emitPythonLineJoin(
+  ctx: PythonRecognizerContext,
+  expression: string,
+  absolutePath: string
+): LayeredParseResult | 'unmatched' | undefined {
+  const lineJoin = expression.match(PYTHON_LINE_JOIN_PATTERN);
+  if (lineJoin === null) return 'unmatched';
+  const delimiter = decodePythonString(lineJoin[1]);
+  const array = ctx.lines.get(lineJoin[2]);
+  const suffix = lineJoin[3] === undefined ? '' : decodePythonString(lineJoin[3]);
+  if (delimiter !== '\n' || array === undefined || suffix === null || (suffix !== '' && suffix !== '\n')) {
+    return rejectPython('unsupported-expression', 'line-array writes require a literal newline join', absolutePath);
+  }
+  if (nodePath.resolve(ctx.cwd, array.path) !== absolutePath || array.edits.size === 0) {
+    return rejectPython(
+      'unsupported-dataflow',
+      'line-array read and write paths are not provably identical',
+      absolutePath
+    );
+  }
+  const content = readPythonPreState(ctx, absolutePath, ['deleted-text']);
+  if (typeof content !== 'string') return content;
+  if (content.includes('\r'))
+    return rejectPython('unsupported-encoding', 'line-array edits require LF text', absolutePath, ctx.preStateRequests);
+  const sourceLines = content.split('\n');
+  if (sourceLines.at(-1) === '') sourceLines.pop();
+  for (const [index, value] of array.edits) {
+    if (index >= sourceLines.length)
+      return rejectPython(
+        'evidence-mismatch',
+        'line-array index is outside pre-state',
+        absolutePath,
+        ctx.preStateRequests
+      );
+    sourceLines[index] = value;
+  }
+  const expectedContent = `${sourceLines.join('\n')}${suffix}`;
+  for (const index of array.edits.keys()) {
+    ctx.resolved.push({
+      status: 'resolved',
+      layer: 'python',
+      idiom: 'python-line-array',
+      span: {
+        operation: 'modify',
+        absolutePath,
+        lineStart: index + 1,
+        lineEnd: index + 1,
+        expectedContent,
+        simpleCommandIndex: 0
+      }
+    });
+  }
+  return undefined;
+}
+
+/**
+ * Structured-dump sink: json/toml/yaml dumps of a loaded-and-key-mutated
+ * value back onto its own load path. Tri-state like the other sinks.
+ */
+
+function emitPythonStructuredDump(
+  ctx: PythonRecognizerContext,
+  expression: string,
+  absolutePath: string
+): LayeredParseResult | 'unmatched' | undefined {
+  const structuredSink = expression.match(/^(json|tomli_w|toml|yaml)\.(dumps|safe_dump)\(([A-Za-z_][A-Za-z0-9_]*)\)$/);
+  if (structuredSink === null) return 'unmatched';
+  const value = ctx.structured.get(structuredSink[3]);
+  const sinkFormat = structuredSink[1] === 'json' ? 'json' : structuredSink[1] === 'yaml' ? 'yaml' : 'toml';
+  if (
+    value === undefined ||
+    value.format !== sinkFormat ||
+    nodePath.resolve(ctx.cwd, value.path) !== absolutePath ||
+    value.keys.length === 0
+  ) {
+    return rejectPython(
+      'unsupported-dataflow',
+      'structured read, literal-key mutation, and write are not linked',
+      absolutePath
+    );
+  }
+  const content = readPythonPreState(ctx, absolutePath, ['match-locations']);
+  if (typeof content !== 'string') return content;
+  for (const keyPath of value.keys) {
+    const key = keyPath.at(-1)!;
+    const ranges = structuredKeyRanges(content, value.format, key);
+    if (ranges.length !== 1) {
+      return rejectPython(
+        'unsupported-expression',
+        'structured literal key is absent or ambiguous in pre-state',
+        absolutePath,
+        ctx.preStateRequests
+      );
+    }
+    ctx.resolved.push({
+      status: 'resolved',
+      layer: 'python',
+      idiom: `python-${value.format}`,
+      span: {
+        operation: 'modify',
+        absolutePath,
+        lineStart: ranges[0].start,
+        lineEnd: ranges[0].end,
+        simpleCommandIndex: 0
+      }
+    });
+  }
+  return undefined;
+}
+
+/**
+ * The Python write-target sink chain, in fixed order: literal overwrite,
+ * then inline-or-named literal replacement ([emitPythonReplace]), then the
+ * anchor-slice, line-array, and structured-dump shapes. Every span push
+ * happens here; nothing else in the recognizer resolves writes.
+ * Returns `undefined` when some sink consumed the expression, or the
+ * final allowlist rejection when none matched.
+ */
+export function resolvePythonWriteSink(
+  ctx: PythonRecognizerContext,
+  expression: string,
+  absolutePath: string
+): LayeredParseResult | undefined {
+  const literal = decodePythonString(expression);
+  if (literal !== null) {
+    ctx.resolved.push({
+      status: 'resolved',
+      layer: 'python',
+      idiom: 'python-write',
+      span: {
+        operation: 'create-overwrite',
+        absolutePath,
+        written: literal,
+        expectedContent: literal,
+        simpleCommandIndex: 0
+      }
+    });
+    return undefined;
+  }
+  const directReplace = expression.match(PYTHON_DIRECT_REPLACE_PATTERN);
+  const replacement =
+    directReplace === null
+      ? ctx.replacements.get(expression)
+      : {
+          source: directReplace[1],
+          pattern: decodePythonString(directReplace[2]) ?? '',
+          replacement: decodePythonString(directReplace[3]) ?? '',
+          count: directReplace[4] === undefined ? undefined : Number.parseInt(directReplace[4], 10)
+        };
+  if (replacement !== undefined) {
+    const rejected = emitPythonReplace(ctx, absolutePath, replacement);
+    if (rejected !== null) return rejected;
+    return undefined;
+  }
+  for (const sink of [emitPythonAnchorSlice, emitPythonLineJoin, emitPythonStructuredDump]) {
+    const outcome = sink(ctx, expression, absolutePath);
+    if (outcome !== 'unmatched') return outcome;
+  }
+  return rejectPython('unsupported-dataflow', 'Python write expression is outside the bounded allowlist', absolutePath);
 }
 
 function parseNodeAttribution(command: string, options: LayeredParseOptions): LayeredParseResult | null {
