@@ -457,13 +457,11 @@ export function stepCaseRegion(s: SplitScan): boolean {
 /** Pattern-list terminators and item separators at local depth 0: `;;`-family back to pattern-start; `;`, bare `&`, and newlines to command start. */
 function stepCasePunct(s: SplitScan, r: CaseRegion): boolean {
   const c = s.cmd[s.i];
-  const two = s.cmd.slice(s.i, s.i + 2);
-  const three = s.cmd.slice(s.i, s.i + 3);
-  // `;;`/`;&`/`;;&` end the current pattern list — back to pattern-start.
-  if (three === ';;&' || two === ';;' || two === ';&') {
+  const termLen = caseTerminatorLength(s);
+  if (termLen > 0) {
     r.pos = 'pattern-start';
-    s.buf += three === ';;&' ? three : two;
-    s.i += three === ';;&' ? 3 : 2;
+    s.buf += s.cmd.slice(s.i, s.i + termLen);
+    s.i += termLen;
     return true;
   }
   // `;` returns to command start (a `;;` was handled above).
@@ -476,7 +474,7 @@ function stepCasePunct(s: SplitScan, r: CaseRegion): boolean {
   }
   // A single `&` (not part of a redirect or `&&`) is the background
   // operator — also command start.
-  if (c === '&' && s.cmd[s.i + 1] !== '>' && s.cmd[s.i + 1] !== '&' && !bufferEndsInRedirectChar(s.buf)) {
+  if (caseBareAmpersand(s)) {
     r.pos = 'command';
     r.cmdEmpty = true;
     s.buf += c;
@@ -501,6 +499,20 @@ function stepCasePunct(s: SplitScan, r: CaseRegion): boolean {
     return true;
   }
   return false;
+}
+
+/** Length of the `;;`-family pattern-list terminator at [SplitScan.i] (`;;&` → 3, `;;`/`;&` → 2), or 0 when none matches. */
+function caseTerminatorLength(s: SplitScan): number {
+  const three = s.cmd.slice(s.i, s.i + 3);
+  if (three === ';;&') return 3;
+  const two = s.cmd.slice(s.i, s.i + 2);
+  return two === ';;' || two === ';&' ? 2 : 0;
+}
+
+/** Whether the `&` at [SplitScan.i] stands alone — not part of a redirect or `&&`. */
+function caseBareAmpersand(s: SplitScan): boolean {
+  if (s.cmd[s.i] !== '&') return false;
+  return s.cmd[s.i + 1] !== '>' && s.cmd[s.i + 1] !== '&' && !bufferEndsInRedirectChar(s.buf);
 }
 
 /**
@@ -608,12 +620,10 @@ export function stepConstructWord(s: SplitScan): boolean {
   const w = s.cmd.slice(s.i, j);
   const top = topFrame(s.levels);
   const atCommand = commandPosition(s.buf);
-  if (w === 'in' && top !== undefined && (top.kind === 'for' || top.kind === 'select')) {
+  if (forSelectSeparator(w, top)) {
     // The for/select word-list separator — recognized wherever it appears
     // while a for/select is open (`for i in a b`, `select x in a`).
-  } else if (w === '{' && (atCommand || fnNameShapeIsPending(s.buf) || (s.functionSeen && s.nameSeen))) {
-    // `{` opens a brace group at command position, or right after a
-    // function name (`f() {`, `f(){`, `function f {`). `{cat` is a word.
+  } else if (opensBraceGroup(s, w, atCommand)) {
     openBraceGroup(s);
   } else if (w === '}' && atCommand) {
     closeBraceGroup(s);
@@ -627,6 +637,16 @@ export function stepConstructWord(s: SplitScan): boolean {
   s.buf += w;
   s.i = j;
   return true;
+}
+
+/** Whether `in` appears while a for/select frame is open — the word-list separator, valid in any position. */
+function forSelectSeparator(w: string, top: OpenConstruct | undefined): boolean {
+  return w === 'in' && top !== undefined && (top.kind === 'for' || top.kind === 'select');
+}
+
+/** Whether `{` opens a brace group here: command position, right after a function name (`f() {`, `f(){`), or closing a pending `function f` handoff. `{cat` is a word. */
+function opensBraceGroup(s: SplitScan, w: string, atCommand: boolean): boolean {
+  return w === '{' && (atCommand || fnNameShapeIsPending(s.buf) || (s.functionSeen && s.nameSeen));
 }
 
 /** Whether a construct/case-opener word begins at [SplitScan.i]. */
@@ -850,19 +870,11 @@ export function stepBoundaryOperator(s: SplitScan): boolean {
   if (s.caseRegion !== null) return false;
   if (s.levels[s.levels.length - 1].length > 0) return false;
   const c = s.cmd[s.i];
-  const two = s.cmd.slice(s.i, s.i + 2);
-  if (two === '&&') {
-    flushBoundaryOrReject(s, 'and');
-    s.i += 2;
-    return true;
-  }
-  if (two === '||') {
-    flushBoundaryOrReject(s, 'or');
-    s.i += 2;
-    return true;
-  }
-  if (two === '|&') {
-    flushBoundaryOrReject(s, 'pipe');
+  // `&&`/`||`/`|&` — the two-character operators, each flushing under its
+  // normalized name.
+  const twoOp = TWO_CHAR_BOUNDARY_OPS.get(s.cmd.slice(s.i, s.i + 2));
+  if (twoOp !== undefined) {
+    flushBoundaryOrReject(s, twoOp);
     s.i += 2;
     return true;
   }
@@ -876,25 +888,7 @@ export function stepBoundaryOperator(s: SplitScan): boolean {
     s.i += 1;
     return true;
   }
-  if (c === '\n') {
-    // A newline is a line continuation — not a statement separator — when
-    // a pipe/and/or operator is pending with a whitespace-only buffer
-    // since it (`cat a.txt |\nsed ...`, `false &&\nsed ...`). `cat f | head -1\ncat g`
-    // is therefore two lists, and a redirect target never continues onto
-    // a later line (plan §1).
-    if (unconsumedPipeOp(s)) {
-      s.i += 1;
-      return true;
-    }
-    if (bufferEndsInDanglingRedirect(s.buf)) {
-      rejectList(s, 'dangling-operator');
-      return true;
-    }
-    appendStage(s, 'newline');
-    s.listStart = s.parts.length;
-    s.i += 1;
-    return true;
-  }
+  if (c === '\n') return stepNewlineBoundary(s);
   if (c === '&') {
     // A bare `&` is a background operator only when it is not part of a
     // redirect token (`&>`, `2>&1`, `>& file`) — splitting inside those
@@ -909,6 +903,29 @@ export function stepBoundaryOperator(s: SplitScan): boolean {
     return true;
   }
   return false;
+}
+
+/** The two-character boundary operators and the operator names they flush under. */
+const TWO_CHAR_BOUNDARY_OPS = new Map<string, Operator>([
+  ['&&', 'and'],
+  ['||', 'or'],
+  ['|&', 'pipe']
+]);
+
+/** The newline boundary: a line continuation when a pipe/and/or operator is pending with a whitespace-only buffer since it (`cat a.txt |\nsed ...`, `false &&\nsed ...`) — `cat f | head -1\ncat g` is therefore two lists, and a redirect target never continues onto a later line (plan §1). Completing the list advances [SplitScan.listStart]. */
+function stepNewlineBoundary(s: SplitScan): boolean {
+  if (unconsumedPipeOp(s)) {
+    s.i += 1;
+    return true;
+  }
+  if (bufferEndsInDanglingRedirect(s.buf)) {
+    rejectList(s, 'dangling-operator');
+    return true;
+  }
+  appendStage(s, 'newline');
+  s.listStart = s.parts.length;
+  s.i += 1;
+  return true;
 }
 
 /** Flush the buffered stage under `nextOp`, unless the buffer leaves the operator unconsumed or a redirect target dangling — both Bash parse errors ('dangling-operator'). */
