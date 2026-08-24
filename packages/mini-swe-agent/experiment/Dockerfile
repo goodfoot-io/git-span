@@ -17,6 +17,13 @@
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
+# Canonical wheel filename resolved by build-image.sh's versioned glob
+# (dist/mini_swe_agent_git_span-*.whl) and passed through as a build arg;
+# pip validates the wheel filename against the wheel naming convention, so
+# the canonical name must be preserved (the setup guide's schematic rename
+# to git-span-agent.whl is rejected by pip).
+ARG WHEEL_NAME
+
 USER root
 
 # Pinned linux-x64 Node.js binary (>=20.11) and the pinned linux x86-64
@@ -31,12 +38,9 @@ RUN chmod 0755 /usr/local/bin/node /usr/local/bin/git-span
 # setup guide. Installed fully offline -- verified in a --network none
 # container that `pip install --no-deps <local wheel>` requires no network
 # access at all.
-# pip validates the wheel filename against the wheel naming convention, so
-# the canonical name must be preserved (the setup guide's schematic rename
-# to git-span-agent.whl is rejected by pip).
-COPY mini_swe_agent_git_span-1.1.4-py3-none-any.whl /tmp/mini_swe_agent_git_span-1.1.4-py3-none-any.whl
-RUN python3 -m pip install --no-deps /tmp/mini_swe_agent_git_span-1.1.4-py3-none-any.whl \
-    && rm /tmp/mini_swe_agent_git_span-1.1.4-py3-none-any.whl
+COPY ${WHEEL_NAME} /tmp/${WHEEL_NAME}
+RUN python3 -m pip install --no-deps "/tmp/${WHEEL_NAME}" \
+    && rm "/tmp/${WHEEL_NAME}"
 
 # Frozen skill tree.
 COPY git-span-skill/ /opt/git-span/skills/git-span/

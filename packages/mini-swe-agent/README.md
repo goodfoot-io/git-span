@@ -145,9 +145,15 @@ are serialized under the same `info.hooks` object.
 an index. Generate the artifacts with:
 
 ```sh
-yarn build:hooks   # rebuild the bundles into src/minisweagent_gitspan/hooks/
-uv build           # build dist/mini_swe_agent_git_span-*.whl (+ sdist)
+yarn build          # build:hooks (rebuild bundles into src/minisweagent_gitspan/hooks/), then build:wheel
+yarn build:hooks    # rebuild just the hook bundles
+yarn build:wheel    # uv build -> dist/mini_swe_agent_git_span-<version>-py3-none-any.whl (+ sdist)
 ```
+
+Always build via `yarn build` so the wheel is regenerated from freshly built
+hook bundles; `experiment/build-image.sh` resolves the wheel by globbing
+`dist/mini_swe_agent_git_span-*.whl` and fails on zero or multiple hits, so a
+stale wheel from an older version can never silently ship.
 
 The wheel is **self-contained**: it embeds the compiled hook bundles, so a test
 environment needs only the wheel, `pip install` (or `uv tool install`), and a
@@ -166,8 +172,8 @@ into `programbench`). Image sketch:
 ```dockerfile
 FROM python:3.12-slim
 RUN npm install -g git-span   # or COPY a git-span binary onto PATH
-COPY mini_swe_agent_git_span-1.1.3-py3-none-any.whl /tmp/
-RUN pip install /tmp/mini_swe_agent_git_span-1.1.3-py3-none-any.whl
+COPY mini_swe_agent_git_span-<version>-py3-none-any.whl /tmp/
+RUN pip install /tmp/mini_swe_agent_git_span-<version>-py3-none-any.whl
 ```
 
 Run against a mounted repository with any litellm model — the hooks are
@@ -226,8 +232,7 @@ exact name and tag.
 The artifact is the self-contained wheel; build it from this package:
 
 ```sh
-yarn build:hooks   # rebuild the bundles into src/minisweagent_gitspan/hooks/ (see "Distributing")
-uv build           # dist/mini_swe_agent_git_span-*.whl
+yarn build          # build:hooks, then build:wheel -> dist/mini_swe_agent_git_span-*.whl
 ```
 
 Then extend the image (sketch; the base image is the instance's):
@@ -236,8 +241,8 @@ Then extend the image (sketch; the base image is the instance's):
 FROM <per-instance base image>
 # git-span and node >= 20.11 on the container's PATH
 RUN npm install -g git-span node@20
-COPY mini_swe_agent_git_span-1.1.3-py3-none-any.whl /tmp/
-RUN pip install /tmp/mini_swe_agent_git_span-1.1.3-py3-none-any.whl
+COPY mini_swe_agent_git_span-<version>-py3-none-any.whl /tmp/
+RUN pip install /tmp/mini_swe_agent_git_span-<version>-py3-none-any.whl
 ```
 
 tag it `{image_name}:task_cleanroom_v6`, and push it to where the runner's

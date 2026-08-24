@@ -10,6 +10,10 @@
 #     so re-running this script never derives-from-a-derivation.
 #   - The runner-expected tag ("${IMAGE_REPO}:${BASE_TAG}") is only ever
 #     reassigned here, at build time, to the freshly built derived image.
+#   - The wheel staged into the build context is resolved by globbing
+#     dist/mini_swe_agent_git_span-*.whl and refusing zero or multiple
+#     hits, so a stale pinned filename can never silently ship; rebuild
+#     first with `yarn build` (build:hooks, then build:wheel -> uv build).
 #
 # Usage: ./build-image.sh
 set -euo pipefail
@@ -17,8 +21,33 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONTEXT_DIR="${SCRIPT_DIR}/context"
 DOCKERFILE="${SCRIPT_DIR}/Dockerfile"
-WHEEL_NAME="mini_swe_agent_git_span-1.1.4-py3-none-any.whl"
 DIST_DIR="${SCRIPT_DIR}/../dist"
+
+# Resolve the wheel by versioned glob instead of pinning a filename: after a
+# version bump a pinned name either fails confusingly or silently ships the
+# stale wheel still sitting in gitignored dist/. Strict cardinality keeps
+# stale artifacts from ever being staged.
+resolve_wheel() {
+    local -a matches=()
+    shopt -s nullglob
+    matches=("${DIST_DIR}"/mini_swe_agent_git_span-*.whl)
+    shopt -u nullglob
+    if (( ${#matches[@]} == 0 )); then
+        echo "ERROR: no wheel matching ${DIST_DIR}/mini_swe_agent_git_span-*.whl." >&2
+        echo "       Build the current one first: yarn build in packages/mini-swe-agent" >&2
+        echo "       (build:hooks bundles the hook JS, build:wheel runs uv build)." >&2
+        return 1
+    fi
+    if (( ${#matches[@]} > 1 )); then
+        echo "ERROR: ${#matches[@]} wheels match ${DIST_DIR}/mini_swe_agent_git_span-*.whl; refusing to guess:" >&2
+        printf '       %s\n' "${matches[@]}" >&2
+        echo "       Prune dist/ so only the current wheel remains, then rebuild." >&2
+        return 1
+    fi
+    WHEEL_PATH="${matches[0]}"
+    WHEEL_NAME="$(basename "${WHEEL_PATH}")"
+}
+resolve_wheel
 
 IMAGE_REPO="programbench/xorg62_1776_tty-clock.f2f847c"
 BASE_TAG="task_cleanroom_v6"
@@ -48,14 +77,8 @@ if [[ -z "${BASE_IMAGE_ID}" ]]; then
 fi
 echo "Original base image ID: ${BASE_IMAGE_ID}" >&2
 
-# --- 2. Stage the fresh wheel into the build context. ----------------------
-WHEEL_SRC="${DIST_DIR}/${WHEEL_NAME}"
-if [[ ! -f "${WHEEL_SRC}" ]]; then
-    echo "ERROR: wheel not found at ${WHEEL_SRC}" >&2
-    echo "       Build it first (see packages/mini-swe-agent build scripts)." >&2
-    exit 1
-fi
-cp "${WHEEL_SRC}" "${CONTEXT_DIR}/${WHEEL_NAME}"
+# --- 2. Stage the resolved wheel into the build context. -------------------
+cp "${WHEEL_PATH}" "${CONTEXT_DIR}/${WHEEL_NAME}"
 echo "Staged wheel: ${CONTEXT_DIR}/${WHEEL_NAME} ($(sha256sum "${CONTEXT_DIR}/${WHEEL_NAME}" | cut -d' ' -f1))" >&2
 
 # --- 3. Verify the other pinned artifacts are already staged. --------------
@@ -73,6 +96,7 @@ done
 docker build \
     --platform "${PLATFORM}" \
     --build-arg "BASE_IMAGE=${ORIGINAL_BASE_TAG}" \
+    --build-arg "WHEEL_NAME=${WHEEL_NAME}" \
     -t "${RUNNER_TAG}" \
     -f "${DOCKERFILE}" \
     "${CONTEXT_DIR}"

@@ -4,8 +4,9 @@
   "description": "mini-swe-agent extension: subclasses upstream LocalEnvironment/DefaultAgent to bridge the git-span agent hooks (built from packages/agent-hooks into hooks/) into the agent loop",
   "license": "MIT",
   "scripts": {
-    "build": "yarn build:hooks",
+    "build": "yarn build:hooks && yarn build:wheel",
     "build:hooks": "yarn workspace agent-hooks run build:hooks:mswea",
+    "build:wheel": "uv build",
     "test": "UV_PROJECT_ENVIRONMENT=\"${GIT_SPAN_UV_PROJECT_ENVIRONMENT:-/var/cache/git-span/uv-envs/mini-swe-agent}\" uv run --group dev pytest -q",
     "lint": "UV_PROJECT_ENVIRONMENT=\"${GIT_SPAN_UV_PROJECT_ENVIRONMENT:-/var/cache/git-span/uv-envs/mini-swe-agent}\" uv run ruff check ."
   },
