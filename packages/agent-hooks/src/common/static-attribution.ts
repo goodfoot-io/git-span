@@ -1265,7 +1265,7 @@ function parsePythonAttribution(command: string, options: LayeredParseOptions): 
     return rejectPython('candidate-budget-exceeded', 'the Python program exceeds the statement budget');
 
   const ctx = createPythonContext(options);
-  const { cwd, resolved, preStateRequests } = ctx;
+  const { resolved, preStateRequests } = ctx;
 
   for (const statement of statements) {
     if (
