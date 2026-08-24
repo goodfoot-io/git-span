@@ -560,7 +560,7 @@ fn worktree_change_to_entry(
 /// candidates carrying a non-core filter must be hashed through the clean
 /// filter pipeline, and only they.
 pub(crate) fn filter_driver_for(repo: &gix::Repository, rel: &str) -> Option<String> {
-    match crate::types::path_filter_attribute_with_repo(repo, std::path::Path::new(rel)) {
+    match crate::types::path_filter_attribute_lenient_with_repo(repo, std::path::Path::new(rel)) {
         Ok(Some(name)) if !crate::types::is_core_filter(&name) => Some(name),
         _ => None,
     }

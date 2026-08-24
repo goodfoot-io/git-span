@@ -799,9 +799,10 @@ impl ConcurrentSession {
         self.filter_attr_misses.fetch_add(1, Ordering::Relaxed);
         // Fail-closed: any plumbing error caches `None` so subsequent
         // reads of the same path return the same answer (matches the
-        // un-memoed behavior in `path_filter_attribute_with_repo`).
-        let value = crate::types::path_filter_attribute_with_repo(repo, std::path::Path::new(path))
-            .unwrap_or(None);
+        // un-memoed behavior in `path_filter_attribute_lenient_with_repo`).
+        let value =
+            crate::types::path_filter_attribute_lenient_with_repo(repo, std::path::Path::new(path))
+                .unwrap_or(None);
         self.filter_attrs
             .write()
             .unwrap()

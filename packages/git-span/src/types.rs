@@ -579,7 +579,7 @@ impl ContentRef {
                 // allowlist short-circuits before we touch gix's filter
                 // pipeline. See `docs/drift-layers-slices.md` standing
                 // rules and `docs/gix-filter-audit.md`.
-                if let Some(name) = path_filter_attribute(workdir, path)?
+                if let Some(name) = path_filter_attribute_lenient_with_repo(repo, path)?
                     && !is_core_filter(&name)
                 {
                     return Err(Error::FilterFailed { filter: name });
@@ -628,42 +628,47 @@ impl ContentRef {
     }
 }
 
-/// Resolve the `filter` `.gitattributes` value for `path` by shelling
-/// out to `git check-attr filter -- <path>`. Returns the driver name
-/// (e.g. `lfs`, `crypt`) when set, `None` for `unspecified` / `unset` /
-/// `set` (no driver name). The fail-loud check in `ContentRef`'s
-/// reader treats any returned name not on the core-filter allowlist
-/// as a hard short-circuit (slice-2 standing rule).
-pub(crate) fn path_filter_attribute(
-    workdir: &std::path::Path,
-    rel_path: &std::path::Path,
-) -> Result<Option<String>> {
-    crate::perf::record_gix_open();
-    let repo = gix::open(workdir).map_err(|e| Error::Git(format!("open repo: {e}")))?;
-    path_filter_attribute_with_repo(&repo, rel_path)
-}
-
-/// Variant of `path_filter_attribute` that reuses the caller's repository
-/// handle instead of re-opening from the workdir. The engine memo path
-/// uses this so a single `drift` run pays at most one `gix::open` for
-/// attribute lookups.
+/// Resolve the `filter` `.gitattributes` value for `rel_path` using the
+/// caller's repository handle. Returns the driver name (e.g. `lfs`,
+/// `crypt`) when set, `None` for `unspecified` / `unset` / `set` (no
+/// driver name). Attribute-stack and index errors propagate: callers
+/// that need "unknown means no driver" semantics must opt into
+/// [`path_filter_attribute_lenient_with_repo`] explicitly.
 pub(crate) fn path_filter_attribute_with_repo(
     repo: &gix::Repository,
     rel_path: &std::path::Path,
 ) -> Result<Option<String>> {
-    // Fail closed on any plumbing error: treat as "no driver" rather than
-    // guessing — the gix pipeline runs downstream.
-    let value = match crate::git::attr_for(repo, rel_path, "filter") {
-        Ok(v) => v,
-        Err(_) => return Ok(None),
-    };
-    // `attr_for` returns `Some("set")` for boolean-set attributes, which
-    // for `filter` is meaningless (no driver name) — collapse to `None`.
-    Ok(match value {
+    let value = crate::git::attr_for(repo, rel_path, "filter")?;
+    Ok(collapse_filter_value(value))
+}
+
+/// Lenient variant of [`path_filter_attribute_with_repo`] for the
+/// engine's read paths: an attribute-stack or index query failure
+/// collapses to `Ok(None)` ("no driver"). Deliberate fail-open — if we
+/// cannot establish that a driver is involved, we must not use "a driver
+/// is involved" as grounds for dropping a failed read (see
+/// `resolver/layers/diff.rs::filter_driver_for`); the gix pipeline
+/// downstream still consults attributes itself and fails loudly there.
+/// The `git span add` precheck uses the strict variant instead: there, a
+/// query failure rejects the pin rather than allowing it.
+pub(crate) fn path_filter_attribute_lenient_with_repo(
+    repo: &gix::Repository,
+    rel_path: &std::path::Path,
+) -> Result<Option<String>> {
+    match crate::git::attr_for(repo, rel_path, "filter") {
+        Ok(value) => Ok(collapse_filter_value(value)),
+        Err(_) => Ok(None),
+    }
+}
+
+/// `attr_for`'s raw `filter` value → driver name: `unspecified` /
+/// `unset` / boolean-`set` carry no driver name and collapse to `None`.
+fn collapse_filter_value(value: Option<gix::bstr::BString>) -> Option<String> {
+    match value {
         None => None,
         Some(v) if v.as_slice() == b"set" => None,
         Some(v) => Some(v.to_string()),
-    })
+    }
 }
 
 /// Filter-driver allowlist for the engine's reader dispatch.
@@ -825,10 +830,20 @@ pub enum AddPrecheckError {
     },
 
     /// Underlying I/O error while probing the path (stat, readlink,
-    /// gitattributes lookup). Surfaces as a precheck failure rather
-    /// than silently allowing the `add`.
+    /// gitattributes lookup), or a failed infrastructure query (locked /
+    /// corrupt index, broken attribute include). Fail-closed: unknown
+    /// state rejects the pin at `add` time rather than silently allowing
+    /// an anchor `drift` could never resolve.
     #[error(transparent)]
     Io(#[from] std::io::Error),
+}
+
+/// Fold a failed infrastructure query ([`Error`] from the index /
+/// exclude / attribute stack) into the precheck's IO error, so `git span
+/// add` fails loud instead of admitting an anchor whose resolution can
+/// never be verified (card main-301).
+fn query_failed(err: Error) -> AddPrecheckError {
+    AddPrecheckError::Io(std::io::Error::other(err))
 }
 
 /// Stage-time validation for a single `git span add` target. Called from
@@ -856,7 +871,9 @@ pub fn validate_add_target(
     // matched by a pattern yet force-added to git resolves normally, and
     // an untracked-but-not-ignored path is a legitimate anchor that
     // resolves on commit (so it must still be allowed).
-    if crate::git::path_is_ignored(repo, path).unwrap_or(false)
+    // Fail closed (card main-301): a failed exclude-stack/index query is
+    // not "not ignored" — unknown state rejects the pin.
+    if crate::git::path_is_ignored(repo, path).map_err(query_failed)?
         && !is_tracked_path(index_snapshot, &path_str)
     {
         return Err(AddPrecheckError::GitignoredPath { path: path_str });
@@ -868,8 +885,12 @@ pub fn validate_add_target(
         .unwrap_or(false);
 
     // .gitattributes: filter driver name (e.g. "lfs", "binary", custom).
-    let filter = path_filter_attribute(workdir, path).unwrap_or(None);
-    let is_binary_attr = check_binary_attribute(workdir, path).unwrap_or(false);
+    // Both queries fail closed (card main-301): a locked/corrupt index or
+    // broken attribute include is not "no filter" / "not binary" — it is
+    // an unverified pin, rejected the way `capture_path_layer_clean`
+    // treats unknown layer state as dirty.
+    let filter = path_filter_attribute_with_repo(repo, path).map_err(query_failed)?;
+    let is_binary_attr = check_binary_attribute(repo, path)?;
     let is_lfs = filter.as_deref() == Some("lfs");
 
     match extent {
@@ -976,16 +997,15 @@ pub(crate) fn submodule_classify(
 }
 
 fn check_binary_attribute(
-    workdir: &std::path::Path,
+    repo: &gix::Repository,
     path: &std::path::Path,
 ) -> std::result::Result<bool, std::io::Error> {
-    let repo = gix::open(workdir).map_err(std::io::Error::other)?;
     // gix_attributes expands the built-in `binary` macro automatically:
     // when `binary` matches, the outcome reports it as Set.
-    match crate::git::attr_for(&repo, path, "binary") {
+    match crate::git::attr_for(repo, path, "binary") {
         Ok(Some(v)) => Ok(v.as_slice() == b"set" || v.as_slice() == b"true"),
         Ok(None) => Ok(false),
-        Err(_) => Ok(false),
+        Err(e) => Err(std::io::Error::other(e)),
     }
 }
 
@@ -1165,5 +1185,92 @@ pub(crate) mod use_sha1 {
             out.push_str(&format!("{word:08x}"));
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod add_precheck_tests {
+    use super::*;
+    use std::process::Command;
+
+    fn run_git(dir: &std::path::Path, args: &[&str]) {
+        let out = Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// Committed plain-text file, no attributes: every precheck query
+    /// succeeds and a whole-file pin on `a.txt` is allowed.
+    fn seeded_repo() -> (tempfile::TempDir, gix::Repository) {
+        let td = tempfile::tempdir().unwrap();
+        let dir = td.path();
+        run_git(dir, &["init", "--initial-branch=main"]);
+        run_git(dir, &["config", "user.email", "t@t"]);
+        run_git(dir, &["config", "user.name", "t"]);
+        std::fs::write(dir.join("a.txt"), "alpha\nbeta\n").unwrap();
+        run_git(dir, &["add", "."]);
+        run_git(dir, &["commit", "-m", "init"]);
+        let repo = gix::open(dir).unwrap();
+        (td, repo)
+    }
+
+    #[test]
+    fn whole_file_pin_is_allowed_when_queries_succeed() {
+        let (_td, repo) = seeded_repo();
+        validate_add_target(
+            &repo,
+            std::path::Path::new("a.txt"),
+            &AnchorExtent::WholeFile,
+            &[],
+        )
+        .expect("queries succeed, so the pin is allowed");
+    }
+
+    /// Card main-301: a corrupt index means the exclude/attribute queries
+    /// cannot be answered. The precheck must reject the pin
+    /// (`AddPrecheckError::Io`) instead of silently allowing an anchor
+    /// `drift` could never resolve; the lenient engine variant keeps its
+    /// documented fail-open answer for the same repository state.
+    #[test]
+    fn corrupt_index_query_failure_rejects_the_pin() {
+        let (_td, repo) = seeded_repo();
+        // Simulate an interrupted index write: leave the parseable body
+        // alone but break the trailing SHA-1 checksum, so the decode
+        // fails its integrity check instead of the file being absent.
+        let mut index = std::fs::read(repo.path().join("index")).unwrap();
+        let last = index.len() - 1;
+        index[last] ^= 0xff;
+        std::fs::write(repo.path().join("index"), &index).unwrap();
+
+        let err = validate_add_target(
+            &repo,
+            std::path::Path::new("a.txt"),
+            &AnchorExtent::WholeFile,
+            &[],
+        )
+        .expect_err("failed index query must reject the pin");
+        assert!(
+            matches!(err, AddPrecheckError::Io(_)),
+            "expected AddPrecheckError::Io, got {err:?}"
+        );
+
+        assert!(
+            path_filter_attribute_with_repo(&repo, std::path::Path::new("a.txt")).is_err(),
+            "strict variant surfaces the query failure"
+        );
+        assert!(
+            path_filter_attribute_lenient_with_repo(&repo, std::path::Path::new("a.txt"))
+                .unwrap()
+                .is_none(),
+            "lenient engine path stays fail-open"
+        );
     }
 }
