@@ -23,6 +23,7 @@ import {
   type SplitScan,
   startsRedirectAt,
   stepBraceContent,
+  stepCaseRegion,
   stepHeredocBody,
   stepHeredocDelimiterNewline,
   stepHeredocOpen,
@@ -138,80 +139,7 @@ export function splitTopLevel(cmd: string): SplitResult {
       while (s.i < n && input[s.i] !== '\n') s.i += 1;
       continue;
     }
-    // The case-region scan owns everything at its local depth 0 — pattern
-    // syntax, list terminators, and words — while the region is open.
-    if (s.caseRegion) {
-      const r = s.caseRegion;
-      if (r.localDepth === 0) {
-        const s2 = input.slice(s.i, s.i + 2);
-        const s3 = input.slice(s.i, s.i + 3);
-        // `;;`/`;&`/`;;&` end the current pattern list — back to pattern-start.
-        if (s3 === ';;&' || s2 === ';;' || s2 === ';&') {
-          r.pos = 'pattern-start';
-          s.buf += s3 === ';;&' ? s3 : s2;
-          s.i += s3 === ';;&' ? 3 : 2;
-          continue;
-        }
-        // `;` returns to command start (a `;;` was handled above).
-        if (c === ';') {
-          r.pos = 'command';
-          r.cmdEmpty = true;
-          s.buf += c;
-          s.i += 1;
-          continue;
-        }
-        // A single `&` (not part of a redirect or `&&`) is the background
-        // operator — also command start.
-        const last = buf[buf.length - 1];
-        if (c === '&' && input[s.i + 1] !== '>' && input[s.i + 1] !== '&' && last !== '>' && last !== '<') {
-          r.pos = 'command';
-          r.cmdEmpty = true;
-          s.buf += c;
-          s.i += 1;
-          continue;
-        }
-        if (c === '\n') {
-          // A pattern cannot continue across a newline (bash errors), but a
-          // newline after `in` or inside a list item is fine.
-          if (r.pos === 'pattern') {
-            rejectList(s, 'unclosed-case');
-            break;
-          }
-          if (r.pos === 'command') r.cmdEmpty = true;
-          s.buf += c;
-          s.i += 1;
-          continue;
-        }
-        if (c === '#' && wordStart(buf)) {
-          // A comment inside the region runs to the newline like outside.
-          while (s.i < n && input[s.i] !== '\n') s.i += 1;
-          continue;
-        }
-        if (wordStart(buf) && !WORD_END.test(c)) {
-          let j = s.i;
-          while (j < n && !WORD_END.test(input[j])) j += 1;
-          const w = input.slice(s.i, j);
-          // `esac` closes at a pattern-list start or at the start of a list
-          // item; elsewhere it is an ordinary word (`echo esac`, `a|esac)`),
-          // as is `case` in the subject (`case esac in …`).
-          if (w === 'esac' && (r.pos === 'pattern-start' || (r.pos === 'command' && r.cmdEmpty))) {
-            s.caseRegion = null;
-            s.afterKeyword = false;
-          } else if (w === 'in' && r.pos === 'subject') {
-            r.pos = 'pattern-start';
-          } else if (r.pos === 'pattern-start') {
-            r.pos = 'pattern';
-          } else if (r.pos === 'command') {
-            r.cmdEmpty = false;
-          }
-          s.buf += w;
-          s.i = j;
-          continue;
-        }
-      }
-      // Local depth > 0 or non-word chars fall through to the paren branches
-      // and the generic buffer.
-    }
+    if (stepCaseRegion(s)) continue;
     if (c === '(') {
       if (s.caseRegion) {
         s.caseRegion.localDepth += 1;

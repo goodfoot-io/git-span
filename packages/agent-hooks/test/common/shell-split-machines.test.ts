@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createScan,
   stepBraceContent,
+  stepCaseRegion,
   stepHeredocBody,
   stepHeredocDelimiterNewline,
   stepHeredocOpen,
@@ -220,5 +221,77 @@ describe('heredoc machines', () => {
       expect(s.listStart).toBe(0);
       expect(s.i).toBe(12);
     });
+  });
+});
+
+describe('case-region machine', () => {
+  /** An open region parked at `at` with the given position state. */
+  function caseAt(cmd: string, at: number, pos: 'subject' | 'pattern-start' | 'pattern' | 'command') {
+    const s = scanAt(cmd, at);
+    s.caseRegion = { pos, cmdEmpty: pos === 'command', localDepth: 0 };
+    return s;
+  }
+
+  it('declines when no region is open or local depth is positive', () => {
+    const noRegion = scanAt('x)', 0);
+    expect(stepCaseRegion(noRegion)).toBe(false);
+    const nested = caseAt('(x)', 1, 'pattern');
+    nested.caseRegion!.localDepth = 1;
+    expect(stepCaseRegion(nested)).toBe(false);
+  });
+
+  it(';; returns to pattern-start; a bare ; lands at command start with an empty list item', () => {
+    const semi = caseAt('a);; b', 2, 'command');
+    expect(stepCaseRegion(semi)).toBe(true);
+    expect(semi.caseRegion!.pos).toBe('pattern-start');
+    expect(semi.i).toBe(4);
+
+    const item = caseAt('a;b', 1, 'pattern');
+    expect(stepCaseRegion(item)).toBe(true);
+    expect(item.caseRegion!.pos).toBe('command');
+    expect(item.caseRegion!.cmdEmpty).toBe(true);
+  });
+
+  it('a newline in pattern position rejects the list; elsewhere it just resets the list item', () => {
+    const bad = caseAt('pat\ntail', 3, 'pattern');
+    expect(stepCaseRegion(bad)).toBe(true);
+    expect(bad.malformed).toBe('unclosed-case');
+    expect(bad.parts).toHaveLength(0);
+    expect(bad.i).toBe(bad.n);
+
+    const ok = caseAt('cmd\nmore', 3, 'command');
+    expect(stepCaseRegion(ok)).toBe(true);
+    expect(ok.caseRegion!.pos).toBe('command');
+    expect(ok.caseRegion!.cmdEmpty).toBe(true);
+  });
+
+  it('esac closes the region from pattern-start and resets the construct keyword flag, but is a word mid-item', () => {
+    const close = caseAt('esac; rest', 0, 'pattern-start');
+    close.afterKeyword = true;
+    expect(stepCaseRegion(close)).toBe(true);
+    expect(close.caseRegion).toBeNull();
+    expect(close.afterKeyword).toBe(false);
+    expect(close.buf).toBe('esac');
+
+    const word = caseAt('echo esac)', 5, 'command');
+    word.caseRegion!.cmdEmpty = false;
+    expect(stepCaseRegion(word)).toBe(true);
+    expect(word.caseRegion!.pos).toBe('command');
+    expect(word.buf).toBe('esac');
+  });
+
+  it('in ends the subject and the next word opens a pattern', () => {
+    const inWord = caseAt('in *.txt', 0, 'subject');
+    expect(stepCaseRegion(inWord)).toBe(true);
+    expect(inWord.caseRegion!.pos).toBe('pattern-start');
+
+    const pattern = caseAt('*.txt)', 0, 'pattern-start');
+    expect(stepCaseRegion(pattern)).toBe(true);
+    expect(pattern.caseRegion!.pos).toBe('pattern');
+  });
+
+  it('a paren falls through so the nesting machine can bump the local depth', () => {
+    const paren = caseAt('(x', 0, 'pattern');
+    expect(stepCaseRegion(paren)).toBe(false);
   });
 });

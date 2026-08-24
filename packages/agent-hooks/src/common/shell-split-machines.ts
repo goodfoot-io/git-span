@@ -434,3 +434,105 @@ function scanHeredocDelimiter(s: SplitScan): ScannedDelimiter {
 function insideOpenRegion(s: SplitScan): boolean {
   return s.levels[s.levels.length - 1].length > 0 || s.caseRegion !== null;
 }
+
+/**
+ * Case-region machine: while a `case` region is open, own everything at its
+ * local depth 0 — pattern-list terminators (`;;`/`;&`/`;;&`), list-item
+ * separators (`;`, bare `&`, newlines), comments, and words (`esac` closing,
+ * `in` ending the subject) — while pattern syntax stays out of the paren and
+ * boundary machinery (the global paren depth freezes while the region is
+ * open). Returns false when no region is open, the region's local depth is
+ * positive (`(`/`)` fall through to the nesting machine), or the character
+ * is none of the above — those reach the generic buffer through the
+ * dispatcher. A newline inside a `pattern` position is a Bash parse error
+ * ('unclosed-case'); a region still open at EOF is rejected by [finishScan].
+ */
+export function stepCaseRegion(s: SplitScan): boolean {
+  const r = s.caseRegion;
+  if (!r || r.localDepth !== 0) return false;
+  if (stepCasePunct(s, r)) return true;
+  return stepCaseWord(s, r);
+}
+
+/** Pattern-list terminators and item separators at local depth 0: `;;`-family back to pattern-start; `;`, bare `&`, and newlines to command start. */
+function stepCasePunct(s: SplitScan, r: CaseRegion): boolean {
+  const c = s.cmd[s.i];
+  const two = s.cmd.slice(s.i, s.i + 2);
+  const three = s.cmd.slice(s.i, s.i + 3);
+  // `;;`/`;&`/`;;&` end the current pattern list — back to pattern-start.
+  if (three === ';;&' || two === ';;' || two === ';&') {
+    r.pos = 'pattern-start';
+    s.buf += three === ';;&' ? three : two;
+    s.i += three === ';;&' ? 3 : 2;
+    return true;
+  }
+  // `;` returns to command start (a `;;` was handled above).
+  if (c === ';') {
+    r.pos = 'command';
+    r.cmdEmpty = true;
+    s.buf += c;
+    s.i += 1;
+    return true;
+  }
+  // A single `&` (not part of a redirect or `&&`) is the background
+  // operator — also command start.
+  if (c === '&' && s.cmd[s.i + 1] !== '>' && s.cmd[s.i + 1] !== '&' && !bufferEndsInRedirectChar(s.buf)) {
+    r.pos = 'command';
+    r.cmdEmpty = true;
+    s.buf += c;
+    s.i += 1;
+    return true;
+  }
+  if (c === '\n') {
+    // A pattern cannot continue across a newline (bash errors), but a
+    // newline after `in` or inside a list item is fine.
+    if (r.pos === 'pattern') {
+      rejectList(s, 'unclosed-case');
+      return true;
+    }
+    if (r.pos === 'command') r.cmdEmpty = true;
+    s.buf += c;
+    s.i += 1;
+    return true;
+  }
+  if (c === '#' && wordStart(s.buf)) {
+    // A comment inside the region runs to the newline like outside.
+    while (s.i < s.n && s.cmd[s.i] !== '\n') s.i += 1;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Words at local depth 0: `esac` closes the region at a pattern-list start or
+ * at the start of a list item (elsewhere it is an ordinary word — `echo esac`,
+ * `a|esac)` — as is `case` in the subject); `in` ends the subject; any other
+ * word after `in` starts a `pattern`, and any word in command position makes
+ * the current list item non-empty.
+ */
+function stepCaseWord(s: SplitScan, r: CaseRegion): boolean {
+  const c = s.cmd[s.i];
+  if (!wordStart(s.buf) || WORD_END.test(c)) return false;
+  let j = s.i;
+  while (j < s.n && !WORD_END.test(s.cmd[j])) j += 1;
+  const w = s.cmd.slice(s.i, j);
+  if (w === 'esac' && (r.pos === 'pattern-start' || (r.pos === 'command' && r.cmdEmpty))) {
+    s.caseRegion = null;
+    s.afterKeyword = false;
+  } else if (w === 'in' && r.pos === 'subject') {
+    r.pos = 'pattern-start';
+  } else if (r.pos === 'pattern-start') {
+    r.pos = 'pattern';
+  } else if (r.pos === 'command') {
+    r.cmdEmpty = false;
+  }
+  s.buf += w;
+  s.i = j;
+  return true;
+}
+
+/** Whether the buffer's last char is a `>`/`<` redirect char (making a following `&` part of a dup token like `2>&1`). */
+function bufferEndsInRedirectChar(buf: string): boolean {
+  const last = buf[buf.length - 1];
+  return last === '>' || last === '<';
+}
