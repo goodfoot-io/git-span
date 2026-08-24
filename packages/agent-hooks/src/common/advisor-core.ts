@@ -23,10 +23,11 @@
  * {@link AdvisorMemoState} persists under) — all from agent-hooks-common.ts.
  */
 
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as nodePath from 'node:path';
+import { promisify } from 'node:util';
 import { isAdvisorIgnored, loadAdvisorIgnore } from './advisor-ignore.js';
 import {
   advisorMemoDir,
@@ -103,6 +104,25 @@ export class AdvisorIncompatibleCliError extends Error {
     this.name = 'AdvisorIncompatibleCliError';
     this.detail = detail;
     this.installedVersion = installedVersion;
+  }
+}
+
+/**
+ * Internal sentinel rejecting the raced deadline promise inside
+ * {@link evaluateAdvisor} when the evaluation's overall budget expires — the
+ * loser of the `Promise.race` that bounds wall time. Never escapes
+ * {@link evaluateAdvisor}: the catch maps it to the fail-open
+ * `allow`/`scan-failed`/`deadline-exceeded` result. Not exported on purpose —
+ * it marks a scheduling fact (the budget ran out), not a repository or install
+ * condition, and callers observe it through the result's `cause`, not through
+ * an exception type.
+ */
+class AdvisorDeadlineError extends Error {
+  readonly budgetMs: number;
+  constructor(budgetMs: number) {
+    super(`advisor evaluation exceeded its ${budgetMs} ms budget`);
+    this.name = 'AdvisorDeadlineError';
+    this.budgetMs = budgetMs;
   }
 }
 
@@ -417,20 +437,23 @@ export interface ChurnSuppression {
  * `TouchExecutors` pattern, so Phase 3.2's tests fake the repo state without a
  * real subprocess and the core never spawns one itself.
  *
- * All returned paths are repo-relative POSIX paths.
+ * Every method takes an optional trailing `signal`: {@link evaluateAdvisor}'s
+ * overall deadline aborts it when the budget expires, and production
+ * implementations kill their in-flight subprocess with it (fakes may ignore
+ * it). All returned paths are repo-relative POSIX paths.
  */
 export interface GitExecutor {
   /**
    * Paths staged for the next commit — `git diff --cached --name-only`. These
    * are what a plain `git commit` would land.
    */
-  stagedPaths(cwd: string): Promise<string[]>;
+  stagedPaths(cwd: string, signal?: AbortSignal): Promise<string[]>;
   /**
    * Tracked files with unstaged working-tree modifications —
    * `git diff --name-only`. Folded into the changeset only for `-a`/`-am`
    * forms, which stage tracked-modified files implicitly at commit time.
    */
-  trackedModifiedPaths(cwd: string): Promise<string[]>;
+  trackedModifiedPaths(cwd: string, signal?: AbortSignal): Promise<string[]>;
   /**
    * Paths in the outgoing push range — the files changed by `@{u}..HEAD`, with
    * a merge-base-against-the-default-remote-branch fallback when no upstream is
@@ -441,7 +464,7 @@ export interface GitExecutor {
    * {@link resolveChangeset} can carry the exact same range into its returned
    * {@link Changeset} rather than re-deriving it and risking a different answer.
    */
-  outgoingPaths(cwd: string): Promise<{ paths: string[]; base: string | null }>;
+  outgoingPaths(cwd: string, signal?: AbortSignal): Promise<{ paths: string[]; base: string | null }>;
   /**
    * Paths under the given explicit pathspecs whose working-tree content differs
    * from `HEAD` — `git diff HEAD --name-only -- <pathspecs>`. This is what a
@@ -452,7 +475,7 @@ export interface GitExecutor {
    * an unrelated staged file, and never missing a modified-but-unstaged file
    * named in the pathspec (which `git diff --cached` would never surface).
    */
-  pathspecPaths(paths: string[], cwd: string): Promise<string[]>;
+  pathspecPaths(paths: string[], cwd: string, signal?: AbortSignal): Promise<string[]>;
   /**
    * The parsed per-file diff content for `paths` over `range` — the fifth
    * method, and the first that returns content rather than names, feeding the
@@ -470,7 +493,7 @@ export interface GitExecutor {
    * one — an oversized diff exceeding the subprocess buffer — and a per-file
    * retry keeps that from costing every other file its classification.
    */
-  changedHunks(paths: string[], range: DiffRange, cwd: string): Promise<FileDiff[]>;
+  changedHunks(paths: string[], range: DiffRange, cwd: string, signal?: AbortSignal): Promise<FileDiff[]>;
 }
 
 /**
@@ -597,7 +620,10 @@ function mergeUniquePaths(...groups: string[][]): string[] {
  * The injected execution surface advisor evaluation needs — the `fix`/`drift`/
  * `list` async functions, mirroring `touch-core.ts`'s `TouchExecutors`. Tests
  * inject fakes returning structured data; the core never spawns a subprocess
- * itself. All paths are repo-relative POSIX paths.
+ * itself. Every method takes an optional trailing `signal`:
+ * {@link evaluateAdvisor}'s overall deadline aborts it when the budget expires,
+ * and production implementations kill their in-flight subprocess with it (fakes
+ * may ignore it). All paths are repo-relative POSIX paths.
  */
 export interface AdvisorExecutors {
   /**
@@ -611,7 +637,7 @@ export interface AdvisorExecutors {
    * working tree byte-identical, so it classifies from the unhealed scan instead
    * (positional rows are never debt, so nothing is lost).
    */
-  fix(paths: string[], cwd: string): Promise<void>;
+  fix(paths: string[], cwd: string, signal?: AbortSignal): Promise<void>;
   /**
    * Run a scoped `git span drift --format porcelain <paths>` and return its
    * parsed rows — one per drifted anchor among the changeset's spans, empty when
@@ -624,7 +650,7 @@ export interface AdvisorExecutors {
    * rather than returning `[]`, so {@link evaluateAdvisor} does not mistake an
    * aborted scan for a clean one and silently allow unverified debt through.
    */
-  drift(paths: string[], cwd: string): Promise<DriftPorcelainRow[]>;
+  drift(paths: string[], cwd: string, signal?: AbortSignal): Promise<DriftPorcelainRow[]>;
   /**
    * Run a scoped `git span list --porcelain <paths>` and return the covering
    * anchors. Used to compute *uncovered writes*: a changed path with zero
@@ -639,7 +665,7 @@ export interface AdvisorExecutors {
    * implementation throws {@link AdvisorScanError} rather than returning `[]`,
    * so {@link evaluateAdvisor} warns instead of issuing a maximal, wrong hold.
    */
-  list(paths: string[], cwd: string): Promise<PorcelainRow[]>;
+  list(paths: string[], cwd: string, signal?: AbortSignal): Promise<PorcelainRow[]>;
   /**
    * Run `git span list <names...>` (human format) and return its raw stdout —
    * one `## <name>` block per span (anchor bullets + description), blocks
@@ -649,7 +675,7 @@ export interface AdvisorExecutors {
    * any failure; {@link annotateBlocks} then synthesizes minimal blocks from
    * the findings themselves so no finding is dropped.
    */
-  listBlocks(names: string[], cwd: string): Promise<string>;
+  listBlocks(names: string[], cwd: string, signal?: AbortSignal): Promise<string>;
 }
 
 /**
@@ -738,9 +764,9 @@ export interface AdvisorMemoState {
  *   `git status` itself does for the working tree.
  */
 /**
- * Why an `allow`/`scan-failed` result happened. Both fail open, and both are
- * surfaced the same way by the adapters (a warning carrying `reason`) — the
- * discriminant exists because the two have nothing else in common:
+ * Why an `allow`/`scan-failed` result happened. All three fail open, and all
+ * are surfaced the same way by the adapters (a warning carrying `reason`) —
+ * the discriminant exists because the three have nothing else in common:
  *
  * - `'aborted'` — the scan ran against this repository and could not finish.
  *   The cause is in the repository, and the remedy is to fix whatever the CLI
@@ -749,12 +775,17 @@ export interface AdvisorMemoState {
  *   the command the hooks issue, so no scan ran at all. The cause is version
  *   skew between the plugin bundle and the binary, and the only remedy is to
  *   upgrade the binary. Nothing about the repository is implicated.
+ * - `'deadline-exceeded'` — the scan was given a fixed overall budget and lost
+ *   the race against it: evaluation was abandoned mid-flight (outstanding
+ *   subprocesses aborted) so the hook can answer inside its registered window.
+ *   The cause is duration, not repository state or install health; nothing
+ *   about the repository is implicated either.
  *
  * The kind stays `'scan-failed'` rather than splitting into a third kind so the
  * adapters keep one branch for "allowed without verifying"; the discriminant
  * lets a caller that cares tell them apart without parsing prose.
  */
-export type ScanFailureCause = 'aborted' | 'incompatible-cli';
+export type ScanFailureCause = 'aborted' | 'incompatible-cli' | 'deadline-exceeded';
 
 export type AdvisorResult =
   | { decision: 'allow'; kind: 'silent' }
@@ -894,6 +925,19 @@ export type AdvisorHarness = 'claude' | 'codex' | 'opencode' | 'generic';
  *   {@link AdvisorHarness}); `'generic'` (default) produces the pre-harness
  *   prose unchanged. The Claude and Codex adapters pass their own values; a
  *   third-party adapter passing nothing degrades to today's behavior.
+ * @param deadlineMs The evaluation's overall wall-clock budget in ms —
+ *   {@link EVALUATION_DEADLINE_MS} (8s) by default, chosen under every
+ *   adapter's registered hook window (Claude/Codex/mswea register 10s).
+ *   Per-spawn timeouts do not bound the pipeline they compose — evaluation is
+ *   strictly sequential (fix → drift → list → listBlocks → changedHunks plus a
+ *   per-file fallback), so a slow or hung child can otherwise spend minutes
+ *   against a 10-second parent budget, after which the harness kills the hook
+ *   and even the scan-failed advisory is lost. Evaluation therefore races this
+ *   deadline: when the budget expires first, an internal {@link AbortSignal}
+ *   aborts (killing outstanding subprocess work so nothing is orphaned),
+ *   executors stop being invoked, and the result is fail-open
+ *   `allow`/`scan-failed`/`'deadline-exceeded'` — an advisory-or-warning is
+ *   always returned, never silence.
  */
 export async function evaluateAdvisor(
   paths: string[],
@@ -902,202 +946,267 @@ export async function evaluateAdvisor(
   memoState: AdvisorMemoState,
   mode: AdvisorMode = 'may-hold',
   churn?: ChurnSuppression,
-  harness: AdvisorHarness = 'generic'
+  harness: AdvisorHarness = 'generic',
+  deadlineMs: number = EVALUATION_DEADLINE_MS
 ): Promise<AdvisorResult> {
   if (paths.length === 0) return { decision: 'allow', kind: 'silent' };
+  // One cancellation scope per evaluation. Aborted when the deadline fires —
+  // which kills any in-flight spawn through the signal threaded into every
+  // executor call — and again unconditionally in the finally below, so no
+  // child outlives the answer either way.
+  const controller = new AbortController();
+  const { signal } = controller;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    // Belt-and-braces heal — `'may-hold'` only. A `'report-only'` preview must
-    // leave the working tree byte-identical (CARD.md main-347): the heal dirties
-    // `.span/**` with positional re-anchors no preview asked for. Skipping it
-    // costs classification nothing — unhealed `MOVED`/`RESOLVED_PENDING_COMMIT`
-    // rows read straight from the scan are never debt (`isDebt()`) and never
-    // contribute to any branch.
-    if (mode === 'may-hold') {
-      await executors.fix(paths, cwd);
-    }
-    const driftRows = await executors.drift(paths, cwd);
+    const evaluation = (async (): Promise<AdvisorResult> => {
+      try {
+        // Belt-and-braces heal — `'may-hold'` only. A `'report-only'` preview must
+        // leave the working tree byte-identical (CARD.md main-347): the heal dirties
+        // `.span/**` with positional re-anchors no preview asked for. Skipping it
+        // costs classification nothing — unhealed `MOVED`/`RESOLVED_PENDING_COMMIT`
+        // rows read straight from the scan are never debt (`isDebt()`) and never
+        // contribute to any branch.
+        if (mode === 'may-hold') {
+          await executors.fix(paths, cwd, signal);
+        }
+        const driftRows = await executors.drift(paths, cwd, signal);
 
-    // Split debt rows into semantic drift (a user can fix by editing a span)
-    // and terminal/environmental conditions (the CLI could not resolve the
-    // anchor at all — sparse checkout, unfetched LFS, partial-clone miss, I/O
-    // error). `isDebt()` is the single source of truth for what is debt at all;
-    // `isEnvironmentalStatus()` splits the fixable from the unresolvable.
-    // `MOVED`/`RESOLVED_PENDING_COMMIT` are never debt and never contribute.
-    const debtRows = driftRows.filter((row) => isDebt(row.status));
-    const semantic = debtRows.filter((row) => !isEnvironmentalStatus(row.status));
-    const environmental = debtRows.filter((row) => isEnvironmentalStatus(row.status));
+        // Split debt rows into semantic drift (a user can fix by editing a span)
+        // and terminal/environmental conditions (the CLI could not resolve the
+        // anchor at all — sparse checkout, unfetched LFS, partial-clone miss, I/O
+        // error). `isDebt()` is the single source of truth for what is debt at all;
+        // `isEnvironmentalStatus()` splits the fixable from the unresolvable.
+        // `MOVED`/`RESOLVED_PENDING_COMMIT` are never debt and never contribute.
+        const debtRows = driftRows.filter((row) => isDebt(row.status));
+        const semantic = debtRows.filter((row) => !isEnvironmentalStatus(row.status));
+        const environmental = debtRows.filter((row) => isEnvironmentalStatus(row.status));
 
-    if (mode === 'report-only') {
-      // A status preview never holds and never spends the `'may-hold'`
-      // one-time hold credit. Item-level markers keep successive previews from
-      // repeating rows or paths already named this session. The whole-state
-      // `seen-` marker remains a separate bridge to `'may-hold'`: a commit
-      // immediately following a status preview still knows the exact state was
-      // already explained, without report-only using whole-state equality to
-      // decide what to render.
-      if (semantic.length > 0) {
-        memoState.record(`seen-${advisorStateDigest(semantic, [])}`);
-        const newSemantic = filterNewReportItems(semantic, memoState, semanticReportIdentity);
-        if (newSemantic.length === 0) return { decision: 'allow', kind: 'silent' };
+        if (mode === 'report-only') {
+          // A status preview never holds and never spends the `'may-hold'`
+          // one-time hold credit. Item-level markers keep successive previews from
+          // repeating rows or paths already named this session. The whole-state
+          // `seen-` marker remains a separate bridge to `'may-hold'`: a commit
+          // immediately following a status preview still knows the exact state was
+          // already explained, without report-only using whole-state equality to
+          // decide what to render.
+          if (semantic.length > 0) {
+            memoState.record(`seen-${advisorStateDigest(semantic, [])}`);
+            const newSemantic = filterNewReportItems(semantic, memoState, semanticReportIdentity);
+            if (newSemantic.length === 0) return { decision: 'allow', kind: 'silent' };
+            return {
+              decision: 'allow',
+              kind: 'semantic-drift-report',
+              findings: newSemantic,
+              reason: renderDriftReason(
+                newSemantic,
+                await fetchSpanBlocks(executors, newSemantic, cwd, signal),
+                'report-only',
+                harness
+              )
+            };
+          }
+          if (environmental.length > 0) {
+            return {
+              decision: 'allow',
+              kind: 'environmental',
+              conditions: environmental,
+              reason: renderEnvironmentalReason(
+                environmental,
+                await fetchSpanBlocks(executors, environmental, cwd, signal)
+              )
+            };
+          }
+          const { uncovered, covering } = await computeUncoveredPaths(paths, cwd, executors, churn, signal);
+          if (uncovered.length === 0) return { decision: 'allow', kind: 'silent' };
+          memoState.record(`seen-${advisorStateDigest([], uncovered)}`);
+          const newUncovered = filterNewReportItems(uncovered, memoState, uncoveredReportIdentity);
+          if (newUncovered.length === 0) return { decision: 'allow', kind: 'silent' };
+          return {
+            decision: 'allow',
+            kind: 'uncovered-writes-report',
+            uncovered: newUncovered,
+            reason: renderUncoveredReason(
+              newUncovered,
+              covering,
+              await fetchSpanBlocks(executors, covering, cwd, signal),
+              'report-only',
+              harness
+            )
+          };
+        }
+
+        // Semantic drift joins the same distinct-debt-state memo the uncovered
+        // check uses: hold once per findings digest, then fall through (rather than
+        // returning) on an identical retry so the rest of the evaluation still runs.
+        let semanticAlreadyPresented = false;
+        if (semantic.length > 0) {
+          const semanticDigest = advisorStateDigest(semantic, []);
+          if (memoState.has(semanticDigest)) {
+            semanticAlreadyPresented = true;
+          } else if (memoState.has(`seen-${semanticDigest}`)) {
+            // Already explained in full by a prior `'report-only'` (status)
+            // preview. The report has landed, which is all a hold can accomplish —
+            // a hold never compels a fix, it only buys one reading — so holding
+            // again buys nothing; record the hold credit too so this digest reads
+            // as presented from here on, and let it through.
+            memoState.record(semanticDigest);
+            semanticAlreadyPresented = true;
+          } else {
+            // A non-persisting memo write would turn "hold once, then allow the
+            // retry" into "hold every time" with no escape — fail open instead.
+            if (!memoState.record(semanticDigest)) return { decision: 'allow', kind: 'silent' };
+            memoState.record(`seen-${semanticDigest}`);
+            return {
+              decision: 'hold',
+              kind: 'semantic-drift',
+              findings: semantic,
+              reason: renderDriftReason(
+                semantic,
+                await fetchSpanBlocks(executors, semantic, cwd, signal),
+                'may-hold',
+                harness
+              )
+            };
+          }
+        }
+
+        // Environmental conditions are not a span edit away from resolution: fail
+        // OPEN (allow) — but carry them so the adapter surfaces the condition rather
+        // than swallowing it. Holding would re-hold forever on an infra failure the
+        // user cannot clear from the advisor, contradicting the fail-open contract the
+        // rest of the advisor already honors for CLI-absent/timeout/parse failures.
+        if (environmental.length > 0) {
+          return {
+            decision: 'allow',
+            kind: 'environmental',
+            conditions: environmental,
+            reason: renderEnvironmentalReason(
+              environmental,
+              await fetchSpanBlocks(executors, environmental, cwd, signal)
+            )
+          };
+        }
+
+        // Uncovered writes: changed paths with zero covering span, minus the
+        // configured span root (span repairs ride the same commit and must never
+        // self-trigger the advisor) and paths the repo's user-owned `.span/.advisorignore`
+        // excludes. Gitignored paths never reach here — git does not stage/publish them.
+        const { uncovered, covering } = await computeUncoveredPaths(paths, cwd, executors, churn, signal);
+        if (uncovered.length === 0) {
+          // A retry that fell through past an already-presented semantic-drift
+          // digest ends clean here: surface already-presented rather than a bare
+          // silent allow, mirroring the uncovered branch's own memo-hit result.
+          return semanticAlreadyPresented
+            ? { decision: 'allow', kind: 'already-presented' }
+            : { decision: 'allow', kind: 'silent' };
+        }
+
+        // Hold once: interrupt the first time this exact debt state is seen, then
+        // pass the retry with an unchanged state. (No semantic rows survive to
+        // here unpresented — the semantic branch above has already returned for
+        // that case — so the digest's findings component is empty and the state
+        // is keyed by the uncovered set.) `covering` — which spans for the rest of
+        // this changeset the message goes on to name — never feeds the digest: it
+        // never changes what's reported on, only what's explained, so it can't
+        // spawn a fresh hold on its own.
+        const digest = advisorStateDigest([], uncovered);
+        if (memoState.has(digest)) return { decision: 'allow', kind: 'already-presented' };
+        if (memoState.has(`seen-${digest}`)) {
+          // Already explained in full by a prior `'report-only'` (status) preview.
+          // The report has landed, which is the only thing a hold ever achieves —
+          // it never compels a fix — so holding again buys nothing. Record the
+          // hold credit so this digest reads as presented from here on, and let
+          // it through.
+          memoState.record(digest);
+          return { decision: 'allow', kind: 'already-presented' };
+        }
+        // A non-persisting memo write would turn "hold once, then allow the retry"
+        // into "hold every time" with no escape — fail open rather than hold.
+        if (!memoState.record(digest)) return { decision: 'allow', kind: 'silent' };
+        memoState.record(`seen-${digest}`);
         return {
-          decision: 'allow',
-          kind: 'semantic-drift-report',
-          findings: newSemantic,
-          reason: renderDriftReason(
-            newSemantic,
-            await fetchSpanBlocks(executors, newSemantic, cwd),
-            'report-only',
+          decision: 'hold',
+          kind: 'uncovered-writes',
+          uncovered,
+          reason: renderUncoveredReason(
+            uncovered,
+            covering,
+            await fetchSpanBlocks(executors, covering, cwd, signal),
+            'may-hold',
             harness
           )
         };
+      } catch (err) {
+        // The budget expired while this body was awaiting an executor. Nothing
+        // below classifies an expiry — it is not a repository condition, and
+        // reading the aborted spawn's collapsed result as a clean pass (or as
+        // a scan failure pointing at the repo) would both lie — so rethrow to
+        // the deadline mapping at the race's catch. This is also what keeps a
+        // timer that fires between two awaits from having the body carry on
+        // spawning: every later executor call receives the already-aborted
+        // signal.
+        if (controller.signal.aborted) throw new AdvisorDeadlineError(deadlineMs);
+        // A scan that could not COMPLETE is not a clean result, but it is not
+        // debt either — there is nothing here for a user to resolve by editing a
+        // span. Fail OPEN with a distinguishable `scan-failed` warning instead of
+        // silently reading the aborted scan's empty result as clean.
+        if (err instanceof AdvisorIncompatibleCliError) {
+          // Version skew, not a repository problem: same fail-open decision, but a
+          // reason that names the binary and the upgrade rather than pointing the
+          // user at a scan error they cannot act on.
+          return {
+            decision: 'allow',
+            kind: 'scan-failed',
+            cause: 'incompatible-cli',
+            reason: renderIncompatibleCliReason(err)
+          };
+        }
+        if (err instanceof AdvisorScanError) {
+          return {
+            decision: 'allow',
+            kind: 'scan-failed',
+            cause: 'aborted',
+            reason: renderScanFailedReason(err.detail)
+          };
+        }
+        // Fail open: any other internal/CLI error resolves to allow. The advisor must
+        // never brick a commit on its own failure.
+        return { decision: 'allow', kind: 'silent' };
       }
-      if (environmental.length > 0) {
-        return {
-          decision: 'allow',
-          kind: 'environmental',
-          conditions: environmental,
-          reason: renderEnvironmentalReason(environmental, await fetchSpanBlocks(executors, environmental, cwd))
-        };
-      }
-      const { uncovered, covering } = await computeUncoveredPaths(paths, cwd, executors, churn);
-      if (uncovered.length === 0) return { decision: 'allow', kind: 'silent' };
-      memoState.record(`seen-${advisorStateDigest([], uncovered)}`);
-      const newUncovered = filterNewReportItems(uncovered, memoState, uncoveredReportIdentity);
-      if (newUncovered.length === 0) return { decision: 'allow', kind: 'silent' };
-      return {
-        decision: 'allow',
-        kind: 'uncovered-writes-report',
-        uncovered: newUncovered,
-        reason: renderUncoveredReason(
-          newUncovered,
-          covering,
-          await fetchSpanBlocks(executors, covering, cwd),
-          'report-only',
-          harness
-        )
-      };
-    }
-
-    // Semantic drift joins the same distinct-debt-state memo the uncovered
-    // check uses: hold once per findings digest, then fall through (rather than
-    // returning) on an identical retry so the rest of the evaluation still runs.
-    let semanticAlreadyPresented = false;
-    if (semantic.length > 0) {
-      const semanticDigest = advisorStateDigest(semantic, []);
-      if (memoState.has(semanticDigest)) {
-        semanticAlreadyPresented = true;
-      } else if (memoState.has(`seen-${semanticDigest}`)) {
-        // Already explained in full by a prior `'report-only'` (status)
-        // preview. The report has landed, which is all a hold can accomplish —
-        // a hold never compels a fix, it only buys one reading — so holding
-        // again buys nothing; record the hold credit too so this digest reads
-        // as presented from here on, and let it through.
-        memoState.record(semanticDigest);
-        semanticAlreadyPresented = true;
-      } else {
-        // A non-persisting memo write would turn "hold once, then allow the
-        // retry" into "hold every time" with no escape — fail open instead.
-        if (!memoState.record(semanticDigest)) return { decision: 'allow', kind: 'silent' };
-        memoState.record(`seen-${semanticDigest}`);
-        return {
-          decision: 'hold',
-          kind: 'semantic-drift',
-          findings: semantic,
-          reason: renderDriftReason(semantic, await fetchSpanBlocks(executors, semantic, cwd), 'may-hold', harness)
-        };
-      }
-    }
-
-    // Environmental conditions are not a span edit away from resolution: fail
-    // OPEN (allow) — but carry them so the adapter surfaces the condition rather
-    // than swallowing it. Holding would re-hold forever on an infra failure the
-    // user cannot clear from the advisor, contradicting the fail-open contract the
-    // rest of the advisor already honors for CLI-absent/timeout/parse failures.
-    if (environmental.length > 0) {
-      return {
-        decision: 'allow',
-        kind: 'environmental',
-        conditions: environmental,
-        reason: renderEnvironmentalReason(environmental, await fetchSpanBlocks(executors, environmental, cwd))
-      };
-    }
-
-    // Uncovered writes: changed paths with zero covering span, minus the
-    // configured span root (span repairs ride the same commit and must never
-    // self-trigger the advisor) and paths the repo's user-owned `.span/.advisorignore`
-    // excludes. Gitignored paths never reach here — git does not stage/publish them.
-    const { uncovered, covering } = await computeUncoveredPaths(paths, cwd, executors, churn);
-    if (uncovered.length === 0) {
-      // A retry that fell through past an already-presented semantic-drift
-      // digest ends clean here: surface already-presented rather than a bare
-      // silent allow, mirroring the uncovered branch's own memo-hit result.
-      return semanticAlreadyPresented
-        ? { decision: 'allow', kind: 'already-presented' }
-        : { decision: 'allow', kind: 'silent' };
-    }
-
-    // Hold once: interrupt the first time this exact debt state is seen, then
-    // pass the retry with an unchanged state. (No semantic rows survive to
-    // here unpresented — the semantic branch above has already returned for
-    // that case — so the digest's findings component is empty and the state
-    // is keyed by the uncovered set.) `covering` — which spans for the rest of
-    // this changeset the message goes on to name — never feeds the digest: it
-    // never changes what's reported on, only what's explained, so it can't
-    // spawn a fresh hold on its own.
-    const digest = advisorStateDigest([], uncovered);
-    if (memoState.has(digest)) return { decision: 'allow', kind: 'already-presented' };
-    if (memoState.has(`seen-${digest}`)) {
-      // Already explained in full by a prior `'report-only'` (status) preview.
-      // The report has landed, which is the only thing a hold ever achieves —
-      // it never compels a fix — so holding again buys nothing. Record the
-      // hold credit so this digest reads as presented from here on, and let
-      // it through.
-      memoState.record(digest);
-      return { decision: 'allow', kind: 'already-presented' };
-    }
-    // A non-persisting memo write would turn "hold once, then allow the retry"
-    // into "hold every time" with no escape — fail open rather than hold.
-    if (!memoState.record(digest)) return { decision: 'allow', kind: 'silent' };
-    memoState.record(`seen-${digest}`);
-    return {
-      decision: 'hold',
-      kind: 'uncovered-writes',
-      uncovered,
-      reason: renderUncoveredReason(
-        uncovered,
-        covering,
-        await fetchSpanBlocks(executors, covering, cwd),
-        'may-hold',
-        harness
-      )
-    };
+    })();
+    // The overall deadline: evaluation races a timer, and the loser's work is
+    // not left running — firing the timer aborts `controller`, which kills the
+    // in-flight subprocess through the executor `signal` and makes every later
+    // executor call refuse to spawn. A losing body that rejects afterwards is
+    // still handled: Promise.race attached handlers to every input, so no
+    // unhandled rejection can escape either direction of the settle order.
+    const expiry = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new AdvisorDeadlineError(deadlineMs));
+      }, deadlineMs);
+    });
+    return await Promise.race([evaluation, expiry]);
   } catch (err) {
-    // A scan that could not COMPLETE is not a clean result, but it is not
-    // debt either — there is nothing here for a user to resolve by editing a
-    // span. Fail OPEN with a distinguishable `scan-failed` warning instead of
-    // silently reading the aborted scan's empty result as clean.
-    if (err instanceof AdvisorIncompatibleCliError) {
-      // Version skew, not a repository problem: same fail-open decision, but a
-      // reason that names the binary and the upgrade rather than pointing the
-      // user at a scan error they cannot act on.
+    if (err instanceof AdvisorDeadlineError) {
+      // Fail OPEN under the expired budget — matching `environmental` and every
+      // other scan failure — but keep the dedicated cause so the surfaced
+      // warning says the changeset was NOT verified because time ran out,
+      // rather than pointing at the repository or the install.
       return {
         decision: 'allow',
         kind: 'scan-failed',
-        cause: 'incompatible-cli',
-        reason: renderIncompatibleCliReason(err)
+        cause: 'deadline-exceeded',
+        reason: renderDeadlineExceededReason(err.budgetMs)
       };
     }
-    if (err instanceof AdvisorScanError) {
-      return {
-        decision: 'allow',
-        kind: 'scan-failed',
-        cause: 'aborted',
-        reason: renderScanFailedReason(err.detail)
-      };
-    }
-    // Fail open: any other internal/CLI error resolves to allow. The advisor must
-    // never brick a commit on its own failure.
-    return { decision: 'allow', kind: 'silent' };
+    throw err;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    // Kill any straggler on the success path too: by construction nothing is
+    // in flight once the sequential body settles, but aborting here makes that
+    // invariant hold by construction rather than by audit.
+    controller.abort();
   }
 }
 
@@ -1138,7 +1247,8 @@ async function computeUncoveredPaths(
   paths: string[],
   cwd: string,
   executors: AdvisorExecutors,
-  churn?: ChurnSuppression
+  churn?: ChurnSuppression,
+  signal?: AbortSignal
 ): Promise<ChangesetCoverage> {
   if (paths.length < 2) return { uncovered: [], covering: [] };
   // `git span list --porcelain <paths...>` matches spans by path but returns
@@ -1149,7 +1259,7 @@ async function computeUncoveredPaths(
   // and the per-span anchor tree rendered under a header that promises "other
   // files in this change") is only meaningful over in-changeset anchors.
   const changeset = new Set(paths);
-  const covering = (await executors.list(paths, cwd)).filter((row) => changeset.has(row.path));
+  const covering = (await executors.list(paths, cwd, signal)).filter((row) => changeset.has(row.path));
   // Every row dropped above has a path outside `paths`, and `covered` is only
   // ever probed with members of `paths`, so the filter cannot change which
   // paths are flagged uncovered. A span usually keeps at least one row, since
@@ -1234,7 +1344,9 @@ async function computeUncoveredPaths(
       needsContent.length > 0 ? 'clean' : 'skipped';
     if (needsContent.length > 0) {
       try {
-        for (const file of await churn.git.changedHunks(needsContent, churn.range, cwd)) byPath.set(file.path, file);
+        for (const file of await churn.git.changedHunks(needsContent, churn.range, cwd, signal)) {
+          byPath.set(file.path, file);
+        }
       } catch {
         readOutcome = 'failed';
       }
@@ -1243,7 +1355,9 @@ async function computeUncoveredPaths(
         if (readOutcome === 'clean') readOutcome = 'per-file-fallback';
         for (const path of missing) {
           try {
-            for (const file of await churn.git.changedHunks([path], churn.range, cwd)) byPath.set(file.path, file);
+            for (const file of await churn.git.changedHunks([path], churn.range, cwd, signal)) {
+              byPath.set(file.path, file);
+            }
           } catch {
             // this one file stays flagged; the rest of the set is unaffected
             readOutcome = 'failed';
@@ -1336,11 +1450,16 @@ function filterNewReportItems<T>(items: T[], memoState: AdvisorMemoState, identi
  * specifically) so both the drift/environmental renderers and the
  * uncovered-writes related-spans section can share this one fetch.
  */
-async function fetchSpanBlocks(executors: AdvisorExecutors, rows: { name: string }[], cwd: string): Promise<string> {
+async function fetchSpanBlocks(
+  executors: AdvisorExecutors,
+  rows: { name: string }[],
+  cwd: string,
+  signal?: AbortSignal
+): Promise<string> {
   const names = [...new Set(rows.map((row) => row.name))].sort();
   if (names.length === 0) return '';
   try {
-    return await executors.listBlocks(names, cwd);
+    return await executors.listBlocks(names, cwd, signal);
   } catch {
     return '';
   }
@@ -1714,6 +1833,24 @@ function renderEnvironmentalReason(conditions: DriftPorcelainRow[], blocksText: 
 }
 
 /**
+ * The advisory a `'deadline-exceeded'` scan failure renders into `reason`: the
+ * evaluation raced its overall budget and lost, so verification was abandoned
+ * mid-flight — not a repository condition and not an install problem, just a
+ * duration fact. Same fail-open shape as {@link renderScanFailedReason}, with
+ * the remedy being a manual scan rather than a fix.
+ */
+function renderDeadlineExceededReason(budgetMs: number): string {
+  return [
+    `The implicit-dependency check exceeded its ${budgetMs} ms time budget, so this change was NOT verified:`,
+    '<git-span-error>',
+    indentBlockBody('a git or git-span subprocess did not finish in time; the scan was abandoned mid-flight'),
+    '</git-span-error>',
+    '',
+    'The command proceeds anyway. Run `git span drift --format porcelain` manually if verification matters for this change.'
+  ].join('\n');
+}
+
+/**
  * The advisory an `allow`/`scan-failed` result renders into `reason`: the scan
  * could not complete, so the changeset was NOT verified — but the command
  * proceeds anyway (fail-open, matching `environmental`).
@@ -2028,6 +2165,28 @@ function renderUncoveredReason(
 const DEFAULT_TIMEOUT_MS = 10_000;
 
 /**
+ * The overall wall-clock budget {@link evaluateAdvisor}'s evaluation races,
+ * in ms.
+ *
+ * Per-spawn timeouts do not bound the pipeline they compose: evaluation is
+ * strictly sequential (fix → drift → list → listBlocks → changedHunks plus the
+ * per-file fallback), so N slow children cost N × {@link DEFAULT_TIMEOUT_MS}
+ * against a parent hook window of 10s (the Claude/Codex/mswea adapters'
+ * registered `timeout: 10_000`), after which the harness kills the hook —
+ * commits stall the full window and even the scan-failed advisory is lost.
+ * 8s keeps the answer inside that window with headroom for process boot,
+ * changeset resolution, and output serialization; on expiry evaluation fails
+ * OPEN with a `'deadline-exceeded'` warning (an advisory-or-warning is always
+ * returned) after aborting its outstanding subprocesses. OpenCode registers no
+ * hook timeout at all and already budgets its spawns tighter (5s); the race
+ * only ever shortens what it would otherwise wait out.
+ */
+export const EVALUATION_DEADLINE_MS = 8_000;
+
+/** Promisified {@link execFile}: the async spawn every default executor reads through. */
+const execFileAsync = promisify(execFile);
+
+/**
  * The stdout ceiling every `execFileSync` read below runs under, replacing
  * Node's 1 MiB default.
  *
@@ -2119,38 +2278,15 @@ export function buildHunkReadArgs(
 }
 
 /** Run a git command at `cwd`, returning its raw stdout as-is (empty string on any failure). */
-function gitText(args: string[], cwd: string, timeoutMs: number): string {
-  try {
-    return execFileSync('git', args, {
-      cwd,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: timeoutMs,
-      maxBuffer: MAX_STDOUT_BYTES
-    });
-  } catch {
-    return '';
-  }
+async function gitText(args: string[], cwd: string, timeoutMs: number, signal?: AbortSignal): Promise<string> {
+  const outcome = await trySpawnGit(args, cwd, timeoutMs, signal);
+  return outcome.ok ? outcome.stdout : '';
 }
 
 /** Run a git command at `cwd`, returning trimmed non-empty POSIX output lines (empty on any failure). */
-function gitLines(args: string[], cwd: string, timeoutMs: number): string[] {
-  try {
-    const out = execFileSync('git', args, {
-      cwd,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: timeoutMs,
-      maxBuffer: MAX_STDOUT_BYTES
-    });
-    return out
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0)
-      .map(toPosix);
-  } catch {
-    return [];
-  }
+async function gitLines(args: string[], cwd: string, timeoutMs: number, signal?: AbortSignal): Promise<string[]> {
+  const outcome = await trySpawnGit(args, cwd, timeoutMs, signal);
+  return outcome.ok ? splitPosixLines(outcome.stdout) : [];
 }
 
 /**
@@ -2159,61 +2295,120 @@ function gitLines(args: string[], cwd: string, timeoutMs: number): string[] {
  * (`[]`), so the outgoing-range resolution knows when to try the merge-base
  * fallback rather than mistaking "no upstream" for "nothing to push".
  */
-function gitLinesOrNull(args: string[], cwd: string, timeoutMs: number): string[] | null {
+async function gitLinesOrNull(
+  args: string[],
+  cwd: string,
+  timeoutMs: number,
+  signal?: AbortSignal
+): Promise<string[] | null> {
+  const outcome = await trySpawnGit(args, cwd, timeoutMs, signal);
+  return outcome.ok ? splitPosixLines(outcome.stdout) : null;
+}
+
+/** Trimmed non-empty POSIX lines of a read's stdout — the shape every name-only consumer wants. */
+function splitPosixLines(out: string): string[] {
+  return out
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map(toPosix);
+}
+
+/**
+ * One spawn attempt's collapsed result. `ok: false` carries whatever stdout/
+ * stderr the child managed to emit — the exact shape `execFileSync`'s throw
+ * used to expose via `err.stdout`/`err.stderr`, which the drift/list/fix
+ * failure classifiers read to tell a legitimate drift exit from an aborted
+ * scan from version skew. An abort (deadline expiry or the final cleanup)
+ * lands here like any other failure with empty pipes; reporting expiry is the
+ * deadline race's job, never the executor's.
+ */
+type SpawnOutcome = { ok: true; stdout: string } | { ok: false; stdout: string; stderr: string };
+
+/**
+ * Spawn one `git` child asynchronously and capture its output.
+ *
+ * Async is load-bearing, not stylistic: the sync spawns this replaced blocked
+ * the event loop for their entire duration, which made an overall evaluation
+ * deadline unenforceable (a timer cannot fire while the loop is blocked) and
+ * left no cancellation path once a child hung. The async child is killed via
+ * `signal` when {@link evaluateAdvisor}'s budget expires, its per-invocation
+ * `timeout` still bounds each individual read exactly as before.
+ */
+async function trySpawnGit(
+  args: string[],
+  cwd: string,
+  timeoutMs: number,
+  signal?: AbortSignal
+): Promise<SpawnOutcome> {
+  if (signal?.aborted) return { ok: false, stdout: '', stderr: '' };
   try {
-    const out = execFileSync('git', args, {
+    const { stdout } = await execFileAsync('git', args, {
       cwd,
       encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
+      maxBuffer: MAX_STDOUT_BYTES,
       timeout: timeoutMs,
-      maxBuffer: MAX_STDOUT_BYTES
+      signal
     });
-    return out
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0)
-      .map(toPosix);
-  } catch {
-    return null;
+    return { ok: true, stdout };
+  } catch (err) {
+    // promisified execFile rejects with the buffered streams attached (as
+    // strings under `encoding: 'utf8'`), matching execFileSync's exception
+    // shape; anything else collapses to empty pipes.
+    const streams = err as { stdout?: unknown; stderr?: unknown };
+    return {
+      ok: false,
+      stdout: typeof streams.stdout === 'string' ? streams.stdout : '',
+      stderr: typeof streams.stderr === 'string' ? streams.stderr : ''
+    };
   }
 }
 
 /** The production {@link GitExecutor}: `git diff` reads scoped to the CWD repo. */
 export function createDefaultGitExecutor(timeoutMs: number = DEFAULT_TIMEOUT_MS): GitExecutor {
   return {
-    stagedPaths: async (cwd) => {
+    stagedPaths: async (cwd, signal) => {
       const repoRoot = resolveRepoRoot(cwd);
       if (!repoRoot) return [];
-      return gitLines(['-C', repoRoot, ...GIT_READ_OPTS, 'diff', '--cached', '--name-only'], repoRoot, timeoutMs);
+      return gitLines(
+        ['-C', repoRoot, ...GIT_READ_OPTS, 'diff', '--cached', '--name-only'],
+        repoRoot,
+        timeoutMs,
+        signal
+      );
     },
-    trackedModifiedPaths: async (cwd) => {
+    trackedModifiedPaths: async (cwd, signal) => {
       const repoRoot = resolveRepoRoot(cwd);
       if (!repoRoot) return [];
-      return gitLines(['-C', repoRoot, ...GIT_READ_OPTS, 'diff', '--name-only'], repoRoot, timeoutMs);
+      return gitLines(['-C', repoRoot, ...GIT_READ_OPTS, 'diff', '--name-only'], repoRoot, timeoutMs, signal);
     },
-    outgoingPaths: async (cwd) => {
+    outgoingPaths: async (cwd, signal) => {
       const repoRoot = resolveRepoRoot(cwd);
       if (!repoRoot) return { paths: [], base: null };
-      const upstream = gitLinesOrNull(
+      const upstream = await gitLinesOrNull(
         ['-C', repoRoot, ...GIT_READ_OPTS, 'diff', '--name-only', '@{u}..HEAD'],
         repoRoot,
-        timeoutMs
+        timeoutMs,
+        signal
       );
       if (upstream !== null) return { paths: upstream, base: '@{u}' };
       // No upstream configured: fall back to the merge-base with the default
       // remote branch (`origin/HEAD`). If that too is unresolvable, fail open.
-      const base = gitLines(['-C', repoRoot, 'merge-base', 'HEAD', 'origin/HEAD'], repoRoot, timeoutMs)[0];
+      const base = (
+        await gitLines(['-C', repoRoot, 'merge-base', 'HEAD', 'origin/HEAD'], repoRoot, timeoutMs, signal)
+      )[0];
       if (!base) return { paths: [], base: null };
       return {
-        paths: gitLines(
+        paths: await gitLines(
           ['-C', repoRoot, ...GIT_READ_OPTS, 'diff', '--name-only', `${base}..HEAD`],
           repoRoot,
-          timeoutMs
+          timeoutMs,
+          signal
         ),
         base
       };
     },
-    pathspecPaths: async (paths, cwd) => {
+    pathspecPaths: async (paths, cwd, signal) => {
       const repoRoot = resolveRepoRoot(cwd);
       if (!repoRoot || paths.length === 0) return [];
       // Working-tree content vs HEAD, scoped to the pathspecs — the files a
@@ -2221,14 +2416,15 @@ export function createDefaultGitExecutor(timeoutMs: number = DEFAULT_TIMEOUT_MS)
       return gitLines(
         ['-C', repoRoot, ...GIT_READ_OPTS, 'diff', 'HEAD', '--name-only', '--', ...paths],
         repoRoot,
-        timeoutMs
+        timeoutMs,
+        signal
       );
     },
-    changedHunks: async (paths, range, cwd) => {
+    changedHunks: async (paths, range, cwd, signal) => {
       if (range.kind === 'unresolvable' || paths.length === 0) return [];
       const repoRoot = resolveRepoRoot(cwd);
       if (!repoRoot) return [];
-      const text = gitText(buildHunkReadArgs(repoRoot, range, paths), repoRoot, timeoutMs);
+      const text = await gitText(buildHunkReadArgs(repoRoot, range, paths), repoRoot, timeoutMs, signal);
       if (text.trim().length === 0) return [];
       try {
         return parseUnifiedDiff(text);
@@ -2302,20 +2498,11 @@ function isOlderThan(version: string, floor: string): boolean {
  * subprocess on every edit to answer a question that matters only on the
  * failure path.
  */
-function probeGitSpanVersion(repoRoot: string, timeoutMs: number): string | null {
-  try {
-    const out = execFileSync('git', ['span', '--version'], {
-      cwd: repoRoot,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: timeoutMs,
-      maxBuffer: MAX_STDOUT_BYTES
-    });
-    const triple = parseSemverTriple(out);
-    return triple ? triple.join('.') : null;
-  } catch {
-    return null;
-  }
+async function probeGitSpanVersion(repoRoot: string, timeoutMs: number, signal?: AbortSignal): Promise<string | null> {
+  const outcome = await trySpawnGit(['span', '--version'], repoRoot, timeoutMs, signal);
+  if (!outcome.ok) return null;
+  const triple = parseSemverTriple(outcome.stdout);
+  return triple ? triple.join('.') : null;
 }
 
 /**
@@ -2340,128 +2527,90 @@ function probeGitSpanVersion(repoRoot: string, timeoutMs: number): string | null
  * PATH, unparseable output) still classifies as skew — the parse failure is the
  * evidence; the version is the detail.
  */
-function classifyCliFailure(detail: string, repoRoot: string, timeoutMs: number): Error {
+async function classifyCliFailure(
+  detail: string,
+  repoRoot: string,
+  timeoutMs: number,
+  signal?: AbortSignal
+): Promise<Error> {
   if (!isArgumentParseFailure(detail)) return new AdvisorScanError(detail);
-  return new AdvisorIncompatibleCliError(detail, probeGitSpanVersion(repoRoot, timeoutMs));
+  return new AdvisorIncompatibleCliError(detail, await probeGitSpanVersion(repoRoot, timeoutMs, signal));
 }
 
 /** The production {@link AdvisorExecutors}: scoped `git span` fix/drift/list at the repo root. */
 export function createDefaultAdvisorExecutors(timeoutMs: number = DEFAULT_TIMEOUT_MS): AdvisorExecutors {
   return {
-    fix: async (paths, cwd) => {
+    fix: async (paths, cwd, signal) => {
       const repoRoot = resolveRepoRoot(cwd);
       if (!repoRoot || paths.length === 0) return;
-      try {
-        execFileSync('git', ['span', 'drift', ...paths, '--fix'], {
-          cwd: repoRoot,
-          encoding: 'utf8',
-          stdio: ['ignore', 'pipe', 'pipe'],
-          timeout: timeoutMs,
-          maxBuffer: MAX_STDOUT_BYTES
-        });
-      } catch (err) {
-        // `git span drift` exits 1 on drift even after healing, and non-zero on
-        // genuine failure; either way the subsequent `drift` read is the source
-        // of truth, so the exit code is ignored here — with one exception.
-        //
-        // A binary that cannot parse the command never healed anything, and the
-        // `drift` read that follows is about to fail the same way. Swallowing it
-        // here means auto-reanchoring stops dead with no signal whatsoever, which
-        // is precisely the state a user upgrading their plugin ahead of their
-        // binary lands in. Raise it so the reason reaches them.
-        const stderr = (err as { stderr?: string }).stderr;
-        const stderrText = typeof stderr === 'string' ? stderr.trim() : '';
-        if (stderrText.length > 0) {
-          const classified = classifyCliFailure(stderrText, repoRoot, timeoutMs);
-          if (classified instanceof AdvisorIncompatibleCliError) throw classified;
-        }
+      const outcome = await trySpawnGit(['span', 'drift', ...paths, '--fix'], repoRoot, timeoutMs, signal);
+      if (outcome.ok) return;
+      // `git span drift` exits 1 on drift even after healing, and non-zero on
+      // genuine failure; either way the subsequent `drift` read is the source
+      // of truth, so the exit code is ignored here — with one exception.
+      //
+      // A binary that cannot parse the command never healed anything, and the
+      // `drift` read that follows is about to fail the same way. Swallowing it
+      // here means auto-reanchoring stops dead with no signal whatsoever, which
+      // is precisely the state a user upgrading their plugin ahead of their
+      // binary lands in. Raise it so the reason reaches them.
+      const stderrText = outcome.stderr.trim();
+      if (stderrText.length > 0) {
+        const classified = await classifyCliFailure(stderrText, repoRoot, timeoutMs, signal);
+        if (classified instanceof AdvisorIncompatibleCliError) throw classified;
       }
     },
-    drift: async (paths, cwd) => {
+    drift: async (paths, cwd, signal) => {
       const repoRoot = resolveRepoRoot(cwd);
       if (!repoRoot || paths.length === 0) return [];
-      let out: string;
-      try {
-        out = execFileSync('git', ['span', 'drift', '--format', 'porcelain', ...paths], {
-          cwd: repoRoot,
-          encoding: 'utf8',
-          stdio: ['ignore', 'pipe', 'pipe'],
-          timeout: timeoutMs,
-          maxBuffer: MAX_STDOUT_BYTES
-        });
-      } catch (err) {
-        // `git span drift` exits non-zero in two very different ways, and they
-        // must not be conflated:
-        //  - Legitimate drift: real porcelain rows on stdout describing the
-        //    drift. Parse them (this is the whole point of the read).
-        //  - Hard scan failure: the scoped query aborted before completing (e.g.
-        //    an unreadable anchor file), writing an error to stderr and emitting
-        //    empty stdout. An empty result here is NOT "clean" — the scan never
-        //    ran to completion — so signal it distinctly rather than parsing to
-        //    `[]`, which would read as a clean pass and silently allow the commit.
-        //  - Version skew: the binary's argument parser rejected the command
-        //    before any scan ran. Shaped exactly like a hard scan failure on the
-        //    wire, but the cause is the install, not the repository —
-        //    `classifyCliFailure` separates the two.
-        const stdout = (err as { stdout?: string }).stdout;
-        const stderr = (err as { stderr?: string }).stderr;
-        const stdoutText = typeof stdout === 'string' ? stdout : '';
-        const stderrText = typeof stderr === 'string' ? stderr : '';
-        if (stdoutText.trim().length === 0 && stderrText.trim().length > 0) {
-          throw classifyCliFailure(stderrText.trim(), repoRoot, timeoutMs);
-        }
-        out = stdoutText;
+      const outcome = await trySpawnGit(
+        ['span', 'drift', '--format', 'porcelain', ...paths],
+        repoRoot,
+        timeoutMs,
+        signal
+      );
+      // `git span drift` exits non-zero in two very different ways, and they
+      // must not be conflated:
+      //  - Legitimate drift: real porcelain rows on stdout describing the
+      //    drift. Parse them (this is the whole point of the read).
+      //  - Hard scan failure: the scoped query aborted before completing (e.g.
+      //    an unreadable anchor file), writing an error to stderr and emitting
+      //    empty stdout. An empty result here is NOT "clean" — the scan never
+      //    ran to completion — so signal it distinctly rather than parsing to
+      //    `[]`, which would read as a clean pass and silently allow the commit.
+      //  - Version skew: the binary's argument parser rejected the command
+      //    before any scan ran. Shaped exactly like a hard scan failure on the
+      //    wire, but the cause is the install, not the repository —
+      //    `classifyCliFailure` separates the two.
+      if (!outcome.ok && outcome.stdout.trim().length === 0 && outcome.stderr.trim().length > 0) {
+        throw await classifyCliFailure(outcome.stderr.trim(), repoRoot, timeoutMs, signal);
       }
-      return parseDriftPorcelain(out);
+      return parseDriftPorcelain(outcome.stdout);
     },
-    list: async (paths, cwd) => {
+    list: async (paths, cwd, signal) => {
       const repoRoot = resolveRepoRoot(cwd);
       if (!repoRoot || paths.length === 0) return [];
-      let out: string;
-      try {
-        out = execFileSync('git', ['span', 'list', '--porcelain', ...paths], {
-          cwd: repoRoot,
-          encoding: 'utf8',
-          stdio: ['ignore', 'pipe', 'pipe'],
-          timeout: timeoutMs,
-          maxBuffer: MAX_STDOUT_BYTES
-        });
-      } catch (err) {
-        // The coverage read is the source of the *covered* set, so an empty
-        // result reads as "nothing is covered" — the most punitive answer the
-        // advisor can give. A hard query failure (an unresolvable argument, say)
-        // writes an error to stderr and emits empty stdout; parsing that to
-        // `[]` would turn a failed scan into a confident, maximal hold with no
-        // related-spans section. Signal it distinctly instead, exactly as the
-        // `drift` executor above does, and let `evaluateAdvisor` fail open with
-        // the `scan-failed` warning. Any partial stdout is still parsed.
-        const stdout = (err as { stdout?: string }).stdout;
-        const stderr = (err as { stderr?: string }).stderr;
-        const stdoutText = typeof stdout === 'string' ? stdout : '';
-        const stderrText = typeof stderr === 'string' ? stderr : '';
-        if (stdoutText.trim().length === 0 && stderrText.trim().length > 0) {
-          throw new AdvisorScanError(stderrText.trim());
-        }
-        out = stdoutText;
+      const outcome = await trySpawnGit(['span', 'list', '--porcelain', ...paths], repoRoot, timeoutMs, signal);
+      // The coverage read is the source of the *covered* set, so an empty
+      // result reads as "nothing is covered" — the most punitive answer the
+      // advisor can give. A hard query failure (an unresolvable argument, say)
+      // writes an error to stderr and emits empty stdout; parsing that to
+      // `[]` would turn a failed scan into a confident, maximal hold with no
+      // related-spans section. Signal it distinctly instead, exactly as the
+      // `drift` executor above does, and let `evaluateAdvisor` fail open with
+      // the `scan-failed` warning. Any partial stdout is still parsed.
+      if (!outcome.ok && outcome.stdout.trim().length === 0 && outcome.stderr.trim().length > 0) {
+        throw new AdvisorScanError(outcome.stderr.trim());
       }
-      return parsePorcelain(out);
+      return parsePorcelain(outcome.stdout);
     },
-    listBlocks: async (names, cwd) => {
+    listBlocks: async (names, cwd, signal) => {
       const repoRoot = resolveRepoRoot(cwd);
       if (!repoRoot || names.length === 0) return '';
-      try {
-        return execFileSync('git', ['span', 'list', ...names], {
-          cwd: repoRoot,
-          encoding: 'utf8',
-          stdio: ['ignore', 'pipe', 'pipe'],
-          timeout: timeoutMs,
-          maxBuffer: MAX_STDOUT_BYTES
-        });
-      } catch {
-        // A failed human-format read only degrades the rendered message
-        // (annotateBlocks synthesizes minimal blocks); never an advisor error.
-        return '';
-      }
+      const outcome = await trySpawnGit(['span', 'list', ...names], repoRoot, timeoutMs, signal);
+      // A failed human-format read only degrades the rendered message
+      // (annotateBlocks synthesizes minimal blocks); never an advisor error.
+      return outcome.ok ? outcome.stdout : '';
     }
   };
 }
