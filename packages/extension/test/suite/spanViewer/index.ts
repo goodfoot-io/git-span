@@ -17,6 +17,7 @@ export * from './historyClient.contract.test.js';
 export * from './historyClient.test.js';
 export * from './historySnapshotLadder.test.js';
 export * from './patchReconstruction.test.js';
+export * from './spanFileEditorProvider.csp.test.js';
 export * from './spanFileEditorProvider.test.js';
 export * from './spanFileGrammar.test.js';
 export * from './spanRenderSession.test.js';

@@ -30,6 +30,7 @@
  * @module spanViewer/spanFileEditorProvider
  */
 
+import * as crypto from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
@@ -95,19 +96,71 @@ function escapeHtml(value: string): string {
 }
 
 /**
- * Build a random nonce for the webview's Content-Security-Policy.
+ * Build a cryptographically random nonce for the webviews'
+ * Content-Security-Policy. `crypto.randomBytes` (CSPRNG) per VS Code's
+ * webview guidance; nonces drawn from predictable PRNGs defeat the
+ * allowlist a nonce-based `script-src` is meant to provide.
  *
- * @returns A random 32-character nonce string.
+ * @returns A fresh 16-byte nonce, base64-encoded.
  * @throws Never.
  */
 function makeNonce(): string {
-  const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  let nonce = '';
-  for (let i = 0; i < 32; i++) {
-    nonce += characters.charAt(Math.floor(Math.random() * characters.length));
-  }
-  return nonce;
+  return crypto.randomBytes(16).toString('base64');
 }
+
+/**
+ * The single construction site for both HTML surfaces' Content-Security-Policy
+ * header content, so the panel and the Monaco webview cannot drift apart on
+ * security policy.
+ *
+ * Both surfaces share the covenant: nothing by default (`default-src 'none'`),
+ * inline styles for VS Code's injected theming variables, and scripts only via
+ * the per-render {@linkcode makeNonce} value. A surface that additionally
+ * loads resources from the webview origin passes its `vscode.Webview`, which
+ * contributes `style-src`/`font-src`/`connect-src`/`img-src` allowances plus
+ * Blob-backed worker construction for the Monaco bundle. Passing `null`
+ * yields the fallback panel's minimal policy -- it renders only inline script
+ * and styles and fetches nothing.
+ *
+ * @param nonce - The per-render nonce scoping `script-src`.
+ * @param webview - The resource-loading webview whose origin may be fetched
+ *   from, or `null` for the resource-free fallback panel.
+ * @returns The CSP directive list for the `Content-Security-Policy` meta tag.
+ * @throws Never.
+ */
+function buildCsp(nonce: string, webview: vscode.Webview | null): string {
+  const origin = webview === null ? null : webview.cspSource;
+  const directives = [
+    "default-src 'none'",
+    origin === null ? "style-src 'unsafe-inline'" : `style-src 'unsafe-inline' ${origin}`,
+    `script-src 'nonce-${nonce}'`
+  ];
+  if (origin !== null) {
+    directives.push(`font-src 'self' ${origin}`, 'worker-src blob:', `connect-src ${origin}`, `img-src ${origin}`);
+  }
+  return `${directives.join('; ')};`;
+}
+
+/**
+ * Test-only handle on {@linkcode buildCsp}: exists purely so unit tests can
+ * pin both surfaces' policies byte-for-byte without rendering a webview.
+ *
+ * @param nonce - The per-render nonce scoping `script-src`.
+ * @param webview - The resource-loading webview whose origin may be fetched
+ *   from, or `null` for the resource-free fallback panel.
+ * @returns The CSP directive list for the `Content-Security-Policy` meta tag.
+ * @throws Never.
+ */
+export const testOnlyBuildCsp: (nonce: string, webview: vscode.Webview | null) => string = buildCsp;
+
+/**
+ * Test-only handle on {@linkcode makeNonce}: exists purely so unit tests can
+ * assert the nonce source's randomness without rendering a webview.
+ *
+ * @returns A fresh 16-byte nonce, base64-encoded.
+ * @throws Never.
+ */
+export const testOnlyMakeNonce: () => string = makeNonce;
 
 /**
  * Map a VS Code theme kind to the closest Monaco built-in base theme.
@@ -164,7 +217,7 @@ function renderPanel(webview: vscode.Webview, message: string, warnings: string[
   webview.html = `<!DOCTYPE html>
 <html>
 <head>
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
+<meta http-equiv="Content-Security-Policy" content="${buildCsp(nonce, null)}">
 </head>
 <body>
   <p>${escapeHtml(message)}</p>
@@ -230,7 +283,7 @@ function renderWebviewHtml(webview: vscode.Webview, themeKind: MonacoBaseTheme):
   return `<!DOCTYPE html>
 <html>
 <head>
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' ${webview.cspSource}; script-src 'nonce-${nonce}'; font-src 'self' ${webview.cspSource}; worker-src blob:; connect-src ${webview.cspSource}; img-src ${webview.cspSource};">
+<meta http-equiv="Content-Security-Policy" content="${buildCsp(nonce, webview)}">
 <link rel="stylesheet" href="${mainCssUri}">
 </head>
 <body data-vscode-theme="${themeKind}">
