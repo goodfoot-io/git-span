@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  appendAttachedTarget,
+  appendQuotedContent,
   createScan,
+  createTokenizeScan,
+  emitRedirect,
   finishScan,
+  flushWord,
   rejectEmptyConstructList,
   skipTopLevelComment,
   stepBoundaryOperator,
@@ -529,5 +534,106 @@ describe('finishScan', () => {
       stages: [{ text: 'cat', precededBy: 'start', heredoc: true }],
       malformed: 'unterminated-heredoc'
     });
+  });
+});
+
+describe('tokenizer scan state', () => {
+  it('initializes an empty word buffer with a zero cursor', () => {
+    const t = createTokenizeScan('echo hi');
+    expect(t.src).toBe('echo hi');
+    expect(t.n).toBe(7);
+    expect(t.i).toBe(0);
+    expect(t.buf).toBe('');
+    expect(t.quoted).toBe(false);
+    expect(t.tokens).toEqual([]);
+  });
+
+  it('flushWord pushes the buffered word with its sticky quoted flag and resets', () => {
+    const t = createTokenizeScan('a b');
+    t.buf = 'wo"rd';
+    t.quoted = true;
+    flushWord(t);
+    expect(t.tokens).toEqual([{ text: 'wo"rd', quoted: true, isRedirect: false }]);
+    expect(t.buf).toBe('');
+    expect(t.quoted).toBe(false);
+  });
+
+  it('flushWord is a no-op on an empty buffer and does not clear the quoted flag', () => {
+    const t = createTokenizeScan('x');
+    t.quoted = true;
+    flushWord(t);
+    expect(t.tokens).toEqual([]);
+    expect(t.quoted).toBe(true);
+  });
+});
+
+describe('tokenizer quoted-content scanner', () => {
+  it('single-quote sections copy content verbatim to the closing quote', () => {
+    const t = createTokenizeScan("'a b'c");
+    const section = appendQuotedContent(t, '', 0);
+    expect(section).toEqual({ out: 'a b', next: 5 });
+  });
+
+  it('double-quote sections resolve the backslash escape set but copy other chars raw', () => {
+    const t = createTokenizeScan('"a\\"b\\$c\\d"');
+    const section = appendQuotedContent(t, '', 0);
+    expect(section).toEqual({ out: 'a"b$c\\d', next: t.n });
+  });
+
+  it('appends into the caller-provided accumulator rather than replacing it', () => {
+    const t = createTokenizeScan("'b'");
+    const section = appendQuotedContent(t, 'a', 0);
+    expect(section?.out).toBe('ab');
+  });
+
+  it('returns null on an unbalanced quote without a next index', () => {
+    const t = createTokenizeScan("'open");
+    expect(appendQuotedContent(t, '', 0)).toBeNull();
+  });
+});
+
+describe('tokenizer attached-target scanner', () => {
+  it('stops at whitespace and redirect operators, reporting the stop index', () => {
+    const t = createTokenizeScan('>out file<x');
+    expect(appendAttachedTarget(t, '', 1)).toEqual({ out: 'out', next: 4 });
+    expect(appendAttachedTarget(t, '', 5)).toEqual({ out: 'file', next: 9 });
+  });
+
+  it('keeps quoted sections spanning spaces verbatim including their quotes', () => {
+    const t = createTokenizeScan(">'a  b\"c' tail");
+    expect(appendAttachedTarget(t, '', 1)).toEqual({ out: "'a  b\"c'", next: 9 });
+  });
+
+  it('copies backslash pairs as typed and stops at EOF', () => {
+    const t = createTokenizeScan('>a\\ b');
+    expect(appendAttachedTarget(t, '', 1)).toEqual({ out: 'a\\ b', next: t.n });
+  });
+
+  it('returns null when the target opens an unbalanced quote', () => {
+    const t = createTokenizeScan(">'open");
+    expect(appendAttachedTarget(t, '', 1)).toBeNull();
+  });
+});
+
+describe('tokenizer redirect emission', () => {
+  it('prefixes the operator with the digit buffer (IO_NUMBER), resets state, and advances the cursor past the target', () => {
+    const t = createTokenizeScan('2>err.log tail');
+    t.buf = '2';
+    t.i = 1;
+    expect(emitRedirect(t, '>', 2)).toBe(true);
+    expect(t.tokens).toEqual([{ text: '2>err.log', quoted: false, isRedirect: true }]);
+    expect(t.buf).toBe('');
+    expect(t.quoted).toBe(false);
+    expect(t.i).toBe(9);
+  });
+
+  it('leaves the scan untouched when the attached target has unbalanced quotes', () => {
+    const t = createTokenizeScan("2>'open");
+    t.buf = '2';
+    t.i = 1;
+    expect(emitRedirect(t, '>', 2)).toBe(false);
+    expect(t.tokens).toEqual([]);
+    expect(t.buf).toBe('2');
+    expect(t.i).toBe(1);
   });
 });

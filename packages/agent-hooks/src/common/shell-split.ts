@@ -13,8 +13,12 @@
  */
 
 import {
+  appendQuotedContent,
   createScan,
+  createTokenizeScan,
+  emitRedirect,
   finishScan,
+  flushWord,
   rejectEmptyConstructList,
   skipTopLevelComment,
   stepBoundaryOperator,
@@ -174,145 +178,64 @@ export interface Token {
  * `"<<"` literal. Returns null on unbalanced quotes.
  */
 export function tokenize(s: string): Token[] | null {
-  const tokens: Token[] = [];
-  let buf = '';
-  let quoted = false;
-  let i = 0;
-  const n = s.length;
-
-  const flushWord = (): void => {
-    if (buf.length === 0) return;
-    tokens.push({ text: buf, quoted, isRedirect: false });
-    buf = '';
-    quoted = false;
-  };
-
-  /**
-   * Append the unquoted content of the quoted section opening at `start`
-   * (the quote char) to `out`, mirroring shlex's escape rules for double
-   * quotes. Returns the index after the closing quote, or null when
-   * unbalanced.
-   */
-  const appendQuotedContent = (out: string, start: number): { out: string; next: number } | null => {
-    const quote = s[start];
-    let j = start + 1;
-    while (j < n) {
-      const c = s[j];
-      if (quote === "'") {
-        if (c === "'") return { out, next: j + 1 };
-        out += c;
-        j += 1;
-        continue;
-      }
-      if (c === '\\' && j + 1 < n && '"\\$`'.includes(s[j + 1])) {
-        out += s[j + 1];
-        j += 2;
-        continue;
-      }
-      if (c === '"') return { out, next: j + 1 };
-      out += c;
-      j += 1;
-    }
-    return null;
-  };
-
-  /**
-   * Append the raw attached-target text starting at `start` to `out` —
-   * verbatim, quoted sections spanning spaces included — stopping at
-   * whitespace or another redirect operator. Returns the next index, or null
-   * on unbalanced quotes.
-   */
-  const appendAttachedTarget = (out: string, start: number): { out: string; next: number } | null => {
-    let j = start;
-    while (j < n) {
-      const c = s[j];
-      if (/\s/.test(c) || c === '<' || c === '>') return { out, next: j };
-      if (c === "'" || c === '"') {
-        const section = appendQuotedContent('', j);
-        if (section === null) return null;
-        out += s.slice(j, section.next);
-        j = section.next;
-        continue;
-      }
-      if (c === '\\' && j + 1 < n) {
-        out += c + s[j + 1];
-        j += 2;
-        continue;
-      }
-      out += c;
-      j += 1;
-    }
-    return { out, next: j };
-  };
-
-  /** Emit a redirect token whose text prefixes the operator with the current digit buffer (an IO_NUMBER like `2>`). */
-  const emitRedirect = (operator: string, attachedStart: number): boolean => {
-    const attached = appendAttachedTarget('', attachedStart);
-    if (attached === null) return false;
-    tokens.push({ text: buf + operator + attached.out, quoted: false, isRedirect: true });
-    buf = '';
-    quoted = false;
-    i = attached.next;
-    return true;
-  };
-
-  while (i < n) {
-    const c = s[i];
+  const t = createTokenizeScan(s);
+  while (t.i < t.n) {
+    const c = t.src[t.i];
     if (/\s/.test(c)) {
-      flushWord();
-      i += 1;
+      flushWord(t);
+      t.i += 1;
       continue;
     }
     if (c === "'" || c === '"') {
-      quoted = true;
-      const section = appendQuotedContent(buf, i);
+      t.quoted = true;
+      const section = appendQuotedContent(t, t.buf, t.i);
       if (section === null) return null;
-      buf = section.out;
-      i = section.next;
+      t.buf = section.out;
+      t.i = section.next;
       continue;
     }
-    if (c === '\\' && i + 1 < n) {
-      quoted = true;
-      buf += s[i + 1];
-      i += 2;
+    if (c === '\\' && t.i + 1 < t.n) {
+      t.quoted = true;
+      t.buf += t.src[t.i + 1];
+      t.i += 2;
       continue;
     }
     if (c === '<' || c === '>') {
       // A `<`/`>` is a redirect operator at a word boundary, or after an
       // IO_NUMBER digit run (`1>`, `2>`); mid-word it ends the current word
       // first (`echo a>b` → words `echo`, `a`; redirect `>b`).
-      if (buf !== '' && !/^\d+$/.test(buf)) flushWord();
+      if (t.buf !== '' && !/^\d+$/.test(t.buf)) flushWord(t);
       let operator: string;
       if (c === '<') {
-        if (s.slice(i, i + 3) === '<<<') operator = '<<<';
-        else if (s.slice(i, i + 3) === '<<-') operator = '<<-';
-        else if (s.slice(i, i + 2) === '<<') operator = '<<';
+        if (t.src.slice(t.i, t.i + 3) === '<<<') operator = '<<<';
+        else if (t.src.slice(t.i, t.i + 3) === '<<-') operator = '<<-';
+        else if (t.src.slice(t.i, t.i + 2) === '<<') operator = '<<';
         else operator = '<';
       } else {
-        operator = s.slice(i, i + 2) === '>>' ? '>>' : '>';
+        operator = t.src.slice(t.i, t.i + 2) === '>>' ? '>>' : '>';
       }
-      if (!emitRedirect(operator, i + operator.length)) return null;
+      if (!emitRedirect(t, operator, t.i + operator.length)) return null;
       continue;
     }
     if (c === '&') {
       // `&>`/`&>>` — the stdout+stderr redirect (kept together by
       // splitTopLevel). A bare `&` here is an ordinary word char (`&1` in
       // `2>&1`, which the attached-target scan above consumed anyway).
-      if (s[i + 1] === '>') {
-        flushWord();
-        const operator = s.slice(i, i + 3) === '&>>' ? '&>>' : '&>';
-        if (!emitRedirect(operator, i + operator.length)) return null;
+      if (t.src[t.i + 1] === '>') {
+        flushWord(t);
+        const operator = t.src.slice(t.i, t.i + 3) === '&>>' ? '&>>' : '&>';
+        if (!emitRedirect(t, operator, t.i + operator.length)) return null;
         continue;
       }
-      buf += c;
-      i += 1;
+      t.buf += c;
+      t.i += 1;
       continue;
     }
-    buf += c;
-    i += 1;
+    t.buf += c;
+    t.i += 1;
   }
-  flushWord();
-  return tokens;
+  flushWord(t);
+  return t.tokens;
 }
 
 /**

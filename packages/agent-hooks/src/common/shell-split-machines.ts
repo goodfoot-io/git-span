@@ -9,7 +9,7 @@
  * testable in isolation from the dispatcher that schedules it.
  */
 
-import type { MalformedVerdict, Operator, SimpleCommand, SplitResult } from './shell-split.js';
+import type { MalformedVerdict, Operator, SimpleCommand, SplitResult, Token } from './shell-split.js';
 
 /** The construct kinds the kind-matched stack tracks (plan §3). */
 export type ConstructKind = 'if' | 'loop' | 'for' | 'select' | 'brace';
@@ -977,4 +977,117 @@ export function finishScan(s: SplitScan): SplitResult {
     appendStage(s, 'newline');
   }
   return { stages: s.parts, malformed: s.malformed };
+}
+
+// ---------------------------------------------------------------------------
+// Tokenizer machines (plan §5.10): [tokenize]'s quote-aware lexical scan over
+// one simple command's text. Same contract as the splitter machines above —
+// narrow state ([TokenizeScan]) threaded through small functions, so each is
+// testable apart from the tokenizer's dispatch loop.
+// ---------------------------------------------------------------------------
+
+/**
+ * The mutable state threaded through the tokenizer's helpers: the input
+ * window (`src`/`n`/`i`), the current word buffer and its sticky `quoted`
+ * flag, and the completed tokens.
+ */
+export interface TokenizeScan {
+  /** The simple-command text being tokenized. */
+  src: string;
+  /** `src.length` — cached because the scanners compare against it constantly. */
+  n: number;
+  /** The scan cursor: the next unread character index. */
+  i: number;
+  /** The word text accumulated since the last flush. */
+  buf: string;
+  /** Sticky: any quoting or escape in the source marks the whole word quoted. */
+  quoted: boolean;
+  /** Completed tokens, in order. */
+  tokens: Token[];
+}
+
+/** Initialize the tokenizer scan state for `src` at the very start of a walk. */
+export function createTokenizeScan(src: string): TokenizeScan {
+  return { src, n: src.length, i: 0, buf: '', quoted: false, tokens: [] };
+}
+
+/** Push the buffered word (no-op when empty) and reset the buffer + `quoted` flag. */
+export function flushWord(t: TokenizeScan): void {
+  if (t.buf.length === 0) return;
+  t.tokens.push({ text: t.buf, quoted: t.quoted, isRedirect: false });
+  t.buf = '';
+  t.quoted = false;
+}
+
+/**
+ * Append the unquoted content of the quoted section opening at `start`
+ * (the quote char) to `out`, mirroring shlex's escape rules for double
+ * quotes. Returns the index after the closing quote, or null when
+ * unbalanced.
+ */
+export function appendQuotedContent(t: TokenizeScan, out: string, start: number): { out: string; next: number } | null {
+  const quote = t.src[start];
+  let j = start + 1;
+  while (j < t.n) {
+    const c = t.src[j];
+    if (quote === "'") {
+      if (c === "'") return { out, next: j + 1 };
+      out += c;
+      j += 1;
+      continue;
+    }
+    if (c === '\\' && j + 1 < t.n && '"\\$`'.includes(t.src[j + 1])) {
+      out += t.src[j + 1];
+      j += 2;
+      continue;
+    }
+    if (c === '"') return { out, next: j + 1 };
+    out += c;
+    j += 1;
+  }
+  return null;
+}
+
+/**
+ * Append the raw attached-target text starting at `start` to `out` —
+ * verbatim, quoted sections spanning spaces included — stopping at
+ * whitespace or another redirect operator. Returns the next index, or null
+ * on unbalanced quotes.
+ */
+export function appendAttachedTarget(
+  t: TokenizeScan,
+  out: string,
+  start: number
+): { out: string; next: number } | null {
+  let j = start;
+  while (j < t.n) {
+    const c = t.src[j];
+    if (/\s/.test(c) || c === '<' || c === '>') return { out, next: j };
+    if (c === "'" || c === '"') {
+      const section = appendQuotedContent(t, '', j);
+      if (section === null) return null;
+      out += t.src.slice(j, section.next);
+      j = section.next;
+      continue;
+    }
+    if (c === '\\' && j + 1 < t.n) {
+      out += c + t.src[j + 1];
+      j += 2;
+      continue;
+    }
+    out += c;
+    j += 1;
+  }
+  return { out, next: j };
+}
+
+/** Emit a redirect token whose text prefixes the operator with the current digit buffer (an IO_NUMBER like `2>`). */
+export function emitRedirect(t: TokenizeScan, operator: string, attachedStart: number): boolean {
+  const attached = appendAttachedTarget(t, '', attachedStart);
+  if (attached === null) return false;
+  t.tokens.push({ text: t.buf + operator + attached.out, quoted: false, isRedirect: true });
+  t.buf = '';
+  t.quoted = false;
+  t.i = attached.next;
+  return true;
 }
