@@ -5,6 +5,7 @@ import {
   type LayeredParseResult,
   type LayeredResolvedMatch,
   parseCompoundStages,
+  parseLiteralListLoop,
   resolveNumericSed,
   resolvePatternSubstitution,
   type UnresolvedAttribution
@@ -301,7 +302,7 @@ describe('parseCompoundStages', () => {
       idiom: 'node-fs',
       span: {
         absolutePath: '/repo/x.txt',
-        operation: 'write',
+        operation: 'modify',
         simpleCommandIndex: 0,
         ...overrides
       }
@@ -367,7 +368,7 @@ describe('parseCompoundStages', () => {
   it('rejects a directory-changing compound outright without recursing into any stage', () => {
     const command = 'cd /tmp && sed -i s/beta/BETA/ a.txt';
     const { parse } = stubParse({});
-    const result = parseCompoundStages(command, splitTopLevel(command), OPTIONS, 32, parse);
+    const result = parseCompoundStages(command, splitTopLevel(command), OPTIONS, 32, parse) as LayeredParseResult;
     expect(result).toEqual({
       resolved: [],
       unresolved: [
@@ -391,7 +392,7 @@ describe('parseCompoundStages', () => {
       resolved: [resolvedSpan()],
       unresolved: [unresolvedMatch({ layer: 'shell', idiom: 'shell-read', reasonCode: 'dynamic-path' })],
       preStateRequests: [
-        { absolutePath: '/repo/x.txt', operation: 'write', requirement: 'match-locations', simpleCommandIndex: 99 }
+        { absolutePath: '/repo/x.txt', operation: 'modify', requirement: 'match-locations', simpleCommandIndex: 99 }
       ]
     };
     const { calls, parse } = stubParse(child);
@@ -422,7 +423,13 @@ describe('parseCompoundStages', () => {
       unresolved: [unresolvedMatch({ layer: 'node' })]
     };
     const command = 'cat notes.txt | python3 rewrite.py';
-    const result = parseCompoundStages(command, splitTopLevel(command), OPTIONS, 32, stubParse(child).parse);
+    const result = parseCompoundStages(
+      command,
+      splitTopLevel(command),
+      OPTIONS,
+      32,
+      stubParse(child).parse
+    ) as LayeredParseResult;
     expect(result.resolved.map((match) => ({ layer: match.layer, operation: spanOf(match).operation }))).toEqual([
       { layer: 'node', operation: 'read' },
       { layer: 'node', operation: 'read' },
@@ -438,7 +445,7 @@ describe('parseCompoundStages', () => {
       OPTIONS,
       32,
       stubParse({ unresolved: [unresolvedMatch({ layer: 'node' })] }).parse
-    );
+    ) as LayeredParseResult;
     expect(shellResult.unresolved[0].layer).toBe('shell');
     const lastRefusal = shellResult.unresolved[shellResult.unresolved.length - 1];
     expect(lastRefusal.layer).toBe('node');
@@ -448,10 +455,184 @@ describe('parseCompoundStages', () => {
   it('rejects over-budget resolution with the compound count noun', () => {
     const command = 'node a.js && node b.js';
     const child: Partial<LayeredParseResult> = { resolved: [resolvedSpan(), resolvedSpan()] };
-    const result = parseCompoundStages(command, splitTopLevel(command), OPTIONS, 3, stubParse(child).parse);
+    const result = parseCompoundStages(
+      command,
+      splitTopLevel(command),
+      OPTIONS,
+      3,
+      stubParse(child).parse
+    ) as LayeredParseResult;
     expect(result.resolved).toEqual([]);
     expect(result.unresolved[0].reasonCode).toBe('candidate-budget-exceeded');
     expect(lastDetail(result.unresolved)).toBe('compound produced 4 candidates; the limit is 3');
     expect(result.preStateRequests).toEqual([]);
+  });
+});
+
+describe('parseLiteralListLoop', () => {
+  const OPTIONS: LayeredParseOptions = { cwd: '/repo' };
+
+  function loopResult(
+    variable: string,
+    listSource: string,
+    body: string,
+    parse: (command: string, options: LayeredParseOptions) => LayeredParseResult,
+    maxCandidates = 32,
+    options: LayeredParseOptions = OPTIONS
+  ): LayeredParseResult {
+    return parseLiteralListLoop(variable, listSource, body, options, maxCandidates, parse);
+  }
+
+  function stubParse(result: Partial<LayeredParseResult>) {
+    const calls: { command: string; options: LayeredParseOptions }[] = [];
+    const parse = (command: string, options: LayeredParseOptions): LayeredParseResult => {
+      calls.push({ command, options });
+      return { resolved: [], unresolved: [], preStateRequests: [], ...result };
+    };
+    return { calls, parse };
+  }
+
+  it('declines nested bodies, dynamic lists, globs, substitutions, and untokenizable lists fail-closed', () => {
+    const declines: [string, string, string, string][] = [
+      ['f', 'a.txt', 'for x in y; do echo $x; done', 'nested loop bodies are not supported'],
+      ['f', '$(ls)', 'sed -i s/x/y/ $f', 'loop list uses command substitution'],
+      ['f', '*.txt', 'sed -i s/x/y/ $f', 'loop list uses glob expansion'],
+      ['f', '${SOURCES}', 'sed -i s/x/y/ $f', 'loop list is not a literal list'],
+      ['f', '', 'sed -i s/x/y/ $f', 'loop list cannot be tokenized']
+    ];
+    for (const [variable, listSource, body, detail] of declines) {
+      const result = loopResult(variable, listSource, body, stubParse({}).parse);
+      expect(result.resolved).toEqual([]);
+      expect(result.unresolved[0].layer).toBe('literal-loop');
+      expect(result.unresolved[0].idiom).toBe('literal-list-loop');
+      expect(lastDetail(result.unresolved)).toBe(detail);
+      expect(result.preStateRequests).toEqual([]);
+    }
+  });
+
+  it('rejects over-budget binding lists before any expansion', () => {
+    const result = loopResult('f', 'a b c d', 'sed -i s/x/y/ $f', stubParse({}).parse, 3);
+    expect(lastDetail(result.unresolved)).toBe('literal list has 4 bindings; the limit is 3');
+    expect(result.unresolved[0].reasonCode).toBe('candidate-budget-exceeded');
+  });
+
+  it('rejects field-splitting expansions and unused variables per binding; dynamic lists decline at list level', () => {
+    const dynamicList = loopResult('f', 'a.txt $PWD.txt', 'sed -i s/x/y/ $f', stubParse({}).parse);
+    expect(dynamicList.unresolved[0].reasonCode).toBe('dynamic-list');
+    expect(lastDetail(dynamicList.unresolved)).toBe('loop list is not a literal list');
+
+    const unsafe = loopResult('f', '"a b.txt"', 'sed -i s/x/y/ $f', stubParse({}).parse);
+    expect(unsafe.unresolved[0].reasonCode).toBe('unsupported-dataflow');
+    expect(lastDetail(unsafe.unresolved)).toBe('unquoted loop expansion would perform shell field splitting');
+
+    const unused = loopResult('f', 'a.txt', 'sed -i s/x/y/ g.txt', stubParse({}).parse);
+    expect(unused.unresolved[0].reasonCode).toBe('unsupported-dataflow');
+    expect(lastDetail(unused.unresolved)).toBe('loop variable is not used in an expandable shell context');
+  });
+
+  it('rewrites layers to literal-loop, forwards expanded bodies, and refuses all-or-nothing on any refusal', () => {
+    const child: Partial<LayeredParseResult> = {
+      resolved: [
+        {
+          status: 'resolved',
+          layer: 'shell',
+          idiom: 'sed-inplace',
+          span: { absolutePath: '/repo/a.txt', operation: 'modify', simpleCommandIndex: 0 }
+        }
+      ],
+      unresolved: []
+    };
+    const { calls, parse } = stubParse(child);
+    const result = loopResult('f', 'one.txt two.txt', 'sed -i s/x/y/ $f', parse);
+    expect(calls.map((call) => call.command)).toEqual(["sed -i s/x/y/ 'one.txt'", "sed -i s/x/y/ 'two.txt'"]);
+    expect(result.resolved).toHaveLength(2);
+    expect(result.resolved.every((match) => match.layer === 'literal-loop')).toBe(true);
+    expect(result.unresolved).toEqual([]);
+
+    const mixed = loopResult(
+      'f',
+      'one.txt two.txt',
+      'sed -i s/x/y/ $f',
+      (command) =>
+        ({
+          resolved: [
+            {
+              status: 'resolved',
+              layer: 'shell',
+              idiom: 'sed-inplace',
+              span: { absolutePath: `/repo/${command}`, operation: 'modify', simpleCommandIndex: 0 }
+            }
+          ],
+          unresolved:
+            command.includes('two.txt') && !command.includes('one.txt')
+              ? [
+                  {
+                    status: 'unresolved',
+                    layer: 'shell',
+                    idiom: 'sed-inplace',
+                    reasonCode: 'dynamic-path',
+                    detail: 'd'
+                  }
+                ]
+              : [],
+          preStateRequests: []
+        }) as unknown as LayeredParseResult
+    );
+    expect(mixed.resolved).toEqual([]);
+    expect(mixed.preStateRequests).toEqual([]);
+    expect(mixed.unresolved.map((match) => match.layer)).toEqual(['literal-loop']);
+  });
+
+  it('back-fills one match-locations request per modified file after the loop, without duplicating threaded ones', () => {
+    const parse = (command: string): LayeredParseResult => {
+      const firstBinding = command.includes('one');
+      return {
+        resolved: [
+          {
+            status: 'resolved',
+            layer: 'pattern-substitution',
+            idiom: 'substitution',
+            span: {
+              absolutePath: '/repo/a.txt',
+              operation: 'modify',
+              simpleCommandIndex: firstBinding ? 0 : 1
+            }
+          }
+        ],
+        unresolved: [],
+        // Second binding already carries the request its resolved modify earned;
+        // the post-loop back-fill must not add a duplicate.
+        preStateRequests: firstBinding
+          ? []
+          : [
+              {
+                absolutePath: '/repo/a.txt',
+                operation: 'modify',
+                requirement: 'match-locations',
+                simpleCommandIndex: 1
+              }
+            ]
+      } as LayeredParseResult;
+    };
+    const result = loopResult('f', 'one two', 'sed -i s/x/y/ $f', parse);
+    expect(result.preStateRequests).toEqual([
+      { absolutePath: '/repo/a.txt', operation: 'modify', requirement: 'match-locations', simpleCommandIndex: 1 }
+    ]);
+    expect(result.resolved.map((match) => spanOf(match).simpleCommandIndex)).toEqual([0, 1]);
+  });
+
+  it('delivers an explicit {...options, maxCandidates} object to every recursion, machine budget winning', () => {
+    const callerOptions: LayeredParseOptions = { cwd: '/repo', maxCandidates: 7 };
+    const { calls, parse } = stubParse({});
+    loopResult('f', 'a b', 'sed -i s/x/y/ $f', parse, 32, callerOptions);
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      expect(call.options).not.toBe(callerOptions);
+      expect(call.options).toEqual({ cwd: '/repo', maxCandidates: 32 });
+    }
+  });
+
+  it('never re-validates maxCandidates inside the machine — entry validation stays in parseCommandLayered', () => {
+    expect(() => loopResult('f', 'a.txt', 'sed -i s/x/y/ $f', stubParse({}).parse, 0)).not.toThrow();
   });
 });

@@ -2142,6 +2142,148 @@ function rejectOverBudget(
 }
 
 /**
+ * The literal-list loop machine: `for <var> in <literal list>; do <body>;
+ * done` expanded binding-by-binding through the stage recursor. Declines
+ * nested loop bodies, dynamic or globbing lists, untokenizable lists, and
+ * non-literal bindings fail-closed; each recursion forwards
+ * `{...options, maxCandidates}` explicitly so the budget set at the
+ * [parseCommandLayered] entry survives body expansion. When any binding is
+ * unresolved the whole loop refuses (all-or-nothing); otherwise resolved
+ * modify spans gain a match-locations pre-state request per touched file.
+ */
+export function parseLiteralListLoop(
+  variable: string,
+  listSource: string,
+  body: string,
+  options: LayeredParseOptions,
+  maxCandidates: number,
+  parse: (command: string, nextOptions: LayeredParseOptions) => LayeredParseResult
+): LayeredParseResult {
+  if (body.includes('for ') || body.includes('while ') || body.includes('until ')) {
+    return {
+      resolved: [],
+      unresolved: [
+        unresolved('literal-loop', 'literal-list-loop', 'unsupported-syntax', 'nested loop bodies are not supported')
+      ],
+      preStateRequests: []
+    };
+  }
+  if (listSource.includes('$(') || listSource.includes('`')) {
+    return {
+      resolved: [],
+      unresolved: [
+        unresolved('literal-loop', 'literal-list-loop', 'command-substitution', 'loop list uses command substitution')
+      ],
+      preStateRequests: []
+    };
+  }
+  if (GLOB_META.test(listSource)) {
+    return {
+      resolved: [],
+      unresolved: [unresolved('literal-loop', 'literal-list-loop', 'glob-path', 'loop list uses glob expansion')],
+      preStateRequests: []
+    };
+  }
+  if (SHELL_EXPANSION.test(listSource)) {
+    return {
+      resolved: [],
+      unresolved: [unresolved('literal-loop', 'literal-list-loop', 'dynamic-list', 'loop list is not a literal list')],
+      preStateRequests: []
+    };
+  }
+  const bindings = argvOf(listSource);
+  if (bindings === null || bindings.length === 0) {
+    return {
+      resolved: [],
+      unresolved: [
+        unresolved('literal-loop', 'literal-list-loop', 'unsupported-syntax', 'loop list cannot be tokenized')
+      ],
+      preStateRequests: []
+    };
+  }
+  if (bindings.length > maxCandidates) {
+    return {
+      resolved: [],
+      unresolved: [
+        unresolved(
+          'literal-loop',
+          'literal-list-loop',
+          'candidate-budget-exceeded',
+          `literal list has ${bindings.length} bindings; the limit is ${maxCandidates}`
+        )
+      ],
+      preStateRequests: []
+    };
+  }
+  const resolved: LayeredResolvedMatch[] = [];
+  const unresolvedMatches: UnresolvedAttribution[] = [];
+  const preStateRequests: PreStateRequest[] = [];
+  for (const binding of bindings) {
+    const dynamic = classifyDynamicWord(binding);
+    if (dynamic !== null) {
+      return {
+        resolved: [],
+        unresolved: [unresolved('literal-loop', 'literal-list-loop', dynamic, 'loop binding is not literal', binding)],
+        preStateRequests: []
+      };
+    }
+    const expanded = expandLiteralLoopVariable(body, variable, binding);
+    if (expanded.unsafeUnquoted) {
+      return {
+        resolved: [],
+        unresolved: [
+          unresolved(
+            'literal-loop',
+            'literal-list-loop',
+            'unsupported-dataflow',
+            'unquoted loop expansion would perform shell field splitting'
+          )
+        ],
+        preStateRequests: []
+      };
+    }
+    if (expanded.replacements === 0) {
+      return {
+        resolved: [],
+        unresolved: [
+          unresolved(
+            'literal-loop',
+            'literal-list-loop',
+            'unsupported-dataflow',
+            'loop variable is not used in an expandable shell context'
+          )
+        ],
+        preStateRequests: []
+      };
+    }
+    const result = parse(expanded.command, { ...options, maxCandidates });
+    resolved.push(...result.resolved.map((match) => ({ ...match, layer: 'literal-loop' as const })));
+    unresolvedMatches.push(...result.unresolved.map((match) => ({ ...match, layer: 'literal-loop' as const })));
+    preStateRequests.push(...result.preStateRequests);
+  }
+  if (unresolvedMatches.length > 0) return { resolved: [], unresolved: unresolvedMatches, preStateRequests: [] };
+  const overBudget = rejectOverBudget(
+    resolved,
+    'literal-loop',
+    'literal-list-loop',
+    'literal expansion',
+    maxCandidates
+  );
+  if (overBudget !== null) return overBudget;
+  for (const match of resolved) {
+    if (match.span.operation !== 'modify') continue;
+    if (preStateRequests.some((request) => request.absolutePath === match.span.absolutePath)) continue;
+    preStateRequests.push({
+      absolutePath: match.span.absolutePath,
+      operation: match.span.operation,
+      requirement: 'match-locations',
+      simpleCommandIndex: match.span.simpleCommandIndex
+    });
+  }
+  return { resolved, unresolved: [], preStateRequests };
+}
+
+/**
  * The compound-stage machine: a top-level multi-stage command (`&&`, `||`,
  * `;`, `|`, newlines) parsed stage-by-stage with per-stage
  * `simpleCommandIndex` and gating-operator bookkeeping. Declines (returns
@@ -2247,135 +2389,8 @@ export function parseCommandLayered(command: string, options: LayeredParseOption
   const loop = command
     .trim()
     .match(/^for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+([\s\S]*?)\s*;\s*do\s+([\s\S]*?)\s*;\s*done\s*$/);
-  if (loop !== null) {
-    const [, variable, listSource, body] = loop;
-    if (body.includes('for ') || body.includes('while ') || body.includes('until ')) {
-      return {
-        resolved: [],
-        unresolved: [
-          unresolved('literal-loop', 'literal-list-loop', 'unsupported-syntax', 'nested loop bodies are not supported')
-        ],
-        preStateRequests: []
-      };
-    }
-    if (listSource.includes('$(') || listSource.includes('`')) {
-      return {
-        resolved: [],
-        unresolved: [
-          unresolved('literal-loop', 'literal-list-loop', 'command-substitution', 'loop list uses command substitution')
-        ],
-        preStateRequests: []
-      };
-    }
-    if (GLOB_META.test(listSource)) {
-      return {
-        resolved: [],
-        unresolved: [unresolved('literal-loop', 'literal-list-loop', 'glob-path', 'loop list uses glob expansion')],
-        preStateRequests: []
-      };
-    }
-    if (SHELL_EXPANSION.test(listSource)) {
-      return {
-        resolved: [],
-        unresolved: [
-          unresolved('literal-loop', 'literal-list-loop', 'dynamic-list', 'loop list is not a literal list')
-        ],
-        preStateRequests: []
-      };
-    }
-    const bindings = argvOf(listSource);
-    if (bindings === null || bindings.length === 0) {
-      return {
-        resolved: [],
-        unresolved: [
-          unresolved('literal-loop', 'literal-list-loop', 'unsupported-syntax', 'loop list cannot be tokenized')
-        ],
-        preStateRequests: []
-      };
-    }
-    if (bindings.length > maxCandidates) {
-      return {
-        resolved: [],
-        unresolved: [
-          unresolved(
-            'literal-loop',
-            'literal-list-loop',
-            'candidate-budget-exceeded',
-            `literal list has ${bindings.length} bindings; the limit is ${maxCandidates}`
-          )
-        ],
-        preStateRequests: []
-      };
-    }
-    const resolved: LayeredResolvedMatch[] = [];
-    const unresolvedMatches: UnresolvedAttribution[] = [];
-    const preStateRequests: PreStateRequest[] = [];
-    for (const binding of bindings) {
-      const dynamic = classifyDynamicWord(binding);
-      if (dynamic !== null) {
-        return {
-          resolved: [],
-          unresolved: [
-            unresolved('literal-loop', 'literal-list-loop', dynamic, 'loop binding is not literal', binding)
-          ],
-          preStateRequests: []
-        };
-      }
-      const expanded = expandLiteralLoopVariable(body, variable, binding);
-      if (expanded.unsafeUnquoted) {
-        return {
-          resolved: [],
-          unresolved: [
-            unresolved(
-              'literal-loop',
-              'literal-list-loop',
-              'unsupported-dataflow',
-              'unquoted loop expansion would perform shell field splitting'
-            )
-          ],
-          preStateRequests: []
-        };
-      }
-      if (expanded.replacements === 0) {
-        return {
-          resolved: [],
-          unresolved: [
-            unresolved(
-              'literal-loop',
-              'literal-list-loop',
-              'unsupported-dataflow',
-              'loop variable is not used in an expandable shell context'
-            )
-          ],
-          preStateRequests: []
-        };
-      }
-      const result = parseCommandLayered(expanded.command, { ...options, maxCandidates });
-      resolved.push(...result.resolved.map((match) => ({ ...match, layer: 'literal-loop' as const })));
-      unresolvedMatches.push(...result.unresolved.map((match) => ({ ...match, layer: 'literal-loop' as const })));
-      preStateRequests.push(...result.preStateRequests);
-    }
-    if (unresolvedMatches.length > 0) return { resolved: [], unresolved: unresolvedMatches, preStateRequests: [] };
-    const overBudget = rejectOverBudget(
-      resolved,
-      'literal-loop',
-      'literal-list-loop',
-      'literal expansion',
-      maxCandidates
-    );
-    if (overBudget !== null) return overBudget;
-    for (const match of resolved) {
-      if (match.span.operation !== 'modify') continue;
-      if (preStateRequests.some((request) => request.absolutePath === match.span.absolutePath)) continue;
-      preStateRequests.push({
-        absolutePath: match.span.absolutePath,
-        operation: match.span.operation,
-        requirement: 'match-locations',
-        simpleCommandIndex: match.span.simpleCommandIndex
-      });
-    }
-    return { resolved, unresolved: [], preStateRequests };
-  }
+  if (loop !== null)
+    return parseLiteralListLoop(loop[1], loop[2], loop[3], options, maxCandidates, parseCommandLayered);
 
   const split = splitTopLevel(command);
   const compound = parseCompoundStages(command, split, options, maxCandidates, parseCommandLayered);
