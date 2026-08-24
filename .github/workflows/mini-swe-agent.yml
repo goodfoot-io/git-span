@@ -1,0 +1,81 @@
+name: mini-swe-agent CI
+
+# Separate from ci.yml because the trigger surface differs: this job must run
+# on every push AND pull request (a harness regression that lands on main
+# corrupts experiment arms even when no PR gate ran), while ci.yml's jobs are
+# PR-only. Adding push-to-main at ci.yml level would re-run every other job
+# on merges too.
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  lint-test:
+    name: Lint & Test (Python)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # The package scripts default UV_PROJECT_ENVIRONMENT to
+      # /var/cache/git-span/uv-envs/mini-swe-agent, a devcontainer-only path;
+      # redirect both the ruff and pytest invocations to one runner-writable
+      # environment so they share a sync.
+      GIT_SPAN_UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/uv-envs/mini-swe-agent
+      # tests/test_real_bundles.py builds the workspace git-span binary under
+      # $GIT_SPAN_CARGO_TARGET_ROOT/git-span/build before its installed-wheel
+      # smoke; keep that off the (nonexistent) devcontainer default path.
+      GIT_SPAN_CARGO_TARGET_ROOT: ${{ runner.temp }}/mswea-cargo-target
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: yarn install
+
+      # The workspace pins [target.*].linker = cc.mold-wrapper on Linux (see
+      # packages/git-span/.cargo/config.toml), so the cargo build inside the
+      # pytest suite needs mold, clang, and the bare-name wrapper on PATH —
+      # same two steps as the build-cli job in ci.yml.
+      - name: Install mold and clang
+        run: sudo apt-get update && sudo apt-get install -y mold clang
+
+      - name: Install mold cc wrapper on PATH
+        run: sudo install -m 755 packages/git-span/scripts/cc.mold-wrapper.sh /usr/local/bin/cc.mold-wrapper
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/git-span -> ${{ runner.temp }}/mswea-cargo-target
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+          cache-dependency-glob: packages/mini-swe-agent/uv.lock
+
+      # src/minisweagent_gitspan/hooks/ is gitignored — the bundle files the
+      # bridge loads (and the wheel smoke asserts on) only exist after this,
+      # mirroring how local validation prepares them.
+      - name: Build hooks bundles
+        run: cd packages/mini-swe-agent && yarn build:hooks
+
+      - name: Lint (ruff)
+        run: cd packages/mini-swe-agent && yarn lint
+
+      - name: Test (pytest)
+        run: cd packages/mini-swe-agent && yarn test
