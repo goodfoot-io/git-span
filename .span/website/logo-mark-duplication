@@ -5,6 +5,6 @@ packages/website/public/favicon.svg rk64:f65506fa5683cbf1
 packages/website/public/logo-accent.svg rk64:35b0a2f7789c8077
 packages/website/public/logo-negative.svg rk64:48acbdfc4044dff5
 packages/website/public/logo-positive.svg rk64:48acbdfc4044dff5
-packages/website/scripts/generate-favicon.mjs rk64:7c645ad0f7aae9be
+packages/website/scripts/generate-favicon.mjs rk64:f3d1e9973750a760
 
 The header inline mark and the positive, negative, accent, and favicon SVG assets share the same untouched geometry. Invoked first by generate:images, the fail-closed favicon generator requires the 512x464 logo-positive.svg structure, wraps its geometry in translate(0 24) under a 512x512 viewport for favicon.svg, then rasterizes that SVG with ImageMagick to a transparent 48x48 favicon.png.

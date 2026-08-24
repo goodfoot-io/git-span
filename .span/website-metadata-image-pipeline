@@ -13,6 +13,6 @@ packages/website/public/og/docs/guides/re-anchor-after-an-edit.png rk64:ea3f69e6
 packages/website/public/og/docs/guides/reconcile-drifted-spans.png rk64:e20ddd0cf0e52579
 packages/website/public/og/docs/overview.png rk64:74230efcaf380719
 packages/website/public/og/docs/reference.png rk64:ee378ff5c63d5a6d
-packages/website/scripts/generate-metadata-images.mjs#L1-L563 rk64:fb92af074ef96b0b
+packages/website/scripts/generate-metadata-images.mjs#L1-L561 rk64:3f9adfbd55a91cdf
 
 The aggregate generate:images entry runs the separately coupled favicon generator before the Playwright metadata generator; its Playwright devDependency, generator, two site-wide rendered PNGs, per-doc OG PNGs, and document-image manifest form the metadata-image stage.
