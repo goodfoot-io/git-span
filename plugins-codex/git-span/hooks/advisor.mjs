@@ -307,10 +307,11 @@ async function execute(hookFn) {
 }
 
 // src/common/advisor-core.ts
-import { execFileSync as execFileSync2 } from "node:child_process";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs4 from "node:fs";
 import * as nodePath4 from "node:path";
+import { promisify } from "node:util";
 
 // src/common/advisor-ignore.ts
 import * as fs2 from "node:fs";
@@ -436,6 +437,31 @@ function resolveRepoRootUncached(dir) {
   }
 }
 var SPAN_ROOT = ".span";
+var spanRootCache = /* @__PURE__ */ new Map();
+function resolveSpanRoot(repoRoot) {
+  const cached = spanRootCache.get(repoRoot);
+  if (cached !== void 0) return cached;
+  const resolved = resolveSpanRootUncached(repoRoot);
+  spanRootCache.set(repoRoot, resolved);
+  return resolved;
+}
+function resolveSpanRootUncached(repoRoot) {
+  const envDir = process.env["GIT_SPAN_DIR"];
+  if (envDir && envDir.trim().length > 0) {
+    return toPosix(envDir.trim()).replace(/\/+$/, "");
+  }
+  try {
+    const out = execFileSync("git", ["-C", repoRoot, "config", "git-span.dir"], {
+      stdio: ["ignore", "pipe", "ignore"],
+      encoding: "utf8"
+    });
+    const trimmed = toPosix(out.trim()).replace(/\/+$/, "");
+    if (trimmed.length > 0) return trimmed;
+  } catch (err) {
+    void err;
+  }
+  return SPAN_ROOT;
+}
 function isInsideSpanRoot(repoRelPath, spanRoot = SPAN_ROOT) {
   const root = spanRoot.replace(/\/+$/, "");
   return repoRelPath === root || repoRelPath.startsWith(`${root}/`);
@@ -957,6 +983,14 @@ var AdvisorIncompatibleCliError = class extends Error {
     this.installedVersion = installedVersion;
   }
 };
+var AdvisorDeadlineError = class extends Error {
+  budgetMs;
+  constructor(budgetMs) {
+    super(`advisor evaluation exceeded its ${budgetMs} ms budget`);
+    this.name = "AdvisorDeadlineError";
+    this.budgetMs = budgetMs;
+  }
+};
 function parseGitCommand(command) {
   for (const segment of splitSegments2(command)) {
     const inv = matchGitInvocation(tokenize(segment));
@@ -1139,137 +1173,186 @@ function mergeUniquePaths(...groups) {
   }
   return merged;
 }
-async function evaluateAdvisor(paths, cwd, executors, memoState, mode = "may-hold", churn, harness = "generic") {
+var GIT_SPAN_SKILL_REF = "git-span";
+var SKILL_REF_TOKEN_START = "{{skill-ref:";
+var SKILL_REF_TOKEN_END = "}}";
+function skillRefToken(ref) {
+  return `${SKILL_REF_TOKEN_START}${ref}${SKILL_REF_TOKEN_END}`;
+}
+async function evaluateAdvisor(paths, cwd, executors, memoState, mode = "may-hold", churn, harness = "generic", deadlineMs = EVALUATION_DEADLINE_MS, logger2) {
   if (paths.length === 0) return { decision: "allow", kind: "silent" };
+  const controller = new AbortController();
+  const { signal } = controller;
+  let timer;
   try {
-    await executors.fix(paths, cwd);
-    const driftRows = await executors.drift(paths, cwd);
-    const debtRows = driftRows.filter((row) => isDebt(row.status));
-    const semantic = debtRows.filter((row) => !isEnvironmentalStatus(row.status));
-    const environmental = debtRows.filter((row) => isEnvironmentalStatus(row.status));
-    if (mode === "report-only") {
-      if (semantic.length > 0) {
-        memoState.record(`seen-${advisorStateDigest(semantic, [])}`);
-        const newSemantic = filterNewReportItems(semantic, memoState, semanticReportIdentity);
-        if (newSemantic.length === 0) return { decision: "allow", kind: "silent" };
+    const evaluation = (async () => {
+      try {
+        if (mode === "may-hold") {
+          await executors.fix(paths, cwd, signal);
+        }
+        const driftRows = await executors.drift(paths, cwd, signal);
+        const debtRows = driftRows.filter((row) => isDebt(row.status));
+        const semantic = debtRows.filter((row) => !isEnvironmentalStatus(row.status));
+        const environmental = debtRows.filter((row) => isEnvironmentalStatus(row.status));
+        if (mode === "report-only") {
+          if (semantic.length > 0) {
+            memoState.record(`seen-${advisorStateDigest(semantic, [])}`);
+            const newSemantic = filterNewReportItems(semantic, memoState, semanticReportIdentity);
+            if (newSemantic.length === 0) return { decision: "allow", kind: "silent" };
+            return {
+              decision: "allow",
+              kind: "semantic-drift-report",
+              findings: newSemantic,
+              ...renderDriftReason(
+                newSemantic,
+                await fetchSpanBlocks(executors, newSemantic, cwd, signal),
+                "report-only",
+                harness
+              )
+            };
+          }
+          if (environmental.length > 0) {
+            return {
+              decision: "allow",
+              kind: "environmental",
+              conditions: environmental,
+              reason: renderEnvironmentalReason(
+                environmental,
+                await fetchSpanBlocks(executors, environmental, cwd, signal)
+              )
+            };
+          }
+          const { uncovered: uncovered2, covering: covering2 } = await computeUncoveredPaths(paths, cwd, executors, churn, signal);
+          if (uncovered2.length === 0) return { decision: "allow", kind: "silent" };
+          memoState.record(`seen-${advisorStateDigest([], uncovered2)}`);
+          const newUncovered = filterNewReportItems(uncovered2, memoState, uncoveredReportIdentity);
+          if (newUncovered.length === 0) return { decision: "allow", kind: "silent" };
+          return {
+            decision: "allow",
+            kind: "uncovered-writes-report",
+            uncovered: newUncovered,
+            ...renderUncoveredReason(
+              newUncovered,
+              covering2,
+              await fetchSpanBlocks(executors, covering2, cwd, signal),
+              "report-only",
+              harness
+            )
+          };
+        }
+        let semanticAlreadyPresented = false;
+        if (semantic.length > 0) {
+          const semanticDigest = advisorStateDigest(semantic, []);
+          if (memoState.has(semanticDigest)) {
+            semanticAlreadyPresented = true;
+          } else if (memoState.has(`seen-${semanticDigest}`)) {
+            memoState.record(semanticDigest);
+            semanticAlreadyPresented = true;
+          } else {
+            if (!memoState.record(semanticDigest)) return { decision: "allow", kind: "silent" };
+            memoState.record(`seen-${semanticDigest}`);
+            return {
+              decision: "hold",
+              kind: "semantic-drift",
+              findings: semantic,
+              ...renderDriftReason(
+                semantic,
+                await fetchSpanBlocks(executors, semantic, cwd, signal),
+                "may-hold",
+                harness
+              )
+            };
+          }
+        }
+        if (environmental.length > 0) {
+          return {
+            decision: "allow",
+            kind: "environmental",
+            conditions: environmental,
+            reason: renderEnvironmentalReason(
+              environmental,
+              await fetchSpanBlocks(executors, environmental, cwd, signal)
+            )
+          };
+        }
+        const { uncovered, covering } = await computeUncoveredPaths(paths, cwd, executors, churn, signal);
+        if (uncovered.length === 0) {
+          return semanticAlreadyPresented ? { decision: "allow", kind: "already-presented" } : { decision: "allow", kind: "silent" };
+        }
+        const digest = advisorStateDigest([], uncovered);
+        if (memoState.has(digest)) return { decision: "allow", kind: "already-presented" };
+        if (memoState.has(`seen-${digest}`)) {
+          memoState.record(digest);
+          return { decision: "allow", kind: "already-presented" };
+        }
+        if (!memoState.record(digest)) return { decision: "allow", kind: "silent" };
+        memoState.record(`seen-${digest}`);
         return {
-          decision: "allow",
-          kind: "semantic-drift-report",
-          findings: newSemantic,
-          reason: renderDriftReason(
-            newSemantic,
-            await fetchSpanBlocks(executors, newSemantic, cwd),
-            "report-only",
+          decision: "hold",
+          kind: "uncovered-writes",
+          uncovered,
+          ...renderUncoveredReason(
+            uncovered,
+            covering,
+            await fetchSpanBlocks(executors, covering, cwd, signal),
+            "may-hold",
             harness
           )
         };
+      } catch (err) {
+        if (controller.signal.aborted) throw new AdvisorDeadlineError(deadlineMs);
+        if (err instanceof AdvisorIncompatibleCliError) {
+          return {
+            decision: "allow",
+            kind: "scan-failed",
+            cause: "incompatible-cli",
+            reason: renderIncompatibleCliReason(err)
+          };
+        }
+        if (err instanceof AdvisorScanError) {
+          return {
+            decision: "allow",
+            kind: "scan-failed",
+            cause: "aborted",
+            reason: renderScanFailedReason(err.detail)
+          };
+        }
+        logger2?.warn("git-span advisor evaluation failed open on an unexpected error", { err });
+        return { decision: "allow", kind: "silent" };
       }
-      if (environmental.length > 0) {
-        return {
-          decision: "allow",
-          kind: "environmental",
-          conditions: environmental,
-          reason: renderEnvironmentalReason(environmental, await fetchSpanBlocks(executors, environmental, cwd))
-        };
-      }
-      const { uncovered: uncovered2, covering: covering2 } = await computeUncoveredPaths(paths, cwd, executors, churn);
-      if (uncovered2.length === 0) return { decision: "allow", kind: "silent" };
-      memoState.record(`seen-${advisorStateDigest([], uncovered2)}`);
-      const newUncovered = filterNewReportItems(uncovered2, memoState, uncoveredReportIdentity);
-      if (newUncovered.length === 0) return { decision: "allow", kind: "silent" };
-      return {
-        decision: "allow",
-        kind: "uncovered-writes-report",
-        uncovered: newUncovered,
-        reason: renderUncoveredReason(
-          newUncovered,
-          covering2,
-          await fetchSpanBlocks(executors, covering2, cwd),
-          "report-only",
-          harness
-        )
-      };
-    }
-    let semanticAlreadyPresented = false;
-    if (semantic.length > 0) {
-      const semanticDigest = advisorStateDigest(semantic, []);
-      if (memoState.has(semanticDigest)) {
-        semanticAlreadyPresented = true;
-      } else if (memoState.has(`seen-${semanticDigest}`)) {
-        memoState.record(semanticDigest);
-        semanticAlreadyPresented = true;
-      } else {
-        if (!memoState.record(semanticDigest)) return { decision: "allow", kind: "silent" };
-        memoState.record(`seen-${semanticDigest}`);
-        return {
-          decision: "hold",
-          kind: "semantic-drift",
-          findings: semantic,
-          reason: renderDriftReason(semantic, await fetchSpanBlocks(executors, semantic, cwd), "may-hold", harness)
-        };
-      }
-    }
-    if (environmental.length > 0) {
-      return {
-        decision: "allow",
-        kind: "environmental",
-        conditions: environmental,
-        reason: renderEnvironmentalReason(environmental, await fetchSpanBlocks(executors, environmental, cwd))
-      };
-    }
-    const { uncovered, covering } = await computeUncoveredPaths(paths, cwd, executors, churn);
-    if (uncovered.length === 0) {
-      return semanticAlreadyPresented ? { decision: "allow", kind: "already-presented" } : { decision: "allow", kind: "silent" };
-    }
-    const digest = advisorStateDigest([], uncovered);
-    if (memoState.has(digest)) return { decision: "allow", kind: "already-presented" };
-    if (memoState.has(`seen-${digest}`)) {
-      memoState.record(digest);
-      return { decision: "allow", kind: "already-presented" };
-    }
-    if (!memoState.record(digest)) return { decision: "allow", kind: "silent" };
-    memoState.record(`seen-${digest}`);
-    return {
-      decision: "hold",
-      kind: "uncovered-writes",
-      uncovered,
-      reason: renderUncoveredReason(
-        uncovered,
-        covering,
-        await fetchSpanBlocks(executors, covering, cwd),
-        "may-hold",
-        harness
-      )
-    };
+    })();
+    const expiry = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new AdvisorDeadlineError(deadlineMs));
+      }, deadlineMs);
+    });
+    return await Promise.race([evaluation, expiry]);
   } catch (err) {
-    if (err instanceof AdvisorIncompatibleCliError) {
+    if (err instanceof AdvisorDeadlineError) {
       return {
         decision: "allow",
         kind: "scan-failed",
-        cause: "incompatible-cli",
-        reason: renderIncompatibleCliReason(err)
+        cause: "deadline-exceeded",
+        reason: renderDeadlineExceededReason(err.budgetMs)
       };
     }
-    if (err instanceof AdvisorScanError) {
-      return {
-        decision: "allow",
-        kind: "scan-failed",
-        cause: "aborted",
-        reason: renderScanFailedReason(err.detail)
-      };
-    }
-    return { decision: "allow", kind: "silent" };
+    throw err;
+  } finally {
+    if (timer !== void 0) clearTimeout(timer);
+    controller.abort();
   }
 }
-async function computeUncoveredPaths(paths, cwd, executors, churn) {
+async function computeUncoveredPaths(paths, cwd, executors, churn, signal) {
   if (paths.length < 2) return { uncovered: [], covering: [] };
   const changeset = new Set(paths);
-  const covering = (await executors.list(paths, cwd)).filter((row) => changeset.has(row.path));
+  const covering = (await executors.list(paths, cwd, signal)).filter((row) => changeset.has(row.path));
   const covered = new Set(covering.map((row) => row.path));
   const repoRoot = resolveRepoRoot(cwd);
   const advisorIgnoreRules = repoRoot ? loadAdvisorIgnore(repoRoot) : [];
+  const spanRoot = repoRoot === null ? SPAN_ROOT : resolveSpanRoot(repoRoot);
   let uncovered = paths.filter(
-    (path) => !covered.has(path) && !isInsideSpanRoot(path) && !isAdvisorIgnored(advisorIgnoreRules, path)
+    (path) => !covered.has(path) && !isInsideSpanRoot(path, spanRoot) && !isAdvisorIgnored(advisorIgnoreRules, path)
   );
   if (churn && uncovered.length > 0) {
     const before = uncovered.length;
@@ -1280,7 +1363,9 @@ async function computeUncoveredPaths(paths, cwd, executors, churn) {
     let readOutcome = needsContent.length > 0 ? "clean" : "skipped";
     if (needsContent.length > 0) {
       try {
-        for (const file of await churn.git.changedHunks(needsContent, churn.range, cwd)) byPath.set(file.path, file);
+        for (const file of await churn.git.changedHunks(needsContent, churn.range, cwd, signal)) {
+          byPath.set(file.path, file);
+        }
       } catch {
         readOutcome = "failed";
       }
@@ -1289,7 +1374,9 @@ async function computeUncoveredPaths(paths, cwd, executors, churn) {
         if (readOutcome === "clean") readOutcome = "per-file-fallback";
         for (const path of missing) {
           try {
-            for (const file of await churn.git.changedHunks([path], churn.range, cwd)) byPath.set(file.path, file);
+            for (const file of await churn.git.changedHunks([path], churn.range, cwd, signal)) {
+              byPath.set(file.path, file);
+            }
           } catch {
             readOutcome = "failed";
           }
@@ -1338,11 +1425,11 @@ function filterNewReportItems(items, memoState, identityOf) {
   for (const identity of unseen) memoState.record(reportItemKey(identity));
   return items.filter((item) => unseen.has(identityOf(item)));
 }
-async function fetchSpanBlocks(executors, rows, cwd) {
+async function fetchSpanBlocks(executors, rows, cwd, signal) {
   const names = [...new Set(rows.map((row) => row.name))].sort();
   if (names.length === 0) return "";
   try {
-    return await executors.listBlocks(names, cwd);
+    return await executors.listBlocks(names, cwd, signal);
   } catch {
     return "";
   }
@@ -1494,19 +1581,22 @@ function renderDriftReason(findings, blocksText, mode = "may-hold", harness = "g
   const subject = names.length === 1 ? "an implicit dependency" : "implicit dependencies";
   const name = names.length === 1 ? names[0] : "<name>";
   const action = `preserve anchor shape; if an address changed, swap the old anchor for the new one with \`git span replace\`; update or retire the why only if its meaning changed; require \`git span drift ${name}\` to report zero`;
-  const lead = harness === "claude" ? "Dispatch a forked subagent to bring the coupled files back into agreement (follow confirmed authority)" : harness === "codex" ? 'Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to bring the coupled files back into agreement (follow confirmed authority)' : harness === "opencode" ? "Dispatch a subagent with the `task` tool to bring the coupled files back into agreement (follow confirmed authority)" : "Bring the coupled files back into agreement (follow confirmed authority)";
+  const inline = harness === "generic" || harness === "mswea";
+  const lead = inline ? "Bring the coupled files back into agreement (follow confirmed authority)" : harness === "claude" ? "Dispatch a forked subagent to bring the coupled files back into agreement (follow confirmed authority)" : harness === "codex" ? 'Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to bring the coupled files back into agreement (follow confirmed authority)' : "Dispatch a subagent with the `task` tool to bring the coupled files back into agreement (follow confirmed authority)";
   const skillLine = harness === "opencode" ? "Load the `reconcile` skill via the skill tool in the subagent." : "Load the `git-span:reconcile` skill in the fork.";
-  const tail = harness === "generic" ? mode === "may-hold" ? `then reconcile: ${action}. Retry the command; the hold will not fire again for the same debt state. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.` : `then reconcile: ${action}. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.` : mode === "may-hold" ? `\u2014 ${action}. Then retry. ${skillLine} The hold will not fire again for the same debt state. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.` : `\u2014 ${action}. ${skillLine} Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.`;
-  const closing = `${lead}${harness === "generic" ? "," : ""} ${tail}`;
-  return [
-    `This change leaves ${subject} out of date:`,
-    "",
-    annotateBlocks(blocksText, findings),
-    "",
-    "---",
-    "",
-    closing
-  ].join("\n");
+  const tail = inline ? mode === "may-hold" ? `then reconcile: ${action}. Retry the command; the hold will not fire again for the same debt state. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.` : `then reconcile: ${action}. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.` : mode === "may-hold" ? `\u2014 ${action}. Then retry. ${skillLine} The hold will not fire again for the same debt state. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.` : `\u2014 ${action}. ${skillLine} Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.`;
+  const closing = `${lead}${inline ? "," : ""} ${tail}`;
+  return {
+    reason: [
+      `This change leaves ${subject} out of date:`,
+      "",
+      annotateBlocks(blocksText, findings),
+      "",
+      "---",
+      "",
+      closing
+    ].join("\n")
+  };
 }
 function wrapGitSpanContext(text) {
   if (text.includes("<git-span>")) return text;
@@ -1523,6 +1613,16 @@ function renderEnvironmentalReason(conditions, blocksText) {
     "---",
     "",
     "Fix the checkout/fetch issue if these dependencies need verifying."
+  ].join("\n");
+}
+function renderDeadlineExceededReason(budgetMs) {
+  return [
+    `The implicit-dependency check exceeded its ${budgetMs} ms time budget, so this change was NOT verified:`,
+    "<git-span-error>",
+    indentBlockBody("a git or git-span subprocess did not finish in time; the scan was abandoned mid-flight"),
+    "</git-span-error>",
+    "",
+    "The command proceeds anyway. Run `git span drift --format porcelain` manually if verification matters for this change."
   ].join("\n");
 }
 function renderScanFailedReason(detail) {
@@ -1650,7 +1750,8 @@ function renderRelatedSpansSection(covering, uncovered, coveringBlocksText) {
 function renderUncoveredReason(uncovered, covering, coveringBlocksText, mode = "may-hold", harness = "generic") {
   const lines = uncovered.map((path) => `- ${path}`);
   const subject = uncovered.length === 1 ? "this file carries" : "these files carry";
-  const actionLine = harness === "generic" ? `Determine if ${subject} implicit dependencies, then use \`git span\` to document them:` : harness === "claude" ? `Dispatch a forked subagent to determine if ${subject} implicit dependencies and to then use \`git span\` to document them:` : harness === "codex" ? `Spawn a forked subagent with \`spawn_agent\`, setting \`fork_turns: "all"\`, to determine if ${subject} implicit dependencies and to then use \`git span\` to document them:` : `Dispatch a subagent with the \`task\` tool to determine if ${subject} implicit dependencies and to then use \`git span\` to document them:`;
+  const inline = harness === "generic" || harness === "mswea";
+  const actionLine = inline ? `Determine if ${subject} implicit dependencies, then use \`git span\` to document them:` : harness === "claude" ? `Dispatch a forked subagent to determine if ${subject} implicit dependencies and to then use \`git span\` to document them:` : harness === "codex" ? `Spawn a forked subagent with \`spawn_agent\`, setting \`fork_turns: "all"\`, to determine if ${subject} implicit dependencies and to then use \`git span\` to document them:` : `Dispatch a subagent with the \`task\` tool to determine if ${subject} implicit dependencies and to then use \`git span\` to document them:`;
   const body = [
     "<git-span>",
     ...lines,
@@ -1666,14 +1767,20 @@ function renderUncoveredReason(uncovered, covering, coveringBlocksText, mode = "
   if (mode === "may-hold") {
     body.push("", "If none exist, retry the command to proceed (one-time check).");
   }
+  if (harness === "mswea") {
+    body.push("", skillRefToken(GIT_SPAN_SKILL_REF), "</git-span>");
+    return { reason: body.join("\n"), skillRef: GIT_SPAN_SKILL_REF };
+  }
   body.push(
     "",
     harness === "generic" ? "Load the `git-span:git-span` skill for guidance." : harness === "opencode" ? "Load the `git-span` skill via the skill tool in the subagent." : "Load the `git-span:git-span` skill in the fork.",
     "</git-span>"
   );
-  return body.join("\n");
+  return { reason: body.join("\n") };
 }
 var DEFAULT_TIMEOUT_MS = 1e4;
+var EVALUATION_DEADLINE_MS = 8e3;
+var execFileAsync = promisify(execFile);
 var MAX_STDOUT_BYTES = 64 * 1024 * 1024;
 var GIT_READ_OPTS = ["-c", "core.quotepath=false"];
 var GIT_DIFF_SHAPE_OPTS = ["--no-ext-diff", "--no-color", "--src-prefix=a/", "--dst-prefix=b/"];
@@ -1681,93 +1788,95 @@ function buildHunkReadArgs(repoRoot, range, paths) {
   const rangeArgs = range.kind === "staged" ? ["--cached"] : range.kind === "worktree" ? ["HEAD"] : [`${range.base}..HEAD`];
   return ["-C", repoRoot, ...GIT_READ_OPTS, "diff", "-U0", ...GIT_DIFF_SHAPE_OPTS, ...rangeArgs, "--", ...paths];
 }
-function gitText(args, cwd, timeoutMs) {
-  try {
-    return execFileSync2("git", args, {
-      cwd,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: timeoutMs,
-      maxBuffer: MAX_STDOUT_BYTES
-    });
-  } catch {
-    return "";
-  }
+async function gitText(args, cwd, timeoutMs, signal) {
+  const outcome = await trySpawnGit(args, cwd, timeoutMs, signal);
+  return outcome.ok ? outcome.stdout : "";
 }
-function gitLines(args, cwd, timeoutMs) {
-  try {
-    const out = execFileSync2("git", args, {
-      cwd,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: timeoutMs,
-      maxBuffer: MAX_STDOUT_BYTES
-    });
-    return out.split("\n").map((line) => line.trim()).filter((line) => line.length > 0).map(toPosix);
-  } catch {
-    return [];
-  }
+async function gitLines(args, cwd, timeoutMs, signal) {
+  const outcome = await trySpawnGit(args, cwd, timeoutMs, signal);
+  return outcome.ok ? splitPosixLines(outcome.stdout) : [];
 }
-function gitLinesOrNull(args, cwd, timeoutMs) {
+async function gitLinesOrNull(args, cwd, timeoutMs, signal) {
+  const outcome = await trySpawnGit(args, cwd, timeoutMs, signal);
+  return outcome.ok ? splitPosixLines(outcome.stdout) : null;
+}
+function splitPosixLines(out) {
+  return out.split("\n").map((line) => line.trim()).filter((line) => line.length > 0).map(toPosix);
+}
+async function trySpawnGit(args, cwd, timeoutMs, signal) {
+  if (signal?.aborted) return { ok: false, stdout: "", stderr: "" };
   try {
-    const out = execFileSync2("git", args, {
+    const { stdout } = await execFileAsync("git", args, {
       cwd,
       encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
+      maxBuffer: MAX_STDOUT_BYTES,
       timeout: timeoutMs,
-      maxBuffer: MAX_STDOUT_BYTES
+      signal
     });
-    return out.split("\n").map((line) => line.trim()).filter((line) => line.length > 0).map(toPosix);
-  } catch {
-    return null;
+    return { ok: true, stdout };
+  } catch (err) {
+    const streams = err;
+    return {
+      ok: false,
+      stdout: typeof streams.stdout === "string" ? streams.stdout : "",
+      stderr: typeof streams.stderr === "string" ? streams.stderr : ""
+    };
   }
 }
 function createDefaultGitExecutor(timeoutMs = DEFAULT_TIMEOUT_MS) {
   return {
-    stagedPaths: async (cwd) => {
+    stagedPaths: async (cwd, signal) => {
       const repoRoot = resolveRepoRoot(cwd);
       if (!repoRoot) return [];
-      return gitLines(["-C", repoRoot, ...GIT_READ_OPTS, "diff", "--cached", "--name-only"], repoRoot, timeoutMs);
+      return gitLines(
+        ["-C", repoRoot, ...GIT_READ_OPTS, "diff", "--cached", "--name-only"],
+        repoRoot,
+        timeoutMs,
+        signal
+      );
     },
-    trackedModifiedPaths: async (cwd) => {
+    trackedModifiedPaths: async (cwd, signal) => {
       const repoRoot = resolveRepoRoot(cwd);
       if (!repoRoot) return [];
-      return gitLines(["-C", repoRoot, ...GIT_READ_OPTS, "diff", "--name-only"], repoRoot, timeoutMs);
+      return gitLines(["-C", repoRoot, ...GIT_READ_OPTS, "diff", "--name-only"], repoRoot, timeoutMs, signal);
     },
-    outgoingPaths: async (cwd) => {
+    outgoingPaths: async (cwd, signal) => {
       const repoRoot = resolveRepoRoot(cwd);
       if (!repoRoot) return { paths: [], base: null };
-      const upstream = gitLinesOrNull(
+      const upstream = await gitLinesOrNull(
         ["-C", repoRoot, ...GIT_READ_OPTS, "diff", "--name-only", "@{u}..HEAD"],
         repoRoot,
-        timeoutMs
+        timeoutMs,
+        signal
       );
       if (upstream !== null) return { paths: upstream, base: "@{u}" };
-      const base = gitLines(["-C", repoRoot, "merge-base", "HEAD", "origin/HEAD"], repoRoot, timeoutMs)[0];
+      const base = (await gitLines(["-C", repoRoot, "merge-base", "HEAD", "origin/HEAD"], repoRoot, timeoutMs, signal))[0];
       if (!base) return { paths: [], base: null };
       return {
-        paths: gitLines(
+        paths: await gitLines(
           ["-C", repoRoot, ...GIT_READ_OPTS, "diff", "--name-only", `${base}..HEAD`],
           repoRoot,
-          timeoutMs
+          timeoutMs,
+          signal
         ),
         base
       };
     },
-    pathspecPaths: async (paths, cwd) => {
+    pathspecPaths: async (paths, cwd, signal) => {
       const repoRoot = resolveRepoRoot(cwd);
       if (!repoRoot || paths.length === 0) return [];
       return gitLines(
         ["-C", repoRoot, ...GIT_READ_OPTS, "diff", "HEAD", "--name-only", "--", ...paths],
         repoRoot,
-        timeoutMs
+        timeoutMs,
+        signal
       );
     },
-    changedHunks: async (paths, range, cwd) => {
+    changedHunks: async (paths, range, cwd, signal) => {
       if (range.kind === "unresolvable" || paths.length === 0) return [];
       const repoRoot = resolveRepoRoot(cwd);
       if (!repoRoot) return [];
-      const text = gitText(buildHunkReadArgs(repoRoot, range, paths), repoRoot, timeoutMs);
+      const text = await gitText(buildHunkReadArgs(repoRoot, range, paths), repoRoot, timeoutMs, signal);
       if (text.trim().length === 0) return [];
       try {
         return parseUnifiedDiff(text);
@@ -1798,109 +1907,57 @@ function isOlderThan(version, floor) {
   }
   return false;
 }
-function probeGitSpanVersion(repoRoot, timeoutMs) {
-  try {
-    const out = execFileSync2("git", ["span", "--version"], {
-      cwd: repoRoot,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: timeoutMs,
-      maxBuffer: MAX_STDOUT_BYTES
-    });
-    const triple = parseSemverTriple(out);
-    return triple ? triple.join(".") : null;
-  } catch {
-    return null;
-  }
+async function probeGitSpanVersion(repoRoot, timeoutMs, signal) {
+  const outcome = await trySpawnGit(["span", "--version"], repoRoot, timeoutMs, signal);
+  if (!outcome.ok) return null;
+  const triple = parseSemverTriple(outcome.stdout);
+  return triple ? triple.join(".") : null;
 }
-function classifyCliFailure(detail, repoRoot, timeoutMs) {
+async function classifyCliFailure(detail, repoRoot, timeoutMs, signal) {
   if (!isArgumentParseFailure(detail)) return new AdvisorScanError(detail);
-  return new AdvisorIncompatibleCliError(detail, probeGitSpanVersion(repoRoot, timeoutMs));
+  return new AdvisorIncompatibleCliError(detail, await probeGitSpanVersion(repoRoot, timeoutMs, signal));
 }
 function createDefaultAdvisorExecutors(timeoutMs = DEFAULT_TIMEOUT_MS) {
   return {
-    fix: async (paths, cwd) => {
+    fix: async (paths, cwd, signal) => {
       const repoRoot = resolveRepoRoot(cwd);
       if (!repoRoot || paths.length === 0) return;
-      try {
-        execFileSync2("git", ["span", "drift", ...paths, "--fix"], {
-          cwd: repoRoot,
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "pipe"],
-          timeout: timeoutMs,
-          maxBuffer: MAX_STDOUT_BYTES
-        });
-      } catch (err) {
-        const stderr = err.stderr;
-        const stderrText = typeof stderr === "string" ? stderr.trim() : "";
-        if (stderrText.length > 0) {
-          const classified = classifyCliFailure(stderrText, repoRoot, timeoutMs);
-          if (classified instanceof AdvisorIncompatibleCliError) throw classified;
-        }
+      const outcome = await trySpawnGit(["span", "drift", ...paths, "--fix"], repoRoot, timeoutMs, signal);
+      if (outcome.ok) return;
+      const stderrText = outcome.stderr.trim();
+      if (stderrText.length > 0) {
+        const classified = await classifyCliFailure(stderrText, repoRoot, timeoutMs, signal);
+        if (classified instanceof AdvisorIncompatibleCliError) throw classified;
       }
     },
-    drift: async (paths, cwd) => {
+    drift: async (paths, cwd, signal) => {
       const repoRoot = resolveRepoRoot(cwd);
       if (!repoRoot || paths.length === 0) return [];
-      let out;
-      try {
-        out = execFileSync2("git", ["span", "drift", "--format", "porcelain", ...paths], {
-          cwd: repoRoot,
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "pipe"],
-          timeout: timeoutMs,
-          maxBuffer: MAX_STDOUT_BYTES
-        });
-      } catch (err) {
-        const stdout = err.stdout;
-        const stderr = err.stderr;
-        const stdoutText = typeof stdout === "string" ? stdout : "";
-        const stderrText = typeof stderr === "string" ? stderr : "";
-        if (stdoutText.trim().length === 0 && stderrText.trim().length > 0) {
-          throw classifyCliFailure(stderrText.trim(), repoRoot, timeoutMs);
-        }
-        out = stdoutText;
+      const outcome = await trySpawnGit(
+        ["span", "drift", "--format", "porcelain", ...paths],
+        repoRoot,
+        timeoutMs,
+        signal
+      );
+      if (!outcome.ok && outcome.stdout.trim().length === 0 && outcome.stderr.trim().length > 0) {
+        throw await classifyCliFailure(outcome.stderr.trim(), repoRoot, timeoutMs, signal);
       }
-      return parseDriftPorcelain(out);
+      return parseDriftPorcelain(outcome.stdout);
     },
-    list: async (paths, cwd) => {
+    list: async (paths, cwd, signal) => {
       const repoRoot = resolveRepoRoot(cwd);
       if (!repoRoot || paths.length === 0) return [];
-      let out;
-      try {
-        out = execFileSync2("git", ["span", "list", "--porcelain", ...paths], {
-          cwd: repoRoot,
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "pipe"],
-          timeout: timeoutMs,
-          maxBuffer: MAX_STDOUT_BYTES
-        });
-      } catch (err) {
-        const stdout = err.stdout;
-        const stderr = err.stderr;
-        const stdoutText = typeof stdout === "string" ? stdout : "";
-        const stderrText = typeof stderr === "string" ? stderr : "";
-        if (stdoutText.trim().length === 0 && stderrText.trim().length > 0) {
-          throw new AdvisorScanError(stderrText.trim());
-        }
-        out = stdoutText;
+      const outcome = await trySpawnGit(["span", "list", "--porcelain", ...paths], repoRoot, timeoutMs, signal);
+      if (!outcome.ok && outcome.stdout.trim().length === 0 && outcome.stderr.trim().length > 0) {
+        throw new AdvisorScanError(outcome.stderr.trim());
       }
-      return parsePorcelain(out);
+      return parsePorcelain(outcome.stdout);
     },
-    listBlocks: async (names, cwd) => {
+    listBlocks: async (names, cwd, signal) => {
       const repoRoot = resolveRepoRoot(cwd);
       if (!repoRoot || names.length === 0) return "";
-      try {
-        return execFileSync2("git", ["span", "list", ...names], {
-          cwd: repoRoot,
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "pipe"],
-          timeout: timeoutMs,
-          maxBuffer: MAX_STDOUT_BYTES
-        });
-      } catch {
-        return "";
-      }
+      const outcome = await trySpawnGit(["span", "list", ...names], repoRoot, timeoutMs, signal);
+      return outcome.ok ? outcome.stdout : "";
     }
   };
 }
@@ -1975,34 +2032,31 @@ function createHandler(git = createDefaultGitExecutor(), executors = createDefau
           // the agent-facing output of a suppression is nothing at all.
           logger: ctx.logger
         },
-        "codex"
+        "codex",
+        void 0,
+        // Core defects (non-advisor-error throws) warn here instead of vanishing
+        // into evaluateAdvisor's fail-open catch.
+        ctx.logger
       );
       if (result.decision !== "hold") {
         if (result.kind === "environmental" || result.kind === "scan-failed") {
           ctx.logger.warn("git-span advisor allowed with an unresolved condition", { reason: result.reason });
-          return preToolUseOutput({
-            additionalContext: wrapGitSpanContext(result.reason),
-            systemMessage: result.reason
-          });
+          return preToolUseOutput({ additionalContext: wrapGitSpanContext(result.reason) });
         }
         if (result.kind === "semantic-drift-report" || result.kind === "uncovered-writes-report") {
-          return preToolUseOutput({
-            additionalContext: wrapGitSpanContext(result.reason),
-            systemMessage: result.reason
-          });
+          return preToolUseOutput({ additionalContext: wrapGitSpanContext(result.reason) });
         }
         return void 0;
       }
       if (hardDeny) {
         return preToolUseOutput({
           permissionDecision: "deny",
-          permissionDecisionReason: result.reason,
-          systemMessage: result.reason
+          permissionDecisionReason: result.reason
         });
       }
       const warning = `Could not block this command \u2014 the issue below still needs resolving:
 ${result.reason}`;
-      return preToolUseOutput({ additionalContext: wrapGitSpanContext(warning), systemMessage: warning });
+      return preToolUseOutput({ additionalContext: wrapGitSpanContext(warning) });
     } catch (err) {
       ctx.logger.warn("git-span advisor failed open on an uncaught error", { err });
       return void 0;

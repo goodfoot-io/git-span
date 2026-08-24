@@ -436,6 +436,10 @@ function canonicalizePath(absPath) {
     }
   }
 }
+function resolveFrame(workdir, directory) {
+  if (workdir === void 0 || workdir.length === 0 || /[$`]/.test(workdir)) return directory;
+  return nodePath.resolve(directory, workdir);
+}
 function rangesIntersect(a, b) {
   return a.start <= b.end && a.end >= b.start;
 }
@@ -770,528 +774,616 @@ function countGitBlobLines(cwd, rev, path) {
   }
 }
 
-// src/common/shell-split.ts
-var COMMAND_OPENER_WORDS = /* @__PURE__ */ new Set(["do", "then", "else", "elif", "if", "while", "until", "!", "time", "{", "("]);
+// src/common/shell-split-machines.ts
+function createScan(cmd) {
+  return {
+    cmd,
+    n: cmd.length,
+    i: 0,
+    buf: "",
+    parts: [],
+    pendingOp: "start",
+    listStart: 0,
+    inSquote: false,
+    inDquote: false,
+    braceDepth: 0,
+    depth: 0,
+    levels: [[]],
+    afterKeyword: false,
+    functionSeen: false,
+    nameSeen: false,
+    caseRegion: null,
+    heredocs: [],
+    inBody: false,
+    bufHeredoc: false
+  };
+}
 var WORD_END = /[\s;&|()<>]/;
+var COMMAND_OPENER_WORDS = /* @__PURE__ */ new Set(["do", "then", "else", "elif", "if", "while", "until", "!", "time", "{", "("]);
+var DANGLING_REDIRECT_WORD = /^(?:>|>>|&>|&>>|>\||<|<>|<<|<<-|<<<|>&|\d+(?:>|>>|>\||<|<>|<<|<<-|<<<|>&|<&))$/;
 function escapeRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
-function splitTopLevel(cmd) {
-  const parts = [];
-  let buf = "";
-  let i = 0;
-  const n = cmd.length;
-  let depth = 0;
-  let braceDepth = 0;
-  let inSquote = false;
-  let inDquote = false;
-  let pendingOp = "start";
-  let malformed;
-  let listStart = 0;
-  const reject = (v) => {
-    malformed = v;
-    parts.length = listStart;
-    i = n;
-  };
-  const isUnconsumedOperator = () => (pendingOp === "pipe" || pendingOp === "and" || pendingOp === "or") && buf.trim() === "";
-  const lastWord = () => buf.trimEnd().match(/\S+$/)?.[0] ?? "";
-  const DANGLING_REDIRECT_WORD = /^(?:>|>>|&>|&>>|>\||<|<>|<<|<<-|<<<|>&|\d+(?:>|>>|>\||<|<>|<<|<<-|<<<|>&|<&))$/;
-  const lastWordIsDanglingRedirect = () => DANGLING_REDIRECT_WORD.test(lastWord());
-  const isWordStart = () => buf === "" || /\s$/.test(buf);
-  const startsRedirectAt = (i2) => {
-    const c = cmd[i2];
-    if (c === ">" || c === "<") return true;
-    if (c === "&") return cmd[i2 + 1] === ">";
-    if (c >= "0" && c <= "9") {
-      let j = i2;
-      while (j < n && cmd[j] >= "0" && cmd[j] <= "9") j += 1;
-      return cmd[j] === ">" || cmd[j] === "<";
-    }
-    return false;
-  };
-  const isCommandPosition = () => buf.trim() === "" || /\n$/.test(buf) || /[;&|()]$/.test(buf.trimEnd()) || COMMAND_OPENER_WORDS.has(lastWord());
-  const flush = (nextOp) => {
-    const s = buf.trim();
-    if (s) {
-      if (pendingOp === "pipe" && (s === "!" || /^!\s/.test(s))) {
-        reject("pipe-bang");
-        return;
-      }
-      parts.push({ text: s, precededBy: pendingOp, ...bufHeredoc ? { heredoc: true } : {} });
-    }
-    buf = "";
-    bufHeredoc = false;
-    pendingOp = nextOp;
-  };
-  const levels = [[]];
-  const top = () => {
-    const lv = levels[levels.length - 1];
-    return lv.length > 0 ? lv[lv.length - 1] : void 0;
-  };
-  let afterKeyword = false;
-  let functionSeen = false;
-  let nameSeen = false;
-  let caseRegion = null;
-  const heredocs = [];
-  let inBody = false;
-  let bufHeredoc = false;
-  while (i < n) {
-    const c = cmd[i];
-    if (inSquote) {
-      buf += c;
-      if (c === "'") inSquote = false;
-      i += 1;
-      continue;
-    }
-    if (inDquote) {
-      buf += c;
-      if (c === "\\" && i + 1 < n) {
-        buf += cmd[i + 1];
-        i += 2;
-        continue;
-      }
-      if (c === '"') inDquote = false;
-      i += 1;
-      continue;
-    }
-    if (c === "'") {
-      inSquote = true;
-      buf += c;
-      i += 1;
-      continue;
-    }
-    if (c === '"') {
-      inDquote = true;
-      buf += c;
-      i += 1;
-      continue;
-    }
-    if (c === "\\" && i + 1 < n) {
-      buf += c + cmd[i + 1];
-      i += 2;
-      continue;
-    }
-    if (braceDepth > 0) {
-      if (c === "}") braceDepth -= 1;
-      buf += c;
-      i += 1;
-      continue;
-    }
-    if (inBody) {
-      const lineEnd = cmd.indexOf("\n", i);
-      const line = lineEnd === -1 ? cmd.slice(i) : cmd.slice(i, lineEnd);
-      if (heredocs[0].close.test(line)) {
-        heredocs.shift();
-        if (heredocs.length === 0) inBody = false;
-      }
-      if (levels[levels.length - 1].length > 0 || caseRegion !== null) {
-        buf += line;
-        if (lineEnd !== -1) buf += "\n";
-      }
-      i = lineEnd === -1 ? n : lineEnd + 1;
-      continue;
-    }
-    if (c === "\n" && heredocs.length > 0) {
-      if (levels[levels.length - 1].length > 0 || caseRegion !== null) {
-        buf += c;
-        inBody = true;
-        i += 1;
-        continue;
-      }
-      if (isUnconsumedOperator() || lastWordIsDanglingRedirect()) {
-        reject("dangling-operator");
-        break;
-      }
-      flush("newline");
-      inBody = true;
-      i += 1;
-      continue;
-    }
-    if (c === "#" && depth === 0 && isWordStart()) {
-      while (i < n && cmd[i] !== "\n") i += 1;
-      continue;
-    }
-    if (caseRegion) {
-      const r = caseRegion;
-      if (r.localDepth === 0) {
-        const s2 = cmd.slice(i, i + 2);
-        const s3 = cmd.slice(i, i + 3);
-        if (s3 === ";;&" || s2 === ";;" || s2 === ";&") {
-          r.pos = "pattern-start";
-          buf += s3 === ";;&" ? s3 : s2;
-          i += s3 === ";;&" ? 3 : 2;
-          continue;
-        }
-        if (c === ";") {
-          r.pos = "command";
-          r.cmdEmpty = true;
-          buf += c;
-          i += 1;
-          continue;
-        }
-        const last = buf[buf.length - 1];
-        if (c === "&" && cmd[i + 1] !== ">" && cmd[i + 1] !== "&" && last !== ">" && last !== "<") {
-          r.pos = "command";
-          r.cmdEmpty = true;
-          buf += c;
-          i += 1;
-          continue;
-        }
-        if (c === "\n") {
-          if (r.pos === "pattern") {
-            reject("unclosed-case");
-            break;
-          }
-          if (r.pos === "command") r.cmdEmpty = true;
-          buf += c;
-          i += 1;
-          continue;
-        }
-        if (c === "#" && isWordStart()) {
-          while (i < n && cmd[i] !== "\n") i += 1;
-          continue;
-        }
-        if (isWordStart() && !WORD_END.test(c)) {
-          let j = i;
-          while (j < n && !WORD_END.test(cmd[j])) j += 1;
-          const w = cmd.slice(i, j);
-          if (w === "esac" && (r.pos === "pattern-start" || r.pos === "command" && r.cmdEmpty)) {
-            caseRegion = null;
-            afterKeyword = false;
-          } else if (w === "in" && r.pos === "subject") {
-            r.pos = "pattern-start";
-          } else if (r.pos === "pattern-start") {
-            r.pos = "pattern";
-          } else if (r.pos === "command") {
-            r.cmdEmpty = false;
-          }
-          buf += w;
-          i = j;
-          continue;
-        }
-      }
-    }
-    if (c === "(") {
-      if (caseRegion) {
-        caseRegion.localDepth += 1;
-      } else {
-        const t = top();
-        if (t?.kind === "brace") t.body = true;
-        depth += 1;
-        levels.push([]);
-      }
-      afterKeyword = false;
-      buf += c;
-      i += 1;
-      continue;
-    }
-    if (c === ")") {
-      if (caseRegion) {
-        if (caseRegion.localDepth === 0) {
-          caseRegion.pos = "command";
-          caseRegion.cmdEmpty = true;
-        } else {
-          caseRegion.localDepth -= 1;
-        }
-      } else {
-        if (depth === 0) {
-          reject("unbalanced-paren");
-          break;
-        }
-        if (levels[levels.length - 1].length > 0) {
-          reject("unclosed-construct");
-          break;
-        }
-        depth -= 1;
-        levels.pop();
-      }
-      buf += c;
-      i += 1;
-      continue;
-    }
-    if (!caseRegion && !WORD_END.test(c) && (isWordStart() || /[()]$/.test(buf)) && !(c === "$" && cmd[i + 1] === "{")) {
-      let j = i;
-      while (j < n && !WORD_END.test(cmd[j])) j += 1;
-      const w = cmd.slice(i, j);
-      const isFnShape = () => /^[A-Za-z_][A-Za-z0-9_]*\(\)$/.test(lastWord()) || lastWord() === "()";
-      if (w === "in" && top() !== void 0 && ["for", "select"].includes(top().kind)) {
-      } else if (w === "{" && (isCommandPosition() || isFnShape() || functionSeen && nameSeen)) {
-        if (functionSeen && nameSeen) {
-          functionSeen = false;
-          nameSeen = false;
-        }
-        if (top()?.kind === "brace") top().body = true;
-        levels[levels.length - 1].push({ kind: "brace", body: false });
-        afterKeyword = true;
-      } else if (w === "}" && isCommandPosition()) {
-        const t = top();
-        if (afterKeyword || t === void 0 || t.kind !== "brace" || !t.body) {
-          reject("unclosed-construct");
-          break;
-        }
-        levels[levels.length - 1].pop();
-        afterKeyword = false;
-      } else if (isCommandPosition()) {
-        if (w === "case") {
-          caseRegion = { pos: "subject", cmdEmpty: false, localDepth: 0 };
-          afterKeyword = false;
-        } else if (w === "function") {
-          functionSeen = true;
-          nameSeen = false;
-          afterKeyword = false;
-        } else if (w === "if") {
-          if (top()?.kind === "brace") top().body = true;
-          levels[levels.length - 1].push({ kind: "if", body: false });
-          afterKeyword = true;
-        } else if (w === "while" || w === "until") {
-          if (top()?.kind === "brace") top().body = true;
-          levels[levels.length - 1].push({ kind: "loop", body: false });
-          afterKeyword = true;
-        } else if (w === "for") {
-          if (top()?.kind === "brace") top().body = true;
-          levels[levels.length - 1].push({ kind: "for", body: false });
-          afterKeyword = true;
-        } else if (w === "select") {
-          if (top()?.kind === "brace") top().body = true;
-          levels[levels.length - 1].push({ kind: "select", body: false });
-          afterKeyword = true;
-        } else if (w === "do") {
-          const t = top();
-          if (t === void 0 || !["for", "loop", "select"].includes(t.kind)) {
-            reject("unclosed-construct");
-            break;
-          }
-          t.body = true;
-          afterKeyword = true;
-        } else if (w === "then") {
-          const t = top();
-          if (t === void 0 || t.kind !== "if") {
-            reject("unclosed-construct");
-            break;
-          }
-          t.body = true;
-          afterKeyword = true;
-        } else if (w === "else" || w === "elif") {
-          const t = top();
-          if (t === void 0 || t.kind !== "if" || !t.body) {
-            reject("unclosed-construct");
-            break;
-          }
-          afterKeyword = true;
-        } else if (w === "in") {
-          const t = top();
-          if (t === void 0 || !["for", "select"].includes(t.kind)) {
-            reject("unclosed-construct");
-            break;
-          }
-        } else if (w === "fi") {
-          const t = top();
-          if (t === void 0 || t.kind !== "if" || !t.body) {
-            reject("unclosed-construct");
-            break;
-          }
-          levels[levels.length - 1].pop();
-          afterKeyword = false;
-        } else if (w === "done") {
-          const t = top();
-          if (t === void 0 || !["for", "loop", "select"].includes(t.kind) || !t.body) {
-            reject("unclosed-construct");
-            break;
-          }
-          levels[levels.length - 1].pop();
-          afterKeyword = false;
-        } else if (w === "esac") {
-          reject("unclosed-construct");
-          break;
-        } else {
-          afterKeyword = false;
-          if (top()?.kind === "brace") top().body = true;
-          if (functionSeen) {
-            if (nameSeen) {
-              functionSeen = false;
-              nameSeen = false;
-            } else {
-              nameSeen = true;
-            }
-          }
-        }
-      } else {
-        afterKeyword = false;
-        if (functionSeen) {
-          if (nameSeen) {
-            functionSeen = false;
-            nameSeen = false;
-          } else {
-            nameSeen = true;
-          }
-        }
-      }
-      buf += w;
-      i = j;
-      continue;
-    }
-    if (caseRegion === null && levels[levels.length - 1].length > 0 && (c === ";" || c === "&") && afterKeyword) {
-      reject("unclosed-construct");
-      break;
-    }
-    if (depth === 0) {
-      if (isWordStart() && lastWordIsDanglingRedirect() && startsRedirectAt(i)) {
-        reject("dangling-operator");
-        break;
-      }
-      if (c === "$" && cmd[i + 1] === "{") {
-        braceDepth += 1;
-        buf += c;
-        i += 1;
-        continue;
-      }
-      if (c === "<" && cmd[i + 1] === "<" && cmd[i + 2] === "<" && cmd[i + 3] !== "<" && cmd[i - 1] !== "<") {
-        buf += "<<<";
-        i += 3;
-        continue;
-      }
-      if (c === "<" && cmd[i + 1] === "<" && cmd[i + 2] !== "<") {
-        let j = i + 2;
-        let allowTabs = false;
-        if (cmd[j] === "-") {
-          allowTabs = true;
-          j += 1;
-        }
-        while (cmd[j] === " " || cmd[j] === "	") j += 1;
-        let delim = "";
-        if (cmd[j] === "'" || cmd[j] === '"') {
-          const q = cmd.indexOf(cmd[j], j + 1);
-          if (q === -1) {
-            delim = cmd.slice(j + 1);
-            j = n;
-          } else {
-            delim = cmd.slice(j + 1, q);
-            j = q + 1;
-          }
-        } else {
-          const wordStart = j;
-          while (j < n && !WORD_END.test(cmd[j])) j += 1;
-          delim = cmd.slice(wordStart, j);
-        }
-        if (delim !== "") {
-          heredocs.push({
-            close: new RegExp(`^${allowTabs ? "	*" : ""}${escapeRegExp(delim)}[ \\t]*$`)
-          });
-          bufHeredoc = true;
-          if (levels[levels.length - 1].length > 0 || caseRegion !== null) {
-            buf += cmd.slice(i, j);
-          }
-          i = j;
-          continue;
-        }
-      }
-      if (caseRegion === null && levels[levels.length - 1].length === 0) {
-        if (cmd.slice(i, i + 2) === "&&") {
-          if (isUnconsumedOperator() || lastWordIsDanglingRedirect()) {
-            reject("dangling-operator");
-            break;
-          }
-          flush("and");
-          i += 2;
-          continue;
-        }
-        if (cmd.slice(i, i + 2) === "||") {
-          if (isUnconsumedOperator() || lastWordIsDanglingRedirect()) {
-            reject("dangling-operator");
-            break;
-          }
-          flush("or");
-          i += 2;
-          continue;
-        }
-        if (cmd.slice(i, i + 2) === "|&") {
-          if (isUnconsumedOperator() || lastWordIsDanglingRedirect()) {
-            reject("dangling-operator");
-            break;
-          }
-          flush("pipe");
-          i += 2;
-          continue;
-        }
-        if (c === ";") {
-          if (isUnconsumedOperator() || lastWordIsDanglingRedirect()) {
-            reject("dangling-operator");
-            break;
-          }
-          flush("semicolon");
-          i += 1;
-          continue;
-        }
-        if (c === "|") {
-          if (isUnconsumedOperator() || lastWordIsDanglingRedirect()) {
-            reject("dangling-operator");
-            break;
-          }
-          flush("pipe");
-          i += 1;
-          continue;
-        }
-        if (c === "\n") {
-          if (isUnconsumedOperator()) {
-            i += 1;
-            continue;
-          }
-          if (lastWordIsDanglingRedirect()) {
-            reject("dangling-operator");
-            break;
-          }
-          flush("newline");
-          listStart = parts.length;
-          i += 1;
-          continue;
-        }
-        if (c === "&") {
-          const next = cmd[i + 1];
-          const last = buf[buf.length - 1];
-          const trimmed = buf.trimEnd();
-          let dupRedirect = false;
-          if (trimmed.endsWith(">")) {
-            const before = trimmed.length >= 2 ? trimmed[trimmed.length - 2] : "";
-            dupRedirect = trimmed.length === 1 || /\s|\d/.test(before);
-          }
-          if (next === ">" || dupRedirect || last === "<") {
-            buf += c;
-            i += 1;
-            continue;
-          }
-          if (isUnconsumedOperator() || lastWordIsDanglingRedirect()) {
-            reject("dangling-operator");
-            break;
-          }
-          flush("background");
-          i += 1;
-          continue;
-        }
-      }
-    }
-    buf += c;
-    i += 1;
+function lastWord(buf) {
+  return buf.trimEnd().match(/\S+$/)?.[0] ?? "";
+}
+function bufferEndsInDanglingRedirect(buf) {
+  return DANGLING_REDIRECT_WORD.test(lastWord(buf));
+}
+function wordStart(buf) {
+  return buf === "" || /\s$/.test(buf);
+}
+function commandPosition(buf) {
+  return buf.trim() === "" || /\n$/.test(buf) || /[;&|()]$/.test(buf.trimEnd()) || COMMAND_OPENER_WORDS.has(lastWord(buf));
+}
+function fnNameShapeIsPending(buf) {
+  return /^[A-Za-z_][A-Za-z0-9_]*\(\)$/.test(lastWord(buf)) || lastWord(buf) === "()";
+}
+function startsRedirectAt(s) {
+  const c = s.cmd[s.i];
+  if (c === ">" || c === "<") return true;
+  if (c === "&") return s.cmd[s.i + 1] === ">";
+  if (c >= "0" && c <= "9") {
+    let j = s.i;
+    while (j < s.n && s.cmd[j] >= "0" && s.cmd[j] <= "9") j += 1;
+    return s.cmd[j] === ">" || s.cmd[j] === "<";
   }
-  if (malformed) return { stages: parts, malformed };
-  if (inSquote || inDquote) {
-    reject("unclosed-quote");
-  } else if (braceDepth > 0) {
-    reject("unclosed-brace");
-  } else if (caseRegion !== null) {
-    reject("unclosed-case");
-  } else if (depth > 0) {
-    reject("unbalanced-paren");
-  } else if (levels[levels.length - 1].length > 0) {
-    reject("unclosed-construct");
-  } else if (isUnconsumedOperator() || lastWordIsDanglingRedirect()) {
-    reject("dangling-operator");
-  } else if (inBody || heredocs.length > 0) {
-    flush("newline");
-    malformed = "unterminated-heredoc";
+  return false;
+}
+function unconsumedPipeOp(s) {
+  return (s.pendingOp === "pipe" || s.pendingOp === "and" || s.pendingOp === "or") && s.buf.trim() === "";
+}
+function appendStage(s, nextOp) {
+  const text = s.buf.trim();
+  if (text) {
+    if (s.pendingOp === "pipe" && (text === "!" || /^!\s/.test(text))) {
+      rejectList(s, "pipe-bang");
+      return;
+    }
+    s.parts.push({ text, precededBy: s.pendingOp, ...s.bufHeredoc ? { heredoc: true } : {} });
+  }
+  s.buf = "";
+  s.bufHeredoc = false;
+  s.pendingOp = nextOp;
+}
+function rejectList(s, v) {
+  s.malformed = v;
+  s.parts.length = s.listStart;
+  s.i = s.n;
+}
+function stepQuote(s) {
+  const c = s.cmd[s.i];
+  if (s.inSquote) {
+    s.buf += c;
+    if (c === "'") s.inSquote = false;
+    s.i += 1;
+    return true;
+  }
+  if (s.inDquote) {
+    s.buf += c;
+    if (c === "\\" && s.i + 1 < s.n) {
+      s.buf += s.cmd[s.i + 1];
+      s.i += 2;
+      return true;
+    }
+    if (c === '"') s.inDquote = false;
+    s.i += 1;
+    return true;
+  }
+  if (c === "'") {
+    s.inSquote = true;
+    s.buf += c;
+    s.i += 1;
+    return true;
+  }
+  if (c === '"') {
+    s.inDquote = true;
+    s.buf += c;
+    s.i += 1;
+    return true;
+  }
+  if (c === "\\" && s.i + 1 < s.n) {
+    s.buf += c + s.cmd[s.i + 1];
+    s.i += 2;
+    return true;
+  }
+  return false;
+}
+function stepBraceContent(s) {
+  if (s.braceDepth === 0) return false;
+  const c = s.cmd[s.i];
+  if (c === "}") s.braceDepth -= 1;
+  s.buf += c;
+  s.i += 1;
+  return true;
+}
+function stepHeredocBody(s) {
+  if (!s.inBody) return false;
+  const lineEnd = s.cmd.indexOf("\n", s.i);
+  const line = lineEnd === -1 ? s.cmd.slice(s.i) : s.cmd.slice(s.i, lineEnd);
+  if (s.heredocs[0].close.test(line)) {
+    s.heredocs.shift();
+    if (s.heredocs.length === 0) s.inBody = false;
+  }
+  if (insideOpenRegion(s)) {
+    s.buf += line;
+    if (lineEnd !== -1) s.buf += "\n";
+  }
+  s.i = lineEnd === -1 ? s.n : lineEnd + 1;
+  return true;
+}
+function stepHeredocDelimiterNewline(s) {
+  if (s.cmd[s.i] !== "\n" || s.heredocs.length === 0) return false;
+  if (insideOpenRegion(s)) {
+    s.buf += "\n";
+    s.inBody = true;
+    s.i += 1;
+    return true;
+  }
+  if (unconsumedPipeOp(s) || bufferEndsInDanglingRedirect(s.buf)) {
+    rejectList(s, "dangling-operator");
+    return true;
+  }
+  appendStage(s, "newline");
+  s.inBody = true;
+  s.i += 1;
+  return true;
+}
+function stepHereString(s) {
+  if (s.depth !== 0) return false;
+  const { i } = s;
+  if (s.cmd[i] !== "<" || s.cmd[i + 1] !== "<" || s.cmd[i + 2] !== "<") return false;
+  if (s.cmd[i + 3] === "<" || s.cmd[i - 1] === "<") return false;
+  s.buf += "<<<";
+  s.i += 3;
+  return true;
+}
+function stepHeredocOpen(s) {
+  if (s.depth !== 0) return false;
+  const { i } = s;
+  if (s.cmd[i] !== "<" || s.cmd[i + 1] !== "<" || s.cmd[i + 2] === "<") return false;
+  const scanned = scanHeredocDelimiter(s);
+  if (scanned.delim === "") return false;
+  s.heredocs.push({
+    close: new RegExp(`^${scanned.allowTabs ? "	*" : ""}${escapeRegExp(scanned.delim)}[ \\t]*$`)
+  });
+  s.bufHeredoc = true;
+  if (insideOpenRegion(s)) {
+    s.buf += s.cmd.slice(i, scanned.next);
+  }
+  s.i = scanned.next;
+  return true;
+}
+function scanHeredocDelimiter(s) {
+  let j = s.i + 2;
+  let allowTabs = false;
+  if (s.cmd[j] === "-") {
+    allowTabs = true;
+    j += 1;
+  }
+  while (s.cmd[j] === " " || s.cmd[j] === "	") j += 1;
+  if (s.cmd[j] === "'" || s.cmd[j] === '"') {
+    const q = s.cmd.indexOf(s.cmd[j], j + 1);
+    if (q === -1) return { delim: s.cmd.slice(j + 1), allowTabs, next: s.n };
+    return { delim: s.cmd.slice(j + 1, q), allowTabs, next: q + 1 };
+  }
+  const delimStart = j;
+  while (j < s.n && !WORD_END.test(s.cmd[j])) j += 1;
+  return { delim: s.cmd.slice(delimStart, j), allowTabs, next: j };
+}
+function insideOpenRegion(s) {
+  return s.levels[s.levels.length - 1].length > 0 || s.caseRegion !== null;
+}
+function stepCaseRegion(s) {
+  const r = s.caseRegion;
+  if (r?.localDepth !== 0) return false;
+  if (stepCasePunct(s, r)) return true;
+  return stepCaseWord(s, r);
+}
+function stepCasePunct(s, r) {
+  const c = s.cmd[s.i];
+  const termLen = caseTerminatorLength(s);
+  if (termLen > 0) {
+    r.pos = "pattern-start";
+    s.buf += s.cmd.slice(s.i, s.i + termLen);
+    s.i += termLen;
+    return true;
+  }
+  if (c === ";") {
+    r.pos = "command";
+    r.cmdEmpty = true;
+    s.buf += c;
+    s.i += 1;
+    return true;
+  }
+  if (caseBareAmpersand(s)) {
+    r.pos = "command";
+    r.cmdEmpty = true;
+    s.buf += c;
+    s.i += 1;
+    return true;
+  }
+  if (c === "\n") {
+    if (r.pos === "pattern") {
+      rejectList(s, "unclosed-case");
+      return true;
+    }
+    if (r.pos === "command") r.cmdEmpty = true;
+    s.buf += c;
+    s.i += 1;
+    return true;
+  }
+  if (c === "#" && wordStart(s.buf)) {
+    while (s.i < s.n && s.cmd[s.i] !== "\n") s.i += 1;
+    return true;
+  }
+  return false;
+}
+function caseTerminatorLength(s) {
+  const three = s.cmd.slice(s.i, s.i + 3);
+  if (three === ";;&") return 3;
+  const two = s.cmd.slice(s.i, s.i + 2);
+  return two === ";;" || two === ";&" ? 2 : 0;
+}
+function caseBareAmpersand(s) {
+  if (s.cmd[s.i] !== "&") return false;
+  return s.cmd[s.i + 1] !== ">" && s.cmd[s.i + 1] !== "&" && !bufferEndsInRedirectChar(s.buf);
+}
+function stepCaseWord(s, r) {
+  const c = s.cmd[s.i];
+  if (!wordStart(s.buf) || WORD_END.test(c)) return false;
+  let j = s.i;
+  while (j < s.n && !WORD_END.test(s.cmd[j])) j += 1;
+  const w = s.cmd.slice(s.i, j);
+  if (w === "esac" && (r.pos === "pattern-start" || r.pos === "command" && r.cmdEmpty)) {
+    s.caseRegion = null;
+    s.afterKeyword = false;
+  } else if (w === "in" && r.pos === "subject") {
+    r.pos = "pattern-start";
+  } else if (r.pos === "pattern-start") {
+    r.pos = "pattern";
+  } else if (r.pos === "command") {
+    r.cmdEmpty = false;
+  }
+  s.buf += w;
+  s.i = j;
+  return true;
+}
+function bufferEndsInRedirectChar(buf) {
+  const last = buf[buf.length - 1];
+  return last === ">" || last === "<";
+}
+function stepParen(s) {
+  const c = s.cmd[s.i];
+  if (c !== "(" && c !== ")") return false;
+  if (c === "(") {
+    if (s.caseRegion) {
+      s.caseRegion.localDepth += 1;
+    } else {
+      markEnclosingBraceBody(s);
+      s.depth += 1;
+      s.levels.push([]);
+    }
+    s.afterKeyword = false;
+    s.buf += c;
+    s.i += 1;
+    return true;
+  }
+  if (s.caseRegion) {
+    if (s.caseRegion.localDepth === 0) {
+      s.caseRegion.pos = "command";
+      s.caseRegion.cmdEmpty = true;
+    } else {
+      s.caseRegion.localDepth -= 1;
+    }
   } else {
-    flush("newline");
+    if (s.depth === 0) {
+      rejectList(s, "unbalanced-paren");
+      return true;
+    }
+    if (s.levels[s.levels.length - 1].length > 0) {
+      rejectList(s, "unclosed-construct");
+      return true;
+    }
+    s.depth -= 1;
+    s.levels.pop();
   }
-  return { stages: parts, malformed };
+  s.buf += c;
+  s.i += 1;
+  return true;
+}
+function stepConstructWord(s) {
+  if (!startsConstructWord(s)) return false;
+  let j = s.i;
+  while (j < s.n && !WORD_END.test(s.cmd[j])) j += 1;
+  const w = s.cmd.slice(s.i, j);
+  const top = topFrame(s.levels);
+  const atCommand = commandPosition(s.buf);
+  if (forSelectSeparator(w, top)) {
+  } else if (opensBraceGroup(s, w, atCommand)) {
+    openBraceGroup(s);
+  } else if (w === "}" && atCommand) {
+    closeBraceGroup(s);
+  } else if (atCommand) {
+    if (!applyCommandKeyword(s, w)) ordinaryConstructWord(s);
+  } else {
+    ordinaryArgumentWord(s);
+  }
+  s.buf += w;
+  s.i = j;
+  return true;
+}
+function forSelectSeparator(w, top) {
+  return w === "in" && top !== void 0 && (top.kind === "for" || top.kind === "select");
+}
+function opensBraceGroup(s, w, atCommand) {
+  return w === "{" && (atCommand || fnNameShapeIsPending(s.buf) || s.functionSeen && s.nameSeen);
+}
+function startsConstructWord(s) {
+  if (s.caseRegion) return false;
+  const c = s.cmd[s.i];
+  if (WORD_END.test(c)) return false;
+  if (!wordStart(s.buf) && !/[()]$/.test(s.buf)) return false;
+  return !(c === "$" && s.cmd[s.i + 1] === "{");
+}
+function pushConstruct(s, kind) {
+  markEnclosingBraceBody(s);
+  s.levels[s.levels.length - 1].push({ kind, body: false });
+  s.afterKeyword = true;
+}
+function requireTopOf(s, kinds, requireBody) {
+  const t = topFrame(s.levels);
+  if (t === void 0 || !kinds.includes(t.kind) || requireBody && !t.body) {
+    rejectList(s, "unclosed-construct");
+    return null;
+  }
+  return t;
+}
+function closeConstruct(s, kinds) {
+  if (requireTopOf(s, kinds, true) === null) return;
+  s.levels[s.levels.length - 1].pop();
+  s.afterKeyword = false;
+}
+function openBraceGroup(s) {
+  if (s.functionSeen && s.nameSeen) {
+    s.functionSeen = false;
+    s.nameSeen = false;
+  }
+  pushConstruct(s, "brace");
+}
+function closeBraceGroup(s) {
+  const t = topFrame(s.levels);
+  if (s.afterKeyword || t === void 0 || t.kind !== "brace" || !t.body) {
+    rejectList(s, "unclosed-construct");
+    return;
+  }
+  s.levels[s.levels.length - 1].pop();
+  s.afterKeyword = false;
+}
+function requireIfBranch(s) {
+  if (requireTopOf(s, ["if"], true) !== null) s.afterKeyword = true;
+}
+var CONSTRUCT_KEYWORDS = /* @__PURE__ */ new Map([
+  [
+    "case",
+    (s) => {
+      s.caseRegion = { pos: "subject", cmdEmpty: false, localDepth: 0 };
+      s.afterKeyword = false;
+    }
+  ],
+  [
+    "function",
+    (s) => {
+      s.functionSeen = true;
+      s.nameSeen = false;
+      s.afterKeyword = false;
+    }
+  ],
+  ["if", (s) => pushConstruct(s, "if")],
+  ["while", (s) => pushConstruct(s, "loop")],
+  ["until", (s) => pushConstruct(s, "loop")],
+  ["for", (s) => pushConstruct(s, "for")],
+  ["select", (s) => pushConstruct(s, "select")],
+  [
+    "do",
+    (s) => {
+      const t = requireTopOf(s, ["for", "loop", "select"], false);
+      if (t !== null) {
+        t.body = true;
+        s.afterKeyword = true;
+      }
+    }
+  ],
+  [
+    "then",
+    (s) => {
+      const t = requireTopOf(s, ["if"], false);
+      if (t !== null) {
+        t.body = true;
+        s.afterKeyword = true;
+      }
+    }
+  ],
+  ["else", (s) => requireIfBranch(s)],
+  ["elif", (s) => requireIfBranch(s)],
+  // `in` only validates the for/select frame — it arms nothing and starts no body.
+  ["in", (s) => void requireTopOf(s, ["for", "select"], false)],
+  ["fi", (s) => closeConstruct(s, ["if"])],
+  ["done", (s) => closeConstruct(s, ["for", "loop", "select"])],
+  // No open region — a stray esac is a parse error.
+  ["esac", (s) => rejectList(s, "unclosed-construct")]
+]);
+function applyCommandKeyword(s, w) {
+  const kw = CONSTRUCT_KEYWORDS.get(w);
+  if (kw === void 0) return false;
+  kw(s);
+  return true;
+}
+function topFrame(levels) {
+  const lv = levels[levels.length - 1];
+  return lv.length > 0 ? lv[lv.length - 1] : void 0;
+}
+function markEnclosingBraceBody(s) {
+  const t = topFrame(s.levels);
+  if (t?.kind === "brace") t.body = true;
+}
+function ordinaryConstructWord(s) {
+  s.afterKeyword = false;
+  markEnclosingBraceBody(s);
+  advanceFunctionNameHandoff(s);
+}
+function ordinaryArgumentWord(s) {
+  s.afterKeyword = false;
+  advanceFunctionNameHandoff(s);
+}
+function advanceFunctionNameHandoff(s) {
+  if (!s.functionSeen) return;
+  if (s.nameSeen) {
+    s.functionSeen = false;
+    s.nameSeen = false;
+  } else {
+    s.nameSeen = true;
+  }
+}
+function rejectEmptyConstructList(s) {
+  const c = s.cmd[s.i];
+  if (s.caseRegion === null && s.levels[s.levels.length - 1].length > 0 && (c === ";" || c === "&") && s.afterKeyword) {
+    rejectList(s, "unclosed-construct");
+    return true;
+  }
+  return false;
+}
+function skipTopLevelComment(s) {
+  if (s.cmd[s.i] !== "#" || s.depth !== 0 || !wordStart(s.buf)) return false;
+  while (s.i < s.n && s.cmd[s.i] !== "\n") s.i += 1;
+  return true;
+}
+function stepRedirectToken(s) {
+  if (s.depth !== 0) return false;
+  const c = s.cmd[s.i];
+  if (wordStart(s.buf) && bufferEndsInDanglingRedirect(s.buf) && startsRedirectAt(s)) {
+    rejectList(s, "dangling-operator");
+    return true;
+  }
+  if (c === "$" && s.cmd[s.i + 1] === "{") {
+    s.braceDepth += 1;
+    s.buf += c;
+    s.i += 1;
+    return true;
+  }
+  if (stepHereString(s)) return true;
+  return stepHeredocOpen(s);
+}
+function stepBoundaryOperator(s) {
+  if (s.depth !== 0) return false;
+  if (s.caseRegion !== null) return false;
+  if (s.levels[s.levels.length - 1].length > 0) return false;
+  const c = s.cmd[s.i];
+  const twoOp = TWO_CHAR_BOUNDARY_OPS.get(s.cmd.slice(s.i, s.i + 2));
+  if (twoOp !== void 0) {
+    flushBoundaryOrReject(s, twoOp);
+    s.i += 2;
+    return true;
+  }
+  if (c === ";") {
+    flushBoundaryOrReject(s, "semicolon");
+    s.i += 1;
+    return true;
+  }
+  if (c === "|") {
+    flushBoundaryOrReject(s, "pipe");
+    s.i += 1;
+    return true;
+  }
+  if (c === "\n") return stepNewlineBoundary(s);
+  if (c === "&") {
+    if (ampersandIsRedirectText(s)) {
+      s.buf += c;
+      s.i += 1;
+      return true;
+    }
+    flushBoundaryOrReject(s, "background");
+    s.i += 1;
+    return true;
+  }
+  return false;
+}
+var TWO_CHAR_BOUNDARY_OPS = /* @__PURE__ */ new Map([
+  ["&&", "and"],
+  ["||", "or"],
+  ["|&", "pipe"]
+]);
+function stepNewlineBoundary(s) {
+  if (unconsumedPipeOp(s)) {
+    s.i += 1;
+    return true;
+  }
+  if (bufferEndsInDanglingRedirect(s.buf)) {
+    rejectList(s, "dangling-operator");
+    return true;
+  }
+  appendStage(s, "newline");
+  s.listStart = s.parts.length;
+  s.i += 1;
+  return true;
+}
+function flushBoundaryOrReject(s, nextOp) {
+  if (unconsumedPipeOp(s) || bufferEndsInDanglingRedirect(s.buf)) {
+    rejectList(s, "dangling-operator");
+    return;
+  }
+  appendStage(s, nextOp);
+}
+function ampersandIsRedirectText(s) {
+  if (s.cmd[s.i + 1] === ">") return true;
+  if (s.buf[s.buf.length - 1] === "<") return true;
+  const trimmed = s.buf.trimEnd();
+  if (!trimmed.endsWith(">")) return false;
+  const before = trimmed.length >= 2 ? trimmed[trimmed.length - 2] : "";
+  return trimmed.length === 1 || /\s|\d/.test(before);
+}
+function finishScan(s) {
+  if (s.malformed) return { stages: s.parts, malformed: s.malformed };
+  if (s.inSquote || s.inDquote) {
+    rejectList(s, "unclosed-quote");
+  } else if (s.braceDepth > 0) {
+    rejectList(s, "unclosed-brace");
+  } else if (s.caseRegion !== null) {
+    rejectList(s, "unclosed-case");
+  } else if (s.depth > 0) {
+    rejectList(s, "unbalanced-paren");
+  } else if (s.levels[s.levels.length - 1].length > 0) {
+    rejectList(s, "unclosed-construct");
+  } else if (unconsumedPipeOp(s) || bufferEndsInDanglingRedirect(s.buf)) {
+    rejectList(s, "dangling-operator");
+  } else if (s.inBody || s.heredocs.length > 0) {
+    appendStage(s, "newline");
+    s.malformed = "unterminated-heredoc";
+  } else {
+    appendStage(s, "newline");
+  }
+  return { stages: s.parts, malformed: s.malformed };
+}
+
+// src/common/shell-split.ts
+function splitTopLevel(cmd) {
+  const s = createScan(cmd);
+  while (s.i < s.n) {
+    if (stepQuote(s)) continue;
+    if (stepBraceContent(s)) continue;
+    if (stepHeredocBody(s)) continue;
+    if (stepHeredocDelimiterNewline(s)) continue;
+    if (skipTopLevelComment(s)) continue;
+    if (stepCaseRegion(s)) continue;
+    if (stepParen(s)) continue;
+    if (stepConstructWord(s)) continue;
+    if (rejectEmptyConstructList(s)) continue;
+    if (stepRedirectToken(s)) continue;
+    if (stepBoundaryOperator(s)) continue;
+    s.buf += s.cmd[s.i];
+    s.i += 1;
+  }
+  return finishScan(s);
 }
 var LEADING_ASSIGNMENT = /^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/;
 function stripLeadingAssignments(simpleCmd) {
@@ -6660,7 +6752,7 @@ function deterministicOperationId(invocationId, repoRoot, addresses) {
   const hex = bytes.subarray(0, 16).toString("hex");
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
-async function runTouchHooks(inputs, executors, memo, invocationId, probeCache) {
+async function runTouchHooks(inputs, executors, memo, invocationId, probeCache, logger2) {
   const outputs = inputs.map(() => ({ additionalContext: null, treeModified: false }));
   const prepared = [];
   for (const [index, input] of inputs.entries()) {
@@ -6744,7 +6836,11 @@ async function runTouchHooks(inputs, executors, memo, invocationId, probeCache) 
     try {
       const additionalContext = renderContextTouch(touch.input, document, touch.repoPath, touch.ranges, memo);
       outputs[touch.index] = { additionalContext, treeModified: singleTouchMutation };
-    } catch {
+    } catch (err) {
+      logger2?.warn("git-span touch render failed open on an unexpected error", {
+        filePath: touch.input.filePath,
+        err
+      });
       outputs[touch.index] = { additionalContext: null, treeModified: singleTouchMutation };
     }
   }
@@ -6789,18 +6885,17 @@ function createDefaultTouchExecutors(timeoutMs = DEFAULT_TIMEOUT_MS) {
         return { ok: false, failure: "empty_output", elapsedMs: performance.now() - started };
       }
       try {
-        JSON.parse(stdout);
-      } catch {
-        return { ok: false, failure: "malformed_json", elapsedMs: performance.now() - started };
-      }
-      try {
         const document = decodeContextDocument(stdout);
         if (document.mutation.requested !== request.repair || document.mutation.rewritten && !request.repair) {
           throw new Error("context mutation does not match the requested mode");
         }
         return { ok: true, document, elapsedMs: performance.now() - started };
-      } catch {
-        return { ok: false, failure: "schema_rejected", elapsedMs: performance.now() - started };
+      } catch (error) {
+        return {
+          ok: false,
+          failure: error instanceof SyntaxError ? "malformed_json" : "schema_rejected",
+          elapsedMs: performance.now() - started
+        };
       }
     },
     forInvocation: () => executors
@@ -7116,7 +7211,7 @@ async function runBashTouches(matches, sessionId, cwd, toolResponse, executors, 
       touches.push(e.touch);
     }
   }
-  const batch = await runTouchHooks(touches, invocationExecutors, memo, invocationId, probeCache);
+  const batch = await runTouchHooks(touches, invocationExecutors, memo, invocationId, probeCache, { warn });
   const blocks = batch.outputs.flatMap(
     (output) => output.additionalContext === null ? [] : [output.additionalContext]
   );
@@ -8003,7 +8098,7 @@ function filterPostTracked(matches, responseSpans, cwd, preTrackedPaths, preTrac
     eligibilityErrors: filtered.errors
   };
 }
-async function runResponseReadTouches(spans, cwd, sessionId, executors, memo, invocationId) {
+async function runResponseReadTouches(spans, cwd, sessionId, executors, memo, invocationId, logger2) {
   const touches = spans.map(
     (span) => ({
       kind: "read",
@@ -8014,7 +8109,7 @@ async function runResponseReadTouches(spans, cwd, sessionId, executors, memo, in
       limit: span.lineEnd - span.lineStart + 1
     })
   );
-  const batch = await runTouchHooks(touches, executors, memo, invocationId);
+  const batch = await runTouchHooks(touches, executors, memo, invocationId, void 0, logger2);
   return {
     blocks: batch.outputs.flatMap((output) => output.additionalContext === null ? [] : [output.additionalContext]),
     diagnostics: batch.diagnostics
@@ -8090,7 +8185,8 @@ async function runLayeredBashTouches(command, cwd, sessionId, toolUseId, toolRes
     sessionId,
     executors,
     memo,
-    `${sessionId}:${toolUseId ?? createHash2("sha256").update(command).digest("hex")}:response`
+    `${sessionId}:${toolUseId ?? createHash2("sha256").update(command).digest("hex")}:response`,
+    logger2
   );
   const blocks = [...commandBlocks, ...responseBatch.blocks];
   logger2.info?.("git-span static attribution post", {
@@ -8366,11 +8462,53 @@ function parseApplyPatch(command, readPreEditFile = defaultReadPreEditFile) {
 // src/codex/post-tool-use.ts
 import { resolve as resolvePath3 } from "node:path";
 
+// src/common/apply-patch-touch.ts
+var noRangeRecovery = () => null;
+async function runApplyPatchTouches(patchText, cwd, sessionId, planned, executors, memo, invocationId, logger2) {
+  const plannedPaths = new Set(planned.map(({ absolutePath }) => absolutePath));
+  const fallback = parseApplyPatch(patchText, noRangeRecovery).map(
+    (anchor) => ({
+      absolutePath: abspathAgainst(cwd, anchor.path),
+      operation: anchor.absent ? "delete" : anchor.kind === "create" ? "create-overwrite" : "modify",
+      ranges: anchor.range === void 0 ? [] : [anchor.range],
+      preTrackedDelete: false
+    })
+  ).filter(({ absolutePath }) => !plannedPaths.has(absolutePath));
+  const candidates = [...planned, ...fallback];
+  const tracked = filterTrackedEligibility(
+    candidates.map((value) => ({ absolutePath: value.absolutePath, value })),
+    { cwd }
+  );
+  const eligible = new Set(tracked.eligible.map(({ value }) => value));
+  for (const candidate of candidates) if (candidate.preTrackedDelete) eligible.add(candidate);
+  const touches = [];
+  for (const candidate of candidates) {
+    if (!eligible.has(candidate)) continue;
+    const ranges = candidate.ranges.length === 0 ? [void 0] : candidate.ranges;
+    for (const range of ranges) {
+      touches.push({
+        kind: "write",
+        sessionId,
+        cwd,
+        filePath: candidate.absolutePath,
+        ...invocationId === null ? {} : { invocationId },
+        written: "",
+        range,
+        targetState: candidate.operation === "delete" ? "absent" : "exists",
+        ...candidate.operation === "delete" ? { postState: { realDelete: true } } : {}
+      });
+    }
+  }
+  const batch = await runTouchHooks(touches, executors, memo, invocationId, void 0, logger2);
+  return batch.outputs.flatMap((output) => output.additionalContext === null ? [] : [output.additionalContext]);
+}
+
 // src/common/advisor-core.ts
-import { execFileSync as execFileSync6 } from "node:child_process";
+import { execFile } from "node:child_process";
 import { createHash as createHash3 } from "node:crypto";
 import * as fs9 from "node:fs";
 import * as nodePath7 from "node:path";
+import { promisify } from "node:util";
 
 // src/common/advisor-ignore.ts
 import * as fs8 from "node:fs";
@@ -8589,6 +8727,14 @@ var AdvisorIncompatibleCliError = class extends Error {
     this.installedVersion = installedVersion;
   }
 };
+var AdvisorDeadlineError = class extends Error {
+  budgetMs;
+  constructor(budgetMs) {
+    super(`advisor evaluation exceeded its ${budgetMs} ms budget`);
+    this.name = "AdvisorDeadlineError";
+    this.budgetMs = budgetMs;
+  }
+};
 function parseGitCommand(command) {
   for (const segment of splitSegments2(command)) {
     const inv = matchGitInvocation(tokenize2(segment));
@@ -8771,137 +8917,186 @@ function mergeUniquePaths(...groups) {
   }
   return merged;
 }
-async function evaluateAdvisor(paths, cwd, executors, memoState, mode = "may-hold", churn, harness = "generic") {
+var GIT_SPAN_SKILL_REF = "git-span";
+var SKILL_REF_TOKEN_START = "{{skill-ref:";
+var SKILL_REF_TOKEN_END = "}}";
+function skillRefToken(ref) {
+  return `${SKILL_REF_TOKEN_START}${ref}${SKILL_REF_TOKEN_END}`;
+}
+async function evaluateAdvisor(paths, cwd, executors, memoState, mode = "may-hold", churn, harness = "generic", deadlineMs = EVALUATION_DEADLINE_MS, logger2) {
   if (paths.length === 0) return { decision: "allow", kind: "silent" };
+  const controller = new AbortController();
+  const { signal } = controller;
+  let timer;
   try {
-    await executors.fix(paths, cwd);
-    const driftRows = await executors.drift(paths, cwd);
-    const debtRows = driftRows.filter((row) => isDebt(row.status));
-    const semantic = debtRows.filter((row) => !isEnvironmentalStatus(row.status));
-    const environmental = debtRows.filter((row) => isEnvironmentalStatus(row.status));
-    if (mode === "report-only") {
-      if (semantic.length > 0) {
-        memoState.record(`seen-${advisorStateDigest(semantic, [])}`);
-        const newSemantic = filterNewReportItems(semantic, memoState, semanticReportIdentity);
-        if (newSemantic.length === 0) return { decision: "allow", kind: "silent" };
+    const evaluation = (async () => {
+      try {
+        if (mode === "may-hold") {
+          await executors.fix(paths, cwd, signal);
+        }
+        const driftRows = await executors.drift(paths, cwd, signal);
+        const debtRows = driftRows.filter((row) => isDebt(row.status));
+        const semantic = debtRows.filter((row) => !isEnvironmentalStatus(row.status));
+        const environmental = debtRows.filter((row) => isEnvironmentalStatus(row.status));
+        if (mode === "report-only") {
+          if (semantic.length > 0) {
+            memoState.record(`seen-${advisorStateDigest(semantic, [])}`);
+            const newSemantic = filterNewReportItems(semantic, memoState, semanticReportIdentity);
+            if (newSemantic.length === 0) return { decision: "allow", kind: "silent" };
+            return {
+              decision: "allow",
+              kind: "semantic-drift-report",
+              findings: newSemantic,
+              ...renderDriftReason(
+                newSemantic,
+                await fetchSpanBlocks(executors, newSemantic, cwd, signal),
+                "report-only",
+                harness
+              )
+            };
+          }
+          if (environmental.length > 0) {
+            return {
+              decision: "allow",
+              kind: "environmental",
+              conditions: environmental,
+              reason: renderEnvironmentalReason(
+                environmental,
+                await fetchSpanBlocks(executors, environmental, cwd, signal)
+              )
+            };
+          }
+          const { uncovered: uncovered2, covering: covering2 } = await computeUncoveredPaths(paths, cwd, executors, churn, signal);
+          if (uncovered2.length === 0) return { decision: "allow", kind: "silent" };
+          memoState.record(`seen-${advisorStateDigest([], uncovered2)}`);
+          const newUncovered = filterNewReportItems(uncovered2, memoState, uncoveredReportIdentity);
+          if (newUncovered.length === 0) return { decision: "allow", kind: "silent" };
+          return {
+            decision: "allow",
+            kind: "uncovered-writes-report",
+            uncovered: newUncovered,
+            ...renderUncoveredReason(
+              newUncovered,
+              covering2,
+              await fetchSpanBlocks(executors, covering2, cwd, signal),
+              "report-only",
+              harness
+            )
+          };
+        }
+        let semanticAlreadyPresented = false;
+        if (semantic.length > 0) {
+          const semanticDigest = advisorStateDigest(semantic, []);
+          if (memoState.has(semanticDigest)) {
+            semanticAlreadyPresented = true;
+          } else if (memoState.has(`seen-${semanticDigest}`)) {
+            memoState.record(semanticDigest);
+            semanticAlreadyPresented = true;
+          } else {
+            if (!memoState.record(semanticDigest)) return { decision: "allow", kind: "silent" };
+            memoState.record(`seen-${semanticDigest}`);
+            return {
+              decision: "hold",
+              kind: "semantic-drift",
+              findings: semantic,
+              ...renderDriftReason(
+                semantic,
+                await fetchSpanBlocks(executors, semantic, cwd, signal),
+                "may-hold",
+                harness
+              )
+            };
+          }
+        }
+        if (environmental.length > 0) {
+          return {
+            decision: "allow",
+            kind: "environmental",
+            conditions: environmental,
+            reason: renderEnvironmentalReason(
+              environmental,
+              await fetchSpanBlocks(executors, environmental, cwd, signal)
+            )
+          };
+        }
+        const { uncovered, covering } = await computeUncoveredPaths(paths, cwd, executors, churn, signal);
+        if (uncovered.length === 0) {
+          return semanticAlreadyPresented ? { decision: "allow", kind: "already-presented" } : { decision: "allow", kind: "silent" };
+        }
+        const digest = advisorStateDigest([], uncovered);
+        if (memoState.has(digest)) return { decision: "allow", kind: "already-presented" };
+        if (memoState.has(`seen-${digest}`)) {
+          memoState.record(digest);
+          return { decision: "allow", kind: "already-presented" };
+        }
+        if (!memoState.record(digest)) return { decision: "allow", kind: "silent" };
+        memoState.record(`seen-${digest}`);
         return {
-          decision: "allow",
-          kind: "semantic-drift-report",
-          findings: newSemantic,
-          reason: renderDriftReason(
-            newSemantic,
-            await fetchSpanBlocks(executors, newSemantic, cwd),
-            "report-only",
+          decision: "hold",
+          kind: "uncovered-writes",
+          uncovered,
+          ...renderUncoveredReason(
+            uncovered,
+            covering,
+            await fetchSpanBlocks(executors, covering, cwd, signal),
+            "may-hold",
             harness
           )
         };
+      } catch (err) {
+        if (controller.signal.aborted) throw new AdvisorDeadlineError(deadlineMs);
+        if (err instanceof AdvisorIncompatibleCliError) {
+          return {
+            decision: "allow",
+            kind: "scan-failed",
+            cause: "incompatible-cli",
+            reason: renderIncompatibleCliReason(err)
+          };
+        }
+        if (err instanceof AdvisorScanError) {
+          return {
+            decision: "allow",
+            kind: "scan-failed",
+            cause: "aborted",
+            reason: renderScanFailedReason(err.detail)
+          };
+        }
+        logger2?.warn("git-span advisor evaluation failed open on an unexpected error", { err });
+        return { decision: "allow", kind: "silent" };
       }
-      if (environmental.length > 0) {
-        return {
-          decision: "allow",
-          kind: "environmental",
-          conditions: environmental,
-          reason: renderEnvironmentalReason(environmental, await fetchSpanBlocks(executors, environmental, cwd))
-        };
-      }
-      const { uncovered: uncovered2, covering: covering2 } = await computeUncoveredPaths(paths, cwd, executors, churn);
-      if (uncovered2.length === 0) return { decision: "allow", kind: "silent" };
-      memoState.record(`seen-${advisorStateDigest([], uncovered2)}`);
-      const newUncovered = filterNewReportItems(uncovered2, memoState, uncoveredReportIdentity);
-      if (newUncovered.length === 0) return { decision: "allow", kind: "silent" };
-      return {
-        decision: "allow",
-        kind: "uncovered-writes-report",
-        uncovered: newUncovered,
-        reason: renderUncoveredReason(
-          newUncovered,
-          covering2,
-          await fetchSpanBlocks(executors, covering2, cwd),
-          "report-only",
-          harness
-        )
-      };
-    }
-    let semanticAlreadyPresented = false;
-    if (semantic.length > 0) {
-      const semanticDigest = advisorStateDigest(semantic, []);
-      if (memoState.has(semanticDigest)) {
-        semanticAlreadyPresented = true;
-      } else if (memoState.has(`seen-${semanticDigest}`)) {
-        memoState.record(semanticDigest);
-        semanticAlreadyPresented = true;
-      } else {
-        if (!memoState.record(semanticDigest)) return { decision: "allow", kind: "silent" };
-        memoState.record(`seen-${semanticDigest}`);
-        return {
-          decision: "hold",
-          kind: "semantic-drift",
-          findings: semantic,
-          reason: renderDriftReason(semantic, await fetchSpanBlocks(executors, semantic, cwd), "may-hold", harness)
-        };
-      }
-    }
-    if (environmental.length > 0) {
-      return {
-        decision: "allow",
-        kind: "environmental",
-        conditions: environmental,
-        reason: renderEnvironmentalReason(environmental, await fetchSpanBlocks(executors, environmental, cwd))
-      };
-    }
-    const { uncovered, covering } = await computeUncoveredPaths(paths, cwd, executors, churn);
-    if (uncovered.length === 0) {
-      return semanticAlreadyPresented ? { decision: "allow", kind: "already-presented" } : { decision: "allow", kind: "silent" };
-    }
-    const digest = advisorStateDigest([], uncovered);
-    if (memoState.has(digest)) return { decision: "allow", kind: "already-presented" };
-    if (memoState.has(`seen-${digest}`)) {
-      memoState.record(digest);
-      return { decision: "allow", kind: "already-presented" };
-    }
-    if (!memoState.record(digest)) return { decision: "allow", kind: "silent" };
-    memoState.record(`seen-${digest}`);
-    return {
-      decision: "hold",
-      kind: "uncovered-writes",
-      uncovered,
-      reason: renderUncoveredReason(
-        uncovered,
-        covering,
-        await fetchSpanBlocks(executors, covering, cwd),
-        "may-hold",
-        harness
-      )
-    };
+    })();
+    const expiry = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new AdvisorDeadlineError(deadlineMs));
+      }, deadlineMs);
+    });
+    return await Promise.race([evaluation, expiry]);
   } catch (err) {
-    if (err instanceof AdvisorIncompatibleCliError) {
+    if (err instanceof AdvisorDeadlineError) {
       return {
         decision: "allow",
         kind: "scan-failed",
-        cause: "incompatible-cli",
-        reason: renderIncompatibleCliReason(err)
+        cause: "deadline-exceeded",
+        reason: renderDeadlineExceededReason(err.budgetMs)
       };
     }
-    if (err instanceof AdvisorScanError) {
-      return {
-        decision: "allow",
-        kind: "scan-failed",
-        cause: "aborted",
-        reason: renderScanFailedReason(err.detail)
-      };
-    }
-    return { decision: "allow", kind: "silent" };
+    throw err;
+  } finally {
+    if (timer !== void 0) clearTimeout(timer);
+    controller.abort();
   }
 }
-async function computeUncoveredPaths(paths, cwd, executors, churn) {
+async function computeUncoveredPaths(paths, cwd, executors, churn, signal) {
   if (paths.length < 2) return { uncovered: [], covering: [] };
   const changeset = new Set(paths);
-  const covering = (await executors.list(paths, cwd)).filter((row) => changeset.has(row.path));
+  const covering = (await executors.list(paths, cwd, signal)).filter((row) => changeset.has(row.path));
   const covered = new Set(covering.map((row) => row.path));
   const repoRoot = resolveRepoRoot(cwd);
   const advisorIgnoreRules = repoRoot ? loadAdvisorIgnore(repoRoot) : [];
+  const spanRoot = repoRoot === null ? SPAN_ROOT : resolveSpanRoot(repoRoot);
   let uncovered = paths.filter(
-    (path) => !covered.has(path) && !isInsideSpanRoot(path) && !isAdvisorIgnored(advisorIgnoreRules, path)
+    (path) => !covered.has(path) && !isInsideSpanRoot(path, spanRoot) && !isAdvisorIgnored(advisorIgnoreRules, path)
   );
   if (churn && uncovered.length > 0) {
     const before = uncovered.length;
@@ -8912,7 +9107,9 @@ async function computeUncoveredPaths(paths, cwd, executors, churn) {
     let readOutcome = needsContent.length > 0 ? "clean" : "skipped";
     if (needsContent.length > 0) {
       try {
-        for (const file of await churn.git.changedHunks(needsContent, churn.range, cwd)) byPath.set(file.path, file);
+        for (const file of await churn.git.changedHunks(needsContent, churn.range, cwd, signal)) {
+          byPath.set(file.path, file);
+        }
       } catch {
         readOutcome = "failed";
       }
@@ -8921,7 +9118,9 @@ async function computeUncoveredPaths(paths, cwd, executors, churn) {
         if (readOutcome === "clean") readOutcome = "per-file-fallback";
         for (const path of missing) {
           try {
-            for (const file of await churn.git.changedHunks([path], churn.range, cwd)) byPath.set(file.path, file);
+            for (const file of await churn.git.changedHunks([path], churn.range, cwd, signal)) {
+              byPath.set(file.path, file);
+            }
           } catch {
             readOutcome = "failed";
           }
@@ -8970,11 +9169,11 @@ function filterNewReportItems(items, memoState, identityOf) {
   for (const identity of unseen) memoState.record(reportItemKey(identity));
   return items.filter((item) => unseen.has(identityOf(item)));
 }
-async function fetchSpanBlocks(executors, rows, cwd) {
+async function fetchSpanBlocks(executors, rows, cwd, signal) {
   const names = [...new Set(rows.map((row) => row.name))].sort();
   if (names.length === 0) return "";
   try {
-    return await executors.listBlocks(names, cwd);
+    return await executors.listBlocks(names, cwd, signal);
   } catch {
     return "";
   }
@@ -9126,19 +9325,22 @@ function renderDriftReason(findings, blocksText, mode = "may-hold", harness = "g
   const subject = names.length === 1 ? "an implicit dependency" : "implicit dependencies";
   const name = names.length === 1 ? names[0] : "<name>";
   const action = `preserve anchor shape; if an address changed, swap the old anchor for the new one with \`git span replace\`; update or retire the why only if its meaning changed; require \`git span drift ${name}\` to report zero`;
-  const lead = harness === "claude" ? "Dispatch a forked subagent to bring the coupled files back into agreement (follow confirmed authority)" : harness === "codex" ? 'Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to bring the coupled files back into agreement (follow confirmed authority)' : harness === "opencode" ? "Dispatch a subagent with the `task` tool to bring the coupled files back into agreement (follow confirmed authority)" : "Bring the coupled files back into agreement (follow confirmed authority)";
+  const inline = harness === "generic" || harness === "mswea";
+  const lead = inline ? "Bring the coupled files back into agreement (follow confirmed authority)" : harness === "claude" ? "Dispatch a forked subagent to bring the coupled files back into agreement (follow confirmed authority)" : harness === "codex" ? 'Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to bring the coupled files back into agreement (follow confirmed authority)' : "Dispatch a subagent with the `task` tool to bring the coupled files back into agreement (follow confirmed authority)";
   const skillLine = harness === "opencode" ? "Load the `reconcile` skill via the skill tool in the subagent." : "Load the `git-span:reconcile` skill in the fork.";
-  const tail = harness === "generic" ? mode === "may-hold" ? `then reconcile: ${action}. Retry the command; the hold will not fire again for the same debt state. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.` : `then reconcile: ${action}. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.` : mode === "may-hold" ? `\u2014 ${action}. Then retry. ${skillLine} The hold will not fire again for the same debt state. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.` : `\u2014 ${action}. ${skillLine} Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.`;
-  const closing = `${lead}${harness === "generic" ? "," : ""} ${tail}`;
-  return [
-    `This change leaves ${subject} out of date:`,
-    "",
-    annotateBlocks(blocksText, findings),
-    "",
-    "---",
-    "",
-    closing
-  ].join("\n");
+  const tail = inline ? mode === "may-hold" ? `then reconcile: ${action}. Retry the command; the hold will not fire again for the same debt state. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.` : `then reconcile: ${action}. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.` : mode === "may-hold" ? `\u2014 ${action}. Then retry. ${skillLine} The hold will not fire again for the same debt state. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.` : `\u2014 ${action}. ${skillLine} Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.`;
+  const closing = `${lead}${inline ? "," : ""} ${tail}`;
+  return {
+    reason: [
+      `This change leaves ${subject} out of date:`,
+      "",
+      annotateBlocks(blocksText, findings),
+      "",
+      "---",
+      "",
+      closing
+    ].join("\n")
+  };
 }
 function wrapGitSpanContext(text) {
   if (text.includes("<git-span>")) return text;
@@ -9155,6 +9357,16 @@ function renderEnvironmentalReason(conditions, blocksText) {
     "---",
     "",
     "Fix the checkout/fetch issue if these dependencies need verifying."
+  ].join("\n");
+}
+function renderDeadlineExceededReason(budgetMs) {
+  return [
+    `The implicit-dependency check exceeded its ${budgetMs} ms time budget, so this change was NOT verified:`,
+    "<git-span-error>",
+    indentBlockBody("a git or git-span subprocess did not finish in time; the scan was abandoned mid-flight"),
+    "</git-span-error>",
+    "",
+    "The command proceeds anyway. Run `git span drift --format porcelain` manually if verification matters for this change."
   ].join("\n");
 }
 function renderScanFailedReason(detail) {
@@ -9282,7 +9494,8 @@ function renderRelatedSpansSection(covering, uncovered, coveringBlocksText) {
 function renderUncoveredReason(uncovered, covering, coveringBlocksText, mode = "may-hold", harness = "generic") {
   const lines = uncovered.map((path) => `- ${path}`);
   const subject = uncovered.length === 1 ? "this file carries" : "these files carry";
-  const actionLine = harness === "generic" ? `Determine if ${subject} implicit dependencies, then use \`git span\` to document them:` : harness === "claude" ? `Dispatch a forked subagent to determine if ${subject} implicit dependencies and to then use \`git span\` to document them:` : harness === "codex" ? `Spawn a forked subagent with \`spawn_agent\`, setting \`fork_turns: "all"\`, to determine if ${subject} implicit dependencies and to then use \`git span\` to document them:` : `Dispatch a subagent with the \`task\` tool to determine if ${subject} implicit dependencies and to then use \`git span\` to document them:`;
+  const inline = harness === "generic" || harness === "mswea";
+  const actionLine = inline ? `Determine if ${subject} implicit dependencies, then use \`git span\` to document them:` : harness === "claude" ? `Dispatch a forked subagent to determine if ${subject} implicit dependencies and to then use \`git span\` to document them:` : harness === "codex" ? `Spawn a forked subagent with \`spawn_agent\`, setting \`fork_turns: "all"\`, to determine if ${subject} implicit dependencies and to then use \`git span\` to document them:` : `Dispatch a subagent with the \`task\` tool to determine if ${subject} implicit dependencies and to then use \`git span\` to document them:`;
   const body = [
     "<git-span>",
     ...lines,
@@ -9298,14 +9511,20 @@ function renderUncoveredReason(uncovered, covering, coveringBlocksText, mode = "
   if (mode === "may-hold") {
     body.push("", "If none exist, retry the command to proceed (one-time check).");
   }
+  if (harness === "mswea") {
+    body.push("", skillRefToken(GIT_SPAN_SKILL_REF), "</git-span>");
+    return { reason: body.join("\n"), skillRef: GIT_SPAN_SKILL_REF };
+  }
   body.push(
     "",
     harness === "generic" ? "Load the `git-span:git-span` skill for guidance." : harness === "opencode" ? "Load the `git-span` skill via the skill tool in the subagent." : "Load the `git-span:git-span` skill in the fork.",
     "</git-span>"
   );
-  return body.join("\n");
+  return { reason: body.join("\n") };
 }
 var DEFAULT_TIMEOUT_MS2 = 1e4;
+var EVALUATION_DEADLINE_MS = 8e3;
+var execFileAsync = promisify(execFile);
 var MAX_STDOUT_BYTES = 64 * 1024 * 1024;
 var GIT_READ_OPTS = ["-c", "core.quotepath=false"];
 var GIT_DIFF_SHAPE_OPTS = ["--no-ext-diff", "--no-color", "--src-prefix=a/", "--dst-prefix=b/"];
@@ -9313,93 +9532,95 @@ function buildHunkReadArgs(repoRoot, range, paths) {
   const rangeArgs = range.kind === "staged" ? ["--cached"] : range.kind === "worktree" ? ["HEAD"] : [`${range.base}..HEAD`];
   return ["-C", repoRoot, ...GIT_READ_OPTS, "diff", "-U0", ...GIT_DIFF_SHAPE_OPTS, ...rangeArgs, "--", ...paths];
 }
-function gitText(args, cwd, timeoutMs) {
-  try {
-    return execFileSync6("git", args, {
-      cwd,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: timeoutMs,
-      maxBuffer: MAX_STDOUT_BYTES
-    });
-  } catch {
-    return "";
-  }
+async function gitText(args, cwd, timeoutMs, signal) {
+  const outcome = await trySpawnGit(args, cwd, timeoutMs, signal);
+  return outcome.ok ? outcome.stdout : "";
 }
-function gitLines(args, cwd, timeoutMs) {
-  try {
-    const out = execFileSync6("git", args, {
-      cwd,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: timeoutMs,
-      maxBuffer: MAX_STDOUT_BYTES
-    });
-    return out.split("\n").map((line) => line.trim()).filter((line) => line.length > 0).map(toPosix);
-  } catch {
-    return [];
-  }
+async function gitLines(args, cwd, timeoutMs, signal) {
+  const outcome = await trySpawnGit(args, cwd, timeoutMs, signal);
+  return outcome.ok ? splitPosixLines(outcome.stdout) : [];
 }
-function gitLinesOrNull(args, cwd, timeoutMs) {
+async function gitLinesOrNull(args, cwd, timeoutMs, signal) {
+  const outcome = await trySpawnGit(args, cwd, timeoutMs, signal);
+  return outcome.ok ? splitPosixLines(outcome.stdout) : null;
+}
+function splitPosixLines(out) {
+  return out.split("\n").map((line) => line.trim()).filter((line) => line.length > 0).map(toPosix);
+}
+async function trySpawnGit(args, cwd, timeoutMs, signal) {
+  if (signal?.aborted) return { ok: false, stdout: "", stderr: "" };
   try {
-    const out = execFileSync6("git", args, {
+    const { stdout } = await execFileAsync("git", args, {
       cwd,
       encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
+      maxBuffer: MAX_STDOUT_BYTES,
       timeout: timeoutMs,
-      maxBuffer: MAX_STDOUT_BYTES
+      signal
     });
-    return out.split("\n").map((line) => line.trim()).filter((line) => line.length > 0).map(toPosix);
-  } catch {
-    return null;
+    return { ok: true, stdout };
+  } catch (err) {
+    const streams = err;
+    return {
+      ok: false,
+      stdout: typeof streams.stdout === "string" ? streams.stdout : "",
+      stderr: typeof streams.stderr === "string" ? streams.stderr : ""
+    };
   }
 }
 function createDefaultGitExecutor(timeoutMs = DEFAULT_TIMEOUT_MS2) {
   return {
-    stagedPaths: async (cwd) => {
+    stagedPaths: async (cwd, signal) => {
       const repoRoot = resolveRepoRoot(cwd);
       if (!repoRoot) return [];
-      return gitLines(["-C", repoRoot, ...GIT_READ_OPTS, "diff", "--cached", "--name-only"], repoRoot, timeoutMs);
+      return gitLines(
+        ["-C", repoRoot, ...GIT_READ_OPTS, "diff", "--cached", "--name-only"],
+        repoRoot,
+        timeoutMs,
+        signal
+      );
     },
-    trackedModifiedPaths: async (cwd) => {
+    trackedModifiedPaths: async (cwd, signal) => {
       const repoRoot = resolveRepoRoot(cwd);
       if (!repoRoot) return [];
-      return gitLines(["-C", repoRoot, ...GIT_READ_OPTS, "diff", "--name-only"], repoRoot, timeoutMs);
+      return gitLines(["-C", repoRoot, ...GIT_READ_OPTS, "diff", "--name-only"], repoRoot, timeoutMs, signal);
     },
-    outgoingPaths: async (cwd) => {
+    outgoingPaths: async (cwd, signal) => {
       const repoRoot = resolveRepoRoot(cwd);
       if (!repoRoot) return { paths: [], base: null };
-      const upstream = gitLinesOrNull(
+      const upstream = await gitLinesOrNull(
         ["-C", repoRoot, ...GIT_READ_OPTS, "diff", "--name-only", "@{u}..HEAD"],
         repoRoot,
-        timeoutMs
+        timeoutMs,
+        signal
       );
       if (upstream !== null) return { paths: upstream, base: "@{u}" };
-      const base = gitLines(["-C", repoRoot, "merge-base", "HEAD", "origin/HEAD"], repoRoot, timeoutMs)[0];
+      const base = (await gitLines(["-C", repoRoot, "merge-base", "HEAD", "origin/HEAD"], repoRoot, timeoutMs, signal))[0];
       if (!base) return { paths: [], base: null };
       return {
-        paths: gitLines(
+        paths: await gitLines(
           ["-C", repoRoot, ...GIT_READ_OPTS, "diff", "--name-only", `${base}..HEAD`],
           repoRoot,
-          timeoutMs
+          timeoutMs,
+          signal
         ),
         base
       };
     },
-    pathspecPaths: async (paths, cwd) => {
+    pathspecPaths: async (paths, cwd, signal) => {
       const repoRoot = resolveRepoRoot(cwd);
       if (!repoRoot || paths.length === 0) return [];
       return gitLines(
         ["-C", repoRoot, ...GIT_READ_OPTS, "diff", "HEAD", "--name-only", "--", ...paths],
         repoRoot,
-        timeoutMs
+        timeoutMs,
+        signal
       );
     },
-    changedHunks: async (paths, range, cwd) => {
+    changedHunks: async (paths, range, cwd, signal) => {
       if (range.kind === "unresolvable" || paths.length === 0) return [];
       const repoRoot = resolveRepoRoot(cwd);
       if (!repoRoot) return [];
-      const text = gitText(buildHunkReadArgs(repoRoot, range, paths), repoRoot, timeoutMs);
+      const text = await gitText(buildHunkReadArgs(repoRoot, range, paths), repoRoot, timeoutMs, signal);
       if (text.trim().length === 0) return [];
       try {
         return parseUnifiedDiff(text);
@@ -9430,109 +9651,57 @@ function isOlderThan(version, floor) {
   }
   return false;
 }
-function probeGitSpanVersion(repoRoot, timeoutMs) {
-  try {
-    const out = execFileSync6("git", ["span", "--version"], {
-      cwd: repoRoot,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: timeoutMs,
-      maxBuffer: MAX_STDOUT_BYTES
-    });
-    const triple = parseSemverTriple(out);
-    return triple ? triple.join(".") : null;
-  } catch {
-    return null;
-  }
+async function probeGitSpanVersion(repoRoot, timeoutMs, signal) {
+  const outcome = await trySpawnGit(["span", "--version"], repoRoot, timeoutMs, signal);
+  if (!outcome.ok) return null;
+  const triple = parseSemverTriple(outcome.stdout);
+  return triple ? triple.join(".") : null;
 }
-function classifyCliFailure(detail, repoRoot, timeoutMs) {
+async function classifyCliFailure(detail, repoRoot, timeoutMs, signal) {
   if (!isArgumentParseFailure(detail)) return new AdvisorScanError(detail);
-  return new AdvisorIncompatibleCliError(detail, probeGitSpanVersion(repoRoot, timeoutMs));
+  return new AdvisorIncompatibleCliError(detail, await probeGitSpanVersion(repoRoot, timeoutMs, signal));
 }
 function createDefaultAdvisorExecutors(timeoutMs = DEFAULT_TIMEOUT_MS2) {
   return {
-    fix: async (paths, cwd) => {
+    fix: async (paths, cwd, signal) => {
       const repoRoot = resolveRepoRoot(cwd);
       if (!repoRoot || paths.length === 0) return;
-      try {
-        execFileSync6("git", ["span", "drift", ...paths, "--fix"], {
-          cwd: repoRoot,
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "pipe"],
-          timeout: timeoutMs,
-          maxBuffer: MAX_STDOUT_BYTES
-        });
-      } catch (err) {
-        const stderr = err.stderr;
-        const stderrText = typeof stderr === "string" ? stderr.trim() : "";
-        if (stderrText.length > 0) {
-          const classified = classifyCliFailure(stderrText, repoRoot, timeoutMs);
-          if (classified instanceof AdvisorIncompatibleCliError) throw classified;
-        }
+      const outcome = await trySpawnGit(["span", "drift", ...paths, "--fix"], repoRoot, timeoutMs, signal);
+      if (outcome.ok) return;
+      const stderrText = outcome.stderr.trim();
+      if (stderrText.length > 0) {
+        const classified = await classifyCliFailure(stderrText, repoRoot, timeoutMs, signal);
+        if (classified instanceof AdvisorIncompatibleCliError) throw classified;
       }
     },
-    drift: async (paths, cwd) => {
+    drift: async (paths, cwd, signal) => {
       const repoRoot = resolveRepoRoot(cwd);
       if (!repoRoot || paths.length === 0) return [];
-      let out;
-      try {
-        out = execFileSync6("git", ["span", "drift", "--format", "porcelain", ...paths], {
-          cwd: repoRoot,
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "pipe"],
-          timeout: timeoutMs,
-          maxBuffer: MAX_STDOUT_BYTES
-        });
-      } catch (err) {
-        const stdout = err.stdout;
-        const stderr = err.stderr;
-        const stdoutText = typeof stdout === "string" ? stdout : "";
-        const stderrText = typeof stderr === "string" ? stderr : "";
-        if (stdoutText.trim().length === 0 && stderrText.trim().length > 0) {
-          throw classifyCliFailure(stderrText.trim(), repoRoot, timeoutMs);
-        }
-        out = stdoutText;
+      const outcome = await trySpawnGit(
+        ["span", "drift", "--format", "porcelain", ...paths],
+        repoRoot,
+        timeoutMs,
+        signal
+      );
+      if (!outcome.ok && outcome.stdout.trim().length === 0 && outcome.stderr.trim().length > 0) {
+        throw await classifyCliFailure(outcome.stderr.trim(), repoRoot, timeoutMs, signal);
       }
-      return parseDriftPorcelain(out);
+      return parseDriftPorcelain(outcome.stdout);
     },
-    list: async (paths, cwd) => {
+    list: async (paths, cwd, signal) => {
       const repoRoot = resolveRepoRoot(cwd);
       if (!repoRoot || paths.length === 0) return [];
-      let out;
-      try {
-        out = execFileSync6("git", ["span", "list", "--porcelain", ...paths], {
-          cwd: repoRoot,
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "pipe"],
-          timeout: timeoutMs,
-          maxBuffer: MAX_STDOUT_BYTES
-        });
-      } catch (err) {
-        const stdout = err.stdout;
-        const stderr = err.stderr;
-        const stdoutText = typeof stdout === "string" ? stdout : "";
-        const stderrText = typeof stderr === "string" ? stderr : "";
-        if (stdoutText.trim().length === 0 && stderrText.trim().length > 0) {
-          throw new AdvisorScanError(stderrText.trim());
-        }
-        out = stdoutText;
+      const outcome = await trySpawnGit(["span", "list", "--porcelain", ...paths], repoRoot, timeoutMs, signal);
+      if (!outcome.ok && outcome.stdout.trim().length === 0 && outcome.stderr.trim().length > 0) {
+        throw new AdvisorScanError(outcome.stderr.trim());
       }
-      return parsePorcelain(out);
+      return parsePorcelain(outcome.stdout);
     },
-    listBlocks: async (names, cwd) => {
+    listBlocks: async (names, cwd, signal) => {
       const repoRoot = resolveRepoRoot(cwd);
       if (!repoRoot || names.length === 0) return "";
-      try {
-        return execFileSync6("git", ["span", "list", ...names], {
-          cwd: repoRoot,
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "pipe"],
-          timeout: timeoutMs,
-          maxBuffer: MAX_STDOUT_BYTES
-        });
-      } catch {
-        return "";
-      }
+      const outcome = await trySpawnGit(["span", "list", ...names], repoRoot, timeoutMs, signal);
+      return outcome.ok ? outcome.stdout : "";
     }
   };
 }
@@ -9602,34 +9771,31 @@ function createHandler(git = createDefaultGitExecutor(), executors = createDefau
           // the agent-facing output of a suppression is nothing at all.
           logger: ctx.logger
         },
-        "codex"
+        "codex",
+        void 0,
+        // Core defects (non-advisor-error throws) warn here instead of vanishing
+        // into evaluateAdvisor's fail-open catch.
+        ctx.logger
       );
       if (result.decision !== "hold") {
         if (result.kind === "environmental" || result.kind === "scan-failed") {
           ctx.logger.warn("git-span advisor allowed with an unresolved condition", { reason: result.reason });
-          return preToolUseOutput({
-            additionalContext: wrapGitSpanContext(result.reason),
-            systemMessage: result.reason
-          });
+          return preToolUseOutput({ additionalContext: wrapGitSpanContext(result.reason) });
         }
         if (result.kind === "semantic-drift-report" || result.kind === "uncovered-writes-report") {
-          return preToolUseOutput({
-            additionalContext: wrapGitSpanContext(result.reason),
-            systemMessage: result.reason
-          });
+          return preToolUseOutput({ additionalContext: wrapGitSpanContext(result.reason) });
         }
         return void 0;
       }
       if (hardDeny) {
         return preToolUseOutput({
           permissionDecision: "deny",
-          permissionDecisionReason: result.reason,
-          systemMessage: result.reason
+          permissionDecisionReason: result.reason
         });
       }
       const warning = `Could not block this command \u2014 the issue below still needs resolving:
 ${result.reason}`;
-      return preToolUseOutput({ additionalContext: wrapGitSpanContext(warning), systemMessage: warning });
+      return preToolUseOutput({ additionalContext: wrapGitSpanContext(warning) });
     } catch (err) {
       ctx.logger.warn("git-span advisor failed open on an uncaught error", { err });
       return void 0;
@@ -9724,7 +9890,6 @@ function classifyApplyPatchResponse(toolResponse) {
   if (normalized === null) return "unknown";
   return normalized.stdout.startsWith(APPLY_PATCH_SUCCESS_PREFIX) ? "success" : "failure";
 }
-var noRangeRecovery = () => null;
 function plannedPatchCandidates(record2, cwd) {
   const repoRoot = resolveRepoRoot(cwd);
   if (record2 === null || repoRoot === null || toPosix(record2.repoRoot) !== toPosix(repoRoot)) return [];
@@ -9734,45 +9899,6 @@ function plannedPatchCandidates(record2, cwd) {
     ranges: touch.ranges,
     preTrackedDelete: touch.operation === "delete" && touch.evidence?.kind === "tracked"
   }));
-}
-async function runApplyPatchTouches(command, cwd, sessionId, record2, executors, memo, invocationId) {
-  const planned = plannedPatchCandidates(record2, cwd);
-  const plannedPaths = new Set(planned.map(({ absolutePath }) => absolutePath));
-  const fallback = parseApplyPatch(command, noRangeRecovery).map(
-    (anchor) => ({
-      absolutePath: abspathAgainst(cwd, anchor.path),
-      operation: anchor.absent ? "delete" : anchor.kind === "create" ? "create-overwrite" : "modify",
-      ranges: anchor.range === void 0 ? [] : [anchor.range],
-      preTrackedDelete: false
-    })
-  ).filter(({ absolutePath }) => !plannedPaths.has(absolutePath));
-  const candidates = [...planned, ...fallback];
-  const tracked = filterTrackedEligibility(
-    candidates.map((value) => ({ absolutePath: value.absolutePath, value })),
-    { cwd }
-  );
-  const eligible = new Set(tracked.eligible.map(({ value }) => value));
-  for (const candidate of candidates) if (candidate.preTrackedDelete) eligible.add(candidate);
-  const touches = [];
-  for (const candidate of candidates) {
-    if (!eligible.has(candidate)) continue;
-    const ranges = candidate.ranges.length === 0 ? [void 0] : candidate.ranges;
-    for (const range of ranges) {
-      touches.push({
-        kind: "write",
-        sessionId,
-        cwd,
-        filePath: candidate.absolutePath,
-        ...invocationId === null ? {} : { invocationId },
-        written: "",
-        range,
-        targetState: candidate.operation === "delete" ? "absent" : "exists",
-        ...candidate.operation === "delete" ? { postState: { realDelete: true } } : {}
-      });
-    }
-  }
-  const batch = await runTouchHooks(touches, executors, memo, invocationId);
-  return batch.outputs.flatMap((output) => output.additionalContext === null ? [] : [output.additionalContext]);
 }
 function createHandler2(executors = createDefaultTouchExecutors(), memoFactory = createDiskMemoStore, layout = DEFAULT_SESSION_LAYOUT) {
   return async (input, ctx) => {
@@ -9796,7 +9922,7 @@ function createHandler2(executors = createDefaultTouchExecutors(), memoFactory =
         workdir = codeMode.workdir;
       }
       if (command2 === null || command2.length === 0) return void 0;
-      const effectiveCwd = workdir !== null && !/[`$]/.test(workdir) ? resolvePath3(cwd, workdir) : cwd;
+      const effectiveCwd = resolveFrame(workdir ?? void 0, cwd);
       const blocks2 = await runLayeredBashTouches(
         command2,
         effectiveCwd,
@@ -9809,8 +9935,7 @@ function createHandler2(executors = createDefaultTouchExecutors(), memoFactory =
         createDefaultPlannedTouchStore(layout)
       );
       if (blocks2.length === 0) return void 0;
-      const combined2 = blocks2.join("");
-      return postToolUseOutput({ additionalContext: combined2, systemMessage: combined2 });
+      return postToolUseOutput({ additionalContext: blocks2.join("") });
     }
     const command = narrowApplyPatchCommand(input.tool_input);
     if (command === null) return void 0;
@@ -9828,14 +9953,14 @@ function createHandler2(executors = createDefaultTouchExecutors(), memoFactory =
       command,
       cwd,
       sessionId,
-      record2,
+      plannedPatchCandidates(record2, cwd),
       executors,
       memo,
-      input.tool_use_id === void 0 ? null : `${sessionId}:${input.tool_use_id}`
+      input.tool_use_id === void 0 ? null : `${sessionId}:${input.tool_use_id}`,
+      ctx.logger
     );
     if (blocks.length === 0) return void 0;
-    const combined = blocks.join("");
-    return postToolUseOutput({ additionalContext: combined, systemMessage: combined });
+    return postToolUseOutput({ additionalContext: blocks.join("") });
   };
 }
 disableUpdateCheck();

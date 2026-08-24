@@ -22,8 +22,9 @@
  * Fail-open is load-bearing at every layer: advisor-core already resolves any
  * internal error to allow, and this adapter wraps the whole path in a try/catch
  * that allows-and-logs on any uncaught exception — the advisor must never brick a
- * commit on its own failure. The timeout is milliseconds here (the Claude CLI
- * emits ms into `hooks.json`).
+ * commit on its own failure. The timeout is milliseconds here (the hooks
+ * build wrapper divides to seconds at emit, mirroring the Codex CLI —
+ * Claude Code itself reads the `hooks.json` field as seconds).
  */
 
 import { type HookContext, type PreToolUseInput, preToolUseHook, preToolUseOutput } from '@goodfoot/claude-code-hooks';

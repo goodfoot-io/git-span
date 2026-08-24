@@ -47,11 +47,11 @@ function nodeModulesComments(generated: string): string[] {
 
 /** The emitted hooks.json parsed from the built output directory. */
 function readHooksJson(outDir: string): {
-  hooks: Record<string, { matcher?: string; hooks: { command: string }[] }[]>;
+  hooks: Record<string, { matcher?: string; hooks: { command: string; timeout?: number }[] }[]>;
   __generated?: { files: string[] };
 } {
   return JSON.parse(readFileSync(join(outDir, 'hooks.json'), 'utf8')) as {
-    hooks: Record<string, { matcher?: string; hooks: { command: string }[] }[]>;
+    hooks: Record<string, { matcher?: string; hooks: { command: string; timeout?: number }[] }[]>;
     __generated?: { files: string[] };
   };
 }
@@ -64,7 +64,11 @@ function groupBundle(group: { hooks: { command: string }[] }): string | undefine
  * The group whose hooks run the named bundle — hooks.json groups may carry a
  * matcher at group level; an unconstrained group has no matcher at all.
  */
-function groupFor(out: ReturnType<typeof readHooksJson>, event: string, bundle: string): { matcher?: string } | null {
+function groupFor(
+  out: ReturnType<typeof readHooksJson>,
+  event: string,
+  bundle: string
+): { matcher?: string; hooks: { command: string; timeout?: number }[] } | null {
   const groups = out.hooks[event] ?? [];
   for (const group of groups) {
     if (group.hooks.some((h) => h.command.includes(bundle))) return group;
@@ -265,6 +269,21 @@ describe('generated hook bin portability', () => {
       }
       expect(groupFor(out, 'PreToolUse', 'snapshot.mjs')).toBeNull();
       expect(groupFor(out, 'PreToolUse', 'activity-log.mjs')).toBeNull();
+      // main-359: the wrapper converts registration timeouts from ms to
+      // seconds at emit — Claude Code reads the field as seconds ("Seconds
+      // before canceling"), so a verbatim 10_000 would register a ~2.8-hour
+      // ceiling instead of ~10s. Pin every converted value so a wrapper
+      // regression fails loudly here.
+      expect(groupFor(out, 'SessionStart', 'session-start.mjs')?.hooks[0]?.timeout).toBe(1);
+      for (const [event, bundle] of [
+        ['PreToolUse', 'advisor.mjs'],
+        ['PreToolUse', 'static-plan.mjs'],
+        ['PostToolUse', 'post-tool-use.mjs'],
+        ['PostToolUseFailure', 'post-tool-use-failure.mjs'],
+        ['SessionEnd', 'session-end.mjs']
+      ] as const) {
+        expect(groupFor(out, event, bundle)?.hooks[0]?.timeout, `${event} ${bundle} timeout`).toBe(10);
+      }
     } finally {
       rmSync(outDir, { recursive: true, force: true });
     }
@@ -288,6 +307,8 @@ describe('generated hook bin portability', () => {
       );
       const out = readHooksJson(outDir);
       expect(groupFor(out, 'PreToolUse', 'static-plan.mjs')?.matcher).toBe('Bash');
+      // main-359: same wrapper conversion as the claude plugin emit.
+      expect(groupFor(out, 'PreToolUse', 'advisor.mjs')?.hooks[0]?.timeout).toBe(10);
       expect(groupFor(out, 'PostToolUse', 'post-tool-use.mjs')?.matcher).toBe('Read|Edit|Write|Bash');
       expect(groupFor(out, 'PostToolUseFailure', 'post-tool-use-failure.mjs')?.matcher).toBe('Bash');
       expect(groupFor(out, 'PreToolUse', 'snapshot.mjs')).toBeNull();

@@ -8,6 +8,15 @@
  * `.mjs` output normalized afterward by
  * `scripts/normalize-hook-module-comments.js`.
  *
+ * It also converts each manifest's hook registration `timeout` from
+ * milliseconds to seconds -- but only for the Claude CLI, which emits the
+ * source value verbatim even though Claude Code reads the field as seconds
+ * ("Seconds before canceling"). The Codex CLI performs the same division
+ * itself (`timeoutMsToSeconds`) before writing its manifest, so its output
+ * must pass through untouched; re-dividing it would shrink every ceiling a
+ * thousandfold. Source authoring stays milliseconds across both adapters,
+ * matching the codex pipeline.
+ *
  * This package's package.json defines "claude-code-hooks" and "codex-hooks"
  * scripts that point here. Because Yarn resolves a bare `yarn <name>`
  * invocation against package.json scripts *before* falling back to a
@@ -119,6 +128,27 @@ function canonicalizeHookManifest(outputPath, inputArg) {
   writeFileSync(outputPath, `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
+// Mirrors the codex-hooks CLI's own emit-time conversion exactly, including
+// the 1-second floor: a sub-second ms budget would otherwise round down to a
+// zero-second (never-cancelling) registration.
+function timeoutMsToSeconds(timeoutMs) {
+  return Math.max(1, Math.ceil(timeoutMs / 1000));
+}
+
+function convertHookTimeoutsToSeconds(outputPath) {
+  const manifest = JSON.parse(readFileSync(outputPath, 'utf8'));
+  for (const groups of Object.values(manifest.hooks ?? {})) {
+    for (const group of groups ?? []) {
+      for (const hook of group.hooks ?? []) {
+        if (typeof hook.timeout === 'number') {
+          hook.timeout = timeoutMsToSeconds(hook.timeout);
+        }
+      }
+    }
+  }
+  writeFileSync(outputPath, `${JSON.stringify(manifest, null, 2)}\n`);
+}
+
 async function main() {
   const [packageName, ...cliArgs] = process.argv.slice(2);
   if (!packageName) {
@@ -147,6 +177,11 @@ async function main() {
     return;
   }
   const outputDir = dirname(resolve(process.cwd(), outputArg));
+  if (packageName === '@goodfoot/claude-code-hooks') {
+    // Only the Claude CLI needs the division -- the Codex CLI already emits
+    // seconds, and converting its manifest again would corrupt it.
+    convertHookTimeoutsToSeconds(resolve(process.cwd(), outputArg));
+  }
   normalizeModuleComments([outputDir]);
   canonicalizeHookManifest(resolve(process.cwd(), outputArg), findInputPath(cliArgs));
 }
