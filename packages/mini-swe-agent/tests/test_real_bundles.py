@@ -246,7 +246,9 @@ def assert_no_legacy_runtime_artifacts(repo: Path, home: Path) -> None:
         r"(?:snapshots|snapshot-recordless-note|activity-log|\.objects(?:/|$)|\.index$|tombstone|watcher|\.sock$|socket)",
         re.IGNORECASE,
     )
-    assert [path for path in paths if forbidden.search(path.as_posix()) and not context_socket.search(path.as_posix())] == []
+    assert [
+        path for path in paths if forbidden.search(path.as_posix()) and not context_socket.search(path.as_posix())
+    ] == []
     sockets = [path for path in paths if path.is_socket()]
     assert sockets
     assert all(context_socket.search(path.as_posix()) for path in sockets)

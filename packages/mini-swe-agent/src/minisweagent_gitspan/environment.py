@@ -254,7 +254,11 @@ class HookedEnvironmentMixin:
             required=self.config.hooks_required,
             skill_file=self.config.skill_file,
         )
-        missing = [str(hooks.hooks_dir / f"{name}.mjs") for name in ALL_HOOKS if not (hooks.hooks_dir / f"{name}.mjs").is_file()]
+        missing = [
+            str(hooks.hooks_dir / f"{name}.mjs")
+            for name in ALL_HOOKS
+            if not (hooks.hooks_dir / f"{name}.mjs").is_file()
+        ]
         if missing:
             raise RequiredHookError("missing hook bundles: " + ", ".join(missing))
         if self.config.hooks_required:
@@ -474,7 +478,10 @@ class HookedDockerEnvironment(HookedEnvironmentMixin, DockerEnvironment):
             skill_file=self.config.skill_file,
         )
         bundle_paths = [str(hooks.hooks_dir / f"{name}.mjs") for name in ALL_HOOKS]
-        checked = self._container_probe(["python3", "-c", _BUNDLE_CHECK_SCRIPT, *bundle_paths])
+        try:
+            checked = self._container_probe(["python3", "-c", _BUNDLE_CHECK_SCRIPT, *bundle_paths])
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise RequiredHookError(f"hook bundle check failed: {exc}") from exc
         if checked.returncode != 0:
             detail = (checked.stderr or checked.stdout).strip()
             raise RequiredHookError(detail or "could not verify hook bundles inside the container")
@@ -486,12 +493,15 @@ class HookedDockerEnvironment(HookedEnvironmentMixin, DockerEnvironment):
                 self._container_probe,
                 "python3",
             )
-            inspected = subprocess.run(
-                [self.config.executable, "inspect", "--format", "{{.Image}}", self.container_id],
-                capture_output=True,
-                text=True,
-                timeout=_PROBE_TIMEOUT,
-            )
+            try:
+                inspected = subprocess.run(
+                    [self.config.executable, "inspect", "--format", "{{.Image}}", self.container_id],
+                    capture_output=True,
+                    text=True,
+                    timeout=_PROBE_TIMEOUT,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise RequiredHookError(f"container image inspection failed: {exc}") from exc
             image_id = inspected.stdout.strip()
             if inspected.returncode != 0 or not image_id:
                 detail = (inspected.stderr or inspected.stdout).strip()

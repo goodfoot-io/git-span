@@ -1,11 +1,13 @@
 """HookedDockerEnvironment: hooks run inside the container, fail-open."""
 
+import subprocess
+
 import pytest
 from conftest import read_record
 from minisweagent.exceptions import Submitted
 
 from minisweagent_gitspan.bridge import RequiredHookError
-from minisweagent_gitspan.environment import HookedDockerEnvironment
+from minisweagent_gitspan.environment import _PROBE_TIMEOUT, HookedDockerEnvironment
 
 
 def make_environment(stub_hooks, fake_docker, tmp_path, **kwargs):
@@ -99,6 +101,65 @@ def test_probe_failure_fails_closed_when_hooks_requested(stub_hooks, fake_docker
     monkeypatch.setenv("FAKE_DOCKER_FAIL_PROBE", "1")
     with pytest.raises(RequiredHookError, match="could not locate"):
         make_environment(stub_hooks, fake_docker, tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("injected", "detail"),
+    [
+        (FileNotFoundError(2, "no such file or directory"), "no such file or directory"),
+        (subprocess.TimeoutExpired(cmd="docker exec", timeout=_PROBE_TIMEOUT), "timed out after"),
+    ],
+)
+def test_bundle_check_infrastructure_failure_becomes_required_hook_error(
+    stub_hooks, fake_docker, tmp_path, monkeypatch, injected, detail
+):
+    """A docker exec OSError/timeout at the bundle-check probe lands as
+    RequiredHookError (with the underlying detail), not a raw traceback."""
+
+    def failing_probe(self, args, cwd=None):
+        raise injected
+
+    monkeypatch.setattr(HookedDockerEnvironment, "_container_probe", failing_probe)
+    with pytest.raises(RequiredHookError, match=f"hook bundle check failed.*{detail}"):
+        make_environment(stub_hooks, fake_docker, tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("injected", "detail"),
+    [
+        (FileNotFoundError(2, "no such file or directory"), "no such file or directory"),
+        (subprocess.TimeoutExpired(cmd="docker inspect", timeout=_PROBE_TIMEOUT), "timed out after"),
+    ],
+)
+def test_image_inspection_infrastructure_failure_becomes_required_hook_error(
+    stub_hooks, fake_docker, tmp_path, monkeypatch, injected, detail
+):
+    """A missing docker executable / hang at the image-inspect probe lands as
+    RequiredHookError in the record path, not a raw OSError/TimeoutExpired."""
+    import minisweagent_gitspan.environment as environment_module
+
+    real_run = environment_module.subprocess.run
+
+    def failing_run(args, **kwargs):
+        if "inspect" in args:
+            raise injected
+        return real_run(args, **kwargs)
+
+    monkeypatch.setattr(environment_module.subprocess, "run", failing_run)
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    skill = tmp_path / "SKILL.md"
+    skill.write_text("# skill\n")
+
+    with pytest.raises(RequiredHookError, match=f"container image inspection failed.*{detail}"):
+        make_environment(
+            stub_hooks,
+            fake_docker,
+            tmp_path,
+            hooks_required=True,
+            skill_file=str(skill),
+            require_initial_no_spans=True,
+            experiment_arm="treatment",
+        )
 
 
 def test_missing_bundles_fail_environment_construction(tmp_path, fake_docker):
