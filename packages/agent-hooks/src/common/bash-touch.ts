@@ -217,7 +217,7 @@ type Verdict = 'failed' | 'succeeded' | 'unknown';
 const FILE_PRODUCING_OPS: ReadonlySet<string> = new Set(['create-overwrite', 'rename-copy', 'truncate', 'append']);
 
 /** One pass-A evaluation: the span, its touch, and the (post-resolution) gate outcome. */
-interface SpanEval {
+export interface SpanEval {
   match: ResolvedMatch;
   /** The translated touch, or `null` when the span failed `resolveTouchScope`. */
   touch: TouchInput | null;
@@ -266,6 +266,119 @@ function joinOfCommand(
 }
 
 /**
+ * Phase E - pass A: translate every span once via [bashSpanToTouch] and
+ * evaluate its gate, pairing cp/install sources with destinations and mv
+ * deletes with rename-copies by declaration order (the parser emits sources
+ * before destinations). `install -s`/`--strip` is deliberately never paired:
+ * stripped output never equals the source, so install dests gate
+ * existence-only.
+ */
+export function translateAndGateSpans(
+  resolved: readonly ResolvedMatch[],
+  groups: Map<number, ResolvedMatch[]>,
+  order: readonly number[],
+  sessionId: string,
+  cwd: string,
+  scopeAlreadyResolved: boolean,
+  probeCache: RealityProbeCache
+): Map<number, SpanEval[]> {
+  const evals = new Map<number, SpanEval[]>();
+  for (const idx of order) {
+    const spans = groups.get(idx);
+    if (spans === undefined) continue; // guard-only command — nothing to evaluate
+    const readPaths = spans
+      .filter((m) => (m.idiom === 'cp-write' || m.idiom === 'install-write') && m.span.operation === 'read')
+      .map((m) => m.span.absolutePath);
+    const deletePaths = spans.filter((m) => m.span.operation === 'delete').map((m) => m.span.absolutePath);
+    let readCursor = 0;
+    let deleteCursor = 0;
+    const list: SpanEval[] = [];
+    for (const m of spans) {
+      const touch = bashSpanToTouch(m.span, sessionId, cwd, scopeAlreadyResolved);
+      const entry: SpanEval = {
+        match: m,
+        touch,
+        outcome: 'inconclusive',
+        explained: false,
+        commandIndex: idx,
+        path: m.span.absolutePath,
+        sourceKey: null
+      };
+      if (touch !== null && touch.kind === 'write') {
+        if (m.span.operation === 'create-overwrite' && (m.idiom === 'cp-write' || m.idiom === 'install-write')) {
+          const source = readPaths[readCursor];
+          if (source !== undefined) {
+            readCursor += 1;
+            // `install -s`/`--strip` is deliberately never paired: stripped
+            // output never equals the source, so install dests gate
+            // existence-only (plan §3 step 1b).
+            if (m.idiom === 'cp-write') {
+              touch.sourcePath = source;
+              entry.sourceKey = source;
+            }
+          }
+        } else if (m.span.operation === 'rename-copy') {
+          const source = deletePaths[deleteCursor];
+          if (source !== undefined) {
+            deleteCursor += 1;
+            touch.renameSourcePath = source;
+          }
+        }
+      }
+      entry.outcome = evalSpanGate(m, touch, probeCache);
+      list.push(entry);
+    }
+    evals.set(idx, list);
+  }
+  return evals;
+}
+
+/** Phase F - the explanation map: the highest simple command index with a decisivePass on each path. */
+export function buildPassByPath(
+  evals: ReadonlyMap<number, readonly SpanEval[]>,
+  order: readonly number[]
+): Map<string, number> {
+  const passByPath = new Map<string, number>();
+  for (const idx of order) {
+    const list = evals.get(idx);
+    if (list === undefined) continue;
+    for (const e of list) {
+      if (e.outcome === 'decisivePass') {
+        const prev = passByPath.get(e.path);
+        if (prev === undefined || idx > prev) passByPath.set(e.path, idx);
+      }
+    }
+  }
+  return passByPath;
+}
+
+/**
+ * Phase G - resolve absent-source holds against the now-complete map, and
+ * downgrade explained fails: a decisiveFail on a path a later command
+ * demonstrably rewrote or deleted is the overwrite, not the earlier command
+ * failing (plan §3 step 2). Mutates entries in place.
+ */
+export function reconcileAgainstPassMap(
+  evals: ReadonlyMap<number, SpanEval[]>,
+  order: readonly number[],
+  passByPath: ReadonlyMap<string, number>
+): void {
+  for (const idx of order) {
+    const list = evals.get(idx);
+    if (list === undefined) continue;
+    for (const e of list) {
+      if (e.outcome === 'pending') {
+        const passIdx = e.sourceKey !== null ? passByPath.get(e.sourceKey) : undefined;
+        e.outcome = passIdx !== undefined && passIdx > e.commandIndex ? 'decisivePass' : 'decisiveFail';
+      } else if (e.outcome === 'decisiveFail') {
+        const passIdx = passByPath.get(e.path);
+        if (passIdx !== undefined && passIdx > e.commandIndex) e.explained = true;
+      }
+    }
+  }
+}
+
+/**
  * Phase D - command grouping and ordering: resolved spans group by simple
  * command index in walker first-appearance order; span-less guard commands
  * (`false`/`true`/`:`) join the order with no group - their deterministic
@@ -303,7 +416,7 @@ export function orderCommands(
 }
 
 /**
- * Phase C - probe-cache seeding (plan Â§3 step 1c): derive every absent target
+ * Phase C - probe-cache seeding (plan §3 step 1c): derive every absent target
  * and cp/install source of the compound, plus the later-recreate scope (the
  * delete paths a later command can re-create with a file-producing write),
  * and build the single per-invocation cache from them. The first gate that
@@ -403,90 +516,11 @@ export async function runBashTouches(
   // span-less guards join the order with no group.
   const { groups, guardByIndex, order: commandOrder } = orderCommands(resolved, guards);
 
-  // Pass A: translate every span once and evaluate its gate, pairing
-  // cp/install sources with destinations and mv deletes with rename-copies by
-  // declaration order (the parser emits sources before destinations).
-  const evals = new Map<number, SpanEval[]>();
-  for (const idx of commandOrder) {
-    const spans = groups.get(idx);
-    if (spans === undefined) continue; // guard-only command — nothing to evaluate
-    const readPaths = spans
-      .filter((m) => (m.idiom === 'cp-write' || m.idiom === 'install-write') && m.span.operation === 'read')
-      .map((m) => m.span.absolutePath);
-    const deletePaths = spans.filter((m) => m.span.operation === 'delete').map((m) => m.span.absolutePath);
-    let readCursor = 0;
-    let deleteCursor = 0;
-    const list: SpanEval[] = [];
-    for (const m of spans) {
-      const touch = bashSpanToTouch(m.span, sessionId, cwd, scopeAlreadyResolved);
-      const entry: SpanEval = {
-        match: m,
-        touch,
-        outcome: 'inconclusive',
-        explained: false,
-        commandIndex: idx,
-        path: m.span.absolutePath,
-        sourceKey: null
-      };
-      if (touch !== null && touch.kind === 'write') {
-        if (m.span.operation === 'create-overwrite' && (m.idiom === 'cp-write' || m.idiom === 'install-write')) {
-          const source = readPaths[readCursor];
-          if (source !== undefined) {
-            readCursor += 1;
-            // `install -s`/`--strip` is deliberately never paired: stripped
-            // output never equals the source, so install dests gate
-            // existence-only (plan §3 step 1b).
-            if (m.idiom === 'cp-write') {
-              touch.sourcePath = source;
-              entry.sourceKey = source;
-            }
-          }
-        } else if (m.span.operation === 'rename-copy') {
-          const source = deletePaths[deleteCursor];
-          if (source !== undefined) {
-            deleteCursor += 1;
-            touch.renameSourcePath = source;
-          }
-        }
-      }
-      entry.outcome = evalSpanGate(m, touch, probeCache);
-      list.push(entry);
-    }
-    evals.set(idx, list);
-  }
-
-  // The explanation map (plan §3 step 2): the highest simpleCommandIndex with
-  // a decisivePass on each path.
-  const passByPath = new Map<string, number>();
-  for (const idx of commandOrder) {
-    const list = evals.get(idx);
-    if (list === undefined) continue;
-    for (const e of list) {
-      if (e.outcome === 'decisivePass') {
-        const prev = passByPath.get(e.path);
-        if (prev === undefined || idx > prev) passByPath.set(e.path, idx);
-      }
-    }
-  }
-
-  // Resolve the absent-source holds against the now-complete map, and
-  // downgrade explained fails: a decisiveFail on a path a later command
-  // demonstrably rewrote or deleted is the overwrite, not the earlier command
-  // failing (plan §3 step 2).
-  for (const idx of commandOrder) {
-    const list = evals.get(idx);
-    if (list === undefined) continue;
-    for (const e of list) {
-      if (e.outcome === 'pending') {
-        const passIdx = e.sourceKey !== null ? passByPath.get(e.sourceKey) : undefined;
-        e.outcome = passIdx !== undefined && passIdx > e.commandIndex ? 'decisivePass' : 'decisiveFail';
-      } else if (e.outcome === 'decisiveFail') {
-        const passIdx = passByPath.get(e.path);
-        if (passIdx !== undefined && passIdx > e.commandIndex) e.explained = true;
-      }
-    }
-  }
-
+  // Pass A (phase E): one translation and gate evaluation per span.
+  const evals = translateAndGateSpans(resolved, groups, commandOrder, sessionId, cwd, scopeAlreadyResolved, probeCache);
+  // Explanation map (phase F), then pending/explained reconciliation (G).
+  const passByPath = buildPassByPath(evals, commandOrder);
+  reconcileAgainstPassMap(evals, commandOrder, passByPath);
   // The later-recreate explanation (round-3, mark widened round-4): a
   // delete's decisiveFail — "file present, so the delete didn't happen" — is
   // also explained when a LATER command writes the same path with a

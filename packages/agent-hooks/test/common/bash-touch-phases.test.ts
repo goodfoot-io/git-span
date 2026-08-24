@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { type BashTouchMatch, bashGatePrelude } from '../../src/common/bash-touch.js';
 
 /** Minimal resolved-match fixture; only the fields the phase reads are populated. */
-function resolvedMatch(overrides: Record<string, unknown> = {}): BashTouchMatch {
+function resolvedMatch(overrides: Record<string, unknown> = {}): never {
   return {
     status: 'resolved',
     idiom: 'sed-inplace',
@@ -11,9 +11,8 @@ function resolvedMatch(overrides: Record<string, unknown> = {}): BashTouchMatch 
       absolutePath: '/repo/a.txt',
       simpleCommandIndex: 0,
       ...overrides
-    },
-    ...overrides
-  } as BashTouchMatch;
+    }
+  } as never;
 }
 
 describe('bashGatePrelude', () => {
@@ -90,7 +89,119 @@ describe('orderCommands', () => {
 
   it('never lets a guard overwrite an existing span group at the same index', () => {
     const guard = { status: 'builtin-guard', simpleCommandIndex: 0, exitStatus: 0 };
-    const { guardByIndex } = orderCommands([resolvedMatch({ simpleCommandIndex: 0 })], [guard as never]);
+    const { guardByIndex } = orderCommands([resolvedMatch({ simpleCommandIndex: 0 })] as never, [guard as never]);
     expect(guardByIndex.size).toBe(0);
+  });
+});
+
+import {
+  buildPassByPath,
+  reconcileAgainstPassMap,
+  type SpanEval,
+  translateAndGateSpans
+} from '../../src/common/bash-touch.js';
+import { createRealityProbeCache } from '../../src/common/touch-core.js';
+
+/** Hand-built SpanEval for phase drives; only the fields those phases read are set. */
+function evalEntry(overrides: Partial<SpanEval>): SpanEval {
+  return {
+    match: resolvedMatch() as never,
+    touch: null,
+    outcome: 'inconclusive',
+    explained: false,
+    commandIndex: 0,
+    path: '/repo/f.txt',
+    sourceKey: null,
+    ...overrides
+  };
+}
+
+describe('translateAndGateSpans', () => {
+  it('translates one entry per span, stamped with its command index and path', () => {
+    const m0 = resolvedMatch({ operation: 'read', idiom: 'rg-read', simpleCommandIndex: 0 });
+    const m3a = resolvedMatch({
+      operation: 'read',
+      idiom: 'rg-read',
+      absolutePath: '/repo/c.txt',
+      simpleCommandIndex: 3
+    });
+    const m3b = resolvedMatch({
+      idiom: 'rg-read',
+      span: { operation: 'read', absolutePath: '/repo/d.txt', simpleCommandIndex: 3 }
+    });
+    const groups = new Map<number, never[]>([
+      [0, [m0]],
+      [3, [m3a, m3b]]
+    ]);
+    const evals = translateAndGateSpans(
+      [m0, m3a, m3b] as never,
+      groups as never,
+      [0, 3],
+      'sess',
+      '/repo',
+      true,
+      createRealityProbeCache([], [])
+    );
+    expect([...evals.keys()]).toEqual([0, 3]);
+    const first = evals.get(0)![0] as unknown as Record<string, unknown>;
+    expect(first.commandIndex).toBe(0);
+    expect(first.path).toBe('/repo/a.txt');
+    expect(first.sourceKey).toBeNull();
+    expect(first.outcome).toBe('inconclusive');
+    expect(evals.get(3)).toHaveLength(2);
+  });
+});
+
+describe('buildPassByPath', () => {
+  it('records the highest command index with a decisivePass per path', () => {
+    const evals = new Map<number, SpanEval[]>([
+      [1, [evalEntry({ outcome: 'decisivePass', path: '/repo/f.txt', commandIndex: 1 })]],
+      [2, [evalEntry({ outcome: 'decisiveFail', path: '/repo/g.txt', commandIndex: 2 })]],
+      [3, [evalEntry({ outcome: 'decisivePass', path: '/repo/f.txt', commandIndex: 3 })]]
+    ]);
+    expect(buildPassByPath(evals, [1, 2, 3])).toEqual(new Map([['/repo/f.txt', 3]]));
+  });
+});
+
+describe('reconcileAgainstPassMap', () => {
+  it('promotes a pending hold to decisivePass when a later command passes its source path', () => {
+    const pending = evalEntry({
+      outcome: 'pending',
+      path: '/repo/dest.txt',
+      sourceKey: '/repo/src.txt',
+      commandIndex: 1
+    });
+    const laterPass = evalEntry({ outcome: 'decisivePass', path: '/repo/src.txt', commandIndex: 2 });
+    const evals = new Map<number, SpanEval[]>([
+      [1, [pending]],
+      [2, [laterPass]]
+    ]);
+    reconcileAgainstPassMap(evals, [1, 2], buildPassByPath(evals, [1, 2]));
+    expect(pending.outcome).toBe('decisivePass');
+
+    const staleHold = evalEntry({
+      outcome: 'pending',
+      path: '/repo/dest.txt',
+      sourceKey: '/repo/src.txt',
+      commandIndex: 5
+    });
+    const earlierPass = evalEntry({ outcome: 'decisivePass', path: '/repo/src.txt', commandIndex: 2 });
+    const evals2 = new Map<number, SpanEval[]>([
+      [5, [staleHold]],
+      [2, [earlierPass]]
+    ]);
+    reconcileAgainstPassMap(evals2, [2, 5], buildPassByPath(evals2, [2, 5]));
+    expect(staleHold.outcome).toBe('decisiveFail');
+  });
+
+  it('marks a decisiveFail explained when a later command passes its own path', () => {
+    const fail = evalEntry({ outcome: 'decisiveFail', path: '/repo/f.txt', commandIndex: 1 });
+    const rewrite = evalEntry({ outcome: 'decisivePass', path: '/repo/f.txt', commandIndex: 4 });
+    const evals = new Map<number, SpanEval[]>([
+      [1, [fail]],
+      [4, [rewrite]]
+    ]);
+    reconcileAgainstPassMap(evals, [1, 4], buildPassByPath(evals, [1, 4]));
+    expect(fail.explained).toBe(true);
   });
 });
