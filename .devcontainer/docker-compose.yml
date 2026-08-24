@@ -28,6 +28,10 @@ services:
       # commits over the host boundary generate constant sync-write disk load
       # and fsevent storms. Container-native named volume shadows just this dir.
       - opencode-data:/home/node/.local/share/opencode
+      # Card worktrees: the heaviest virtiofs writers (vitest/cargo/esbuild churn)
+      # move to container-native ext4. The Mac deliberately loses direct
+      # visibility into worktree contents.
+      - cards-worktrees:/home/node/.cards/worktrees
       - claude-code-bashhistory:/commandhistory
       - git-span-cargo-target:/var/cache/git-span/cargo-target
     env_file:
@@ -43,3 +47,4 @@ volumes:
   claude-code-bashhistory:
   git-span-cargo-target:
   opencode-data:
+  cards-worktrees:

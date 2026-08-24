@@ -75,6 +75,6 @@ RUN npm install -g @anthropic-ai/claude-code @openai/codex && \
 # opencode-data named volumes initialize content and ownership from this image
 # path, and a root-owned mountpoint would break opencode (uid 1000) on first run.
 USER root
-RUN mkdir -p /home/node/.local/share/opencode \
-  && chown -R node:node /home/node/.local
+RUN mkdir -p /home/node/.local/share/opencode /home/node/.cards/worktrees \
+  && chown -R node:node /home/node/.local /home/node/.cards
 USER node
