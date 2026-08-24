@@ -1067,22 +1067,42 @@ function consumePythonStatement(
   return 'unmatched';
 }
 
-function parsePythonAttribution(command: string, options: LayeredParseOptions): LayeredParseResult | null {
+/** Extract and split a Python -c/heredoc program into budget-checked statements. `'unrecognized'` means the command is not a Python invocation in this layer's shapes at all - the caller returns null so the dispatcher can try other layers - distinct from `'rejected'`, which is a complete fail-closed verdict. */
+function preparePythonStatements(
+  command: string
+):
+  | { readonly kind: 'unrecognized' }
+  | { readonly kind: 'rejected'; readonly result: LayeredParseResult }
+  | { readonly kind: 'ready'; readonly statements: readonly string[] } {
   const extracted = extractPythonProgram(command);
-  if (extracted === null) return null;
+  if (extracted === null) return { kind: 'unrecognized' };
   if (extracted.program === undefined) {
-    return rejectPython(extracted.reason ?? 'unsupported-syntax', extracted.detail ?? 'unsupported Python invocation');
+    return {
+      kind: 'rejected',
+      result: rejectPython(
+        extracted.reason ?? 'unsupported-syntax',
+        extracted.detail ?? 'unsupported Python invocation'
+      )
+    };
   }
   const statements = splitPythonStatements(extracted.program);
   if (statements === null || statements.length === 0) {
-    return rejectPython('unsupported-syntax', 'the Python program is incomplete or cannot be tokenized');
+    return {
+      kind: 'rejected',
+      result: rejectPython('unsupported-syntax', 'the Python program is incomplete or cannot be tokenized')
+    };
   }
-  if (statements.length > 64)
-    return rejectPython('candidate-budget-exceeded', 'the Python program exceeds the statement budget');
+  if (statements.length > 64) {
+    return {
+      kind: 'rejected',
+      result: rejectPython('candidate-budget-exceeded', 'the Python program exceeds the statement budget')
+    };
+  }
+  return { kind: 'ready', statements };
+}
 
-  const ctx = createPythonContext(options);
-  const { resolved, preStateRequests } = ctx;
-
+/** Run the per-statement machines in order; returns the terminal rejection, or null when all consumed. */
+function runPythonStatements(statements: readonly string[], ctx: PythonRecognizerContext): LayeredParseResult | null {
   for (const statement of statements) {
     if (
       /^(?:from\s+pathlib\s+import\s+Path|import\s+(?:pathlib|json|tomllib|tomli_w|toml|yaml|sys)(?:\s*,\s*(?:pathlib|json|tomllib|tomli_w|toml|yaml|sys))*)$/.test(
@@ -1098,13 +1118,24 @@ function parsePythonAttribution(command: string, options: LayeredParseOptions): 
     if (verdict === undefined) continue;
     return verdict === 'unmatched' ? consumeUnmatchedPython(statement) : verdict;
   }
+  return null;
+}
 
-  if (resolved.length === 0)
+function parsePythonAttribution(command: string, options: LayeredParseOptions): LayeredParseResult | null {
+  const prepared = preparePythonStatements(command);
+  if (prepared.kind === 'unrecognized') return null;
+  if (prepared.kind === 'rejected') return prepared.result;
+
+  const ctx = createPythonContext(options);
+  const rejected = runPythonStatements(prepared.statements, ctx);
+  if (rejected !== null) return rejected;
+
+  if (ctx.resolved.length === 0)
     return rejectPython('unsupported-dataflow', 'Python program has no supported authoring sink');
   const maxCandidates = options.maxCandidates ?? DEFAULT_MAX_ATTRIBUTION_CANDIDATES;
-  const overBudget = rejectOverBudget(resolved, 'python', 'python-edit', 'Python program', maxCandidates);
+  const overBudget = rejectOverBudget(ctx.resolved, 'python', 'python-edit', 'Python program', maxCandidates);
   if (overBudget !== null) return overBudget;
-  return { resolved, unresolved: [], preStateRequests };
+  return { resolved: ctx.resolved, unresolved: [], preStateRequests: ctx.preStateRequests };
 }
 
 interface NodeProgram {
