@@ -1,5 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { type BashTouchMatch, bashGatePrelude } from '../../src/common/bash-touch.js';
+import {
+  applyJoinFilter,
+  type BashTouchMatch,
+  bashGatePrelude,
+  buildPassByPath,
+  computeVerdicts,
+  explainLaterRecreates,
+  orderCommands,
+  reconcileAgainstPassMap,
+  type SpanEval,
+  translateAndGateSpans,
+  type Verdict
+} from '../../src/common/bash-touch.js';
 
 /** Minimal resolved-match fixture; only the fields the phase reads are populated. */
 function resolvedMatch(overrides: Record<string, unknown> = {}): never {
@@ -56,8 +68,6 @@ describe('bashGatePrelude', () => {
   });
 });
 
-import { orderCommands } from '../../src/common/bash-touch.js';
-
 describe('orderCommands', () => {
   it('groups spans by simple command index in first-appearance walker order', () => {
     const { groups, guardByIndex, order } = orderCommands(
@@ -94,13 +104,6 @@ describe('orderCommands', () => {
   });
 });
 
-import {
-  buildPassByPath,
-  explainLaterRecreates,
-  reconcileAgainstPassMap,
-  type SpanEval,
-  translateAndGateSpans
-} from '../../src/common/bash-touch.js';
 import { createRealityProbeCache } from '../../src/common/touch-core.js';
 
 /** Hand-built SpanEval for phase drives; only the fields those phases read are set. */
@@ -239,5 +242,54 @@ describe('explainLaterRecreates', () => {
     const evals = new Map<number, SpanEval[]>([[1, [fail]]]);
     explainLaterRecreates(evals, [1], createRealityProbeCache([], []), '/repo');
     expect(fail.explained).toBe(false);
+  });
+});
+
+describe('computeVerdicts and applyJoinFilter', () => {
+  const guard = (index: number, exitStatus: number) => ({
+    status: 'builtin-guard' as const,
+    simpleCommandIndex: index,
+    exitStatus
+  });
+
+  it('derives per-command verdicts from unexplained fails, decisive passes, and guard exits', () => {
+    const evals = new Map<number, SpanEval[]>([
+      [0, [evalEntry({ outcome: 'decisivePass', commandIndex: 0 })]],
+      [
+        1,
+        [
+          evalEntry({ outcome: 'decisiveFail', explained: true, commandIndex: 1 }),
+          evalEntry({ outcome: 'decisiveFail', commandIndex: 1 })
+        ]
+      ],
+      [2, [evalEntry({ outcome: 'inconclusive', commandIndex: 2 })]]
+    ]);
+    const guards = new Map([[3, { status: 'builtin-guard' as const, simpleCommandIndex: 3, exitStatus: 1 }]]);
+    const verdicts = computeVerdicts([0, 1, 2, 3], evals, guards);
+    expect(verdicts.get(0)).toBe('succeeded');
+    expect(verdicts.get(1)).toBe('failed');
+    expect(verdicts.get(2)).toBe('unknown');
+    expect(verdicts.get(3)).toBe('failed');
+  });
+
+  it('chains &&-skips as failed and ||-skips as succeeded, matching the shell short-circuit', () => {
+    const computed = new Map<number, Verdict>([
+      [0, 'failed'],
+      [1, 'unknown'],
+      [2, 'succeeded'],
+      [3, 'unknown']
+    ]);
+    const spanGroups = new Map<number, never[]>([
+      [1, [resolvedMatch({ simpleCommandIndex: 1, join: '&&' })]],
+      [3, [resolvedMatch({ simpleCommandIndex: 3, join: '||' })]]
+    ]);
+    const { effective, skipped } = applyJoinFilter([0, 1, 2, 3], spanGroups, new Map(), computed);
+    // 0 failed -> && skips 1 as failed; 1's chained 'failed' does not skip 2
+    // (join undefined between them is impossible in real output, but 2 runs);
+    // 2 succeeded -> || skips 3 as succeeded.
+    expect([...skipped]).toEqual([1, 3]);
+    expect(effective.get(1)).toBe('failed');
+    expect(effective.get(2)).toBe('succeeded');
+    expect(effective.get(3)).toBe('succeeded');
   });
 });

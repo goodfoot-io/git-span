@@ -205,7 +205,7 @@ export type BashTouchMatch =
 type ResolvedMatch = Extract<BashTouchMatch, { status: 'resolved' }>;
 type GuardMatch = Extract<BashTouchMatch, { status: 'builtin-guard' }>;
 
-type Verdict = 'failed' | 'succeeded' | 'unknown';
+export type Verdict = 'failed' | 'succeeded' | 'unknown';
 
 /**
  * File-producing write operations — the only spans that can explain a
@@ -252,8 +252,8 @@ function evalSpanGate(match: ResolvedMatch, touch: TouchInput | null, probeCache
 /** The operator preceding a command, from its first span (all spans of one command share it) — or from its guard match when the command has no spans. */
 function joinOfCommand(
   idx: number,
-  groups: Map<number, ResolvedMatch[]>,
-  guardByIndex: Map<number, GuardMatch>
+  groups: ReadonlyMap<number, ResolvedMatch[]>,
+  guardByIndex: ReadonlyMap<number, GuardMatch>
 ): '&&' | '||' | undefined {
   const spans = groups.get(idx);
   if (spans !== undefined) {
@@ -431,6 +431,63 @@ export function explainLaterRecreates(
   }
 }
 
+/** Phase I - per-command verdicts: 'failed' on any unexplained decisiveFail, else 'succeeded' on at least one decisive outcome, else 'unknown'. A guard-only command's deterministic exit status IS its verdict. */
+export function computeVerdicts(
+  order: readonly number[],
+  evals: ReadonlyMap<number, SpanEval[]>,
+  guardByIndex: ReadonlyMap<number, GuardMatch>
+): Map<number, Verdict> {
+  const computed = new Map<number, Verdict>();
+  for (const idx of order) {
+    const list = evals.get(idx);
+    if (list === undefined) {
+      const guard = guardByIndex.get(idx);
+      computed.set(idx, guard !== undefined ? (guard.exitStatus === 0 ? 'succeeded' : 'failed') : 'unknown');
+      continue;
+    }
+    let failed = false;
+    let passed = false;
+    for (const e of list) {
+      if (e.outcome === 'decisiveFail' && !e.explained) failed = true;
+      if (e.outcome === 'decisivePass') passed = true;
+    }
+    computed.set(idx, failed ? 'failed' : passed ? 'succeeded' : 'unknown');
+  }
+  return computed;
+}
+
+/**
+ * Phase J - the join filter: a skipped command's chained verdict is the
+ * guard that skipped it - 'failed' after an &&-skip, 'succeeded' after an
+ * ||-skip - matching the shell short-circuit (a || b || c stops after the
+ * first success). 'unknown' fails open.
+ */
+export function applyJoinFilter(
+  order: readonly number[],
+  groups: ReadonlyMap<number, ResolvedMatch[]>,
+  guardByIndex: ReadonlyMap<number, GuardMatch>,
+  computed: ReadonlyMap<number, Verdict>
+): { readonly effective: Map<number, Verdict>; readonly skipped: Set<number> } {
+  const effective = new Map<number, Verdict>();
+  const skipped = new Set<number>();
+  let prevIndex: number | null = null;
+  for (const idx of order) {
+    const join = joinOfCommand(idx, groups, guardByIndex);
+    const prevVerdict = prevIndex !== null ? effective.get(prevIndex) : undefined;
+    if (prevVerdict !== undefined && join !== undefined) {
+      if ((join === '&&' && prevVerdict === 'failed') || (join === '||' && prevVerdict === 'succeeded')) {
+        effective.set(idx, join === '&&' ? 'failed' : 'succeeded');
+        skipped.add(idx);
+        prevIndex = idx;
+        continue;
+      }
+    }
+    effective.set(idx, computed.get(idx)!);
+    prevIndex = idx;
+  }
+  return { effective, skipped };
+}
+
 /**
  * Phase D - command grouping and ordering: resolved spans group by simple
  * command index in walker first-appearance order; span-less guard commands
@@ -577,49 +634,9 @@ export async function runBashTouches(
   // Later-recreate explanation (phase H): a failed delete explained by a
   // later tracked re-create of its path.
   explainLaterRecreates(evals, commandOrder, probeCache, cwd);
-  // Per-command verdicts: 'failed' on any unexplained decisiveFail, else
-  // 'succeeded' on at least one decisive outcome, else 'unknown'. A
-  // guard-only command's deterministic exit status IS its verdict (plan §3
-  // step 2's span-less-guard rule).
-  const computed = new Map<number, Verdict>();
-  for (const idx of commandOrder) {
-    const list = evals.get(idx);
-    if (list === undefined) {
-      const guard = guardByIndex.get(idx);
-      computed.set(idx, guard !== undefined ? (guard.exitStatus === 0 ? 'succeeded' : 'failed') : 'unknown');
-      continue;
-    }
-    let failed = false;
-    let passed = false;
-    for (const e of list) {
-      if (e.outcome === 'decisiveFail' && !e.explained) failed = true;
-      if (e.outcome === 'decisivePass') passed = true;
-    }
-    computed.set(idx, failed ? 'failed' : passed ? 'succeeded' : 'unknown');
-  }
-
-  // The join filter (plan §3 step 2): a skipped command's chained verdict is
-  // the guard that skipped it — 'failed' after an &&-skip, 'succeeded' after
-  // an ||-skip — matching the shell short-circuit (a || b || c stops after
-  // the first success). 'unknown' fails open.
-  const effective = new Map<number, Verdict>();
-  const skipped = new Set<number>();
-  let prevIndex: number | null = null;
-  for (const idx of commandOrder) {
-    const join = joinOfCommand(idx, groups, guardByIndex);
-    const prevVerdict = prevIndex !== null ? effective.get(prevIndex) : undefined;
-    if (prevVerdict !== undefined && join !== undefined) {
-      if ((join === '&&' && prevVerdict === 'failed') || (join === '||' && prevVerdict === 'succeeded')) {
-        effective.set(idx, join === '&&' ? 'failed' : 'succeeded');
-        skipped.add(idx);
-        prevIndex = idx;
-        continue;
-      }
-    }
-    effective.set(idx, computed.get(idx)!);
-    prevIndex = idx;
-  }
-
+  // Verdicts (phase I), then the join filter (J) with chained skips.
+  const computed = computeVerdicts(commandOrder, evals, guardByIndex);
+  const { effective, skipped } = applyJoinFilter(commandOrder, groups, guardByIndex, computed);
   // Pass B: run the touch hook for surviving spans only — decisivePass, or
   // inconclusive with an 'exists' target (the advisory residual class:
   // existence-gated families fire and heal/surface; phantom deletes never
