@@ -96,6 +96,7 @@ describe('orderCommands', () => {
 
 import {
   buildPassByPath,
+  explainLaterRecreates,
   reconcileAgainstPassMap,
   type SpanEval,
   translateAndGateSpans
@@ -202,5 +203,41 @@ describe('reconcileAgainstPassMap', () => {
     ]);
     reconcileAgainstPassMap(evals, [1, 4], buildPassByPath(evals, [1, 4]));
     expect(fail.explained).toBe(true);
+  });
+});
+
+describe('explainLaterRecreates', () => {
+  it('marks a delete fail explained when a later file-producing write re-creates the path', () => {
+    const failedDelete = evalEntry({
+      outcome: 'decisiveFail',
+      path: '/repo/f.txt',
+      commandIndex: 1,
+      touch: { kind: 'write', sessionId: 's', cwd: '/repo', filePath: '/repo/f.txt', targetState: 'absent' } as never
+    });
+    const recreate = evalEntry({
+      outcome: 'inconclusive',
+      path: '/repo/f.txt',
+      commandIndex: 2,
+      touch: { kind: 'write', sessionId: 's', cwd: '/repo', filePath: '/repo/f.txt', targetState: 'exists' } as never
+    });
+    const evals = new Map<number, SpanEval[]>([
+      [1, [failedDelete]],
+      [2, [recreate]]
+    ]);
+    explainLaterRecreates(evals, [1, 2], createRealityProbeCache(['/repo/f.txt'], ['/repo/f.txt']), '/repo');
+    // The probe decides: without a tracked status row the fail stands.
+    expect(failedDelete.explained).toBe(false);
+  });
+
+  it('never explains a fail whose path no later command re-creates', () => {
+    const fail = evalEntry({
+      outcome: 'decisiveFail',
+      path: '/repo/g.txt',
+      commandIndex: 1,
+      touch: { kind: 'write', sessionId: 's', cwd: '/repo', filePath: '/repo/g.txt', targetState: 'absent' } as never
+    });
+    const evals = new Map<number, SpanEval[]>([[1, [fail]]]);
+    explainLaterRecreates(evals, [1], createRealityProbeCache([], []), '/repo');
+    expect(fail.explained).toBe(false);
   });
 });

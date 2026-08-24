@@ -378,6 +378,60 @@ export function reconcileAgainstPassMap(
 }
 
 /**
+ * Phase H - the later-recreate explanation (round-3, mark widened round-4): a
+ * delete's decisiveFail - "file present, so the delete didn't happen" - is
+ * also explained when a LATER command writes the same path with a
+ * file-producing operation whose own gate did not fail (a decisiveFail
+ * there proves the write didn't happen) AND the path carries any tracked
+ * status row - index column or worktree column, read from the per-command
+ * probe. A file with NO status row means it still matches HEAD: the chain
+ * short-circuited before the write (the rm failed and dropped the rest of
+ * the chain), so the fail stands and the join filter still suppresses the
+ * joined command. The index column is what separates the two realities a
+ * clean worktree cannot: a staged re-create leaves an index-column row
+ * while a genuinely failed rm leaves no row at all. This is the
+ * existence-gated sibling of the decisivePass explanation above:
+ * content-verified re-creates never need it; only an inconclusive-gate
+ * re-create is visible solely through this rule. Residual: a pre-existing
+ * uncommitted or staged change on the deleted path masks the discriminator,
+ * letting an rm that failed on a dirty path fire advisory - same bounded
+ * harm as the plan's documented join corner.
+ */
+export function explainLaterRecreates(
+  evals: ReadonlyMap<number, SpanEval[]>,
+  order: readonly number[],
+  probeCache: RealityProbeCache,
+  cwd: string
+): void {
+  const recreateByPath = new Map<string, number>();
+  for (const idx of order) {
+    const list = evals.get(idx);
+    if (list === undefined) continue;
+    for (const e of list) {
+      if (e.outcome === 'decisiveFail') continue;
+      if (e.touch === null || e.touch.kind !== 'write' || e.touch.targetState !== 'exists') continue;
+      if (!FILE_PRODUCING_OPS.has(e.match.span.operation)) continue;
+      const prev = recreateByPath.get(e.path);
+      if (prev === undefined || idx > prev) recreateByPath.set(e.path, idx);
+    }
+  }
+  if (recreateByPath.size > 0) {
+    for (const idx of order) {
+      const list = evals.get(idx);
+      if (list === undefined) continue;
+      for (const e of list) {
+        if (e.outcome !== 'decisiveFail' || e.explained) continue;
+        if (e.touch === null || e.touch.kind !== 'write' || e.touch.targetState !== 'absent') continue;
+        const recreateIdx = recreateByPath.get(e.path);
+        if (recreateIdx !== undefined && recreateIdx > e.commandIndex && workingTreeChanged(probeCache, cwd, e.path)) {
+          e.explained = true;
+        }
+      }
+    }
+  }
+}
+
+/**
  * Phase D - command grouping and ordering: resolved spans group by simple
  * command index in walker first-appearance order; span-less guard commands
  * (`false`/`true`/`:`) join the order with no group - their deterministic
@@ -520,63 +574,9 @@ export async function runBashTouches(
   // Explanation map (phase F), then pending/explained reconciliation (G).
   const passByPath = buildPassByPath(evals, commandOrder);
   reconcileAgainstPassMap(evals, commandOrder, passByPath);
-  // The later-recreate explanation (round-3, mark widened round-4): a
-  // delete's decisiveFail — "file present, so the delete didn't happen" — is
-  // also explained when a LATER command writes the same path with a
-  // file-producing operation whose own gate did not fail (a decisiveFail
-  // there proves the write didn't happen) AND the path carries any tracked
-  // status row — index column or worktree column, read from the per-command
-  // probe (see the probe's per-column reasoning). A file with NO status row
-  // means it still matches HEAD: the chain short-circuited before the write
-  // (the rm failed and `&&` dropped the rest), so the fail stands and the
-  // join filter still suppresses the joined command. The index column is
-  // what separates the two realities a clean worktree cannot: `rm f && patch
-  // -p0 < d && git add f` ends with f staged (`M ` row, blank worktree
-  // column) — the write ran and was verified into the index — while a
-  // genuinely failed rm leaves no row at all. This is the existence-gated
-  // sibling of the decisivePass explanation above: `rm f && patch -p0 <
-  // new.diff` ends with f present because the patch re-created it, not
-  // because the rm failed, and the patch's gate is inconclusive — only this
-  // rule can see the re-create. Content-verified re-creates (echo/cp/
-  // truncate with a body) never need it — their decisivePass explains via
-  // the map above. Residual: a pre-existing uncommitted OR staged change on
-  // the deleted path masks the discriminator (the file differed from the
-  // index before the compound ever ran), so an rm that failed on a dirty
-  // path lets the joined write fire advisory — same bounded harm as the
-  // plan's documented "coincidentally passes" join corner, and a
-  // harness-supplied non-zero exit code still suppresses the advisory class
-  // in pass B. The staged face is the widening's one cost: round-3's blank-Y
-  // rule kept `M `/`A ` rows invisible, so a failed rm on a pre-staged path
-  // stayed fully suppressed; the index column now marks it, and the joined
-  // write fires advisory wherever genuine staged drift exists against the
-  // span baseline (pinned end-to-end in the integration suite).
-  const recreateByPath = new Map<string, number>();
-  for (const idx of commandOrder) {
-    const list = evals.get(idx);
-    if (list === undefined) continue;
-    for (const e of list) {
-      if (e.outcome === 'decisiveFail') continue;
-      if (e.touch === null || e.touch.kind !== 'write' || e.touch.targetState !== 'exists') continue;
-      if (!FILE_PRODUCING_OPS.has(e.match.span.operation)) continue;
-      const prev = recreateByPath.get(e.path);
-      if (prev === undefined || idx > prev) recreateByPath.set(e.path, idx);
-    }
-  }
-  if (recreateByPath.size > 0) {
-    for (const idx of commandOrder) {
-      const list = evals.get(idx);
-      if (list === undefined) continue;
-      for (const e of list) {
-        if (e.outcome !== 'decisiveFail' || e.explained) continue;
-        if (e.touch === null || e.touch.kind !== 'write' || e.touch.targetState !== 'absent') continue;
-        const recreateIdx = recreateByPath.get(e.path);
-        if (recreateIdx !== undefined && recreateIdx > e.commandIndex && workingTreeChanged(probeCache, cwd, e.path)) {
-          e.explained = true;
-        }
-      }
-    }
-  }
-
+  // Later-recreate explanation (phase H): a failed delete explained by a
+  // later tracked re-create of its path.
+  explainLaterRecreates(evals, commandOrder, probeCache, cwd);
   // Per-command verdicts: 'failed' on any unexplained decisiveFail, else
   // 'succeeded' on at least one decisive outcome, else 'unknown'. A
   // guard-only command's deterministic exit status IS its verdict (plan §3
