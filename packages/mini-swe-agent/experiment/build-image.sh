@@ -104,6 +104,11 @@ docker build \
 DERIVED_IMAGE_ID="$(docker image inspect "${RUNNER_TAG}" --format '{{.Id}}')"
 
 echo "== done ==" >&2
+# manifest.json records the LAST run's provenance; it is regenerated per-run,
+# never edited in place (see its _purpose). Point the operator at the re-pin.
+echo "NOTE: experiment/manifest.json + treatment.yaml pins are historical until re-pinned." >&2
+echo "      Re-pin against this image before the next run:" >&2
+echo "        .claude/skills/evaluation/bin/repin-artifacts.sh --yes --image-id ${DERIVED_IMAGE_ID}" >&2
 echo "original_base_id=${BASE_IMAGE_ID}"
 echo "derived_image_id=${DERIVED_IMAGE_ID}"
 echo "runner_tag=${RUNNER_TAG}"
