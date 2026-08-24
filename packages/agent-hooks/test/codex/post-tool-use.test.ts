@@ -278,7 +278,8 @@ describe('codex post-tool-use touch signal', () => {
 
       expect(calls.fix).toBe(1);
       expect(result.stdout.hookSpecificOutput?.additionalContext).toContain(SPAN);
-      expect(result.stdout.systemMessage).toContain(SPAN);
+      // Single channel (main-341): no systemMessage twin of the block.
+      expect(result.stdout.systemMessage).toBeUndefined();
     } finally {
       repo.cleanup();
     }

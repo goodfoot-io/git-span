@@ -132,18 +132,12 @@ export function createHandler(
         // additional context.
         if (result.kind === 'environmental' || result.kind === 'scan-failed') {
           ctx.logger.warn('git-span advisor allowed with an unresolved condition', { reason: result.reason });
-          return preToolUseOutput({
-            additionalContext: wrapGitSpanContext(result.reason),
-            systemMessage: result.reason
-          });
+          return preToolUseOutput({ additionalContext: wrapGitSpanContext(result.reason) });
         }
         // `status`-only advisory kinds: span debt exists, but a status check
         // never holds the command — surface it as information, not a warning.
         if (result.kind === 'semantic-drift-report' || result.kind === 'uncovered-writes-report') {
-          return preToolUseOutput({
-            additionalContext: wrapGitSpanContext(result.reason),
-            systemMessage: result.reason
-          });
+          return preToolUseOutput({ additionalContext: wrapGitSpanContext(result.reason) });
         }
         return undefined;
       }
@@ -152,17 +146,17 @@ export function createHandler(
         // Primary path (per the README): translate our `hold` into Codex's own
         // vocabulary and stop this one invocation. The memo has recorded the
         // debt state, so an identical retry allows — this is a single
-        // interruption, not enforcement.
+        // interruption, not enforcement. Single channel (main-341): the
+        // reason travels only as `permissionDecisionReason`.
         return preToolUseOutput({
           permissionDecision: 'deny',
-          permissionDecisionReason: result.reason,
-          systemMessage: result.reason
+          permissionDecisionReason: result.reason
         });
       }
       // Fallback path (CARD.md contingency): cannot hold, so surface the same
       // checklist as a loud warning and allow — the CI recipe enforces for Codex.
       const warning = `Could not block this command — the issue below still needs resolving:\n${result.reason}`;
-      return preToolUseOutput({ additionalContext: wrapGitSpanContext(warning), systemMessage: warning });
+      return preToolUseOutput({ additionalContext: wrapGitSpanContext(warning) });
     } catch (err) {
       ctx.logger.warn('git-span advisor failed open on an uncaught error', { err });
       return undefined;

@@ -97,9 +97,11 @@ export function createHandler(
       if (result.decision === 'hold') {
         // `hold` → the harness's own vocabulary. Claude has no "hold", so the
         // one-time interruption is expressed as `permissionDecision: 'deny'`.
+        // Single channel (main-341): the reason travels only as
+        // `permissionDecisionReason`; a `systemMessage` twin would inject the
+        // same checklist into context twice.
         return preToolUseOutput({
-          hookSpecificOutput: { permissionDecision: 'deny', permissionDecisionReason: result.reason },
-          systemMessage: result.reason
+          hookSpecificOutput: { permissionDecision: 'deny', permissionDecisionReason: result.reason }
         });
       }
       // Environmental drift and a failed drift scan both allow

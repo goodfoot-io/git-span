@@ -136,7 +136,9 @@ describe('codex advisor adapter', () => {
 
     expect(result.stdout.hookSpecificOutput?.permissionDecision).toBe('deny');
     expect(result.stdout.hookSpecificOutput?.permissionDecisionReason).toContain(SPAN);
-    expect(result.stdout.systemMessage).toContain(SPAN);
+    // Single channel (main-341): the checklist travels only as
+    // permissionDecisionReason — no systemMessage twin.
+    expect(result.stdout.systemMessage).toBeUndefined();
     // The adapter passes harness `'codex'`, so the closing instruction names
     // Codex's forked-subagent vocabulary rather than the inline-instruction
     // prose a `'generic'` harness would render.
@@ -148,7 +150,7 @@ describe('codex advisor adapter', () => {
     );
   });
 
-  it('with hard-deny disabled, a semantic-drift deny becomes a loud allow: additionalContext + systemMessage carry the warning and no permissionDecision is set', async () => {
+  it('with hard-deny disabled, a semantic-drift deny becomes a loud allow: additionalContext carries the warning and no permissionDecision is set', async () => {
     // Exercises the CARD.md-documented fallback branch (CODEX_ADVISOR_HARD_DENY =
     // false): when deny is not trusted to block live, the same checklist is
     // surfaced as a loud warning and the command is allowed through, with the CI
@@ -160,11 +162,11 @@ describe('codex advisor adapter', () => {
 
     // Allowed through — the fallback cannot block.
     expect(result.stdout.hookSpecificOutput?.permissionDecision).toBeUndefined();
-    // But loudly, transcript-visibly: both surfaces carry the warning + checklist.
+    // But loudly, and on one channel only (main-341): the context surface
+    // carries the warning + checklist, with no systemMessage twin.
     expect(result.stdout.hookSpecificOutput?.additionalContext).toContain(SPAN);
     expect(result.stdout.hookSpecificOutput?.additionalContext).toContain('Could not block');
-    expect(result.stdout.systemMessage).toContain(SPAN);
-    expect(result.stdout.systemMessage).toContain('Could not block');
+    expect(result.stdout.systemMessage).toBeUndefined();
   });
 
   it('allows an identical retry after a semantic-drift deny (consider-once per debt-state digest)', async () => {
@@ -189,10 +191,10 @@ describe('codex advisor adapter', () => {
     const result = toResult(await handler(preInput('git commit -m "wip"') as never, { logger } as never));
 
     expect(result.stdout.hookSpecificOutput?.permissionDecision).toBeUndefined();
-    expect(result.stdout.systemMessage).toContain('lfs not fetched');
+    expect(result.stdout.hookSpecificOutput?.additionalContext).toContain('lfs not fetched');
   });
 
-  it('surfaces a scan failure as additionalContext + systemMessage and allows (fail-open)', async () => {
+  it('surfaces a scan failure as additionalContext and allows (fail-open)', async () => {
     const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
     const executors = fakeExecutors({
       drift: async () => {
@@ -208,20 +210,17 @@ describe('codex advisor adapter', () => {
       '  fatal: unable to read src/app.ts: Permission denied',
       '</git-span-error>'
     ].join('\n');
-    // Both delivery channels carry the tagged block: `additionalContext`
-    // (wrapped in the outer `<git-span>`) and the bare `systemMessage`.
+    // Single delivery channel (main-341): the wrapped `additionalContext`
+    // carries the tagged block, and no `systemMessage` twin is emitted.
     expect(result.stdout.hookSpecificOutput?.additionalContext).toContain('Permission denied');
     expect(result.stdout.hookSpecificOutput?.additionalContext).toContain('<git-span>');
     expect(result.stdout.hookSpecificOutput?.additionalContext).toContain(block);
-    expect(result.stdout.systemMessage).toContain('Permission denied');
-    expect(result.stdout.systemMessage).toContain(block);
-    // The wrap is applied exactly once, and only on the context channel: the
-    // outer `<git-span>` tag appears once — the inner `<git-span-error>`
-    // block cannot trip the no-double-wrap guard, so it is not wrapped
-    // again, and the `systemMessage` stays unwrapped.
+    expect(result.stdout.systemMessage).toBeUndefined();
+    // The wrap is applied exactly once: the outer `<git-span>` tag appears
+    // once — the inner `<git-span-error>` block cannot trip the
+    // no-double-wrap guard, so it is not wrapped again.
     expect(result.stdout.hookSpecificOutput?.additionalContext?.match(/<git-span>/g)).toHaveLength(1);
     expect(result.stdout.hookSpecificOutput?.additionalContext?.match(/<git-span-error>/g)).toHaveLength(1);
-    expect(result.stdout.systemMessage).not.toContain('<git-span>');
   });
 
   it('fails open (allow) when a dependency throws an uncaught error', async () => {
@@ -235,7 +234,7 @@ describe('codex advisor adapter', () => {
     expect(result.stdout.hookSpecificOutput).toBeUndefined();
   });
 
-  it('never denies `git status` even with real span debt — surfaces the checklist as additionalContext + systemMessage instead', async () => {
+  it('never denies `git status` even with real span debt — surfaces the checklist as additionalContext instead', async () => {
     const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
     const executors = fakeExecutors({ list: async () => [porcelainRow()], drift: async () => [driftRow('CHANGED')] });
     const handler = createHandler(git, executors, sharedMemoFactory());
@@ -244,7 +243,8 @@ describe('codex advisor adapter', () => {
     expect(result.stdout.hookSpecificOutput?.permissionDecision).toBeUndefined();
     expect(result.stdout.hookSpecificOutput?.additionalContext).toContain(SPAN);
     expect(result.stdout.hookSpecificOutput?.additionalContext).not.toContain('then retry');
-    expect(result.stdout.systemMessage).toContain(SPAN);
+    // Single channel (main-341): no systemMessage twin.
+    expect(result.stdout.systemMessage).toBeUndefined();
   });
 
   it('`git status` never consumes the one-time hold credit, but marks the state as already-shown so a later `git commit` on the same debt passes instead of denying', async () => {

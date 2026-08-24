@@ -90,11 +90,7 @@ export function createHandler(
         createDefaultPlannedTouchStore(layout)
       );
       if (blocks.length === 0) return null;
-      const combined = blocks.join('');
-      return postToolUseOutput({
-        hookSpecificOutput: { additionalContext: combined },
-        systemMessage: combined
-      });
+      return postToolUseOutput({ hookSpecificOutput: { additionalContext: blocks.join('') } });
     }
 
     const toolInput = (input.tool_input ?? {}) as ToolInput;
@@ -111,10 +107,7 @@ export function createHandler(
     if (touch === null || postTrackedValue(absolutePath, touch, cwd) === null) return null;
     const output = await runTouchHook(touch, executors, memo);
     if (!output.additionalContext) return null;
-    return postToolUseOutput({
-      hookSpecificOutput: { additionalContext: output.additionalContext },
-      systemMessage: output.additionalContext
-    });
+    return postToolUseOutput({ hookSpecificOutput: { additionalContext: output.additionalContext } });
   };
 }
 

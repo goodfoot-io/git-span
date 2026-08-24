@@ -153,7 +153,7 @@ describe('claude post-tool-use touch signal', () => {
   });
   afterAll(() => repo.cleanup());
 
-  it('heals and folds a semantic directive on an Edit, on both output channels', async () => {
+  it('heals and folds a semantic directive on an Edit, on the additionalContext channel alone', async () => {
     const { executors, calls } = makeExecutors({ list: [porcelainRow()], drift: [driftRow('CHANGED')] });
     const handler = createHandler(executors, inMemoryMemoFactory(), layout);
     const input = postInput({
@@ -167,7 +167,8 @@ describe('claude post-tool-use touch signal', () => {
     const ctx = result.stdout.hookSpecificOutput?.additionalContext ?? '';
     expect(ctx).toContain(SPAN);
     expect(ctx).toContain('— changed');
-    expect(result.stdout.systemMessage).toContain(SPAN);
+    // Single channel (main-341): no systemMessage twin of the block.
+    expect(result.stdout.systemMessage).toBeUndefined();
   });
 
   it('never invokes fix on a Read and surfaces nothing for positional-only drift', async () => {

@@ -237,8 +237,7 @@ export function createHandler(
         createDefaultPlannedTouchStore(layout)
       );
       if (blocks.length === 0) return undefined;
-      const combined = blocks.join('');
-      return postToolUseOutput({ additionalContext: combined, systemMessage: combined });
+      return postToolUseOutput({ additionalContext: blocks.join('') });
     }
 
     const command = narrowApplyPatchCommand(input.tool_input);
@@ -264,8 +263,7 @@ export function createHandler(
       input.tool_use_id === undefined ? null : `${sessionId}:${input.tool_use_id}`
     );
     if (blocks.length === 0) return undefined;
-    const combined = blocks.join('');
-    return postToolUseOutput({ additionalContext: combined, systemMessage: combined });
+    return postToolUseOutput({ additionalContext: blocks.join('') });
   };
 }
 
