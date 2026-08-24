@@ -1830,6 +1830,109 @@ function parseNodeAttribution(command: string, options: LayeredParseOptions): La
 
 /** Parse explicit authoring intent through deterministic and bounded recognizers. */
 /**
+ * The numeric-sed machine: an in-place substitution addressed by literal line
+ * numbers (`3s/…/…/`, `3,5s/…/…/`). Resolves each file operand to one modify
+ * span over the addressed range with expected post-state content; binary or
+ * unreadable pre-state resolves without expected content and therefore
+ * without a match-locations request. Every path returns a complete
+ * [LayeredParseResult].
+ */
+export function resolveNumericSed(
+  patternCommand: PatternCommand,
+  numericMatch: RegExpMatchArray,
+  options: LayeredParseOptions,
+  cwd: string,
+  maxCandidates: number
+): LayeredParseResult {
+  if (patternCommand.files.length === 0) {
+    return {
+      resolved: [],
+      unresolved: [
+        unresolved('shell', 'sed-inplace', 'unsupported-syntax', 'numeric in-place substitution has no file operand')
+      ],
+      preStateRequests: []
+    };
+  }
+  const start = Number.parseInt(numericMatch[1], 10);
+  const end = Number.parseInt(numericMatch[2] ?? numericMatch[1], 10);
+  const substitution = parseLiteralSubstitution(patternCommand.script.slice(numericMatch[0].indexOf('s')));
+  if (substitution === null) {
+    return {
+      resolved: [],
+      unresolved: [
+        unresolved(
+          'pattern-substitution',
+          'sed-inplace',
+          'unsupported-expression',
+          'numeric substitutions require a literal pattern and replacement for post-state verification'
+        )
+      ],
+      preStateRequests: []
+    };
+  }
+  const resolved: LayeredResolvedMatch[] = [];
+  const unresolvedMatches: UnresolvedAttribution[] = [];
+  const preStateRequests: PreStateRequest[] = [];
+  for (const file of patternCommand.files) {
+    const reason = classifyDynamicWord(file);
+    if (reason !== null) {
+      unresolvedMatches.push(unresolved('shell', 'sed-inplace', reason, 'target path is dynamic', file));
+      continue;
+    }
+    const absolutePath = nodePath.resolve(cwd, file);
+    const content = options.readPreState?.(absolutePath) ?? null;
+    const expectedContent =
+      content === null || content.includes('\0')
+        ? undefined
+        : content
+            .split(/(?<=\n)/)
+            .map((line, index) =>
+              index + 1 >= start && index + 1 <= end
+                ? replaceLiteral(line, substitution.pattern, substitution.replacement, substitution.global)
+                : line
+            )
+            .join('');
+    resolved.push({
+      status: 'resolved',
+      layer: 'shell',
+      idiom: 'sed-inplace',
+      span: {
+        operation: 'modify',
+        absolutePath,
+        lineStart: start,
+        lineEnd: end,
+        expectedContent,
+        simpleCommandIndex: patternCommand.simpleCommandIndex
+      }
+    });
+    if (expectedContent !== undefined) {
+      preStateRequests.push({
+        absolutePath,
+        operation: 'modify',
+        requirement: 'match-locations',
+        simpleCommandIndex: patternCommand.simpleCommandIndex
+      });
+    }
+    if (patternCommand.backupSuffix !== undefined && patternCommand.backupSuffix !== '') {
+      resolved.push({
+        status: 'resolved',
+        layer: 'shell',
+        idiom: 'sed-inplace',
+        span: {
+          operation: 'create-overwrite',
+          absolutePath: `${nodePath.resolve(cwd, file)}${patternCommand.backupSuffix}`,
+          simpleCommandIndex: patternCommand.simpleCommandIndex
+        }
+      });
+    }
+  }
+  if (unresolvedMatches.length > 0) return { resolved: [], unresolved: unresolvedMatches, preStateRequests: [] };
+  const overBudget = rejectOverBudget(resolved, 'shell', 'sed-inplace', 'numeric substitution', maxCandidates);
+  if (overBudget !== null) return overBudget;
+  return { resolved, unresolved: [], preStateRequests };
+}
+
+/**
  * The pattern-substitution machine for sed-addressed, perl, and perl-zero
  * in-place substitutions: parses the substitution (and a literal sed
  * address when present), then resolves each file operand against its
@@ -2256,102 +2359,8 @@ export function parseCommandLayered(command: string, options: LayeredParseOption
     split.malformed === undefined && split.stages.length === 1 ? parsePatternCommand(split.stages[0].text) : null;
   if (patternCommand !== null) {
     const numericMatch = patternCommand.kind === 'sed' ? patternCommand.script.match(/^(\d+)(?:,(\d+))?s\W/) : null;
-    const numericSed = numericMatch !== null;
-    if (numericMatch !== null) {
-      if (patternCommand.files.length === 0) {
-        return {
-          resolved: [],
-          unresolved: [
-            unresolved(
-              'shell',
-              'sed-inplace',
-              'unsupported-syntax',
-              'numeric in-place substitution has no file operand'
-            )
-          ],
-          preStateRequests: []
-        };
-      }
-      const start = Number.parseInt(numericMatch[1], 10);
-      const end = Number.parseInt(numericMatch[2] ?? numericMatch[1], 10);
-      const substitution = parseLiteralSubstitution(patternCommand.script.slice(numericMatch[0].indexOf('s')));
-      if (substitution === null) {
-        return {
-          resolved: [],
-          unresolved: [
-            unresolved(
-              'pattern-substitution',
-              'sed-inplace',
-              'unsupported-expression',
-              'numeric substitutions require a literal pattern and replacement for post-state verification'
-            )
-          ],
-          preStateRequests: []
-        };
-      }
-      const resolved: LayeredResolvedMatch[] = [];
-      const unresolvedMatches: UnresolvedAttribution[] = [];
-      const preStateRequests: PreStateRequest[] = [];
-      for (const file of patternCommand.files) {
-        const reason = classifyDynamicWord(file);
-        if (reason !== null) {
-          unresolvedMatches.push(unresolved('shell', 'sed-inplace', reason, 'target path is dynamic', file));
-          continue;
-        }
-        const absolutePath = nodePath.resolve(cwd, file);
-        const content = options.readPreState?.(absolutePath) ?? null;
-        const expectedContent =
-          content === null || content.includes('\0')
-            ? undefined
-            : content
-                .split(/(?<=\n)/)
-                .map((line, index) =>
-                  index + 1 >= start && index + 1 <= end
-                    ? replaceLiteral(line, substitution.pattern, substitution.replacement, substitution.global)
-                    : line
-                )
-                .join('');
-        resolved.push({
-          status: 'resolved',
-          layer: 'shell',
-          idiom: 'sed-inplace',
-          span: {
-            operation: 'modify',
-            absolutePath,
-            lineStart: start,
-            lineEnd: end,
-            expectedContent,
-            simpleCommandIndex: patternCommand.simpleCommandIndex
-          }
-        });
-        if (expectedContent !== undefined) {
-          preStateRequests.push({
-            absolutePath,
-            operation: 'modify',
-            requirement: 'match-locations',
-            simpleCommandIndex: patternCommand.simpleCommandIndex
-          });
-        }
-        if (patternCommand.backupSuffix !== undefined && patternCommand.backupSuffix !== '') {
-          resolved.push({
-            status: 'resolved',
-            layer: 'shell',
-            idiom: 'sed-inplace',
-            span: {
-              operation: 'create-overwrite',
-              absolutePath: `${nodePath.resolve(cwd, file)}${patternCommand.backupSuffix}`,
-              simpleCommandIndex: patternCommand.simpleCommandIndex
-            }
-          });
-        }
-      }
-      if (unresolvedMatches.length > 0) return { resolved: [], unresolved: unresolvedMatches, preStateRequests: [] };
-      const overBudget = rejectOverBudget(resolved, 'shell', 'sed-inplace', 'numeric substitution', maxCandidates);
-      if (overBudget !== null) return overBudget;
-      return { resolved, unresolved: [], preStateRequests };
-    } else {
-      return resolvePatternSubstitution(patternCommand, options, cwd, maxCandidates);
-    }
+    if (numericMatch !== null) return resolveNumericSed(patternCommand, numericMatch, options, cwd, maxCandidates);
+    return resolvePatternSubstitution(patternCommand, options, cwd, maxCandidates);
   }
 
   const argv = argvOf(command.trim());
