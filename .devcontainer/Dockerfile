@@ -69,3 +69,12 @@ ENV NODE_OPTIONS=--max-old-space-size=4096
 # /home/node bind mount).
 RUN npm install -g @anthropic-ai/claude-code @openai/codex && \
   npm install -g tsx dotenv-cli @ast-grep/cli jsdoczoom agent-browser git-span
+
+# Guarantee the opencode data dir exists node-owned in the final image even if
+# built against a stale devcontainer-base (see base commit bcc1d2e): fresh
+# opencode-data named volumes initialize content and ownership from this image
+# path, and a root-owned mountpoint would break opencode (uid 1000) on first run.
+USER root
+RUN mkdir -p /home/node/.local/share/opencode \
+  && chown -R node:node /home/node/.local
+USER node
