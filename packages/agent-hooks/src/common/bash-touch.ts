@@ -266,6 +266,37 @@ function joinOfCommand(
 }
 
 /**
+ * Phase C - probe-cache seeding (plan Â§3 step 1c): derive every absent target
+ * and cp/install source of the compound, plus the later-recreate scope (the
+ * delete paths a later command can re-create with a file-producing write),
+ * and build the single per-invocation cache from them. The first gate that
+ * needs it runs one ls-files + one span-list batch for all paths; the
+ * recreate scope's working-tree-vs-index status is read once in one `git
+ * status` batch.
+ */
+export function seedProbeCache(resolved: readonly ResolvedMatch[]): RealityProbeCache {
+  const probePaths: string[] = [];
+  const fileProducingByPath = new Map<string, number[]>();
+  for (const m of resolved) {
+    if (m.span.operation === 'delete') probePaths.push(m.span.absolutePath);
+    else if ((m.idiom === 'cp-write' || m.idiom === 'install-write') && m.span.operation === 'read') {
+      probePaths.push(m.span.absolutePath);
+    } else if (FILE_PRODUCING_OPS.has(m.span.operation)) {
+      const list = fileProducingByPath.get(m.span.absolutePath);
+      if (list !== undefined) list.push(m.span.simpleCommandIndex);
+      else fileProducingByPath.set(m.span.absolutePath, [m.span.simpleCommandIndex]);
+    }
+  }
+  const recreateProbePaths: string[] = [];
+  for (const m of resolved) {
+    if (m.span.operation !== 'delete') continue;
+    const later = (fileProducingByPath.get(m.span.absolutePath) ?? []).some((i) => i > m.span.simpleCommandIndex);
+    if (later) recreateProbePaths.push(m.span.absolutePath);
+  }
+  return createRealityProbeCache(probePaths, recreateProbePaths);
+}
+
+/**
  * Phase A+B - the gate prelude: match triage into resolved spans and guards,
  * the whole-command interruption drop (a command that did not complete
  * produces no touches whatever its spans), the empty-set exit, and the
@@ -328,32 +359,8 @@ export async function runBashTouches(
   const { resolved, exitCode } = prelude;
   const guards = matches.filter((m): m is GuardMatch => m.status === 'builtin-guard');
 
-  // Seed the per-command probe cache (plan §3 step 1c) with every absent
-  // target and cp/install source of the compound; the first gate that needs
-  // it runs one ls-files + one span-list batch for all of them. The
-  // later-recreate explanation's probe scope (round-3) rides alongside: the
-  // delete paths a later command can re-create with a file-producing write —
-  // their working-tree-vs-index status is the re-create's mark, read once in
-  // one `git status` batch.
-  const probePaths: string[] = [];
-  const fileProducingByPath = new Map<string, number[]>();
-  for (const m of resolved) {
-    if (m.span.operation === 'delete') probePaths.push(m.span.absolutePath);
-    else if ((m.idiom === 'cp-write' || m.idiom === 'install-write') && m.span.operation === 'read') {
-      probePaths.push(m.span.absolutePath);
-    } else if (FILE_PRODUCING_OPS.has(m.span.operation)) {
-      const list = fileProducingByPath.get(m.span.absolutePath);
-      if (list !== undefined) list.push(m.span.simpleCommandIndex);
-      else fileProducingByPath.set(m.span.absolutePath, [m.span.simpleCommandIndex]);
-    }
-  }
-  const recreateProbePaths: string[] = [];
-  for (const m of resolved) {
-    if (m.span.operation !== 'delete') continue;
-    const later = (fileProducingByPath.get(m.span.absolutePath) ?? []).some((i) => i > m.span.simpleCommandIndex);
-    if (later) recreateProbePaths.push(m.span.absolutePath);
-  }
-  const probeCache = createRealityProbeCache(probePaths, recreateProbePaths);
+  // Probe-cache seeding (phase C): one shared cache for the whole invocation.
+  const probeCache = seedProbeCache(resolved);
 
   // Group by simple command in walker order. Span-less guard commands
   // (`false`/`true`/`:`) join the order with no group: their deterministic
