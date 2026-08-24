@@ -29,13 +29,10 @@
  * impossible for any current or future ingress.
  */
 
+import type { PatchCandidate } from '../common/apply-patch-touch.js';
+
 /** A pre-parsed apply_patch candidate, ready for the touch pipeline. */
-export interface PatchPlanTouch {
-  absolutePath: string;
-  operation: 'create-overwrite' | 'modify' | 'delete';
-  ranges: readonly { start: number; end: number }[];
-  preTrackedDelete: boolean;
-}
+export type PatchPlanTouch = PatchCandidate;
 
 interface CallEntry {
   report?: string;

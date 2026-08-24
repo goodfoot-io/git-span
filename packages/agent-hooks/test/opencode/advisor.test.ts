@@ -14,7 +14,8 @@ import { describe, expect, it } from 'vitest';
 import type { AdvisorExecutors, AdvisorMemoState, GitExecutor } from '../../src/common/advisor-core.js';
 import { AdvisorScanError } from '../../src/common/advisor-core.js';
 import type { DriftPorcelainRow, PorcelainRow } from '../../src/common/agent-hooks-common.js';
-import { createAdvisorHandler, GitSpanHoldError, resolveFrame } from '../../src/opencode/advisor.js';
+import { resolveFrame } from '../../src/common/agent-hooks-common.js';
+import { createAdvisorHandler, GitSpanHoldError } from '../../src/opencode/advisor.js';
 
 const SPAN = 'billing/checkout-request-flow';
 

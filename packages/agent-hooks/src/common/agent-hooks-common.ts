@@ -202,6 +202,19 @@ export function derivePath(toolInput: Record<string, unknown>, cwd: string): str
   return canonicalizePath(abs);
 }
 
+/**
+ * Resolve a bash-style `workdir` argument into the frame (absolute directory)
+ * relative paths resolve against. Absolute values pass through unchanged;
+ * missing or empty values fall back to `directory`; a template-literal workdir
+ * (containing `$` or a backtick) is unresolvable static intent and falls back
+ * too. Shared by every adapter's advisor frame and post-execution touch
+ * pipeline so the unresolvable-guard semantics cannot drift between twins.
+ */
+export function resolveFrame(workdir: string | undefined, directory: string): string {
+  if (workdir === undefined || workdir.length === 0 || /[$`]/.test(workdir)) return directory;
+  return nodePath.resolve(directory, workdir);
+}
+
 // ---------------------------------------------------------------------------
 // Line range types and helpers
 // ---------------------------------------------------------------------------

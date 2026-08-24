@@ -41,15 +41,7 @@ import {
   resolveChangeset
 } from '../common/advisor-core.js';
 import { disableUpdateCheck } from '../common/update-check-env.js';
-
-/** Narrow a `Bash` tool_input to its `command` string. */
-function narrowCommand(toolInput: unknown): string | null {
-  if (toolInput !== null && typeof toolInput === 'object' && 'command' in toolInput) {
-    const command = (toolInput as { command: unknown }).command;
-    if (typeof command === 'string' && command.length > 0) return command;
-  }
-  return null;
-}
+import { narrowCommand } from './static-plan.js';
 
 export function createHandler(
   git: GitExecutor = createDefaultGitExecutor(),

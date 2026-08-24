@@ -24,6 +24,7 @@ import { parseApplyPatch } from '../codex/apply-patch.js';
 import {
   abspathAgainst,
   DEFAULT_SESSION_LAYOUT,
+  resolveFrame,
   resolveRepoRoot,
   type SessionLayout
 } from '../common/agent-hooks-common.js';
@@ -31,7 +32,6 @@ import { createDefaultPlannedTouchStore, planBashTouches } from '../common/bash-
 import type { MemoLogger } from '../common/span-surface.js';
 import { filterTrackedEligibility } from '../common/static-attribution.js';
 import { disableUpdateCheck } from '../common/update-check-env.js';
-import { resolveFrame } from './advisor.js';
 import { narrowApplyPatchText, narrowBashArgs } from './narrows.js';
 import type { PatchPlanTouch } from './stash.js';
 import type { OpencodeBeforeOutput, OpencodeToolInput } from './types.js';

@@ -46,7 +46,8 @@ import type {
   OpencodeToolInput
 } from './types.js';
 
-export { GitSpanHoldError, resolveFrame } from './advisor.js';
+export { resolveFrame } from '../common/agent-hooks-common.js';
+export { GitSpanHoldError } from './advisor.js';
 export { createOpencodeLogger, OPENCODE_LOG_FILE_ENV } from './logger.js';
 export * from './types.js';
 

@@ -26,7 +26,6 @@
  * the tool call, which is exactly what must never happen by accident).
  */
 
-import { resolve as resolvePath } from 'node:path';
 import {
   type AdvisorExecutors,
   type AdvisorMemoState,
@@ -40,24 +39,13 @@ import {
   resolveChangeset,
   wrapGitSpanContext
 } from '../common/advisor-core.js';
+import { resolveFrame } from '../common/agent-hooks-common.js';
 import type { MemoLogger } from '../common/span-surface.js';
 import { disableUpdateCheck } from '../common/update-check-env.js';
 import type { OpencodeBeforeOutput, OpencodeToolInput } from './types.js';
 
 /** Sentinel so the fail-open catch can rethrow holds without a flag parameter. */
 export class GitSpanHoldError extends Error {}
-
-/**
- * Resolve the advisor frame for a bash call: the args' `workdir` (absolute, or
- * relative against the plugin init directory — the host resolves it against
- * the instance directory, so an absolute value passes through unchanged)
- * falling back to the init directory. A template-literal workdir (containing
- * `$` or a backtick) is unresolvable static intent and falls back too.
- */
-export function resolveFrame(workdir: string | undefined, directory: string): string {
-  if (workdir === undefined || workdir.length === 0 || /[$`]/.test(workdir)) return directory;
-  return resolvePath(directory, workdir);
-}
 
 export interface AdvisorHandlerDeps {
   /** Plugin init directory — the frame every relative workdir resolves against. */

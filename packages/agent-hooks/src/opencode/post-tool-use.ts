@@ -19,7 +19,8 @@
  * - `read` / `edit` / `write` — structured touches translated like Claude's,
  *   filtered through the post-command tracked index first.
  * - `apply_patch` — pre-parsed plans (range fidelity from pre-edit content)
- *   consumed first, fresh {@link parseApplyPatch} fallback for unplanned files.
+ *   consumed first by the shared {@link runApplyPatchTouches} driver, with a
+ *   fresh whole-file fallback parse for unplanned files.
  *
  * Never throws: the whole body is fail-open, because an uncaught after-hook
  * error would block an already-executed tool call on the fail-closed host.
@@ -30,25 +31,24 @@
  * state's ingress guard — nothing keys outside the prunable universe.
  */
 
-import { parseApplyPatch } from '../codex/apply-patch.js';
 import {
   abspathAgainst,
   canonicalizePath,
   DEFAULT_SESSION_LAYOUT,
+  resolveFrame,
   type SessionLayout
 } from '../common/agent-hooks-common.js';
+import { runApplyPatchTouches } from '../common/apply-patch-touch.js';
 import { createDefaultPlannedTouchStore, runLayeredBashTouches } from '../common/bash-attribution.js';
-import { type CoreLogger, createDiskMemoStore, type MemoFactory, type MemoLogger } from '../common/span-surface.js';
+import { createDiskMemoStore, type MemoFactory, type MemoLogger } from '../common/span-surface.js';
 import { filterTrackedEligibility } from '../common/static-attribution.js';
 import {
   createDefaultTouchExecutors,
   runTouchHook,
-  runTouchHooks,
   type TouchExecutors,
   type TouchInput
 } from '../common/touch-core.js';
 import { disableUpdateCheck } from '../common/update-check-env.js';
-import { resolveFrame } from './advisor.js';
 import {
   narrowApplyPatchText,
   narrowBashArgs,
@@ -59,76 +59,6 @@ import {
 } from './narrows.js';
 import type { PatchPlanTouch } from './stash.js';
 import type { OpencodeAfterOutput, OpencodeToolInput } from './types.js';
-
-interface PatchCandidate {
-  absolutePath: string;
-  operation: 'create-overwrite' | 'modify' | 'delete';
-  ranges: readonly { start: number; end: number }[];
-  preTrackedDelete: boolean;
-}
-
-/** Translate a stashed pre-parsed plan into touch-pipeline candidates. */
-function stashedPlanCandidates(plan: readonly PatchPlanTouch[]): PatchCandidate[] {
-  return plan.map((touch) => ({
-    absolutePath: touch.absolutePath,
-    operation: touch.operation,
-    ranges: touch.ranges,
-    preTrackedDelete: touch.preTrackedDelete
-  }));
-}
-
-async function runPatchTouches(
-  patchText: string,
-  cwd: string,
-  sessionId: string,
-  stashed: readonly PatchPlanTouch[] | null,
-  executors: TouchExecutors,
-  memo: ReturnType<MemoFactory>,
-  invocationId: string | null,
-  logger: CoreLogger
-): Promise<string[]> {
-  const planned = stashed !== null ? stashedPlanCandidates(stashed) : [];
-  const plannedPaths = new Set(planned.map(({ absolutePath }) => absolutePath));
-  const noRangeRecovery = (): null => null;
-  const fallback: PatchCandidate[] = parseApplyPatch(patchText, noRangeRecovery)
-    .map(
-      (anchor): PatchCandidate => ({
-        absolutePath: abspathAgainst(cwd, anchor.path),
-        operation: anchor.absent ? 'delete' : anchor.kind === 'create' ? 'create-overwrite' : 'modify',
-        ranges: anchor.range === undefined ? [] : [anchor.range],
-        preTrackedDelete: false
-      })
-    )
-    .filter(({ absolutePath }) => !plannedPaths.has(absolutePath));
-  const candidates = [...planned, ...fallback];
-  const tracked = filterTrackedEligibility(
-    candidates.map((value) => ({ absolutePath: value.absolutePath, value })),
-    { cwd }
-  );
-  const eligible = new Set(tracked.eligible.map(({ value }) => value));
-  for (const candidate of candidates) if (candidate.preTrackedDelete) eligible.add(candidate);
-
-  const touches: TouchInput[] = [];
-  for (const candidate of candidates) {
-    if (!eligible.has(candidate)) continue;
-    const ranges = candidate.ranges.length === 0 ? [undefined] : candidate.ranges;
-    for (const range of ranges) {
-      touches.push({
-        kind: 'write',
-        sessionId,
-        cwd,
-        filePath: candidate.absolutePath,
-        ...(invocationId === null ? {} : { invocationId }),
-        written: '',
-        range,
-        targetState: candidate.operation === 'delete' ? 'absent' : 'exists',
-        ...(candidate.operation === 'delete' ? { postState: { realDelete: true } } : {})
-      });
-    }
-  }
-  const batch = await runTouchHooks(touches, executors, memo, invocationId, undefined, logger);
-  return batch.outputs.flatMap((output) => (output.additionalContext === null ? [] : [output.additionalContext]));
-}
 
 export interface AfterHandlerDeps {
   directory: string;
@@ -236,11 +166,11 @@ export function createAfterHandler(
         if (patchText !== null) {
           const cwd = deps.directory;
           const stashed = deps.takePatchPlan(sessionId, callId);
-          blocks = await runPatchTouches(
+          blocks = await runApplyPatchTouches(
             patchText,
             cwd,
             sessionId,
-            stashed,
+            stashed ?? [],
             executors,
             memoFactory(logger, layout),
             callId.length > 0 ? `${sessionId}:${callId}` : null,

@@ -3,28 +3,23 @@
 import { resolve as resolvePath } from 'node:path';
 import { type HookContext, type PostToolUseInput, postToolUseHook, postToolUseOutput } from '@goodfoot/codex-hooks';
 import {
-  abspathAgainst,
   DEFAULT_SESSION_LAYOUT,
+  resolveFrame,
   resolveRepoRoot,
   type SessionLayout,
   toPosix
 } from '../common/agent-hooks-common.js';
+import { type PatchCandidate, runApplyPatchTouches } from '../common/apply-patch-touch.js';
 import {
   createDefaultPlannedTouchStore,
   normalizeBashResponse,
   runLayeredBashTouches
 } from '../common/bash-attribution.js';
-import { type CoreLogger, createDiskMemoStore, type MemoFactory } from '../common/span-surface.js';
-import { filterTrackedEligibility, type PlannedTouchRecord } from '../common/static-attribution.js';
-import {
-  createDefaultTouchExecutors,
-  runTouchHooks,
-  type TouchExecutors,
-  type TouchInput
-} from '../common/touch-core.js';
+import { createDiskMemoStore, type MemoFactory } from '../common/span-surface.js';
+import type { PlannedTouchRecord } from '../common/static-attribution.js';
+import { createDefaultTouchExecutors, type TouchExecutors } from '../common/touch-core.js';
 import { disableUpdateCheck } from '../common/update-check-env.js';
 import { extractShellCommand } from './advisor.js';
-import { parseApplyPatch } from './apply-patch.js';
 
 const APPLY_PATCH_SUCCESS_PREFIX = 'Success. Updated the following files:';
 
@@ -126,15 +121,12 @@ export function classifyApplyPatchResponse(toolResponse: unknown): 'success' | '
   return normalized.stdout.startsWith(APPLY_PATCH_SUCCESS_PREFIX) ? 'success' : 'failure';
 }
 
-const noRangeRecovery = (): null => null;
-
-interface PatchCandidate {
-  absolutePath: string;
-  operation: 'create-overwrite' | 'modify' | 'delete';
-  ranges: readonly { start: number; end: number }[];
-  preTrackedDelete: boolean;
-}
-
+/**
+ * Translate a retrieved disk-store plan into touch-pipeline candidates: the
+ * record only applies when it was planned against this cwd's repo root, its
+ * repo-relative paths resolve against the record's own root, and a delete is
+ * pre-tracked exactly when the planner recorded tracked evidence.
+ */
 function plannedPatchCandidates(record: PlannedTouchRecord | null, cwd: string): PatchCandidate[] {
   const repoRoot = resolveRepoRoot(cwd);
   if (record === null || repoRoot === null || toPosix(record.repoRoot) !== toPosix(repoRoot)) return [];
@@ -145,58 +137,6 @@ function plannedPatchCandidates(record: PlannedTouchRecord | null, cwd: string):
     ranges: touch.ranges,
     preTrackedDelete: touch.operation === 'delete' && touch.evidence?.kind === 'tracked'
   }));
-}
-
-async function runApplyPatchTouches(
-  command: string,
-  cwd: string,
-  sessionId: string,
-  record: PlannedTouchRecord | null,
-  executors: TouchExecutors,
-  memo: ReturnType<MemoFactory>,
-  invocationId: string | null,
-  logger: CoreLogger
-): Promise<string[]> {
-  const planned = plannedPatchCandidates(record, cwd);
-  const plannedPaths = new Set(planned.map(({ absolutePath }) => absolutePath));
-  const fallback: PatchCandidate[] = parseApplyPatch(command, noRangeRecovery)
-    .map(
-      (anchor): PatchCandidate => ({
-        absolutePath: abspathAgainst(cwd, anchor.path),
-        operation: anchor.absent ? 'delete' : anchor.kind === 'create' ? 'create-overwrite' : 'modify',
-        ranges: anchor.range === undefined ? [] : [anchor.range],
-        preTrackedDelete: false
-      })
-    )
-    .filter(({ absolutePath }) => !plannedPaths.has(absolutePath));
-  const candidates = [...planned, ...fallback];
-  const tracked = filterTrackedEligibility(
-    candidates.map((value) => ({ absolutePath: value.absolutePath, value })),
-    { cwd }
-  );
-  const eligible = new Set(tracked.eligible.map(({ value }) => value));
-  for (const candidate of candidates) if (candidate.preTrackedDelete) eligible.add(candidate);
-
-  const touches: TouchInput[] = [];
-  for (const candidate of candidates) {
-    if (!eligible.has(candidate)) continue;
-    const ranges = candidate.ranges.length === 0 ? [undefined] : candidate.ranges;
-    for (const range of ranges) {
-      touches.push({
-        kind: 'write',
-        sessionId,
-        cwd,
-        filePath: candidate.absolutePath,
-        ...(invocationId === null ? {} : { invocationId }),
-        written: '',
-        range,
-        targetState: candidate.operation === 'delete' ? 'absent' : 'exists',
-        ...(candidate.operation === 'delete' ? { postState: { realDelete: true } } : {})
-      });
-    }
-  }
-  const batch = await runTouchHooks(touches, executors, memo, invocationId, undefined, logger);
-  return batch.outputs.flatMap((output) => (output.additionalContext === null ? [] : [output.additionalContext]));
 }
 
 export function createHandler(
@@ -225,7 +165,7 @@ export function createHandler(
         workdir = codeMode.workdir;
       }
       if (command === null || command.length === 0) return undefined;
-      const effectiveCwd = workdir !== null && !/[`$]/.test(workdir) ? resolvePath(cwd, workdir) : cwd;
+      const effectiveCwd = resolveFrame(workdir ?? undefined, cwd);
       const blocks = await runLayeredBashTouches(
         command,
         effectiveCwd,
@@ -258,7 +198,7 @@ export function createHandler(
       command,
       cwd,
       sessionId,
-      record,
+      plannedPatchCandidates(record, cwd),
       executors,
       memo,
       input.tool_use_id === undefined ? null : `${sessionId}:${input.tool_use_id}`,

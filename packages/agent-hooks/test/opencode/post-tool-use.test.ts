@@ -220,6 +220,72 @@ describe('opencode after hook — injection appends', () => {
     }
   });
 
+  it('attributes apply_patch through the shared driver: stashed plan first, fresh-parse fallback for unplanned files', async () => {
+    const repo = makeTempRepo();
+    try {
+      for (const name of ['f.ts', 'h.ts']) {
+        writeFileSync(join(repo.root, name), `export const ${name[0]} = 1;\n`);
+        execFileSync('git', ['add', name], { cwd: repo.root, stdio: 'ignore' });
+      }
+      execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init'], {
+        cwd: repo.root,
+        stdio: 'ignore'
+      });
+      recorded.calls.length = 0;
+      const { handler, state } = createHandler({ directory: repo.root });
+      state.patchPlans.set('s:c', [
+        {
+          absolutePath: join(repo.root, 'f.ts'),
+          operation: 'modify',
+          ranges: [{ start: 1, end: 1 }],
+          preTrackedDelete: false
+        }
+      ]);
+      await handler(
+        {
+          tool: 'apply_patch',
+          sessionID: 's',
+          callID: 'c',
+          args: {
+            patchText: [
+              '*** Begin Patch',
+              '*** Update File: f.ts',
+              '@@',
+              '-stale context',
+              '+fresh context',
+              '*** Update File: h.ts',
+              '@@',
+              '-stale context',
+              '+fresh context',
+              '*** End Patch'
+            ].join('\n')
+          }
+        },
+        {}
+      );
+      // The planned f.ts candidate keeps its stash ranges and suppresses the
+      // whole-file fallback twin; h.ts comes from the driver's fresh parse.
+      expect(recorded.calls).toEqual([
+        expect.objectContaining({
+          kind: 'write',
+          filePath: join(repo.root, 'f.ts'),
+          range: { start: 1, end: 1 },
+          invocationId: 's:c',
+          targetState: 'exists'
+        }),
+        expect.objectContaining({
+          kind: 'write',
+          filePath: join(repo.root, 'h.ts'),
+          range: undefined,
+          invocationId: 's:c',
+          targetState: 'exists'
+        })
+      ]);
+    } finally {
+      repo.cleanup();
+    }
+  });
+
   it('never throws on garbage input shapes', async () => {
     const { handler } = createHandler();
     await expect(handler(undefined as never, undefined as never)).resolves.toBeUndefined();
