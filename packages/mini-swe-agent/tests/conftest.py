@@ -30,16 +30,19 @@ if sleep := os.environ.get("MSWEA_STUB_SLEEP"):
     time.sleep(float(sleep))
 out = {}
 if name == "advisor.mjs" and os.environ.get("MSWEA_STUB_DENY") and os.environ["MSWEA_STUB_DENY"] in cmd:
+    reason = "span debt: " + cmd + os.environ.get("MSWEA_STUB_REASON_SUFFIX", "")
     out = {
         "hookSpecificOutput": {
             "permissionDecision": "deny",
-            "permissionDecisionReason": "span debt: " + cmd,
+            "permissionDecisionReason": reason,
         }
     }
 elif name == "static-plan.mjs" and os.environ.get("MSWEA_STUB_CONTEXT_PRE"):
     out = {"hookSpecificOutput": {"additionalContext": os.environ["MSWEA_STUB_CONTEXT_PRE"]}}
 elif name in ("post-tool-use.mjs", "post-tool-use-failure.mjs") and os.environ.get("MSWEA_STUB_CONTEXT_POST"):
     out = {"hookSpecificOutput": {"additionalContext": os.environ["MSWEA_STUB_CONTEXT_POST"]}}
+if os.environ.get("MSWEA_STUB_SKILL_REF") and "hookSpecificOutput" in out:
+    out["hookSpecificOutput"]["skillRef"] = os.environ["MSWEA_STUB_SKILL_REF"]
 if os.environ.get("MSWEA_STUB_EMPTY"):
     pass  # the hook returned nothing: no stdout at all
 elif raw := os.environ.get("MSWEA_STUB_RAW"):

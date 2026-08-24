@@ -179,14 +179,16 @@ def test_default_hooks_dir_points_at_package_bundles():
 def test_context_is_rewritten_for_the_mini_agent_and_recorded(stub_hooks, monkeypatch):
     monkeypatch.setenv(
         "MSWEA_STUB_CONTEXT_PRE",
-        "<git-span>\n## linked-files\n- src/a.py#L1-L2\n\nLoad the `git-span:git-span` skill for guidance.\n</git-span>",
+        "<git-span>\n## linked-files\n- src/a.py#L1-L2\n\n{{skill-ref:git-span}}\n</git-span>",
     )
+    monkeypatch.setenv("MSWEA_STUB_SKILL_REF", "git-span")
     bridge = make_bridge(stub_hooks, skill_file="/opt/git-span/skills/git-span/SKILL.md")
 
     result = bridge.pre_tool_use("git status", "/work", "tu-skill")
     bridge.mark_delivered("tu-skill", result.context)
 
     assert "Load the" not in result.context
+    assert "{{skill-ref:" not in result.context
     assert "`/opt/git-span/skills/git-span/SKILL.md`" in result.context
     event = bridge.events[0]
     assert event["context"] == result.context
@@ -197,6 +199,64 @@ def test_context_is_rewritten_for_the_mini_agent_and_recorded(stub_hooks, monkey
     assert event["delivered"] is True
     assert event["ordinal"] == 1
     assert event["duration_ms"] >= 0
+
+
+def test_deny_reason_is_rewritten_when_the_field_gates_it(stub_hooks, monkeypatch):
+    # The advisor's deny reason carries the same placeholder; substitution is
+    # gated on the structured field, not on where the payload travels.
+    monkeypatch.setenv("MSWEA_STUB_DENY", "git commit")
+    monkeypatch.setenv("MSWEA_STUB_REASON_SUFFIX", "\n{{skill-ref:git-span}}")
+    monkeypatch.setenv("MSWEA_STUB_SKILL_REF", "git-span")
+    bridge = make_bridge(stub_hooks, skill_file="/opt/git-span/skills/git-span/SKILL.md")
+
+    result = bridge.pre_tool_use("git commit -am x", "/work", "tu-reason")
+
+    assert result.denied
+    assert "{{skill-ref:" not in (result.reason or "")
+    assert "`/opt/git-span/skills/git-span/SKILL.md`" in (result.reason or "")
+
+
+def test_absent_skill_ref_field_leaves_the_payload_untouched(stub_hooks, monkeypatch):
+    # Fail-closed: without hookSpecificOutput.skillRef the bridge never
+    # attempts any rewriting — a raw placeholder passes through verbatim
+    # rather than being silently matched against prose.
+    payload = "<git-span>\n- src/a.py#L1-L2\n\n{{skill-ref:git-span}}\n</git-span>"
+    monkeypatch.setenv("MSWEA_STUB_CONTEXT_PRE", payload)
+    bridge = make_bridge(stub_hooks, skill_file="/opt/git-span/skills/git-span/SKILL.md")
+
+    result = bridge.pre_tool_use("cat x", "/work", "tu-nofield")
+
+    assert result.context == payload
+
+
+def test_unknown_skill_ref_drops_the_guidance_line(stub_hooks, monkeypatch):
+    # A ref this environment cannot resolve must not leak a Claude Code skill
+    # name (or a raw token) to the model: the guidance line is dropped.
+    monkeypatch.setenv(
+        "MSWEA_STUB_CONTEXT_PRE",
+        "<git-span>\n- src/a.py#L1-L2\n\n{{skill-ref:reconcile}}\n</git-span>",
+    )
+    monkeypatch.setenv("MSWEA_STUB_SKILL_REF", "reconcile")
+    bridge = make_bridge(stub_hooks, skill_file="/opt/git-span/skills/git-span/SKILL.md")
+
+    result = bridge.pre_tool_use("cat x", "/work", "tu-unknown")
+
+    assert result.context == "<git-span>\n- src/a.py#L1-L2\n\n</git-span>"
+
+
+def test_unconfigured_skill_file_still_never_leaks_the_placeholder(stub_hooks, monkeypatch):
+    # Without a configured skill_file no instruction can be produced, but the
+    # placeholder line is still dropped: the mini agent never sees the token.
+    monkeypatch.setenv(
+        "MSWEA_STUB_CONTEXT_PRE",
+        "<git-span>\n- src/a.py#L1-L2\n\n{{skill-ref:git-span}}\n</git-span>",
+    )
+    monkeypatch.setenv("MSWEA_STUB_SKILL_REF", "git-span")
+    bridge = make_bridge(stub_hooks)
+
+    result = bridge.pre_tool_use("cat x", "/work", "tu-nofile")
+
+    assert result.context == "<git-span>\n- src/a.py#L1-L2\n\n</git-span>"
 
 
 def make_docker_bridge(stub_hooks, fake_docker, *, executable=None, **kwargs):

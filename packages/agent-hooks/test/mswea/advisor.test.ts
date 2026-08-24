@@ -3,16 +3,20 @@
  * (packages/agent-hooks/src/mswea/advisor.ts).
  *
  * The mswea adapter re-registers the Claude adapter's handler with the
- * `'generic'` harness: its agent has only the bash tool, so the closing
+ * `'mswea'` harness: its agent has only the bash tool, so the closing
  * instruction must be the inline prose the model can carry out — never the
- * forked-subagent tasking of the `'claude'` default. The adapter-level
+ * forked-subagent tasking of the `'claude'` default — and its skill guidance
+ * travels as the machine-readable placeholder plus the structured
+ * `hookSpecificOutput.skillRef` field that the Python bridge substitutes
+ * (main-332), never as a Claude Code skill name. The adapter-level
  * translation itself is covered by test/claude/advisor.test.ts; these pin the
- * registration and the harness choice.
+ * registration, the harness choice, and the protocol field's presence.
  */
 
 import { Logger } from '@goodfoot/claude-code-hooks';
 import { describe, expect, it } from 'vitest';
 import type { AdvisorExecutors, AdvisorMemoState, GitExecutor } from '../../src/common/advisor-core.js';
+import { GIT_SPAN_SKILL_REF, skillRefToken } from '../../src/common/advisor-core.js';
 import type { DriftPorcelainRow, PorcelainRow } from '../../src/common/agent-hooks-common.js';
 import { createDefaultPlannedTouchStore } from '../../src/common/bash-attribution.js';
 import hook, { createHandler } from '../../src/mswea/advisor.js';
@@ -81,7 +85,11 @@ function preInput(command: string): Record<string, unknown> {
 interface HookResult {
   stdout: {
     systemMessage?: string;
-    hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string };
+    hookSpecificOutput?: {
+      permissionDecision?: string;
+      permissionDecisionReason?: string;
+      skillRef?: string;
+    };
   };
 }
 function toResult(raw: unknown): HookResult {
@@ -116,9 +124,12 @@ describe('mswea advisor adapter', () => {
     );
     expect(result.stdout.hookSpecificOutput?.permissionDecisionReason).toContain('then reconcile:');
     expect(result.stdout.hookSpecificOutput?.permissionDecisionReason).not.toContain('forked subagent');
+    // Drift closings name no skill at all — no placeholder, no ref field.
+    expect(result.stdout.hookSpecificOutput?.permissionDecisionReason).not.toContain('{{skill-ref:');
+    expect(result.stdout.hookSpecificOutput?.skillRef).toBeUndefined();
   });
 
-  it('denies an uncovered-only commit with the inline documentation instruction', async () => {
+  it('denies an uncovered-only commit with the inline instruction and the skill-ref field', async () => {
     const git = fakeGit({ stagedPaths: async () => ['src/uncovered.ts', 'src/other.ts'] });
     const executors = fakeExecutors({ list: async () => [], drift: async () => [] });
     const handler = createHandler(git, executors, sharedMemoFactory());
@@ -129,6 +140,24 @@ describe('mswea advisor adapter', () => {
       'Determine if these files carry implicit dependencies, then use `git span` to document them:'
     );
     expect(result.stdout.hookSpecificOutput?.permissionDecisionReason).not.toContain('Dispatch a forked subagent');
+    // main-332 protocol: placeholder line + structured field, never prose.
+    expect(result.stdout.hookSpecificOutput?.skillRef).toBe(GIT_SPAN_SKILL_REF);
+    expect(result.stdout.hookSpecificOutput?.permissionDecisionReason).toContain(skillRefToken(GIT_SPAN_SKILL_REF));
+    expect(result.stdout.hookSpecificOutput?.permissionDecisionReason).not.toContain('Load the `git-span');
+  });
+
+  it('surfaces a status advisory as systemMessage with the skill-ref field alongside', async () => {
+    const git = fakeGit({
+      stagedPaths: async () => [],
+      trackedModifiedPaths: async () => ['src/uncovered.ts', 'src/other.ts']
+    });
+    const executors = fakeExecutors({ list: async () => [], drift: async () => [] });
+    const handler = createHandler(git, executors, sharedMemoFactory());
+    const result = toResult(await handler(preInput('git status --short') as never, { logger } as never));
+
+    expect(result.stdout.systemMessage).toContain(skillRefToken(GIT_SPAN_SKILL_REF));
+    expect(result.stdout.hookSpecificOutput?.skillRef).toBe(GIT_SPAN_SKILL_REF);
+    expect(result.stdout.hookSpecificOutput?.permissionDecision).toBeUndefined();
   });
 
   it('discards a pending static plan when the advisor denies the command', async () => {

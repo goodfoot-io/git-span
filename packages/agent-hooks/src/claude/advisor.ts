@@ -95,9 +95,16 @@ export function createHandler(
         // one-time interruption is expressed as `permissionDecision: 'deny'`.
         // Single channel (main-341): the reason travels only as
         // `permissionDecisionReason`; a `systemMessage` twin would inject the
-        // same checklist into context twice.
+        // same checklist into context twice. When core rendered the closing
+        // skill guidance as a machine placeholder (`'mswea'` harness), the
+        // result's `skillRef` travels alongside so the mini-agent bridge can
+        // gate its substitution on the structured field.
         return preToolUseOutput({
-          hookSpecificOutput: { permissionDecision: 'deny', permissionDecisionReason: result.reason }
+          hookSpecificOutput: {
+            permissionDecision: 'deny',
+            permissionDecisionReason: result.reason,
+            ...(result.skillRef ? { skillRef: result.skillRef } : {})
+          }
         });
       }
       // Environmental drift and a failed drift scan both allow
@@ -109,8 +116,14 @@ export function createHandler(
       }
       // `status`-only advisory kinds: span debt exists, but a status check
       // never holds the command — surface it as information, not a warning.
+      // The placeholder protocol's `skillRef` rides inside
+      // `hookSpecificOutput` even on this systemMessage-only shape, keeping
+      // one location for the field across every payload that carries it.
       if (result.kind === 'semantic-drift-report' || result.kind === 'uncovered-writes-report') {
-        return preToolUseOutput({ systemMessage: result.reason });
+        return preToolUseOutput({
+          systemMessage: result.reason,
+          ...(result.skillRef ? { hookSpecificOutput: { skillRef: result.skillRef } } : {})
+        });
       }
       return null;
     } catch (err) {

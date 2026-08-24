@@ -30,6 +30,17 @@ logger = logging.getLogger("minisweagent.hooks")
 # Claude adapters; the order matches the hooks.json registration order.
 PRE_TOOL_USE_HOOKS = ("static-plan", "advisor")
 ALL_HOOKS = (*PRE_TOOL_USE_HOOKS, "post-tool-use", "post-tool-use-failure", "session-end")
+
+# The skill-guidance protocol (main-332): hooks render their closing skill
+# guidance as a machine-readable placeholder line and name it via the
+# structured ``hookSpecificOutput.skillRef`` field. Both sides below mirror
+# the constants exported by packages/agent-hooks/src/common/advisor-core.ts
+# (SKILL_REF_TOKEN_START / SKILL_REF_TOKEN_END / GIT_SPAN_SKILL_REF);
+# tests/test_skill_ref_parity.py parses that source and pins this file to it,
+# so an advisor-side format change fails loudly here instead of silently
+# degrading to wrong instructions.
+SKILL_REF_FIELD = "skillRef"
+_SKILL_REF_LINE = re.compile(r"^\{\{skill-ref:(?P<ref>[a-z0-9][a-z0-9-]*)\}\}$")
 _ANCHOR_LINE = re.compile(r"^(?:[│ ]*[├└]──|[-*])\s+([^\s`]+?)(?:#L\d+(?:-L\d+)?)?(?:\s+—.*)?$")
 _SPAN_HEADING = re.compile(r"^##\s+([a-z0-9][a-z0-9/-]*)$")
 
@@ -87,17 +98,48 @@ class HookBridge:
         self.events: list[dict[str, Any]] = []
         self._ordinal = 0
 
-    def _rewrite_context(self, value: str | None) -> str | None:
-        """Translate host-specific skill loading into a real mini-agent command."""
-        if not value or not self.skill_file:
-            return value
-        instruction = (
+    def _instruction_for_ref(self, ref: str) -> str | None:
+        """The environment-appropriate instruction for a skill ref, or None.
+
+        This mapping is the bridge's single source of truth for how the mini
+        agent loads each skill the hooks may reference. An unresolvable ref —
+        or an unconfigured ``skill_file`` — yields ``None`` and the caller
+        drops the guidance line entirely: a Claude Code skill name must never
+        reach this model, and neither may a raw placeholder token.
+        """
+        if ref != "git-span" or not self.skill_file:
+            return None
+        parent = Path(self.skill_file).parent
+        return (
             f"Read `{self.skill_file}` with `sed` before acting on this report; "
-            f"read any referenced file relative to `{Path(self.skill_file).parent}`."
+            f"read any referenced file relative to `{parent}`."
         )
-        return value.replace("Load the `git-span:git-span` skill for guidance.", instruction).replace(
-            "Load the `git-span:git-span` skill in the fork.", instruction
-        )
+
+    def _rewrite_context(self, value: str | None, *, skill_ref: str | None = None) -> str | None:
+        """Resolve the hooks' skill-ref placeholders into mini-agent instructions.
+
+        Fail-closed: a payload without the structured
+        ``hookSpecificOutput.skillRef`` field is returned untouched. There is
+        no prose matching anywhere in this path, so an advisor copy edit can no
+        longer silently stop matching (main-332). With the field present, each
+        placeholder line resolves through :meth:`_instruction_for_ref`; an
+        unresolvable ref drops its guidance line rather than leaking either a
+        Claude Code skill name or a raw token into the observation.
+        """
+        if not value or skill_ref is None:
+            return value
+        lines: list[str] = []
+        for line in value.splitlines(keepends=True):
+            body = line[:-1] if line.endswith("\n") else line
+            match = _SKILL_REF_LINE.fullmatch(body)
+            instruction = self._instruction_for_ref(match.group("ref")) if match else None
+            if match and instruction is not None:
+                lines.append(instruction + ("\n" if line.endswith("\n") else ""))
+            elif match:
+                continue
+            else:
+                lines.append(line)
+        return "".join(lines) or None
 
     def _new_event(self, name: str, envelope: dict[str, Any]) -> dict[str, Any]:
         self._ordinal += 1
@@ -228,9 +270,12 @@ class HookBridge:
             return False, None, None
         specific = output.get("hookSpecificOutput") or {}
         denied = specific.get("permissionDecision") == "deny"
-        reason = self._rewrite_context(specific.get("permissionDecisionReason") or output.get("systemMessage"))
+        skill_ref = specific.get(SKILL_REF_FIELD)
+        reason = self._rewrite_context(
+            specific.get("permissionDecisionReason") or output.get("systemMessage"), skill_ref=skill_ref
+        )
         parts = [part for part in (specific.get("additionalContext"), output.get("systemMessage")) if part]
-        context = self._rewrite_context("\n".join(dict.fromkeys(parts)) or None)
+        context = self._rewrite_context("\n".join(dict.fromkeys(parts)) or None, skill_ref=skill_ref)
         if denied and context is None:
             context = reason
         if self.events:

@@ -100,12 +100,12 @@ API facts relied on
   directly, not reimplemented) against the now-ready repo. This is the real
   production attestation logic, just invoked once the repo exists instead of
   at ``__init__`` time.
-- ``HookBridge._rewrite_context`` (bridge.py) replaces "Load the
-  `git-span:git-span` skill for guidance." / "...in the fork." with a
-  sed-the-SKILL.md instruction whenever ``skill_file`` is configured --
-  assertion (f) checks that replacement text appears in some delivered
-  event context and that the literal "Load the `git-span:git-span` skill"
-  string does not appear anywhere.
+- ``HookBridge._rewrite_context`` (bridge.py) substitutes the hooks'
+  ``{{skill-ref:git-span}}`` placeholder line with a sed-the-SKILL.md
+  instruction whenever the payload carries ``hookSpecificOutput.skillRef``
+  and ``skill_file`` is configured -- assertion (f) checks that replacement
+  text appears in some delivered event context and that the literal "Load the
+  `git-span:git-span` skill" string does not appear anywhere.
 - ``env.serialize()["info"]["hooks"]`` (environment.py
   ``HookedEnvironmentMixin.serialize``) contains session_id / enabled /
   required / arm / attestation / events / span_summary / session_finished.
