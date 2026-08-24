@@ -132,9 +132,9 @@ describe('claude advisor adapter', () => {
     expect(result.stdout.hookSpecificOutput?.permissionDecision).toBe('deny');
     expect(result.stdout.hookSpecificOutput?.permissionDecisionReason).toContain(SPAN);
     expect(result.stdout.hookSpecificOutput?.permissionDecisionReason).not.toContain('To proceed anyway');
-    // Single channel (main-341): the checklist travels only as
-    // permissionDecisionReason — no systemMessage twin.
-    expect(result.stdout.systemMessage).toBeUndefined();
+    // The user-facing mirror carries the identical payload the model channel
+    // received: one copy into context, one banner on the transcript.
+    expect(result.stdout.systemMessage).toBe(result.stdout.hookSpecificOutput?.permissionDecisionReason);
     // The adapter passes harness `'claude'`, so the closing instruction names
     // Claude's forked-subagent vocabulary rather than the inline-instruction
     // prose a `'generic'` harness would render.

@@ -136,9 +136,9 @@ describe('codex advisor adapter', () => {
 
     expect(result.stdout.hookSpecificOutput?.permissionDecision).toBe('deny');
     expect(result.stdout.hookSpecificOutput?.permissionDecisionReason).toContain(SPAN);
-    // Single channel (main-341): the checklist travels only as
-    // permissionDecisionReason — no systemMessage twin.
-    expect(result.stdout.systemMessage).toBeUndefined();
+    // The user-facing mirror carries the identical payload the model channel
+    // received.
+    expect(result.stdout.systemMessage).toBe(result.stdout.hookSpecificOutput?.permissionDecisionReason);
     // The adapter passes harness `'codex'`, so the closing instruction names
     // Codex's forked-subagent vocabulary rather than the inline-instruction
     // prose a `'generic'` harness would render.
@@ -150,7 +150,7 @@ describe('codex advisor adapter', () => {
     );
   });
 
-  it('with hard-deny disabled, a semantic-drift deny becomes a loud allow: additionalContext carries the warning and no permissionDecision is set', async () => {
+  it('with hard-deny disabled, a semantic-drift deny becomes a loud allow: additionalContext + systemMessage carry the warning and no permissionDecision is set', async () => {
     // Exercises the CARD.md-documented fallback branch (CODEX_ADVISOR_HARD_DENY =
     // false): when deny is not trusted to block live, the same checklist is
     // surfaced as a loud warning and the command is allowed through, with the CI
@@ -162,11 +162,10 @@ describe('codex advisor adapter', () => {
 
     // Allowed through — the fallback cannot block.
     expect(result.stdout.hookSpecificOutput?.permissionDecision).toBeUndefined();
-    // But loudly, and on one channel only (main-341): the context surface
-    // carries the warning + checklist, with no systemMessage twin.
+    // But loudly: both surfaces carry the same wrapped warning + checklist.
     expect(result.stdout.hookSpecificOutput?.additionalContext).toContain(SPAN);
     expect(result.stdout.hookSpecificOutput?.additionalContext).toContain('Could not block');
-    expect(result.stdout.systemMessage).toBeUndefined();
+    expect(result.stdout.systemMessage).toBe(result.stdout.hookSpecificOutput?.additionalContext);
   });
 
   it('allows an identical retry after a semantic-drift deny (consider-once per debt-state digest)', async () => {
@@ -192,9 +191,11 @@ describe('codex advisor adapter', () => {
 
     expect(result.stdout.hookSpecificOutput?.permissionDecision).toBeUndefined();
     expect(result.stdout.hookSpecificOutput?.additionalContext).toContain('lfs not fetched');
+    // The wrapped advisory is mirrored identically for the operator.
+    expect(result.stdout.systemMessage).toBe(result.stdout.hookSpecificOutput?.additionalContext);
   });
 
-  it('surfaces a scan failure as additionalContext and allows (fail-open)', async () => {
+  it('surfaces a scan failure as additionalContext + systemMessage and allows (fail-open)', async () => {
     const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
     const executors = fakeExecutors({
       drift: async () => {
@@ -210,17 +211,18 @@ describe('codex advisor adapter', () => {
       '  fatal: unable to read src/app.ts: Permission denied',
       '</git-span-error>'
     ].join('\n');
-    // Single delivery channel (main-341): the wrapped `additionalContext`
-    // carries the tagged block, and no `systemMessage` twin is emitted.
+    // Both delivery channels carry the identical wrapped block: the outer
+    // `<git-span>` envelope rides on each copy.
     expect(result.stdout.hookSpecificOutput?.additionalContext).toContain('Permission denied');
     expect(result.stdout.hookSpecificOutput?.additionalContext).toContain('<git-span>');
     expect(result.stdout.hookSpecificOutput?.additionalContext).toContain(block);
-    expect(result.stdout.systemMessage).toBeUndefined();
-    // The wrap is applied exactly once: the outer `<git-span>` tag appears
-    // once — the inner `<git-span-error>` block cannot trip the
-    // no-double-wrap guard, so it is not wrapped again.
+    expect(result.stdout.systemMessage).toBe(result.stdout.hookSpecificOutput?.additionalContext);
+    // The wrap is applied exactly once per channel: the outer `<git-span>`
+    // tag appears once in each — the inner `<git-span-error>` block cannot
+    // trip the no-double-wrap guard, so neither string is wrapped again.
     expect(result.stdout.hookSpecificOutput?.additionalContext?.match(/<git-span>/g)).toHaveLength(1);
     expect(result.stdout.hookSpecificOutput?.additionalContext?.match(/<git-span-error>/g)).toHaveLength(1);
+    expect(result.stdout.systemMessage?.match(/<git-span>/g)).toHaveLength(1);
   });
 
   it('fails open (allow) when a dependency throws an uncaught error', async () => {
@@ -234,7 +236,7 @@ describe('codex advisor adapter', () => {
     expect(result.stdout.hookSpecificOutput).toBeUndefined();
   });
 
-  it('never denies `git status` even with real span debt — surfaces the checklist as additionalContext instead', async () => {
+  it('never denies `git status` even with real span debt — surfaces the checklist as additionalContext + systemMessage instead', async () => {
     const git = fakeGit({ stagedPaths: async () => ['src/app.ts'] });
     const executors = fakeExecutors({ list: async () => [porcelainRow()], drift: async () => [driftRow('CHANGED')] });
     const handler = createHandler(git, executors, sharedMemoFactory());
@@ -243,8 +245,8 @@ describe('codex advisor adapter', () => {
     expect(result.stdout.hookSpecificOutput?.permissionDecision).toBeUndefined();
     expect(result.stdout.hookSpecificOutput?.additionalContext).toContain(SPAN);
     expect(result.stdout.hookSpecificOutput?.additionalContext).not.toContain('then retry');
-    // Single channel (main-341): no systemMessage twin.
-    expect(result.stdout.systemMessage).toBeUndefined();
+    // The advisory is mirrored identically for the operator.
+    expect(result.stdout.systemMessage).toBe(result.stdout.hookSpecificOutput?.additionalContext);
   });
 
   it('`git status` never consumes the one-time hold credit, but marks the state as already-shown so a later `git commit` on the same debt passes instead of denying', async () => {

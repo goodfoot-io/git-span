@@ -153,7 +153,7 @@ describe('claude post-tool-use touch signal', () => {
   });
   afterAll(() => repo.cleanup());
 
-  it('heals and folds a semantic directive on an Edit, on the additionalContext channel alone', async () => {
+  it('heals and folds a semantic directive on an Edit, on both output channels', async () => {
     const { executors, calls } = makeExecutors({ list: [porcelainRow()], drift: [driftRow('CHANGED')] });
     const handler = createHandler(executors, inMemoryMemoFactory(), layout);
     const input = postInput({
@@ -167,8 +167,8 @@ describe('claude post-tool-use touch signal', () => {
     const ctx = result.stdout.hookSpecificOutput?.additionalContext ?? '';
     expect(ctx).toContain(SPAN);
     expect(ctx).toContain('— changed');
-    // Single channel (main-341): no systemMessage twin of the block.
-    expect(result.stdout.systemMessage).toBeUndefined();
+    // The user-facing mirror carries the identical block.
+    expect(result.stdout.systemMessage).toBe(result.stdout.hookSpecificOutput?.additionalContext);
   });
 
   it('never invokes fix on a Read and surfaces nothing for positional-only drift', async () => {
@@ -291,6 +291,8 @@ describe('claude post-tool-use touch signal', () => {
     const result = toResult(await handler(input as never, { logger }));
     expect(calls.fix).toBe(0); // read path never heals
     expect(result.stdout.hookSpecificOutput?.additionalContext).toContain(SPAN);
+    // The Bash-block emission is mirrored identically for the operator.
+    expect(result.stdout.systemMessage).toBe(result.stdout.hookSpecificOutput?.additionalContext);
   });
 
   it('returns null for a Bash command with no recognized idiom (no executor calls)', async () => {

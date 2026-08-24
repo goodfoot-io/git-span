@@ -278,8 +278,8 @@ describe('codex post-tool-use touch signal', () => {
 
       expect(calls.fix).toBe(1);
       expect(result.stdout.hookSpecificOutput?.additionalContext).toContain(SPAN);
-      // Single channel (main-341): no systemMessage twin of the block.
-      expect(result.stdout.systemMessage).toBeUndefined();
+      // The user-facing mirror carries the identical block.
+      expect(result.stdout.systemMessage).toBe(result.stdout.hookSpecificOutput?.additionalContext);
     } finally {
       repo.cleanup();
     }
@@ -455,6 +455,8 @@ describe('codex post-tool-use touch signal', () => {
       const result = toResult(await handler(input as never, { logger } as never));
       expect(calls.fix).toBe(0); // read path never heals
       expect(result.stdout.hookSpecificOutput?.additionalContext).toContain(SPAN);
+      // The shell-block emission is mirrored identically for the operator.
+      expect(result.stdout.systemMessage).toBe(result.stdout.hookSpecificOutput?.additionalContext);
     } finally {
       repo.cleanup();
     }
