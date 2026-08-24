@@ -27,8 +27,10 @@ pub fn run_doctor(repo: &gix::Repository, _args: DoctorArgs, span_root: &str) ->
     let names = reader.list_span_names()?;
     let n_spans = names.len();
     let mut findings: Vec<String> = Vec::new();
+    // One capture for the whole per-span health scan (card main-290).
+    let layers = crate::span_file_reader::LayerSnapshot::default();
     for name in &names {
-        match reader.read_effective(name) {
+        match reader.read_effective_with_layers(name, &layers) {
             Ok(Some(_file)) => {}
             Ok(None) => {} // deletion tombstone — skip silently
             Err(e) => findings.push(format!("span `{name}` failed to parse: {e}")),

@@ -106,8 +106,12 @@ pub(crate) fn load_all_spans_strict_in(
     }
     let mut loaded = Vec::new();
     let mut conflicted = Vec::new();
+    // One capture for the whole retained-corpus loop (card main-290): every
+    // tombstone/content probe below answers from the same index + HEAD
+    // snapshot instead of re-loading git per span.
+    let layers = crate::span_file_reader::LayerSnapshot::default();
     for name in names {
-        match reader.read_effective_retained(&name, authority) {
+        match reader.read_effective_retained_with_layers(&name, authority, &layers) {
             Ok(Some(file)) => loaded.push((name.clone(), span_from_file(&name, &file))),
             Ok(None) => {}
             Err(Error::SpanConflict { kind, .. }) => conflicted.push((name, kind)),
@@ -184,6 +188,10 @@ fn read_effective_parallel(
     // hot read path.
     let slots: Mutex<Vec<(usize, LoadSlot)>> = Mutex::new(Vec::with_capacity(names.len()));
     let fatal: Mutex<Option<Error>> = Mutex::new(None);
+    // One layer capture for the whole corpus run (card main-290): the
+    // workers' combined reads materialize the index and HEAD span subtree
+    // once (single-flight on the snapshot's OnceLocks), not once per span.
+    let layers = std::sync::Arc::new(crate::span_file_reader::LayerSnapshot::default());
 
     std::thread::scope(|s| {
         for _ in 0..workers {
@@ -194,6 +202,7 @@ fn read_effective_parallel(
             let next_idx = &next_idx;
             let slots = &slots;
             let fatal = &fatal;
+            let layers = &layers;
             s.spawn(move || {
                 let reader = SpanFileReader::new(&repo, span_root.to_string());
                 let mut local: Vec<(usize, LoadSlot)> = Vec::new();
@@ -206,7 +215,7 @@ fn read_effective_parallel(
                         break;
                     }
                     let name = &names[i];
-                    match reader.read_effective(name) {
+                    match reader.read_effective_with_layers(name, layers) {
                         Ok(Some(file)) => {
                             local.push((i, LoadSlot::Loaded(span_from_file(name, &file))));
                         }
@@ -285,11 +294,12 @@ pub(crate) fn read_effective_each_parallel(
     // and single-core hosts.
     if names.len() <= 1 || cpus <= 1 {
         let reader = SpanFileReader::new(repo, span_root.to_string());
+        let layers = crate::span_file_reader::LayerSnapshot::default();
         return names
             .iter()
             .map(|name| {
                 reader
-                    .read_effective(name)
+                    .read_effective_with_layers(name, &layers)
                     .map(|opt| opt.map(|file| span_from_file(name, &file)))
             })
             .collect();
@@ -301,12 +311,15 @@ pub(crate) fn read_effective_each_parallel(
     // a `Vec<Option<…>>` after the scope so every index is exactly filled.
     type RawOutcome = std::result::Result<Option<Span>, Error>;
     let slots: Mutex<Vec<(usize, RawOutcome)>> = Mutex::new(Vec::with_capacity(names.len()));
+    // One layer capture shared by every worker (card main-290).
+    let layers = std::sync::Arc::new(crate::span_file_reader::LayerSnapshot::default());
 
     std::thread::scope(|s| {
         for _ in 0..workers {
             let repo = repo.clone();
             let next_idx = &next_idx;
             let slots = &slots;
+            let layers = &layers;
             s.spawn(move || {
                 let reader = SpanFileReader::new(&repo, span_root.to_string());
                 let mut local: Vec<(usize, RawOutcome)> = Vec::new();
@@ -317,7 +330,7 @@ pub(crate) fn read_effective_each_parallel(
                     }
                     let name = &names[i];
                     let outcome = reader
-                        .read_effective(name)
+                        .read_effective_with_layers(name, layers)
                         .map(|opt| opt.map(|file| span_from_file(name, &file)));
                     local.push((i, outcome));
                 }
@@ -353,6 +366,8 @@ fn read_effective_serial(
     names: &[String],
 ) -> Result<LoadedSpans> {
     let reader = SpanFileReader::new(repo, span_root.to_string());
+    // One capture for the whole serial corpus loop (card main-290).
+    let layers = crate::span_file_reader::LayerSnapshot::default();
     let mut out = Vec::with_capacity(names.len());
     let mut conflicted = Vec::new();
     for name in names {
@@ -365,7 +380,7 @@ fn read_effective_serial(
         // collecting it here lets callers avoid a separate
         // `conflicted_span_names_in` scan (still fail-closed: the conflict
         // is reported, exit is non-zero).
-        match reader.read_effective(name) {
+        match reader.read_effective_with_layers(name, &layers) {
             Ok(Some(file)) => {
                 crate::perf::record_list_span_parsed();
                 out.push((name.clone(), span_from_file(name, &file)));
@@ -390,9 +405,11 @@ pub fn conflicted_span_names_in(repo: &gix::Repository, span_root: &str) -> Resu
     let reader = SpanFileReader::new(repo, span_root.to_string());
     let mut names = reader.list_span_names()?;
     names.sort();
+    // One capture for the whole conflict scan (card main-290).
+    let layers = crate::span_file_reader::LayerSnapshot::default();
     let mut conflicted = Vec::new();
     for name in names {
-        if let Err(Error::SpanConflict { .. }) = reader.read_effective(&name) {
+        if let Err(Error::SpanConflict { .. }) = reader.read_effective_with_layers(&name, &layers) {
             conflicted.push(name);
         }
     }

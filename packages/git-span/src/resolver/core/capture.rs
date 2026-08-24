@@ -482,12 +482,14 @@ fn load_uncommitted(
     let mut file_paths = Vec::new();
     let mut anchored: BTreeSet<String> = BTreeSet::new();
     let mut copy_detection = CopyDetection::Off;
+    // One capture for the whole uncommitted-corpus loop (card main-290).
+    let layers = crate::span_file_reader::LayerSnapshot::default();
     for name in reader.worktree_span_names()? {
         if committed_names.contains(name.as_str()) {
             continue;
         }
         file_paths.push(format!("{span_root}/{name}"));
-        if let Ok(Some(file)) = reader.read_effective(&name) {
+        if let Ok(Some(file)) = reader.read_effective_with_layers(&name, &layers) {
             let span = crate::types::span_from_file(&name, &file);
             for (_, a) in &span.anchors {
                 anchored.insert(a.path.clone());

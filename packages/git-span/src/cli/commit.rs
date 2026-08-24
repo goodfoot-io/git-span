@@ -407,6 +407,9 @@ fn check_worktree_prefix_collision(
 ) -> std::result::Result<(), crate::Error> {
     let reader = crate::span_file_reader::SpanFileReader::new(repo, span_root.to_string());
     let known_names = reader.list_span_names()?;
+    // One capture for the whole collision scan (card main-290); the loop is
+    // read-only — no staging happens until after it returns.
+    let layers = crate::span_file_reader::LayerSnapshot::default();
     for other in &known_names {
         if other == name {
             continue;
@@ -415,7 +418,7 @@ fn check_worktree_prefix_collision(
         // name deleted in the index/worktree but still in HEAD is a
         // tombstone and no longer occupies its path.  Filter it through
         // the effective view (mirrors `load_all_spans_in`).
-        match reader.read_effective(other) {
+        match reader.read_effective_with_layers(other, &layers) {
             Ok(Some(_)) => {}
             // Either kind means the name is occupied, which is the only
             // question this loop asks — so discarding the discriminator here

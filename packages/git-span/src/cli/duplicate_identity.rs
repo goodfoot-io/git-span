@@ -310,8 +310,10 @@ pub fn scan_duplicate_identities(
 
     let reader = SpanFileReader::new(repo, span_root.to_string());
     let mut findings = Vec::new();
+    // One capture for the whole per-span scan (card main-290).
+    let layers = crate::span_file_reader::LayerSnapshot::default();
     for name in reader.list_span_names()? {
-        let Ok(Some(file)) = reader.read_effective(&name) else {
+        let Ok(Some(file)) = reader.read_effective_with_layers(&name, &layers) else {
             continue;
         };
         findings.extend(duplicates_in(&name, &file.anchors, &|path, end| {

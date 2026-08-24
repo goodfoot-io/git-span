@@ -231,6 +231,8 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
         let mut missing_files: Vec<String> = Vec::new();
 
         let reader = crate::span_file_reader::SpanFileReader::new(repo, span_root.to_string());
+        // One capture for the per-arg membership loop (card main-290).
+        let layers = crate::span_file_reader::LayerSnapshot::default();
 
         // Load the corpus once and build the path index from it. The previous
         // code called `SpanPathIndex::load_in` here (which loads and discards
@@ -250,7 +252,7 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
 
             // Step 1: try span name first when arg matches span-name shape.
             if validate_span_name_shape(arg).is_ok() {
-                let is_committed = reader.read_effective(arg)?.is_some();
+                let is_committed = reader.read_effective_with_layers(arg, &layers)?.is_some();
                 if is_committed {
                     if seen.insert(arg.clone()) {
                         span_names.push(arg.clone());

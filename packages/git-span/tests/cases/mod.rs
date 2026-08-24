@@ -95,6 +95,7 @@ pub mod slice_5_6_integration;
 pub mod span_config_block;
 pub mod span_file_format;
 pub mod span_file_reader;
+pub mod span_layers_snapshot_shared_per_corpus_run;
 pub mod span_name_path_traversal_escape;
 pub mod span_root_resolution;
 pub mod span_root_stays_clean;

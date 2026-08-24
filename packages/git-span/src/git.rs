@@ -1372,6 +1372,29 @@ pub fn index_entries_call_count() -> usize {
 }
 
 // ---------------------------------------------------------------------------
+// Call counter for load_index — card main-290 evidence: the layered span
+// reader used to call this once per probe (`exists_in_index`, `read_staged`)
+// per span, so corpus loads paid O(spans) index materializations. After the
+// per-run `LayerSnapshot` capture a clean run performs zero legacy loads
+// (the capture itself materializes via `index_entries`); any nonzero count
+// means a probe fell back to the un-snapshotted path. Always compiled; the
+// atomic increment on a hot path has negligible cost.
+// ---------------------------------------------------------------------------
+
+static LOAD_INDEX_CALL_COUNT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Reset the call counter.
+pub fn reset_load_index_call_count() {
+    LOAD_INDEX_CALL_COUNT.store(0, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Read the call counter.
+pub fn load_index_call_count() -> usize {
+    LOAD_INDEX_CALL_COUNT.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+// ---------------------------------------------------------------------------
 // Worktree-index loading with a git-backed reconstruction fallback.
 //
 // When `$GIT_DIR/index` does not exist, gix synthesizes an in-memory index
@@ -1398,6 +1421,7 @@ use gix::worktree::IndexPersistedOrInMemory;
 /// today; use [`load_index_or_empty`] where an absent HEAD means "no staged
 /// state" instead.
 pub fn load_index(repo: &gix::Repository) -> Result<IndexPersistedOrInMemory> {
+    LOAD_INDEX_CALL_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     match repo.index_or_load_from_head() {
         Ok(index) => Ok(index),
         Err(
