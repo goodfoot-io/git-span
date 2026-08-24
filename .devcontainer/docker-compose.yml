@@ -24,6 +24,10 @@ services:
       # to it and fixes permissions at container start.
       - /var/run/docker.sock:/var/run/docker-host.sock:cached
       - ${HOME}/devcontainer/git-span:/home/node:cached
+      # opencode's SQLite DB (WAL mode) + logs must not live on virtiofs: WAL
+      # commits over the host boundary generate constant sync-write disk load
+      # and fsevent storms. Container-native named volume shadows just this dir.
+      - opencode-data:/home/node/.local/share/opencode
       - claude-code-bashhistory:/commandhistory
       - git-span-cargo-target:/var/cache/git-span/cargo-target
     env_file:
@@ -38,3 +42,4 @@ services:
 volumes:
   claude-code-bashhistory:
   git-span-cargo-target:
+  opencode-data:
