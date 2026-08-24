@@ -12,7 +12,9 @@
 //!
 //! Phase 2 replaced per-anchor replay with a composed line map:
 //! `project_by_linemap` projects through `composed_linemap` and falls back to
-//! `project_by_hunk_replay` when the line map cannot place the range.
+//! `project_by_hunk_replay` when the line map cannot place the range. A
+//! parity cross-check against hunk replay remains available under
+//! `GIT_SPAN_PERF` diagnostics runs.
 
 use crate::git;
 use crate::perf;
@@ -79,13 +81,14 @@ impl PathTimeline {
     /// Project `(start, end)` from `start_path` through the timeline to
     /// the final path. Returns `None` when the path is deleted along the
     /// way (parity with `walker::Change::Deleted`).
-    /// Phase 2: project via the composed `LineMap`. Falls back to the
-    /// Phase 1 `project_by_hunk_replay` when the linemap result
-    /// disagrees with the hunk-replay result; mismatches are recorded
-    /// as `linemap.project-fallbacks`.
+    /// Phase 2: project via the composed `LineMap`. Under
+    /// `GIT_SPAN_PERF`, the Phase 1 `project_by_hunk_replay` runs as a
+    /// parity cross-check; a mismatch falls back and records
+    /// `linemap.project-fallbacks`. With diagnostics off, only the
+    /// linemap projection runs.
     ///
     /// Returns `None` only when the path is deleted along the way (or
-    /// the fallback decides so).
+    /// the diagnostics cross-check decides so).
     pub(crate) fn project_by_linemap(&self, start: u32, end: u32) -> Option<Tracked> {
         // Any deleted delta terminates projection.
         if self.deltas.iter().any(|d| d.deleted) {
@@ -114,19 +117,23 @@ impl PathTimeline {
             None => return self.project_by_hunk_replay(start, end),
         };
 
-        // Cross-check against hunk replay. On mismatch, fall back and
-        // record a counter — keeps Phase 1 parity airtight.
-        let replay = self.project_by_hunk_replay(start, end);
-        match &replay {
-            Some(t) => {
-                if t.start != lm_s || t.end != lm_e {
-                    crate::resolver::linemap::record_fallback();
-                    return replay;
+        // Diagnostics-only parity cross-check (`GIT_SPAN_PERF`):
+        // recompute via hunk replay and fall back on mismatch, recording
+        // `linemap.project-fallbacks`. Off-path cost is zero; retire the
+        // check once that counter stays zero across corpora.
+        if perf::enabled() {
+            let replay = self.project_by_hunk_replay(start, end);
+            match &replay {
+                Some(t) => {
+                    if t.start != lm_s || t.end != lm_e {
+                        crate::resolver::linemap::record_fallback();
+                        return replay;
+                    }
                 }
-            }
-            None => {
-                crate::resolver::linemap::record_fallback();
-                return None;
+                None => {
+                    crate::resolver::linemap::record_fallback();
+                    return None;
+                }
             }
         }
 
@@ -139,7 +146,7 @@ impl PathTimeline {
 
     pub(crate) fn project_by_hunk_replay(&self, start: u32, end: u32) -> Option<Tracked> {
         let _span = perf::span("timeline.project-range");
-        let t0 = std::time::Instant::now();
+        let t0 = perf::enabled().then(std::time::Instant::now);
         let mut loc = Tracked {
             path: bytes_to_string(&self.start_path),
             start,
@@ -166,11 +173,13 @@ fn bytes_to_string(bytes: &Arc<[u8]>) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
-fn record_project_us(t0: std::time::Instant) {
-    PROJECT_RANGE_US.fetch_add(
-        t0.elapsed().as_micros() as u64,
-        std::sync::atomic::Ordering::Relaxed,
-    );
+fn record_project_us(t0: Option<std::time::Instant>) {
+    if let Some(t0) = t0 {
+        PROJECT_RANGE_US.fetch_add(
+            t0.elapsed().as_micros() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
 }
 
 // ── Counters ────────────────────────────────────────────────────────────────

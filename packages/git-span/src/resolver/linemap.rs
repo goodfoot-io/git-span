@@ -42,12 +42,116 @@ pub(crate) struct LineSegment {
 #[derive(Clone, Debug)]
 pub(crate) struct LineMap {
     pub(crate) segments: Vec<LineSegment>,
+    /// `prefix[i]` is the sum of fold deltas of `segments[..i]` in list
+    /// order (`fold_delta`; identity segments contribute 0). Lets
+    /// projection apply a whole skipped run prefix with one subtraction.
+    pub(crate) prefix: Vec<i64>,
+    /// Aligned with `segments`, scoped per run: `pmax[i]` is the maximum
+    /// of `pivot_key(seg) - (prefix[i] - prefix[run_start])` over the
+    /// run's indices up to `i`. That value is the segment's shift-test
+    /// boundary translated into the query's initial window coordinates,
+    /// so the first run index whose shift test can fail — accounting for
+    /// window movement caused by earlier shifts — is the first index
+    /// with `pmax >= s`. Each run's `pmax` is monotone, which admits
+    /// binary search. The search may land slightly early (an earlier,
+    /// larger key lowers nothing); landing early is always safe because
+    /// everything from the pivot on is folded by the real sequential
+    /// logic, while landing late would misclassify an overlapping
+    /// segment as a shift.
+    pub(crate) pmax: Vec<i64>,
+    /// Half-open `[start, end)` ranges into `segments`, one per source
+    /// map. Each run is internally sorted and disjoint by old
+    /// coordinates (so once a segment falls entirely right of the
+    /// window, the rest of the run cannot re-enter it). Across runs the
+    /// order is *application* order (`compose` concatenates);
+    /// coordinates from different runs are never compared, so runs must
+    /// never be reordered geometrically.
+    pub(crate) runs: Vec<(u32, u32)>,
+}
+
+/// Net shift a segment applies when it lies fully left of the projected
+/// window: new-side length minus old-side length (0 for identity).
+fn fold_delta(seg: &LineSegment) -> i64 {
+    let oc: i64 = if seg.old_start == 0 {
+        0
+    } else {
+        (seg.old_end - seg.old_start + 1) as i64
+    };
+    let nc: i64 = if seg.new_start == 0 {
+        0
+    } else {
+        (seg.new_end - seg.new_start + 1) as i64
+    };
+    nc - oc
+}
+
+/// The coordinate a segment's shift test compares against the window
+/// start: the old-side end, or the anchor for pure inserts (empty old
+/// side).
+fn pivot_key(seg: &LineSegment) -> i64 {
+    if seg.old_start == 0 {
+        seg.insert_anchor_old as i64
+    } else {
+        seg.old_end as i64
+    }
+}
+
+/// Precompute the projection indexes over `segments` tiled by `runs`:
+/// global prefix-delta sums plus per-run pivot maxima (see `LineMap`).
+fn build_indexes(segments: &[LineSegment], runs: &[(u32, u32)]) -> (Vec<i64>, Vec<i64>) {
+    let mut prefix = Vec::with_capacity(segments.len() + 1);
+    prefix.push(0i64);
+    for seg in segments {
+        let last = prefix.last().copied().unwrap_or(0);
+        prefix.push(last + fold_delta(seg));
+    }
+    let mut pmax = vec![0i64; segments.len()];
+    for &(rs, re) in runs {
+        let (rs, re) = (rs as usize, re as usize);
+        let base = prefix[rs];
+        let mut run_max = i64::MIN;
+        for (i, seg) in segments.iter().enumerate().take(re).skip(rs) {
+            run_max = run_max.max(pivot_key(seg) - (prefix[i] - base));
+            pmax[i] = run_max;
+        }
+    }
+    (prefix, pmax)
+}
+
+/// Reindex `runs` after identity segments have been dropped from
+/// `segments`: each run's bounds shift down by the number of dropped
+/// predecessors. Order within and across runs is preserved.
+fn compact_runs(segments: &[LineSegment], runs: &[(u32, u32)]) -> Vec<(u32, u32)> {
+    let mut out = Vec::with_capacity(runs.len());
+    let mut kept = 0u32;
+    let mut cursor = 0usize;
+    for &(rs, re) in runs {
+        let (rs, re) = (rs as usize, re as usize);
+        while cursor < rs {
+            if !segments[cursor].identity {
+                kept += 1;
+            }
+            cursor += 1;
+        }
+        let start = kept;
+        while cursor < re {
+            if !segments[cursor].identity {
+                kept += 1;
+            }
+            cursor += 1;
+        }
+        out.push((start, kept));
+    }
+    out
 }
 
 impl LineMap {
     pub(crate) fn empty() -> Self {
         Self {
             segments: Vec::new(),
+            prefix: Vec::new(),
+            pmax: Vec::new(),
+            runs: Vec::new(),
         }
     }
 
@@ -127,13 +231,23 @@ impl LineMap {
         MAPS_BUILT.fetch_add(1, Ordering::Relaxed);
         SEGMENTS_TOTAL.fetch_add(segments.len() as u64, Ordering::Relaxed);
 
-        LineMap { segments }
+        let len = segments.len() as u32;
+        let (prefix, pmax) = build_indexes(&segments, &[(0, len)]);
+        LineMap {
+            prefix,
+            pmax,
+            runs: vec![(0, len)],
+            segments,
+        }
     }
 
     /// Project `[start, end]` (1-based inclusive) through the map. The
     /// semantics replicate `walker::apply_hunks_to_range` so this can be
     /// used as a drop-in for the per-anchor projection path.
     pub(crate) fn project_range(&self, start: u32, end: u32) -> Option<(u32, u32)> {
+        if !perf::enabled() {
+            return self.project_range_inner(start, end);
+        }
         let t0 = std::time::Instant::now();
         let res = self.project_range_inner(start, end);
         PROJECT_US.fetch_add(t0.elapsed().as_micros() as u64, Ordering::Relaxed);
@@ -142,52 +256,73 @@ impl LineMap {
 
     fn project_range_inner(&self, start: u32, end: u32) -> Option<(u32, u32)> {
         // Apply the same overlap-expanding rule as
-        // `apply_hunks_to_range`: iterate touched replacement segments
-        // in order and fold `(s, e)` through them; identity-shifted
-        // segments only update via the cumulative delta.
+        // `apply_hunks_to_range`: visit replacement segments in
+        // application order and fold `(s, e)` through them; identity
+        // segments contribute nothing.
+        //
+        // Per run, everything strictly before the *pivot* can only take
+        // the shift branch of the fold — its pivot key, translated by the
+        // cumulative delta of earlier shifts (which is what `pmax`
+        // precomputes), sits below the window start. Those shifts collapse
+        // into one prefix-sum lookup; the pivot search may land slightly
+        // early (never late), which only means a few segments are folded
+        // normally instead of skipped. From the pivot on, the sequential
+        // fold runs verbatim until a segment falls entirely right of the
+        // window: runs are sorted and disjoint by old coordinates, so the
+        // rest of the run cannot re-enter it. Cross-run order stays
+        // application order (`compose` concatenates maps in different
+        // coordinate spaces), never geometric.
 
         let mut s = start as i64;
         let mut e = end as i64;
-        // We need to visit replacement segments in old-order. This is a
-        // linear O(S) fold over map segments; there is no indexed search in
-        // the current implementation.
-        for seg in &self.segments {
-            if seg.identity {
-                continue;
+        for &(run_start, run_end) in &self.runs {
+            let (rs, re) = (run_start as usize, run_end as usize);
+            let pivot = self.pmax[rs..re].partition_point(|&m| m < s);
+            if pivot > 0 {
+                let skipped = self.prefix[rs + pivot] - self.prefix[rs];
+                s += skipped;
+                e += skipped;
             }
-            let oc: i64 = if seg.old_start == 0 {
-                0
-            } else {
-                (seg.old_end - seg.old_start + 1) as i64
-            };
-            let nc: i64 = if seg.new_start == 0 {
-                0
-            } else {
-                (seg.new_end - seg.new_start + 1) as i64
-            };
-            let os: i64 = seg.insert_anchor_old as i64;
-            let delta = nc - oc;
-            if oc == 0 {
-                if os < s {
+            for seg in &self.segments[rs + pivot..re] {
+                if seg.identity {
+                    continue;
+                }
+                let oc: i64 = if seg.old_start == 0 {
+                    0
+                } else {
+                    (seg.old_end - seg.old_start + 1) as i64
+                };
+                let nc: i64 = if seg.new_start == 0 {
+                    0
+                } else {
+                    (seg.new_end - seg.new_start + 1) as i64
+                };
+                let os: i64 = seg.insert_anchor_old as i64;
+                let delta = nc - oc;
+                if oc == 0 {
+                    if os < s {
+                        s += delta;
+                        e += delta;
+                    } else if os >= e {
+                        // no effect
+                    } else {
+                        e += delta;
+                    }
+                    continue;
+                }
+                let old_last = os + oc - 1;
+                if old_last < s {
                     s += delta;
                     e += delta;
-                } else if os >= e {
-                    // no effect
+                } else if os > e {
+                    // Entirely right of the window; the rest of this
+                    // sorted run is too.
+                    break;
                 } else {
-                    e += delta;
+                    let new_last = if nc == 0 { os } else { os + nc - 1 };
+                    s = (s.min(os)).max(1);
+                    e = new_last.max(e + delta);
                 }
-                continue;
-            }
-            let old_last = os + oc - 1;
-            if old_last < s {
-                s += delta;
-                e += delta;
-            } else if os > e {
-                // no effect
-            } else {
-                let new_last = if nc == 0 { os } else { os + nc - 1 };
-                s = (s.min(os)).max(1);
-                e = new_last.max(e + delta);
             }
         }
         let s = s.max(1) as u32;
@@ -198,7 +333,7 @@ impl LineMap {
     /// Compose two maps `a` then `b`. The result `c` satisfies
     /// `c.project_range(s,e) == b.project_range(a.project_range(s,e))`.
     pub(crate) fn compose(a: &LineMap, b: &LineMap) -> LineMap {
-        let t0 = std::time::Instant::now();
+        let t0 = perf::enabled().then(std::time::Instant::now);
         // Concatenate the replacement segments: `a`'s in `a`'s old
         // coordinates, then `b`'s in `b`'s old coordinates after `a`
         // has been applied. Because `project_range_inner` runs the
@@ -211,22 +346,39 @@ impl LineMap {
         // order yields the same `(s, e)` as projecting through `a`
         // and then through `b`. So composition is concatenation in
         // visit order. Identity segments are dropped (they don't
-        // participate in the fold).
+        // participate in the fold). Each input keeps its own run so
+        // projection can binary-search inside it; the cross-run order
+        // is application order and must never be reordered.
         let mut segments = Vec::with_capacity(a.segments.len() + b.segments.len());
         for seg in &a.segments {
             if !seg.identity {
                 segments.push(*seg);
             }
         }
+        let mut runs = compact_runs(&a.segments, &a.runs);
+        let a_kept = segments.len() as u32;
         for seg in &b.segments {
             if !seg.identity {
                 segments.push(*seg);
             }
         }
-        COMPOSE_US.fetch_add(t0.elapsed().as_micros() as u64, Ordering::Relaxed);
+        runs.extend(
+            compact_runs(&b.segments, &b.runs)
+                .into_iter()
+                .map(|(rs, re)| (rs + a_kept, re + a_kept)),
+        );
+        if let Some(t0) = t0 {
+            COMPOSE_US.fetch_add(t0.elapsed().as_micros() as u64, Ordering::Relaxed);
+        }
         MAPS_BUILT.fetch_add(1, Ordering::Relaxed);
         SEGMENTS_TOTAL.fetch_add(segments.len() as u64, Ordering::Relaxed);
-        LineMap { segments }
+        let (prefix, pmax) = build_indexes(&segments, &runs);
+        LineMap {
+            prefix,
+            pmax,
+            runs,
+            segments,
+        }
     }
 }
 
