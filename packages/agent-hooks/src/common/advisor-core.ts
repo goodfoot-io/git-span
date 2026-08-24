@@ -604,6 +604,10 @@ export interface AdvisorExecutors {
    * in the changeset that the touch hook has not already healed. Reports nothing;
    * its effect is on the working tree, and the subsequent {@link AdvisorExecutors.drift}
    * read observes the healed state.
+   *
+   * Invoked only in `'may-hold'` mode: a `'report-only'` preview must leave the
+   * working tree byte-identical, so it classifies from the unhealed scan instead
+   * (positional rows are never debt, so nothing is lost).
    */
   fix(paths: string[], cwd: string): Promise<void>;
   /**
@@ -765,9 +769,9 @@ export type AdvisorResult =
  * read (`'may-hold'`, the default — used for `commit`/`push`), or must deliver
  * the report without holding at all (`'report-only'` — used for `status`).
  *
- * Neither mode enforces: `'may-hold'` is the stronger of the two only in that
- * it can interrupt once per distinct debt state, and even that interruption
- * clears on a bare retry. In `'report-only'` every branch that would otherwise
+ * Neither mode enforces: `'may-hold'` differs from `'report-only'` in that it
+ * can interrupt once per distinct debt state and runs the belt-and-braces
+ * `fix` heal before classifying. In `'report-only'` every branch that would otherwise
  * return `decision: 'hold'` returns its `-report` `allow` counterpart for only
  * the rows or paths not already reported this session. Report-only reads and
  * writes item markers, but never spends the one-time hold that a subsequent
@@ -806,7 +810,8 @@ export type AdvisorHarness = 'claude' | 'codex' | 'opencode' | 'generic';
  * spent per *distinct* debt state: change the debt and the advisor asks for
  * attention once more; leave it unchanged and the advisor steps aside.
  *
- * Runs `executors.fix` (scoped belt-and-braces `drift --fix`), then reads
+ * Runs `executors.fix` (scoped belt-and-braces `drift --fix`) in `'may-hold'`
+ * mode only, then reads
  * `executors.drift` and classifies each debt row (`isDebt()`) into *semantic*
  * drift and *environmental* conditions (`isEnvironmentalStatus()`).
  *
@@ -859,7 +864,10 @@ export type AdvisorHarness = 'claude' | 'codex' | 'opencode' | 'generic';
  * here: every evaluation of a still-failing scan warns again.
  *
  * In `'report-only'` mode (`status`), the same classification runs but neither
- * `hold` branch fires. Each semantic row and uncovered path is memoized
+ * `hold` branch fires — and no heal runs either: `executors.fix` is skipped so
+ * a preview leaves the working tree byte-identical, classifying positionally-
+ * drifted anchors from the read-only scan (those rows are never debt). Each
+ * semantic row and uncovered path is memoized
  * independently: a preview reports only items this session has not named yet,
  * and resolves to `allow`/`silent` when none are new. These item markers are
  * separate from the once-per-debt-state hold credit, which status never spends.
@@ -871,8 +879,10 @@ export type AdvisorHarness = 'claude' | 'codex' | 'opencode' | 'generic';
  * @param cwd The working directory the git command ran in.
  * @param executors The injected `fix`/`drift`/`list` surface.
  * @param memoState The session memo for hold-credit state and report-only item markers.
- * @param mode `'may-hold'` (default) may hold the command once; `'report-only'`
- *   delivers the same report and never holds. Neither enforces.
+ * @param mode `'may-hold'` (default) may hold the command once and runs the
+ *   belt-and-braces heal; `'report-only'`
+ *   delivers the same report, never holds, and never heals (no `fix` call —
+ *   the preview leaves the working tree byte-identical). Neither enforces.
  * @param churn The optional mechanical-churn suppression surface (see
  *   {@link ChurnSuppression}), consumed by the uncovered-writes check via
  *   {@link computeUncoveredPaths}. Omitting it disables suppression
@@ -894,8 +904,15 @@ export async function evaluateAdvisor(
 ): Promise<AdvisorResult> {
   if (paths.length === 0) return { decision: 'allow', kind: 'silent' };
   try {
-    // Belt-and-braces heal, then classify against the healed state.
-    await executors.fix(paths, cwd);
+    // Belt-and-braces heal — `'may-hold'` only. A `'report-only'` preview must
+    // leave the working tree byte-identical (CARD.md main-347): the heal dirties
+    // `.span/**` with positional re-anchors no preview asked for. Skipping it
+    // costs classification nothing — unhealed `MOVED`/`RESOLVED_PENDING_COMMIT`
+    // rows read straight from the scan are never debt (`isDebt()`) and never
+    // contribute to any branch.
+    if (mode === 'may-hold') {
+      await executors.fix(paths, cwd);
+    }
     const driftRows = await executors.drift(paths, cwd);
 
     // Split debt rows into semantic drift (a user can fix by editing a span)

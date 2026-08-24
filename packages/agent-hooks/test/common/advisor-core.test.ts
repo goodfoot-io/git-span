@@ -357,6 +357,46 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
       expect(calls).toBe(0);
     });
 
+    it("in 'report-only' mode, no fix call runs and drifted anchors still classify — a preview leaves the tree byte-identical", async () => {
+      const memo = createMemoryAdvisorMemoState();
+      let fixCalls = 0;
+      const executors = createFakeAdvisorExecutors({
+        // A real heal would rewrite `.span/**` so the subsequent drift read
+        // comes back clean; here it counts calls instead, proving the preview
+        // never mutates the working tree.
+        fix: async (): Promise<void> => {
+          fixCalls += 1;
+        },
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+        drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'CHANGED' })]
+      });
+      const paths = ['src/app.ts'];
+
+      const result = await evaluateAdvisor(paths, REPO_ROOT, executors, memo, 'report-only');
+
+      expect(result.decision).toBe('allow');
+      expect(result.kind).toBe('semantic-drift-report');
+      expect(fixCalls).toBe(0);
+    });
+
+    it("in 'may-hold' mode, the belt-and-braces fix still runs before classification", async () => {
+      const memo = createMemoryAdvisorMemoState();
+      let fixCalls = 0;
+      const executors = createFakeAdvisorExecutors({
+        fix: async (): Promise<void> => {
+          fixCalls += 1;
+        },
+        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
+        drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'CHANGED' })]
+      });
+
+      const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo, 'may-hold');
+
+      expect(result.decision).toBe('hold');
+      expect(result.kind).toBe('semantic-drift');
+      expect(fixCalls).toBe(1);
+    });
+
     it('semantic drift (CHANGED/DELETED) → deny/semantic-drift with findings once per digest, then falls through to allow/already-presented on an identical retry', async () => {
       const memo = createMemoryAdvisorMemoState();
       const executors = createFakeAdvisorExecutors({
