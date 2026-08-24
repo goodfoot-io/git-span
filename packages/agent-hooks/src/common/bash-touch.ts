@@ -636,7 +636,7 @@ export async function runBashTouches(
   explainLaterRecreates(evals, commandOrder, probeCache, cwd);
   // Verdicts (phase I), then the join filter (J) with chained skips.
   const computed = computeVerdicts(commandOrder, evals, guardByIndex);
-  const { effective, skipped } = applyJoinFilter(commandOrder, groups, guardByIndex, computed);
+  const { skipped } = applyJoinFilter(commandOrder, groups, guardByIndex, computed);
   // Pass B: run the touch hook for surviving spans only — decisivePass, or
   // inconclusive with an 'exists' target (the advisory residual class:
   // existence-gated families fire and heal/surface; phantom deletes never

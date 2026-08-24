@@ -246,12 +246,6 @@ describe('explainLaterRecreates', () => {
 });
 
 describe('computeVerdicts and applyJoinFilter', () => {
-  const guard = (index: number, exitStatus: number) => ({
-    status: 'builtin-guard' as const,
-    simpleCommandIndex: index,
-    exitStatus
-  });
-
   it('derives per-command verdicts from unexplained fails, decisive passes, and guard exits', () => {
     const evals = new Map<number, SpanEval[]>([
       [0, [evalEntry({ outcome: 'decisivePass', commandIndex: 0 })]],
@@ -264,7 +258,9 @@ describe('computeVerdicts and applyJoinFilter', () => {
       ],
       [2, [evalEntry({ outcome: 'inconclusive', commandIndex: 2 })]]
     ]);
-    const guards = new Map([[3, { status: 'builtin-guard' as const, simpleCommandIndex: 3, exitStatus: 1 }]]);
+    const guards = new Map([
+      [3, { status: 'builtin-guard' as const, simpleCommandIndex: 3, join: undefined, exitStatus: 1 as const }]
+    ]);
     const verdicts = computeVerdicts([0, 1, 2, 3], evals, guards);
     expect(verdicts.get(0)).toBe('succeeded');
     expect(verdicts.get(1)).toBe('failed');
