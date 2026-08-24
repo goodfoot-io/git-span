@@ -1357,7 +1357,14 @@ export async function runTouchHook(
 // Default subprocess-backed executors
 // ---------------------------------------------------------------------------
 
-const DEFAULT_TIMEOUT_MS = 2_000;
+/**
+ * Subprocess ceiling for one touch/probe child. 2s sat right on the edge of
+ * `git span context --fix` on slow filesystems, where the repair walk's
+ * repeated `git status` calls each cost 100–250ms — the portability matrix
+ * timed out flakily there, so the ceiling gets real headroom under the
+ * hooks' own 10s budgets.
+ */
+const DEFAULT_TIMEOUT_MS = 5_000;
 const HOOK_CONTEXT_LOCK_WAIT_SECS = '1';
 
 /**
