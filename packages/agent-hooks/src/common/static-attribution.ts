@@ -2521,14 +2521,8 @@ function rejectOverBudget(
  * unresolved the whole loop refuses (all-or-nothing); otherwise resolved
  * modify spans gain a match-locations pre-state request per touched file.
  */
-export function parseLiteralListLoop(
-  variable: string,
-  listSource: string,
-  body: string,
-  options: LayeredParseOptions,
-  maxCandidates: number,
-  parse: (command: string, nextOptions: LayeredParseOptions) => LayeredParseResult
-): LayeredParseResult {
+/** The list-level declines: nested bodies, substitutions, globs, dynamic lists, untokenizable lists, and over-budget binding counts. */
+function literalListLoopDecline(listSource: string, body: string, maxCandidates: number): LayeredParseResult | null {
   if (body.includes('for ') || body.includes('while ') || body.includes('until ')) {
     return {
       resolved: [],
@@ -2585,6 +2579,21 @@ export function parseLiteralListLoop(
       preStateRequests: []
     };
   }
+  return null;
+}
+
+export function parseLiteralListLoop(
+  variable: string,
+  listSource: string,
+  body: string,
+  options: LayeredParseOptions,
+  maxCandidates: number,
+  parse: (command: string, nextOptions: LayeredParseOptions) => LayeredParseResult
+): LayeredParseResult {
+  const declined = literalListLoopDecline(listSource, body, maxCandidates);
+  if (declined !== null) return declined;
+  // The decline pass guarantees a non-empty tokenizable list.
+  const bindings = argvOf(listSource) ?? [];
   const resolved: LayeredResolvedMatch[] = [];
   const unresolvedMatches: UnresolvedAttribution[] = [];
   const preStateRequests: PreStateRequest[] = [];
