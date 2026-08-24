@@ -178,7 +178,8 @@ export function createHandler(
         createDefaultPlannedTouchStore(layout)
       );
       if (blocks.length === 0) return undefined;
-      return postToolUseOutput({ additionalContext: blocks.join('') });
+      const shellCombined = blocks.join('');
+      return postToolUseOutput({ additionalContext: shellCombined, systemMessage: shellCombined });
     }
 
     const command = narrowApplyPatchCommand(input.tool_input);
@@ -205,7 +206,8 @@ export function createHandler(
       ctx.logger
     );
     if (blocks.length === 0) return undefined;
-    return postToolUseOutput({ additionalContext: blocks.join('') });
+    const combined = blocks.join('');
+    return postToolUseOutput({ additionalContext: combined, systemMessage: combined });
   };
 }
 

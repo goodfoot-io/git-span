@@ -90,7 +90,11 @@ export function createHandler(
         createDefaultPlannedTouchStore(layout)
       );
       if (blocks.length === 0) return null;
-      return postToolUseOutput({ hookSpecificOutput: { additionalContext: blocks.join('') } });
+      const combined = blocks.join('');
+      return postToolUseOutput({
+        hookSpecificOutput: { additionalContext: combined },
+        systemMessage: combined
+      });
     }
 
     const toolInput = (input.tool_input ?? {}) as ToolInput;
@@ -110,7 +114,10 @@ export function createHandler(
     // record of a degraded context query) is surfaced on the hook log.
     const output = await runTouchHook(touch, executors, memo, undefined, ctx.logger);
     if (!output.additionalContext) return null;
-    return postToolUseOutput({ hookSpecificOutput: { additionalContext: output.additionalContext } });
+    return postToolUseOutput({
+      hookSpecificOutput: { additionalContext: output.additionalContext },
+      systemMessage: output.additionalContext
+    });
   };
 }
 

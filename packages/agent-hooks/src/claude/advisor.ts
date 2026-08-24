@@ -94,18 +94,20 @@ export function createHandler(
       if (result.decision === 'hold') {
         // `hold` → the harness's own vocabulary. Claude has no "hold", so the
         // one-time interruption is expressed as `permissionDecision: 'deny'`.
-        // Single channel (main-341): the reason travels only as
-        // `permissionDecisionReason`; a `systemMessage` twin would inject the
-        // same checklist into context twice. When core rendered the closing
-        // skill guidance as a machine placeholder (`'mswea'` harness), the
-        // result's `skillRef` travels alongside so the mini-agent bridge can
-        // gate its substitution on the structured field.
+        // Single model channel (main-341): the reason reaches model context
+        // only as `permissionDecisionReason`; the identical `systemMessage`
+        // string is the user-facing mirror of that copy — a warning banner on
+        // the transcript, never a second context payload. When core rendered
+        // the closing skill guidance as a machine placeholder (`'mswea'`
+        // harness), the result's `skillRef` travels alongside so the
+        // mini-agent bridge can gate its substitution on the structured field.
         return preToolUseOutput({
           hookSpecificOutput: {
             permissionDecision: 'deny',
             permissionDecisionReason: result.reason,
             ...(result.skillRef ? { skillRef: result.skillRef } : {})
-          }
+          },
+          systemMessage: result.reason
         });
       }
       // Environmental drift and a failed drift scan both allow
