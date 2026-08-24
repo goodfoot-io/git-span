@@ -9,6 +9,7 @@ import {
   orderCommands,
   reconcileAgainstPassMap,
   type SpanEval,
+  selectSurvivors,
   translateAndGateSpans,
   type Verdict
 } from '../../src/common/bash-touch.js';
@@ -287,5 +288,68 @@ describe('computeVerdicts and applyJoinFilter', () => {
     expect(effective.get(1)).toBe('failed');
     expect(effective.get(2)).toBe('succeeded');
     expect(effective.get(3)).toBe('succeeded');
+  });
+});
+
+describe('selectSurvivors', () => {
+  const writeTouch = (targetState: 'exists' | 'absent') =>
+    ({ kind: 'write', sessionId: 's', cwd: '/repo', filePath: '/repo/f.txt', targetState }) as never;
+
+  function evalsOf(entries: SpanEval[]): Map<number, SpanEval[]> {
+    return new Map(entries.map((entry) => [entry.commandIndex, [entry]]));
+  }
+
+  it('keeps decisive passes and exists-target advisories; drops absent inconclusives and explained fails', () => {
+    const entries: SpanEval[] = [
+      evalEntry({ outcome: 'decisivePass', commandIndex: 0, touch: writeTouch('absent'), path: '/repo/a.txt' }),
+      evalEntry({ outcome: 'inconclusive', commandIndex: 1, touch: writeTouch('exists'), path: '/repo/b.txt' }),
+      evalEntry({ outcome: 'inconclusive', commandIndex: 2, touch: writeTouch('absent'), path: '/repo/c.txt' }),
+      evalEntry({
+        outcome: 'decisiveFail',
+        explained: true,
+        commandIndex: 3,
+        touch: writeTouch('exists'),
+        path: '/repo/d.txt'
+      })
+    ];
+    const survivors = selectSurvivors([0, 1, 2, 3], evalsOf(entries), new Set(), undefined);
+    expect(survivors).toHaveLength(2);
+    expect(survivors.every((touch) => touch.kind === 'write')).toBe(true);
+  });
+
+  it('suppresses the advisory class when the harness reports a non-zero exit code', () => {
+    const advisory = evalEntry({
+      outcome: 'inconclusive',
+      commandIndex: 0,
+      touch: writeTouch('exists'),
+      path: '/repo/a.txt'
+    });
+    const verified = evalEntry({
+      outcome: 'decisivePass',
+      commandIndex: 1,
+      touch: writeTouch('exists'),
+      path: '/repo/b.txt'
+    });
+    const survivors = selectSurvivors([0, 1], evalsOf([advisory, verified]), new Set(), 1);
+    expect(survivors).toHaveLength(1);
+    // Content-verified passes fire regardless of exit code (fail-open).
+    expect(survivors[0]).toBe(verified.touch);
+  });
+
+  it('skips every span of a join-filtered command but keeps later commands', () => {
+    const skippedSpan = evalEntry({
+      outcome: 'decisivePass',
+      commandIndex: 1,
+      touch: writeTouch('exists'),
+      path: '/repo/a.txt'
+    });
+    const kept = evalEntry({
+      outcome: 'decisivePass',
+      commandIndex: 2,
+      touch: writeTouch('exists'),
+      path: '/repo/b.txt'
+    });
+    const survivors = selectSurvivors([1, 2], evalsOf([skippedSpan, kept]), new Set([1]), 0);
+    expect(survivors).toEqual([kept.touch]);
   });
 });

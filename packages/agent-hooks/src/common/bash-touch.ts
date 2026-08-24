@@ -588,6 +588,43 @@ export function bashGatePrelude(
 }
 
 /**
+ * Phase K - survivor selection for pass B: decisivePass fires, or
+ * inconclusive with an 'exists' target (the advisory residual class:
+ * existence-gated families fire and heal or surface; phantom deletes never
+ * fire). A harness-supplied non-zero exit code suppresses the advisory
+ * class too, bounded by two documented-residue faces: the code is the
+ * compound's, so a masked failure (`git apply p.diff || echo ok` exiting 0)
+ * suppresses nothing and a trailing failure (`sed -i s/a/b/ f; false`)
+ * suppresses an earlier real write - and a nonzero code does not prove the
+ * write did not happen for non-atomic writers that modify before failing.
+ * A zero or absent code proceeds, and content-verified decisive passes fire
+ * regardless (fail-open, plan §4). Guard-only commands have no touches;
+ * explained fails and decisive fails never reach an executor.
+ */
+export function selectSurvivors(
+  order: readonly number[],
+  evals: ReadonlyMap<number, SpanEval[]>,
+  skipped: ReadonlySet<number>,
+  exitCode: number | undefined
+): TouchInput[] {
+  const touches: TouchInput[] = [];
+  for (const idx of order) {
+    if (skipped.has(idx)) continue;
+    const list = evals.get(idx);
+    if (list === undefined) continue;
+    for (const e of list) {
+      if (e.touch === null || e.explained) continue;
+      if (e.outcome === 'decisiveFail') continue;
+      if (e.outcome === 'inconclusive' && e.touch.kind === 'write' && e.touch.targetState === 'absent') continue;
+      if (e.outcome === 'inconclusive' && e.touch.kind === 'write' && exitCode !== undefined && exitCode !== 0)
+        continue;
+      touches.push(e.touch);
+    }
+  }
+  return touches;
+}
+
+/**
  * Shared Bash driver (plan §3 step 2): owns the per-command verdict thread —
  * pass A `evaluateWriteGate` sweep (every span, before any join decision),
  * the explanation map, per-command verdicts, the join filter with chained
@@ -637,36 +674,9 @@ export async function runBashTouches(
   // Verdicts (phase I), then the join filter (J) with chained skips.
   const computed = computeVerdicts(commandOrder, evals, guardByIndex);
   const { skipped } = applyJoinFilter(commandOrder, groups, guardByIndex, computed);
-  // Pass B: run the touch hook for surviving spans only — decisivePass, or
-  // inconclusive with an 'exists' target (the advisory residual class:
-  // existence-gated families fire and heal/surface; phantom deletes never
-  // fire). A harness-supplied non-zero exit code suppresses the advisory
-  // class too, bounded by two documented-residue faces (see
-  // bashResponseExitCode): the code is the compound's, so a masked failure
-  // (`git apply p.diff || echo ok` exiting 0) suppresses nothing and a
-  // trailing failure (`sed -i s/a/b/ f; false`) suppresses an earlier real
-  // write — and a nonzero code does not prove the write did not happen for
-  // the non-atomic writers that modify before failing (patch applying
-  // earlier hunks, `git apply --reject`, formatters writing fixes then
-  // exiting nonzero). A zero or absent code proceeds, and content-verified
-  // decisive passes fire regardless (fail-open, plan §4). Guard-only
-  // commands have no touches. Explained fails and decisive fails never
-  // reach an executor.
-  const touches: TouchInput[] = [];
+  // Survivor selection (phase K), then pass B batch execution.
+  const touches = selectSurvivors(commandOrder, evals, skipped, exitCode);
   const invocationExecutors = executors.forInvocation?.() ?? executors;
-  for (const idx of commandOrder) {
-    if (skipped.has(idx)) continue;
-    const list = evals.get(idx);
-    if (list === undefined) continue;
-    for (const e of list) {
-      if (e.touch === null || e.explained) continue;
-      if (e.outcome === 'decisiveFail') continue;
-      if (e.outcome === 'inconclusive' && e.touch.kind === 'write' && e.touch.targetState === 'absent') continue;
-      if (e.outcome === 'inconclusive' && e.touch.kind === 'write' && exitCode !== undefined && exitCode !== 0)
-        continue;
-      touches.push(e.touch);
-    }
-  }
   // The `warn` channel doubles as the touch core's logger: a render defect
   // warns there instead of vanishing into the per-touch swallow.
   const batch = await runTouchHooks(touches, invocationExecutors, memo, invocationId, probeCache, { warn });
