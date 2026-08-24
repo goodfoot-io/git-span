@@ -1830,6 +1830,187 @@ function parseNodeAttribution(command: string, options: LayeredParseOptions): La
 
 /** Parse explicit authoring intent through deterministic and bounded recognizers. */
 /**
+ * The pattern-substitution machine for sed-addressed, perl, and perl-zero
+ * in-place substitutions: parses the substitution (and a literal sed
+ * address when present), then resolves each file operand against its
+ * pre-state text into bounded modify spans. Every path returns a complete
+ * [LayeredParseResult].
+ */
+export function resolvePatternSubstitution(
+  patternCommand: PatternCommand,
+  options: LayeredParseOptions,
+  cwd: string,
+  maxCandidates: number
+): LayeredParseResult {
+  let addressLiteral: string | null = null;
+  let substitutionSource = patternCommand.script;
+  if (patternCommand.kind === 'sed' && substitutionSource.startsWith('/')) {
+    const address = readDelimitedField(substitutionSource, 1, '/');
+    if (address === null) substitutionSource = '';
+    else {
+      addressLiteral = decodeLiteralField(address.raw, '/', false);
+      if (addressLiteral === '') addressLiteral = null;
+      substitutionSource = substitutionSource.slice(address.next);
+    }
+  }
+  const substitution = parseLiteralSubstitution(substitutionSource);
+  const patternNewlines = substitution?.pattern.match(/\n/g)?.length ?? 0;
+  const replacementNewlines = substitution?.replacement.match(/\n/g)?.length ?? 0;
+  if (
+    substitution === null ||
+    patternNewlines !== replacementNewlines ||
+    (patternCommand.kind !== 'perl-zero' && patternNewlines > 0)
+  ) {
+    return {
+      resolved: [],
+      unresolved: [
+        unresolved(
+          'pattern-substitution',
+          patternCommand.kind === 'sed' ? 'sed-inplace' : 'perl-inplace',
+          'unsupported-expression',
+          'only literal line-count-preserving substitutions are supported'
+        )
+      ],
+      preStateRequests: []
+    };
+  }
+  if (patternCommand.files.length === 0) {
+    return {
+      resolved: [],
+      unresolved: [
+        unresolved(
+          'pattern-substitution',
+          patternCommand.kind === 'sed' ? 'sed-inplace' : 'perl-inplace',
+          'unsupported-syntax',
+          'in-place substitution has no literal file operand'
+        )
+      ],
+      preStateRequests: []
+    };
+  }
+  if (addressLiteral === null && patternCommand.kind === 'sed' && patternCommand.script.startsWith('/')) {
+    return {
+      resolved: [],
+      unresolved: [
+        unresolved(
+          'pattern-substitution',
+          'sed-inplace',
+          'unsupported-expression',
+          'sed address is not a literal pattern'
+        )
+      ],
+      preStateRequests: []
+    };
+  }
+  const resolved: LayeredResolvedMatch[] = [];
+  const unresolvedMatches: UnresolvedAttribution[] = [];
+  const preStateRequests: PreStateRequest[] = [];
+  for (const file of patternCommand.files) {
+    const reason = classifyDynamicWord(file);
+    if (reason !== null) {
+      unresolvedMatches.push(
+        unresolved(
+          'pattern-substitution',
+          patternCommand.kind === 'sed' ? 'sed-inplace' : 'perl-inplace',
+          reason,
+          'target path is dynamic',
+          file
+        )
+      );
+      continue;
+    }
+    const absolutePath = nodePath.resolve(cwd, file);
+    preStateRequests.push({
+      absolutePath,
+      operation: 'modify',
+      requirement: 'match-locations',
+      simpleCommandIndex: patternCommand.simpleCommandIndex
+    });
+    if (patternCommand.kind === 'perl-zero') {
+      preStateRequests.push({
+        absolutePath,
+        operation: 'modify',
+        requirement: 'deleted-text',
+        simpleCommandIndex: patternCommand.simpleCommandIndex
+      });
+    }
+    const content = options.readPreState?.(absolutePath) ?? null;
+    if (content === null) {
+      unresolvedMatches.push(
+        unresolved(
+          'pattern-substitution',
+          patternCommand.kind === 'sed' ? 'sed-inplace' : 'perl-inplace',
+          'missing-pre-state',
+          'literal substitution range requires pre-command text',
+          absolutePath
+        )
+      );
+      continue;
+    }
+    if (content.includes('\0')) {
+      unresolvedMatches.push(
+        unresolved(
+          'pattern-substitution',
+          patternCommand.kind === 'sed' ? 'sed-inplace' : 'perl-inplace',
+          'binary-content',
+          'substitution range recovery does not accept NUL-delimited content',
+          absolutePath
+        )
+      );
+      continue;
+    }
+    let ranges = literalOccurrenceRanges(content, substitution.pattern);
+    if (addressLiteral !== null) {
+      const addressedLines = new Set(literalOccurrenceRanges(content, addressLiteral).map(({ start }) => start));
+      ranges = ranges.filter(({ start, end }) => start === end && addressedLines.has(start));
+    }
+    if (patternCommand.kind === 'perl' && ranges.length > 1) {
+      ranges = [{ start: ranges[0].start, end: ranges[ranges.length - 1].end }];
+    } else if (patternCommand.kind === 'perl-zero' && !substitution.global) {
+      ranges = ranges.slice(0, 1);
+    }
+    const expectedContent = expectedSubstitutionContent(content, substitution, patternCommand.kind, addressLiteral);
+    for (const range of ranges) {
+      resolved.push({
+        status: 'resolved',
+        layer: 'pattern-substitution',
+        idiom: patternCommand.kind === 'sed' ? 'sed-inplace' : 'perl-inplace',
+        span: {
+          operation: 'modify',
+          absolutePath,
+          lineStart: range.start,
+          lineEnd: range.end,
+          expectedContent,
+          simpleCommandIndex: patternCommand.simpleCommandIndex
+        }
+      });
+    }
+    if (patternCommand.backupSuffix !== undefined && patternCommand.backupSuffix !== '') {
+      resolved.push({
+        status: 'resolved',
+        layer: 'pattern-substitution',
+        idiom: 'sed-inplace',
+        span: {
+          operation: 'create-overwrite',
+          absolutePath: `${absolutePath}${patternCommand.backupSuffix}`,
+          simpleCommandIndex: patternCommand.simpleCommandIndex
+        }
+      });
+    }
+  }
+  if (unresolvedMatches.length > 0) return { resolved: [], unresolved: unresolvedMatches, preStateRequests };
+  const overBudget = rejectOverBudget(
+    resolved,
+    'pattern-substitution',
+    patternCommand.kind === 'sed' ? 'sed-inplace' : 'perl-inplace',
+    'substitution',
+    maxCandidates
+  );
+  if (overBudget !== null) return overBudget;
+  return { resolved, unresolved: [], preStateRequests };
+}
+
+/**
  * The shared candidate-budget tail: under the limit this declines (null) so
  * the caller proceeds, over the limit it produces the layer's
  * budget-exceeded rejection. `noun` names the producer in the detail string,
@@ -2168,174 +2349,8 @@ export function parseCommandLayered(command: string, options: LayeredParseOption
       const overBudget = rejectOverBudget(resolved, 'shell', 'sed-inplace', 'numeric substitution', maxCandidates);
       if (overBudget !== null) return overBudget;
       return { resolved, unresolved: [], preStateRequests };
-    }
-    if (!numericSed) {
-      let addressLiteral: string | null = null;
-      let substitutionSource = patternCommand.script;
-      if (patternCommand.kind === 'sed' && substitutionSource.startsWith('/')) {
-        const address = readDelimitedField(substitutionSource, 1, '/');
-        if (address === null) substitutionSource = '';
-        else {
-          addressLiteral = decodeLiteralField(address.raw, '/', false);
-          if (addressLiteral === '') addressLiteral = null;
-          substitutionSource = substitutionSource.slice(address.next);
-        }
-      }
-      const substitution = parseLiteralSubstitution(substitutionSource);
-      const patternNewlines = substitution?.pattern.match(/\n/g)?.length ?? 0;
-      const replacementNewlines = substitution?.replacement.match(/\n/g)?.length ?? 0;
-      if (
-        substitution === null ||
-        patternNewlines !== replacementNewlines ||
-        (patternCommand.kind !== 'perl-zero' && patternNewlines > 0)
-      ) {
-        return {
-          resolved: [],
-          unresolved: [
-            unresolved(
-              'pattern-substitution',
-              patternCommand.kind === 'sed' ? 'sed-inplace' : 'perl-inplace',
-              'unsupported-expression',
-              'only literal line-count-preserving substitutions are supported'
-            )
-          ],
-          preStateRequests: []
-        };
-      }
-      if (patternCommand.files.length === 0) {
-        return {
-          resolved: [],
-          unresolved: [
-            unresolved(
-              'pattern-substitution',
-              patternCommand.kind === 'sed' ? 'sed-inplace' : 'perl-inplace',
-              'unsupported-syntax',
-              'in-place substitution has no literal file operand'
-            )
-          ],
-          preStateRequests: []
-        };
-      }
-      if (addressLiteral === null && patternCommand.kind === 'sed' && patternCommand.script.startsWith('/')) {
-        return {
-          resolved: [],
-          unresolved: [
-            unresolved(
-              'pattern-substitution',
-              'sed-inplace',
-              'unsupported-expression',
-              'sed address is not a literal pattern'
-            )
-          ],
-          preStateRequests: []
-        };
-      }
-      const resolved: LayeredResolvedMatch[] = [];
-      const unresolvedMatches: UnresolvedAttribution[] = [];
-      const preStateRequests: PreStateRequest[] = [];
-      for (const file of patternCommand.files) {
-        const reason = classifyDynamicWord(file);
-        if (reason !== null) {
-          unresolvedMatches.push(
-            unresolved(
-              'pattern-substitution',
-              patternCommand.kind === 'sed' ? 'sed-inplace' : 'perl-inplace',
-              reason,
-              'target path is dynamic',
-              file
-            )
-          );
-          continue;
-        }
-        const absolutePath = nodePath.resolve(cwd, file);
-        preStateRequests.push({
-          absolutePath,
-          operation: 'modify',
-          requirement: 'match-locations',
-          simpleCommandIndex: patternCommand.simpleCommandIndex
-        });
-        if (patternCommand.kind === 'perl-zero') {
-          preStateRequests.push({
-            absolutePath,
-            operation: 'modify',
-            requirement: 'deleted-text',
-            simpleCommandIndex: patternCommand.simpleCommandIndex
-          });
-        }
-        const content = options.readPreState?.(absolutePath) ?? null;
-        if (content === null) {
-          unresolvedMatches.push(
-            unresolved(
-              'pattern-substitution',
-              patternCommand.kind === 'sed' ? 'sed-inplace' : 'perl-inplace',
-              'missing-pre-state',
-              'literal substitution range requires pre-command text',
-              absolutePath
-            )
-          );
-          continue;
-        }
-        if (content.includes('\0')) {
-          unresolvedMatches.push(
-            unresolved(
-              'pattern-substitution',
-              patternCommand.kind === 'sed' ? 'sed-inplace' : 'perl-inplace',
-              'binary-content',
-              'substitution range recovery does not accept NUL-delimited content',
-              absolutePath
-            )
-          );
-          continue;
-        }
-        let ranges = literalOccurrenceRanges(content, substitution.pattern);
-        if (addressLiteral !== null) {
-          const addressedLines = new Set(literalOccurrenceRanges(content, addressLiteral).map(({ start }) => start));
-          ranges = ranges.filter(({ start, end }) => start === end && addressedLines.has(start));
-        }
-        if (patternCommand.kind === 'perl' && ranges.length > 1) {
-          ranges = [{ start: ranges[0].start, end: ranges[ranges.length - 1].end }];
-        } else if (patternCommand.kind === 'perl-zero' && !substitution.global) {
-          ranges = ranges.slice(0, 1);
-        }
-        const expectedContent = expectedSubstitutionContent(content, substitution, patternCommand.kind, addressLiteral);
-        for (const range of ranges) {
-          resolved.push({
-            status: 'resolved',
-            layer: 'pattern-substitution',
-            idiom: patternCommand.kind === 'sed' ? 'sed-inplace' : 'perl-inplace',
-            span: {
-              operation: 'modify',
-              absolutePath,
-              lineStart: range.start,
-              lineEnd: range.end,
-              expectedContent,
-              simpleCommandIndex: patternCommand.simpleCommandIndex
-            }
-          });
-        }
-        if (patternCommand.backupSuffix !== undefined && patternCommand.backupSuffix !== '') {
-          resolved.push({
-            status: 'resolved',
-            layer: 'pattern-substitution',
-            idiom: 'sed-inplace',
-            span: {
-              operation: 'create-overwrite',
-              absolutePath: `${absolutePath}${patternCommand.backupSuffix}`,
-              simpleCommandIndex: patternCommand.simpleCommandIndex
-            }
-          });
-        }
-      }
-      if (unresolvedMatches.length > 0) return { resolved: [], unresolved: unresolvedMatches, preStateRequests };
-      const overBudget = rejectOverBudget(
-        resolved,
-        'pattern-substitution',
-        patternCommand.kind === 'sed' ? 'sed-inplace' : 'perl-inplace',
-        'substitution',
-        maxCandidates
-      );
-      if (overBudget !== null) return overBudget;
-      return { resolved, unresolved: [], preStateRequests };
+    } else {
+      return resolvePatternSubstitution(patternCommand, options, cwd, maxCandidates);
     }
   }
 
