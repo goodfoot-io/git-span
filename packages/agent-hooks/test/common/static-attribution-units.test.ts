@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { splitTopLevel } from '../../src/common/shell-split.js';
 import {
+  createNodeContext,
   createPythonContext,
   type LayeredParseOptions,
   type LayeredParseResult,
   type LayeredResolvedMatch,
   parseCompoundStages,
   parseLiteralListLoop,
+  resolveNodeWriteSink,
   resolveNumericSed,
   resolvePatternSubstitution,
   resolvePythonWriteSink,
@@ -734,6 +736,62 @@ describe('resolvePythonWriteSink', () => {
     expect(rejected).not.toBeNull();
     expect((rejected as LayeredParseResult).unresolved[0].detail).toBe(
       'Python write expression is outside the bounded allowlist'
+    );
+  });
+});
+
+describe('resolveNodeWriteSink', () => {
+  function nodeCtx(overrides: Partial<LayeredParseOptions> = {}): ReturnType<typeof createNodeContext> {
+    return createNodeContext({ cwd: '/repo', ...overrides });
+  }
+
+  function sink(ctx: ReturnType<typeof createNodeContext>, expression: string, path = 'a.txt') {
+    return resolveNodeWriteSink(ctx, expression, `/repo/${path}`);
+  }
+
+  it('requests match-locations only for a newline-count-changing replacement — the node-side asymmetry', () => {
+    const ctx = nodeCtx({ readPreState: (path) => (path.endsWith('/repo/a.txt') ? 'alpha\nbeta\n' : null) });
+    ctx.texts.set('t', { path: 'a.txt' });
+    expect(sink(ctx, "t.replace('beta', '')")).toBeUndefined();
+    expect(ctx.preStateRequests.map((request) => request.requirement)).toEqual(['match-locations']);
+    expect(ctx.resolved[0].idiom).toBe('node-replace');
+    expect(spanOf(ctx.resolved[0]).expectedContent).toBe('alpha\n\n');
+  });
+
+  it('resolves a literal writeFileSync as create-overwrite and rejects non-literal replacement inputs', () => {
+    const ctx = nodeCtx();
+    expect(sink(ctx, "'alpha\\n'")).toBeUndefined();
+    const span = spanOf(ctx.resolved[0]);
+    expect(span.operation).toBe('create-overwrite');
+    expect(span.written).toBe('alpha\n');
+
+    const badPattern = nodeCtx();
+    badPattern.replacements.set('r', { source: 't', pattern: '', replacement: 'x', global: false });
+    const rejected = sink(badPattern, 'r');
+    expect(rejected).not.toBeNull();
+    expect((rejected as LayeredParseResult).unresolved[0].reasonCode).toBe('unsupported-expression');
+  });
+
+  it('resolves a linked JSON.stringify dump to one modify span per mutated key path', () => {
+    const ctx = nodeCtx({ readPreState: (path) => (path.endsWith('/repo/a.txt') ? '"name": "old"\n' : null) });
+    ctx.structured.set('data', { path: 'a.txt', keys: [['name']] });
+    expect(sink(ctx, 'JSON.stringify(data, null, 2)')).toBeUndefined();
+    expect(ctx.resolved).toHaveLength(1);
+    expect(ctx.resolved[0].idiom).toBe('node-json');
+    expect(ctx.preStateRequests.map((request) => request.requirement)).toEqual(['match-locations']);
+
+    const unlinked = nodeCtx({ readPreState: () => '"name": "old"\n' });
+    unlinked.structured.set('data', { path: 'other.txt', keys: [['name']] });
+    const rejected = sink(unlinked, 'JSON.stringify(data)');
+    expect(rejected).not.toBeNull();
+    expect((rejected as LayeredParseResult).unresolved[0].reasonCode).toBe('unsupported-dataflow');
+  });
+
+  it('falls back to the allowlist rejection for write expressions outside every sink', () => {
+    const rejected = sink(nodeCtx(), "t.replace(x, 'y')");
+    expect(rejected).not.toBeNull();
+    expect((rejected as LayeredParseResult).unresolved[0].detail).toBe(
+      'Node write expression is outside the bounded allowlist'
     );
   });
 });

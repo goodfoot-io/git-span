@@ -1925,80 +1925,7 @@ function consumeNodeStatement(
       return rejectNode('unsupported-encoding', 'Node write requires default or UTF-8 encoding', binding.path);
     }
     const absolutePath = nodePath.resolve(ctx.cwd, binding.path);
-    const expression = call.args[1];
-    const literal = decodeNodeString(expression);
-    if (literal !== null) {
-      ctx.resolved.push({
-        status: 'resolved',
-        layer: 'node',
-        idiom: 'node-write',
-        span: {
-          operation: 'create-overwrite',
-          absolutePath,
-          written: literal,
-          expectedContent: literal,
-          simpleCommandIndex: 0
-        }
-      });
-      return undefined;
-    }
-    const directReplacement = expression.match(NODE_REPLACE_CALL_PATTERN);
-    const replacement =
-      directReplacement === null
-        ? ctx.replacements.get(expression)
-        : {
-            source: directReplacement[1],
-            pattern: decodeNodeString(directReplacement[3]) ?? '',
-            replacement: decodeNodeString(directReplacement[4]) ?? '',
-            global: directReplacement[2] === 'replaceAll'
-          };
-    if (replacement !== undefined) {
-      if (replacement.pattern.length === 0 || replacement.replacement.includes('$')) {
-        return rejectNode('unsupported-expression', 'Node replace requires non-empty literal input', absolutePath);
-      }
-      const rejected = emitNodeReplacement(ctx, absolutePath, replacement);
-      if (rejected !== null) return rejected;
-      return undefined;
-    }
-    const serialized = expression.match(/^JSON\.stringify\(([A-Za-z_$][A-Za-z0-9_$]*)(?:\s*,\s*null\s*,\s*\d+)?\)$/);
-    if (serialized !== null) {
-      const value = ctx.structured.get(serialized[1]);
-      if (value === undefined || nodePath.resolve(ctx.cwd, value.path) !== absolutePath || value.keys.length === 0) {
-        return rejectNode(
-          'unsupported-dataflow',
-          'JSON read, literal-key mutation, and write are not linked',
-          absolutePath
-        );
-      }
-      const content = readNodePreState(ctx, absolutePath, 'modify', ['match-locations']);
-      if (typeof content !== 'string') return content;
-      for (const keyPath of value.keys) {
-        const key = keyPath.at(-1)!;
-        const ranges = structuredKeyRanges(content, 'json', key);
-        if (ranges.length !== 1) {
-          return rejectNode(
-            'unsupported-expression',
-            'structured literal key is absent or ambiguous in pre-state',
-            absolutePath,
-            ctx.preStateRequests
-          );
-        }
-        ctx.resolved.push({
-          status: 'resolved',
-          layer: 'node',
-          idiom: 'node-json',
-          span: {
-            operation: 'modify',
-            absolutePath,
-            lineStart: ranges[0].start,
-            lineEnd: ranges[0].end,
-            simpleCommandIndex: 0
-          }
-        });
-      }
-      return undefined;
-    }
-    return rejectNode('unsupported-dataflow', 'Node write expression is outside the bounded allowlist', absolutePath);
+    return resolveNodeWriteSink(ctx, call.args[1], absolutePath);
   }
   return 'unmatched';
 }
@@ -2058,6 +1985,104 @@ function parseNodeAttribution(command: string, options: LayeredParseOptions): La
 }
 
 /** Parse explicit authoring intent through deterministic and bounded recognizers. */
+/**
+ * The Node write-target sink chain, in fixed order: literal overwrite,
+ * then inline-or-named literal replacement ([emitNodeReplacement]), then
+ * the structured dump. Returns `undefined` when some sink consumed the
+ * expression, or the final allowlist rejection when none matched.
+ */
+export function resolveNodeWriteSink(
+  ctx: NodeRecognizerContext,
+  expression: string,
+  absolutePath: string
+): LayeredParseResult | undefined {
+  const literal = decodeNodeString(expression);
+  if (literal !== null) {
+    ctx.resolved.push({
+      status: 'resolved',
+      layer: 'node',
+      idiom: 'node-write',
+      span: {
+        operation: 'create-overwrite',
+        absolutePath,
+        written: literal,
+        expectedContent: literal,
+        simpleCommandIndex: 0
+      }
+    });
+    return undefined;
+  }
+  const directReplacement = expression.match(NODE_REPLACE_CALL_PATTERN);
+  const replacement =
+    directReplacement === null
+      ? ctx.replacements.get(expression)
+      : {
+          source: directReplacement[1],
+          pattern: decodeNodeString(directReplacement[3]) ?? '',
+          replacement: decodeNodeString(directReplacement[4]) ?? '',
+          global: directReplacement[2] === 'replaceAll'
+        };
+  if (replacement !== undefined) {
+    if (replacement.pattern.length === 0 || replacement.replacement.includes('$')) {
+      return rejectNode('unsupported-expression', 'Node replace requires non-empty literal input', absolutePath);
+    }
+    const rejected = emitNodeReplacement(ctx, absolutePath, replacement);
+    if (rejected !== null) return rejected;
+    return undefined;
+  }
+  const dumped = emitNodeStructuredDump(ctx, expression, absolutePath);
+  if (dumped !== 'unmatched') return dumped;
+  return rejectNode('unsupported-dataflow', 'Node write expression is outside the bounded allowlist', absolutePath);
+}
+
+/**
+ * The Node structured-dump sink: JSON.stringify of a loaded-and-key-mutated
+ * value back onto its own read path. Tri-state like the Python sinks.
+ */
+function emitNodeStructuredDump(
+  ctx: NodeRecognizerContext,
+  expression: string,
+  absolutePath: string
+): LayeredParseResult | 'unmatched' | undefined {
+  const serialized = expression.match(/^JSON\.stringify\(([A-Za-z_$][A-Za-z0-9_$]*)(?:\s*,\s*null\s*,\s*\d+)?\)$/);
+  if (serialized === null) return 'unmatched';
+  const value = ctx.structured.get(serialized[1]);
+  if (value === undefined || nodePath.resolve(ctx.cwd, value.path) !== absolutePath || value.keys.length === 0) {
+    return rejectNode(
+      'unsupported-dataflow',
+      'JSON read, literal-key mutation, and write are not linked',
+      absolutePath
+    );
+  }
+  const content = readNodePreState(ctx, absolutePath, 'modify', ['match-locations']);
+  if (typeof content !== 'string') return content;
+  for (const keyPath of value.keys) {
+    const key = keyPath.at(-1)!;
+    const ranges = structuredKeyRanges(content, 'json', key);
+    if (ranges.length !== 1) {
+      return rejectNode(
+        'unsupported-expression',
+        'structured literal key is absent or ambiguous in pre-state',
+        absolutePath,
+        ctx.preStateRequests
+      );
+    }
+    ctx.resolved.push({
+      status: 'resolved',
+      layer: 'node',
+      idiom: 'node-json',
+      span: {
+        operation: 'modify',
+        absolutePath,
+        lineStart: ranges[0].start,
+        lineEnd: ranges[0].end,
+        simpleCommandIndex: 0
+      }
+    });
+  }
+  return undefined;
+}
+
 /**
  * The numeric-sed machine: an in-place substitution addressed by literal line
  * numbers (`3s/…/…/`, `3,5s/…/…/`). Resolves each file operand to one modify
