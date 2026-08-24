@@ -31,6 +31,10 @@ services:
       # nested mounts. The base entrypoint symlinks the home paths here.
       - opencode-data:/var/lib/coaxial/opencode
       - cards-worktrees:/var/lib/coaxial/cards-worktrees
+      # Rust toolchains (rustup renames dirs into place, which the virtiofs
+      # stale-cache defect breaks) and the cargo registry/bin cache.
+      - rustup-data:/var/lib/coaxial/rustup
+      - cargo-data:/var/lib/coaxial/cargo
       - claude-code-bashhistory:/commandhistory
       - git-span-cargo-target:/var/cache/git-span/cargo-target
     env_file:
@@ -47,3 +51,5 @@ volumes:
   git-span-cargo-target:
   opencode-data:
   cards-worktrees:
+  rustup-data:
+  cargo-data:
