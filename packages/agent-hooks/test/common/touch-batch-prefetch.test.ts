@@ -137,7 +137,7 @@ async function runBatched(repo: RealBundleRepo, touches: TouchInput[]): Promise<
  * build is hoisted into `beforeAll` and every case carries the same generous
  * bound, so harness load cannot turn a passing check into a timeout.
  */
-const INSTALLED_SMOKE_TIMEOUT_MS = 180_000;
+const INSTALLED_SMOKE_TIMEOUT_MS = 600_000;
 
 /**
  * Subprocess budget handed to the real `git span` children. The production

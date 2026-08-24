@@ -320,12 +320,44 @@ def test_docker_bridge_missing_executable_fails_open(stub_hooks, tmp_path, monke
 # and a fragment of the error message (absent for the clean no-op). The
 # launch-error case instead breaks the launcher binary itself, which is
 # environment-specific (host node vs docker executable).
+#
+# Only the timeout case is about the timeout taxonomy, so only it carries a
+# tight budget; every other case classifies on exit code or stdout shape, and
+# a shared tight budget made those classifications depend on scheduler
+# latency — under the workspace-parallel validation load a bare interpreter
+# startup could exceed 250ms and flip e.g. nonzero-exit into timeout,
+# identically on pristine baselines, host and docker alike.
 HOOK_RESULT_MATRIX = [
-    {"stub_env": {"MSWEA_STUB_EXIT": "2"}, "status": "nonzero-exit", "error": "exited 2"},
-    {"stub_env": {"MSWEA_STUB_EMPTY": "1"}, "status": "clean-noop"},
-    {"stub_env": {"MSWEA_STUB_RAW": '{"hookSpecificOutput": '}, "status": "malformed-output", "error": "unparsable"},
-    {"stub_env": {"MSWEA_STUB_SLEEP": "10"}, "status": "timeout", "error": "timed out after 250ms"},
-    {"stub_env": {}, "status": "launch-error", "error": "failed open", "break_launcher": True},
+    {
+        "stub_env": {"MSWEA_STUB_EXIT": "2"},
+        "status": "nonzero-exit",
+        "error": "exited 2",
+        "timeout_ms": 10_000,
+    },
+    {
+        "stub_env": {"MSWEA_STUB_EMPTY": "1"},
+        "status": "clean-noop",
+        "timeout_ms": 10_000,
+    },
+    {
+        "stub_env": {"MSWEA_STUB_RAW": '{"hookSpecificOutput": '},
+        "status": "malformed-output",
+        "error": "unparsable",
+        "timeout_ms": 10_000,
+    },
+    {
+        "stub_env": {"MSWEA_STUB_SLEEP": "10"},
+        "status": "timeout",
+        "error": "timed out after 250ms",
+        "timeout_ms": 250,
+    },
+    {
+        "stub_env": {},
+        "status": "launch-error",
+        "error": "failed open",
+        "break_launcher": True,
+        "timeout_ms": 10_000,
+    },
 ]
 
 
@@ -342,7 +374,7 @@ def test_result_taxonomy_identical_across_environments(
     docker_kwargs = {"executable": str(tmp_path / "no-such-docker")} if broken else {}
 
     def make(kind, required):
-        common = {"timeout_ms": 250, "required": required}
+        common = {"timeout_ms": case["timeout_ms"], "required": required}
         if kind == "host":
             return make_bridge(stub_hooks, **common, **host_kwargs)
         return make_docker_bridge(stub_hooks, fake_docker, **common, **docker_kwargs)
