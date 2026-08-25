@@ -1,4 +1,4 @@
 .claude/skills/evaluation/references/architecture.md#L32-L44 rk64:e83a2f3f04de2e84
-packages/agent-hooks/package.json#L1-L33 rk64:3a8771a4733f3378
+packages/agent-hooks/package.json#L1-L33 rk64:651557c08efd69b9
 
 The code map names packages/agent-hooks's build scripts as the authoritative source of advisor.mjs, and the wrapper/build-target list here must track that package.json if a new target is added or the build:hooks:mswea chain changes.
