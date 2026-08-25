@@ -796,15 +796,22 @@ fn context_test_checkpoint(_repo: &gix::Repository, checkpoint: &str) -> Result<
     std::fs::write(directory.join(format!("{checkpoint}.ready")), &token)?;
     let release = directory.join(format!("{checkpoint}.release"));
     // The release-wait budget must comfortably exceed the test side's
-    // ready-poll deadline (`wait_for_checkpoint` uses 30s): the test's wall-
+    // ready-poll deadline (`wait_for_checkpoint` uses 120s): the test's wall-
     // clock polling can be starved by the rest of the suite while this
     // process's budget burns, so an equal or tight budget turns load into
-    // spurious "checkpoint timed out" failures. 60s absorbs scheduling
-    // starvation without turning a genuinely hung test into a 60s stall.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    while std::time::Instant::now() < deadline {
+    // spurious "checkpoint timed out" failures. 180s absorbs scheduling
+    // starvation under a fully saturated test phase (60s was observed to
+    // expire there) without turning a genuinely hung test into a stall of
+    // the same order as the suite itself. The release check runs once more
+    // after the deadline expires so a release that lands while this thread
+    // is descheduled is never missed.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+    loop {
         if std::fs::read_to_string(&release).ok().as_deref() == Some(token.as_str()) {
             return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            break;
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
