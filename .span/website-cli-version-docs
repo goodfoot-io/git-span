@@ -1,4 +1,4 @@
-packages/git-span/package.json#L1-L4 rk64:f45cc627ac796ab1
+packages/git-span/package.json#L1-L4 rk64:a8902262774b7dac
 packages/website/content/docs/getting-started.mdx#L14-L25 rk64:236bcd5b0121bf0c
 
 The CLI package version is authoritative, and the getting-started verification example prints that released version.
