@@ -123,39 +123,84 @@ echo "Full validation log: $log_path"
 # shared target lock (the same pattern every cargo gate in
 # packages/git-span/package.json uses), then prepend its build directory to
 # PATH so `git span` resolves to this tree's build and nothing else. If the
-# build fails, the && chain below fails the validation — the gate fails closed
-# rather than falling through to an installed release.
+# build fails, the group's && chain fails the validation — the gate fails
+# closed rather than falling through to an installed release.
 target_root="${GIT_SPAN_CARGO_TARGET_ROOT:-/var/cache/git-span/cargo-target}"
 build_dir="$target_root/git-span/build"
 
-{
+phase_drift() {
   (
     cd "$repo_root/packages/git-span"
     bash scripts/with-target-lock.sh shared env CARGO_TARGET_DIR="$build_dir" cargo build --quiet --locked --bin git-span
   ) &&
-  PATH="$build_dir/debug:$PATH" git span drift &&
-  yarn typecheck &&
-  yarn lint &&
-  # rkyv-js must stay resolvable through its own package exports (card
-  # main-386): Node resolves every declared target, tsc binds the bare
-  # specifier without paths entries, and no alias workaround creeps back.
-  node scripts/check-rkyv-resolution.mjs &&
-  # Migration-bundle proof (card main-386-1): validate must build the bundle
-  # itself — scripts/dist/ is gitignored and worktree-provisioned as a shared
-  # symlink, so a fresh checkout has nothing at that path. The golden gate then
-  # holds dry-run output byte-equal to the pre-upgrade bundle's, and the compat
-  # scan keeps the node20 target honest about runtime APIs esbuild won't catch.
+  PATH="$build_dir/debug:$PATH" git span drift
+}
+
+phase_typecheck() { yarn typecheck; }
+
+phase_lint() { yarn lint; }
+
+# rkyv-js must stay resolvable through its own package exports (card
+# main-386): Node resolves every declared target, tsc binds the bare
+# specifier without paths entries, and no alias workaround creeps back.
+phase_rkyv() { node scripts/check-rkyv-resolution.mjs; }
+
+# Migration-bundle proof (card main-386-1): validate must build the bundle
+# itself — scripts/dist/ is gitignored and worktree-provisioned as a shared
+# symlink, so a fresh checkout has nothing at that path. The golden gate then
+# holds dry-run output byte-equal to the pre-upgrade bundle's, and the compat
+# scan keeps the node20 target honest about runtime APIs esbuild won't catch.
+phase_migration() {
   yarn build:migration &&
   node scripts/check-migration-golden.mjs &&
-  node scripts/check-migration-bundle-compat.mjs &&
-  # The artifact drift gate runs before the test suites, never after: after
-  # `yarn build` the build would have rewritten the committed file and the
-  # check would trivially pass, and after `yarn test` the website contract
-  # suite's toEqual failure (which names no fix command) would pre-empt the
-  # umbrella's "ERROR: … is stale; run …" — the named-error contract must be
-  # the first failure a developer sees. First placement also keeps its lines
-  # in the failure-summary tail even when later steps fail too.
-  yarn workspace @goodfoot/git-span-website artifacts:check &&
+  node scripts/check-migration-bundle-compat.mjs
+}
+
+# The artifact drift gate runs before the test suites, never after: after
+# `yarn build` the build would have rewritten the committed file and the
+# check would trivially pass, and after `yarn test` the website contract
+# suite's toEqual failure (which names no fix command) would pre-empt the
+# umbrella's "ERROR: … is stale; run …" — the named-error contract must be
+# the first failure a developer sees. Pre-test placement also keeps its lines
+# in the failure-summary tail even when later steps fail too.
+phase_artifacts() { yarn workspace @goodfoot/git-span-website artifacts:check; }
+
+# Every phase before `yarn test` runs concurrently — all cargo work involved
+# takes SHARED target locks, so the groups are compatible. Each group's
+# combined output is buffered to a temp file and replayed into the tee'd log
+# in canonical order (the historical serial order) once every group has been
+# reaped, so the log reads exactly as the serial pipeline did: no check is
+# dropped, weakened, or moved in its reporting position, and a stale-artifact
+# "ERROR: … is stale" still lands before any test/build output. Fail-closed:
+# in-flight sibling groups run to completion, but any failure blocks
+# test/build/diff-gate and the run exits with the canonically FIRST failing
+# phase's own exit code — the same code the serial chain would have surfaced.
+pretest_phases() {
+  local order=(phase_drift phase_typecheck phase_lint phase_rkyv phase_migration phase_artifacts)
+  local buf_dir i
+  local pids=() statuses=()
+  buf_dir="$(mktemp -d)" || return 1
+  for i in "${!order[@]}"; do
+    "${order[$i]}" > "$buf_dir/$i.out" 2>&1 &
+    pids[$i]=$!
+  done
+  for i in "${!order[@]}"; do
+    if wait "${pids[$i]}"; then statuses[$i]=0; else statuses[$i]=$?; fi
+  done
+  for i in "${!order[@]}"; do
+    cat "$buf_dir/$i.out"
+  done
+  rm -rf "$buf_dir"
+  for i in "${!order[@]}"; do
+    if [ "${statuses[$i]}" -ne 0 ]; then
+      return "${statuses[$i]}"
+    fi
+  done
+  return 0
+}
+
+{
+  pretest_phases &&
   yarn test &&
   {
     # The website's rolldown-vite build carries three upstream races that open
