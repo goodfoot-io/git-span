@@ -14,7 +14,7 @@
 //!   always (its `ContextFormat` has only a `Json` variant);
 //!   `merge-driver` always (git's own protocol).
 //! * `stdout_is_tty` — false when stdout is not a terminal (extension,
-//!   mini-swe-agent, scripts, git-hook invocations); the fail-closed
+//!   scripts, git-hook invocations); the fail-closed
 //!   backstop for anything the typed match misses.
 //! * `internal` — hidden/internal subcommands (`__context-service`,
 //!   `__update-check`, `merge-driver`) never engage or remind, so the

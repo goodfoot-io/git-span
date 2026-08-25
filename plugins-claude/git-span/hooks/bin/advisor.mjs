@@ -1557,12 +1557,6 @@ function mergeUniquePaths(...groups) {
   }
   return merged;
 }
-var GIT_SPAN_SKILL_REF = "git-span";
-var SKILL_REF_TOKEN_START = "{{skill-ref:";
-var SKILL_REF_TOKEN_END = "}}";
-function skillRefToken(ref) {
-  return `${SKILL_REF_TOKEN_START}${ref}${SKILL_REF_TOKEN_END}`;
-}
 async function evaluateAdvisor(paths, cwd, executors, memoState, mode = "may-hold", churn, harness = "generic", deadlineMs = EVALUATION_DEADLINE_MS, logger2) {
   if (paths.length === 0) return { decision: "allow", kind: "silent" };
   const controller = new AbortController();
@@ -1965,7 +1959,7 @@ function renderDriftReason(findings, blocksText, mode = "may-hold", harness = "g
   const subject = names.length === 1 ? "an implicit dependency" : "implicit dependencies";
   const name = names.length === 1 ? names[0] : "<name>";
   const action = `preserve anchor shape; if an address changed, swap the old anchor for the new one with \`git span replace\`; update or retire the why only if its meaning changed; require \`git span drift ${name}\` to report zero`;
-  const inline = harness === "generic" || harness === "mswea";
+  const inline = harness === "generic";
   const lead = inline ? "Bring the coupled files back into agreement (follow confirmed authority)" : harness === "claude" ? "Dispatch a forked subagent to bring the coupled files back into agreement (follow confirmed authority)" : harness === "codex" ? 'Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to bring the coupled files back into agreement (follow confirmed authority)' : "Dispatch a subagent with the `task` tool to bring the coupled files back into agreement (follow confirmed authority)";
   const skillLine = harness === "opencode" ? "Load the `reconcile` skill via the skill tool in the subagent." : "Load the `git-span:reconcile` skill in the fork.";
   const tail = inline ? mode === "may-hold" ? `then reconcile: ${action}. Retry the command; the hold will not fire again for the same debt state. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.` : `then reconcile: ${action}. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.` : mode === "may-hold" ? `\u2014 ${action}. Then retry. ${skillLine} The hold will not fire again for the same debt state. Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.` : `\u2014 ${action}. ${skillLine} Conform a side only when confirmed authority or a satisfied gate decides it; report ambiguity or an obsolete dependency.`;
@@ -2128,7 +2122,7 @@ function renderRelatedSpansSection(covering, uncovered, coveringBlocksText) {
 function renderUncoveredReason(uncovered, covering, coveringBlocksText, mode = "may-hold", harness = "generic") {
   const lines = uncovered.map((path) => `- ${path}`);
   const subject = uncovered.length === 1 ? "this file carries" : "these files carry";
-  const inline = harness === "generic" || harness === "mswea";
+  const inline = harness === "generic";
   const actionLine = inline ? `Determine if ${subject} implicit dependencies, then use \`git span\` to document them:` : harness === "claude" ? `Dispatch a forked subagent to determine if ${subject} implicit dependencies and to then use \`git span\` to document them:` : harness === "codex" ? `Spawn a forked subagent with \`spawn_agent\`, setting \`fork_turns: "all"\`, to determine if ${subject} implicit dependencies and to then use \`git span\` to document them:` : `Dispatch a subagent with the \`task\` tool to determine if ${subject} implicit dependencies and to then use \`git span\` to document them:`;
   const body = [
     "<git-span>",
@@ -2144,10 +2138,6 @@ function renderUncoveredReason(uncovered, covering, coveringBlocksText, mode = "
   body.push(...renderRelatedSpansSection(covering, uncovered, coveringBlocksText));
   if (mode === "may-hold") {
     body.push("", "If none exist, retry the command to proceed (one-time check).");
-  }
-  if (harness === "mswea") {
-    body.push("", skillRefToken(GIT_SPAN_SKILL_REF), "</git-span>");
-    return { reason: body.join("\n"), skillRef: GIT_SPAN_SKILL_REF };
   }
   body.push(
     "",
@@ -7912,7 +7902,7 @@ disableUpdateCheck();
 var static_plan_default = preToolUseHook({ matcher: "Bash", timeout: 1e4 }, createHandler());
 
 // src/claude/advisor.ts
-function createHandler2(git = createDefaultGitExecutor(), executors = createDefaultAdvisorExecutors(), memoFactory = createDiskAdvisorMemoState, harness = "claude") {
+function createHandler2(git = createDefaultGitExecutor(), executors = createDefaultAdvisorExecutors(), memoFactory = createDiskAdvisorMemoState) {
   return async (input, ctx) => {
     try {
       const command = narrowCommand(input.tool_input);
@@ -7936,7 +7926,7 @@ function createHandler2(git = createDefaultGitExecutor(), executors = createDefa
           // the agent-facing output of a suppression is nothing at all.
           logger: ctx.logger
         },
-        harness,
+        "claude",
         void 0,
         // Core defects (non-advisor-error throws) warn here instead of vanishing
         // into evaluateAdvisor's fail-open catch.
@@ -7946,8 +7936,7 @@ function createHandler2(git = createDefaultGitExecutor(), executors = createDefa
         return preToolUseOutput({
           hookSpecificOutput: {
             permissionDecision: "deny",
-            permissionDecisionReason: result.reason,
-            ...result.skillRef ? { skillRef: result.skillRef } : {}
+            permissionDecisionReason: result.reason
           },
           systemMessage: result.reason
         });
@@ -7958,8 +7947,7 @@ function createHandler2(git = createDefaultGitExecutor(), executors = createDefa
       }
       if (result.kind === "semantic-drift-report" || result.kind === "uncovered-writes-report") {
         return preToolUseOutput({
-          systemMessage: result.reason,
-          ...result.skillRef ? { hookSpecificOutput: { skillRef: result.skillRef } } : {}
+          systemMessage: result.reason
         });
       }
       return null;

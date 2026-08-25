@@ -1,4 +1,0 @@
-knip.config.json#L13-L16 rk64:062fad074d7dd8c2
-packages/mini-swe-agent/package.json#L6-L13 rk64:85096ecdcfb55e1d
-
-The package imports nothing from agent-hooks at runtime — its TypeScript sources only feed build:hooks:mswea — and invokes uv only in non-runtime scripts (lint/test and the build:wheel packaging step), so the per-package knip overrides declare them non-runtime; a change to the package's scripts or devDependencies must revisit these ignore entries.

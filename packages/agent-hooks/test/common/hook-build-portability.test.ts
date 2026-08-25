@@ -89,8 +89,7 @@ const REMOVED_SOURCE_PATHS = [
   'packages/agent-hooks/src/claude/activity-log.ts',
   'packages/agent-hooks/src/codex/snapshot.ts',
   'packages/agent-hooks/src/codex/activity-log.ts',
-  'packages/agent-hooks/src/codex/subagent-stop.ts',
-  'packages/agent-hooks/src/mswea/snapshot.ts'
+  'packages/agent-hooks/src/codex/subagent-stop.ts'
 ] as const;
 
 const LEGACY_RUNTIME_MARKERS = [
@@ -284,34 +283,6 @@ describe('generated hook bin portability', () => {
       ] as const) {
         expect(groupFor(out, event, bundle)?.hooks[0]?.timeout, `${event} ${bundle} timeout`).toBe(10);
       }
-    } finally {
-      rmSync(outDir, { recursive: true, force: true });
-    }
-  });
-
-  it('builds mini-swe with the inherited static planner and no snapshot entrypoint', {
-    timeout: BUILD_TEST_TIMEOUT_MS
-  }, () => {
-    const outDir = mkdtempSync(join(tmpdir(), 'agent-hooks-build-mswea-matchers-'));
-    try {
-      execFileSync(
-        'yarn',
-        [
-          'claude-code-hooks',
-          '-i',
-          'src/mswea/{advisor,static-plan,post-tool-use,post-tool-use-failure,session-end}.ts',
-          '-o',
-          join(outDir, 'hooks.json')
-        ],
-        { stdio: 'pipe' }
-      );
-      const out = readHooksJson(outDir);
-      expect(groupFor(out, 'PreToolUse', 'static-plan.mjs')?.matcher).toBe('Bash');
-      // main-359: same wrapper conversion as the claude plugin emit.
-      expect(groupFor(out, 'PreToolUse', 'advisor.mjs')?.hooks[0]?.timeout).toBe(10);
-      expect(groupFor(out, 'PostToolUse', 'post-tool-use.mjs')?.matcher).toBe('Read|Edit|Write|Bash');
-      expect(groupFor(out, 'PostToolUseFailure', 'post-tool-use-failure.mjs')?.matcher).toBe('Bash');
-      expect(groupFor(out, 'PreToolUse', 'snapshot.mjs')).toBeNull();
     } finally {
       rmSync(outDir, { recursive: true, force: true });
     }

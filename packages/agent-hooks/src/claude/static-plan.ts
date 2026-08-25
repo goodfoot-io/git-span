@@ -5,7 +5,7 @@ import { DEFAULT_SESSION_LAYOUT, type SessionLayout } from '../common/agent-hook
 import { createDefaultPlannedTouchStore, planBashTouches } from '../common/bash-attribution.js';
 import { disableUpdateCheck } from '../common/update-check-env.js';
 
-/** Narrow the Claude/mini-swe Bash input to a non-empty command string. */
+/** Narrow the Claude Bash input to a non-empty command string. */
 export function narrowCommand(toolInput: unknown): string | null {
   if (toolInput !== null && typeof toolInput === 'object' && 'command' in toolInput) {
     const command = (toolInput as { command: unknown }).command;

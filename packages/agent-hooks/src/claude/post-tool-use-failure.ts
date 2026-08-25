@@ -1,4 +1,4 @@
-/** Claude/mini-swe failed Bash events routed through the static touch driver. */
+/** Claude failed Bash events routed through the static touch driver. */
 
 import {
   type HookContext,

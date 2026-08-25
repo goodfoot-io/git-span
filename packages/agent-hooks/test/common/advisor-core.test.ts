@@ -28,11 +28,9 @@ import {
   buildHunkReadArgs,
   commitStagesAll,
   evaluateAdvisor,
-  GIT_SPAN_SKILL_REF,
   type GitExecutor,
   parseGitCommand,
-  resolveChangeset,
-  skillRefToken
+  resolveChangeset
 } from '../../src/common/advisor-core.js';
 import type { DriftPorcelainRow, PorcelainRow } from '../../src/common/agent-hooks-common.js';
 import type { FileDiff } from '../../src/common/mechanical-change.js';
@@ -2115,78 +2113,6 @@ describe('advisor-core (Phase 3.2 — skipped acceptance checks)', () => {
         expect(result.reason).toContain('Load the `git-span:git-span` skill for guidance.');
         expect(result.reason).not.toContain('forked subagent');
       }
-    });
-
-    it("an uncovered-writes hold with harness 'mswea' renders the skill-ref placeholder and the structured ref", async () => {
-      // main-332: the mswea closing guidance is the machine-readable
-      // placeholder plus result.skillRef — never a Claude Code skill name.
-      const executors = createFakeAdvisorExecutors({
-        list: async (): Promise<PorcelainRow[]> => [],
-        drift: async (): Promise<DriftPorcelainRow[]> => []
-      });
-
-      const result = await evaluateAdvisor(
-        ['src/uncovered.ts', 'src/other.ts'],
-        REPO_ROOT,
-        executors,
-        createMemoryAdvisorMemoState(),
-        'may-hold',
-        undefined,
-        'mswea'
-      );
-
-      expect(result.decision).toBe('hold');
-      if (result.kind !== 'uncovered-writes') throw new Error('unreachable');
-      expect(result.skillRef).toBe(GIT_SPAN_SKILL_REF);
-      expect(result.reason).toContain(`\n${skillRefToken(GIT_SPAN_SKILL_REF)}\n</git-span>`);
-      expect(result.reason).not.toContain('Load the');
-      expect(result.reason).toContain(
-        'Determine if these files carry implicit dependencies, then use `git span` to document them:'
-      );
-    });
-
-    it("a report-only uncovered preview with harness 'mswea' carries the placeholder and ref too", async () => {
-      const memo = createMemoryAdvisorMemoState();
-      const executors = createFakeAdvisorExecutors({
-        list: async (): Promise<PorcelainRow[]> => [],
-        drift: async (): Promise<DriftPorcelainRow[]> => []
-      });
-
-      const result = await evaluateAdvisor(
-        ['src/uncovered.ts', 'src/other.ts'],
-        REPO_ROOT,
-        executors,
-        memo,
-        'report-only',
-        undefined,
-        'mswea'
-      );
-
-      expect(result.decision).toBe('allow');
-      if (result.kind !== 'uncovered-writes-report') throw new Error('unreachable');
-      expect(result.skillRef).toBe(GIT_SPAN_SKILL_REF);
-      expect(result.reason).toContain(skillRefToken(GIT_SPAN_SKILL_REF));
-      expect(result.reason).not.toContain('Load the');
-    });
-
-    it("a semantic-drift hold with harness 'mswea' stays inline and names no skill at all", async () => {
-      // Drift closings under the inline harnesses never carried a skill
-      // sentence; mswea must not introduce one (no token, no prose).
-      const memo = createMemoryAdvisorMemoState();
-      const executors = createFakeAdvisorExecutors({
-        list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
-        drift: async (): Promise<DriftPorcelainRow[]> => [driftRow({ status: 'CHANGED' })]
-      });
-
-      const result = await evaluateAdvisor(['src/app.ts'], REPO_ROOT, executors, memo, 'may-hold', undefined, 'mswea');
-
-      expect(result.decision).toBe('hold');
-      if (result.kind !== 'semantic-drift') throw new Error('unreachable');
-      expect(result.skillRef).toBeUndefined();
-      expect(result.reason).not.toContain(skillRefToken(GIT_SPAN_SKILL_REF));
-      expect(result.reason).not.toContain('Load the');
-      expect(result.reason).toContain('Bring the coupled files back into agreement (follow confirmed authority)');
-      expect(result.reason).toContain('then reconcile:');
     });
 
     it('identical report-only retries stay silent under every harness', async () => {

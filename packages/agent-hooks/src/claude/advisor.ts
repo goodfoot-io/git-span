@@ -30,7 +30,6 @@
 import { type HookContext, type PreToolUseInput, preToolUseHook, preToolUseOutput } from '@goodfoot/claude-code-hooks';
 import {
   type AdvisorExecutors,
-  type AdvisorHarness,
   type AdvisorMemoState,
   commitStagesAll,
   createDefaultAdvisorExecutors,
@@ -47,12 +46,7 @@ import { narrowCommand } from './static-plan.js';
 export function createHandler(
   git: GitExecutor = createDefaultGitExecutor(),
   executors: AdvisorExecutors = createDefaultAdvisorExecutors(),
-  memoFactory: (cwd: string) => AdvisorMemoState = createDiskAdvisorMemoState,
-  // Which harness the closing instruction is written for; the mswea adapter
-  // passes `'generic'` (inline instruction) because its agent has only the
-  // bash tool — the forked-subagent tasking of `'claude'` would be dead
-  // guidance there. Claude Code itself keeps the default.
-  harness: AdvisorHarness = 'claude'
+  memoFactory: (cwd: string) => AdvisorMemoState = createDiskAdvisorMemoState
 ) {
   return async (input: PreToolUseInput, ctx: HookContext) => {
     try {
@@ -67,11 +61,6 @@ export function createHandler(
       const changeset = await resolveChangeset(parsed.kind, all, cwd, git, parsed.paths);
 
       const mode = parsed.kind === 'status' ? 'report-only' : 'may-hold';
-      // `'claude'` makes the closing instruction name Claude's forked-subagent
-      // vocabulary (`Agent` with `subagent_type: "fork"`); `'generic'` would
-      // keep the pre-harness inline-instruction prose. `createHandler` takes
-      // the harness as a parameter so the mswea adapter can select `'generic'`
-      // without this adapter branching on anything at runtime.
       const result = await evaluateAdvisor(
         changeset.paths,
         cwd,
@@ -85,7 +74,7 @@ export function createHandler(
           // the agent-facing output of a suppression is nothing at all.
           logger: ctx.logger
         },
-        harness,
+        'claude',
         undefined,
         // Core defects (non-advisor-error throws) warn here instead of vanishing
         // into evaluateAdvisor's fail-open catch.
@@ -97,15 +86,11 @@ export function createHandler(
         // Single model channel (main-341): the reason reaches model context
         // only as `permissionDecisionReason`; the identical `systemMessage`
         // string is the user-facing mirror of that copy — a warning banner on
-        // the transcript, never a second context payload. When core rendered
-        // the closing skill guidance as a machine placeholder (`'mswea'`
-        // harness), the result's `skillRef` travels alongside so the
-        // mini-agent bridge can gate its substitution on the structured field.
+        // the transcript, never a second context payload.
         return preToolUseOutput({
           hookSpecificOutput: {
             permissionDecision: 'deny',
-            permissionDecisionReason: result.reason,
-            ...(result.skillRef ? { skillRef: result.skillRef } : {})
+            permissionDecisionReason: result.reason
           },
           systemMessage: result.reason
         });
@@ -119,13 +104,9 @@ export function createHandler(
       }
       // `status`-only advisory kinds: span debt exists, but a status check
       // never holds the command — surface it as information, not a warning.
-      // The placeholder protocol's `skillRef` rides inside
-      // `hookSpecificOutput` even on this systemMessage-only shape, keeping
-      // one location for the field across every payload that carries it.
       if (result.kind === 'semantic-drift-report' || result.kind === 'uncovered-writes-report') {
         return preToolUseOutput({
-          systemMessage: result.reason,
-          ...(result.skillRef ? { hookSpecificOutput: { skillRef: result.skillRef } } : {})
+          systemMessage: result.reason
         });
       }
       return null;

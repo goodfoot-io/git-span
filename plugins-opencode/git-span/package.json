@@ -1,6 +1,6 @@
 {
   "name": "opencode-git-span",
-  "version": "1.1.17",
+  "version": "1.1.18",
   "description": "In-session git-span for OpenCode: silent span-drift healing behind shell/read/edit/write/patch calls, a hold-once git commit/push advisor, and an installer for the git-span skills and expert agent.",
   "license": "MIT",
   "type": "module",

@@ -1,6 +1,6 @@
 {
   "name": "git-span-darwin-arm64",
-  "version": "1.1.17",
+  "version": "1.1.18",
   "description": "Platform-specific binary for git-span",
   "license": "MIT",
   "os": [

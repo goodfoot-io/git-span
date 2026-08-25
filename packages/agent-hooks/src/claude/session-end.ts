@@ -5,7 +5,7 @@ import { cleanupSessionState, DEFAULT_SESSION_LAYOUT, type SessionLayout } from 
 import { disableUpdateCheck } from '../common/update-check-env.js';
 
 /**
- * Exported so mini-swe registers the same lifecycle and tests can inject a
+ * Exported so tests can inject a
  * scratch layout instead of binding the production base at module load.
  */
 export const createHandler =

@@ -87,8 +87,7 @@ for rel in \
   packages/website/package.json \
   packages/agent-hooks/package.json \
   packages/git-span-core/package.json \
-  packages/discover/package.json \
-  packages/mini-swe-agent/package.json; do
+  packages/discover/package.json; do
   pkg_json="$REPO_ROOT/$rel"
   if [ -f "$pkg_json" ]; then
     current=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$pkg_json','utf8')).version)")
@@ -106,30 +105,6 @@ for rel in \
     fi
   fi
 done
-
-# Update the mini-swe-agent Python package's __version__ so the wheel built
-# from it (pyproject.toml reads the attribute as its dynamic version) tracks
-# the release version like every other package. The yarn wrapper above and the
-# attribute must stay equal; the wheel's filename carries the attribute's
-# value.
-py_init="$REPO_ROOT/packages/mini-swe-agent/src/minisweagent_gitspan/__init__.py"
-if [ -f "$py_init" ]; then
-  current=$(awk '/^__version__[[:space:]]*=/ { gsub(/[";]/, "", $3); print $3; exit }' "$py_init")
-  if [ -n "$current" ] && [ "$current" != "$VERSION" ]; then
-    awk -v ver="$VERSION" '
-      /^__version__[[:space:]]*=/ {
-        print "__version__ = \"" ver "\""
-        replaced = 1
-        next
-      }
-      { print }
-    ' "$py_init" > "$py_init.tmp" && mv "$py_init.tmp" "$py_init"
-    echo "Updated: $py_init ($current -> $VERSION)"
-    updated=$((updated + 1))
-  else
-    echo "OK:      $py_init (already $VERSION)"
-  fi
-fi
 
 # Update packages/git-span/Cargo.toml so the compiled binary's --version matches.
 cargo_toml="$REPO_ROOT/packages/git-span/Cargo.toml"
@@ -247,6 +222,30 @@ if [ -f "$market_json" ]; then
     updated=$((updated + 1))
   else
     echo "OK:      $market_json (already $VERSION)"
+  fi
+fi
+
+# Update the versioned install-verification example in the website's
+# getting-started guide so the printed `git-span <version>` output tracks the
+# release version like every other published artifact. The website-cli-version
+# span (.span/release) couples this example to packages/git-span/package.json;
+# a bump that skips it leaves the docs asserting an unreleased version.
+docs_example="$REPO_ROOT/packages/website/content/docs/getting-started.mdx"
+if [ -f "$docs_example" ]; then
+  docs_version=$(grep -E '^git-span [0-9]+\.[0-9]+\.[0-9]+$' "$docs_example" | head -1 | awk '{print $2}')
+  if [ -n "$docs_version" ] && [ "$docs_version" != "$VERSION" ]; then
+    awk -v ver="$VERSION" '
+      /^git-span [0-9]+\.[0-9]+\.[0-9]+$/ {
+        print "git-span " ver
+        replaced = 1
+        next
+      }
+      { print }
+    ' "$docs_example" > "$docs_example.tmp" && mv "$docs_example.tmp" "$docs_example"
+    echo "Updated: $docs_example ($docs_version -> $VERSION)"
+    updated=$((updated + 1))
+  else
+    echo "OK:      $docs_example (already $VERSION)"
   fi
 fi
 

@@ -788,20 +788,12 @@ export interface AdvisorMemoState {
 export type ScanFailureCause = 'aborted' | 'incompatible-cli' | 'deadline-exceeded';
 
 /**
- * A reason payload a renderer produced, plus the structured skill ref the
- * adapter must surface alongside it. `skillRef` is set exactly when `reason`
- * embeds the machine {@link skillRefToken} placeholder — the two travel
- * together so the consuming bridge can gate its substitution on the
- * structured field (fail-closed: no field, no rewriting).
+ * A reason payload a renderer produced. Adapters surface `reason` through
+ * their own message channel verbatim.
  */
 export interface RenderedReason {
   /** The rendered report text, ready for the harness's reason channel. */
   reason: string;
-  /**
-   * The logical skill {@link reason}'s placeholder stands in for, when the
-   * selected harness renders guidance as a placeholder (`'mswea'` only).
-   */
-  skillRef?: AdvisorSkillRef;
 }
 
 export type AdvisorResult =
@@ -814,28 +806,24 @@ export type AdvisorResult =
       kind: 'semantic-drift-report';
       findings: DriftPorcelainRow[];
       reason: string;
-      skillRef?: AdvisorSkillRef;
     }
   | {
       decision: 'allow';
       kind: 'uncovered-writes-report';
       uncovered: string[];
       reason: string;
-      skillRef?: AdvisorSkillRef;
     }
   | {
       decision: 'hold';
       kind: 'semantic-drift';
       findings: DriftPorcelainRow[];
       reason: string;
-      skillRef?: AdvisorSkillRef;
     }
   | {
       decision: 'hold';
       kind: 'uncovered-writes';
       uncovered: string[];
       reason: string;
-      skillRef?: AdvisorSkillRef;
     };
 
 /**
@@ -866,54 +854,8 @@ export type AdvisorMode = 'may-hold' | 'report-only';
  * directory name through its skill tool, where Claude/Codex use the
  * `git-span:<skill>` namespaced form. Environmental and scan-failed messages
  * do not read this value.
- *
- * `'mswea'` keeps the inline action prose of `'generic'` — mini-swe-agent's
- * loop is a single bash tool, so the work must be carried out inline — but
- * replaces the closing skill-loading sentence with the machine-readable
- * {@link skillRefToken} placeholder plus a structured
- * `hookSpecificOutput.skillRef` field (see {@link AdvisorSkillRef}): the
- * mini-agent bridge substitutes both with its own environment-appropriate
- * instruction, so no Claude Code skill name ever reaches that model. No other
- * harness emits the token, and no prose matching exists anywhere downstream.
  */
-export type AdvisorHarness = 'claude' | 'codex' | 'opencode' | 'generic' | 'mswea';
-
-/**
- * A logical skill a piece of advisor guidance points at. This is the hooks'
- * side of the skill-guidance protocol: renderers embed only this name — never
- * host-specific loading prose — when the consuming bridge is expected to
- * substitute its own instruction (see {@link AdvisorHarness}, `'mswea'`).
- */
-export type AdvisorSkillRef = 'git-span';
-
-/**
- * The one skill ref the `'mswea'` harness emits guidance for.
- */
-export const GIT_SPAN_SKILL_REF: AdvisorSkillRef = 'git-span';
-
-/**
- * Stable literal opening every {@link skillRefToken} placeholder. Exported so
- * consumers (and cross-language parity tests) can pin the exact wire format
- * instead of guessing at prose.
- */
-export const SKILL_REF_TOKEN_START = '{{skill-ref:';
-
-/** Stable literal closing every {@link skillRefToken} placeholder. */
-export const SKILL_REF_TOKEN_END = '}}';
-
-/**
- * The machine-readable placeholder a renderer emits where a skill-loading
- * sentence would otherwise go. The token always occupies a whole line inside
- * the `<git-span>` block; the mini-agent bridge replaces that line with its
- * environment-appropriate instruction whenever the payload also carries the
- * structured `hookSpecificOutput.skillRef` field naming the same protocol,
- * and drops the line when it cannot resolve the ref. Because the placeholder
- * is a stable protocol marker — not English prose — an advisor copy edit can
- * no longer silently break the substitution.
- */
-export function skillRefToken(ref: AdvisorSkillRef): string {
-  return `${SKILL_REF_TOKEN_START}${ref}${SKILL_REF_TOKEN_END}`;
-}
+export type AdvisorHarness = 'claude' | 'codex' | 'opencode' | 'generic';
 
 /**
  * Evaluate the advisor for a resolved changeset: report the span debt the
@@ -1010,13 +952,11 @@ export function skillRefToken(ref: AdvisorSkillRef): string {
  *   wire it" degrades to today's behavior rather than to silence.
  * @param harness The harness the closing instruction is written for (see
  *   {@link AdvisorHarness}); `'generic'` (default) produces the pre-harness
- *   prose unchanged, and `'mswea'` renders the closing skill guidance as the
- *   machine-readable {@link skillRefToken} placeholder plus a structured
- *   `skillRef` on the result. The Claude and Codex adapters pass their own
+ *   prose unchanged. The Claude, Codex, and OpenCode adapters pass their own
  *   values; a third-party adapter passing nothing degrades to today's behavior.
  * @param deadlineMs The evaluation's overall wall-clock budget in ms —
  *   {@link EVALUATION_DEADLINE_MS} (8s) by default, chosen under every
- *   adapter's registered hook window (Claude/Codex/mswea register 10s).
+ *   adapter's registered hook window (Claude/Codex register 10s).
  *   Per-spawn timeouts do not bound the pipeline they compose — evaluation is
  *   strictly sequential (fix → drift → list → listBlocks → changedHunks plus a
  *   per-file fallback), so a slow or hung child can otherwise spend minutes
@@ -1847,11 +1787,9 @@ function annotateBlocks(blocksText: string, rows: DriftPorcelainRow[]): string {
  * a `status` advisory) renders into `reason`. The closing sentence drops "—
  * then retry" in `'report-only'` mode: a `status` check never held anything, so
  * there is nothing to retry. The `harness` selects who the closing directs to
- * do the work: inline (`'generic'`, unchanged; `'mswea'`), or a forked
- * subagent (`'claude'`/`'codex'`/`'opencode'`). The inline closings name no
- * skill at all — the reconcile workflow is spelled out by the action sentence —
- * so this renderer never emits a {@link skillRefToken} placeholder and its
- * results carry no `skillRef`.
+ * do the work: inline (`'generic'`, unchanged), or a forked subagent
+ * (`'claude'`/`'codex'`/`'opencode'`). The inline closings name no skill at all
+ * — the reconcile workflow is spelled out by the action sentence.
  */
 function renderDriftReason(
   findings: DriftPorcelainRow[],
@@ -1864,15 +1802,14 @@ function renderDriftReason(
   const name = names.length === 1 ? names[0] : '<name>';
   const action = `preserve anchor shape; if an address changed, swap the old anchor for the new one with \`git span replace\`; update or retire the why only if its meaning changed; require \`git span drift ${name}\` to report zero`;
   // Who the closing directs to do the work: inline by default (`'generic'`, the
-  // pre-harness prose, unchanged) and for `'mswea'` (whose single-bash-tool
-  // agent must act inline); a forked subagent for `'claude'` (Claude's
+  // pre-harness prose, unchanged); a forked subagent for `'claude'` (Claude's
   // `Agent` tool with `subagent_type: "fork"`), `'codex'` (`spawn_agent`
   // with `fork_turns: "all"`), and `'opencode'` (the Task tool with
   // `subagent_type`), since the reconcile task is self-contained and
   // benefits from isolation while the parent session continues. The mode still
   // controls the retry framing: a `'report-only'` status check never held
   // anything, so there is nothing to retry.
-  const inline = harness === 'generic' || harness === 'mswea';
+  const inline = harness === 'generic';
   const lead = inline
     ? 'Bring the coupled files back into agreement (follow confirmed authority)'
     : harness === 'claude'
@@ -2213,13 +2150,8 @@ function renderRelatedSpansSection(
  * spans section (via {@link renderRelatedSpansSection}): it's supplementary
  * context about the changeset, not itself part of what's flagged or
  * consider-once'd. The `harness` selects who the action line directs to do the
- * work: inline (`'generic'`, unchanged; `'mswea'`), or a forked subagent
- * (`'claude'`/`'codex'`/`'opencode'`). Under `'mswea'` the closing skill-
- * loading sentence becomes a machine-readable {@link skillRefToken} placeholder
- * line and the result carries its {@link AdvisorSkillRef}: the mini-agent
- * bridge — the only consumer of `'mswea'` bundles — substitutes both with the
- * environment-appropriate instruction, so no Claude Code skill name ever
- * reaches that model and an advisor copy edit cannot break the substitution.
+ * work: inline (`'generic'`, unchanged), or a forked subagent
+ * (`'claude'`/`'codex'`/`'opencode'`).
  */
 function renderUncoveredReason(
   uncovered: string[],
@@ -2230,7 +2162,7 @@ function renderUncoveredReason(
 ): RenderedReason {
   const lines = uncovered.map((path) => `- ${path}`);
   const subject = uncovered.length === 1 ? 'this file carries' : 'these files carry';
-  const inline = harness === 'generic' || harness === 'mswea';
+  const inline = harness === 'generic';
   const actionLine = inline
     ? `Determine if ${subject} implicit dependencies, then use \`git span\` to document them:`
     : harness === 'claude'
@@ -2252,13 +2184,6 @@ function renderUncoveredReason(
   body.push(...renderRelatedSpansSection(covering, uncovered, coveringBlocksText));
   if (mode === 'may-hold') {
     body.push('', 'If none exist, retry the command to proceed (one-time check).');
-  }
-  // The closing guidance is host-specific prose for every harness except
-  // `'mswea'`: there it is the protocol placeholder line, whose substitution
-  // (and only whose) the bridge owns.
-  if (harness === 'mswea') {
-    body.push('', skillRefToken(GIT_SPAN_SKILL_REF), '</git-span>');
-    return { reason: body.join('\n'), skillRef: GIT_SPAN_SKILL_REF };
   }
   body.push(
     '',
@@ -2291,7 +2216,7 @@ const DEFAULT_TIMEOUT_MS = 10_000;
  * Per-spawn timeouts do not bound the pipeline they compose: evaluation is
  * strictly sequential (fix → drift → list → listBlocks → changedHunks plus the
  * per-file fallback), so N slow children cost N × {@link DEFAULT_TIMEOUT_MS}
- * against a parent hook window of 10s (the Claude/Codex/mswea adapters'
+ * against a parent hook window of 10s (the Claude/Codex adapters'
  * registered `timeout: 10_000`), after which the harness kills the hook —
  * commits stall the full window and even the scan-failed advisory is lost.
  * 8s keeps the answer inside that window with headroom for process boot,

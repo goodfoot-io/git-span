@@ -1,6 +1,6 @@
 /**
- * Authoritative static-intent pipeline shared by the Claude, Codex, and
- * mini-swe-agent Bash adapters.
+ * Authoritative static-intent pipeline shared by the Claude and Codex Bash
+ * adapters.
  *
  * PreToolUse records only the tracked ranges whose precision or eligibility
  * depends on pre-command state. PostToolUse consumes that record, reparses the

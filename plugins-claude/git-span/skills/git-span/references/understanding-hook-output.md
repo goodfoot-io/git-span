@@ -340,7 +340,7 @@ verification evidence; it never contains a file body or repository tree.
 `PostToolUse` atomically consumes the record once, verifies the evidence,
 reparses ordinary operations, and applies shell join and post-state gates before
 touching a span. Success, failure, interruption, and duplicate delivery cannot
-reuse a plan. `SessionEnd` on Claude/mini-swe and `Stop` on Codex eagerly
+reuse a plan. `SessionEnd` on Claude and `Stop` on Codex eagerly
 retire the session memo and plans; opportunistic 30-day cleanup covers crashed
 sessions.
 
