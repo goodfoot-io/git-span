@@ -1679,6 +1679,17 @@ pub(crate) fn untracked_worktree_files(repo: &gix::Repository) -> Result<Vec<std
         .collect())
 }
 
+/// gix's `at_entry` rejects any path carrying a `.` component, but a leading
+/// `./` on a repo-relative path is an identity prefix (span anchors keep it
+/// verbatim so option-like names such as `./-f.txt` stay shell-safe). Strip
+/// `CurDir` components only; `..` components and absolute paths pass through
+/// untouched so gix keeps failing closed on genuinely unsafe paths.
+fn strip_curdir(path: &Path) -> std::path::PathBuf {
+    path.components()
+        .filter(|c| !matches!(c, std::path::Component::CurDir))
+        .collect()
+}
+
 /// Resolve a single `.gitattributes` attribute for `rel_path` relative to
 /// the repo's worktree root. Returns:
 ///
@@ -1705,7 +1716,7 @@ pub fn attr_for(
         .map_err(|e| Error::Git(format!("attribute stack: {e}")))?;
     let mut outcome = stack.selected_attribute_matches([name]);
     let platform = stack
-        .at_entry(rel_path, None)
+        .at_entry(strip_curdir(rel_path), None)
         .map_err(|e| Error::Git(format!("attr at_entry `{}`: {e}", rel_path.display())))?;
     if !platform.matching_attributes(&mut outcome) {
         return Ok(None);
@@ -1739,7 +1750,7 @@ pub fn path_is_ignored(repo: &gix::Repository, rel_path: &Path) -> Result<bool> 
         )
         .map_err(|e| Error::Git(format!("exclude stack: {e}")))?;
     let platform = stack
-        .at_entry(rel_path, None)
+        .at_entry(strip_curdir(rel_path), None)
         .map_err(|e| Error::Git(format!("exclude at_entry `{}`: {e}", rel_path.display())))?;
     Ok(platform.is_excluded())
 }
