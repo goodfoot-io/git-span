@@ -1734,16 +1734,22 @@ fn strict_tombstone_and_definition_capture() -> Result<()> {
 
 fn wait_for_checkpoint(path: &std::path::Path, previous: Option<&str>) -> Result<String> {
     // The ready-poll deadline must stay comfortably below the child side's
-    // release-wait budget (60s in `context_test_checkpoint`): the child
+    // release-wait budget (180s in `context_test_checkpoint`): the child
     // starts burning its budget the moment it writes `ready`, and this
     // thread's wall-clock polling can be starved by the rest of the suite,
     // so the poll must never be the binding constraint under parallel load.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while std::time::Instant::now() < deadline {
+    // 120s absorbs a fully saturated test phase (30s was observed to expire
+    // there), and one final read after the deadline catches a ready file
+    // written while this thread was descheduled.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    loop {
         if let Ok(token) = std::fs::read_to_string(path)
             && previous != Some(token.as_str())
         {
             return Ok(token);
+        }
+        if std::time::Instant::now() >= deadline {
+            break;
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
