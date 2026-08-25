@@ -5,9 +5,8 @@
 //
 // This decodes the legacy catalog blobs DIRECTLY in JS with rkyv-js, so it
 // does NOT depend on the old `git span` binary being installed on the three
-// testing installations. Because rkyv-js ships TypeScript sources and is not
-// on npm, this file is not run directly on the targets — build the
-// self-contained bundle first:
+// testing installations. The targets only get Node + git, so build the
+// self-contained bundle first rather than running this .mjs there:
 //
 //   yarn build:migration
 //   node scripts/dist/span-ref-to-tracked-file.cjs --dry-run

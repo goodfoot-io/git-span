@@ -1,13 +1,12 @@
 #!/usr/bin/env node
 
-// Resolution gate for the rkyv-js dependency (card main-386). The pinned
-// GitHub snapshot declares package exports pointing at a dist/ directory its
-// snapshot never builds, which once forced a repo-local esbuild alias plus a
-// TypeScript paths mapping in every consumer. The manifest is patched to
-// point at the shipped src/, and this gate proves standard resolution keeps
-// working: Node resolves every declared export target to an existing file,
-// tsc binds the bare specifier in a consumer program with zero paths entries,
-// and none of the old workarounds creep back into the repo.
+// Resolution gate for the rkyv-js dependency (card main-386, npm channel per
+// card main-386-1). The old GitHub-snapshot pin once forced a repo-local
+// esbuild alias plus a TypeScript paths mapping in every consumer; it now
+// resolves from npm through its own manifest, and this gate proves standard
+// resolution keeps working: Node resolves every declared export target to an
+// existing file, tsc binds the bare specifier in a consumer program with zero
+// paths entries, and none of the old workarounds creep back into the repo.
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';

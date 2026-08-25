@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
 // Bundle scripts/span-ref-to-tracked-file.mjs into a single self-contained
-// CommonJS file. rkyv-js is not published to npm; a Yarn patch points its
-// manifest entrypoints at the TypeScript sources it ships (card main-386),
-// so the bare specifier resolves normally and esbuild compiles those sources
-// while inlining them. The resulting bundle runs on the three testing
-// installations with only Node + git, no node_modules.
+// CommonJS file. rkyv-js resolves from npm through its own published manifest
+// (card main-386-1; the manifest-patch workaround for the old GitHub snapshot
+// is retired), and esbuild inlines the package's compiled dist/ output. The
+// resulting bundle runs on the three testing installations with only Node +
+// git, no node_modules.
 //
 //   node scripts/build-migration.mjs            # build only
 //   node scripts/build-migration.mjs --run ...  # build, then run with args

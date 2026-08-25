@@ -39,10 +39,19 @@ function fail(message) {
 if (!existsSync(bundle)) {
   fail(`migration bundle not found at ${bundle}; run "yarn build:migration" first`);
 }
-for (const source of ['span-ref-to-tracked-file.mjs', 'build-migration.mjs']) {
-  const src = join(workspaceRoot, 'scripts', source);
+// The wired validate.sh path always rebuilds first; this guard protects manual
+// invocations. Sources AND dependency manifests are watched: a dependency
+// swap that leaves the old bundle in place must not pass vacuously just
+// because the goldens were captured from exactly those stale bytes.
+for (const input of [
+  'scripts/span-ref-to-tracked-file.mjs',
+  'scripts/build-migration.mjs',
+  'package.json',
+  'yarn.lock'
+]) {
+  const src = join(workspaceRoot, input);
   if (statSync(src).mtimeMs > statSync(bundle).mtimeMs) {
-    fail(`stale bundle suspected (${source} is newer than the bundle); run "yarn build:migration" first`);
+    fail(`stale bundle suspected (${input} is newer than the bundle); run "yarn build:migration" first`);
   }
 }
 
@@ -57,6 +66,8 @@ const gitIn = (cwd, args_, opts = {}) => execFileSync('git', args_, { cwd, ...op
 // 1. Scratch repo with the legacy catalog ref. sha1 keeps the content OIDs
 // embedded inside the fixture blobs resolvable regardless of local defaults.
 const scratch = mkdtempSync(join(tmpdir(), 'rkyv-golden-scratch-'));
+/** @type {{ code: number }} */
+const outcome = { code: 0 };
 try {
   gitIn(scratch, ['-c', 'init.defaultObjectFormat=sha1', 'init', '-q']);
 
@@ -82,9 +93,21 @@ try {
   const treeOid = gitIn(scratch, ['mktree'], { input: `${treeEntries.join('\n')}\n` }).trim();
   gitIn(scratch, ['update-ref', 'refs/spans/v1/catalog', treeOid]);
 
-  // Sanity: every OID referenced by the fixtures resolves in the scratch repo.
-  for (const [file, oid] of Object.entries(oids)) {
-    if (!oids[file] || oid.length !== 40) fail(`bad OID for ${file}: ${oid}`);
+  // Every anchor-content OID embedded inside the fixture blobs must resolve in
+  // the scratch repo — content bytes are hashed to OIDs above, so this fails
+  // here with a named diagnostic if fixtures and blobs ever drift apart,
+  // instead of as an uncaught cat-file error mid-render inside the bundle.
+  for (const name of ['whole-file', 'line-range', 'multi-anchor']) {
+    const bytes = readFileSync(join(fixtureDir, 'blobs', `${name}.bin`));
+    const embedded = [...new Set(bytes.toString('latin1').match(/[0-9a-f]{40}/g) ?? [])];
+    for (const oid of embedded) {
+      const check = spawnSync('git', ['-C', scratch, 'cat-file', '-e', oid]);
+      if (check.status !== 0) {
+        throw new Error(
+          `fixture ${name}.bin references content OID ${oid} which the committed content/*.txt bytes do not produce — regenerate the blobs per scripts/rkyv-upgrade-fixture/README.md`
+        );
+      }
+    }
   }
 
   // 2. Run the bundle dry-run over the scratch repo.
@@ -98,7 +121,12 @@ try {
   });
   let stdout = outBuf ?? '';
   let stderr = errBuf ?? '';
-  if (status !== 0) stderr += `\n[bundle exited with status ${status}]`;
+  if (status !== 0) {
+    stderr += `\n[bundle exited with status ${status}]`;
+    throw new Error(
+      `migration bundle failed (status ${status}); refusing to ${update ? 'recapture' : 'compare against'} goldens from a broken run\n${stderr}`
+    );
+  }
 
   // 3. Compare (paths are relative by construction; normalize defensively).
   stdout = stdout.split(scratch).join('<SCRATCH>');
@@ -109,32 +137,37 @@ try {
     writeFileSync(join(goldenDir, 'stdout.txt'), stdout);
     writeFileSync(join(goldenDir, 'stderr.txt'), stderr);
     console.log('check-migration-golden: goldens updated');
-    process.exit(0);
-  }
-
-  let failed = false;
-  for (const [label, actual] of [
-    ['stdout', stdout],
-    ['stderr', stderr]
-  ]) {
-    const expectedPath = join(goldenDir, `${label}.txt`);
-    if (!existsSync(expectedPath))
-      fail(`missing golden ${relative(workspaceRoot, expectedPath)}; run with --update after verifying output`);
-    const expected = readFileSync(expectedPath, 'utf8');
-    if (actual !== expected) {
-      failed = true;
+  } else {
+    for (const [label, actual] of [
+      ['stdout', stdout],
+      ['stderr', stderr]
+    ]) {
+      const expectedPath = join(goldenDir, `${label}.txt`);
+      if (!existsSync(expectedPath)) {
+        throw new Error(
+          `missing golden ${relative(workspaceRoot, expectedPath)}; run with --update after verifying output`
+        );
+      }
+      const expected = readFileSync(expectedPath, 'utf8');
+      if (actual !== expected) {
+        outcome.code = 1;
+        console.error(
+          `check-migration-golden: ${label} DIFFERS from golden\n--- expected\n${expected}\n--- actual\n${actual}`
+        );
+      }
+    }
+    if (outcome.code !== 0) {
       console.error(
-        `check-migration-golden: ${label} DIFFERS from golden\n--- expected\n${expected}\n--- actual\n${actual}`
+        '\nMigration dry-run output changed. If this change is intentional, capture new goldens with --update AND record why in the change description — the goldens are the byte-stability contract.'
       );
+    } else {
+      console.log('check-migration-golden: output matches goldens');
     }
   }
-  if (failed) {
-    console.error(
-      '\nMigration dry-run output changed. If this change is intentional, capture new goldens with --update AND record why in the change description — the goldens are the byte-stability contract.'
-    );
-    process.exit(1);
-  }
-  console.log('check-migration-golden: output matches goldens');
+} catch (err) {
+  console.error(`check-migration-golden: ${/** @type {Error} */ (err).message}`);
+  outcome.code = 1;
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }
+process.exit(outcome.code);
