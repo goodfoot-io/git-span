@@ -1,0 +1,6 @@
+packages/git-span/src/span/read.rs#L76-L115 rk64:e469c1095343b4f1
+packages/git-span/src/span_file_reader.rs#L719-L744 rk64:2bad5117e7e4f931
+packages/git-span/tests/cases/dispatcher_log_strict_context.rs rk64:978120b8ba4623d3
+packages/git-span/tests/cases/mod.rs#L66-L66 rk64:5d2075d4dc827d98
+
+is_span_name_segment is the single choke-point predicate every enumeration path (filesystem walk, HEAD-tree walk, index scan, and the strict retained-corpus loader) must reuse to exclude dispatcher logs, editor scratch files, and dotfile config artifacts from the span corpus; the strict loader in read.rs calls it directly rather than re-deriving its own filter, and the regression test pins that a dispatcher-log artifact under the span root no longer hard-fails git span context.

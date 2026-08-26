@@ -1,0 +1,4 @@
+packages/agent-hooks/src/opencode/index.ts#L180-L198 rk64:c55ed9ec120fbdca
+packages/agent-hooks/test/opencode/module-shape.test.ts rk64:fe38c4648dd08cd0
+
+The OpenCode host's loader contract (external to this repo) requires the default export to be an object with a server function, detected before any named-export fallback; the module-shape test pins that exact shape, plus the id matching the npm package name, so a refactor cannot silently regress the load.

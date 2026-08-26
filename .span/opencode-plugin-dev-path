@@ -1,0 +1,4 @@
+opencode.json rk64:f93f11b75d75f88d
+packages/agent-hooks/package.json#L9-L9 rk64:71ef99ac558e904a
+
+This repo's own opencode.json points at the local dev/test plugin path ./plugins-opencode/git-span/dist/index.js so the plugin loads from checked-in source while iterating; that path string must match build:opencode's hardcoded esbuild outfile, and nothing but this coupling notices if the outfile location moves.
