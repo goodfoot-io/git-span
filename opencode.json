@@ -5,5 +5,5 @@
       "*": "allow"
     }
   },
-  "plugin": ["opencode-git-span"]
+  "plugin": ["./plugins-opencode/git-span/dist/index.js"]
 }

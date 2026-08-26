@@ -177,8 +177,22 @@ export async function gitSpanOpencode(input: OpencodePluginInput = {}): Promise<
   return assemblePlugin({ ...input, directory, logger });
 }
 
+/**
+ * The module shape OpenCode's loader detects: a default-exported
+ * `{ id?, server }` object whose `server` builds the hooks. Detection on the
+ * `server` key short-circuits before the host inspects any other export, so
+ * the helper re-exports above stay safe to keep.
+ *
+ * `id` keys hook attribution; it matches the npm package name so logs from a
+ * path-installed copy read identically to an npm-installed one.
+ */
+const pluginModule: { id: string; server: typeof gitSpanOpencode } = {
+  id: 'opencode-git-span',
+  server: gitSpanOpencode
+};
+
 // Automated git-span caller: suppress the update check before any executor
 // runs so every `git span` child inherits the env var.
 disableUpdateCheck();
 
-export default gitSpanOpencode;
+export default pluginModule;

@@ -10291,8 +10291,12 @@ async function gitSpanOpencode(input = {}) {
   }
   return assemblePlugin({ ...input, directory, logger });
 }
+var pluginModule = {
+  id: "opencode-git-span",
+  server: gitSpanOpencode
+};
 disableUpdateCheck();
-var index_default = gitSpanOpencode;
+var index_default = pluginModule;
 export {
   GitSpanHoldError,
   OPENCODE_LOG_FILE_ENV,
