@@ -1479,7 +1479,14 @@ fn controlled_repair_epoch() -> Result<()> {
     );
     let fixed_json: serde_json::Value = serde_json::from_slice(&fixed.stdout)?;
     assert_eq!(fixed_json["mutation"]["rewritten"], true);
-    assert!(String::from_utf8(fixed.stderr)?.contains("context.service-corpus-loads 2"));
+    // A transient RPC miss falls back to the non-service repair, which prints
+    // no service counters; surface the stderr so that distinction is visible
+    // in the failure instead of a bare `contains` mismatch.
+    let fixed_stderr = String::from_utf8(fixed.stderr)?;
+    assert!(
+        fixed_stderr.contains("context.service-corpus-loads 2"),
+        "expected the service repair path with two corpus loads, got: {fixed_stderr}"
+    );
 
     let next = repo.run_span(["--perf", "context", "file1.txt", "--format", "json"])?;
     assert!(
