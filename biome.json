@@ -78,7 +78,9 @@
       "!!**/coverage",
       "!!**/.next",
       "!!**/.cache",
-      "!!**/*.log"
+      "!!**/*.log",
+      "!!plugins-claude/git-span/hooks/bin/**/*.mjs",
+      "!!plugins-codex/git-span/hooks/*.mjs"
     ]
   },
   "overrides": [
