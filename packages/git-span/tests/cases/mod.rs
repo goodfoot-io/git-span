@@ -63,6 +63,7 @@ pub mod drift_shared_index_snapshot;
 pub mod drift_span_integration;
 pub mod drift_sparse_checkout;
 pub mod duplicate_identity;
+pub mod dispatcher_log_strict_context;
 pub mod editmsg_orphan_enumerated;
 pub mod filter_driver_failure;
 pub mod head_read_failures;

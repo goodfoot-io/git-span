@@ -1,5 +1,5 @@
 packages/git-span/src/cli/drift_output.rs#L229-L302 rk64:5732af024b009cb1
 packages/git-span/src/cli/show.rs#L614-L675 rk64:1864e6325beb74a2
-packages/git-span/src/span/read.rs#L431-L498 rk64:406e924d55c42e7b
+packages/git-span/src/span/read.rs#L436-L503 rk64:406e924d55c42e7b
 
 Positional-arg resolution for `drift` and `show`/`list` builds one SpanPathIndex from a single corpus load and resolves every arg through it, so many args against a large span set stay O(args + spans) instead of reloading the corpus per arg.

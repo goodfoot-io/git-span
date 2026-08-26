@@ -100,7 +100,15 @@ pub(crate) fn load_all_spans_strict_in(
         let Some(name) = relative.to_str() else {
             return Err(Error::Parse("span name is not UTF-8".into()));
         };
-        if name.split('/').all(|segment| !segment.starts_with('.')) {
+        // Same choke-point predicate as every other enumeration path:
+        // dispatcher logs, editor scratch files, and dotfile config
+        // artifacts under the span root are runtime diagnostics, not
+        // spans, and must never enter the corpus (an invalid name would
+        // otherwise hard-fail the retained read below).
+        if name
+            .split('/')
+            .all(crate::span_file_reader::is_span_name_segment)
+        {
             names.insert(name.to_owned());
         }
     }

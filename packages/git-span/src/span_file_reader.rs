@@ -721,9 +721,10 @@ impl<'repo> SpanFileReader<'repo> {
 /// Span names and slugs never begin with `.`, so any dotfile or
 /// dot-directory under the span root (e.g. the `.hookignore` config
 /// sibling) is a non-span config artifact and must be skipped by every
-/// enumeration path — filesystem walk, HEAD-tree walk, and index scan.
-/// This is the single choke-point predicate shared by all three.
-fn is_span_name_segment(basename: &str) -> bool {
+/// enumeration path — filesystem walk, HEAD-tree walk, index scan, and
+/// the strict retained-corpus loader's descriptor-rooted enumeration.
+/// This is the single choke-point predicate shared by all of them.
+pub(crate) fn is_span_name_segment(basename: &str) -> bool {
     // Dot-prefixed names are config artifacts (e.g. .hookignore,
     // .gitignore, .gitattributes).
     if basename.starts_with('.') {
