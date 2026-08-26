@@ -1337,6 +1337,35 @@ mod unix {
         }
         Ok(0)
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{client_query, identity_paths};
+        use anyhow::Result;
+        use std::os::unix::fs::PermissionsExt;
+
+        #[test]
+        fn client_query_propagates_runtime_authority_permission_failures() -> Result<()> {
+            let temp = tempfile::tempdir()?;
+            let repo = gix::init(temp.path())?;
+            std::fs::create_dir(temp.path().join(".span"))?;
+            let paths = identity_paths(&repo, ".span")?;
+            let identity = paths.directory.display_path().to_path_buf();
+            std::fs::set_permissions(&identity, std::fs::Permissions::from_mode(0o755))?;
+
+            let result = client_query(&repo, ".span", &[]);
+
+            std::fs::set_permissions(&identity, std::fs::Permissions::from_mode(0o700))?;
+            std::fs::remove_dir(identity)?;
+            let error = result.expect_err("public runtime authority selected synchronous context");
+            assert!(
+                error
+                    .to_string()
+                    .contains("private retained directory permissions are not 0o700")
+            );
+            Ok(())
+        }
+    }
 }
 
 pub(crate) fn query(
