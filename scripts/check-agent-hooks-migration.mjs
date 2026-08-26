@@ -31,6 +31,7 @@ function occurrences(content, needle) {
   return count;
 }
 
+/** @param {string} path */
 function isActiveGuidancePath(path) {
   return path.endsWith('.md') || path.endsWith('.mdx') || path === 'packages/website/app/lib/agent-skills.generated.ts';
 }

@@ -5,6 +5,6 @@ packages/website/content/docs/commands.mdx rk64:26d1992fb1dfa9b4
 packages/website/public/schemas/cli/v1/context.json rk64:a7352bd7485e2442
 packages/website/scripts/generate-agent-skills.mjs rk64:2d511ddf4fbe09a0
 packages/website/scripts/generate-artifacts.mjs rk64:2055e9e2d1d9529d
-scripts/check-agent-hooks-migration.mjs#L34-L36 rk64:b49c1e3f83a25490
+scripts/check-agent-hooks-migration.mjs#L35-L37 rk64:b49c1e3f83a25490
 
 The inventory in app/lib/artifact-gate/inventory.mjs is the single audit point of the umbrella drift gate, declaring each committed generated artifact's source, generator, and fix command; the generators (scripts/generate-agent-skills.mjs and schemas/mod.rs, chained through scripts/generate-artifacts.mjs) and the committed outputs (app/lib/agent-skills.generated.ts, content/docs/commands.mdx, and the v1 schemas) must move with it, because a generator or artifact edit that skips the inventory breaks the gate's named-fix contract and the banner bijection, which nothing in the build or test suites couples. context.json stands for the whole v1 schema set per the too-large-to-enumerate convention; the umbrella --check byte-compares the committed artifacts against fresh generation, and the migration scanner's active-guidance exception follows the generated skill artifact's inventory path so a relocation cannot silently escape its legacy-diagnostic gate.
