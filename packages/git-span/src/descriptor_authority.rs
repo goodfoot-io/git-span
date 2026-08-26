@@ -797,18 +797,20 @@ pub struct RuntimeAuthority {
 }
 
 impl RuntimeAuthority {
-    /// Retain `<git-dir>/span/context/<service-key-prefix>` with mode 0700.
-    pub fn open(git_dir: &Path, service_key: &str) -> Result<Self> {
+    /// Retain `/tmp/git-span-<uid>/context/<service-key-prefix>` with mode
+    /// 0700. The fixed root deliberately ignores `TMPDIR`: environment-selected
+    /// temporary storage can point back into removable Git metadata.
+    pub fn open(service_key: &str) -> Result<Self> {
         ensure!(
             service_key.len() >= 16 && service_key.bytes().all(|byte| byte.is_ascii_hexdigit()),
             "service key must be at least sixteen hexadecimal characters"
         );
-        let git_dir = RetainedDirectory::open_canonical(git_dir)?;
-        // `.git/span` is shared with the resolver store and may predate the
-        // service. Retain it without weakening its established permissions;
-        // the service-owned context subtree and identity leaf are private.
-        let span = git_dir.descend(Path::new("span"), DirectoryPolicy::Create { mode: 0o755 })?;
-        let context = span.descend(
+        let temporary = RetainedDirectory::open_canonical(Path::new("/tmp"))?;
+        let user = temporary.descend(
+            Path::new(&format!("git-span-{}", unsafe { libc::geteuid() })),
+            DirectoryPolicy::Private { mode: 0o700 },
+        )?;
+        let context = user.descend(
             Path::new("context"),
             DirectoryPolicy::Private { mode: 0o700 },
         )?;
@@ -986,30 +988,57 @@ mod tests {
     }
 
     #[test]
-    fn runtime_authority_survives_each_private_parent_swap() -> Result<()> {
-        for swapped in ["span", "context", "service"] {
-            let temp = tempfile::tempdir()?;
-            let git_dir = temp.path().join("git-dir");
-            std::fs::create_dir(&git_dir)?;
-            let runtime = RuntimeAuthority::open(&git_dir, "0123456789abcdef0123456789abcdef")?;
-            let directory = runtime.directory()?;
-            let relative = match swapped {
-                "span" => Path::new("span").to_path_buf(),
-                "context" => Path::new("span/context").to_path_buf(),
-                "service" => Path::new("span/context/0123456789abcdef").to_path_buf(),
-                _ => unreachable!(),
-            };
-            let original = git_dir.join(&relative);
-            let retained = original.with_extension("retained");
-            std::fs::rename(&original, &retained)?;
-            let attacker = temp.path().join(format!("attacker-{swapped}"));
-            std::fs::create_dir(&attacker)?;
-            symlink(&attacker, &original)?;
+    fn runtime_authority_is_private_deterministic_and_survives_leaf_swap() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let key = blake3::hash(temp.path().as_os_str().as_encoded_bytes())
+            .to_hex()
+            .to_string();
+        let runtime = RuntimeAuthority::open(&key)?;
+        let repeated = RuntimeAuthority::open(&key)?;
+        let directory = runtime.directory()?;
+        assert_eq!(
+            directory.display_path(),
+            repeated.directory()?.display_path()
+        );
+        assert!(directory.display_path().starts_with("/tmp"));
 
-            replace_through(&directory, b"runtime")?;
-            assert_eq!(read_through(&directory)?, b"runtime");
-            assert!(!attacker.join("value").exists());
-        }
+        let original = directory.display_path().to_path_buf();
+        let retained = original.with_extension("retained");
+        std::fs::rename(&original, &retained)?;
+        let attacker = temp.path().join("attacker-runtime");
+        std::fs::create_dir(&attacker)?;
+        symlink(&attacker, &original)?;
+
+        replace_through(&directory, b"runtime")?;
+        assert_eq!(read_through(&directory)?, b"runtime");
+        assert!(!attacker.join("value").exists());
+
+        std::fs::remove_file(&original)?;
+        std::fs::rename(&retained, &original)?;
+        std::fs::remove_file(original.join("value"))?;
+        std::fs::remove_dir(original)?;
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_authority_rejects_non_private_identity_directory() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir()?;
+        let key = blake3::hash(temp.path().as_os_str().as_encoded_bytes())
+            .to_hex()
+            .to_string();
+        let valid = RuntimeAuthority::open(&key)?;
+        let identity = valid.directory()?.display_path().to_path_buf();
+        std::fs::set_permissions(&identity, std::fs::Permissions::from_mode(0o755))?;
+        let error = RuntimeAuthority::open(&key).expect_err("public runtime directory accepted");
+        assert!(
+            error
+                .to_string()
+                .contains("private retained directory permissions are not 0o700")
+        );
+        std::fs::set_permissions(&identity, std::fs::Permissions::from_mode(0o700))?;
+        std::fs::remove_dir(identity)?;
         Ok(())
     }
 

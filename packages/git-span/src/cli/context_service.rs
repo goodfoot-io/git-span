@@ -660,7 +660,7 @@ mod unix {
             hasher.update(&[0xff]);
         }
         let key = hasher.finalize().to_hex().to_string();
-        let runtime = crate::descriptor_authority::RuntimeAuthority::open(&git_dir, &key)?;
+        let runtime = crate::descriptor_authority::RuntimeAuthority::open(&key)?;
         let directory = runtime.directory()?;
         let socket = directory.descriptor_path(std::ffi::OsStr::new("service.sock"))?;
         Ok(ServicePaths {
@@ -1230,8 +1230,7 @@ mod unix {
         let workdir = crate::git::work_dir(repo)?.to_path_buf();
         let git_dir = crate::git::git_dir(repo).to_path_buf();
         let common_dir = crate::git::common_dir(repo).to_path_buf();
-        let runtime =
-            crate::descriptor_authority::RuntimeAuthority::open(&git_dir, &args.service_key)?;
+        let runtime = crate::descriptor_authority::RuntimeAuthority::open(&args.service_key)?;
         let runtime_directory = runtime.directory()?;
         let service_dir = runtime_directory.display_path().to_path_buf();
         let socket_name = std::ffi::OsStr::new("service.sock");

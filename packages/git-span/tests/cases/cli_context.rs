@@ -3,6 +3,38 @@
 use crate::support::TestRepo;
 use anyhow::{Context, Result};
 
+#[cfg(unix)]
+fn runtime_service_sockets() -> Result<Vec<std::path::PathBuf>> {
+    let root = std::path::Path::new("/tmp")
+        .join(format!("git-span-{}", unsafe { libc::geteuid() }))
+        .join("context");
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Ok(Vec::new());
+    };
+    Ok(entries
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.path().join("service.sock"))
+        .filter(|socket| socket.exists())
+        .collect())
+}
+
+fn contains_service_socket(root: &std::path::Path) -> Result<bool> {
+    if !root.exists() {
+        return Ok(false);
+    }
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            if contains_service_socket(&entry.path())? {
+                return Ok(true);
+            }
+        } else if entry.file_name() == "service.sock" {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn ignored_contract_case() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let output = repo.run_span(["context", "file1.txt#L1-L3", "--format", "json"])?;
@@ -640,14 +672,7 @@ fn service_identity_bootstrap_and_strict_fallback() -> Result<()> {
         environment_diagnostics.contains("context.service-generation-hits 1"),
         "volatile agent metadata created a cold service: {environment_diagnostics}"
     );
-    let default_service_leaf = std::fs::read_dir(repo.path().join(".git/span/context"))?
-        .find_map(|entry| {
-            entry
-                .ok()
-                .filter(|entry| entry.path().join("service.sock").exists())
-                .map(|entry| entry.path())
-        })
-        .expect("resident default service identity directory");
+    assert!(!contains_service_socket(&repo.path().join(".git"))?);
     let fallback = repo.run_span_with_env(
         ["context", "file1.txt#L1-L3", "--format", "json"],
         "GIT_SPAN_CONTEXT_DISABLE_SERVICE",
@@ -722,20 +747,25 @@ fn service_identity_bootstrap_and_strict_fallback() -> Result<()> {
         .args(["add", "linked", "file2.txt#L3-L4"])
         .output()?;
     assert!(linked_add.status.success());
+    #[cfg(unix)]
+    let sockets_before_linked = runtime_service_sockets()?
+        .into_iter()
+        .collect::<std::collections::HashSet<_>>();
     let linked_query = std::process::Command::new(env!("CARGO_BIN_EXE_git-span"))
         .current_dir(&linked)
+        .env("TMPDIR", repo.path().join(".git/worktrees"))
         .args(["context", "file2.txt#L3-L4", "--format", "json"])
         .output()?;
     assert!(linked_query.status.success());
     let linked_json: serde_json::Value = serde_json::from_slice(&linked_query.stdout)?;
     assert_eq!(linked_json["spans"][0]["name"], "linked");
+    assert!(!contains_service_socket(&repo.path().join(".git"))?);
+    #[cfg(unix)]
     assert!(
-        std::fs::read_dir(repo.path().join(".git/worktrees"))?.any(|entry| {
-            entry
-                .ok()
-                .is_some_and(|entry| entry.path().join("span/context").is_dir())
-        }),
-        "linked worktree did not receive private service state"
+        runtime_service_sockets()?
+            .iter()
+            .any(|socket| !sockets_before_linked.contains(socket)),
+        "linked worktree did not receive a distinct runtime service"
     );
     for failure in [
         "backend",
@@ -762,26 +792,6 @@ fn service_identity_bootstrap_and_strict_fallback() -> Result<()> {
     assert!(invalidated.status.success());
     assert!(String::from_utf8(invalidated.stderr)?.contains("context.service-invalidations"));
 
-    if crate::support::symlinks_supported() {
-        let context_root = repo.path().join(".git/span/context");
-        let retained = context_root.join("retained-service-leaf");
-        std::fs::rename(&default_service_leaf, &retained)?;
-        let attacker = tempfile::tempdir()?;
-        crate::support::symlink_dir(attacker.path(), &default_service_leaf)?;
-        let swapped = repo.run_span(["context", "file1.txt#L1-L3", "--format", "json"])?;
-        assert!(
-            swapped.status.success(),
-            "{}",
-            String::from_utf8_lossy(&swapped.stderr)
-        );
-        let strict_after_edit = repo.run_span_with_env(
-            ["context", "file1.txt#L1-L3", "--format", "json"],
-            "GIT_SPAN_CONTEXT_DISABLE_SERVICE",
-            "1",
-        )?;
-        assert_eq!(swapped.stdout, strict_after_edit.stdout);
-        assert_eq!(std::fs::read_dir(attacker.path())?.count(), 0);
-    }
     Ok(())
 }
 
@@ -831,8 +841,17 @@ fn watch_closure_liveness_and_backpressure() -> Result<()> {
         &format!("{}\n", alternate_objects.display()),
     )?;
     let query = ["--perf", "context", "file1.txt#L1-L2", "--format", "json"];
+    #[cfg(unix)]
+    let sockets_before_query = runtime_service_sockets()?
+        .into_iter()
+        .collect::<std::collections::HashSet<_>>();
     assert!(repo.run_span(query)?.status.success());
     assert!(repo.run_span(query)?.status.success());
+    #[cfg(unix)]
+    let service_socket = runtime_service_sockets()?
+        .into_iter()
+        .find(|socket| !sockets_before_query.contains(socket))
+        .expect("context query did not create a runtime service socket");
 
     std::fs::write(alternate_objects.join("context-watch-probe"), b"changed")?;
     let alternate_changed = repo.run_span(query)?;
@@ -912,13 +931,8 @@ fn watch_closure_liveness_and_backpressure() -> Result<()> {
     }
     #[cfg(unix)]
     {
-        let socket = std::fs::read_dir(repo.path().join(".git/span/context"))?
-            .filter_map(Result::ok)
-            .map(|entry| entry.path().join("service.sock"))
-            .find(|path| path.exists())
-            .expect("context service socket");
         let stalled = (0..16)
-            .map(|_| crate::support::stall_unix_socket(&socket))
+            .map(|_| crate::support::stall_unix_socket(&service_socket))
             .collect::<std::io::Result<Vec<_>>>()?;
         std::thread::sleep(std::time::Duration::from_millis(300));
         let bounded = repo.run_span(["context", "file1.txt#L1-L2", "--format", "json"])?;
