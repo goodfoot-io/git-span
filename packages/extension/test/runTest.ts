@@ -15,7 +15,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runTests } from '@vscode/test-electron';
+import { downloadAndUnzipVSCode, runTests } from '@vscode/test-electron';
 
 /**
  * Extension root directory (where package.json lives).
@@ -43,6 +43,63 @@ const TEST_BIN_PATH = `/tmp/git-span-ext-test-bin-${INSTANCE_ID}`;
  * concurrent test runs and the production build.
  */
 const TEST_DIST_PATH = path.join(EXTENSION_ROOT, `dist-test-${INSTANCE_ID}`);
+
+/**
+ * Shared, worktree-invariant cache for the VS Code builds @vscode/test-electron
+ * downloads. Its default is `process.cwd()/.vscode-test`, so every card worktree
+ * re-downloaded and stored its own ~700MB copy; pointing the download at a single
+ * HOME-relative directory lets sibling worktrees reuse one seeded install.
+ * `VSCODE_TEST_CACHE_PATH` overrides it (CI isolation).
+ */
+const VSCODE_TEST_CACHE_PATH =
+  process.env['VSCODE_TEST_CACHE_PATH'] ?? path.join(os.homedir(), '.cache', 'git-span', 'vscode-test');
+const ACQUIRE_LOCK_PATH = path.join(VSCODE_TEST_CACHE_PATH, 'acquire.lock');
+
+/**
+ * How long an acquire lock may sit untouched before it is assumed abandoned by
+ * a crashed run and stolen. A cold download must comfortably fit inside this
+ * budget; warm runs hold the lock for well under a second.
+ */
+const ACQUIRE_LOCK_STALE_MS = 20 * 60_000;
+const ACQUIRE_LOCK_POLL_MS = 500;
+
+/**
+ * Runs `fn` while holding an exclusive lock on the shared cache's acquire.lock.
+ *
+ * The download extracts into `cachePath/<platform>-<version>` in place and only
+ * then drops its `is-complete` marker, so two first-runs racing on one shared
+ * cache could interleave extractions or rm each other's target. Validates are
+ * serialized repo-wide by validate.lock, but direct `yarn test` invocations in
+ * sibling worktrees are not — the lock closes that window without depending on
+ * platform-specific flock(1). A crashed holder's lock is stolen once stale, so
+ * it can never wedge future runs.
+ *
+ * @param fn - The VS Code acquisition step to run under the lock.
+ * @returns Whatever `fn` resolves to — the VS Code executable path.
+ */
+async function withVscodeCacheAcquireLock<T>(fn: () => Promise<T>): Promise<T> {
+  fs.mkdirSync(VSCODE_TEST_CACHE_PATH, { recursive: true });
+  let lockFd: number | undefined;
+  for (;;) {
+    try {
+      lockFd = fs.openSync(ACQUIRE_LOCK_PATH, 'wx');
+      break;
+    } catch {
+      const age = Date.now() - fs.statSync(ACQUIRE_LOCK_PATH).mtimeMs;
+      if (age > ACQUIRE_LOCK_STALE_MS) {
+        fs.rmSync(ACQUIRE_LOCK_PATH, { force: true });
+        continue;
+      }
+      await new Promise((resolve) => setTimeout(resolve, ACQUIRE_LOCK_POLL_MS));
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    fs.closeSync(lockFd);
+    fs.rmSync(ACQUIRE_LOCK_PATH, { force: true });
+  }
+}
 
 /**
  * Mutable state shared between setup and cleanup.
@@ -538,6 +595,14 @@ async function main(): Promise<void> {
   const extensionDevelopmentPath = TEST_DIST_PATH;
   const extensionTestsPath = path.join(TEST_DIST_PATH, 'test/suite/index.cjs');
 
+  // Resolve the VS Code executable through the shared cache under the acquire
+  // lock, then hand the explicit path to runTests so it never re-downloads
+  // against its per-worktree cwd() default. A failure rejects main(), which
+  // the .catch below reports with cleanup.
+  const vscodeExecutablePath = await withVscodeCacheAcquireLock(() =>
+    downloadAndUnzipVSCode({ version: getMinVSCodeVersion(), cachePath: VSCODE_TEST_CACHE_PATH })
+  );
+
   try {
     if (isHeadless()) {
       state.xvfbProcess = startXvfb();
@@ -570,7 +635,7 @@ async function main(): Promise<void> {
     }
 
     exitCode = await runTests({
-      version: getMinVSCodeVersion(),
+      vscodeExecutablePath,
       extensionDevelopmentPath,
       extensionTestsPath,
       extensionTestsEnv: { ...process.env, TEST_WORKSPACE_PATH, GIT_SPAN_EXTENSION_USE_PATH_FALLBACK: '1' },
@@ -614,7 +679,7 @@ async function main(): Promise<void> {
 
       try {
         exitCode = await runTests({
-          version: getMinVSCodeVersion(),
+          vscodeExecutablePath,
           extensionDevelopmentPath,
           extensionTestsPath,
           extensionTestsEnv: { ...process.env, TEST_WORKSPACE_PATH, GIT_SPAN_EXTENSION_USE_PATH_FALLBACK: '1' },
