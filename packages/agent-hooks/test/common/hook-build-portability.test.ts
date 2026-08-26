@@ -624,20 +624,28 @@ function allPaths(root: string): string[] {
   return out;
 }
 
-function assertNoLegacyRuntimeArtifacts(repo: RealBundleRepo): void {
+function runtimeServiceSockets(): Set<string> {
+  const uid = process.getuid?.();
+  if (uid === undefined) return new Set();
+  const root = join('/tmp', `git-span-${uid}`, 'context');
+  if (!existsSync(root)) return new Set();
+  return new Set(allPaths(root).filter((path) => lstatSync(path).isSocket()));
+}
+
+function assertNoLegacyRuntimeArtifacts(repo: RealBundleRepo, socketsBefore: Set<string>): void {
   const paths = [...allPaths(repo.home), ...allPaths(repo.root)].map((path) => path.replaceAll('\\', '/'));
-  const contextSocket = /\/\.git\/span\/context\/[a-f0-9]+\/service\.sock$/;
-  const forbidden = paths.filter(
-    (path) =>
-      !contextSocket.test(path) &&
-      /(?:snapshots|snapshot-recordless-note|activity-log|\.objects(?:\/|$)|\.index$|tombstone|watcher|\.sock$|socket)/i.test(
-        path
-      )
+  const forbidden = paths.filter((path) =>
+    /(?:snapshots|snapshot-recordless-note|activity-log|\.objects(?:\/|$)|\.index$|tombstone|watcher|\.sock$|socket)/i.test(
+      path
+    )
   );
   expect(forbidden).toEqual([]);
-  const sockets = paths.filter((path) => lstatSync(path).isSocket());
+  expect(paths.filter((path) => lstatSync(path).isSocket())).toEqual([]);
+
+  const contextSocket = /\/tmp\/git-span-\d+\/context\/[a-f0-9]{16}\/service\.sock$/;
+  const sockets = [...runtimeServiceSockets()].filter((path) => !socketsBefore.has(path));
   expect(sockets.length).toBeGreaterThan(0);
-  expect(sockets.every((path) => contextSocket.test(path))).toBe(true);
+  expect(sockets.every((path) => contextSocket.test(path.replaceAll('\\', '/')))).toBe(true);
 }
 
 function assertNoLegacyBundleCode(dir: string): void {
@@ -725,10 +733,11 @@ describe('mandatory installed-artifact static attribution smoke', () => {
     timeout: INSTALLED_SMOKE_TIMEOUT_MS
   }, () => {
     const repo = makeRealBundleRepo(pathDir);
+    const socketsBefore = runtimeServiceSockets();
     try {
       seedInstalledSmokeRepo(repo);
       runInstalledHostMatrix('claude', bundles.claudeHooksDir, repo);
-      assertNoLegacyRuntimeArtifacts(repo);
+      assertNoLegacyRuntimeArtifacts(repo, socketsBefore);
     } finally {
       repo.cleanup();
     }
@@ -738,11 +747,12 @@ describe('mandatory installed-artifact static attribution smoke', () => {
     timeout: INSTALLED_SMOKE_TIMEOUT_MS
   }, () => {
     const repo = makeRealBundleRepo(pathDir);
+    const socketsBefore = runtimeServiceSockets();
     try {
       seedInstalledSmokeRepo(repo);
       runInstalledHostMatrix('codex', bundles.codexHooksDir, repo);
       runCodexApplyPatchSmoke(bundles.codexHooksDir, repo);
-      assertNoLegacyRuntimeArtifacts(repo);
+      assertNoLegacyRuntimeArtifacts(repo, socketsBefore);
     } finally {
       repo.cleanup();
     }
