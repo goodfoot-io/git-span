@@ -1,12 +1,7 @@
 #!/usr/bin/env node
 /**
- * Wraps the `@goodfoot/claude-code-hooks`/`@goodfoot/codex-hooks` CLIs so
- * every invocation -- whether reached via `yarn build:hooks`/`yarn
- * build:hooks:codex` or directly via `yarn claude-code-hooks`/`yarn
- * codex-hooks` (as the reproduction test in
- * test/common/hook-build-portability.test.ts does) -- gets its generated
- * `.mjs` output normalized afterward by
- * `scripts/normalize-hook-module-comments.js`.
+ * Wraps the `@goodfoot/agent-hooks` CLI so every invocation preserves the
+ * repository's deterministic manifest order and Claude timeout contract.
  *
  * It also converts each manifest's hook registration `timeout` from
  * milliseconds to seconds -- but only for the Claude CLI, which emits the
@@ -17,29 +12,16 @@
  * thousandfold. Source authoring stays milliseconds across both adapters,
  * matching the codex pipeline.
  *
- * This package's package.json defines "claude-code-hooks" and "codex-hooks"
- * scripts that point here. Because Yarn resolves a bare `yarn <name>`
- * invocation against package.json scripts *before* falling back to a
- * same-named binary contributed by a dependency, `yarn claude-code-hooks
- * ...`/`yarn codex-hooks ...` run this wrapper instead of the raw CLI --
- * so the fix applies uniformly no matter which of those spellings invokes
- * the build.
- *
  * The wrapper forwards all CLI args unchanged to the real, installed CLI
- * (resolved by realpath through node_modules -- symlinked or not -- so the
- * actual compiled output is byte-for-byte what the CLI itself produces),
- * then post-processes only the `//` module-boundary comments in the
- * directory the `-o`/`--output` argument points at.
+ * and then canonicalizes the emitted manifest.
  *
- * Usage: node scripts/hooks-cli-wrapper.js <package-name> [...cli-args]
- *   package-name: "@goodfoot/claude-code-hooks" or "@goodfoot/codex-hooks"
+ * Usage: node scripts/hooks-cli-wrapper.js --agent claude-code|codex [...cli-args]
  */
 
 import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { normalizeModuleComments } from './normalize-hook-module-comments.js';
 
 function findOutputPath(cliArgs) {
   for (let i = 0; i < cliArgs.length; i += 1) {
@@ -150,14 +132,19 @@ function convertHookTimeoutsToSeconds(outputPath) {
 }
 
 async function main() {
-  const [packageName, ...cliArgs] = process.argv.slice(2);
-  if (!packageName) {
-    process.stderr.write('Usage: hooks-cli-wrapper.js <package-name> [...cli-args]\n');
+  const cliArgs = process.argv.slice(2);
+  const agentIndex = cliArgs.indexOf('--agent');
+  const agent =
+    agentIndex === -1
+      ? cliArgs.find((arg) => arg.startsWith('--agent='))?.slice('--agent='.length)
+      : cliArgs[agentIndex + 1];
+  if (agent !== 'claude-code' && agent !== 'codex') {
+    process.stderr.write('Usage: hooks-cli-wrapper.js --agent claude-code|codex [...cli-args]\n');
     process.exit(1);
   }
 
-  const cliEntryUrl = import.meta.resolve(`${packageName}/cli`);
-  const cliEntryPath = fileURLToPath(cliEntryUrl);
+  const packageEntryPath = fileURLToPath(import.meta.resolve('@goodfoot/agent-hooks'));
+  const cliEntryPath = resolve(dirname(packageEntryPath), 'cli.js');
 
   const result = spawnSync(process.execPath, [cliEntryPath, ...cliArgs], {
     stdio: 'inherit'
@@ -172,17 +159,14 @@ async function main() {
 
   const outputArg = findOutputPath(cliArgs);
   if (outputArg === undefined) {
-    // Nothing was compiled to a hooks.json (e.g. --scaffold, --help); no
-    // generated .mjs output to normalize.
+    // Nothing was compiled to a hooks.json (e.g. --scaffold, --help).
     return;
   }
-  const outputDir = dirname(resolve(process.cwd(), outputArg));
-  if (packageName === '@goodfoot/claude-code-hooks') {
+  if (agent === 'claude-code') {
     // Only the Claude CLI needs the division -- the Codex CLI already emits
     // seconds, and converting its manifest again would corrupt it.
     convertHookTimeoutsToSeconds(resolve(process.cwd(), outputArg));
   }
-  normalizeModuleComments([outputDir]);
   canonicalizeHookManifest(resolve(process.cwd(), outputArg), findInputPath(cliArgs));
 }
 

@@ -4,6 +4,7 @@ summary: The best beachhead segment — polyglot API, SDK, and protocol synchron
 aliases: [Polyglot SDK Synchronization, Protocol Synchronization]
 tags: [marketing, use-cases]
 keywords: [API, SDK, protocol, polyglot, serializer, webhook, pagination, code generation]
+links-reviewed: 1
 ---
 
 # API SDK and protocol synchronization

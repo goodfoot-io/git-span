@@ -4,6 +4,7 @@ summary: What to do with drift that `git span drift --fix` leaves behind — fol
 aliases: [Drift Authority, Docs Follow Source]
 tags: [guide, git-span]
 keywords: [reconcile, drift, authority, source of truth, fail closed, doc rewrite]
+links-reviewed: 1
 ---
 
 # Reconciliation authority

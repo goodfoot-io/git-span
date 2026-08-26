@@ -26,7 +26,9 @@ export function buildRealHookBundles(): BuiltRealHookBundles {
     execFileSync(
       'yarn',
       [
-        'claude-code-hooks',
+        'agent-hooks',
+        '--agent',
+        'claude-code',
         '-i',
         'src/claude/{session-start,advisor,static-plan,post-tool-use,post-tool-use-failure,session-end}.ts',
         '-o',
@@ -38,7 +40,9 @@ export function buildRealHookBundles(): BuiltRealHookBundles {
     execFileSync(
       'yarn',
       [
-        'codex-hooks',
+        'agent-hooks',
+        '--agent',
+        'codex',
         '-i',
         'src/codex/{session-start,advisor,static-plan,apply-patch-plan,post-tool-use,stop}.ts',
         '-o',

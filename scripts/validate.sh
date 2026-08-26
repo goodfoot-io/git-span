@@ -129,6 +129,12 @@ target_root="${GIT_SPAN_CARGO_TARGET_ROOT:-/var/cache/git-span/cargo-target}"
 build_dir="$target_root/git-span/build"
 
 {
+  # Reject superseded hook packages before any build or test can rewrite
+  # generated artifacts and hide the tracked-tree state being certified. The
+  # focused suite runs the real scanner in temporary git repositories so its
+  # tracked-file scope and retained-identifier allowlist stay fail-closed.
+  node scripts/check-agent-hooks-migration.mjs &&
+  node --test scripts/check-agent-hooks-migration.test.mjs &&
   (
     cd "$repo_root/packages/git-span"
     bash scripts/with-target-lock.sh shared env CARGO_TARGET_DIR="$build_dir" cargo build --quiet --locked --bin git-span

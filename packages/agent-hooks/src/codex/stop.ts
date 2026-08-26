@@ -1,6 +1,6 @@
 /** Codex Stop hook — eager cleanup of session memo and planned touches. */
 
-import { type HookContext, type StopInput, stopHook } from '@goodfoot/codex-hooks';
+import { type HookContext, type StopInput, stopHook } from '@goodfoot/agent-hooks/codex';
 import { cleanupSessionState, DEFAULT_SESSION_LAYOUT, type SessionLayout } from '../common/agent-hooks-common.js';
 import { disableUpdateCheck } from '../common/update-check-env.js';
 

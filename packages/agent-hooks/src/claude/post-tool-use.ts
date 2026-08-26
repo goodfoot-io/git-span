@@ -12,7 +12,7 @@ import {
   type PostToolUseInput,
   postToolUseHook,
   postToolUseOutput
-} from '@goodfoot/claude-code-hooks';
+} from '@goodfoot/agent-hooks/claude-code';
 import { DEFAULT_SESSION_LAYOUT, derivePath, type SessionLayout } from '../common/agent-hooks-common.js';
 import { createDefaultPlannedTouchStore, postTrackedValue, runLayeredBashTouches } from '../common/bash-attribution.js';
 import { createDiskMemoStore, type MemoFactory } from '../common/span-surface.js';

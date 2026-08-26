@@ -6,66 +6,7 @@ const require = __createRequire(import.meta.url);
 const __filename = __fileURLToPath(import.meta.url);
 const __dirname = __pathDirname(__filename);
 
-// ../../node_modules/@goodfoot/claude-code-hooks/dist/env.js
-import * as fs from "node:fs";
-var CLAUDE_ENV_VARS = {
-  /**
-   * Absolute path to the project root directory where Claude Code was started.
-   * Available in all hooks.
-   */
-  PROJECT_DIR: "CLAUDE_PROJECT_DIR",
-  /**
-   * Path to a file where SessionStart hooks can persist environment variables.
-   * Variables written to this file will be available in all subsequent bash commands.
-   * Only available in SessionStart hooks.
-   */
-  ENV_FILE: "CLAUDE_ENV_FILE",
-  /**
-   * Set to "true" when running in a remote (web) environment.
-   * Not set or empty when running in local CLI environment.
-   */
-  REMOTE: "CLAUDE_CODE_REMOTE"
-};
-function getEnvFilePath() {
-  return process.env[CLAUDE_ENV_VARS.ENV_FILE];
-}
-function persistEnvVar(name, value) {
-  const envFile = getEnvFilePath();
-  if (envFile === void 0) {
-    throw new Error("persistEnvVar can only be used in SessionStart hooks. CLAUDE_ENV_FILE environment variable is not set.");
-  }
-  const escapedValue = escapeShellValue(value);
-  const exportStatement = `export ${name}=${escapedValue}
-`;
-  fs.appendFileSync(envFile, exportStatement, "utf-8");
-}
-function persistEnvVars(vars) {
-  for (const [name, value] of Object.entries(vars)) {
-    persistEnvVar(name, value);
-  }
-}
-function escapeShellValue(value) {
-  const escaped = value.replace(/'/g, "'\\''");
-  return `'${escaped}'`;
-}
-
-// ../../node_modules/@goodfoot/claude-code-hooks/dist/hooks.js
-function createHookFunction(hookEventName, config, handler) {
-  const hookFn = async (input, context) => {
-    return await handler(input, context);
-  };
-  hookFn.hookEventName = hookEventName;
-  hookFn.matcher = config.matcher;
-  hookFn.timeout = config.timeout;
-  hookFn.unexpectedError = config.unexpectedError;
-  hookFn.onUnexpectedError = config.onUnexpectedError;
-  return hookFn;
-}
-function sessionStartHook(config, handler) {
-  return createHookFunction("SessionStart", config, handler);
-}
-
-// ../../node_modules/@goodfoot/claude-code-hooks/dist/logger.js
+// node_modules/@goodfoot/agent-hooks/dist/core/logger.js
 import { closeSync, existsSync, mkdirSync, openSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
 var LOG_LEVELS = ["debug", "info", "warn", "error"];
@@ -104,7 +45,7 @@ var Logger = class {
    * @example
    * ```typescript
    * // Use singleton (recommended)
-   * import { logger } from '@goodfoot/claude-code-hooks';
+   * import { logger } from '@goodfoot/agent-hooks';
    *
    * // Or create custom instance
    * const customLogger = new Logger({ logFilePath: '/var/log/hooks.log' });
@@ -256,7 +197,7 @@ var Logger = class {
    *
    * This is called internally by the runtime before invoking hook handlers.
    * You typically don't need to call this directly.
-   * @param hookType - The type of hook being executed
+   * @param hookType - The agent event name being executed
    * @param input - The hook input data
    * @internal
    */
@@ -283,7 +224,7 @@ var Logger = class {
    * @example
    * ```typescript
    * // Enable file logging at runtime
-   * logger.setLogFile('/var/log/claude-hooks.log');
+   * logger.setLogFile('/var/log/agent-hooks.log');
    *
    * // Disable file logging
    * logger.setLogFile(null);
@@ -294,7 +235,7 @@ var Logger = class {
       try {
         closeSync(this.logFileFd);
       } catch (closeError) {
-        process.stderr.write(`[claude-code-hooks] Failed to close log file: ${String(closeError)}
+        process.stderr.write(`[agent-hooks] Failed to close log file: ${String(closeError)}
 `);
       }
       this.logFileFd = null;
@@ -318,7 +259,7 @@ var Logger = class {
       try {
         closeSync(this.logFileFd);
       } catch (closeError) {
-        process.stderr.write(`[claude-code-hooks] Failed to close log file: ${String(closeError)}
+        process.stderr.write(`[agent-hooks] Failed to close log file: ${String(closeError)}
 `);
       }
       this.logFileFd = null;
@@ -369,7 +310,7 @@ var Logger = class {
         try {
           handler(event);
         } catch (handlerError) {
-          process.stderr.write(`[claude-code-hooks] Log handler error: ${String(handlerError)}
+          process.stderr.write(`[agent-hooks] Log handler error: ${String(handlerError)}
 `);
         }
       }
@@ -395,7 +336,7 @@ var Logger = class {
     } catch (writeError) {
       this.logFileFd = null;
       this.fileInitialized = false;
-      process.stderr.write(`[claude-code-hooks] Log file write failed: ${String(writeError)}
+      process.stderr.write(`[agent-hooks] Log file write failed: ${String(writeError)}
 `);
     }
   }
@@ -440,10 +381,134 @@ var Logger = class {
   }
 };
 var logger = new Logger({
-  logEnvVar: process.env.CLAUDE_CODE_HOOKS_LOG_ENV_VAR ?? "CLAUDE_CODE_HOOKS_LOG_FILE"
+  logEnvVar: process.env.AGENT_HOOKS_LOG_ENV_VAR ?? "AGENT_HOOKS_LOG_FILE"
 });
 
-// ../../node_modules/@goodfoot/claude-code-hooks/dist/outputs.js
+// node_modules/@goodfoot/agent-hooks/dist/core/env.js
+import * as fs from "node:fs";
+var CLAUDE_ENV_VARS = {
+  /**
+   * Absolute path to the project root directory where Claude Code was started.
+   * Available in all hooks.
+   */
+  PROJECT_DIR: "CLAUDE_PROJECT_DIR",
+  /**
+   * Path to a file where SessionStart hooks can persist environment variables.
+   * Variables written to this file will be available in all subsequent bash commands.
+   * Only available in SessionStart hooks.
+   */
+  ENV_FILE: "CLAUDE_ENV_FILE",
+  /**
+   * Set to "true" when running in a remote (web) environment.
+   * Not set or empty when running in local CLI environment.
+   */
+  REMOTE: "CLAUDE_CODE_REMOTE"
+};
+function getEnvFilePath() {
+  return process.env[CLAUDE_ENV_VARS.ENV_FILE];
+}
+function persistEnvVar(name, value) {
+  const envFile = getEnvFilePath();
+  if (envFile === void 0) {
+    throw new Error("persistEnvVar can only be used in SessionStart hooks. CLAUDE_ENV_FILE environment variable is not set.");
+  }
+  const escapedValue = escapeShellValue(value);
+  const exportStatement = `export ${name}=${escapedValue}
+`;
+  fs.appendFileSync(envFile, exportStatement, "utf-8");
+}
+function persistEnvVars(vars) {
+  for (const [name, value] of Object.entries(vars)) {
+    persistEnvVar(name, value);
+  }
+}
+function escapeShellValue(value) {
+  const escaped = value.replace(/'/g, "'\\''");
+  return `'${escaped}'`;
+}
+
+// node_modules/@goodfoot/agent-hooks/dist/agents/claude-code/events.js
+var HOOK_EVENT_NAMES = [
+  "PreToolUse",
+  "PostToolUse",
+  "PostToolUseFailure",
+  "PostToolBatch",
+  "Notification",
+  "UserPromptExpansion",
+  "UserPromptSubmit",
+  "SessionStart",
+  "SessionEnd",
+  "Stop",
+  "StopFailure",
+  "SubagentStart",
+  "SubagentStop",
+  "PreCompact",
+  "PostCompact",
+  "PermissionRequest",
+  "PermissionDenied",
+  "Setup",
+  "TeammateIdle",
+  "TaskCreated",
+  "TaskCompleted",
+  "Elicitation",
+  "ElicitationResult",
+  "ConfigChange",
+  "InstructionsLoaded",
+  "WorktreeCreate",
+  "WorktreeRemove",
+  "CwdChanged",
+  "FileChanged",
+  "MessageDisplay"
+];
+var EXCLUDED_FROM_ADVISORY = [
+  "PreToolUse",
+  "PermissionRequest",
+  "Stop",
+  "SubagentStop",
+  "WorktreeCreate",
+  "WorktreeRemove"
+];
+var ADVISORY_EVENTS = HOOK_EVENT_NAMES.filter((eventName) => !EXCLUDED_FROM_ADVISORY.includes(eventName));
+
+// node_modules/@goodfoot/agent-hooks/dist/core/define-hook.js
+function defineHook(eventName, config, handler, policyGate) {
+  if (policyGate !== void 0) {
+    let accepted;
+    try {
+      accepted = policyGate(eventName, config.unexpectedError);
+    } catch (error) {
+      throw new Error(`Policy gate rejected "${eventName}": ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (!accepted) {
+      throw new Error(`Policy gate rejected "${eventName}"`);
+    }
+  }
+  const hookFn = async (input, context) => {
+    return await handler(input, context);
+  };
+  hookFn.eventName = eventName;
+  hookFn.matcher = config.matcher;
+  hookFn.timeout = config.timeout;
+  hookFn.unexpectedError = config.unexpectedError;
+  hookFn.onUnexpectedError = config.onUnexpectedError;
+  hookFn.createContext = config.createContext;
+  return hookFn;
+}
+
+// node_modules/@goodfoot/agent-hooks/dist/agents/claude-code/hooks.js
+var advisoryPolicyGate = (eventName, policy) => policy !== "continue" || ADVISORY_EVENTS.includes(eventName);
+function createSessionStartContext() {
+  return { logger, persistEnvVar, persistEnvVars };
+}
+function createHookFunction(hookEventName, config, handler) {
+  const isSessionStart = hookEventName === "SessionStart";
+  return defineHook(hookEventName, isSessionStart ? { ...config, createContext: createSessionStartContext } : config, handler, advisoryPolicyGate);
+}
+function sessionStartHook(config, handler) {
+  return createHookFunction("SessionStart", config, handler);
+}
+
+// node_modules/@goodfoot/agent-hooks/dist/agents/claude-code/outputs.js
 var EXIT_CODES = {
   /** Handler completed successfully. Claude Code parses stdout as JSON. */
   SUCCESS: 0,
@@ -453,7 +518,7 @@ var EXIT_CODES = {
   BLOCK: 2
 };
 
-// ../../node_modules/@goodfoot/claude-code-hooks/dist/runtime.js
+// node_modules/@goodfoot/agent-hooks/dist/core/stdin.js
 async function readStdin() {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -469,36 +534,29 @@ async function readStdin() {
     });
   });
 }
-function parseStdinInput(stdinContent) {
-  const rawInput = JSON.parse(stdinContent);
-  return rawInput;
+function parseStdinJson(stdinContent) {
+  return JSON.parse(stdinContent);
 }
-function createMalformedInputOutput(error) {
-  logger.error(`Invalid JSON input: ${error instanceof Error ? error.message : String(error)}`);
-  return { stdout: {} };
-}
-function handleHandlerError(error) {
-  if (error instanceof Error) {
-    process.stderr.write(`${error.stack ?? error.message}
-`);
-  } else {
-    process.stderr.write(`${String(error)}
-`);
+
+// node_modules/@goodfoot/agent-hooks/dist/core/transport.js
+var HookBlockError = class extends Error {
+  /**
+   * Optional structured fields carried alongside the block reason (e.g.
+   * extra wire fields the agent's translation may forward).
+   */
+  fields;
+  /**
+   * @param message - The block reason; becomes the error `message`.
+   * @param fields - Optional additional structured fields.
+   */
+  constructor(message, fields) {
+    super(message);
+    this.name = "HookBlockError";
+    this.fields = fields;
   }
-  logger.error(`Hook handler error: ${error instanceof Error ? error.message : String(error)}`);
-  logger.clearContext();
-  logger.close();
-  process.exit(EXIT_CODES.BLOCK);
-}
-function writeUnexpectedErrorStderr(error) {
-  if (error instanceof Error) {
-    process.stderr.write(`${error.stack ?? error.message}
-`);
-  } else {
-    process.stderr.write(`${String(error)}
-`);
-  }
-}
+};
+var FALLBACK_EXIT_ERROR = 1;
+var FALLBACK_EXIT_SUCCESS = 0;
 function reportUnexpectedError(onUnexpectedError, error, phase) {
   try {
     onUnexpectedError?.(error, phase);
@@ -509,21 +567,134 @@ function reportUnexpectedError(onUnexpectedError, error, phase) {
   } catch {
   }
 }
-function handleUnexpectedError(error, phase, policy, onUnexpectedError) {
-  if (policy === "continue") {
-    reportUnexpectedError(onUnexpectedError, error, phase);
-    return;
-  }
-  writeUnexpectedErrorStderr(error);
-  process.exit(EXIT_CODES.ERROR);
-}
 function cleanup(policy, onUnexpectedError) {
   try {
     logger.clearContext();
     logger.close();
   } catch (error) {
-    handleUnexpectedError(error, "cleanup", policy, onUnexpectedError);
+    if (policy !== "continue") {
+      throw error;
+    }
+    reportUnexpectedError(onUnexpectedError, error, "cleanup");
   }
+}
+function classify(error, phase, policy, onUnexpectedError) {
+  if (error instanceof HookBlockError) {
+    return { kind: "block", error };
+  }
+  if (policy === "continue") {
+    reportUnexpectedError(onUnexpectedError, error, phase);
+    return { kind: "response", output: void 0 };
+  }
+  return { kind: "handlerError", error, phase };
+}
+function writeUnexpectedErrorStderr(error) {
+  if (error instanceof Error) {
+    process.stderr.write(`${error.stack ?? error.message}
+`);
+  } else {
+    process.stderr.write(`${String(error)}
+`);
+  }
+}
+function cleanupQuietly() {
+  try {
+    logger.clearContext();
+    logger.close();
+  } catch {
+  }
+}
+async function drive(transport, hookFn) {
+  const policy = hookFn.unexpectedError ?? "error";
+  const onUnexpectedError = hookFn.onUnexpectedError;
+  const outcome = await (async () => {
+    let stdinContent;
+    try {
+      stdinContent = await readStdin();
+    } catch (error) {
+      logger.logError(error, "Failed to read stdin");
+      return classify(error, "read", policy, onUnexpectedError);
+    }
+    let input;
+    try {
+      input = parseStdinJson(stdinContent);
+    } catch (error) {
+      logger.logError(error, "Failed to parse stdin JSON");
+      return classify(error, "parse", policy, onUnexpectedError);
+    }
+    logger.setContext(hookFn.eventName, input);
+    const context = hookFn.createContext?.(input) ?? { logger };
+    try {
+      const result = await hookFn(input, context);
+      if (result === null || result === void 0) {
+        return { kind: "response", output: void 0 };
+      }
+      const raw = transport.rawStdout?.(result);
+      return raw !== void 0 ? { kind: "rawStdout", stdout: raw } : { kind: "response", output: result };
+    } catch (error) {
+      return classify(error, "handler", policy, onUnexpectedError);
+    }
+  })();
+  let finalized;
+  try {
+    finalized = transport.finalize(outcome);
+  } catch (error) {
+    if (policy === "continue") {
+      reportUnexpectedError(onUnexpectedError, error, "serialize");
+      cleanupQuietly();
+      process.exit(FALLBACK_EXIT_SUCCESS);
+    }
+    writeUnexpectedErrorStderr(error);
+    cleanupQuietly();
+    process.exit(FALLBACK_EXIT_ERROR);
+  }
+  try {
+    cleanup(policy, onUnexpectedError);
+  } catch (error) {
+    writeUnexpectedErrorStderr(error);
+    process.exit(FALLBACK_EXIT_ERROR);
+  }
+  if (finalized.stderr !== void 0) {
+    process.stderr.write(finalized.stderr);
+  }
+  if (finalized.stdout !== void 0) {
+    try {
+      process.stdout.write(finalized.stdout);
+    } catch (error) {
+      if (policy === "continue") {
+        reportUnexpectedError(onUnexpectedError, error, "write");
+        cleanupQuietly();
+        process.exit(FALLBACK_EXIT_SUCCESS);
+      }
+      writeUnexpectedErrorStderr(error);
+      cleanupQuietly();
+      process.exit(FALLBACK_EXIT_ERROR);
+    }
+  }
+  process.exit(finalized.exitCode);
+}
+
+// node_modules/@goodfoot/agent-hooks/dist/agents/claude-code/transport.js
+var BLOCK_SHAPE_BY_EVENT = {
+  PermissionRequest: (reason) => ({
+    hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "deny", message: reason } }
+  }),
+  PreToolUse: (reason) => ({
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: reason
+    }
+  })
+};
+function translateBlockToPayload(eventName, error) {
+  const reason = error.message;
+  const known = HOOK_EVENT_NAMES.includes(eventName) ? eventName : void 0;
+  const payload = known !== void 0 ? BLOCK_SHAPE_BY_EVENT[known]?.(reason) ?? { continue: false, stopReason: reason } : { continue: false, stopReason: reason };
+  if (error.fields !== void 0) {
+    Object.assign(payload, error.fields);
+  }
+  return payload;
 }
 function convertToHookOutput(specificOutput) {
   const { stdout, stderr, rawStdout } = specificOutput;
@@ -536,82 +707,64 @@ function convertToHookOutput(specificOutput) {
   }
   return result;
 }
-var HandlerThrewError = class {
-  original;
-  constructor(original) {
-    this.original = original;
+function formatErrorText(error) {
+  return error instanceof Error ? `${error.stack ?? error.message}
+` : `${String(error)}
+`;
+}
+function detectRawStdout(output) {
+  if (output._type === "WorktreeCreate" || output._type === "WorktreeRemove") {
+    return output.rawStdout;
   }
-};
-async function runHandlerPhases(hookFn, policy, onUnexpectedError, setPhase) {
-  let stdinContent;
-  try {
-    stdinContent = await readStdin();
-  } catch (error) {
-    logger.logError(error, "Failed to read stdin");
-    return createMalformedInputOutput(error);
-  }
-  setPhase("parse");
-  let input;
-  try {
-    input = parseStdinInput(stdinContent);
-  } catch (error) {
-    logger.logError(error, "Failed to parse stdin JSON");
-    return createMalformedInputOutput(error);
-  }
-  const hookEventName = hookFn.hookEventName;
-  logger.setContext(hookEventName, input);
-  const context = hookEventName === "SessionStart" ? { logger, persistEnvVar, persistEnvVars } : { logger };
-  setPhase("handler");
-  try {
-    const specificOutput = await hookFn(input, context);
-    return specificOutput !== null ? convertToHookOutput(specificOutput) : void 0;
-  } catch (error) {
-    if (policy !== "continue") {
-      throw new HandlerThrewError(error);
-    }
-    reportUnexpectedError(onUnexpectedError, error, "handler");
-    return void 0;
-  }
+  return void 0;
+}
+function createClaudeCodeTransport(eventName, policy, onUnexpectedError) {
+  return {
+    finalize(outcome) {
+      switch (outcome.kind) {
+        case "response": {
+          const converted = outcome.output === null || outcome.output === void 0 ? void 0 : convertToHookOutput(outcome.output);
+          if (converted?.stderr !== void 0) {
+            return { stderr: converted.stderr, exitCode: EXIT_CODES.BLOCK };
+          }
+          let serializedText;
+          try {
+            serializedText = converted?.rawStdout !== void 0 ? converted.rawStdout : JSON.stringify(converted?.stdout ?? {});
+          } catch (error) {
+            logger.logError(error, "Failed to serialize hook output");
+            if (policy !== "continue") {
+              return { stderr: formatErrorText(error), exitCode: EXIT_CODES.ERROR };
+            }
+            onUnexpectedError?.(error, "serialize");
+            serializedText = "{}";
+          }
+          return { stdout: serializedText, exitCode: EXIT_CODES.SUCCESS };
+        }
+        case "rawStdout":
+          return { stdout: outcome.stdout, exitCode: EXIT_CODES.SUCCESS };
+        case "block": {
+          return {
+            stdout: JSON.stringify(translateBlockToPayload(eventName, outcome.error)),
+            exitCode: EXIT_CODES.SUCCESS
+          };
+        }
+        case "handlerError": {
+          if (outcome.phase === "read" || outcome.phase === "parse") {
+            logger.error(`Invalid JSON input: ${outcome.error instanceof Error ? outcome.error.message : String(outcome.error)}`);
+            return { stdout: "{}", exitCode: EXIT_CODES.SUCCESS };
+          }
+          logger.error(`Hook handler error: ${outcome.error instanceof Error ? outcome.error.message : String(outcome.error)}`);
+          return { stderr: formatErrorText(outcome.error), exitCode: EXIT_CODES.BLOCK };
+        }
+      }
+    },
+    rawStdout: detectRawStdout
+  };
 }
 async function execute(hookFn) {
   const policy = hookFn.unexpectedError ?? "error";
-  const onUnexpectedError = hookFn.onUnexpectedError;
-  let phase = "read";
-  let output;
-  try {
-    output = await runHandlerPhases(hookFn, policy, onUnexpectedError, (p) => {
-      phase = p;
-    });
-  } catch (error) {
-    if (error instanceof HandlerThrewError) {
-      handleHandlerError(error.original);
-    }
-    handleUnexpectedError(error, phase, policy, onUnexpectedError);
-    output = void 0;
-  }
-  if (output?.stderr !== void 0) {
-    phase = "cleanup";
-    cleanup(policy, onUnexpectedError);
-    process.stderr.write(output.stderr);
-    process.exit(EXIT_CODES.BLOCK);
-  }
-  phase = "serialize";
-  let serializedText;
-  try {
-    serializedText = output?.rawStdout !== void 0 ? output.rawStdout : JSON.stringify(output?.stdout ?? {});
-  } catch (error) {
-    handleUnexpectedError(error, "serialize", policy, onUnexpectedError);
-    serializedText = "{}";
-  }
-  phase = "write";
-  try {
-    process.stdout.write(serializedText);
-  } catch (error) {
-    handleUnexpectedError(error, "write", policy, onUnexpectedError);
-  }
-  phase = "cleanup";
-  cleanup(policy, onUnexpectedError);
-  process.exit(EXIT_CODES.SUCCESS);
+  const transport = createClaudeCodeTransport(hookFn.eventName, policy, hookFn.onUnexpectedError);
+  await drive(transport, hookFn);
 }
 
 // src/common/context-warmup.ts

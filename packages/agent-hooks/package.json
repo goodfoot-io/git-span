@@ -7,10 +7,9 @@
     "build:claude": "yarn build:hooks",
     "build:codex": "yarn build:hooks:codex",
     "build:opencode": "node -e \"require('esbuild').buildSync({ entryPoints: ['src/opencode/index.ts'], absWorkingDir: process.cwd(), bundle: true, platform: 'node', format: 'esm', minify: false, sourcemap: false, outfile: '../../plugins-opencode/git-span/dist/index.js' })\"",
-    "build:hooks": "yarn claude-code-hooks -i \"src/claude/{session-start,advisor,static-plan,post-tool-use,post-tool-use-failure,session-end}.ts\" -o \"../../plugins-claude/git-span/hooks/hooks.json\" --no-sourcemap",
-    "build:hooks:codex": "yarn codex-hooks -i \"src/codex/{session-start,advisor,static-plan,apply-patch-plan,post-tool-use,stop}.ts\" -o \"../../plugins-codex/git-span/hooks/hooks.json\" --plugin-root --no-sourcemap",
-    "claude-code-hooks": "node scripts/hooks-cli-wrapper.js @goodfoot/claude-code-hooks",
-    "codex-hooks": "node scripts/hooks-cli-wrapper.js @goodfoot/codex-hooks",
+    "build:hooks": "yarn agent-hooks --agent claude-code -i \"src/claude/{session-start,advisor,static-plan,post-tool-use,post-tool-use-failure,session-end}.ts\" -o \"../../plugins-claude/git-span/hooks/hooks.json\" --no-sourcemap",
+    "build:hooks:codex": "yarn agent-hooks --agent codex -i \"src/codex/{session-start,advisor,static-plan,apply-patch-plan,post-tool-use,stop}.ts\" -o \"../../plugins-codex/git-span/hooks/hooks.json\" --plugin-root --no-sourcemap",
+    "agent-hooks": "node scripts/hooks-cli-wrapper.js",
     "bench:static": "node scripts/run-static-attribution-benchmark.js",
     "bench:hooks": "node scripts/run-hook-path-benchmark.js",
     "bench:context-hooks": "node scripts/run-context-integration-benchmark.js",
@@ -19,8 +18,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@goodfoot/claude-code-hooks": "^1.9.0",
-    "@goodfoot/codex-hooks": "^1.3.0"
+    "@goodfoot/agent-hooks": "1.0.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.8",

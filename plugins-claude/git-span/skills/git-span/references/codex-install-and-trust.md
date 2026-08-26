@@ -63,8 +63,10 @@ Hash-stable filenames (produced by the plugin's `--plugin-root` build) keep
 an existing trust decision valid across plugin updates, so re-trusting after
 every upgrade is not expected to be necessary.
 
-## Windows caveat
+## Windows support
 
-`@goodfoot/codex-hooks` disables hooks entirely on Windows. There is no
-partial-functionality fallback — on Windows, none of the steps above produce
-running hooks.
+The Codex adapter now comes from `@goodfoot/agent-hooks/codex`. The unified
+package does not disable hooks on Windows, and its compiler normalizes paths
+for cross-platform output. The same install and trust flow applies there;
+`git span --version` must still resolve successfully in the Codex environment
+before the hooks can work.

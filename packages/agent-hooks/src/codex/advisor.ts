@@ -14,7 +14,7 @@
  * Whether Codex's `permissionDecision: 'deny'` actually *blocks* the shell tool
  * live was never confirmed in this repo: the Phase 0 spike could not get a
  * from-scratch plugin to load, so the deny path was never exercised end-to-end.
- * The only positive evidence is documentary — the `@goodfoot/codex-hooks` README
+ * The only positive evidence is documentary — the `@goodfoot/agent-hooks/codex` README
  * (the exact version this repo depends on) ships a worked `permissionDecision:
  * 'deny'` example matched on `"Bash"`. This adapter therefore ships the hard-deny
  * path per that README ({@link CODEX_ADVISOR_HARD_DENY} = `true`), but keeps the
@@ -35,7 +35,7 @@
  * divides to seconds at emit).
  */
 
-import { type HookContext, type PreToolUseInput, preToolUseHook, preToolUseOutput } from '@goodfoot/codex-hooks';
+import { type HookContext, type PreToolUseInput, preToolUseHook, preToolUseOutput } from '@goodfoot/agent-hooks/codex';
 import {
   type AdvisorExecutors,
   type AdvisorMemoState,
@@ -53,7 +53,7 @@ import { disableUpdateCheck } from '../common/update-check-env.js';
 
 /**
  * Whether Codex's `permissionDecision: 'deny'` is trusted to block the shell tool
- * live. Ships `true` (hard deny) per the `@goodfoot/codex-hooks` README's worked
+ * live. Ships `true` (hard deny) per the `@goodfoot/agent-hooks/codex` README's worked
  * example. Flip to `false` to activate the CARD.md-documented fallback if a live
  * session shows deny does not fire — see notes/codex-deny-spike.md and this
  * file's header. This is the single switch that separates the two code paths.

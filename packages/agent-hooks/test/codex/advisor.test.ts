@@ -9,7 +9,7 @@
  * covered by test/common/advisor-core.test.ts.
  */
 
-import { Logger } from '@goodfoot/codex-hooks';
+import { Logger } from '@goodfoot/agent-hooks/codex';
 import { describe, expect, it } from 'vitest';
 import hook, { createHandler, extractShellCommand } from '../../src/codex/advisor.js';
 import {
@@ -99,7 +99,7 @@ function toResult(raw: unknown): HookResult {
 
 describe('codex advisor hook registration', () => {
   it('registers PreToolUse and matches the plausible shell tool names', () => {
-    expect(hook.hookEventName).toBe('PreToolUse');
+    expect(hook.eventName).toBe('PreToolUse');
     expect(hook.matcher).toBe('Bash|shell|exec|local_shell');
   });
 });

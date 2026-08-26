@@ -4,6 +4,7 @@ summary: An organization-wide span graph as an explicit map of where architectur
 aliases: [Implicit Debt Mapping]
 tags: [marketing, use-cases]
 keywords: [architecture, implicit debt, blast radius, span graph, CodeScene, remediation]
+links-reviewed: 1
 ---
 
 # Semantic architecture and implicit debt mapping

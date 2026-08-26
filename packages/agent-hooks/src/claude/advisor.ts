@@ -27,7 +27,12 @@
  * Claude Code itself reads the `hooks.json` field as seconds).
  */
 
-import { type HookContext, type PreToolUseInput, preToolUseHook, preToolUseOutput } from '@goodfoot/claude-code-hooks';
+import {
+  type HookContext,
+  type PreToolUseInput,
+  preToolUseHook,
+  preToolUseOutput
+} from '@goodfoot/agent-hooks/claude-code';
 import {
   type AdvisorExecutors,
   type AdvisorMemoState,

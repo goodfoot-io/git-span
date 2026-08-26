@@ -1,7 +1,7 @@
 /** Codex PreToolUse planner for every supported shell envelope. */
 
 import { resolve as resolvePath } from 'node:path';
-import { type HookContext, type PreToolUseInput, preToolUseHook } from '@goodfoot/codex-hooks';
+import { type HookContext, type PreToolUseInput, preToolUseHook } from '@goodfoot/agent-hooks/codex';
 import { DEFAULT_SESSION_LAYOUT, type SessionLayout } from '../common/agent-hooks-common.js';
 import { createDefaultPlannedTouchStore, planBashTouches } from '../common/bash-attribution.js';
 import { disableUpdateCheck } from '../common/update-check-env.js';

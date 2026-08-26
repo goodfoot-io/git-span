@@ -1,6 +1,6 @@
 /** Claude SessionStart hook — warm the repository context service off-path. */
 
-import { type HookContext, type SessionStartInput, sessionStartHook } from '@goodfoot/claude-code-hooks';
+import { type HookContext, type SessionStartInput, sessionStartHook } from '@goodfoot/agent-hooks/claude-code';
 import { startContextWarmup, type WarmupSpawner } from '../common/context-warmup.js';
 import { disableUpdateCheck } from '../common/update-check-env.js';
 

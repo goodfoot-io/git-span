@@ -2,6 +2,7 @@
 title: Profiling git span drift
 summary: How to profile `git span drift` — flame-graph capture with `perf record` + inferno, the opt-in `--perf-trace` per-anchor wall-clock CSV emitter, and the `--perf` / `GIT_SPAN_PERF=1` cache-path counters that say which cache path a run took and why.
 aliases: [git-span profiling, perf trace, cache-path counters, perf-trace]
+links-reviewed: 1
 ---
 
 # Profiling `git span drift`

@@ -4,6 +4,7 @@ summary: Modernization creates temporary couplings valid only during a lifecycle
 aliases: [Migration Governance, Deprecation Governance]
 tags: [marketing, use-cases]
 keywords: [modernization, migration, deprecation, dual write, cutover, lifecycle, evidence gate]
+links-reviewed: 1
 ---
 
 # Modernization migration and deprecation governance

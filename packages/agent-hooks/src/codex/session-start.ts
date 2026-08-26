@@ -1,6 +1,6 @@
 /** Codex SessionStart hook — warm the repository context service off-path. */
 
-import { type HookContext, type SessionStartInput, sessionStartHook } from '@goodfoot/codex-hooks';
+import { type HookContext, type SessionStartInput, sessionStartHook } from '@goodfoot/agent-hooks/codex';
 import { startContextWarmup, type WarmupSpawner } from '../common/context-warmup.js';
 import { disableUpdateCheck } from '../common/update-check-env.js';
 

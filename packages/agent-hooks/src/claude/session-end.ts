@@ -1,6 +1,6 @@
 /** Claude SessionEnd hook — eager cleanup of session memo and planned touches. */
 
-import { type HookContext, type SessionEndInput, sessionEndHook } from '@goodfoot/claude-code-hooks';
+import { type HookContext, type SessionEndInput, sessionEndHook } from '@goodfoot/agent-hooks/claude-code';
 import { cleanupSessionState, DEFAULT_SESSION_LAYOUT, type SessionLayout } from '../common/agent-hooks-common.js';
 import { disableUpdateCheck } from '../common/update-check-env.js';
 

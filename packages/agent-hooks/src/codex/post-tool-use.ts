@@ -1,7 +1,12 @@
 /** Codex PostToolUse adapter for shell and apply_patch static attribution. */
 
 import { resolve as resolvePath } from 'node:path';
-import { type HookContext, type PostToolUseInput, postToolUseHook, postToolUseOutput } from '@goodfoot/codex-hooks';
+import {
+  type HookContext,
+  type PostToolUseInput,
+  postToolUseHook,
+  postToolUseOutput
+} from '@goodfoot/agent-hooks/codex';
 import {
   DEFAULT_SESSION_LAYOUT,
   resolveFrame,

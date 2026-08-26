@@ -26,8 +26,8 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { Logger as ClaudeLogger } from '@goodfoot/claude-code-hooks';
-import { Logger as CodexLogger } from '@goodfoot/codex-hooks';
+import { Logger as ClaudeLogger } from '@goodfoot/agent-hooks/claude-code';
+import { Logger as CodexLogger } from '@goodfoot/agent-hooks/codex';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createHandler as createClaudeHandler } from '../../src/claude/post-tool-use.js';
 import { createHandler as createClaudeFailureHandler } from '../../src/claude/post-tool-use-failure.js';

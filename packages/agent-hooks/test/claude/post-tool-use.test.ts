@@ -11,7 +11,7 @@
 import { execFileSync } from 'node:child_process';
 import { rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { Logger } from '@goodfoot/claude-code-hooks';
+import { Logger } from '@goodfoot/agent-hooks/claude-code';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import hook, { createHandler } from '../../src/claude/post-tool-use.js';
 import { createHandler as createStaticPlanHandler } from '../../src/claude/static-plan.js';
@@ -136,7 +136,7 @@ function toResult(raw: unknown): HookResult {
 
 describe('claude post-tool-use hook registration', () => {
   it('registers PostToolUse with matcher Read|Edit|Write|Bash', () => {
-    expect(hook.hookEventName).toBe('PostToolUse');
+    expect(hook.eventName).toBe('PostToolUse');
     expect(hook.matcher).toBe('Read|Edit|Write|Bash');
   });
 });

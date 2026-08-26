@@ -1,5 +1,5 @@
-packages/agent-hooks/src/claude/session-start.ts rk64:5dcdc68bccda4fba
-packages/agent-hooks/src/codex/session-start.ts rk64:73afff004f57735f
+packages/agent-hooks/src/claude/session-start.ts rk64:6d464c1e0cda1134
+packages/agent-hooks/src/codex/session-start.ts rk64:188f9bdd66606e0d
 packages/agent-hooks/src/common/context-warmup.ts rk64:43ffb50f45978baa
 packages/agent-hooks/test/common/context-warmup.test.ts rk64:9766dae03e38486b
 packages/git-span/src/cli/context.rs#L865-L869 rk64:26d21e441ff74a69

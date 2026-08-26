@@ -10,7 +10,7 @@
  * test/common/advisor-core.test.ts.
  */
 
-import { Logger } from '@goodfoot/claude-code-hooks';
+import { Logger } from '@goodfoot/agent-hooks/claude-code';
 import { describe, expect, it } from 'vitest';
 import hook, { createHandler } from '../../src/claude/advisor.js';
 import {
@@ -98,7 +98,7 @@ function toResult(raw: unknown): HookResult {
 
 describe('claude advisor hook registration', () => {
   it('registers PreToolUse with matcher Bash', () => {
-    expect(hook.hookEventName).toBe('PreToolUse');
+    expect(hook.eventName).toBe('PreToolUse');
     expect(hook.matcher).toBe('Bash');
   });
 });

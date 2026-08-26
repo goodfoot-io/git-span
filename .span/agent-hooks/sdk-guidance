@@ -1,0 +1,6 @@
+packages/agent-hooks/CLAUDE.md#L1-L1 rk64:55094baa2c8f4b82
+packages/agent-hooks/README.md#L3-L3 rk64:53a7260e5a048add
+packages/agent-hooks/src/claude/advisor.ts#L31-L35 rk64:3f6d3ba82125c3cf
+packages/agent-hooks/src/codex/advisor.ts#L38-L38 rk64:7e502e474417adff
+
+The package guidance names the unified SDK skill and host subpaths, while representative Claude and Codex adapters establish the imports that guidance must describe.

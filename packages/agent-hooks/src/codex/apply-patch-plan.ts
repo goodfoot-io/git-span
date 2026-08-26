@@ -1,7 +1,7 @@
 /** Codex PreToolUse planner that preserves apply_patch hunk ranges. */
 
 import * as fs from 'node:fs';
-import { type HookContext, type PreToolUseInput, preToolUseHook } from '@goodfoot/codex-hooks';
+import { type HookContext, type PreToolUseInput, preToolUseHook } from '@goodfoot/agent-hooks/codex';
 import {
   abspathAgainst,
   DEFAULT_SESSION_LAYOUT,

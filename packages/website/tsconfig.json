@@ -9,7 +9,6 @@
     "resolveJsonModule": true,
     "strict": true,
     "skipLibCheck": true,
-    "baseUrl": ".",
     "paths": {
       "~/*": ["./app/*"],
       "collections/*": ["./.source/*"]

@@ -4,6 +4,7 @@ summary: Architecture of the scroll-driven, drag-orbitable Three.js V8 engine an
 aliases: [Engine Animation, EngineScene, Homepage 3D Animation, V8 Engine Animation, Drag to Orbit, Engine Fog]
 tags: [architecture, website, threejs]
 keywords: [three.js, glTF, GLB, exploded view, scroll timeline, EngineScene, beats.ts, EngineFrame, git-span metaphor, meshopt, engineBackCover, dedup suffix, drag to orbit, fog, cast iron, crankshaft-axis camera, ACES tone mapping, studio HDRI, PMREM, selective bloom, UnrealBloomPass, blackbody color, heartbeat pulse, mismatch bounding box, green glass, MeshPhysicalMaterial, RETURN_TO_NORMAL]
+links-reviewed: 1
 ---
 
 The git-span homepage's pinned right-column media is a scroll-scrubbed, pointer-draggable

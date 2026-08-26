@@ -68,7 +68,7 @@ every upgrade is not expected to be necessary.
 Trusting the hooks makes the advisor active, but whether the
 `permissionDecision: 'deny'` it emits for a hold actually stops the shell
 tool under Codex has never been confirmed by direct execution in this repo —
-only by documentary evidence from the `@goodfoot/codex-hooks` SDK's own
+only by documentary evidence from the `@goodfoot/agent-hooks/codex` adapter's
 example. The advisor surfaces its `systemMessage` checklist either way, so
 you'll see the same span-debt listing whether or not the command pauses.
 Don't count on a trusted advisor to stop anything; rely on `git span drift`
@@ -76,8 +76,10 @@ in CI (see `references/ci-and-sync.md`) as the real backstop, and see
 `references/understanding-hook-output.md` for what a held command looks
 like.
 
-## Windows caveat
+## Windows support
 
-`@goodfoot/codex-hooks` disables hooks entirely on Windows. There is no
-partial-functionality fallback — on Windows, none of the steps above produce
-running hooks.
+The Codex adapter now comes from `@goodfoot/agent-hooks/codex`. The unified
+package does not disable hooks on Windows, and its compiler normalizes paths
+for cross-platform output. The same install and trust flow applies there;
+`git span --version` must still resolve successfully in the Codex environment
+before the hooks can work.

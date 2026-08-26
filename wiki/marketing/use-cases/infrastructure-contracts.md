@@ -4,6 +4,7 @@ summary: Protection against operational half-changes — spans connecting applic
 aliases: [Infrastructure Contracts, Operational Half Changes]
 tags: [marketing, use-cases]
 keywords: [infrastructure, SRE, Helm, Terraform, probe, alert, runbook, configuration, migration]
+links-reviewed: 1
 ---
 
 # Infrastructure and application contracts

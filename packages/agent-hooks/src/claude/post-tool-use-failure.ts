@@ -5,7 +5,7 @@ import {
   type PostToolUseFailureInput,
   postToolUseFailureHook,
   postToolUseFailureOutput
-} from '@goodfoot/claude-code-hooks';
+} from '@goodfoot/agent-hooks/claude-code';
 import { DEFAULT_SESSION_LAYOUT, type SessionLayout } from '../common/agent-hooks-common.js';
 import {
   createDefaultPlannedTouchStore,

@@ -4,6 +4,7 @@ summary: Git-span's commercial category — semantic change assurance — the va
 aliases: [Market Position, Commercial Category]
 tags: [marketing, use-cases]
 keywords: [category, value model, competition, Nx, Sonargraph, CodeScene, Sourcegraph, Swimm, Jama]
+links-reviewed: 1
 ---
 
 # Commercial market position

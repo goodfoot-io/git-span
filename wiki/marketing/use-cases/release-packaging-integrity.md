@@ -4,6 +4,7 @@ summary: The manually synchronized declarations in release engineering — crate
 aliases: [Packaging Integrity]
 tags: [marketing, use-cases]
 keywords: [release, packaging, manifest, version, checksum, CI, distribution]
+links-reviewed: 1
 ---
 
 # Release and packaging integrity

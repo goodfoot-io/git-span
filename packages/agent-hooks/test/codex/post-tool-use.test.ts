@@ -17,7 +17,7 @@
 import { execFileSync } from 'node:child_process';
 import { rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { Logger } from '@goodfoot/codex-hooks';
+import { Logger } from '@goodfoot/agent-hooks/codex';
 import { afterAll, describe, expect, it } from 'vitest';
 import { createHandler as createApplyPatchPlanHandler } from '../../src/codex/apply-patch-plan.js';
 import hook, {
@@ -182,7 +182,7 @@ function toResult(raw: unknown): HookResult {
 
 describe('codex post-tool-use hook registration', () => {
   it('registers PostToolUse with matcher apply_patch|exec_command|exec|shell|local_shell|Bash', () => {
-    expect(hook.hookEventName).toBe('PostToolUse');
+    expect(hook.eventName).toBe('PostToolUse');
     expect(hook.matcher).toBe('apply_patch|exec_command|exec|shell|local_shell|Bash');
   });
 });

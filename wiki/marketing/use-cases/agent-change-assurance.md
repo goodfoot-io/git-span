@@ -4,6 +4,7 @@ summary: The strongest horizontal commercial product — git-span's touch hook, 
 aliases: [Change Assurance, Pull Request Impact Review]
 tags: [marketing, use-cases]
 keywords: [agent, pull request, review, touch hook, commit advisor, CI, MCP]
+links-reviewed: 1
 ---
 
 # Agent change assurance

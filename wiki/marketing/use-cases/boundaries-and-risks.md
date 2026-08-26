@@ -4,6 +4,7 @@ summary: The constraints on git-span's commercial claims — hash drift is not c
 aliases: [Commercial Risks]
 tags: [marketing, use-cases]
 keywords: [risks, boundaries, correctness, authoring cost, prompt injection, cross-repository, efficacy evidence]
+links-reviewed: 1
 ---
 
 # Boundaries and risks
