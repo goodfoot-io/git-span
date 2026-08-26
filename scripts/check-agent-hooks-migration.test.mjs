@@ -9,6 +9,8 @@ import { fileURLToPath } from 'node:url';
 const scanner = join(dirname(fileURLToPath(import.meta.url)), 'check-agent-hooks-migration.mjs');
 const legacyClaude = '@goodfoot/' + 'claude-code-hooks';
 const legacyCodex = '@goodfoot/' + 'codex-hooks';
+const legacyClaudeLog = 'CLAUDE_CODE_' + 'HOOKS_LOG_FILE';
+const legacyCodexLog = 'CODEX_' + 'HOOKS_LOG_FILE';
 const marketplaceSetting = [
   '{',
   '  "enabledPlugins": {',
@@ -39,7 +41,10 @@ function scan(root) {
 }
 
 test('passes a clean tracked tree and ignores untracked build state', () => {
-  const root = fixture({ 'src/adapter.ts': "import '@goodfoot/agent-hooks/codex';\n" });
+  const root = fixture({
+    'src/adapter.ts': "import '@goodfoot/agent-hooks/codex';\n",
+    'README.md': 'Set AGENT_HOOKS_LOG_FILE for hook diagnostics.\n'
+  });
   try {
     writeFileSync(join(root, 'ignored-build.mjs'), legacyCodex);
     const result = scan(root);
@@ -48,6 +53,23 @@ test('passes a clean tracked tree and ignores untracked build state', () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+for (const [host, variable] of [
+  ['Claude', legacyClaudeLog],
+  ['Codex', legacyCodexLog]
+]) {
+  test(`rejects the superseded ${host} diagnostic variable in active guidance`, () => {
+    const root = fixture({ 'docs/hooks.md': `Set ${variable} for diagnostics.\n` });
+    try {
+      const result = scan(root);
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /docs\/hooks\.md/);
+      assert.match(result.stderr, /superseded hook diagnostic variable/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
 
 test('ignores a tracked legacy file deleted from the working tree', () => {
   const root = fixture({ 'src/removed-adapter.ts': `import '${legacyClaude}';\n` });

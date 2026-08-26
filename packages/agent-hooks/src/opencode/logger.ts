@@ -3,7 +3,7 @@
  * {@link MemoLogger} surface (`../common/span-surface.js`).
  *
  * OpenCode has no SDK-level hook logger (the Claude/Codex twins log through
- * their hosts' `CLAUDE_CODE_HOOKS_LOG_FILE` / `CODEX_HOOKS_LOG_FILE`), so this
+ * their hosts' unified `AGENT_HOOKS_LOG_FILE`), so this
  * adapter ships its own: when `OPENCODE_GIT_SPAN_LOG_FILE` names a path, every
  * record appends as one JSON object per line (JSONL); unset, the logger is a
  * silent no-op — the same "no destination, record discarded" posture the twins'

@@ -299,7 +299,7 @@ rendered:
 Suppression is deliberately invisible — a suppressed file is simply one the
 agent is never told about. That means a correct suppression, a wrong one, and a
 diff read that failed and suppressed nothing all look identical from outside.
-When you need to tell them apart, set `CLAUDE_CODE_HOOKS_LOG_FILE` to a path and
+When you need to tell them apart, set `AGENT_HOOKS_LOG_FILE` to a path and
 re-run the command; each advisor invocation appends a `git-span advisor churn
 suppression` record with the candidate count, how many were dropped by path,
 how many by content, how many were reported, and whether the diff read

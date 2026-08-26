@@ -133,11 +133,11 @@ function convertHookTimeoutsToSeconds(outputPath) {
 
 async function main() {
   const cliArgs = process.argv.slice(2);
-  const agentIndex = cliArgs.indexOf('--agent');
-  const agent =
-    agentIndex === -1
-      ? cliArgs.find((arg) => arg.startsWith('--agent='))?.slice('--agent='.length)
-      : cliArgs[agentIndex + 1];
+  const agentIndexes = cliArgs.flatMap((arg, index) =>
+    arg === '--agent' || arg.startsWith('--agent=') ? [index] : []
+  );
+  const exactAgentIndex = agentIndexes.length === 1 && cliArgs[agentIndexes[0]] === '--agent' ? agentIndexes[0] : -1;
+  const agent = exactAgentIndex === -1 ? undefined : cliArgs[exactAgentIndex + 1];
   if (agent !== 'claude-code' && agent !== 'codex') {
     process.stderr.write('Usage: hooks-cli-wrapper.js --agent claude-code|codex [...cli-args]\n');
     process.exit(1);

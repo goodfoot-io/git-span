@@ -5,6 +5,7 @@ import { lstatSync, readFileSync, readlinkSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 const forbiddenPackages = ['@goodfoot/' + 'claude-code-hooks', '@goodfoot/' + 'codex-hooks'];
+const forbiddenDiagnosticVariables = ['CLAUDE_CODE_' + 'HOOKS_LOG_FILE', 'CODEX_' + 'HOOKS_LOG_FILE'];
 const retainedIdentifiers = [
   {
     path: '.claude/settings.json',
@@ -28,6 +29,10 @@ function occurrences(content, needle) {
     match = content.indexOf(needle, offset);
   }
   return count;
+}
+
+function isActiveGuidancePath(path) {
+  return path.endsWith('.md') || path.endsWith('.mdx') || path === 'packages/website/app/lib/agent-skills.generated.ts';
 }
 
 let root;
@@ -63,6 +68,12 @@ for (const path of trackedPaths) {
   for (const packageName of forbiddenPackages) {
     const count = occurrences(content, packageName);
     if (count > 0) failures.push(`${path}: ${count} superseded hook package occurrence(s): ${packageName}`);
+  }
+  if (isActiveGuidancePath(path)) {
+    for (const variable of forbiddenDiagnosticVariables) {
+      const count = occurrences(content, variable);
+      if (count > 0) failures.push(`${path}: ${count} superseded hook diagnostic variable occurrence(s): ${variable}`);
+    }
   }
 }
 

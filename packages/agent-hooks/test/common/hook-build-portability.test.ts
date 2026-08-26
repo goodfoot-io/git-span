@@ -7,7 +7,7 @@
  * `build:hooks`/`build:hooks:codex`, so they fail in place inside any
  * worktree that reproduces the underlying symlink layout.
  */
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -149,6 +149,65 @@ describe('generated hook bin portability', () => {
       }
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['codex then claude-code', ['codex', 'claude-code']],
+    ['claude-code then codex', ['claude-code', 'codex']],
+    ['claude-code twice', ['claude-code', 'claude-code']],
+    ['codex twice', ['codex', 'codex']]
+  ])('rejects duplicate --agent selectors before compiling: %s', (_label, agents) => {
+    const outDir = mkdtempSync(join(tmpdir(), 'agent-hooks-duplicate-agent-'));
+    try {
+      const result = spawnSync(
+        process.execPath,
+        [
+          'scripts/hooks-cli-wrapper.js',
+          '--agent',
+          agents[0],
+          '--agent',
+          agents[1],
+          '-i',
+          'src/claude/session-start.ts',
+          '-o',
+          join(outDir, 'hooks.json')
+        ],
+        { cwd: join(WORKSPACE_ROOT, 'packages/agent-hooks'), encoding: 'utf8' }
+      );
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('Usage: hooks-cli-wrapper.js');
+      expect(existsSync(join(outDir, 'hooks.json'))).toBe(false);
+      expect(readdirSync(outDir)).toEqual([]);
+    } finally {
+      rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['exact Codex then equals Claude', ['--agent', 'codex', '--agent=claude-code']],
+    ['equals Codex then exact Claude', ['--agent=codex', '--agent', 'claude-code']]
+  ])('rejects mixed exact and equals-form agent selectors before compiling: %s', (_label, selectors) => {
+    const outDir = mkdtempSync(join(tmpdir(), 'agent-hooks-mixed-agent-'));
+    try {
+      const result = spawnSync(
+        process.execPath,
+        [
+          'scripts/hooks-cli-wrapper.js',
+          ...selectors,
+          '-i',
+          'src/claude/session-start.ts',
+          '-o',
+          join(outDir, 'hooks.json')
+        ],
+        { cwd: join(WORKSPACE_ROOT, 'packages/agent-hooks'), encoding: 'utf8' }
+      );
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('Usage: hooks-cli-wrapper.js');
+      expect(existsSync(join(outDir, 'hooks.json'))).toBe(false);
+      expect(readdirSync(outDir)).toEqual([]);
+    } finally {
+      rmSync(outDir, { recursive: true, force: true });
     }
   });
 
@@ -588,6 +647,40 @@ function assertNoLegacyBundleCode(dir: string): void {
     for (const marker of LEGACY_RUNTIME_MARKERS) expect(content, `${name} contains ${marker}`).not.toContain(marker);
   }
 }
+
+describe('emitted hook diagnostics', () => {
+  let bundles: BuiltRealHookBundles;
+
+  beforeAll(() => {
+    bundles = buildRealHookBundles();
+  }, BUILD_TEST_TIMEOUT_MS);
+
+  afterAll(() => bundles?.cleanup());
+
+  it.each([
+    ['Claude', () => bundles.claudeHooksDir],
+    ['Codex', () => bundles.codexHooksDir]
+  ])('%s emitted hook writes JSONL diagnostics through AGENT_HOOKS_LOG_FILE', (_host, hooksDir) => {
+    const logPath = join(bundles.root, `${String(_host).toLowerCase()}-diagnostics.jsonl`);
+    invokeRealHook(
+      join(hooksDir(), 'static-plan.mjs'),
+      {
+        session_id: `logging-${String(_host).toLowerCase()}`,
+        cwd: join(bundles.root, 'missing-repository'),
+        tool_name: 'Bash',
+        tool_input: { command: 'rm file.ts' },
+        tool_use_id: 'logging-witness'
+      },
+      { ...process.env, AGENT_HOOKS_LOG_FILE: logPath }
+    );
+    const records = readFileSync(logPath, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { message?: unknown });
+    expect(records.length).toBeGreaterThan(0);
+    expect(records.some(({ message }) => typeof message === 'string' && message.length > 0)).toBe(true);
+  });
+});
 
 describe('mandatory installed-artifact static attribution smoke', () => {
   let bundles: BuiltRealHookBundles;
