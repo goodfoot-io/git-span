@@ -1,7 +1,8 @@
 /**
  * Update-check suppression env contract (main-246): every hook entry point —
- * the ten sources wired by `plugins-claude/git-span/hooks/hooks.json` and
- * `plugins-codex/git-span/hooks/hooks.json` — sets
+ * the sources wired by `plugins-claude/git-span/hooks/hooks.json`,
+ * `plugins-codex/git-span/hooks/hooks.json`, and
+ * `plugins-antigravity/git-span/hooks.json` — sets
  * `GIT_SPAN_DISABLE_UPDATE_CHECK=1` at module scope, before any executor can
  * run. The assertion is ordering-sensitive by construction: each entry module
  * is imported (which registers its default export via the hook factory) and
@@ -15,7 +16,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 const SUPPRESSION_VAR = 'GIT_SPAN_DISABLE_UPDATE_CHECK';
 
-/** The ten hook entry points wired into the two plugin hook manifests. */
+/** The hook entry points wired into the plugin hook manifests. */
 const ENTRY_MODULES = [
   '../../src/claude/advisor.js',
   '../../src/claude/static-plan.js',
@@ -26,7 +27,14 @@ const ENTRY_MODULES = [
   '../../src/codex/static-plan.js',
   '../../src/codex/apply-patch-plan.js',
   '../../src/codex/post-tool-use.js',
-  '../../src/codex/stop.js'
+  '../../src/codex/stop.js',
+  '../../src/antigravity/pre-invocation.js',
+  '../../src/antigravity/advisor.js',
+  '../../src/antigravity/static-plan.js',
+  '../../src/antigravity/tool-call-stash.js',
+  '../../src/antigravity/post-tool-use.js',
+  '../../src/antigravity/post-invocation.js',
+  '../../src/antigravity/stop.js'
 ] as const;
 
 describe('update-check suppression env contract', () => {

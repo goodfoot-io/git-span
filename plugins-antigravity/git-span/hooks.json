@@ -1,0 +1,85 @@
+{
+  "pre-invocation": {
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "node \"./bin/pre-invocation.mjs\"",
+        "timeout": 10
+      }
+    ]
+  },
+  "advisor": {
+    "PreToolUse": [
+      {
+        "matcher": "run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"./bin/advisor.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+  "static-plan": {
+    "PreToolUse": [
+      {
+        "matcher": "run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"./bin/static-plan.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+  "tool-call-stash": {
+    "PreToolUse": [
+      {
+        "matcher": "run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"./bin/tool-call-stash.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+  "post-tool-use": {
+    "PostToolUse": [
+      {
+        "matcher": "run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"./bin/post-tool-use.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+  "post-invocation": {
+    "PostInvocation": [
+      {
+        "type": "command",
+        "command": "node \"./bin/post-invocation.mjs\"",
+        "timeout": 10
+      }
+    ]
+  },
+  "stop": {
+    "Stop": [
+      {
+        "type": "command",
+        "command": "node \"./bin/stop.mjs\"",
+        "timeout": 10
+      }
+    ]
+  }
+}

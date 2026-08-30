@@ -81,6 +81,7 @@
       "!!**/*.log",
       "!!plugins-claude/git-span/hooks/bin/**/*.mjs",
       "!!plugins-codex/git-span/hooks/*.mjs",
+      "!!plugins-antigravity/git-span/bin/**/*.mjs",
       "!!skills-src/**",
       "!!plugins-claude/git-span/skills/**",
       "!!plugins-codex/git-span/skills/**",

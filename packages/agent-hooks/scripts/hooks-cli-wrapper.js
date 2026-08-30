@@ -93,22 +93,40 @@ function canonicalizeHookManifest(outputPath, inputArg) {
     return JSON.stringify(left).localeCompare(JSON.stringify(right));
   };
 
-  const hookEntries = Object.entries(manifest.hooks ?? {});
-  for (const [, groups] of hookEntries) {
-    for (const group of groups) {
-      group.hooks?.sort((left, right) => {
-        const rank = rankOfCommand(left.command) - rankOfCommand(right.command);
-        return rank !== 0 ? rank : left.command.localeCompare(right.command);
-      });
-    }
-    groups.sort(compareGroups);
+  // The Antigravity manifest has no `hooks` envelope at all -- its top-level
+  // keys are the hook names themselves (one bundle each), written in
+  // compile-completion order, which varies run to run. Reorder those keys by
+  // declared-input rank instead; running the claude/codex branch on this
+  // shape would inject a spurious top-level `"hooks": {}` the host would
+  // read as a hook named "hooks".
+  if (manifest.hooks === undefined) {
+    const entries = Object.entries(manifest);
+    entries.sort(([left], [right]) => {
+      const rank =
+        (rankByBundle.get(left) ?? Number.MAX_SAFE_INTEGER) - (rankByBundle.get(right) ?? Number.MAX_SAFE_INTEGER);
+      return rank !== 0 ? rank : left.localeCompare(right);
+    });
+    writeFileSync(outputPath, `${JSON.stringify(Object.fromEntries(entries), null, 2)}\n`);
+    return;
   }
-  hookEntries.sort(([leftEvent, leftGroups], [rightEvent, rightGroups]) => {
-    const leftRank = Math.min(...leftGroups.map(rankOfGroup));
-    const rightRank = Math.min(...rightGroups.map(rankOfGroup));
-    return leftRank !== rightRank ? leftRank - rightRank : leftEvent.localeCompare(rightEvent);
-  });
-  manifest.hooks = Object.fromEntries(hookEntries);
+  {
+    const hookEntries = Object.entries(manifest.hooks);
+    for (const [, groups] of hookEntries) {
+      for (const group of groups) {
+        group.hooks?.sort((left, right) => {
+          const rank = rankOfCommand(left.command) - rankOfCommand(right.command);
+          return rank !== 0 ? rank : left.command.localeCompare(right.command);
+        });
+      }
+      groups.sort(compareGroups);
+    }
+    hookEntries.sort(([leftEvent, leftGroups], [rightEvent, rightGroups]) => {
+      const leftRank = Math.min(...leftGroups.map(rankOfGroup));
+      const rightRank = Math.min(...rightGroups.map(rankOfGroup));
+      return leftRank !== rightRank ? leftRank - rightRank : leftEvent.localeCompare(rightEvent);
+    });
+    manifest.hooks = Object.fromEntries(hookEntries);
+  }
 
   if (Array.isArray(manifest.__generated?.files)) {
     manifest.__generated.files.sort((left, right) => {

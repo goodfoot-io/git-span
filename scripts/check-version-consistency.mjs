@@ -66,7 +66,9 @@ for (const name of [...pluginNames].sort()) {
   const present = manifestPaths.filter((path) => existsSync(resolve(root, path)));
   if (present.length === 0) continue; // A bare directory with no manifest anywhere is not a plugin manifest set.
   for (const path of manifestPaths.filter((path) => !present.includes(path))) {
-    failures.push(`${name}: missing platform manifest ${path} — a plugin with any platform manifest must carry all four`);
+    failures.push(
+      `${name}: missing platform manifest ${path} — a plugin with any platform manifest must carry all four`
+    );
   }
 
   /** @type {[string, string][]} */
