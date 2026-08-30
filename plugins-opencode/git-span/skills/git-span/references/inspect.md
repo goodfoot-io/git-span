@@ -1,3 +1,5 @@
+<!-- Generated from skills-src/git-span/git-span/references/inspect.md by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild. -->
+
 # Inspect spans (read-only — no `add`/`remove`/`delete`/`commit` here)
 
 Match the question to the command, don't reflexively mutate:

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// Generated from skills-src/git-span/git-span/scripts/mine.mjs by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild.
 // Mine git history for implicit semantic dependencies.
 //
 // Combines several signals from the literature:

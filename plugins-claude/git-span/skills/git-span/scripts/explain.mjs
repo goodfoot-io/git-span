@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// Generated from skills-src/git-span/git-span/scripts/explain.mjs by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild.
 // Explain why a specific pair of files appears coupled.
 //
 // Lists every commit in the window that touched both files, with subject and

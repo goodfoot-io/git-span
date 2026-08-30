@@ -1,3 +1,5 @@
+<!-- Generated from skills-src/git-span/git-span/references/triage.md by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild. -->
+
 # Multi-span / uncertain-coupling triage
 
 1. Run `git span drift` once. For each drifted span, run `git span history <name>`

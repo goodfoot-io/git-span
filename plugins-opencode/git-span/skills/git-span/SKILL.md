@@ -2,6 +2,7 @@
 name: git-span
 description: Track, declare, reconcile, and clean up implicit semantic couplings — file/line-range anchors coupled by nothing a schema, test, or build step enforces.
 ---
+<!-- Generated from skills-src/git-span/git-span/SKILL.md.eta by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild. -->
 
 # git-span
 

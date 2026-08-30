@@ -13,9 +13,16 @@ VERSION_LOCK_STAGED=$(echo "$STAGED_FILES" | grep -E '^(package\.json|packages/[
 [ -z "$VERSION_LOCK_STAGED" ] && exit 0
 
 echo "Locking package + plugin versions to highest semver..."
-node <<'NODE'
-const fs = require('fs');
-const path = require('path');
+node --input-type=module <<'NODE'
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+// Hooks run from the repository toplevel, so the shared manifest map resolves
+// from the working directory.
+const { platformManifest, marketplacePath } = await import(
+  pathToFileURL(path.resolve('scripts/plugin-manifests.mjs')).href
+);
 
 function glob(dir, pattern) {
   if (!fs.existsSync(dir)) return [];
@@ -40,16 +47,12 @@ addPackageJson('package.json');
 for (const f of glob('packages', 'package.json')) addPackageJson(f);
 for (const f of glob('npm', 'package.json')) addPackageJson(f);
 
-// Plugin manifests across the four platform layouts. A plugin that carries a
-// manifest under any platform root must carry one under all four — a missing
-// manifest would silently ship that platform a stale version, so fail closed.
-const platformManifest = {
-  'plugins-claude': (name) => path.join('plugins-claude', name, '.claude-plugin', 'plugin.json'),
-  'plugins-codex': (name) => path.join('plugins-codex', name, '.codex-plugin', 'plugin.json'),
-  'plugins-opencode': (name) => path.join('plugins-opencode', name, 'package.json'),
-  'plugins-antigravity': (name) => path.join('plugins-antigravity', name, 'plugin.json'),
-};
+// Plugin manifests across the four platform layouts (the shared map in
+// scripts/plugin-manifests.mjs). A plugin that carries a manifest under any
+// platform root must carry one under all four — a missing manifest would
+// silently ship that platform a stale version, so fail closed.
 const pluginNames = new Set();
+const manifestedPlugins = new Set();
 for (const dir of Object.keys(platformManifest)) {
   if (!fs.existsSync(dir)) continue;
   for (const name of fs.readdirSync(dir)) {
@@ -69,6 +72,7 @@ for (const name of pluginNames) {
   // Each manifest contributes the plugin's own version field only, never a
   // dependency's.
   for (const file of present) addPackageJson(file);
+  if (present.length > 0) manifestedPlugins.add(name);
 }
 
 // Cargo manifest: packages/git-span/Cargo.toml. The CLI's --version is wired
@@ -98,12 +102,17 @@ if (fs.existsSync(cargoFile)) {
   });
 }
 
-// Marketplace: each plugins[].version must match
-const marketplaceFile = '.claude-plugin/marketplace.json';
+// Marketplace: each plugins[].version must match, and — the same predicate
+// check-version-consistency.mjs enforces — every plugin carrying any platform
+// manifest must be listed, or the marketplace silently ships a version this
+// lock never touched.
+const marketplaceFile = marketplacePath;
 const marketplaceEntries = [];
+const marketplaceNames = new Set();
 if (fs.existsSync(marketplaceFile)) {
   const json = JSON.parse(fs.readFileSync(marketplaceFile, 'utf8'));
   for (let i = 0; i < (json.plugins || []).length; i += 1) {
+    if (typeof json.plugins[i].name === 'string') marketplaceNames.add(json.plugins[i].name);
     if (json.plugins[i].version) {
       targets.push({
         file: marketplaceFile,
@@ -114,6 +123,14 @@ if (fs.existsSync(marketplaceFile)) {
       });
       marketplaceEntries.push(i);
     }
+  }
+}
+for (const name of manifestedPlugins) {
+  if (!marketplaceNames.has(name)) {
+    throw new Error(
+      `Plugin "${name}" has platform manifests but no entry in ${marketplaceFile} — ` +
+      'a plugin with any platform manifest must carry a marketplace entry.',
+    );
   }
 }
 

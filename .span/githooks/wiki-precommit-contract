@@ -1,4 +1,4 @@
-.githooks/README.md#L31-L52 rk64:e24ef36f3ec0e677
+.githooks/README.md#L32-L53 rk64:e24ef36f3ec0e677
 .githooks/pre-commit.wiki.sh#L2-L55 rk64:ab53038bc3e60ad4
 
 The hooks README documents the pre-commit wiki behavior — auto-fixing drifted links/anchors, creating or extending .wiki mesh coverage for uncovered fragment links, and re-staging only the fix deltas of files clean before the hook while leaving already-dirty pages unstaged — that .githooks/pre-commit.wiki.sh implements, with the script as the source of truth when the two disagree.

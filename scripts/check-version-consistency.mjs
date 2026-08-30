@@ -5,20 +5,14 @@
 // plugins-codex/<name>/.codex-plugin/plugin.json,
 // plugins-opencode/<name>/package.json,
 // plugins-antigravity/<name>/plugin.json) and its Claude marketplace entry.
-// A plugin with any platform manifest must carry all four — a missing
-// manifest would silently ship that platform a stale version.
+// A plugin with any platform manifest must carry all four AND a marketplace
+// entry — a missing manifest or entry would silently ship that surface a
+// stale version.
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-
-/** @type {Record<string, (name: string) => string>} */
-const platformManifest = {
-  'plugins-claude': (name) => join('plugins-claude', name, '.claude-plugin', 'plugin.json'),
-  'plugins-codex': (name) => join('plugins-codex', name, '.codex-plugin', 'plugin.json'),
-  'plugins-opencode': (name) => join('plugins-opencode', name, 'package.json'),
-  'plugins-antigravity': (name) => join('plugins-antigravity', name, 'plugin.json')
-};
+import { marketplacePath, platformManifest } from './plugin-manifests.mjs';
 
 /** @type {string} */
 let root;
@@ -49,7 +43,6 @@ for (const dir of Object.keys(platformManifest)) {
   }
 }
 
-const marketplacePath = '.claude-plugin/marketplace.json';
 /** @type {Map<string, string>} */
 const marketplaceVersions = new Map();
 if (existsSync(resolve(root, marketplacePath))) {
@@ -82,7 +75,12 @@ for (const name of [...pluginNames].sort()) {
     }
   }
   const marketplaceVersion = marketplaceVersions.get(name);
-  if (marketplaceVersion !== undefined) {
+  if (marketplaceVersion === undefined) {
+    failures.push(
+      `${name}: missing marketplace entry in ${marketplacePath} — ` +
+        'a plugin with any platform manifest must carry a marketplace entry'
+    );
+  } else {
     versions.push([`${marketplacePath} plugins entry "${name}"`, marketplaceVersion]);
   }
   if (new Set(versions.map(([, version]) => version)).size > 1) {

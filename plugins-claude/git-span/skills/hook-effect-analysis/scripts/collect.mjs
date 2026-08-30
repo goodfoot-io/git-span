@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// Generated from skills-src/git-span/hook-effect-analysis/scripts/collect.mjs by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild.
 // Walk Claude Code session transcripts — local or a remote host over ssh —
 // and normalise every hook emission into one JSON-lines intermediate that
 // outcomes.mjs / baseline.mjs / simulate.mjs all consume. This is the single

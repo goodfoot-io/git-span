@@ -86,6 +86,12 @@ jobs:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
 
+      # Refuse to publish a version set where any platform manifest or the
+      # marketplace entry disagrees — after this point the versions fan out to
+      # npm and the marketplace and cannot be recalled.
+      - name: Check plugin version consistency
+        run: node scripts/check-version-consistency.mjs
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -171,30 +177,22 @@ jobs:
       - name: Rebuild Antigravity hook bundles
         run: yarn workspace agent-hooks build:antigravity
 
+      # Both freshness guards call the same shared gate script validate.sh
+      # runs locally, so the local and CI gates measure one staleness
+      # predicate (modified, untracked, and deleted paths alike) and emit
+      # the same cause-diagnosed failure text.
       - name: Guard committed plugin bundle freshness
-        run: |
-          if ! git diff --exit-code -- plugins-opencode/git-span/dist plugins-antigravity/git-span/hooks.json plugins-antigravity/git-span/bin; then
-            echo "ERROR: rebuild produced uncommitted bundle changes — commit the rebuilt plugin bundles" >&2
-            exit 1
-          fi
+        run: node scripts/check-generated-tree-freshness.mjs hooks
 
-      # The three plugin skill trees are committed build output of skills-src/
-      # (rendered by scripts/build-agent-skills.mjs) and the OpenCode package
-      # ships its skills/ tree in the published tarball, so re-render from the
-      # tagged sources and refuse to publish a stale committed tree — same
-      # freshness contract as scripts/validate.sh's skills gate.
-      - name: Rebuild agent skill trees
+      # The plugin skill trees are committed build output of skills-src/ and
+      # the OpenCode package ships its skills/ tree in the published tarball,
+      # so re-render from the tagged sources and refuse to publish a stale
+      # committed tree — the gate script runs the build driver itself and
+      # branches its advice on why the trees are dirty.
+      - name: Rebuild and guard agent skill tree freshness
         run: |
           node scripts/lint-agent-skills.mjs
-          node scripts/build-agent-skills.mjs
-
-      - name: Guard committed skill tree freshness
-        run: |
-          if [ -n "$(git status --porcelain -- plugins-claude/git-span/skills plugins-codex/git-span/skills plugins-opencode/git-span/skills plugins-antigravity/git-span/skills)" ]; then
-            echo "ERROR: rebuild produced uncommitted skill-tree changes — commit the rebuilt skill trees" >&2
-            git status --porcelain -- plugins-claude/git-span/skills plugins-codex/git-span/skills plugins-opencode/git-span/skills plugins-antigravity/git-span/skills >&2
-            exit 1
-          fi
+          node scripts/check-generated-tree-freshness.mjs skills
 
       # The Antigravity plugin has no packaged artifact — `agy plugin install`
       # consumes the repository tree directly — so the pack-and-inspect guard
@@ -203,7 +201,15 @@ jobs:
       # present, or an installed plugin would silently ship skill-less.
       - name: Guard Antigravity plugin carries the skills and hooks
         run: |
-          for skill in git-span hook-effect-analysis reconcile; do
+          # The skill list is derived from the registry, never hardcoded — a
+          # skill added to scripts/agent-skills-plugins.json is guarded here
+          # without anyone remembering to extend this step.
+          SKILLS="$(node -p "JSON.parse(require('fs').readFileSync('scripts/agent-skills-plugins.json','utf8')).plugins.find((p)=>p.name==='git-span').skills.join(' ')")"
+          if [ -z "$SKILLS" ]; then
+            echo "ERROR: derived an empty skill list from the registry — refusing to pass an empty guard" >&2
+            exit 1
+          fi
+          for skill in $SKILLS; do
             if [ ! -f "plugins-antigravity/git-span/skills/$skill/SKILL.md" ]; then
               echo "ERROR: plugins-antigravity/git-span/skills/$skill/SKILL.md is missing — refusing to publish" >&2
               exit 1
@@ -224,7 +230,13 @@ jobs:
         run: |
           TARBALL="$(npm pack --silent | tail -1)"
           echo "Packed tarball: $TARBALL"
-          for skill in git-span hook-effect-analysis reconcile; do
+          # Skill list derived from the registry, same as the Antigravity guard.
+          SKILLS="$(node -p "JSON.parse(require('fs').readFileSync('../../scripts/agent-skills-plugins.json','utf8')).plugins.find((p)=>p.name==='git-span').skills.join(' ')")"
+          if [ -z "$SKILLS" ]; then
+            echo "ERROR: derived an empty skill list from the registry — refusing to pass an empty guard" >&2
+            exit 1
+          fi
+          for skill in $SKILLS; do
             if ! tar -tf "$TARBALL" | grep -q "^package/skills/$skill/SKILL.md$"; then
               echo "ERROR: packed opencode-git-span is missing package/skills/$skill/SKILL.md — refusing to publish" >&2
               exit 1

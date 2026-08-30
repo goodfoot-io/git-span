@@ -121,6 +121,13 @@ jobs:
       - name: Check platform package READMEs match template
         run: node scripts/generate-platform-readmes.mjs --check
 
+      # Every plugin must carry one version across all four platform manifests
+      # and its marketplace entry. The same checker gates the release workflow
+      # ahead of publishing; running it here surfaces a missed enumeration at
+      # PR time instead.
+      - name: Check plugin version consistency
+        run: node scripts/check-version-consistency.mjs
+
       - name: Enable Corepack
         run: corepack enable
 

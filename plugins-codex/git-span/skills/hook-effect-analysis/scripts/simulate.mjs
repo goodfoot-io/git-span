@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// Generated from skills-src/git-span/hook-effect-analysis/scripts/simulate.mjs by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild.
 // Evaluate a candidate suppression rule as a "what if" projection: what
 // fraction of characters would a policy have saved, and what fraction of
 // the touch/write outcomes outcomes.mjs already measured would it have kept.

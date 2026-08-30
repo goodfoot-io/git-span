@@ -1,3 +1,5 @@
+<!-- Generated from skills-src/git-span/git-span/references/understanding-hook-output.md.eta by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild. -->
+
 # Understanding hook output
 
 Two hooks run in-session, on two different tool families, at two different

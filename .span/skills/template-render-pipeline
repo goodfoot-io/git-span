@@ -1,0 +1,9 @@
+.githooks/pre-commit.generated-trees.sh rk64:46cab3ce69ff4eeb
+CLAUDE.md#L8-L8 rk64:2a53eba563fa7ff7
+scripts/agent-skills-drivers.test.mjs rk64:aad5c87cb26442d6
+scripts/agent-skills-registry.mjs rk64:fb96de65fbde1f09
+scripts/build-agent-skills.mjs rk64:917a4098af7ce28a
+scripts/lint-agent-skills.mjs rk64:d14416d8aad0f196
+skills-src/README.md rk64:32e0d6de6cb1bcb5
+
+scripts/agent-skills-registry.mjs is the sole enumeration authority for skills, platform targets, and the realpath-resolved CLI, and the build and lint drivers prove the render ran — captured per-target write confirmations, hand-edit snapshot-restore, disk reconciliation — exiting on the 0/1/2/3 contract (verified render / failure / would-destroy-hand-edit / no-verifiable-render) that the freshness gate branches its diagnoses on. scripts/agent-skills-drivers.test.mjs is the remove-the-mechanism control suite for those guards, and skills-src/README.md, the CLAUDE.md workspace bullet, and the generated-trees pre-commit hook state the authoring contract, so they must describe exactly what the drivers enforce.

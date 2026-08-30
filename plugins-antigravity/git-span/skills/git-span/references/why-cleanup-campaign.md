@@ -1,3 +1,5 @@
+<!-- Generated from skills-src/git-span/git-span/references/why-cleanup-campaign.md.eta by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild. -->
+
 # Corpus-wide why cleanup campaign
 
 Apply the why standard across `.span/**`: one or two complete, present-tense

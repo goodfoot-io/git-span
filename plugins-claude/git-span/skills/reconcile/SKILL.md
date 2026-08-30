@@ -2,6 +2,7 @@
 name: reconcile
 description: Reconcile drifted/stale git spans surfaced by `git span drift`.
 ---
+<!-- Generated from skills-src/git-span/reconcile/SKILL.md.eta by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild. -->
 
 <instructions>
 

@@ -1,3 +1,5 @@
+<!-- Generated from skills-src/git-span/reconcile/references/team.md.eta by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild. -->
+
 # Delegating stage 3
 
 You are the owner. You have already run stages 1 and 2, so you hold the

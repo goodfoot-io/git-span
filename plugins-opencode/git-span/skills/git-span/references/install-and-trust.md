@@ -1,3 +1,5 @@
+<!-- Generated from skills-src/git-span/git-span/references/install-and-trust.md.eta by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild. -->
+
 # OpenCode install and skill setup
 
 ## Overview

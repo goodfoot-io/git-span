@@ -1,3 +1,5 @@
+<!-- Generated from skills-src/git-span/git-span/references/hookignore.md.eta by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild. -->
+
 # Suppressing spans per path: `.hookignore`
 
 Some spans are noise when browsing certain parts of the tree — wiki or

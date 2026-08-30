@@ -60,7 +60,7 @@ idempotent and travels on a fresh clone — there is no installer to run and no 
 ## Dispatcher templates
 
 The fail-closed dispatcher uses `set -e` and calls each sub-script directly, so any
-non-zero exit aborts the commit. This repository's [pre-commit](../../.githooks/pre-commit#L1-L19)
+non-zero exit aborts the commit. This repository's [pre-commit](../../.githooks/pre-commit#L2-L20)
 dispatcher is a working example.
 
 ```bash

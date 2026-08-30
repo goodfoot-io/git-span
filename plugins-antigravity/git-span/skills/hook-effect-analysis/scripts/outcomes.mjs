@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// Generated from skills-src/git-span/hook-effect-analysis/scripts/outcomes.mjs by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild.
 // Join collect.mjs's emissions to the activity that followed them, producing
 // one row per (emission, entity) with the corrections that are easy to miss
 // and that silently invert the answer — self-reference exclusion, ordering,

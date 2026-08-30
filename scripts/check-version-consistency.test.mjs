@@ -108,6 +108,33 @@ test('rejects a plugin missing one platform manifest while the others exist', ()
   }
 });
 
+test('rejects a plugin with all four platform manifests but no marketplace.json at all', () => {
+  const root = fixture({ claude: '1.2.3', codex: '1.2.3', opencode: '1.2.3', antigravity: '1.2.3' });
+  try {
+    const result = check(root);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /missing marketplace entry/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('rejects a plugin absent from an existing marketplace.json plugins list', () => {
+  const root = fixture({ claude: '1.2.3', codex: '1.2.3', opencode: '1.2.3', antigravity: '1.2.3' });
+  mkdirSync(join(root, '.claude-plugin'), { recursive: true });
+  writeFileSync(
+    join(root, '.claude-plugin/marketplace.json'),
+    `${JSON.stringify({ name: 'demo', plugins: [{ name: 'other', version: '1.2.3' }] }, null, 2)}\n`
+  );
+  try {
+    const result = check(root);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /demo: missing marketplace entry/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('the real repository carries one version across every source', () => {
   const result = spawnSync(process.execPath, [checker], { cwd: scripts, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);

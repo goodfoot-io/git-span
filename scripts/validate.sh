@@ -142,6 +142,11 @@ build_dir="$target_root/git-span/build"
   # repository itself.
   node scripts/check-version-consistency.mjs &&
   node --test scripts/check-version-consistency.test.mjs &&
+  # The skills build and lint drivers must fail closed when the CLI silently
+  # declines to run, refuse to destroy hand-edits to rendered trees, and
+  # reconcile the registry's skill declarations against disk — the focused
+  # suite exercises the real drivers end-to-end in fixture repositories.
+  node --test scripts/agent-skills-drivers.test.mjs &&
   (
     cd "$repo_root/packages/git-span"
     bash scripts/with-target-lock.sh shared env CARGO_TARGET_DIR="$build_dir" cargo build --quiet --locked --bin git-span
@@ -195,28 +200,20 @@ build_dir="$target_root/git-span/build"
       fi
     fi
   } &&
-  (
-    if ! git diff --exit-code -- plugins-claude/git-span/hooks plugins-codex/git-span/hooks plugins-opencode/git-span/dist plugins-antigravity/git-span/hooks.json plugins-antigravity/git-span/bin; then
-      echo "ERROR: rebuild produced uncommitted bundle changes — commit the rebuilt plugin bundles" >&2
-      exit 1
-    fi
-  ) &&
-  # Skills-freshness gate, the same contract as the hooks gate above: the
-  # rendered plugins-*/git-span/skills trees are committed build output of
-  # skills-src/, so rebuild them here and refuse a tree that differs from
-  # what is committed. Lint runs first as its own step — a lint-baseline
-  # drift is a build-independent failure mode and must name itself rather
-  # than hide behind a build error. Untracked files in the rendered trees
-  # fail closed too: build-agent-skills.mjs refuses to publish over them
-  # before the diff below ever runs.
+  # Generated-tree freshness gates. Both call the one shared staleness
+  # predicate in check-generated-tree-freshness.mjs — the same script the
+  # release workflow runs — so the local and CI gates cannot measure
+  # different things (modified, untracked, AND deleted paths all count).
+  # The hooks bundles were rebuilt by 'yarn build' above; the skills suite
+  # runs its own build driver, whose guards make the measurement witnessing
+  # rather than healing (a hand-edit or unverifiable render fails with its
+  # own diagnosis instead of being flattened into "commit the trees").
+  # Lint runs first as its own step — a lint-baseline drift is a
+  # build-independent failure mode and must name itself rather than hide
+  # behind a build error.
+  node scripts/check-generated-tree-freshness.mjs hooks &&
   node scripts/lint-agent-skills.mjs &&
-  node scripts/build-agent-skills.mjs &&
-  (
-    if ! git diff --exit-code -- plugins-claude/git-span/skills plugins-codex/git-span/skills plugins-opencode/git-span/skills plugins-antigravity/git-span/skills; then
-      echo "ERROR: rebuild produced uncommitted skill-tree changes — commit the rebuilt skill trees" >&2
-      exit 1
-    fi
-  )
+  node scripts/check-generated-tree-freshness.mjs skills
 } 2>&1 | tee "$log_path"
 
 EXIT_CODE=${PIPESTATUS[0]}

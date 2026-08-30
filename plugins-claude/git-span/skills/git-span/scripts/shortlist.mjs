@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// Generated from skills-src/git-span/git-span/scripts/shortlist.mjs by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild.
 // Distill mine.mjs JSON output into the actionable span-candidate shortlist.
 //
 // `mine.mjs` prints 13 sections of raw signal. The most useful subset for a

@@ -1,3 +1,4 @@
+// Generated from skills-src/git-span/hook-effect-analysis/scripts/policies/default.mjs by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild.
 // Built-in example policies for simulate.mjs — a runnable smoke test, not a
 // recommendation. Each is a named export `(section, anchor) => boolean`
 // where `section = {name, text, anchors}` and `anchor = {entity, line,

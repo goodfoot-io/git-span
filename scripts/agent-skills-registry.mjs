@@ -10,11 +10,17 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+/**
+ * Overridable via AGENT_SKILLS_REPO so the driver test suite can run the real
+ * build and lint drivers end-to-end against a temporary fixture repository
+ * (its own git history, skills-src, and node_modules symlink) instead of
+ * mutating this one.
+ */
+export const repo = process.env.AGENT_SKILLS_REPO ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 /**
  * @typedef {object} SkillsTarget
@@ -133,10 +139,93 @@ export function assertTargetsRenderFiles(registry) {
 }
 
 /**
+ * The skills a plugin's declaration says should render into one platform's
+ * tree, after front-config gating.
+ * @param {SkillsPlugin} plugin
+ * @param {string} platform
+ */
+export function expectedSkillsFor(plugin, platform) {
+  return (plugin.skills ?? []).filter((skill) => (plugin.skillPlatforms?.[skill] ?? ALL_PLATFORMS).includes(platform));
+}
+
+/**
+ * The registry's `skills` array must equal the set of skill directories on
+ * disk, in both directions. The CLI renders by glob, so the array does not
+ * drive rendering — but every downstream guard (target verification, the
+ * release workflow's ship-completeness checks) reasons from it. A directory
+ * the array does not name would be rendered but never verified; a name the
+ * disk does not carry would be verified against nothing. Worse, a skill
+ * directory whose entrypoint is a plain `SKILL.md` instead of `SKILL.md.eta`
+ * is silently dropped from every rendered tree at exit 0, so the entrypoint's
+ * existence is asserted here, before anything builds.
+ * @param {SkillsRegistry} registry
+ */
+export function assertSkillsMatchDisk(registry) {
+  for (const plugin of registry.plugins) {
+    const srcRoot = path.resolve(repo, plugin.skillsSrc);
+    const onDisk = readdirSync(srcRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort();
+    const declared = [...(plugin.skills ?? [])].sort();
+    for (const name of onDisk.filter((name) => !declared.includes(name))) {
+      const entry = `${plugin.skillsSrc}/${name}/SKILL.md.eta`;
+      throw new Error(
+        `${plugin.name}: ${plugin.skillsSrc}/${name} exists on disk but is not declared in the registry's ` +
+          `skills array${existsSync(path.join(srcRoot, name, 'SKILL.md.eta')) ? '' : `, and lacks ${entry} — without that entrypoint the CLI silently drops the whole skill from every rendered tree`}. ` +
+          `Declare it in scripts/agent-skills-plugins.json (and give it a SKILL.md.eta) or remove the directory.`
+      );
+    }
+    for (const name of declared.filter((name) => !onDisk.includes(name))) {
+      throw new Error(
+        `${plugin.name}: the registry declares skill "${name}" but ${plugin.skillsSrc}/${name} does not exist. ` +
+          `Remove the declaration or restore the directory.`
+      );
+    }
+    for (const name of declared) {
+      if (!existsSync(path.join(srcRoot, name, 'SKILL.md.eta'))) {
+        throw new Error(
+          `${plugin.name}: ${plugin.skillsSrc}/${name} lacks SKILL.md.eta — a plain SKILL.md is silently ` +
+            `dropped from every rendered tree. Author the entrypoint as SKILL.md.eta.`
+        );
+      }
+    }
+  }
+}
+
+/**
+ * The authored template a rendered file came from: the `.eta` twin when one
+ * exists, the verbatim-copied source otherwise. Throws on a rendered file with
+ * no template -- output of unknown provenance means the driver's mapping no
+ * longer matches how the CLI names its output, and any marker naming a
+ * template would lie.
+ * @param {SkillsPlugin} plugin
+ * @param {string} relativeToTarget
+ */
+export function templateFor(plugin, relativeToTarget) {
+  for (const candidate of [`${relativeToTarget}.eta`, relativeToTarget]) {
+    const templatePath = `${plugin.skillsSrc}/${candidate}`;
+    if (existsSync(path.join(repo, templatePath))) return templatePath;
+  }
+  throw new Error(
+    `${plugin.name}: rendered file ${relativeToTarget} has no template under ${plugin.skillsSrc} — ` +
+      `the driver's template mapping no longer matches the CLI's output naming.`
+  );
+}
+
+/**
  * The rename that publishes a target takes the directory's whole prior
  * contents with it, tracked or not. Tracked losses come back from the index;
- * untracked ones are gone. Nothing downstream can restore them, so the refusal
- * has to come before the CLI runs.
+ * untracked ones are gone.
+ *
+ * The refusal message diagnoses each file before advising, because every
+ * remediation branch it offers must reach a correct state: a file that maps
+ * to a template is render output a previous build wrote and the committed
+ * tree lacks — committing it is the only correct move (deleting it just
+ * regenerates the same red state, invisibly to any diff-based check). A file
+ * no template maps to is not render output at all, and publishing would
+ * destroy it irrecoverably — it must move out. "Commit or move" as a single
+ * undiagnosed offer gave each case the other's wrong branch.
  * @param {SkillsRegistry} registry
  */
 export function assertNoUntrackedInTargets(registry) {
@@ -156,15 +245,39 @@ export function assertNoUntrackedInTargets(registry) {
           ...gitLsFiles(['--others', '--ignored', '--exclude-standard'])
         ])
       ].sort();
-      if (untracked.length > 0) {
-        throw new Error(
-          `${plugin.name}: ${target.path} holds untracked files that publishing would destroy irrecoverably:\n` +
-            `${untracked.map((file) => `  ${file}`).join('\n')}\n` +
-            `Commit or move them, then build again.`
-        );
-      }
+      if (untracked.length === 0) continue;
+      const lines = untracked.map((file) => {
+        try {
+          const template = templateFor(plugin, file.slice(target.path.length + 1));
+          return `  ${file} — new render output (from ${template}); commit it, then build again`;
+        } catch {
+          return `  ${file} — NOT render output (no template maps to it); publishing would destroy it irrecoverably — move it out of the generated tree`;
+        }
+      });
+      throw new Error(
+        `${plugin.name}: ${target.path} holds untracked files a publish would sweep away:\n${lines.join('\n')}\n` +
+          `These trees are generated — see skills-src/README.md.`
+      );
     }
   }
+}
+
+/**
+ * The absolute, symlink-resolved path to the agent-skills CLI entrypoint.
+ *
+ * realpathSync is load-bearing, not cosmetic: the CLI's direct-invocation
+ * guard compares `import.meta.url` (which Node resolves to the realpath for a
+ * main module) against `process.argv[1]` verbatim. Spawned through a
+ * symlinked `node_modules/@goodfoot` — the documented worktree provisioning
+ * shape (scripts/ensure-worktree-local-generated.mjs) — the two disagree, the
+ * guard never fires, and the process exits 0 having done nothing.
+ * AGENT_SKILLS_CLI lets the driver test suite substitute a deliberately
+ * silent stub and observe the drivers refuse it.
+ */
+export function cliPath() {
+  return realpathSync(
+    process.env.AGENT_SKILLS_CLI ?? path.join(repo, 'node_modules/@goodfoot/agent-skills/dist/cli.js')
+  );
 }
 
 /**
@@ -174,7 +287,7 @@ export function assertNoUntrackedInTargets(registry) {
  */
 export function cliArgs(plugin, command) {
   return [
-    'node_modules/@goodfoot/agent-skills/dist/cli.js',
+    cliPath(),
     command,
     '--root',
     plugin.skillsSrc,

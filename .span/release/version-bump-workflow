@@ -1,9 +1,10 @@
-.githooks/pre-commit.version-lock.sh rk64:365fd28ce298b62b
+.githooks/pre-commit.version-lock.sh rk64:f97ac1da3009bcea
 package.json#L32-L32 rk64:9ed9e94c793e83d7
 scripts/bump.sh#L37-L43 rk64:06b3f2199dbf9b32
-scripts/check-version-consistency.mjs rk64:cde9572f31a89422
-scripts/check-version-consistency.test.mjs rk64:c4cb65913c83d863
+scripts/check-version-consistency.mjs rk64:2553297f47e11f2c
+scripts/check-version-consistency.test.mjs rk64:5528247e3b15e1f3
+scripts/plugin-manifests.mjs rk64:14729707af6bc2bd
 scripts/sync-versions.sh#L54-L76 rk64:05e35dd805df9756
 scripts/sync-versions.sh#L110-L132 rk64:3eddd333502fc955
 
-packages/git-span/package.json is the authoritative version source, and bump.sh, sync-versions.sh, the pre-commit version-lock hook, and check-version-consistency.mjs align workspace manifests, all four plugins-*/git-span platform manifests, the marketplace entry, and the CLI optionalDependencies so version changes run through yarn bump. The manifest-layout enumerations in the version-lock hook, sync-versions.sh, and the consistency checker (with its test fixtures) must each name every platform plugin tree — a new plugins-* tree added without extending them silently ships version-lagged, which no build step catches.
+packages/git-span/package.json is the authoritative version source, and bump.sh, sync-versions.sh, the pre-commit version-lock hook, and check-version-consistency.mjs align workspace manifests, all four plugins-*/git-span platform manifests, the marketplace entry, and the CLI optionalDependencies so version changes run through yarn bump. The per-platform manifest layout is defined once in scripts/plugin-manifests.mjs and imported by both the version-lock hook and the consistency checker (which treats the marketplace entry as mandatory), while sync-versions.sh still enumerates by hand — a new plugins-* tree must land in both plugin-manifests.mjs and sync-versions.sh or it silently ships version-lagged, which no build step catches.

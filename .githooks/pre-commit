@@ -8,6 +8,7 @@ set -e
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 PARTS=(
     pre-commit.version-lock.sh
+    pre-commit.generated-trees.sh
     pre-commit.wiki.sh
     pre-commit.biome.sh
 )

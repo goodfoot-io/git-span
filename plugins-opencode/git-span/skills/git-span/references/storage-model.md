@@ -1,3 +1,5 @@
+<!-- Generated from skills-src/git-span/git-span/references/storage-model.md by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild. -->
+
 # Storage model
 
 git-span has **no Git refs**. There is no `refs/spans/*`, no span refspec,

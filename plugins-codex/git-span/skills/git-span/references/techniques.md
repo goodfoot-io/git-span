@@ -1,3 +1,5 @@
+<!-- Generated from skills-src/git-span/git-span/references/techniques.md by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild. -->
+
 # Techniques reference
 
 `mine.mjs` runs 13 independent signals over the git history. Each is a noisy

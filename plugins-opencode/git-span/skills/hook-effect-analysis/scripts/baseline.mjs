@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// Generated from skills-src/git-span/hook-effect-analysis/scripts/baseline.mjs by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild.
 // The control. A raw hit rate is uninterpretable without one: in the
 // analysis that motivated this skill, a figure that looked like a strong
 // effect turned out to be about 1.3x chance once compared against files the

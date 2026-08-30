@@ -1,3 +1,5 @@
+<!-- Generated from skills-src/git-span/hook-effect-analysis/references/transcript-record-shape.md by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild. -->
+
 # Transcript record shape
 
 The shape [`collect.mjs`](../scripts/collect.mjs) parses. Undocumented anywhere else in this repo; rediscovered by inspection and confirmed against this repo's own local `~/.claude/projects` transcripts.

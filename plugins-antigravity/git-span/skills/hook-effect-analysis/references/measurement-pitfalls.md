@@ -1,3 +1,5 @@
+<!-- Generated from skills-src/git-span/hook-effect-analysis/references/measurement-pitfalls.md by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild. -->
+
 # Measurement pitfalls
 
 Every defect below was hit during the analysis that motivated this skill, and each one independently inverted a conclusion. The tools in this skill make them structurally impossible rather than warning about them — read this before trusting a number that came out of a modified pipeline.

@@ -1,3 +1,5 @@
+<!-- Generated from skills-src/git-span/git-span/references/content-unavailable.md by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild. -->
+
 # `CONTENT_UNAVAILABLE`
 
 Content should exist but cannot be read locally without a network call. **The

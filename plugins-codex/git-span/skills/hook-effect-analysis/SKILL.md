@@ -2,6 +2,7 @@
 name: hook-effect-analysis
 description: Measure whether a hook's emissions earn their token cost — collect emissions from session transcripts, join them to later activity with the corrections that are easy to get wrong, compare against a placebo baseline, and cost a proposed suppression rule before building it.
 ---
+<!-- Generated from skills-src/git-span/hook-effect-analysis/SKILL.md.eta by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild. -->
 
 # hook-effect-analysis
 

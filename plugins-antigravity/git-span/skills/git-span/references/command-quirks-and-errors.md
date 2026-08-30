@@ -1,3 +1,5 @@
+<!-- Generated from skills-src/git-span/git-span/references/command-quirks-and-errors.md by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild. -->
+
 # Command quirks and errors
 
 A span is a tracked plain-text file under `.span/<name>`. `git span add` /

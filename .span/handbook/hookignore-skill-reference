@@ -1,4 +1,4 @@
-plugins-claude/git-span/skills/git-span/SKILL.md#L134-L135 rk64:fdab7c6661d6fb47
-plugins-claude/git-span/skills/git-span/references/hookignore.md rk64:13687487581c4b2f
+plugins-claude/git-span/skills/git-span/SKILL.md#L135-L136 rk64:fdab7c6661d6fb47
+plugins-claude/git-span/skills/git-span/references/hookignore.md rk64:838ee678e739ad80
 
 SKILL.md's routing table step 7 sends readers with hookignore- or advisorignore-related noise questions to references/hookignore.md, which defines the .hookignore and .advisorignore per-path suppression files that hold back noisy span surfacing in the PostToolUse touch hook's inline block and the advisor's uncovered-writes nudge respectively.

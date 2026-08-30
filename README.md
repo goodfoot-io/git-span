@@ -82,11 +82,17 @@ It does not register a custom editor, Markdown renderer, search UI, or webview.
 │   └── extension/      # goodfoot.git-span VS Code extension
 ├── npm/
 │   └── git-span-*/     # platform-specific binary distribution packages
+├── skills-src/         # authored agent-skill templates (the ONLY place to edit skills)
+├── plugins-*/          # per-platform plugin trees; their skills/ subtrees are generated
 └── scripts/
     ├── sync-versions.sh
     ├── validate.sh
     └── release.sh
 ```
+
+The `plugins-claude|codex|opencode|antigravity/git-span/skills` trees are committed build
+output rendered from `skills-src/` — never edit them directly. See
+[skills-src/README.md](skills-src/README.md) for the authoring workflow.
 
 ## Development Prerequisites
 

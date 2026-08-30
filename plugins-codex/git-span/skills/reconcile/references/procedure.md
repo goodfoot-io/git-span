@@ -1,3 +1,5 @@
+<!-- Generated from skills-src/git-span/reconcile/references/procedure.md by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild. -->
+
 # Reconcile drifted git spans
 
 Four stages. Stages 1, 2, and 4 belong to whoever owns the reconciliation — run

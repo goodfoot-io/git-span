@@ -1,3 +1,5 @@
+<!-- Generated from skills-src/git-span/git-span/references/command-reference.md by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild. -->
+
 # Command reference
 
 A span is an ordinary tracked plain-text file under the span root (default

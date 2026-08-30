@@ -1,3 +1,4 @@
+// Generated from skills-src/git-span/hook-effect-analysis/scripts/extractors/git-span.mjs by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild.
 // Entity extractor for the git-span touch hook's `<git-span>` block.
 //
 // outcomes.mjs and baseline.mjs take any extractor matching the shape

@@ -5,7 +5,7 @@ Resolve every warning and failure from the required checks, including ones you d
 </golden-rule>
 
 <workspace>
-Greenfield Yarn 4.x monorepo, packages in `./packages/`. Use Yarn, never `npm`; prefer local over origin branches. No migrations, backwards compatibility, or fallbacks. Choose the "right way" over the "easy way"; prefer fail-closed workflows over fail-open. When asked to commit, commit to the current local branch — never create a new branch first, even on `main`.
+Greenfield Yarn 4.x monorepo, packages in `./packages/`. Use Yarn, never `npm`; prefer local over origin branches. No migrations, backwards compatibility, or fallbacks. Choose the "right way" over the "easy way"; prefer fail-closed workflows over fail-open. When asked to commit, commit to the current local branch — never create a new branch first, even on `main`. The `plugins-*/git-span/skills` trees are generated from `skills-src/` — edit the templates and run `node scripts/build-agent-skills.mjs`, never the rendered files (see skills-src/README.md).
 </workspace>
 
 <build>
