@@ -8,7 +8,7 @@ const host = it.variant({
   "claude-code": "claude-code",
   codex: "codex",
   opencode: "opencode",
-  antigravity: null
+  antigravity: "antigravity"
 }); %># Understanding hook output
 
 Two hooks run in-session, on two different tool families, at two different
@@ -46,6 +46,34 @@ moments. Neither waits for a commit:
   in the transcript is not itself proof the command stopped. A plain `git
   status` is never held (unconditionally, not just per the unconfirmed-deny
   caveat) — it only ever reports via `additionalContext`/`systemMessage`.
+<% } else if (host === "antigravity") { %>- **Touch hook** (`PostToolUse`, joined to a `PreToolUse` stash on matcher
+  `run_command`) — Antigravity's `PostToolUse` input carries only a step index
+  (no tool name, arguments, or response), so a `PreToolUse` handler stashes
+  each `run_command` call on disk and the `PostToolUse` handler joins on that
+  step index to attribute it, gating on the absence of the host's `error`
+  field. It heals positional drift silently right after the command completes;
+  the `<git-span>` blocks it renders are stashed and delivered after the
+  invocation's tool batch as one ephemeral message, since `PostToolUse` has no
+  reply channel.
+- **Advisor** (`PreToolUse`, matcher `run_command`) — fires before `git
+  commit`/`git push`/`git status` runs. For `git commit`/`git push`, it holds
+  the command once when the resolved changeset carries real span debt, so the
+  report gets read; it never enforces, and an identical retry proceeds. A hold
+  is a `deny` decision whose reason — the full checklist — reaches the model
+  as the denial message (live-verified; of the four platforms this is the one
+  whose hold is confirmed to stop the command). A plain `git status` is never
+  held — report-only advisories have no allow-with-message channel on
+  `PreToolUse`, so its checklist is stashed and delivered after the
+  invocation's tool batch as an ephemeral message, re-reported live every
+  call, and the check never touches the consider-once memo a real `git
+  commit`/`git push` depends on.
+
+One coverage gap is accepted for this version: Antigravity's dedicated
+file-edit tool names are not pinned by its hook contract, so only
+`run_command` shell activity is attributed — edits made through file tools
+bypass touch attribution entirely (see `references/install-and-trust.md`).
+The advisor is unaffected: it resolves the changeset from git state and sees
+every edit however it was made.
 <% } else { %>- **Touch hook** (`tool.execute.after` on `bash`/`read`/`edit`/`write`, plus
   `apply_patch` on gpt models) — fires synchronously right after each shell command,
   read/edit/write, or patch completes, not after commit. It heals positional drift
@@ -74,6 +102,10 @@ When an edit lands (or a read touches a partial range) inside a span anchor,
 output: a header line, one full span section per surfaced span (sections
 separated by `---`), and a single footer after a final `---`. A healthy span
 renders as:
+<% } else if (host === "antigravity") { %>the touch pipeline renders a merged `<git-span>` block and delivers it after
+the invocation's tool batch as one ephemeral message: a header line, one full
+span section per surfaced span (sections separated by `---`), and a single
+footer after a final `---`. A healthy span renders as:
 <% } else { %>the hook injects a merged `<git-span>` block as `additionalContext`: a header
 line, one full span section per surfaced span (sections separated by `---`),
 and a single footer after a final `---`. A healthy span renders as:
@@ -171,6 +203,10 @@ edits in one session, it renders once, not on every touch.
 <% if (host === "opencode") { %>- Whole-file `read` (no `offset`/`limit`).
 - `write` to a path that doesn't yet exist on disk.
 - A `write` that's a full-content replacement (no common prefix/suffix with
+<% } else if (host === "antigravity") { %>- Any dedicated file read/edit/write tool call — unpinned tool names mean
+  only `run_command` activity is attributed at all.
+- A shell write to a path that doesn't yet exist on disk.
+- A shell write that's a full-content replacement (no common prefix/suffix with
 <% } else { %>- Whole-file `Read` (no `offset`/`limit`).
 - `Write` to a path that doesn't yet exist on disk.
 - A `Write` that's a full-content replacement (no common prefix/suffix with
@@ -191,6 +227,13 @@ what's left. For `git commit`/`git push`, a hold throws an error from the
 before hook, which blocks the command and surfaces the thrown text — one of
 two shapes below — verbatim as the tool error. There is no separate system
 message, so the checklist in the error is all the model sees:
+<% } else if (host === "antigravity") { %>never a file read or edit. It resolves the actual changeset (staged files,
+plus tracked-modified files when the command uses `-a`/`-am`; for `git
+status`, staged plus tracked-modified — the same working-tree picture `git
+status` itself prints), reruns a scoped `drift --fix`, then classifies what's
+left. For `git commit`/`git push`, a hold becomes a `deny` decision whose
+reason — one of two shapes below — reaches the model verbatim as the denial
+message:
 <% } else { %>never a Read, Edit, or Write. It resolves the actual changeset (staged files,
 plus tracked-modified files when the command uses `-a`/`-am`; for `git
 status`, staged plus tracked-modified — the same working-tree picture `git
@@ -238,6 +281,14 @@ report zero. Then retry. Load the `git-span:reconcile` skill in the fork. The
 hold will not fire again for the same debt state. Conform a side only when
 confirmed authority or a satisfied gate decides it; report ambiguity or an
 obsolete dependency.
+<% } else if (host === "antigravity") { %>Dispatch a subagent with `invoke_subagent` to bring the coupled files back
+into agreement (follow confirmed authority) — preserve anchor shape; if an
+address changed, swap the old anchor for the new one with `git span replace`;
+update or retire the why only if its meaning changed; require `git span drift
+billing/checkout-request-flow` to report zero. Then retry. Load the
+`reconcile` skill in the subagent. The hold will not fire again for the same
+debt state. Conform a side only when confirmed authority or a satisfied gate
+decides it; report ambiguity or an obsolete dependency.
 <% } else { %>Dispatch a subagent with the `task` tool to bring the coupled files back into
 agreement (follow confirmed authority) — preserve anchor shape; if an address
 changed, swap the old anchor for the new one with `git span replace`; update or
@@ -270,6 +321,8 @@ dependencies and to then use `git span` to document them:
 <% } else if (host === "codex") { %>Spawn a forked subagent with `spawn_agent`, setting `fork_turns: "all"`, to
 determine if this file carries implicit dependencies and to then use
 `git span` to document them:
+<% } else if (host === "antigravity") { %>Dispatch a subagent with `invoke_subagent` to determine if this file carries
+implicit dependencies and to then use `git span` to document them:
 <% } else { %>Dispatch a subagent with the `task` tool to determine if this file carries implicit
 dependencies and to then use `git span` to document them:
 <% } %>
@@ -296,6 +349,7 @@ Stripe-backed server.
 If none exist, retry the command to proceed (one-time check).
 
 <% if (host === "opencode") { %>Load the `git-span` skill via the skill tool in the subagent.
+<% } else if (host === "antigravity") { %>Load the `git-span` skill in the subagent.
 <% } else { %>Load the `git-span:git-span` skill in the fork.
 <% } %></git-span>
 ```
@@ -360,6 +414,20 @@ on a separate axis: a `git commit`/`git push` that follows a `git status` on
 the same unchanged debt state passes rather than holding, since the advisor
 only reports and there's nothing left to tell the agent that the status
 preview didn't already say.
+<% } else if (host === "antigravity") { %>above are stashed by the advisor and delivered after the invocation's tool
+batch as an ephemeral message (never a `deny` — nothing is ever held), with
+one difference: each drops its retry phrasing — drift drops `— then retry`
+from its closing sentence, and uncovered writes drops the whole `If none
+exist, retry the command to proceed (one-time check).` sentence — since a
+status preview never held the command and there's nothing to retry. A `git
+status` call also never spends the consider-once *hold-credit* memo. It reads
+and writes separate per-item preview markers so it can report only newly seen
+paths and rows, and it can't consume the one-time hold a later real `git
+commit`/`git push` with the same debt depends on. It also marks the complete
+debt state as already-explained on a separate axis: a `git commit`/`git push`
+that follows a `git status` on the same unchanged debt state passes rather
+than holding, since the advisor only reports and there's nothing left to tell
+the agent that the status preview didn't already say.
 <% } else { %>above are appended to the tool result after the command runs (nothing is ever
 thrown, and a successful `git status` always reaches its `after` hook, so this
 reporting path is untouched by the failed-tool caveat in
@@ -399,6 +467,17 @@ the agent that the status preview didn't already say.
    implicit dependencies and to use `git span` to document them (loading the
    `git-span:git-span` skill in the fork), or just retry — the second
    attempt at an unchanged debt state passes.
+<% } else if (host === "antigravity") { %>1. Semantic drift: dispatch a subagent with `invoke_subagent` to bring the
+   coupled files back into agreement (loading the `reconcile` skill in the
+   subagent), or just retry with the findings unchanged, since an identical
+   set of findings is only held on once. Conform a side only when confirmed
+   authority or a satisfied gate decides it; report ambiguity or an obsolete
+   dependency.
+2. Uncovered writes: dispatch a subagent with `invoke_subagent` to determine
+   whether the uncovered files carry implicit dependencies and to use
+   `git span` to document them (loading the `git-span` skill in the
+   subagent), or just retry — the second attempt at an unchanged debt state
+   passes.
 <% } else { %>1. Semantic drift: dispatch a subagent with the `task` tool to bring the
    coupled files back into agreement (loading the `reconcile` skill via the
    skill tool in the subagent),
@@ -481,6 +560,10 @@ filtered through one batched tracked-file query. Files outside the repository,
 tool's `workdir` argument (resolved by the host) is used for both planning and
 post-tool attribution, so an explicit working directory inside a different
 repository is handled in that repository.
+<% } else if (host === "antigravity") { %>ignored files, span metadata, and untracked files are dropped. The
+`run_command` call's `Cwd` argument is used for both planning and post-tool
+attribution, so an explicit working directory inside a different repository
+is handled in that repository.
 <% } else { %>ignored files, span metadata, and untracked files are dropped. A Codex
 `exec_command` or code-mode `exec` envelope's `workdir` is used for both
 planning and post-tool attribution, so an explicit working directory inside a
@@ -516,6 +599,17 @@ unattributed. This is the degraded-parity caveat documented in
 result suppresses like an interruption) stay silent. Response-derived reads
 remain a separate pass and share only the session memo, so a later read
 can surface context without duplicating command-derived output.
+<% } else if (host === "antigravity") { %>reuse a plan. Under Antigravity, `Stop` prunes the session's call-scoped
+plans and stashes; the surfaced-span memo is deliberately left to its TTL
+sweep (pruning it at a turn boundary would make identical spans re-inject
+every turn), and opportunistic 30-day cleanup covers crashed sessions.
+
+Antigravity's `PostToolUse` carries no tool response — success collapses to
+the absence of the host's `error` field. A command whose input carries
+`error` routes to failure attribution and can never surface a write (there is
+no post-state evidence to verify against), and response-derived read
+attribution is unavailable entirely — the degraded-parity caveat one notch
+past OpenCode's. Interrupted calls stay silent.
 <% } else { %>reuse a plan. `SessionEnd` on Claude and `Stop` on Codex eagerly
 retire the session memo and plans; opportunistic 30-day cleanup covers crashed
 sessions.
@@ -565,6 +659,13 @@ above): that still fails open, but visibly — a warning names the failure and
 attribution. The one noisy case is the advisor's own
 scoped scan failing to complete (see "The advisor: what a held command sees"
 above): that still fails open, but visibly — a warning names the failure and
+<% } else if (host === "antigravity") { %>`run_command` call's `Cwd` argument selects the effective repository for both
+planning and attribution. Edits through Antigravity's dedicated file tools
+never reach the touch pipeline at all (unpinned tool names — the caveat in
+`references/install-and-trust.md`), so they surface nothing. The one noisy
+case is the advisor's own scoped scan failing to complete (see "The advisor:
+what a held command sees" above): that still fails open, but visibly — a
+warning, delivered with the invocation's ephemeral report, names the failure and
 <% } else { %>`bash` tool's `workdir` argument selects the effective repository for both
 planning and attribution. A tool call that fails at the host level (invalid
 arguments, denied permission, spawn error) never reaches the
@@ -578,6 +679,11 @@ instead of staying silent, since an unverified changeset is worth flagging
 under Codex's `hooks.json` (Claude Code's equivalent is milliseconds) — if
 you're comparing the two harnesses' hook definitions, don't read the raw
 number across without converting.
+<% } else if (host === "antigravity") { %>even though nothing was held. Every hook exits 0 — Antigravity gives hooks no
+exit-code channel — and hook timeouts are configured in **seconds** under its
+`hooks.json` (Claude Code's equivalent is milliseconds); if you're comparing
+harnesses' hook definitions, don't read the raw number across without
+converting.
 <% } else { %>even though nothing was held.
 <% } %>
 Rendering is the deliberate exception, and fails **closed**. If the anchor

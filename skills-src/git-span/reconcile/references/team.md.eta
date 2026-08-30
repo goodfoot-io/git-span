@@ -6,7 +6,7 @@ const dispatch = it.variant({
   "claude-code": "agent-fork",
   codex: "spawn-agent",
   opencode: "task-tool",
-  antigravity: null
+  antigravity: "invoke-subagent"
 }); %># Delegating stage 3
 
 You are the owner. You have already run stages 1 and 2, so you hold the
@@ -58,6 +58,24 @@ the `message`:
   "fork_turns": "all"
 }
 ```
+<% } else if (dispatch === "invoke-subagent") { %>Spawn each worker by delegating to a subagent with `invoke_subagent`, named
+`reconcile-worker-<i>`. Delegated subagents are not documented to inherit your
+conversation, so the delegation message must carry the whole unit:
+
+```text
+Read [absolute path to ./procedure.md] and run its stage 3 on the unit below.
+Only stage 3 — do not run stages 1, 2, or 4, and never commit.
+
+Unit: <spans; every drifted anchor as path, range, CHANGED/DELETED; each span's
+why; shared files; non-drifted context spans; range-overlap flags>
+
+Report per span: classification, action taken, the decisive nonlocal fact, every
+anchor diff (retired and added addresses), and elapsed time. Flag any span you
+stopped on and why.
+```
+
+Check state with `manage_subagents` while workers run, and re-engage a live
+worker with `send_message` when its unit needs a correction.
 <% } else { %>Spawn each worker with the `task` tool, setting `subagent_type` to `general`, its unit
 in the `prompt`:
 

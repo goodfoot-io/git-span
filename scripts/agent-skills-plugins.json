@@ -6,10 +6,12 @@
     "claudePluginRoot": "plugins-claude/git-span",
     "codexPluginRoot": "plugins-codex/git-span",
     "opencodePluginRoot": "plugins-opencode/git-span",
+    "antigravityPluginRoot": "plugins-antigravity/git-span",
     "targets": [
       { "platform": "claude-code", "path": "plugins-claude/git-span/skills" },
       { "platform": "codex", "path": "plugins-codex/git-span/skills" },
-      { "platform": "opencode", "path": "plugins-opencode/git-span/skills" }
+      { "platform": "opencode", "path": "plugins-opencode/git-span/skills" },
+      { "platform": "antigravity", "path": "plugins-antigravity/git-span/skills" }
     ],
     "platformDirs": [
       "claude-code:skills=plugins-claude/git-span/skills",
@@ -20,7 +22,9 @@
       "codex:plugin=plugins-codex/git-span",
       "opencode:skills=plugins-opencode/git-span/skills",
       "opencode:hooks=plugins-opencode/git-span/dist",
-      "opencode:plugin=plugins-opencode/git-span"
+      "opencode:plugin=plugins-opencode/git-span",
+      "antigravity:skills=plugins-antigravity/git-span/skills",
+      "antigravity:plugin=plugins-antigravity/git-span"
     ],
     "lintBaseline": {
       "diagnostics": [
@@ -28,6 +32,7 @@
         "git-span/references/finding-span-candidates.md.eta:14:skill-relative-path",
         "git-span/references/finding-span-candidates.md.eta:15:skill-relative-path",
         "git-span/references/finding-span-candidates.md.eta:16:skill-relative-path",
+        "git-span/references/finding-span-candidates.md.eta:17:skill-relative-path",
         "git-span/references/finding-span-candidates.md:81:skill-relative-path",
         "git-span/references/finding-span-candidates.md:83:skill-relative-path",
         "git-span/references/finding-span-candidates.md:84:skill-relative-path",
@@ -40,6 +45,7 @@
         "git-span/references/understanding-hook-output.md:283:cross-dialect-reference",
         "git-span/references/why-cleanup-campaign.md:189:cross-dialect-reference",
         "git-span/references/why-cleanup-campaign.md:190:cross-dialect-reference",
+        "git-span/references/why-cleanup-campaign.md:201:cross-dialect-reference",
         "git-span/references/why-cleanup-campaign.md:22:cross-dialect-reference",
         "reconcile/references/procedure.md:10:cross-dialect-reference"
       ],

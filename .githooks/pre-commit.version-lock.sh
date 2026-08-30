@@ -9,7 +9,7 @@ command -v node >/dev/null 2>&1 || exit 0
 STAGED_FILES=$(git diff --cached --name-only --diff-filter=d)
 [ -z "$STAGED_FILES" ] && exit 0
 
-VERSION_LOCK_STAGED=$(echo "$STAGED_FILES" | grep -E '^(package\.json|packages/[^/]+/package\.json|npm/[^/]+/package\.json|plugins/[^/]+/\.claude-plugin/plugin\.json|\.claude-plugin/marketplace\.json|packages/git-span/Cargo\.toml)$' || true)
+VERSION_LOCK_STAGED=$(echo "$STAGED_FILES" | grep -E '^(package\.json|packages/[^/]+/package\.json|npm/[^/]+/package\.json|plugins-claude/[^/]+/\.claude-plugin/plugin\.json|plugins-codex/[^/]+/\.codex-plugin/plugin\.json|plugins-opencode/[^/]+/package\.json|plugins-antigravity/[^/]+/plugin\.json|\.claude-plugin/marketplace\.json|packages/git-span/Cargo\.toml)$' || true)
 [ -z "$VERSION_LOCK_STAGED" ] && exit 0
 
 echo "Locking package + plugin versions to highest semver..."
@@ -40,10 +40,35 @@ addPackageJson('package.json');
 for (const f of glob('packages', 'package.json')) addPackageJson(f);
 for (const f of glob('npm', 'package.json')) addPackageJson(f);
 
-// Plugin manifests: plugins/*/.claude-plugin/plugin.json
-for (const name of fs.existsSync('plugins') ? fs.readdirSync('plugins') : []) {
-  const file = path.join('plugins', name, '.claude-plugin', 'plugin.json');
-  if (fs.existsSync(file)) addPackageJson(file);
+// Plugin manifests across the four platform layouts. A plugin that carries a
+// manifest under any platform root must carry one under all four — a missing
+// manifest would silently ship that platform a stale version, so fail closed.
+const platformManifest = {
+  'plugins-claude': (name) => path.join('plugins-claude', name, '.claude-plugin', 'plugin.json'),
+  'plugins-codex': (name) => path.join('plugins-codex', name, '.codex-plugin', 'plugin.json'),
+  'plugins-opencode': (name) => path.join('plugins-opencode', name, 'package.json'),
+  'plugins-antigravity': (name) => path.join('plugins-antigravity', name, 'plugin.json'),
+};
+const pluginNames = new Set();
+for (const dir of Object.keys(platformManifest)) {
+  if (!fs.existsSync(dir)) continue;
+  for (const name of fs.readdirSync(dir)) {
+    if (fs.statSync(path.join(dir, name)).isDirectory()) pluginNames.add(name);
+  }
+}
+for (const name of pluginNames) {
+  const files = Object.values(platformManifest).map((manifestPath) => manifestPath(name));
+  const present = files.filter((file) => fs.existsSync(file));
+  if (present.length > 0 && present.length < files.length) {
+    const missing = files.filter((file) => !fs.existsSync(file));
+    throw new Error(
+      `Plugin "${name}" is missing platform manifest(s): ${missing.join(', ')} — ` +
+      'a plugin with any platform manifest must carry all four.',
+    );
+  }
+  // Each manifest contributes the plugin's own version field only, never a
+  // dependency's.
+  for (const file of present) addPackageJson(file);
 }
 
 // Cargo manifest: packages/git-span/Cargo.toml. The CLI's --version is wired
@@ -172,7 +197,10 @@ yarn install
 git add package.json \
     packages/*/package.json \
     npm/*/package.json \
-    plugins/*/.claude-plugin/plugin.json \
+    plugins-claude/*/.claude-plugin/plugin.json \
+    plugins-codex/*/.codex-plugin/plugin.json \
+    plugins-opencode/*/package.json \
+    plugins-antigravity/*/plugin.json \
     .claude-plugin/marketplace.json \
     packages/git-span/Cargo.toml \
     packages/git-span/Cargo.lock 2>/dev/null || true

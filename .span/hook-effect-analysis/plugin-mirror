@@ -1,4 +1,5 @@
+plugins-antigravity/git-span/skills/hook-effect-analysis/SKILL.md rk64:154f4b9f51f7f704
 plugins-claude/git-span/skills/hook-effect-analysis/SKILL.md rk64:154f4b9f51f7f704
 plugins-codex/git-span/skills/hook-effect-analysis/SKILL.md rk64:154f4b9f51f7f704
 
-The Claude plugin tree is the normative source for the hook-effect-analysis skill (SKILL.md, references/, and every scripts/*.mjs file), and the Codex tree mirrors it byte-identically; this SKILL.md pair stands for the whole mirrored tree per the git-span skill's own too-large-to-enumerate convention.
+The hook-effect-analysis skill (SKILL.md, references/, and every scripts/*.mjs file) is rendered identically onto every platform plugin tree from skills-src/git-span by scripts/build-agent-skills.mjs; these SKILL.md copies stand for the whole mirrored tree per the git-span skill's own too-large-to-enumerate convention, and validate.sh's byte-identical rebuild gate is the parity check.

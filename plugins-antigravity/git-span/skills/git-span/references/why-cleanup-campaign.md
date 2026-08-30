@@ -1,14 +1,4 @@
-<% /* The Phase 2 dispatch block is a whole-region variant on the subagent
-   dispatch mechanism: Claude Code forks with the Agent tool (context
-   inherited), Codex spawns with spawn_agent and fork_turns "all" (context
-   inherited), OpenCode dispatches the task tool whose subagents start with no
-   context, which reshapes the surrounding prose, not just the code block. */
-const dispatch = it.variant({
-  "claude-code": "agent-fork",
-  codex: "spawn-agent",
-  opencode: "task-tool",
-  antigravity: "invoke-subagent"
-}); %># Corpus-wide why cleanup campaign
+# Corpus-wide why cleanup campaign
 
 Apply the why standard across `.span/**`: one or two complete, present-tense
 clauses stating the shared relationship plus its decisive nonlocal facts —
@@ -137,72 +127,7 @@ each unit to a fork.
 
 ---
 
-<% if (dispatch === "agent-fork") { %>## Phase 2 — Execution (one fork per fork unit, all forks in parallel)
-
-Fork one subagent per fork unit from step 5. If there are N fork units, N forks
-run in parallel.
-
-**No worktree isolation** — fork units are disjoint by construction (spans
-sharing a file are never split across units), so forks touch disjoint `.span/`
-files. They share the main worktree without conflict. Only the main agent
-commits.
-
-Dispatch each fork unit with a fork. Forks inherit the full conversation
-context (including this reference and the why standard), so the prompt only
-needs to identify which spans the fork owns and the structural context the main
-agent gathered in Phase 1:
-
-```xml
-<invoke name="Agent">
-<parameter name="description" string="true">Clean up <label> why cluster</parameter>
-<parameter name="subagent_type" string="true">fork</parameter>
-<parameter name="prompt" string="true">
-Bring these <N> spans' whys up to the why standard inlined above (component: <label> — connected via <shared-file>). Do not commit.
-
-## <name-1>
-- Class: <list-tier class from triage>
-- Why: <from git span list>
-- Anchors: <paths> — verify current bytes before rewriting
-
-(Context: these spans share <shared-file>. Clean sibling spans also anchoring it: <list>. <Overlap or duplicate-candidate flag if any>.)
-</parameter>
-</invoke>
-```
-
-### Fork procedure
-
-Each fork reads this section from context to know what to do. The main agent's
-prompt only designates which spans — the procedure is shared here.
-<% } else if (dispatch === "spawn-agent") { %>## Phase 2 — Execution (one subagent per fork unit, all in parallel)
-
-Spawn one subagent per fork unit from step 5. If there are N fork units, N
-subagents run in parallel.
-
-**No worktree isolation** — fork units are disjoint by construction (spans
-sharing a file are never split across units), so subagents touch disjoint
-`.span/` files. They share the main worktree without conflict. Only the main
-agent commits.
-
-Dispatch each fork unit with `spawn_agent`, setting `fork_turns: "all"`.
-Forked subagents inherit the full conversation context (including this
-reference and the why standard), so the `message` only needs to identify
-which spans the subagent owns and the structural context the main agent
-gathered in Phase 1:
-
-```json
-{
-  "task_name": "cleanup-<label>-whys",
-  "message": "Bring these <N> spans' whys up to the why standard inlined above (component: <label> — connected via <shared-file>). Do not commit.\n\n## <name-1>\n- Class: <list-tier class from triage>\n- Why: <from git span list>\n- Anchors: <paths> — verify current bytes before rewriting\n\n(Context: these spans share <shared-file>. Clean sibling spans also anchoring it: <list>. <Overlap or duplicate-candidate flag if any>.)",
-  "fork_turns": "all"
-}
-```
-
-### Fork procedure
-
-Each spawned subagent reads this section from context to know what to do. The
-main agent's `message` only designates which spans — the procedure is shared
-here.
-<% } else if (dispatch === "invoke-subagent") { %>## Phase 2 — Execution (one subagent per fork unit, all in parallel)
+## Phase 2 — Execution (one subagent per fork unit, all in parallel)
 
 Dispatch one subagent per fork unit from step 5. If there are N fork units, N
 subagents run in parallel.
@@ -242,35 +167,7 @@ subagent with `send_message` when a unit needs a correction.
 Each subagent reads this section from the reference file its delegation
 message points at. The main agent's message only designates which spans — the
 procedure is shared here.
-<% } else { %>## Phase 2 — Execution (one subagent per fork unit, all in parallel)
 
-Dispatch one subagent per fork unit from step 5. If there are N fork units, N
-subagents run in parallel.
-
-**No worktree isolation** — fork units are disjoint by construction (spans
-sharing a file are never split across units), so subagents touch disjoint
-`.span/` files. They share the main worktree without conflict. Only the main
-agent commits.
-
-OpenCode task subagents start with no context — nothing carries over from your
-conversation. The prompt must carry everything the fork model would have
-inherited: point the subagent at this reference by absolute path (the procedure
-below lives here) and inline the why standard's application to its unit:
-
-```json
-{
-  "description": "Clean up <label> why cluster",
-  "subagent_type": "general",
-  "prompt": "Read [absolute path to ./why-cleanup-campaign.md] and run its Cleanup procedure on the unit below. Do not commit.\n\nBring these <N> spans' whys up to the why standard inlined above (component: <label> — connected via <shared-file>).\n\n## <name-1>\n- Class: <list-tier class from triage>\n- Why: <from git span list>\n- Anchors: <paths> — verify current bytes before rewriting\n\n(Context: these spans share <shared-file>. Clean sibling spans also anchoring it: <list>. <Overlap or duplicate-candidate flag if any>.)"
-}
-```
-
-### Cleanup procedure
-
-Each subagent reads this section from the reference file its prompt points at.
-The main agent's prompt only designates which spans — the procedure is shared
-here.
-<% } %>
 For each assigned span:
 
 1. **Confirm the class.** Read current bytes at the anchors in one parallel

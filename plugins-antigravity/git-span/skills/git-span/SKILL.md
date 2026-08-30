@@ -1,30 +1,4 @@
-<% /* Host hook event names, the tool-call vocabulary the touch hook watches,
-   and the install-doc routing line vary per platform; everything else,
-   including the frontmatter, renders identically. */
-const touchEvent = it.variant({
-  "claude-code": "PostToolUse",
-  codex: "PostToolUse",
-  opencode: "tool.execute.after",
-  antigravity: "PostToolUse"
-});
-const advisorEvent = it.variant({
-  "claude-code": "PreToolUse",
-  codex: "PreToolUse",
-  opencode: "tool.execute.before",
-  antigravity: "PreToolUse"
-});
-const toolVocab = it.variant({
-  "claude-code": "claude-tools",
-  codex: "codex-tools",
-  opencode: "opencode-tools",
-  antigravity: "antigravity-tools"
-});
-const installFlow = it.variant({
-  "claude-code": "codex-marketplace",
-  codex: "codex-marketplace",
-  opencode: "opencode-npm",
-  antigravity: "antigravity-agy"
-}); %>---
+---
 name: git-span
 description: Track, declare, reconcile, and clean up implicit semantic couplings — file/line-range anchors coupled by nothing a schema, test, or build step enforces.
 ---
@@ -45,11 +19,11 @@ After any `add`/`replace`/`remove`/`why`/`delete`: `git add .span && git commit 
 
 ## Same-commit workflow
 
-The `<%= touchEvent %>` touch hook heals positional drift (a pure line-shift) inline; no
+The `PostToolUse` touch hook heals positional drift (a pure line-shift) inline; no
 reconcile commit is needed for it. Semantic drift — content no longer matching what a
 span asserts — needs your action: conform the lagging artifact when a confirmed authority
 or satisfied gate decides it; otherwise ask. Fold the fix, with the `.span/`
-refresh, into the **same commit** as the code change, never a follow-up — list the fix's paths alongside `.span` in the commit's `-o`. Before `git commit`/`git push` a `<%= advisorEvent %>` advisor
+refresh, into the **same commit** as the code change, never a follow-up — list the fix's paths alongside `.span` in the commit's `-o`. Before `git commit`/`git push` a `PreToolUse` advisor
 re-checks the changeset and holds the command once if real span debt remains; see
 `references/understanding-hook-output.md` § "Resolving a held commit".
 
@@ -155,30 +129,18 @@ Pick the first that fits:
    (no `#L`) is in play → `references/whole-file-and-lfs.md`.
 5. One span — declaring it, re-anchoring it, or refreshing a coupled value — matches one
    of the three recipes above → do that, no section read.
-<% if (toolVocab === "claude-tools") { %>6. A `<git-span>` block appeared — or a `git commit`/`git push` was held — during a
-   `Read`/`Edit`/`Write`/`Bash` call → `references/understanding-hook-output.md`.
-<% } else if (toolVocab === "codex-tools") { %>6. A `<git-span>` block appeared — or a `git commit`/`git push` was held — during an
-   `apply_patch` or shell call → `references/understanding-hook-output.md`.
-<% } else if (toolVocab === "antigravity-tools") { %>6. A `<git-span>` block arrived in a message after a turn's tool calls — or a
+6. A `<git-span>` block arrived in a message after a turn's tool calls — or a
    `git commit`/`git push` was denied during a `run_command` call →
    `references/understanding-hook-output.md`.
-<% } else { %>6. A `<git-span>` block appeared — or a `git commit`/`git push` was held — during a
-   `bash`/`read`/`edit`/`write` (or `apply_patch` on gpt models) call →
-   `references/understanding-hook-output.md`.
-<% } %>7. The touch hook's block surfaces spans that are noise for a path class, or the advisor's
+7. The touch hook's block surfaces spans that are noise for a path class, or the advisor's
    uncovered-writes nudge is noise for the whole repo → `references/hookignore.md`.
 8. Mining git history for undeclared couplings (broad sweep, not one known pair) →
    `references/finding-span-candidates.md`.
 9. CI wiring, PR gating, syncing spans across remotes, or a non-gating advisory report →
    `references/ci-and-sync.md`.
-<% if (installFlow === "opencode-npm") { %>10. Installing git-span under OpenCode (npm `plugin` array entry, plus the npx
-    installer for skills and agent) →
-    `references/install-and-trust.md`.
-<% } else if (installFlow === "antigravity-agy") { %>10. Installing git-span under Antigravity (`agy plugin install` from a local
+10. Installing git-span under Antigravity (`agy plugin install` from a local
     checkout or a git URL) → `references/install-and-trust.md`.
-<% } else { %>10. git-span under OpenAI Codex (marketplace install, hook trust) →
-    `references/install-and-trust.md`.
-<% } %>11. Exact flags, defaults, exit codes, anchor/config grammar, or reserved names →
+11. Exact flags, defaults, exit codes, anchor/config grammar, or reserved names →
     `references/command-reference.md`.
 12. A command errors unexpectedly, or a `why`/`doctor`/`list` result looks wrong beyond
     the gotchas above → `references/command-quirks-and-errors.md`.

@@ -1,30 +1,14 @@
-<% /* The host hook event names (and the line wrapping of the paragraphs they
-   sit in) differ per platform, so the two hook-facing paragraphs are
-   whole-block variants keyed on one axis. */
-const hookEventDialect = it.variant({
-  "claude-code": "pre-post-tool-use",
-  codex: "pre-post-tool-use",
-  opencode: "tool-execute",
-  antigravity: "pre-post-tool-use-deferred"
-}); %># Suppressing spans per path: `.hookignore`
+# Suppressing spans per path: `.hookignore`
 
 Some spans are noise when browsing certain parts of the tree — wiki or
 marketing spans that anchor prose add little when surfaced inline while reading
 source. A repo can hold those back, **per path**, with a `.hookignore` file.
-<% if (hookEventDialect === "tool-execute") { %>This only affects the inline block the `tool.execute.after` touch hook emits
-(see `./understanding-hook-output.md`); it never changes what `git span`
-commands report or how anchors resolve, and it has no effect on the
-`tool.execute.before` advisor.
-<% } else if (hookEventDialect === "pre-post-tool-use-deferred") { %>This only affects the `<git-span>` block the `PostToolUse` touch pipeline
+This only affects the `<git-span>` block the `PostToolUse` touch pipeline
 surfaces (delivered after the invocation's tool batch — see
 `./understanding-hook-output.md`); it never changes what `git span` commands
 report or how anchors resolve, and it has no effect on the `PreToolUse`
 advisor.
-<% } else { %>This only affects the inline block the `PostToolUse` touch hook emits (see
-`./understanding-hook-output.md`); it never changes what `git span` commands
-report or how anchors resolve, and it has no effect on the `PreToolUse`
-advisor.
-<% } %>
+
 ## Where it lives
 
 A single file at the span root: `<repoRoot>/.span/.hookignore`. It is an
@@ -79,11 +63,9 @@ file errs toward showing spans, not hiding them.
 
 ## Suppressing the advisor's uncovered-writes check: `.advisorignore`
 
-<% if (hookEventDialect === "tool-execute") { %>A separate file, `<repoRoot>/.span/.advisorignore`, controls the
-`tool.execute.before` advisor's uncovered-writes leg (`./understanding-hook-output.md` § "The advisor:
-<% } else { %>A separate file, `<repoRoot>/.span/.advisorignore`, controls the `PreToolUse`
+A separate file, `<repoRoot>/.span/.advisorignore`, controls the `PreToolUse`
 advisor's uncovered-writes leg (`./understanding-hook-output.md` § "The advisor:
-<% } %>what a held command sees") — a changed file no span anchors at all. It is
+what a held command sees") — a changed file no span anchors at all. It is
 **user-owned**: nothing creates or populates it (unlike `.hookignore`, which
 the `git-span` CLI auto-creates), so its absence is the normal, unconfigured
 state.

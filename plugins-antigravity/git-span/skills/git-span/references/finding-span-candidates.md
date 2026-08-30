@@ -1,21 +1,4 @@
-<% /* Where the runnable copies of this skill's scripts live differs per
-   platform: Claude Code runs them from the repo checkout's plugin tree, Codex
-   from the plugin cache `codex plugin add` snapshots, OpenCode from the
-   directory its installer materializes. One path token covers the three
-   invocations; the intro paragraph is a whole-block variant because the
-   installed-copy framing differs, not just the path. */
-const scriptsHome = it.variant({
-  "claude-code": "repo-checkout",
-  codex: "codex-plugin-cache",
-  opencode: "opencode-installed",
-  antigravity: "antigravity-installed"
-});
-const scriptsDir = it.variant({
-  "claude-code": "plugins-claude/git-span/skills/git-span",
-  codex: "~/.codex/plugins/cache/git-span/git-span/local/skills/git-span",
-  opencode: ".opencode/skills/git-span",
-  antigravity: "~/.gemini/config/plugins/git-span/skills/git-span"
-}); %># Finding span candidates by mining git history
+# Finding span candidates by mining git history
 
 An *implicit semantic dependency* is a load-bearing relationship between two
 files that the type system, test suite, build graph, or generator tooling do
@@ -94,30 +77,17 @@ commits consistently cite the same concern is a real span candidate.
 
 ## End-to-End Workflow
 
-<% if (scriptsHome === "codex-plugin-cache") { %>Paths below name the installed skill directory
-(`~/.codex/plugins/cache/git-span/git-span/local/skills/git-span/` — `codex
-plugin add` snapshots these scripts into the plugin cache). In a checkout of
-this repository the same scripts live under
-`plugins-codex/git-span/skills/git-span/scripts/`; prefer the installed
-copies.
-<% } else if (scriptsHome === "opencode-installed") { %>Paths below are relative to the installed skill directory
-(`.opencode/skills/git-span/` — the installer materializes these scripts next
-to this reference). In a checkout of this repository the same scripts live
-under `plugins-opencode/git-span/skills/git-span/scripts/`; prefer the
-installed copies.
-<% } else if (scriptsHome === "antigravity-installed") { %>Paths below name the installed plugin's skill directory
+Paths below name the installed plugin's skill directory
 (`~/.gemini/config/plugins/git-span/skills/git-span/` — `agy plugin install`
 copies the plugin, these scripts included, under
 `~/.gemini/config/plugins/git-span/`). In a checkout of this repository the
 same scripts live under `plugins-antigravity/git-span/skills/git-span/scripts/`;
 prefer the installed copies.
-<% } else { %>Paths below are relative to this skill's directory
-(`plugins-claude/git-span/skills/git-span/`).
-<% } %>
+
 **1. Mine.** From the repo root:
 
 ```bash
-node <%= scriptsDir %>/scripts/mine.mjs \
+node ~/.gemini/config/plugins/git-span/skills/git-span/scripts/mine.mjs \
   --since=6.months --top=25 --no-gh
 ```
 
@@ -128,7 +98,7 @@ for the next step.
 **2. Shortlist.** Distill to actionable candidates:
 
 ```bash
-node <%= scriptsDir %>/scripts/shortlist.mjs \
+node ~/.gemini/config/plugins/git-span/skills/git-span/scripts/shortlist.mjs \
   --min-techniques=2
 ```
 
@@ -138,7 +108,7 @@ exactly 2 techniques deserve a look — verify with explain.
 **3. Explain.** For each candidate worth pursuing:
 
 ```bash
-node <%= scriptsDir %>/scripts/explain.mjs \
+node ~/.gemini/config/plugins/git-span/skills/git-span/scripts/explain.mjs \
   packages/foo/src/Foo.ts packages/bar/src/Bar.ts
 ```
 
