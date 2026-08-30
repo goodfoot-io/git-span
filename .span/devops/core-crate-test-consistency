@@ -1,4 +1,4 @@
-.github/workflows/ci.yml#L88-L91 rk64:48045e17ebfabe55
+.github/workflows/ci.yml#L93-L96 rk64:48045e17ebfabe55
 packages/git-span-core/package.json#L6-L6 rk64:1cd44206fbb12d0a
 
 The git-span-core test command is defined once in package.json's test script and repeated verbatim as CI's cargo test step for packages/git-span-core.

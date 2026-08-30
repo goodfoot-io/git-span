@@ -39,17 +39,21 @@ naming the template it came from.
 
 - **Hand-edits to rendered trees are refused, not destroyed**: the build
   restores your bytes, fails, and names the template the edit belongs in.
-- **One staleness gate for local and CI**:
-  `scripts/check-generated-tree-freshness.mjs` (run by `validate.sh` and the
-  release workflow alike) counts modified, untracked, and deleted paths in the
-  rendered trees, and its failure text diagnoses *why* the trees are dirty —
-  only genuine new render output is ever advised into a commit.
+- **One staleness gate, one gate-set definition**:
+  `scripts/check-generated-tree-freshness.mjs` counts modified, untracked,
+  and deleted paths in the rendered trees, and its failure text diagnoses
+  *why* the trees are dirty — only genuine new render output is ever advised
+  into a commit. Every caller reaches it through the shared gate list in
+  `scripts/run-pipeline-gates.sh`, which `validate.sh`, PR CI (`ci.yml`),
+  and the release workflow all execute — add or remove a gate there, never
+  in a caller.
 - **Host-facing vocabulary comes from one glossary**: tool names, skill
   dispatch syntax, and supported-host enumerations live in
   `scripts/agent-skills-vocabulary.mjs`. Templates consume it through a
   `/* BEGIN GENERATED VOCAB */ … /* END GENERATED VOCAB */` region kept in
-  sync by `scripts/sync-skill-vocabulary.mjs` (its `--check` runs in
-  `validate.sh` and the release workflow), and cross-platform references use
+  sync by `scripts/sync-skill-vocabulary.mjs` (its `--check` is part of the
+  shared gate set in `scripts/run-pipeline-gates.sh`), and cross-platform
+  references use
   `it.skillRef(...)`/`it.variant(...)` — never hand-written per-host prose. A
   rendered-tree control
   (`packages/agent-hooks/test/antigravity/skill-tree-vocabulary.test.ts`,

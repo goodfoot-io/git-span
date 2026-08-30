@@ -129,24 +129,11 @@ target_root="${GIT_SPAN_CARGO_TARGET_ROOT:-/var/cache/git-span/cargo-target}"
 build_dir="$target_root/git-span/build"
 
 {
-  # Reject superseded hook packages before any build or test can rewrite
-  # generated artifacts and hide the tracked-tree state being certified. The
-  # focused suite runs the real scanner in temporary git repositories so its
-  # tracked-file scope and retained-identifier allowlist stay fail-closed.
-  node scripts/check-agent-hooks-migration.mjs &&
-  node --test scripts/check-agent-hooks-migration.test.mjs &&
-  # Every plugin must carry one version across all four platform manifests and
-  # its marketplace entry — the fan-out scripts enumerate the manifests, and
-  # this gate refuses a tree where any enumeration was missed. The focused
-  # suite runs the real checker against temporary git fixtures, plus this
-  # repository itself.
-  node scripts/check-version-consistency.mjs &&
-  node --test scripts/check-version-consistency.test.mjs &&
-  # The skills build and lint drivers must fail closed when the CLI silently
-  # declines to run, refuse to destroy hand-edits to rendered trees, and
-  # reconcile the registry's skill declarations against disk — the focused
-  # suite exercises the real drivers end-to-end in fixture repositories.
-  node --test scripts/agent-skills-drivers.test.mjs &&
+  # Pre-build integrity gates — the shared definition in
+  # scripts/run-pipeline-gates.sh, the same list ci.yml runs on every PR.
+  # These must run before any build or test can rewrite generated artifacts
+  # and hide the tracked-tree state being certified.
+  bash scripts/run-pipeline-gates.sh pre-build &&
   (
     cd "$repo_root/packages/git-span"
     bash scripts/with-target-lock.sh shared env CARGO_TARGET_DIR="$build_dir" cargo build --quiet --locked --bin git-span
@@ -200,24 +187,15 @@ build_dir="$target_root/git-span/build"
       fi
     fi
   } &&
-  # Generated-tree freshness gates. Both call the one shared staleness
-  # predicate in check-generated-tree-freshness.mjs — the same script the
-  # release workflow runs — so the local and CI gates cannot measure
-  # different things (modified, untracked, AND deleted paths all count).
-  # The hooks bundles were rebuilt by 'yarn build' above; the skills suite
-  # runs its own build driver, whose guards make the measurement witnessing
-  # rather than healing (a hand-edit or unverifiable render fails with its
-  # own diagnosis instead of being flattened into "commit the trees").
-  # Lint runs first as its own step — a lint-baseline drift is a
-  # build-independent failure mode and must name itself rather than hide
-  # behind a build error.
-  # The vocabulary sync check runs before the skills gate: a stale copy of
-  # the glossary inside a template means the rendered trees are about to
-  # teach per-platform vocabulary the glossary no longer sanctions.
-  node scripts/check-generated-tree-freshness.mjs hooks &&
-  node scripts/lint-agent-skills.mjs &&
-  node scripts/sync-skill-vocabulary.mjs --check &&
-  node scripts/check-generated-tree-freshness.mjs skills
+  # Generated-tree gates — the shared definition in
+  # scripts/run-pipeline-gates.sh, the same phase ci.yml (PR) and the release
+  # workflow run, so no caller can measure a different gate set. The phase
+  # rebuilds the hook bundles itself (idempotent after the 'yarn build'
+  # above) and then runs the freshness, lint, and vocabulary gates in their
+  # documented order. The agent-hooks-tests phase is NOT called here: the
+  # root 'yarn test' above already ran that workspace's suite through the
+  # same package-level `test` definition the phase invokes.
+  bash scripts/run-pipeline-gates.sh generated-trees
 } 2>&1 | tee "$log_path"
 
 EXIT_CODE=${PIPESTATUS[0]}

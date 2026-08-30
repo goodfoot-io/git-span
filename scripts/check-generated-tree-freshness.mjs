@@ -30,23 +30,261 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadRegistry, repo } from './agent-skills-registry.mjs';
 
 const scripts = path.dirname(fileURLToPath(import.meta.url));
 
+/** @param {string} message @returns {never} */
+function fail(message) {
+  process.stderr.write(`ERROR: ${message}\n`);
+  process.exit(1);
+}
+
 /**
- * The hook-bundle trees are rebuilt by their own build steps (yarn build
- * locally, the dedicated workflow steps in CI); this gate only measures them.
+ * ## Deriving the hook trees from the builds themselves
+ *
+ * The hook-bundle trees this gate measures used to be a hand-maintained
+ * array beside a comment asking the next author to keep it in sync with the
+ * `build:*` scripts — the exact enumeration-drift class the skills suite
+ * already avoids by deriving its trees from the registry. A renamed `-o`
+ * destination or a new platform's build script would have dropped out of
+ * measurement while the gate kept printing "hooks trees fresh".
+ *
+ * The list is now observed, not declared: the gate reads the hook build
+ * scripts out of the agent-hooks package.json (resolving `yarn <alias>`
+ * chains), replays each one into a scratch directory, and measures whatever
+ * the build actually wrote — not just the `-o` flag, which understates the
+ * write set for every agent that emits companion bundles beside its
+ * manifest (claude's `bin/`, codex's flat `.mjs` files, antigravity's
+ * sibling `bin/`). Each derived tree must then exist in the working tree
+ * (so a renamed destination goes red instead of silently unmeasured), and
+ * the set of built agents must equal the registry's platform set in both
+ * directions (so a platform added without a hook build — or a build for a
+ * platform the registry dropped — goes red instead of unnoticed).
  */
-const HOOKS_TREES = [
-  'plugins-claude/git-span/hooks',
-  'plugins-codex/git-span/hooks',
-  'plugins-opencode/git-span/dist',
-  'plugins-antigravity/git-span/hooks.json',
-  'plugins-antigravity/git-span/bin'
-];
+const hooksWorkspace = process.env.AGENT_HOOKS_WORKSPACE
+  ? path.resolve(process.env.AGENT_HOOKS_WORKSPACE)
+  : path.join(repo, 'packages/agent-hooks');
+
+/**
+ * Split a package.json script string into tokens, treating a quoted span as
+ * one token with the quotes stripped (the build scripts quote their `-i`
+ * brace globs and `-o` paths).
+ * @param {string} text
+ */
+function tokenizeScript(text) {
+  return (text.match(/"[^"]*"|'[^']*'|\S+/g) ?? []).map((raw) => raw.replace(/^["']|["']$/g, ''));
+}
+
+/**
+ * Follow `yarn <name>` aliases (build:claude → build:hooks) until the script
+ * text is no longer a bare reference to another script.
+ * @param {Record<string, string>} scriptMap @param {string} text
+ */
+function resolveScriptAlias(scriptMap, text) {
+  let current = text.trim();
+  const seen = new Set();
+  for (;;) {
+    const match = current.match(/^yarn\s+(\S+)$/);
+    if (match === null || scriptMap[match[1]] === undefined || seen.has(match[1])) return current;
+    seen.add(match[1]);
+    current = scriptMap[match[1]].trim();
+  }
+}
+
+/**
+ * @param {string[]} args @param {string[]} flags
+ * @returns {string | undefined}
+ */
+function argValue(args, flags) {
+  for (let i = 0; i < args.length; i += 1) {
+    for (const flag of flags) {
+      if (args[i] === flag) return args[i + 1];
+      if (args[i].startsWith(`${flag}=`)) return args[i].slice(flag.length + 1);
+    }
+  }
+  return undefined;
+}
+
+/** @param {string[]} args @param {string[]} flags @param {string} replacement */
+function swapArgValue(args, flags, replacement) {
+  const out = [...args];
+  for (let i = 0; i < out.length; i += 1) {
+    if (flags.includes(out[i])) {
+      out[i + 1] = replacement;
+      return out;
+    }
+    for (const flag of flags) {
+      if (out[i].startsWith(`${flag}=`)) {
+        out[i] = `${flag}=${replacement}`;
+        return out;
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * The derivation source: every package.json script that resolves to a
+ * `yarn agent-hooks --agent <agent> … -o <dest>` invocation, one per agent.
+ * @returns {{ wrapper: string, builds: { name: string, agent: string, args: string[], output: string }[] }}
+ */
+function hookBuildCommands() {
+  const pkgPath = path.join(hooksWorkspace, 'package.json');
+  /** @type {{ scripts?: Record<string, string> }} */
+  let pkg;
+  try {
+    pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+  } catch (error) {
+    fail(
+      `cannot read the hooks derivation source ${pkgPath}: ${error instanceof Error ? error.message : String(error)}\n` +
+        `The hooks freshness gate derives its measured trees from the agent-hooks build scripts.`
+    );
+  }
+  const scriptMap = pkg.scripts ?? {};
+  const wrapperTokens = tokenizeScript(scriptMap['agent-hooks'] ?? '');
+  if (wrapperTokens[0] !== 'node' || wrapperTokens.length !== 2) {
+    fail(
+      `the "agent-hooks" script in ${pkgPath} is not a plain "node <script>" command — ` +
+        `the hooks gate cannot replay the builds to derive its measured trees (unparseable build script).`
+    );
+  }
+  const wrapper = path.resolve(hooksWorkspace, wrapperTokens[1]);
+  /** @type {Map<string, { name: string, agent: string, args: string[], output: string }>} */
+  const byAgent = new Map();
+  for (const [name, text] of Object.entries(scriptMap)) {
+    if (name === 'agent-hooks') continue;
+    const resolved = resolveScriptAlias(scriptMap, text);
+    const match = resolved.match(/^yarn\s+agent-hooks\s+(.*)$/s);
+    if (match === null) continue;
+    const args = tokenizeScript(match[1]);
+    const agent = argValue(args, ['--agent']);
+    const output = argValue(args, ['-o', '--output']);
+    if (agent === undefined || output === undefined) {
+      fail(
+        `hook build script "${name}" in ${pkgPath} invokes agent-hooks but its --agent/-o could not be ` +
+          `parsed (unparseable build script) — the gate cannot derive the tree it writes.`
+      );
+    }
+    if (!byAgent.has(agent)) byAgent.set(agent, { name, agent, args, output });
+  }
+  return { wrapper, builds: [...byAgent.values()] };
+}
+
+/** Basenames committed under `dir` at HEAD (empty when HEAD has no such dir). @param {string} dir */
+function committedEntries(dir) {
+  const result = spawnSync('git', ['ls-tree', '--name-only', 'HEAD', `${dir}/`], { cwd: repo, encoding: 'utf8' });
+  if (result.status !== 0) return [];
+  return result.stdout
+    .split('\n')
+    .filter(Boolean)
+    .map((entry) => path.posix.basename(entry));
+}
+
+/**
+ * Replay one hook build into a scratch directory and map its complete write
+ * set back onto the committed tree: a directory `-o` measures that
+ * directory; a manifest `-o` measures the manifest's parent directory when
+ * the build accounts for every committed entry in it (claude/codex layouts),
+ * and only the written entries when the parent also holds unrelated content
+ * (antigravity's plugin root).
+ * @param {string} wrapper @param {{ name: string, agent: string, args: string[], output: string }} build
+ * @returns {string[]} repo-relative tree paths this build's output occupies
+ */
+function treesWrittenBy(wrapper, build) {
+  const realOut = path.resolve(hooksWorkspace, build.output);
+  const relOut = path.relative(repo, realOut).split(path.sep).join('/');
+  if (relOut.startsWith('..')) {
+    fail(`hook build script "${build.name}" writes outside the repository (${realOut}) — nothing to measure.`);
+  }
+  const scratch = mkdtempSync(path.join(tmpdir(), `hooks-tree-${build.agent}-`));
+  try {
+    const scratchOut = path.join(scratch, path.basename(build.output));
+    const result = spawnSync(process.execPath, [wrapper, ...swapArgValue(build.args, ['-o', '--output'], scratchOut)], {
+      cwd: hooksWorkspace,
+      encoding: 'utf8'
+    });
+    if (result.status !== 0) {
+      fail(
+        `scratch replay of hook build script "${build.name}" (agent ${build.agent}) failed — the gate derives its ` +
+          `measured trees from what the builds write, so a failing build leaves them underivable:\n` +
+          `${result.stdout}${result.stderr}`
+      );
+    }
+    const written = readdirSync(scratch);
+    if (written.length === 0) {
+      fail(
+        `scratch replay of hook build script "${build.name}" (agent ${build.agent}) wrote nothing — ` +
+          `the gate cannot derive a measured tree from a build with no observable output.`
+      );
+    }
+    if (existsSync(scratchOut) && statSync(scratchOut).isDirectory()) {
+      const parent = path.posix.dirname(relOut);
+      return [relOut, ...written.filter((entry) => entry !== path.basename(build.output)).map((e) => `${parent}/${e}`)];
+    }
+    const parent = path.posix.dirname(relOut);
+    const writtenSet = new Set(written);
+    const committed = committedEntries(parent);
+    if (committed.length > 0 && committed.every((entry) => writtenSet.has(entry))) return [parent];
+    return written.map((entry) => `${parent}/${entry}`);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+/** Derive the measured hook trees from the builds, reconciling both directions. */
+function deriveHooksTrees() {
+  const { wrapper, builds } = hookBuildCommands();
+  if (builds.length === 0) {
+    fail(
+      `no hook build scripts found in ${path.join(hooksWorkspace, 'package.json')} — the hooks freshness gate ` +
+        `derives its measured trees from them and refuses to certify anything from an empty derivation.`
+    );
+  }
+
+  // Both directions of the platform reconciliation: a registry platform with
+  // no hook build is unmeasured; a hook build for a platform the registry
+  // does not declare ships to no target.
+  const buildAgents = new Set(builds.map((build) => build.agent));
+  const registryPlatforms = new Set(
+    loadRegistry().plugins.flatMap((plugin) => plugin.targets.map((target) => target.platform))
+  );
+  const problems = [];
+  for (const platform of registryPlatforms) {
+    if (!buildAgents.has(platform)) {
+      problems.push(
+        `the registry declares platform "${platform}" but packages/agent-hooks has no hook build script for it — ` +
+          `that platform's hook output would be unmeasured by this gate. Add a build:* script for it (or remove ` +
+          `the platform from the registry).`
+      );
+    }
+  }
+  for (const agent of buildAgents) {
+    if (!registryPlatforms.has(agent)) {
+      problems.push(
+        `packages/agent-hooks builds hooks for agent "${agent}" but no registry target declares that platform — ` +
+          `remove the build script or declare the platform in the registry.`
+      );
+    }
+  }
+  if (problems.length > 0) fail(problems.join('\n'));
+
+  const trees = [...new Set(builds.flatMap((build) => treesWrittenBy(wrapper, build)))].sort();
+  const missing = trees.filter((tree) => !existsSync(path.join(repo, tree)));
+  if (missing.length > 0) {
+    fail(
+      `the hook builds write trees that do not exist in the working tree:\n` +
+        missing.map((tree) => `  ${tree}`).join('\n') +
+        `\nThe build destinations and the committed trees have diverged (a renamed -o path is the usual cause) — ` +
+        `run 'yarn workspace agent-hooks build' and commit the result before this gate can certify anything.`
+    );
+  }
+  return trees;
+}
 
 /**
  * The one staleness predicate: everything `git status --porcelain` sees in
@@ -101,8 +339,9 @@ function requireClean(trees, rebuildAdvice) {
 const suite = process.argv[2];
 
 if (suite === 'hooks') {
-  requireClean(HOOKS_TREES, 'Commit the rebuilt plugin bundles together with the source change that reworked them.');
-  console.log(`hooks trees fresh: ${HOOKS_TREES.join(', ')}`);
+  const hooksTrees = deriveHooksTrees();
+  requireClean(hooksTrees, 'Commit the rebuilt plugin bundles together with the source change that reworked them.');
+  console.log(`hooks trees fresh: ${hooksTrees.join(', ')}`);
   process.exit(0);
 }
 

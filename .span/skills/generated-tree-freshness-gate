@@ -1,5 +1,6 @@
-.github/workflows/release-git-span.yml#L180-L196 rk64:3f49962c8afe78aa
-scripts/check-generated-tree-freshness.mjs rk64:6114fac71a5e1d63
-scripts/validate.sh#L203-L220 rk64:6c29ae4cfeff3d0a
+.github/workflows/release-git-span.yml#L170-L181 rk64:06a961f646f3d080
+scripts/check-generated-tree-freshness.mjs rk64:718967a1bb312aae
+scripts/run-pipeline-gates.sh#L61-L70 rk64:492fc37d0f3beb7e
+scripts/validate.sh#L190-L198 rk64:945d5925115b00d8
 
-scripts/check-generated-tree-freshness.mjs is the one staleness predicate for the committed generated trees — modified, untracked, and deleted paths all count — and validate.sh's freshness block and the release workflow's guard steps both invoke that script rather than hand-rolled git checks; a caller that measures with its own git predicate reintroduces the local-green/CI-red divergence the predicate exists to prevent, and its failure text branches on the build driver's exit-code contract so each reachable cause reads differently.
+scripts/check-generated-tree-freshness.mjs is the one staleness predicate for the committed generated trees — modified, untracked, and deleted paths all count — and every caller reaches it through the one gate-set definition in scripts/run-pipeline-gates.sh (its generated-trees phase): validate.sh, ci.yml's pipeline-gates job, and the release workflow all execute that phase rather than hand-rolled git checks or hand-copied gate lists; a caller that measures with its own git predicate — or names individual gate scripts instead of the shared phase — reintroduces the local-green/CI-red divergence the predicate exists to prevent. The gate holds no hand-maintained tree enumeration: the skills trees derive from the registry and the hook trees are observed by replaying the agent-hooks build scripts into scratch directories, reconciled both ways against the registry's platform set and the working tree, so a renamed build destination or an unbuilt platform goes red instead of dropping out of measurement; its failure text branches on the build driver's exit-code contract so each reachable cause reads differently.

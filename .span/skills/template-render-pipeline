@@ -1,12 +1,12 @@
 .githooks/pre-commit.generated-trees.sh rk64:46cab3ce69ff4eeb
 CLAUDE.md#L8-L8 rk64:2a53eba563fa7ff7
-scripts/agent-skills-drivers.test.mjs rk64:aad5c87cb26442d6
+scripts/agent-skills-drivers.test.mjs rk64:81ba487ae73728f0
 scripts/agent-skills-registry.mjs rk64:fb96de65fbde1f09
 scripts/agent-skills-vocabulary.mjs rk64:71a7f3cadda50aad
 scripts/build-agent-skills.mjs rk64:917a4098af7ce28a
 scripts/lint-agent-skills.mjs rk64:d14416d8aad0f196
 scripts/sync-skill-vocabulary.mjs rk64:5ed389f332938c84
-skills-src/README.md rk64:a64b71c639a35d01
+skills-src/README.md rk64:97a5ec6085d5c8e7
 skills-src/git-span/git-span/references/terminal-statuses.md.eta rk64:45211c72d7b8a57f
 skills-src/git-span/reconcile/references/procedure.md.eta rk64:f3c455d3ed1c5d01
 

@@ -50,9 +50,7 @@ const FORBIDDEN: { name: string; pattern: RegExp }[] = [
 const ALLOWED: Record<string, Record<string, string>> = {
   'hook-effect-analysis/SKILL.md': {
     'Claude home path':
-      'names the transcript corpus the pipeline analyzes as DATA (`~/.claude/projects/**/*.jsonl`); the SKILL.md host-scope note states this host records no such transcripts',
-    'bare Claude Read tool name':
-      '--hook selector examples (`--hook=PostToolUse:Read`) name recorded events in the measured corpus, not tools on this host'
+      'names the transcript corpus the pipeline analyzes as DATA (`~/.claude/projects/**/*.jsonl`); the SKILL.md host-scope note states this host records no such transcripts'
   },
   'hook-effect-analysis/references/transcript-record-shape.md': {
     'Claude home path':
@@ -96,8 +94,13 @@ describe('antigravity skill tree — no foreign vocabulary outside data-vocabula
         }
       }
       for (const [name] of Object.entries(allowed)) {
-        if (!FORBIDDEN.some(({ name: n }) => n === name)) {
+        const forbidden = FORBIDDEN.find(({ name: n }) => n === name);
+        if (forbidden === undefined) {
           violations.push(`${rel}: allowlist entry "${name}" matches no known token (stale allowlist)`);
+        } else if (!forbidden.pattern.test(text)) {
+          violations.push(
+            `${rel}: allowlist entry "${name}" but its token no longer appears in the file — remove the entry (stale allowlist)`
+          );
         }
       }
     }

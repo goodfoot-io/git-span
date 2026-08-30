@@ -79,6 +79,50 @@ function fixture({ skills = ['alpha'], onDisk = { alpha: 'SKILL.md.eta' }, basel
 
   // The provisioning shape under test: the package directory reachable only
   // through a symlink, exactly like a card worktree's shared node_modules.
+  // The hooks gate's derivation source: a fixture agent-hooks workspace with
+  // build scripts (one reached through a `yarn` alias) and a stub CLI wrapper
+  // that writes a manifest plus a companion bin/ bundle — the sibling-write
+  // shape the real builds have, which the `-o` flag alone understates. run()
+  // points the gate here via AGENT_HOOKS_WORKSPACE.
+  const hooksWorkspace = join(root, 'packages/agent-hooks');
+  mkdirSync(join(hooksWorkspace, 'scripts'), { recursive: true });
+  writeFileSync(
+    join(hooksWorkspace, 'package.json'),
+    JSON.stringify(
+      {
+        name: 'agent-hooks-fixture',
+        type: 'module',
+        scripts: {
+          'build:claude': 'yarn build:hooks',
+          'build:hooks': 'yarn agent-hooks --agent claude-code -i src -o "../../plugins-claude/demo/hooks/hooks.json"',
+          'build:codex': 'yarn agent-hooks --agent codex -i src -o ../../plugins-codex/demo/hooks/hooks.json',
+          'agent-hooks': 'node scripts/hooks-cli-wrapper.js'
+        }
+      },
+      null,
+      2
+    )
+  );
+  writeFileSync(
+    join(hooksWorkspace, 'scripts/hooks-cli-wrapper.js'),
+    [
+      "import { mkdirSync, writeFileSync } from 'node:fs';",
+      "import { dirname, join } from 'node:path';",
+      'const args = process.argv.slice(2);',
+      "const out = args[args.indexOf('-o') + 1];",
+      "const agent = args[args.indexOf('--agent') + 1];",
+      "mkdirSync(join(dirname(out), 'bin'), { recursive: true });",
+      'writeFileSync(out, `${JSON.stringify({ agent })}\\n`);',
+      "writeFileSync(join(dirname(out), 'bin/hook.mjs'), 'export {};\\n');",
+      ''
+    ].join('\n')
+  );
+  for (const tree of ['plugins-claude/demo/hooks', 'plugins-codex/demo/hooks']) {
+    mkdirSync(join(root, tree, 'bin'), { recursive: true });
+    writeFileSync(join(root, tree, 'hooks.json'), '{}\n');
+    writeFileSync(join(root, tree, 'bin/hook.mjs'), 'export {};\n');
+  }
+
   mkdirSync(join(root, 'node_modules'));
   symlinkSync(join(realRepo, 'node_modules/@goodfoot'), join(root, 'node_modules/@goodfoot'), 'dir');
 
@@ -102,6 +146,7 @@ function run(script, root, env = {}, args = []) {
       ...process.env,
       AGENT_SKILLS_REPO: root,
       AGENT_SKILLS_REGISTRY: join(root, 'registry.json'),
+      AGENT_HOOKS_WORKSPACE: join(root, 'packages/agent-hooks'),
       ...env
     }
   });
@@ -385,17 +430,71 @@ test('freshness gate routes a hand-edit to the template, preserving the edited b
   }
 });
 
-test('freshness gate hooks suite counts untracked bundle files', () => {
+test('freshness gate hooks suite derives its trees from the build scripts and counts untracked bundle files', () => {
   const root = fixture();
   try {
     const clean = run('check-generated-tree-freshness.mjs', root, {}, ['hooks']);
     assert.equal(clean.status, 0, clean.stderr);
+    assert.match(
+      clean.stdout,
+      /hooks trees fresh: plugins-claude\/demo\/hooks, plugins-codex\/demo\/hooks/,
+      'the measured trees must be the ones the scratch replays observed the builds writing'
+    );
 
-    mkdirSync(join(root, 'plugins-claude/git-span/hooks'), { recursive: true });
-    writeFileSync(join(root, 'plugins-claude/git-span/hooks/stray.mjs'), 'export {};\n');
+    writeFileSync(join(root, 'plugins-claude/demo/hooks/stray.mjs'), 'export {};\n');
     const dirty = run('check-generated-tree-freshness.mjs', root, {}, ['hooks']);
     assert.equal(dirty.status, 1, 'an untracked bundle file must turn the hooks gate red');
-    assert.match(dirty.stderr, /plugins-claude\/git-span\/hooks\/stray\.mjs \(new file, untracked\)/);
+    assert.match(dirty.stderr, /plugins-claude\/demo\/hooks\/stray\.mjs \(new file, untracked\)/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('hooks gate goes red when a platform build script is removed from the derivation source', () => {
+  const root = fixture();
+  try {
+    const pkgPath = join(root, 'packages/agent-hooks/package.json');
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+    delete pkg.scripts['build:codex'];
+    writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
+    const result = run('check-generated-tree-freshness.mjs', root, {}, ['hooks']);
+    assert.equal(result.status, 1, 'a registry platform whose build script disappeared must turn the gate red');
+    assert.match(
+      result.stderr,
+      /registry declares platform "codex" but packages\/agent-hooks has no hook build script/
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('hooks gate goes red when a build destination is renamed away from the committed tree', () => {
+  const root = fixture();
+  try {
+    const pkgPath = join(root, 'packages/agent-hooks/package.json');
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+    pkg.scripts['build:hooks'] = pkg.scripts['build:hooks'].replace('demo/hooks/', 'demo/hooks-renamed/');
+    writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
+    const result = run('check-generated-tree-freshness.mjs', root, {}, ['hooks']);
+    assert.equal(result.status, 1, 'a renamed -o destination must turn the gate red, never drop out of measurement');
+    assert.match(result.stderr, /plugins-claude\/demo\/hooks-renamed/);
+    assert.match(result.stderr, /do not exist in the working tree/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('hooks gate refuses a hook build for a platform the registry does not declare', () => {
+  const root = fixture();
+  try {
+    const pkgPath = join(root, 'packages/agent-hooks/package.json');
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+    pkg.scripts['build:antigravity'] =
+      'yarn agent-hooks --agent antigravity -i src -o ../../plugins-antigravity/demo/hooks.json';
+    writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
+    const result = run('check-generated-tree-freshness.mjs', root, {}, ['hooks']);
+    assert.equal(result.status, 1, 'a build for an undeclared platform must be reconciled, not silently measured');
+    assert.match(result.stderr, /builds hooks for agent "antigravity" but no registry target declares that platform/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

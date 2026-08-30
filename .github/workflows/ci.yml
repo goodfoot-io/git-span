@@ -47,9 +47,14 @@ jobs:
         with:
           tool: cargo-nextest
 
+      # shared-key: the pipeline-gates job cargo-builds the same workspace
+      # (its agent-hooks suite builds the debug binary through
+      # test/real-bundle-helpers.ts), so the two jobs share one cache line
+      # instead of each paying a cold build.
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
         with:
+          shared-key: git-span
           workspaces: packages/git-span -> ${{ runner.temp }}/git-span-target
 
       - name: Cargo check (git-span)
@@ -102,6 +107,61 @@ jobs:
           path: ${{ runner.temp }}/git-span-target/git-span/build/release/git-span
           retention-days: 1
 
+  pipeline-gates:
+    name: Pipeline Gates (shared with validate.sh)
+    runs-on: ubuntu-latest
+    # Runs the ONE gate-set definition (scripts/run-pipeline-gates.sh) that
+    # scripts/validate.sh executes locally and the release workflow executes
+    # at tag time — never a hand-copied subset, which is exactly the
+    # local-vs-CI divergence the shared definition exists to prevent. All
+    # three phases run here: pre-build integrity checks, the agent-hooks
+    # vitest suite (the skill-tree vocabulary controls have no tag-time
+    # backstop, so this is their only CI execution), and the generated-tree
+    # freshness/lint/vocabulary gates.
+    env:
+      CARGO_INCREMENTAL: "0"
+      # The agent-hooks suite cargo-builds the workspace debug binary through
+      # test/real-bundle-helpers.ts, which reads this root and budgets the
+      # build. A cold runner build legitimately exceeds the local-machine
+      # default budget, so raise it; the shared rust-cache line below makes
+      # the warm case cheap.
+      GIT_SPAN_CARGO_TARGET_ROOT: ${{ runner.temp }}/git-span-target
+      GIT_SPAN_CARGO_BUILD_BUDGET_MS: "900000"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The cargo [target.*].linker config pins `cc.mold-wrapper` — same
+      # provisioning as the build-cli job above.
+      - name: Install mold and clang
+        run: sudo apt-get update && sudo apt-get install -y mold clang
+
+      - name: Install mold cc wrapper on PATH
+        run: sudo install -m 755 packages/git-span/scripts/cc.mold-wrapper.sh /usr/local/bin/cc.mold-wrapper
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: git-span
+          workspaces: packages/git-span -> ${{ runner.temp }}/git-span-target
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: yarn install
+
+      - name: Run the shared pipeline gate set
+        run: bash scripts/run-pipeline-gates.sh all
+
   build-extension:
     name: Build Extension (TypeScript)
     runs-on: ubuntu-latest
@@ -120,13 +180,6 @@ jobs:
       # before the next release silently reverts it.
       - name: Check platform package READMEs match template
         run: node scripts/generate-platform-readmes.mjs --check
-
-      # Every plugin must carry one version across all four platform manifests
-      # and its marketplace entry. The same checker gates the release workflow
-      # ahead of publishing; running it here surfaces a missed enumeration at
-      # PR time instead.
-      - name: Check plugin version consistency
-        run: node scripts/check-version-consistency.mjs
 
       - name: Enable Corepack
         run: corepack enable

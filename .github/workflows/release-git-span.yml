@@ -167,33 +167,18 @@ jobs:
       - name: Install dependencies
         run: yarn install --immutable
 
-      - name: Rebuild OpenCode plugin bundle
-        run: yarn workspace agent-hooks build:opencode
-
-      # The antigravity plugin ships its hooks.json and bin/ bundles checked
-      # in and installs straight from the repository (`agy plugin install`
-      # takes a git URL), so a stale committed bundle would ship exactly as
-      # committed — same freshness contract as the OpenCode bundle above.
-      - name: Rebuild Antigravity hook bundles
-        run: yarn workspace agent-hooks build:antigravity
-
-      # Both freshness guards call the same shared gate script validate.sh
-      # runs locally, so the local and CI gates measure one staleness
-      # predicate (modified, untracked, and deleted paths alike) and emit
-      # the same cause-diagnosed failure text.
-      - name: Guard committed plugin bundle freshness
-        run: node scripts/check-generated-tree-freshness.mjs hooks
-
-      # The plugin skill trees are committed build output of skills-src/ and
-      # the OpenCode package ships its skills/ tree in the published tarball,
-      # so re-render from the tagged sources and refuse to publish a stale
-      # committed tree — the gate script runs the build driver itself and
-      # branches its advice on why the trees are dirty.
-      - name: Rebuild and guard agent skill tree freshness
-        run: |
-          node scripts/lint-agent-skills.mjs
-          node scripts/sync-skill-vocabulary.mjs --check
-          node scripts/check-generated-tree-freshness.mjs skills
+      # The antigravity plugin installs straight from the repository (`agy
+      # plugin install` takes a git URL) and the OpenCode package ships its
+      # bundled dist/ and skills/ trees in the published tarball, so a stale
+      # committed tree would ship exactly as committed. The generated-trees
+      # phase is the ONE gate-set definition (scripts/run-pipeline-gates.sh)
+      # that scripts/validate.sh runs locally and ci.yml runs on every PR:
+      # it rebuilds every hook bundle, measures both tree families with the
+      # shared staleness predicate, and runs the skills lint and vocabulary
+      # sync checks — same list, same cause-diagnosed failure text, at tag
+      # time.
+      - name: Run the shared generated-tree gates
+        run: bash scripts/run-pipeline-gates.sh generated-trees
 
       # The Antigravity plugin has no packaged artifact — `agy plugin install`
       # consumes the repository tree directly — so the pack-and-inspect guard

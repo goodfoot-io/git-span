@@ -76,8 +76,13 @@ describe('opencode skill tree — no twin-only vocabulary outside pinned forks',
         }
       }
       for (const [name] of Object.entries(allowed)) {
-        if (!FORBIDDEN.some(({ name: n }) => n === name)) {
+        const forbidden = FORBIDDEN.find(({ name: n }) => n === name);
+        if (forbidden === undefined) {
           violations.push(`${rel}: allowlist entry "${name}" matches no known token (stale allowlist)`);
+        } else if (!forbidden.pattern.test(text)) {
+          violations.push(
+            `${rel}: allowlist entry "${name}" but its token no longer appears in the file — remove the entry (stale allowlist)`
+          );
         }
       }
     }
