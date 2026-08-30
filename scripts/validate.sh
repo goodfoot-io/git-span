@@ -193,6 +193,22 @@ build_dir="$target_root/git-span/build"
       echo "ERROR: rebuild produced uncommitted bundle changes — commit the rebuilt plugin bundles" >&2
       exit 1
     fi
+  ) &&
+  # Skills-freshness gate, the same contract as the hooks gate above: the
+  # rendered plugins-*/git-span/skills trees are committed build output of
+  # skills-src/, so rebuild them here and refuse a tree that differs from
+  # what is committed. Lint runs first as its own step — a lint-baseline
+  # drift is a build-independent failure mode and must name itself rather
+  # than hide behind a build error. Untracked files in the rendered trees
+  # fail closed too: build-agent-skills.mjs refuses to publish over them
+  # before the diff below ever runs.
+  node scripts/lint-agent-skills.mjs &&
+  node scripts/build-agent-skills.mjs &&
+  (
+    if ! git diff --exit-code -- plugins-claude/git-span/skills plugins-codex/git-span/skills plugins-opencode/git-span/skills; then
+      echo "ERROR: rebuild produced uncommitted skill-tree changes — commit the rebuilt skill trees" >&2
+      exit 1
+    fi
   )
 } 2>&1 | tee "$log_path"
 

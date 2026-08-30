@@ -16,12 +16,34 @@ import { fileURLToPath } from 'node:url';
 
 export const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
+/**
+ * @typedef {object} SkillsTarget
+ * @property {string} platform
+ * @property {string} path
+ *
+ * @typedef {object} SkillsPlugin
+ * @property {string} name
+ * @property {string} skillsSrc
+ * @property {string[]} skills
+ * @property {string} claudePluginRoot
+ * @property {string} codexPluginRoot
+ * @property {string} opencodePluginRoot
+ * @property {string} [antigravityPluginRoot]
+ * @property {Record<string, string[]>} [skillPlatforms]
+ * @property {SkillsTarget[]} targets
+ * @property {string[]} platformDirs
+ * @property {{ diagnostics: string[], reason: string }} [lintBaseline]
+ *
+ * @typedef {{ plugins: SkillsPlugin[] }} SkillsRegistry
+ */
+
 const DEFAULT_REGISTRY = path.join(repo, 'scripts/agent-skills-plugins.json');
 
 /**
  * Overridable via AGENT_SKILLS_REGISTRY so a test can run a driver end-to-end
  * against a deliberately unsafe registry and observe the refusal, rather than
  * trusting a unit check on a copy of the rule.
+ * @returns {SkillsRegistry}
  */
 export function loadRegistry() {
   return JSON.parse(readFileSync(process.env.AGENT_SKILLS_REGISTRY ?? DEFAULT_REGISTRY, 'utf8'));
@@ -32,6 +54,7 @@ export function loadRegistry() {
  * shared AGENTS.md-convention skills root (`.agents/skills` stays pointed at
  * `/workspace/.claude/skills`, untouched by the skills build), so only the
  * per-platform plugin skill leaves are allowed.
+ * @param {SkillsPlugin} plugin
  */
 function allowedTargets(plugin) {
   const targets = [
@@ -55,6 +78,7 @@ function allowedTargets(plugin) {
  * `skills-src/git-span` is neither a plugin root nor a stray path under
  * `plugins-*`, and naming it would delete the authored templates the build
  * reads from.
+ * @param {SkillsRegistry} registry
  */
 export function assertSafeTargets(registry) {
   for (const plugin of registry.plugins) {
@@ -75,7 +99,10 @@ export function assertSafeTargets(registry) {
 
 const ALL_PLATFORMS = ['claude-code', 'codex', 'opencode', 'antigravity'];
 
-/** The platforms a plugin's skills actually render to, after front-config gating. */
+/**
+ * The platforms a plugin's skills actually render to, after front-config gating.
+ * @param {SkillsPlugin} plugin
+ */
 function renderedPlatforms(plugin) {
   return new Set((plugin.skills ?? []).flatMap((skill) => plugin.skillPlatforms?.[skill] ?? ALL_PLATFORMS));
 }
@@ -88,6 +115,7 @@ function renderedPlatforms(plugin) {
  *
  * Declared here rather than discovered after publishing, so the empty tree is
  * never created in the first place.
+ * @param {SkillsRegistry} registry
  */
 export function assertTargetsRenderFiles(registry) {
   for (const plugin of registry.plugins) {
@@ -109,10 +137,12 @@ export function assertTargetsRenderFiles(registry) {
  * contents with it, tracked or not. Tracked losses come back from the index;
  * untracked ones are gone. Nothing downstream can restore them, so the refusal
  * has to come before the CLI runs.
+ * @param {SkillsRegistry} registry
  */
 export function assertNoUntrackedInTargets(registry) {
   for (const plugin of registry.plugins) {
     for (const target of plugin.targets) {
+      /** @param {string[]} args */
       const gitLsFiles = (args) =>
         execFileSync('git', ['ls-files', ...args, '--', target.path], {
           cwd: repo,
@@ -137,7 +167,11 @@ export function assertNoUntrackedInTargets(registry) {
   }
 }
 
-/** The agent-skills CLI argv for one plugin, identical between build and lint. */
+/**
+ * The agent-skills CLI argv for one plugin, identical between build and lint.
+ * @param {SkillsPlugin} plugin
+ * @param {'build' | 'lint'} command
+ */
 export function cliArgs(plugin, command) {
   return [
     'node_modules/@goodfoot/agent-skills/dist/cli.js',
@@ -155,12 +189,12 @@ export function cliArgs(plugin, command) {
  * because the same template site is reported once per target it renders into.
  * Comparing sites rather than raw lines keeps the registry's declared baseline
  * something a reviewer can read.
+ * @param {string} stderr
  */
 export function diagnosticSites(stderr) {
-  const sites = stderr
-    .split('\n')
-    .map((line) => /^(.+?):(\d+):\d+ \[([^\]]+)\]/.exec(line))
-    .filter((match) => match !== null)
-    .map((match) => `${match[1]}:${match[2]}:${match[3]}`);
+  const sites = stderr.split('\n').flatMap((line) => {
+    const match = /^(.+?):(\d+):\d+ \[([^\]]+)\]/.exec(line);
+    return match === null ? [] : [`${match[1]}:${match[2]}:${match[3]}`];
+  });
   return [...new Set(sites)].sort();
 }

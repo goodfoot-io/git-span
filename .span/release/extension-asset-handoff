@@ -1,5 +1,5 @@
 .github/workflows/release-extension.yml#L3-L8 rk64:29d3657b4a44a4c3
 .github/workflows/release-extension.yml#L36-L68 rk64:1285cdf908aef5d6
-.github/workflows/release-git-span.yml#L192-L244 rk64:b8fb004dd29d28bd
+.github/workflows/release-git-span.yml#L228-L280 rk64:b8fb004dd29d28bd
 
 The Git Span release workflow creates the named CLI assets before passing its tag to the reusable extension workflow, and the extension gate must request the same asset names and accept that release_tag input before either marketplace publish proceeds.

@@ -171,6 +171,42 @@ jobs:
             exit 1
           fi
 
+      # The three plugin skill trees are committed build output of skills-src/
+      # (rendered by scripts/build-agent-skills.mjs) and the OpenCode package
+      # ships its skills/ tree in the published tarball, so re-render from the
+      # tagged sources and refuse to publish a stale committed tree — same
+      # freshness contract as scripts/validate.sh's skills gate.
+      - name: Rebuild agent skill trees
+        run: |
+          node scripts/lint-agent-skills.mjs
+          node scripts/build-agent-skills.mjs
+
+      - name: Guard committed skill tree freshness
+        run: |
+          if [ -n "$(git status --porcelain -- plugins-claude/git-span/skills plugins-codex/git-span/skills plugins-opencode/git-span/skills)" ]; then
+            echo "ERROR: rebuild produced uncommitted skill-tree changes — commit the rebuilt skill trees" >&2
+            git status --porcelain -- plugins-claude/git-span/skills plugins-codex/git-span/skills plugins-opencode/git-span/skills >&2
+            exit 1
+          fi
+
+      # The OpenCode package ships its skills/ tree inside the published
+      # tarball, and `npm pack` silently drops anything the manifest's files
+      # globs fail to capture — the wiki repo shipped a skill-less package
+      # exactly that way when a skills symlink stopped resolving. Pack first
+      # and refuse to publish a tarball missing any of the three skills.
+      - name: Guard packed OpenCode tarball carries the skills
+        working-directory: plugins-opencode/git-span
+        run: |
+          TARBALL="$(npm pack --silent | tail -1)"
+          echo "Packed tarball: $TARBALL"
+          for skill in git-span hook-effect-analysis reconcile; do
+            if ! tar -tf "$TARBALL" | grep -q "^package/skills/$skill/SKILL.md$"; then
+              echo "ERROR: packed opencode-git-span is missing package/skills/$skill/SKILL.md — refusing to publish" >&2
+              exit 1
+            fi
+          done
+          rm -f "$TARBALL"
+
       - name: Publish OpenCode plugin package
         working-directory: plugins-opencode/git-span
         run: npm publish --access public --provenance

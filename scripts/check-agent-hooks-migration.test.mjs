@@ -14,7 +14,7 @@ const legacyCodexLog = 'CODEX_' + 'HOOKS_LOG_FILE';
 const marketplaceSetting = [
   '{',
   '  "enabledPlugins": {',
-  '    "claude-code-hooks@goodfoot": true,',
+  '    "agent-hooks@goodfoot": true,',
   '    "git-span@git-span": true',
   '  }',
   '}',
@@ -102,7 +102,7 @@ for (const [label, path, content] of [
 }
 
 test('rejects drift in the exact retained marketplace setting', () => {
-  const root = fixture({ '.claude/settings.json': '{"enabledPlugins":{"claude-code-hooks@goodfoot":false}}\n' });
+  const root = fixture({ '.claude/settings.json': '{"enabledPlugins":{"agent-hooks@goodfoot":false}}\n' });
   try {
     const result = scan(root);
     assert.equal(result.status, 1);

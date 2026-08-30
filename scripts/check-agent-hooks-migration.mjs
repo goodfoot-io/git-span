@@ -9,7 +9,7 @@ const forbiddenDiagnosticVariables = ['CLAUDE_CODE_' + 'HOOKS_LOG_FILE', 'CODEX_
 const retainedIdentifiers = [
   {
     path: '.claude/settings.json',
-    content: '    "claude-code-hooks@goodfoot": true,',
+    content: '    "agent-hooks@goodfoot": true,',
     count: 1
   }
 ];
