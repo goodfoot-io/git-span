@@ -111,8 +111,8 @@ describe('antigravity advisor hook registration', () => {
 describe('antigravity advisor adapter', () => {
   it('allows a non-git command silently', async () => {
     const handler = createHandler(fakeGit(), fakeExecutors(), sharedMemoFactory(), layout);
-    const result = await handler(preInput('ls -la') as never, { logger } as never);
-    expect(result).toBeUndefined();
+    const result = toResult(await handler(preInput('ls -la') as never, { logger } as never));
+    expect(result.stdout.decision).toBe('allow');
   });
 
   it('allows silently when the tool call is not run_command', async () => {
@@ -121,7 +121,7 @@ describe('antigravity advisor adapter', () => {
       ...preInput('git commit -m x'),
       toolCall: { name: 'write_to_file', args: { TargetFile: '/repo/a.ts' } }
     };
-    expect(await handler(input as never, { logger } as never)).toBeUndefined();
+    expect(toResult(await handler(input as never, { logger } as never)).stdout.decision).toBe('allow');
   });
 
   it('denies a commit carrying semantic drift with the checklist as the reason', async () => {
@@ -147,8 +147,8 @@ describe('antigravity advisor adapter', () => {
     const first = toResult(await handler(preInput('git commit -m x', conv) as never, { logger } as never));
     expect(first.stdout.decision).toBe('deny');
 
-    const second = await handler(preInput('git commit -m x', conv) as never, { logger } as never);
-    expect(second).toBeUndefined();
+    const second = toResult(await handler(preInput('git commit -m x', conv) as never, { logger } as never));
+    expect(second.stdout.decision).toBe('allow');
   });
 
   it('surfaces an environmental condition by stashing a wrapped block for the PostInvocation drain and allows', async () => {
@@ -159,9 +159,9 @@ describe('antigravity advisor adapter', () => {
     });
     const handler = createHandler(git, executors, sharedMemoFactory(), layout);
     const conv = 'agy-adv-env';
-    const result = await handler(preInput('git commit -m "wip"', conv) as never, { logger } as never);
+    const result = toResult(await handler(preInput('git commit -m "wip"', conv) as never, { logger } as never));
 
-    expect(result).toBeUndefined();
+    expect(result.stdout.decision).toBe('allow');
     const blocks = drainPendingInjections(layout, conv);
     expect(blocks).toHaveLength(1);
     expect(blocks[0]).toContain('lfs not fetched');
@@ -177,9 +177,9 @@ describe('antigravity advisor adapter', () => {
     });
     const handler = createHandler(git, executors, sharedMemoFactory(), layout);
     const conv = 'agy-adv-scan';
-    const result = await handler(preInput('git commit -m "wip"', conv) as never, { logger } as never);
+    const result = toResult(await handler(preInput('git commit -m "wip"', conv) as never, { logger } as never));
 
-    expect(result).toBeUndefined();
+    expect(result.stdout.decision).toBe('allow');
     const blocks = drainPendingInjections(layout, conv);
     expect(blocks).toHaveLength(1);
     expect(blocks[0]).toContain('Permission denied');
@@ -192,9 +192,9 @@ describe('antigravity advisor adapter', () => {
     const executors = fakeExecutors({ list: async () => [porcelainRow()], drift: async () => [driftRow('CHANGED')] });
     const handler = createHandler(git, executors, sharedMemoFactory(), layout);
     const conv = 'agy-adv-status';
-    const result = await handler(preInput('git status', conv) as never, { logger } as never);
+    const result = toResult(await handler(preInput('git status', conv) as never, { logger } as never));
 
-    expect(result).toBeUndefined();
+    expect(result.stdout.decision).toBe('allow');
     const blocks = drainPendingInjections(layout, conv);
     expect(blocks).toHaveLength(1);
     expect(blocks[0]).toContain(SPAN);
@@ -209,8 +209,8 @@ describe('antigravity advisor adapter', () => {
     });
     const handler = createHandler(git, fakeExecutors(), sharedMemoFactory(), layout);
     const conv = 'agy-adv-boom';
-    const result = await handler(preInput('git commit -m "wip"', conv) as never, { logger } as never);
-    expect(result).toBeUndefined();
+    const result = toResult(await handler(preInput('git commit -m "wip"', conv) as never, { logger } as never));
+    expect(result.stdout.decision).toBe('allow');
     expect(drainPendingInjections(layout, conv)).toEqual([]);
   });
 });

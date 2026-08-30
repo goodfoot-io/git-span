@@ -598,6 +598,23 @@ var AntigravityBlockError = class extends HookBlockError {
     this.reason = reason;
   }
 };
+function omitUndefined(value) {
+  return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== void 0));
+}
+function buildOutput(type, stdout) {
+  return {
+    _type: type,
+    stdout: omitUndefined(stdout)
+  };
+}
+function preToolUseOutput(options = {}) {
+  return buildOutput("PreToolUse", {
+    decision: options.decision,
+    reason: options.reason,
+    permissionOverrides: options.permissionOverrides,
+    overwrite: options.overwrite
+  });
+}
 
 // node_modules/@goodfoot/agent-hooks/dist/agents/antigravity/transport.js
 function formatErrorText(error) {
@@ -712,10 +729,10 @@ function createHandler(layout = DEFAULT_SESSION_LAYOUT) {
   return async (input, ctx) => {
     try {
       stashToolCall(layout, input.conversationId, input.stepIdx, input.toolCall);
-      return void 0;
+      return preToolUseOutput({ decision: "allow" });
     } catch (err) {
       ctx.logger.warn("git-span tool-call stash failed open; this call loses attribution", { err });
-      return void 0;
+      return preToolUseOutput({ decision: "allow" });
     }
   };
 }

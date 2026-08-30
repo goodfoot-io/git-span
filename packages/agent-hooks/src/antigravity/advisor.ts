@@ -61,12 +61,15 @@ export function createHandler(
   layout: SessionLayout = DEFAULT_SESSION_LAYOUT
 ) {
   return async (input: PreToolUseInput, ctx: HookContext) => {
+    // Every non-hold path replies an explicit allow: the live host treats a
+    // `{}` PreToolUse reply as a deny with an empty reason (CONTRACT.md marks
+    // `decision` as required), so silence here would block the tool call.
     try {
       const call = narrowRunCommand(input.toolCall);
-      if (call === null) return undefined;
+      if (call === null) return preToolUseOutput({ decision: 'allow' });
 
       const parsed = parseGitCommand(call.command);
-      if (parsed.kind === 'none') return undefined;
+      if (parsed.kind === 'none') return preToolUseOutput({ decision: 'allow' });
 
       const cwd = resolveCallCwd(call, input.workspacePaths);
       const all = parsed.kind === 'commit' ? commitStagesAll(call.command) : false;
@@ -112,10 +115,10 @@ export function createHandler(
         }
         appendPendingInjection(layout, input.conversationId, wrapGitSpanContext(result.reason));
       }
-      return undefined;
+      return preToolUseOutput({ decision: 'allow' });
     } catch (err) {
       ctx.logger.warn('git-span advisor failed open on an uncaught error', { err });
-      return undefined;
+      return preToolUseOutput({ decision: 'allow' });
     }
   };
 }

@@ -2365,9 +2365,9 @@ function createHandler(git = createDefaultGitExecutor(), executors = createDefau
   return async (input, ctx) => {
     try {
       const call = narrowRunCommand(input.toolCall);
-      if (call === null) return void 0;
+      if (call === null) return preToolUseOutput({ decision: "allow" });
       const parsed = parseGitCommand(call.command);
-      if (parsed.kind === "none") return void 0;
+      if (parsed.kind === "none") return preToolUseOutput({ decision: "allow" });
       const cwd = resolveCallCwd(call, input.workspacePaths);
       const all = parsed.kind === "commit" ? commitStagesAll(call.command) : false;
       const changeset = await resolveChangeset(parsed.kind, all, cwd, git, parsed.paths);
@@ -2400,10 +2400,10 @@ function createHandler(git = createDefaultGitExecutor(), executors = createDefau
         }
         appendPendingInjection(layout, input.conversationId, wrapGitSpanContext(result.reason));
       }
-      return void 0;
+      return preToolUseOutput({ decision: "allow" });
     } catch (err) {
       ctx.logger.warn("git-span advisor failed open on an uncaught error", { err });
-      return void 0;
+      return preToolUseOutput({ decision: "allow" });
     }
   };
 }
