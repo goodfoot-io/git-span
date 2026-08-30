@@ -192,6 +192,7 @@ jobs:
       - name: Rebuild and guard agent skill tree freshness
         run: |
           node scripts/lint-agent-skills.mjs
+          node scripts/sync-skill-vocabulary.mjs --check
           node scripts/check-generated-tree-freshness.mjs skills
 
       # The Antigravity plugin has no packaged artifact — `agy plugin install`

@@ -1,4 +1,4 @@
-# Terminal statuses
+<% /* BEGIN GENERATED VOCAB */ const vocab = it.variant({"claude-code":{"advisorHosts":"Claude Code, Codex, OpenCode, or Antigravity","readTool":"`Read`"},"codex":{"advisorHosts":"Claude Code, Codex, OpenCode, or Antigravity","readTool":"your host's file-read tool"},"opencode":{"advisorHosts":"Claude Code, Codex, OpenCode, or Antigravity","readTool":"your host's file-read tool"},"antigravity":{"advisorHosts":"Claude Code, Codex, OpenCode, or Antigravity","readTool":"your host's file-read tool"}}); /* edit scripts/agent-skills-vocabulary.mjs and run: node scripts/sync-skill-vocabulary.mjs */ /* END GENERATED VOCAB */ %># Terminal statuses
 
 Terminal statuses short-circuit the resolver — no slice math, no diff. The
 real terminal status codes are `DELETED`, `CONFLICT`, and `SUBMODULE`;
@@ -23,7 +23,7 @@ ls path/to/file1 path/to/file2   # check existence
 1. **Read the why.** `git span why <name>` — what subsystem does this span
    define?
 2. **Inspect each current anchor and confirm the relationship plus its decisive
-   nonlocal fact.** Open the file at the recorded path and line range with `Read`
+   nonlocal fact.** Open the file at the recorded path and line range with <%= vocab.readTool %>
    (whole file, for whole-file anchors). If you cannot state that context, you
    have not confirmed — inspect further or `git span delete <name>`.
 3. **Decide:**

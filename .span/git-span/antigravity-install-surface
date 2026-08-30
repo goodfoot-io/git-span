@@ -1,5 +1,5 @@
 plugins-antigravity/git-span/plugin.json#L2-L2 rk64:6510e51838a30bf7
-plugins-antigravity/git-span/skills/git-span/references/install-and-trust.md rk64:35efbfc47d4f83c0
-skills-src/git-span/git-span/references/install-and-trust.md.eta rk64:81acb581b8f3c108
+plugins-antigravity/git-span/skills/git-span/references/install-and-trust.md rk64:12f22497f152c2ec
+skills-src/git-span/git-span/references/install-and-trust.md.eta rk64:ca9f465a7be3dd9c
 
 The plugin name declared in the Antigravity manifest is authoritative, and the Antigravity install-and-trust reference — rendered from the template's antigravity variant branch — names it in the agy plugin install command and the ~/.gemini/config/plugins/git-span/ layout it documents; a plugin rename or install-root change must land on the template in the same change.

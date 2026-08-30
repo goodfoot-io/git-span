@@ -1,5 +1,5 @@
-.github/workflows/release-git-span.yml#L180-L195 rk64:c404b17d6047de6e
+.github/workflows/release-git-span.yml#L180-L196 rk64:3f49962c8afe78aa
 scripts/check-generated-tree-freshness.mjs rk64:6114fac71a5e1d63
-scripts/validate.sh#L203-L216 rk64:74e878e134de75e5
+scripts/validate.sh#L203-L220 rk64:6c29ae4cfeff3d0a
 
 scripts/check-generated-tree-freshness.mjs is the one staleness predicate for the committed generated trees — modified, untracked, and deleted paths all count — and validate.sh's freshness block and the release workflow's guard steps both invoke that script rather than hand-rolled git checks; a caller that measures with its own git predicate reintroduces the local-green/CI-red divergence the predicate exists to prevent, and its failure text branches on the build driver's exit-code contract so each reachable cause reads differently.

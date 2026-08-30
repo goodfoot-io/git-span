@@ -603,7 +603,7 @@ function distinctiveTokens(p) {
   for (let i = parts.length - 2; i >= 0; i--) {
     const seg = parts[i];
     if (seg.length < 4) continue;
-    if (["src", "lib", "test", "tests", "dist", "node_modules", ".claude-plugin", "hooks", "skills", "agents", "commands"].includes(seg)) continue;
+    if (["src", "lib", "test", "tests", "dist", "node_modules", ".claude-plugin", ".codex-plugin", "hooks", "skills", "agents", "commands"].includes(seg)) continue;
     tokens.add(seg);
     if (tokens.size >= 3) break;
   }

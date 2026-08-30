@@ -17,7 +17,12 @@ flowchart LR
   S -->|cost vs retention| R
 ```
 
-None of the four scripts contain the string "span" or any knowledge of what a hook's output means — every hook-specific behavior is injected through an `--extract=<module-path>` module. Scope: Claude Code transcripts only (`~/.claude/projects/**/*.jsonl` or the same shape on a remote host); Codex session transcripts are not confirmed to share this JSONL layout and are out of scope.
+None of the four scripts contain the string "span" or any knowledge of what a hook's output means — every hook-specific behavior is injected through an `--extract=<module-path>` module. Scope: Claude Code transcripts only (`~/.claude/projects/**/*.jsonl` or the same shape on a remote host); Codex session transcripts are not confirmed to share this JSONL layout and are out of scope.<%= it.variant({
+  "claude-code": "",
+  codex: "\n\n**On this host**, that scope note means the pipeline analyzes a *recorded Claude Code transcript corpus* as data — pointed at a directory or remote host that holds one. It does not measure this host's own sessions: this host does not record transcripts in that JSONL shape, so there is nothing here for the tools to collect from your current environment unless such a corpus exists.",
+  opencode: "\n\n**On this host**, that scope note means the pipeline analyzes a *recorded Claude Code transcript corpus* as data — pointed at a directory or remote host that holds one. It does not measure this host's own sessions: this host does not record transcripts in that JSONL shape, so there is nothing here for the tools to collect from your current environment unless such a corpus exists.",
+  antigravity: "\n\n**On this host**, that scope note means the pipeline analyzes a *recorded Claude Code transcript corpus* as data — pointed at a directory or remote host that holds one. It does not measure this host's own sessions: this host does not record transcripts in that JSONL shape, so there is nothing here for the tools to collect from your current environment unless such a corpus exists."
+}) %>
 
 ## The four tools
 

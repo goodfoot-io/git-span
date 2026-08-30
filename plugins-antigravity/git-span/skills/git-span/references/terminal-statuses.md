@@ -1,4 +1,4 @@
-<!-- Generated from skills-src/git-span/git-span/references/terminal-statuses.md by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild. -->
+<!-- Generated from skills-src/git-span/git-span/references/terminal-statuses.md.eta by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild. -->
 
 # Terminal statuses
 
@@ -25,7 +25,7 @@ ls path/to/file1 path/to/file2   # check existence
 1. **Read the why.** `git span why <name>` — what subsystem does this span
    define?
 2. **Inspect each current anchor and confirm the relationship plus its decisive
-   nonlocal fact.** Open the file at the recorded path and line range with `Read`
+   nonlocal fact.** Open the file at the recorded path and line range with your host's file-read tool
    (whole file, for whole-file anchors). If you cannot state that context, you
    have not confirmed — inspect further or `git span delete <name>`.
 3. **Decide:**

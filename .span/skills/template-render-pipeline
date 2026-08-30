@@ -2,8 +2,12 @@
 CLAUDE.md#L8-L8 rk64:2a53eba563fa7ff7
 scripts/agent-skills-drivers.test.mjs rk64:aad5c87cb26442d6
 scripts/agent-skills-registry.mjs rk64:fb96de65fbde1f09
+scripts/agent-skills-vocabulary.mjs rk64:71a7f3cadda50aad
 scripts/build-agent-skills.mjs rk64:917a4098af7ce28a
 scripts/lint-agent-skills.mjs rk64:d14416d8aad0f196
-skills-src/README.md rk64:32e0d6de6cb1bcb5
+scripts/sync-skill-vocabulary.mjs rk64:5ed389f332938c84
+skills-src/README.md rk64:a64b71c639a35d01
+skills-src/git-span/git-span/references/terminal-statuses.md.eta rk64:45211c72d7b8a57f
+skills-src/git-span/reconcile/references/procedure.md.eta rk64:f3c455d3ed1c5d01
 
-scripts/agent-skills-registry.mjs is the sole enumeration authority for skills, platform targets, and the realpath-resolved CLI, and the build and lint drivers prove the render ran — captured per-target write confirmations, hand-edit snapshot-restore, disk reconciliation — exiting on the 0/1/2/3 contract (verified render / failure / would-destroy-hand-edit / no-verifiable-render) that the freshness gate branches its diagnoses on. scripts/agent-skills-drivers.test.mjs is the remove-the-mechanism control suite for those guards, and skills-src/README.md, the CLAUDE.md workspace bullet, and the generated-trees pre-commit hook state the authoring contract, so they must describe exactly what the drivers enforce.
+scripts/agent-skills-registry.mjs is the sole enumeration authority for skills, platform targets, and the realpath-resolved CLI, and the build and lint drivers prove the render ran — captured per-target write confirmations, hand-edit snapshot-restore, disk reconciliation — exiting on the 0/1/2/3 contract (verified render / failure / would-destroy-hand-edit / no-verifiable-render) that the freshness gate branches its diagnoses on. scripts/agent-skills-drivers.test.mjs is the remove-the-mechanism control suite for those guards, and skills-src/README.md, the CLAUDE.md workspace bullet, and the generated-trees pre-commit hook state the authoring contract, so they must describe exactly what the drivers enforce. Host-facing vocabulary is defined once in scripts/agent-skills-vocabulary.mjs and copied by scripts/sync-skill-vocabulary.mjs into templates that declare a generated-vocab region — the anchored terminal-statuses and procedure templates stand for the opting-in set; sync --check catches a stale copy but nothing catches a template whose region markers are removed, which silently reverts that file to hand-maintained vocabulary.

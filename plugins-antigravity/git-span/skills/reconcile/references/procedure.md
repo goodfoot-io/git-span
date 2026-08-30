@@ -1,4 +1,4 @@
-<!-- Generated from skills-src/git-span/reconcile/references/procedure.md by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild. -->
+<!-- Generated from skills-src/git-span/reconcile/references/procedure.md.eta by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild. -->
 
 # Reconcile drifted git spans
 
@@ -9,7 +9,7 @@ only stage that may be delegated (see `./team.md`).
 **Report** below means your final summary if you own the reconciliation, or your
 message to the owner if you are a delegated worker.
 
-Invoke `git-span:git-span` only when a topic exceeds what is here; navigate to
+Invoke `git-span` only when a topic exceeds what is here; navigate to
 the named section.
 
 ---

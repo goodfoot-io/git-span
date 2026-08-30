@@ -49,7 +49,11 @@ install after upgrading to refresh the copies.
 There is no trust-review step to complete — Antigravity runs installed plugin
 hooks without a prompt. Every git-span hook fails open on anything deciding
 *whether* there is something to say, and the host gives hooks no exit-code
-channel at all: nothing they do can brick an edit or a commit. A hold is an
+channel at all: nothing they do can brick an edit or a commit. One host
+behavior shapes the hook replies: Antigravity treats an **empty** PreToolUse
+reply (`{}`) as a deny with an empty reason, so every non-deny path in the
+bundled hooks answers with an explicit `{"decision": "allow"}` — silence is
+not consent on this host. A hold is an
 advisory one-time interruption — a held `git commit`/`git push` is denied
 once with its checklist as the deny reason, and a bare retry passes — so rely
 on `git span drift` in CI (see `references/ci-and-sync.md`) as the

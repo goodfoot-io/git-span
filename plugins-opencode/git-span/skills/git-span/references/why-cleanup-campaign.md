@@ -21,7 +21,7 @@ sub-batches by class or topic, as long as no split separates spans sharing a
 file. A span sharing no file with any other non-clean span is a component of
 size one — still a valid fork unit.
 
-Some steps reference sections of the `git-span:git-span` skill. These are
+Some steps reference sections of the `$git-span` skill. These are
 conditional — invoke the skill only when the topic exceeds what is explained
 here. The skill's sections are loaded together when the skill is invoked;
 navigate to the named section within it.
@@ -188,7 +188,7 @@ For each assigned span:
 6. **Do not commit.**
 
 For deletion syntax or why rules beyond what is explained here, invoke the
-corresponding `git-span:git-span` section.
+corresponding `$git-span` section.
 
 ### After all forks complete
 

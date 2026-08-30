@@ -42,12 +42,7 @@
         "git-span/references/install-and-trust.md:50:skill-relative-path",
         "git-span/references/install-and-trust.md:8:skill-relative-path",
         "git-span/references/understanding-hook-output.md:276:cross-dialect-reference",
-        "git-span/references/understanding-hook-output.md:283:cross-dialect-reference",
-        "git-span/references/why-cleanup-campaign.md:189:cross-dialect-reference",
-        "git-span/references/why-cleanup-campaign.md:190:cross-dialect-reference",
-        "git-span/references/why-cleanup-campaign.md:201:cross-dialect-reference",
-        "git-span/references/why-cleanup-campaign.md:22:cross-dialect-reference",
-        "reconcile/references/procedure.md:10:cross-dialect-reference"
+        "git-span/references/understanding-hook-output.md:283:cross-dialect-reference"
       ],
       "reason": "Initial port baseline: paths in these docs deliberately name concrete install locations and sibling skills; it.platformDir()/dialect rewrites are follow-on work, not part of the consolidation card."
     }

@@ -211,8 +211,12 @@ build_dir="$target_root/git-span/build"
   # Lint runs first as its own step — a lint-baseline drift is a
   # build-independent failure mode and must name itself rather than hide
   # behind a build error.
+  # The vocabulary sync check runs before the skills gate: a stale copy of
+  # the glossary inside a template means the rendered trees are about to
+  # teach per-platform vocabulary the glossary no longer sanctions.
   node scripts/check-generated-tree-freshness.mjs hooks &&
   node scripts/lint-agent-skills.mjs &&
+  node scripts/sync-skill-vocabulary.mjs --check &&
   node scripts/check-generated-tree-freshness.mjs skills
 } 2>&1 | tee "$log_path"
 

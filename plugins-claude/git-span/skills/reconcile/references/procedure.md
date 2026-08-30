@@ -1,4 +1,4 @@
-<!-- Generated from skills-src/git-span/reconcile/references/procedure.md by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild. -->
+<!-- Generated from skills-src/git-span/reconcile/references/procedure.md.eta by scripts/build-agent-skills.mjs — do not edit; change the template and rebuild. -->
 
 # Reconcile drifted git spans
 

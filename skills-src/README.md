@@ -44,6 +44,17 @@ naming the template it came from.
   release workflow alike) counts modified, untracked, and deleted paths in the
   rendered trees, and its failure text diagnoses *why* the trees are dirty —
   only genuine new render output is ever advised into a commit.
+- **Host-facing vocabulary comes from one glossary**: tool names, skill
+  dispatch syntax, and supported-host enumerations live in
+  `scripts/agent-skills-vocabulary.mjs`. Templates consume it through a
+  `/* BEGIN GENERATED VOCAB */ … /* END GENERATED VOCAB */` region kept in
+  sync by `scripts/sync-skill-vocabulary.mjs` (its `--check` runs in
+  `validate.sh` and the release workflow), and cross-platform references use
+  `it.skillRef(...)`/`it.variant(...)` — never hand-written per-host prose. A
+  rendered-tree control
+  (`packages/agent-hooks/test/antigravity/skill-tree-vocabulary.test.ts`,
+  mirroring the opencode one) fails if a tree re-learns a foreign host's
+  vocabulary.
 - A pre-commit check (`.githooks/pre-commit.generated-trees.sh`) rejects
   commits that stage rendered-tree changes without staging any build input.
 - The wiki indexer ignores the rendered trees (`.wikiignore`); author docs
