@@ -58,7 +58,7 @@ exhaustive — a human-authored commit, a session with hooks disabled, an
 OpenCode session where the plugin was never added to the config's `plugin`
 array or whose installer never materialized the hooks' host pieces, a Codex
 session where `permissionDecision: 'deny'` doesn't actually block (see
-`references/codex-install-and-trust.md`), or an OpenCode tool call that failed
+`references/install-and-trust.md`), or an OpenCode tool call that failed
 at the host level and never reached the after hook can all land span debt.
 `git span drift` with its default exit code is the backstop that catches what the advisor
 missed, at the point where it's cheapest to catch: before merge.

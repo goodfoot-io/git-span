@@ -53,11 +53,14 @@ an unscoped error rather than a per-span report — see
 ## CI gate: the enforcement backstop
 
 The in-session advisor (`references/understanding-hook-output.md`) only runs inside
-a hooked Claude Code or Codex session. It's high-leverage but not exhaustive —
-a human-authored commit, a session with hooks disabled, or a Codex session
-where `permissionDecision: 'deny'` doesn't actually block (see
-`references/codex-install-and-trust.md`) can all land span debt. `git span
-drift` with its default exit code is the backstop that catches what the advisor
+a hooked Claude Code, Codex, or OpenCode session. It's high-leverage but not
+exhaustive — a human-authored commit, a session with hooks disabled, an
+OpenCode session where the plugin was never added to the config's `plugin`
+array or whose installer never materialized the hooks' host pieces, a Codex
+session where `permissionDecision: 'deny'` doesn't actually block (see
+`references/install-and-trust.md`), or an OpenCode tool call that failed
+at the host level and never reached the after hook can all land span debt.
+`git span drift` with its default exit code is the backstop that catches what the advisor
 missed, at the point where it's cheapest to catch: before merge.
 
 ```bash

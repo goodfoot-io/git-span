@@ -256,7 +256,7 @@ warns again.
 above are appended to the tool result after the command runs (nothing is ever
 thrown, and a successful `git status` always reaches its `after` hook, so this
 reporting path is untouched by the failed-tool caveat in
-`references/codex-install-and-trust.md`), with one
+`references/install-and-trust.md`), with one
 difference: each drops its retry phrasing — drift drops `— then retry`
 from its closing sentence, and uncovered writes drops the whole `If none
 exist, retry the command to proceed (one-time check).` sentence — since a
@@ -372,7 +372,7 @@ rather than firing as an existence-gated advisory. Only host-level failures
 entirely — such a call surfaces nothing, so even one carrying decisive
 post-state evidence, such as an expected replacement result, goes
 unattributed. This is the degraded-parity caveat documented in
-`references/codex-install-and-trust.md`. Interrupted calls (an `exit: null`
+`references/install-and-trust.md`. Interrupted calls (an `exit: null`
 result suppresses like an interruption) stay silent. Response-derived reads
 remain a separate pass and share only the session memo, so a later read
 can surface context without duplicating command-derived output.
@@ -408,7 +408,7 @@ untracked writes, and unsupported dynamic intent are silent by design. The
 planning and attribution. A tool call that fails at the host level (invalid
 arguments, denied permission, spawn error) never reaches the
 after hook at all, so it surfaces nothing — the degraded-parity caveat in
-`references/codex-install-and-trust.md`. The one noisy case is the advisor's
+`references/install-and-trust.md`. The one noisy case is the advisor's
 own scoped scan failing to complete (see "The advisor: what a held command
 sees" above): that still fails open, but visibly — a warning names the failure and
 carries the failed command's stderr in a delimited `<git-span-error>` block

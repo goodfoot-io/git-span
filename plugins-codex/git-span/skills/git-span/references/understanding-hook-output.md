@@ -13,7 +13,7 @@ moments. Neither waits for a commit:
   span debt, so the report gets read; it never enforces, and an identical
   retry proceeds. Whether the `permissionDecision: 'deny'` a hold emits
   actually pauses the Codex shell tool was never confirmed live in this repo
-  (see `references/codex-install-and-trust.md`) — the hook ships a hard-deny
+  (see `references/install-and-trust.md`) — the hook ships a hard-deny
   path per its SDK's own documented example, with a one-constant fallback to a
   loud `additionalContext` warning if a live session shows it doesn't fire.
   Don't assume a paused command the way you would under Claude; if the same

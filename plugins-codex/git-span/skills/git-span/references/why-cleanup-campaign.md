@@ -127,42 +127,35 @@ each unit to a fork.
 
 ---
 
-## Phase 2 — Execution (one fork per fork unit, all forks in parallel)
+## Phase 2 — Execution (one subagent per fork unit, all in parallel)
 
-Fork one subagent per fork unit from step 5. If there are N fork units, N forks
-run in parallel.
+Spawn one subagent per fork unit from step 5. If there are N fork units, N
+subagents run in parallel.
 
 **No worktree isolation** — fork units are disjoint by construction (spans
-sharing a file are never split across units), so forks touch disjoint `.span/`
-files. They share the main worktree without conflict. Only the main agent
-commits.
+sharing a file are never split across units), so subagents touch disjoint
+`.span/` files. They share the main worktree without conflict. Only the main
+agent commits.
 
-Dispatch each fork unit with a fork. Forks inherit the full conversation
-context (including this reference and the why standard), so the prompt only
-needs to identify which spans the fork owns and the structural context the main
-agent gathered in Phase 1:
+Dispatch each fork unit with `spawn_agent`, setting `fork_turns: "all"`.
+Forked subagents inherit the full conversation context (including this
+reference and the why standard), so the `message` only needs to identify
+which spans the subagent owns and the structural context the main agent
+gathered in Phase 1:
 
-```xml
-<invoke name="Agent">
-<parameter name="description" string="true">Clean up <label> why cluster</parameter>
-<parameter name="subagent_type" string="true">fork</parameter>
-<parameter name="prompt" string="true">
-Bring these <N> spans' whys up to the why standard inlined above (component: <label> — connected via <shared-file>). Do not commit.
-
-## <name-1>
-- Class: <list-tier class from triage>
-- Why: <from git span list>
-- Anchors: <paths> — verify current bytes before rewriting
-
-(Context: these spans share <shared-file>. Clean sibling spans also anchoring it: <list>. <Overlap or duplicate-candidate flag if any>.)
-</parameter>
-</invoke>
+```json
+{
+  "task_name": "cleanup-<label>-whys",
+  "message": "Bring these <N> spans' whys up to the why standard inlined above (component: <label> — connected via <shared-file>). Do not commit.\n\n## <name-1>\n- Class: <list-tier class from triage>\n- Why: <from git span list>\n- Anchors: <paths> — verify current bytes before rewriting\n\n(Context: these spans share <shared-file>. Clean sibling spans also anchoring it: <list>. <Overlap or duplicate-candidate flag if any>.)",
+  "fork_turns": "all"
+}
 ```
 
 ### Fork procedure
 
-Each fork reads this section from context to know what to do. The main agent's
-prompt only designates which spans — the procedure is shared here.
+Each spawned subagent reads this section from context to know what to do. The
+main agent's `message` only designates which spans — the procedure is shared
+here.
 
 For each assigned span:
 

@@ -1,0 +1,49 @@
+{
+  "plugins": [{
+    "name": "git-span",
+    "skillsSrc": "skills-src/git-span",
+    "skills": ["git-span", "hook-effect-analysis", "reconcile"],
+    "claudePluginRoot": "plugins-claude/git-span",
+    "codexPluginRoot": "plugins-codex/git-span",
+    "opencodePluginRoot": "plugins-opencode/git-span",
+    "targets": [
+      { "platform": "claude-code", "path": "plugins-claude/git-span/skills" },
+      { "platform": "codex", "path": "plugins-codex/git-span/skills" },
+      { "platform": "opencode", "path": "plugins-opencode/git-span/skills" }
+    ],
+    "platformDirs": [
+      "claude-code:skills=plugins-claude/git-span/skills",
+      "claude-code:hooks=plugins-claude/git-span/hooks",
+      "claude-code:plugin=plugins-claude/git-span",
+      "codex:skills=plugins-codex/git-span/skills",
+      "codex:hooks=plugins-codex/git-span/hooks",
+      "codex:plugin=plugins-codex/git-span",
+      "opencode:skills=plugins-opencode/git-span/skills",
+      "opencode:hooks=plugins-opencode/git-span/dist",
+      "opencode:plugin=plugins-opencode/git-span"
+    ],
+    "lintBaseline": {
+      "diagnostics": [
+        "git-span/SKILL.md:142:skill-relative-path",
+        "git-span/references/finding-span-candidates.md.eta:14:skill-relative-path",
+        "git-span/references/finding-span-candidates.md.eta:15:skill-relative-path",
+        "git-span/references/finding-span-candidates.md.eta:16:skill-relative-path",
+        "git-span/references/finding-span-candidates.md:81:skill-relative-path",
+        "git-span/references/finding-span-candidates.md:83:skill-relative-path",
+        "git-span/references/finding-span-candidates.md:84:skill-relative-path",
+        "git-span/references/install-and-trust.md:39:skill-relative-path",
+        "git-span/references/install-and-trust.md:41:skill-relative-path",
+        "git-span/references/install-and-trust.md:42:plugin-root-variable",
+        "git-span/references/install-and-trust.md:50:skill-relative-path",
+        "git-span/references/install-and-trust.md:8:skill-relative-path",
+        "git-span/references/understanding-hook-output.md:276:cross-dialect-reference",
+        "git-span/references/understanding-hook-output.md:283:cross-dialect-reference",
+        "git-span/references/why-cleanup-campaign.md:189:cross-dialect-reference",
+        "git-span/references/why-cleanup-campaign.md:190:cross-dialect-reference",
+        "git-span/references/why-cleanup-campaign.md:22:cross-dialect-reference",
+        "reconcile/references/procedure.md:10:cross-dialect-reference"
+      ],
+      "reason": "Initial port baseline: paths in these docs deliberately name concrete install locations and sibling skills; it.platformDir()/dialect rewrites are follow-on work, not part of the consolidation card."
+    }
+  }]
+}

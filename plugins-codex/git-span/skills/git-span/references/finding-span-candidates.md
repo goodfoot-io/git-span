@@ -77,13 +77,17 @@ commits consistently cite the same concern is a real span candidate.
 
 ## End-to-End Workflow
 
-Paths below are relative to this skill's directory
-(`plugins-claude/git-span/skills/git-span/`).
+Paths below name the installed skill directory
+(`~/.codex/plugins/cache/git-span/git-span/local/skills/git-span/` — `codex
+plugin add` snapshots these scripts into the plugin cache). In a checkout of
+this repository the same scripts live under
+`plugins-codex/git-span/skills/git-span/scripts/`; prefer the installed
+copies.
 
 **1. Mine.** From the repo root:
 
 ```bash
-node plugins-claude/git-span/skills/git-span/scripts/mine.mjs \
+node ~/.codex/plugins/cache/git-span/git-span/local/skills/git-span/scripts/mine.mjs \
   --since=6.months --top=25 --no-gh
 ```
 
@@ -94,7 +98,7 @@ for the next step.
 **2. Shortlist.** Distill to actionable candidates:
 
 ```bash
-node plugins-claude/git-span/skills/git-span/scripts/shortlist.mjs \
+node ~/.codex/plugins/cache/git-span/git-span/local/skills/git-span/scripts/shortlist.mjs \
   --min-techniques=2
 ```
 
@@ -104,7 +108,7 @@ exactly 2 techniques deserve a look — verify with explain.
 **3. Explain.** For each candidate worth pursuing:
 
 ```bash
-node plugins-claude/git-span/skills/git-span/scripts/explain.mjs \
+node ~/.codex/plugins/cache/git-span/git-span/local/skills/git-span/scripts/explain.mjs \
   packages/foo/src/Foo.ts packages/bar/src/Bar.ts
 ```
 

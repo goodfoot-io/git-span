@@ -26,6 +26,8 @@
     "build:migration": "node scripts/ensure-worktree-local-generated.mjs scripts && node scripts/build-migration.mjs",
     "dev": "yarn workspace @goodfoot/git-span-website run dev",
     "dev:stop": "yarn workspace @goodfoot/git-span-website run dev:stop",
+    "build:agent-skills": "node scripts/build-agent-skills.mjs",
+    "lint:agent-skills": "node scripts/lint-agent-skills.mjs",
     "validate": "bash scripts/validate.sh",
     "bump": "bash scripts/bump.sh",
     "release": "bash scripts/release.sh"

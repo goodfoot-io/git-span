@@ -3,6 +3,7 @@ packages/agent-hooks/src/common/advisor-core.ts#L1535-L1928 rk64:68ae0ad60a12ea1
 packages/agent-hooks/src/common/touch-core.ts#L880-L909 rk64:2ebd57907c32ae1e
 packages/website/content/docs/agent-integration.mdx rk64:240fbc9042d49a2f
 plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md rk64:8c7cfed17abe2bf1
-plugins-codex/git-span/skills/git-span/references/understanding-hook-output.md rk64:932efef9821fad33
+plugins-codex/git-span/skills/git-span/references/understanding-hook-output.md rk64:37e646d253221691
+plugins-opencode/git-span/skills/git-span/references/understanding-hook-output.md rk64:d5f03ba06dae10d4
 
-The shared hook-core messages are authoritative, and the package README, website agent-integration guide, and both plugin references preserve their user-facing meaning and any text identified as verbatim.
+The shared hook-core messages are authoritative, and the package README, website agent-integration guide, and every plugin tree's understanding-hook-output reference preserve their user-facing meaning and any text identified as verbatim.

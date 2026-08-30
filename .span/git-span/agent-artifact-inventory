@@ -1,9 +1,9 @@
 packages/git-span/src/schemas/mod.rs rk64:f6d2ff8f63be4d52
-packages/website/app/lib/agent-skills.generated.ts rk64:03853275987c746b
+packages/website/app/lib/agent-skills.generated.ts rk64:6aef2d5af134dfd5
 packages/website/app/lib/artifact-gate/inventory.mjs rk64:e365dc4d516a726b
 packages/website/content/docs/commands.mdx rk64:26d1992fb1dfa9b4
 packages/website/public/schemas/cli/v1/context.json rk64:a7352bd7485e2442
-packages/website/scripts/generate-agent-skills.mjs rk64:2d511ddf4fbe09a0
+packages/website/scripts/generate-agent-skills.mjs rk64:36c0db8c2f387978
 packages/website/scripts/generate-artifacts.mjs rk64:2055e9e2d1d9529d
 scripts/check-agent-hooks-migration.mjs#L35-L37 rk64:b49c1e3f83a25490
 

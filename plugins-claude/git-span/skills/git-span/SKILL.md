@@ -138,7 +138,7 @@ Pick the first that fits:
 9. CI wiring, PR gating, syncing spans across remotes, or a non-gating advisory report →
    `references/ci-and-sync.md`.
 10. git-span under OpenAI Codex (marketplace install, hook trust) →
-    `references/codex-install-and-trust.md`.
+    `references/install-and-trust.md`.
 11. Exact flags, defaults, exit codes, anchor/config grammar, or reserved names →
     `references/command-reference.md`.
 12. A command errors unexpectedly, or a `why`/`doctor`/`list` result looks wrong beyond

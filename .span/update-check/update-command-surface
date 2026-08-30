@@ -1,7 +1,7 @@
 packages/git-span/src/update_check/message.rs#L1-L13 rk64:511f53970a6c4192
 packages/website/content/docs/getting-started.mdx#L11-L11 rk64:a3130433f9c425a6
 packages/website/content/docs/getting-started.mdx#L52-L52 rk64:cc44eede8aaf4425
-plugins-claude/git-span/skills/git-span/references/codex-install-and-trust.md#L38-L38 rk64:cc44eede8aaf4425
-plugins-codex/git-span/skills/git-span/references/codex-install-and-trust.md#L38-L38 rk64:cc44eede8aaf4425
+plugins-claude/git-span/skills/git-span/references/install-and-trust.md#L38-L38 rk64:cc44eede8aaf4425
+plugins-codex/git-span/skills/git-span/references/install-and-trust.md#L38-L38 rk64:cc44eede8aaf4425
 
-The reminder note's per-tool refresh commands must stay identical to the host commands the docs state: npm install -g git-span and codex plugin add git-span@git-span are named both in the renderer and in the website getting-started guide and both plugin trees' codex install-and-trust references, while claude plugin update git-span@git-span is spiked live and has no doc counterpart yet; a host CLI syntax change must land on every surface that names the command.
+The reminder note's per-tool refresh commands must stay identical to the host commands the docs state: npm install -g git-span and codex plugin add git-span@git-span are named both in the renderer and in the website getting-started guide and both plugin trees' install-and-trust references, while claude plugin update git-span@git-span is spiked live and has no doc counterpart yet; a host CLI syntax change must land on every surface that names the command.

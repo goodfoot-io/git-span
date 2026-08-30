@@ -1,7 +1,7 @@
 plugins-claude/git-span/agents/expert.md rk64:d2564ce1e36b28b7
 plugins-claude/git-span/skills/git-span/SKILL.md#L22-L28 rk64:cef6407e50e684df
 plugins-claude/git-span/skills/git-span/SKILL.md#L48-L51 rk64:208d10a605282398
-plugins-claude/git-span/skills/git-span/references/ci-and-sync.md rk64:af270366aafdcc88
+plugins-claude/git-span/skills/git-span/references/ci-and-sync.md rk64:d7672555e920e3c8
 plugins-claude/git-span/skills/git-span/references/finding-span-candidates.md rk64:72f949b1909ba95f
 plugins-claude/git-span/skills/git-span/references/hookignore.md rk64:13687487581c4b2f
 plugins-claude/git-span/skills/git-span/references/triage.md rk64:136609565e73834a
@@ -11,17 +11,17 @@ plugins-claude/git-span/skills/reconcile/SKILL.md rk64:eb91e3fb050a6310
 plugins-codex/git-span/agents/expert.md rk64:d2564ce1e36b28b7
 plugins-codex/git-span/skills/git-span/SKILL.md#L22-L28 rk64:cef6407e50e684df
 plugins-codex/git-span/skills/git-span/SKILL.md#L48-L51 rk64:208d10a605282398
-plugins-codex/git-span/skills/git-span/references/ci-and-sync.md rk64:af270366aafdcc88
-plugins-codex/git-span/skills/git-span/references/finding-span-candidates.md rk64:72f949b1909ba95f
+plugins-codex/git-span/skills/git-span/references/ci-and-sync.md rk64:d7672555e920e3c8
+plugins-codex/git-span/skills/git-span/references/finding-span-candidates.md rk64:7ee7a155dd5fb22d
 plugins-codex/git-span/skills/git-span/references/hookignore.md rk64:13687487581c4b2f
 plugins-codex/git-span/skills/git-span/references/triage.md rk64:136609565e73834a
 plugins-codex/git-span/skills/git-span/references/whole-file-and-lfs.md rk64:508c516ac3d22a0a
-plugins-codex/git-span/skills/git-span/references/why-cleanup-campaign.md rk64:fa2923f4c861fc9e
+plugins-codex/git-span/skills/git-span/references/why-cleanup-campaign.md rk64:2680a1c9a9678e64
 plugins-codex/git-span/skills/reconcile/SKILL.md rk64:eb91e3fb050a6310
 plugins-opencode/git-span/agents/expert.md rk64:c1f0a3155790dfdc
 plugins-opencode/git-span/skills/git-span/SKILL.md#L22-L28 rk64:3c0e44e6eec36bc3
 plugins-opencode/git-span/skills/git-span/SKILL.md#L48-L51 rk64:208d10a605282398
-plugins-opencode/git-span/skills/git-span/references/ci-and-sync.md rk64:0919c79c438add2a
+plugins-opencode/git-span/skills/git-span/references/ci-and-sync.md rk64:d7672555e920e3c8
 plugins-opencode/git-span/skills/git-span/references/finding-span-candidates.md rk64:9a152689c90b2766
 plugins-opencode/git-span/skills/git-span/references/hookignore.md rk64:f53a5e4ba39535ba
 plugins-opencode/git-span/skills/git-span/references/triage.md rk64:136609565e73834a
@@ -29,4 +29,4 @@ plugins-opencode/git-span/skills/git-span/references/whole-file-and-lfs.md rk64:
 plugins-opencode/git-span/skills/git-span/references/why-cleanup-campaign.md rk64:fe07d53b2c62540d
 plugins-opencode/git-span/skills/reconcile/SKILL.md rk64:eb91e3fb050a6310
 
-The Claude plugin tree is the normative source for the expert, triage, whole-file-anchor, and reconcile guidance and the core skill's never-narrow gotcha bullet; the Codex and OpenCode trees mirror it, and an edit to one lands identically on the others. Deliberately forked per tree, and pinned by the anchors above, are the harness dispatch/vocabulary sections — the reconcile team spawn syntax, understanding-hook-output's channel semantics, the core skill's hook-vocabulary items (the Same-commit workflow event names and the Where-to-go-next install pointer), hookignore's event names, the cleanup campaign's worker dispatch, the candidate finder's installed-skill script paths, and ci-and-sync's enforcement-backstop gap enumeration — plus the install flow, whose OpenCode copy retains the codex-install-and-trust.md filename while describing the npm plugin array and npx installer, and the expert, whose OpenCode copy forks frontmatter and body skill addresses (OpenCode has no `skills:` agent key and addresses skills by bare name). A standing vitest control (packages/agent-hooks test/opencode/skill-tree-vocabulary.test.ts) greps the opencode skill tree for twin-only vocabulary outside these sanctioned spots.
+All three plugin skill trees are rendered from the shared template tree skills-src/git-span by scripts/build-agent-skills.mjs, so the expert, triage, whole-file-anchor, and reconcile guidance and the core skill's never-narrow gotcha bullet land identically on every tree from a single template edit. Deliberately per-platform — expressed as it.variant branches in the templates, not hand edits to the rendered trees — and pinned by the anchors above are the harness dispatch/vocabulary sections: the reconcile team spawn syntax, understanding-hook-output's channel semantics, the core skill's hook-vocabulary items (the Same-commit workflow event names and the Where-to-go-next install pointer), hookignore's event names, the cleanup campaign's worker dispatch, and the candidate finder's installed-skill script paths — plus the install flow in install-and-trust.md, whose per-platform bodies describe the Codex marketplace/trust flow versus the OpenCode npm plugin array and npx installer. The expert is the one surface still forked by hand: agents/expert.md lives outside skills-src, and its OpenCode copy forks frontmatter and body skill addresses (OpenCode has no skills: agent key and addresses skills by bare name). ci-and-sync's enforcement-backstop enumeration is no longer forked — it is identical on all three trees. A standing vitest control (packages/agent-hooks test/opencode/skill-tree-vocabulary.test.ts) greps the opencode skill tree for twin-only vocabulary outside these sanctioned spots.

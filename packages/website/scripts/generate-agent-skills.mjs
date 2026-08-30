@@ -2,16 +2,20 @@
 
 /**
  * Build-time generator for the agent-skills discovery surface: reads the
- * normative Claude plugin skill tree (`plugins-claude/git-span/skills`) and
+ * rendered Claude plugin skill tree (`plugins-claude/git-span/skills`) and
  * emits `app/lib/agent-skills.generated.ts` — the Cloudflare Agent Skills
  * draft v0.2.0 index document plus every served skill file, byte-identical
  * to the tree.
  *
- * The tree is the normative source because `.span/git-span/plugin-twin-guidance`
- * names the Claude plugin tree authoritative for the published guidance; that
- * dependency is anchored by the `.span/git-span/agent-skills-publication`
- * span, so retargeting the twins without updating this generator surfaces as
- * drift.
+ * The Claude tree is itself a build product: `scripts/build-agent-skills.mjs`
+ * renders it (and the Codex and OpenCode twins) from the authored template
+ * tree `skills-src/git-span/`, so this generator is transitively generated
+ * from `skills-src/` while staying pinned to the rendered tree it actually
+ * serves. It deliberately does NOT read `skills-src/` directly — the rendered
+ * tree is what installs ship, and reading templates would serve unexpanded
+ * Eta source. That dependency is anchored by the
+ * `.span/git-span/agent-skills-publication` span, so retargeting the
+ * published tree without updating this generator surfaces as drift.
  *
  * Chained into the package's `dev` and `build` scripts so deploys and tunnel
  * previews always regenerate; deliberately not in `test`/`typecheck` — the

@@ -1,0 +1,4 @@
+plugins-opencode/git-span/package.json#L2-L2 rk64:8f00dffbcd3c188e
+plugins-opencode/git-span/skills/git-span/references/install-and-trust.md rk64:8e3aec4a917b51ed
+
+The opencode-git-span package name declared in the manifest is authoritative, and the OpenCode install-and-trust reference names it in the config plugin array and the npx installer command it documents; a package or bin rename must land on the doc in the same change.

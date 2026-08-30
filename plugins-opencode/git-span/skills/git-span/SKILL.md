@@ -140,7 +140,7 @@ Pick the first that fits:
    `references/ci-and-sync.md`.
 10. Installing git-span under OpenCode (npm `plugin` array entry, plus the npx
     installer for skills and agent) →
-    `references/codex-install-and-trust.md`.
+    `references/install-and-trust.md`.
 11. Exact flags, defaults, exit codes, anchor/config grammar, or reserved names →
     `references/command-reference.md`.
 12. A command errors unexpectedly, or a `why`/`doctor`/`list` result looks wrong beyond

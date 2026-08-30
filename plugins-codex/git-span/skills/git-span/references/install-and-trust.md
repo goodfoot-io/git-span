@@ -63,6 +63,19 @@ Hash-stable filenames (produced by the plugin's `--plugin-root` build) keep
 an existing trust decision valid across plugin updates, so re-trusting after
 every upgrade is not expected to be necessary.
 
+## Caveat: the advisor's hold hasn't been verified live
+
+Trusting the hooks makes the advisor active, but whether the
+`permissionDecision: 'deny'` it emits for a hold actually stops the shell
+tool under Codex has never been confirmed by direct execution in this repo —
+only by documentary evidence from the `@goodfoot/agent-hooks/codex` adapter's
+example. The advisor surfaces its `systemMessage` checklist either way, so
+you'll see the same span-debt listing whether or not the command pauses.
+Don't count on a trusted advisor to stop anything; rely on `git span drift`
+in CI (see `references/ci-and-sync.md`) as the real backstop, and see
+`references/understanding-hook-output.md` for what a held command looks
+like.
+
 ## Windows support
 
 The Codex adapter now comes from `@goodfoot/agent-hooks/codex`. The unified

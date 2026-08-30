@@ -90,7 +90,7 @@ describe('opencode skill tree — no twin-only vocabulary outside pinned forks',
     expect(skill).toContain('tool.execute.before');
     const team = readFileSync(join(skillsRoot, 'reconcile', 'references', 'team.md'), 'utf8');
     expect(team).toContain('"subagent_type": "general"');
-    const install = readFileSync(join(skillsRoot, 'git-span', 'references', 'codex-install-and-trust.md'), 'utf8');
+    const install = readFileSync(join(skillsRoot, 'git-span', 'references', 'install-and-trust.md'), 'utf8');
     expect(install).toContain('npx opencode-git-span install');
     expect(install).toContain('"plugin": ["opencode-git-span"]');
   });
