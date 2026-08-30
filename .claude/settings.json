@@ -1,7 +1,4 @@
 {
-  "worktree": {
-    "baseRef": "head"
-  },
   "env": {
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
     "VOICE_SERVER_HTTP_PORT": "5555",
@@ -41,6 +38,9 @@
       }
     ]
   },
+  "worktree": {
+    "baseRef": "head"
+  },
   "disableWorkflows": true,
   "disableArtifact": false,
   "enabledPlugins": {
@@ -48,18 +48,17 @@
     "typescript-hooks@goodfoot": true,
     "typescript-claude-code-for-web-setup@goodfoot": false,
     "project@goodfoot": false,
-    "vscode@goodfoot": true,
     "goodfoot@goodfoot": true,
     "jsdoczoom@goodfoot": true,
     "code-simplifier@claude-plugins-official": false,
     "frontend-design@claude-plugins-official": false,
     "plugin-dev@claude-plugins-official": false,
-    "claude-code-hooks@goodfoot": true,
     "git-span@git-span": true,
     "agent-hooks@goodfoot": true,
     "agent-sklls@goodfoot": true,
     "wiki@goodfoot-wiki": true,
-    "mattpocock-skills@claude-plugins-official": false
+    "mattpocock-skills@claude-plugins-official": false,
+    "agent-skills@goodfoot": true
   },
   "extraKnownMarketplaces": {
     "git-span": {
