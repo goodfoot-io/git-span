@@ -2,7 +2,7 @@
 title: Testing Claude skills with a multi-armed bandit
 summary: How the git-span-v2 skill was selected — five SKILL.md variants raced with two-level Thompson sampling over headless haiku trials in deterministic scenario repos, graded pass/fail by terminal-state graders and scored by inverse transcript size — plus the methodology corrections (scenario-matched blocks, transcript-autopsy breeding, pooled sign tests) and how to rerun the archived harness for the next skill experiment.
 aliases: [skill bandit, bandit skill testing, git-span-v2 methodology, skill A/B testing]
-links-reviewed: 1
+links-reviewed: 2
 ---
 
 # Testing Claude skills with a multi-armed bandit

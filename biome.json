@@ -80,7 +80,12 @@
       "!!**/.cache",
       "!!**/*.log",
       "!!plugins-claude/git-span/hooks/bin/**/*.mjs",
-      "!!plugins-codex/git-span/hooks/*.mjs"
+      "!!plugins-codex/git-span/hooks/*.mjs",
+      "!!skills-src/**",
+      "!!plugins-claude/git-span/skills/**",
+      "!!plugins-codex/git-span/skills/**",
+      "!!plugins-opencode/git-span/skills/**",
+      "!!plugins-antigravity/git-span/skills/**"
     ]
   },
   "overrides": [
