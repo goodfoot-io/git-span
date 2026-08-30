@@ -56,6 +56,8 @@
     "plugin-dev@claude-plugins-official": false,
     "claude-code-hooks@goodfoot": true,
     "git-span@git-span": true,
+    "agent-hooks@goodfoot": true,
+    "agent-sklls@goodfoot": true,
     "wiki@goodfoot-wiki": true,
     "mattpocock-skills@claude-plugins-official": false
   },
