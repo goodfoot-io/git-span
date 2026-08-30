@@ -1,8 +1,9 @@
 /**
  * OpenCode plugin entry — assembles the git-span adapter into the host's
  * `Hooks` shape (local structural types, no SDK dependency; the peer package
- * esbuild-bundles this module to `plugins-opencode/git-span/dist/index.js`
- * for bun/node ESM loading).
+ * bundles this module through the unified `@goodfoot/agent-hooks` CLI
+ * (`--agent opencode`) to `plugins-opencode/git-span/dist/index.mjs` for
+ * bun/node ESM loading).
  *
  * Hooks assembled here:
  * - `tool.execute.before` — static planning first (bash planned touches,

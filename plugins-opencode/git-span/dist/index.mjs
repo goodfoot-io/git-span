@@ -68,7 +68,6 @@ function resolveSpanRootUncached(repoRoot) {
     const trimmed = toPosix(out.trim()).replace(/\/+$/, "");
     if (trimmed.length > 0) return trimmed;
   } catch (err) {
-    void err;
   }
   return SPAN_ROOT;
 }
@@ -83,7 +82,6 @@ function isGitIgnored(repoRoot, repoRelPath) {
     });
     return true;
   } catch (err) {
-    void err;
     return false;
   }
 }
@@ -229,11 +227,9 @@ function pruneStaleSessions(layout, now = Date.now(), maxAgeMs = THIRTY_DAYS_MS)
           fs.rmSync(trashPath, { recursive: true, force: true });
         }
       } catch (err) {
-        void err;
       }
     }
   } catch (err) {
-    void err;
   }
   let entries;
   try {
@@ -260,7 +256,6 @@ function pruneStaleSessions(layout, now = Date.now(), maxAgeMs = THIRTY_DAYS_MS)
         fs.utimesSync(trashPath, now / 1e3, now / 1e3);
       }
     } catch (err) {
-      void err;
     }
   }
 }
@@ -331,15 +326,16 @@ function disableUpdateCheck() {
 // src/common/advisor-core.ts
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import * as fs3 from "node:fs";
+import * as fs4 from "node:fs";
 import * as nodePath4 from "node:path";
 import { promisify } from "node:util";
 
 // src/common/advisor-ignore.ts
-import * as fs2 from "node:fs";
+import * as fs3 from "node:fs";
 import * as nodePath3 from "node:path";
 
 // src/common/span-ignore.ts
+import * as fs2 from "node:fs";
 import * as nodePath2 from "node:path";
 var HOOK_IGNORE_REL = nodePath2.join(".span", ".hookignore");
 function globToRegExp(glob) {
@@ -408,7 +404,7 @@ function parseAdvisorIgnore(content) {
 }
 function loadAdvisorIgnore(repoRoot) {
   try {
-    const content = fs2.readFileSync(nodePath3.join(repoRoot, ADVISOR_IGNORE_REL), "utf8");
+    const content = fs3.readFileSync(nodePath3.join(repoRoot, ADVISOR_IGNORE_REL), "utf8");
     return parseAdvisorIgnore(content);
   } catch {
     return [];
@@ -985,7 +981,7 @@ async function resolveChangeset(kind, all, cwd, git, paths) {
   const changeset = await resolveChangesetUnfiltered(kind, all, cwd, git, paths);
   const repoRoot = resolveRepoRoot(cwd);
   if (!repoRoot || changeset.paths.length === 0) return changeset;
-  return { ...changeset, paths: changeset.paths.filter((p) => fs3.existsSync(nodePath4.join(repoRoot, p))) };
+  return { ...changeset, paths: changeset.paths.filter((p) => fs4.existsSync(nodePath4.join(repoRoot, p))) };
 }
 function mergeUniquePaths(...groups) {
   const seen = /* @__PURE__ */ new Set();
@@ -1786,15 +1782,15 @@ function createDiskAdvisorMemoState(cwd) {
   return {
     has: (digest) => {
       try {
-        return fs3.existsSync(nodePath4.join(dir, digest));
+        return fs4.existsSync(nodePath4.join(dir, digest));
       } catch {
         return false;
       }
     },
     record: (digest) => {
       try {
-        fs3.mkdirSync(dir, { recursive: true });
-        fs3.writeFileSync(nodePath4.join(dir, digest), "");
+        fs4.mkdirSync(dir, { recursive: true });
+        fs4.writeFileSync(nodePath4.join(dir, digest), "");
         return true;
       } catch {
         return false;
@@ -1909,7 +1905,7 @@ function createOpencodeLogger(options = {}) {
 }
 
 // src/codex/apply-patch.ts
-import * as fs4 from "node:fs";
+import * as fs5 from "node:fs";
 var END_PATCH_MARKER = "*** End Patch";
 var ADD_FILE_MARKER = "*** Add File: ";
 var DELETE_FILE_MARKER = "*** Delete File: ";
@@ -1920,7 +1916,7 @@ var CHANGE_CONTEXT_MARKER = "@@ ";
 var EMPTY_CHANGE_CONTEXT_MARKER = "@@";
 function defaultReadPreEditFile(path) {
   try {
-    return fs4.readFileSync(path, "utf8");
+    return fs5.readFileSync(path, "utf8");
   } catch {
     return null;
   }
@@ -2151,20 +2147,20 @@ function parseApplyPatch(command, readPreEditFile = defaultReadPreEditFile) {
 
 // src/common/static-attribution.ts
 import { execFileSync as execFileSync3 } from "node:child_process";
-import * as fs5 from "node:fs";
+import * as fs6 from "node:fs";
 import * as nodePath5 from "node:path";
 
 // src/common/parse-command.ts
-import { readFileSync as readFileSync4, statSync as statSync3 } from "node:fs";
+import { readFileSync as readFileSync5, statSync as statSync3 } from "node:fs";
 import { basename as basename2, isAbsolute as isAbsolute2, join as joinPath, resolve as resolvePath } from "node:path";
 
 // src/common/command-resolve.ts
 import { execFileSync as execFileSync2 } from "node:child_process";
-import { readFileSync as readFileSync3, statSync as statSync2 } from "node:fs";
+import { readFileSync as readFileSync4, statSync as statSync2 } from "node:fs";
 function countFileLines(absolutePath) {
   try {
     if (!statSync2(absolutePath).isFile()) return null;
-    const content = readFileSync3(absolutePath, "utf8");
+    const content = readFileSync4(absolutePath, "utf8");
     if (content.length === 0) return 0;
     const withoutTrailingNewline = content.endsWith("\n") ? content.slice(0, -1) : content;
     return withoutTrailingNewline.split("\n").length;
@@ -4426,7 +4422,7 @@ function patchApplyParts(args, isGitApply) {
 }
 function readPatchFile(absolutePath) {
   try {
-    return readFileSync4(absolutePath, "utf8");
+    return readFileSync5(absolutePath, "utf8");
   } catch {
     return null;
   }
@@ -4866,7 +4862,6 @@ function parseCommandDetailed(command, opts = {}) {
   const cwd = typeof opts === "string" ? opts : opts.cwd ?? process.cwd();
   const { writes: heredocWrites, masked } = extractHeredocWrites(command);
   const { stages: simpleCommands, malformed } = splitTopLevel(masked);
-  void malformed;
   const results = [];
   const fsLineCache = /* @__PURE__ */ new Map();
   const gitLineCache = /* @__PURE__ */ new Map();
@@ -7234,14 +7229,14 @@ function createPlannedTouchStore(layout, budgets) {
     };
   };
   const makeRestrictiveDir = (dir) => {
-    fs5.mkdirSync(dir, { recursive: true, mode: 448 });
-    fs5.chmodSync(layout.base, 448);
-    fs5.chmodSync(nodePath5.dirname(dir), 448);
-    fs5.chmodSync(dir, 448);
+    fs6.mkdirSync(dir, { recursive: true, mode: 448 });
+    fs6.chmodSync(layout.base, 448);
+    fs6.chmodSync(nodePath5.dirname(dir), 448);
+    fs6.chmodSync(dir, 448);
   };
   const claim = (consumed) => {
     try {
-      fs5.writeFileSync(consumed, "", { encoding: "utf8", flag: "wx", mode: 384 });
+      fs6.writeFileSync(consumed, "", { encoding: "utf8", flag: "wx", mode: 384 });
       return true;
     } catch (error) {
       if (error.code === "EEXIST") return false;
@@ -7255,12 +7250,12 @@ function createPlannedTouchStore(layout, budgets) {
     if (!claim(paths.consumed)) return { status: "consumed" };
     let raw;
     try {
-      raw = fs5.readFileSync(paths.record, "utf8");
+      raw = fs6.readFileSync(paths.record, "utf8");
     } catch (error) {
       if (error.code === "ENOENT") return { status: "missing" };
       throw error;
     } finally {
-      fs5.rmSync(paths.record, { force: true });
+      fs6.rmSync(paths.record, { force: true });
     }
     try {
       const record2 = normalizePlannedTouchRecord(JSON.parse(raw), budgets);
@@ -7275,7 +7270,7 @@ function createPlannedTouchStore(layout, budgets) {
       const normalized = normalizePlannedTouchRecord(record2, budgets);
       const paths = recordPaths(normalized.sessionId, normalized.toolUseId);
       makeRestrictiveDir(paths.dir);
-      if (fs5.existsSync(paths.consumed)) {
+      if (fs6.existsSync(paths.consumed)) {
         throw new Error("planned-touch record has already been consumed or discarded");
       }
       const encoded = JSON.stringify(normalized);
@@ -7284,11 +7279,11 @@ function createPlannedTouchStore(layout, budgets) {
         `.${nodePath5.basename(paths.record)}.${process.pid}.${Date.now().toString(36)}.${Math.random().toString(36).slice(2)}.tmp`
       );
       try {
-        fs5.writeFileSync(tmp, encoded, { encoding: "utf8", mode: 384 });
-        fs5.chmodSync(tmp, 384);
-        fs5.renameSync(tmp, paths.record);
+        fs6.writeFileSync(tmp, encoded, { encoding: "utf8", mode: 384 });
+        fs6.chmodSync(tmp, 384);
+        fs6.renameSync(tmp, paths.record);
       } catch (error) {
-        fs5.rmSync(tmp, { force: true });
+        fs6.rmSync(tmp, { force: true });
         throw error;
       }
     },
@@ -7302,7 +7297,7 @@ function createPlannedTouchStore(layout, budgets) {
       const paths = recordPaths(sessionId, toolUseId);
       makeRestrictiveDir(paths.dir);
       claim(paths.consumed);
-      fs5.rmSync(paths.record, { force: true });
+      fs6.rmSync(paths.record, { force: true });
     }
   };
 }
@@ -7545,7 +7540,7 @@ function filterTrackedEligibility(candidates, options) {
 // src/common/touch-core.ts
 import { execFileSync as execFileSync4 } from "node:child_process";
 import { createHash as createHash2 } from "node:crypto";
-import * as fs6 from "node:fs";
+import * as fs7 from "node:fs";
 import { basename as basename4, dirname as dirname3, join as join6 } from "node:path";
 function toNeedleLines(written) {
   if (written.length === 0) return [];
@@ -7587,7 +7582,7 @@ function createRealityProbeCache(paths, changedCandidates = []) {
 }
 function fileExists(absPath) {
   try {
-    fs6.statSync(absPath);
+    fs7.statSync(absPath);
     return true;
   } catch {
     return false;
@@ -7595,21 +7590,21 @@ function fileExists(absPath) {
 }
 function isFileOnDisk(absPath) {
   try {
-    return fs6.statSync(absPath).isFile();
+    return fs7.statSync(absPath).isFile();
   } catch {
     return false;
   }
 }
 function contentMatches(post, filePath) {
   try {
-    if ("exact" in post) return fs6.readFileSync(filePath, "utf8") === post.exact;
+    if ("exact" in post) return fs7.readFileSync(filePath, "utf8") === post.exact;
     if ("suffix" in post) {
-      const content = fs6.readFileSync(filePath, "utf8");
+      const content = fs7.readFileSync(filePath, "utf8");
       return content.endsWith(post.suffix) || content.endsWith(`${post.suffix}
 `);
     }
-    if ("empty" in post) return fs6.statSync(filePath).size === 0;
-    return fs6.statSync(filePath).size === post.size;
+    if ("empty" in post) return fs7.statSync(filePath).size === 0;
+    return fs7.statSync(filePath).size === post.size;
   } catch {
     return false;
   }
@@ -7675,7 +7670,6 @@ function changedOnDisk(cache, cwd) {
           changed.add(join6(repoRoot, entry.slice(3)));
         }
       } catch (err) {
-        void err;
       }
     }
   }
@@ -7701,8 +7695,8 @@ function evaluateWriteGate(input, probeCache) {
       let src;
       let dst;
       try {
-        src = fs6.readFileSync(input.sourcePath, "utf8");
-        dst = fs6.readFileSync(input.filePath, "utf8");
+        src = fs7.readFileSync(input.sourcePath, "utf8");
+        dst = fs7.readFileSync(input.filePath, "utf8");
       } catch {
         return "decisiveFail";
       }
@@ -7995,7 +7989,7 @@ function recoverRangeFromDisk(written, filePath) {
   if (written.length === 0) return "whole-file";
   let content;
   try {
-    content = fs6.readFileSync(filePath, "utf8");
+    content = fs7.readFileSync(filePath, "utf8");
   } catch {
     return "whole-file";
   }
@@ -8007,7 +8001,7 @@ function recoverReadRange(offset, limit, filePath) {
   const start = offset ?? 1;
   let lineCount2;
   try {
-    const content = fs6.readFileSync(filePath, "utf8");
+    const content = fs7.readFileSync(filePath, "utf8");
     lineCount2 = content.length === 0 ? 0 : content.split("\n").length;
   } catch {
     return "whole-file";
@@ -8315,18 +8309,19 @@ async function runApplyPatchTouches(patchText, cwd, sessionId, planned, executor
 
 // src/common/bash-attribution.ts
 import { createHash as createHash3 } from "node:crypto";
-import * as fs8 from "node:fs";
+import * as fs9 from "node:fs";
 import * as nodePath7 from "node:path";
 
 // src/common/span-surface.ts
-import * as fs7 from "node:fs";
+import { execFileSync as execFileSync5 } from "node:child_process";
+import * as fs8 from "node:fs";
 import * as nodePath6 from "node:path";
 function createDiskMemoStore(logger, layout) {
   return {
     getSurfaced(sessionId) {
       pruneStaleSessionsThrottled(layout);
       try {
-        const raw = fs7.readFileSync(layout.memoFile(sessionId), "utf8");
+        const raw = fs8.readFileSync(layout.memoFile(sessionId), "utf8");
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed.surfaced)) {
           return new Set(parsed.surfaced);
@@ -8343,9 +8338,9 @@ function createDiskMemoStore(logger, layout) {
       const memoPath = layout.memoFile(sessionId);
       const tmpPath = `${memoPath}.tmp`;
       try {
-        fs7.mkdirSync(memoDir, { recursive: true, mode: 448 });
-        fs7.writeFileSync(tmpPath, JSON.stringify({ surfaced: [...existing] }), "utf8");
-        fs7.renameSync(tmpPath, memoPath);
+        fs8.mkdirSync(memoDir, { recursive: true, mode: 448 });
+        fs8.writeFileSync(tmpPath, JSON.stringify({ surfaced: [...existing] }), "utf8");
+        fs8.renameSync(tmpPath, memoPath);
       } catch (err) {
         logger.warn("memo write failed", { err });
       }
@@ -9488,7 +9483,7 @@ function createDefaultPlannedTouchStore(layout) {
 }
 function readText(path) {
   try {
-    return fs8.readFileSync(path, "utf8");
+    return fs9.readFileSync(path, "utf8");
   } catch {
     return null;
   }
@@ -10143,10 +10138,10 @@ function createOpencodeCallState() {
 }
 
 // src/opencode/static-plan.ts
-import * as fs9 from "node:fs";
+import * as fs10 from "node:fs";
 function readPreEdit(cwd, path) {
   try {
-    return fs9.readFileSync(abspathAgainst(cwd, path), "utf8");
+    return fs10.readFileSync(abspathAgainst(cwd, path), "utf8");
   } catch {
     return null;
   }

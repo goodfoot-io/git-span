@@ -1680,16 +1680,35 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@goodfoot/agent-hooks@npm:1.0.0":
-  version: 1.0.0
-  resolution: "@goodfoot/agent-hooks@npm:1.0.0"
+"@goodfoot/agent-hooks@npm:1.0.9":
+  version: 1.0.9
+  resolution: "@goodfoot/agent-hooks@npm:1.0.9"
   dependencies:
     esbuild: "npm:^0.24.0"
     glob: "npm:^11.0.0"
     typescript: "npm:^5.9.3"
+  peerDependencies:
+    "@opencode-ai/plugin": ^1.18.23
+  peerDependenciesMeta:
+    "@opencode-ai/plugin":
+      optional: true
   bin:
     agent-hooks: dist/cli.js
-  checksum: 10c0/95e391682a5ed25e05f057f94caf8dc3188fdd3a37a49d3b79c26d952f3ccff6af4b4ec2546dee4e27550f96efb6e2a7f2943957f699ca8bd455b90a085a3acd
+  checksum: 10c0/4d470ec7dc531914763d050a35f16464d51f2c4c7df8797792bd7574a49f291e6525e11cb1fdeb4cf5e37891d19df29f6400fcd90d18e0fac42f0491da7662a9
+  languageName: node
+  linkType: hard
+
+"@goodfoot/agent-skills@npm:1.0.25":
+  version: 1.0.25
+  resolution: "@goodfoot/agent-skills@npm:1.0.25"
+  dependencies:
+    eta: "npm:^4.6.0"
+    glob: "npm:^13.0.6"
+    yaml: "npm:^2.9.0"
+    zod: "npm:^4.4.3"
+  bin:
+    agent-skills: dist/cli.js
+  checksum: 10c0/6c69bb4e581aea054b325a34c1ed01af83e8d04b779e9640d223f44404f83f3232800e3a368ac60f95b1e585a08e4a0ff02fb8503825857d78cf2d56ebec2af3
   languageName: node
   linkType: hard
 
@@ -5188,7 +5207,8 @@ __metadata:
   resolution: "agent-hooks@workspace:packages/agent-hooks"
   dependencies:
     "@biomejs/biome": "npm:^2.5.8"
-    "@goodfoot/agent-hooks": "npm:1.0.0"
+    "@goodfoot/agent-hooks": "npm:1.0.9"
+    "@goodfoot/agent-skills": "npm:1.0.25"
     "@types/node": "npm:24.x"
     typescript: "npm:^7.0.2"
     vitest: "npm:^4.1.10"
@@ -7020,6 +7040,13 @@ __metadata:
   version: 2.0.3
   resolution: "esutils@npm:2.0.3"
   checksum: 10c0/9a2fe69a41bfdade834ba7c42de4723c97ec776e40656919c62cbd13607c45e127a003f05f724a1ea55e5029a4cf2de444b13009f2af71271e42d93a637137c7
+  languageName: node
+  linkType: hard
+
+"eta@npm:^4.6.0":
+  version: 4.6.0
+  resolution: "eta@npm:4.6.0"
+  checksum: 10c0/98c8081f756884bbc22f2bf4a6a38c2322ee97575fb6f0c02dcb1c3040353971c91a96bfba2d6f7cba39bb0ebece5708803a765447d9a81ca1172ccd5e31becf
   languageName: node
   linkType: hard
 

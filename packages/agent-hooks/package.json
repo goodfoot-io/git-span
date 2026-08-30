@@ -6,7 +6,7 @@
     "build": "yarn build:claude && yarn build:codex && yarn build:opencode",
     "build:claude": "yarn build:hooks",
     "build:codex": "yarn build:hooks:codex",
-    "build:opencode": "node -e \"require('esbuild').buildSync({ entryPoints: ['src/opencode/index.ts'], absWorkingDir: process.cwd(), bundle: true, platform: 'node', format: 'esm', minify: false, sourcemap: false, outfile: '../../plugins-opencode/git-span/dist/index.js' })\"",
+    "build:opencode": "yarn agent-hooks --agent opencode -i \"src/opencode/index.ts\" -o \"../../plugins-opencode/git-span/dist\" --no-sourcemap",
     "build:hooks": "yarn agent-hooks --agent claude-code -i \"src/claude/{session-start,advisor,static-plan,post-tool-use,post-tool-use-failure,session-end}.ts\" -o \"../../plugins-claude/git-span/hooks/hooks.json\" --no-sourcemap",
     "build:hooks:codex": "yarn agent-hooks --agent codex -i \"src/codex/{session-start,advisor,static-plan,apply-patch-plan,post-tool-use,stop}.ts\" -o \"../../plugins-codex/git-span/hooks/hooks.json\" --plugin-root --no-sourcemap",
     "agent-hooks": "node scripts/hooks-cli-wrapper.js",
@@ -18,7 +18,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@goodfoot/agent-hooks": "1.0.0"
+    "@goodfoot/agent-hooks": "1.0.9",
+    "@goodfoot/agent-skills": "1.0.25"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.8",

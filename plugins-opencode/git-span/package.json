@@ -4,8 +4,10 @@
   "description": "In-session git-span for OpenCode: silent span-drift healing behind shell/read/edit/write/patch calls, a hold-once git commit/push advisor, and an installer for the git-span skills and expert agent.",
   "license": "MIT",
   "type": "module",
+  "main": "./dist/index.mjs",
   "exports": {
-    ".": "./dist/index.js"
+    ".": "./dist/index.mjs",
+    "./server": "./dist/index.mjs"
   },
   "bin": {
     "opencode-git-span": "bin/opencode-git-span.mjs"

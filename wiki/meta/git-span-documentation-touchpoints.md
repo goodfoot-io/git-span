@@ -140,7 +140,7 @@ Run `yarn build` in `packages/agent-hooks` to regenerate:
 - `plugins-claude/git-span/hooks/hooks.json`
 - `plugins-codex/git-span/hooks/{advisor,post-tool-use}.mjs`
 - `plugins-codex/git-span/hooks/hooks.json`
-- `plugins-opencode/git-span/dist/index.js`
+- `plugins-opencode/git-span/dist/index.mjs`
 
 Keep text marked verbatim exact in the website integration page and both
 `understanding-hook-output.md` files. Reconciliation text must say:

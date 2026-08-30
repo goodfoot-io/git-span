@@ -4,18 +4,28 @@
  * repository's deterministic manifest order and Claude timeout contract.
  *
  * It also converts each manifest's hook registration `timeout` from
- * milliseconds to seconds -- but only for the Claude CLI, which emits the
- * source value verbatim even though Claude Code reads the field as seconds
- * ("Seconds before canceling"). The Codex CLI performs the same division
- * itself (`timeoutMsToSeconds`) before writing its manifest, so its output
- * must pass through untouched; re-dividing it would shrink every ceiling a
- * thousandfold. Source authoring stays milliseconds across both adapters,
- * matching the codex pipeline.
+ * milliseconds to seconds -- but only for `--agent claude-code`, which emits
+ * the source value verbatim even though Claude Code reads the field as
+ * seconds ("Seconds before canceling"). `--agent codex` performs the same
+ * division itself (`timeoutMsToSeconds`) before writing its manifest, and
+ * `--agent antigravity`'s manifest emitter likewise converts ms to seconds
+ * on its own, so both of those outputs must pass through undivided;
+ * re-dividing either would shrink every ceiling a thousandfold. Source
+ * authoring stays milliseconds across all adapters.
+ *
+ * `--agent opencode` emits no manifest at all: `-o` names an artifact
+ * *directory* the CLI fills with one self-contained `<entry>.mjs` per plugin
+ * entry, so the wrapper returns before the manifest-rewrite steps (which
+ * read `-o` as a JSON file and would fail on EISDIR). `--agent antigravity`
+ * emits its manifest at the plugin root (`-o` is the root `hooks.json`,
+ * bundles in `bin/` beside it -- a Claude-style `hooks/hooks.json` layout is
+ * silently skipped by the host) and gets the same canonicalization as
+ * claude-code/codex.
  *
  * The wrapper forwards all CLI args unchanged to the real, installed CLI
  * and then canonicalizes the emitted manifest.
  *
- * Usage: node scripts/hooks-cli-wrapper.js --agent claude-code|codex [...cli-args]
+ * Usage: node scripts/hooks-cli-wrapper.js --agent claude-code|codex|opencode|antigravity [...cli-args]
  */
 
 import { spawnSync } from 'node:child_process';
@@ -138,8 +148,8 @@ async function main() {
   );
   const exactAgentIndex = agentIndexes.length === 1 && cliArgs[agentIndexes[0]] === '--agent' ? agentIndexes[0] : -1;
   const agent = exactAgentIndex === -1 ? undefined : cliArgs[exactAgentIndex + 1];
-  if (agent !== 'claude-code' && agent !== 'codex') {
-    process.stderr.write('Usage: hooks-cli-wrapper.js --agent claude-code|codex [...cli-args]\n');
+  if (agent !== 'claude-code' && agent !== 'codex' && agent !== 'opencode' && agent !== 'antigravity') {
+    process.stderr.write('Usage: hooks-cli-wrapper.js --agent claude-code|codex|opencode|antigravity [...cli-args]\n');
     process.exit(1);
   }
 
@@ -157,14 +167,25 @@ async function main() {
     process.exit(result.status ?? 1);
   }
 
+  if (agent === 'opencode') {
+    // OpenCode has no manifest to post-process: `-o` names an artifact
+    // *directory*, and the CLI writes one self-contained `<entry>.mjs` per
+    // plugin entry into it with no hooks.json alongside. Both steps below
+    // read `-o` as a JSON file, so letting them run would fail on EISDIR --
+    // and there is nothing they could canonicalize anyway, since the emitted
+    // bundle carries no hook ordering, no timeout field, and no manifest.
+    return;
+  }
+
   const outputArg = findOutputPath(cliArgs);
   if (outputArg === undefined) {
     // Nothing was compiled to a hooks.json (e.g. --scaffold, --help).
     return;
   }
   if (agent === 'claude-code') {
-    // Only the Claude CLI needs the division -- the Codex CLI already emits
-    // seconds, and converting its manifest again would corrupt it.
+    // Only the Claude CLI needs the division -- the Codex and Antigravity
+    // CLIs already emit seconds, and converting either manifest again would
+    // corrupt it.
     convertHookTimeoutsToSeconds(resolve(process.cwd(), outputArg));
   }
   canonicalizeHookManifest(resolve(process.cwd(), outputArg), findInputPath(cliArgs));
