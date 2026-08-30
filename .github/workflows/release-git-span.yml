@@ -164,10 +164,17 @@ jobs:
       - name: Rebuild OpenCode plugin bundle
         run: yarn workspace agent-hooks build:opencode
 
-      - name: Guard committed OpenCode plugin bundle freshness
+      # The antigravity plugin ships its hooks.json and bin/ bundles checked
+      # in and installs straight from the repository (`agy plugin install`
+      # takes a git URL), so a stale committed bundle would ship exactly as
+      # committed — same freshness contract as the OpenCode bundle above.
+      - name: Rebuild Antigravity hook bundles
+        run: yarn workspace agent-hooks build:antigravity
+
+      - name: Guard committed plugin bundle freshness
         run: |
-          if ! git diff --exit-code -- plugins-opencode/git-span/dist; then
-            echo "ERROR: rebuild produced uncommitted bundle changes — commit the rebuilt plugins-opencode/git-span/dist" >&2
+          if ! git diff --exit-code -- plugins-opencode/git-span/dist plugins-antigravity/git-span/hooks.json plugins-antigravity/git-span/bin; then
+            echo "ERROR: rebuild produced uncommitted bundle changes — commit the rebuilt plugin bundles" >&2
             exit 1
           fi
 
@@ -183,9 +190,27 @@ jobs:
 
       - name: Guard committed skill tree freshness
         run: |
-          if [ -n "$(git status --porcelain -- plugins-claude/git-span/skills plugins-codex/git-span/skills plugins-opencode/git-span/skills)" ]; then
+          if [ -n "$(git status --porcelain -- plugins-claude/git-span/skills plugins-codex/git-span/skills plugins-opencode/git-span/skills plugins-antigravity/git-span/skills)" ]; then
             echo "ERROR: rebuild produced uncommitted skill-tree changes — commit the rebuilt skill trees" >&2
-            git status --porcelain -- plugins-claude/git-span/skills plugins-codex/git-span/skills plugins-opencode/git-span/skills >&2
+            git status --porcelain -- plugins-claude/git-span/skills plugins-codex/git-span/skills plugins-opencode/git-span/skills plugins-antigravity/git-span/skills >&2
+            exit 1
+          fi
+
+      # The Antigravity plugin has no packaged artifact — `agy plugin install`
+      # consumes the repository tree directly — so the pack-and-inspect guard
+      # below has no tarball to open for it. Assert the equivalent directly on
+      # the tree being released: every skill plus the hook manifest must be
+      # present, or an installed plugin would silently ship skill-less.
+      - name: Guard Antigravity plugin carries the skills and hooks
+        run: |
+          for skill in git-span hook-effect-analysis reconcile; do
+            if [ ! -f "plugins-antigravity/git-span/skills/$skill/SKILL.md" ]; then
+              echo "ERROR: plugins-antigravity/git-span/skills/$skill/SKILL.md is missing — refusing to publish" >&2
+              exit 1
+            fi
+          done
+          if [ ! -f plugins-antigravity/git-span/hooks.json ]; then
+            echo "ERROR: plugins-antigravity/git-span/hooks.json is missing — refusing to publish" >&2
             exit 1
           fi
 

@@ -135,6 +135,13 @@ build_dir="$target_root/git-span/build"
   # tracked-file scope and retained-identifier allowlist stay fail-closed.
   node scripts/check-agent-hooks-migration.mjs &&
   node --test scripts/check-agent-hooks-migration.test.mjs &&
+  # Every plugin must carry one version across all four platform manifests and
+  # its marketplace entry — the fan-out scripts enumerate the manifests, and
+  # this gate refuses a tree where any enumeration was missed. The focused
+  # suite runs the real checker against temporary git fixtures, plus this
+  # repository itself.
+  node scripts/check-version-consistency.mjs &&
+  node --test scripts/check-version-consistency.test.mjs &&
   (
     cd "$repo_root/packages/git-span"
     bash scripts/with-target-lock.sh shared env CARGO_TARGET_DIR="$build_dir" cargo build --quiet --locked --bin git-span
@@ -189,7 +196,7 @@ build_dir="$target_root/git-span/build"
     fi
   } &&
   (
-    if ! git diff --exit-code -- plugins-claude/git-span/hooks plugins-codex/git-span/hooks plugins-opencode/git-span/dist; then
+    if ! git diff --exit-code -- plugins-claude/git-span/hooks plugins-codex/git-span/hooks plugins-opencode/git-span/dist plugins-antigravity/git-span/hooks.json plugins-antigravity/git-span/bin; then
       echo "ERROR: rebuild produced uncommitted bundle changes — commit the rebuilt plugin bundles" >&2
       exit 1
     fi
@@ -205,7 +212,7 @@ build_dir="$target_root/git-span/build"
   node scripts/lint-agent-skills.mjs &&
   node scripts/build-agent-skills.mjs &&
   (
-    if ! git diff --exit-code -- plugins-claude/git-span/skills plugins-codex/git-span/skills plugins-opencode/git-span/skills; then
+    if ! git diff --exit-code -- plugins-claude/git-span/skills plugins-codex/git-span/skills plugins-opencode/git-span/skills plugins-antigravity/git-span/skills; then
       echo "ERROR: rebuild produced uncommitted skill-tree changes — commit the rebuilt skill trees" >&2
       exit 1
     fi

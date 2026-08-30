@@ -1,0 +1,7 @@
+# Generated build output of skills-src/ (rendered by
+# scripts/build-agent-skills.mjs) — never author or index these trees; edit
+# the templates and rebuild instead.
+plugins-claude/git-span/skills/
+plugins-codex/git-span/skills/
+plugins-opencode/git-span/skills/
+plugins-antigravity/git-span/skills/
