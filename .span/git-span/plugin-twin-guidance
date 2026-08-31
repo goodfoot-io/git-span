@@ -1,3 +1,5 @@
+packages/agent-hooks/test/antigravity/skill-tree-vocabulary.test.ts rk64:89b6850294c7a344
+packages/agent-hooks/test/opencode/skill-tree-vocabulary.test.ts rk64:bd5910fe2053aa00
 plugins-antigravity/git-span/skills/git-span/SKILL.md#L23-L29 rk64:cef6407e50e684df
 plugins-antigravity/git-span/skills/git-span/SKILL.md#L49-L52 rk64:208d10a605282398
 plugins-antigravity/git-span/skills/git-span/references/ci-and-sync.md rk64:0565f6a9d7d0ded7

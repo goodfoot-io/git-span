@@ -1,0 +1,4 @@
+packages/agent-hooks/package.json#L6-L12 rk64:c3b00746f7a45c45
+packages/agent-hooks/test/common/update-check-suppression.test.ts#L20-L40 rk64:4c1c4744e3f594bd
+
+ENTRY_MODULES hand-enumerates every hook entry point the build scripts' -i globs compile, to prove each one calls disableUpdateCheck() at module scope before any executor can run; nothing types the two lists together, so a glob entry added without a matching ENTRY_MODULES line ships an unverified suppression gap (claude/session-start.js and codex/session-start.js were both missing before this span was written, despite both calling disableUpdateCheck() themselves).

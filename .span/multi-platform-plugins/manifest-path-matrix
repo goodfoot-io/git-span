@@ -1,0 +1,4 @@
+.claude/skills/multi-platform-plugins/references/platform-matrix.md#L9-L14 rk64:81318529b6d82a24
+scripts/plugin-manifests.mjs#L16-L19 rk64:0ed5efb2af8c702e
+
+scripts/plugin-manifests.mjs is the authoritative per-platform manifest-path map (release/version-bump-workflow's single source), and the multi-platform-plugins skill's platform matrix restates the same plugin-root/manifest-file pairing in prose for a human/agent orienting on the four trees; a manifest path change or a new platform tree in plugin-manifests.mjs must land on this table in the same change or the skill silently teaches a stale layout.

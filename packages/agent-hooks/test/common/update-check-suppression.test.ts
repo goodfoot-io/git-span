@@ -18,11 +18,13 @@ const SUPPRESSION_VAR = 'GIT_SPAN_DISABLE_UPDATE_CHECK';
 
 /** The hook entry points wired into the plugin hook manifests. */
 const ENTRY_MODULES = [
+  '../../src/claude/session-start.js',
   '../../src/claude/advisor.js',
   '../../src/claude/static-plan.js',
   '../../src/claude/post-tool-use.js',
   '../../src/claude/post-tool-use-failure.js',
   '../../src/claude/session-end.js',
+  '../../src/codex/session-start.js',
   '../../src/codex/advisor.js',
   '../../src/codex/static-plan.js',
   '../../src/codex/apply-patch-plan.js',
