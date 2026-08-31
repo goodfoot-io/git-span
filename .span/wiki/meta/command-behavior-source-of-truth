@@ -3,6 +3,6 @@ packages/git-span/src/cli/mod.rs#L580-L644 rk64:4141cc1e25df6951
 packages/git-span/src/cli/mod.rs#L700-L764 rk64:000101109c9f1260
 packages/git-span/src/main.rs#L49-L157 rk64:1b76359b366bdd73
 packages/git-span/src/validation.rs#L7-L37 rk64:67a4e8c157035cee
-wiki/meta/git-span-documentation-touchpoints.md#L25-L44 rk64:0c2ec8fa06c6bda7
+wiki/meta/git-span-documentation-touchpoints.md#L31-L50 rk64:0c2ec8fa06c6bda7
 
 The Clap declarations, pre-classification, reserved-name validation, and command handlers are authoritative, and the touchpoints command-behavior section identifies those sources for documentation maintainers.

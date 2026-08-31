@@ -118,6 +118,12 @@ jobs:
     # vitest suite (the skill-tree vocabulary controls have no tag-time
     # backstop, so this is their only CI execution), and the generated-tree
     # freshness/lint/vocabulary gates.
+    #
+    # This job must remain a REQUIRED status check on main: the Antigravity
+    # route publishes on merge (`agy plugin install` consumes the default
+    # branch directly, with no later gate). The full obligation is recorded in
+    # the scripts/run-pipeline-gates.sh header, which the
+    # generated-tree-freshness-gate span watches.
     env:
       CARGO_INCREMENTAL: "0"
       # The agent-hooks suite cargo-builds the workspace debug binary through

@@ -22,7 +22,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { vocabulary } from './agent-skills-vocabulary.mjs';
 
-const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const repo = process.env.AGENT_SKILLS_REPO ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BEGIN = '/* BEGIN GENERATED VOCAB */';
 const END = '/* END GENERATED VOCAB */';
 
@@ -54,7 +54,7 @@ for (const file of walk(path.join(repo, 'skills-src'))) {
   const end = content.indexOf(END, begin);
   if (end === -1) {
     console.error(`${path.relative(repo, file)}: BEGIN GENERATED VOCAB without a matching END marker`);
-    process.exit(1);
+    process.exit(1); // refusal: unterminated-region
   }
   regions += 1;
   const updated = `${content.slice(0, begin)}${generated}${content.slice(end + END.length)}`;
@@ -69,12 +69,12 @@ for (const file of walk(path.join(repo, 'skills-src'))) {
 
 if (regions === 0) {
   console.error('No templates declare a GENERATED VOCAB region — the glossary is wired to nothing.');
-  process.exit(1);
+  process.exit(1); // refusal: no-regions
 }
 if (stale.length > 0) {
   console.error(
     `Vocabulary regions are stale in:\n${stale.map((file) => `  ${file}`).join('\n')}\n` +
       `Run: node scripts/sync-skill-vocabulary.mjs (the glossary lives in scripts/agent-skills-vocabulary.mjs).`
   );
-  process.exit(1);
+  process.exit(1); // refusal: stale-regions
 }

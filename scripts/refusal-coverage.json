@@ -1,0 +1,148 @@
+{
+  "comment": "Reconciles every refusal site in the agent-skills gate family against the control that trips it, bidirectionally — see scripts/check-refusal-coverage.mjs. A site with no entry, an entry with no site, and an entry naming a test that no longer exists all fail the checker. An 'accepted' entry is the reviewed ledger for a refusal no control trips, with the reason it is accepted.",
+  "files": {
+    "scripts/agent-skills-registry.mjs": {
+      "antigravity-root-required": {
+        "accepted": "The demo fixture registry models no Antigravity target; tripping this requires an antigravity-target fixture family the drivers suite does not yet have. Candidate for a future control."
+      },
+      "target-not-declared-tree": {
+        "control": "build refuses publishing into a path that is not a declared skills tree",
+        "suite": "scripts/agent-skills-drivers.test.mjs"
+      },
+      "target-renders-nothing": {
+        "accepted": "Requires a platform target that every fixture skill excludes via front-config; the demo templates carry no front-config. Candidate for a future control alongside a front-config fixture."
+      },
+      "undeclared-skill-on-disk": {
+        "control": "build refuses a skills-src directory the registry does not declare, naming the missing entrypoint",
+        "suite": "scripts/agent-skills-drivers.test.mjs"
+      },
+      "declared-skill-missing": {
+        "control": "build refuses a registry skill with no directory on disk",
+        "suite": "scripts/agent-skills-drivers.test.mjs"
+      },
+      "entrypoint-not-eta": {
+        "control": "build refuses a declared skill whose entrypoint is a plain SKILL.md",
+        "suite": "scripts/agent-skills-drivers.test.mjs"
+      },
+      "no-template-for-rendered-file": {
+        "control": "untracked guard diagnoses each file before advising, without a stack trace",
+        "suite": "scripts/agent-skills-drivers.test.mjs"
+      },
+      "untracked-in-target-tree": {
+        "control": "freshness gate turns red on new untracked render output",
+        "suite": "scripts/agent-skills-drivers.test.mjs"
+      }
+    },
+    "scripts/build-agent-skills.mjs": {
+      "registry-guard-refused": {
+        "control": "build refuses a registry skill with no directory on disk",
+        "suite": "scripts/agent-skills-drivers.test.mjs"
+      },
+      "no-marker-syntax": {
+        "accepted": "Tripping it requires the CLI to render a file type injectMarker() does not know, which the fixture CLI stubs cannot produce without also failing render verification first. Candidate for a future control."
+      },
+      "git-diff-failed": {
+        "accepted": "Infrastructure refusal: git itself failing inside a valid repository is not reproducible hermetically without breaking every other assertion in the same fixture."
+      },
+      "would-destroy-hand-edit": {
+        "control": "build restores and refuses a hand-edited rendered file, naming its template",
+        "suite": "scripts/agent-skills-drivers.test.mjs"
+      },
+      "verification-failures": {
+        "control": "build fails when the CLI reports some targets but not all",
+        "suite": "scripts/agent-skills-drivers.test.mjs"
+      },
+      "no-verifiable-render": {
+        "control": "build fails closed when the CLI exits 0 having written nothing",
+        "suite": "scripts/agent-skills-drivers.test.mjs"
+      }
+    },
+    "scripts/check-generated-tree-freshness.mjs": {
+      "derivation-source-unreadable": {
+        "control": "hooks gate refuses an unreadable derivation source",
+        "suite": "scripts/agent-skills-drivers.test.mjs"
+      },
+      "wrapper-script-unparseable": {
+        "control": "hooks gate refuses a wrapper script it cannot replay",
+        "suite": "scripts/agent-skills-drivers.test.mjs"
+      },
+      "build-script-unparseable": {
+        "control": "hooks gate refuses a build script whose output flags cannot be parsed",
+        "suite": "scripts/agent-skills-drivers.test.mjs"
+      },
+      "build-writes-outside-repo": {
+        "control": "hooks gate refuses a build destination outside the repository",
+        "suite": "scripts/agent-skills-drivers.test.mjs"
+      },
+      "replay-failed": {
+        "control": "hooks gate refuses a build whose scratch replay fails",
+        "suite": "scripts/agent-skills-drivers.test.mjs"
+      },
+      "replay-wrote-nothing": {
+        "control": "hooks gate refuses a build that exits 0 having written nothing",
+        "suite": "scripts/agent-skills-drivers.test.mjs"
+      },
+      "empty-derivation": {
+        "control": "hooks gate refuses an empty derivation when no build scripts exist",
+        "suite": "scripts/agent-skills-drivers.test.mjs"
+      },
+      "platform-reconciliation": {
+        "control": "hooks gate goes red when a platform build script is removed from the derivation source",
+        "suite": "scripts/agent-skills-drivers.test.mjs"
+      },
+      "derived-tree-missing": {
+        "control": "hooks gate goes red when a build destination is renamed away from the committed tree",
+        "suite": "scripts/agent-skills-drivers.test.mjs"
+      },
+      "git-status-failed": {
+        "accepted": "Infrastructure refusal: git status failing inside a valid repository is not reproducible hermetically."
+      },
+      "stale-trees": {
+        "control": "freshness gate detects committed drift and advises committing the rebuilt trees",
+        "suite": "scripts/agent-skills-drivers.test.mjs"
+      },
+      "usage": {
+        "accepted": "Argument-validation refusal on the gate's own CLI surface; every caller is the shared gate set, which passes a literal suite name."
+      },
+      "hand-edit-in-trees": {
+        "control": "freshness gate routes a hand-edit to the template, preserving the edited bytes",
+        "suite": "scripts/agent-skills-drivers.test.mjs"
+      },
+      "no-verifiable-render": {
+        "control": "freshness gate never advises committing when the render did not verifiably run",
+        "suite": "scripts/agent-skills-drivers.test.mjs"
+      },
+      "build-refused": {
+        "control": "freshness gate turns red on new untracked render output",
+        "suite": "scripts/agent-skills-drivers.test.mjs"
+      }
+    },
+    "scripts/sync-skill-vocabulary.mjs": {
+      "unterminated-region": {
+        "control": "vocab sync refuses a region without a matching END marker",
+        "suite": "scripts/agent-skills-drivers.test.mjs"
+      },
+      "no-regions": {
+        "control": "vocab sync refuses a template tree with no vocab regions at all",
+        "suite": "scripts/agent-skills-drivers.test.mjs"
+      },
+      "stale-regions": {
+        "control": "vocab sync --check turns red on a stale region",
+        "suite": "scripts/agent-skills-drivers.test.mjs"
+      }
+    },
+    "scripts/lint-agent-skills.mjs": {
+      "registry-guard-refused": {
+        "accepted": "Shares assertSafeTargets with the build path, whose emission channel is policed by the target-tree control; a lint-path duplicate would re-test the same registry throw through an identical catch-print-exit channel."
+      },
+      "cli-no-version": {
+        "control": "lint refuses a CLI that produces no version output at all",
+        "suite": "scripts/agent-skills-drivers.test.mjs"
+      },
+      "aggregate-failures": {
+        "control": "lint distinguishes \"reported nothing at all\" from \"these sites are now clean\"",
+        "suite": "scripts/agent-skills-drivers.test.mjs"
+      }
+    }
+  }
+}

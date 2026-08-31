@@ -89,11 +89,13 @@ function allowedTargets(plugin) {
 export function assertSafeTargets(registry) {
   for (const plugin of registry.plugins) {
     if (plugin.targets.some((target) => target.platform === 'antigravity') && !plugin.antigravityPluginRoot) {
+      // refusal: antigravity-root-required
       throw new Error(`${plugin.name}: an Antigravity target requires antigravityPluginRoot`);
     }
     const allowed = allowedTargets(plugin);
     for (const target of plugin.targets) {
       if (!allowed.has(target.path)) {
+        // refusal: target-not-declared-tree
         throw new Error(
           `${plugin.name}: --target ${target.platform}=${target.path} is not a declared skills tree. ` +
             `Publishing renames the whole directory away, so only ${[...allowed].join(', ')} may be published into.`
@@ -128,6 +130,7 @@ export function assertTargetsRenderFiles(registry) {
     const rendered = renderedPlatforms(plugin);
     for (const target of plugin.targets) {
       if (!rendered.has(target.platform)) {
+        // refusal: target-renders-nothing
         throw new Error(
           `${plugin.name}: --target ${target.platform}=${target.path} would publish an empty directory. ` +
             `No skill renders to ${target.platform}, and git cannot commit an empty tree. ` +
@@ -170,6 +173,7 @@ export function assertSkillsMatchDisk(registry) {
     const declared = [...(plugin.skills ?? [])].sort();
     for (const name of onDisk.filter((name) => !declared.includes(name))) {
       const entry = `${plugin.skillsSrc}/${name}/SKILL.md.eta`;
+      // refusal: undeclared-skill-on-disk
       throw new Error(
         `${plugin.name}: ${plugin.skillsSrc}/${name} exists on disk but is not declared in the registry's ` +
           `skills array${existsSync(path.join(srcRoot, name, 'SKILL.md.eta')) ? '' : `, and lacks ${entry} — without that entrypoint the CLI silently drops the whole skill from every rendered tree`}. ` +
@@ -177,6 +181,7 @@ export function assertSkillsMatchDisk(registry) {
       );
     }
     for (const name of declared.filter((name) => !onDisk.includes(name))) {
+      // refusal: declared-skill-missing
       throw new Error(
         `${plugin.name}: the registry declares skill "${name}" but ${plugin.skillsSrc}/${name} does not exist. ` +
           `Remove the declaration or restore the directory.`
@@ -184,6 +189,7 @@ export function assertSkillsMatchDisk(registry) {
     }
     for (const name of declared) {
       if (!existsSync(path.join(srcRoot, name, 'SKILL.md.eta'))) {
+        // refusal: entrypoint-not-eta
         throw new Error(
           `${plugin.name}: ${plugin.skillsSrc}/${name} lacks SKILL.md.eta — a plain SKILL.md is silently ` +
             `dropped from every rendered tree. Author the entrypoint as SKILL.md.eta.`
@@ -207,6 +213,7 @@ export function templateFor(plugin, relativeToTarget) {
     const templatePath = `${plugin.skillsSrc}/${candidate}`;
     if (existsSync(path.join(repo, templatePath))) return templatePath;
   }
+  // refusal: no-template-for-rendered-file
   throw new Error(
     `${plugin.name}: rendered file ${relativeToTarget} has no template under ${plugin.skillsSrc} — ` +
       `the driver's template mapping no longer matches the CLI's output naming.`
@@ -254,6 +261,7 @@ export function assertNoUntrackedInTargets(registry) {
           return `  ${file} — NOT render output (no template maps to it); publishing would destroy it irrecoverably — move it out of the generated tree`;
         }
       });
+      // refusal: untracked-in-target-tree
       throw new Error(
         `${plugin.name}: ${target.path} holds untracked files a publish would sweep away:\n${lines.join('\n')}\n` +
           `These trees are generated — see skills-src/README.md.`

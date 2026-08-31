@@ -678,6 +678,7 @@ var DEFAULT_SESSION_LAYOUT = createSessionLayout(
   nodePath.join(os.homedir(), ".cache", "git-span", "session")
 );
 var THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1e3;
+var SESSION_TRASH_MARKER = ".trash-session-";
 var lastOpportunisticPruneAt = Number.NEGATIVE_INFINITY;
 
 // src/common/update-check-env.ts
@@ -689,7 +690,6 @@ function disableUpdateCheck() {
 import { randomBytes } from "node:crypto";
 import * as fs2 from "node:fs";
 import * as nodePath2 from "node:path";
-var SESSION_TRASH_MARKER = ".trash-session-";
 function toolCallDir(layout, conversationId) {
   return nodePath2.join(layout.dir(conversationId), "antigravity-tool-calls");
 }

@@ -23,7 +23,7 @@ try {
   assertSafeTargets(registry);
 } catch (error) {
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  process.exit(1);
+  process.exit(1); // refusal: registry-guard-refused
 }
 
 // Positive evidence the CLI executes at all before any lint result is
@@ -43,7 +43,7 @@ try {
       `The agent-skills CLI produced no version output (exit ${probe.status}, stdout ${JSON.stringify(probe.stdout ?? '')}) — ` +
         `it did not actually execute, so no lint result from it can be trusted.\n`
     );
-    process.exit(1);
+    process.exit(1); // refusal: cli-no-version
   }
 }
 
@@ -112,4 +112,4 @@ for (const plugin of registry.plugins) {
   }
 }
 
-process.exit(failed ? 1 : 0);
+process.exit(failed ? 1 : 0); // refusal: aggregate-failures

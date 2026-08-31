@@ -11,14 +11,24 @@ set -euo pipefail
 # all). Add or remove a gate HERE; hand-copying an invocation into a caller
 # recreates exactly the local-vs-CI divergence this file exists to end.
 #
+# CALLER OBLIGATION: the ci.yml job that runs these phases (pipeline-gates)
+# must remain a REQUIRED status check on main in branch protection. Merging to
+# main IS publishing for the Antigravity route — `agy plugin install` consumes
+# the default branch directly, with no tag, release, or later gate in between —
+# so an advisory-only run of this file protects nobody. The requirement lives
+# in repository settings, which no file in this tree can enforce; this notice
+# is the in-tree record of that obligation, placed here because the
+# generated-tree-freshness-gate span watches this file.
+#
 # Phases (a caller passes one, or `all`):
 #
 #   pre-build        Integrity checks that must run before any build or test
 #                    can rewrite generated artifacts and hide the tracked-tree
 #                    state being certified: the superseded-hook-package scan,
-#                    plugin version consistency, and the agent-skills driver
-#                    suite — each check paired with the node --test suite that
-#                    proves its mechanism still trips.
+#                    plugin version consistency, refusal-coverage
+#                    reconciliation for the agent-skills gate family, and the
+#                    agent-skills driver suite — each check paired with the
+#                    node --test suite that proves its mechanism still trips.
 #
 #   agent-hooks-tests  The packages/agent-hooks vitest suite — the hook
 #                    runtime tests plus the skill-tree vocabulary controls
@@ -51,6 +61,8 @@ run_pre_build() {
   node --test scripts/check-agent-hooks-migration.test.mjs
   node scripts/check-version-consistency.mjs
   node --test scripts/check-version-consistency.test.mjs
+  node scripts/check-refusal-coverage.mjs
+  node --test scripts/check-refusal-coverage.test.mjs
   node --test scripts/agent-skills-drivers.test.mjs
 }
 

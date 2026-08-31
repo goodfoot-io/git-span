@@ -480,7 +480,13 @@ const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
  */
 const SESSION_TRASH_TTL_MS = 60_000;
 
-const SESSION_TRASH_MARKER = '.trash-session-';
+/**
+ * Marker embedded in the name of every trash-renamed directory —
+ * `pruneStaleSessions` unlinks only trash-dir entries carrying it. Exported so
+ * adapters that trash-rename their own call-scoped dirs (the Antigravity
+ * stash) ride the same TTL sweep instead of duplicating the literal.
+ */
+export const SESSION_TRASH_MARKER = '.trash-session-';
 
 /**
  * Opportunistically prune per-session state directories under `layout.base`

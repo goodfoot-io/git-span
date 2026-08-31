@@ -28,21 +28,13 @@
 import { randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as nodePath from 'node:path';
-import type { SessionLayout } from '../common/agent-hooks-common.js';
+import { SESSION_TRASH_MARKER, type SessionLayout } from '../common/agent-hooks-common.js';
 
 /** The stashed slice of a PreToolUse `toolCall` — exactly what the join needs. */
 export interface StashedToolCall {
   name: string;
   args: Record<string, unknown>;
 }
-
-/**
- * Mirrors agent-hooks-common's private `SESSION_TRASH_MARKER` byte-for-byte:
- * `pruneStaleSessions` unlinks only trash-dir entries carrying this marker in
- * their name, so retired call-scoped dirs ride the same TTL sweep as retired
- * sessions instead of needing a sweeper of their own.
- */
-const SESSION_TRASH_MARKER = '.trash-session-';
 
 function toolCallDir(layout: SessionLayout, conversationId: string): string {
   return nodePath.join(layout.dir(conversationId), 'antigravity-tool-calls');

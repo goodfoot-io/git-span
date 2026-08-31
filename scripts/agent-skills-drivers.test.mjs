@@ -77,13 +77,13 @@ function fixture({ skills = ['alpha'], onDisk = { alpha: 'SKILL.md.eta' }, basel
     )
   );
 
-  // The provisioning shape under test: the package directory reachable only
-  // through a symlink, exactly like a card worktree's shared node_modules.
   // The hooks gate's derivation source: a fixture agent-hooks workspace with
   // build scripts (one reached through a `yarn` alias) and a stub CLI wrapper
-  // that writes a manifest plus a companion bin/ bundle — the sibling-write
-  // shape the real builds have, which the `-o` flag alone understates. run()
-  // points the gate here via AGENT_HOOKS_WORKSPACE.
+  // that writes a manifest plus a companion bin/ bundle inside the manifest's
+  // own directory — the claude/codex whole-dir layout. The other real shape,
+  // a sibling written beside the -o destination and so invisible to the -o
+  // flag, is exercised by the directory-destination test, which rewrites this
+  // stub. run() points the gate here via AGENT_HOOKS_WORKSPACE.
   const hooksWorkspace = join(root, 'packages/agent-hooks');
   mkdirSync(join(hooksWorkspace, 'scripts'), { recursive: true });
   writeFileSync(
@@ -123,6 +123,8 @@ function fixture({ skills = ['alpha'], onDisk = { alpha: 'SKILL.md.eta' }, basel
     writeFileSync(join(root, tree, 'bin/hook.mjs'), 'export {};\n');
   }
 
+  // The provisioning shape under test: the package directory reachable only
+  // through a symlink, exactly like a card worktree's shared node_modules.
   mkdirSync(join(root, 'node_modules'));
   symlinkSync(join(realRepo, 'node_modules/@goodfoot'), join(root, 'node_modules/@goodfoot'), 'dir');
 
@@ -495,6 +497,216 @@ test('hooks gate refuses a hook build for a platform the registry does not decla
     const result = run('check-generated-tree-freshness.mjs', root, {}, ['hooks']);
     assert.equal(result.status, 1, 'a build for an undeclared platform must be reconciled, not silently measured');
     assert.match(result.stderr, /builds hooks for agent "antigravity" but no registry target declares that platform/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('hooks gate refuses an empty derivation when no build scripts exist', () => {
+  const root = fixture();
+  try {
+    const pkgPath = join(root, 'packages/agent-hooks/package.json');
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+    pkg.scripts = { 'agent-hooks': pkg.scripts['agent-hooks'] };
+    writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
+    const result = run('check-generated-tree-freshness.mjs', root, {}, ['hooks']);
+    assert.equal(result.status, 1, 'an empty derivation must be refused, never certified as trivially fresh');
+    assert.match(result.stderr, /no hook build scripts found/);
+    assert.match(result.stderr, /refuses to certify anything from an empty derivation/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('hooks gate refuses a build that exits 0 having written nothing', () => {
+  const root = fixture();
+  try {
+    writeFileSync(join(root, 'packages/agent-hooks/scripts/hooks-cli-wrapper.js'), 'export {};\n');
+    const result = run('check-generated-tree-freshness.mjs', root, {}, ['hooks']);
+    assert.equal(result.status, 1, 'a no-op build must be refused, not measured as an empty tree set');
+    assert.match(
+      result.stderr,
+      /scratch replay of hook build script "build:claude" \(agent claude-code\) wrote nothing/
+    );
+    assert.match(result.stderr, /cannot derive a measured tree from a build with no observable output/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('hooks gate refuses a build whose scratch replay fails', () => {
+  const root = fixture();
+  try {
+    writeFileSync(join(root, 'packages/agent-hooks/scripts/hooks-cli-wrapper.js'), 'process.exit(3);\n');
+    const result = run('check-generated-tree-freshness.mjs', root, {}, ['hooks']);
+    assert.equal(result.status, 1, 'a failing build must leave the trees underivable, not silently unmeasured');
+    assert.match(result.stderr, /scratch replay of hook build script "build:claude" \(agent claude-code\) failed/);
+    assert.match(result.stderr, /a failing build leaves them underivable/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('hooks gate measures a sibling written beside a directory-shaped build destination', () => {
+  const root = fixture();
+  try {
+    const pkgPath = join(root, 'packages/agent-hooks/package.json');
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+    pkg.scripts['build:codex'] = 'yarn agent-hooks --agent codex -i src -o ../../plugins-codex/demo/dist';
+    writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
+    writeFileSync(
+      join(root, 'packages/agent-hooks/scripts/hooks-cli-wrapper.js'),
+      [
+        "import { mkdirSync, writeFileSync } from 'node:fs';",
+        "import { dirname, join } from 'node:path';",
+        'const args = process.argv.slice(2);',
+        "const out = args[args.indexOf('-o') + 1];",
+        "const agent = args[args.indexOf('--agent') + 1];",
+        "if (agent === 'codex') {",
+        '  mkdirSync(out, { recursive: true });',
+        "  writeFileSync(join(out, 'index.mjs'), 'export {};\\n');",
+        "  writeFileSync(join(dirname(out), 'manifest.json'), '{}\\n');",
+        '} else {',
+        "  mkdirSync(join(dirname(out), 'bin'), { recursive: true });",
+        '  writeFileSync(out, `${JSON.stringify({ agent })}\\n`);',
+        "  writeFileSync(join(dirname(out), 'bin/hook.mjs'), 'export {};\\n');",
+        '}',
+        ''
+      ].join('\n')
+    );
+    mkdirSync(join(root, 'plugins-codex/demo/dist'), { recursive: true });
+    writeFileSync(join(root, 'plugins-codex/demo/dist/index.mjs'), 'export {};\n');
+    writeFileSync(join(root, 'plugins-codex/demo/manifest.json'), '{}\n');
+    git(root, ['add', '-A']);
+    git(root, ['commit', '--quiet', '-m', 'dir-shaped codex destination']);
+
+    const clean = run('check-generated-tree-freshness.mjs', root, {}, ['hooks']);
+    assert.equal(clean.status, 0, clean.stderr);
+    assert.match(clean.stdout, /plugins-codex\/demo\/dist/);
+    assert.match(
+      clean.stdout,
+      /plugins-codex\/demo\/manifest\.json/,
+      'a sibling the build writes beside its directory destination must be measured, not dropped'
+    );
+
+    writeFileSync(join(root, 'plugins-codex/demo/manifest.json'), '{"edited":true}\n');
+    const dirty = run('check-generated-tree-freshness.mjs', root, {}, ['hooks']);
+    assert.equal(dirty.status, 1, 'an edit to the measured sibling must turn the gate red');
+    assert.match(dirty.stderr, /plugins-codex\/demo\/manifest\.json \(modified\)/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('hooks gate refuses an unreadable derivation source', () => {
+  const root = fixture();
+  try {
+    writeFileSync(join(root, 'packages/agent-hooks/package.json'), '{not json');
+    const result = run('check-generated-tree-freshness.mjs', root, {}, ['hooks']);
+    assert.equal(result.status, 1, 'a broken derivation source must be refused, never treated as no builds');
+    assert.match(result.stderr, /cannot read the hooks derivation source/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('hooks gate refuses a wrapper script it cannot replay', () => {
+  const root = fixture();
+  try {
+    const pkgPath = join(root, 'packages/agent-hooks/package.json');
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+    pkg.scripts['agent-hooks'] = 'yarn dlx some-cli';
+    writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
+    const result = run('check-generated-tree-freshness.mjs', root, {}, ['hooks']);
+    assert.equal(result.status, 1, 'a wrapper the gate cannot replay must be refused, not skipped');
+    assert.match(result.stderr, /is not a plain "node <script>" command/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('hooks gate refuses a build script whose output flags cannot be parsed', () => {
+  const root = fixture();
+  try {
+    const pkgPath = join(root, 'packages/agent-hooks/package.json');
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+    pkg.scripts['build:hooks'] = 'yarn agent-hooks --agent claude-code -i src';
+    writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
+    const result = run('check-generated-tree-freshness.mjs', root, {}, ['hooks']);
+    assert.equal(result.status, 1, 'an unparseable build script must be refused, not silently unmeasured');
+    assert.match(result.stderr, /unparseable build script/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('hooks gate refuses a build destination outside the repository', () => {
+  const root = fixture();
+  try {
+    const pkgPath = join(root, 'packages/agent-hooks/package.json');
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+    pkg.scripts['build:hooks'] = 'yarn agent-hooks --agent claude-code -i src -o ../../../outside/hooks.json';
+    writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
+    const result = run('check-generated-tree-freshness.mjs', root, {}, ['hooks']);
+    assert.equal(result.status, 1, 'a destination outside the repository leaves nothing this gate can measure');
+    assert.match(result.stderr, /writes outside the repository/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('vocab sync refuses a region without a matching END marker', () => {
+  const root = fixture();
+  try {
+    writeFileSync(
+      join(root, 'skills-src/demo/alpha/frag.md.eta'),
+      'intro\n/* BEGIN GENERATED VOCAB */ const vocab = {};\nno end marker\n'
+    );
+    const result = run('sync-skill-vocabulary.mjs', root);
+    assert.equal(result.status, 1, 'an unterminated vocab region must be refused, not silently skipped');
+    assert.match(result.stderr, /BEGIN GENERATED VOCAB without a matching END marker/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('vocab sync refuses a template tree with no vocab regions at all', () => {
+  const root = fixture();
+  try {
+    const result = run('sync-skill-vocabulary.mjs', root);
+    assert.equal(result.status, 1, 'a glossary wired to nothing must be refused, not reported as synced');
+    assert.match(result.stderr, /No templates declare a GENERATED VOCAB region/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('vocab sync --check turns red on a stale region', () => {
+  const root = fixture();
+  try {
+    writeFileSync(
+      join(root, 'skills-src/demo/alpha/frag.md.eta'),
+      '/* BEGIN GENERATED VOCAB */ stale hand-edited copy /* END GENERATED VOCAB */\n'
+    );
+    const result = run('sync-skill-vocabulary.mjs', root, {}, ['--check']);
+    assert.equal(result.status, 1, 'a stale vocab copy must fail --check');
+    assert.match(result.stderr, /Vocabulary regions are stale in:/);
+    assert.match(result.stderr, /skills-src\/demo\/alpha\/frag\.md\.eta/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('build refuses publishing into a path that is not a declared skills tree', () => {
+  const root = fixture();
+  try {
+    const registryPath = join(root, 'registry.json');
+    const registry = JSON.parse(readFileSync(registryPath, 'utf8'));
+    registry.plugins[0].targets[0].path = 'plugins-claude/demo';
+    writeFileSync(registryPath, JSON.stringify(registry, null, 2));
+    const result = run('build-agent-skills.mjs', root);
+    assert.equal(result.status, 1, 'a target outside the declared trees must be refused before publishing');
+    assert.match(result.stderr, /is not a declared skills tree/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

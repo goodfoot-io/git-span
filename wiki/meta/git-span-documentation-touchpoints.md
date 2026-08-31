@@ -2,7 +2,7 @@
 title: Git Span Documentation Touchpoints
 summary: Sources, mirrors, generated artifacts, and checks for git-span guidance changes.
 tags: [meta, git-span, tooling]
-links-reviewed: 1
+links-reviewed: 2
 ---
 
 # Git span documentation touchpoints
@@ -16,11 +16,17 @@ Update the authoritative source, then its consumers. See [[Wiki Organization]] a
 - **CLI behavior:** Clap declarations and handlers.
 - **Hook text:** shared TypeScript hook cores.
 - **Generated:** man page, published schemas, command-reference page, and hook bundles; regenerate, never patch.
-- **Plugins:** `plugins-claude/` is normative; mirror to `plugins-codex/` and
-  `plugins-opencode/` while preserving harness-specific sections.
+- **Plugins:** skill trees are generated — authored once as templates in `skills-src/` and
+  rendered into all four platform trees (`plugins-claude/`, `plugins-codex/`,
+  `plugins-opencode/`, `plugins-antigravity/`) by
+  [build-agent-skills.mjs](/scripts/build-agent-skills.mjs). Edit the templates and rebuild;
+  never edit a rendered tree (the build restores and refuses hand-edits, and the shared
+  freshness gate in [run-pipeline-gates.sh](/scripts/run-pipeline-gates.sh) fails stale trees
+  locally, on PRs, and at tag time).
 - **Historical research:** preserve outcomes. Change only live instructions or specs.
 
-For a span joining plugin trees, name the Claude-to-Codex direction in its why.
+Rendered trees are generated output and therefore span-ineligible; span the `skills-src/`
+templates instead.
 
 ## CLI sources
 
@@ -70,13 +76,14 @@ to be zero. Do not restore superseded rules such as “one subsystem-definition 
 
 ### Agent load paths
 
-Update Claude first, then Codex. Files likely loaded together should divide responsibility:
+Edit the `skills-src/` templates and rebuild — the per-platform paths below are rendered
+output. Files likely loaded together should divide responsibility:
 the core skill owns shared rules; the expert and routed references add only branch-specific
 judgment. Claude and Codex router branches may differ by harness.
 
 - Core recipes and routing: `plugins-{claude,codex}/git-span/skills/git-span/SKILL.md`.
 - Judgment loaded with the core skill: `plugins-{claude,codex}/git-span/agents/expert.md`.
-- Multi-span branch: `plugins-{claude,codex}/git-span/skills/reconcile/` — SKILL.md dispatches; `references/reconcile.md` holds the workflow.
+- Multi-span branch: `plugins-{claude,codex}/git-span/skills/reconcile/` — SKILL.md dispatches; `references/procedure.md` holds the workflow and `references/team.md` the delegation branch.
 - Cleanup branch: `plugins-{claude,codex}/git-span/skills/git-span/references/why-cleanup-campaign.md`.
 - Deleted-anchor branch: `.../references/terminal-statuses.md`.
 - Why lifecycle caveats: `.../references/command-quirks-and-errors.md`.
@@ -110,6 +117,11 @@ judgment. Claude and Codex router branches may differ by harness.
 - [Codex manifest](/plugins-codex/git-span/.codex-plugin/plugin.json)
 - [OpenCode manifest](/plugins-opencode/git-span/package.json) — a `package.json`,
   not a plugin manifest
+- [Antigravity manifest](/plugins-antigravity/git-span/plugin.json)
+
+All four manifests and the marketplace entry must carry one version;
+[check-version-consistency.mjs](/scripts/check-version-consistency.mjs) enforces this in the
+shared gate set and refuses an npm publish on divergence.
 
 ### Live reports
 
@@ -134,13 +146,17 @@ Authoritative source and tests:
 - [touch-core.test.ts](/packages/agent-hooks/test/common/touch-core.test.ts)
 - Adapter tests under `packages/agent-hooks/test/{claude,codex}/`
 
-Run `yarn build` in `packages/agent-hooks` to regenerate:
+Run `yarn workspace agent-hooks build` to regenerate all four platform hook outputs:
 
-- `plugins-claude/git-span/hooks/bin/{advisor,post-tool-use}.mjs`
-- `plugins-claude/git-span/hooks/hooks.json`
-- `plugins-codex/git-span/hooks/{advisor,post-tool-use}.mjs`
-- `plugins-codex/git-span/hooks/hooks.json`
-- `plugins-opencode/git-span/dist/index.mjs`
+- `plugins-claude/git-span/hooks/` — `hooks.json` plus per-hook bundles in `bin/`
+- `plugins-codex/git-span/hooks/` — `hooks.json` plus flat per-hook bundles
+- `plugins-opencode/git-span/dist/` — one self-contained plugin artifact
+- `plugins-antigravity/git-span/hooks.json` plus bundles in the sibling `bin/`
+
+Do not hand-maintain this list anywhere a gate reasons from: the hooks freshness gate in
+[check-generated-tree-freshness.mjs](/scripts/check-generated-tree-freshness.mjs) derives
+its measured trees by replaying the `build:*` scripts and observing what they write,
+reconciled both ways against the registry's platform set.
 
 Keep text marked verbatim exact in the website integration page and both
 `understanding-hook-output.md` files. Reconciliation text must say:

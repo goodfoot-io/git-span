@@ -547,14 +547,16 @@ function runInstalledHostMatrix(host: 'claude' | 'codex', hooksDir: string, repo
   for (const [index, fixture] of installedCommandCases().entries()) {
     const toolUseId = `tool-${index}`;
     const command = fixture.command.replaceAll('__REPO__', repo.root);
+    const logPath = join(repo.home, `attribution-${host}-${index}.jsonl`);
+    const env = { ...repo.env, AGENT_HOOKS_LOG_FILE: logPath };
     const runPipeline = (id: string): string => {
       const pre = hookEnvelope(host, repo, id, toolUseId, command);
-      invokeRealHook(join(hooksDir, 'static-plan.mjs'), pre, repo.env);
+      invokeRealHook(join(hooksDir, 'static-plan.mjs'), pre, env);
       const shell = runRealShell(repo, command);
       const response = { ...shell, interrupted: fixture.interrupted === true };
       const post = hookEnvelope(host, repo, id, toolUseId, command, response);
       const bundle = host === 'claude' && shell.exitCode !== 0 ? 'post-tool-use-failure.mjs' : 'post-tool-use.mjs';
-      return hookContext(invokeRealHook(join(hooksDir, bundle), post, repo.env).output);
+      return hookContext(invokeRealHook(join(hooksDir, bundle), post, env).output);
     };
     let context = runPipeline(sessionId);
     // Under the root foreach harness a real `git span` child inside the
@@ -566,7 +568,21 @@ function runInstalledHostMatrix(host: 'claude' | 'codex', hooksDir: string, repo
     if (fixture.expected.length > 0 && context === '') context = runPipeline(`${sessionId}-retry`);
     for (const name of fixture.expected) expect(context, `${host}: ${fixture.name}`).toContain(name);
     for (const name of fixture.excluded ?? []) expect(context, `${host}: ${fixture.name}`).not.toContain(name);
-    if (fixture.expected.length === 0) expect(context, `${host}: ${fixture.name}`).toBe('');
+    if (fixture.expected.length === 0) {
+      // A silent verdict must be distinguishable from a pipeline that never
+      // ran: an empty context is also what a crashed or starved hook fails
+      // open to. The post hook logs its attribution breadcrumb after the
+      // pipeline completes regardless of what it surfaced, so require that
+      // side effect before accepting the empty context as the pass value.
+      const messages = readFileSync(logPath, 'utf8')
+        .trim()
+        .split('\n')
+        .map((line) => (JSON.parse(line) as { message?: unknown }).message);
+      expect(messages, `${host}: ${fixture.name} must log the post-attribution breadcrumb`).toContain(
+        'git-span static attribution post'
+      );
+      expect(context, `${host}: ${fixture.name}`).toBe('');
+    }
   }
 }
 

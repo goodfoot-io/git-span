@@ -4,7 +4,7 @@ summary: How to set up repo-tracked git hooks as thin per-event dispatchers that
 aliases: [Git Hook Dispatcher, Githooks Setup, Hook Router]
 tags: [guide, git, hooks]
 keywords: [githooks, core.hooksPath, pre-commit, post-commit, dispatcher, fail-closed, advisory]
-links-reviewed: 1
+links-reviewed: 2
 ---
 
 This guide describes the **router (dispatcher) model** used for git hooks in this

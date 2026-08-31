@@ -1,6 +1,6 @@
 README.md#L18-L55 rk64:7e7e504cf1c05169
 packages/git-span/src/cli/mod.rs#L46-L309 rk64:4aa185fdeb24af71
 packages/git-span/src/main.rs#L49-L157 rk64:1b76359b366bdd73
-wiki/meta/git-span-documentation-touchpoints.md#L184-L198 rk64:e06fd6b9857b8154
+wiki/meta/git-span-documentation-touchpoints.md#L200-L214 rk64:e06fd6b9857b8154
 
 The touchpoints update order is authoritative for propagating why-guidance changes from canonical and behavioral sources through mirrors, generated artifacts, validation, and exact span reconciliation.

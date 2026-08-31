@@ -1,4 +1,4 @@
 packages/agent-hooks/src/opencode/logger.ts#L5-L10 rk64:536d1cabedc3a0ef
-packages/agent-hooks/test/common/hook-build-portability.test.ts#L668-L689 rk64:ee4596a0a42a9220
+packages/agent-hooks/test/common/hook-build-portability.test.ts#L684-L705 rk64:ee4596a0a42a9220
 
 The installed-bundle smoke proves that both SDK-backed hosts write diagnostics through AGENT_HOOKS_LOG_FILE, while the OpenCode logger documents its intentionally separate destination and equivalent unset behavior.

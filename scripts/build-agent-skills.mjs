@@ -52,7 +52,7 @@ try {
   assertNoUntrackedInTargets(registry);
 } catch (error) {
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  process.exit(1);
+  process.exit(1); // refusal: registry-guard-refused
 }
 
 // Lets CI ask "would this registry be safe to publish?" without publishing.
@@ -115,6 +115,7 @@ function injectMarker(plugin, target, file) {
     writeFileSync(absolute, `${comment}${content}`);
     return;
   }
+  // refusal: no-marker-syntax
   throw new Error(
     `${plugin.name}: no generated-from marker syntax is defined for ${file} — ` +
       `teach injectMarker() this file type before shipping it in a rendered tree.`
@@ -137,6 +138,7 @@ function snapshotModifiedTracked(plugin) {
       encoding: 'utf8'
     });
     if (result.status !== 0) {
+      // refusal: git-diff-failed
       throw new Error(`git diff --name-only HEAD -- ${target.path} failed:\n${result.stderr}`);
     }
     for (const file of result.stdout.split('\n').filter(Boolean)) {
@@ -276,14 +278,14 @@ for (const plugin of registry.plugins) {
         `Port hand-edits into the named template and rebuild; if the worktree changes were themselves\n` +
         `stale build output, discard them (git checkout -- <tree>) and rebuild.\n`
     );
-    process.exit(2);
+    process.exit(2); // refusal: would-destroy-hand-edit
   }
   if (failures.length > 0) {
     process.stderr.write(`\n${failures.join('\n')}${unverified.length > 0 ? `\n${unverified.join('\n')}` : ''}\n`);
-    process.exit(1);
+    process.exit(1); // refusal: verification-failures
   }
   if (unverified.length > 0) {
     process.stderr.write(`\n${unverified.join('\n')}\n`);
-    process.exit(3);
+    process.exit(3); // refusal: no-verifiable-render
   }
 }

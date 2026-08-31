@@ -41,7 +41,7 @@ const scripts = path.dirname(fileURLToPath(import.meta.url));
 /** @param {string} message @returns {never} */
 function fail(message) {
   process.stderr.write(`ERROR: ${message}\n`);
-  process.exit(1);
+  process.exit(1); // refusal-channel
 }
 
 /**
@@ -140,6 +140,7 @@ function hookBuildCommands() {
   try {
     pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
   } catch (error) {
+    // refusal: derivation-source-unreadable
     fail(
       `cannot read the hooks derivation source ${pkgPath}: ${error instanceof Error ? error.message : String(error)}\n` +
         `The hooks freshness gate derives its measured trees from the agent-hooks build scripts.`
@@ -148,6 +149,7 @@ function hookBuildCommands() {
   const scriptMap = pkg.scripts ?? {};
   const wrapperTokens = tokenizeScript(scriptMap['agent-hooks'] ?? '');
   if (wrapperTokens[0] !== 'node' || wrapperTokens.length !== 2) {
+    // refusal: wrapper-script-unparseable
     fail(
       `the "agent-hooks" script in ${pkgPath} is not a plain "node <script>" command — ` +
         `the hooks gate cannot replay the builds to derive its measured trees (unparseable build script).`
@@ -165,6 +167,7 @@ function hookBuildCommands() {
     const agent = argValue(args, ['--agent']);
     const output = argValue(args, ['-o', '--output']);
     if (agent === undefined || output === undefined) {
+      // refusal: build-script-unparseable
       fail(
         `hook build script "${name}" in ${pkgPath} invokes agent-hooks but its --agent/-o could not be ` +
           `parsed (unparseable build script) — the gate cannot derive the tree it writes.`
@@ -199,6 +202,7 @@ function treesWrittenBy(wrapper, build) {
   const realOut = path.resolve(hooksWorkspace, build.output);
   const relOut = path.relative(repo, realOut).split(path.sep).join('/');
   if (relOut.startsWith('..')) {
+    // refusal: build-writes-outside-repo
     fail(`hook build script "${build.name}" writes outside the repository (${realOut}) — nothing to measure.`);
   }
   const scratch = mkdtempSync(path.join(tmpdir(), `hooks-tree-${build.agent}-`));
@@ -209,6 +213,7 @@ function treesWrittenBy(wrapper, build) {
       encoding: 'utf8'
     });
     if (result.status !== 0) {
+      // refusal: replay-failed
       fail(
         `scratch replay of hook build script "${build.name}" (agent ${build.agent}) failed — the gate derives its ` +
           `measured trees from what the builds write, so a failing build leaves them underivable:\n` +
@@ -217,6 +222,7 @@ function treesWrittenBy(wrapper, build) {
     }
     const written = readdirSync(scratch);
     if (written.length === 0) {
+      // refusal: replay-wrote-nothing
       fail(
         `scratch replay of hook build script "${build.name}" (agent ${build.agent}) wrote nothing — ` +
           `the gate cannot derive a measured tree from a build with no observable output.`
@@ -240,6 +246,7 @@ function treesWrittenBy(wrapper, build) {
 function deriveHooksTrees() {
   const { wrapper, builds } = hookBuildCommands();
   if (builds.length === 0) {
+    // refusal: empty-derivation
     fail(
       `no hook build scripts found in ${path.join(hooksWorkspace, 'package.json')} — the hooks freshness gate ` +
         `derives its measured trees from them and refuses to certify anything from an empty derivation.`
@@ -271,11 +278,13 @@ function deriveHooksTrees() {
       );
     }
   }
+  // refusal: platform-reconciliation
   if (problems.length > 0) fail(problems.join('\n'));
 
   const trees = [...new Set(builds.flatMap((build) => treesWrittenBy(wrapper, build)))].sort();
   const missing = trees.filter((tree) => !existsSync(path.join(repo, tree)));
   if (missing.length > 0) {
+    // refusal: derived-tree-missing
     fail(
       `the hook builds write trees that do not exist in the working tree:\n` +
         missing.map((tree) => `  ${tree}`).join('\n') +
@@ -302,7 +311,7 @@ function treeDirt(trees) {
   });
   if (result.status !== 0) {
     process.stderr.write(`git status --porcelain failed:\n${result.stderr}\n`);
-    process.exit(1);
+    process.exit(1); // refusal: git-status-failed
   }
   /** @type {{ modified: string[], untracked: string[], deleted: string[] }} */
   const dirt = { modified: [], untracked: [], deleted: [] };
@@ -333,7 +342,7 @@ function requireClean(trees, rebuildAdvice) {
     `ERROR: the rebuild produced output that is not committed — the committed generated trees are stale:\n` +
       `${describeDirt(dirt)}\n${rebuildAdvice}\n`
   );
-  process.exit(1);
+  process.exit(1); // refusal: stale-trees
 }
 
 const suite = process.argv[2];
@@ -347,7 +356,7 @@ if (suite === 'hooks') {
 
 if (suite !== 'skills') {
   process.stderr.write(`Usage: node scripts/check-generated-tree-freshness.mjs <skills|hooks>\n`);
-  process.exit(1);
+  process.exit(1); // refusal: usage
 }
 
 const trees = loadRegistry().plugins.flatMap((plugin) => plugin.targets.map((target) => target.path));
@@ -369,7 +378,7 @@ if (build.status === 2) {
       `trees. Do NOT commit the current tree bytes — an edit committed into generated output is\n` +
       `silently overwritten by the next rebuild.\n`
   );
-  process.exit(1);
+  process.exit(1); // refusal: hand-edit-in-trees
 }
 if (build.status === 3) {
   process.stderr.write(
@@ -378,14 +387,14 @@ if (build.status === 3) {
       `(an unresolved CLI path or broken invocation is the usual cause). Never commit the trees on\n` +
       `the strength of this state.\n`
   );
-  process.exit(1);
+  process.exit(1); // refusal: no-verifiable-render
 }
 if (build.status !== 0) {
   process.stderr.write(
     `\nFRESHNESS GATE: the skills build refused or failed before freshness could be measured — ` +
       `resolve the diagnostic above.\n`
   );
-  process.exit(1);
+  process.exit(1); // refusal: build-refused
 }
 
 requireClean(
