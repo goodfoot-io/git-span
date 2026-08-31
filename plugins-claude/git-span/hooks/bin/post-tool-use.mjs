@@ -778,7 +778,7 @@ async function execute(hookFn) {
   await drive(transport, hookFn);
 }
 
-// src/common/agent-hooks-common.ts
+// packages/agent-hooks/src/common/agent-hooks-common.ts
 import { execFileSync } from "node:child_process";
 import * as fs2 from "node:fs";
 import * as os from "node:os";
@@ -1014,22 +1014,22 @@ function pruneStaleSessionsThrottled(layout, now = Date.now()) {
   pruneStaleSessions(layout, now);
 }
 
-// src/common/bash-attribution.ts
+// packages/agent-hooks/src/common/bash-attribution.ts
 import { createHash as createHash2 } from "node:crypto";
 import * as fs7 from "node:fs";
 import * as nodePath5 from "node:path";
 
-// src/common/span-surface.ts
+// packages/agent-hooks/src/common/span-surface.ts
 import { execFileSync as execFileSync2 } from "node:child_process";
 import * as fs4 from "node:fs";
 import * as nodePath3 from "node:path";
 
-// src/common/span-ignore.ts
+// packages/agent-hooks/src/common/span-ignore.ts
 import * as fs3 from "node:fs";
 import * as nodePath2 from "node:path";
 var HOOK_IGNORE_REL = nodePath2.join(".span", ".hookignore");
 
-// src/common/span-surface.ts
+// packages/agent-hooks/src/common/span-surface.ts
 function createDiskMemoStore(logger2, layout) {
   return {
     getSurfaced(sessionId) {
@@ -1075,16 +1075,16 @@ function resolveTouchScope(cwd, absPath) {
   return { repoRoot, repoRelPath };
 }
 
-// src/common/static-attribution.ts
+// packages/agent-hooks/src/common/static-attribution.ts
 import { execFileSync as execFileSync4 } from "node:child_process";
 import * as fs5 from "node:fs";
 import * as nodePath4 from "node:path";
 
-// src/common/parse-command.ts
+// packages/agent-hooks/src/common/parse-command.ts
 import { readFileSync as readFileSync4, statSync as statSync3 } from "node:fs";
 import { basename as basename2, isAbsolute as isAbsolute2, join as joinPath, resolve as resolvePath } from "node:path";
 
-// src/common/command-resolve.ts
+// packages/agent-hooks/src/common/command-resolve.ts
 import { execFileSync as execFileSync3 } from "node:child_process";
 import { readFileSync as readFileSync3, statSync as statSync2 } from "node:fs";
 function countFileLines(absolutePath) {
@@ -1113,7 +1113,7 @@ function countGitBlobLines(cwd, rev, path) {
   }
 }
 
-// src/common/shell-split-machines.ts
+// packages/agent-hooks/src/common/shell-split-machines.ts
 function createScan(cmd) {
   return {
     cmd,
@@ -1822,7 +1822,7 @@ function finishTokenizeScan(t) {
   return t.tokens;
 }
 
-// src/common/shell-split.ts
+// packages/agent-hooks/src/common/shell-split.ts
 function splitTopLevel(cmd) {
   const s = createScan(cmd);
   while (s.i < s.n) {
@@ -1917,7 +1917,7 @@ function hasUnquotedRedirect(simpleCmd) {
   return false;
 }
 
-// src/common/unified-diff.ts
+// packages/agent-hooks/src/common/unified-diff.ts
 var HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
 function stripPathComponents(p, n) {
   let s = p;
@@ -2033,7 +2033,7 @@ function parseUnifiedDiffRange(patchText, strip) {
   return sawBlock ? results : null;
 }
 
-// src/common/parse-command.ts
+// packages/agent-hooks/src/common/parse-command.ts
 function resolveSpec(spec, totalLines) {
   switch (spec.kind) {
     case "literal":
@@ -4001,7 +4001,7 @@ function parseCommandDetailed(command, opts = {}) {
   return results;
 }
 
-// src/common/static-attribution.ts
+// packages/agent-hooks/src/common/static-attribution.ts
 var DEFAULT_MAX_ATTRIBUTION_CANDIDATES = 32;
 var SHELL_EXPANSION = /(?:\$|`)/;
 var GLOB_META = /[*?[\]]/;
@@ -6467,13 +6467,13 @@ function filterTrackedEligibility(candidates, options) {
   return { eligible, dropped, errors, ignoreQueryCount, trackedQueryCount };
 }
 
-// src/common/touch-core.ts
+// packages/agent-hooks/src/common/touch-core.ts
 import { execFileSync as execFileSync5 } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs6 from "node:fs";
 import { basename as basename4, dirname as dirname5, join as join4 } from "node:path";
 
-// src/common/anchor-tree.ts
+// packages/agent-hooks/src/common/anchor-tree.ts
 function collapseByPath(rows) {
   const order = [];
   const byPath = /* @__PURE__ */ new Map();
@@ -6672,7 +6672,7 @@ function renderAnchorTree(anchors) {
   return renderNodes(forest, "");
 }
 
-// src/common/touch-core.ts
+// packages/agent-hooks/src/common/touch-core.ts
 function toNeedleLines(written) {
   if (written.length === 0) return [];
   const trimmed = written.endsWith("\n") ? written.slice(0, -1) : written;
@@ -7397,7 +7397,7 @@ function createDefaultTouchExecutors(timeoutMs = DEFAULT_TIMEOUT_MS) {
   return executors;
 }
 
-// src/common/bash-touch.ts
+// packages/agent-hooks/src/common/bash-touch.ts
 function bashSpanToTouch(span, sessionId, cwd, scopeAlreadyResolved = false) {
   if (!scopeAlreadyResolved && !resolveTouchScope(cwd, span.absolutePath)) return null;
   switch (span.operation) {
@@ -7752,7 +7752,7 @@ async function runBashTouches(matches, sessionId, cwd, toolResponse, executors, 
   return blocks;
 }
 
-// src/common/parse-response.ts
+// packages/agent-hooks/src/common/parse-response.ts
 import { existsSync as existsSync4, statSync as statSync5 } from "node:fs";
 import { dirname as dirname6, join as join5, resolve as resolvePath2, sep as sep2 } from "node:path";
 var MAX_RESPONSE_SPANS = 50;
@@ -8472,7 +8472,7 @@ function parseResponse(input) {
   return capSpans(spans);
 }
 
-// src/common/bash-attribution.ts
+// packages/agent-hooks/src/common/bash-attribution.ts
 var RESPONSE_TEXT_FIELDS = ["output", "stdout", "content", "text"];
 function finiteTimeout(record2) {
   const value = record2.timedOutAfterMs;
@@ -8854,12 +8854,12 @@ function postTrackedValue(absolutePath, value, cwd) {
   return filterTrackedEligibility([{ absolutePath, value }], { cwd }).eligible[0]?.value ?? null;
 }
 
-// src/common/update-check-env.ts
+// packages/agent-hooks/src/common/update-check-env.ts
 function disableUpdateCheck() {
   process.env.GIT_SPAN_DISABLE_UPDATE_CHECK = "1";
 }
 
-// src/claude/static-plan.ts
+// packages/agent-hooks/src/claude/static-plan.ts
 function narrowCommand(toolInput) {
   if (toolInput !== null && typeof toolInput === "object" && "command" in toolInput) {
     const command = toolInput.command;
@@ -8891,7 +8891,7 @@ function createHandler(layout = DEFAULT_SESSION_LAYOUT) {
 disableUpdateCheck();
 var static_plan_default = preToolUseHook({ matcher: "Bash", timeout: 1e4 }, createHandler());
 
-// src/claude/post-tool-use.ts
+// packages/agent-hooks/src/claude/post-tool-use.ts
 function positiveIntField(toolInput, field) {
   const raw = toolInput[field];
   return typeof raw === "number" && Number.isInteger(raw) && raw > 0 ? raw : void 0;
@@ -8971,5 +8971,5 @@ function createHandler2(executors = createDefaultTouchExecutors(), memoFactory =
 disableUpdateCheck();
 var post_tool_use_default = postToolUseHook({ matcher: "Read|Edit|Write|Bash", timeout: 1e4 }, createHandler2());
 
-// src/claude/post-tool-use-entry.ts
+// packages/agent-hooks/src/claude/post-tool-use-entry.ts
 execute(post_tool_use_default);

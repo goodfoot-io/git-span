@@ -651,7 +651,7 @@ async function execute(hookFn) {
   await drive(createAntigravityTransport(), hookFn);
 }
 
-// src/common/agent-hooks-common.ts
+// packages/agent-hooks/src/common/agent-hooks-common.ts
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -697,12 +697,12 @@ var DEFAULT_SESSION_LAYOUT = createSessionLayout(
 var THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1e3;
 var lastOpportunisticPruneAt = Number.NEGATIVE_INFINITY;
 
-// src/common/update-check-env.ts
+// packages/agent-hooks/src/common/update-check-env.ts
 function disableUpdateCheck() {
   process.env.GIT_SPAN_DISABLE_UPDATE_CHECK = "1";
 }
 
-// src/antigravity/stash.ts
+// packages/agent-hooks/src/antigravity/stash.ts
 import { randomBytes } from "node:crypto";
 import * as fs2 from "node:fs";
 import * as nodePath2 from "node:path";
@@ -724,7 +724,7 @@ function stashToolCall(layout, conversationId, stepIdx, toolCall) {
   );
 }
 
-// src/antigravity/tool-call-stash.ts
+// packages/agent-hooks/src/antigravity/tool-call-stash.ts
 function createHandler(layout = DEFAULT_SESSION_LAYOUT) {
   return async (input, ctx) => {
     try {
@@ -739,5 +739,5 @@ function createHandler(layout = DEFAULT_SESSION_LAYOUT) {
 disableUpdateCheck();
 var tool_call_stash_default = preToolUseHook({ matcher: "run_command", timeout: 1e4 }, createHandler());
 
-// src/antigravity/tool-call-stash-entry.ts
+// packages/agent-hooks/src/antigravity/tool-call-stash-entry.ts
 execute(tool_call_stash_default);

@@ -752,18 +752,18 @@ async function execute(hookFn) {
   await drive(createCodexTransport(), composed);
 }
 
-// src/common/advisor-core.ts
+// packages/agent-hooks/src/common/advisor-core.ts
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs4 from "node:fs";
 import * as nodePath4 from "node:path";
 import { promisify } from "node:util";
 
-// src/common/advisor-ignore.ts
+// packages/agent-hooks/src/common/advisor-ignore.ts
 import * as fs2 from "node:fs";
 import * as nodePath2 from "node:path";
 
-// src/common/span-ignore.ts
+// packages/agent-hooks/src/common/span-ignore.ts
 import * as fs from "node:fs";
 import * as nodePath from "node:path";
 var HOOK_IGNORE_REL = nodePath.join(".span", ".hookignore");
@@ -820,7 +820,7 @@ function compilePattern(pattern) {
   };
 }
 
-// src/common/advisor-ignore.ts
+// packages/agent-hooks/src/common/advisor-ignore.ts
 var ADVISOR_IGNORE_REL = nodePath2.join(".span", ".advisorignore");
 function parseAdvisorIgnore(content) {
   const rules = [];
@@ -843,7 +843,7 @@ function isAdvisorIgnored(rules, repoRelPath) {
   return rules.some((rule) => rule.matches(repoRelPath));
 }
 
-// src/common/agent-hooks-common.ts
+// packages/agent-hooks/src/common/agent-hooks-common.ts
 import { execFileSync } from "node:child_process";
 import * as fs3 from "node:fs";
 import * as os from "node:os";
@@ -1037,7 +1037,7 @@ function indentBlockBody(text) {
   return text.split("\n").map((line) => line.length > 0 ? `  ${line}` : line).join("\n");
 }
 
-// src/common/anchor-tree.ts
+// packages/agent-hooks/src/common/anchor-tree.ts
 function collapseByPath(rows) {
   const order = [];
   const byPath = /* @__PURE__ */ new Map();
@@ -1236,7 +1236,7 @@ function renderAnchorTree(anchors) {
   return renderNodes(forest, "");
 }
 
-// src/common/mechanical-change.ts
+// packages/agent-hooks/src/common/mechanical-change.ts
 function parseUnifiedDiff(text) {
   const files = [];
   let current = null;
@@ -1409,7 +1409,7 @@ function classifyMechanical(file) {
   return isMechanicalDiff(file);
 }
 
-// src/common/advisor-core.ts
+// packages/agent-hooks/src/common/advisor-core.ts
 var AdvisorScanError = class extends Error {
   detail;
   constructor(detail) {
@@ -2422,12 +2422,12 @@ function createDiskAdvisorMemoState(cwd) {
   };
 }
 
-// src/common/update-check-env.ts
+// packages/agent-hooks/src/common/update-check-env.ts
 function disableUpdateCheck() {
   process.env.GIT_SPAN_DISABLE_UPDATE_CHECK = "1";
 }
 
-// src/codex/advisor.ts
+// packages/agent-hooks/src/codex/advisor.ts
 var CODEX_ADVISOR_HARD_DENY = true;
 function extractShellCommand(toolInput) {
   if (toolInput === null || typeof toolInput !== "object" || !("command" in toolInput)) return null;
@@ -2505,5 +2505,5 @@ ${result.reason}`;
 disableUpdateCheck();
 var advisor_default = preToolUseHook({ matcher: "Bash|shell|exec|local_shell", timeout: 1e4 }, createHandler());
 
-// src/codex/advisor-entry.ts
+// packages/agent-hooks/src/codex/advisor-entry.ts
 execute(advisor_default);

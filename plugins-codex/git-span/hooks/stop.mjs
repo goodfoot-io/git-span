@@ -733,7 +733,7 @@ async function execute(hookFn) {
   await drive(createCodexTransport(), composed);
 }
 
-// src/common/agent-hooks-common.ts
+// packages/agent-hooks/src/common/agent-hooks-common.ts
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -794,12 +794,12 @@ function cleanupSessionState(layout, sessionId, now = Date.now()) {
   }
 }
 
-// src/common/update-check-env.ts
+// packages/agent-hooks/src/common/update-check-env.ts
 function disableUpdateCheck() {
   process.env.GIT_SPAN_DISABLE_UPDATE_CHECK = "1";
 }
 
-// src/codex/stop.ts
+// packages/agent-hooks/src/codex/stop.ts
 function createHandler(layout = DEFAULT_SESSION_LAYOUT) {
   return async (input, ctx) => {
     try {
@@ -814,5 +814,5 @@ function createHandler(layout = DEFAULT_SESSION_LAYOUT) {
 disableUpdateCheck();
 var stop_default = stopHook({ timeout: 1e4 }, createHandler());
 
-// src/codex/stop-entry.ts
+// packages/agent-hooks/src/codex/stop-entry.ts
 execute(stop_default);

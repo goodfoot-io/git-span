@@ -767,7 +767,7 @@ async function execute(hookFn) {
   await drive(transport, hookFn);
 }
 
-// src/common/agent-hooks-common.ts
+// packages/agent-hooks/src/common/agent-hooks-common.ts
 import { execFileSync } from "node:child_process";
 import * as fs2 from "node:fs";
 import * as os from "node:os";
@@ -828,12 +828,12 @@ function cleanupSessionState(layout, sessionId, now = Date.now()) {
   }
 }
 
-// src/common/update-check-env.ts
+// packages/agent-hooks/src/common/update-check-env.ts
 function disableUpdateCheck() {
   process.env.GIT_SPAN_DISABLE_UPDATE_CHECK = "1";
 }
 
-// src/claude/session-end.ts
+// packages/agent-hooks/src/claude/session-end.ts
 var createHandler = (layout = DEFAULT_SESSION_LAYOUT) => async (input, ctx) => {
   try {
     cleanupSessionState(layout, input.session_id);
@@ -846,5 +846,5 @@ var createHandler = (layout = DEFAULT_SESSION_LAYOUT) => async (input, ctx) => {
 disableUpdateCheck();
 var session_end_default = sessionEndHook({ timeout: 1e4 }, createHandler());
 
-// src/claude/session-end-entry.ts
+// packages/agent-hooks/src/claude/session-end-entry.ts
 execute(session_end_default);

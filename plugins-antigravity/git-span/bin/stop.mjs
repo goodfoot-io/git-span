@@ -634,7 +634,7 @@ async function execute(hookFn) {
   await drive(createAntigravityTransport(), hookFn);
 }
 
-// src/common/agent-hooks-common.ts
+// packages/agent-hooks/src/common/agent-hooks-common.ts
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -681,12 +681,12 @@ var THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1e3;
 var SESSION_TRASH_MARKER = ".trash-session-";
 var lastOpportunisticPruneAt = Number.NEGATIVE_INFINITY;
 
-// src/common/update-check-env.ts
+// packages/agent-hooks/src/common/update-check-env.ts
 function disableUpdateCheck() {
   process.env.GIT_SPAN_DISABLE_UPDATE_CHECK = "1";
 }
 
-// src/antigravity/stash.ts
+// packages/agent-hooks/src/antigravity/stash.ts
 import { randomBytes } from "node:crypto";
 import * as fs2 from "node:fs";
 import * as nodePath2 from "node:path";
@@ -717,7 +717,7 @@ function cleanupCallScopedState(layout, conversationId, now = Date.now()) {
   }
 }
 
-// src/antigravity/stop.ts
+// packages/agent-hooks/src/antigravity/stop.ts
 function createHandler(layout = DEFAULT_SESSION_LAYOUT) {
   return async (input, ctx) => {
     try {
@@ -732,5 +732,5 @@ function createHandler(layout = DEFAULT_SESSION_LAYOUT) {
 disableUpdateCheck();
 var stop_default = stopHook({ timeout: 1e4 }, createHandler());
 
-// src/antigravity/stop-entry.ts
+// packages/agent-hooks/src/antigravity/stop-entry.ts
 execute(stop_default);

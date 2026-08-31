@@ -2,7 +2,7 @@
   "name": "git-span-extension",
   "displayName": "Git Span",
   "description": "Exposes the Git Span CLI in VS Code.",
-  "version": "1.1.20",
+  "version": "1.1.21",
   "publisher": "goodfoot",
   "type": "module",
   "engines": {

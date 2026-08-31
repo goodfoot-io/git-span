@@ -1,5 +1,5 @@
 #!/usr/bin/env -S node --enable-source-maps
-// src/codex/post-tool-use.ts
+// packages/agent-hooks/src/codex/post-tool-use.ts
 import { resolve as resolvePath3 } from "node:path";
 
 // node_modules/@goodfoot/agent-hooks/dist/core/logger.js
@@ -775,7 +775,7 @@ async function execute(hookFn) {
   await drive(createCodexTransport(), composed);
 }
 
-// src/common/agent-hooks-common.ts
+// packages/agent-hooks/src/common/agent-hooks-common.ts
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -1064,7 +1064,7 @@ function indentBlockBody(text) {
   return text.split("\n").map((line) => line.length > 0 ? `  ${line}` : line).join("\n");
 }
 
-// src/codex/apply-patch.ts
+// packages/agent-hooks/src/codex/apply-patch.ts
 import * as fs2 from "node:fs";
 var END_PATCH_MARKER = "*** End Patch";
 var ADD_FILE_MARKER = "*** Add File: ";
@@ -1305,16 +1305,16 @@ function parseApplyPatch(command, readPreEditFile = defaultReadPreEditFile) {
   return anchors;
 }
 
-// src/common/static-attribution.ts
+// packages/agent-hooks/src/common/static-attribution.ts
 import { execFileSync as execFileSync3 } from "node:child_process";
 import * as fs3 from "node:fs";
 import * as nodePath2 from "node:path";
 
-// src/common/parse-command.ts
+// packages/agent-hooks/src/common/parse-command.ts
 import { readFileSync as readFileSync3, statSync as statSync3 } from "node:fs";
 import { basename as basename2, isAbsolute as isAbsolute2, join as joinPath, resolve as resolvePath } from "node:path";
 
-// src/common/command-resolve.ts
+// packages/agent-hooks/src/common/command-resolve.ts
 import { execFileSync as execFileSync2 } from "node:child_process";
 import { readFileSync as readFileSync2, statSync as statSync2 } from "node:fs";
 function countFileLines(absolutePath) {
@@ -1343,7 +1343,7 @@ function countGitBlobLines(cwd, rev, path) {
   }
 }
 
-// src/common/shell-split-machines.ts
+// packages/agent-hooks/src/common/shell-split-machines.ts
 function createScan(cmd) {
   return {
     cmd,
@@ -2052,7 +2052,7 @@ function finishTokenizeScan(t) {
   return t.tokens;
 }
 
-// src/common/shell-split.ts
+// packages/agent-hooks/src/common/shell-split.ts
 function splitTopLevel(cmd) {
   const s = createScan(cmd);
   while (s.i < s.n) {
@@ -2147,7 +2147,7 @@ function hasUnquotedRedirect(simpleCmd) {
   return false;
 }
 
-// src/common/unified-diff.ts
+// packages/agent-hooks/src/common/unified-diff.ts
 var HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
 function stripPathComponents(p, n) {
   let s = p;
@@ -2263,7 +2263,7 @@ function parseUnifiedDiffRange(patchText, strip) {
   return sawBlock ? results : null;
 }
 
-// src/common/parse-command.ts
+// packages/agent-hooks/src/common/parse-command.ts
 function resolveSpec(spec, totalLines) {
   switch (spec.kind) {
     case "literal":
@@ -4231,7 +4231,7 @@ function parseCommandDetailed(command, opts = {}) {
   return results;
 }
 
-// src/common/static-attribution.ts
+// packages/agent-hooks/src/common/static-attribution.ts
 var DEFAULT_MAX_ATTRIBUTION_CANDIDATES = 32;
 var SHELL_EXPANSION = /(?:\$|`)/;
 var GLOB_META = /[*?[\]]/;
@@ -6697,13 +6697,13 @@ function filterTrackedEligibility(candidates, options) {
   return { eligible, dropped, errors, ignoreQueryCount, trackedQueryCount };
 }
 
-// src/common/touch-core.ts
+// packages/agent-hooks/src/common/touch-core.ts
 import { execFileSync as execFileSync4 } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs4 from "node:fs";
 import { basename as basename4, dirname as dirname4, join as join3 } from "node:path";
 
-// src/common/anchor-tree.ts
+// packages/agent-hooks/src/common/anchor-tree.ts
 function collapseByPath(rows) {
   const order = [];
   const byPath = /* @__PURE__ */ new Map();
@@ -6902,7 +6902,7 @@ function renderAnchorTree(anchors) {
   return renderNodes(forest, "");
 }
 
-// src/common/touch-core.ts
+// packages/agent-hooks/src/common/touch-core.ts
 function toNeedleLines(written) {
   if (written.length === 0) return [];
   const trimmed = written.endsWith("\n") ? written.slice(0, -1) : written;
@@ -7617,7 +7617,7 @@ function createDefaultTouchExecutors(timeoutMs = DEFAULT_TIMEOUT_MS) {
   return executors;
 }
 
-// src/common/apply-patch-touch.ts
+// packages/agent-hooks/src/common/apply-patch-touch.ts
 var noRangeRecovery = () => null;
 async function runApplyPatchTouches(patchText, cwd, sessionId, planned, executors, memo, invocationId, logger2) {
   const plannedPaths = new Set(planned.map(({ absolutePath }) => absolutePath));
@@ -7658,17 +7658,17 @@ async function runApplyPatchTouches(patchText, cwd, sessionId, planned, executor
   return batch.outputs.flatMap((output) => output.additionalContext === null ? [] : [output.additionalContext]);
 }
 
-// src/common/bash-attribution.ts
+// packages/agent-hooks/src/common/bash-attribution.ts
 import { createHash as createHash2 } from "node:crypto";
 import * as fs7 from "node:fs";
 import * as nodePath5 from "node:path";
 
-// src/common/span-surface.ts
+// packages/agent-hooks/src/common/span-surface.ts
 import { execFileSync as execFileSync5 } from "node:child_process";
 import * as fs6 from "node:fs";
 import * as nodePath4 from "node:path";
 
-// src/common/span-ignore.ts
+// packages/agent-hooks/src/common/span-ignore.ts
 import * as fs5 from "node:fs";
 import * as nodePath3 from "node:path";
 var HOOK_IGNORE_REL = nodePath3.join(".span", ".hookignore");
@@ -7725,7 +7725,7 @@ function compilePattern(pattern) {
   };
 }
 
-// src/common/span-surface.ts
+// packages/agent-hooks/src/common/span-surface.ts
 function createDiskMemoStore(logger2, layout) {
   return {
     getSurfaced(sessionId) {
@@ -7771,7 +7771,7 @@ function resolveTouchScope(cwd, absPath) {
   return { repoRoot, repoRelPath };
 }
 
-// src/common/bash-touch.ts
+// packages/agent-hooks/src/common/bash-touch.ts
 function bashSpanToTouch(span, sessionId, cwd, scopeAlreadyResolved = false) {
   if (!scopeAlreadyResolved && !resolveTouchScope(cwd, span.absolutePath)) return null;
   switch (span.operation) {
@@ -8126,7 +8126,7 @@ async function runBashTouches(matches, sessionId, cwd, toolResponse, executors, 
   return blocks;
 }
 
-// src/common/parse-response.ts
+// packages/agent-hooks/src/common/parse-response.ts
 import { existsSync as existsSync4, statSync as statSync5 } from "node:fs";
 import { dirname as dirname6, join as join5, resolve as resolvePath2, sep as sep2 } from "node:path";
 var MAX_RESPONSE_SPANS = 50;
@@ -8846,7 +8846,7 @@ function parseResponse(input) {
   return capSpans(spans);
 }
 
-// src/common/bash-attribution.ts
+// packages/agent-hooks/src/common/bash-attribution.ts
 var RESPONSE_TEXT_FIELDS = ["output", "stdout", "content", "text"];
 function finiteTimeout(record2) {
   const value = record2.timedOutAfterMs;
@@ -9120,19 +9120,19 @@ async function runLayeredBashTouches(command, cwd, sessionId, toolUseId, toolRes
   return blocks;
 }
 
-// src/common/update-check-env.ts
+// packages/agent-hooks/src/common/update-check-env.ts
 function disableUpdateCheck() {
   process.env.GIT_SPAN_DISABLE_UPDATE_CHECK = "1";
 }
 
-// src/common/advisor-core.ts
+// packages/agent-hooks/src/common/advisor-core.ts
 import { execFile } from "node:child_process";
 import { createHash as createHash3 } from "node:crypto";
 import * as fs9 from "node:fs";
 import * as nodePath7 from "node:path";
 import { promisify } from "node:util";
 
-// src/common/advisor-ignore.ts
+// packages/agent-hooks/src/common/advisor-ignore.ts
 import * as fs8 from "node:fs";
 import * as nodePath6 from "node:path";
 var ADVISOR_IGNORE_REL = nodePath6.join(".span", ".advisorignore");
@@ -9157,7 +9157,7 @@ function isAdvisorIgnored(rules, repoRelPath) {
   return rules.some((rule) => rule.matches(repoRelPath));
 }
 
-// src/common/mechanical-change.ts
+// packages/agent-hooks/src/common/mechanical-change.ts
 function parseUnifiedDiff(text) {
   const files = [];
   let current = null;
@@ -9330,7 +9330,7 @@ function classifyMechanical(file) {
   return isMechanicalDiff(file);
 }
 
-// src/common/advisor-core.ts
+// packages/agent-hooks/src/common/advisor-core.ts
 var AdvisorScanError = class extends Error {
   detail;
   constructor(detail) {
@@ -10343,7 +10343,7 @@ function createDiskAdvisorMemoState(cwd) {
   };
 }
 
-// src/codex/advisor.ts
+// packages/agent-hooks/src/codex/advisor.ts
 var CODEX_ADVISOR_HARD_DENY = true;
 function extractShellCommand(toolInput) {
   if (toolInput === null || typeof toolInput !== "object" || !("command" in toolInput)) return null;
@@ -10421,7 +10421,7 @@ ${result.reason}`;
 disableUpdateCheck();
 var advisor_default = preToolUseHook({ matcher: "Bash|shell|exec|local_shell", timeout: 1e4 }, createHandler());
 
-// src/codex/post-tool-use.ts
+// packages/agent-hooks/src/codex/post-tool-use.ts
 var APPLY_PATCH_SUCCESS_PREFIX = "Success. Updated the following files:";
 function narrowApplyPatchCommand(toolInput) {
   if (toolInput !== null && typeof toolInput === "object" && "command" in toolInput) {
@@ -10587,5 +10587,5 @@ var post_tool_use_default = postToolUseHook(
   createHandler2()
 );
 
-// src/codex/post-tool-use-entry.ts
+// packages/agent-hooks/src/codex/post-tool-use-entry.ts
 execute(post_tool_use_default);

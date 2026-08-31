@@ -775,18 +775,18 @@ async function execute(hookFn) {
   await drive(transport, hookFn);
 }
 
-// src/common/advisor-core.ts
+// packages/agent-hooks/src/common/advisor-core.ts
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs5 from "node:fs";
 import * as nodePath4 from "node:path";
 import { promisify } from "node:util";
 
-// src/common/advisor-ignore.ts
+// packages/agent-hooks/src/common/advisor-ignore.ts
 import * as fs3 from "node:fs";
 import * as nodePath2 from "node:path";
 
-// src/common/span-ignore.ts
+// packages/agent-hooks/src/common/span-ignore.ts
 import * as fs2 from "node:fs";
 import * as nodePath from "node:path";
 var HOOK_IGNORE_REL = nodePath.join(".span", ".hookignore");
@@ -843,7 +843,7 @@ function compilePattern(pattern) {
   };
 }
 
-// src/common/advisor-ignore.ts
+// packages/agent-hooks/src/common/advisor-ignore.ts
 var ADVISOR_IGNORE_REL = nodePath2.join(".span", ".advisorignore");
 function parseAdvisorIgnore(content) {
   const rules = [];
@@ -866,7 +866,7 @@ function isAdvisorIgnored(rules, repoRelPath) {
   return rules.some((rule) => rule.matches(repoRelPath));
 }
 
-// src/common/agent-hooks-common.ts
+// packages/agent-hooks/src/common/agent-hooks-common.ts
 import { execFileSync } from "node:child_process";
 import * as fs4 from "node:fs";
 import * as os from "node:os";
@@ -1129,7 +1129,7 @@ function indentBlockBody(text) {
   return text.split("\n").map((line) => line.length > 0 ? `  ${line}` : line).join("\n");
 }
 
-// src/common/anchor-tree.ts
+// packages/agent-hooks/src/common/anchor-tree.ts
 function collapseByPath(rows) {
   const order = [];
   const byPath = /* @__PURE__ */ new Map();
@@ -1328,7 +1328,7 @@ function renderAnchorTree(anchors) {
   return renderNodes(forest, "");
 }
 
-// src/common/mechanical-change.ts
+// packages/agent-hooks/src/common/mechanical-change.ts
 function parseUnifiedDiff(text) {
   const files = [];
   let current = null;
@@ -1501,7 +1501,7 @@ function classifyMechanical(file) {
   return isMechanicalDiff(file);
 }
 
-// src/common/advisor-core.ts
+// packages/agent-hooks/src/common/advisor-core.ts
 var AdvisorScanError = class extends Error {
   detail;
   constructor(detail) {
@@ -2508,31 +2508,31 @@ function createDiskAdvisorMemoState(cwd) {
   };
 }
 
-// src/common/update-check-env.ts
+// packages/agent-hooks/src/common/update-check-env.ts
 function disableUpdateCheck() {
   process.env.GIT_SPAN_DISABLE_UPDATE_CHECK = "1";
 }
 
-// src/common/bash-attribution.ts
+// packages/agent-hooks/src/common/bash-attribution.ts
 import { createHash as createHash3 } from "node:crypto";
 import * as fs9 from "node:fs";
 import * as nodePath7 from "node:path";
 
-// src/common/span-surface.ts
+// packages/agent-hooks/src/common/span-surface.ts
 import { execFileSync as execFileSync2 } from "node:child_process";
 import * as fs6 from "node:fs";
 import * as nodePath5 from "node:path";
 
-// src/common/static-attribution.ts
+// packages/agent-hooks/src/common/static-attribution.ts
 import { execFileSync as execFileSync4 } from "node:child_process";
 import * as fs7 from "node:fs";
 import * as nodePath6 from "node:path";
 
-// src/common/parse-command.ts
+// packages/agent-hooks/src/common/parse-command.ts
 import { readFileSync as readFileSync5, statSync as statSync3 } from "node:fs";
 import { basename as basename2, isAbsolute as isAbsolute2, join as joinPath, resolve as resolvePath } from "node:path";
 
-// src/common/command-resolve.ts
+// packages/agent-hooks/src/common/command-resolve.ts
 import { execFileSync as execFileSync3 } from "node:child_process";
 import { readFileSync as readFileSync4, statSync as statSync2 } from "node:fs";
 function countFileLines(absolutePath) {
@@ -2561,7 +2561,7 @@ function countGitBlobLines(cwd, rev, path) {
   }
 }
 
-// src/common/shell-split-machines.ts
+// packages/agent-hooks/src/common/shell-split-machines.ts
 function createScan(cmd) {
   return {
     cmd,
@@ -3270,7 +3270,7 @@ function finishTokenizeScan(t) {
   return t.tokens;
 }
 
-// src/common/shell-split.ts
+// packages/agent-hooks/src/common/shell-split.ts
 function splitTopLevel(cmd) {
   const s = createScan(cmd);
   while (s.i < s.n) {
@@ -3332,7 +3332,7 @@ function argvOf(simpleCmd) {
   return argv;
 }
 
-// src/common/unified-diff.ts
+// packages/agent-hooks/src/common/unified-diff.ts
 var HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
 function stripPathComponents(p, n) {
   let s = p;
@@ -3448,7 +3448,7 @@ function parseUnifiedDiffRange(patchText, strip) {
   return sawBlock ? results : null;
 }
 
-// src/common/parse-command.ts
+// packages/agent-hooks/src/common/parse-command.ts
 function resolveSpec(spec, totalLines) {
   switch (spec.kind) {
     case "literal":
@@ -5416,7 +5416,7 @@ function parseCommandDetailed(command, opts = {}) {
   return results;
 }
 
-// src/common/static-attribution.ts
+// packages/agent-hooks/src/common/static-attribution.ts
 var DEFAULT_MAX_ATTRIBUTION_CANDIDATES = 32;
 var SHELL_EXPANSION = /(?:\$|`)/;
 var GLOB_META = /[*?[\]]/;
@@ -7882,18 +7882,18 @@ function filterTrackedEligibility(candidates, options) {
   return { eligible, dropped, errors, ignoreQueryCount, trackedQueryCount };
 }
 
-// src/common/touch-core.ts
+// packages/agent-hooks/src/common/touch-core.ts
 import { execFileSync as execFileSync5 } from "node:child_process";
 import { createHash as createHash2 } from "node:crypto";
 import * as fs8 from "node:fs";
 import { basename as basename4, dirname as dirname5, join as join6 } from "node:path";
 var MAX_CONTEXT_JSON_BYTES = 16 * 1024 * 1024;
 
-// src/common/parse-response.ts
+// packages/agent-hooks/src/common/parse-response.ts
 import { existsSync as existsSync5, statSync as statSync5 } from "node:fs";
 import { dirname as dirname6, join as join7, resolve as resolvePath2, sep as sep2 } from "node:path";
 
-// src/common/bash-attribution.ts
+// packages/agent-hooks/src/common/bash-attribution.ts
 function createDefaultPlannedTouchStore(layout) {
   return createPlannedTouchStore(layout, DEFAULT_PLANNED_TOUCH_BUDGETS);
 }
@@ -8022,7 +8022,7 @@ function planBashTouches(command, cwd, sessionId, toolUseId, logger2, store) {
   });
 }
 
-// src/claude/static-plan.ts
+// packages/agent-hooks/src/claude/static-plan.ts
 function narrowCommand(toolInput) {
   if (toolInput !== null && typeof toolInput === "object" && "command" in toolInput) {
     const command = toolInput.command;
@@ -8054,7 +8054,7 @@ function createHandler(layout = DEFAULT_SESSION_LAYOUT) {
 disableUpdateCheck();
 var static_plan_default = preToolUseHook({ matcher: "Bash", timeout: 1e4 }, createHandler());
 
-// src/claude/advisor.ts
+// packages/agent-hooks/src/claude/advisor.ts
 function createHandler2(git = createDefaultGitExecutor(), executors = createDefaultAdvisorExecutors(), memoFactory = createDiskAdvisorMemoState) {
   return async (input, ctx) => {
     try {
@@ -8113,5 +8113,5 @@ function createHandler2(git = createDefaultGitExecutor(), executors = createDefa
 disableUpdateCheck();
 var advisor_default = preToolUseHook({ matcher: "Bash", timeout: 1e4 }, createHandler2());
 
-// src/claude/advisor-entry.ts
+// packages/agent-hooks/src/claude/advisor-entry.ts
 execute(advisor_default);

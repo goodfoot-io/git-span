@@ -634,7 +634,7 @@ async function execute(hookFn) {
   await drive(createAntigravityTransport(), hookFn);
 }
 
-// src/common/context-warmup.ts
+// packages/agent-hooks/src/common/context-warmup.ts
 import { spawn } from "node:child_process";
 function startContextWarmup(cwd, onError, spawnProcess = spawn) {
   const child = spawnProcess("git", ["span", "context", "--warm"], {
@@ -651,12 +651,12 @@ function startContextWarmup(cwd, onError, spawnProcess = spawn) {
   child.unref();
 }
 
-// src/common/update-check-env.ts
+// packages/agent-hooks/src/common/update-check-env.ts
 function disableUpdateCheck() {
   process.env.GIT_SPAN_DISABLE_UPDATE_CHECK = "1";
 }
 
-// src/antigravity/pre-invocation.ts
+// packages/agent-hooks/src/antigravity/pre-invocation.ts
 function createHandler(spawner) {
   return async (input, ctx) => {
     try {
@@ -679,5 +679,5 @@ function createHandler(spawner) {
 disableUpdateCheck();
 var pre_invocation_default = preInvocationHook({ timeout: 1e4 }, createHandler());
 
-// src/antigravity/pre-invocation-entry.ts
+// packages/agent-hooks/src/antigravity/pre-invocation-entry.ts
 execute(pre_invocation_default);

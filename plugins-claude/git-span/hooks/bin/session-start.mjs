@@ -767,7 +767,7 @@ async function execute(hookFn) {
   await drive(transport, hookFn);
 }
 
-// src/common/context-warmup.ts
+// packages/agent-hooks/src/common/context-warmup.ts
 import { spawn } from "node:child_process";
 function startContextWarmup(cwd, onError, spawnProcess = spawn) {
   const child = spawnProcess("git", ["span", "context", "--warm"], {
@@ -784,12 +784,12 @@ function startContextWarmup(cwd, onError, spawnProcess = spawn) {
   child.unref();
 }
 
-// src/common/update-check-env.ts
+// packages/agent-hooks/src/common/update-check-env.ts
 function disableUpdateCheck() {
   process.env.GIT_SPAN_DISABLE_UPDATE_CHECK = "1";
 }
 
-// src/claude/session-start.ts
+// packages/agent-hooks/src/claude/session-start.ts
 function createHandler(spawnProcess) {
   return async (input, ctx) => {
     try {
@@ -807,5 +807,5 @@ function createHandler(spawnProcess) {
 disableUpdateCheck();
 var session_start_default = sessionStartHook({ timeout: 1e3 }, createHandler());
 
-// src/claude/session-start-entry.ts
+// packages/agent-hooks/src/claude/session-start-entry.ts
 execute(session_start_default);
