@@ -83,7 +83,10 @@ claude plugin list
 - **Verify**: `claude plugin list`, or the `version` field in
   `~/.claude/plugins/installed_plugins.json`. The presence of a newer directory
   under `~/.claude/plugins/cache/<marketplace>/<plugin>/` proves only that it was
-  fetched, never that it is the active install.
+  fetched, never that it is the active install. The same file's `gitCommitSha`
+  pins the exact commit the git-URL route fetched — check it when verifying a fix
+  that shipped without a version bump, where the version field alone can't
+  distinguish old from new.
 
 ### Codex
 
@@ -112,6 +115,10 @@ opencode debug skill                 # verification
 
 - **Scope**: `opencode plugin` writes `<cwd>/.opencode/opencode.json`, not the
   global config — verify from the directory you ran it in.
+- **The npm-package route only ever proves the last published version.** If the
+  version under test hasn't been published yet, this route can't reflect it —
+  report it as not-applicable-to-this-version, not as a failure, and exercise the
+  local-directory route instead for today's bytes.
 - **Installer rejects the package**: `opencode plugin` requires a plugin entrypoint
   — `exports["./tui"]`, `exports["./server"]`, or a top-level `main`. A package
   exposing only `exports["."]` fails with "No plugin targets found" and installs
@@ -150,6 +157,10 @@ agy plugin list
   login did not land, and login needs a controlling terminal, so it cannot be
   scripted over SSH. Confirm with a throwaway `agy -p "Reply with exactly: PONG"`
   first, and install on whichever host holds the session.
+- **No isolation means no revert**: with the user's consent to install on a real
+  host, the plugin stays live in `~/.gemini/config/plugins/<name>/` after the
+  round — there is no isolated copy to discard instead. Expected, not a cleanup
+  step you owe.
 
 ## Functional check
 

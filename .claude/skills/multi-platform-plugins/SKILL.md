@@ -89,8 +89,10 @@ release.
 Rebuilding proves the trees are fresh; only installing proves a user can get them.
 Run the round in `references/smoke-test.md` on [SMOKE_HOST].
 
-**STOP** — Installing mutates real agent state on the host. Use a disposable
-container unless the user accepts changes to their own agent configuration.
+**STOP** — Installing mutates real agent state on the host. Most platforms isolate
+per-tool via an env var even without a disposable container (see the isolation
+table in `references/smoke-test.md`); Antigravity has no isolation option at
+all — get explicit user consent before installing it on a real host.
 
 Verify per platform that the *installed* version matches what was published, not
 merely that a command exited zero — several hosts report success while leaving a

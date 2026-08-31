@@ -99,3 +99,22 @@ that no compiler enforces. When editing a hook source or template, the matching
 generated artifact must be rebuilt in the same change. Repos using a span or
 coupling tracker will surface these pairs — heed them; the coupling is real even
 where the tool is absent.
+
+A coupling gate can trigger at push time over every commit ahead of the remote,
+not just your own diff, including files from commits you didn't write. Read each
+commit's own message/diff before writing a coupling's rationale — a
+plausible-sounding but unverified reason is worse than leaving the file
+undocumented. Generated/build output is normally already exempt; check the
+tracker's own exemption rule before assuming a rendered file needs one.
+
+## Diagnosing a reproducibility-test failure
+
+A byte-stability or module-comment test failing after an unrelated change usually
+implicates the bundler, not your source — esbuild-class tools write `//` module
+comments and sourcemap paths relative to `process.cwd()`, which drifts with
+directory depth and symlinks. Before patching source or weakening the test:
+confirm the failure predates your change; check git history for a deleted local
+normalizer (removing one on the assumption an upstream fix landed is a common
+regression); check whether a newer bundler-dependency version already fixes it.
+If not, file an upstream bug report with a minimal repro instead of
+reintroducing a workaround silently.
