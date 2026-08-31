@@ -1,4 +1,4 @@
 packages/agent-hooks/src/common/span-surface.ts#L200-L203 rk64:c4c3d8f27377ba1c
-packages/agent-hooks/src/common/static-attribution.ts#L3394-L3497 rk64:e6b574160cc5ecab
+packages/agent-hooks/src/common/static-attribution.ts#L3360-L3463 rk64:e6b574160cc5ecab
 
 filterTrackedEligibility drops every candidate inside the resolved span root before any command, response, structured, or apply-patch producer reaches the touch hook, while resolveTouchScope retains the same fail-closed boundary inside touch execution.

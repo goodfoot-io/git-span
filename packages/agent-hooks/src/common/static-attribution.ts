@@ -2929,40 +2929,6 @@ export function parseCommandLayered(command: string, options: LayeredParseOption
   return parseShellFallback(command, options, maxCandidates);
 }
 
-/** Aggregate counters emitted once per tool invocation and never sent to the model. */
-export interface AttributionDiagnostics {
-  readonly resolvedReads: number;
-  readonly resolvedWrites: number;
-  readonly unresolvedByIdiom: Readonly<Record<string, number>>;
-  readonly unresolvedByReason: Readonly<Partial<Record<UnresolvedReasonCode, number>>>;
-  readonly scopeDrops: number;
-  readonly trackedDrops: number;
-  readonly executionGateDrops: number;
-  readonly parserLatencyMs: number;
-  readonly touchLatencyMs: number;
-  readonly ignoreQueryCount: number;
-  readonly trackedQueryCount: number;
-  readonly dependencyContextSurfaced: boolean;
-}
-
-/** Create the zero-valued diagnostic accumulator for one invocation. */
-export function createAttributionDiagnostics(): AttributionDiagnostics {
-  return {
-    resolvedReads: 0,
-    resolvedWrites: 0,
-    unresolvedByIdiom: {},
-    unresolvedByReason: {},
-    scopeDrops: 0,
-    trackedDrops: 0,
-    executionGateDrops: 0,
-    parserLatencyMs: 0,
-    touchLatencyMs: 0,
-    ignoreQueryCount: 0,
-    trackedQueryCount: 0,
-    dependencyContextSurfaced: false
-  };
-}
-
 /** Bounded evidence sufficient to verify a planned range without retaining a file body. */
 export type PreStateEvidence =
   | {

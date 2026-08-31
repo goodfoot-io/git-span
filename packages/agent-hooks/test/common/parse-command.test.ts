@@ -34,11 +34,7 @@ import {
   type SpanMatch
 } from '../../src/common/parse-command.js';
 import { splitTopLevel } from '../../src/common/shell-split.js';
-import {
-  createAttributionDiagnostics,
-  parseCommandLayered,
-  UNRESOLVED_REASON_CODES
-} from '../../src/common/static-attribution.js';
+import { parseCommandLayered, UNRESOLVED_REASON_CODES } from '../../src/common/static-attribution.js';
 import { makeTempRepo } from '../helpers.js';
 import { STATIC_ATTRIBUTION_CORPUS } from './fixtures/static-attribution-corpus.js';
 
@@ -2085,23 +2081,6 @@ NODE`;
     expect(new Set(UNRESOLVED_REASON_CODES).size).toBe(UNRESOLVED_REASON_CODES.length);
     expect(UNRESOLVED_REASON_CODES).toContain('unsupported-dataflow');
     expect(UNRESOLVED_REASON_CODES).toContain('untracked-path');
-  });
-
-  it('starts each per-call diagnostic with explicit zero values', () => {
-    expect(createAttributionDiagnostics()).toEqual({
-      resolvedReads: 0,
-      resolvedWrites: 0,
-      unresolvedByIdiom: {},
-      unresolvedByReason: {},
-      scopeDrops: 0,
-      trackedDrops: 0,
-      executionGateDrops: 0,
-      parserLatencyMs: 0,
-      touchLatencyMs: 0,
-      ignoreQueryCount: 0,
-      trackedQueryCount: 0,
-      dependencyContextSurfaced: false
-    });
   });
 });
 
