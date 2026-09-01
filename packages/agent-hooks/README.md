@@ -1,32 +1,62 @@
-# agent-hooks
+# Git Span agent hooks
 
-This project contains hooks for [Claude Code](https://docs.anthropic.com/en/docs/claude-code/hooks) and OpenAI Codex, built with the unified `@goodfoot/agent-hooks` package. The Claude adapter imports `@goodfoot/agent-hooks/claude-code`, while the Codex adapter imports `@goodfoot/agent-hooks/codex`; both keep `.span/` spans reconciled in-session, without a background pipeline or a separate commit. Two harness-agnostic cores in `src/common/` drive both harnesses' adapters:
+This package builds the in-session Git Span integrations for Claude Code, OpenAI Codex, OpenCode, and Antigravity. All four adapters share the same attribution and advisor cores while translating each host's tool events, response channels, and lifecycle into that common behavior.
 
-- **`touch-core.ts`** — the `PostToolUse` touch hook (Claude matcher `Read|Edit|Write|Bash`, Codex matcher `apply_patch|exec_command|exec|Bash`). Fires synchronously after each file read/edit/write, re-anchors pure positional drift against the edit's real post-edit content silently, and — only when genuine semantic drift survives that heal — injects a bounded `<git-span>` context block, deduplicated per span-per-status-per-session. Bash envelopes flow through the layered [static attribution pipeline](./src/common/static-attribution.ts): deterministic shell operations, bounded literal loops and substitutions, and proven literal Python/Node edit dataflows become operation-kind spans (read, create-overwrite, append, modify, rename-copy, truncate, delete). One batched eligibility query retains only tracked, in-repository paths; the shared [driver](./src/common/bash-touch.ts) then applies post-state evidence and `&&`/`||` execution gates. Deletes, pre-edit ranges, and pre-command EOF may use a bounded content-minimal pre-tool plan, consumed once after the command. Dynamic paths, globs, command substitutions, history operations, generators, unsupported dataflows, and over-budget candidate sets fail closed with logger-only reason codes: no inferred write and no whole-file fallback.
-- **`advisor-core.ts`** — the `PreToolUse` commit advisor (Claude matcher `Bash`, Codex matcher `Bash|shell|exec|local_shell`). Fires before `git commit`/`git push`, resolves the actual changeset (staged files, plus tracked-modified files under `-a`/`-am`), and holds the command when real span debt remains: semantic drift or an uncovered write outside any span, each held once per distinct debt state, so an identical retry proceeds once the report has been shown. It reports rather than enforces — a hold exists only so the report is read once, so it stops that one invocation and never the commit itself: an identical retry proceeds, as does a `git commit`/`git push` whose exact debt state a prior `git status` already surfaced in full. `.span/**` writes are excluded so span repairs riding the same commit never self-trigger the advisor. A `git span drift` scan failure holds nothing; it warns and lets the command proceed, the same fail-open behavior the environmental category already uses — the failed command's own stderr surfaces inside the advisory as a delimited `<git-span-error>` block, and resolving the underlying read/scan error is what restores verification.
+End users should install the published plugin for their coding agent rather than this workspace package. The canonical documentation is [git-span.com](https://git-span.com).
 
-Both hooks fail open on everything that decides *whether* there is something to say — a missing `git span` binary, a timeout, or a malformed result resolves to "allow silently, inject nothing." Neither can brick an edit or a commit on its own failure. Rendering is the deliberate exception and fails **closed**: if the anchor tree can't be drawn, the hook falls back to the flat bullet form and still holds, because a defect in how a hold is presented must cost presentation, never the hold itself. That is why the `try/catch` blocks around the render calls in `advisor-core.ts` and `touch-core.ts` sit there instead of deferring to the outer fail-open catch — treat them as load-bearing, not as fallbacks that escaped the rule above. On Codex, whether `permissionDecision: 'deny'` actually blocks the shell tool was never confirmed live in this repo (see `notes/codex-deny-spike.md` in the card repo, and the header comment in `src/codex/advisor.ts`); the adapter ships a hard-deny path per the SDK's documented example, with a one-constant fallback (`CODEX_ADVISOR_HARD_DENY`) to a loud `additionalContext` warning if a live session shows deny doesn't fire.
+## Shared behavior
 
-The old commit-triggered pipeline this replaced (a `Stop` hook writing a touch journal, `post-commit`/`post-rewrite` git hooks, a detached dispatcher subprocess, and a spawned reconciler agent) has been deleted entirely — span repairs now ride the implementing session's own commits instead of arriving as separate, provenance-unclear commits from a background process.
+- The touch pipeline observes supported reads and writes, repairs positional drift when it is mechanically safe, and surfaces remaining semantic drift as bounded context.
+- The commit advisor examines the actual Git changeset before `git commit` and `git push`. It interrupts once when semantic drift or uncovered writes remain; an identical retry proceeds after the report has been shown.
+- A plain `git status` receives the same report without being interrupted.
+- `.span/.hookignore` suppresses selected span context by path. `.span/.advisorignore` excludes selected paths from the uncovered-writes report without suppressing semantic drift.
+- Hook failures do not block edits or commits. If a computed hold cannot be rendered as a tree, rendering falls back to a flat form without discarding the hold.
 
-To get started, run `yarn install` to install dependencies, then `yarn build` to compile the hooks into each harness's `hooks.json`. Point your Claude Code settings (or Codex plugin config) at the generated output, and the hooks run automatically. Edit the files in `src/` to customize behavior, and use `yarn test` to verify your changes work correctly.
+These hooks are advisory coverage, not the enforcement boundary. Human changes, inactive plugins, unsupported tools, and host-level failures can bypass in-session attribution; run `git span drift` in CI before merge.
 
-`yarn build` writes both the `hooks.json` manifests and the compiled `.mjs` bundles beside them (under `plugins-claude/` and `plugins-codex/`, plus the OpenCode plugin's `dist/index.mjs`), and those bundles are checked in — hosts load them straight from the plugin directory, so they are the shipped behavior, not a build cache. They are generated artifacts, not sources: after editing `src/`, rebuild and commit the sources and their bundles together. A source edit that lands without its rebuilt bundle ships the previous behavior to every host until the next build.
+## Host coverage
 
-## Suppressing span references per path
+### Claude Code
 
-Some spans are noise in certain parts of the tree — wiki or marketing spans that anchor prose add little when you are reading source. A repo can hold them back with a `.span/.hookignore` file at its root. Each non-comment line is a gitignore-style path pattern, a single space, then a comma-separated list of span slug **prefixes** to suppress for anchors under matching paths:
+Claude Code observes `Read`, `Edit`, `Write`, and `Bash`. The plugin includes the three Git Span skills plus an expert agent.
 
-```gitignore
-# <path pattern>  <comma-separated span slug prefixes>
-packages/agent-hooks/src  wiki,marketing
-packages                  wiki
+### OpenAI Codex
+
+Codex observes `apply_patch` and its shell/exec tool family. Installing the plugin does not activate its hooks until the user reviews and trusts them through `/hooks`. The plugin includes the three skills plus an expert agent.
+
+### OpenCode
+
+OpenCode observes `bash`, `read`, `edit`, `write`, and `apply_patch`; its experimental code-mode `execute` tool is outside the integration. Hooks run in-process, and a held command is reported as a tool error. Host-level failures that never reach the after hook receive no attribution. The npm plugin installer materializes three skills and an expert agent on disk.
+
+### Antigravity
+
+Antigravity observes the pinned `run_command` contract. Dedicated file-edit tools are outside the integration, but their changes remain visible when the advisor resolves the Git changeset. Tool calls are joined through disk-backed state and context is delivered after the invocation as an ephemeral message. The plugin ships three skills and no separate expert-agent artifact.
+
+## Development
+
+Install workspace dependencies, then build all four generated plugin outputs:
+
+```bash
+yarn install
+yarn workspace agent-hooks build
 ```
 
-A span whose slug equals or begins with one of those prefixes (e.g. `wiki` or `wiki/onboarding`) is then never surfaced for an anchor under the matching path — the `PostToolUse` touch hook never injects it into `additionalContext`. Suppressed spans still count toward write coverage in the advisor's uncovered-writes check, so hiding one never makes a covered write look uncovered.
+The build writes committed artifacts under:
 
-Pattern grammar is a focused subset of gitignore: blank lines and `#` comments are skipped; a trailing `/` restricts a pattern to directories; a pattern containing a slash is anchored to the repo root, otherwise it matches a path component at any depth; `*`/`?` match within one segment and `**` matches across segments. Negation (`!`) is not supported. A missing or malformed file simply suppresses nothing (fail-open).
+- `plugins-claude/git-span/hooks/`
+- `plugins-codex/git-span/hooks/`
+- `plugins-opencode/git-span/dist/`
+- `plugins-antigravity/git-span/bin/` and `hooks.json`
 
-## Suppressing the advisor's uncovered-writes check
+Edit `packages/agent-hooks/src/`, never the generated bundles. Validate changes with:
 
-A separate, user-owned file, `.span/.advisorignore`, excludes specific paths from the advisor's uncovered-writes check. Each non-comment line is a gitignore-style path pattern — the same grammar as `.hookignore` above, minus the trailing span-slug-prefix list (an `.advisorignore` line either excludes a path or it doesn't). Unlike `.hookignore`, nothing auto-creates it; its absence is the normal, unconfigured state. A missing or unreadable file, or a malformed line, fails open to no additional exclusion. It never suppresses the semantic-drift check.
+```bash
+yarn workspace agent-hooks lint
+yarn workspace agent-hooks typecheck
+yarn workspace agent-hooks test
+yarn workspace agent-hooks build
+```
+
+## License
+
+MIT — Copyright © 2026 Goodfoot Media LLC.

@@ -30,12 +30,11 @@ don't, edit the disagreeing artifact first. Reconciliation that only touches
 span metadata over a live disagreement hides the drift signal without
 resolving it.
 
-## Decision rule
+## Authority requirements
 
-When coupled artifacts disagree, decide which side is authoritative, then act
-by cost of error:
+When coupled artifacts disagree, establish authority from the why and demonstrated intent before changing either side.
 
-1. **Locate authority via the why and demonstrated intent.** A confirmed why may
+- **Authority must be evidenced.** A confirmed why may
    name an authoritative anchor. `git span drift` reports the
    resolver layers that observed drift, but `HEAD` alone does not prove the
    declaration or content change was committed: a worktree-only declaration
@@ -47,14 +46,14 @@ by cost of error:
    drifting behind a deliberate, committed code change means the doc is
    wrong. A code change with no coherent commit story may be a regression —
    the doc may be the truth.
-2. **Conform the non-authoritative side automatically.** Validate code changes.
+- **Conform the non-authoritative side.** Validate code changes.
    Without a confirmed contrary authority, docs follow deliberate committed code
    and describe current reality without "we used to" framing.
-3. **Complete gate-authorized transitions.** When the named evidence satisfies
+- **Complete gate-authorized transitions.** When the named evidence satisfies
    a lifecycle gate, make its behavior change, revise or retire its why, and
    reconcile or retire every superseded anchor. Run the required code checks
    and require scoped zero drift.
-4. **Escalate ambiguous authority.** This includes a possible contract whose
+- **Stop on ambiguous authority.** This includes a possible contract whose
    authority is not established and drift with no intentional change behind it.
 
 Fail closed on authority ambiguity, not on editing per se.

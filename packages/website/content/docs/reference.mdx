@@ -99,9 +99,11 @@ The schemas and the [command reference](/docs/commands) are generated from the C
 | Setting | Effect |
 |---|---|
 | `GIT_SPAN_PERF` | Enables `--perf` timing output to stderr without passing the flag (`1`/`true`/`yes`/`on`, case-insensitive) |
-| `GIT_SPAN_CACHE=0` | Disables the on-disk resolver cache entirely |
+| `GIT_SPAN_CACHE=0` | Disables both the repository resolver cache and the per-user executable-digest cache |
+| `GIT_SPAN_CACHE_HOME` | Sets the directory for per-user git-span cache databases; defaults to `$HOME/.cache/git-span` |
+| `GIT_SPAN_EXE_DIGEST_DB` | Overrides the executable-digest SQLite database path directly |
 | `GIT_SPAN_RENAME_BUDGET` | Overrides the rename-detection budget used by history/move tracking. Default `1000` |
 
-The resolver cache lives in the git common directory and is safe to delete.
+The resolver cache lives at `<git-common-dir>/span/store.db` and is shared by linked worktrees of one clone. The executable-digest cache lives at `$GIT_SPAN_CACHE_HOME/exe-digest.db`; it is shared across repositories for filter executables installed on the same machine. Both databases are safe to delete and rebuild lazily.
 
 See [Command reference](/docs/commands) for per-subcommand flags and behavior.

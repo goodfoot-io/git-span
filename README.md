@@ -1,21 +1,66 @@
 # git-span
 
-`git-span` is a Rust CLI for recording durable relationships between exact
-anchors in a Git repository. It stores span metadata as ordinary tracked files
-so teams can review, fetch, push, and audit those relationships alongside the
-code they describe.
+`git-span` records the relationships in a codebase that no schema, type system,
+test, or build step enforces. A span connects exact line ranges or whole files,
+stores the reason they must stay aligned, and reports when any anchor moves,
+changes, or disappears.
 
-The monorepo ships:
+Span declarations are ordinary tracked files under `.span/`, so they travel
+with the code through branches, reviews, merges, and CI. The CLI is complete on
+its own, and integrations for Claude Code, OpenAI Codex, OpenCode, and
+Antigravity surface relevant spans while an agent works.
 
-- **`git-span`** - the Rust CLI and npm wrapper
-- **`goodfoot.git-span`** - a lightweight VS Code extension that manages the
-  packaged `git-span` binary and exposes command entry points
+## Install
 
-The extension intentionally does not include a visualization webview yet. The
-current goal is reliable binary resolution and command execution; richer span
-visualization will be added later.
+```bash
+npm install -g git-span
+git span --version
+```
 
-## CLI
+The npm package selects the native binary for Linux, macOS, or Windows. Agent
+plugins call `git span` from `PATH`; install the CLI anywhere an agent session
+runs before installing its plugin.
+
+Full agent setup is documented at [git-span.com](https://git-span.com):
+
+- Claude Code installs from the `goodfoot-io/git-span` marketplace.
+- Codex installs from the same repository marketplace and requires hook review through `/hooks`.
+- OpenCode loads the `opencode-git-span` npm plugin and uses its installer for skills and the expert agent.
+- Antigravity installs `plugins-antigravity/git-span` with `agy plugin install`.
+
+## Quick start
+
+```bash
+git span add checkout-request-flow \
+  src/client.ts#L10-L40 \
+  src/server.ts#L20-L64
+
+git span why checkout-request-flow \
+  "The server contract is authoritative for the request fields the client sends."
+
+git add .span
+git commit -m "Record checkout request coupling"
+git span drift
+```
+
+Use `git span list` and `git span show <name>` to inspect declarations,
+`git span tree` to explore their blast radius, and `git span history <name>`
+to review provenance. `git span drift --fix` repairs safe positional movement;
+meaning-changing drift remains visible for review. See
+[git-span.com](https://git-span.com) for the complete CLI reference.
+
+## VS Code
+
+The `goodfoot.git-span` extension uses the independently installed `git span`
+binary from `PATH`. It provides:
+
+- a custom editor for files under `.span/`, including anchor diffs and source navigation;
+- **Git Span: Show CLI Version**;
+- **Git Span: Open Terminal**.
+
+See [git-span.com](https://git-span.com) for usage and troubleshooting. Repository-specific extension notes live in [packages/extension/README.md](packages/extension/README.md).
+
+## Development
 
 During local development, run commands from `packages/git-span`:
 
@@ -59,31 +104,21 @@ exit 1 when drift is found, exit 0 with `--no-exit-code`. There is no
 advisory best-effort pass (it never aborts the commit) and never stages
 files that were already dirty before the hook ran.
 
-## VS Code Extension
-
-The VS Code extension workspace is named `git-span-extension` (to avoid
-colliding with the CLI's `git-span` npm package name) but publishes to the
-Marketplace as `goodfoot.git-span`. For now it is a lightweight command and
-binary manager:
-
-- resolves the packaged `git-span` executable for the current platform
-- installs or retries the managed binary when needed
-- exposes Git Span command entry points inside VS Code
-- keeps terminal PATH integration focused on the managed binary
-
-It does not register a custom editor, Markdown renderer, search UI, or webview.
-
 ## Monorepo Layout
 
 ```text
 .
 ├── packages/
 │   ├── git-span/       # git-span Rust CLI
-│   └── extension/      # goodfoot.git-span VS Code extension
+│   ├── extension/      # goodfoot.git-span VS Code extension
+│   ├── agent-hooks/    # shared four-host agent integration sources
+│   ├── website/        # git-span.com
+│   └── discover/       # internal span-candidate discovery engine
 ├── npm/
 │   └── git-span-*/     # platform-specific binary distribution packages
 ├── skills-src/         # authored agent-skill templates (the ONLY place to edit skills)
 ├── plugins-*/          # per-platform plugin trees; their skills/ subtrees are generated
+├── wiki/               # source-anchored architecture and operating guidance
 └── scripts/
     ├── sync-versions.sh
     ├── validate.sh

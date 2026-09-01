@@ -1,12 +1,14 @@
-# @cards.management/discover
+# discover (internal workspace)
 
-Discovers candidate **implicit couplings** in a git repository: groups of
+This private monorepo package discovers candidate **implicit couplings** in a git repository: groups of
 files (or line ranges) that tend to change together although no type, test,
 or schema enforces it. Uses only the repository's own tracked content and
 ordinary git history — no external inputs, nothing tuned to any particular
 repo.
 
-## CLI
+It is a contributor tool, not a published package, and it only proposes candidates. A human or coding agent must confirm that a relationship is real before declaring a span.
+
+## Workspace CLI
 
 ```bash
 yarn workspace @cards.management/discover exec discover -- --repo /path/to/repo
@@ -33,7 +35,7 @@ Flags:
 ## API
 
 ```ts
-import { discover, resolveConfig } from '@cards.management/discover';
+import { discover, resolveConfig } from 'discover';
 
 const { candidates } = discover('/path/to/repo', resolveConfig({ exclude: ['vendor'] }));
 ```

@@ -1,6 +1,6 @@
 ---
 title: Getting started
-description: Install the git-span CLI, then wire it into Claude Code, OpenAI Codex, or OpenCode.
+description: Install the git-span CLI, then wire it into Claude Code, OpenAI Codex, OpenCode, or Antigravity.
 ---
 
 git-span is a CLI. Day to day, it's your coding agent that runs it — declaring spans, checking `git span drift`, reconciling drift — while you review the results. Install the binary first, then install the plugin for whichever agent runtime you use.
@@ -22,7 +22,7 @@ git-span 1.1.21
 ```
 
 <Callout type="info">
-The Claude Code, Codex, and OpenCode plugins don't install this binary — they call `git span` on `PATH`. Install the CLI first, on any machine or container an agent session runs in.
+The agent plugins don't install this binary — they call `git span` on `PATH`. Install the CLI first, on any machine or container an agent session runs in.
 </Callout>
 
 ## Install the Claude Code plugin
@@ -79,10 +79,29 @@ Add the npm package to the `plugin` array in your OpenCode config (`opencode.jso
 An npm plugin can't contribute skills or agents, so the package ships an installer that materializes them on disk. Run it once per checkout — add `--global` to target your user-level directories (`~/.config/opencode`) instead of the project's `.opencode/`:
 
 ```bash
-npx opencode-git-span install --global
+npx opencode-git-span install
 ```
 
+Use `npx opencode-git-span install --global` instead to install the skills and expert agent under `$XDG_CONFIG_HOME/opencode` (or `~/.config/opencode`). Re-run the installer after upgrading the npm package.
+
 This wires the touch hook, the commit advisor, three skills (`git-span`, `reconcile`, and `hook-effect-analysis`), and an expert subagent — see [Agent integration](/docs/agent-integration) for what each piece does.
+
+## Install the Antigravity plugin
+
+From a git-span checkout:
+
+```bash
+agy plugin validate ./plugins-antigravity/git-span
+agy plugin install ./plugins-antigravity/git-span
+```
+
+Or install the plugin directory directly from GitHub:
+
+```bash
+agy plugin install https://github.com/goodfoot-io/git-span.git/plugins-antigravity/git-span
+```
+
+Antigravity has no marketplace or separate hook-trust prompt. The plugin installs three skills and the workflow hooks; it does not install an expert subagent. Re-run the install after upgrading to refresh the installed copy under `~/.gemini/config/plugins/git-span/`.
 
 ## Verify
 
@@ -106,6 +125,12 @@ or, for a `--global` install,
 
 ```bash
 ls ~/.config/opencode/skills
+```
+
+or
+
+```bash
+agy plugin list
 ```
 
 should show `git-span`. Independently of any plugin, confirm the CLI itself is healthy:

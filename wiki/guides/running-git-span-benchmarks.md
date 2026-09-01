@@ -43,7 +43,7 @@ yarn bench:static \
   --large-files 1500 --output /tmp/static-attribution.json
 ```
 
-The three measured optimization checkpoints that introduced the harness are recorded in [round 1](./static-attribution-benchmark-round-1.md), [round 2](./static-attribution-benchmark-round-2.md), and [round 3](./static-attribution-benchmark-round-3.md). Round 3 is intentionally explicit that the full rendered tracked-Post path remains above 100 ms: a benchmark report is evidence, not a place to convert an unmet latency objective into a success by changing the boundary after measuring it.
+Benchmark reports are evidence artifacts, while this page is the current procedure. Keep the measured boundary fixed: the full rendered tracked-post path includes its paired pre-hook, subprocesses, memo I/O, and rendering.
 
 ## `yarn bench:check` — the rot guard
 
@@ -59,7 +59,7 @@ Per-operation cells: `list`, `tree`, `show`, `history`, `drift-cold`, `drift-war
 
 Before timing each cell, the oracle captures the command's stdout, stderr, and exit status twice against the same clone — once with **the one cache disabled** (`GIT_SPAN_CACHE=0`, the single "disable all caching" switch, hence the genuine ground truth) and once with the store live — and asserts all three are identical, across **all five `drift` formats** (human, porcelain, json, junit, github-actions). A divergence panics with the offending operation/format named. This is what makes the latency numbers trustworthy: a fast wrong answer fails the oracle before it is ever reported. The `dirty-tree` oracle cell additionally dirties an unrelated tracked file so the warm-dirty render is gated too.
 
-`GIT_SPAN_CACHE=0` is a genuine ground truth on its own: after the Phase 7 cutover there is a single cache — the SQLite store — and that switch bypasses it entirely. No sibling tier can leave a "cache-disabled" run partly warm, because both legacy tiers (`resolver/cache`, `resolver/cache_v2`) were deleted. Historically this was a real gap — a two-tier era where disabling only one tier left the other live, see `notes/investigation-question-log.md` Step 2, "Does the documented cache-off oracle provide ground truth?" (card main-157) — which the collapse to one store and one switch closes structurally.
+`GIT_SPAN_CACHE=0` is the uncached ground truth. It bypasses the repository SQLite resolver store and the per-user executable-digest store, so a cache-disabled run cannot remain partly warm through another cache tier.
 
 ### Per-op budgets and the no-regression rule
 
@@ -67,13 +67,13 @@ Each operation has its own hard latency ceiling — never a single composite sco
 
 ### The one active store
 
-There is exactly one persistent cache: a SQLite database at `<common_dir>/span/store.db` (plus its `-wal` / `-shm` sidecars), owned by [resolver/store](../../packages/git-span/src/resolver/store/mod.rs). The Phase 7 cutover (card main-157) deleted both legacy caches — the `resolver/cache` filesystem tier and the `resolver/cache_v2` SQLite tier — so this store is the whole on-disk cache footprint. To clear it for a genuine cold run, remove `store.db*`; the benches and the [bench-span.sh](../../scripts/bench-span.sh) / [bench-span-scale.sh](../../scripts/bench-span-scale.sh) harnesses do exactly this in their cache-clearing helpers.
+The repository resolver cache is a SQLite database at `<common_dir>/span/store.db` (plus its `-wal` / `-shm` sidecars), owned by [resolver/store](../../packages/git-span/src/resolver/store/mod.rs). To clear it for a genuine cold run, remove `store.db*`; the benches and the [bench-span.sh](../../scripts/bench-span.sh) / [bench-span-scale.sh](../../scripts/bench-span-scale.sh) harnesses do this in their cache-clearing helpers.
 
 **Sharing boundary.** The store lives in the Git *common* directory, so it is shared across **linked worktrees of one clone on one host** — a build in any worktree reuses generations published by its siblings. It is explicitly **not** shared cross-host or cross-clone: same-host linked-worktree sharing is a design constraint, cross-host is a stated non-goal (see `notes/architecture-and-complexity.md`, card main-157). Each clone keeps its own store.
 
 ### The cache-off switch
 
-One switch disables the one cache: `GIT_SPAN_CACHE=0`. It is the single "disable all caching" control — the entry point returns before touching the store, and the command runs the uncached authoritative resolver. Only the exact string `"0"` disables it; anything else leaves the store on (fail-closed). This switch alone is a genuine ground-truth run — there is no second tier to leave live. Its history is worth knowing: it once named only the (now-deleted) `resolver/cache` filesystem tier while a separate `GIT_SPAN_CACHE_V2` gated the SQLite tier; the cutover removed `GIT_SPAN_CACHE_V2` (and the development-only `GIT_SPAN_CACHE_STORE_V3` selector) and repurposed `GIT_SPAN_CACHE=0` as the sole disable switch over the sole store.
+`GIT_SPAN_CACHE=0` is the single "disable all caching" control. Only the exact string `"0"` disables caching; any other value leaves it enabled.
 
 ### Quota, GC, and diagnostics
 
@@ -81,7 +81,7 @@ The store is bounded by a count-based sweep (stale non-live generations reclaime
 
 ### The in-process warm SLA
 
-[drift_warm.rs](../../packages/git-span/benches/drift_warm.rs) measures `drift_spans()` **in-process** (no process spawn) and enforces the historical warm-clean SLA: a manual median over 30 iterations must stay under 40 ms, or the bench panics. This is the apples-to-apples home for the 40 ms figure — the process-level `drift-warm` cell in `real_corpus.rs` is necessarily higher (it includes ~17 ms startup + ~12 ms discovery) and carries its own, looser, process-level ceiling.
+[drift_warm.rs](../../packages/git-span/benches/drift_warm.rs) measures `drift_spans()` **in-process** (no process spawn) and enforces the warm-clean SLA: a manual median over 30 iterations must stay under 40 ms, or the bench panics. The process-level `drift-warm` cell in `real_corpus.rs` includes startup and discovery and carries its own looser ceiling.
 
 ## `size_sweep` — scaling-cliff detection
 

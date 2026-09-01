@@ -23,7 +23,7 @@ Update the authoritative source, then its consumers. See [[Wiki Organization]] a
   never edit a rendered tree (the build restores and refuses hand-edits, and the shared
   freshness gate in [run-pipeline-gates.sh](/scripts/run-pipeline-gates.sh) fails stale trees
   locally, on PRs, and at tag time).
-- **Historical research:** preserve outcomes. Change only live instructions or specs.
+- **Research evidence:** keep it outside live instructions; wiki pages state the current operational conclusion.
 
 Rendered trees are generated output and therefore span-ineligible; span the `skills-src/`
 templates instead.
@@ -81,9 +81,9 @@ output. Files likely loaded together should divide responsibility:
 the core skill owns shared rules; the expert and routed references add only branch-specific
 judgment. Claude and Codex router branches may differ by harness.
 
-- Core recipes and routing: `plugins-{claude,codex}/git-span/skills/git-span/SKILL.md`.
-- Judgment loaded with the core skill: `plugins-{claude,codex}/git-span/agents/expert.md`.
-- Multi-span branch: `plugins-{claude,codex}/git-span/skills/reconcile/` — SKILL.md dispatches; `references/procedure.md` holds the workflow and `references/team.md` the delegation branch.
+- Core recipes and routing: `skills-src/git-span/git-span/SKILL.md.eta`, rendered into all four platform trees.
+- Judgment loaded with the core skill: the authored expert source and the Claude Code, Codex, and OpenCode agent outputs; Antigravity has no expert-agent artifact.
+- Multi-span branch: `skills-src/git-span/reconcile/` — the template dispatches, `references/procedure.md.eta` holds the workflow, and `references/team.md.eta` carries host-specific delegation language.
 - Cleanup branch: `plugins-{claude,codex}/git-span/skills/git-span/references/why-cleanup-campaign.md`.
 - Deleted-anchor branch: `.../references/terminal-statuses.md`.
 - Why lifecycle caveats: `.../references/command-quirks-and-errors.md`.
@@ -211,7 +211,7 @@ the new one atomically. Require zero drift.
 
 1. Update [[Writing Span Whys]] and this map.
 2. Update CLI and hook sources plus exact-string tests.
-3. Update Claude agent instructions; mirror Codex without erasing harness differences.
+3. Update the shared skill templates and render every configured platform without erasing host-specific vocabulary or capability differences.
 4. Update READMEs, website, marketing, metadata, and live instructional reports.
 5. Regenerate man, hook, schema, and command-reference artifacts (`yarn build:man`, agent-hooks
    `yarn build`, `yarn build:schemas`).

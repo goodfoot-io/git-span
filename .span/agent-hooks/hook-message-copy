@@ -1,11 +1,10 @@
-packages/agent-hooks/README.md#L5-L8 rk64:bcf75aa9d17e17e4
 packages/agent-hooks/src/common/advisor-core.ts#L1535-L1928 rk64:68ae0ad60a12ea14
 packages/agent-hooks/src/common/touch-core.ts#L880-L909 rk64:2ebd57907c32ae1e
-packages/website/content/docs/agent-integration.mdx rk64:240fbc9042d49a2f
+packages/website/content/docs/agent-integration.mdx rk64:7f8c8d1ae1be7083
 plugins-antigravity/git-span/skills/git-span/references/understanding-hook-output.md rk64:2f88aaa738cd083c
 plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md rk64:e09ea51897ae3bb4
 plugins-codex/git-span/skills/git-span/references/understanding-hook-output.md rk64:b5df4266c227dc4a
 plugins-opencode/git-span/skills/git-span/references/understanding-hook-output.md rk64:9bf601bd16912e05
 skills-src/git-span/git-span/references/understanding-hook-output.md.eta rk64:49a61cdbdfc33594
 
-The shared hook-core messages are authoritative, and the package README, website agent-integration guide, the skills-src understanding-hook-output template, and every plugin tree's rendered understanding-hook-output reference preserve their user-facing meaning and any text identified as verbatim; the template's it.variant branches are the edit surface, and the four rendered copies are its committed build output.
+The shared hook-core messages are authoritative, and the website guide, the skills-src understanding-hook-output template, and every rendered plugin reference preserve their user-facing meaning and verbatim text; the template is the edit surface for all four generated copies.

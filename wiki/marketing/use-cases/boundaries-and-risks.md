@@ -1,19 +1,19 @@
 ---
 title: Boundaries and Risks
-summary: The constraints on git-span's commercial claims — hash drift is not correctness, authoring cost, span content as privileged agent input, cross-repository limits, the early UI surface, and the missing product-specific efficacy study.
+summary: The current constraints on git-span's commercial claims — drift is not correctness, spans are privileged input, support is repository-local, agent coverage varies, and efficacy claims require evidence.
 aliases: [Commercial Risks]
 tags: [marketing, use-cases]
 keywords: [risks, boundaries, correctness, authoring cost, prompt injection, cross-repository, efficacy evidence]
-links-reviewed: 1
+links-reviewed: 2
 ---
 
 # Boundaries and risks
 
-These constraints shape both the product roadmap and what marketing may claim. Each one is a boundary the commercial narrative must respect until the product changes.
+These constraints define what the product and its marketing may claim.
 
 ## Hash drift is not semantic correctness
 
-Git-span detects that recorded content changed. It cannot determine whether the connected implementations still agree. Its documentation explicitly warns that re-anchoring can record a new baseline without resolving an underlying disagreement ([`concepts.mdx`](/packages/website/content/docs/concepts.mdx#L39-L39)).
+Git-span detects that recorded content changed. It cannot determine whether the connected implementations still agree. Its documentation explicitly warns that re-anchoring can record a new baseline without resolving an underlying disagreement ([`concepts.mdx`](/packages/website/content/docs/concepts.mdx#L41)).
 
 Commercial messaging should therefore use "surface," "protect," "review," and "assure the change process," not "prove correctness."
 
@@ -29,11 +29,11 @@ Because a span's explanation is injected into an agent's context, malicious or p
 
 Sourcegraph, Swimm, and enterprise traceability platforms emphasize cross-repository or cross-tool understanding because many consequential relationships cross repository boundaries. Git-span's current repository-local model is appropriate for its first wedge but constrains modernization, microservice, embedded, and enterprise architecture use cases.
 
-## The current UI and integration surface are early
+## Agent coverage varies by host
 
-The current VS Code extension is intentionally a lightweight binary and command manager ([`package.json`](/packages/extension/package.json#L1-L25)) and does not yet provide visualization, search, or a custom webview. Agent integrations currently focus on Claude Code and Codex, and Codex hooks are disabled on Windows ([`agent-integration.mdx`](/packages/website/content/docs/agent-integration.mdx#L120-L120)).
+The VS Code extension exposes CLI commands and a span-file custom editor ([`package.json`](/packages/extension/package.json)). Claude Code, Codex, OpenCode, and Antigravity all ship git-span integrations, but their host contracts differ. OpenCode excludes its experimental `execute` tool and cannot attribute host-level failures. Antigravity attributes `run_command`, while dedicated file-edit tools remain outside its pinned hook surface. The advisor still sees the repository changeset, and `git span drift` in CI is the common enforcement boundary.
 
-That is sufficient for technical pilots, but a commercial team product needs a repository-hosting and browser-based workflow that does not depend on every developer installing or trusting local hooks.
+Marketing must describe hooks as high-leverage advisory coverage, not exhaustive enforcement.
 
 ## Product-specific efficacy still needs evidence
 

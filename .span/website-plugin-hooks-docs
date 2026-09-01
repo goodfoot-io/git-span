@@ -1,6 +1,6 @@
-packages/website/content/docs/agent-integration.mdx#L15-L25 rk64:c0bd88232aff4543
-packages/website/content/docs/concepts.mdx#L45-L54 rk64:c348a78869f7a40d
-packages/website/content/docs/overview.mdx#L30-L35 rk64:8a0ce625cb12d40c
+packages/website/content/docs/agent-integration.mdx#L15-L25 rk64:2f2aefe893b7a9ce
+packages/website/content/docs/concepts.mdx#L45-L54 rk64:a93fc91d43b5dc25
+packages/website/content/docs/overview.mdx#L30-L35 rk64:75885d306cde9885
 packages/website/content/docs/reference.mdx#L43-L48 rk64:c4caade1929f8dda
 plugins-claude/git-span/hooks/hooks.json rk64:b72ceb977ad08529
 plugins-codex/git-span/hooks/hooks.json rk64:7ebdbad94c0e4045

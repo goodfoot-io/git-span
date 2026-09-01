@@ -1,57 +1,70 @@
-# git span
+# git-span
 
-`git span` tracks implicit semantic dependencies — line-range or whole-file anchors coupled by nothing a schema, type, test, or build/generator step enforces. Each span names its anchors, should carry a compact, decision-relevant `why`, and surfaces drift via `git span drift` when anchors diverge from their recorded state.
+`git-span` tracks implicit semantic dependencies: exact line ranges or whole files that must stay aligned even though no schema, type, test, or build step enforces the relationship.
 
-The primary CLI surface lives in `src/cli/mod.rs`. Run `git span --help` or `git span drift --help` for flag reference.
+Each span records its anchors and a compact, decision-relevant reason. Span declarations live under `.span/` as ordinary tracked repository data, and `git span drift` reports when their recorded content moves, changes, or disappears.
 
-### Exact batched context
+## Install
 
-`git span context <address>... --format json` returns one schema-v1 snapshot
-for exact repository-relative paths and inclusive line ranges: normalized
-scopes, exact anchored/current overlaps, complete selected spans, why text,
-live status/source facts, and structured mutation counts. `--fix` adds
-cycle-safe positional repair; `--operation-id <uuid>` makes a delivery-unknown
-repair replayable across processes. Failures leave stdout empty, while a valid
-no-overlap query succeeds with an empty `spans` array. The complete schema,
-token, failure, service, and recovery contract is in the
-[command reference](../../plugins-claude/git-span/skills/git-span/references/command-reference.md#exact-batched-context).
+```bash
+npm install -g git-span
+git span --version
+```
 
-Linux uses an authenticated private per-worktree watcher service for warm
-queries and falls back to the same strict in-process answer whenever the
-watcher or service is unavailable. The released-binary
-[acceptance harness](./scripts/context-acceptance.py) runs 31 samples in each
-required warm cell. On the documented 2026-08-14 container run, warm context
-p50/p95 improvement over the legacy process lifecycle was at least
-78.2%/76.3% (clean) and reached 86.7%/90.0% (multi-span); cold bootstrap was 43.0 ms,
-invalidated rebuild 42.7 ms, strict fallback 34.6 ms, and a journaled repair
-136.1 ms. Root-switch and linked-worktree checks passed.
+The package installs the native binary for supported Linux, macOS, and Windows hosts.
 
-### The drift cache
+## Create a span
 
-`git span drift` (and related resolution paths) are backed by a single persistent cache: a SQLite database at `<common_dir>/span/store.db` (plus its `-wal` and `-shm` companions), implemented in `src/resolver/store/`. This is the whole on-disk cache footprint — remove `store.db*` to reset it. Setting `GIT_SPAN_CACHE=0` disables it for a run.
+```bash
+git span add checkout-request-flow \
+  src/client.ts#L10-L40 \
+  src/server.ts#L20-L64
 
-The store is bounded by a count-based sweep: stale non-live generations are swept to a 16-generation reuse buffer, and maintenance runs after a publish and at drift open. It lives in the Git *common* directory, so it is shared across linked worktrees of one clone on one host; it is not shared cross-host or cross-clone. Earlier releases kept two separate caches (a `cache/v1/` filesystem trail store and a `stale-cache.db`); both were replaced by this one store and leave no files behind on a fresh clone.
+git span why checkout-request-flow \
+  "The server contract is authoritative for the request fields the client sends."
 
-### The shared executable-digest store
+git add .span
+git commit -m "Record checkout request coupling"
+```
 
-A configured filter driver's resolved executable (e.g. a `git-lfs` install) is content-hashed to prove its identity as part of every state-token capture. That hash is a fact about a file on the local machine, not about any one repository, so it is memoized in a *second*, small, per-user SQLite database — separate from the per-repo drift cache above — at `$GIT_SPAN_CACHE_HOME/exe-digest.db`, defaulting to `$HOME/.cache/git-span/exe-digest.db` (mirrors the workspace's `$HOME/.cache/git-span/cargo-target/` per-user build-artifact directory). Every repository on a machine that shares the same filter executable reuses the same memoized digest instead of re-hashing it per clone. `GIT_SPAN_EXE_DIGEST_DB` overrides the database file path directly (useful for CI isolation). `GIT_SPAN_CACHE=0` disables this store too, exactly like the drift cache. Implemented in `src/resolver/core/exe_digest_store.rs`; safe to delete at any time (it is rebuilt lazily, fail-closed on any error — a missing or broken database just means every executable is re-hashed).
+A useful why is one or two present-tense clauses that state the shared relationship and any decisive authority, invariant, intentional difference, or lifecycle gate.
 
-### The daily update check
+## Review and reconcile
 
-On an interactive `git span` invocation, the CLI quietly notices whether the running binary or the installed Claude Code / Codex git-span plugin bundles have fallen behind the latest `git-span-v*` release from GitHub, and — at most once per 24 hours — prints a short informational note naming what is out of date plus the exact command to bring it current. Nothing blocks: the network fetch and plugin-cache scans run in a detached background child, the foreground command's latency and exit code are untouched, and the first run prints nothing (the reminder reports what the *previous* check stored). Check state lives in a third, per-user SQLite database beside the exe-digest store — `$GIT_SPAN_CACHE_HOME/update-check.db`, defaulting to `$HOME/.cache/git-span/update-check.db` — with the same path precedence and fail-closed bootstrap; an offline machine pays one failed fetch attempt per day. The note only informs, never updates. Every check run appends one diagnostic line to `update-check.log` beside the database — the audit trail that separates a clean check from a silently failing one.
+```bash
+git span list
+git span show checkout-request-flow
+git span tree checkout-request-flow
+git span history checkout-request-flow
+git span drift
+```
 
-Suppression is fail-closed and two-layered: any one of the following silences the check and the note.
+`git span drift --fix` repairs mechanically safe movement and whitespace-only changes. Meaning-changing drift remains visible for review. Refresh an unchanged anchor address with `git span add`; move an anchor atomically with `git span replace`.
 
-- `GIT_SPAN_DISABLE_UPDATE_CHECK` — presence disables the check and the message entirely. Automated callers set it: the Claude Code and Codex hook plugins export it into every hook process, and future git-hook integrations should too.
-- Machine-readable output — commands whose effective output format is machine-readable (`--porcelain`, `--oneline`, `--format` other than human, `context`, `merge-driver`) never engage the check.
-- Non-TTY stdout — piped or scripted invocations (including the VS Code extension and the agent-hooks shell-outs) are silent regardless of the other layers.
-- Hidden internal subcommands (`__context-service`, `__update-check`) never engage or remind.
+`git span drift` exits nonzero when actionable drift remains, making it suitable for CI:
 
-The remaining vars are testing and isolation seams: `GIT_SPAN_UPDATE_CHECK_URL` overrides the releases-API endpoint the child fetches; `GIT_SPAN_UPDATE_CHECK_DB` overrides the `update-check.db` path directly (mirroring `GIT_SPAN_EXE_DIGEST_DB`); `GIT_SPAN_PLUGIN_CACHE_ROOT` overrides the base the Claude Code and Codex plugin-cache scans resolve under (`{root}/{claude,codex}/plugins/cache`), instead of `$HOME/.{claude,codex}/plugins/cache` (or `CLAUDE_CONFIG_DIR` / `CODEX_HOME` when set). Implemented in `src/update_check/`.
+```yaml
+- uses: actions/checkout@v4
+  with:
+    fetch-depth: 0
+- run: npm install -g git-span
+- run: git span drift
+```
 
-## Profiling
+## Agent and editor integrations
 
-Perf investigation tooling is documented in [Profiling `git span drift`](../../wiki/guides/profiling-git-span-drift.md):
+Git-span ships integrations for Claude Code, OpenAI Codex, OpenCode, and Antigravity. Their hooks heal positional drift after supported tool calls, surface semantic drift as context, and advise before commits with unresolved span debt. The VS Code extension provides an interactive editor for `.span/` declarations.
 
-- **Flame graph capture** — `perf record` + `inferno-flamegraph` recipe for identifying hot functions.
-- **`--perf-trace <path>`** — opt-in per-anchor wall-clock CSV emitter for `git span drift`; CSV schema, usage constraints, and quick analysis snippets are documented there.
+Install integrations separately after putting `git span` on `PATH`. See [git-span.com](https://git-span.com) for current host-specific instructions and limitations.
+
+## Automation
+
+Commands with `--format json` provide machine-readable output. `git span context <address>... --format json` returns an exact repository snapshot for paths and inclusive line ranges, including selected spans, whys, current status, and resolver sources. Published JSON Schemas and their contracts are documented at [git-span.com](https://git-span.com).
+
+## Documentation
+
+- [git-span.com](https://git-span.com) — installation, concepts, command reference, agent integration, and CI guidance
+
+## License
+
+MIT — Copyright © 2026 Goodfoot Media LLC.
