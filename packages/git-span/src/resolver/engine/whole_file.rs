@@ -832,7 +832,6 @@ pub(crate) fn resolve_whole_file(
                                 .collect();
                         }
                 status = AnchorStatus::Changed;
-                source = Some(deepest);
                 // Collect all drifting layers in I → W → H order.
                 let mut ls: Vec<DriftSource> = Vec::new();
                 if index_drifts {
@@ -844,6 +843,14 @@ pub(crate) fn resolve_whole_file(
                 if head_drifts {
                     ls.push(DriftSource::Head);
                 }
+                // The reported `source` is the shallowest layer that
+                // actually shows drift (I → W → H), not merely the deepest
+                // layer this scan happens to have enabled — otherwise a
+                // fully-committed drift (index/HEAD affected, worktree
+                // clean of any uncommitted delta) would be mislabeled
+                // "changed in the working tree" any time worktree scanning
+                // is on, which it is by default.
+                source = Some(ls.first().copied().unwrap_or(deepest));
                 layer_sources = if ls.is_empty() { vec![deepest] } else { ls };
             }
         }

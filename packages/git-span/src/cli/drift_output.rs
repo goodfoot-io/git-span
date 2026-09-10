@@ -1951,16 +1951,27 @@ fn render_human(
                     }]
                 } else {
                     // Collapse per-layer expansions to a single row per
-                    // anchor, picking the deepest drifting source
-                    // (Worktree > Index > HEAD).
+                    // anchor, picking the shallowest drifting source in the
+                    // extent's own precedence order — Worktree > Index > HEAD
+                    // for line-range anchors, Index > Worktree > HEAD for
+                    // whole-file anchors (matching `layer_sources`'s W → I → H
+                    // / I → W → H construction order in the engine). Using a
+                    // single universal precedence here mislabeled
+                    // fully-committed whole-file drift (index and HEAD both
+                    // affected, worktree merely equal to them) as "changed in
+                    // the working tree" any time worktree scanning was on.
+                    let is_whole_file = matches!(r.anchored.extent, AnchorExtent::WholeFile);
                     let deepest = findings
                         .iter()
                         .filter(|f| f.span == m.name && f.anchor_id == r.anchor_id)
-                        .max_by_key(|f| match f.source {
-                            Some(DriftSource::Worktree) => 3,
-                            Some(DriftSource::Index) => 2,
-                            Some(DriftSource::Head) => 1,
-                            None => 0,
+                        .max_by_key(|f| match (is_whole_file, f.source) {
+                            (true, Some(DriftSource::Index)) => 3,
+                            (true, Some(DriftSource::Worktree)) => 2,
+                            (true, Some(DriftSource::Head)) => 1,
+                            (false, Some(DriftSource::Worktree)) => 3,
+                            (false, Some(DriftSource::Index)) => 2,
+                            (false, Some(DriftSource::Head)) => 1,
+                            (_, None) => 0,
                         })
                         .cloned();
                     deepest.into_iter().collect()

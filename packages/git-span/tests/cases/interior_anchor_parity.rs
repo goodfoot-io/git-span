@@ -6,8 +6,10 @@
 //! store's `withhold_whole_result_for_interior_anchor` gate keeps `run_drift`'s
 //! interior-anchor scan). The deleted `cache_v2` then fell back to a
 //! `committed_only` render that labeled an interior anchor's drift "changed"
-//! (HEAD) while the effective resolver labels it "changed in the working tree",
-//! so cache-on diverged from cache-off in Human output for any corpus mixing a
+//! (HEAD) while the effective resolver labels it "changed in `<sha>`" (card
+//! main-395 fixed the effective resolver's committed-drift label; it no longer
+//! reads "changed in the working tree" for drift that is fully committed), so
+//! cache-on diverged from cache-off in Human output for any corpus mixing a
 //! normal drifted span with an interior-anchor span. The new store instead
 //! resolves the withheld case through the shared effective path, so the drift
 //! labels match cache-off regardless of the interior-anchor store gate.
