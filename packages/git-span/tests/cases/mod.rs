@@ -106,5 +106,6 @@ pub mod untracked_span_invalidation;
 pub mod update_check;
 pub mod why_non_terminal_stdin;
 pub mod why_writer_name_validation;
+pub mod whole_file_committed_drift_label;
 pub mod worktree_path_resolution;
 pub mod worktree_uncommitted_move;
