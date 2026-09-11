@@ -1,0 +1,7 @@
+packages/git-span/src/cli/drift_output.rs#L1953-L1977 rk64:49c97f3fc488ac19
+packages/git-span/src/resolver/engine/whole_file.rs#L846-L853 rk64:20e02a6b8d0b6777
+packages/git-span/tests/cases/dirty_differential.rs#L41-L51 rk64:12bec07c955f0c80
+packages/git-span/tests/cases/dirty_differential.rs#L556-L566 rk64:72b16395c0c841bf
+packages/git-span/tests/cases/interior_anchor_parity.rs#L4-L15 rk64:a06d0916299d69a8
+
+resolve_whole_file's I -> W -> H layer_sources order and render_human's extent-dependent collapse precedence must agree on which layer is shallowest-drifted for whole-file anchors, or drift mislabels fully-committed drift as working-tree drift; the parity-test comments in dirty_differential.rs and interior_anchor_parity.rs restate the corrected 'changed in <sha>' label as expected ground truth with nothing but this span catching prose drift if the precedence changes again.
