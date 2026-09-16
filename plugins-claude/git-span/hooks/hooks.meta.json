@@ -1,0 +1,10 @@
+{
+  "files": [
+    "advisor.mjs",
+    "post-tool-use-failure.mjs",
+    "post-tool-use.mjs",
+    "session-end.mjs",
+    "session-start.mjs",
+    "static-plan.mjs"
+  ]
+}

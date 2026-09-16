@@ -791,11 +791,17 @@ impl SpanRootAuthority {
 }
 
 /// Authority for private service state below a per-worktree Git directory.
+///
+/// Linux-only, matching its sole consumer: the private context service. The
+/// retained root is `/tmp/git-span-<uid>`, so construction needs `geteuid`
+/// and the Unix permission bits that [`DirectoryPolicy::Private`] applies.
+#[cfg(target_os = "linux")]
 #[derive(Debug)]
 pub struct RuntimeAuthority {
     directory: RetainedDirectory,
 }
 
+#[cfg(target_os = "linux")]
 impl RuntimeAuthority {
     /// Retain `/tmp/git-span-<uid>/context/<service-key-prefix>` with mode
     /// 0700. The fixed root deliberately ignores `TMPDIR`: environment-selected
@@ -899,9 +905,9 @@ impl RecoveryAuthority {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::{
-        DirectoryPolicy, RecoveryAuthority, RetainedDirectory, RuntimeAuthority, SpanRootAuthority,
-    };
+    use super::{DirectoryPolicy, RecoveryAuthority, RetainedDirectory, SpanRootAuthority};
+    #[cfg(target_os = "linux")]
+    use super::RuntimeAuthority;
     use anyhow::Result;
     use std::ffi::OsStr;
     use std::fs::File;
@@ -988,6 +994,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn runtime_authority_is_private_deterministic_and_survives_leaf_swap() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let key = blake3::hash(temp.path().as_os_str().as_encoded_bytes())
@@ -1021,6 +1028,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn runtime_authority_rejects_non_private_identity_directory() -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
 

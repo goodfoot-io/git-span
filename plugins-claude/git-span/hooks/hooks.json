@@ -9,9 +9,33 @@
             "timeout": 1
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PLUGIN_ROOT\"/hooks/bin/session-start.mjs",
+            "timeout": 1
+          }
+        ]
       }
     ],
     "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PLUGIN_ROOT\"/hooks/bin/advisor.mjs",
+            "timeout": 1
+          },
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PLUGIN_ROOT\"/hooks/bin/static-plan.mjs",
+            "timeout": 1
+          }
+        ],
+        "matcher": "Bash"
+      },
       {
         "hooks": [
           {
@@ -34,6 +58,16 @@
           {
             "type": "command",
             "command": "node \"$CLAUDE_PLUGIN_ROOT\"/hooks/bin/post-tool-use.mjs",
+            "timeout": 1
+          }
+        ],
+        "matcher": "Read|Edit|Write|Bash"
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PLUGIN_ROOT\"/hooks/bin/post-tool-use.mjs",
             "timeout": 10
           }
         ],
@@ -41,6 +75,16 @@
       }
     ],
     "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PLUGIN_ROOT\"/hooks/bin/post-tool-use-failure.mjs",
+            "timeout": 1
+          }
+        ],
+        "matcher": "Bash"
+      },
       {
         "hooks": [
           {
@@ -58,21 +102,19 @@
           {
             "type": "command",
             "command": "node \"$CLAUDE_PLUGIN_ROOT\"/hooks/bin/session-end.mjs",
+            "timeout": 1
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PLUGIN_ROOT\"/hooks/bin/session-end.mjs",
             "timeout": 10
           }
         ]
       }
     ]
-  },
-  "__generated": {
-    "files": [
-      "session-start.mjs",
-      "advisor.mjs",
-      "static-plan.mjs",
-      "post-tool-use.mjs",
-      "post-tool-use-failure.mjs",
-      "session-end.mjs"
-    ],
-    "timestamp": "2026-08-21T02:18:04.244Z"
   }
 }
