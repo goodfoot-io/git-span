@@ -126,13 +126,6 @@ jobs:
     # generated-tree-freshness-gate span watches.
     env:
       CARGO_INCREMENTAL: "0"
-      # The agent-hooks suite cargo-builds the workspace debug binary through
-      # test/real-bundle-helpers.ts, which reads this root and budgets the
-      # build. A cold runner build legitimately exceeds the local-machine
-      # default budget, so raise it; the shared rust-cache line below makes
-      # the warm case cheap.
-      GIT_SPAN_CARGO_TARGET_ROOT: ${{ runner.temp }}/git-span-target
-      GIT_SPAN_CARGO_BUILD_BUDGET_MS: "900000"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -165,7 +158,20 @@ jobs:
       - name: Install dependencies
         run: yarn install
 
+      # The agent-hooks suite cargo-builds the workspace debug binary through
+      # test/real-bundle-helpers.ts, which reads this root and budgets the
+      # build. A cold runner build legitimately exceeds the local-machine
+      # default budget, so raise it; the shared rust-cache step above keeps the
+      # warm case cheap. Both are step-scoped, not job-scoped: job-level env
+      # admits only the github, needs, strategy, matrix, vars, secrets and
+      # inputs contexts, so `${{ runner.temp }}` there made the whole file
+      # unloadable — GitHub registered this workflow by path and emitted
+      # zero-job startup failures on every push while never once running it on
+      # the pull_request event it declares.
       - name: Run the shared pipeline gate set
+        env:
+          GIT_SPAN_CARGO_TARGET_ROOT: ${{ runner.temp }}/git-span-target
+          GIT_SPAN_CARGO_BUILD_BUDGET_MS: "900000"
         run: bash scripts/run-pipeline-gates.sh all
 
   build-extension:
