@@ -9,33 +9,9 @@
             "timeout": 1
           }
         ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PLUGIN_ROOT\"/hooks/bin/session-start.mjs",
-            "timeout": 1
-          }
-        ]
       }
     ],
     "PreToolUse": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PLUGIN_ROOT\"/hooks/bin/advisor.mjs",
-            "timeout": 1
-          },
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PLUGIN_ROOT\"/hooks/bin/static-plan.mjs",
-            "timeout": 1
-          }
-        ],
-        "matcher": "Bash"
-      },
       {
         "hooks": [
           {
@@ -58,16 +34,6 @@
           {
             "type": "command",
             "command": "node \"$CLAUDE_PLUGIN_ROOT\"/hooks/bin/post-tool-use.mjs",
-            "timeout": 1
-          }
-        ],
-        "matcher": "Read|Edit|Write|Bash"
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PLUGIN_ROOT\"/hooks/bin/post-tool-use.mjs",
             "timeout": 10
           }
         ],
@@ -80,16 +46,6 @@
           {
             "type": "command",
             "command": "node \"$CLAUDE_PLUGIN_ROOT\"/hooks/bin/post-tool-use-failure.mjs",
-            "timeout": 1
-          }
-        ],
-        "matcher": "Bash"
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PLUGIN_ROOT\"/hooks/bin/post-tool-use-failure.mjs",
             "timeout": 10
           }
         ],
@@ -97,15 +53,6 @@
       }
     ],
     "SessionEnd": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PLUGIN_ROOT\"/hooks/bin/session-end.mjs",
-            "timeout": 1
-          }
-        ]
-      },
       {
         "hooks": [
           {
