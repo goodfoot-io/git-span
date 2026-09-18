@@ -28,6 +28,7 @@ fn history_succeeds_when_historical_revision_is_malformed() -> Result<()> {
     repo.write_file(".span/my-span", &malformed_content)?;
     repo.run_git(["add", ".span/my-span"])?;
     repo.run_git(["commit", "-m", "commit with malformed span file"])?;
+    let malformed_commit = repo.git_stdout(["rev-parse", "HEAD"])?;
 
     // Commit 3: fixed span file with proper blank line separator
     let fixed_content = format!("{anchor_line}\n\nfixed why with blank line\n");
@@ -39,7 +40,7 @@ fn history_succeeds_when_historical_revision_is_malformed() -> Result<()> {
     let show = repo.run_span(["show", "my-span"])?;
     assert!(show.status.success(), "show must succeed on healthy current state");
 
-    // Reproduce: git span history must not abort with exit 1
+    // History must not abort with exit 1; prints trail and warns to stderr
     let out = repo.run_span(["history", "my-span"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -50,6 +51,20 @@ fn history_succeeds_when_historical_revision_is_malformed() -> Result<()> {
          exit: {:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
         out.status.code()
     );
+    assert!(
+        stderr.contains("warning: historical revision") && stderr.contains(&malformed_commit),
+        "stderr must report the malformed revision as unreadable; stderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("create valid span") && stdout.contains("fix span file with separator"),
+        "stdout must print the span's revision trail; stdout:\n{stdout}"
+    );
+
+    // JSON format also succeeds and returns valid HistoryDocument
+    let json_out = repo.run_span(["history", "my-span", "--format=json"])?;
+    assert!(json_out.status.success(), "history --format=json must succeed");
+    let json: serde_json::Value = serde_json::from_slice(&json_out.stdout)?;
+    assert_eq!(json["span"], "my-span");
 
     Ok(())
 }

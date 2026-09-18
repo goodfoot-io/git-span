@@ -261,6 +261,10 @@ pub struct HistoryReport {
     /// Optional current-drift section (omitted when nothing drifts and the
     /// working tree declaration matches HEAD).
     pub current: Option<CurrentSection>,
+    /// Historical revisions whose `.span` file failed to parse, recorded as
+    /// `(commit_oid, error_message)`. The walk continues past them rather than
+    /// aborting, and a warning is emitted to stderr.
+    pub unreadable_revisions: Vec<(String, String)>,
 }
 
 /// One commit in the history where the span changed observably.
@@ -568,6 +572,8 @@ pub fn run_history(repo: &gix::Repository, args: HistoryArgs, span_root: &str) -
     let mut spans_at: std::collections::HashMap<String, Option<Rc<Span>>> =
         std::collections::HashMap::new();
 
+    let mut unreadable_revisions: Vec<(String, String)> = Vec::new();
+
     let mut seed_paths: Vec<String> = vec![span_path.clone()];
     {
         let _perf = crate::perf::span("history.walk.anchored-paths");
@@ -576,6 +582,18 @@ pub fn run_history(repo: &gix::Repository, args: HistoryArgs, span_root: &str) -
             let parsed = match read_span_at_in(repo, &args.span, Some(&cc.hash), span_root) {
                 Ok(m) => Some(Rc::new(m)),
                 Err(crate::Error::SpanNotFound(_)) => None,
+                Err(crate::Error::InvalidSpanFile(err)) => {
+                    if !unreadable_revisions.iter().any(|(h, _)| h == &cc.hash) {
+                        unreadable_revisions.push((cc.hash.clone(), err));
+                    }
+                    None
+                }
+                Err(crate::Error::SpanConflict { kind, .. }) => {
+                    if !unreadable_revisions.iter().any(|(h, _)| h == &cc.hash) {
+                        unreadable_revisions.push((cc.hash.clone(), format!("git conflict ({kind})")));
+                    }
+                    None
+                }
                 Err(e) => return Err(e.into()),
             };
             let parsed = spans_at.entry(cc.hash.clone()).or_insert(parsed);
@@ -624,6 +642,7 @@ pub fn run_history(repo: &gix::Repository, args: HistoryArgs, span_root: &str) -
             &commits,
             args.limit,
             &mut spans_at,
+            &mut unreadable_revisions,
         )?
     };
 
@@ -635,6 +654,13 @@ pub fn run_history(repo: &gix::Repository, args: HistoryArgs, span_root: &str) -
         eprintln!(
             "warning: history is scoped — `--limit` dropped older commits; \
              this is a partial timeline, not the complete record"
+        );
+    }
+
+    for (hash, err) in &report.unreadable_revisions {
+        eprintln!(
+            "warning: historical revision {hash} for span `{}` is unreadable: {err}",
+            report.span
         );
     }
 
@@ -877,6 +903,7 @@ fn state_at_commit(
     span_root: &str,
     commit_oid: &str,
     spans_at: &mut std::collections::HashMap<String, Option<Rc<Span>>>,
+    unreadable_revisions: &mut Vec<(String, String)>,
 ) -> Result<RenderedState> {
     // `spans_at` memoizes the declaration parse per commit; the discovery
     // pass in `run_history` seeds it, so a declaration-touching commit is
@@ -887,6 +914,18 @@ fn state_at_commit(
             let parsed = match read_span_at_in(repo, span_name, Some(commit_oid), span_root) {
                 Ok(m) => Some(Rc::new(m)),
                 Err(crate::Error::SpanNotFound(_)) => None,
+                Err(crate::Error::InvalidSpanFile(err)) => {
+                    if !unreadable_revisions.iter().any(|(h, _)| h == commit_oid) {
+                        unreadable_revisions.push((commit_oid.to_string(), err));
+                    }
+                    None
+                }
+                Err(crate::Error::SpanConflict { kind, .. }) => {
+                    if !unreadable_revisions.iter().any(|(h, _)| h == commit_oid) {
+                        unreadable_revisions.push((commit_oid.to_string(), format!("git conflict ({kind})")));
+                    }
+                    None
+                }
                 Err(e) => return Err(e.into()),
             };
             spans_at.insert(commit_oid.to_string(), parsed.clone());
@@ -1377,6 +1416,7 @@ fn build_report(
     commits: &[crate::git::CommitChanges],
     limit: Option<usize>,
     spans_at: &mut std::collections::HashMap<String, Option<Rc<Span>>>,
+    unreadable_revisions: &mut Vec<(String, String)>,
 ) -> Result<HistoryReport> {
     let mut sections: Vec<CommitSection> = Vec::new();
 
@@ -1427,7 +1467,7 @@ fn build_report(
             Some(s) => Rc::clone(s),
             None => {
                 let s = Rc::new(state_at_commit(
-                    repo, span_name, span_root, &cc.hash, spans_at,
+                    repo, span_name, span_root, &cc.hash, spans_at, unreadable_revisions,
                 )?);
                 states.insert(cc.hash.clone(), Rc::clone(&s));
                 s
@@ -1451,7 +1491,7 @@ fn build_report(
                 Some(s) => Rc::clone(s),
                 None => {
                     let s = Rc::new(state_at_commit(
-                        repo, span_name, span_root, &parent, spans_at,
+                        repo, span_name, span_root, &parent, spans_at, unreadable_revisions,
                     )?);
                     states.insert(parent, Rc::clone(&s));
                     s
@@ -1530,6 +1570,7 @@ fn build_report(
         scoped,
         commits: sections,
         current,
+        unreadable_revisions: unreadable_revisions.clone(),
     })
 }
 

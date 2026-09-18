@@ -40,11 +40,16 @@ function nodeModulesComments(generated: string): string[] {
 /** The emitted hooks.json parsed from the built output directory. */
 function readHooksJson(outDir: string): {
   hooks: Record<string, { matcher?: string; hooks: { command: string; timeout?: number }[] }[]>;
-  __generated?: { files: string[] };
 } {
   return JSON.parse(readFileSync(join(outDir, 'hooks.json'), 'utf8')) as {
     hooks: Record<string, { matcher?: string; hooks: { command: string; timeout?: number }[] }[]>;
-    __generated?: { files: string[] };
+  };
+}
+
+/** The tracking sidecar emitted beside hooks.json. */
+function readHooksMetaJson(outDir: string): { files: string[] } {
+  return JSON.parse(readFileSync(join(outDir, 'hooks.meta.json'), 'utf8')) as {
+    files: string[];
   };
 }
 
@@ -304,13 +309,13 @@ describe('generated hook bin portability', () => {
       expect(
         out.hooks['PreToolUse']?.[0]?.hooks.map(({ command }) => command.match(/([A-Za-z0-9-]+\.mjs)\b/)?.[1])
       ).toEqual(['advisor.mjs', 'static-plan.mjs']);
-      expect(out.__generated?.files).toEqual([
-        'session-start.mjs',
+      expect(readHooksMetaJson(outDir).files).toEqual([
         'advisor.mjs',
-        'static-plan.mjs',
-        'post-tool-use.mjs',
         'post-tool-use-failure.mjs',
-        'session-end.mjs'
+        'post-tool-use.mjs',
+        'session-end.mjs',
+        'session-start.mjs',
+        'static-plan.mjs'
       ]);
       const expected: [string, string, string][] = [
         ['PreToolUse', 'static-plan.mjs', CLAUDE_STATIC_PLAN_PRE_MATCHER],
