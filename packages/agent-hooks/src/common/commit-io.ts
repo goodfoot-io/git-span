@@ -10,12 +10,14 @@ export interface CommitProcessResult {
 }
 
 export interface CommitGitIO {
-  /** Probe using the frozen absolute Git and original global options before executing the actual command. */
+  /** Probe from the ORIGINAL child cwd with original global options; never apply -C again to effectiveCwd. */
   resolveRepository(
     executable: string,
     globalArguments: readonly string[],
     cwd: string
   ): Promise<CommitValidation<CommitRepository>>;
+  /** Verify the witnessed full SHA resolves to a commit object using the repository actual object format. */
+  validateCommitObject(repository: CommitRepository, sha: string): Promise<CommitValidation<string>>;
   checkpoint(reflogPath: string): Promise<CommitValidation<CommitReflogCheckpoint>>;
   readAppend(
     reflogPath: string,
@@ -58,6 +60,6 @@ export interface CommitClaimIO {
   acquire(key: string, owner: CommitClaimOwner): Promise<boolean>;
   inspect(key: string): Promise<CommitValidation<CommitClaimOwner | null>>;
   liveness(owner: CommitClaimOwner): Promise<CommitOwnerLiveness>;
-  /** Recovery and release compare the exact owner token atomically. */
+  /** Serialize recovery/release before comparing owner tokens; a read-then-unlink race is not sufficient. */
   remove(key: string, expectedOwner: CommitClaimOwner): Promise<boolean>;
 }
