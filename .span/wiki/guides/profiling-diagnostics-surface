@@ -9,6 +9,6 @@ packages/git-span/src/resolver/store/maintenance.rs#L7-L8 rk64:8f13f3a6fc9629bf
 packages/git-span/src/resolver/store/maintenance.rs#L55-L96 rk64:8a1a078b5be3b74e
 packages/git-span/src/resolver/store/mod.rs#L1-L20 rk64:5ff7f3b1be2832ca
 wiki/guides/profiling-git-span-drift.md#L43-L67 rk64:57a277bb51460fc0
-wiki/guides/profiling-git-span-drift.md#L96-L190 rk64:01851c1eaaefc14c
+wiki/guides/profiling-git-span-drift.md#L96-L190 rk64:f93c365e352e545c
 
 The guide's --perf-trace schema and cache-path.* diagnostics describe the emitters and resolver/store lifecycle; its maintenance policy follows the shared sixteen-admission schedule, success-only reset, entry-triggered reconciliation, and immediate publication overlay narrowing.

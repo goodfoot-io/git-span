@@ -178,7 +178,7 @@ The [shared maintenance schedule](../../packages/git-span/src/resolver/store/mai
 | Line | Meaning |
 |------|---------|
 | `cache-path.corruption-recovered: <reason>` | The store quarantined and recreated an incompatible-schema or `SQLITE_CORRUPT` database on open; a silent recovery made reportable. |
-| `cache-path.maintenance-interval` / `cache-path.maintenance-admitted-count` / `cache-path.maintenance-due` | Shared admission interval, durable admitted count, and due flag before the entry's scheduling decision. |
+| `cache-path.maintenance-interval` / `cache-path.maintenance-admitted-count` / `cache-path.maintenance-due` | Shared admission interval, durable admitted count, and due flag after a successful admission commits. On active-owner deferral, count and due observe the current shared state without admitting this entry. |
 | `cache-path.maintain-deferred: <reason>` | An active owner or admission interval defers the pass; storage, count, or completion errors retain progress for retry. Active-owner deferral does not count as admission. |
 | `cache-path.reconcile-executed` / `cache-path.reconcile-restored` | A fresh liveness pass ran; eligible generations at returning worktree HEADs regained protection. Deliberately superseded overlays stay narrowed. |
 | `cache-path.reconcile-demoted` | Generations became non-live during fresh reconciliation or immediate publication overlay narrowing, making them evictable. |

@@ -1171,13 +1171,10 @@ fn key_u32(n: u32) -> [u8; 32] {
     k
 }
 
-/// Faithful in-test model of 6B's production trigger
-/// [`super::super::exact`]`::maybe_maintain`: production reconciles liveness
-/// first (demoting superseded generations — a no-op for every corpus here,
-/// which holds no live generation at a dead head), then the cheap probe —
-/// non-live generations beyond the reuse buffer (card main-224) — gates the
-/// bounded pass, which runs only above the high-water mark. Returns the pass's
-/// stats (all-zero below the water mark, i.e. the probe-only fast path).
+/// Mechanism-only retention model: a non-live count above the reuse buffer
+/// runs the bounded eviction pass; otherwise it returns zero statistics.
+/// This helper does not model shared admissions or worktree discovery.
+/// Exact-entry tests cover production's sixteen-admission scheduling policy.
 fn run_maybe_maintain(store: &mut CacheStore) -> GcStats {
     let over_buffer = store.non_live_generation_count().unwrap() > STORE_REUSE_BUFFER_GENERATIONS;
     if !over_buffer {
@@ -1243,7 +1240,7 @@ fn repeated_identical_state_query_stays_bounded() {
 /// generations, *provided a superseded generation is demoted to non-live* (the
 /// retention signal `maintain` acts on). Each iteration publishes a fresh
 /// distinct-key generation, marks it non-live and aged (modelling a superseded
-/// state), then runs the production trigger. Storage plateaus at the reuse
+/// state), then runs the retention mechanism. Storage plateaus at the reuse
 /// buffer instead of growing linearly with iteration count.
 ///
 /// This isolates `maintain`'s bounding from the liveness-wiring gap that
@@ -1350,15 +1347,10 @@ fn maintain_sweeps_stale_non_live_generations_under_cap() {
     );
 }
 
-/// Faithful in-test model of the PRODUCTION trigger *after the liveness fix*
-/// (card main-157 Phase 6C's measured gap, now closed):
-/// [`super::super::exact`]`::maybe_maintain` — [`CacheStore::reconcile_live_heads`]
-/// against the active worktree HEAD set first (its demotions are what push the
-/// count leg over the water mark on a fresh store, card main-223), then the
-/// count probe, then — only above the high-water mark — [`CacheStore::maintain`].
-/// `live_head` stands in for the git worktree enumeration
-/// [`super::super::exact`]`::reconcile_liveness` performs in production: the
-/// single commit currently checked out.
+/// Mechanism-only liveness/retention model: reconcile the supplied active
+/// HEAD, then evict above the reuse buffer. The supplied HEAD replaces real
+/// worktree discovery; this helper deliberately omits admission scheduling.
+/// Exact-entry tests cover production's sixteen-admission scheduling policy.
 fn run_maybe_maintain_reconciled(store: &mut CacheStore, live_head: &str) -> GcStats {
     let live: HashSet<String> = std::iter::once(live_head.to_string()).collect();
     // Moving-HEAD model: rule 1 (superseded-head demotion) alone drives this
@@ -1430,22 +1422,11 @@ fn reconcile_live_heads_demotes_only_superseded() {
     );
 }
 
-/// FIXED: repeated current-version commits cannot grow the store without bound.
-/// Models 6B's production wiring literally — [`super::super::exact`]`::publish_
-/// if_eligible` always publishes `live: true` at the current HEAD — and adds the
-/// missing production step this card wires in: before the quota pass,
-/// [`CacheStore::reconcile_live_heads`] demotes every generation whose HEAD is
-/// no longer checked out (a superseded commit), so [`CacheStore::maintain`]'s
-/// `WHERE live = 0` candidate filter finally has something to reclaim.
-///
-/// A sequence of distinct current-version states — a developer committing
-/// repeatedly, each commit a fresh HEAD and a fresh canonical key — now
-/// plateaus at the reuse buffer instead of climbing linearly with the commit
-/// count. This is the direct before/after of the measured gap that
-/// `phase-6-lifecycle-measurement.md` documented: the same 16 KiB-per-generation
-/// live-publish sequence that reached 10.8x a byte cap with zero reclamation
-/// now bounds itself, because reconciliation feeds `maintain` the superseded
-/// generations the unfixed wiring never demoted.
+/// Mechanism-only retention model for generations with superseded HEAD hints.
+/// Publishing live records, explicitly reconciling each supplied HEAD, and
+/// invoking eviction above the reuse buffer demonstrates bounded retention
+/// after successful reconciliation. It does not model production timing:
+/// exact-entry tests cover the sixteen-admission schedule and its deferrals.
 #[test]
 fn superseded_generations_reconciled_and_evicted() {
     let dir = tmp();
@@ -1454,17 +1435,17 @@ fn superseded_generations_reconciled_and_evicted() {
     let mut sizes = Vec::new();
     let mut removed_total = 0u64;
     for n in 0..160u32 {
-        // Exactly what publish_if_eligible does: a distinct key, live = true,
-        // at the just-committed HEAD.
+        // Model a distinct live publication with a new HEAD hint; no repository
+        // commits or production scheduling participate in this fixture.
         let head = format!("head-{n}");
         let mut input = make_big_input(key_u32(n), 16 * 1024, 1);
         input.head = head.clone();
         input.live = true;
         store.publish_generation(&input).unwrap();
 
-        // The production trigger, faithfully ordered: reconcile against the one
-        // checked-out HEAD (the prior commits are no longer live), then run the
-        // bounded quota pass.
+        // Exercise the mechanisms directly: reconcile the supplied active HEAD
+        // and reclaim beyond the buffer. Production admits and defers entries
+        // before these mechanisms run.
         let stats = run_maybe_maintain_reconciled(&mut store, &head);
         removed_total += stats.generations_removed;
         sizes.push(store.database_size_bytes().unwrap());
@@ -1499,22 +1480,12 @@ fn superseded_generations_reconciled_and_evicted() {
     );
 }
 
-/// FIXED (card main-157 F2): dirty-state churn at a *single, unchanging* HEAD
-/// cannot grow the store without bound. The moving-HEAD test above supersedes
-/// each generation by moving to a fresh commit; this one never moves — it holds
-/// one HEAD fixed and publishes many distinct summary-only overlays, exactly a
-/// developer (or an editor extension running `git span drift` on save) sitting
-/// on one commit and producing many distinct dirty worktree states.
-///
-/// Head-scoped liveness alone leaves every same-head overlay permanently live,
-/// so [`CacheStore::eviction_candidates`]' `WHERE live = 0` filter never sees
-/// them and the store climbs linearly with the churn count (the measured 496%
-/// -of-cap, still-climbing gap). The same-head demotion rule
-/// [`CacheStore::reconcile_live_heads`] now applies when a current `(head, key)`
-/// is supplied — demote every live summary-only overlay at the current head
-/// other than the current key — bounds the working set: the current overlay and
-/// the rows-bearing clean baseline the overlays reuse from stay live; abandoned
-/// prior overlays become evictable.
+/// Mechanism-only same-HEAD overlay retention model. Explicit reconciliation
+/// with the current key narrows obsolete summary-only overlays, while the
+/// current overlay and rows-bearing baseline remain live. Direct eviction
+/// then bounds abandoned-overlay retention by the reuse buffer.
+/// Production narrows overlays immediately after publication and schedules
+/// full reconciliation separately; exact-entry tests cover those admissions.
 #[test]
 fn same_head_dirty_churn_reconciled_and_evicted() {
     let dir = tmp();
@@ -1537,8 +1508,8 @@ fn same_head_dirty_churn_reconciled_and_evicted() {
     let mut last_overlay = baseline;
     // Dirty-state churn: the HEAD never moves. Each iteration is a distinct
     // dirty worktree state -> a distinct canonical key -> a summary-only overlay
-    // published `live` at the *same* head (exactly the dirty path of
-    // `exact::publish_if_eligible`).
+    // published live at the same HEAD hint. This is a retention-mechanism
+    // fixture, independent of production entry scheduling.
     for n in 1..=200u32 {
         let overlay = key_u32(n);
         last_overlay = overlay;
@@ -1547,13 +1518,9 @@ fn same_head_dirty_churn_reconciled_and_evicted() {
         input.live = true;
         store.publish_generation_summary_only(&input).unwrap();
 
-        // The production trigger, faithfully ordered (card main-223): reconcile
-        // first — the just-published current (head, key) scopes the same-head
-        // rule that demotes every prior overlay — then the count probe, then
-        // the bounded quota pass above the high-water mark. Reconciliation must
-        // precede the probe: every overlay here publishes `live`, so the
-        // non-live count can never cross the reuse buffer on its own — the
-        // demotions from this call are what feed the count leg.
+        // Exercise narrowing and retention directly. The current key narrows
+        // prior overlays before the count probe and eviction; this fixture
+        // does not represent production's separately scheduled full discovery.
         let live: HashSet<String> = std::iter::once(head.to_string()).collect();
         store
             .reconcile_live_heads(&live, Some((head, &overlay)))
