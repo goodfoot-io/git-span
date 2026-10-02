@@ -1,5 +1,6 @@
 /** Claude failed Bash events routed through the static touch driver. */
 
+import { dirname, join } from 'node:path';
 import {
   type HookContext,
   type PostToolUseFailureInput,
@@ -12,6 +13,7 @@ import {
   failureBashResponse,
   runLayeredBashTouches
 } from '../common/bash-attribution.js';
+import { type CommitRuntimeOptions, terminalCommitInvocation } from '../common/commit-runtime.js';
 import { createDiskMemoStore, type MemoFactory } from '../common/span-surface.js';
 import { createDefaultTouchExecutors, type TouchExecutors } from '../common/touch-core.js';
 import { disableUpdateCheck } from '../common/update-check-env.js';
@@ -20,15 +22,35 @@ import { narrowCommand } from './static-plan.js';
 export function createHandler(
   executors: TouchExecutors = createDefaultTouchExecutors(),
   memoFactory: MemoFactory = createDiskMemoStore,
-  layout: SessionLayout = DEFAULT_SESSION_LAYOUT
+  layout: SessionLayout = DEFAULT_SESSION_LAYOUT,
+  runtimeOptions: CommitRuntimeOptions = {}
 ) {
+  const options = { stateRoot: join(dirname(layout.base), 'commit-receipts'), ...runtimeOptions };
   return async (input: PostToolUseFailureInput, ctx: HookContext) => {
+    let original: Awaited<ReturnType<typeof terminalCommitInvocation>>['original'] = null;
+    if (input.tool_name === 'Bash' && input.session_id && input.tool_use_id) {
+      try {
+        original = (
+          await terminalCommitInvocation(
+            {
+              host: 'claude',
+              sessionId: input.session_id,
+              toolUseId: input.tool_use_id
+            },
+            options,
+            ctx.logger
+          )
+        ).original;
+      } catch (err) {
+        ctx.logger.warn('git-span terminal commit attribution failed', { err });
+      }
+    }
     try {
-      const command = narrowCommand(input.tool_input);
+      const command = original?.command ?? narrowCommand(input.tool_input);
       if (command === null) return null;
       const blocks = await runLayeredBashTouches(
         command,
-        input.cwd ?? '',
+        original?.cwd ?? input.cwd ?? '',
         input.session_id,
         input.tool_use_id,
         failureBashResponse(input),
@@ -52,4 +74,4 @@ export function createHandler(
 // runs so every `git span` child inherits the env var.
 disableUpdateCheck();
 
-export default postToolUseFailureHook({ matcher: 'Bash', timeout: 10_000 }, createHandler());
+export default postToolUseFailureHook({ matcher: 'Bash', timeout: 15_000 }, createHandler());

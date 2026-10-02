@@ -1,6 +1,6 @@
 /** Codex PostToolUse adapter for shell and apply_patch static attribution. */
 
-import { resolve as resolvePath } from 'node:path';
+import { dirname, join, resolve as resolvePath } from 'node:path';
 import {
   type HookContext,
   type PostToolUseInput,
@@ -20,6 +20,7 @@ import {
   normalizeBashResponse,
   runLayeredBashTouches
 } from '../common/bash-attribution.js';
+import { type CommitRuntimeOptions, terminalCommitInvocation } from '../common/commit-runtime.js';
 import { createDiskMemoStore, type MemoFactory } from '../common/span-surface.js';
 import type { PlannedTouchRecord } from '../common/static-attribution.js';
 import { createDefaultTouchExecutors, type TouchExecutors } from '../common/touch-core.js';
@@ -147,14 +148,34 @@ function plannedPatchCandidates(record: PlannedTouchRecord | null, cwd: string):
 export function createHandler(
   executors: TouchExecutors = createDefaultTouchExecutors(),
   memoFactory: MemoFactory = createDiskMemoStore,
-  layout: SessionLayout = DEFAULT_SESSION_LAYOUT
+  layout: SessionLayout = DEFAULT_SESSION_LAYOUT,
+  runtimeOptions: CommitRuntimeOptions = {}
 ) {
+  const options = { stateRoot: join(dirname(layout.base), 'commit-receipts'), ...runtimeOptions };
   return async (input: PostToolUseInput, ctx: HookContext) => {
-    const cwd = input.cwd ?? '';
+    let original: Awaited<ReturnType<typeof terminalCommitInvocation>>['original'] = null;
+    if (input.tool_name === 'Bash' && input.session_id && input.tool_use_id) {
+      try {
+        original = (
+          await terminalCommitInvocation(
+            {
+              host: 'codex',
+              sessionId: input.session_id,
+              toolUseId: input.tool_use_id
+            },
+            options,
+            ctx.logger
+          )
+        ).original;
+      } catch (err) {
+        ctx.logger.warn('git-span terminal commit attribution failed', { err });
+      }
+    }
+    const cwd = original?.cwd ?? input.cwd ?? '';
     const sessionId = input.session_id;
     const memo = memoFactory(ctx.logger, layout);
     if (['Bash', 'shell', 'local_shell', 'exec_command', 'exec'].includes(input.tool_name)) {
-      let command = extractShellCommand(input.tool_input);
+      let command = original?.command ?? extractShellCommand(input.tool_input);
       let workdir: string | null = null;
       if (command === null) {
         const classic = narrowExecCommand(input.tool_input);
@@ -224,6 +245,6 @@ export const SNAPSHOT_POST_MATCHER = STATIC_POST_MATCHER;
 disableUpdateCheck();
 
 export default postToolUseHook(
-  { matcher: 'apply_patch|exec_command|exec|shell|local_shell|Bash', timeout: 10_000 },
+  { matcher: 'apply_patch|exec_command|exec|shell|local_shell|Bash', timeout: 15_000 },
   createHandler()
 );

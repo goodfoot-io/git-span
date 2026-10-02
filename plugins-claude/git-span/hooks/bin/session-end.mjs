@@ -6,6 +6,9 @@ const require = __createRequire(import.meta.url);
 const __filename = __fileURLToPath(import.meta.url);
 const __dirname = __pathDirname(__filename);
 
+// packages/agent-hooks/src/claude/session-end.ts
+import { dirname as dirname4, join as join5 } from "node:path";
+
 // node_modules/@goodfoot/agent-hooks/dist/core/logger.js
 import { closeSync, existsSync, mkdirSync, openSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
@@ -520,17 +523,17 @@ var EXIT_CODES = {
 
 // node_modules/@goodfoot/agent-hooks/dist/core/stdin.js
 async function readStdin() {
-  return new Promise((resolve2, reject) => {
+  return new Promise((resolve4, reject2) => {
     const chunks = [];
     process.stdin.setEncoding("utf-8");
     process.stdin.on("data", (chunk) => {
       chunks.push(chunk);
     });
     process.stdin.on("end", () => {
-      resolve2(chunks.join(""));
+      resolve4(chunks.join(""));
     });
     process.stdin.on("error", (error) => {
-      reject(error);
+      reject2(error);
     });
   });
 }
@@ -828,13 +831,634 @@ function cleanupSessionState(layout, sessionId, now = Date.now()) {
   }
 }
 
+// packages/agent-hooks/src/common/commit-runtime.ts
+import { randomBytes as randomBytes2 } from "node:crypto";
+import { chmodSync, existsSync as existsSync5, lstatSync as lstatSync3, readFileSync as readFileSync2, realpathSync as realpathSync3, rmSync as rmSync3, writeFileSync as writeFileSync2 } from "node:fs";
+import { homedir as homedir2 } from "node:os";
+import { isAbsolute as isAbsolute5, join as join4 } from "node:path";
+
+// packages/agent-hooks/src/common/commit-association.ts
+import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
+function object(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function noteDocument(value) {
+  if (!object(value) || value.schemaVersion !== 1 || value.host !== "claude" && value.host !== "codex") return null;
+  if (typeof value.sessionId !== "string" || value.sessionId.length === 0 || value.sessionId.length > 4096 || value.sessionId.includes("\0"))
+    return null;
+  if (Object.keys(value).some((key2) => !["schemaVersion", "host", "sessionId", "transcriptLocator"].includes(key2)))
+    return null;
+  if (value.transcriptLocator !== void 0 && (typeof value.transcriptLocator !== "string" || value.transcriptLocator.length === 0 || value.transcriptLocator.length > 4096 || value.transcriptLocator.includes("\0")))
+    return null;
+  return {
+    schemaVersion: 1,
+    host: value.host,
+    sessionId: value.sessionId,
+    ...value.transcriptLocator === void 0 ? {} : { transcriptLocator: value.transcriptLocator }
+  };
+}
+function commitAssociationKey(receipt, document) {
+  return createHash("sha256").update(JSON.stringify([receipt.repository.commonDirectory, document.host, document.sessionId, receipt.sha])).digest("hex");
+}
+function selectCommitAssociation(document, existing) {
+  if (!noteDocument(document)) return { kind: "reject", reason: "invalid association document" };
+  const matches = [];
+  for (const note of existing) {
+    const value = noteDocument(note.document);
+    if (value && value.host === document.host && value.sessionId === document.sessionId) matches.push(value);
+  }
+  if (matches.length > 1) return { kind: "reject", reason: "ambiguous existing commit associations" };
+  if (matches.length === 0) return { kind: "add", document };
+  const original = matches[0];
+  return {
+    kind: "reuse",
+    document: original,
+    locatorConflict: document.transcriptLocator !== void 0 && original.transcriptLocator !== document.transcriptLocator
+  };
+}
+function validateEnvelope(value, sha, operation) {
+  const reject2 = (reason) => ({ ok: false, reason });
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(sha) || /^0+$/.test(sha)) return reject2("invalid full SHA selection");
+  if (!object(value) || value.schema_version !== 1 || value.operation !== operation || !Array.isArray(value.notes))
+    return reject2("invalid notes CLI envelope");
+  const result = [];
+  const ids = /* @__PURE__ */ new Set();
+  for (const note of value.notes) {
+    if (!object(note) || typeof note.id !== "number" || !Number.isSafeInteger(note.id) || note.id <= 0 || ids.has(note.id) || note.commit_sha !== sha || !Object.hasOwn(note, "document") || note.document === void 0) {
+      return reject2("invalid exact-SHA notes record");
+    }
+    ids.add(note.id);
+    result.push({ document: note.document });
+  }
+  return { ok: true, value: result };
+}
+function validateCommitNotesList(value, sha) {
+  return validateEnvelope(value, sha, "list");
+}
+function validateCommitNotesAdd(value, sha, document) {
+  const envelope = validateEnvelope(value, sha, "add");
+  if (!envelope.ok) return envelope;
+  if (envelope.value.length !== 1 || !noteDocument(document) || !isDeepStrictEqual(envelope.value[0].document, document)) {
+    return { ok: false, reason: "notes acknowledgment does not match frozen document" };
+  }
+  return { ok: true, value: document };
+}
+
+// packages/agent-hooks/src/common/commit-contracts.ts
+import { isAbsolute } from "node:path";
+function object2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function text(value, max = 4096) {
+  return typeof value === "string" && value.length > 0 && value.length <= max && !value.includes("\0");
+}
+function absolute(value) {
+  return text(value) && isAbsolute(value);
+}
+function key(value) {
+  return text(value, 256) && /^[a-zA-Z0-9_-]+$/.test(value);
+}
+function reject(reason) {
+  return { ok: false, reason };
+}
+function validateCommitEnrollment(value) {
+  if (!object2(value) || value.schemaVersion !== 1) return reject("invalid enrollment schema");
+  if (value.host !== "claude" && value.host !== "codex") return reject("unsupported commit host");
+  if (!key(value.invocationKey) || !text(value.sessionId) || !text(value.toolUseId)) {
+    return reject("invalid invocation identity");
+  }
+  if (!absolute(value.cwd) || !absolute(value.gitExecutable)) return reject("enrollment paths must be absolute");
+  if (!object2(value.originalInput) || !text(value.originalCommand, 1048576)) {
+    return reject("invalid original tool input");
+  }
+  if (value.transcriptLocator !== void 0 && !text(value.transcriptLocator))
+    return reject("invalid transcript locator");
+  try {
+    if (Buffer.byteLength(JSON.stringify(value.originalInput)) > 1048576)
+      return reject("original input exceeds budget");
+  } catch {
+    return reject("original input is not serializable");
+  }
+  const enrollment = {
+    schemaVersion: 1,
+    invocationKey: value.invocationKey,
+    host: value.host,
+    sessionId: value.sessionId,
+    toolUseId: value.toolUseId,
+    originalInput: value.originalInput,
+    originalCommand: value.originalCommand,
+    cwd: value.cwd,
+    gitExecutable: value.gitExecutable,
+    ...value.transcriptLocator === void 0 ? {} : { transcriptLocator: value.transcriptLocator }
+  };
+  return { ok: true, value: enrollment };
+}
+function validateCommitReceipt(value, enrollment) {
+  if (!object2(value) || value.schemaVersion !== 1 || value.invocationKey !== enrollment.invocationKey || !key(value.nonce)) {
+    return reject("invalid receipt identity");
+  }
+  const repo = value.repository;
+  if (!object2(repo) || !absolute(repo.cwd) || !absolute(repo.gitDirectory) || !absolute(repo.commonDirectory) || !absolute(repo.headReflog)) {
+    return reject("receipt repository paths must be absolute");
+  }
+  if (repo.objectFormat !== "sha1" && repo.objectFormat !== "sha256") return reject("unsupported object format");
+  const pattern = repo.objectFormat === "sha1" ? /^[0-9a-f]{40}$/ : /^[0-9a-f]{64}$/;
+  if (typeof value.sha !== "string" || !pattern.test(value.sha) || /^0+$/.test(value.sha))
+    return reject("invalid full commit SHA");
+  return {
+    ok: true,
+    value: {
+      schemaVersion: 1,
+      invocationKey: value.invocationKey,
+      nonce: value.nonce,
+      sha: value.sha,
+      repository: {
+        cwd: repo.cwd,
+        gitDirectory: repo.gitDirectory,
+        commonDirectory: repo.commonDirectory,
+        headReflog: repo.headReflog,
+        objectFormat: repo.objectFormat
+      }
+    }
+  };
+}
+function createCommitNoteDocument(enrollment) {
+  return {
+    schemaVersion: 1,
+    host: enrollment.host,
+    sessionId: enrollment.sessionId,
+    ...enrollment.transcriptLocator === void 0 ? {} : { transcriptLocator: enrollment.transcriptLocator }
+  };
+}
+function serializeCommitNoteDocument(document) {
+  return JSON.stringify({
+    schemaVersion: document.schemaVersion,
+    host: document.host,
+    sessionId: document.sessionId,
+    ...document.transcriptLocator === void 0 ? {} : { transcriptLocator: document.transcriptLocator }
+  });
+}
+
+// packages/agent-hooks/src/common/commit-git.ts
+import { isAbsolute as isAbsolute2, resolve as resolve2 } from "node:path";
+
+// packages/agent-hooks/src/common/commit-lifecycle.ts
+var COMMIT_RECEIPT_LIMITS = {
+  reflogBytes: 1048576,
+  receiptsPerInvocation: 256,
+  bytesPerInvocation: 4194304,
+  invocations: 4096,
+  totalBytes: 67108864,
+  abandonedRetentionMs: 864e5,
+  drainMs: 3e3,
+  cliMs: 2e3
+};
+function decideCommitClaim(owner, liveness, remainingMs) {
+  if (!Number.isFinite(remainingMs) || remainingMs <= 0) return "refuse";
+  if (owner === null) return "acquire";
+  if (!Number.isSafeInteger(owner.pid) || owner.pid <= 0 || !/^[a-zA-Z0-9_-]{1,256}$/.test(owner.token))
+    return "refuse";
+  if (liveness === "dead") return "recover";
+  return liveness === "alive" ? "wait" : "refuse";
+}
+function commitCliBudgetMs(phaseStartedMs, nowMs) {
+  if (!Number.isFinite(phaseStartedMs) || !Number.isFinite(nowMs) || nowMs < phaseStartedMs) return 0;
+  return Math.max(
+    0,
+    Math.floor(Math.min(COMMIT_RECEIPT_LIMITS.cliMs, COMMIT_RECEIPT_LIMITS.drainMs - (nowMs - phaseStartedMs)))
+  );
+}
+
+// packages/agent-hooks/src/common/commit-native-io.ts
+import { spawn, spawnSync } from "node:child_process";
+import {
+  accessSync,
+  closeSync as closeSync2,
+  constants,
+  existsSync as existsSync3,
+  fstatSync,
+  lstatSync,
+  openSync as openSync2,
+  readSync,
+  realpathSync as realpathSync2
+} from "node:fs";
+import { delimiter, isAbsolute as isAbsolute3, join as join2, resolve as resolve3 } from "node:path";
+import { StringDecoder } from "node:string_decoder";
+async function executeCommitNotes(executable, command) {
+  return new Promise((resolveResult) => {
+    let stdout = "";
+    let stderr = "";
+    let bytes = 0;
+    const stdoutDecoder = new StringDecoder("utf8");
+    const stderrDecoder = new StringDecoder("utf8");
+    let timedOut = false;
+    let outputExceeded = false;
+    let finished = false;
+    const grouped = process.platform !== "win32";
+    const child = spawn(executable, [...command.argv], {
+      cwd: command.cwd,
+      detached: grouped,
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+    const finish = (exitCode, signal) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      stdout += stdoutDecoder.end();
+      stderr += stderrDecoder.end();
+      child.stdin.destroy();
+      child.stdout.destroy();
+      child.stderr.destroy();
+      resolveResult({ exitCode, signal, stdout, stderr, timedOut, outputExceeded });
+    };
+    const terminate = () => {
+      try {
+        if (grouped && child.pid !== void 0) process.kill(-child.pid, "SIGKILL");
+        else child.kill("SIGKILL");
+      } catch {
+      }
+      finish(null, "SIGKILL");
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      terminate();
+    }, command.timeoutMs);
+    const append = (kind, chunk) => {
+      bytes += chunk.length;
+      if (bytes > command.maxOutputBytes) {
+        outputExceeded = true;
+        terminate();
+        return;
+      }
+      if (kind === "stdout") stdout += stdoutDecoder.write(chunk);
+      else stderr += stderrDecoder.write(chunk);
+    };
+    child.stdout.on("data", (chunk) => append("stdout", chunk));
+    child.stderr.on("data", (chunk) => append("stderr", chunk));
+    child.stdin.on("error", () => {
+    });
+    child.stdin.end(command.stdin ?? "");
+    child.once("error", () => finish(127, null));
+    child.once("close", (exitCode, signal) => finish(exitCode, signal));
+  });
+}
+
+// packages/agent-hooks/src/common/commit-storage.ts
+import { createHash as createHash2, randomBytes } from "node:crypto";
+import {
+  closeSync as closeSync3,
+  existsSync as existsSync4,
+  linkSync,
+  lstatSync as lstatSync2,
+  mkdirSync as mkdirSync3,
+  opendirSync,
+  openSync as openSync3,
+  readFileSync,
+  renameSync as renameSync2,
+  rmSync as rmSync2,
+  unlinkSync,
+  writeFileSync
+} from "node:fs";
+import { dirname as dirname3, isAbsolute as isAbsolute4, join as join3 } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+function privateDirectory(path) {
+  if (!isAbsolute4(path)) throw new Error("receipt state root must be absolute");
+  mkdirSync3(path, { recursive: true, mode: 448 });
+  const stat = lstatSync2(path);
+  if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 63) !== 0 || process.getuid && stat.uid !== process.getuid()) {
+    throw new Error("receipt directory is not private");
+  }
+}
+function readJson(path, maximumBytes = 1048576) {
+  const stat = lstatSync2(path);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > maximumBytes)
+    throw new Error("invalid bounded receipt file");
+  return JSON.parse(readFileSync(path, "utf8"));
+}
+function atomicJson(path, value, immutable = false) {
+  const temporary = join3(dirname3(path), `.publish-${randomBytes(16).toString("hex")}`);
+  try {
+    writeFileSync(temporary, JSON.stringify(value), { mode: 384, flag: "wx" });
+    if (immutable) linkSync(temporary, path);
+    else renameSync2(temporary, path);
+  } finally {
+    rmSync2(temporary, { force: true });
+  }
+}
+function boundedEntries(directory, cap, deadline = Infinity) {
+  if (!existsSync4(directory)) return [];
+  const stream = opendirSync(directory);
+  const names = [];
+  try {
+    for (; ; ) {
+      if (performance.now() >= deadline) throw new Error("receipt phase deadline exhausted");
+      const entry = stream.readSync();
+      if (!entry) break;
+      if (names.length >= cap) throw new Error("receipt entry count exceeds budget");
+      names.push(entry.name);
+    }
+  } finally {
+    stream.closeSync();
+  }
+  return names;
+}
+function ownerLiveness(owner) {
+  try {
+    process.kill(owner.pid, 0);
+    return "alive";
+  } catch (error) {
+    return error.code === "ESRCH" ? "dead" : "uncertain";
+  }
+}
+function ownerRecord(value) {
+  if (typeof value !== "object" || value === null) return null;
+  const owner = value;
+  return typeof owner.token === "string" && /^[a-zA-Z0-9_-]{1,256}$/.test(owner.token) && typeof owner.pid === "number" && Number.isSafeInteger(owner.pid) && owner.pid > 0 ? owner : null;
+}
+async function acquireReceiptClaim(root, key2, deadline) {
+  if (!/^[a-zA-Z0-9_-]+$/.test(key2)) throw new Error("invalid receipt claim key");
+  const directory = join3(root, "claims");
+  privateDirectory(directory);
+  const path = join3(directory, `${key2}.json`);
+  const guard = join3(directory, `${key2}.guard`);
+  const owner = { token: randomBytes(16).toString("hex"), pid: process.pid };
+  while (performance.now() < deadline) {
+    let guarded = false;
+    try {
+      try {
+        mkdirSync3(guard, { mode: 448 });
+        guarded = true;
+      } catch (error) {
+        if (error.code !== "EEXIST") throw error;
+        return null;
+      }
+      let prior = null;
+      if (existsSync4(path)) {
+        prior = ownerRecord(readJson(path, 4096));
+        if (prior === null) return null;
+      }
+      const decision = decideCommitClaim(
+        prior,
+        prior === null ? "uncertain" : ownerLiveness(prior),
+        deadline - performance.now()
+      );
+      if (decision === "acquire" || decision === "recover") {
+        if (prior !== null) unlinkSync(path);
+        atomicJson(path, owner, true);
+        return {
+          owner,
+          release: () => {
+            let releaseGuard = false;
+            try {
+              mkdirSync3(guard, { mode: 448 });
+              releaseGuard = true;
+              const current = ownerRecord(readJson(path, 4096));
+              if (current?.token !== owner.token || current.pid !== owner.pid)
+                throw new Error("receipt claim ownership changed");
+              unlinkSync(path);
+            } finally {
+              if (releaseGuard) rmSync2(guard, { recursive: true });
+            }
+          }
+        };
+      }
+      if (decision === "refuse") return null;
+    } finally {
+      if (guarded) rmSync2(guard, { recursive: true });
+    }
+    await delay(Math.min(20, Math.max(0, deadline - performance.now())));
+  }
+  return null;
+}
+async function reserveReceiptCapacity(root, invocationDelta, byteDelta, deadline) {
+  const claim = await acquireReceiptClaim(root, "capacity", deadline);
+  if (!claim) return false;
+  try {
+    const path = join3(root, "usage.json");
+    let usage = { invocations: 0, totalBytes: 0 };
+    if (existsSync4(path)) usage = readJson(path, 4096);
+    if (!Number.isSafeInteger(usage.invocations) || !Number.isSafeInteger(usage.totalBytes) || usage.invocations < 0 || usage.totalBytes < 0)
+      return false;
+    const next = { invocations: usage.invocations + invocationDelta, totalBytes: usage.totalBytes + byteDelta };
+    if (next.invocations < 0 || next.invocations > COMMIT_RECEIPT_LIMITS.invocations || next.totalBytes < 0 || next.totalBytes > COMMIT_RECEIPT_LIMITS.totalBytes)
+      return false;
+    atomicJson(path, next);
+    return true;
+  } finally {
+    claim.release();
+  }
+}
+
+// packages/agent-hooks/src/common/commit-runtime.ts
+async function cleanupCommitInvocations(host, sessionId, options = {}, logger2) {
+  const root = receiptRoot(options);
+  const started = performance.now();
+  const deadline = started + COMMIT_RECEIPT_LIMITS.drainMs;
+  const result = { acknowledged: 0, pending: 0, retired: 0 };
+  if (!existsSync5(join4(root, "invocations"))) return result;
+  try {
+    for (const key2 of boundedEntries(join4(root, "invocations"), COMMIT_RECEIPT_LIMITS.invocations, deadline)) {
+      if (performance.now() >= deadline) {
+        logger2?.warn("git-span commit receipts: cleanup deadline exhausted");
+        break;
+      }
+      const directory = join4(root, "invocations", key2);
+      const valid = validateCommitEnrollment(readJson(join4(directory, "enrollment.json")));
+      if (!valid.ok) {
+        logger2?.warn(`git-span commit receipts: ${valid.reason}`);
+        continue;
+      }
+      const claim = await acquireReceiptClaim(root, `invocation-${key2}`, deadline);
+      if (!claim) {
+        logger2?.warn("git-span commit receipts: cleanup invocation ownership unavailable");
+        continue;
+      }
+      try {
+        const state = readState(directory, valid.value);
+        const abandoned = Date.now() - state.lastActivityMs >= COMMIT_RECEIPT_LIMITS.abandonedRetentionMs;
+        if (abandoned && (state.status !== "active" || !invocationIsLive(directory))) {
+          const usage = readUsage(directory);
+          logger2?.warn("git-span commit receipts: expired abandoned state and pending evidence");
+          if (await reserveReceiptCapacity(root, -1, -usage.bytes, deadline)) {
+            rmSync3(directory, { recursive: true });
+            result.retired++;
+          }
+          continue;
+        }
+        if (valid.value.host !== host || valid.value.sessionId !== sessionId || state.status === "active") continue;
+        if (state.status === "retired") continue;
+        const drained = await drainDirectory(root, directory, valid.value, options, started, logger2);
+        result.acknowledged += drained.acknowledged;
+        result.pending += drained.pending;
+        if (drained.pending === 0) {
+          atomicJson(join4(directory, "state.json"), {
+            ...state,
+            status: "retired",
+            pendingNonces: [],
+            liveLease: false,
+            lastActivityMs: Date.now()
+          });
+          result.retired++;
+        }
+      } finally {
+        claim.release();
+      }
+    }
+  } catch (error) {
+    logger2?.warn(`git-span commit receipts: ${errorMessage(error)}`);
+  }
+  return result;
+}
+function receiptRoot(options) {
+  return options.stateRoot ?? join4(homedir2(), ".cache", "git-span", "commit-receipts");
+}
+function errorMessage(error) {
+  return (error instanceof Error ? error.message : String(error)).slice(0, 512);
+}
+function readState(directory, enrollment) {
+  const value = readJson(join4(directory, "state.json"));
+  if (!["active", "completed", "acknowledged", "retired"].includes(value.status) || !Array.isArray(value.pendingNonces) || value.pendingNonces.length > COMMIT_RECEIPT_LIMITS.receiptsPerInvocation || !Number.isFinite(value.lastActivityMs) || value.enrollment.invocationKey !== enrollment.invocationKey)
+    throw new Error("invalid private invocation lifecycle");
+  return value;
+}
+function readUsage(directory) {
+  const usage = readJson(join4(directory, "usage.json"), 4096);
+  if (!Number.isSafeInteger(usage.bytes) || usage.bytes < 0 || !Number.isSafeInteger(usage.receipts) || usage.receipts < 0)
+    throw new Error("invalid invocation usage");
+  return usage;
+}
+function invocationIsLive(directory) {
+  try {
+    if (!existsSync5(join4(directory, "lease"))) return false;
+    const lease = readFileSync2(join4(directory, "lease"), "utf8");
+    if (lease === "") return false;
+    const pid = Number(lease);
+    if (!Number.isSafeInteger(pid) || pid <= 0) return true;
+    return ownerLiveness({ token: "lease", pid }) !== "dead";
+  } catch {
+    return true;
+  }
+}
+async function drainDirectory(root, directory, enrollment, options, started, logger2) {
+  const deadline = started + COMMIT_RECEIPT_LIMITS.drainMs;
+  let acknowledged = 0;
+  const names = boundedEntries(join4(directory, "receipts"), COMMIT_RECEIPT_LIMITS.receiptsPerInvocation, deadline);
+  for (const name of names) {
+    if (performance.now() >= deadline) {
+      logger2?.warn("git-span commit receipts: receipt drain deadline exhausted");
+      break;
+    }
+    try {
+      if (!/^receipt-[a-f0-9]+\.json$/.test(name)) throw new Error("invalid receipt filename");
+      const valid = validateCommitReceipt(readJson(join4(directory, "receipts", name)), enrollment);
+      if (!valid.ok) throw new Error(valid.reason);
+      const document = createCommitNoteDocument(enrollment);
+      const association = await acquireReceiptClaim(
+        root,
+        `association-${commitAssociationKey(valid.value, document)}`,
+        deadline
+      );
+      if (!association) throw new Error("commit association ownership unavailable");
+      try {
+        const list = await invokeNotes(
+          enrollment,
+          valid.value,
+          options,
+          ["list", valid.value.sha, "--exact", "--format", "json"],
+          void 0,
+          started
+        );
+        const existing = validateCommitNotesList(JSON.parse(list), valid.value.sha);
+        if (!existing.ok) throw new Error(existing.reason);
+        const selected = selectCommitAssociation(document, existing.value);
+        if (selected.kind === "reject") throw new Error(selected.reason);
+        if (selected.kind === "reuse") {
+          if (selected.locatorConflict)
+            logger2?.warn("git-span commit receipts: conflicting transcript locator; existing association retained");
+        } else {
+          const added = await invokeNotes(
+            enrollment,
+            valid.value,
+            options,
+            ["add", valid.value.sha, "--format", "json"],
+            serializeCommitNoteDocument(selected.document),
+            started
+          );
+          const confirmation = validateCommitNotesAdd(JSON.parse(added), valid.value.sha, selected.document);
+          if (!confirmation.ok) throw new Error(confirmation.reason);
+        }
+        if (performance.now() >= deadline) throw new Error("receipt drain deadline exhausted before acknowledgment");
+        const usage = readUsage(directory);
+        const bytes = lstatSync3(join4(directory, "receipts", name)).size;
+        rmSync3(join4(directory, "receipts", name));
+        atomicJson(join4(directory, "usage.json"), {
+          bytes: usage.bytes - bytes,
+          receipts: Math.max(0, usage.receipts - 1)
+        });
+        await reserveReceiptCapacity(root, 0, -bytes, deadline);
+        acknowledged++;
+      } finally {
+        association.release();
+      }
+    } catch (error) {
+      logger2?.warn(`git-span commit receipts: ${errorMessage(error)}`);
+    }
+  }
+  const pendingNames = boundedEntries(join4(directory, "receipts"), COMMIT_RECEIPT_LIMITS.receiptsPerInvocation);
+  const state = readState(directory, enrollment);
+  atomicJson(join4(directory, "state.json"), {
+    ...state,
+    status: pendingNames.length === 0 ? "acknowledged" : "completed",
+    pendingNonces: pendingNames.map((name) => name.replace(/\.json$/, "")),
+    liveLease: false,
+    lastActivityMs: Date.now()
+  });
+  if (existsSync5(join4(directory, "diagnostics.json"))) {
+    const diagnostics = readJson(join4(directory, "diagnostics.json"), 16384);
+    if (Array.isArray(diagnostics)) {
+      for (const message of diagnostics)
+        if (typeof message === "string") logger2?.warn(`git-span commit receipts: ${message.slice(0, 512)}`);
+    }
+    rmSync3(join4(directory, "diagnostics.json"));
+  }
+  return { acknowledged, pending: pendingNames.length };
+}
+async function invokeNotes(enrollment, receipt, options, args, stdin, started) {
+  const timeoutMs = commitCliBudgetMs(started, performance.now());
+  if (timeoutMs <= 0) throw new Error("receipt drain deadline exhausted");
+  const command = {
+    cwd: receipt.repository.commonDirectory,
+    argv: options.notesExecutable === void 0 ? ["span", "notes", ...args] : ["notes", ...args],
+    ...stdin === void 0 ? {} : { stdin },
+    timeoutMs,
+    maxOutputBytes: 1048576
+  };
+  const result = await (options.notesIO?.execute(command) ?? executeCommitNotes(options.notesExecutable ?? enrollment.gitExecutable, command));
+  if (result.exitCode !== 0 || result.signal !== null || result.timedOut || result.outputExceeded)
+    throw new Error(
+      result.timedOut ? "notes CLI timed out; receipt retained" : "notes CLI unavailable or failed; receipt retained"
+    );
+  return result.stdout;
+}
+
 // packages/agent-hooks/src/common/update-check-env.ts
 function disableUpdateCheck() {
   process.env.GIT_SPAN_DISABLE_UPDATE_CHECK = "1";
 }
 
 // packages/agent-hooks/src/claude/session-end.ts
-var createHandler = (layout = DEFAULT_SESSION_LAYOUT) => async (input, ctx) => {
+var createHandler = (layout = DEFAULT_SESSION_LAYOUT, runtimeOptions = {}) => async (input, ctx) => {
+  try {
+    await cleanupCommitInvocations(
+      "claude",
+      input.session_id,
+      { stateRoot: join5(dirname4(layout.base), "commit-receipts"), ...runtimeOptions },
+      ctx.logger
+    );
+  } catch (err) {
+    ctx.logger.warn("git-span completed commit receipt cleanup failed", { err });
+  }
   try {
     cleanupSessionState(layout, input.session_id);
     return null;

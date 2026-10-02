@@ -23,7 +23,7 @@
  * never weakened, the expectations stand for a future phase.
  */
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Logger as ClaudeLogger } from '@goodfoot/agent-hooks/claude-code';
@@ -433,6 +433,12 @@ describe('cross-adapter contract — identical touch call sequences (Phase 3)', 
         toolUseId: 'failed-claude-tool',
         plan: createClaudePlanHandler(layout),
         post: createClaudeFailureHandler(undefined, inMemoryMemoFactory(), layout)
+      },
+      {
+        sessionId: 'failed-codex',
+        toolUseId: 'failed-codex-tool',
+        plan: createCodexPlanHandler(layout),
+        post: createCodexHandler(undefined, inMemoryMemoFactory(), layout)
       }
     ];
     for (const fixture of cases) {
@@ -449,51 +455,31 @@ describe('cross-adapter contract — identical touch call sequences (Phase 3)', 
         warn: (message: string) => warnings.push(message),
         info: () => undefined
       };
-      await fixture.plan(input as never, { logger: testLogger } as never);
+      const planned = await fixture.plan(input as never, { logger: testLogger } as never);
+      const updatedInput = (planned?.stdout as { hookSpecificOutput?: { updatedInput?: { command?: string } } })
+        ?.hookSpecificOutput?.updatedInput;
+      expect(typeof updatedInput?.command, fixture.sessionId).toBe('string');
+      if (typeof updatedInput?.command !== 'string') throw new Error('expected actual pre-hook command replacement');
       expect(
         existsSync(join(layout.base, fixture.sessionId, 'planned-touches', `${fixture.toolUseId}.json`)),
         fixture.sessionId
       ).toBe(true);
-      writeFileSync(
-        join(repoA.root, 'f'),
-        `${Array.from({ length: TOTAL }, (_, i) => (i === 6 ? 'changed' : `line ${i + 1}`)).join('\n')}\n`
-      );
+      const execution = spawnSync('/bin/bash', ['-c', updatedInput.command], { cwd: repoA.root, encoding: 'utf8' });
+      expect(execution, fixture.sessionId).toMatchObject({ status: 1, stdout: '', stderr: '' });
       recorded.calls.length = 0;
-      await fixture.post(input as never, { logger: testLogger } as never);
+      await fixture.post(
+        {
+          ...input,
+          tool_input: updatedInput,
+          tool_response: { output: execution.stdout, exitStatus: execution.status }
+        } as never,
+        { logger: testLogger } as never
+      );
       expect(warnings, fixture.sessionId).toEqual([]);
       expect(recorded.calls, fixture.sessionId).toEqual([
         { filePath: join(repoA.root, 'f'), cwd: repoA.root, offset: undefined, limit: undefined, written: '' }
       ]);
     }
-
-    writeFileSync(join(repoA.root, 'f'), `${Array.from({ length: TOTAL }, (_, i) => `line ${i + 1}`).join('\n')}\n`);
-    const codexInput = {
-      session_id: 'failed-codex',
-      tool_use_id: 'failed-codex-tool',
-      cwd: repoA.root,
-      tool_name: 'Bash',
-      tool_input: { command },
-      tool_response: { output: '', exitStatus: 1 }
-    };
-    await createCodexPlanHandler(layout)(codexInput as never, { logger: codexLogger } as never);
-    writeFileSync(
-      join(repoA.root, 'f'),
-      `${Array.from({ length: TOTAL }, (_, i) => (i === 6 ? 'changed' : `line ${i + 1}`)).join('\n')}\n`
-    );
-    recorded.calls.length = 0;
-    await createCodexHandler(
-      undefined,
-      inMemoryMemoFactory(),
-      layout
-    )(
-      codexInput as never,
-      {
-        logger: codexLogger
-      } as never
-    );
-    expect(recorded.calls).toEqual([
-      { filePath: join(repoA.root, 'f'), cwd: repoA.root, offset: undefined, limit: undefined, written: '' }
-    ]);
   });
 
   /**

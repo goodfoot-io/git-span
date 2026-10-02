@@ -160,10 +160,10 @@ export function validateCommitCreationEvidence(evidence: CommitCreationEvidence)
   if (checkpoint.existed && (checkpoint.device !== append.device || checkpoint.inode !== append.inode)) {
     return reject('reflog replaced');
   }
+  if (append.exceededBudget || append.bytes.byteLength > 1_048_576) return reject('reflog evidence exceeds budget');
   if (append.fileSize < checkpoint.offset || append.fileSize - checkpoint.offset !== append.bytes.byteLength) {
     return reject('reflog truncated or incomplete read');
   }
-  if (append.exceededBudget || append.bytes.byteLength > 1_048_576) return reject('reflog evidence exceeds budget');
   const length = evidence.objectFormat === 'sha1' ? 40 : 64;
   const header = new RegExp(`^([0-9a-f]{${length}}) ([0-9a-f]{${length}}) .+ <[^>]*> [0-9]+ [+-][0-9]{4}$`);
   const text = new TextDecoder().decode(append.bytes);

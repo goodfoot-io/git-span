@@ -7,6 +7,7 @@
  * against the post-command index before touching spans.
  */
 
+import { dirname, join } from 'node:path';
 import {
   type HookContext,
   type PostToolUseInput,
@@ -15,6 +16,7 @@ import {
 } from '@goodfoot/agent-hooks/claude-code';
 import { DEFAULT_SESSION_LAYOUT, derivePath, type SessionLayout } from '../common/agent-hooks-common.js';
 import { createDefaultPlannedTouchStore, postTrackedValue, runLayeredBashTouches } from '../common/bash-attribution.js';
+import { type CommitRuntimeOptions, terminalCommitInvocation } from '../common/commit-runtime.js';
 import { createDiskMemoStore, type MemoFactory } from '../common/span-surface.js';
 import {
   createDefaultTouchExecutors,
@@ -69,14 +71,34 @@ function toTouchInput(
 export function createHandler(
   executors: TouchExecutors = createDefaultTouchExecutors(),
   memoFactory: MemoFactory = createDiskMemoStore,
-  layout: SessionLayout = DEFAULT_SESSION_LAYOUT
+  layout: SessionLayout = DEFAULT_SESSION_LAYOUT,
+  runtimeOptions: CommitRuntimeOptions = {}
 ) {
+  const options = { stateRoot: join(dirname(layout.base), 'commit-receipts'), ...runtimeOptions };
   return async (input: PostToolUseInput, ctx: HookContext) => {
+    let original: Awaited<ReturnType<typeof terminalCommitInvocation>>['original'] = null;
+    if (input.tool_name === 'Bash' && input.session_id && input.tool_use_id) {
+      try {
+        original = (
+          await terminalCommitInvocation(
+            {
+              host: 'claude',
+              sessionId: input.session_id,
+              toolUseId: input.tool_use_id
+            },
+            options,
+            ctx.logger
+          )
+        ).original;
+      } catch (err) {
+        ctx.logger.warn('git-span terminal commit attribution failed', { err });
+      }
+    }
     const sessionId = input.session_id;
-    const cwd = input.cwd ?? '';
+    const cwd = original?.cwd ?? input.cwd ?? '';
     const memo = memoFactory(ctx.logger, layout);
     if (input.tool_name === 'Bash') {
-      const command = narrowCommand(input.tool_input);
+      const command = original?.command ?? narrowCommand(input.tool_input);
       if (command === null) return null;
       const blocks = await runLayeredBashTouches(
         command,
@@ -125,4 +147,4 @@ export function createHandler(
 // runs so every `git span` child inherits the env var.
 disableUpdateCheck();
 
-export default postToolUseHook({ matcher: 'Read|Edit|Write|Bash', timeout: 10_000 }, createHandler());
+export default postToolUseHook({ matcher: 'Read|Edit|Write|Bash', timeout: 15_000 }, createHandler());

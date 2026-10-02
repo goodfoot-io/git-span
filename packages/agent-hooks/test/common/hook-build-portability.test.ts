@@ -388,13 +388,13 @@ describe('generated hook bin portability', () => {
       // ceiling instead of ~10s. Pin every converted value so a wrapper
       // regression fails loudly here.
       expect(groupFor(out, 'SessionStart', 'session-start.mjs')?.hooks[0]?.timeout).toBe(1);
-      for (const [event, bundle] of [
-        ['PreToolUse', 'static-plan.mjs'],
-        ['PostToolUse', 'post-tool-use.mjs'],
-        ['PostToolUseFailure', 'post-tool-use-failure.mjs'],
-        ['SessionEnd', 'session-end.mjs']
+      for (const [event, bundle, timeout] of [
+        ['PreToolUse', 'static-plan.mjs', 10],
+        ['PostToolUse', 'post-tool-use.mjs', 15],
+        ['PostToolUseFailure', 'post-tool-use-failure.mjs', 15],
+        ['SessionEnd', 'session-end.mjs', 10]
       ] as const) {
-        expect(groupFor(out, event, bundle)?.hooks[0]?.timeout, `${event} ${bundle} timeout`).toBe(10);
+        expect(groupFor(out, event, bundle)?.hooks[0]?.timeout, `${event} ${bundle} timeout`).toBe(timeout);
       }
     } finally {
       rmSync(outDir, { recursive: true, force: true });

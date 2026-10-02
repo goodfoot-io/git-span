@@ -40,7 +40,7 @@
           {
             "type": "command",
             "command": "node \"${PLUGIN_ROOT}/hooks/post-tool-use.mjs\"",
-            "timeout": 10
+            "timeout": 15
           }
         ]
       }

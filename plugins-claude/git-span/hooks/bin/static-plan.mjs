@@ -6,6 +6,10 @@ const require = __createRequire(import.meta.url);
 const __filename = __fileURLToPath(import.meta.url);
 const __dirname = __pathDirname(__filename);
 
+// packages/agent-hooks/src/claude/static-plan.ts
+import { dirname as dirname8, join as join10 } from "node:path";
+import { fileURLToPath } from "node:url";
+
 // node_modules/@goodfoot/agent-hooks/dist/core/logger.js
 import { closeSync, existsSync, mkdirSync, openSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
@@ -517,20 +521,28 @@ var EXIT_CODES = {
   /** Handler threw exception OR blocking action requested. stderr shown to Claude. */
   BLOCK: 2
 };
+function createHookSpecificOutputBuilder(hookType) {
+  return (options = {}) => {
+    const { hookSpecificOutput, ...rest } = options;
+    const stdout = hookSpecificOutput !== void 0 ? { ...rest, hookSpecificOutput: { hookEventName: hookType, ...hookSpecificOutput } } : rest;
+    return { _type: hookType, stdout };
+  };
+}
+var preToolUseOutput = /* @__PURE__ */ createHookSpecificOutputBuilder("PreToolUse");
 
 // node_modules/@goodfoot/agent-hooks/dist/core/stdin.js
 async function readStdin() {
-  return new Promise((resolve3, reject) => {
+  return new Promise((resolve5, reject2) => {
     const chunks = [];
     process.stdin.setEncoding("utf-8");
     process.stdin.on("data", (chunk) => {
       chunks.push(chunk);
     });
     process.stdin.on("end", () => {
-      resolve3(chunks.join(""));
+      resolve5(chunks.join(""));
     });
     process.stdin.on("error", (error) => {
-      reject(error);
+      reject2(error);
     });
   });
 }
@@ -1058,13 +1070,13 @@ function unconsumedPipeOp(s) {
   return (s.pendingOp === "pipe" || s.pendingOp === "and" || s.pendingOp === "or") && s.buf.trim() === "";
 }
 function appendStage(s, nextOp) {
-  const text = s.buf.trim();
-  if (text) {
-    if (s.pendingOp === "pipe" && (text === "!" || /^!\s/.test(text))) {
+  const text2 = s.buf.trim();
+  if (text2) {
+    if (s.pendingOp === "pipe" && (text2 === "!" || /^!\s/.test(text2))) {
       rejectList(s, "pipe-bang");
       return;
     }
-    s.parts.push({ text, precededBy: s.pendingOp, ...s.bufHeredoc ? { heredoc: true } : {} });
+    s.parts.push({ text: text2, precededBy: s.pendingOp, ...s.bufHeredoc ? { heredoc: true } : {} });
   }
   s.buf = "";
   s.bufHeredoc = false;
@@ -1598,11 +1610,11 @@ function flushWord(t) {
   t.quoted = false;
 }
 function appendQuotedContent(t, out, start) {
-  const quote = t.src[start];
+  const quote2 = t.src[start];
   let j = start + 1;
   while (j < t.n) {
     const c = t.src[j];
-    if (quote === "'") {
+    if (quote2 === "'") {
       if (c === "'") return { out, next: j + 1 };
       out += c;
       j += 1;
@@ -1748,8 +1760,8 @@ function tokenize(s) {
   }
   return finishTokenizeScan(t);
 }
-function redirectAttachedTarget(text) {
-  const match = text.match(/^(\d*)(<<<|<<-|&>>|<<|>>|&>|>&|<|>)(.*)$/);
+function redirectAttachedTarget(text2) {
+  const match = text2.match(/^(\d*)(<<<|<<-|&>>|<<|>>|&>|>&|<|>)(.*)$/);
   if (match === null) return null;
   const [, , , rest] = match;
   return rest.length > 0 ? rest : null;
@@ -1796,9 +1808,9 @@ function parseUnifiedDiffRange(patchText, strip) {
   let renameTo = null;
   let binary = false;
   const stripped = (raw) => {
-    const text = headerPathText(raw);
-    if (text === "/dev/null") return text;
-    return stripPathComponents(text, stripLevelFor(text, strip));
+    const text2 = headerPathText(raw);
+    if (text2 === "/dev/null") return text2;
+    return stripPathComponents(text2, stripLevelFor(text2, strip));
   };
   const finish = () => {
     if (current !== null) {
@@ -2159,9 +2171,9 @@ function findHeredocOpener(raw, from) {
     while (k < n && !/\s/.test(raw[k]) && raw[k] !== "<" && raw[k] !== ">") {
       const c = raw[k];
       if (c === "'" || c === '"') {
-        const quote = c;
+        const quote2 = c;
         let m = k + 1;
-        while (m < n && raw[m] !== quote) {
+        while (m < n && raw[m] !== quote2) {
           d += raw[m];
           m += 1;
         }
@@ -2345,8 +2357,8 @@ function extractHeredocWrites(raw) {
   return { writes, masked };
 }
 var REDIRECT_TOKEN = /^(\d*)(<<<|<<-|&>>|<<|>>|&>|>&|<|>)(.*)$/;
-function classifyRedirectToken(text) {
-  const m = text.match(REDIRECT_TOKEN);
+function classifyRedirectToken(text2) {
+  const m = text2.match(REDIRECT_TOKEN);
   if (m === null) return null;
   const [, fdText, op, target] = m;
   return {
@@ -2440,7 +2452,7 @@ function teeOperandParts(argv) {
   }
   return { append, operands };
 }
-function matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join7, results) {
+function matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join11, results) {
   const parts = teeOperandParts(argv);
   if (parts === null) return;
   for (const operand of parts.operands) {
@@ -2453,23 +2465,23 @@ function matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex,
         operation: "create-overwrite",
         absolutePath,
         simpleCommandIndex,
-        join: join7,
+        join: join11,
         ...pipeEchoContent !== null ? { written: pipeEchoContent } : {}
       } : {
         operation: "append",
         absolutePath,
         simpleCommandIndex,
-        join: join7,
+        join: join11,
         ...pipeEchoContent !== null ? { written: pipeEchoContent } : {}
       }
     });
   }
 }
-function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpleCommandIndex, join7, results) {
+function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpleCommandIndex, join11, results) {
   const contentRedirects = redirects.filter(isContentRedirect);
   const host = argv[0];
   if (contentRedirects.length === 0) {
-    if (host === "tee") matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join7, results);
+    if (host === "tee") matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join11, results);
     return;
   }
   if (host === void 0 || host === ":" || host === "exec") {
@@ -2480,7 +2492,7 @@ function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpl
       results.push({
         status: "resolved",
         idiom: "truncate-write",
-        span: { operation: "truncate", absolutePath, simpleCommandIndex, join: join7 }
+        span: { operation: "truncate", absolutePath, simpleCommandIndex, join: join11 }
       });
     }
     return;
@@ -2502,7 +2514,7 @@ function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpl
           operation: "append",
           absolutePath,
           simpleCommandIndex,
-          join: join7,
+          join: join11,
           ...threadedAppend !== void 0 ? { written: threadedAppend } : {}
         }
       });
@@ -2514,13 +2526,13 @@ function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpl
           operation: "create-overwrite",
           absolutePath,
           simpleCommandIndex,
-          join: join7,
+          join: join11,
           ...threadedOverwrite !== void 0 ? { written: threadedOverwrite } : {}
         }
       });
     }
   }
-  if (host === "tee") matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join7, results);
+  if (host === "tee") matchTeeOperands(argv, pipeEchoContent, currentDir, simpleCommandIndex, join11, results);
 }
 var FOREIGN_WRAPPERS = /* @__PURE__ */ new Set(["sudo", "xargs", "nohup", "time", "nice", "doas"]);
 var ASSIGNMENT_TOKEN = /^[A-Za-z_][A-Za-z0-9_]*=/;
@@ -2629,12 +2641,12 @@ function copyMoveParts(args, spec) {
   }
   return { operands, targetDir };
 }
-function emitSourceSpan(results, spec, absolutePath, simpleCommandIndex, join7) {
+function emitSourceSpan(results, spec, absolutePath, simpleCommandIndex, join11) {
   if (spec.sourceOperation === "delete") {
     results.push({
       status: "resolved",
       idiom: spec.idiom,
-      span: { operation: "delete", absolutePath, simpleCommandIndex, join: join7 }
+      span: { operation: "delete", absolutePath, simpleCommandIndex, join: join11 }
     });
     return;
   }
@@ -2642,17 +2654,17 @@ function emitSourceSpan(results, spec, absolutePath, simpleCommandIndex, join7) 
   results.push({
     status: "resolved",
     idiom: spec.idiom,
-    span: range === null ? { operation: "read", absolutePath, simpleCommandIndex, join: join7 } : {
+    span: range === null ? { operation: "read", absolutePath, simpleCommandIndex, join: join11 } : {
       operation: "read",
       lineStart: range.lineStart,
       lineEnd: range.lineEnd,
       absolutePath,
       simpleCommandIndex,
-      join: join7
+      join: join11
     }
   });
 }
-function matchCopyMoveFamily(argv, dirForResolution, simpleCommandIndex, join7, results) {
+function matchCopyMoveFamily(argv, dirForResolution, simpleCommandIndex, join11, results) {
   const rest = stripTransparentWrapper(argv);
   if (rest.length === 0) return;
   const command = rest[0];
@@ -2720,20 +2732,20 @@ function matchCopyMoveFamily(argv, dirForResolution, simpleCommandIndex, join7, 
     destPaths = destIsDir ? sourcePaths.map((p) => joinPath(destAbs, basename2(p))) : [destAbs];
   }
   for (let k = 0; k < sourcePaths.length; k++) {
-    emitSourceSpan(results, spec, sourcePaths[k], simpleCommandIndex, join7);
+    emitSourceSpan(results, spec, sourcePaths[k], simpleCommandIndex, join11);
   }
   for (let k = 0; k < sourcePaths.length; k++) {
     results.push({
       status: "resolved",
       idiom: spec.idiom,
-      span: { operation: spec.destOperation, absolutePath: destPaths[k], simpleCommandIndex, join: join7 }
+      span: { operation: spec.destOperation, absolutePath: destPaths[k], simpleCommandIndex, join: join11 }
     });
   }
 }
 var RM_NO_VALUE = /* @__PURE__ */ new Set(["-f", "-i", "-v"]);
 var RM_EXCLUDED = /* @__PURE__ */ new Set(["-r", "-R", "--recursive", "-d"]);
 var GIT_RM_EXCLUDED = /* @__PURE__ */ new Set(["-r", "-R", "--recursive", "-d", "-n", "--dry-run"]);
-function matchRmOperands(args, excluded, excludeCached, dir, simpleCommandIndex, join7, results) {
+function matchRmOperands(args, excluded, excludeCached, dir, simpleCommandIndex, join11, results) {
   let afterDashDash = false;
   const operands = [];
   for (const a of args) {
@@ -2759,7 +2771,7 @@ function matchRmOperands(args, excluded, excludeCached, dir, simpleCommandIndex,
     results.push({
       status: "resolved",
       idiom: "rm-write",
-      span: { operation: "delete", absolutePath: resolvePath(dir, operand), simpleCommandIndex, join: join7 }
+      span: { operation: "delete", absolutePath: resolvePath(dir, operand), simpleCommandIndex, join: join11 }
     });
   }
 }
@@ -2771,7 +2783,7 @@ function evaluateStaticSize(value) {
   const mult = m[2] === "K" ? 1024 : m[2] === "M" ? 1024 ** 2 : m[2] === "G" ? 1024 ** 3 : 1;
   return base * mult;
 }
-function matchTruncateOperands(args, dir, simpleCommandIndex, join7, results) {
+function matchTruncateOperands(args, dir, simpleCommandIndex, join11, results) {
   let sawSizeFlag = false;
   let afterDashDash = false;
   let staticSize;
@@ -2816,22 +2828,22 @@ function matchTruncateOperands(args, dir, simpleCommandIndex, join7, results) {
         operation: "truncate",
         absolutePath: resolvePath(dir, operand.path),
         simpleCommandIndex,
-        join: join7,
+        join: join11,
         ...operand.size !== void 0 ? { size: operand.size } : {}
       }
     });
   }
 }
-function matchRmTruncate(argv, dirForResolution, simpleCommandIndex, join7, results) {
+function matchRmTruncate(argv, dirForResolution, simpleCommandIndex, join11, results) {
   const rest = stripTransparentWrapper(argv);
   if (rest.length === 0) return;
   const command = rest[0];
   if (command === "rm") {
-    matchRmOperands(rest.slice(1), RM_EXCLUDED, false, dirForResolution, simpleCommandIndex, join7, results);
+    matchRmOperands(rest.slice(1), RM_EXCLUDED, false, dirForResolution, simpleCommandIndex, join11, results);
     return;
   }
   if (command === "truncate") {
-    matchTruncateOperands(rest.slice(1), dirForResolution, simpleCommandIndex, join7, results);
+    matchTruncateOperands(rest.slice(1), dirForResolution, simpleCommandIndex, join11, results);
     return;
   }
   if (command === "git") {
@@ -2847,7 +2859,7 @@ function matchRmTruncate(argv, dirForResolution, simpleCommandIndex, join7, resu
         true,
         sub.cDir ?? dirForResolution,
         simpleCommandIndex,
-        join7,
+        join11,
         results
       );
     }
@@ -2875,7 +2887,7 @@ function heredocBodyIsLiteral(body) {
   }
   return true;
 }
-function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleCommandIndex, join7, results) {
+function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleCommandIndex, join11, results) {
   const bodyLiteral = quotedDelim || heredocBodyIsLiteral(body);
   const tokens = tokenize(stripLeadingAssignments(opener).trim());
   if (tokens === null) return;
@@ -2898,7 +2910,7 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
             operation: "append",
             absolutePath,
             simpleCommandIndex,
-            join: join7,
+            join: join11,
             ...singlePlainAppend && r.op === ">>" && bodyLiteral ? { written: body } : {}
           }
         });
@@ -2906,11 +2918,11 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
         results.push({
           status: "resolved",
           idiom: "heredoc-write",
-          span: body.length === 0 ? { operation: "truncate", absolutePath, simpleCommandIndex, join: join7 } : {
+          span: body.length === 0 ? { operation: "truncate", absolutePath, simpleCommandIndex, join: join11 } : {
             operation: "create-overwrite",
             absolutePath,
             simpleCommandIndex,
-            join: join7,
+            join: join11,
             // The exact gate compares full file bytes, so the trailing
             // `\n` the extraction stripped comes back on the overwrite.
             ...singlePlainOverwrite && bodyLiteral ? { written: `${body}
@@ -2939,7 +2951,7 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
               operation: "append",
               absolutePath,
               simpleCommandIndex,
-              join: join7,
+              join: join11,
               ...contentRedirects.length === 0 && bodyLiteral ? { written: body } : {}
             }
           });
@@ -2947,11 +2959,11 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
           results.push({
             status: "resolved",
             idiom: "heredoc-write",
-            span: body.length === 0 ? { operation: "truncate", absolutePath, simpleCommandIndex, join: join7 } : {
+            span: body.length === 0 ? { operation: "truncate", absolutePath, simpleCommandIndex, join: join11 } : {
               operation: "create-overwrite",
               absolutePath,
               simpleCommandIndex,
-              join: join7,
+              join: join11,
               // Same restored-`\n` exact body as the redirect branch; a
               // tee operand with a content redirect present keeps the
               // redirect's threading only (mirror of the append branch).
@@ -2966,18 +2978,18 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
     return;
   }
   if (host === "patch" || host === "git") {
-    classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join7, results);
+    classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join11, results);
     return;
   }
 }
 var NUMERIC_SUBSTITUTION = /^(\d+)(?:,(\d+))?[sy]/;
 var UNRESTRICTED_SUBSTITUTION = /^[sy]/;
-function matchSedInplace(argv, dirForResolution, simpleCommandIndex, join7, results) {
+function matchSedInplace(argv, dirForResolution, simpleCommandIndex, join11, results) {
   const rest = stripTransparentWrapper(argv);
   if (rest.length === 0) return;
   const command = rest[0];
   if (command === "sed") {
-    matchSedInplaceArgs(rest.slice(1), dirForResolution, simpleCommandIndex, join7, results);
+    matchSedInplaceArgs(rest.slice(1), dirForResolution, simpleCommandIndex, join11, results);
     return;
   }
   if (FOREIGN_WRAPPERS.has(command)) {
@@ -2988,7 +3000,7 @@ function matchSedInplace(argv, dirForResolution, simpleCommandIndex, join7, resu
   }
 }
 var SED_SCRIPT_SHAPE = /^(?:[A-Za-z]|\d|\/|\\|\$|~)/;
-function matchSedInplaceArgs(args, dir, simpleCommandIndex, join7, results) {
+function matchSedInplaceArgs(args, dir, simpleCommandIndex, join11, results) {
   let suffix = null;
   let sawInplace = false;
   let i = 0;
@@ -3111,20 +3123,20 @@ function matchSedInplaceArgs(args, dir, simpleCommandIndex, join7, results) {
       results.push({
         status: "resolved",
         idiom: "sed-inplace",
-        span: { operation: "modify", lineStart: start, lineEnd: end, absolutePath, simpleCommandIndex, join: join7 }
+        span: { operation: "modify", lineStart: start, lineEnd: end, absolutePath, simpleCommandIndex, join: join11 }
       });
     } else {
       results.push({
         status: "resolved",
         idiom: "sed-inplace",
-        span: { operation: "modify", absolutePath, simpleCommandIndex, join: join7 }
+        span: { operation: "modify", absolutePath, simpleCommandIndex, join: join11 }
       });
     }
     if (suffix !== null && suffix !== "") {
       results.push({
         status: "resolved",
         idiom: "sed-inplace",
-        span: { operation: "create-overwrite", absolutePath: `${absolutePath}${suffix}`, simpleCommandIndex, join: join7 }
+        span: { operation: "create-overwrite", absolutePath: `${absolutePath}${suffix}`, simpleCommandIndex, join: join11 }
       });
     }
   }
@@ -3209,7 +3221,7 @@ function readPatchFile(absolutePath) {
     return null;
   }
 }
-function emitPatchTargets(args, isGitApply, host, targetDir, shellDir, redirects, simpleCommandIndex, join7, results) {
+function emitPatchTargets(args, isGitApply, host, targetDir, shellDir, redirects, simpleCommandIndex, join11, results) {
   const parts = patchApplyParts(args, isGitApply);
   if (parts.readOnly || parts.cachedOnly) return;
   if (parts.directory) {
@@ -3267,13 +3279,13 @@ function emitPatchTargets(args, isGitApply, host, targetDir, shellDir, redirects
         operation: t.operation,
         absolutePath,
         simpleCommandIndex,
-        join: join7,
+        join: join11,
         ...t.lineStart !== void 0 ? { lineStart: t.lineStart, lineEnd: t.lineEnd } : {}
       }
     });
   }
 }
-function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, join7, results) {
+function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, join11, results) {
   const rest = stripTransparentWrapper(argv);
   if (rest.length === 0) return;
   const command = rest[0];
@@ -3286,7 +3298,7 @@ function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, 
       dirForResolution,
       redirects,
       simpleCommandIndex,
-      join7,
+      join11,
       results
     );
     return;
@@ -3306,7 +3318,7 @@ function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, 
       dirForResolution,
       redirects,
       simpleCommandIndex,
-      join7,
+      join11,
       results
     );
     return;
@@ -3318,7 +3330,7 @@ function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, 
     }
   }
 }
-function classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join7, results) {
+function classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join11, results) {
   const rest = stripTransparentWrapper(argv);
   if (rest.length === 0) return;
   const command = rest[0];
@@ -3361,7 +3373,7 @@ function classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join7,
         operation: t.operation,
         absolutePath,
         simpleCommandIndex,
-        join: join7,
+        join: join11,
         ...t.lineStart !== void 0 ? { lineStart: t.lineStart, lineEnd: t.lineEnd } : {}
       }
     });
@@ -3432,7 +3444,7 @@ function stripPackageRunner(argv) {
   if (wrapped.startsWith("-") || wrapped.startsWith(".") || /\s/.test(wrapped)) return { kind: "obscured" };
   return { kind: "stripped", stripped: rest };
 }
-function matchFormatter(argv, dirForResolution, simpleCommandIndex, join7, results) {
+function matchFormatter(argv, dirForResolution, simpleCommandIndex, join11, results) {
   const rest = stripTransparentWrapper(argv);
   if (rest.length === 0) return;
   let words = rest;
@@ -3494,12 +3506,12 @@ function matchFormatter(argv, dirForResolution, simpleCommandIndex, join7, resul
     results.push({
       status: "resolved",
       idiom: "formatter-write",
-      span: { operation: "modify", absolutePath: resolvePath(dirForResolution, operand), simpleCommandIndex, join: join7 }
+      span: { operation: "modify", absolutePath: resolvePath(dirForResolution, operand), simpleCommandIndex, join: join11 }
     });
   }
 }
 var RESTORE_NO_VALUE = /* @__PURE__ */ new Set(["-q", "-f", "-u"]);
-function emitRestoreCheckoutPathspec(results, idiom, operand, dir, simpleCommandIndex, join7) {
+function emitRestoreCheckoutPathspec(results, idiom, operand, dir, simpleCommandIndex, join11) {
   if (looksUnresolvable(operand)) {
     pushUnresolved(results, idiom, operand, "path contains an unexpanded shell variable or glob");
     return;
@@ -3517,10 +3529,10 @@ function emitRestoreCheckoutPathspec(results, idiom, operand, dir, simpleCommand
   results.push({
     status: "resolved",
     idiom,
-    span: { operation: "create-overwrite", absolutePath, simpleCommandIndex, join: join7 }
+    span: { operation: "create-overwrite", absolutePath, simpleCommandIndex, join: join11 }
   });
 }
-function matchRestoreOperands(args, dir, simpleCommandIndex, join7, results) {
+function matchRestoreOperands(args, dir, simpleCommandIndex, join11, results) {
   let staged = false;
   let worktree = false;
   let afterDashDash = false;
@@ -3564,10 +3576,10 @@ function matchRestoreOperands(args, dir, simpleCommandIndex, join7, results) {
   }
   if (staged && !worktree) return;
   for (const operand of operands) {
-    emitRestoreCheckoutPathspec(results, "git-restore-write", operand, dir, simpleCommandIndex, join7);
+    emitRestoreCheckoutPathspec(results, "git-restore-write", operand, dir, simpleCommandIndex, join11);
   }
 }
-function matchCheckoutOperands(args, dir, simpleCommandIndex, join7, results) {
+function matchCheckoutOperands(args, dir, simpleCommandIndex, join11, results) {
   let afterDashDash = false;
   const operands = [];
   for (let i = 0; i < args.length; i++) {
@@ -3597,10 +3609,10 @@ function matchCheckoutOperands(args, dir, simpleCommandIndex, join7, results) {
     if (a.startsWith("-")) continue;
   }
   for (const operand of operands) {
-    emitRestoreCheckoutPathspec(results, "git-checkout-write", operand, dir, simpleCommandIndex, join7);
+    emitRestoreCheckoutPathspec(results, "git-checkout-write", operand, dir, simpleCommandIndex, join11);
   }
 }
-function matchGitRestoreCheckout(argv, dirForResolution, simpleCommandIndex, join7, results) {
+function matchGitRestoreCheckout(argv, dirForResolution, simpleCommandIndex, join11, results) {
   const rest = stripTransparentWrapper(argv);
   if (rest.length === 0) return;
   const command = rest[0];
@@ -3618,8 +3630,8 @@ function matchGitRestoreCheckout(argv, dirForResolution, simpleCommandIndex, joi
     }
     const dir = sub.cDir ?? dirForResolution;
     const args = rest.slice(1).slice(sub.subIdx + 1);
-    if (sub.subcommand === "restore") matchRestoreOperands(args, dir, simpleCommandIndex, join7, results);
-    else matchCheckoutOperands(args, dir, simpleCommandIndex, join7, results);
+    if (sub.subcommand === "restore") matchRestoreOperands(args, dir, simpleCommandIndex, join11, results);
+    else matchCheckoutOperands(args, dir, simpleCommandIndex, join11, results);
     return;
   }
   if (FOREIGN_WRAPPERS.has(command)) {
@@ -3652,9 +3664,9 @@ function parseCommandDetailed(command, opts = {}) {
     return fsLineCache.get(absPath) ?? null;
   };
   const cachedGitTotalLines = (gitCwd, rev, path) => () => {
-    const key = `${gitCwd}\0${rev}\0${path}`;
-    if (!gitLineCache.has(key)) gitLineCache.set(key, countGitBlobLines(gitCwd, rev, path));
-    return gitLineCache.get(key) ?? null;
+    const key2 = `${gitCwd}\0${rev}\0${path}`;
+    if (!gitLineCache.has(key2)) gitLineCache.set(key2, countGitBlobLines(gitCwd, rev, path));
+    return gitLineCache.get(key2) ?? null;
   };
   let currentDir = cwd;
   let lastPlainFileSource = null;
@@ -3669,7 +3681,7 @@ function parseCommandDetailed(command, opts = {}) {
     if (isAbsolute(c.dirOverride)) return c.dirOverride;
     return frame.certain ? resolvePath(frame.dir, c.dirOverride) : void 0;
   };
-  const emitCandidate = (c, frame, simpleCommandIndex, join7) => {
+  const emitCandidate = (c, frame, simpleCommandIndex, join11) => {
     if (looksUnresolvable(c.fileArg)) {
       results.push({
         status: "unresolved",
@@ -3720,7 +3732,7 @@ function parseCommandDetailed(command, opts = {}) {
         lineEnd: range.lineEnd,
         absolutePath,
         simpleCommandIndex,
-        join: join7
+        join: join11
       }
     });
   };
@@ -3950,7 +3962,7 @@ function classifyDynamicWord(word) {
   if (GLOB_META.test(word)) return "glob-path";
   return null;
 }
-function decodeLiteralField(raw, delimiter, replacement) {
+function decodeLiteralField(raw, delimiter2, replacement) {
   let value = "";
   for (let index = 0; index < raw.length; index += 1) {
     const character = raw[index];
@@ -3958,7 +3970,7 @@ function decodeLiteralField(raw, delimiter, replacement) {
       const next = raw[index + 1];
       if (next === void 0) return null;
       if (next === "n") value += "\n";
-      else if (next === delimiter || next === "\\" || !replacement && REGEX_META.test(next)) value += next;
+      else if (next === delimiter2 || next === "\\" || !replacement && REGEX_META.test(next)) value += next;
       else return null;
       index += 1;
       continue;
@@ -3968,7 +3980,7 @@ function decodeLiteralField(raw, delimiter, replacement) {
   }
   return value;
 }
-function readDelimitedField(source, start, delimiter) {
+function readDelimitedField(source, start, delimiter2) {
   let raw = "";
   for (let index = start; index < source.length; index += 1) {
     const character = source[index];
@@ -3979,23 +3991,23 @@ function readDelimitedField(source, start, delimiter) {
       index += 1;
       continue;
     }
-    if (character === delimiter) return { raw, next: index + 1 };
+    if (character === delimiter2) return { raw, next: index + 1 };
     raw += character;
   }
   return null;
 }
 function parseLiteralSubstitution(script) {
   if (script.length < 4 || script[0] !== "s") return null;
-  const delimiter = script[1];
-  if (/\w|\s/.test(delimiter)) return null;
-  const patternField = readDelimitedField(script, 2, delimiter);
+  const delimiter2 = script[1];
+  if (/\w|\s/.test(delimiter2)) return null;
+  const patternField = readDelimitedField(script, 2, delimiter2);
   if (patternField === null) return null;
-  const replacementField = readDelimitedField(script, patternField.next, delimiter);
+  const replacementField = readDelimitedField(script, patternField.next, delimiter2);
   if (replacementField === null) return null;
   const flags = script.slice(replacementField.next);
   if (flags !== "" && flags !== "g") return null;
-  const pattern = decodeLiteralField(patternField.raw, delimiter, false);
-  const replacement = decodeLiteralField(replacementField.raw, delimiter, true);
+  const pattern = decodeLiteralField(patternField.raw, delimiter2, false);
+  const replacement = decodeLiteralField(replacementField.raw, delimiter2, true);
   if (pattern === null || pattern.length === 0 || replacement === null) return null;
   return { pattern, replacement, global: flags === "g" };
 }
@@ -4106,27 +4118,27 @@ function shellQuote(value) {
 }
 function expandLiteralLoopVariable(body, variable, binding) {
   let command = "";
-  let quote = null;
+  let quote2 = null;
   let replacements = 0;
   let unsafeUnquoted = false;
   for (let index = 0; index < body.length; index += 1) {
     const character = body[index];
-    if (character === "\\" && quote !== "'") {
+    if (character === "\\" && quote2 !== "'") {
       command += character;
       if (index + 1 < body.length) command += body[++index];
       continue;
     }
-    if (character === "'" && quote !== '"') {
-      quote = quote === "'" ? null : "'";
+    if (character === "'" && quote2 !== '"') {
+      quote2 = quote2 === "'" ? null : "'";
       command += character;
       continue;
     }
-    if (character === '"' && quote !== "'") {
-      quote = quote === '"' ? null : '"';
+    if (character === '"' && quote2 !== "'") {
+      quote2 = quote2 === '"' ? null : '"';
       command += character;
       continue;
     }
-    if (character !== "$" || quote === "'") {
+    if (character !== "$" || quote2 === "'") {
       command += character;
       continue;
     }
@@ -4138,8 +4150,8 @@ function expandLiteralLoopVariable(body, variable, binding) {
       continue;
     }
     const length = braced ? variable.length + 3 : variable.length + 1;
-    if (quote === null && /\s/.test(binding)) unsafeUnquoted = true;
-    command += quote === '"' ? binding.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("$", "\\$") : shellQuote(binding);
+    if (quote2 === null && /\s/.test(binding)) unsafeUnquoted = true;
+    command += quote2 === '"' ? binding.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("$", "\\$") : shellQuote(binding);
     replacements += 1;
     index += length - 1;
   }
@@ -4267,11 +4279,11 @@ var PYTHON_STRING_SOURCE = String.raw`(?:'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")`;
 var PYTHON_NAME_SOURCE = `[A-Za-z_][A-Za-z0-9_]*`;
 var compiledPatternCache = /* @__PURE__ */ new Map();
 function compileOnce(source, flags) {
-  const key = `${flags ?? ""}\0${source}`;
-  let pattern = compiledPatternCache.get(key);
+  const key2 = `${flags ?? ""}\0${source}`;
+  let pattern = compiledPatternCache.get(key2);
   if (pattern === void 0) {
     pattern = new RegExp(source, flags);
-    compiledPatternCache.set(key, pattern);
+    compiledPatternCache.set(key2, pattern);
   }
   return pattern;
 }
@@ -4368,7 +4380,7 @@ function extractPythonProgram(command) {
 function splitPythonStatements(program) {
   const statements = [];
   let statement = "";
-  let quote = null;
+  let quote2 = null;
   let escaped = false;
   let depth = 0;
   let comment = false;
@@ -4383,15 +4395,15 @@ function splitPythonStatements(program) {
       }
       continue;
     }
-    if (quote !== null) {
+    if (quote2 !== null) {
       statement += character;
       if (escaped) escaped = false;
       else if (character === "\\") escaped = true;
-      else if (character === quote) quote = null;
+      else if (character === quote2) quote2 = null;
       continue;
     }
     if (character === "'" || character === '"') {
-      quote = character;
+      quote2 = character;
       statement += character;
       continue;
     }
@@ -4411,7 +4423,7 @@ function splitPythonStatements(program) {
     }
     statement += character;
   }
-  if (quote !== null || escaped || depth !== 0) return null;
+  if (quote2 !== null || escaped || depth !== 0) return null;
   if (statement.trim() !== "") statements.push(statement.trim());
   return statements;
 }
@@ -4432,8 +4444,8 @@ function countLiteralOccurrences(content, literal) {
   }
   return count;
 }
-function structuredKeyRanges(content, format, key) {
-  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function structuredKeyRanges(content, format, key2) {
+  const escaped = key2.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const pattern = format === "json" ? compileOnce(`^[ \\t]*["']${escaped}["'][ \\t]*:`, "m") : format === "toml" ? compileOnce(`^[ \\t]*(?:["']${escaped}["']|${escaped})[ \\t]*=`, "m") : compileOnce(`^[ \\t]*(?:["']${escaped}["']|${escaped})[ \\t]*:`, "m");
   const ranges = [];
   let offset = 0;
@@ -4553,8 +4565,8 @@ function consumePythonStatement(statement, ctx) {
   }
   match = statement.match(PYTHON_STRUCTURED_ASSIGN_PATTERN);
   if (match !== null && ctx.structured.has(match[1])) {
-    const keys = [...match[2].matchAll(PYTHON_STRUCTURED_KEY_SCAN_PATTERN)].map((key) => decodePythonString(key[1]));
-    if (keys.length === 0 || keys.some((key) => key === null)) {
+    const keys = [...match[2].matchAll(PYTHON_STRUCTURED_KEY_SCAN_PATTERN)].map((key2) => decodePythonString(key2[1]));
+    if (keys.length === 0 || keys.some((key2) => key2 === null)) {
       return rejectPython("unsupported-expression", "structured Python mutation requires literal string keys");
     }
     ctx.structured.get(match[1]).keys.push(keys);
@@ -4747,7 +4759,7 @@ function splitNodeStatements(program) {
   if (program.includes("`")) return null;
   const statements = [];
   let statement = "";
-  let quote = null;
+  let quote2 = null;
   let escaped = false;
   let depth = 0;
   let lineComment = false;
@@ -4772,15 +4784,15 @@ function splitNodeStatements(program) {
       }
       continue;
     }
-    if (quote !== null) {
+    if (quote2 !== null) {
       statement += character;
       if (escaped) escaped = false;
       else if (character === "\\") escaped = true;
-      else if (character === quote) quote = null;
+      else if (character === quote2) quote2 = null;
       continue;
     }
     if (character === "'" || character === '"') {
-      quote = character;
+      quote2 = character;
       statement += character;
       continue;
     }
@@ -4806,26 +4818,26 @@ function splitNodeStatements(program) {
     }
     statement += character;
   }
-  if (quote !== null || escaped || depth !== 0 || blockComment) return null;
+  if (quote2 !== null || escaped || depth !== 0 || blockComment) return null;
   if (statement.trim() !== "") statements.push(statement.trim());
   return statements;
 }
 function splitNodeArguments(source) {
   const arguments_ = [];
   let argument = "";
-  let quote = null;
+  let quote2 = null;
   let escaped = false;
   let depth = 0;
   for (const character of source) {
-    if (quote !== null) {
+    if (quote2 !== null) {
       argument += character;
       if (escaped) escaped = false;
       else if (character === "\\") escaped = true;
-      else if (character === quote) quote = null;
+      else if (character === quote2) quote2 = null;
       continue;
     }
     if (character === "'" || character === '"') {
-      quote = character;
+      quote2 = character;
       argument += character;
       continue;
     }
@@ -4841,7 +4853,7 @@ function splitNodeArguments(source) {
     }
     argument += character;
   }
-  if (quote !== null || escaped || depth !== 0) return null;
+  if (quote2 !== null || escaped || depth !== 0) return null;
   if (argument.trim() !== "" || arguments_.length > 0) arguments_.push(argument.trim());
   return arguments_;
 }
@@ -4887,10 +4899,10 @@ function emitPythonAnchorSlice(ctx, expression, absolutePath) {
 function emitPythonLineJoin(ctx, expression, absolutePath) {
   const lineJoin = expression.match(PYTHON_LINE_JOIN_PATTERN);
   if (lineJoin === null) return "unmatched";
-  const delimiter = decodePythonString(lineJoin[1]);
+  const delimiter2 = decodePythonString(lineJoin[1]);
   const array = ctx.lines.get(lineJoin[2]);
   const suffix = lineJoin[3] === void 0 ? "" : decodePythonString(lineJoin[3]);
-  if (delimiter !== "\n" || array === void 0 || suffix === null || suffix !== "" && suffix !== "\n") {
+  if (delimiter2 !== "\n" || array === void 0 || suffix === null || suffix !== "" && suffix !== "\n") {
     return rejectPython("unsupported-expression", "line-array writes require a literal newline join", absolutePath);
   }
   if (nodePath4.resolve(ctx.cwd, array.path) !== absolutePath || array.edits.size === 0) {
@@ -4949,8 +4961,8 @@ function emitPythonStructuredDump(ctx, expression, absolutePath) {
   const content = readPythonPreState(ctx, absolutePath, ["match-locations"]);
   if (typeof content !== "string") return content;
   for (const keyPath of value.keys) {
-    const key = keyPath.at(-1);
-    const ranges = structuredKeyRanges(content, value.format, key);
+    const key2 = keyPath.at(-1);
+    const ranges = structuredKeyRanges(content, value.format, key2);
     if (ranges.length !== 1) {
       return rejectPython(
         "unsupported-expression",
@@ -5197,9 +5209,9 @@ function consumeNodeStatement(statement, ctx) {
     }
     const parsedJson = expression.match(NODE_JSON_PARSE_PATTERN);
     if (parsedJson !== null) {
-      const text = ctx.texts.get(parsedJson[1]);
-      if (text === void 0) return rejectNode("unsupported-dataflow", "JSON.parse source is not a direct text read");
-      ctx.structured.set(name, { path: text.path, keys: [] });
+      const text2 = ctx.texts.get(parsedJson[1]);
+      if (text2 === void 0) return rejectNode("unsupported-dataflow", "JSON.parse source is not a direct text read");
+      ctx.structured.set(name, { path: text2.path, keys: [] });
       return void 0;
     }
     const directJson = expression.match(/^JSON\.parse\((.+)\)$/);
@@ -5223,7 +5235,7 @@ function consumeNodeStatement(statement, ctx) {
   if (match !== null && ctx.structured.has(match[1])) {
     const keySegments = [...match[2].matchAll(NODE_KEY_SEGMENT_SCAN_PATTERN)];
     const keys = keySegments.map((segment) => segment[1] ?? decodeNodeString(segment[2]));
-    if (keys.length === 0 || keys.some((key) => key === null)) {
+    if (keys.length === 0 || keys.some((key2) => key2 === null)) {
       return rejectNode("unsupported-expression", "structured Node mutation requires literal property keys");
     }
     if (!/^(?:true|false|null|-?\d+(?:\.\d+)?|(?:'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"))$/.test(match[3].trim())) {
@@ -5406,8 +5418,8 @@ function emitNodeStructuredDump(ctx, expression, absolutePath) {
   const content = readNodePreState(ctx, absolutePath, "modify", ["match-locations"]);
   if (typeof content !== "string") return content;
   for (const keyPath of value.keys) {
-    const key = keyPath.at(-1);
-    const ranges = structuredKeyRanges(content, "json", key);
+    const key2 = keyPath.at(-1);
+    const ranges = structuredKeyRanges(content, "json", key2);
     if (ranges.length !== 1) {
       return rejectNode(
         "unsupported-expression",
@@ -5895,11 +5907,11 @@ function parseCompoundStages(command, split, options, maxCandidates, parse) {
   for (let index = 0; index < split.stages.length; index += 1) {
     const stage = split.stages[index];
     const child = parse(stage.text, options);
-    const join7 = stage.precededBy === "and" ? "&&" : stage.precededBy === "or" ? "||" : void 0;
+    const join11 = stage.precededBy === "and" ? "&&" : stage.precededBy === "or" ? "||" : void 0;
     resolved.push(
       ...child.resolved.map((match) => ({
         ...match,
-        span: { ...match.span, simpleCommandIndex: index, join: join7 }
+        span: { ...match.span, simpleCommandIndex: index, join: join11 }
       }))
     );
     unresolvedMatches.push(...child.unresolved.map((match) => ({ ...match, simpleCommandIndex: index })));
@@ -6390,10 +6402,10 @@ function planBashTouches(command, cwd, sessionId, toolUseId, logger2, store) {
   const parsed = parseCommandLayered(command, { cwd, readPreState: readText });
   const requested = /* @__PURE__ */ new Map();
   for (const request of parsed.preStateRequests) {
-    const key = `${request.absolutePath}\0${request.operation}\0${request.simpleCommandIndex}`;
-    const requirements = requested.get(key) ?? /* @__PURE__ */ new Set();
+    const key2 = `${request.absolutePath}\0${request.operation}\0${request.simpleCommandIndex}`;
+    const requirements = requested.get(key2) ?? /* @__PURE__ */ new Set();
     requirements.add(request.requirement);
-    requested.set(key, requirements);
+    requested.set(key2, requirements);
   }
   const candidates = parsed.resolved.filter(
     ({ span }) => span.operation === "delete" || requested.has(planGroupKey(span))
@@ -6422,15 +6434,15 @@ function planBashTouches(command, cwd, sessionId, toolUseId, logger2, store) {
   if (repoRoot === null) return;
   const groups = /* @__PURE__ */ new Map();
   for (const { value } of tracked.eligible) {
-    const key = planGroupKey(value.span);
-    const group = groups.get(key) ?? [];
+    const key2 = planGroupKey(value.span);
+    const group = groups.get(key2) ?? [];
     group.push(value);
-    groups.set(key, group);
+    groups.set(key2, group);
   }
   const touches = [];
-  for (const [key, matches] of groups) {
+  for (const [key2, matches] of groups) {
     const span = matches[0].span;
-    const requirements = requested.get(key) ?? /* @__PURE__ */ new Set();
+    const requirements = requested.get(key2) ?? /* @__PURE__ */ new Set();
     const evidence = planEvidence(matches, requirements);
     touches.push({
       repoRelativePath: toPosix(relativeToRepo(repoRoot, span.absolutePath)),
@@ -6459,6 +6471,742 @@ function planBashTouches(command, cwd, sessionId, toolUseId, logger2, store) {
   });
 }
 
+// packages/agent-hooks/src/common/commit-runtime.ts
+import { randomBytes as randomBytes2 } from "node:crypto";
+import { chmodSync as chmodSync2, existsSync as existsSync7, lstatSync as lstatSync3, readFileSync as readFileSync9, realpathSync as realpathSync3, rmSync as rmSync4, writeFileSync as writeFileSync4 } from "node:fs";
+import { homedir as homedir2 } from "node:os";
+import { isAbsolute as isAbsolute8, join as join9 } from "node:path";
+
+// packages/agent-hooks/src/common/commit-association.ts
+import { createHash as createHash3 } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
+
+// packages/agent-hooks/src/common/commit-contracts.ts
+import { isAbsolute as isAbsolute4 } from "node:path";
+function object(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function text(value, max = 4096) {
+  return typeof value === "string" && value.length > 0 && value.length <= max && !value.includes("\0");
+}
+function absolute(value) {
+  return text(value) && isAbsolute4(value);
+}
+function key(value) {
+  return text(value, 256) && /^[a-zA-Z0-9_-]+$/.test(value);
+}
+function reject(reason) {
+  return { ok: false, reason };
+}
+function validateCommitEnrollment(value) {
+  if (!object(value) || value.schemaVersion !== 1) return reject("invalid enrollment schema");
+  if (value.host !== "claude" && value.host !== "codex") return reject("unsupported commit host");
+  if (!key(value.invocationKey) || !text(value.sessionId) || !text(value.toolUseId)) {
+    return reject("invalid invocation identity");
+  }
+  if (!absolute(value.cwd) || !absolute(value.gitExecutable)) return reject("enrollment paths must be absolute");
+  if (!object(value.originalInput) || !text(value.originalCommand, 1048576)) {
+    return reject("invalid original tool input");
+  }
+  if (value.transcriptLocator !== void 0 && !text(value.transcriptLocator))
+    return reject("invalid transcript locator");
+  try {
+    if (Buffer.byteLength(JSON.stringify(value.originalInput)) > 1048576)
+      return reject("original input exceeds budget");
+  } catch {
+    return reject("original input is not serializable");
+  }
+  const enrollment = {
+    schemaVersion: 1,
+    invocationKey: value.invocationKey,
+    host: value.host,
+    sessionId: value.sessionId,
+    toolUseId: value.toolUseId,
+    originalInput: value.originalInput,
+    originalCommand: value.originalCommand,
+    cwd: value.cwd,
+    gitExecutable: value.gitExecutable,
+    ...value.transcriptLocator === void 0 ? {} : { transcriptLocator: value.transcriptLocator }
+  };
+  return { ok: true, value: enrollment };
+}
+
+// packages/agent-hooks/src/common/commit-git.ts
+import { isAbsolute as isAbsolute5, resolve as resolve3 } from "node:path";
+function parseCommitGitInvocation(argv, cwd) {
+  const reject2 = (reason) => ({ ok: false, reason });
+  if (!isAbsolute5(cwd) || argv.some((arg) => arg.includes("\0"))) return reject2("invalid Git argv or cwd");
+  let effectiveCwd = cwd;
+  let gitDirectory;
+  let workTree;
+  let index = 0;
+  const switches = /* @__PURE__ */ new Set([
+    "--no-pager",
+    "--paginate",
+    "-p",
+    "-P",
+    "--bare",
+    "--no-replace-objects",
+    "--literal-pathspecs",
+    "--glob-pathspecs",
+    "--noglob-pathspecs",
+    "--icase-pathspecs",
+    "--no-optional-locks"
+  ]);
+  while (index < argv.length && argv[index].startsWith("-")) {
+    const argument = argv[index];
+    if (switches.has(argument)) {
+      index++;
+      continue;
+    }
+    let option;
+    let value;
+    if (argument === "-C" || argument === "-c" || argument === "--git-dir" || argument === "--work-tree" || argument === "--config-env") {
+      option = argument;
+      value = argv[++index];
+    } else if (argument.startsWith("-C") || argument.startsWith("-c")) {
+      option = argument.slice(0, 2);
+      value = argument.slice(2);
+    } else {
+      const equals = argument.indexOf("=");
+      option = equals < 0 ? argument : argument.slice(0, equals);
+      value = equals < 0 ? void 0 : argument.slice(equals + 1);
+      if (!["--git-dir", "--work-tree", "--config-env"].includes(option))
+        return reject2("unsupported Git global option");
+    }
+    if (value === void 0 || value === "" && option !== "-C") return reject2("incomplete Git global option");
+    if (option === "-C" && value !== "") effectiveCwd = resolve3(effectiveCwd, value);
+    if (option === "--git-dir") gitDirectory = value;
+    if (option === "--work-tree") workTree = value;
+    index++;
+  }
+  const command = argv[index];
+  if (!command) return reject2("missing Git builtin command");
+  const commandArguments = argv.slice(index + 1);
+  let dryRun = false;
+  const consumes = /* @__PURE__ */ new Set([
+    "-m",
+    "--message",
+    "-F",
+    "--file",
+    "-C",
+    "--reuse-message",
+    "-c",
+    "--reedit-message",
+    "--author",
+    "--date",
+    "--fixup",
+    "--squash",
+    "-t",
+    "--template",
+    "--pathspec-from-file",
+    "--trailer",
+    "--cleanup"
+  ]);
+  for (let i = 0; i < commandArguments.length; i++) {
+    const argument = commandArguments[i];
+    if (argument === "--") break;
+    if (consumes.has(argument)) {
+      i++;
+      continue;
+    }
+    if (argument === "--dry-run") dryRun = true;
+  }
+  return {
+    ok: true,
+    value: {
+      argv: [...argv],
+      effectiveCwd,
+      globalArguments: argv.slice(0, index),
+      command,
+      commandArguments,
+      builtinCommit: command === "commit",
+      dryRun: command === "commit" && dryRun,
+      ...gitDirectory === void 0 ? {} : { gitDirectory },
+      ...workTree === void 0 ? {} : { workTree }
+    }
+  };
+}
+function validateCommitCreationEvidence(evidence) {
+  const reject2 = (reason) => ({ ok: false, reason });
+  if (!evidence.builtinCommit || evidence.dryRun || evidence.gitExitCode !== 0 || evidence.gitSignal !== null) {
+    return reject2("no successful builtin commit");
+  }
+  if (!/^[a-zA-Z0-9_-]{1,256}$/.test(evidence.nonce)) return reject2("invalid reflog nonce");
+  if (evidence.objectFormat !== "sha1" && evidence.objectFormat !== "sha256")
+    return reject2("unsupported object format");
+  const { append, checkpoint } = evidence;
+  if (!append) return reject2("missing HEAD reflog");
+  if (!Number.isSafeInteger(checkpoint.offset) || checkpoint.offset < 0 || !Number.isSafeInteger(append.fileSize)) {
+    return reject2("invalid reflog offset");
+  }
+  if (checkpoint.existed && (checkpoint.device !== append.device || checkpoint.inode !== append.inode)) {
+    return reject2("reflog replaced");
+  }
+  if (append.exceededBudget || append.bytes.byteLength > 1048576) return reject2("reflog evidence exceeds budget");
+  if (append.fileSize < checkpoint.offset || append.fileSize - checkpoint.offset !== append.bytes.byteLength) {
+    return reject2("reflog truncated or incomplete read");
+  }
+  const length = evidence.objectFormat === "sha1" ? 40 : 64;
+  const header = new RegExp(`^([0-9a-f]{${length}}) ([0-9a-f]{${length}}) .+ <[^>]*> [0-9]+ [+-][0-9]{4}$`);
+  const text2 = new TextDecoder().decode(append.bytes);
+  if (text2.length === 0 || !text2.endsWith("\n")) return reject2("incomplete reflog evidence");
+  const lines = text2.slice(0, -1).split("\n");
+  const matches = [];
+  for (const line of lines) {
+    const tab = line.indexOf("	");
+    if (tab < 0) return reject2("malformed reflog evidence");
+    const parsed = header.exec(line.slice(0, tab));
+    if (!parsed) return reject2("malformed reflog evidence");
+    if (!line.slice(tab + 1).startsWith(`${evidence.nonce}: `)) continue;
+    if (/^0+$/.test(parsed[2]) || parsed[1] === parsed[2]) return reject2("invalid nonce-tagged transition");
+    matches.push(parsed[2]);
+  }
+  return matches.length === 1 ? { ok: true, value: matches[0] } : reject2("missing or ambiguous nonce-tagged transition");
+}
+
+// packages/agent-hooks/src/common/commit-lifecycle.ts
+var COMMIT_RECEIPT_LIMITS = {
+  reflogBytes: 1048576,
+  receiptsPerInvocation: 256,
+  bytesPerInvocation: 4194304,
+  invocations: 4096,
+  totalBytes: 67108864,
+  abandonedRetentionMs: 864e5,
+  drainMs: 3e3,
+  cliMs: 2e3
+};
+function decideCommitClaim(owner, liveness, remainingMs) {
+  if (!Number.isFinite(remainingMs) || remainingMs <= 0) return "refuse";
+  if (owner === null) return "acquire";
+  if (!Number.isSafeInteger(owner.pid) || owner.pid <= 0 || !/^[a-zA-Z0-9_-]{1,256}$/.test(owner.token))
+    return "refuse";
+  if (liveness === "dead") return "recover";
+  return liveness === "alive" ? "wait" : "refuse";
+}
+
+// packages/agent-hooks/src/common/commit-native-io.ts
+import { spawn, spawnSync } from "node:child_process";
+import {
+  accessSync,
+  closeSync as closeSync2,
+  constants,
+  existsSync as existsSync5,
+  fstatSync,
+  lstatSync,
+  openSync as openSync2,
+  readSync,
+  realpathSync as realpathSync2
+} from "node:fs";
+import { delimiter, isAbsolute as isAbsolute6, join as join7, resolve as resolve4 } from "node:path";
+import { StringDecoder } from "node:string_decoder";
+function executableOnPath(name) {
+  const candidates = isAbsolute6(name) ? [name] : (process.env.PATH ?? "").split(delimiter).filter(Boolean).map((directory) => resolve4(directory, name));
+  for (const candidate of candidates) {
+    try {
+      accessSync(candidate, constants.X_OK);
+      if (lstatSync(candidate).isFile() || lstatSync(candidate).isSymbolicLink()) return realpathSync2(candidate);
+    } catch {
+    }
+  }
+  throw new Error(`${name} executable is unavailable`);
+}
+function probe(executable, argv, cwd) {
+  const result = spawnSync(executable, [...argv], {
+    cwd,
+    encoding: "utf8",
+    timeout: 1e3,
+    maxBuffer: 65536,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  if (result.error || result.status !== 0) throw new Error("Git repository probe failed");
+  return result.stdout.trimEnd();
+}
+function resolveCommitRepository(executable, globalArguments, originalCwd) {
+  const fields = probe(
+    executable,
+    [
+      ...globalArguments,
+      "rev-parse",
+      "--path-format=absolute",
+      "--git-dir",
+      "--git-common-dir",
+      "--show-object-format"
+    ],
+    originalCwd
+  ).split("\n");
+  if (fields.length !== 3 || fields[2] !== "sha1" && fields[2] !== "sha256")
+    throw new Error("unsupported Git repository format");
+  const cwd = realpathSync2(probe(executable, [...globalArguments, "rev-parse", "--show-toplevel"], originalCwd));
+  const gitDirectory = realpathSync2(fields[0]);
+  const commonDirectory = realpathSync2(fields[1]);
+  if (gitRefBackend(executable, globalArguments, originalCwd) !== "files")
+    throw new Error("unsupported Git ref backend");
+  return {
+    cwd,
+    gitDirectory,
+    commonDirectory,
+    headReflog: join7(gitDirectory, "logs", "HEAD"),
+    objectFormat: fields[2]
+  };
+}
+function gitRefBackend(executable, globalArguments, cwd) {
+  const result = spawnSync(executable, [...globalArguments, "config", "--get", "extensions.refStorage"], {
+    cwd,
+    encoding: "utf8",
+    timeout: 1e3,
+    maxBuffer: 4096
+  });
+  if (result.error || result.status !== 0 && result.status !== 1) throw new Error("Git ref backend probe failed");
+  return result.status === 1 ? "files" : result.stdout.trim();
+}
+function checkpointCommitReflog(path) {
+  if (!existsSync5(path)) return { existed: false, offset: 0 };
+  const stat = lstatSync(path);
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("unsupported HEAD reflog");
+  return { existed: true, device: String(stat.dev), inode: String(stat.ino), offset: stat.size };
+}
+function readCommitReflogAppend(path, checkpoint, maxBytes) {
+  if (!existsSync5(path)) return null;
+  const descriptor = openSync2(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const stat = fstatSync(descriptor);
+    if (!stat.isFile()) throw new Error("HEAD reflog is not a file");
+    const length = stat.size - checkpoint.offset;
+    const exceededBudget = length > maxBytes;
+    const bytes = Buffer.alloc(Math.max(0, Math.min(length, maxBytes)));
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = readSync(descriptor, bytes, offset, bytes.length - offset, checkpoint.offset + offset);
+      if (count === 0) break;
+      offset += count;
+    }
+    return {
+      device: String(stat.dev),
+      inode: String(stat.ino),
+      fileSize: stat.size,
+      bytes: bytes.subarray(0, offset),
+      exceededBudget
+    };
+  } finally {
+    closeSync2(descriptor);
+  }
+}
+function verifyCommitObject(executable, repository, sha) {
+  try {
+    const format = probe(
+      executable,
+      ["--git-dir", repository.gitDirectory, "rev-parse", "--show-object-format"],
+      repository.commonDirectory
+    );
+    const type = probe(
+      executable,
+      ["--git-dir", repository.gitDirectory, "cat-file", "-t", sha],
+      repository.commonDirectory
+    );
+    return format === repository.objectFormat && type === "commit" ? { ok: true, value: sha } : { ok: false, reason: "witness is not a commit object in the actual object format" };
+  } catch {
+    return { ok: false, reason: "commit object verification failed" };
+  }
+}
+async function executeCommitGit(executable, argv, cwd, reflogAction) {
+  return new Promise((resolveResult) => {
+    const child = spawn(executable, [...argv], {
+      cwd,
+      stdio: "inherit",
+      env: reflogAction === void 0 ? process.env : { ...process.env, GIT_REFLOG_ACTION: reflogAction }
+    });
+    const signals = ["SIGINT", "SIGTERM", "SIGHUP"];
+    const handlers = signals.map((signal) => {
+      const handler = () => {
+        child.kill(signal);
+      };
+      process.on(signal, handler);
+      return { signal, handler };
+    });
+    const finish = (result) => {
+      for (const { signal, handler } of handlers) process.removeListener(signal, handler);
+      resolveResult(result);
+    };
+    child.once("error", () => finish({ exitCode: 127, signal: null }));
+    child.once("close", (exitCode, signal) => finish({ exitCode, signal }));
+  });
+}
+
+// packages/agent-hooks/src/common/commit-storage.ts
+import { createHash as createHash4, randomBytes } from "node:crypto";
+import {
+  closeSync as closeSync3,
+  existsSync as existsSync6,
+  linkSync,
+  lstatSync as lstatSync2,
+  mkdirSync as mkdirSync5,
+  opendirSync,
+  openSync as openSync3,
+  readFileSync as readFileSync8,
+  renameSync as renameSync4,
+  rmSync as rmSync3,
+  unlinkSync,
+  writeFileSync as writeFileSync3
+} from "node:fs";
+import { dirname as dirname7, isAbsolute as isAbsolute7, join as join8 } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+function identityKey(identity) {
+  return createHash4("sha256").update(JSON.stringify([identity.host, identity.sessionId, identity.toolUseId])).digest("hex");
+}
+function privateDirectory(path) {
+  if (!isAbsolute7(path)) throw new Error("receipt state root must be absolute");
+  mkdirSync5(path, { recursive: true, mode: 448 });
+  const stat = lstatSync2(path);
+  if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 63) !== 0 || process.getuid && stat.uid !== process.getuid()) {
+    throw new Error("receipt directory is not private");
+  }
+}
+function readJson(path, maximumBytes = 1048576) {
+  const stat = lstatSync2(path);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > maximumBytes)
+    throw new Error("invalid bounded receipt file");
+  return JSON.parse(readFileSync8(path, "utf8"));
+}
+function atomicJson(path, value, immutable = false) {
+  const temporary = join8(dirname7(path), `.publish-${randomBytes(16).toString("hex")}`);
+  try {
+    writeFileSync3(temporary, JSON.stringify(value), { mode: 384, flag: "wx" });
+    if (immutable) linkSync(temporary, path);
+    else renameSync4(temporary, path);
+  } finally {
+    rmSync3(temporary, { force: true });
+  }
+}
+function ownerLiveness(owner) {
+  try {
+    process.kill(owner.pid, 0);
+    return "alive";
+  } catch (error) {
+    return error.code === "ESRCH" ? "dead" : "uncertain";
+  }
+}
+function ownerRecord(value) {
+  if (typeof value !== "object" || value === null) return null;
+  const owner = value;
+  return typeof owner.token === "string" && /^[a-zA-Z0-9_-]{1,256}$/.test(owner.token) && typeof owner.pid === "number" && Number.isSafeInteger(owner.pid) && owner.pid > 0 ? owner : null;
+}
+async function acquireReceiptClaim(root, key2, deadline) {
+  if (!/^[a-zA-Z0-9_-]+$/.test(key2)) throw new Error("invalid receipt claim key");
+  const directory = join8(root, "claims");
+  privateDirectory(directory);
+  const path = join8(directory, `${key2}.json`);
+  const guard = join8(directory, `${key2}.guard`);
+  const owner = { token: randomBytes(16).toString("hex"), pid: process.pid };
+  while (performance.now() < deadline) {
+    let guarded = false;
+    try {
+      try {
+        mkdirSync5(guard, { mode: 448 });
+        guarded = true;
+      } catch (error) {
+        if (error.code !== "EEXIST") throw error;
+        return null;
+      }
+      let prior = null;
+      if (existsSync6(path)) {
+        prior = ownerRecord(readJson(path, 4096));
+        if (prior === null) return null;
+      }
+      const decision = decideCommitClaim(
+        prior,
+        prior === null ? "uncertain" : ownerLiveness(prior),
+        deadline - performance.now()
+      );
+      if (decision === "acquire" || decision === "recover") {
+        if (prior !== null) unlinkSync(path);
+        atomicJson(path, owner, true);
+        return {
+          owner,
+          release: () => {
+            let releaseGuard = false;
+            try {
+              mkdirSync5(guard, { mode: 448 });
+              releaseGuard = true;
+              const current = ownerRecord(readJson(path, 4096));
+              if (current?.token !== owner.token || current.pid !== owner.pid)
+                throw new Error("receipt claim ownership changed");
+              unlinkSync(path);
+            } finally {
+              if (releaseGuard) rmSync3(guard, { recursive: true });
+            }
+          }
+        };
+      }
+      if (decision === "refuse") return null;
+    } finally {
+      if (guarded) rmSync3(guard, { recursive: true });
+    }
+    await delay(Math.min(20, Math.max(0, deadline - performance.now())));
+  }
+  return null;
+}
+async function reserveReceiptCapacity(root, invocationDelta, byteDelta, deadline) {
+  const claim = await acquireReceiptClaim(root, "capacity", deadline);
+  if (!claim) return false;
+  try {
+    const path = join8(root, "usage.json");
+    let usage = { invocations: 0, totalBytes: 0 };
+    if (existsSync6(path)) usage = readJson(path, 4096);
+    if (!Number.isSafeInteger(usage.invocations) || !Number.isSafeInteger(usage.totalBytes) || usage.invocations < 0 || usage.totalBytes < 0)
+      return false;
+    const next = { invocations: usage.invocations + invocationDelta, totalBytes: usage.totalBytes + byteDelta };
+    if (next.invocations < 0 || next.invocations > COMMIT_RECEIPT_LIMITS.invocations || next.totalBytes < 0 || next.totalBytes > COMMIT_RECEIPT_LIMITS.totalBytes)
+      return false;
+    atomicJson(path, next);
+    return true;
+  } finally {
+    claim.release();
+  }
+}
+function privateEmptyFile(path) {
+  const descriptor = openSync3(path, "wx", 384);
+  closeSync3(descriptor);
+}
+function appendReceiptDiagnostic(directory, message) {
+  const path = join8(directory, "diagnostics.json");
+  try {
+    const prior = existsSync6(path) ? readJson(path, 16384) : [];
+    if (!Array.isArray(prior) || prior.length >= 16) return;
+    const bounded = message.slice(0, 512);
+    if (!prior.includes(bounded)) atomicJson(path, [...prior, bounded]);
+  } catch {
+  }
+}
+
+// packages/agent-hooks/src/common/commit-runtime.ts
+async function enrollCommitInvocation(request, options = {}, logger2) {
+  const unsupported = inspectInput(request.toolInput);
+  if (unsupported !== null) {
+    logger2?.warn(`git-span commit receipts: ${unsupported}`);
+    return { kind: "unsupported", reason: unsupported };
+  }
+  const command = request.toolInput.command;
+  const root = receiptRoot(options);
+  const key2 = identityKey(request);
+  const directory = join9(root, "invocations", key2);
+  const deadline = performance.now() + COMMIT_RECEIPT_LIMITS.drainMs;
+  try {
+    privateDirectory(root);
+    privateDirectory(join9(root, "invocations"));
+    const claim = await acquireReceiptClaim(root, `invocation-${key2}`, deadline);
+    if (!claim) throw new Error("invocation enrollment ownership unavailable");
+    try {
+      const enrollmentPath = join9(directory, "enrollment.json");
+      if (existsSync7(enrollmentPath)) {
+        const existing = validateCommitEnrollment(readJson(enrollmentPath));
+        if (!existing.ok) throw new Error(existing.reason);
+        const state2 = readState(directory, existing.value);
+        if (state2.status !== "active" || JSON.stringify(existing.value.originalInput) !== JSON.stringify(request.toolInput) || existing.value.cwd !== request.cwd)
+          throw new Error("invocation key cannot be reused");
+        return {
+          kind: "enrolled",
+          enrollment: existing.value,
+          updatedInput: replacementInput(existing.value, directory)
+        };
+      }
+      if (!isAbsolute8(request.bundlePath) || !lstatSync3(request.bundlePath).isFile())
+        throw new Error("deployed shim bundle must be an absolute file");
+      if (!lstatSync3(realpathSync3(request.cwd)).isDirectory())
+        throw new Error("effective shell cwd must be a directory");
+      const enrollment = {
+        schemaVersion: 1,
+        invocationKey: randomBytes2(24).toString("hex"),
+        host: request.host,
+        sessionId: request.sessionId,
+        toolUseId: request.toolUseId,
+        originalInput: JSON.parse(JSON.stringify(request.toolInput)),
+        originalCommand: command,
+        cwd: request.cwd,
+        gitExecutable: executableOnPath("git"),
+        ...request.transcriptLocator === void 0 ? {} : { transcriptLocator: request.transcriptLocator }
+      };
+      const valid = validateCommitEnrollment(enrollment);
+      if (!valid.ok) throw new Error(valid.reason);
+      const config = { schemaVersion: 1, root, directory, enrollment: valid.value };
+      const launcher = `#!/bin/sh
+exec ${quote(process.execPath)} ${quote(request.bundlePath)} --git-span-commit-shim ${quote(join9(directory, "shim.json"))} -- "$@"
+`;
+      const state = {
+        enrollment: valid.value,
+        status: "active",
+        pendingNonces: [],
+        liveLease: true,
+        lastActivityMs: Date.now()
+      };
+      const initialBytes = Buffer.byteLength(JSON.stringify(config)) + Buffer.byteLength(JSON.stringify(valid.value)) + Buffer.byteLength(JSON.stringify(state)) + Buffer.byteLength(launcher) + 32768;
+      if (initialBytes > COMMIT_RECEIPT_LIMITS.bytesPerInvocation || !await reserveReceiptCapacity(root, 1, initialBytes, deadline))
+        throw new Error("private receipt state capacity exceeded");
+      try {
+        privateDirectory(directory);
+        privateDirectory(join9(directory, "bin"));
+        privateDirectory(join9(directory, "receipts"));
+        privateEmptyFile(join9(directory, "lease"));
+        atomicJson(enrollmentPath, valid.value, true);
+        atomicJson(join9(directory, "state.json"), state);
+        atomicJson(join9(directory, "usage.json"), { bytes: initialBytes, receipts: 0 });
+        atomicJson(join9(directory, "shim.json"), config, true);
+        writeFileSync4(join9(directory, "bin", "git"), launcher, { mode: 448, flag: "wx" });
+        chmodSync2(join9(directory, "bin", "git"), 448);
+      } catch (error) {
+        await reserveReceiptCapacity(root, -1, -initialBytes, deadline);
+        rmSync4(directory, { recursive: true, force: true });
+        throw error;
+      }
+      return { kind: "enrolled", enrollment: valid.value, updatedInput: replacementInput(valid.value, directory) };
+    } finally {
+      claim.release();
+    }
+  } catch (error) {
+    const reason = errorMessage(error);
+    logger2?.warn(`git-span commit receipts: ${reason}`);
+    return { kind: "unavailable", reason };
+  }
+}
+async function dispatchCommitShim(argv = process.argv.slice(2)) {
+  if (argv[0] !== "--git-span-commit-shim") return false;
+  const configPath = argv[1];
+  if (!configPath || !isAbsolute8(configPath) || argv[2] !== "--") throw new Error("invalid receipt shim dispatch");
+  const config = readJson(configPath);
+  const valid = validateCommitEnrollment(config.enrollment);
+  if (config.schemaVersion !== 1 || !valid.ok || !isAbsolute8(config.root) || !isAbsolute8(config.directory))
+    throw new Error("invalid immutable receipt shim configuration");
+  const enrollment = valid.value;
+  const gitArgv = argv.slice(3);
+  const parsed = parseCommitGitInvocation(gitArgv, process.cwd());
+  const nonce = `receipt-${randomBytes2(24).toString("hex")}`;
+  let repository = null;
+  let checkpoint = null;
+  if (parsed.ok && parsed.value.builtinCommit && !parsed.value.dryRun) {
+    try {
+      repository = resolveCommitRepository(enrollment.gitExecutable, parsed.value.globalArguments, process.cwd());
+      checkpoint = checkpointCommitReflog(repository.headReflog);
+    } catch (error) {
+      appendReceiptDiagnostic(config.directory, errorMessage(error));
+    }
+  } else if (!parsed.ok) appendReceiptDiagnostic(config.directory, parsed.reason);
+  const result = await executeCommitGit(
+    enrollment.gitExecutable,
+    gitArgv,
+    process.cwd(),
+    parsed.ok && parsed.value.builtinCommit ? nonce : void 0
+  );
+  if (repository !== null && checkpoint !== null) {
+    try {
+      const evidence = validateCommitCreationEvidence({
+        checkpoint,
+        append: readCommitReflogAppend(repository.headReflog, checkpoint, COMMIT_RECEIPT_LIMITS.reflogBytes),
+        objectFormat: repository.objectFormat,
+        nonce,
+        gitExitCode: result.exitCode,
+        gitSignal: result.signal,
+        builtinCommit: true,
+        dryRun: false
+      });
+      if (!evidence.ok) {
+        if (result.exitCode === 0 && result.signal === null) appendReceiptDiagnostic(config.directory, evidence.reason);
+      } else {
+        const object2 = verifyCommitObject(enrollment.gitExecutable, repository, evidence.value);
+        if (!object2.ok) appendReceiptDiagnostic(config.directory, object2.reason);
+        else
+          await publishReceipt(config.root, config.directory, {
+            schemaVersion: 1,
+            invocationKey: enrollment.invocationKey,
+            nonce,
+            sha: evidence.value,
+            repository
+          });
+      }
+    } catch (error) {
+      appendReceiptDiagnostic(config.directory, errorMessage(error));
+    }
+  }
+  if (result.signal !== null) {
+    process.kill(process.pid, result.signal);
+    await new Promise(() => {
+    });
+  }
+  process.exit(result.exitCode ?? 127);
+}
+function receiptRoot(options) {
+  return options.stateRoot ?? join9(homedir2(), ".cache", "git-span", "commit-receipts");
+}
+function quote(value) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+function errorMessage(error) {
+  return (error instanceof Error ? error.message : String(error)).slice(0, 512);
+}
+function inspectInput(input) {
+  if (typeof input.command !== "string" || input.command.length === 0) return "unsupported shell input";
+  if (input.run_in_background === true || input.background === true || input.delegated === true || input.worker === true)
+    return "background or delegated execution is unsupported";
+  const split = splitTopLevel(input.command);
+  if (split.stages.some((stage) => stage.precededBy === "background") || /&\s*$/.test(input.command))
+    return "background shell execution is unsupported";
+  for (const stage of split.stages) {
+    const args = argvOf(stage.text) ?? [];
+    const tokens = tokenize(stage.text) ?? [];
+    const leadingAssignments = [];
+    for (const token of tokens) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*=/.test(token.text)) break;
+      leadingAssignments.push(token.text);
+    }
+    if (leadingAssignments.some((arg) => /^PATH=/.test(arg)) || ["export", "env"].includes(args[0]) && args.some((arg) => /^PATH=/.test(arg)) || args[0] === "unset" && args.includes("PATH") || args[0] === "env" && (args.includes("-i") || args.includes("--ignore-environment")))
+      return "observable instrumentation PATH override is unsupported";
+    const executable = ["command", "exec", "env"].includes(args[0]) ? args.find((arg) => isAbsolute8(arg) && /(?:^|\/)git$/.test(arg)) : args[0];
+    if (executable !== void 0 && isAbsolute8(executable) && /(?:^|\/)git$/.test(executable))
+      return "absolute Git invocation bypasses receipt instrumentation";
+  }
+  return null;
+}
+function replacementInput(enrollment, directory) {
+  const command = `{ printf '%s' "$$" > ${quote(join9(directory, "lease"))}; } 2>/dev/null || :; export PATH=${quote(join9(directory, "bin"))}:"$PATH"; ${enrollment.originalCommand}`;
+  return { ...enrollment.originalInput, command };
+}
+function readState(directory, enrollment) {
+  const value = readJson(join9(directory, "state.json"));
+  if (!["active", "completed", "acknowledged", "retired"].includes(value.status) || !Array.isArray(value.pendingNonces) || value.pendingNonces.length > COMMIT_RECEIPT_LIMITS.receiptsPerInvocation || !Number.isFinite(value.lastActivityMs) || value.enrollment.invocationKey !== enrollment.invocationKey)
+    throw new Error("invalid private invocation lifecycle");
+  return value;
+}
+function readUsage(directory) {
+  const usage = readJson(join9(directory, "usage.json"), 4096);
+  if (!Number.isSafeInteger(usage.bytes) || usage.bytes < 0 || !Number.isSafeInteger(usage.receipts) || usage.receipts < 0)
+    throw new Error("invalid invocation usage");
+  return usage;
+}
+async function publishReceipt(root, directory, receipt) {
+  const deadline = performance.now() + COMMIT_RECEIPT_LIMITS.drainMs;
+  const enrollment = validateCommitEnrollment(readJson(join9(directory, "enrollment.json")));
+  if (!enrollment.ok) throw new Error(enrollment.reason);
+  const key2 = identityKey(enrollment.value);
+  const claim = await acquireReceiptClaim(root, `invocation-${key2}`, deadline);
+  if (!claim) throw new Error("receipt publication ownership unavailable");
+  try {
+    const state = readState(directory, enrollment.value);
+    if (state.status !== "active") throw new Error("receipt invocation is no longer active");
+    const usage = readUsage(directory);
+    const bytes = Buffer.byteLength(JSON.stringify(receipt));
+    if (usage.receipts >= COMMIT_RECEIPT_LIMITS.receiptsPerInvocation || usage.bytes + bytes > COMMIT_RECEIPT_LIMITS.bytesPerInvocation || !await reserveReceiptCapacity(root, 0, bytes, deadline))
+      throw new Error("receipt capacity exceeded");
+    atomicJson(join9(directory, "usage.json"), { bytes: usage.bytes + bytes, receipts: usage.receipts + 1 });
+    atomicJson(join9(directory, "receipts", `${receipt.nonce}.json`), receipt, true);
+    atomicJson(join9(directory, "state.json"), {
+      ...state,
+      pendingNonces: [...state.pendingNonces, receipt.nonce],
+      lastActivityMs: Date.now()
+    });
+  } finally {
+    claim.release();
+  }
+}
+
 // packages/agent-hooks/src/common/update-check-env.ts
 function disableUpdateCheck() {
   process.env.GIT_SPAN_DISABLE_UPDATE_CHECK = "1";
@@ -6472,7 +7220,8 @@ function narrowCommand(toolInput) {
   }
   return null;
 }
-function createHandler(layout = DEFAULT_SESSION_LAYOUT) {
+function createHandler(layout = DEFAULT_SESSION_LAYOUT, runtimeOptions = {}, bundlePath = fileURLToPath(import.meta.url)) {
+  const options = { stateRoot: join10(dirname8(layout.base), "commit-receipts"), ...runtimeOptions };
   return async (input, ctx) => {
     try {
       if (!input.session_id || !input.tool_use_id) return null;
@@ -6486,12 +7235,40 @@ function createHandler(layout = DEFAULT_SESSION_LAYOUT) {
         ctx.logger,
         createDefaultPlannedTouchStore(layout)
       );
-      return null;
+      if (input.tool_name !== "Bash" || typeof input.tool_input.command !== "string")
+        return null;
+      const toolInput = input.tool_input;
+      if (toolInput.run_in_background === true || toolInput.background === true || toolInput.delegate === true) {
+        ctx.logger.warn("git-span commit attribution does not support visible background or delegated execution");
+        return null;
+      }
+      const result = await enrollCommitInvocation(
+        {
+          host: "claude",
+          sessionId: input.session_id,
+          toolUseId: input.tool_use_id,
+          cwd: input.cwd ?? "",
+          toolInput,
+          ...input.transcript_path ? { transcriptLocator: input.transcript_path } : {},
+          bundlePath
+        },
+        options,
+        ctx.logger
+      );
+      if (result.kind !== "enrolled") {
+        ctx.logger.warn("git-span commit attribution enrollment unavailable", { reason: result.reason });
+        return null;
+      }
+      return preToolUseOutput({ hookSpecificOutput: { updatedInput: result.updatedInput } });
     } catch (err) {
       ctx.logger.warn("git-span static Bash pre-plan failed closed for attribution", { err });
       return null;
     }
   };
+}
+if (process.argv[2] === "--git-span-commit-shim") {
+  await dispatchCommitShim();
+  process.exit(0);
 }
 disableUpdateCheck();
 var static_plan_default = preToolUseHook({ matcher: "Bash", timeout: 1e4 }, createHandler());
