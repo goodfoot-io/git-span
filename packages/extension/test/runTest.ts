@@ -107,6 +107,7 @@ async function withVscodeCacheAcquireLock<T>(fn: () => Promise<T>): Promise<T> {
 const state = {
   assignedDisplay: null as number | null,
   xvfbProcess: null as cp.ChildProcess | null,
+  dbusPid: null as number | null,
   cleanupDone: false
 };
 
@@ -250,7 +251,9 @@ function startXvfb(): cp.ChildProcess | null {
 }
 
 /**
- * Clean up Xvfb and temp directories. Safe to call multiple times.
+ * Clean up owned display and session-bus processes and temp directories. Safe to call multiple times.
+ *
+ * @throws Error when an owned session-bus process cannot be terminated.
  */
 function performCleanup(): void {
   if (state.cleanupDone) return;
@@ -266,6 +269,17 @@ function performCleanup(): void {
     }
   }
   cleanX11LockFiles();
+
+  if (state.dbusPid !== null) {
+    try {
+      process.kill(state.dbusPid, 'SIGTERM');
+    } catch (err) {
+      if (err && typeof err === 'object' && 'code' in err && (err as NodeJS.ErrnoException).code !== 'ESRCH') {
+        throw err;
+      }
+    }
+    state.dbusPid = null;
+  }
 
   for (const dir of [TEST_WORKSPACE_PATH, USER_DATA_DIR_PATH, TEST_DIST_PATH, TEST_BIN_PATH]) {
     if (fs.existsSync(dir)) {
@@ -626,9 +640,24 @@ async function main(): Promise<void> {
     prepareTestWorkspace();
     installGitSpanFixtureBinary();
 
-    // Remove VSCODE_ and ELECTRON_RUN_AS_NODE env vars that cause MODULE_NOT_FOUND errors.
+    // Electron requires a session bus, not just the container's system bus.
+    // Own a private Linux bus so parallel suites do not share session state.
+    if (process.platform === 'linux') {
+      const output = cp.execFileSync('dbus-daemon', ['--session', '--fork', '--print-address=1', '--print-pid=1'], {
+        encoding: 'utf8'
+      });
+      const [address, pid] = output.trim().split('\n');
+      const daemonPid = Number(pid);
+      if (!address?.startsWith('unix:') || !Number.isSafeInteger(daemonPid) || daemonPid <= 0) {
+        throw new Error('dbus-daemon did not return a valid session address and process ID');
+      }
+      state.dbusPid = daemonPid;
+      process.env['DBUS_SESSION_BUS_ADDRESS'] = address;
+    }
+
+    // Host Node/VS Code flags are not supported by packaged test Electron.
     const problematicVars = Object.keys(process.env).filter(
-      (key) => key.startsWith('VSCODE_') || key === 'ELECTRON_RUN_AS_NODE'
+      (key) => key.startsWith('VSCODE_') || key === 'ELECTRON_RUN_AS_NODE' || key === 'NODE_OPTIONS'
     );
     for (const key of problematicVars) {
       delete process.env[key];

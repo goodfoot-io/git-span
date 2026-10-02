@@ -58,7 +58,7 @@
     "@types/node": "24.x",
     "@types/vscode": "^1.101.0",
     "@typescript/native-preview": "^7.0.0-dev",
-    "@vscode/test-electron": "^3.1.0",
+    "@vscode/test-electron": "patch:@vscode/test-electron@npm%3A3.1.0#~/.yarn/patches/@vscode-test-electron-npm-3.1.0-8fa07da1aa.patch",
     "@vscode/vsce": "3.9.2",
     "esbuild": "^0.28.2",
     "glob": "^13.0.6",

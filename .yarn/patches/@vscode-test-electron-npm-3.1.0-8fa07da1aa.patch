@@ -1,0 +1,13 @@
+diff --git a/out/runTest.js b/out/runTest.js
+index 4d506e5a4d0399add8060558aeb5cded1bef2cd7..80dd8332db8ad458bdacf90a69b2adf610803652 100644
+--- a/out/runTest.js
++++ b/out/runTest.js
+@@ -60,7 +60,7 @@ async function runTests(options) {
+         '--disable-updates',
+         '--skip-welcome',
+         '--skip-release-notes',
+-        '--no-cached-data',
++        '--no-cached-data=true',
+         '--disable-workspace-trust',
+         '--extensionTestsPath=' + options.extensionTestsPath,
+     ];

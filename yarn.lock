@@ -4915,7 +4915,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@vscode/test-electron@npm:^3.1.0":
+"@vscode/test-electron@npm:3.1.0":
   version: 3.1.0
   resolution: "@vscode/test-electron@npm:3.1.0"
   dependencies:
@@ -4925,6 +4925,19 @@ __metadata:
     ora: "npm:^8.1.0"
     semver: "npm:^7.6.2"
   checksum: 10c0/94dec0f45cc35ad50bdff982b377c3160de340af92e4fb5e1fe161e6ecc9bbd3718ecf33f8776da1cfb4b80930d7e9141031ee8ae264465c86c71c99923fa9e4
+  languageName: node
+  linkType: hard
+
+"@vscode/test-electron@patch:@vscode/test-electron@npm%3A3.1.0#~/.yarn/patches/@vscode-test-electron-npm-3.1.0-8fa07da1aa.patch":
+  version: 3.1.0
+  resolution: "@vscode/test-electron@patch:@vscode/test-electron@npm%3A3.1.0#~/.yarn/patches/@vscode-test-electron-npm-3.1.0-8fa07da1aa.patch::version=3.1.0&hash=06042e"
+  dependencies:
+    http-proxy-agent: "npm:^7.0.2"
+    https-proxy-agent: "npm:^7.0.5"
+    jszip: "npm:^3.10.1"
+    ora: "npm:^8.1.0"
+    semver: "npm:^7.6.2"
+  checksum: 10c0/1242a15232674c72e7df343d8502381c3754dd59d7b1b3d1d48f6983952e4c31da87833afe67236f414c96ec99ae89effbde66d75e1d9546a52acc7eac5494ff
   languageName: node
   linkType: hard
 
@@ -7646,7 +7659,7 @@ __metadata:
     "@typescript/native-preview": "npm:^7.0.0-dev"
     "@vscode-elements/elements": "npm:^2.5.1"
     "@vscode/codicons": "npm:0.0.46-24"
-    "@vscode/test-electron": "npm:^3.1.0"
+    "@vscode/test-electron": "patch:@vscode/test-electron@npm%3A3.1.0#~/.yarn/patches/@vscode-test-electron-npm-3.1.0-8fa07da1aa.patch"
     "@vscode/vsce": "npm:3.9.2"
     esbuild: "npm:^0.28.2"
     glob: "npm:^13.0.6"
