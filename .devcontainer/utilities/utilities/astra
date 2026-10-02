@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+exec codex --model "gpt-6-astra" --dangerously-bypass-approvals-and-sandbox "$@"

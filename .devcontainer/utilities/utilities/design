@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+exec claude --settings '{"enabledPlugins":{"typeui@bergside":true},"extraKnownMarketplaces":{"bergside":{"source":{"source":"github","repo":"bergside/typeui"}}}}' "$@"
+

@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+exec codex --model "gpt-5.6-terra" --dangerously-bypass-approvals-and-sandbox "$@"

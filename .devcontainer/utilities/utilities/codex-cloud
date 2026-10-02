@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+workspace_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+exec node "$workspace_root/public/packages/tools/codex-cloud-cli/dist/cli.js" "$@"
