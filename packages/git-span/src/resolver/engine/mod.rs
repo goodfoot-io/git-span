@@ -388,6 +388,7 @@ pub fn resolve_anchor(
     anchor_id: &str,
     options: EngineOptions,
 ) -> Result<AnchorResolved> {
+    let _immutable = crate::perf::immutable_invocation();
     let _perf = crate::perf::span("resolver.resolve-anchor");
     let mut state = EngineState::new_with_fuzzy_threshold(
         repo,
@@ -436,6 +437,7 @@ pub fn resolve_span(
     name: &str,
     options: EngineOptions,
 ) -> Result<SpanResolved> {
+    let _immutable = crate::perf::immutable_invocation();
     let _perf = crate::perf::span("resolver.resolve-span");
     let mut state = EngineState::new_with_fuzzy_threshold(
         repo,
@@ -461,6 +463,7 @@ pub fn resolve_span_at(
     options: EngineOptions,
     commit_oid: &str,
 ) -> Result<SpanResolved> {
+    let _immutable = crate::perf::immutable_invocation();
     let _perf = crate::perf::span("resolver.resolve-span-at");
     let mut state = EngineState::new_with_fuzzy_threshold(
         repo,
@@ -775,6 +778,7 @@ pub(crate) fn resolve_loaded_spans(
     spans: &[(String, Span)],
     options: EngineOptions,
 ) -> Result<Vec<SpanResolved>> {
+    let _immutable = crate::perf::immutable_invocation();
     let _perf = crate::perf::span("resolver.resolve-loaded-spans");
     let mut state = EngineState::new_with_fuzzy_threshold(
         repo,
@@ -811,6 +815,7 @@ pub(crate) fn resolve_named_spans(
     names: &[String],
     options: EngineOptions,
 ) -> Result<NamedSpanResults> {
+    let _immutable = crate::perf::immutable_invocation();
     let state = EngineState::new_with_fuzzy_threshold(
         repo,
         options.layers,
@@ -1077,6 +1082,7 @@ pub(crate) fn resolve_named_spans_with_source_layers(
     options: EngineOptions,
     source_layers: SourceLayers,
 ) -> Result<NamedSpanResults> {
+    let _immutable = crate::perf::immutable_invocation();
     let state = EngineState::from_source_layers(
         source_layers,
         repo,
@@ -1097,6 +1103,7 @@ pub(crate) fn resolve_named_spans_retaining_source_layers(
     names: &[String],
     options: EngineOptions,
 ) -> Result<(NamedSpanResults, SourceLayers)> {
+    let _immutable = crate::perf::immutable_invocation();
     let state = EngineState::new_with_fuzzy_threshold(
         repo,
         options.layers,
@@ -1225,6 +1232,7 @@ pub(crate) fn resolve_named_spans_parallel(
     options: EngineOptions,
     thread_count: usize,
 ) -> Result<NamedSpanResults> {
+    let _immutable = crate::perf::immutable_invocation();
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1366,7 +1374,7 @@ fn drift_spans_inner(
     enable_trace: bool,
     retain_layers: bool,
 ) -> Result<DriftSpansOutput> {
-    crate::perf::reset_subroutine_counters();
+    crate::perf::reset_resolution_subroutine_counters();
     crate::resolver::timeline::reset_counters();
     crate::resolver::linemap::reset_counters();
     let span_pairs: Vec<(String, Span)> = {
@@ -1502,9 +1510,6 @@ fn drift_spans_inner(
     //                          smaller.
     crate::perf::counter("session.gix-open-calls", crate::perf::gix_open_calls());
     crate::perf::counter("session.attr-for-calls", crate::perf::attr_for_calls());
-    for (label, value) in crate::perf::immutable_counters() {
-        crate::perf::counter(label, value);
-    }
     // Category 2: anchor-set decomposition.
     let anchors_total = state.concurrent.anchors_total();
     crate::perf::counter("session.anchors-total", anchors_total);
@@ -1586,6 +1591,7 @@ pub fn drift_spans(
     span_root: &str,
     options: EngineOptions,
 ) -> Result<Vec<SpanResolved>> {
+    let _immutable = crate::perf::immutable_invocation();
     // The SQLite store is the only cache path. On [`ExactAttempt::Resolved`] it
     // rendered the reportable set (already reportable-filtered and sorted). A
     // [`ExactAttempt::Bypass`] — cache disabled, ineligible run, or store fault
@@ -1618,6 +1624,7 @@ pub(crate) fn drift_spans_retaining_source_layers(
     Option<SourceLayers>,
     Option<crate::resolver::WholeResult>,
 )> {
+    let _immutable = crate::perf::immutable_invocation();
     // The SQLite store is the only cache path. On a `Resolved` outcome the store
     // rendered the reportable set and hands back the render-ready whole-result
     // so `run_drift` skips its per-invocation corpus reload (count-totals /
@@ -1641,6 +1648,7 @@ pub fn drift_spans_with_trace(
     span_root: &str,
     options: EngineOptions,
 ) -> Result<(Vec<SpanResolved>, Vec<crate::perf::TraceRow>)> {
+    let _immutable = crate::perf::immutable_invocation();
     let output = drift_spans_inner(repo, span_root, options, true, false)?;
     Ok((output.spans, output.trace_rows))
 }
@@ -2492,3 +2500,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod immutable_perf_tests;

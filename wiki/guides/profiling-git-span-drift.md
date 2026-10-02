@@ -1,8 +1,8 @@
 ---
 title: Profiling git span drift
 summary: How to profile `git span drift` — flame-graph capture with `perf record` + inferno, the opt-in `--perf-trace` per-anchor wall-clock CSV emitter, and the `--perf` / `GIT_SPAN_PERF=1` cache-path counters that say which cache path a run took and why.
-aliases: [git-span profiling, perf trace, cache-path counters, perf-trace]
-links-reviewed: 2
+aliases: [git-span profiling, perf trace, cache-path counters, immutable counters, perf-trace]
+links-reviewed: 3
 ---
 
 # Profiling `git span drift`
@@ -103,24 +103,31 @@ When `--perf-trace` is absent, the resolver does not capture per-anchor traces; 
 
 **`--perf-trace` intentionally forces full resolution** for its per-anchor wall-clock profiling — bypassing every cache tier is what lets it attribute time to `resolve_anchor_inner` uniformly. It stays that way; it answers "where does resolver time go on a full scan," not "which cache path did this run take."
 
-The cache-path counters below are a SEPARATE, additive mechanism that does **not** force full resolution — they observe whichever path a normal (uncached-flag) invocation actually takes, on top of the existing `--perf` diagnostics (`GIT_SPAN_PERF=1` or the `--perf` flag; see [`perf.rs`](../../packages/git-span/src/perf.rs#L1-L80)):
+The cache-path counters below are a SEPARATE, additive mechanism that does **not** force full resolution — they observe whichever path a normal (uncached-flag) invocation actually takes, on top of the existing `--perf` diagnostics (`GIT_SPAN_PERF=1` or the `--perf` flag; see [`init`](../../packages/git-span/src/perf.rs#L8-L10)):
 
 ```bash
-GIT_SPAN_PERF=1 git span drift --no-exit-code 2>&1 >/dev/null | grep 'cache-path\.'
+GIT_SPAN_PERF=1 git span drift --no-exit-code 2>&1 >/dev/null | grep -E '(cache-path|immutable)\.'
 ```
 
-These counters are THE cache diagnostics surface. There is one cache — the
-SQLite store (`<git_dir>/span/store.db`, see [`resolver/store`](../../packages/git-span/src/resolver/store/mod.rs#L1-L20)) —
-and the `cache-path.*` family reports everything it does: which path a run
-took, why it bypassed, what it published, and what the bounded quota reclaimed.
-The Phase 7 cutover deleted both legacy caches (`resolver/cache`,
-`resolver/cache_v2`) and their `cache.l1-*` / `cache.l2-*` counter families;
-nothing contrasts against this surface anymore.
+The result store (`<common_dir>/span/store.db`, see [`CacheStore::open`](../../packages/git-span/src/resolver/store/mod.rs#L237-L242)) reports its routing, publication, and quota maintenance through `cache-path.*`. A separately bounded observation memo (`<common_dir>/span/immutable.db`, see [`ImmutableMemo::open`](../../packages/git-span/src/resolver/core/immutable_observation.rs#L59-L70) and its [storage initialization](../../packages/git-span/src/resolver/core/immutable_observation.rs#L72-L103)) reports reuse through `immutable.*`. The memo reuses successful declaration facts, recursive source-tree maps, and blob digests only after [lookup verification](../../packages/git-span/src/resolver/core/immutable_observation.rs#L147-L212) proves current dependency objects remain readable with matching kinds and bytes; its counters describe state observation, rather than the result-store path that ultimately serves the run.
 
-Every line is emitted via the same [`crate::perf::note`](../../packages/git-span/src/perf.rs#L69-L74) /
-[`crate::perf::counter`](../../packages/git-span/src/perf.rs#L58-L63) calls every other `--perf` diagnostic
+Every line is emitted via the same [`crate::perf::note`](../../packages/git-span/src/perf.rs#L73-L78) /
+[`crate::perf::counter`](../../packages/git-span/src/perf.rs#L58-L67) calls every other `--perf` diagnostic
 uses — plain, gated output — so they cost nothing when `--perf`/`GIT_SPAN_PERF=1`
 is off. `note` lines are free-form text; `counter` lines carry an integer value.
+
+**Immutable observation reuse** (labels are defined by [`immutable_counters`](../../packages/git-span/src/perf.rs#L117-L141)):
+
+| Line | Meaning |
+|------|---------|
+| `immutable.declaration-hits` | Successful declaration summaries reused after their current blob witness matches. |
+| `immutable.tree-map-hits` | Recursive source-tree maps reused after all current tree witnesses match. |
+| `immutable.blob-digest-hits` | Blob digests reused after their current blob witness matches. |
+| `immutable.misses` | Memo lookups that do not yield reuse, including absent entries and rejected stored entries. |
+| `immutable.rejections` | Stored entries rejected by envelope, shape, or current dependency validation; these also count as misses. |
+| `immutable.reused-source-bytes` | Sum of raw dependency-witness bytes verified for successful hits; these bytes are still read to prove current availability. |
+
+The [invocation guard](../../packages/git-span/src/perf.rs#L143-L167) resets these counters at each external resolver entry and emits one complete set on return, including result-store hits, authoritative fallback, and error returns. Work observed before fallback remains in that invocation's totals. Trace and cache-disabled invocations emit zeros when they perform no memo lookups. The pre-fix and post-fix resolve passes of `drift --fix` each emit their own set; repeated resolver calls in one process do not accumulate earlier calls' totals.
 
 **Routing — which path served the run** (exactly one `hit-class` per run):
 

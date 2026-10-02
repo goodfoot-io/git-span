@@ -60,6 +60,10 @@ pub fn counter(label: &str, value: u64) {
         return;
     }
     eprintln!("git-span perf: {label} {value}");
+    #[cfg(test)]
+    if label.starts_with("immutable.") {
+        IMMUTABLE_EMISSIONS.with(|rows| rows.borrow_mut().push((label.to_owned(), value)));
+    }
 }
 
 /// Emit a free-form annotation line in the `--perf` output.
@@ -134,6 +138,42 @@ pub(crate) fn immutable_counters() -> [(&'static str, u64); 6] {
             IMMUTABLE_REUSED_BYTES.load(Ordering::Relaxed),
         ),
     ]
+}
+
+/// Own the immutable observation counters for one external resolver invocation.
+/// Drop emits on store hits, authoritative fallback, and error returns alike.
+pub(crate) struct ImmutableInvocation;
+
+pub(crate) fn immutable_invocation() -> ImmutableInvocation {
+    reset_immutable_counters();
+    ImmutableInvocation
+}
+
+impl Drop for ImmutableInvocation {
+    fn drop(&mut self) {
+        for (label, value) in immutable_counters() {
+            counter(label, value);
+        }
+    }
+}
+
+fn reset_immutable_counters() {
+    for counter in &IMMUTABLE_HITS {
+        counter.store(0, Ordering::Relaxed);
+    }
+    IMMUTABLE_MISSES.store(0, Ordering::Relaxed);
+    IMMUTABLE_REJECTIONS.store(0, Ordering::Relaxed);
+    IMMUTABLE_REUSED_BYTES.store(0, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+thread_local! {
+    static IMMUTABLE_EMISSIONS: std::cell::RefCell<Vec<(String, u64)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+pub(crate) fn take_immutable_emissions() -> Vec<(String, u64)> {
+    IMMUTABLE_EMISSIONS.with(|rows| std::mem::take(&mut *rows.borrow_mut()))
 }
 
 // ── `git span list` corpus-load counters ────────────────────────────────────
@@ -411,15 +451,16 @@ pub struct TraceRow {
     pub status: &'static str,
 }
 
-/// Reset all subroutine-level counters. Called at the top of `drift_spans`
-/// so the emit block reports values from a single resolver run.
+/// Reset all subroutine-level counters for standalone instrumentation checks.
+/// Resolver invocation boundaries own immutable counters separately.
 pub fn reset_subroutine_counters() {
-    for counter in &IMMUTABLE_HITS {
-        counter.store(0, Ordering::Relaxed);
-    }
-    IMMUTABLE_MISSES.store(0, Ordering::Relaxed);
-    IMMUTABLE_REJECTIONS.store(0, Ordering::Relaxed);
-    IMMUTABLE_REUSED_BYTES.store(0, Ordering::Relaxed);
+    reset_immutable_counters();
+    reset_resolution_subroutine_counters();
+}
+
+/// Reset the authoritative engine's ordinary metrics without discarding work
+/// performed by a preceding store/capture attempt in the same invocation.
+pub(crate) fn reset_resolution_subroutine_counters() {
     GIX_OPEN_CALLS.store(0, Ordering::Relaxed);
     ATTR_FOR_CALLS.store(0, Ordering::Relaxed);
 }
