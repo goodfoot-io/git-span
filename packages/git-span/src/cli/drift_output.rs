@@ -69,7 +69,7 @@ fn write_perf_trace_csv(
         .into()
     };
     w.write_all(b"span,anchor_id,anchor_sha,path,wall_us,fast_path,status\n")
-        .map_err(&write_err)?;
+        .map_err(write_err)?;
     for r in rows {
         let mut line = String::new();
         line.push_str(&csv_escape(&r.span));
@@ -86,7 +86,7 @@ fn write_perf_trace_csv(
         line.push(',');
         line.push_str(r.status);
         line.push('\n');
-        w.write_all(line.as_bytes()).map_err(&write_err)?;
+        w.write_all(line.as_bytes()).map_err(write_err)?;
     }
     w.flush().map_err(write_err)
 }
