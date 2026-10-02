@@ -2,17 +2,9 @@
 
 import type { CommitEnrollment, CommitPostIdentity, CommitReceipt, CommitValidation } from './commit-contracts.js';
 import { restoreCommitInvocation, validateCommitReceipt } from './commit-contracts.js';
+import { COMMIT_RECEIPT_LIMITS } from './commit-limits.js';
 
-export const COMMIT_RECEIPT_LIMITS = {
-  reflogBytes: 1_048_576,
-  receiptsPerInvocation: 256,
-  bytesPerInvocation: 4_194_304,
-  invocations: 4096,
-  totalBytes: 67_108_864,
-  abandonedRetentionMs: 86_400_000,
-  drainMs: 3000,
-  cliMs: 2000
-} as const;
+export { COMMIT_RECEIPT_LIMITS } from './commit-limits.js';
 
 export type CommitInvocationStatus = 'active' | 'completed' | 'acknowledged' | 'retired';
 

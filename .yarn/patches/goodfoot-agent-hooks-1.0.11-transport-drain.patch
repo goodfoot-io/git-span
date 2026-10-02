@@ -1,0 +1,65 @@
+diff --git a/dist/core/transport.js b/dist/core/transport.js
+index 2c770b255ed333835dafb2044730a82a4d84113f..86184ed7989245628f37dd66fff1c56d424a5ddd 100644
+--- a/dist/core/transport.js
++++ b/dist/core/transport.js
+@@ -117,14 +117,16 @@ function classify(error, phase, policy, onUnexpectedError) {
+  * policy, which exit with code 1 — these are not the handler's own
+  * intentional signal.
+  */
+-function writeUnexpectedErrorStderr(error) {
+-    if (error instanceof Error) {
+-        process.stderr.write(`${error.stack ?? error.message}\n`);
+-    }
+-    else {
+-        process.stderr.write(`${String(error)}\n`);
+-    }
++function writeStream(stream, content) {
++    return new Promise((resolve, reject) => {
++        stream.write(content, (error) => error ? reject(error) : resolve());
++    });
++}
++async function writeUnexpectedErrorStderr(error) {
++    const content = error instanceof Error ? `${error.stack ?? error.message}\n` : `${String(error)}\n`;
++    await writeStream(process.stderr, content);
+ }
++
+ /**
+  * Last-resort logger shutdown used only when the transport's finalize itself
+  * threw — a broken mapping must not mask the original failure.
+@@ -198,7 +200,7 @@ export async function drive(transport, hookFn) {
+             cleanupQuietly();
+             process.exit(FALLBACK_EXIT_SUCCESS);
+         }
+-        writeUnexpectedErrorStderr(error);
++        await writeUnexpectedErrorStderr(error);
+         cleanupQuietly();
+         process.exit(FALLBACK_EXIT_ERROR);
+     }
+@@ -206,15 +208,15 @@ export async function drive(transport, hookFn) {
+         cleanup(policy, onUnexpectedError);
+     }
+     catch (error) {
+-        writeUnexpectedErrorStderr(error);
++        await writeUnexpectedErrorStderr(error);
+         process.exit(FALLBACK_EXIT_ERROR);
+     }
+     if (finalized.stderr !== undefined) {
+-        process.stderr.write(finalized.stderr);
++        await writeStream(process.stderr, finalized.stderr);
+     }
+     if (finalized.stdout !== undefined) {
+         try {
+-            process.stdout.write(finalized.stdout);
++            await writeStream(process.stdout, finalized.stdout);
+         }
+         catch (error) {
+             if (policy === "continue") {
+@@ -222,7 +224,7 @@ export async function drive(transport, hookFn) {
+                 cleanupQuietly();
+                 process.exit(FALLBACK_EXIT_SUCCESS);
+             }
+-            writeUnexpectedErrorStderr(error);
++            await writeUnexpectedErrorStderr(error);
+             cleanupQuietly();
+             process.exit(FALLBACK_EXIT_ERROR);
+         }

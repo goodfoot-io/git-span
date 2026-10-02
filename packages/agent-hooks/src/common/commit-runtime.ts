@@ -140,12 +140,28 @@ export async function enrollCommitInvocation(
         liveLease: true,
         lastActivityMs: Date.now()
       };
-      const initialBytes =
-        Buffer.byteLength(JSON.stringify(config)) +
-        Buffer.byteLength(JSON.stringify(valid.value)) +
-        Buffer.byteLength(JSON.stringify(state)) +
-        Buffer.byteLength(launcher) +
-        32768;
+      // Reserve the largest reachable lifecycle representation, including all pending keys.
+      const maximumState = {
+        ...state,
+        status: 'acknowledged',
+        pendingNonces: Array.from({ length: COMMIT_RECEIPT_LIMITS.receiptsPerInvocation }, () =>
+          'x'.repeat(COMMIT_RECEIPT_LIMITS.identityKeyBytes)
+        ),
+        liveLease: false,
+        lastActivityMs: Number.MAX_SAFE_INTEGER
+      };
+      const serializedBytes = [valid.value, config, maximumState].map((value) =>
+        Buffer.byteLength(JSON.stringify(value))
+      );
+      const initialBytes = serializedBytes.reduce((sum, bytes) => sum + bytes, 0) + Buffer.byteLength(launcher) + 32768;
+      if (
+        serializedBytes.some((bytes) => bytes > COMMIT_RECEIPT_LIMITS.jsonFileBytes) ||
+        initialBytes > COMMIT_RECEIPT_LIMITS.bytesPerInvocation
+      ) {
+        const reason = 'serialized receipt envelope exceeds private state bounds';
+        logger?.warn(`git-span commit receipts: ${reason}`);
+        return { kind: 'unsupported', reason };
+      }
       if (
         initialBytes > COMMIT_RECEIPT_LIMITS.bytesPerInvocation ||
         !(await reserveReceiptCapacity(root, 1, initialBytes, deadline))
@@ -418,14 +434,53 @@ function inspectInput(input: Readonly<Record<string, unknown>>): string | null {
       if (!/^[A-Za-z_][A-Za-z0-9_]*=/.test(token.text)) break;
       leadingAssignments.push(token.text);
     }
+    const wrapper = args[0]?.split('/').at(-1);
     if (
       leadingAssignments.some((arg) => /^PATH=/.test(arg)) ||
-      (['export', 'env'].includes(args[0]) && args.some((arg) => /^PATH=/.test(arg))) ||
+      (['export', 'env'].includes(wrapper ?? '') && args.some((arg) => /^PATH=/.test(arg))) ||
       (args[0] === 'unset' && args.includes('PATH')) ||
-      (args[0] === 'env' && (args.includes('-i') || args.includes('--ignore-environment')))
+      (wrapper === 'env' && (args.includes('-i') || args.includes('--ignore-environment')))
     )
       return 'observable instrumentation PATH override is unsupported';
-    const executable = ['command', 'exec', 'env'].includes(args[0])
+    // Walk visible wrapper prefixes, rather than treating their arguments as ordinary Git argv.
+    for (let index = 0; index < args.length; ) {
+      const name = args[index]?.split('/').at(-1);
+      if (!['command', 'exec', 'env', 'hash'].includes(name ?? '')) break;
+      if (name === 'hash' && args.length > index + 1)
+        return 'observable executable-search mutation bypasses receipt instrumentation';
+      index++;
+      while (index < args.length) {
+        const arg = args[index];
+        if (arg === '--') {
+          index++;
+          break;
+        }
+        if (name === 'command' && /^-[^-]*p/.test(arg))
+          return 'observable executable-search mutation bypasses receipt instrumentation';
+        if (
+          name === 'env' &&
+          (/^PATH=/.test(arg) ||
+            arg === '--ignore-environment' ||
+            /^-[^-]*i/.test(arg) ||
+            arg === '--unset=PATH' ||
+            /^(?:-[^-]*u)PATH$/.test(arg) ||
+            ((arg === '-u' || arg === '--unset') && args[index + 1] === 'PATH') ||
+            arg === '-S' ||
+            arg.startsWith('--split-string'))
+        )
+          return 'observable executable-search mutation bypasses receipt instrumentation';
+        if (name === 'env' && ['-u', '--unset', '-C', '--chdir'].includes(arg)) {
+          index += 2;
+          continue;
+        }
+        if (arg.startsWith('-') || (name === 'env' && /^[A-Za-z_][A-Za-z0-9_]*=/.test(arg))) {
+          index++;
+          continue;
+        }
+        break;
+      }
+    }
+    const executable = ['command', 'exec', 'env'].includes(wrapper ?? '')
       ? args.find((arg) => isAbsolute(arg) && /(?:^|\/)git$/.test(arg))
       : args[0];
     if (executable !== undefined && isAbsolute(executable) && /(?:^|\/)git$/.test(executable))

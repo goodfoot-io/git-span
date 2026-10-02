@@ -1698,6 +1698,24 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@goodfoot/agent-hooks@patch:@goodfoot/agent-hooks@npm%3A1.0.11#../../.yarn/patches/goodfoot-agent-hooks-1.0.11-transport-drain.patch::locator=agent-hooks%40workspace%3Apackages%2Fagent-hooks":
+  version: 1.0.11
+  resolution: "@goodfoot/agent-hooks@patch:@goodfoot/agent-hooks@npm%3A1.0.11#../../.yarn/patches/goodfoot-agent-hooks-1.0.11-transport-drain.patch::version=1.0.11&hash=d5f52f&locator=agent-hooks%40workspace%3Apackages%2Fagent-hooks"
+  dependencies:
+    esbuild: "npm:^0.24.0"
+    glob: "npm:^11.0.0"
+    typescript: "npm:^5.9.3"
+  peerDependencies:
+    "@opencode-ai/plugin": ^1.18.23
+  peerDependenciesMeta:
+    "@opencode-ai/plugin":
+      optional: true
+  bin:
+    agent-hooks: dist/cli.js
+  checksum: 10c0/b57d07699c29182220d7b367f1f554da435079a33fe4093d73ec8f0e794ae7bf87dd101bcd9eca91648decda7462d415af6298dca2cef9b3d7708ccd032345cc
+  languageName: node
+  linkType: hard
+
 "@goodfoot/agent-skills@npm:1.0.25":
   version: 1.0.25
   resolution: "@goodfoot/agent-skills@npm:1.0.25"
@@ -5220,7 +5238,7 @@ __metadata:
   resolution: "agent-hooks@workspace:packages/agent-hooks"
   dependencies:
     "@biomejs/biome": "npm:^2.5.8"
-    "@goodfoot/agent-hooks": "npm:1.0.11"
+    "@goodfoot/agent-hooks": "patch:@goodfoot/agent-hooks@npm%3A1.0.11#../../.yarn/patches/goodfoot-agent-hooks-1.0.11-transport-drain.patch"
     "@goodfoot/agent-skills": "npm:1.0.25"
     "@types/node": "npm:24.x"
     typescript: "npm:^7.0.2"

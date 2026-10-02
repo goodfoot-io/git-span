@@ -600,14 +600,16 @@ function classify(error, phase, policy, onUnexpectedError) {
   }
   return { kind: "handlerError", error, phase };
 }
-function writeUnexpectedErrorStderr(error) {
-  if (error instanceof Error) {
-    process.stderr.write(`${error.stack ?? error.message}
-`);
-  } else {
-    process.stderr.write(`${String(error)}
-`);
-  }
+function writeStream(stream, content) {
+  return new Promise((resolve5, reject2) => {
+    stream.write(content, (error) => error ? reject2(error) : resolve5());
+  });
+}
+async function writeUnexpectedErrorStderr(error) {
+  const content = error instanceof Error ? `${error.stack ?? error.message}
+` : `${String(error)}
+`;
+  await writeStream(process.stderr, content);
 }
 function cleanupQuietly() {
   try {
@@ -656,29 +658,29 @@ async function drive(transport, hookFn) {
       cleanupQuietly();
       process.exit(FALLBACK_EXIT_SUCCESS);
     }
-    writeUnexpectedErrorStderr(error);
+    await writeUnexpectedErrorStderr(error);
     cleanupQuietly();
     process.exit(FALLBACK_EXIT_ERROR);
   }
   try {
     cleanup(policy, onUnexpectedError);
   } catch (error) {
-    writeUnexpectedErrorStderr(error);
+    await writeUnexpectedErrorStderr(error);
     process.exit(FALLBACK_EXIT_ERROR);
   }
   if (finalized.stderr !== void 0) {
-    process.stderr.write(finalized.stderr);
+    await writeStream(process.stderr, finalized.stderr);
   }
   if (finalized.stdout !== void 0) {
     try {
-      process.stdout.write(finalized.stdout);
+      await writeStream(process.stdout, finalized.stdout);
     } catch (error) {
       if (policy === "continue") {
         reportUnexpectedError(onUnexpectedError, error, "write");
         cleanupQuietly();
         process.exit(FALLBACK_EXIT_SUCCESS);
       }
-      writeUnexpectedErrorStderr(error);
+      await writeUnexpectedErrorStderr(error);
       cleanupQuietly();
       process.exit(FALLBACK_EXIT_ERROR);
     }
@@ -6483,6 +6485,22 @@ import { isDeepStrictEqual } from "node:util";
 
 // packages/agent-hooks/src/common/commit-contracts.ts
 import { isAbsolute as isAbsolute4 } from "node:path";
+
+// packages/agent-hooks/src/common/commit-limits.ts
+var COMMIT_RECEIPT_LIMITS = {
+  jsonFileBytes: 1048576,
+  identityKeyBytes: 256,
+  reflogBytes: 1048576,
+  receiptsPerInvocation: 256,
+  bytesPerInvocation: 4194304,
+  invocations: 4096,
+  totalBytes: 67108864,
+  abandonedRetentionMs: 864e5,
+  drainMs: 3e3,
+  cliMs: 2e3
+};
+
+// packages/agent-hooks/src/common/commit-contracts.ts
 function object(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -6493,7 +6511,7 @@ function absolute(value) {
   return text(value) && isAbsolute4(value);
 }
 function key(value) {
-  return text(value, 256) && /^[a-zA-Z0-9_-]+$/.test(value);
+  return text(value, COMMIT_RECEIPT_LIMITS.identityKeyBytes) && /^[a-zA-Z0-9_-]+$/.test(value);
 }
 function reject(reason) {
   return { ok: false, reason };
@@ -6505,13 +6523,13 @@ function validateCommitEnrollment(value) {
     return reject("invalid invocation identity");
   }
   if (!absolute(value.cwd) || !absolute(value.gitExecutable)) return reject("enrollment paths must be absolute");
-  if (!object(value.originalInput) || !text(value.originalCommand, 1048576)) {
+  if (!object(value.originalInput) || !text(value.originalCommand, COMMIT_RECEIPT_LIMITS.jsonFileBytes)) {
     return reject("invalid original tool input");
   }
   if (value.transcriptLocator !== void 0 && !text(value.transcriptLocator))
     return reject("invalid transcript locator");
   try {
-    if (Buffer.byteLength(JSON.stringify(value.originalInput)) > 1048576)
+    if (Buffer.byteLength(JSON.stringify(value.originalInput)) > COMMIT_RECEIPT_LIMITS.jsonFileBytes)
       return reject("original input exceeds budget");
   } catch {
     return reject("original input is not serializable");
@@ -6666,16 +6684,6 @@ function validateCommitCreationEvidence(evidence) {
 }
 
 // packages/agent-hooks/src/common/commit-lifecycle.ts
-var COMMIT_RECEIPT_LIMITS = {
-  reflogBytes: 1048576,
-  receiptsPerInvocation: 256,
-  bytesPerInvocation: 4194304,
-  invocations: 4096,
-  totalBytes: 67108864,
-  abandonedRetentionMs: 864e5,
-  drainMs: 3e3,
-  cliMs: 2e3
-};
 function decideCommitClaim(owner, liveness, remainingMs) {
   if (!Number.isFinite(remainingMs) || remainingMs <= 0) return "refuse";
   if (owner === null) return "acquire";
@@ -6862,7 +6870,7 @@ function privateDirectory(path) {
     throw new Error("receipt directory is not private");
   }
 }
-function readJson(path, maximumBytes = 1048576) {
+function readJson(path, maximumBytes = COMMIT_RECEIPT_LIMITS.jsonFileBytes) {
   const stat = lstatSync2(path);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > maximumBytes)
     throw new Error("invalid bounded receipt file");
@@ -7039,7 +7047,25 @@ exec ${quote(process.execPath)} ${quote(request.bundlePath)} --git-span-commit-s
         liveLease: true,
         lastActivityMs: Date.now()
       };
-      const initialBytes = Buffer.byteLength(JSON.stringify(config)) + Buffer.byteLength(JSON.stringify(valid.value)) + Buffer.byteLength(JSON.stringify(state)) + Buffer.byteLength(launcher) + 32768;
+      const maximumState = {
+        ...state,
+        status: "acknowledged",
+        pendingNonces: Array.from(
+          { length: COMMIT_RECEIPT_LIMITS.receiptsPerInvocation },
+          () => "x".repeat(COMMIT_RECEIPT_LIMITS.identityKeyBytes)
+        ),
+        liveLease: false,
+        lastActivityMs: Number.MAX_SAFE_INTEGER
+      };
+      const serializedBytes = [valid.value, config, maximumState].map(
+        (value) => Buffer.byteLength(JSON.stringify(value))
+      );
+      const initialBytes = serializedBytes.reduce((sum, bytes) => sum + bytes, 0) + Buffer.byteLength(launcher) + 32768;
+      if (serializedBytes.some((bytes) => bytes > COMMIT_RECEIPT_LIMITS.jsonFileBytes) || initialBytes > COMMIT_RECEIPT_LIMITS.bytesPerInvocation) {
+        const reason = "serialized receipt envelope exceeds private state bounds";
+        logger2?.warn(`git-span commit receipts: ${reason}`);
+        return { kind: "unsupported", reason };
+      }
       if (initialBytes > COMMIT_RECEIPT_LIMITS.bytesPerInvocation || !await reserveReceiptCapacity(root, 1, initialBytes, deadline))
         throw new Error("private receipt state capacity exceeded");
       try {
@@ -7157,9 +7183,37 @@ function inspectInput(input) {
       if (!/^[A-Za-z_][A-Za-z0-9_]*=/.test(token.text)) break;
       leadingAssignments.push(token.text);
     }
-    if (leadingAssignments.some((arg) => /^PATH=/.test(arg)) || ["export", "env"].includes(args[0]) && args.some((arg) => /^PATH=/.test(arg)) || args[0] === "unset" && args.includes("PATH") || args[0] === "env" && (args.includes("-i") || args.includes("--ignore-environment")))
+    const wrapper = args[0]?.split("/").at(-1);
+    if (leadingAssignments.some((arg) => /^PATH=/.test(arg)) || ["export", "env"].includes(wrapper ?? "") && args.some((arg) => /^PATH=/.test(arg)) || args[0] === "unset" && args.includes("PATH") || wrapper === "env" && (args.includes("-i") || args.includes("--ignore-environment")))
       return "observable instrumentation PATH override is unsupported";
-    const executable = ["command", "exec", "env"].includes(args[0]) ? args.find((arg) => isAbsolute8(arg) && /(?:^|\/)git$/.test(arg)) : args[0];
+    for (let index = 0; index < args.length; ) {
+      const name = args[index]?.split("/").at(-1);
+      if (!["command", "exec", "env", "hash"].includes(name ?? "")) break;
+      if (name === "hash" && args.length > index + 1)
+        return "observable executable-search mutation bypasses receipt instrumentation";
+      index++;
+      while (index < args.length) {
+        const arg = args[index];
+        if (arg === "--") {
+          index++;
+          break;
+        }
+        if (name === "command" && /^-[^-]*p/.test(arg))
+          return "observable executable-search mutation bypasses receipt instrumentation";
+        if (name === "env" && (/^PATH=/.test(arg) || arg === "--ignore-environment" || /^-[^-]*i/.test(arg) || arg === "--unset=PATH" || /^(?:-[^-]*u)PATH$/.test(arg) || (arg === "-u" || arg === "--unset") && args[index + 1] === "PATH" || arg === "-S" || arg.startsWith("--split-string")))
+          return "observable executable-search mutation bypasses receipt instrumentation";
+        if (name === "env" && ["-u", "--unset", "-C", "--chdir"].includes(arg)) {
+          index += 2;
+          continue;
+        }
+        if (arg.startsWith("-") || name === "env" && /^[A-Za-z_][A-Za-z0-9_]*=/.test(arg)) {
+          index++;
+          continue;
+        }
+        break;
+      }
+    }
+    const executable = ["command", "exec", "env"].includes(wrapper ?? "") ? args.find((arg) => isAbsolute8(arg) && /(?:^|\/)git$/.test(arg)) : args[0];
     if (executable !== void 0 && isAbsolute8(executable) && /(?:^|\/)git$/.test(executable))
       return "absolute Git invocation bypasses receipt instrumentation";
   }

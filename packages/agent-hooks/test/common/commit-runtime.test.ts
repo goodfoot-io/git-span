@@ -680,3 +680,42 @@ describe('original lexical cwd restoration', () => {
     });
   });
 });
+
+describe('accepted envelope and executable-search boundaries', () => {
+  it.each(['claude', 'codex'] as const)(
+    '%s rejects unreadable persisted envelopes before publishing a replacement',
+    async (host) => {
+      const command = `git commit -q --allow-empty -m oversized; #${'x'.repeat(100000)}`;
+      const input = request(command, { host, toolInput: { command, description: 'y'.repeat(900000) } });
+      const result = await enrollCommitInvocation(input, options, logger);
+      expect(result.kind).toBe('unsupported');
+      expect(existsSync(directory(input))).toBe(false);
+      expect(warnings.length).toBeGreaterThan(0);
+      expect(shell(command).status).toBe(0);
+      expect(notes().notes).toEqual([]);
+    }
+  );
+  it.each(
+    (['claude', 'codex'] as const).flatMap((host) =>
+      [
+        'command -p git',
+        'env -u PATH git',
+        'env --unset=PATH git',
+        '/usr/bin/env -i git',
+        'hash -p /usr/bin/git git; git',
+        'command env --unset PATH git',
+        'exec /usr/bin/env -uPATH git',
+        'env -- /usr/bin/env --ignore-environment git',
+        'env -iuPATH git'
+      ].map((prefix) => ({ host, prefix }))
+    )
+  )('$host diagnoses visible search mutation $prefix and preserves original execution', async ({ host, prefix }) => {
+    const command = `${prefix} commit -q --allow-empty -m bypass`;
+    const input = request(command, { host });
+    expect(await enrollCommitInvocation(input, options, logger)).toMatchObject({ kind: 'unsupported' });
+    expect(existsSync(directory(input))).toBe(false);
+    expect(warnings.length).toBeGreaterThan(0);
+    expect(shell(command).status).toBe(0);
+    expect(notes().notes).toEqual([]);
+  });
+});

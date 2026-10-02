@@ -1,5 +1,6 @@
 /** Immutable invocation and receipt contracts; all validation is independent of host SDKs and filesystem IO. */
 import { isAbsolute } from 'node:path';
+import { COMMIT_RECEIPT_LIMITS } from './commit-limits.js';
 export type CommitHost = 'claude' | 'codex';
 export type CommitObjectFormat = 'sha1' | 'sha256';
 export type CommitValidation<T> =
@@ -65,7 +66,7 @@ function absolute(value: unknown): value is string {
 }
 
 function key(value: unknown): value is string {
-  return text(value, 256) && /^[a-zA-Z0-9_-]+$/.test(value);
+  return text(value, COMMIT_RECEIPT_LIMITS.identityKeyBytes) && /^[a-zA-Z0-9_-]+$/.test(value);
 }
 
 function reject(reason: string): { readonly ok: false; readonly reason: string } {
@@ -80,13 +81,13 @@ export function validateCommitEnrollment(value: unknown): CommitValidation<Commi
     return reject('invalid invocation identity');
   }
   if (!absolute(value.cwd) || !absolute(value.gitExecutable)) return reject('enrollment paths must be absolute');
-  if (!object(value.originalInput) || !text(value.originalCommand, 1_048_576)) {
+  if (!object(value.originalInput) || !text(value.originalCommand, COMMIT_RECEIPT_LIMITS.jsonFileBytes)) {
     return reject('invalid original tool input');
   }
   if (value.transcriptLocator !== undefined && !text(value.transcriptLocator))
     return reject('invalid transcript locator');
   try {
-    if (Buffer.byteLength(JSON.stringify(value.originalInput)) > 1_048_576)
+    if (Buffer.byteLength(JSON.stringify(value.originalInput)) > COMMIT_RECEIPT_LIMITS.jsonFileBytes)
       return reject('original input exceeds budget');
   } catch {
     return reject('original input is not serializable');

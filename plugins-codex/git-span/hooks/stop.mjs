@@ -521,14 +521,16 @@ function classify(error, phase, policy, onUnexpectedError) {
   }
   return { kind: "handlerError", error, phase };
 }
-function writeUnexpectedErrorStderr(error) {
-  if (error instanceof Error) {
-    process.stderr.write(`${error.stack ?? error.message}
-`);
-  } else {
-    process.stderr.write(`${String(error)}
-`);
-  }
+function writeStream(stream, content) {
+  return new Promise((resolve4, reject2) => {
+    stream.write(content, (error) => error ? reject2(error) : resolve4());
+  });
+}
+async function writeUnexpectedErrorStderr(error) {
+  const content = error instanceof Error ? `${error.stack ?? error.message}
+` : `${String(error)}
+`;
+  await writeStream(process.stderr, content);
 }
 function cleanupQuietly() {
   try {
@@ -577,29 +579,29 @@ async function drive(transport, hookFn) {
       cleanupQuietly();
       process.exit(FALLBACK_EXIT_SUCCESS);
     }
-    writeUnexpectedErrorStderr(error);
+    await writeUnexpectedErrorStderr(error);
     cleanupQuietly();
     process.exit(FALLBACK_EXIT_ERROR);
   }
   try {
     cleanup(policy, onUnexpectedError);
   } catch (error) {
-    writeUnexpectedErrorStderr(error);
+    await writeUnexpectedErrorStderr(error);
     process.exit(FALLBACK_EXIT_ERROR);
   }
   if (finalized.stderr !== void 0) {
-    process.stderr.write(finalized.stderr);
+    await writeStream(process.stderr, finalized.stderr);
   }
   if (finalized.stdout !== void 0) {
     try {
-      process.stdout.write(finalized.stdout);
+      await writeStream(process.stdout, finalized.stdout);
     } catch (error) {
       if (policy === "continue") {
         reportUnexpectedError(onUnexpectedError, error, "write");
         cleanupQuietly();
         process.exit(FALLBACK_EXIT_SUCCESS);
       }
-      writeUnexpectedErrorStderr(error);
+      await writeUnexpectedErrorStderr(error);
       cleanupQuietly();
       process.exit(FALLBACK_EXIT_ERROR);
     }
@@ -873,6 +875,22 @@ function validateCommitNotesAdd(value, sha, document) {
 
 // packages/agent-hooks/src/common/commit-contracts.ts
 import { isAbsolute } from "node:path";
+
+// packages/agent-hooks/src/common/commit-limits.ts
+var COMMIT_RECEIPT_LIMITS = {
+  jsonFileBytes: 1048576,
+  identityKeyBytes: 256,
+  reflogBytes: 1048576,
+  receiptsPerInvocation: 256,
+  bytesPerInvocation: 4194304,
+  invocations: 4096,
+  totalBytes: 67108864,
+  abandonedRetentionMs: 864e5,
+  drainMs: 3e3,
+  cliMs: 2e3
+};
+
+// packages/agent-hooks/src/common/commit-contracts.ts
 function object2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -883,7 +901,7 @@ function absolute(value) {
   return text(value) && isAbsolute(value);
 }
 function key(value) {
-  return text(value, 256) && /^[a-zA-Z0-9_-]+$/.test(value);
+  return text(value, COMMIT_RECEIPT_LIMITS.identityKeyBytes) && /^[a-zA-Z0-9_-]+$/.test(value);
 }
 function reject(reason) {
   return { ok: false, reason };
@@ -895,13 +913,13 @@ function validateCommitEnrollment(value) {
     return reject("invalid invocation identity");
   }
   if (!absolute(value.cwd) || !absolute(value.gitExecutable)) return reject("enrollment paths must be absolute");
-  if (!object2(value.originalInput) || !text(value.originalCommand, 1048576)) {
+  if (!object2(value.originalInput) || !text(value.originalCommand, COMMIT_RECEIPT_LIMITS.jsonFileBytes)) {
     return reject("invalid original tool input");
   }
   if (value.transcriptLocator !== void 0 && !text(value.transcriptLocator))
     return reject("invalid transcript locator");
   try {
-    if (Buffer.byteLength(JSON.stringify(value.originalInput)) > 1048576)
+    if (Buffer.byteLength(JSON.stringify(value.originalInput)) > COMMIT_RECEIPT_LIMITS.jsonFileBytes)
       return reject("original input exceeds budget");
   } catch {
     return reject("original input is not serializable");
@@ -970,16 +988,6 @@ function serializeCommitNoteDocument(document) {
 import { isAbsolute as isAbsolute2, resolve as resolve2 } from "node:path";
 
 // packages/agent-hooks/src/common/commit-lifecycle.ts
-var COMMIT_RECEIPT_LIMITS = {
-  reflogBytes: 1048576,
-  receiptsPerInvocation: 256,
-  bytesPerInvocation: 4194304,
-  invocations: 4096,
-  totalBytes: 67108864,
-  abandonedRetentionMs: 864e5,
-  drainMs: 3e3,
-  cliMs: 2e3
-};
 function decideCommitClaim(owner, liveness, remainingMs) {
   if (!Number.isFinite(remainingMs) || remainingMs <= 0) return "refuse";
   if (owner === null) return "acquire";
@@ -1096,7 +1104,7 @@ function privateDirectory(path) {
     throw new Error("receipt directory is not private");
   }
 }
-function readJson(path, maximumBytes = 1048576) {
+function readJson(path, maximumBytes = COMMIT_RECEIPT_LIMITS.jsonFileBytes) {
   const stat = lstatSync2(path);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > maximumBytes)
     throw new Error("invalid bounded receipt file");

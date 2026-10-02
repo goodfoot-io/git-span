@@ -42,7 +42,7 @@ export function privateDirectory(path: string): void {
     throw new Error('receipt directory is not private');
   }
 }
-export function readJson(path: string, maximumBytes = 1_048_576): unknown {
+export function readJson(path: string, maximumBytes: number = COMMIT_RECEIPT_LIMITS.jsonFileBytes): unknown {
   const stat = lstatSync(path);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > maximumBytes)
     throw new Error('invalid bounded receipt file');

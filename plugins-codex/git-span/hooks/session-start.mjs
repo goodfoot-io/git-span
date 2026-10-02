@@ -518,14 +518,16 @@ function classify(error, phase, policy, onUnexpectedError) {
   }
   return { kind: "handlerError", error, phase };
 }
-function writeUnexpectedErrorStderr(error) {
-  if (error instanceof Error) {
-    process.stderr.write(`${error.stack ?? error.message}
-`);
-  } else {
-    process.stderr.write(`${String(error)}
-`);
-  }
+function writeStream(stream, content) {
+  return new Promise((resolve, reject) => {
+    stream.write(content, (error) => error ? reject(error) : resolve());
+  });
+}
+async function writeUnexpectedErrorStderr(error) {
+  const content = error instanceof Error ? `${error.stack ?? error.message}
+` : `${String(error)}
+`;
+  await writeStream(process.stderr, content);
 }
 function cleanupQuietly() {
   try {
@@ -574,29 +576,29 @@ async function drive(transport, hookFn) {
       cleanupQuietly();
       process.exit(FALLBACK_EXIT_SUCCESS);
     }
-    writeUnexpectedErrorStderr(error);
+    await writeUnexpectedErrorStderr(error);
     cleanupQuietly();
     process.exit(FALLBACK_EXIT_ERROR);
   }
   try {
     cleanup(policy, onUnexpectedError);
   } catch (error) {
-    writeUnexpectedErrorStderr(error);
+    await writeUnexpectedErrorStderr(error);
     process.exit(FALLBACK_EXIT_ERROR);
   }
   if (finalized.stderr !== void 0) {
-    process.stderr.write(finalized.stderr);
+    await writeStream(process.stderr, finalized.stderr);
   }
   if (finalized.stdout !== void 0) {
     try {
-      process.stdout.write(finalized.stdout);
+      await writeStream(process.stdout, finalized.stdout);
     } catch (error) {
       if (policy === "continue") {
         reportUnexpectedError(onUnexpectedError, error, "write");
         cleanupQuietly();
         process.exit(FALLBACK_EXIT_SUCCESS);
       }
-      writeUnexpectedErrorStderr(error);
+      await writeUnexpectedErrorStderr(error);
       cleanupQuietly();
       process.exit(FALLBACK_EXIT_ERROR);
     }

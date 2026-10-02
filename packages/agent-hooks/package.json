@@ -19,7 +19,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@goodfoot/agent-hooks": "1.0.11",
+    "@goodfoot/agent-hooks": "patch:@goodfoot/agent-hooks@npm%3A1.0.11#../../.yarn/patches/goodfoot-agent-hooks-1.0.11-transport-drain.patch",
     "@goodfoot/agent-skills": "1.0.25"
   },
   "devDependencies": {
