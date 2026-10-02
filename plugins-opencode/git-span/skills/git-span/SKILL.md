@@ -22,7 +22,8 @@ include owned source repairs. `git commit -o <paths> -m "..."` commits only thos
 
 ## Same-commit workflow
 
-The `tool.execute.after` hook heals positional drift inline. For semantic drift,
+The `tool.execute.after` hook heals positional drift inline; the
+`tool.execute.before` planner captures bounded pre-state for supported shell writes. For semantic drift,
 conform the lagging artifact to confirmed authority or a satisfied gate; otherwise
 ask. Commit repairs and span refreshes with the original change while authoring it.
 Reviewing committed changes uses a follow-up commit; do not amend history.

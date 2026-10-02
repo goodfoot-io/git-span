@@ -1,7 +1,7 @@
 packages/agent-hooks/test/antigravity/skill-tree-vocabulary.test.ts rk64:e97c516ab364731d
 packages/agent-hooks/test/opencode/skill-tree-vocabulary.test.ts rk64:bd5910fe2053aa00
-plugins-antigravity/git-span/skills/git-span/SKILL.md#L23-L29 rk64:dd8278c76d6ed947
-plugins-antigravity/git-span/skills/git-span/SKILL.md#L50-L53 rk64:208d10a605282398
+plugins-antigravity/git-span/skills/git-span/SKILL.md#L23-L30 rk64:0dd93ac4afa88ca7
+plugins-antigravity/git-span/skills/git-span/SKILL.md#L51-L54 rk64:208d10a605282398
 plugins-antigravity/git-span/skills/git-span/references/ci-and-sync.md rk64:89184562319a6de4
 plugins-antigravity/git-span/skills/git-span/references/finding-span-candidates.md rk64:d6082fd4a7f55230
 plugins-antigravity/git-span/skills/git-span/references/hookignore.md rk64:90ff6ba615438759
@@ -10,8 +10,8 @@ plugins-antigravity/git-span/skills/git-span/references/whole-file-and-lfs.md rk
 plugins-antigravity/git-span/skills/git-span/references/why-cleanup-campaign.md rk64:11de943b955fbf3b
 plugins-antigravity/git-span/skills/reconcile/SKILL.md rk64:2871a4aca7176f9e
 plugins-claude/git-span/agents/expert.md rk64:d2564ce1e36b28b7
-plugins-claude/git-span/skills/git-span/SKILL.md#L23-L29 rk64:dd8278c76d6ed947
-plugins-claude/git-span/skills/git-span/SKILL.md#L50-L53 rk64:208d10a605282398
+plugins-claude/git-span/skills/git-span/SKILL.md#L23-L30 rk64:0dd93ac4afa88ca7
+plugins-claude/git-span/skills/git-span/SKILL.md#L51-L54 rk64:208d10a605282398
 plugins-claude/git-span/skills/git-span/references/ci-and-sync.md rk64:909e82602d92b308
 plugins-claude/git-span/skills/git-span/references/finding-span-candidates.md rk64:011e3e4a92b2cbfc
 plugins-claude/git-span/skills/git-span/references/hookignore.md rk64:95f4ad8da00611d6
@@ -20,8 +20,8 @@ plugins-claude/git-span/skills/git-span/references/whole-file-and-lfs.md rk64:b1
 plugins-claude/git-span/skills/git-span/references/why-cleanup-campaign.md rk64:1d55cd74fe108fb8
 plugins-claude/git-span/skills/reconcile/SKILL.md rk64:05124116cdae2a90
 plugins-codex/git-span/agents/expert.md rk64:d2564ce1e36b28b7
-plugins-codex/git-span/skills/git-span/SKILL.md#L23-L29 rk64:dd8278c76d6ed947
-plugins-codex/git-span/skills/git-span/SKILL.md#L50-L53 rk64:208d10a605282398
+plugins-codex/git-span/skills/git-span/SKILL.md#L23-L30 rk64:0dd93ac4afa88ca7
+plugins-codex/git-span/skills/git-span/SKILL.md#L51-L54 rk64:208d10a605282398
 plugins-codex/git-span/skills/git-span/references/ci-and-sync.md rk64:bf66a8133f0e2adb
 plugins-codex/git-span/skills/git-span/references/finding-span-candidates.md rk64:66c11ff6baf3cbfb
 plugins-codex/git-span/skills/git-span/references/hookignore.md rk64:95f4ad8da00611d6
@@ -30,8 +30,8 @@ plugins-codex/git-span/skills/git-span/references/whole-file-and-lfs.md rk64:b17
 plugins-codex/git-span/skills/git-span/references/why-cleanup-campaign.md rk64:19b633143c4bac30
 plugins-codex/git-span/skills/reconcile/SKILL.md rk64:696c6779ce00d50d
 plugins-opencode/git-span/agents/expert.md rk64:c1f0a3155790dfdc
-plugins-opencode/git-span/skills/git-span/SKILL.md#L23-L29 rk64:1ca2005d9a474a74
-plugins-opencode/git-span/skills/git-span/SKILL.md#L50-L53 rk64:208d10a605282398
+plugins-opencode/git-span/skills/git-span/SKILL.md#L23-L30 rk64:26aa73ae181a11bd
+plugins-opencode/git-span/skills/git-span/SKILL.md#L51-L54 rk64:208d10a605282398
 plugins-opencode/git-span/skills/git-span/references/ci-and-sync.md rk64:95c9d451d77f1d25
 plugins-opencode/git-span/skills/git-span/references/finding-span-candidates.md rk64:458e98bdef9d87c2
 plugins-opencode/git-span/skills/git-span/references/hookignore.md rk64:0f8bc8c5a88fb76b
@@ -39,8 +39,8 @@ plugins-opencode/git-span/skills/git-span/references/triage.md rk64:d2c9df5be0f0
 plugins-opencode/git-span/skills/git-span/references/whole-file-and-lfs.md rk64:b17ce2fa658af7ce
 plugins-opencode/git-span/skills/git-span/references/why-cleanup-campaign.md rk64:4f26765042bdc567
 plugins-opencode/git-span/skills/reconcile/SKILL.md rk64:8df460d92ddd9ecd
-scripts/agent-skills-plugins.json rk64:89f86ca7dba9e6a6
-skills-src/git-span/git-span/SKILL.md.eta rk64:af327f35d0f437f7
+scripts/agent-skills-plugins.json rk64:10c035d4800adb89
+skills-src/git-span/git-span/SKILL.md.eta rk64:73216010b3832149
 skills-src/git-span/git-span/references/finding-span-candidates.md.eta rk64:826e9801d37bde41
 skills-src/git-span/git-span/references/hookignore.md.eta rk64:534d217ccc81e892
 skills-src/git-span/git-span/references/why-cleanup-campaign.md.eta rk64:a726f4b6e84fa2e2

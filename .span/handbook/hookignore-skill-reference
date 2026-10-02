@@ -1,4 +1,4 @@
-plugins-claude/git-span/skills/git-span/SKILL.md#L137-L137 rk64:2d34ddc488d9e799
+plugins-claude/git-span/skills/git-span/SKILL.md#L138-L138 rk64:2d34ddc488d9e799
 plugins-claude/git-span/skills/git-span/references/hookignore.md rk64:95f4ad8da00611d6
 
 The core skill routes per-path touch-hook noise questions to references/hookignore.md, which defines .hookignore suppression for existing-span surfacing; the routing language and reference must describe the same supported behavior.
