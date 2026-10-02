@@ -596,11 +596,7 @@ fn maybe_maintain_evicts_non_live_beyond_reuse_buffer() {
         }
         publish_non_live(&mut store, [n; 32]);
     }
-    crate::resolver::store::set_bucket(
-        &store,
-        &key,
-        crate::resolver::store::now_bucket() - 100,
-    );
+    crate::resolver::store::set_bucket(&store, &key, crate::resolver::store::now_bucket() - 100);
     assert!(
         matches!(
             store.get_generation(&key, SUMMARY_VERSION).expect("get"),
@@ -998,6 +994,8 @@ fn broken_worktree_does_not_disable_reconciliation() {
         "healthy worktree must be at a distinct commit"
     );
 
+    git(&healthy, &["checkout", "--detach"]);
+
     // A broken/prunable linked worktree: created, then its working directory
     // deleted without `git worktree prune`. Its admin dir (and `gitdir` file)
     // remain, so `worktrees()` still enumerates it, but `into_repo()` fails on
@@ -1007,6 +1005,10 @@ fn broken_worktree_does_not_disable_reconciliation() {
         dir,
         &["worktree", "add", "-b", "broken", broken.to_str().unwrap()],
     );
+    git(&broken, &["commit", "--allow-empty", "-m", "broken commit"]);
+    let h_broken = git_out(&broken, &["rev-parse", "HEAD"]);
+    assert_ne!(h_broken, h_main);
+    assert_ne!(h_broken, h_healthy);
     std::fs::remove_dir_all(&broken).expect("delete broken worktree checkout");
 
     let repo = gix::open(dir).expect("gix open");
@@ -1020,6 +1022,8 @@ fn broken_worktree_does_not_disable_reconciliation() {
         "healthy linked worktree HEAD present"
     );
 
+    assert!(!live.contains(&h_broken), "deleted checkout HEAD excluded");
+
     // Half 2: reconciliation demotes a drifted head no resolvable worktree sits
     // on, while both live worktrees' generations survive. Seventeen filler
     // non-live generations seed the count leg — one past the 16-generation
@@ -1032,7 +1036,7 @@ fn broken_worktree_does_not_disable_reconciliation() {
     let k_main = [1u8; 32];
     let k_healthy = [2u8; 32];
     let k_drift = [3u8; 32];
-    let h_drift = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+    let h_drift = h_broken.as_str();
     publish_live_at(&mut store, k_main, &h_main);
     publish_live_at(&mut store, k_healthy, &h_healthy);
     publish_live_at(&mut store, k_drift, h_drift);
@@ -1076,4 +1080,153 @@ fn broken_worktree_does_not_disable_reconciliation() {
         ),
         "the healthy linked worktree's live generation must survive",
     );
+}
+
+/// A private-ref sibling retains its own generation through an ordinary exact
+/// hit. Enumeration blindness must leave even an absent head generation live.
+#[test]
+fn scoped_sibling_retention_and_enumeration_blindness() {
+    reset_test_state();
+    clear_memo();
+    let (td, repo) = drifted_repo("scoped-live");
+    enable_store();
+    let sibling = td.path().join("sibling");
+    git(
+        td.path(),
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            sibling.to_str().unwrap(),
+            "HEAD^",
+        ],
+    );
+    let sibling_head = git_out(&sibling, &["rev-parse", "HEAD"]);
+    let admin = repo.common_dir().join("worktrees/sibling");
+    std::fs::create_dir_all(admin.join("refs/worktree")).unwrap();
+    std::fs::write(
+        admin.join("refs/worktree/live"),
+        format!("{sibling_head}\n"),
+    )
+    .unwrap();
+    std::fs::write(admin.join("HEAD"), "ref: refs/worktree/live\n").unwrap();
+    let mut store = CacheStore::open(&repo).unwrap();
+    let sibling_key = [42; 32];
+    publish_live_at(&mut store, sibling_key, &sibling_head);
+    let opts = EngineOptions::full();
+    let cold = resolved(drift_spans_new_store(&repo, SPAN_ROOT, opts).unwrap());
+    clear_memo();
+    let warm = resolved(drift_spans_new_store(&repo, SPAN_ROOT, opts).unwrap());
+    assert_eq!(test_exact_hits(), 1);
+    assert_eq!(warm, cold);
+    assert!(matches!(
+        store.get_generation(&sibling_key, SUMMARY_VERSION).unwrap(),
+        GetOutcome::Hit(_)
+    ));
+    assert_eq!(store.non_live_generation_count().unwrap(), 0);
+
+    let absent_key = [43; 32];
+    publish_live_at(
+        &mut store,
+        absent_key,
+        "1111111111111111111111111111111111111111",
+    );
+    let worktrees = repo.common_dir().join("worktrees");
+    let hidden = repo.common_dir().join("hidden-worktrees");
+    std::fs::rename(&worktrees, &hidden).unwrap();
+    std::fs::write(&worktrees, "not a directory").unwrap();
+    reconcile_liveness(&repo, &mut store, None);
+    assert_eq!(
+        store.non_live_generation_count().unwrap(),
+        0,
+        "enumeration blindness cannot demote any generation"
+    );
+    std::fs::remove_file(&worktrees).unwrap();
+    std::fs::rename(&hidden, &worktrees).unwrap();
+    reconcile_liveness(&repo, &mut store, None);
+    assert_eq!(
+        store.non_live_generation_count().unwrap(),
+        1,
+        "the absent generation is demoted once enumeration recovers"
+    );
+    assert!(matches!(
+        store.get_generation(&sibling_key, SUMMARY_VERSION).unwrap(),
+        GetOutcome::Hit(_)
+    ));
+}
+
+/// Atomic packed-ref replacements with equal or regressed timestamps must
+/// retain the newly observed sibling generation through reconciliation.
+#[test]
+fn packed_timestamp_replacements_keep_sibling_generation_live() {
+    reset_test_state();
+    clear_memo();
+    let (td, repo) = drifted_repo("packed-fresh-live");
+    enable_store();
+    let current = git_out(td.path(), &["rev-parse", "HEAD"]);
+    let previous = git_out(td.path(), &["rev-parse", "HEAD^"]);
+    let sibling = td.path().join("sibling");
+    git(
+        td.path(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "packed-sibling",
+            sibling.to_str().unwrap(),
+            &current,
+        ],
+    );
+    let mut store = CacheStore::open(&repo).unwrap();
+    let control_key = [44; 32];
+    publish_live_at(&mut store, control_key, &current);
+    for (regress, key) in [(false, [45; 32]), (true, [46; 32])] {
+        std::fs::write(
+            repo.common_dir().join("refs/heads/packed-sibling"),
+            format!("{current}\n"),
+        )
+        .unwrap();
+        git(td.path(), &["pack-refs", "--all", "--prune"]);
+        if !regress {
+            reconcile_liveness(&repo, &mut store, None);
+            assert_eq!(store.non_live_generation_count().unwrap(), 0);
+        }
+        repo.refs.cached_packed_buffer().unwrap();
+        let path = repo.common_dir().join("packed-refs");
+        let timestamp = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let packed = std::fs::read_to_string(&path).unwrap();
+        let replacement = packed.replace(
+            &format!("{current} refs/heads/packed-sibling"),
+            &format!("{previous} refs/heads/packed-sibling"),
+        );
+        assert_ne!(packed, replacement);
+        let next = repo.common_dir().join("packed-refs.next");
+        std::fs::write(&next, replacement).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&next)
+            .unwrap()
+            .set_modified(if regress {
+                timestamp - std::time::Duration::from_secs(1)
+            } else {
+                timestamp
+            })
+            .unwrap();
+        std::fs::rename(next, path).unwrap();
+        assert_eq!(
+            crate::git::head_oid(&gix::open(&sibling).unwrap()).unwrap(),
+            previous
+        );
+        publish_live_at(&mut store, key, &previous);
+        reconcile_liveness(&repo, &mut store, None);
+        assert!(matches!(
+            store.get_generation(&key, SUMMARY_VERSION).unwrap(),
+            GetOutcome::Hit(_)
+        ));
+        assert_eq!(
+            store.non_live_generation_count().unwrap(),
+            0,
+            "new packed sibling generation must remain live, regressed: {regress}"
+        );
+    }
 }

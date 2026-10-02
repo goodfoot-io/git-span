@@ -864,12 +864,10 @@ fn maybe_maintain(
 /// checked out anywhere, making superseded generations eligible for quota
 /// eviction.
 ///
-/// Fails closed on any uncertainty: if the live-HEAD set cannot be computed in
-/// full (a linked worktree is inaccessible, a HEAD will not resolve), or the
-/// demotion query itself faults, nothing is demoted. That preserves
-/// correctness — a genuinely-live generation is never demoted on a partial set,
-/// so the current worktree's active state, and every sibling worktree's, stays
-/// findable — at the cost of deferring reclamation to a later, cleaner pass.
+/// Fails closed when the current HEAD or worktree enumeration fails, or when
+/// the demotion query itself faults. Individual prunable or unresolvable
+/// siblings are skipped, so one deleted checkout cannot disable reclamation.
+/// Resolvable main and sibling heads retain their generations.
 /// If the count probe then crosses the high-water mark, `maintain` still runs
 /// regardless; it simply finds fewer (or no) candidates when reconciliation
 /// was skipped.

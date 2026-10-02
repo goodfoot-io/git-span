@@ -383,39 +383,108 @@ pub(crate) fn head_oid(repo: &gix::Repository) -> Result<String> {
 /// Failing the whole reconcile on that one entry instead would let a prunable
 /// worktree permanently disable quota reclamation. This worktree's own HEAD
 /// must resolve — if it does not we are in no state to reason about liveness,
-/// so that one is fatal. The main worktree's HEAD when the main repo is bare or
-/// unborn (no checked-out state to keep alive) is a tolerated absent
-/// contribution, not an error.
+/// so that one is fatal. An unresolvable main HEAD is a tolerated absent
+/// contribution; a resolvable main HEAD contributes even when the main is bare.
 pub(crate) fn live_worktree_heads(repo: &gix::Repository) -> Result<HashSet<String>> {
+    // Discovery observes each HEAD independently, just as the repository-open
+    // path did. Refresh packed refs per HEAD; there is no atomic checkout snapshot.
+    crate::perf::counter("cache-path.live-heads.repository-opens", 0);
     let mut heads = HashSet::new();
-    // This worktree's own HEAD — always present, always the generation we just
-    // published with. Fatal if unresolvable.
-    heads.insert(head_oid(repo)?);
-
-    // The main worktree, reached from a linked worktree. A bare/unborn main has
-    // no live checkout, so an unresolvable HEAD there is tolerated, not fatal.
-    if let Ok(main) = repo.main_repo()
-        && let Ok(id) = main.head_id()
     {
-        heads.insert(id.detach().to_string());
+        let _perf = crate::perf::span("resolver.store.reconcile.head-resolution");
+        heads.insert(scoped_worktree_head(repo, repo.git_dir()).ok_or_else(|| {
+            Error::Git(
+                "resolve current worktree HEAD: native scoped reference resolution failed".into(),
+            )
+        })?);
+        if let Some(id) = scoped_worktree_head(repo, repo.common_dir()) {
+            heads.insert(id);
+        }
     }
-
-    // Enumerating the linked worktrees must succeed — a failure here means we
-    // cannot see the full set and might miss a live worktree entirely, so we
-    // fail closed and the caller skips reconciliation.
-    let proxies = repo
-        .worktrees()
-        .map_err(|e| Error::Git(format!("enumerate worktrees: {e}")))?;
-    // A single linked worktree that will not open or whose HEAD will not
-    // resolve is skipped, not fatal (see the fail-closed-on-blindness note
-    // above): its head is excluded from the live set, never treated as proof of
-    // non-liveness for another head.
+    let proxies = {
+        let _perf = crate::perf::span("resolver.store.reconcile.worktree-enumeration");
+        repo.worktrees()
+            .map_err(|e| Error::Git(format!("enumerate worktrees: {e}")))?
+    };
+    crate::perf::counter("cache-path.live-heads.enumerated", proxies.len() as u64);
+    let _perf = crate::perf::span("resolver.store.reconcile.head-resolution");
+    let mut resolved = 0;
+    let mut skipped = 0;
     for proxy in proxies {
-        let Ok(wt) = proxy.into_repo() else { continue };
-        let Ok(id) = wt.head_id() else { continue };
-        heads.insert(id.detach().to_string());
+        let id = (|| {
+            if !proxy.base().ok()?.is_dir() {
+                return None;
+            }
+            let common =
+                gix::discover::path::from_plain_file(&proxy.git_dir().join("commondir"))?.ok()?;
+            if !same_directory(&proxy.git_dir().join(common), repo.common_dir()) {
+                return None;
+            }
+            scoped_worktree_head(repo, proxy.git_dir())
+        })();
+        if let Some(id) = id {
+            heads.insert(id);
+            resolved += 1;
+        } else {
+            skipped += 1;
+        }
     }
+    crate::perf::counter("cache-path.live-heads.resolved", resolved);
+    crate::perf::counter("cache-path.live-heads.skipped", skipped);
     Ok(heads)
+}
+
+/// Compare directory identity without rejecting equivalent path/mount aliases.
+fn same_directory(left: &Path, right: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        match (std::fs::metadata(left), std::fs::metadata(right)) {
+            (Ok(a), Ok(b)) => a.is_dir() && b.is_dir() && a.dev() == b.dev() && a.ino() == b.ino(),
+            _ => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        left.is_dir()
+            && right.is_dir()
+            && matches!((left.canonicalize(), right.canonicalize()), (Ok(a), Ok(b)) if a == b)
+    }
+}
+
+/// Read a main or linked HEAD using only a scoped reference view and the open
+/// repository's object database. Individual metadata/ref failures are prunable.
+fn scoped_worktree_head(repo: &gix::Repository, git_dir: &Path) -> Option<String> {
+    use gix::refs::file::ReferenceExt;
+    let options = gix::refs::store::init::Options {
+        write_reflog: gix::refs::store::WriteReflog::Disable,
+        object_hash: repo.object_hash(),
+        precompose_unicode: repo.refs.precompose_unicode,
+        prohibit_windows_device_names: repo.refs.prohibit_windows_device_names,
+    };
+    let mut refs = if git_dir == repo.common_dir() {
+        gix::refs::file::Store::at(git_dir.to_owned(), options)
+    } else {
+        gix::refs::file::Store::for_linked_worktree(
+            git_dir.to_owned(),
+            repo.common_dir().to_owned(),
+            options,
+        )
+    };
+    refs.namespace = repo.refs.namespace.clone();
+    // This newly allocated view has no prior packed snapshot: its first read
+    // observes replacements even with equal or regressed modification times.
+    let packed = refs.cached_packed_buffer().ok()?;
+    let packed = packed.as_ref().map(|buffer| &***buffer);
+    let mut head = refs.find_packed("HEAD", packed).ok()?;
+    // Native repository HEAD lookup follows its initial symbolic target before
+    // applying the bounded chain peel. Counting HEAD would shorten that bound.
+    if let gix::refs::Target::Symbolic(target) = &head.target {
+        head = refs.find_packed(target.as_ref(), packed).ok()?;
+    }
+    head.peel_to_id_packed(&refs, &repo.objects, packed)
+        .ok()
+        .map(|id| id.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -1150,9 +1219,7 @@ pub fn path_blob_at(repo: &gix::Repository, commit_oid: &str, path: &str) -> Res
         // bytes, no object-store read, hence infallible beyond "absent".
         let entry = tree
             .lookup_entry_by_path(Path::new(component.as_os_str()))
-            .map_err(|e| {
-                Error::Git(format!("traverse tree of `{commit_oid}` to `{path}`: {e}"))
-            })?
+            .map_err(|e| Error::Git(format!("traverse tree of `{commit_oid}` to `{path}`: {e}")))?
             .ok_or_else(not_in_tree)?;
         if components.peek().is_none() {
             return Ok(entry.object_id().to_string());
@@ -1160,9 +1227,9 @@ pub fn path_blob_at(repo: &gix::Repository, commit_oid: &str, path: &str) -> Res
         if !entry.mode().is_tree() {
             return Err(not_in_tree());
         }
-        tree = repo
-            .find_tree(entry.object_id())
-            .map_err(|e| Error::Git(format!("read tree `{}` of `{commit_oid}`: {e}", entry.id())))?;
+        tree = repo.find_tree(entry.object_id()).map_err(|e| {
+            Error::Git(format!("read tree `{}` of `{commit_oid}`: {e}", entry.id()))
+        })?;
     }
     Err(not_in_tree())
 }
@@ -1424,9 +1491,9 @@ pub fn load_index(repo: &gix::Repository) -> Result<IndexPersistedOrInMemory> {
     LOAD_INDEX_CALL_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     match repo.index_or_load_from_head() {
         Ok(index) => Ok(index),
-        Err(
-            e @ gix::repository::index_or_load_from_head::Error::TraverseTree(_),
-        ) => rebuild_after_synthesis_failure(repo, e),
+        Err(e @ gix::repository::index_or_load_from_head::Error::TraverseTree(_)) => {
+            rebuild_after_synthesis_failure(repo, e)
+        }
         Err(e) => Err(Error::Git(format!("load index: {e}"))),
     }
 }
@@ -1437,9 +1504,9 @@ pub fn load_index(repo: &gix::Repository) -> Result<IndexPersistedOrInMemory> {
 pub(crate) fn load_index_or_empty(repo: &gix::Repository) -> Result<IndexPersistedOrInMemory> {
     match repo.index_or_load_from_head_or_empty() {
         Ok(index) => Ok(index),
-        Err(
-            e @ gix::repository::index_or_load_from_head_or_empty::Error::TraverseTree(_),
-        ) => rebuild_after_synthesis_failure(repo, e),
+        Err(e @ gix::repository::index_or_load_from_head_or_empty::Error::TraverseTree(_)) => {
+            rebuild_after_synthesis_failure(repo, e)
+        }
         Err(e) => Err(Error::Git(format!("load index: {e}"))),
     }
 }
@@ -1470,7 +1537,9 @@ fn rebuild_after_synthesis_failure(
 /// Fails with a bare diagnostic string — the caller embeds it in a single
 /// prefixed [`Error::Git`], so nesting one here would double the `git:`
 /// prefix in rendered output.
-fn rebuild_index_from_head(repo: &gix::Repository) -> std::result::Result<gix::index::File, String> {
+fn rebuild_index_from_head(
+    repo: &gix::Repository,
+) -> std::result::Result<gix::index::File, String> {
     // The from-tree synthesis only fails after HEAD resolved to a readable
     // commit, so this re-resolution mirrors an already-taken path; any
     // surprise here surfaces as a plain rebuild failure.
@@ -1604,9 +1673,7 @@ pub(crate) fn index_tracks_path(repo: &gix::Repository, path: &str) -> bool {
         Err(_) => return false,
     };
     let file = &*idx;
-    file.entries()
-        .iter()
-        .any(|entry| entry.path(file) == path)
+    file.entries().iter().any(|entry| entry.path(file) == path)
 }
 
 /// Check whether the repository is a partial clone whose object store is
@@ -1809,6 +1876,326 @@ mod gix_helper_tests {
         crate::perf::record_gix_open();
         let repo = gix::open(dir).unwrap();
         (td, repo, head)
+    }
+
+    /// The former discovery path is a test-only semantic oracle.
+    fn opened_worktree_heads(repo: &gix::Repository) -> HashSet<String> {
+        let fresh = gix::open(repo.git_dir()).unwrap();
+        let repo = &fresh;
+        let mut heads = HashSet::from([head_oid(repo).unwrap()]);
+        if let Ok(main) = repo.main_repo()
+            && let Ok(id) = main.head_id()
+        {
+            heads.insert(id.detach().to_string());
+        }
+        for proxy in repo.worktrees().unwrap() {
+            if let Ok(wt) = proxy.into_repo()
+                && let Ok(id) = wt.head_id()
+            {
+                heads.insert(id.detach().to_string());
+            }
+        }
+        heads
+    }
+
+    fn live_fixture() -> (tempfile::TempDir, gix::Repository, String, String) {
+        let (td, repo, first) = seed_repo();
+        run_git(td.path(), &["commit", "--allow-empty", "-m", "second"]);
+        let second = head_oid(&repo).unwrap();
+        for name in ["one", "two"] {
+            run_git(
+                td.path(),
+                &[
+                    "worktree",
+                    "add",
+                    "--detach",
+                    td.path().join(name).to_str().unwrap(),
+                    &first,
+                ],
+            );
+        }
+        (td, repo, first, second)
+    }
+
+    fn set_test_ref(dir: &Path, name: &str, value: &str) {
+        let path = dir.join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, format!("{value}\n")).unwrap();
+    }
+
+    fn assert_live_oracle(repo: &gix::Repository) {
+        assert_eq!(
+            live_worktree_heads(repo).unwrap(),
+            opened_worktree_heads(repo)
+        );
+    }
+
+    #[test]
+    fn live_worktree_heads_scoped_private_and_qualified_refs() {
+        let (td, repo, first, second) = live_fixture();
+        assert_live_oracle(&repo);
+        let common = repo.common_dir();
+        let one = common.join("worktrees/one");
+        let two = common.join("worktrees/two");
+        set_test_ref(common, "refs/worktree/shared-name", &second);
+        set_test_ref(&one, "refs/worktree/shared-name", &first);
+        set_test_ref(&two, "refs/worktree/shared-name", &second);
+        for scope in [common.to_owned(), one.clone(), two.clone()] {
+            set_test_ref(&scope, "HEAD", "ref: refs/worktree/shared-name");
+        }
+        let linked = gix::open(td.path().join("two")).unwrap();
+        assert_live_oracle(&repo);
+        assert_live_oracle(&linked);
+        assert_eq!(scoped_worktree_head(&repo, &one), Some(first.clone()));
+        assert_eq!(scoped_worktree_head(&repo, &two), Some(second.clone()));
+        set_test_ref(&one, "HEAD", "ref: main-worktree/refs/worktree/shared-name");
+        assert_eq!(scoped_worktree_head(&repo, &one), Some(second));
+        set_test_ref(&two, "HEAD", "ref: worktrees/one/refs/worktree/shared-name");
+        assert_eq!(scoped_worktree_head(&repo, &two), Some(first));
+        assert_live_oracle(&repo);
+        assert_live_oracle(&linked);
+    }
+
+    #[test]
+    fn live_worktree_heads_fresh_loose_and_packed_refs() {
+        let (_td, repo, first, second) = live_fixture();
+        let one = repo.common_dir().join("worktrees/one");
+        set_test_ref(&one, "HEAD", &second);
+        assert_eq!(
+            live_worktree_heads(&repo).unwrap(),
+            HashSet::from([first.clone(), second.clone()])
+        );
+        set_test_ref(&one, "HEAD", "ref: refs/heads/packed-sibling");
+        set_test_ref(repo.common_dir(), "refs/heads/packed-sibling", &first);
+        assert_eq!(scoped_worktree_head(&repo, &one), Some(first.clone()));
+        run_git(repo.workdir().unwrap(), &["pack-refs", "--all", "--prune"]);
+        assert_eq!(scoped_worktree_head(&repo, &one), Some(first.clone()));
+        set_test_ref(repo.common_dir(), "refs/heads/packed-sibling", &second);
+        assert_eq!(scoped_worktree_head(&repo, &one), Some(second.clone()));
+        run_git(repo.workdir().unwrap(), &["pack-refs", "--all", "--prune"]);
+        assert_eq!(scoped_worktree_head(&repo, &one), Some(second.clone()));
+        let packed_path = repo.common_dir().join("packed-refs");
+        let packed = std::fs::read_to_string(&packed_path).unwrap();
+        let replacement = packed.replace(
+            &format!("{second} refs/heads/packed-sibling"),
+            &format!("{first} refs/heads/packed-sibling"),
+        );
+        std::fs::write(repo.common_dir().join("packed-refs.next"), replacement).unwrap();
+        std::fs::rename(repo.common_dir().join("packed-refs.next"), &packed_path).unwrap();
+        assert_eq!(scoped_worktree_head(&repo, &one), Some(first));
+        assert_live_oracle(&repo);
+    }
+
+    #[test]
+    fn live_worktree_heads_packed_timestamp_replacements_in_every_scope() {
+        let (td, repo, first, second) = live_fixture();
+        let common = repo.common_dir();
+        let one = common.join("worktrees/one");
+        let two = common.join("worktrees/two");
+        let linked = gix::open(td.path().join("two")).unwrap();
+        for scope in [&one, &common.to_owned(), &two] {
+            for regress in [false, true] {
+                for dir in [common.to_owned(), one.clone(), two.clone()] {
+                    set_test_ref(&dir, "HEAD", &second);
+                }
+                set_test_ref(scope, "HEAD", "ref: refs/heads/fresh-target");
+                set_test_ref(common, "refs/heads/fresh-target", &first);
+                run_git(td.path(), &["pack-refs", "--all", "--prune"]);
+                let caller = if scope == &one { &repo } else { &linked };
+                assert_live_oracle(caller);
+                let packed_path = common.join("packed-refs");
+                let timestamp = std::fs::metadata(&packed_path).unwrap().modified().unwrap();
+                // Warm the persistent handle: discovery must not reuse its snapshot.
+                caller.refs.cached_packed_buffer().unwrap();
+                let packed = std::fs::read_to_string(&packed_path).unwrap();
+                let replacement = packed.replace(
+                    &format!("{first} refs/heads/fresh-target"),
+                    &format!("{second} refs/heads/fresh-target"),
+                );
+                assert_ne!(replacement, packed);
+                let next = common.join("packed-refs.next");
+                std::fs::write(&next, replacement).unwrap();
+                std::fs::File::options()
+                    .write(true)
+                    .open(&next)
+                    .unwrap()
+                    .set_modified(if regress {
+                        timestamp - std::time::Duration::from_secs(1)
+                    } else {
+                        timestamp
+                    })
+                    .unwrap();
+                std::fs::rename(next, packed_path).unwrap();
+                assert_eq!(
+                    live_worktree_heads(caller).unwrap(),
+                    HashSet::from([second.clone()]),
+                    "fresh scope {scope:?}, regressed timestamp: {regress}"
+                );
+                assert_live_oracle(caller);
+            }
+        }
+    }
+
+    #[test]
+    fn live_worktree_heads_cycles_missing_and_tag_targets() {
+        let (td, repo, first, _second) = live_fixture();
+        let one = repo.common_dir().join("worktrees/one");
+        set_test_ref(&one, "HEAD", "ref: refs/worktree/a");
+        set_test_ref(&one, "refs/worktree/a", "ref: refs/worktree/b");
+        set_test_ref(&one, "refs/worktree/b", "ref: refs/worktree/a");
+        assert_eq!(scoped_worktree_head(&repo, &one), None);
+        assert_live_oracle(&repo);
+        // Five targets including the initial HEAD target remain valid: HEAD
+        // itself does not consume native follow-to-object depth budget.
+        for (name, next) in [("a", "b"), ("b", "c"), ("c", "d"), ("d", "e")] {
+            set_test_ref(
+                &one,
+                &format!("refs/worktree/{name}"),
+                &format!("ref: refs/worktree/{next}"),
+            );
+        }
+        set_test_ref(&one, "refs/worktree/e", &first);
+        assert_eq!(scoped_worktree_head(&repo, &one), Some(first.clone()));
+        assert_live_oracle(&repo);
+        set_test_ref(&one, "refs/worktree/e", "ref: refs/worktree/f");
+        set_test_ref(&one, "refs/worktree/f", &first);
+        assert_eq!(scoped_worktree_head(&repo, &one), None);
+        assert_live_oracle(&repo);
+        set_test_ref(&one, "HEAD", "malformed head");
+        assert_eq!(scoped_worktree_head(&repo, &one), None);
+        assert_live_oracle(&repo);
+        set_test_ref(&one, "HEAD", "1111111111111111111111111111111111111111");
+        assert_eq!(scoped_worktree_head(&repo, &one), None);
+        assert_live_oracle(&repo);
+        run_git(td.path(), &["tag", "-a", "test-tag", "-m", "tag", &first]);
+        let tag = repo
+            .find_reference("refs/tags/test-tag")
+            .unwrap()
+            .id()
+            .detach()
+            .to_string();
+        set_test_ref(&one, "HEAD", &tag);
+        assert_eq!(scoped_worktree_head(&repo, &one), Some(first));
+        assert_live_oracle(&repo);
+        set_test_ref(&one, "HEAD", "ref: refs/heads/nonexistent");
+        assert_eq!(scoped_worktree_head(&repo, &one), None);
+        assert_live_oracle(&repo);
+    }
+
+    #[test]
+    fn live_worktree_heads_metadata_eligibility_and_failures() {
+        let (td, repo, first, second) = live_fixture();
+        let two = repo.common_dir().join("worktrees/two");
+        set_test_ref(&two, "HEAD", &second);
+        std::fs::remove_dir_all(td.path().join("one")).unwrap();
+        assert_eq!(
+            live_worktree_heads(&repo).unwrap(),
+            HashSet::from([second.clone()])
+        );
+        assert_live_oracle(&repo);
+        set_test_ref(&two, "HEAD", &first);
+        assert_eq!(
+            live_worktree_heads(&repo).unwrap(),
+            HashSet::from([first.clone(), second.clone()])
+        );
+        std::fs::remove_file(two.join("commondir")).unwrap();
+        assert_eq!(
+            live_worktree_heads(&repo).unwrap(),
+            HashSet::from([second.clone()])
+        );
+        set_test_ref(&two, "HEAD", &first);
+        set_test_ref(&two, "commondir", "not-a-repository");
+        assert_eq!(
+            live_worktree_heads(&repo).unwrap(),
+            HashSet::from([second.clone()])
+        );
+        // A real directory belonging elsewhere must not be substituted with
+        // our common directory, even though the sibling HEAD can resolve.
+        set_test_ref(&two, "commondir", td.path().to_str().unwrap());
+        assert_eq!(
+            live_worktree_heads(&repo).unwrap(),
+            HashSet::from([second.clone()])
+        );
+        set_test_ref(&two, "commondir", "../..");
+        set_test_ref(&two, "gitdir", "");
+        assert_eq!(
+            live_worktree_heads(&repo).unwrap(),
+            HashSet::from([second.clone()])
+        );
+        set_test_ref(repo.common_dir(), "HEAD", "ref: refs/heads/unborn");
+        assert!(live_worktree_heads(&repo).is_err());
+        set_test_ref(repo.common_dir(), "HEAD", &second);
+        std::fs::remove_dir_all(repo.common_dir().join("worktrees")).unwrap();
+        assert_eq!(live_worktree_heads(&repo).unwrap(), HashSet::from([second]));
+        std::fs::write(repo.common_dir().join("worktrees"), "not a directory").unwrap();
+        assert!(live_worktree_heads(&repo).is_err());
+    }
+
+    #[test]
+    fn live_worktree_heads_optional_unborn_and_bare_main() {
+        let (td, repo, first, second) = live_fixture();
+        let linked = gix::open(td.path().join("one")).unwrap();
+        set_test_ref(repo.common_dir(), "worktrees/two/HEAD", &first);
+        set_test_ref(repo.common_dir(), "HEAD", "ref: refs/heads/unborn");
+        assert_eq!(
+            live_worktree_heads(&linked).unwrap(),
+            HashSet::from([first.clone()])
+        );
+        assert_live_oracle(&linked);
+        set_test_ref(repo.common_dir(), "HEAD", &second);
+        run_git(td.path(), &["config", "core.bare", "true"]);
+        assert_eq!(
+            live_worktree_heads(&linked).unwrap(),
+            HashSet::from([first, second])
+        );
+        assert_live_oracle(&linked);
+    }
+
+    #[test]
+    fn live_worktree_heads_ignores_unrelated_sibling_configuration() {
+        let (td, repo, first, second) = live_fixture();
+        set_test_ref(repo.common_dir(), "worktrees/two/HEAD", &second);
+        assert_eq!(
+            live_worktree_heads(&repo).unwrap(),
+            HashSet::from([first.clone(), second.clone()])
+        );
+        run_git(td.path(), &["config", "extensions.worktreeConfig", "true"]);
+        std::fs::write(
+            repo.common_dir().join("worktrees/one/config.worktree"),
+            "[broken",
+        )
+        .unwrap();
+        assert_eq!(
+            live_worktree_heads(&repo).unwrap(),
+            HashSet::from([first, second])
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn live_worktree_heads_aliases_and_byte_safe_administrative_names() {
+        use std::os::unix::ffi::OsStringExt;
+        use std::os::unix::fs::symlink;
+        let (td, repo, first, second) = live_fixture();
+        let one = repo.common_dir().join("worktrees/one");
+        set_test_ref(repo.common_dir(), "worktrees/two/HEAD", &second);
+        let alias = td.path().join("common-alias");
+        symlink(repo.common_dir(), &alias).unwrap();
+        set_test_ref(&one, "commondir", alias.to_str().unwrap());
+        assert_eq!(
+            live_worktree_heads(&repo).unwrap(),
+            HashSet::from([first.clone(), second.clone()])
+        );
+        assert_live_oracle(&repo);
+        let renamed = repo
+            .common_dir()
+            .join("worktrees")
+            .join(std::ffi::OsString::from_vec(b"one-\xff".to_vec()));
+        std::fs::rename(&one, &renamed).unwrap();
+        assert_eq!(
+            live_worktree_heads(&repo).unwrap(),
+            HashSet::from([first, second])
+        );
     }
 
     #[test]
