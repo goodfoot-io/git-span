@@ -3,7 +3,8 @@
 # Storage model
 
 git-span has **no Git refs**. There is no `refs/spans/*`, no span refspec,
-and no reflog plumbing. Everything lives in ordinary tracked files.
+and no reflog plumbing. Span declarations live in ordinary tracked files.
+Commit-associated JSON notes use separate, durable local storage.
 
 ## Where spans live
 
@@ -83,3 +84,11 @@ repo with no `.span/` directory cannot receive `.span/` conflicts. Never run
 `git span merge-driver` by hand; git invokes it with the temp-file arguments
 shown above. Until a clone adds the `.git/config` block, conflicts simply
 fall back to `--fix`.
+
+## Commit-associated notes
+
+`git span notes` stores arbitrary JSON documents in `<git-common-dir>/span/notes.db`, shared by linked worktrees. Notes attach to full commit SHAs; their positive sequential IDs are clone-wide and never reused after deletion. They are separate from tracked span declarations and the disposable resolver cache at `<git-common-dir>/span/store.db`. Cache eviction, quarantine, recreation, and span-root settings do not affect notes.
+
+SQLite immediate transactions serialize first-open initialization, duplicate retries, allocation, and removal across processes. The store uses a durable rollback journal, synchronous FULL, and a 30-second busy timeout. Addition compares complete canonical document bytes with the commit SHA before allocating; deletion never resets the sequence. Incompatible, foreign, corrupt, or malformed storage fails closed and is left intact; no automatic repair or migration occurs.
+
+List returns an ascending-ID read snapshot. Consume named IDs individually; removal of an older batch cannot remove documents subsequently attached to the same commits. Notes stay until explicitly removed, with no worker states, acknowledgements, leases, synchronization, or native Git-notes interchange. Read/write them through the [notes commands](./command-reference.md#commit-associated-json-notes).

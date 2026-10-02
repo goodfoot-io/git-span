@@ -124,7 +124,9 @@ Delete a span — removes its file under the span root. Destructive. Run `git sp
 git span notes add [OPTIONS] <GIT_REF> [JSON]
 ```
 
-Attach one JSON value to a commit, returning its sequential ID. Retry identical documents to receive the existing ID
+Attach one arbitrary JSON value to a frozen full commit SHA.
+
+Use a positional value or nonterminal stdin, up to 16 MiB with bounded nesting. Empty, invalid, conflicting, or missing terminal input fails before mutation. Identical still-present documents on the same SHA return the existing ID; object key order and decoded strings agree, arrays retain order, and parsed arbitrary-precision numeric representation is significant (1 differs from 1.0). IDs are positive JavaScript-safe integers, atomic across linked worktrees, persistent across restart, and never reused after removal. Notes remain in shared durable storage until explicitly removed; incompatible or corrupt storage is refused without repair, and locks time out after 30 seconds.
 
 JSON schema: [notes](https://git-span.com/schemas/cli/v1/notes.json).
 
@@ -140,7 +142,9 @@ Key flags:
 git span notes list [OPTIONS] [GIT_REF]
 ```
 
-List notes by ascending ID, optionally selecting reachable commits or an explicit Git range
+List notes by ascending ID, optionally selecting reachable commits or a Git range.
+
+Without a revision, includes associations to unreachable commits. A single revision selects reachable history; two-dot and three-dot ranges use native Git sets, including omitted-endpoint HEAD defaults. --exact selects only one resolved commit and cannot be combined with a range. Selection freezes full SHAs before traversal. Lists are coherent snapshots; records may subsequently be removed. JSON always returns an envelope, including an empty notes array.
 
 JSON schema: [notes](https://git-span.com/schemas/cli/v1/notes.json).
 
@@ -157,7 +161,9 @@ Key flags:
 git span notes show [OPTIONS] <NOTE_ID>
 ```
 
-Show one durable document and its full commit association
+Show one durable document and its full commit association.
+
+Missing or invalid IDs fail. JSON returns one record in the schema-version 1 envelope with numeric id, full commit_sha, and parsed document.
 
 JSON schema: [notes](https://git-span.com/schemas/cli/v1/notes.json).
 
@@ -173,7 +179,9 @@ Key flags:
 git span notes remove [OPTIONS] <NOTE_ID>
 ```
 
-Remove only the named record, returning the document removed
+Remove only the named record, returning the document removed.
+
+The deletion commits before reporting success. Missing or invalid IDs fail; later records on the same commit are unaffected. JSON returns the deleted record in the schema-version 1 envelope. Storage failures emit no success.
 
 JSON schema: [notes](https://git-span.com/schemas/cli/v1/notes.json).
 

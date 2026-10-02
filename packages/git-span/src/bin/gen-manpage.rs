@@ -44,6 +44,8 @@ fn main() -> anyhow::Result<()> {
     man.render_subcommands_section(&mut buf)?;
     man.render_version_section(&mut buf)?;
 
+    write!(buf, "{}", NOTES_SECTION)?;
+
     // Hand-authored EXAMPLES section.
     write!(buf, "{}", EXAMPLES_SECTION)?;
 
@@ -144,6 +146,43 @@ Show one span (anchors, why, config).
 .RE
 "#;
 
+/// Nested notes interface and durable failure behavior.
+const NOTES_SECTION: &str = r#".SH COMMIT-ASSOCIATED JSON NOTES
+.B git span notes add <git-ref> [<json>] [--format human|json]
+attaches one arbitrary UTF-8 JSON value to an unambiguous commit, peeling annotated tags.
+Omit the JSON argument to read nonterminal stdin. Missing terminal input, empty or
+invalid JSON, excessive nesting, input over 16 MiB, and nonempty stdin combined with
+an argument fail before storage mutation. Tree/blob objects and options are refused.
+.PP
+.B git span notes list [<git-ref>] [--exact] [--format human|json]
+returns records by ascending ID. Without a revision it includes unreachable commits;
+a tip selects reachable history, and two-dot/three-dot ranges use native Git sets,
+including omitted-endpoint HEAD defaults. Exact mode requires one revision.
+.PP
+.B git span notes show <note-id> [--format human|json]
+returns one document and its full SHA association.
+.B git span notes remove <note-id> [--format human|json]
+deletes only that ID and returns the deleted record. Missing/invalid IDs fail.
+.PP
+Each new ID is a repository-wide positive integer through 9007199254740991,
+allocated atomically across worktrees, never reused after removal or restart.
+Retrying an identical still-present document on the same SHA returns its existing ID.
+Identity sorts object keys, decodes strings, preserves array order and arbitrary-precision
+parsed numeric representation (1 differs from 1.0); parser-normalized exponent spellings
+agree and duplicate object keys use their last value. Associations use frozen full SHAs.
+.PP
+JSON output is one schema_version 1 envelope with operation and notes fields.
+Every note has numeric id, full commit_sha, and parsed document.
+Add/show/remove return one record; empty lists return an empty notes array.
+Human is the default format. Storage/selection failures emit no JSON success.
+.PP
+Notes remain at <git-common-dir>/span/notes.db until explicitly removed,
+independent of disposable resolver cache state and span-root settings.
+Corrupt, foreign, or incompatible storage is left intact and refused;
+lock contention fails after a 30-second busy timeout. There is no migration,
+remote synchronization, native Git-notes interchange, or processing lifecycle.
+"#;
+
 /// Hand-authored EXAMPLES section.
 const EXAMPLES_SECTION: &str = r#".SH EXAMPLES
 Anchor a new span alongside a code change:
@@ -181,6 +220,19 @@ Check for drift and inspect a span:
 git span drift
 git span billing/charge-request-contract
 git span show billing/charge-request-contract
+.fi
+.RE
+.PP
+Attach and consume a commit-associated JSON record:
+.PP
+.RS 4
+.nf
+git span notes add HEAD '{"session_id":"session-42"}'
+git span notes add HEAD < metadata.json
+git span notes list main..feature --format json
+git span notes list HEAD --exact --format json
+git span notes show 1 --format json
+git span notes remove 1 --format json
 .fi
 .RE
 "#;

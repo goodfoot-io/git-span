@@ -61,6 +61,25 @@ Install integrations separately after putting `git span` on `PATH`. See [git-spa
 
 Commands with `--format json` provide machine-readable output. `git span context <address>... --format json` returns an exact repository snapshot for paths and inclusive line ranges, including selected spans, whys, current status, and resolver sources. Published JSON Schemas and their contracts are documented at [git-span.com](https://git-span.com).
 
+## Commit-associated JSON notes
+
+Attach arbitrary supporting JSON to a commit and consume records by their sequential IDs:
+
+```bash
+git span notes add HEAD '{"session_id":"session-42"}'
+git span notes add HEAD < metadata.json
+git span notes list main..feature --format json
+git span notes list HEAD --exact --format json
+git span notes show 1 --format json
+git span notes remove 1 --format json
+```
+
+Every leaf accepts `--format human|json`. Machine output is a schema-version 1 envelope with `operation` and an ascending `notes` array; each record contains numeric `id`, full `commit_sha`, and parsed `document`. Empty lists contain `notes: []`; add/show/remove return one record, including the deleted record for removal.
+
+Notes remain in the clone's shared Git directory until removed, independently of resolver-cache maintenance. IDs are atomic across worktrees, never reused, and bounded to JavaScript-safe positive integers. Retrying identical JSON on the same commit returns its existing ID: object key order and decoded string escapes do not matter, arrays retain order, and the parser's arbitrary-precision numeric representation is significant (`1` differs from `1.0`). The full commit association survives branch movement.
+
+Input accepts one UTF-8 JSON value from an argument or nonterminal stdin, up to 16 MiB with bounded nesting. Invalid/conflicting input, ambiguous or noncommit revisions, missing IDs, and incompatible/corrupt storage fail without a success result. Notes provide local storage and Git selection; clients own processing and there is no remote synchronization. See the [command reference](https://git-span.com/docs/commands#notes-add) for the complete contract.
+
 ## Documentation
 
 - [git-span.com](https://git-span.com) — installation, concepts, command reference, agent integration, and CI guidance

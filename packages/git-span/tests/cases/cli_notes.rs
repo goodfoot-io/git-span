@@ -33,7 +33,8 @@ fn command(path: &std::path::Path, args: &[&str]) -> Command {
         .env("GIT_SPAN_DISABLE_UPDATE_CHECK", "1")
         .env_remove("GIT_SPAN_DIR")
         .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE");
+        .env_remove("GIT_WORK_TREE")
+        .stderr(Stdio::piped());
     cmd
 }
 fn failed_without_stdout(repo: &TestRepo, args: &[&str]) -> Result<()> {
@@ -45,7 +46,6 @@ fn failed_without_stdout(repo: &TestRepo, args: &[&str]) -> Result<()> {
 }
 
 #[test]
-#[ignore = "notes bootstrap: envelopes"]
 fn notes_all_four_envelopes_and_empty_lists_validate_against_published_schema() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let schema: Value = serde_json::from_str(&std::fs::read_to_string(concat!(
@@ -73,10 +73,10 @@ fn notes_all_four_envelopes_and_empty_lists_validate_against_published_schema() 
 }
 
 #[test]
-#[ignore = "notes bootstrap: stdin and source conflicts"]
 fn notes_positional_and_stdin_inputs_are_bounded_and_conflicts_do_not_mutate() -> Result<()> {
     use std::io::Write;
     let repo = TestRepo::seeded()?;
+    assert_eq!(add(&repo, "HEAD", "-1")?["document"], json!(-1));
     let mut cmd = command(repo.path(), &["notes", "add", "HEAD", "--format", "json"]);
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped());
     let mut child = cmd.spawn()?;
@@ -89,7 +89,7 @@ fn notes_positional_and_stdin_inputs_are_bounded_and_conflicts_do_not_mutate() -
     assert!(out.status.success());
     assert_eq!(
         serde_json::from_slice::<Value>(&out.stdout)?["notes"][0]["id"],
-        1
+        2
     );
     let mut cmd = command(
         repo.path(),
@@ -106,13 +106,12 @@ fn notes_positional_and_stdin_inputs_are_bounded_and_conflicts_do_not_mutate() -
             .as_array()
             .unwrap()
             .len(),
-        1
+        2
     );
     Ok(())
 }
 
 #[test]
-#[ignore = "notes bootstrap: input refusal before storage"]
 fn notes_invalid_input_and_refs_leave_no_database() -> Result<()> {
     let repo = TestRepo::seeded()?;
     for args in [
@@ -129,7 +128,6 @@ fn notes_invalid_input_and_refs_leave_no_database() -> Result<()> {
 }
 
 #[test]
-#[ignore = "notes bootstrap: IDs and idempotency"]
 fn notes_retry_and_readd_ids_persist_across_processes() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let first = add(&repo, "HEAD", r#"{"b":2,"a":1}"#)?;
@@ -146,7 +144,6 @@ fn notes_retry_and_readd_ids_persist_across_processes() -> Result<()> {
 }
 
 #[test]
-#[ignore = "notes bootstrap: frozen associations and tag peeling"]
 fn notes_commit_sha_is_frozen_when_a_branch_moves_and_annotated_tags_peel() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let original = git(&repo, &["rev-parse", "HEAD"])?;
@@ -174,7 +171,6 @@ fn notes_commit_sha_is_frozen_when_a_branch_moves_and_annotated_tags_peel() -> R
 }
 
 #[test]
-#[ignore = "notes bootstrap: ambiguous names"]
 fn notes_ambiguous_git_refs_fail_even_when_native_git_exits_zero() -> Result<()> {
     let repo = TestRepo::seeded()?;
     git(&repo, &["branch", "collision"])?;
@@ -191,7 +187,6 @@ fn notes_ambiguous_git_refs_fail_even_when_native_git_exits_zero() -> Result<()>
 }
 
 #[test]
-#[ignore = "notes bootstrap: Git reachability and ranges"]
 fn notes_selection_matches_native_git_on_branches_merge_and_omitted_ranges() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let base = git(&repo, &["rev-parse", "HEAD"])?;
@@ -242,7 +237,6 @@ fn notes_selection_matches_native_git_on_branches_merge_and_omitted_ranges() -> 
 }
 
 #[test]
-#[ignore = "notes bootstrap: repository isolation"]
 fn notes_independent_repositories_have_independent_sequences() -> Result<()> {
     let a = TestRepo::seeded()?;
     let b = TestRepo::seeded()?;
@@ -257,7 +251,6 @@ fn notes_independent_repositories_have_independent_sequences() -> Result<()> {
 }
 
 #[test]
-#[ignore = "notes bootstrap: linked worktree concurrent processes"]
 fn notes_linked_worktrees_share_atomic_first_open_allocation_and_duplicates() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let tmp = tempfile::tempdir()?;
@@ -317,7 +310,6 @@ fn notes_linked_worktrees_share_atomic_first_open_allocation_and_duplicates() ->
 }
 
 #[test]
-#[ignore = "notes bootstrap: consumable IDs"]
 fn notes_batch_consumption_preserves_new_same_commit_attachments() -> Result<()> {
     let repo = TestRepo::seeded()?;
     add(&repo, "HEAD", "null")?;
@@ -332,7 +324,6 @@ fn notes_batch_consumption_preserves_new_same_commit_attachments() -> Result<()>
 }
 
 #[test]
-#[ignore = "notes bootstrap: cache lifecycle and recovery isolation"]
 fn notes_survive_cache_recreation_and_invalid_span_settings() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let first = add(&repo, "HEAD", "null")?;
@@ -355,7 +346,6 @@ fn notes_survive_cache_recreation_and_invalid_span_settings() -> Result<()> {
 }
 
 #[test]
-#[ignore = "notes bootstrap: fail-closed durable storage"]
 fn notes_corrupt_storage_is_preserved_and_errors_emit_no_json_success() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let db = repo.path().join(".git/span/notes.db");
@@ -374,7 +364,6 @@ fn notes_corrupt_storage_is_preserved_and_errors_emit_no_json_success() -> Resul
 }
 
 #[test]
-#[ignore = "notes bootstrap: human help and command reservation"]
 fn notes_human_output_help_and_reserved_name_are_visible() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let out = repo.span_stdout(["notes", "add", "HEAD", "{\"a\":1}"])?;
@@ -394,7 +383,6 @@ fn notes_human_output_help_and_reserved_name_are_visible() -> Result<()> {
 }
 
 #[test]
-#[ignore = "notes bootstrap: detached associations"]
 fn notes_unfiltered_listing_retains_commits_no_longer_reachable() -> Result<()> {
     let repo = TestRepo::seeded()?;
     let base = git(&repo, &["rev-parse", "HEAD"])?;
@@ -407,7 +395,6 @@ fn notes_unfiltered_listing_retains_commits_no_longer_reachable() -> Result<()> 
 }
 
 #[test]
-#[ignore = "notes bootstrap: machine suppression"]
 fn notes_every_json_leaf_suppresses_update_checks_on_terminal_stdout() -> Result<()> {
     use clap::Parser;
     for leaf in ["add", "list", "show", "remove"] {
@@ -425,7 +412,6 @@ fn notes_every_json_leaf_suppresses_update_checks_on_terminal_stdout() -> Result
 }
 
 #[test]
-#[ignore = "notes bootstrap: concurrent duplicate/remove linearizability"]
 fn notes_duplicate_remove_race_has_only_serializable_results() -> Result<()> {
     let repo = TestRepo::seeded()?;
     add(&repo, "HEAD", "null")?;
@@ -456,7 +442,6 @@ fn notes_duplicate_remove_race_has_only_serializable_results() -> Result<()> {
 
 #[cfg(unix)]
 #[test]
-#[ignore = "notes bootstrap: unwritable storage"]
 fn notes_unwritable_storage_fails_without_success_or_allocation() -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let repo = TestRepo::seeded()?;
@@ -469,5 +454,48 @@ fn notes_unwritable_storage_fails_without_success_or_allocation() -> Result<()> 
     assert!(output.stdout.is_empty());
     assert!(!directory.join("notes.db").exists());
     assert_eq!(add(&repo, "HEAD", "null")?["id"], 1);
+    let database = directory.join("notes.db");
+    std::fs::set_permissions(&database, std::fs::Permissions::from_mode(0o400))?;
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o500))?;
+    let output = repo.run_span(["notes", "remove", "1", "--format", "json"])?;
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))?;
+    std::fs::set_permissions(&database, std::fs::Permissions::from_mode(0o600))?;
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert_eq!(envelope(&repo, &["show", "1"])?["notes"][0]["id"], 1);
+    Ok(())
+}
+
+#[test]
+fn notes_foreign_trigger_cannot_remove_other_ids_and_storage_is_left_intact() -> Result<()> {
+    let repo = TestRepo::seeded()?;
+    add(&repo, "HEAD", "null")?;
+    add(&repo, "HEAD", "true")?;
+    let path = repo.path().join(".git/span/notes.db");
+    for schema in [
+        "CREATE TRIGGER consume_other_notes BEFORE DELETE ON notes BEGIN DELETE FROM notes WHERE id != OLD.id; END;",
+        "CREATE VIEW foreign_view AS SELECT id FROM notes;",
+        "CREATE INDEX foreign_index ON notes (id);",
+    ] {
+        let connection = rusqlite::Connection::open(&path)?;
+        connection.execute_batch(schema)?;
+        drop(connection);
+        let bytes = std::fs::read(&path)?;
+        for args in [
+            vec!["notes", "remove", "1", "--format", "json"],
+            vec!["notes", "add", "HEAD", "false", "--format", "json"],
+            vec!["notes", "show", "1", "--format", "json"],
+            vec!["notes", "list", "--format", "json"],
+        ] {
+            failed_without_stdout(&repo, &args)?;
+            assert_eq!(std::fs::read(&path)?, bytes);
+        }
+        let connection = rusqlite::Connection::open(&path)?;
+        assert_eq!(
+            connection.query_row("SELECT COUNT(*) FROM notes", [], |row| row.get::<_, u32>(0))?,
+            2
+        );
+        connection.execute_batch("DROP TRIGGER IF EXISTS consume_other_notes; DROP VIEW IF EXISTS foreign_view; DROP INDEX IF EXISTS foreign_index;")?;
+    }
     Ok(())
 }

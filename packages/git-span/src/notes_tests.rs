@@ -10,7 +10,6 @@ fn sha() -> &'static str {
 }
 
 #[test]
-#[ignore = "notes bootstrap: input validation"]
 fn notes_inputs_accept_scalars_stdin_and_empty_second_source() {
     for text in ["null", "true", "42", "\"hello\"", "[]", "{}"] {
         assert_eq!(
@@ -27,7 +26,6 @@ fn notes_inputs_accept_scalars_stdin_and_empty_second_source() {
 }
 
 #[test]
-#[ignore = "notes bootstrap: input errors"]
 fn notes_inputs_reject_conflicts_invalid_empty_terminal_and_limits() {
     assert!(parse_input(None, &mut std::io::empty(), true).is_err());
     assert!(parse_input(None, &mut std::io::empty(), false).is_err());
@@ -43,7 +41,6 @@ fn notes_inputs_reject_conflicts_invalid_empty_terminal_and_limits() {
 }
 
 #[test]
-#[ignore = "notes bootstrap: canonical identity"]
 fn notes_identity_sorts_objects_decodes_strings_preserves_arrays_and_numbers() {
     assert_eq!(
         parsed(r#" {"b":{"y":2,"x":1},"a":"\u0061"} "#),
@@ -60,8 +57,12 @@ fn notes_identity_sorts_objects_decodes_strings_preserves_arrays_and_numbers() {
         ("1e9999", "2e9999"),
     ] {
         assert_ne!(parsed(a).canonical_document, parsed(b).canonical_document);
-        assert_eq!(parsed(a).document.to_string(), a);
+        assert_eq!(
+            parsed(a).document,
+            serde_json::from_str::<serde_json::Value>(a).unwrap()
+        );
     }
+    assert_eq!(parsed("1e9999"), parsed("1e+9999"));
     assert_eq!(
         canonicalize(&json!({"z":1,"a":2})).unwrap(),
         r#"{"a":2,"z":1}"#
@@ -69,7 +70,6 @@ fn notes_identity_sorts_objects_decodes_strings_preserves_arrays_and_numbers() {
 }
 
 #[test]
-#[ignore = "notes bootstrap: identifier validation"]
 fn notes_ids_are_positive_safe_integers() {
     assert_eq!(parse_id("1").unwrap(), NoteId(1));
     assert_eq!(
@@ -89,7 +89,6 @@ fn notes_ids_are_positive_safe_integers() {
 }
 
 #[test]
-#[ignore = "notes bootstrap: durable store"]
 fn notes_store_deduplicates_present_associations_and_preserves_monotonic_ids() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("notes.db");
@@ -121,10 +120,23 @@ fn notes_store_deduplicates_present_associations_and_preserves_monotonic_ids() {
     assert_eq!(reopened.add(sha(), &parsed("null")).unwrap().id, NoteId(4));
     assert!(reopened.show(first.id).is_err());
     assert!(reopened.remove(first.id).is_err());
+    // The 16 MiB input limit must permit a normalized stored representation that grows.
+    let framing = "[1e1,\"\"]".len();
+    let input = format!("[1e1,\"{}\"]", "x".repeat(MAX_DOCUMENT_BYTES - framing));
+    assert_eq!(input.len(), MAX_DOCUMENT_BYTES);
+    let large = parsed(&input);
+    assert!(large.canonical_document.len() > MAX_DOCUMENT_BYTES);
+    let large_note = reopened.add(sha(), &large).unwrap();
+    assert_eq!(
+        reopened.show(large_note.id).unwrap().document[1]
+            .as_str()
+            .unwrap()
+            .len(),
+        MAX_DOCUMENT_BYTES - framing
+    );
 }
 
 #[test]
-#[ignore = "notes bootstrap: store fail-closed"]
 fn notes_store_rejects_corrupt_foreign_incompatible_and_malformed_storage() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("notes.db");
@@ -159,10 +171,37 @@ fn notes_store_rejects_corrupt_foreign_incompatible_and_malformed_storage() {
     assert!(store.list(&Selection::All).is_err());
     assert!(store.show(NoteId(1)).is_err());
     assert!(store.remove(NoteId(1)).is_err());
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute_batch("UPDATE notes SET document = 'true';")
+        .unwrap();
+    drop(connection);
+    assert!(
+        store.show(NoteId(1)).is_err(),
+        "valid JSON with mismatched canonical bytes must fail"
+    );
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "UPDATE notes SET document = 'null'; UPDATE sqlite_sequence SET seq = 'broken';",
+        )
+        .unwrap();
+    drop(connection);
+    assert!(store.list(&Selection::All).is_err());
+    assert!(store.add(sha(), &parsed("true")).is_err());
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute_batch("DELETE FROM notes; DELETE FROM sqlite_sequence;")
+        .unwrap();
+    drop(connection);
+    assert!(
+        store.list(&Selection::All).is_err(),
+        "missing sequence after removing every note must fail closed"
+    );
+    assert!(store.add(sha(), &parsed("true")).is_err());
 }
 
 #[test]
-#[ignore = "notes bootstrap: store exhaustion"]
 fn notes_allocation_exhaustion_and_failed_mutations_preserve_records() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("notes.db");
@@ -183,11 +222,17 @@ fn notes_allocation_exhaustion_and_failed_mutations_preserve_records() {
     connection.execute_batch("CREATE TRIGGER refuse_delete BEFORE DELETE ON notes BEGIN SELECT RAISE(ABORT, 'failure'); END;").unwrap();
     drop(connection);
     assert!(store.remove(NoteId(1)).is_err());
-    assert_eq!(store.show(NoteId(1)).unwrap().id, NoteId(1));
+    // Foreign triggers are rejected before mutation, including a trigger that aborts.
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(
+        connection
+            .query_row("SELECT id FROM notes", [], |row| row.get::<_, u64>(0))
+            .unwrap(),
+        1
+    );
 }
 
 #[test]
-#[ignore = "notes bootstrap: locking timeout"]
 fn notes_busy_timeout_names_the_durable_storage_without_success() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("notes.db");
@@ -203,7 +248,6 @@ fn notes_busy_timeout_names_the_durable_storage_without_success() {
 }
 
 #[test]
-#[ignore = "notes bootstrap: bundled SQLite concurrent first-open"]
 fn notes_concurrent_first_open_and_duplicate_allocation_are_atomic() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("notes.db");
@@ -228,7 +272,6 @@ fn notes_concurrent_first_open_and_duplicate_allocation_are_atomic() {
 }
 
 #[test]
-#[ignore = "notes bootstrap: shared repository storage"]
 fn notes_store_paths_use_git_common_dir() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = gix::init(tmp.path()).unwrap();

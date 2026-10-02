@@ -8,6 +8,33 @@ A span is an ordinary tracked plain-text file under the span root (default
 directly; `git add .span && git commit -o .span` persists it. There is no staging area,
 no span refs, and no `git span commit` step.
 
+## Commit-associated JSON notes
+
+Attach supporting evidence to a commit, inspect it across branch histories, and remove a consumed record by ID:
+
+```bash
+git span notes add HEAD '{"session_id":"session-42","transcript":"sessions/42.jsonl"}'
+git span notes add HEAD < metadata.json
+git span notes list main..feature --format json
+git span notes list HEAD --exact --format json
+git span notes show 1 --format json
+git span notes remove 1 --format json
+```
+
+`notes add` accepts one arbitrary UTF-8 JSON value, including scalars and `null`, from its positional argument or nonterminal stdin. Omitted input on a terminal fails immediately. Empty or invalid input, input over 16 MiB, excessive nesting, and nonempty stdin combined with an argument fail before storage mutation. Empty piped stdin with an argument is allowed. Commit expressions must peel to an unambiguous commit; tree/blob IDs and options are refused. The stored full SHA stays fixed when a branch moves.
+
+IDs are repository-wide positive integers through `9007199254740991`. Allocation is atomic across linked worktrees and processes; IDs survive restart and are never reused after removal. An identical document still attached to the same SHA returns its existing ID. Identity sorts object keys recursively, decodes strings, preserves array order, and uses the parser's arbitrary-precision numeric representation: `1` and `1.0` differ; equivalent exponent spellings normalized by the JSON parser deduplicate. Duplicate object keys use their last value. Re-adding a removed association receives a new ID.
+
+Unfiltered `notes list` returns every record in ascending ID order, including unreachable commits. A single revision selects its reachable history; two-dot and three-dot ranges use native Git sets and omitted-endpoint HEAD defaults. `--exact` requires one revision and returns only that commit. A list is a read snapshot: consumers remove the returned IDs individually, so later attachments survive.
+
+Every leaf accepts `--format human|json` (default human). JSON stdout contains one envelope:
+
+```json
+{"schema_version":1,"operation":"add","notes":[{"id":1,"commit_sha":"1111111111111111111111111111111111111111","document":null}]}
+```
+
+Add/show/remove return one complete record; remove returns what it deleted. Empty lists return `"notes":[]`. Missing or invalid IDs and storage failures exit nonzero without a success envelope. Documents and allocation state live in `<git-common-dir>/span/notes.db`, independently of the disposable resolver cache. They remain until explicitly removed. Notes are local to the clone; they provide no remote synchronization or processing lifecycle. See [Storage model](./storage-model.md#commit-associated-notes).
+
 ## Anchor grammar
 
 - **Line-range anchor**: `<path>#L<start>-L<end>` — 1-based, inclusive.

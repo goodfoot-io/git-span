@@ -832,7 +832,10 @@ pub fn dispatch(
     cli: &Cli,
 ) -> anyhow::Result<i32> {
     if let Commands::Notes(args) = command {
-        return notes::run(repo, args);
+        crate::update_check::maybe_engage(cli);
+        let result = notes::run(repo, args);
+        if result.is_ok() { crate::update_check::maybe_remind(cli); }
+        return result;
     }
     // Resolve the span root once, here, through the single precedence
     // chain (`span_dir` > `GIT_SPAN_DIR` > `git config git-span.dir`
