@@ -1502,6 +1502,9 @@ fn drift_spans_inner(
     //                          smaller.
     crate::perf::counter("session.gix-open-calls", crate::perf::gix_open_calls());
     crate::perf::counter("session.attr-for-calls", crate::perf::attr_for_calls());
+    for (label, value) in crate::perf::immutable_counters() {
+        crate::perf::counter(label, value);
+    }
     // Category 2: anchor-set decomposition.
     let anchors_total = state.concurrent.anchors_total();
     crate::perf::counter("session.anchors-total", anchors_total);

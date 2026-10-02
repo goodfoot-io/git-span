@@ -958,3 +958,152 @@ fn replacement_unresolvable_targets_fail_closed() {
         assert!(err.to_string().contains("resolve replacement ref"));
     }
 }
+
+fn loose_object(repo: &gix::Repository, oid: gix::ObjectId) -> std::path::PathBuf {
+    let hex = oid.to_string();
+    crate::git::common_dir(repo)
+        .join("objects")
+        .join(&hex[..2])
+        .join(&hex[2..])
+}
+
+fn replace_object(repo: &gix::Repository, oid: gix::ObjectId, kind: &str, bytes: &[u8]) {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = Command::new("git")
+        .current_dir(repo.path())
+        .args(["hash-object", "-w", "-t", kind, "--stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(bytes).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success());
+    let replacement: gix::ObjectId = String::from_utf8(out.stdout)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let path = loose_object(repo, oid);
+    let staged = path.with_extension("replacement");
+    std::fs::copy(loose_object(repo, replacement), &staged).unwrap();
+    std::fs::rename(staged, path).unwrap();
+}
+
+#[test]
+fn immutable_capture_shared_blob_preserves_both_current_names() {
+    let (td, _repo) = repo_with_span();
+    std::fs::copy(td.path().join(".span/alpha"), td.path().join(".span/beta")).unwrap();
+    git(td.path(), &["add", ".span/beta"]);
+    git(td.path(), &["commit", "-qm", "shared declaration"]);
+    let mut repo = reopen(&td);
+    repo.object_cache_size_if_unset(1024 * 1024);
+    crate::perf::init(true);
+    crate::perf::reset_subroutine_counters();
+    let token = capture_state_token(&repo, SPAN_ROOT, EngineOptions::full()).unwrap();
+    assert_eq!(token.span_blobs.len(), 2);
+    assert_eq!(token.span_blobs[0].blob, token.span_blobs[1].blob);
+    assert_ne!(token.span_blobs[0].path, token.span_blobs[1].path);
+    assert!(crate::perf::immutable_counters()[0].1 >= 1);
+    let current = CurrentReader::new(&repo).unwrap();
+    let head = current.head(&repo).unwrap().unwrap();
+    let committed = load_committed(&repo, SPAN_ROOT, &current, &head).unwrap();
+    assert_eq!(
+        committed
+            .spans
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        ["alpha", "beta"]
+    );
+    assert!(
+        load_uncommitted(&repo, SPAN_ROOT, &committed)
+            .unwrap()
+            .file_paths
+            .is_empty()
+    );
+    crate::perf::init(false);
+}
+
+#[test]
+fn immutable_capture_changed_declaration_reconstructs_current_paths() {
+    let (_td, mut repo) = repo_with_span();
+    repo.object_cache_size_if_unset(1024 * 1024);
+    let token = capture_state_token(&repo, SPAN_ROOT, EngineOptions::full()).unwrap();
+    let oid: gix::ObjectId = token.span_blobs[0].blob.parse().unwrap();
+    let old = repo.find_object(oid).unwrap().data.clone();
+    let updated = String::from_utf8(old)
+        .unwrap()
+        .replace("src/a.txt", "src/b.txt");
+    replace_object(&repo, oid, "blob", updated.as_bytes());
+    let fresh = capture_state_token(&repo, SPAN_ROOT, EngineOptions::full()).unwrap();
+    assert!(fresh.worktree_state.iter().any(|e| e.path == "src/b.txt"));
+    assert!(!fresh.worktree_state.iter().any(|e| e.path == "src/a.txt"));
+    assert_ne!(token.canonical_key_digest(), fresh.canonical_key_digest());
+}
+
+#[test]
+fn immutable_capture_absent_declaration_requires_current_ancestor() {
+    let (td, _repo) = repo_with_span();
+    std::fs::create_dir_all(td.path().join("nested")).unwrap();
+    std::fs::write(td.path().join("nested/other"), b"other").unwrap();
+    git(td.path(), &["add", "nested"]);
+    git(td.path(), &["commit", "-qm", "ancestor fixture"]);
+    git(td.path(), &["config", "remote.origin.promisor", "true"]);
+    let mut repo = reopen(&td);
+    repo.object_cache_size_if_unset(1024 * 1024);
+    let token = capture_state_token(&repo, "nested/.span", EngineOptions::full()).unwrap();
+    assert!(token.span_blobs.is_empty());
+    let tree = repo
+        .head_tree()
+        .unwrap()
+        .lookup_entry_by_path("nested")
+        .unwrap()
+        .unwrap()
+        .object_id();
+    repo.find_object(tree).unwrap();
+    std::fs::remove_file(loose_object(&repo, tree)).unwrap();
+    assert!(capture_state_token(&repo, "nested/.span", EngineOptions::full()).is_err());
+}
+
+#[test]
+fn immutable_capture_attributes_are_current_with_native_cache_warm() {
+    let (td, _repo) = repo_with_span();
+    std::fs::write(td.path().join(".gitattributes"), b"*.txt -text\n").unwrap();
+    git(td.path(), &["add", ".gitattributes"]);
+    git(td.path(), &["commit", "-qm", "attribute fixture"]);
+    let mut repo = reopen(&td);
+    repo.object_cache_size_if_unset(1024 * 1024);
+    capture_state_token(&repo, SPAN_ROOT, EngineOptions::full()).unwrap();
+    let oid = repo
+        .head_tree()
+        .unwrap()
+        .lookup_entry_by_path(".gitattributes")
+        .unwrap()
+        .unwrap()
+        .object_id();
+    repo.find_object(oid).unwrap();
+    std::fs::remove_file(loose_object(&repo, oid)).unwrap();
+    assert!(capture_state_token(&repo, SPAN_ROOT, EngineOptions::full()).is_err());
+}
+
+#[test]
+fn immutable_capture_parser_errors_keep_the_current_name() {
+    for name in ["alpha", "beta"] {
+        let (td, _repo) = repo_with_span();
+        std::fs::remove_file(td.path().join(".span/alpha")).unwrap();
+        std::fs::write(
+            td.path().join(".span").join(name),
+            b"<<<<<<< HEAD\n\nconflict\n",
+        )
+        .unwrap();
+        git(td.path(), &["add", ".span"]);
+        git(td.path(), &["commit", "-qm", "conflicted declaration"]);
+        let repo = reopen(&td);
+        for _ in 0..2 {
+            let error = capture_state_token(&repo, SPAN_ROOT, EngineOptions::full()).unwrap_err();
+            assert!(matches!(error, crate::Error::SpanConflict { span, .. } if span == name));
+        }
+    }
+}

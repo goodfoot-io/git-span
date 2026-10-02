@@ -56,7 +56,6 @@
 //! fallback (first run, rebase, branch switch, reset), not a rare edge.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 
 use crate::Result;
 use crate::resolver::core::resolution::{ResolutionCore, SpanCore};
@@ -309,6 +308,18 @@ pub(crate) fn relevant_dirty_paths(
     repo: &gix::Repository,
     token: &StateToken,
 ) -> Result<HashSet<String>> {
+    crate::resolver::dirty::relevant_dirty_paths(repo, token)
+}
+
+/// Independent per-path reference retained for the batched-map correctness check.
+#[cfg(test)]
+pub(crate) fn relevant_dirty_paths_reference(
+    repo: &gix::Repository,
+    token: &StateToken,
+) -> Result<HashSet<String>> {
+    use crate::resolver::core::immutable_observation::CurrentReader;
+    let current = CurrentReader::new(repo)?;
+    let head = current.head(repo)?;
     let staged: HashMap<&str, &PathState> = token
         .staged_state
         .iter()
@@ -319,32 +330,28 @@ pub(crate) fn relevant_dirty_paths(
         .iter()
         .map(|e| (e.path.as_str(), &e.state))
         .collect();
-
-    let mut all: HashSet<&str> = HashSet::new();
-    all.extend(staged.keys().copied());
-    all.extend(worktree.keys().copied());
-
-    let mut dirty: HashSet<String> = HashSet::new();
-    for path in all {
-        let head_oid = head_blob_oid(repo, path)?;
-        let staged_clean = staged_clean(staged.get(path).copied(), head_oid.as_deref());
-        let worktree_clean = worktree_clean(repo, worktree.get(path).copied(), head_oid.as_deref());
-        if !(staged_clean && worktree_clean) {
+    let paths: HashSet<&str> = staged.keys().chain(worktree.keys()).copied().collect();
+    let mut dirty = HashSet::new();
+    for path in paths {
+        let oid = match &head {
+            Some(head) => current
+                .tree_entry(head.tree, path)?
+                .filter(|(mode, _)| mode.is_blob())
+                .map(|(_, oid)| oid.to_string()),
+            None => None,
+        };
+        if !(staged_clean(staged.get(path).copied(), oid.as_deref())
+            && worktree_clean_with_memo(
+                &current,
+                worktree.get(path).copied(),
+                oid.as_deref(),
+                None,
+            ))
+        {
             dirty.insert(path.to_string());
         }
     }
     Ok(dirty)
-}
-
-/// HEAD blob OID (hex) for `path`, or `None` when the path is absent at HEAD or
-/// is not a blob.
-pub(crate) fn head_blob_oid(repo: &gix::Repository, path: &str) -> Result<Option<String>> {
-    Ok(
-        match crate::git::tree_entry_at(repo, "HEAD", Path::new(path))? {
-            Some((mode, oid)) if mode.is_blob() => Some(oid.to_string()),
-            _ => None,
-        },
-    )
 }
 
 /// Whether the staged (index) content of a path matches HEAD.
@@ -360,15 +367,18 @@ pub(crate) fn staged_clean(state: Option<&PathState>, head_oid: Option<&str>) ->
 
 /// Whether the worktree content of a path matches HEAD (compared as a BLAKE3
 /// digest of raw bytes — the same digest the token stores for worktree state).
-pub(crate) fn worktree_clean(
-    repo: &gix::Repository,
+pub(crate) fn worktree_clean_with_memo(
+    current: &crate::resolver::core::immutable_observation::CurrentReader,
     state: Option<&PathState>,
     head_oid: Option<&str>,
+    memo: Option<&mut crate::resolver::core::immutable_observation::ImmutableMemo<'_>>,
 ) -> bool {
     match state {
         None | Some(PathState::Absent) => head_oid.is_none(),
         Some(PathState::WorktreeContent { content_digest }) => match head_oid {
-            Some(oid) => head_blob_content_digest(repo, oid).as_deref() == Some(content_digest),
+            Some(oid) => {
+                head_blob_content_digest(current, oid, memo).as_deref() == Some(content_digest)
+            }
             None => false,
         },
         // Tracked (unexpected for worktree) / Conflict / Unreadable → dirty.
@@ -379,9 +389,37 @@ pub(crate) fn worktree_clean(
 /// BLAKE3 digest (lowercase hex) of a HEAD blob's raw bytes, matching the
 /// worktree `content_digest` the token captures. `None` when the blob cannot be
 /// read (treated as "not provably equal" → dirty by the caller).
-fn head_blob_content_digest(repo: &gix::Repository, oid_hex: &str) -> Option<String> {
-    let bytes = crate::git::read_blob_bytes(repo, oid_hex).ok()?;
-    Some(hex_bytes(blake3::hash(&bytes).as_bytes()))
+fn head_blob_content_digest(
+    current: &crate::resolver::core::immutable_observation::CurrentReader,
+    oid_hex: &str,
+    memo: Option<&mut crate::resolver::core::immutable_observation::ImmutableMemo<'_>>,
+) -> Option<String> {
+    use crate::resolver::core::immutable_observation::{
+        MAX_ENTRY_BYTES, Observation, ObservationKind, Witness,
+    };
+    if let Some(Observation::BlobDigest(digest)) = memo
+        .as_ref()
+        .and_then(|m| m.lookup(oid_hex, ObservationKind::BlobDigest))
+    {
+        return Some(hex_bytes(&digest));
+    }
+    let oid = gix::ObjectId::from_hex(oid_hex.as_bytes()).ok()?;
+    let bytes = current.read(oid, gix::object::Kind::Blob).ok()?;
+    let digest = *blake3::hash(&bytes).as_bytes();
+    if bytes.len() <= MAX_ENTRY_BYTES
+        && let Some(memo) = memo
+    {
+        memo.admit(
+            oid_hex,
+            &Observation::BlobDigest(digest),
+            &[Witness {
+                oid: oid_hex.to_string(),
+                tree: false,
+                bytes,
+            }],
+        );
+    }
+    Some(hex_bytes(&digest))
 }
 
 fn hex_bytes(b: &[u8]) -> String {

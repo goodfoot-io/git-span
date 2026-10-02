@@ -160,7 +160,7 @@ pub(crate) fn attempt(
 ///
 /// This is behaviourally identical to
 /// [`incremental::relevant_dirty_paths`] — same per-path
-/// [`incremental::staged_clean`]/[`incremental::worktree_clean`] predicates,
+/// [`incremental::staged_clean`]/[`incremental::worktree_clean_with_memo`] predicates,
 /// same conservative over-reporting — but sources each path's HEAD blob OID
 /// from a single [`head_blob_path_map`] traversal of the HEAD tree instead of a
 /// per-path [`crate::git::tree_entry_at`] (which re-peels HEAD and re-navigates
@@ -176,7 +176,7 @@ pub(crate) fn attempt(
 ///
 /// The map covers the *whole* HEAD tree; a relevant path absent from it (a
 /// newly-staged/untracked file with no HEAD blob) resolves to `None`, exactly
-/// as `incremental::head_blob_oid` returns `None` for a path absent at HEAD.
+/// as direct current tree lookup returns `None` for a path absent at HEAD.
 ///
 /// `pub(crate)` (card main-157 F4): the exact path's warm-hit dirty-tree
 /// withhold guard ([`exact::withhold_whole_result_for_dirty_tree`]) reuses this
@@ -191,7 +191,9 @@ pub(crate) fn relevant_dirty_paths(
     use crate::resolver::core::token::PathState;
     use std::collections::HashMap;
 
-    let head_blobs = head_blob_path_map(repo)?;
+    let current = crate::resolver::core::immutable_observation::CurrentReader::new(repo)?;
+    let head_blobs = head_blob_path_map(repo, &current)?;
+    let mut memo = crate::resolver::core::immutable_observation::ImmutableMemo::open(repo);
 
     let staged: HashMap<&str, &PathState> = token
         .staged_state
@@ -211,8 +213,12 @@ pub(crate) fn relevant_dirty_paths(
     for path in all {
         let head_oid = head_blobs.get(path).map(String::as_str);
         let staged_clean = incremental::staged_clean(staged.get(path).copied(), head_oid);
-        let worktree_clean =
-            incremental::worktree_clean(repo, worktree.get(path).copied(), head_oid);
+        let worktree_clean = incremental::worktree_clean_with_memo(
+            &current,
+            worktree.get(path).copied(),
+            head_oid,
+            memo.as_mut(),
+        );
         if !(staged_clean && worktree_clean) {
             dirty.insert(path.to_string());
         }
@@ -223,34 +229,70 @@ pub(crate) fn relevant_dirty_paths(
 /// The `path -> blob-OID (hex)` map of every **blob** in the HEAD tree, built in
 /// one breadth-first traversal.
 ///
-/// The `mode.is_blob()` filter matches [`incremental::head_blob_oid`]
-/// (`tree_entry_at` + `mode.is_blob()`) exactly, so a lookup here returns
-/// `Some(oid)` for precisely the paths that function returns `Some` for and
-/// `None` for the rest — a symlink, submodule, or tree entry is excluded here
-/// just as `is_blob()` excludes it there. This equality is what keeps the dirty
-/// affected-set byte-identical to the per-path implementation it replaces.
+/// The `mode.is_blob()` filter matches a direct per-path
+/// [`CurrentReader::tree_entry`](crate::resolver::core::immutable_observation::CurrentReader::tree_entry)
+/// followed by the same mode filter: symlinks, submodules, and tree entries
+/// are excluded. The independent per-path test reference keeps this batched
+/// affected-set computation equivalent across clean, dirty and staged states.
 ///
-/// Returns an empty map when HEAD (or its tree) cannot be read — the caller then
-/// treats every relevant path as absent at HEAD, which the per-path predicates
-/// classify conservatively (never a drifted reuse).
-fn head_blob_path_map(repo: &gix::Repository) -> Result<std::collections::HashMap<String, String>> {
-    use crate::Error;
-    let Ok(commit) = repo.head_commit() else {
-        return Ok(std::collections::HashMap::new());
+/// An unborn HEAD has no paths; unavailable referenced commits/trees error,
+/// including when every mutable relevant path is absent.
+fn head_blob_path_map(
+    repo: &gix::Repository,
+    current: &crate::resolver::core::immutable_observation::CurrentReader,
+) -> Result<std::collections::HashMap<String, String>> {
+    use crate::resolver::core::immutable_observation::{
+        ImmutableMemo, MAX_ENTRIES, MAX_ENTRY_BYTES, Observation, ObservationKind, Witness,
     };
-    let Ok(tree) = commit.tree() else {
-        return Ok(std::collections::HashMap::new());
+    let Some(head) = current.head(repo)? else {
+        return Ok(HashMap::new());
     };
-    let records = tree
-        .traverse()
-        .breadthfirst
-        .files()
-        .map_err(|e| Error::Git(format!("HEAD tree traverse: {e}")))?;
-    let mut map = std::collections::HashMap::with_capacity(records.len());
-    for e in records {
-        if e.mode.is_blob() {
-            map.insert(e.filepath.to_string(), e.oid.to_string());
+    let root = head.tree;
+    let mut memo = ImmutableMemo::open(repo);
+    if let Some(Observation::TreeMap(map)) = memo
+        .as_ref()
+        .and_then(|m| m.lookup(&root.to_string(), ObservationKind::TreeMap))
+    {
+        return Ok(map.into_iter().collect());
+    }
+    let mut map = HashMap::new();
+    let mut pending = std::collections::VecDeque::from([(String::new(), root)]);
+    let mut witnesses = Vec::new();
+    let mut witnessed = std::collections::HashSet::new();
+    let mut witness_bytes = 0usize;
+    let mut cacheable = memo.is_some();
+    while let Some((prefix, oid)) = pending.pop_front() {
+        let bytes = current.read(oid, gix::object::Kind::Tree)?;
+        if cacheable && witnessed.insert(oid) {
+            witness_bytes = witness_bytes.saturating_add(bytes.len());
+            if witness_bytes > MAX_ENTRY_BYTES || witnesses.len() >= MAX_ENTRIES {
+                cacheable = false;
+                witnesses.clear();
+            } else {
+                witnesses.push(Witness {
+                    oid: oid.to_string(),
+                    tree: true,
+                    bytes: bytes.clone(),
+                });
+            }
         }
+        for entry in gix::objs::TreeRefIter::from_bytes(&bytes, repo.object_hash()) {
+            let entry = entry.map_err(|e| crate::Error::Git(format!("HEAD tree decode: {e}")))?;
+            let path = format!("{prefix}{}", entry.filename);
+            if entry.mode.is_tree() {
+                pending.push_back((format!("{path}/"), entry.oid.to_owned()));
+            } else if entry.mode.is_blob() {
+                map.insert(path, entry.oid.to_string());
+            }
+        }
+        if cacheable && (map.len() > MAX_ENTRIES || pending.len() > MAX_ENTRIES) {
+            cacheable = false;
+            witnesses.clear();
+        }
+    }
+    if cacheable && let Some(memo) = &mut memo {
+        let sorted = map.iter().map(|(p, o)| (p.clone(), o.clone())).collect();
+        memo.admit(&root.to_string(), &Observation::TreeMap(sorted), &witnesses);
     }
     Ok(map)
 }

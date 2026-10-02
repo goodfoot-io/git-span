@@ -536,8 +536,8 @@ fn batched_relevant_dirty_paths_matches_per_path_reference() {
         let repo = reopen(dir);
         let token = capture_state_token(&repo, SPAN_ROOT, EngineOptions::full()).expect("token");
         let batched = relevant_dirty_paths(&repo, &token).expect("batched");
-        let per_path =
-            crate::resolver::incremental::relevant_dirty_paths(&repo, &token).expect("per-path");
+        let per_path = crate::resolver::incremental::relevant_dirty_paths_reference(&repo, &token)
+            .expect("per-path");
         assert_eq!(
             batched, per_path,
             "{note}: batched map must match per-path walk"
@@ -569,5 +569,45 @@ fn resolved_names(attempt: &ExactAttempt) -> Vec<String> {
             names
         }
         ExactAttempt::Bypass => panic!("expected Resolved, got Bypass"),
+    }
+}
+
+#[test]
+fn immutable_dirty_guard_unavailable_trees_fail_closed_even_for_absent_states() {
+    for descendant in [false, true] {
+        let (_td, dir) = fresh_two_span_repo("availability");
+        git(&dir, &["config", "remote.origin.promisor", "true"]);
+        let mut repo = reopen(&dir);
+        repo.object_cache_size_if_unset(1024 * 1024);
+        let mut token = capture_state_token(&repo, SPAN_ROOT, EngineOptions::full()).unwrap();
+        assert!(relevant_dirty_paths(&repo, &token).unwrap().is_empty());
+        let tree = if descendant {
+            repo.head_tree()
+                .unwrap()
+                .lookup_entry_by_path("src")
+                .unwrap()
+                .unwrap()
+                .object_id()
+        } else {
+            repo.head_commit().unwrap().tree_id().unwrap().detach()
+        };
+        repo.find_object(tree).unwrap();
+        let hex = tree.to_string();
+        std::fs::remove_file(
+            crate::git::common_dir(&repo)
+                .join("objects")
+                .join(&hex[..2])
+                .join(&hex[2..]),
+        )
+        .unwrap();
+        for entry in token
+            .staged_state
+            .iter_mut()
+            .chain(token.worktree_state.iter_mut())
+        {
+            entry.state = crate::resolver::core::token::PathState::Absent;
+        }
+        assert!(relevant_dirty_paths(&repo, &token).is_err());
+        assert!(crate::resolver::incremental::relevant_dirty_paths(&repo, &token).is_err());
     }
 }

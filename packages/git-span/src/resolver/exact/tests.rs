@@ -1189,3 +1189,31 @@ fn maintenance_deferred_entry_observes_dirty_state_and_verifies_lookup() {
         "publications do not admit another opportunity"
     );
 }
+
+#[test]
+fn immutable_prepublication_missing_declaration_never_publishes() {
+    reset_test_state();
+    clear_memo();
+    let (_td, mut repo) = drifted_repo("immutable-prepublish");
+    repo.object_cache_size_if_unset(1024 * 1024);
+    enable_store();
+    let opts = EngineOptions::full();
+    let token = capture_state_token(&repo, SPAN_ROOT, opts).unwrap();
+    let key = token.canonical_key_digest();
+    let oid: gix::ObjectId = token.span_blobs[0].blob.parse().unwrap();
+    repo.find_object(oid).unwrap();
+    let hex = oid.to_string();
+    let path = crate::git::common_dir(&repo)
+        .join("objects")
+        .join(&hex[..2])
+        .join(&hex[2..]);
+    set_after_build_hook(move || {
+        std::fs::remove_file(&path).unwrap();
+    });
+    assert!(drift_spans_new_store(&repo, SPAN_ROOT, opts).is_err());
+    let store = CacheStore::open(&repo).unwrap();
+    assert!(matches!(
+        store.get_generation(&key, SUMMARY_VERSION).unwrap(),
+        GetOutcome::Miss
+    ));
+}

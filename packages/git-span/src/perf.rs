@@ -87,6 +87,55 @@ static GIX_OPEN_CALLS: AtomicU64 = AtomicU64::new(0);
 /// per `gix::Repository` instance, so this counter does not measure disk I/O.
 static ATTR_FOR_CALLS: AtomicU64 = AtomicU64::new(0);
 
+static IMMUTABLE_HITS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+static IMMUTABLE_MISSES: AtomicU64 = AtomicU64::new(0);
+static IMMUTABLE_REJECTIONS: AtomicU64 = AtomicU64::new(0);
+static IMMUTABLE_REUSED_BYTES: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn record_immutable_miss() {
+    if enabled() {
+        IMMUTABLE_MISSES.fetch_add(1, Ordering::Relaxed);
+    }
+}
+pub(crate) fn record_immutable_rejection() {
+    if enabled() {
+        IMMUTABLE_REJECTIONS.fetch_add(1, Ordering::Relaxed);
+    }
+}
+pub(crate) fn record_immutable_hit(kind: u32, bytes: u64) {
+    if !enabled() {
+        return;
+    }
+    IMMUTABLE_MISSES.fetch_sub(1, Ordering::Relaxed);
+    IMMUTABLE_HITS[(kind - 1) as usize].fetch_add(1, Ordering::Relaxed);
+    IMMUTABLE_REUSED_BYTES.fetch_add(bytes, Ordering::Relaxed);
+}
+pub(crate) fn immutable_counters() -> [(&'static str, u64); 6] {
+    [
+        (
+            "immutable.declaration-hits",
+            IMMUTABLE_HITS[0].load(Ordering::Relaxed),
+        ),
+        (
+            "immutable.tree-map-hits",
+            IMMUTABLE_HITS[1].load(Ordering::Relaxed),
+        ),
+        (
+            "immutable.blob-digest-hits",
+            IMMUTABLE_HITS[2].load(Ordering::Relaxed),
+        ),
+        ("immutable.misses", IMMUTABLE_MISSES.load(Ordering::Relaxed)),
+        (
+            "immutable.rejections",
+            IMMUTABLE_REJECTIONS.load(Ordering::Relaxed),
+        ),
+        (
+            "immutable.reused-source-bytes",
+            IMMUTABLE_REUSED_BYTES.load(Ordering::Relaxed),
+        ),
+    ]
+}
+
 // ── `git span list` corpus-load counters ────────────────────────────────────
 //
 // Phases of `load_all_spans_in` (3-layer name discovery + per-span
@@ -365,6 +414,12 @@ pub struct TraceRow {
 /// Reset all subroutine-level counters. Called at the top of `drift_spans`
 /// so the emit block reports values from a single resolver run.
 pub fn reset_subroutine_counters() {
+    for counter in &IMMUTABLE_HITS {
+        counter.store(0, Ordering::Relaxed);
+    }
+    IMMUTABLE_MISSES.store(0, Ordering::Relaxed);
+    IMMUTABLE_REJECTIONS.store(0, Ordering::Relaxed);
+    IMMUTABLE_REUSED_BYTES.store(0, Ordering::Relaxed);
     GIX_OPEN_CALLS.store(0, Ordering::Relaxed);
     ATTR_FOR_CALLS.store(0, Ordering::Relaxed);
 }

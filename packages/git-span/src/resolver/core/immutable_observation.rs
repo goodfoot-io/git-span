@@ -1,9 +1,6 @@
 //! Repository-bound derived observations. A lookup proves current dependency
 //! bytes afresh; persisted data never establishes object availability by itself.
 
-// Contract-only bootstrap: removed when consumers are integrated.
-#![allow(dead_code)]
-
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -31,7 +28,7 @@ pub(crate) enum ObservationKind {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) enum Observation {
     Declaration(DeclarationSummary),
-    TreeMap(BTreeMap<String, String>),
+    TreeMap(#[serde(deserialize_with = "unique_paths")] BTreeMap<String, String>),
     BlobDigest([u8; 32]),
 }
 
@@ -55,25 +52,465 @@ pub(crate) struct ImmutableMemo<'repo> {
     repo: &'repo gix::Repository,
     conn: rusqlite::Connection,
     limits: Limits,
+    policy: [u8; 32],
 }
 
 impl<'repo> ImmutableMemo<'repo> {
     /// Disabled caching and storage errors return no memo.
-    pub(crate) fn open(_repo: &'repo gix::Repository) -> Option<Self> {
-        todo!("immutable memo contract")
+    pub(crate) fn open(repo: &'repo gix::Repository) -> Option<Self> {
+        if std::env::var("GIT_SPAN_CACHE").as_deref() == Ok("0") {
+            return None;
+        }
+        let limits = Limits {
+            entry_bytes: MAX_ENTRY_BYTES,
+            entries: MAX_ENTRIES,
+            database_bytes: MAX_DATABASE_BYTES,
+        };
+        Self::open_with_limits(repo, limits)
     }
 
-    /// Verify the bounded envelope and every currently readable, correctly
-    /// typed dependency. A rejection is a miss, so the caller reconstructs
-    /// authoritatively and retains its normal object-error handling.
-    pub(crate) fn lookup(&self, _oid: &str, _kind: ObservationKind) -> Option<Observation> {
-        todo!("immutable memo contract")
+    fn open_with_limits(repo: &'repo gix::Repository, limits: Limits) -> Option<Self> {
+        let dir = crate::git::common_dir(repo).join("span");
+        std::fs::create_dir_all(&dir).ok()?;
+        let conn = rusqlite::Connection::open(dir.join("immutable.db")).ok()?;
+        conn.busy_timeout(std::time::Duration::from_millis(1000))
+            .ok()?;
+        conn.execute_batch(
+            "PRAGMA journal_mode=DELETE; PRAGMA auto_vacuum=FULL;
+            CREATE TABLE IF NOT EXISTS memo (
+                key TEXT PRIMARY KEY, kind INTEGER NOT NULL, version INTEGER NOT NULL,
+                epoch INTEGER NOT NULL, cardinality INTEGER NOT NULL,
+                payload BLOB NOT NULL, digest BLOB NOT NULL);",
+        )
+        .ok()?;
+        let policy = CurrentReader::new(repo).ok()?.policy;
+        let mut memo = Self {
+            repo,
+            conn,
+            limits,
+            policy,
+        };
+        // Old/injected oversized files are reclaimed through SQLite, never
+        // unlinked out from under another process's connection.
+        if memo.database_size()? > limits.database_bytes {
+            memo.conn.execute_batch("DELETE FROM memo; VACUUM;").ok()?;
+        }
+        memo.bound_pages()?;
+        let tx = memo.conn.transaction().ok()?;
+        tx.execute("DELETE FROM memo WHERE rowid NOT IN (SELECT rowid FROM memo ORDER BY rowid DESC LIMIT ?1)", [limits.entries]).ok()?;
+        tx.commit().ok()?;
+        Some(memo)
     }
 
-    /// Admission is best-effort and transactional. Oversized/invalid entries
-    /// are skipped; the database and row count remain independently bounded.
-    pub(crate) fn admit(&mut self, _oid: &str, _value: &Observation, _witnesses: &[Witness]) {
-        todo!("immutable memo contract")
+    fn database_size(&self) -> Option<usize> {
+        let pages: usize = self
+            .conn
+            .query_row("PRAGMA page_count", [], |r| r.get(0))
+            .ok()?;
+        let size: usize = self
+            .conn
+            .query_row("PRAGMA page_size", [], |r| r.get(0))
+            .ok()?;
+        pages.checked_mul(size)
+    }
+
+    fn bound_pages(&self) -> Option<()> {
+        let size: usize = self
+            .conn
+            .query_row("PRAGMA page_size", [], |r| r.get(0))
+            .ok()?;
+        let pages = self.limits.database_bytes.checked_div(size)?;
+        if pages == 0 || self.database_size()? > self.limits.database_bytes {
+            return None;
+        }
+        let actual: usize = self
+            .conn
+            .query_row(&format!("PRAGMA max_page_count={pages}"), [], |r| r.get(0))
+            .ok()?;
+        (actual <= pages).then_some(())
+    }
+
+    fn key(&self, oid: &str, kind: ObservationKind) -> Option<String> {
+        let id = gix::ObjectId::from_hex(oid.as_bytes()).ok()?;
+        if id.kind() != self.repo.object_hash() || id.to_string() != oid {
+            return None;
+        }
+        Some(format!(
+            "{:?}:{oid}:{}:{PAYLOAD_VERSION}:{}:{}",
+            id.kind(),
+            kind.tag(),
+            super::capture::SEMANTIC_EPOCH,
+            blake3::Hash::from_bytes(self.policy)
+        ))
+    }
+
+    /// Each lookup independently rereads every witnessed object. A failed
+    /// availability/kind/byte check is a miss, never a proof of absence.
+    pub(crate) fn lookup(&self, oid: &str, kind: ObservationKind) -> Option<Observation> {
+        crate::perf::record_immutable_miss();
+        let key = self.key(oid, kind)?;
+        let row = self.conn.query_row(
+            "SELECT kind, version, epoch, cardinality, payload, digest FROM memo
+             WHERE key=?1 AND length(payload)<=?2 AND length(digest)=32",
+            rusqlite::params![key, self.limits.entry_bytes],
+            |r| {
+                Ok((
+                    r.get::<_, u32>(0)?,
+                    r.get::<_, u32>(1)?,
+                    r.get::<_, u32>(2)?,
+                    r.get::<_, u64>(3)?,
+                    r.get::<_, Vec<u8>>(4)?,
+                    r.get::<_, Vec<u8>>(5)?,
+                ))
+            },
+        );
+        let (tag, version, epoch, count, bytes, digest) = match row {
+            Ok(row) => row,
+            Err(_) => return None,
+        };
+        let decoded = (|| {
+            if tag != kind.tag()
+                || version != PAYLOAD_VERSION
+                || epoch != super::capture::SEMANTIC_EPOCH
+            {
+                return None;
+            }
+            let sealed = envelope_digest(&key, tag, version, epoch, count, &bytes);
+            if sealed.as_slice() != digest {
+                return None;
+            }
+            let payload: Payload = serde_json::from_slice(&bytes).ok()?;
+            if payload.value.kind() != kind
+                || payload.value.cardinality() != count
+                || !self.shape_valid(oid, &payload.value, &payload.witnesses)
+            {
+                return None;
+            }
+            let reader = CurrentReader::new(self.repo).ok()?;
+            if !payload
+                .witnesses
+                .iter()
+                .all(|w| witness_current(&reader, w))
+            {
+                return None;
+            }
+            Some(payload)
+        })();
+        match decoded {
+            Some(payload) => {
+                crate::perf::record_immutable_hit(
+                    kind.tag(),
+                    payload.witnesses.iter().map(|w| w.bytes.len() as u64).sum(),
+                );
+                Some(payload.value)
+            }
+            None => {
+                crate::perf::record_immutable_rejection();
+                None
+            }
+        }
+    }
+
+    fn shape_valid(&self, oid: &str, value: &Observation, witnesses: &[Witness]) -> bool {
+        if witnesses.is_empty()
+            || witnesses.len() > MAX_ENTRIES
+            || value.cardinality() > MAX_ENTRIES as u64
+        {
+            return false;
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for w in witnesses {
+            if w.bytes.len() > self.limits.entry_bytes
+                || self.key(&w.oid, value.kind()).is_none()
+                || !seen.insert(&w.oid)
+            {
+                return false;
+            }
+        }
+        let Some(root) = witnesses.iter().find(|w| w.oid == oid) else {
+            return false;
+        };
+        match value {
+            Observation::Declaration(s) => {
+                !root.tree && witnesses.len() == 1 && s.anchor_paths.iter().all(|p| valid_path(p))
+            }
+            Observation::BlobDigest(_) => !root.tree && witnesses.len() == 1,
+            Observation::TreeMap(map) => {
+                root.tree
+                    && witnesses.iter().all(|w| w.tree)
+                    && map.iter().all(|(p, o)| {
+                        valid_path(p) && self.key(o, ObservationKind::BlobDigest).is_some()
+                    })
+            }
+        }
+    }
+
+    /// Validate derivation/closure once, before sealing the persisted envelope.
+    /// Reuse verifies its seal and fresh byte witnesses without redecoding trees.
+    pub(crate) fn admit(&mut self, oid: &str, value: &Observation, witnesses: &[Witness]) {
+        let _ = self.admit_inner(oid, value, witnesses);
+    }
+
+    fn admit_inner(&mut self, oid: &str, value: &Observation, witnesses: &[Witness]) -> Option<()> {
+        let key = self.key(oid, value.kind())?;
+        let raw_size = witnesses
+            .iter()
+            .try_fold(0usize, |sum, w| sum.checked_add(w.bytes.len()))?;
+        let reader = CurrentReader::new(self.repo).ok()?;
+        if raw_size > self.limits.entry_bytes
+            || !self.shape_valid(oid, value, witnesses)
+            || !witnesses.iter().all(|w| witness_current(&reader, w))
+        {
+            return None;
+        }
+        let root = witnesses.iter().find(|w| w.oid == oid)?;
+        match value {
+            Observation::BlobDigest(digest) if blake3::hash(&root.bytes).as_bytes() != digest => {
+                return None;
+            }
+            Observation::Declaration(summary) => {
+                let text = std::str::from_utf8(&root.bytes).ok()?;
+                let file = crate::span_file::SpanFile::parse(text).ok()?;
+                if summary.anchor_paths
+                    != file
+                        .anchors
+                        .iter()
+                        .map(|a| a.path.to_string())
+                        .collect::<Vec<_>>()
+                    || summary.copy_detection != file.config.copy_detection
+                {
+                    return None;
+                }
+            }
+            Observation::TreeMap(map)
+                if tree_map_from_witnesses(self.repo, oid, witnesses)? != *map =>
+            {
+                return None;
+            }
+            _ => {}
+        }
+        // Serialize through a capped writer: JSON serialization cannot itself
+        // allocate an entry larger than the admission limit.
+        #[derive(Serialize)]
+        struct BorrowedPayload<'a> {
+            value: &'a Observation,
+            witnesses: &'a [Witness],
+        }
+        let mut writer = BoundedWriter {
+            bytes: Vec::new(),
+            limit: self.limits.entry_bytes,
+        };
+        serde_json::to_writer(&mut writer, &BorrowedPayload { value, witnesses }).ok()?;
+        let bytes = writer.bytes;
+        self.bound_pages()?;
+        let count = value.cardinality();
+        let digest = envelope_digest(
+            &key,
+            value.kind().tag(),
+            PAYLOAD_VERSION,
+            super::capture::SEMANTIC_EPOCH,
+            count,
+            &bytes,
+        );
+        let page_size: usize = self
+            .conn
+            .query_row("PRAGMA page_size", [], |r| r.get(0))
+            .ok()?;
+        let payload_budget = self.limits.database_bytes.checked_sub(4 * page_size)?;
+        // Reserve schema/pointer-map pages and conservatively round each row
+        // plus index overhead to pages. SQLite's own page ceiling remains
+        // the final authority when fragmentation or layout uses more space.
+        let raw_cost = bytes.len().checked_add(key.len())?.checked_add(128)?;
+        let entry_cost = raw_cost
+            .div_ceil(page_size)
+            .checked_add(1)?
+            .checked_mul(page_size)?;
+        if entry_cost > payload_budget {
+            return None;
+        }
+        let tx = self.conn.transaction().ok()?;
+        // Replacing a row moves it to the newest admission position. Count and
+        // page budgets are enforced inside the write transaction.
+        tx.execute("DELETE FROM memo WHERE key=?1", [&key]).ok()?;
+        loop {
+            let occupied: usize = tx
+                .query_row(
+                    "SELECT coalesce(sum(((length(payload)+length(key)+128+?1-1)/?1+1)*?1),0) FROM memo",
+                    [page_size],
+                    |r| r.get(0),
+                )
+                .ok()?;
+            if occupied.checked_add(entry_cost)? <= payload_budget {
+                break;
+            }
+            tx.execute(
+                "DELETE FROM memo WHERE rowid=(SELECT min(rowid) FROM memo)",
+                [],
+            )
+            .ok()?;
+        }
+        let retain = self.limits.entries.checked_sub(1)?;
+        tx.execute("DELETE FROM memo WHERE rowid NOT IN (SELECT rowid FROM memo ORDER BY rowid DESC LIMIT ?1)", [retain]).ok()?;
+        tx.execute("INSERT INTO memo(key,kind,version,epoch,cardinality,payload,digest) VALUES(?1,?2,?3,?4,?5,?6,?7)", rusqlite::params![key,value.kind().tag(),PAYLOAD_VERSION,super::capture::SEMANTIC_EPOCH,count,bytes,digest.as_slice()]).ok()?;
+        tx.commit().ok()?;
+        Some(())
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Payload {
+    value: Observation,
+    witnesses: Vec<Witness>,
+}
+
+impl ObservationKind {
+    fn tag(self) -> u32 {
+        match self {
+            Self::Declaration => 1,
+            Self::TreeMap => 2,
+            Self::BlobDigest => 3,
+        }
+    }
+}
+
+impl Observation {
+    fn kind(&self) -> ObservationKind {
+        match self {
+            Self::Declaration(_) => ObservationKind::Declaration,
+            Self::TreeMap(_) => ObservationKind::TreeMap,
+            Self::BlobDigest(_) => ObservationKind::BlobDigest,
+        }
+    }
+    fn cardinality(&self) -> u64 {
+        match self {
+            Self::Declaration(s) => s.anchor_paths.len() as u64,
+            Self::TreeMap(m) => m.len() as u64,
+            Self::BlobDigest(_) => 1,
+        }
+    }
+}
+
+fn envelope_digest(
+    key: &str,
+    kind: u32,
+    version: u32,
+    epoch: u32,
+    count: u64,
+    payload: &[u8],
+) -> [u8; 32] {
+    let mut h = blake3::Hasher::new();
+    h.update(b"git-span:immutable-observation\0");
+    h.update(&epoch.to_le_bytes());
+    h.update(&kind.to_le_bytes());
+    h.update(&version.to_le_bytes());
+    h.update(&count.to_le_bytes());
+    h.update(&(key.len() as u64).to_le_bytes());
+    h.update(key.as_bytes());
+    h.update(payload);
+    *h.finalize().as_bytes()
+}
+
+fn valid_path(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.contains('\0')
+        && !path
+            .split('/')
+            .any(|p| p.is_empty() || p == "." || p == "..")
+}
+
+fn witness_current(reader: &CurrentReader, w: &Witness) -> bool {
+    let Ok(oid) = gix::ObjectId::from_hex(w.oid.as_bytes()) else {
+        return false;
+    };
+    let kind = if w.tree {
+        gix::object::Kind::Tree
+    } else {
+        gix::object::Kind::Blob
+    };
+    reader.read(oid, kind).is_ok_and(|bytes| bytes == w.bytes)
+}
+
+/// Derive the map from the supplied closure without trusting its completeness.
+/// Used only at admission; lookup validates the sealed closure with raw bytes.
+fn tree_map_from_witnesses(
+    repo: &gix::Repository,
+    root: &str,
+    witnesses: &[Witness],
+) -> Option<BTreeMap<String, String>> {
+    let by_oid: BTreeMap<&str, &Witness> = witnesses.iter().map(|w| (w.oid.as_str(), w)).collect();
+    let mut pending = vec![(String::new(), root.to_string())];
+    let mut visited = std::collections::BTreeSet::new();
+    let mut map = BTreeMap::new();
+    let mut paths = 0usize;
+    while let Some((prefix, oid)) = pending.pop() {
+        paths += 1;
+        if paths > MAX_ENTRIES {
+            return None;
+        }
+        let witness = by_oid.get(oid.as_str())?;
+        visited.insert(oid.clone());
+        for entry in gix::objs::TreeRefIter::from_bytes(&witness.bytes, repo.object_hash()) {
+            let entry = entry.ok()?;
+            let path = format!("{prefix}{}", entry.filename);
+            if !valid_path(&path) {
+                return None;
+            }
+            if entry.mode.is_tree() {
+                pending.push((format!("{path}/"), entry.oid.to_string()));
+            } else if entry.mode.is_blob() && map.insert(path, entry.oid.to_string()).is_some() {
+                return None;
+            }
+        }
+        if pending.len() + map.len() > MAX_ENTRIES {
+            return None;
+        }
+    }
+    (visited.len() == witnesses.len()).then_some(map)
+}
+
+fn unique_paths<'de, D: serde::Deserializer<'de>>(
+    decoder: D,
+) -> Result<BTreeMap<String, String>, D::Error> {
+    struct Unique;
+    impl<'de> serde::de::Visitor<'de> for Unique {
+        type Value = BTreeMap<String, String>;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("unique path identities")
+        }
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut access: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut result = BTreeMap::new();
+            while let Some((key, value)) = access.next_entry::<String, String>()? {
+                if result.len() >= MAX_ENTRIES || result.insert(key, value).is_some() {
+                    return Err(serde::de::Error::custom(
+                        "duplicate/excessive immutable map keys",
+                    ));
+                }
+            }
+            Ok(result)
+        }
+    }
+    decoder.deserialize_map(Unique)
+}
+
+struct BoundedWriter {
+    bytes: Vec<u8>,
+    limit: usize,
+}
+impl std::io::Write for BoundedWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if bytes.len() > self.limit.saturating_sub(self.bytes.len()) {
+            return Err(std::io::Error::other("immutable memo entry limit"));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 
@@ -93,32 +530,134 @@ pub(crate) struct HeadObservation {
 }
 
 impl CurrentReader {
-    pub(crate) fn new(_repo: &gix::Repository) -> crate::Result<Self> {
-        todo!("independent current reader contract")
+    pub(crate) fn new(repo: &gix::Repository) -> crate::Result<Self> {
+        let store = gix::odb::Store::try_from(repo.objects.store_ref())
+            .map_err(|e| crate::Error::Git(format!("current object store: {e}")))?;
+        let mut h = blake3::Hasher::new();
+        h.update(b"git-span:immutable-policy\0");
+        h.update(&[u8::from(repo.objects.ignore_replacements)]);
+        for (original, replacement) in store.replacements() {
+            h.update(original.as_bytes());
+            h.update(replacement.as_bytes());
+        }
+        let policy = *h.finalize().as_bytes();
+        let mut handle = std::sync::Arc::new(store).to_handle_arc();
+        handle.ignore_replacements = repo.objects.ignore_replacements;
+        let mut cache = gix::odb::Cache::from(handle);
+        cache.unset_object_cache();
+        cache.unset_pack_cache();
+        let objects =
+            gix::odb::memory::Proxy::new(cache, repo.object_hash()).with_write_passthrough();
+        Ok(Self {
+            objects,
+            policy,
+            hash: repo.object_hash(),
+        })
     }
 
-    /// Requires an actual object of the requested kind under the copied policy.
+    fn read_any(&self, oid: gix::ObjectId) -> crate::Result<(gix::object::Kind, Vec<u8>)> {
+        use gix::prelude::FindExt;
+        if oid.kind() != self.hash {
+            return Err(crate::Error::Git(
+                "current object hash kind mismatch".into(),
+            ));
+        }
+        let mut bytes = Vec::new();
+        let kind = self
+            .objects
+            .find(&oid, &mut bytes)
+            .map_err(|e| crate::Error::Git(format!("find current object `{oid}`: {e}")))?
+            .kind;
+        Ok((kind, bytes))
+    }
+
+    /// Direct ODB lookup requires physical storage, including the empty tree.
     pub(crate) fn read(
         &self,
-        _oid: gix::ObjectId,
-        _kind: gix::object::Kind,
+        oid: gix::ObjectId,
+        expected: gix::object::Kind,
     ) -> crate::Result<Vec<u8>> {
-        todo!("independent current reader contract")
+        let (kind, bytes) = self.read_any(oid)?;
+        if kind != expected {
+            return Err(crate::Error::Git(format!(
+                "object `{oid}` is a {kind}, not a {expected}"
+            )));
+        }
+        Ok(bytes)
     }
 
-    /// Resolve current HEAD/ref identity, then peel/decode through direct bytes.
-    /// Only an unborn HEAD returns None; unavailable referenced objects error.
-    pub(crate) fn head(&self, _repo: &gix::Repository) -> crate::Result<Option<HeadObservation>> {
-        todo!("independent current reader contract")
+    pub(crate) fn head(&self, repo: &gix::Repository) -> crate::Result<Option<HeadObservation>> {
+        let head = repo
+            .head()
+            .map_err(|e| crate::Error::Git(format!("HEAD: {e}")))?;
+        if head.is_unborn() {
+            return Ok(None);
+        }
+        let mut oid = repo
+            .head_id()
+            .map_err(|e| crate::Error::Git(format!("HEAD id: {e}")))?
+            .detach();
+        let mut seen = std::collections::HashSet::new();
+        loop {
+            if !seen.insert(oid) || seen.len() > 32 {
+                return Err(crate::Error::Git(
+                    "HEAD tag peeling cycle or depth limit".into(),
+                ));
+            }
+            let (kind, bytes) = self.read_any(oid)?;
+            match kind {
+                gix::object::Kind::Commit => {
+                    let commit = gix::objs::CommitRef::from_bytes(&bytes, self.hash)
+                        .map_err(|e| crate::Error::Git(format!("HEAD commit decode: {e}")))?;
+                    return Ok(Some(HeadObservation {
+                        commit: oid,
+                        tree: commit.tree(),
+                    }));
+                }
+                gix::object::Kind::Tag => {
+                    let tag = gix::objs::TagRef::from_bytes(&bytes, self.hash)
+                        .map_err(|e| crate::Error::Git(format!("HEAD tag decode: {e}")))?;
+                    oid = tag.target();
+                }
+                _ => {
+                    return Err(crate::Error::Git(format!(
+                        "HEAD `{oid}` is a {kind}, not a commit"
+                    )));
+                }
+            }
+        }
     }
 
-    /// Each ancestor is decoded through current bytes, including when absent.
     pub(crate) fn tree_entry(
         &self,
-        _root: gix::ObjectId,
-        _path: &str,
+        root: gix::ObjectId,
+        path: &str,
     ) -> crate::Result<Option<(gix::objs::tree::EntryMode, gix::ObjectId)>> {
-        todo!("independent current reader contract")
+        let mut tree = root;
+        let mut segments = path.split('/').peekable();
+        while let Some(segment) = segments.next() {
+            let bytes = self.read(tree, gix::object::Kind::Tree)?;
+            let mut found = None;
+            for entry in gix::objs::TreeRefIter::from_bytes(&bytes, self.hash) {
+                let entry =
+                    entry.map_err(|e| crate::Error::Git(format!("current tree decode: {e}")))?;
+                if entry.filename == segment.as_bytes() {
+                    found = Some((entry.mode, entry.oid.to_owned()));
+                    break;
+                }
+            }
+            let Some((mode, oid)) = found else {
+                return Ok(None);
+            };
+            if segments.peek().is_none() {
+                return Ok(Some((mode, oid)));
+            }
+            if !mode.is_tree() {
+                return Ok(None);
+            }
+            tree = oid;
+        }
+        Ok(None)
     }
 }
 
@@ -180,8 +719,14 @@ mod tests {
             .join(&oid[2..])
     }
 
+    fn replace_loose(repo: &gix::Repository, source: &str, target: &str) {
+        let original = loose_path(repo, target);
+        let replacement = original.with_extension("replacement");
+        std::fs::copy(loose_path(repo, source), &replacement).unwrap();
+        std::fs::rename(replacement, original).unwrap();
+    }
+
     #[test]
-    #[ignore = "contract bootstrap"]
     fn immutable_blob_reuse_persists_across_repository_reopen() {
         let (dir, repo) = fixture();
         let (oid, value, witnesses) = blob(&repo, b"source\n");
@@ -203,16 +748,16 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "contract bootstrap"]
     fn immutable_missing_and_changed_blob_witnesses_reject() {
-        let (dir, repo) = fixture();
+        let (_dir, mut repo) = fixture();
+        repo.object_cache_size_if_unset(1024 * 1024);
         let (oid, value, witnesses) = blob(&repo, b"original");
+        let native = gix::ObjectId::from_hex(oid.as_bytes()).unwrap();
+        repo.find_object(native).unwrap();
         let mut memo = ImmutableMemo::open(&repo).unwrap();
         memo.admit(&oid, &value, &witnesses);
         let other = object(&repo, "blob", b"changed!");
-        std::fs::copy(loose_path(&repo, &other), loose_path(&repo, &oid)).unwrap();
-        drop(memo);
-        let repo = gix::open(dir.path()).unwrap();
+        replace_loose(&repo, &other, &oid);
         assert_eq!(
             ImmutableMemo::open(&repo)
                 .unwrap()
@@ -220,7 +765,6 @@ mod tests {
             None
         );
         std::fs::remove_file(loose_path(&repo, &oid)).unwrap();
-        let repo = gix::open(dir.path()).unwrap();
         assert_eq!(
             ImmutableMemo::open(&repo)
                 .unwrap()
@@ -230,7 +774,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "contract bootstrap"]
     fn immutable_wrong_kind_and_invalid_summary_reject() {
         let (_dir, repo) = fixture();
         let (oid, value, mut witnesses) = blob(&repo, b"original");
@@ -250,7 +793,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "contract bootstrap"]
     fn immutable_corrupt_envelope_and_oversized_payload_reject() {
         let (_dir, repo) = fixture();
         let (oid, value, witnesses) = blob(&repo, b"original");
@@ -278,9 +820,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "contract bootstrap"]
     fn immutable_tree_requires_complete_current_descendant_witnesses() {
-        let (dir, repo) = fixture();
+        let (_dir, mut repo) = fixture();
+        repo.object_cache_size_if_unset(1024 * 1024);
         let child = object(&repo, "tree", b"");
         let mut bytes = b"40000 sub\0".to_vec();
         bytes.extend_from_slice(
@@ -300,14 +842,16 @@ mod tests {
             bytes: vec![],
         };
         let value = Observation::TreeMap(BTreeMap::new());
+        repo.find_object(gix::ObjectId::from_hex(root.as_bytes()).unwrap())
+            .unwrap();
+        repo.find_object(gix::ObjectId::from_hex(child.as_bytes()).unwrap())
+            .unwrap();
         let mut memo = ImmutableMemo::open(&repo).unwrap();
         memo.admit(&root, &value, std::slice::from_ref(&root_witness));
         assert_eq!(memo.lookup(&root, ObservationKind::TreeMap), None);
         memo.admit(&root, &value, &[root_witness, child_witness]);
         assert_eq!(memo.lookup(&root, ObservationKind::TreeMap), Some(value));
         std::fs::remove_file(loose_path(&repo, &child)).unwrap();
-        drop(memo);
-        let repo = gix::open(dir.path()).unwrap();
         assert_eq!(
             ImmutableMemo::open(&repo)
                 .unwrap()
@@ -317,7 +861,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "contract bootstrap"]
     fn immutable_tiny_limits_bound_count_and_database() {
         let (_dir, repo) = fixture();
         let mut memo = ImmutableMemo::open(&repo).unwrap();
@@ -350,7 +893,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "contract bootstrap"]
     fn immutable_disabled_and_storage_failure_bypass() {
         let (_dir, repo) = fixture();
         unsafe {
@@ -401,7 +943,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "contract bootstrap"]
     fn current_reader_detects_loose_removal_with_native_cache_warm() {
         let (_dir, repo, oid) = committed_fixture();
         assert_eq!(repo.find_object(oid).unwrap().data, b"before");
@@ -415,16 +956,11 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "contract bootstrap"]
     fn current_reader_detects_valid_loose_replacement_with_native_cache_warm() {
         let (_dir, repo, oid) = committed_fixture();
         assert_eq!(repo.find_object(oid).unwrap().data, b"before");
         let other = object(&repo, "blob", b"after");
-        std::fs::copy(
-            loose_path(&repo, &other),
-            loose_path(&repo, &oid.to_string()),
-        )
-        .unwrap();
+        replace_loose(&repo, &other, &oid.to_string());
         assert_eq!(
             CurrentReader::new(&repo)
                 .unwrap()
@@ -435,7 +971,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "contract bootstrap"]
     fn current_reader_detects_packed_removal_with_native_cache_warm() {
         let (dir, _repo, oid) = committed_fixture();
         git(dir.path(), &["repack", "-adq"]);
@@ -455,7 +990,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "contract bootstrap"]
     fn current_reader_detects_atomic_pack_replacement_with_native_cache_warm() {
         let (dir, _repo, oid) = committed_fixture();
         git(dir.path(), &["repack", "-adq"]);
@@ -481,7 +1015,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "contract bootstrap"]
     fn current_reader_requires_physical_empty_tree_and_correct_kind() {
         let (_dir, repo) = fixture();
         let empty = gix::ObjectId::empty_tree(repo.object_hash());
@@ -503,7 +1036,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "contract bootstrap"]
     fn current_reader_head_commit_and_missing_ancestor_are_current() {
         let (_dir, repo, _oid) = committed_fixture();
         let head = repo.head_commit().unwrap();
@@ -514,11 +1046,7 @@ mod tests {
             "tree {empty}\nauthor Test <test@example.com> 0 +0000\ncommitter Test <test@example.com> 0 +0000\n\nreplacement\n"
         );
         let replacement = object(&repo, "commit", replacement_commit.as_bytes());
-        std::fs::copy(
-            loose_path(&repo, &replacement),
-            loose_path(&repo, &head_oid.to_string()),
-        )
-        .unwrap();
+        replace_loose(&repo, &replacement, &head_oid.to_string());
         let observed = CurrentReader::new(&repo)
             .unwrap()
             .head(&repo)
@@ -540,11 +1068,13 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "contract bootstrap"]
     fn current_reader_replacement_policy_is_copied_and_identified() {
         let (dir, repo, oid) = committed_fixture();
         let replacement = object(&repo, "blob", b"replacement");
         git(dir.path(), &["replace", &oid.to_string(), &replacement]);
+        // gix 0.84's inverted config default loads this table for false;
+        // the reader preserves the actual configured ODB table exactly.
+        git(dir.path(), &["config", "core.useReplaceRefs", "false"]);
         let enabled = gix::open(dir.path()).unwrap();
         let mut disabled = enabled.clone();
         disabled.objects.ignore_replacements = true;
@@ -556,5 +1086,211 @@ mod tests {
             b"replacement"
         );
         assert_eq!(other.read(oid, gix::object::Kind::Blob).unwrap(), b"before");
+    }
+    #[test]
+    fn immutable_packed_mutations_reject_after_native_and_memo_warm() {
+        for corrupt in [false, true] {
+            let (dir, _repo, oid) = committed_fixture();
+            git(dir.path(), &["repack", "-adq"]);
+            let mut repo = gix::open(dir.path()).unwrap();
+            repo.object_cache_size_if_unset(1024 * 1024);
+            let bytes = repo.find_object(oid).unwrap().data.clone();
+            let value = Observation::BlobDigest(*blake3::hash(&bytes).as_bytes());
+            let mut memo = ImmutableMemo::open(&repo).unwrap();
+            memo.admit(
+                &oid.to_string(),
+                &value,
+                &[Witness {
+                    oid: oid.to_string(),
+                    tree: false,
+                    bytes,
+                }],
+            );
+            assert_eq!(
+                memo.lookup(&oid.to_string(), ObservationKind::BlobDigest),
+                Some(value)
+            );
+            for entry in
+                std::fs::read_dir(crate::git::common_dir(&repo).join("objects/pack")).unwrap()
+            {
+                let path = entry.unwrap().path();
+                if corrupt {
+                    if path.extension().is_some_and(|e| e == "pack") {
+                        let mut bytes = std::fs::read(&path).unwrap();
+                        bytes[..4].copy_from_slice(b"BAD!");
+                        let replacement = path.with_extension("replacement");
+                        std::fs::write(&replacement, bytes).unwrap();
+                        std::fs::rename(replacement, path).unwrap();
+                    }
+                } else {
+                    std::fs::remove_file(path).unwrap();
+                }
+            }
+            assert_eq!(
+                memo.lookup(&oid.to_string(), ObservationKind::BlobDigest),
+                None
+            );
+            assert!(
+                CurrentReader::new(&repo)
+                    .unwrap()
+                    .read(oid, gix::object::Kind::Blob)
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn immutable_replacement_policies_never_share_entries() {
+        let (dir, repo, oid) = committed_fixture();
+        let replacement = object(&repo, "blob", b"replacement");
+        git(dir.path(), &["replace", &oid.to_string(), &replacement]);
+        git(dir.path(), &["config", "core.useReplaceRefs", "false"]);
+        let enabled = gix::open(dir.path()).unwrap();
+        let mut disabled = enabled.clone();
+        disabled.objects.ignore_replacements = true;
+        let reader = CurrentReader::new(&enabled).unwrap();
+        let bytes = reader.read(oid, gix::object::Kind::Blob).unwrap();
+        let value = Observation::BlobDigest(*blake3::hash(&bytes).as_bytes());
+        let mut memo = ImmutableMemo::open(&enabled).unwrap();
+        memo.admit(
+            &oid.to_string(),
+            &value,
+            &[Witness {
+                oid: oid.to_string(),
+                tree: false,
+                bytes,
+            }],
+        );
+        assert_eq!(
+            memo.lookup(&oid.to_string(), ObservationKind::BlobDigest),
+            Some(value.clone())
+        );
+        assert_eq!(
+            ImmutableMemo::open(&disabled)
+                .unwrap()
+                .lookup(&oid.to_string(), ObservationKind::BlobDigest),
+            None
+        );
+        assert_eq!(
+            memo.lookup(&oid.to_string(), ObservationKind::BlobDigest),
+            Some(value)
+        );
+    }
+
+    #[test]
+    fn immutable_metadata_and_witness_shape_reject_before_reuse() {
+        let (_dir, repo) = fixture();
+        let (oid, value, witnesses) = blob(&repo, b"original");
+        let mut memo = ImmutableMemo::open(&repo).unwrap();
+        let key = memo.key(&oid, ObservationKind::BlobDigest).unwrap();
+        for mutation in ["bad-oid", "duplicate-witness", "wrong-bytes", "truncated"] {
+            memo.admit(&oid, &value, &witnesses);
+            let raw: Vec<u8> = memo
+                .conn
+                .query_row("SELECT payload FROM memo WHERE key=?1", [&key], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            let mut json: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+            match mutation {
+                "bad-oid" => json["witnesses"][0]["oid"] = "not-an-oid".into(),
+                "duplicate-witness" => {
+                    let item = json["witnesses"][0].clone();
+                    json["witnesses"].as_array_mut().unwrap().push(item);
+                }
+                "wrong-bytes" => json["witnesses"][0]["bytes"] = serde_json::json!([1, 2, 3]),
+                _ => {}
+            }
+            let mut raw = serde_json::to_vec(&json).unwrap();
+            if mutation == "truncated" {
+                raw.pop();
+            }
+            let digest = envelope_digest(
+                &key,
+                ObservationKind::BlobDigest.tag(),
+                PAYLOAD_VERSION,
+                super::super::capture::SEMANTIC_EPOCH,
+                1,
+                &raw,
+            );
+            memo.conn
+                .execute(
+                    "UPDATE memo SET payload=?1,digest=?2 WHERE key=?3",
+                    rusqlite::params![raw, digest.as_slice(), key],
+                )
+                .unwrap();
+            assert_eq!(
+                memo.lookup(&oid, ObservationKind::BlobDigest),
+                None,
+                "{mutation}"
+            );
+        }
+        assert!(
+            serde_json::from_str::<Observation>(
+                "{\"TreeMap\":{\"path\":\"oid\",\"path\":\"other\"}}"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn immutable_database_budget_evicts_and_reclaims_oversized_startup() {
+        let (_dir, repo) = fixture();
+        let limits = Limits {
+            entry_bytes: 32 * 1024,
+            entries: 20,
+            database_bytes: 32 * 1024,
+        };
+        let mut memo = ImmutableMemo::open_with_limits(&repo, limits).unwrap();
+        let mut first = None;
+        let mut last = None;
+        for byte in 1..=8 {
+            let (oid, value, witnesses) = blob(&repo, &vec![byte; 3000]);
+            if first.is_none() {
+                first = Some(oid.clone());
+            }
+            memo.admit(&oid, &value, &witnesses);
+            last = Some((oid, value));
+            assert!(memo.database_size().unwrap() <= limits.database_bytes);
+        }
+        assert_eq!(
+            memo.lookup(&first.unwrap(), ObservationKind::BlobDigest),
+            None
+        );
+        let (oid, value) = last.unwrap();
+        assert_eq!(memo.lookup(&oid, ObservationKind::BlobDigest), Some(value));
+        drop(memo);
+        let smaller = ImmutableMemo::open_with_limits(
+            &repo,
+            Limits {
+                database_bytes: 16 * 1024,
+                ..limits
+            },
+        )
+        .unwrap();
+        assert!(smaller.database_size().unwrap() <= 16 * 1024);
+        assert_eq!(smaller.lookup(&oid, ObservationKind::BlobDigest), None);
+    }
+
+    #[test]
+    fn immutable_reuse_counters_reset_and_measure_source_bytes() {
+        let (_dir, repo) = fixture();
+        let (oid, value, witnesses) = blob(&repo, b"original");
+        let mut memo = ImmutableMemo::open(&repo).unwrap();
+        memo.admit(&oid, &value, &witnesses);
+        crate::perf::init(true);
+        crate::perf::reset_subroutine_counters();
+        assert_eq!(memo.lookup(&oid, ObservationKind::BlobDigest), Some(value));
+        let counters = crate::perf::immutable_counters();
+        assert_eq!(counters[2].1, 1);
+        assert_eq!(counters[3].1, 0);
+        assert_eq!(counters[5].1, 8);
+        crate::perf::reset_subroutine_counters();
+        assert!(
+            crate::perf::immutable_counters()
+                .iter()
+                .all(|(_, count)| *count == 0)
+        );
+        crate::perf::init(false);
     }
 }

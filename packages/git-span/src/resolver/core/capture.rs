@@ -88,12 +88,16 @@
 //!   refinement for a later phase.
 
 use super::exe_digest::{ExeDigestMemo, ExeStatIdentity};
+use super::immutable_observation::{
+    CurrentReader, DeclarationSummary, HeadObservation, ImmutableMemo, MAX_ENTRY_BYTES,
+    Observation, ObservationKind, Witness,
+};
 use super::token::{
     AvailabilityProof, FilterDependency, PathState, PathStateEntry, SpanBlobIdentity, StateToken,
 };
 use crate::Result;
 use crate::span_file_reader::SpanFileReader;
-use crate::types::{CopyDetection, EngineOptions, Span};
+use crate::types::{CopyDetection, EngineOptions};
 use blake3::Hasher;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -158,9 +162,13 @@ pub(crate) fn capture_state_token_with_extra_paths(
     extra_paths: &BTreeSet<String>,
     memo: Option<&mut dyn ExeDigestMemo>,
 ) -> Result<StateToken> {
+    let current = CurrentReader::new(repo)?;
+    let head = current
+        .head(repo)?
+        .ok_or_else(|| crate::Error::Git("capture unborn HEAD".into()))?;
     let committed = {
         let _perf = crate::perf::span("cache.capture.committed");
-        load_committed(repo, span_root)?
+        load_committed(repo, span_root, &current, &head)?
     };
 
     // Uncommitted (worktree-only) span files participate in the resolved output —
@@ -189,10 +197,10 @@ pub(crate) fn capture_state_token_with_extra_paths(
     for b in &committed.blobs {
         relevant.insert(b.path.clone());
     }
-    for s in &committed.spans {
-        for (_, a) in &s.anchors {
-            anchored.insert(a.path.clone());
-            relevant.insert(a.path.clone());
+    for (_, summary) in &committed.spans {
+        for path in &summary.anchor_paths {
+            anchored.insert(path.clone());
+            relevant.insert(path.clone());
         }
     }
     for path in &uncommitted.file_paths {
@@ -216,7 +224,7 @@ pub(crate) fn capture_state_token_with_extra_paths(
     let copy_detection = committed
         .spans
         .iter()
-        .map(|s| s.config.copy_detection)
+        .map(|(_, summary)| summary.copy_detection)
         .max()
         .unwrap_or(CopyDetection::Off)
         .max(uncommitted.copy_detection);
@@ -240,16 +248,16 @@ pub(crate) fn capture_state_token_with_extra_paths(
         since: options.since.map(|o| o.to_string()),
         head: {
             let _perf = crate::perf::span("cache.capture.head");
-            crate::git::head_oid(repo)?
+            head.commit.to_string()
         },
         source_tree: {
             let _perf = crate::perf::span("cache.capture.source-tree");
-            source_tree_oid(repo)?
+            head.tree.to_string()
         },
         span_root: span_root.to_string(),
         span_subtree: {
             let _perf = crate::perf::span("cache.capture.span-subtree");
-            span_subtree_oid(repo, span_root)?
+            span_subtree_oid(&current, head.tree, span_root)?
         },
         span_blobs: committed.blobs,
         rename_budget: rename_budget_u32(),
@@ -264,7 +272,7 @@ pub(crate) fn capture_state_token_with_extra_paths(
         },
         attributes_digest: {
             let _perf = crate::perf::span("cache.capture.attributes");
-            attributes_digest(repo, &anchored)
+            attributes_digest(&current, head.tree, &anchored)?
         },
         normalization_digest: {
             let _perf = crate::perf::span("cache.capture.normalization");
@@ -284,7 +292,7 @@ pub(crate) fn capture_state_token_with_extra_paths(
         },
         availability: {
             let _perf = crate::perf::span("cache.capture.availability");
-            availability(repo)
+            availability(repo, &current, head.tree)?
         },
     })
 }
@@ -397,48 +405,111 @@ fn diff_tokens(a: &StateToken, b: &StateToken) -> Revalidation {
 // ---------------------------------------------------------------------------
 
 /// The committed-at-HEAD span corpus: ordered `(span-file-path, blob)`
-/// identities plus the parsed [`Span`]s (for config + anchored paths).
+/// identities plus successful declaration facts (config + anchored paths).
 struct CommittedSpans {
     /// Sorted by span-file path (`committed_span_names` yields sorted names).
     blobs: Vec<SpanBlobIdentity>,
-    spans: Vec<Span>,
+    spans: Vec<(String, DeclarationSummary)>,
 }
 
-fn load_committed(repo: &gix::Repository, span_root: &str) -> Result<CommittedSpans> {
-    let reader = SpanFileReader::new(repo, span_root.to_string());
-    // One HEAD `.span`-subtree decode yields every committed span's mode and
-    // object id. Previously this loop called `tree_entry_at` once per span for
-    // the blob identity AND `read_head` (a second `tree_entry_at`) once per
-    // span for the parse — each re-peeling HEAD and re-decoding the whole span
-    // subtree, i.e. O(N²) over N spans. Now each span is an O(log N) map lookup
-    // plus a direct blob read via `read_head_blob` with the resolved id.
-    let entries = reader.committed_span_entries()?;
+fn load_committed(
+    repo: &gix::Repository,
+    span_root: &str,
+    current: &CurrentReader,
+    head: &HeadObservation,
+) -> Result<CommittedSpans> {
+    let mut entries = BTreeMap::new();
+    if let Some((mode, oid)) = current.tree_entry(head.tree, span_root)?
+        && mode.is_tree()
+    {
+        collect_committed_entries(repo, current, oid, "", &mut entries)?;
+    }
+    let mut memo = ImmutableMemo::open(repo);
     let mut blobs = Vec::with_capacity(entries.len());
     let mut spans = Vec::with_capacity(entries.len());
-    for (name, (mode, oid)) in &entries {
+    for (name, (mode, oid)) in entries {
         if mode.is_blob() {
             blobs.push(SpanBlobIdentity {
                 path: format!("{span_root}/{name}"),
                 blob: oid.to_string(),
             });
         }
-        let file = match reader.read_head_blob(name, *oid) {
-            Ok(file) => file,
-            // A partial clone holds HEAD's trees but not necessarily its
-            // blobs (`--filter=blob:none`, `tree:<n>`); git fetches those
-            // lazily on demand while gix never does. A declaration whose
-            // blob cannot be read is *unavailable*, not absent: exclude it
-            // from the committed corpus exactly as a parse-poisoned span is
-            // excluded — one unreadable span never blanks the corpus — and
-            // let the effective-view loaders answer for it from whatever
-            // layers they can read. Gated on the repository's own promisor
-            // markers so a genuinely damaged store still fails loudly.
+        if let Some(Observation::Declaration(summary)) = memo
+            .as_ref()
+            .and_then(|m| m.lookup(&oid.to_string(), ObservationKind::Declaration))
+        {
+            spans.push((name, summary));
+            continue;
+        }
+        let loaded = (|| {
+            let bytes = current.read(oid, gix::object::Kind::Blob)?;
+            let text = std::str::from_utf8(&bytes)
+                .map_err(|e| crate::Error::Parse(format!("object not utf-8: {e}")))?;
+            crate::perf::record_list_layer_read();
+            crate::perf::record_list_bytes_parsed(text.len() as u64);
+            let file = crate::span_file::SpanFile::parse(text).map_err(|e| match e {
+                git_span_core::Error::SpanConflict(kind) => crate::Error::SpanConflict {
+                    span: name.clone(),
+                    kind,
+                },
+                other => other.into(),
+            })?;
+            let summary = DeclarationSummary {
+                anchor_paths: file.anchors.iter().map(|a| a.path.to_string()).collect(),
+                copy_detection: file.config.copy_detection,
+            };
+            Ok::<_, crate::Error>((summary, bytes))
+        })();
+        let (summary, bytes) = match loaded {
+            Ok(value) => value,
             Err(_) if crate::git::promisor_active(repo) => continue,
             Err(e) => return Err(e),
         };
-        spans.push(crate::types::span_from_file(name, &file));
+        if bytes.len() <= MAX_ENTRY_BYTES
+            && let Some(memo) = &mut memo
+        {
+            memo.admit(
+                &oid.to_string(),
+                &Observation::Declaration(summary.clone()),
+                &[Witness {
+                    oid: oid.to_string(),
+                    tree: false,
+                    bytes,
+                }],
+            );
+        }
+        spans.push((name, summary));
     }
     Ok(CommittedSpans { blobs, spans })
+}
+
+fn collect_committed_entries(
+    repo: &gix::Repository,
+    current: &CurrentReader,
+    root: gix::ObjectId,
+    prefix: &str,
+    entries: &mut BTreeMap<String, (gix::objs::tree::EntryMode, gix::ObjectId)>,
+) -> Result<()> {
+    let bytes = current.read(root, gix::object::Kind::Tree)?;
+    for entry in gix::objs::TreeRefIter::from_bytes(&bytes, repo.object_hash()) {
+        let entry =
+            entry.map_err(|e| crate::Error::Git(format!("declaration tree decode: {e}")))?;
+        let name = entry.filename.to_string();
+        if !crate::span_file_reader::is_span_name_segment(&name) {
+            continue;
+        }
+        let path = if prefix.is_empty() {
+            name
+        } else {
+            format!("{prefix}/{name}")
+        };
+        if entry.mode.is_tree() {
+            collect_committed_entries(repo, current, entry.oid.to_owned(), &path, entries)?;
+        } else {
+            entries.insert(path, (entry.mode, entry.oid.to_owned()));
+        }
+    }
+    Ok(())
 }
 
 /// The uncommitted (worktree-only) span corpus: span files present on the
@@ -478,7 +549,11 @@ fn load_uncommitted(
     committed: &CommittedSpans,
 ) -> Result<UncommittedSpans> {
     let reader = SpanFileReader::new(repo, span_root.to_string());
-    let committed_names: BTreeSet<&str> = committed.spans.iter().map(|s| s.name.as_str()).collect();
+    let committed_names: BTreeSet<&str> = committed
+        .spans
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect();
     let mut file_paths = Vec::new();
     let mut anchored: BTreeSet<String> = BTreeSet::new();
     let mut copy_detection = CopyDetection::Off;
@@ -508,21 +583,14 @@ fn load_uncommitted(
 // Tree / HEAD identities
 // ---------------------------------------------------------------------------
 
-/// Tree object id of the `HEAD` commit — the source tree content identity.
-fn source_tree_oid(repo: &gix::Repository) -> Result<String> {
-    let head = repo
-        .head_commit()
-        .map_err(|e| crate::Error::Git(format!("capture head commit: {e}")))?;
-    let tree = head
-        .tree_id()
-        .map_err(|e| crate::Error::Git(format!("capture head tree: {e}")))?;
-    Ok(tree.detach().to_string())
-}
-
-/// Tree object id of the span root at `HEAD`, or the empty-tree sentinel when
-/// the span root is absent at `HEAD`.
-fn span_subtree_oid(repo: &gix::Repository, span_root: &str) -> Result<String> {
-    match crate::git::tree_entry_at(repo, "HEAD", Path::new(span_root))? {
+/// Tree identity obtained through freshly read declaration ancestors. Missing
+/// declarations use the existing sentinel only after current ancestor decoding.
+fn span_subtree_oid(
+    current: &CurrentReader,
+    root: gix::ObjectId,
+    span_root: &str,
+) -> Result<String> {
+    match current.tree_entry(root, span_root)? {
         Some((mode, oid)) if mode.is_tree() => Ok(oid.to_string()),
         _ => Ok(EMPTY_TREE_HEX.to_string()),
     }
@@ -991,15 +1059,17 @@ fn os_str_bytes(s: &std::ffi::OsStr) -> std::borrow::Cow<'_, [u8]> {
 /// committed at `HEAD` that can govern an anchored path: the repo root plus
 /// each ancestor directory of an anchored path. A `None` records "probed,
 /// absent" so a later addition of a `.gitattributes` changes the digest.
-fn attributes_digest(repo: &gix::Repository, anchored: &BTreeSet<String>) -> [u8; 32] {
+fn attributes_digest(
+    current: &CurrentReader,
+    root: gix::ObjectId,
+    anchored: &BTreeSet<String>,
+) -> Result<[u8; 32]> {
     let mut attrs: BTreeMap<String, Option<String>> = BTreeMap::new();
-    let head_tree = head_root_tree(repo);
-    let head_tree = head_tree.as_ref();
-    collect_gitattributes(head_tree, Path::new(".gitattributes"), &mut attrs);
+    collect_gitattributes(current, root, Path::new(".gitattributes"), &mut attrs)?;
     for p in anchored {
         let mut dir = Path::new(p).parent();
         while let Some(d) = dir {
-            collect_gitattributes(head_tree, &d.join(".gitattributes"), &mut attrs);
+            collect_gitattributes(current, root, &d.join(".gitattributes"), &mut attrs)?;
             dir = d.parent();
         }
     }
@@ -1018,41 +1088,25 @@ fn attributes_digest(repo: &gix::Repository, anchored: &BTreeSet<String>) -> [u8
             }
         }
     }
-    *h.finalize().as_bytes()
-}
-
-/// HEAD's root tree, peeled once for a whole [`attributes_digest`] pass.
-///
-/// [`crate::git::tree_entry_at`] re-parses the revspec, reloads the commit and
-/// re-peels to the tree on *every* call, so calling it once per candidate
-/// `.gitattributes` re-walked HEAD once per ancestor directory — the same shape
-/// as the card main-157 F4 regression fixed in
-/// [`crate::resolver::dirty::head_blob_path_map`]. `None` (an unresolvable or
-/// unborn HEAD) leaves every lookup absent, exactly as the per-call form
-/// returned `Ok(None)` when `rev_parse_single` failed.
-fn head_root_tree(repo: &gix::Repository) -> Option<gix::Tree<'_>> {
-    repo.rev_parse_single("HEAD")
-        .ok()?
-        .object()
-        .ok()?
-        .peel_to_tree()
-        .ok()
+    Ok(*h.finalize().as_bytes())
 }
 
 fn collect_gitattributes(
-    head_tree: Option<&gix::Tree<'_>>,
+    current: &CurrentReader,
+    root: gix::ObjectId,
     path: &Path,
     out: &mut BTreeMap<String, Option<String>>,
-) {
+) -> Result<()> {
     let key = path.to_string_lossy().replace('\\', "/");
     if out.contains_key(&key) {
-        return;
+        return Ok(());
     }
-    let oid = match head_tree.and_then(|t| t.lookup_entry_by_path(path).ok().flatten()) {
-        Some(e) if e.mode().is_blob() => Some(e.object_id().to_string()),
+    let oid = match current.tree_entry(root, &key)? {
+        Some((mode, oid)) if mode.is_blob() => Some(oid.to_string()),
         _ => None,
     };
     out.insert(key, oid);
+    Ok(())
 }
 
 /// Digest of `core.autocrlf`/`core.eol`/`core.safecrlf` (missing distinguished
@@ -1272,32 +1326,34 @@ fn worktree_path_state(workdir: &Path, rel: &str) -> PathState {
 /// Global sparse/promisor/LFS availability proofs from the resolver's existing
 /// signals. Per-path proofs are not computed by any subsystem today (see module
 /// docs) and are left empty.
-fn availability(repo: &gix::Repository) -> AvailabilityProof {
-    AvailabilityProof {
-        lfs_installed: head_root_gitattributes_declares_lfs(repo),
+fn availability(
+    repo: &gix::Repository,
+    current: &CurrentReader,
+    root: gix::ObjectId,
+) -> Result<AvailabilityProof> {
+    Ok(AvailabilityProof {
+        lfs_installed: head_root_gitattributes_declares_lfs(current, root)?,
         sparse_active: crate::git::common_dir(repo)
             .join("info")
             .join("sparse-checkout")
             .exists(),
         promisor_active: crate::git::promisor_active(repo),
         paths: Vec::new(),
-    }
+    })
 }
 
 /// Whether HEAD's root `.gitattributes` blob declares `filter=lfs`. A real,
 /// deterministic, non-forking signal (unlike a `git lfs version` probe).
-fn head_root_gitattributes_declares_lfs(repo: &gix::Repository) -> bool {
-    match crate::git::tree_entry_at(repo, "HEAD", Path::new(".gitattributes")) {
-        Ok(Some((mode, oid))) if mode.is_blob() => match repo.find_object(oid) {
-            Ok(obj) => obj
-                .into_blob()
-                .detach()
-                .data
-                .windows(10)
-                .any(|w| w == b"filter=lfs"),
-            Err(_) => false,
-        },
-        _ => false,
+fn head_root_gitattributes_declares_lfs(
+    current: &CurrentReader,
+    root: gix::ObjectId,
+) -> Result<bool> {
+    match current.tree_entry(root, ".gitattributes")? {
+        Some((mode, oid)) if mode.is_blob() => Ok(current
+            .read(oid, gix::object::Kind::Blob)?
+            .windows(10)
+            .any(|w| w == b"filter=lfs")),
+        _ => Ok(false),
     }
 }
 
