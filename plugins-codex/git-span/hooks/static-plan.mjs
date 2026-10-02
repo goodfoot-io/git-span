@@ -9795,9 +9795,13 @@ function inspectInput(input) {
     const wrapper = args[0]?.split("/").at(-1);
     if (leadingAssignments.some((arg) => /^PATH=/.test(arg)) || ["export", "env"].includes(wrapper ?? "") && args.some((arg) => /^PATH=/.test(arg)) || args[0] === "unset" && args.includes("PATH") || wrapper === "env" && (args.includes("-i") || args.includes("--ignore-environment")))
       return "observable instrumentation PATH override is unsupported";
-    for (let index = 0; index < args.length; ) {
+    let executableIndex = 0;
+    for (; executableIndex < args.length; ) {
+      let index = executableIndex;
       const name = args[index]?.split("/").at(-1);
-      if (!["command", "exec", "env", "hash"].includes(name ?? "")) break;
+      if (name === "export" && args.slice(index + 1).some((arg) => /^PATH=/.test(arg)) || name === "unset" && args.slice(index + 1).includes("PATH"))
+        return "observable instrumentation PATH override is unsupported";
+      if (!["builtin", "command", "exec", "env", "hash"].includes(name ?? "")) break;
       if (name === "hash" && args.length > index + 1)
         return "observable executable-search mutation bypasses receipt instrumentation";
       index++;
@@ -9821,8 +9825,9 @@ function inspectInput(input) {
         }
         break;
       }
+      executableIndex = index;
     }
-    const executable = ["command", "exec", "env"].includes(wrapper ?? "") ? args.find((arg) => isAbsolute8(arg) && /(?:^|\/)git$/.test(arg)) : args[0];
+    const executable = args[executableIndex];
     if (executable !== void 0 && isAbsolute8(executable) && /(?:^|\/)git$/.test(executable))
       return "absolute Git invocation bypasses receipt instrumentation";
   }

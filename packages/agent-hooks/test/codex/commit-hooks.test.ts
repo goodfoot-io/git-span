@@ -296,6 +296,16 @@ sys.exit(child.wait())
 
 describe('emitted receipt envelope and executable-search controls', () => {
   it.each([
+    'builtin -- command -p git',
+    'builtin -- hash -p /usr/bin/git git; git',
+    'builtin -- export PATH=/usr/bin; git',
+    'builtin builtin command -p git',
+    'command builtin command -p git',
+    'builtin command env --unset=PATH git',
+    'command builtin -- export PATH=/usr/bin; git',
+    'builtin command -p git',
+    'builtin hash -p /usr/bin/git git; git',
+    'builtin export PATH=/usr/bin; git',
     'command -p git',
     'env -u PATH git',
     'env --unset=PATH git',
@@ -440,4 +450,22 @@ describe('emitted receipt envelope and executable-search controls', () => {
     expect(runRealShell(repo, command).exitCode).toBe(0);
     expect(notes(repo)).toEqual([]);
   });
+});
+
+describe('supported emitted explicit builtin dispatch', () => {
+  it.each(['builtin -- command -- git', 'command builtin -- command -- git'])(
+    'records ordinary %s without receipt diagnostics',
+    (prefix) => {
+      const repo = fixture();
+      const log = join(repo.home, 'supported-builtin.jsonl');
+      repo.env['AGENT_HOOKS_LOG_FILE'] = log;
+      const command = `${prefix} commit -q --allow-empty -m supported-builtin`;
+      const input = envelope(repo, 'supported-builtin', command);
+      const updated = prepare(repo, input);
+      expect(runRealShell(repo, updated['command'] as string).exitCode).toBe(0);
+      post(repo, input, updated, { exit_code: 0 });
+      expect(notes(repo)).toHaveLength(1);
+      expect(readFileSync(log, 'utf8')).not.toContain('git-span commit receipts:');
+    }
+  );
 });

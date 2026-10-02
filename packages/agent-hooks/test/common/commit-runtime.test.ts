@@ -698,6 +698,16 @@ describe('accepted envelope and executable-search boundaries', () => {
   it.each(
     (['claude', 'codex'] as const).flatMap((host) =>
       [
+        'builtin -- command -p git',
+        'builtin -- hash -p /usr/bin/git git; git',
+        'builtin -- export PATH=/usr/bin; git',
+        'builtin builtin command -p git',
+        'command builtin command -p git',
+        'builtin command env --unset=PATH git',
+        'command builtin -- export PATH=/usr/bin; git',
+        'builtin command -p git',
+        'builtin hash -p /usr/bin/git git; git',
+        'builtin export PATH=/usr/bin; git',
         'command -p git',
         'env -u PATH git',
         'env --unset=PATH git',
@@ -717,5 +727,25 @@ describe('accepted envelope and executable-search boundaries', () => {
     expect(warnings.length).toBeGreaterThan(0);
     expect(shell(command).status).toBe(0);
     expect(notes().notes).toEqual([]);
+  });
+});
+
+describe('ordinary explicit builtin dispatch', () => {
+  it.each(
+    (['claude', 'codex'] as const).flatMap((host) =>
+      ['builtin -- command -- git', 'command builtin -- command -- git'].map((prefix) => ({ host, prefix }))
+    )
+  )('$host records supported $prefix and restores the original input without warnings', async ({ host, prefix }) => {
+    const command = `${prefix} commit -q --allow-empty -m supported-builtin`;
+    const input = request(command, { host });
+    const result = await enrolled(input);
+    expect(shell(result.updatedInput.command as string).status).toBe(0);
+    expect(receipts(input)).toHaveLength(1);
+    expect(await terminalCommitInvocation(input, options, logger)).toMatchObject({
+      acknowledged: 1,
+      original: { input: input.toolInput, command }
+    });
+    expect(notes().notes).toHaveLength(1);
+    expect(warnings).toEqual([]);
   });
 });

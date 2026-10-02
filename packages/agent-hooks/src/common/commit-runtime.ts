@@ -443,9 +443,16 @@ function inspectInput(input: Readonly<Record<string, unknown>>): string | null {
     )
       return 'observable instrumentation PATH override is unsupported';
     // Walk visible wrapper prefixes, rather than treating their arguments as ordinary Git argv.
-    for (let index = 0; index < args.length; ) {
+    let executableIndex = 0;
+    for (; executableIndex < args.length; ) {
+      let index = executableIndex;
       const name = args[index]?.split('/').at(-1);
-      if (!['command', 'exec', 'env', 'hash'].includes(name ?? '')) break;
+      if (
+        (name === 'export' && args.slice(index + 1).some((arg) => /^PATH=/.test(arg))) ||
+        (name === 'unset' && args.slice(index + 1).includes('PATH'))
+      )
+        return 'observable instrumentation PATH override is unsupported';
+      if (!['builtin', 'command', 'exec', 'env', 'hash'].includes(name ?? '')) break;
       if (name === 'hash' && args.length > index + 1)
         return 'observable executable-search mutation bypasses receipt instrumentation';
       index++;
@@ -479,10 +486,9 @@ function inspectInput(input: Readonly<Record<string, unknown>>): string | null {
         }
         break;
       }
+      executableIndex = index;
     }
-    const executable = ['command', 'exec', 'env'].includes(wrapper ?? '')
-      ? args.find((arg) => isAbsolute(arg) && /(?:^|\/)git$/.test(arg))
-      : args[0];
+    const executable = args[executableIndex];
     if (executable !== undefined && isAbsolute(executable) && /(?:^|\/)git$/.test(executable))
       return 'absolute Git invocation bypasses receipt instrumentation';
   }
