@@ -852,3 +852,17 @@ fn exe_digest_memo_recomputes_when_mtime_changes() {
         "the recomputed digest must overwrite the stale row"
     );
 }
+
+// Replacement metadata must never collapse to the identity of an empty namespace.
+#[test]
+fn replacement_broken_metadata_fails_closed() {
+    let (td, _repo) = repo_with_span();
+    let dir = td.path().join(".git/refs/replace");
+    std::fs::create_dir_all(&dir).expect("mkdir replacement namespace");
+    std::fs::write(dir.join("broken"), b"not-an-object-id\n").expect("write broken ref");
+    let repo = reopen(&td);
+    assert!(
+        capture_state_token(&repo, SPAN_ROOT, EngineOptions::full()).is_err(),
+        "malformed replacement metadata must prevent a trusted state token"
+    );
+}
