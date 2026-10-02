@@ -7,7 +7,7 @@ Once installed (see [Getting started](/docs/getting-started)), the git-span plug
 
 - **A touch hook** — surfaces existing spans after supported reads and writes and repairs mechanically safe positional drift inline.
 - **Static planning and lifecycle hooks** — capture bounded pre-state for supported writes, deduplicate context, warm up the CLI, and clean up session state.
-- **Three skills** — `git-span` for declaration, inspection, and focused reconciliation; `reconcile` for multi-span triage; and `hook-effect-analysis` for measuring hook emissions.
+- **Four skills** — `git-span` for declaration, inspection, and focused reconciliation; `cover-commits` for reviewing noted commits and consuming their notes after validated repairs; `reconcile` for multi-span triage; and `hook-effect-analysis` for measuring hook emissions.
 - **An expert subagent where supported** — Claude Code, Codex, and OpenCode ship one; Antigravity ships skills and hooks without a separate agent artifact.
 
 The integrations use the same scriptable `git span` CLI available in a terminal or CI.
@@ -46,7 +46,7 @@ Loading the plugin disables CLI update checks for the session. Set `OPENCODE_GIT
 
 ## Antigravity specifics
 
-Antigravity installs three skills and the workflow hooks without a marketplace or separate trust-review step. Empty `PreToolUse` responses mean denial on this host, so the retained pre-tool handlers return explicit allow decisions.
+Antigravity installs four skills and the workflow hooks without a marketplace or separate trust-review step. Empty `PreToolUse` responses mean denial on this host, so the retained pre-tool handlers return explicit allow decisions.
 
 Only `run_command` has a pinned tool contract. Dedicated file-edit tools receive no touch attribution; explicit `git span drift` checks or CI verify their changes.
 

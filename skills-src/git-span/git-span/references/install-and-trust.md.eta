@@ -124,7 +124,7 @@ instead of the project's `.opencode/`):
 npx opencode-git-span install --global
 ```
 
-This copies the three skills (`git-span`, `hook-effect-analysis`, and
+This copies the skills (`git-span`, `cover-commits`, `hook-effect-analysis`, and
 `reconcile`) into the project's `.opencode/skills/<name>/` and the expert
 agent into `.opencode/agents/expert.md`; with `--global` the same layout lands
 under `~/.config/opencode/` instead (`~/.config/opencode/skills/<name>/`,

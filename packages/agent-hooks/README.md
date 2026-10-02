@@ -16,19 +16,19 @@ These hooks are advisory coverage, not the enforcement boundary. Human changes, 
 
 ### Claude Code
 
-Claude Code observes `Read`, `Edit`, `Write`, and `Bash`. The plugin includes the three Git Span skills plus an expert agent.
+Claude Code observes `Read`, `Edit`, `Write`, and `Bash`. The plugin includes four Git Span skills plus an expert agent.
 
 ### OpenAI Codex
 
-Codex observes `apply_patch` and its shell/exec tool family. Installing the plugin does not activate its hooks until the user reviews and trusts them through `/hooks`. The plugin includes the three skills plus an expert agent.
+Codex observes `apply_patch` and its shell/exec tool family. Installing the plugin does not activate its hooks until the user reviews and trusts them through `/hooks`. The plugin includes four skills plus an expert agent.
 
 ### OpenCode
 
-OpenCode observes `bash`, `read`, `edit`, `write`, and `apply_patch`; its experimental code-mode `execute` tool is outside the integration. Hooks run in-process. Host-level failures that never reach the after hook receive no attribution. The npm plugin installer materializes three skills and an expert agent on disk.
+OpenCode observes `bash`, `read`, `edit`, `write`, and `apply_patch`; its experimental code-mode `execute` tool is outside the integration. Hooks run in-process. Host-level failures that never reach the after hook receive no attribution. The npm plugin installer materializes four skills and an expert agent on disk.
 
 ### Antigravity
 
-Antigravity observes the pinned `run_command` contract. Dedicated file-edit tools are outside the integration; explicit `git span drift` checks verify their changes. Tool calls are joined through disk-backed state and context is delivered after the invocation as an ephemeral message. The plugin ships three skills and no separate expert-agent artifact.
+Antigravity observes the pinned `run_command` contract. Dedicated file-edit tools are outside the integration; explicit `git span drift` checks verify their changes. Tool calls are joined through disk-backed state and context is delivered after the invocation as an ephemeral message. The plugin ships four skills and no separate expert-agent artifact.
 
 ## Development
 

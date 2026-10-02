@@ -21,19 +21,38 @@ git span notes show 1 --format json
 git span notes remove 1 --format json
 ```
 
-`notes add` accepts one arbitrary UTF-8 JSON value, including scalars and `null`, from its positional argument or nonterminal stdin. Omitted input on a terminal fails immediately. Empty or invalid input, input over 16 MiB, excessive nesting, and nonempty stdin combined with an argument fail before storage mutation. Empty piped stdin with an argument is allowed. Commit expressions must peel to an unambiguous commit; tree/blob IDs and options are refused. The stored full SHA stays fixed when a branch moves.
+`notes add` accepts one UTF-8 JSON value (including scalars/null) from its
+argument or nonterminal stdin, bounded to 16 MiB and limited nesting. Missing,
+empty, invalid, or conflicting input fails before mutation; empty piped stdin
+with an argument is allowed. Revisions must peel unambiguously to commits.
+The stored full SHA remains fixed when branches move or history is rewritten.
 
-IDs are repository-wide positive integers through `9007199254740991`. Allocation is atomic across linked worktrees and processes; IDs survive restart and are never reused after removal. An identical document still attached to the same SHA returns its existing ID. Identity sorts object keys recursively, decodes strings, preserves array order, and uses the parser's arbitrary-precision numeric representation: `1` and `1.0` differ; equivalent exponent spellings normalized by the JSON parser deduplicate. Duplicate object keys use their last value. Re-adding a removed association receives a new ID.
+IDs are positive clone-wide integers through `9007199254740991`, atomic across
+linked worktrees, persistent, and never reused. An identical still-present
+SHA/document returns its existing ID. Identity recursively sorts object keys,
+decodes strings, preserves array order and parsed numeric representation
+(`1` differs from `1.0`); duplicate keys use their last value. Re-adding a removed
+association allocates a new ID.
 
-Unfiltered `notes list` returns every record in ascending ID order, including unreachable commits. A single revision selects its reachable history; two-dot and three-dot ranges use native Git sets and omitted-endpoint HEAD defaults. `--exact` requires one revision and returns only that commit. A list is a read snapshot: consumers remove the returned IDs individually, so later attachments survive.
+Lists are ascending-ID snapshots. No revision includes unreachable commits;
+one revision selects reachable history. Two-/three-dot ranges use native Git
+sets and omitted-endpoint HEAD defaults. `--exact` requires one revision.
+Remove captured IDs individually; later attachments survive.
 
-Every leaf accepts `--format human|json` (default human). JSON stdout contains one envelope:
+Every leaf accepts `--format human|json` (default human). JSON emits one envelope:
 
 ```json
 {"schema_version":1,"operation":"add","notes":[{"id":1,"commit_sha":"1111111111111111111111111111111111111111","document":null}]}
 ```
 
-Add/show/remove return one complete record; remove returns what it deleted. Empty lists return `"notes":[]`. Missing or invalid IDs and storage failures exit nonzero without a success envelope. Documents and allocation state live in `<git-common-dir>/span/notes.db`, independently of the disposable resolver cache. They remain until explicitly removed. Notes are local to the clone; they provide no remote synchronization or processing lifecycle. See [Storage model](./storage-model.md#commit-associated-notes).
+Add/show/remove return one record; remove commits deletion before returning it.
+Empty lists return `"notes":[]`. Missing/invalid IDs and storage errors fail
+without a success envelope. Notes remain until removed and have no claims,
+leases, synchronization, or automatic coverage classification. The `cover-commits`
+skill defines the coverage-marker convention and review/validation/commit gate
+before consumption; arbitrary JSON notes must not be treated as coverage work.
+Storage is clone-local, independent of resolver caches and span roots:
+[Storage model](./storage-model.md#commit-associated-notes).
 
 ## Anchor grammar
 
@@ -424,7 +443,7 @@ with 2+ anchors on one file.
 
 A span name must be kebab-case segments separated by `/`. The following
 tokens are reserved and cannot be used as a span name (so the bare
-`git span <name>` form is unambiguous): `add`, `remove`, `commit`, `why`,
+`git span <name>` form is unambiguous): `notes`, `add`, `remove`, `commit`, `why`,
 `restore`, `revert`, `delete`, `move`, `drift`, `tree`, `fetch`, `push`,
 `doctor`, `log`, `config`, `list`, `help`, `pre-commit`, `advice`, `rewrite`,
 `hooks`, `merge-driver`, `history`. `show` is **not** reserved — `git span add

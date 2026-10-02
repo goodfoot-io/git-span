@@ -1,5 +1,5 @@
 packages/agent-hooks/src/common/touch-core.ts#L880-L909 rk64:2ebd57907c32ae1e
-packages/website/content/docs/agent-integration.mdx rk64:9197551dec0ac460
+packages/website/content/docs/agent-integration.mdx rk64:d99b118de89b6572
 plugins-antigravity/git-span/skills/git-span/references/understanding-hook-output.md rk64:38d4d58585cd33d7
 plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md rk64:829ec20f2ba6420a
 plugins-codex/git-span/skills/git-span/references/understanding-hook-output.md rk64:bd8b497758f1aaa8

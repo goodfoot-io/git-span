@@ -2,14 +2,9 @@
 
 # Finding span candidates by mining git history
 
-An *implicit semantic dependency* is a load-bearing relationship between two
-files that the type system, test suite, build graph, or generator tooling do
-not enforce. This
-section mines git history to surface those pairs, combining 13 signals
-(co-change, lagged co-change, defect propagation, churn correlation,
-cross-language symbol overlap, branch topology, reviewer overlap, and more)
-into a unified ranked shortlist. The pairs at the top are the strongest span
-candidates: real coupling that is currently invisible.
+Mine history for broad discovery of relationships unenforced by types, tests,
+builds, or generators. For pending commit notes, use `$git-span:cover-commits`;
+direct commit evidence needs no statistical co-change threshold.
 
 ## Scripts
 

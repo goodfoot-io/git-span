@@ -25,6 +25,9 @@ git log --oneline -- .span/<name>
 git show <commit>:.span/<name>
 ```
 
+Commit notes are clone-local and shared by linked worktrees; push/pull do not
+transfer them. A fresh CI clone cannot inspect a developer's pending notes.
+
 ## Advisory report (no gating)
 
 ```bash
@@ -58,6 +61,8 @@ The touch hooks report existing spans after supported reads and writes. Human
 edits, inactive hooks, unsupported tools, and host-level failures can bypass
 that coverage. Run `git span drift` before merge to check every existing span
 regardless of how an edit was made.
+Zero drift validates existing declarations, not undeclared couplings or completion
+of noted commit reviews; use `$cover-commits` for those.
 
 ```bash
 git span drift                # exits 1 on any drift, 0 when clean

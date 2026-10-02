@@ -2,7 +2,7 @@
 title: Testing Claude skills with a multi-armed bandit
 summary: How the git-span-v2 skill was selected — five SKILL.md variants raced with two-level Thompson sampling over headless haiku trials in deterministic scenario repos, graded pass/fail by terminal-state graders and scored by inverse transcript size — plus the methodology corrections (scenario-matched blocks, transcript-autopsy breeding, pooled sign tests) and how to rerun the archived harness for the next skill experiment.
 aliases: [skill bandit, bandit skill testing, git-span-v2 methodology, skill A/B testing]
-links-reviewed: 3
+links-reviewed: 4
 ---
 
 # Testing Claude skills with a multi-armed bandit
@@ -84,7 +84,7 @@ require a clean tree will otherwise fail correct work (this was a live bug; see
   trust-boundary violations (re-verifying `drift` output via `git log`/`git show`,
   ~50k wasted chars per occurrence), unbatched history calls, and silent router misses in
   multi-file skills. The bred-in countermeasures are visible in the winner's dispatch
-  block — [SKILL.md § Where to go next](../../plugins-claude/git-span/skills/git-span/SKILL.md#L120-L150) —
+  block — [SKILL.md § Where to go next](../../plugins-claude/git-span/skills/git-span/SKILL.md#L123-L154) —
   which routes on countable conditions with a catch-all else-branch.
 
 ## Outcome

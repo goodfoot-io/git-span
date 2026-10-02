@@ -4,6 +4,7 @@
       "name": "git-span",
       "skillsSrc": "skills-src/git-span",
       "skills": [
+        "cover-commits",
         "git-span",
         "hook-effect-analysis",
         "reconcile"
@@ -45,14 +46,14 @@
       ],
       "lintBaseline": {
         "diagnostics": [
-          "git-span/SKILL.md:139:skill-relative-path",
+          "git-span/SKILL.md:143:skill-relative-path",
           "git-span/references/finding-span-candidates.md.eta:14:skill-relative-path",
           "git-span/references/finding-span-candidates.md.eta:15:skill-relative-path",
           "git-span/references/finding-span-candidates.md.eta:16:skill-relative-path",
           "git-span/references/finding-span-candidates.md.eta:17:skill-relative-path",
-          "git-span/references/finding-span-candidates.md:81:skill-relative-path",
-          "git-span/references/finding-span-candidates.md:83:skill-relative-path",
-          "git-span/references/finding-span-candidates.md:84:skill-relative-path",
+          "git-span/references/finding-span-candidates.md:76:skill-relative-path",
+          "git-span/references/finding-span-candidates.md:78:skill-relative-path",
+          "git-span/references/finding-span-candidates.md:79:skill-relative-path",
           "git-span/references/install-and-trust.md:37:skill-relative-path",
           "git-span/references/install-and-trust.md:39:skill-relative-path",
           "git-span/references/install-and-trust.md:42:plugin-root-variable",

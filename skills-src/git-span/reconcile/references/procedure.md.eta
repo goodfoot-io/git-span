@@ -10,6 +10,13 @@ message to the owner if you are a delegated worker.
 Invoke <%= it.skillRef('git-span:git-span') %> only when a topic exceeds what is here; navigate to
 the named section.
 
+**Embedded coverage mode:** the coverage owner controls all staging and commits,
+including stage 1, and consumes notes only after its complete review. Scope every
+mutation to owned spans/source repairs; never run global `--fix` over unrelated
+work. Delegates perform stage 3 only. Return validation requirements and diffs to
+the owner instead of executing stage 4's commit. Zero remaining drift completes
+reconciliation only, not coverage review.
+
 ---
 
 ## Stage 1 — Prelude
@@ -17,13 +24,10 @@ the named section.
 The only mutating research step.
 
 First scan the bare drift output for `deleted in the working tree` anchors that
-are renames in progress: a deletion at the old path plus a new file in `git
-status --short`, matched by content (`git hash-object <new>` = `git rev-parse
-HEAD:<old>`). Stage both halves (`git add <new> <old>`) — the resolver reads a
-staged rename as `moved to <path>` and `--fix` clears it without a commit — and
-commit unless a review-before-commit gate forbids. Left unstaged it is invisible
-to rename detection (no git data records the untracked destination) and needs a
-manual re-anchor. Only a read-only worktree forces that manual pass.
+are renames in progress: old-path deletion plus a new path in `git status --short`,
+matched by content (`git hash-object <new>` = `git rev-parse HEAD:<old>`). The owner
+may stage both owned paths; embedded coverage defers the commit. Delegates never
+stage. Staged renames resolve as `moved to <path>`; otherwise re-anchor manually.
 
 `--fix` never clears a deletion — stage 2's STOP case governs those — but
 staging first makes the classification authoritative (`deleted in the index`;
@@ -35,9 +39,9 @@ copy. If it did, `git span remove` the wrong address and `add` the right one.
 git span drift --fix
 ```
 
-If `--fix` changes `.span/`, commit that refresh in one commit with any
-uncommitted anchored source it records — list every path it records in `-o`. If
-the source is already committed, commit `.span/` alone.
+Standalone: commit refreshed span files with every owned uncommitted source they
+record, using explicit `-o` paths. Embedded: leave repairs for the coverage owner's
+validation and commit.
 
 Remaining findings are CHANGED (beyond whitespace) and DELETED. Group them by
 span. If none remain, you are done — skip stages 2–4.

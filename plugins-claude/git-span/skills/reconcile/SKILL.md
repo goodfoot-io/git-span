@@ -6,8 +6,10 @@ description: Reconcile drifted/stale git spans surfaced by `git span drift`.
 
 <instructions>
 
-Read `./references/procedure.md` and work its four stages end to end. You own
-this reconciliation and its commit.
+Read `./references/procedure.md` and complete its four stages. You own the commit
+unless embedded in `git-span:cover-commits`; that owner retains all
+staging, validation, commits, and note consumption. Reconciliation checks existing
+spans; zero drift does not complete coverage review or authorize note removal.
 
 If stage 1 leaves more than 8 drifted anchors, also read `./references/team.md`
 and delegate stage 3 by component. Stages 1, 2, and 4 stay yours.
