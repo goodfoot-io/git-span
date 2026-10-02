@@ -866,3 +866,95 @@ fn replacement_broken_metadata_fails_closed() {
         "malformed replacement metadata must prevent a trusted state token"
     );
 }
+
+#[test]
+fn replacement_identity_survives_packing_and_detects_mutations() {
+    let (td, repo) = repo_with_span();
+    let opts = EngineOptions::full();
+    let empty = capture_state_token(&repo, SPAN_ROOT, opts).expect("empty capture");
+    assert!(empty.replace_refs.is_empty());
+    let head = repo.head_id().expect("head").to_string();
+    let tree = repo
+        .head_commit()
+        .expect("commit")
+        .tree_id()
+        .expect("tree")
+        .to_string();
+    let first = "1111111111111111111111111111111111111111";
+    let second = "2222222222222222222222222222222222222222";
+    let first_ref = format!("refs/replace/{first}");
+    let second_ref = format!("refs/replace/{second}");
+    // Create out of order and keep one unrelated ref: identities stay sorted.
+    git(td.path(), &["update-ref", &second_ref, &tree]);
+    git(td.path(), &["update-ref", &first_ref, &head]);
+    git(
+        td.path(),
+        &["update-ref", "refs/replace-other/ignored", &head],
+    );
+    let loose = capture_state_token(&reopen(&td), SPAN_ROOT, opts).expect("loose capture");
+    assert_eq!(
+        loose.replace_refs,
+        vec![format!("{first}:{head}"), format!("{second}:{tree}")]
+    );
+    assert_ne!(empty.canonical_key_digest(), loose.canonical_key_digest());
+    assert_eq!(
+        revalidate(&reopen(&td), SPAN_ROOT, opts, &empty).expect("addition revalidation"),
+        Revalidation::Changed {
+            field: "replace_refs"
+        }
+    );
+    git(td.path(), &["pack-refs", "--all", "--prune"]);
+    let packed = capture_state_token(&reopen(&td), SPAN_ROOT, opts).expect("packed capture");
+    assert_eq!(
+        loose, packed,
+        "packing must preserve the entire token identity"
+    );
+    // A loose update shadows the packed identity, and symbolic refs resolve
+    // to the same object while retaining their original replacement name.
+    git(td.path(), &["symbolic-ref", &first_ref, "refs/heads/main"]);
+    let symbolic = capture_state_token(&reopen(&td), SPAN_ROOT, opts).expect("symbolic capture");
+    assert_eq!(packed, symbolic);
+    git(td.path(), &["update-ref", "--no-deref", &first_ref, &tree]);
+    let changed = capture_state_token(&reopen(&td), SPAN_ROOT, opts).expect("changed capture");
+    assert_eq!(
+        changed.replace_refs,
+        vec![format!("{first}:{tree}"), format!("{second}:{tree}")]
+    );
+    assert_ne!(
+        packed.canonical_key_digest(),
+        changed.canonical_key_digest()
+    );
+    assert_eq!(
+        revalidate(&reopen(&td), SPAN_ROOT, opts, &packed).expect("change revalidation"),
+        Revalidation::Changed {
+            field: "replace_refs"
+        }
+    );
+    git(td.path(), &["update-ref", "-d", &first_ref]);
+    git(td.path(), &["update-ref", "-d", &second_ref]);
+    let deleted = capture_state_token(&reopen(&td), SPAN_ROOT, opts).expect("deleted capture");
+    assert_eq!(empty, deleted);
+    assert_eq!(
+        revalidate(&reopen(&td), SPAN_ROOT, opts, &changed).expect("deletion revalidation"),
+        Revalidation::Changed {
+            field: "replace_refs"
+        }
+    );
+}
+
+#[test]
+fn replacement_unresolvable_targets_fail_closed() {
+    let (td, _repo) = repo_with_span();
+    let dir = td.path().join(".git/refs/replace");
+    std::fs::create_dir_all(&dir).expect("mkdir replacement namespace");
+    for target in [
+        "ref: refs/heads/missing\n",
+        "3333333333333333333333333333333333333333\n",
+    ] {
+        std::fs::write(dir.join("broken"), target).expect("write unresolvable ref");
+        let repo = reopen(&td);
+        let err = capture_state_token(&repo, SPAN_ROOT, EngineOptions::full())
+            .expect_err("unresolvable replacement target must abort capture");
+        assert!(err.to_string().contains("resolve replacement ref"));
+    }
+}

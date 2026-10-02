@@ -256,7 +256,7 @@ pub(crate) fn capture_state_token_with_extra_paths(
         copy_detection,
         replace_refs: {
             let _perf = crate::perf::span("cache.capture.replace-refs");
-            replace_refs(repo)
+            replace_refs(repo)?
         },
         filters: {
             let _perf = crate::perf::span("cache.capture.filters");
@@ -546,31 +546,34 @@ fn rename_budget_u32() -> u32 {
 // Config-derived identities: replace refs, filters, attributes, normalization
 // ---------------------------------------------------------------------------
 
-/// Sorted `"<original-oid>:<replacement-oid>"` pairs from every `refs/replace/`
-/// ref. Empty when none are configured. Reuses the same `repo.references()`
-/// entry point the copy-pool walk uses.
-fn replace_refs(repo: &gix::Repository) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let Ok(platform) = repo.references() else {
-        return out;
-    };
-    let Ok(all) = platform.all() else {
-        return out;
-    };
-    for r in all.flatten() {
-        let mut r = r;
+/// Sorted "<original-oid>:<replacement-oid>" pairs from `refs/replace/`.
+///
+/// Capture intentionally records the default namespace independently of Git's
+/// replacement controls. The topology gate handles disabled processing and
+/// custom namespaces; this collector preserves the token's existing semantics.
+/// Any enumeration or resolution failure aborts capture, so uncertain metadata
+/// cannot masquerade as an empty namespace and yield a trusted cache identity.
+fn replace_refs(repo: &gix::Repository) -> Result<Vec<String>> {
+    let platform = repo
+        .references()
+        .map_err(|e| crate::Error::Git(format!("capture replacement refs: {e}")))?;
+    let refs = platform
+        .prefixed(b"refs/replace/")
+        .map_err(|e| crate::Error::Git(format!("enumerate replacement refs: {e}")))?;
+    let mut out = Vec::new();
+    for r in refs {
+        let mut r = r.map_err(|e| crate::Error::Git(format!("read replacement ref: {e}")))?;
         let name = r.name().as_bstr().to_string();
         let Some(original) = name.strip_prefix("refs/replace/") else {
             continue;
         };
-        let original = original.to_string();
-        let Ok(id) = r.peel_to_id() else {
-            continue;
-        };
+        let id = r
+            .peel_to_id()
+            .map_err(|e| crate::Error::Git(format!("resolve replacement ref `{name}`: {e}")))?;
         out.push(format!("{original}:{}", id.detach()));
     }
     out.sort();
-    out
+    Ok(out)
 }
 
 /// The `filter.<driver>.*` value names that name an executable command line
