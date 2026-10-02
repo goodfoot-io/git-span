@@ -280,3 +280,156 @@ fn notes_store_paths_use_git_common_dir() {
         crate::git::common_dir(&repo).join("span/notes.db")
     );
 }
+
+#[test]
+fn notes_private_number_key_is_an_ordinary_object() {
+    let expected = serde_json::Value::Object(serde_json::Map::from_iter([(
+        "$serde_json::private::Number".to_owned(),
+        serde_json::Value::String("123".to_owned()),
+    )]));
+    assert_eq!(
+        parsed(r#"{"$serde_json::private::Number":"123"}"#).document,
+        expected
+    );
+}
+
+#[test]
+fn notes_private_keys_preserve_source_and_reopened_storage() {
+    use serde_json::{Map, Value};
+    let object = |entries: Vec<(&str, Value)>| {
+        Value::Object(Map::from_iter(
+            entries.into_iter().map(|(k, v)| (k.to_owned(), v)),
+        ))
+    };
+    let key = "$serde_json::private::Number";
+    let marker = object(vec![(key, Value::String("123".into()))]);
+    let witnesses = vec![
+        (r#"{"$serde_json::private::Number":"123"}"#, marker.clone()),
+        (
+            r#"{"$serde_json::private::Number":"x"}"#,
+            object(vec![(key, Value::String("x".into()))]),
+        ),
+        (
+            r#"{"$serde_json::private::Number":123}"#,
+            object(vec![(key, Value::Number(123.into()))]),
+        ),
+        (
+            r#"{"x":{"$serde_json::private::Number":"123"}}"#,
+            object(vec![("x", marker.clone())]),
+        ),
+        (
+            r#"[{"$serde_json::private::Number":"123"}]"#,
+            Value::Array(vec![marker.clone()]),
+        ),
+        (
+            r#"{"$serde_json::private::Number":"123","keep":true}"#,
+            object(vec![
+                (key, Value::String("123".into())),
+                ("keep", Value::Bool(true)),
+            ]),
+        ),
+        (
+            r#"{"keep":true,"$serde_json::private::Number":"123"}"#,
+            object(vec![
+                (key, Value::String("123".into())),
+                ("keep", Value::Bool(true)),
+            ]),
+        ),
+        (
+            r#"{"$serde_json::private::RawValue":"x"}"#,
+            object(vec![(
+                "$serde_json::private::RawValue",
+                Value::String("x".into()),
+            )]),
+        ),
+        (
+            r#"{"$serde_json::private::Number":"first","$serde_json::private::Number":"last"}"#,
+            object(vec![(key, Value::String("last".into()))]),
+        ),
+    ];
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("notes.db");
+    let scalar = Store::at(&path).add(sha(), &parsed("123")).unwrap();
+    for (source, expected) in witnesses {
+        let input = parsed(source);
+        assert_eq!(input.document, expected, "positional {source}");
+        assert_eq!(
+            parse_input(None, &mut source.as_bytes(), false).unwrap(),
+            input
+        );
+        let note = Store::at(&path).add(sha(), &input).unwrap();
+        assert_ne!(note.id, scalar.id);
+        assert_eq!(Store::at(&path).show(note.id).unwrap().document, expected);
+        assert_eq!(
+            Store::at(&path)
+                .add(sha(), &parsed(&input.canonical_document))
+                .unwrap(),
+            note
+        );
+        assert!(
+            Store::at(&path)
+                .list(&Selection::All)
+                .unwrap()
+                .contains(&note)
+        );
+        assert_eq!(Store::at(&path).remove(note.id).unwrap(), note);
+        assert_eq!(Store::at(&path).show(scalar.id).unwrap(), scalar);
+    }
+    // Inject independently serialized canonical bytes to exercise stored decoding
+    // without letting the source decoder generate the expected representation.
+    let expected = object(vec![
+        (key, Value::String("x".into())),
+        ("keep", Value::Bool(true)),
+    ]);
+    let stored = serde_json::to_string(&expected).unwrap();
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute(
+            "UPDATE notes SET document = ?1, canonical_document = ?1 WHERE id = ?2",
+            rusqlite::params![stored, scalar.id.0],
+        )
+        .unwrap();
+    drop(connection);
+    assert_eq!(Store::at(&path).show(scalar.id).unwrap().document, expected);
+    assert_eq!(
+        Store::at(&path).remove(scalar.id).unwrap().document,
+        expected
+    );
+}
+
+#[test]
+fn notes_decoder_preserves_precision_duplicate_keys_and_exact_depth_boundary() {
+    use serde_json::{Number, Value};
+    for text in [
+        "1",
+        "1.0",
+        "9007199254740992",
+        "9007199254740993",
+        "1e9999",
+        "2e9999",
+    ] {
+        let expected = Value::Number(text.parse::<Number>().unwrap());
+        assert_eq!(parsed(text).document, expected);
+    }
+    assert_ne!(parsed("1"), parsed("1.0"));
+    assert_ne!(parsed("9007199254740992"), parsed("9007199254740993"));
+    assert_eq!(
+        parsed(r#"{"a":1,"a":2}"#).document,
+        Value::Object(serde_json::Map::from_iter([(
+            "a".into(),
+            Value::Number(2.into())
+        )]))
+    );
+    for (open, close) in [("[", "]"), ("{\"x\":", "}")] {
+        let accepted = format!("{}0{}", open.repeat(127), close.repeat(127));
+        let rejected = format!("{}0{}", open.repeat(128), close.repeat(128));
+        assert!(parse_input(Some(&accepted), &mut std::io::empty(), true).is_ok());
+        assert!(parse_input(Some(&rejected), &mut std::io::empty(), true).is_err());
+    }
+}
+
+#[test]
+fn notes_duplicate_members_cannot_hide_excessive_nesting() {
+    let source = format!("{{\"a\":{}0{},\"a\":0}}", "[".repeat(127), "]".repeat(127));
+    assert!(parse_input(Some(&source), &mut std::io::empty(), true).is_err());
+}

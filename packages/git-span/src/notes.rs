@@ -1,5 +1,7 @@
 //! Durable JSON documents attached to frozen commit identities, independent of resolver caches.
 
+mod json;
+
 use anyhow::{Context, bail, ensure};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use schemars::JsonSchema;
@@ -95,7 +97,7 @@ pub fn parse_input(
         !text.trim().is_empty(),
         "notes JSON input is empty; provide one valid JSON value"
     );
-    let document: serde_json::Value = serde_json::from_str(text)
+    let document: serde_json::Value = json::decode(text)
         .context("invalid notes JSON; provide one complete JSON value within the nesting limit")?;
     let canonical_document = canonicalize(&document)?;
     Ok(ParsedDocument {
@@ -530,7 +532,7 @@ fn decode_note(
     // The source limit is checked before parsing input. Normalized exponent signs can
     // enlarge persisted JSON, so its parsed representation must not inherit that limit.
     let document: serde_json::Value =
-        serde_json::from_str(&document).context("malformed stored notes document")?;
+        json::decode(&document).context("malformed stored notes document")?;
     ensure!(
         canonicalize(&document)? == canonical,
         "stored note {} has a mismatched canonical identity",

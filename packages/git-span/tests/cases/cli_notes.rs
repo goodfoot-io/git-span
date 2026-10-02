@@ -499,3 +499,127 @@ fn notes_foreign_trigger_cannot_remove_other_ids_and_storage_is_left_intact() ->
     }
     Ok(())
 }
+
+#[test]
+fn notes_private_keys_round_trip_positional_stdin_and_isolated_records() -> Result<()> {
+    use std::io::Write;
+    #[derive(serde::Deserialize)]
+    struct RawNote {
+        id: u64,
+        document: Box<serde_json::value::RawValue>,
+    }
+    #[derive(serde::Deserialize)]
+    struct RawEnvelope {
+        notes: Vec<RawNote>,
+    }
+    fn raw_envelope(bytes: &[u8]) -> Result<RawEnvelope> {
+        Ok(serde_json::from_slice(bytes)?)
+    }
+    fn run(repo: &TestRepo, args: &[&str]) -> Result<RawEnvelope> {
+        let mut argv = vec!["notes"];
+        argv.extend_from_slice(args);
+        argv.extend_from_slice(&["--format", "json"]);
+        raw_envelope(repo.span_stdout(argv)?.as_bytes())
+    }
+    let object = |entries: Vec<(&str, Value)>| {
+        Value::Object(serde_json::Map::from_iter(
+            entries.into_iter().map(|(k, v)| (k.to_owned(), v)),
+        ))
+    };
+    let key = "$serde_json::private::Number";
+    let marker = object(vec![(key, Value::String("123".into()))]);
+    let witnesses = vec![
+        (r#"{"$serde_json::private::Number":"123"}"#, marker.clone()),
+        (
+            r#"{"$serde_json::private::Number":"x"}"#,
+            object(vec![(key, Value::String("x".into()))]),
+        ),
+        (
+            r#"{"$serde_json::private::Number":123}"#,
+            object(vec![(key, Value::Number(123.into()))]),
+        ),
+        (
+            r#"{"x":{"$serde_json::private::Number":"123"}}"#,
+            object(vec![("x", marker.clone())]),
+        ),
+        (
+            r#"[{"$serde_json::private::Number":"123"}]"#,
+            Value::Array(vec![marker]),
+        ),
+        (
+            r#"{"$serde_json::private::Number":"123","keep":true}"#,
+            object(vec![
+                (key, Value::String("123".into())),
+                ("keep", Value::Bool(true)),
+            ]),
+        ),
+        (
+            r#"{"keep":true,"$serde_json::private::Number":"123"}"#,
+            object(vec![
+                (key, Value::String("123".into())),
+                ("keep", Value::Bool(true)),
+            ]),
+        ),
+        (
+            r#"{"$serde_json::private::RawValue":"x"}"#,
+            object(vec![(
+                "$serde_json::private::RawValue",
+                Value::String("x".into()),
+            )]),
+        ),
+    ];
+    let repo = TestRepo::seeded()?;
+    let scalar_id = run(&repo, &["add", "HEAD", "123"])?.notes[0].id;
+    for (source, expected) in witnesses {
+        // The oracle serializes an explicitly constructed object. It never parses
+        // marker-bearing output through Value's private-key visitor.
+        let expected = serde_json::to_string(&expected)?;
+        let added = run(&repo, &["add", "HEAD", source])?.notes.remove(0);
+        assert_ne!(added.id, scalar_id);
+        assert_eq!(added.document.get(), expected);
+        let id = added.id.to_string();
+        let mut child = command(repo.path(), &["notes", "add", "HEAD", "--format", "json"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()?;
+        child.stdin.take().unwrap().write_all(source.as_bytes())?;
+        let out = child.wait_with_output()?;
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdin_note = raw_envelope(&out.stdout)?.notes.remove(0);
+        assert_eq!(stdin_note.id, added.id);
+        assert_eq!(stdin_note.document.get(), expected);
+        assert_eq!(
+            run(&repo, &["add", "HEAD", &expected])?.notes[0].id,
+            added.id
+        );
+        assert_eq!(
+            run(&repo, &["show", &id])?.notes[0].document.get(),
+            expected
+        );
+        let listed = run(&repo, &["list"])?;
+        assert_eq!(listed.notes.len(), 2);
+        assert_eq!(
+            listed
+                .notes
+                .iter()
+                .find(|n| n.id == added.id)
+                .unwrap()
+                .document
+                .get(),
+            expected
+        );
+        assert_eq!(
+            run(&repo, &["remove", &id])?.notes[0].document.get(),
+            expected
+        );
+        let surviving = run(&repo, &["list"])?;
+        assert_eq!(surviving.notes.len(), 1);
+        assert_eq!(surviving.notes[0].id, scalar_id);
+        assert_eq!(surviving.notes[0].document.get(), "123");
+    }
+    Ok(())
+}
