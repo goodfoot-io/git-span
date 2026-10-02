@@ -480,6 +480,15 @@ pub fn make_executable(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Remove write permissions from `path` (Unix mode bits or Windows read-only
+/// attribute). Restore owner-write access with [`make_writable`] after the test.
+#[allow(dead_code)]
+pub fn make_readonly(path: &Path) -> std::io::Result<()> {
+    let mut perms = std::fs::metadata(path)?.permissions();
+    perms.set_readonly(true);
+    std::fs::set_permissions(path, perms)
+}
+
 /// Clear the read-only bit on `path` so it can be rewritten — loose git
 /// objects, for instance, are written read-only. On Unix the owner-write bit
 /// is OR'd into the existing mode rather than going through

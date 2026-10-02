@@ -443,23 +443,22 @@ fn notes_duplicate_remove_race_has_only_serializable_results() -> Result<()> {
 #[cfg(unix)]
 #[test]
 fn notes_unwritable_storage_fails_without_success_or_allocation() -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
     let repo = TestRepo::seeded()?;
     let directory = repo.path().join(".git/span");
     std::fs::create_dir_all(&directory)?;
-    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o500))?;
+    crate::support::make_readonly(&directory)?;
     let output = repo.run_span(["notes", "add", "HEAD", "null", "--format", "json"])?;
-    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))?;
+    crate::support::make_writable(&directory)?;
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
     assert!(!directory.join("notes.db").exists());
     assert_eq!(add(&repo, "HEAD", "null")?["id"], 1);
     let database = directory.join("notes.db");
-    std::fs::set_permissions(&database, std::fs::Permissions::from_mode(0o400))?;
-    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o500))?;
+    crate::support::make_readonly(&database)?;
+    crate::support::make_readonly(&directory)?;
     let output = repo.run_span(["notes", "remove", "1", "--format", "json"])?;
-    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))?;
-    std::fs::set_permissions(&database, std::fs::Permissions::from_mode(0o600))?;
+    crate::support::make_writable(&directory)?;
+    crate::support::make_writable(&database)?;
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
     assert_eq!(envelope(&repo, &["show", "1"])?["notes"][0]["id"], 1);
