@@ -49,6 +49,7 @@ impl SuppressionSignals {
 /// not a flag enumeration.
 fn is_machine_output(command: &Commands) -> bool {
     match command {
+        Commands::Notes(args) => args.command.format() == crate::cli::notes::NotesFormat::Json,
         Commands::List(args) => args.porcelain || args.oneline,
         Commands::Drift(args) => args.format != DriftFormat::Human,
         Commands::Add(args) => args.format != AddFormat::Human,
@@ -90,10 +91,7 @@ fn is_internal(command: &Commands) -> bool {
 /// extend it — not a flag enumeration.
 pub fn signals_for(cli: &Cli, stdout_is_tty: bool) -> SuppressionSignals {
     let env_disable = std::env::var_os("GIT_SPAN_DISABLE_UPDATE_CHECK").is_some();
-    let machine_flags = cli
-        .command
-        .as_ref()
-        .is_some_and(is_machine_output);
+    let machine_flags = cli.command.as_ref().is_some_and(is_machine_output);
     let internal = cli.command.as_ref().is_some_and(is_internal);
     SuppressionSignals {
         env_disable,
@@ -176,7 +174,9 @@ mod tests {
     fn json_formatted_writes_are_machine_output() {
         for argv in [
             &["git-span", "add", "s", "f.txt", "--format", "json"][..],
-            &["git-span", "replace", "s", "a.txt", "b.txt", "--format", "json"][..],
+            &[
+                "git-span", "replace", "s", "a.txt", "b.txt", "--format", "json",
+            ][..],
             &["git-span", "why", "s", "because", "--format", "json"][..],
             &["git-span", "resolve", "s", "--format", "json"][..],
             &["git-span", "tree", "f.txt", "--format", "json"][..],
@@ -203,7 +203,10 @@ mod tests {
             &["git-span", "merge-driver", "base", "ours", "theirs", "7"],
             true,
         );
-        assert!(signals.machine_flags, "git's own protocol is machine output");
+        assert!(
+            signals.machine_flags,
+            "git's own protocol is machine output"
+        );
         assert!(signals.internal, "merge-driver is a git-invoked internal");
         assert!(signals.suppressed());
     }

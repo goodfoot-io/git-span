@@ -21,7 +21,10 @@ pub(crate) struct Guard {
 
 pub(crate) fn command_mode(command: &Commands) -> Option<Mode> {
     match command {
-        Commands::Context(_) | Commands::ContextService(_) | Commands::UpdateCheck => None,
+        Commands::Notes(_)
+        | Commands::Context(_)
+        | Commands::ContextService(_)
+        | Commands::UpdateCheck => None,
         Commands::Drift(args) if args.fix => Some(Mode::Exclusive),
         Commands::Why(args) if args.why_text.is_some() => Some(Mode::Exclusive),
         Commands::Config(args) if args.value.is_some() => Some(Mode::Exclusive),

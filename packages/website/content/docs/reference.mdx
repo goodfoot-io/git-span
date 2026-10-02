@@ -77,6 +77,7 @@ Every subcommand that accepts `--format json` publishes its output family as a J
 | context | `https://git-span.com/schemas/cli/v1/context.json` | `context` |
 | history | `https://git-span.com/schemas/cli/v1/history.json` | `history` |
 | drift | `https://git-span.com/schemas/cli/v1/drift.json` | `drift` |
+| notes | `https://git-span.com/schemas/cli/v1/notes.json` | `notes add`, `notes list`, `notes show`, `notes remove` |
 
 Each schema's `$id` is its URL, and the URL is the version: v1 is immutable. A committed `sha256-manifest.txt` beside the schemas pins every published file's digest, and CI recomputes and compares it — the manifest is never regenerated, so published bytes cannot drift. A breaking change to a family's shape lands at a `v2` URL; the v1 bytes stay byte-for-byte what they were. The frozen bytes freeze the key set with them: a validator cached against a v1 schema stays correct for every output that family produces, because a round-trip test validates real CLI stdout against the committed schemas — a schema the binary violates fails CI, not a consumer's validator.
 

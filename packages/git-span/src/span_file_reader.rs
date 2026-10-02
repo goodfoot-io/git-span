@@ -931,7 +931,7 @@ mod tests {
     /// - `dirty`      → worktree + index both modified (staged edit)
     /// - `tombstoned` → committed, worktree copy deleted (index tombstone)
     /// - `headonly`   → committed, then `rm --cached` + deleted from the
-    ///                  worktree (index absent, HEAD present)
+    ///   worktree (index absent, HEAD present)
     /// - `unmerged`   → stages 2/3 in the index (conflict fires first)
     fn build_corpus() -> tempfile::TempDir {
         let td = tempfile::tempdir().expect("tempdir");

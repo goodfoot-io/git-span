@@ -1,0 +1,68 @@
+{
+  "$id": "https://git-span.com/schemas/cli/v1/notes.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NotesDocument",
+  "description": "Versioned machine output; list can successfully contain no notes.",
+  "type": "object",
+  "properties": {
+    "notes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Note"
+      }
+    },
+    "operation": {
+      "$ref": "#/$defs/Operation"
+    },
+    "schema_version": {
+      "type": "integer",
+      "format": "uint32",
+      "maximum": 1,
+      "minimum": 1
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "operation",
+    "notes"
+  ],
+  "$defs": {
+    "Note": {
+      "description": "A stored association and its parsed arbitrary JSON document.",
+      "type": "object",
+      "properties": {
+        "commit_sha": {
+          "type": "string"
+        },
+        "document": true,
+        "id": {
+          "$ref": "#/$defs/NoteId"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "commit_sha",
+        "document"
+      ]
+    },
+    "NoteId": {
+      "description": "A positive, safe-integer repository-wide note identifier.",
+      "type": "integer",
+      "format": "uint64",
+      "maximum": 9007199254740991,
+      "minimum": 1
+    },
+    "Operation": {
+      "description": "The nested command which produced an envelope.",
+      "type": "string",
+      "enum": [
+        "add",
+        "list",
+        "show",
+        "remove"
+      ]
+    }
+  }
+}

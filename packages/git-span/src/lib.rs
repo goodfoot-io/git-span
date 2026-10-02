@@ -19,6 +19,9 @@ pub mod cli;
 #[doc(hidden)]
 pub mod descriptor_authority;
 pub mod git;
+pub mod notes;
+#[cfg(test)]
+mod notes_tests;
 pub mod perf;
 pub mod resolver;
 pub mod schemas;
@@ -35,7 +38,7 @@ pub use git::read_git_text;
 pub use git::{index_entries_call_count, reset_index_entries_call_count};
 pub use git::{load_index_call_count, reset_load_index_call_count};
 pub use git::{reset_tree_entry_at_call_count, tree_entry_at_call_count};
-pub use resolver::{resolve_anchor, resolve_span, drift_spans};
+pub use resolver::{drift_spans, resolve_anchor, resolve_span};
 pub use span::{
     delete_span, list_span_names, read_span, read_span_at, rename_span, show_span, show_span_at,
 };

@@ -5,7 +5,7 @@ packages/git-span/src/update_check/mod.rs#L139-L190 rk64:77fe7373aa5264bf
 packages/git-span/src/update_check/mod.rs#L273-L283 rk64:1daaa3cde354c22c
 packages/git-span/src/update_check/mod.rs#L289-L314 rk64:fee7d3366ca7d28c
 packages/git-span/src/update_check/store.rs#L12-L24 rk64:4d900497cbd71cde
-packages/git-span/src/update_check/suppress.rs#L91-L104 rk64:290bf05bd693bccc
+packages/git-span/src/update_check/suppress.rs#L92-L102 rk64:6819e60cd6a9cbfd
 packages/git-span/tests/cases/update_check.rs rk64:44e16a21d7d7e8df
 packages/git-span/tests/fixtures/update-check-releases.json rk64:aa7a436abc6e38c1
 

@@ -39,7 +39,7 @@ pub struct Artifact {
     pub content: String,
 }
 
-/// The five versioned `--format json` families published at stable URLs.
+/// The six versioned `--format json` families published at stable URLs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Family {
     Mutation,
@@ -47,6 +47,7 @@ pub enum Family {
     Context,
     History,
     Drift,
+    Notes,
 }
 
 impl Family {
@@ -58,13 +59,14 @@ impl Family {
             Family::Context => "context",
             Family::History => "history",
             Family::Drift => "drift",
+            Family::Notes => "notes",
         }
     }
 }
 
 /// The URL version for a family, from an explicit mapping — never inferred
 /// from the artifact path string, so a published URL's meaning is a declared
-/// fact rather than an accident of file layout. All five families publish at
+/// fact rather than an accident of file layout. All six families publish at
 /// `v1`; a breaking change bumps a family's entry here and lands the new
 /// schema at a new path, leaving the old URL's bytes untouched.
 pub fn family_url_version(family: &Family) -> u32 {
@@ -73,7 +75,8 @@ pub fn family_url_version(family: &Family) -> u32 {
         | Family::Resolve
         | Family::Context
         | Family::History
-        | Family::Drift => 1,
+        | Family::Drift
+        | Family::Notes => 1,
     }
 }
 
@@ -106,6 +109,22 @@ pub struct JsonCommandMapping {
 /// skipping publication.
 pub fn json_command_mappings() -> &'static [JsonCommandMapping] {
     &[
+        JsonCommandMapping {
+            subcommand: "notes add",
+            family: Some(Family::Notes),
+        },
+        JsonCommandMapping {
+            subcommand: "notes list",
+            family: Some(Family::Notes),
+        },
+        JsonCommandMapping {
+            subcommand: "notes show",
+            family: Some(Family::Notes),
+        },
+        JsonCommandMapping {
+            subcommand: "notes remove",
+            family: Some(Family::Notes),
+        },
         JsonCommandMapping {
             subcommand: "add",
             family: Some(Family::Mutation),
@@ -168,18 +187,15 @@ pub fn any_schema(_generator: &mut SchemaGenerator) -> Schema {
 fn family_schema(family: &Family) -> Schema {
     let generator = SchemaSettings::draft2020_12().into_generator();
     match family {
+        Family::Notes => generator.into_root_schema_for::<crate::notes::NotesDocument>(),
         Family::Mutation => {
             generator.into_root_schema_for::<crate::cli::commit::MutationDocument>()
         }
         Family::Resolve => {
             generator.into_root_schema_for::<crate::cli::resolve::ResolveFamilyDoc>()
         }
-        Family::Context => {
-            generator.into_root_schema_for::<crate::cli::context::ContextDocument>()
-        }
-        Family::History => {
-            generator.into_root_schema_for::<crate::cli::history::HistoryDocument>()
-        }
+        Family::Context => generator.into_root_schema_for::<crate::cli::context::ContextDocument>(),
+        Family::History => generator.into_root_schema_for::<crate::cli::history::HistoryDocument>(),
         Family::Drift => {
             generator.into_root_schema_for::<crate::cli::drift_output::DriftDocument>()
         }
@@ -200,6 +216,7 @@ pub fn artifacts() -> Vec<Artifact> {
         Family::Context,
         Family::History,
         Family::Drift,
+        Family::Notes,
     ] {
         let mut schema = family_schema(&family);
         // `$id` is the family's stable URL; schemars emits `$schema`
@@ -298,6 +315,10 @@ const SECTION_GROUPS: &[(&str, &[&str])] = &[
         "Declare and edit",
         &["add", "remove", "replace", "why", "config", "delete"],
     ),
+    (
+        "Commit documents",
+        &["notes add", "notes list", "notes show", "notes remove"],
+    ),
     ("Inspect", &["show", "list", "tree", "history", "context"]),
     (
         "Audit and automate",
@@ -308,11 +329,27 @@ const SECTION_GROUPS: &[(&str, &[&str])] = &[
 /// The subcommands the page renders: everything visible, minus clap's
 /// auto-generated `help` subcommand (documented in the Global-options
 /// prose). Hidden subcommands (`__context-service`) are excluded by design.
-fn visible_subcommands(cmd: &clap::Command) -> Vec<clap::Command> {
-    cmd.get_subcommands()
-        .filter(|sub| !sub.is_hide_set() && sub.get_name() != "help")
-        .cloned()
-        .collect()
+fn visible_subcommands(cmd: &clap::Command) -> Vec<(String, clap::Command)> {
+    fn collect(cmd: &clap::Command, prefix: &str, out: &mut Vec<(String, clap::Command)>) {
+        for sub in cmd
+            .get_subcommands()
+            .filter(|sub| !sub.is_hide_set() && sub.get_name() != "help")
+        {
+            let path = if prefix.is_empty() {
+                sub.get_name().to_string()
+            } else {
+                format!("{prefix} {}", sub.get_name())
+            };
+            if sub.has_subcommands() {
+                collect(sub, &path, out);
+            } else {
+                out.push((path, sub.clone()));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    collect(cmd, "", &mut out);
+    out
 }
 
 /// Throw on prose a markdown/MDX pipeline would misparse: a raw `{`, `}`,
@@ -459,18 +496,15 @@ fn render_prose_paragraphs(owner: &str, text: &str) -> String {
 
 /// The page's usage fence line: clap's rendered usage for the subcommand,
 /// expressed as `git span ...` (the invocation users actually type).
-fn subcommand_usage(sub: &clap::Command) -> String {
+fn subcommand_usage(sub: &clap::Command, path: &str) -> String {
     // A bare subcommand clone renders usage without its own name, so the
     // bin name carries it: "git span add <name> <anchors>...".
     let usage = sub
         .clone()
-        .bin_name(format!("git span {}", sub.get_name()))
+        .bin_name(format!("git span {path}"))
         .render_usage()
         .to_string();
-    let usage = usage
-        .strip_prefix("Usage: ")
-        .unwrap_or(&usage)
-        .to_string();
+    let usage = usage.strip_prefix("Usage: ").unwrap_or(&usage).to_string();
     assert!(
         usage.starts_with("git span "),
         "unexpected usage shape for `{}`: {usage}",
@@ -530,7 +564,12 @@ fn flag_description(arg: &clap::Arg) -> String {
     let text = arg
         .get_long_help()
         .or_else(|| arg.get_help())
-        .unwrap_or_else(|| panic!("commands.mdx renderer: flag `{}` has no help text", arg.get_id()))
+        .unwrap_or_else(|| {
+            panic!(
+                "commands.mdx renderer: flag `{}` has no help text",
+                arg.get_id()
+            )
+        })
         .to_string();
     mdx_prose(&owner, &text);
     text.replace("\n\n", " <br /> ")
@@ -546,7 +585,10 @@ fn subcommand_prose(sub: &clap::Command) -> String {
         .get_long_about()
         .or_else(|| sub.get_about())
         .unwrap_or_else(|| {
-            panic!("commands.mdx renderer: subcommand `{}` has no description", sub.get_name())
+            panic!(
+                "commands.mdx renderer: subcommand `{}` has no description",
+                sub.get_name()
+            )
         })
         .to_string();
     assert!(
@@ -561,14 +603,24 @@ fn subcommand_prose(sub: &clap::Command) -> String {
 /// One subcommand section: usage fence, description prose (with Callouts),
 /// then a flags table over the command's non-positional, non-hidden,
 /// non-global arguments.
-fn render_subcommand_section(sub: &clap::Command) -> String {
-    let name = sub.get_name();
+fn render_subcommand_section(sub: &clap::Command, name: &str) -> String {
     let mut out = String::new();
     out.push_str(&format!("### {name}\n\n"));
     out.push_str("```bash\n");
-    out.push_str(&subcommand_usage(sub));
+    out.push_str(&subcommand_usage(sub, name));
     out.push_str("\n```\n\n");
     out.push_str(&subcommand_prose(sub));
+    if let Some(family) = json_command_mappings()
+        .iter()
+        .find(|row| row.subcommand == name)
+        .and_then(|row| row.family)
+    {
+        out.push_str(&format!(
+            "JSON schema: [{}]({}).\n\n",
+            family.key(),
+            family_schema_url(&family)
+        ));
+    }
     let mut rows: Vec<(String, String)> = Vec::new();
     for arg in sub.get_arguments() {
         if arg.is_hide_set() || arg.is_global_set() {
@@ -610,7 +662,7 @@ fn commands_mdx() -> String {
     for (_, subs) in SECTION_GROUPS {
         rendered_names.extend_from_slice(subs);
     }
-    let mut expected: Vec<&str> = visible.iter().map(|sub| sub.get_name()).collect();
+    let mut expected: Vec<&str> = visible.iter().map(|(path, _)| path.as_str()).collect();
     let mut actual = rendered_names.clone();
     expected.sort_unstable();
     actual.sort_unstable();
@@ -623,10 +675,12 @@ fn commands_mdx() -> String {
     for (group, subs) in SECTION_GROUPS {
         out.push_str(&format!("## {group}\n\n"));
         for name in *subs {
-            let sub = cmd
-                .find_subcommand(name)
+            let sub = visible
+                .iter()
+                .find(|(path, _)| path == name)
+                .map(|(_, sub)| sub)
                 .unwrap_or_else(|| panic!("unknown subcommand `{name}` in SECTION_GROUPS"));
-            out.push_str(&render_subcommand_section(sub));
+            out.push_str(&render_subcommand_section(sub, name));
         }
     }
     out
@@ -646,8 +700,8 @@ mod tests {
     }
 
     #[test]
-    fn mapping_table_covers_all_eight_json_emitters() {
-        assert_eq!(json_command_mappings().len(), 8);
+    fn mapping_table_covers_all_twelve_json_emitters() {
+        assert_eq!(json_command_mappings().len(), 12);
     }
 
     #[test]
@@ -703,10 +757,12 @@ mod tests {
             .map(|a| a.path.to_str().expect("utf8 path").to_string())
             .collect();
         paths.sort_unstable();
-        let mut expected: Vec<String> = ["context", "drift", "history", "mutation", "resolve"]
-            .into_iter()
-            .map(|key| format!("public/schemas/cli/v1/{key}.json"))
-            .collect();
+        let mut expected: Vec<String> = [
+            "context", "drift", "history", "mutation", "notes", "resolve",
+        ]
+        .into_iter()
+        .map(|key| format!("public/schemas/cli/v1/{key}.json"))
+        .collect();
         expected.push("content/docs/commands.mdx".to_string());
         expected.sort_unstable();
         assert_eq!(paths, expected);
@@ -722,8 +778,7 @@ mod tests {
                 serde_json::from_str(&artifact.content).expect("artifact is valid JSON");
             let id = parsed["$id"].as_str().expect("schema has a string $id");
             assert!(
-                id.starts_with("https://git-span.com/schemas/cli/v1/")
-                    && id.ends_with(".json"),
+                id.starts_with("https://git-span.com/schemas/cli/v1/") && id.ends_with(".json"),
                 "unexpected $id {id}"
             );
         }
@@ -733,9 +788,9 @@ mod tests {
     fn mapping_table_is_a_bijection_with_the_clap_tree() {
         use clap::CommandFactory as _;
         let cmd = crate::cli::Cli::command();
-        let mut json_subcommands: Vec<String> = cmd
-            .get_subcommands()
-            .filter(|sub| {
+        let mut json_subcommands: Vec<String> = visible_subcommands(&cmd)
+            .into_iter()
+            .filter(|(_, sub)| {
                 sub.get_arguments().any(|arg| {
                     arg.get_id() == "format"
                         && arg
@@ -744,7 +799,7 @@ mod tests {
                             .any(|possible| possible.get_name() == "json")
                 })
             })
-            .map(|sub| sub.get_name().to_string())
+            .map(|(path, _)| path)
             .collect();
         json_subcommands.sort_unstable();
 
@@ -770,8 +825,8 @@ mod tests {
         families.dedup();
         assert_eq!(
             families.len(),
-            5,
-            "each of the five families must be mapped by exactly one versioned row"
+            6,
+            "each of the six families must be mapped by exactly one versioned row"
         );
     }
 
@@ -804,8 +859,7 @@ mod tests {
     fn generated_page_covers_every_visible_subcommand_in_a_section() {
         let page = commands_mdx_artifact().content;
         let cmd = crate::cli::Cli::command();
-        for sub in visible_subcommands(&cmd) {
-            let name = sub.get_name();
+        for (name, _) in visible_subcommands(&cmd) {
             assert!(
                 page.contains(&format!("### {name}\n")),
                 "generated page lost the `{name}` section"
@@ -872,7 +926,10 @@ mod tests {
 
     #[test]
     fn mdx_prose_accepts_backticked_and_fenced_sigils() {
-        assert_eq!(mdx_prose("test", "anchors are `<path>`"), "anchors are `<path>`");
+        assert_eq!(
+            mdx_prose("test", "anchors are `<path>`"),
+            "anchors are `<path>`"
+        );
         let fenced = "```gitattributes\n\n.span/** merge=span\n\n```\n";
         assert_eq!(mdx_prose("test", fenced), fenced);
     }
@@ -880,7 +937,10 @@ mod tests {
     #[test]
     #[should_panic(expected = "fence marker glued to prose")]
     fn mdx_prose_throws_on_a_fence_glued_to_prose() {
-        mdx_prose("test", "Register in `.gitattributes`: ```gitattributes .span/** merge=span ```");
+        mdx_prose(
+            "test",
+            "Register in `.gitattributes`: ```gitattributes .span/** merge=span ```",
+        );
     }
 
     #[test]
@@ -921,8 +981,7 @@ mod tests {
         let prose = "````text\n\n```\n\n.span/** merge=span\n\n````\n";
         let rendered = render_prose_paragraphs("test", prose);
         assert_eq!(
-            rendered,
-            "````text\n```\n.span/** merge=span\n````\n\n",
+            rendered, "````text\n```\n.span/** merge=span\n````\n\n",
             "a shorter backtick run inside a long fence must stay code content"
         );
     }
@@ -968,13 +1027,19 @@ mod tests {
     fn clap_joins_wrapped_doc_comment_lines_with_spaces() {
         let cmd = crate::cli::Cli::command();
         let add = cmd.find_subcommand("add").expect("add exists");
-        let about = add.get_long_about().expect("add has a long description").to_string();
+        let about = add
+            .get_long_about()
+            .expect("add has a long description")
+            .to_string();
         assert!(
             about.contains("index changed during check) — retryable"),
             "clap must join wrapped doc lines with spaces; stored help:\n{about}"
         );
         let why = cmd.find_subcommand("why").expect("why exists");
-        let about = why.get_long_about().expect("why has a long description").to_string();
+        let about = why
+            .get_long_about()
+            .expect("why has a long description")
+            .to_string();
         assert!(
             about.contains("read mode rejects it fail-closed (exit 1, no stdout)"),
             "clap must join wrapped doc lines with spaces; stored help:\n{about}"

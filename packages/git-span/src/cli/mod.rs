@@ -32,6 +32,7 @@ pub mod format;
 pub mod history;
 pub mod interior_anchor;
 pub mod merge_driver;
+pub mod notes;
 pub(crate) mod recovery_domain;
 pub(crate) mod repair_domain;
 pub mod resolve;
@@ -74,6 +75,9 @@ pub struct Cli {
 /// [`dispatch`].
 #[derive(Debug, Clone, Subcommand)]
 pub enum Commands {
+    /// Attach, inspect, and remove durable arbitrary JSON documents associated with commits.
+    Notes(notes::NotesArgs),
+
     /// Show the named span — its anchors, why, and config. The bare
     /// `git span <name>` positional form is equivalent to
     /// `git span show <name>`.
@@ -827,6 +831,9 @@ pub fn dispatch(
     span_dir: Option<&str>,
     cli: &Cli,
 ) -> anyhow::Result<i32> {
+    if let Commands::Notes(args) = command {
+        return notes::run(repo, args);
+    }
     // Resolve the span root once, here, through the single precedence
     // chain (`span_dir` > `GIT_SPAN_DIR` > `git config git-span.dir`
     // > `.span`). Every handler — read, write, management, doctor — and
@@ -850,6 +857,7 @@ pub fn dispatch(
     crate::update_check::maybe_engage(cli);
 
     let result = match command {
+        Commands::Notes(_) => unreachable!("notes dispatched before span recovery"),
         Commands::Show(args) => {
             let _perf = crate::perf::span("command.show");
             show::run_show(repo, args, span_root)
