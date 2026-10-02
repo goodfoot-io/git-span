@@ -35,7 +35,7 @@ export function abspathAgainst(base: string, target: string): string {
  * Repo root per requested directory, for the life of the process.
  *
  * Hooks are one-shot processes: they resolve the same handful of directories
- * repeatedly — every advisor git call re-resolves the same `cwd` — and a
+ * repeatedly for the same `cwd`, and a
  * repository does not appear or move underneath a single hook invocation. The
  * miss path is what makes this worth caching: a directory that is not in a
  * repo costs a `git rev-parse` spawn every time it is asked about.
@@ -86,7 +86,7 @@ function resolveRepoRootUncached(dir: string): string | null {
  * Report whether a repo-relative path is excluded by git's ignore rules
  * (.gitignore, .git/info/exclude, core.excludesFile). Used to keep ignored
  * files — build output, caches, logs — out of touch tracking entirely, so
- * the touch hook never reports reads, writes, or uncovered writes on them.
+ * the touch hook never reports reads or writes on them.
  *
  * `git check-ignore -q <path>` exits 0 when the path is ignored, 1 when it is
  * not, and 128 on error. execFileSync throws on any non-zero exit, so a clean
@@ -207,7 +207,7 @@ export function derivePath(toolInput: Record<string, unknown>, cwd: string): str
  * relative paths resolve against. Absolute values pass through unchanged;
  * missing or empty values fall back to `directory`; a template-literal workdir
  * (containing `$` or a backtick) is unresolvable static intent and falls back
- * too. Shared by every adapter's advisor frame and post-execution touch
+ * too. Shared by every adapter's planning frame and post-execution touch
  * pipeline so the unresolvable-guard semantics cannot drift between twins.
  */
 export function resolveFrame(workdir: string | undefined, directory: string): string {
@@ -294,8 +294,7 @@ export interface DriftPorcelainRow extends PorcelainRow {
 }
 
 /**
- * The debt invariant (system-wide; consumed by both the future touch-core and
- * advisor-core): only semantic statuses are debt. `CHANGED` and `DELETED` are
+ * The debt invariant used by the touch pipeline. `CHANGED` and `DELETED` are
  * semantic drift; the remaining non-FRESH/MOVED/RESOLVED_PENDING_COMMIT tokens
  * are terminal/error conditions and are treated as debt too (they block on
  * their own merits — the CLI could not resolve the anchor at all). `FRESH`,
@@ -323,46 +322,11 @@ export function isDebt(status: PorcelainStatus): boolean {
 /**
  * Lowercase human label for a porcelain status token (`LFS_NOT_FETCHED` →
  * `lfs not fetched`). The single label mapping for every human-format anchor
- * suffix — both the touch hook's block and the advisor's messages render through
- * this, so a status never reads differently between the two.
+ * suffix — the touch hook's blocks render through
+ * this, so statuses use consistent labels across touch blocks.
  */
 export function humanStatusLabel(status: PorcelainStatus): string {
   return status.toLowerCase().replace(/_/g, ' ');
-}
-
-/**
- * The terminal/environmental statuses: the CLI could not resolve the anchor at
- * all, so the row is not span drift a user can fix by editing a span. These are
- * `CONFLICT` (unresolved merge), `SUBMODULE` (anchor inside a submodule),
- * `LFS_NOT_FETCHED`/`LFS_NOT_INSTALLED` (Git LFS content unavailable),
- * `PROMISOR_MISSING` (partial-clone object not fetched), `SPARSE_EXCLUDED`
- * (path outside the sparse-checkout cone), `FILTER_FAILED` (a clean/smudge
- * filter errored), and `IO_ERROR` (transient read failure).
- *
- * These are a strict subset of {@link isDebt}: every environmental status is
- * also debt (it blocks on its own merits when surfaced in a status report), but
- * the advisor must treat them differently from *semantic* drift (`CHANGED`,
- * `DELETED`). Semantic drift is fixable by editing a span, so the advisor fails
- * closed on it; an environmental condition is not something a span edit can
- * resolve, so the advisor fails OPEN on it (allow, but surface the condition) —
- * re-denying forever on an infra failure the user cannot clear from here would
- * contradict the fail-open contract the rest of the advisor already honors for
- * CLI-absent/timeout/parse-failure conditions.
- */
-export function isEnvironmentalStatus(status: PorcelainStatus): boolean {
-  switch (status) {
-    case 'CONFLICT':
-    case 'SUBMODULE':
-    case 'LFS_NOT_FETCHED':
-    case 'LFS_NOT_INSTALLED':
-    case 'PROMISOR_MISSING':
-    case 'SPARSE_EXCLUDED':
-    case 'FILTER_FAILED':
-    case 'IO_ERROR':
-      return true;
-    default:
-      return false;
-  }
 }
 
 /**
@@ -659,45 +623,6 @@ export interface AnchorSpec {
   path: string;
   kind: TouchKind;
   range?: LineRange;
-}
-
-// ---------------------------------------------------------------------------
-// Queue directory helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Resolve the git common directory for the given repo root.
- * This is the shared directory (not the worktree-specific .git), so queue
- * records survive worktree deletion.
- */
-export function resolveGitCommonDir(repoRoot: string): string {
-  const out = execFileSync('git', ['-C', repoRoot, 'rev-parse', '--git-common-dir'], {
-    stdio: ['ignore', 'pipe', 'ignore'],
-    encoding: 'utf8'
-  });
-  const trimmed = toPosix(out.trim());
-  // git returns a relative path (e.g. ".git") for simple repos. Resolve it
-  // against repoRoot so callers never depend on process.cwd().
-  if (!nodePath.isAbsolute(trimmed)) {
-    return toPosix(nodePath.resolve(repoRoot, trimmed));
-  }
-  return trimmed;
-}
-
-/**
- * Root of the git-span queue directory tree, under the git common dir.
- */
-export function queueRoot(repoRoot: string): string {
-  return nodePath.join(resolveGitCommonDir(repoRoot), 'git-span');
-}
-
-/**
- * Directory for the advisor's per-changeset state memos (digest of sorted
- * findings + uncovered paths), under the git common dir so it is shared
- * across worktrees.
- */
-export function advisorMemoDir(repoRoot: string): string {
-  return nodePath.join(queueRoot(repoRoot), 'advisor');
 }
 
 // ---------------------------------------------------------------------------

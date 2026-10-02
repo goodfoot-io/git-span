@@ -3,7 +3,7 @@
  * envelope the pinned contract names (live-verified `args` shape:
  * `{ CommandLine, Cwd }`, PascalCase keys). Shared by every adapter that
  * reads a `run_command` call so the narrowing cannot drift between the
- * advisor, the planner, and the touch join.
+ * planner and the touch join.
  */
 
 import type { AntigravityToolCall } from '@goodfoot/agent-hooks/antigravity';

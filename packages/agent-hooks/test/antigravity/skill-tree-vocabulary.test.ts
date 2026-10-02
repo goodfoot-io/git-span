@@ -3,8 +3,7 @@
  * the antigravity skill tree was born by cloning Claude-tree content, so it
  * launched speaking vocabulary that is foreign or false on an agy host —
  * `git-span:git-span` plugin-namespace dispatch, bare Claude tool names,
- * `~/.claude`/`.claude-plugin` paths, and an advisor-host enumeration that
- * excluded its own platform. The fix is the shared glossary in
+ * `~/.claude`/`.claude-plugin` paths, and host-facing tool vocabulary. The fix is the shared glossary in
  * scripts/agent-skills-vocabulary.mjs rendered through the templates; this
  * test asserts on the RENDERED tree so a future template edit that
  * reintroduces the class turns a gate red.
@@ -19,11 +18,9 @@
 
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const skillsRoot = join(process.cwd(), '..', '..', 'plugins-antigravity', 'git-span', 'skills');
-const vocabularyModule = pathToFileURL(join(process.cwd(), '..', '..', 'scripts', 'agent-skills-vocabulary.mjs')).href;
 
 /** token pattern → the foreign vocabulary it detects. */
 const FORBIDDEN: { name: string; pattern: RegExp }[] = [
@@ -38,8 +35,7 @@ const FORBIDDEN: { name: string; pattern: RegExp }[] = [
   { name: 'Claude plugin-manifest dir', pattern: /\.claude-plugin/ },
   { name: 'Claude hooks log env var', pattern: /CLAUDE_CODE_HOOKS_LOG_FILE/ },
   { name: 'Codex hooks log env var', pattern: /CODEX_HOOKS_LOG_FILE/ },
-  { name: 'sibling-tree script path', pattern: /plugins-(claude|codex|opencode)\// },
-  { name: 'advisor-host enumeration missing Antigravity', pattern: /Claude Code, Codex, (or |and )?OpenCode(?!, )/ }
+  { name: 'sibling-tree script path', pattern: /plugins-(claude|codex|opencode)\// }
 ];
 
 /**
@@ -105,14 +101,6 @@ describe('antigravity skill tree — no foreign vocabulary outside data-vocabula
       }
     }
     expect(violations, violations.join('\n')).toEqual([]);
-  });
-
-  it('advisor-host enumeration is rendered from the shared glossary and includes this platform', async () => {
-    const vocabulary = await import(vocabularyModule);
-    const prose: string = vocabulary.advisorHostsProse;
-    expect(prose).toContain('Antigravity');
-    const ciAndSync = readFileSync(join(skillsRoot, 'git-span', 'references', 'ci-and-sync.md'), 'utf8');
-    expect(ciAndSync).toContain(`a hooked ${prose} session`);
   });
 
   it('positive controls — the antigravity adaptations are actually present', () => {

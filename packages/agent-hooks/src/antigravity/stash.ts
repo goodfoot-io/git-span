@@ -15,7 +15,7 @@
  *   tool identity and arguments the host withholds. Single-consumer: a take
  *   unlinks the record.
  * - **Pending-injection stash** (`antigravity-pending-injections/`): rendered
- *   `<git-span>` blocks and allow-with-report advisories accumulate here
+ *   `<git-span>` touch blocks accumulate here
  *   keyed `conversationId` (one file per block, filenames ordered by append
  *   time), because neither PreToolUse-allow nor PostToolUse has a message
  *   channel. The PostInvocation handler drains them into one

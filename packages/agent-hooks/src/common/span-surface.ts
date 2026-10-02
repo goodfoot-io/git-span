@@ -39,7 +39,7 @@ import { type HookIgnoreLoader, isSpanSuppressed } from './span-ignore.js';
  * satisfy it. `warn` is required — every existing call site reports a failure.
  * `info` is optional so a fake carrying only `warn` still satisfies the
  * interface: it exists for the diagnostic breadcrumbs a *successful* run leaves
- * behind (advisor-core's churn-suppression count), which are not warnings and
+ * behind (static-attribution planning diagnostics), which are not warnings and
  * must not read as failures in the hook log.
  */
 export interface CoreLogger {

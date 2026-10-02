@@ -31,7 +31,7 @@ Sourcegraph, Swimm, and enterprise traceability platforms emphasize cross-reposi
 
 ## Agent coverage varies by host
 
-The VS Code extension exposes CLI commands and a span-file custom editor ([`package.json`](/packages/extension/package.json)). Claude Code, Codex, OpenCode, and Antigravity all ship git-span integrations, but their host contracts differ. OpenCode excludes its experimental `execute` tool and cannot attribute host-level failures. Antigravity attributes `run_command`, while dedicated file-edit tools remain outside its pinned hook surface. The advisor still sees the repository changeset, and `git span drift` in CI is the common enforcement boundary.
+The VS Code extension exposes CLI commands and a span-file custom editor ([`package.json`](/packages/extension/package.json)). Claude Code, Codex, OpenCode, and Antigravity all ship git-span integrations, but their host contracts differ. OpenCode excludes its experimental `execute` tool and cannot attribute host-level failures. Antigravity attributes `run_command`, while dedicated file-edit tools remain outside its pinned hook surface. Only supported touch events surface existing spans in-session; commit, push, and status commands do not scan the repository changeset. `git span drift` in CI is the common enforcement boundary.
 
 Marketing must describe hooks as high-leverage advisory coverage, not exhaustive enforcement.
 

@@ -79,6 +79,13 @@ function groupFor(
 const BUILD_TEST_TIMEOUT_MS = 30_000;
 
 const REMOVED_SOURCE_PATHS = [
+  'packages/agent-hooks/src/common/advisor-core.ts',
+  'packages/agent-hooks/src/common/advisor-ignore.ts',
+  'packages/agent-hooks/src/common/mechanical-change.ts',
+  'packages/agent-hooks/src/claude/advisor.ts',
+  'packages/agent-hooks/src/codex/advisor.ts',
+  'packages/agent-hooks/src/opencode/advisor.ts',
+  'packages/agent-hooks/src/antigravity/advisor.ts',
   'packages/agent-hooks/src/common/snapshot-core.ts',
   'packages/agent-hooks/src/common/snapshot-harness.ts',
   'packages/agent-hooks/src/common/snapshot-store.ts',
@@ -90,6 +97,14 @@ const REMOVED_SOURCE_PATHS = [
 ] as const;
 
 const LEGACY_RUNTIME_MARKERS = [
+  'advisor-core',
+  'advisor-ignore',
+  '.advisorignore',
+  'evaluateAdvisor',
+  'GitSpanHoldError',
+  'advisorMemo',
+  'stashReport',
+  'takeReport',
   'snapshot-core',
   'snapshot-harness',
   'snapshot-store',
@@ -110,6 +125,26 @@ describe('generated hook bin portability', () => {
     for (const path of activeSources) {
       const content = readFileSync(path, 'utf8');
       for (const marker of LEGACY_RUNTIME_MARKERS) expect(content, `${path} contains ${marker}`).not.toContain(marker);
+    }
+  });
+
+  it('ships no obsolete advisor bundle or registration on any host', () => {
+    for (const relative of [
+      'plugins-claude/git-span/hooks',
+      'plugins-codex/git-span/hooks',
+      'plugins-antigravity/git-span',
+      'plugins-opencode/git-span/dist'
+    ]) {
+      const files = allPaths(join(WORKSPACE_ROOT, relative)).filter(
+        (path) => path.endsWith('.mjs') || path.endsWith('hooks.json') || path.endsWith('hooks.meta.json')
+      );
+      expect(files.length).toBeGreaterThan(0);
+      for (const path of files) {
+        expect(path).not.toMatch(/[/]advisor[.]mjs$/);
+        const content = readFileSync(path, 'utf8');
+        for (const marker of LEGACY_RUNTIME_MARKERS)
+          expect(content, `${path} contains ${marker}`).not.toContain(marker);
+      }
     }
   });
 
@@ -233,7 +268,7 @@ describe('generated hook bin portability', () => {
           '--agent',
           'codex',
           '-i',
-          'src/codex/{session-start,advisor,static-plan,apply-patch-plan,post-tool-use,stop}.ts',
+          'src/codex/{session-start,static-plan,apply-patch-plan,post-tool-use,stop}.ts',
           '-o',
           join(outDir, 'hooks.json'),
           '--plugin-root'
@@ -243,11 +278,7 @@ describe('generated hook bin portability', () => {
       const out = readHooksJson(outDir);
       expect(Object.keys(out.hooks)).toEqual(['SessionStart', 'PreToolUse', 'PostToolUse', 'Stop']);
       expect(groupFor(out, 'SessionStart', 'session-start.mjs')).not.toBeNull();
-      expect(out.hooks['PreToolUse']?.map(groupBundle)).toEqual([
-        'advisor.mjs',
-        'static-plan.mjs',
-        'apply-patch-plan.mjs'
-      ]);
+      expect(out.hooks['PreToolUse']?.map(groupBundle)).toEqual(['static-plan.mjs', 'apply-patch-plan.mjs']);
       const pre = groupFor(out, 'PreToolUse', 'static-plan.mjs');
       expect(pre, 'PreToolUse static-plan.mjs group must exist').not.toBeNull();
       expect(pre!.matcher, 'PreToolUse static-plan.mjs matcher must equal CODEX_STATIC_PLAN_PRE_MATCHER').toBe(
@@ -291,7 +322,7 @@ describe('generated hook bin portability', () => {
           '--agent',
           'claude-code',
           '-i',
-          'src/claude/{session-start,advisor,static-plan,post-tool-use,post-tool-use-failure,session-end}.ts',
+          'src/claude/{session-start,static-plan,post-tool-use,post-tool-use-failure,session-end}.ts',
           '-o',
           join(outDir, 'hooks.json')
         ],
@@ -308,9 +339,8 @@ describe('generated hook bin portability', () => {
       expect(groupFor(out, 'SessionStart', 'session-start.mjs')).not.toBeNull();
       expect(
         out.hooks['PreToolUse']?.[0]?.hooks.map(({ command }) => command.match(/([A-Za-z0-9-]+\.mjs)\b/)?.[1])
-      ).toEqual(['advisor.mjs', 'static-plan.mjs']);
+      ).toEqual(['static-plan.mjs']);
       expect(readHooksMetaJson(outDir).files).toEqual([
-        'advisor.mjs',
         'post-tool-use-failure.mjs',
         'post-tool-use.mjs',
         'session-end.mjs',
@@ -319,7 +349,6 @@ describe('generated hook bin portability', () => {
       ]);
       const expected: [string, string, string][] = [
         ['PreToolUse', 'static-plan.mjs', CLAUDE_STATIC_PLAN_PRE_MATCHER],
-        ['PreToolUse', 'advisor.mjs', 'Bash'],
         ['PostToolUse', 'post-tool-use.mjs', 'Read|Edit|Write|Bash'],
         ['PostToolUseFailure', 'post-tool-use-failure.mjs', 'Bash']
       ];
@@ -337,7 +366,6 @@ describe('generated hook bin portability', () => {
       // regression fails loudly here.
       expect(groupFor(out, 'SessionStart', 'session-start.mjs')?.hooks[0]?.timeout).toBe(1);
       for (const [event, bundle] of [
-        ['PreToolUse', 'advisor.mjs'],
         ['PreToolUse', 'static-plan.mjs'],
         ['PostToolUse', 'post-tool-use.mjs'],
         ['PostToolUseFailure', 'post-tool-use-failure.mjs'],
@@ -726,7 +754,6 @@ describe('mandatory installed-artifact static attribution smoke', () => {
     timeout: INSTALLED_SMOKE_TIMEOUT_MS
   }, () => {
     expect(emittedBundleNames(bundles.claudeHooksDir)).toEqual([
-      'advisor.mjs',
       'post-tool-use-failure.mjs',
       'post-tool-use.mjs',
       'session-end.mjs',
@@ -734,7 +761,6 @@ describe('mandatory installed-artifact static attribution smoke', () => {
       'static-plan.mjs'
     ]);
     expect(emittedBundleNames(bundles.codexHooksDir)).toEqual([
-      'advisor.mjs',
       'apply-patch-plan.mjs',
       'post-tool-use.mjs',
       'session-start.mjs',
@@ -742,6 +768,7 @@ describe('mandatory installed-artifact static attribution smoke', () => {
       'stop.mjs'
     ]);
     for (const names of [emittedBundleNames(bundles.claudeHooksDir), emittedBundleNames(bundles.codexHooksDir)]) {
+      expect(names).not.toContain('advisor.mjs');
       expect(names).not.toContain('snapshot.mjs');
       expect(names).not.toContain('activity-log.mjs');
       expect(names).not.toContain('subagent-stop.mjs');

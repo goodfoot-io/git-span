@@ -1,8 +1,7 @@
 /**
  * Shared box-drawing tree renderer for a span's anchor list, used by every
  * call site that today prints a flat `- path#Lstart-Lend` bullet run
- * (`touch-core.ts`'s `anchorBullets`, and `advisor-core.ts`'s
- * `annotateBlocks`/`groupCoveringByName`). Anchors that share a directory
+ * (`touch-core.ts`'s `anchorBullets`). Anchors that share a directory
  * prefix collapse into one tree instead of being reconstructed by eye from a
  * flat list — the motivating case is parity anchors under parallel
  * `public/claude/...`/`public/codex/...` trees.
@@ -17,20 +16,8 @@
 // Public types
 // ---------------------------------------------------------------------------
 
-/**
- * How a single anchor's line range is known. `range` and `whole-file` are the
- * two shapes every anchor takes today; `truncated` is a defensive third shape
- * reachable only from re-parsing the CLI's flat human-format text (a `#L`
- * fragment that doesn't cleanly match `#Lstart-Lend`).
- *
- * Verified invariant: the structured-data call sites can never produce
- * `truncated`. `parsePorcelain` (agent-hooks-common.ts) `continue`s past any
- * row missing a valid range, so an incomplete `PorcelainRow` can never be
- * constructed; the Rust CLI's own porcelain writer always emits a range
- * column (`0-0` for whole-file). `truncated` is reachable only from
- * `annotateBlocks`' flat-text parsing of `blocksText` in a later phase.
- */
-export type RangeLabel = { kind: 'range'; start: number; end: number } | { kind: 'whole-file' } | { kind: 'truncated' };
+/** A structured anchor is a numeric line range or the CLI's whole-file row. */
+export type RangeLabel = { kind: 'range'; start: number; end: number } | { kind: 'whole-file' };
 
 /** One stacked range under a `TreeAnchor`, with its precomputed drift suffix. */
 export interface RangeEntry {
@@ -61,8 +48,7 @@ export interface TreeAnchor {
  * at most one `TreeAnchor` per distinct path — this is the mandatory
  * pre-processing step every caller runs first to guarantee that.
  *
- * Mirrors the order-array-plus-Map idiom already used by
- * `dedupeByAnchor()` (advisor-core.ts) for the same reason: the CLI can emit
+ * The CLI can emit
  * multiple rows for one logical path, and the *position* of a later
  * same-path row is subsumed into that path's first occurrence, not appended
  * at its own later position. Concretely: `a.ts#L1-L5`, `b.ts#L1-L5`,
@@ -198,10 +184,9 @@ function foldChain(node: PathTreeNode): DisplayItem {
 
 /**
  * Rank of a stacked entry's range kind: `whole-file` first, then numeric
- * `range`s, then `truncated`. A whole-file anchor is the CLI's `0-0` row — it
+ * `range`s. A whole-file anchor is the CLI's `0-0` row — it
  * covers the entire file, so it sorts ahead of every line range on that file
- * the same way line 0 would. `truncated` carries no position at all and sorts
- * last.
+ * the same way line 0 would.
  */
 function rangeRank(range: RangeLabel): number {
   switch (range.kind) {
@@ -209,8 +194,6 @@ function rangeRank(range: RangeLabel): number {
       return 0;
     case 'range':
       return 1;
-    case 'truncated':
-      return 2;
   }
 }
 
@@ -218,9 +201,8 @@ function rangeRank(range: RangeLabel): number {
  * Stacked-range order is by kind rank then numeric (`start` then `end`),
  * overriding arrival or codepoint order — the only sorting this module does,
  * and scoped strictly to ranges stacked on one path (never to sibling paths
- * or directory order). Equal-ranked entries (two `truncated`s, or two
- * identical ranges) keep their own relative arrival order, since the sort is
- * stable.
+ * or directory order). Identical ranges keep their own relative arrival
+ * order, since the sort is stable.
  */
 function compareRangeEntries(a: RangeEntry, b: RangeEntry): number {
   const rank = rangeRank(a.range) - rangeRank(b.range);
@@ -259,8 +241,6 @@ function labelFor(range: RangeLabel, sole: boolean): string | null {
       return `#L${range.start}-L${range.end}`;
     case 'whole-file':
       return sole ? null : '(whole file)';
-    case 'truncated':
-      return '(truncated in source — anchor incomplete)';
   }
 }
 

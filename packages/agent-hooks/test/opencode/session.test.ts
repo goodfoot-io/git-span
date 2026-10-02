@@ -1,7 +1,7 @@
 /**
  * Tests for the OpenCode session lifecycle split (plan decision 8):
  * `session.idle` is a turn boundary — it prunes ONLY call-scoped state
- * (stashed reports, patch plans, shell cwd frames, pending bash planned-touch
+ * (patch plans, shell cwd frames, pending bash planned-touch
  * records) and never the surfaced-span memo on disk; `session.deleted` runs
  * the full cleanup; `dispose()` backstops every tracked session. Also covers
  * the call-state stash's consume-on-read semantics and the assembled plugin's
@@ -10,8 +10,6 @@
 
 import { existsSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
-import type { AdvisorExecutors, AdvisorMemoState, GitExecutor } from '../../src/common/advisor-core.js';
-import type { DriftPorcelainRow, PorcelainRow } from '../../src/common/agent-hooks-common.js';
 import { createDefaultPlannedTouchStore } from '../../src/common/bash-attribution.js';
 import { createDiskMemoStore } from '../../src/common/span-surface.js';
 import { assemblePlugin } from '../../src/opencode/index.js';
@@ -19,47 +17,6 @@ import { createDisposeHandler, createEventHandler } from '../../src/opencode/ses
 import type { OpencodeCallState, PatchPlanTouch } from '../../src/opencode/stash.js';
 import { createOpencodeCallState } from '../../src/opencode/stash.js';
 import { makeTempLayout } from '../session-layout-helpers.js';
-
-const SPAN = 'billing/checkout-request-flow';
-
-function fakeGit(): GitExecutor {
-  return {
-    stagedPaths: async () => ['src/app.ts'],
-    trackedModifiedPaths: async () => [],
-    outgoingPaths: async () => ({ paths: [], base: '@{u}' }),
-    pathspecPaths: async () => [],
-    changedHunks: async () => []
-  };
-}
-
-/** An executor pair whose advisory always resolves to an environmental report kind. */
-function environmentalExecutors(): AdvisorExecutors {
-  return {
-    fix: async () => {},
-    list: async (): Promise<PorcelainRow[]> => [porcelainRow()],
-    drift: async (): Promise<DriftPorcelainRow[]> => [driftRow('LFS_NOT_FETCHED')],
-    listBlocks: async (): Promise<string> => ''
-  };
-}
-
-function sharedMemoFactory(): (cwd: string) => AdvisorMemoState {
-  const digests = new Set<string>();
-  const state: AdvisorMemoState = {
-    has: (d) => digests.has(d),
-    record: (d) => {
-      digests.add(d);
-      return true;
-    }
-  };
-  return () => state;
-}
-
-function porcelainRow(path = 'src/app.ts'): PorcelainRow {
-  return { name: SPAN, path, start: 1, end: 10 };
-}
-function driftRow(status: DriftPorcelainRow['status'], path = 'src/app.ts'): DriftPorcelainRow {
-  return { name: SPAN, path, start: 1, end: 10, status };
-}
 
 function silentLogger() {
   return { warn: () => undefined };
@@ -83,12 +40,8 @@ vi.mock('../../src/opencode/stash.js', async (importOriginal) => {
 });
 
 describe('opencode call state (stash)', () => {
-  it('report blocks and patch plans consume-on-read', () => {
+  it('patch plans consume-on-read', () => {
     const stash = createOpencodeCallState();
-    stash.stashReport('s', 'c1', '<git-span>preview</git-span>');
-    expect(stash.takeReport('s', 'c1')).toBe('<git-span>preview</git-span>');
-    expect(stash.takeReport('s', 'c1')).toBeNull();
-
     stash.stashPatchPlan('s', 'c2', [
       { absolutePath: '/r/f.ts', operation: 'modify', ranges: [{ start: 1, end: 2 }], preTrackedDelete: false }
     ]);
@@ -105,15 +58,15 @@ describe('opencode call state (stash)', () => {
 
   it('pruneSession drops that session only; clear drops everything', () => {
     const stash = createOpencodeCallState();
-    stash.stashReport('s1', 'c', 'one');
-    stash.stashReport('s2', 'c', 'two');
+    stash.trackShellCwd('s1', 'c', '/one');
+    stash.trackShellCwd('s2', 'c', '/two');
     stash.trackPlannedCall('s1', 'p1');
     stash.pruneSession('s1');
-    expect(stash.takeReport('s1', 'c')).toBeNull();
+    expect(stash.peekShellCwd('s1', 'c')).toBeNull();
     expect(stash.plannedCalls('s1')).toEqual([]);
-    expect(stash.takeReport('s2', 'c')).toBe('two');
+    expect(stash.peekShellCwd('s2', 'c')).toBe('/two');
     stash.clear();
-    expect(stash.takeReport('s2', 'c')).toBeNull();
+    expect(stash.peekShellCwd('s2', 'c')).toBeNull();
   });
 
   it('every ingress refuses empty session or call ids — nothing enters the unprunable keyspace', () => {
@@ -125,11 +78,6 @@ describe('opencode call state (stash)', () => {
     const plan: PatchPlanTouch[] = [
       { absolutePath: '/r/f.ts', operation: 'modify', ranges: [{ start: 1, end: 2 }], preTrackedDelete: false }
     ];
-
-    stash.stashReport('', 'c', 'ghost-report');
-    stash.stashReport('s', '', 'ghost-report');
-    expect(stash.takeReport('', 'c')).toBeNull();
-    expect(stash.takeReport('s', '')).toBeNull();
 
     stash.stashPatchPlan('', 'c', plan);
     stash.stashPatchPlan('s', '', plan);
@@ -147,13 +95,13 @@ describe('opencode call state (stash)', () => {
     expect(stash.plannedCalls('s')).toEqual([]);
 
     // Real keys are unaffected by the refusals.
-    stash.stashReport('s', 'c', 'kept');
-    expect(stash.takeReport('s', 'c')).toBe('kept');
+    stash.trackShellCwd('s', 'c', '/kept');
+    expect(stash.peekShellCwd('s', 'c')).toBe('/kept');
   });
 });
 
 describe('opencode lifecycle split (decision 8)', () => {
-  it('idle preserves the surfaced-span memo but prunes stashed reports and pending bash plans', async () => {
+  it('idle preserves the surfaced-span memo but prunes cwd frames and pending bash plans', async () => {
     const temp = makeTempLayout();
     try {
       const logger = silentLogger();
@@ -171,7 +119,7 @@ describe('opencode lifecycle split (decision 8)', () => {
 
       const sessions = new Set(['sess']);
       const callState = createOpencodeCallState();
-      callState.stashReport('sess', 'call-8', '<git-span>status preview</git-span>');
+      callState.trackShellCwd('sess', 'call-8', '/repo/sub');
       callState.trackPlannedCall('sess', 'call-9');
 
       const event = createEventHandler({
@@ -186,8 +134,8 @@ describe('opencode lifecycle split (decision 8)', () => {
 
       // The turn boundary must NOT touch the surfaced-span memo…
       expect([...memo.getSurfaced('sess')]).toEqual(['billing/checkout-request-flow']);
-      // …but the report stash is gone…
-      expect(callState.takeReport('sess', 'call-8')).toBeNull();
+      // …but the cwd frame is gone…
+      expect(callState.peekShellCwd('sess', 'call-8')).toBeNull();
       // …and the pending bash plan record was discarded.
       expect(store.take('sess', 'call-9').status).not.toBe('record');
     } finally {
@@ -205,7 +153,7 @@ describe('opencode lifecycle split (decision 8)', () => {
 
       const sessions = new Set(['gone']);
       const callState = createOpencodeCallState();
-      callState.stashReport('gone', 'c', 'x');
+      callState.trackShellCwd('gone', 'c', '/repo/sub');
       const event = createEventHandler({
         layout: temp.layout,
         logger: silentLogger(),
@@ -291,95 +239,6 @@ describe('opencode plugin shell.env wiring', () => {
       expect(stash.peekShellCwd('sess', 'real-call')).toBe('/frame');
       await hooks.event!({ event: { type: 'session.idle', properties: { sessionID: 'sess' } } });
       expect(stash.peekShellCwd('sess', 'real-call')).toBeNull();
-    } finally {
-      cleanup();
-    }
-  });
-});
-
-describe('opencode plugin — degraded-id composition (empty sessionID, real callID)', () => {
-  interface Recording {
-    warns: string[];
-  }
-
-  /** Assemble the plugin with an advisor that always produces a report-kind advisory. */
-  function assembleWithAdvisor() {
-    const temp = makeTempLayout();
-    const recording: Recording = { warns: [] };
-    const logger = {
-      warn: (message: string) => {
-        recording.warns.push(message);
-      },
-      info: () => undefined
-    };
-    const hooks = assemblePlugin({
-      directory: '/repo',
-      layout: temp.layout,
-      logger,
-      git: fakeGit(),
-      executors: environmentalExecutors(),
-      advisorMemoFactory: sharedMemoFactory()
-    });
-    if (captured.last === null) throw new Error('plugin did not create a call-state stash');
-    return { hooks, stash: captured.last, recording, cleanup: () => temp.cleanup() };
-  }
-
-  const degradedBefore = {
-    tool: 'bash',
-    sessionID: '',
-    callID: 'ghost-call'
-  } as const;
-  const degradedAfter = { ...degradedBefore, args: { command: 'git commit -m x' } } as const;
-  const successfulBash = { output: '', metadata: { output: '', exit: 0 } };
-
-  it('an advisory under an empty sessionID is never stashed; the paired after hook skips cleanly with no throw and no swallowed-work warn', async () => {
-    const { hooks, stash, recording, cleanup } = assembleWithAdvisor();
-    try {
-      // Before hook: the environmental advisory resolves, but its ingress key
-      // is degraded — the stash must refuse it (nothing immortal).
-      await hooks['tool.execute.before']!(degradedBefore, { args: degradedAfter.args });
-      expect(stash.takeReport('', 'ghost-call')).toBeNull();
-
-      // Paired after hook: resolves cleanly — the touch pipeline is skipped
-      // symmetrically instead of throwing on the planned-touch store's
-      // ''-keyed take past report consumption. No fail-open warn distinguishes
-      // a clean skip from the old consume-then-throw swallow (the advisor's
-      // own advisory trace is deliberate logging, not an error).
-      const output = { ...successfulBash };
-      await expect(hooks['tool.execute.after']!(degradedAfter, output)).resolves.toBeUndefined();
-      expect(recording.warns.filter((message) => message.includes('failed open'))).toEqual([]);
-      expect(output.output).toBe('');
-    } finally {
-      cleanup();
-    }
-  });
-
-  it('a report stashed under a real session survives a degraded after hook and stays prunable', async () => {
-    const { hooks, stash, recording, cleanup } = assembleWithAdvisor();
-    try {
-      // A real before hook stashes under `real-sess`…
-      await hooks['tool.execute.before']!(
-        { tool: 'bash', sessionID: 'real-sess', callID: 'call-9' },
-        { args: { command: 'git commit -m x' } }
-      );
-      expect(stash.takeReport('real-sess', 'call-9')).not.toBeNull();
-      // …re-stash for the degradation scenario (takeReport consumed above).
-      stash.stashReport('real-sess', 'call-9', '<git-span>ENV ADVISORY</git-span>');
-
-      // The host then degrades ids between before and after: nothing may
-      // throw, and the retained report must stay prunable by the real
-      // session's turn boundary — never stranded forever.
-      const output = { ...successfulBash };
-      await expect(
-        hooks['tool.execute.after']!(
-          { tool: 'bash', sessionID: '', callID: 'call-9', args: { command: 'git commit -m x' } },
-          output
-        )
-      ).resolves.toBeUndefined();
-      expect(recording.warns.filter((message) => message.includes('failed open'))).toEqual([]);
-      expect(stash.takeReport('real-sess', 'call-9')).toBe('<git-span>ENV ADVISORY</git-span>');
-      await hooks.event!({ event: { type: 'session.idle', properties: { sessionID: 'real-sess' } } });
-      expect(stash.takeReport('real-sess', 'call-9')).toBeNull();
     } finally {
       cleanup();
     }

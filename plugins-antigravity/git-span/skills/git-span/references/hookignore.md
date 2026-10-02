@@ -8,8 +8,7 @@ source. A repo can hold those back, **per path**, with a `.hookignore` file.
 This only affects the `<git-span>` block the `PostToolUse` touch pipeline
 surfaces (delivered after the invocation's tool batch — see
 `./understanding-hook-output.md`); it never changes what `git span` commands
-report or how anchors resolve, and it has no effect on the `PreToolUse`
-advisor.
+report or how anchors resolve.
 
 ## Where it lives
 
@@ -62,51 +61,3 @@ docs/   wiki
 A missing or unreadable `.hookignore`, or a malformed line, yields no rule —
 spans surface as normal rather than being silently hidden. When in doubt the
 file errs toward showing spans, not hiding them.
-
-## Suppressing the advisor's uncovered-writes check: `.advisorignore`
-
-A separate file, `<repoRoot>/.span/.advisorignore`, controls the `PreToolUse`
-advisor's uncovered-writes leg (`./understanding-hook-output.md` § "The advisor:
-what a held command sees") — a changed file no span anchors at all. It is
-**user-owned**: nothing creates or populates it (unlike `.hookignore`, which
-the `git-span` CLI auto-creates), so its absence is the normal, unconfigured
-state.
-
-Each non-comment line is a single gitignore-style path pattern — the same
-grammar as `.hookignore` above (blank lines and `#` comments skipped, trailing
-`/` for directory-only, anchored-vs-unanchored matching, `*`/`?`/`**`, no
-negation), but with **no trailing prefix list**: an `.advisorignore` line either
-excludes a path from the uncovered-writes check or it doesn't, since the
-advisor has no per-span-slug suppression concept.
-
-```text
-# Generated output and vendored code never need a span.
-dist/**
-vendor/
-```
-
-This is a coarser tool than `.hookignore` in scope but finer-grained in
-matching: it opts specific paths out of the "should this changed file have a
-span?" nudge, rather than suppressing specific spans on specific paths. Reach
-for it when part of a repo's write surface is dominated by files that will
-never carry a coupling worth declaring (generated output, vendored code, pure
-config) and the one-time uncovered-writes prompt on those paths is pure noise
-rather than an occasional useful nudge.
-
-`.advisorignore` never affects the advisor's **semantic-drift** check — a
-changeset that already carries a drifted anchor is still held regardless of
-this file (once per distinct set of findings; an identical retry passes on
-its own). It only silences the "nothing anchors this new/changed file"
-observation, and only for the paths it matches — a standing, committed,
-path-scoped exclusion from that one check.
-
-Fail-open: a missing or unreadable `.advisorignore`, or a malformed line,
-yields no additional exclusion — the uncovered-writes check simply falls back
-to the advisor's unconditional `.span/**` exclusion.
-
-```bash
-cat <<'EOF' > .span/.advisorignore
-vendor/
-EOF
-git add .span/.advisorignore && git commit -o .span/.advisorignore -m "Exclude vendored code from the advisor's uncovered-writes nudge"
-```

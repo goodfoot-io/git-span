@@ -46,10 +46,8 @@ const HEADING_INVENTORY: Record<string, string[]> = {
     'where-to-go-next'
   ],
   '/docs/agent-integration': [
-    'touch-hook--advisor',
-    'what-the-advisor-holds-on',
+    'touch-hook',
     'suppression',
-    'resolving-a-held-commit',
     'codex-specifics',
     'opencode-specifics',
     'antigravity-specifics',
@@ -61,7 +59,6 @@ const HEADING_INVENTORY: Record<string, string[]> = {
     'auto-resolve-whats-safe',
     'resolve-whats-left-by-hand',
     'commit-the-result',
-    'if-a-commit-was-denied',
     'merge-conflicts-in-span'
   ],
   '/docs/guides/re-anchor-after-an-edit': [

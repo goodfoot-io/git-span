@@ -1,6 +1,6 @@
 /**
  * Antigravity PostInvocation drain — the delivery leg of the three-way
- * touch-attribution split and of the advisor's allow-with-report kinds.
+ * touch-attribution split.
  * Neither PreToolUse-allow nor PostToolUse carries a message channel, so
  * every rendered `<git-span>` block produced during the invocation waits in
  * the pending-injection stash; this handler drains them, in append order,

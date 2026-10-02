@@ -8,7 +8,7 @@
  * `edit` (`{filePath, oldString, newString, replaceAll?}`), `write`
  * (`{content, filePath}`), and `apply_patch` (`{patchText}`, gpt-models only).
  * OpenCode's experimental code-mode `execute` tool is deliberately excluded —
- * commands issued through it bypass attribution and advisory checks alike
+ * commands issued through it bypass attribution checks
  * (accepted v1 gap, documented in the skill reference and website docs).
  *
  * Every narrow is total over garbage input: malformed shapes resolve to

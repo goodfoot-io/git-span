@@ -3,145 +3,55 @@ title: Agent integration
 description: What the Claude Code, Codex, OpenCode, and Antigravity integrations wire up — workflow hooks, skills, and agent-specific support.
 ---
 
-The git-span plugin is how an agent operates git-span without being told the command syntax on every turn. Once installed (see [Getting started](/docs/getting-started)), it provides these capabilities:
+Once installed (see [Getting started](/docs/getting-started)), the git-span plugin provides:
 
-- **A touch hook** — fires after supported tool calls that can touch tracked files, healing positional drift inline.
-- **A commit advisor** — fires before `git commit`/`git push`, holding the command once when the changeset carries real span debt, and reports (without holding) on a plain `git status`.
-- **Three skills** — `git-span` for everyday declaration, inspection, and focused reconciliation; `reconcile` for multi-span triage; and `hook-effect-analysis` for measuring whether hook emissions earn their context cost. Skills load when the task matches; the measurement skill is not part of ordinary span maintenance.
-- **An expert subagent where the host supports one** — Claude Code, Codex, and OpenCode ship a dedicated agent for judgment-heavy span work. Antigravity ships the skills and hooks without a separate agent artifact.
+- **A touch hook** — surfaces existing spans after supported reads and writes and repairs mechanically safe positional drift inline.
+- **Static planning and lifecycle hooks** — capture bounded pre-state for supported writes, deduplicate context, warm up the CLI, and clean up session state.
+- **Three skills** — `git-span` for declaration, inspection, and focused reconciliation; `reconcile` for multi-span triage; and `hook-effect-analysis` for measuring hook emissions.
+- **An expert subagent where supported** — Claude Code, Codex, and OpenCode ship one; Antigravity ships skills and hooks without a separate agent artifact.
 
-The CLI itself doesn't change: every capability the plugin uses is a plain `git span` invocation, scriptable the same way in a terminal or CI.
+The integrations use the same scriptable `git span` CLI available in a terminal or CI.
 
-The bundles also include lifecycle and planning hooks that attribute supported writes, clean up per-session state, and check CLI/plugin compatibility. Event names, delivery channels, and tool coverage differ by host; the touch hook and advisor are the two user-facing workflows.
+## Touch hook
 
-## Touch hook + advisor
+The touch pipeline observes supported file-affecting tools: Claude Code covers `Read`, `Edit`, `Write`, and `Bash`; Codex covers `apply_patch` and its shell/exec family; OpenCode covers `bash`, `read`, `edit`, `write`, and `apply_patch`; Antigravity covers `run_command`.
 
-- **Touch hook** — observes supported file-affecting tool calls. Claude Code covers `Read`, `Edit`, `Write`, and `Bash`; Codex covers `apply_patch` and its shell/exec tool family; OpenCode covers `bash`, `read`, `edit`, `write`, and `apply_patch`; Antigravity covers `run_command`. It re-anchors pure positional drift against the file's real post-edit content, silently. If genuine semantic drift survives that heal, it injects a bounded context block naming the span, its status, and what to do. Each `(span, status)` pair surfaces at most once per session.
-- **Advisor** (`PreToolUse` on the shell tool) — fires before `git commit`/`git push`/`git status` runs. It resolves the actual changeset (staged files, plus tracked-modified files under `-a`/`-am`; for `git status`, staged plus tracked-modified, the same working-tree picture `git status` itself prints), reruns a scoped `git span drift --fix`, and classifies what's left. For `git commit`/`git push`, real span debt — semantic drift, or a changed file no span covers — holds the command with a checklist once per distinct debt state, so the report gets read; an identical retry proceeds. The advisor reports rather than enforces, so a `git commit`/`git push` whose exact debt state a prior `git status` already surfaced in full also proceeds, without holding on a state the agent has already been shown. `git status` is never held: its first preview shows the same checklist as advisory context, later previews show only newly discovered paths or drift rows, and an unchanged preview stays silent. Positional drift never causes a hold; the touch hook already healed it. If the scan itself fails to complete, the advisor holds nothing on that account — it warns that span debt wasn't verified and lets the command proceed, carrying the failed command's own stderr as a delimited `<git-span-error>` block inside the warning so the raw diagnostic is clearly bounded.
+When a supported range intersects an existing anchor, the hook repairs mechanically safe positional drift and surfaces bounded context identifying the span, its anchors, and its why. Remaining semantic drift requires a decision about the coupled artifacts; see [Reconcile drifted spans](/docs/guides/reconcile-drifted-spans). Session deduplication suppresses context already shown with the same span status.
+
+Shell attribution uses bounded literal command intent and post-state evidence. Static planning captures only the pre-state needed for supported operations. Unproven dynamic paths, unsupported syntax, and inconclusive failed writes stay silent. Failed commands can surface a write only when the supported parser provides decisive post-state evidence; interrupted calls suppress attribution.
 
 <Callout type="info">
-Both hooks fail open on everything that decides *whether* there is something to say: a missing `git span` binary, a timeout, or an unexpected result resolves to "allow silently, inject nothing." Neither can brick an edit or a commit on its own failure.
+A missing `git span` binary, timeout, failed scan, or unexpected CLI result injects nothing and does not block the tool.
 
-Rendering is the deliberate exception, and fails **closed**. If the anchor tree can't be drawn, the hook falls back to the flat bullet form and still holds — a defect in how a hold is presented must cost presentation, never the hold itself. That's why those `try/catch` blocks sit around the render calls rather than deferring to the advisor's outer fail-open catch: they exist precisely to keep a formatting error from converting a correctly computed hold into a silent allow. Treat them as load-bearing, not as fallbacks that escaped the rule above.
+Human edits, unsupported tools, and inactive hooks can bypass this coverage. Run explicit `git span drift` checks or use CI to verify existing spans across the repository.
 </Callout>
-
-### What the advisor holds on
-
-Two shapes, both rendered into the held command's `permissionDecisionReason`:
-
-**Semantic drift** — the full span (all anchors, drifted ones labeled, the description), held on once per distinct set of findings; a retry with the same findings proceeds, and editing a span's anchors changes the findings and produces one fresh hold:
-
-```
-This change leaves an implicit dependency out of date:
-
-## checkout-flow
-├─ web/checkout.tsx #L4-L6 — changed
-└─ api/charge.ts    #L30-L76
-
-Checkout request flow that carries a charge attempt from the browser to the
-Stripe-backed server.
-
----
-
-Dispatch a forked subagent to bring the coupled files back into agreement
-(follow confirmed authority) — preserve anchor shape; if an address changed,
-swap the old anchor for the new one with `git span replace`; update or
-retire the why only if its meaning changed; require `git span drift
-checkout-flow` to report zero. Then retry. Load the `git-span:reconcile`
-skill in the fork. The hold will not fire again for the same debt state.
-Conform a side only when confirmed authority or a satisfied gate decides it;
-report ambiguity or an obsolete dependency.
-```
-
-The closing copy uses the Claude harness's vocabulary (`Agent` with `subagent_type: "fork"`); under Codex the same direction is spelled `spawn_agent` with `fork_turns: "all"`.
-
-The `## <name>` header and the why sentence are the same shape `git span list` prints; the anchor list deliberately is not — where the CLI prints a flat `- path#Lstart-Lend` bullet run, the hook renders the span's full declared anchor list as a box-drawing tree grouped by shared path prefix. A directory holding a single entry folds onto that entry's line, so a branch only ever appears where two or more anchors actually share a prefix. A whole-file anchor is a bare path with no range column; where the same file also carries line ranges, it takes `(whole file)` in the range column so its own drift label can never be read as belonging to a neighbouring range. The CLI's own text format is untouched — only the hook's re-presentation of it groups, so `(whole file)` is a token you will see in a hold and never in `git span list` output.
-
-**Uncovered writes** — a changed file no span anchors at all, held on once per distinct debt state; an unchanged retry passes, and so does a commit/push whose exact debt state a prior `git status` already showed in full. When the rest of the changeset already belongs to spans, a related-spans section follows the checklist — only anchors that are part of *this* changeset, as line ranges wherever possible, ranked so the span covering the most of the changeset leads (ties broken by directory proximity to an uncovered file, then by name), capped at eight spans with any remainder disclosed by count, each group followed by that span's `why` sentence when it has one recorded:
-
-```
-<git-span>
-- src/new-module.ts
-
-Dispatch a forked subagent to determine if this file carries implicit
-dependencies and to then use `git span` to document them:
-
-`git span add <name> <anchor> [<anchor>] ...`  — an anchor is a path or a `path#Lstart-Lend` range
-`git span why <name> "<why>"`
-
-The "<why>" is one or two complete present-tense clauses stating the
-relationship and any decisive nonlocal authority, invariant, permitted
-difference, lifecycle state, evidence gate, or focused conditional verification.
-Labels are optional but must introduce complete clauses. Omit generic work
-orders and CLI procedure.
-
----
-
-Other files in this change already belong to spans — an uncovered file above
-might belong with one of these instead of a new one:
-
-## checkout-flow
-└─ web/checkout.tsx #L4-L6
-
-Checkout request flow that carries a charge attempt from the browser to the
-Stripe-backed server.
-
-If none exist, retry the command to proceed (one-time check).
-
-Load the `git-span:git-span` skill in the fork.
-</git-span>
-```
-
-`MOVED` and `RESOLVED_PENDING_COMMIT` anchors are never debt — they never appear in either checklist and never cause a hold. `.span/**` writes are excluded from the uncovered-writes check so a span repair riding the same commit never self-triggers the advisor.
-
-A `git status` preview renders the same two checklists as advisory `systemMessage` context, minus each's retry phrasing — semantic drift drops `— then retry` from its closing sentence, and uncovered writes drops the whole `If none exist, retry the command to proceed (one-time check).` sentence — nothing was ever held, so there's nothing to retry. Each preview memoizes the individual uncovered paths and semantic drift rows it names. Later previews render the full checklist for only newly seen items; when every current item was already named, the preview is silent. This per-item preview memory is separate from the once-per-debt-state *hold-credit* memo that `git commit`/`git push` rely on, so status cannot spend the one-time hold a later real commit depends on. Status also marks its complete debt state as already explained on a separate axis, so a `git commit`/`git push` that follows a `git status` on the same unchanged state passes instead of holding — the advisor only reports, and there's nothing left to tell the agent that the status preview didn't already say.
 
 ### Suppression
 
-There's no override for an advisory hold, and none is needed — every hold resolves on its own: a fresh finding holds once, and an identical retry proceeds. What's left to configure is what the hooks pay attention to in the first place:
-
-- `.span/.hookignore` — a gitignore-like, per-path file suppressing the touch hook's context injection for noisy spans (wiki/marketing prose, etc). Never affects `git span` command output itself.
-- `.span/.advisorignore` — user-owned; each non-comment line is a gitignore-style path pattern (same grammar as `.hookignore`, minus the span-slug-prefix list) excluding matching paths from the advisor's uncovered-writes check. Nothing auto-creates it, and a missing/unreadable file fails open to no additional exclusion. It never suppresses the semantic-drift check. This is the right home for generated output a listed path will never carry a span for — the advisor cannot recognize a regenerated bundle on its own, and spanning build output is the wrong answer.
-
-Separately, and with nothing to configure: the uncovered-writes list omits files whose change is recognizably mechanical, so a release bump across twenty manifests doesn't bury the file carrying the real edit. Lockfiles, minified output, sourcemaps, and vendored trees are dropped by path; a manifest whose diff moves nothing but a version token, checksum, or timestamp is dropped by content. Source and prose files are never dropped by content — an unrecognized file type can only ever stay listed. Because a suppressed file is simply one you're never told about, set `AGENT_HOOKS_LOG_FILE` to a path when you need to know why something is missing: each invocation records how many candidates were dropped by path, by content, and whether the diff read succeeded. Unset, that record has nowhere to go.
-
-### Resolving a held commit
-
-1. Semantic drift: restore each relationship using confirmed authority or a satisfied gate, reconcile its why and anchors, and require scoped zero drift before retrying. An unchanged retry proceeds because the same findings are held only once.
-2. Uncovered writes: either declare the coupling (`git span add` then `git span why <name> "..."`) or just retry — a second attempt at an unchanged debt state passes.
-
-See [Reconcile drifted spans](/docs/guides/reconcile-drifted-spans) for the full triage workflow.
+`.span/.hookignore` suppresses selected spans by path in touch context. It does not change CLI output or anchor resolution. A missing or unreadable file applies no suppression.
 
 ## Codex specifics
 
-The trust flow in [Getting started](/docs/getting-started) is what actually turns these hooks on under Codex — installing the plugin alone leaves them inert until `/hooks` review. Two things worth repeating here because they change what "installed" means:
+Installing the plugin leaves hooks inactive until the user reviews and trusts them through `/hooks`; see [Getting started](/docs/getting-started). Hash-stable hook filenames preserve an existing trust decision across plugin upgrades.
 
-- Hash-stable hook filenames keep an existing trust decision valid across plugin upgrades, so a Codex user doesn't re-trust on every update.
-
-None of this affects Claude Code, which has no separate trust step.
+Shell envelopes' `workdir` selects the effective repository for planning and attribution. Patch planning and post-tool handling preserve the affected ranges, including supported failure-event attribution. Context arrives through `additionalContext`.
 
 ## OpenCode specifics
 
-OpenCode loads the plugin from the npm package (see [Getting started](/docs/getting-started)) with no trust-review step, and runs its hooks in-process. The touch hook and advisor behave as described above, with these differences:
+OpenCode loads the npm plugin in-process without a trust-review step. `tool.execute.before` captures shell and patch plans; `tool.execute.after` appends `<git-span>` context to tool output. Shell cwd frames and session lifecycle keep plans scoped to the correct repository and tool call.
 
-- **A hold is a thrown error.** There's no deny decision and no separate system message: when the advisor holds `git commit`/`git push`, the before-hook throws, the command never runs, and the thrown checklist is the error the model sees verbatim. The hold is still advisory and one-time — a bare retry passes.
-- **Injection appends to tool output.** `<git-span>` blocks and `git status` previews are appended to the tool result after execution, never rewritten or held back.
-- **Host-level failures get no attribution (degraded parity).** OpenCode's after hook fires only on successful execution, and only host-level failures skip it — invalid arguments, denied permission, a spawn error. Those calls' writes are neither healed nor attributed until a later successful read/edit touches those paths, and any report stashed for them is dropped silently. A command that merely exits nonzero still runs the after hook: the bash tool returns a numeric `exit`, and join semantics gate each write on that exit (a short-circuited `&&` attributes nothing because its write never ran). As with the twins' failed commands, though, it can still surface a write only when the parse carries decisive post-state evidence, such as an expected replacement result — an inconclusive write goes silent under a nonzero exit instead of firing as an existence-gated advisory. Aborts and timeouts surface as `exit: null`, suppressing attribution exactly like the twins' interrupted rows. As everywhere, `git span drift` in CI ([The enforcement backstop](#the-enforcement-backstop)) is what catches what the hooks miss.
-- **No per-hook timeouts.** OpenCode doesn't kill slow hooks, and plugins run in-process — an advisor scan briefly blocks the host loop — so the plugin bounds its own `git span` subprocesses with tighter timeouts than the other twins' hosts impose.
-- **Coverage.** The hooks cover the `bash`, `read`, `edit`, and `write` tools, plus `apply_patch` on gpt models (where it replaces `edit`/`write`). OpenCode's experimental code-mode `execute` tool is excluded from both hooks, so commands issued through it bypass attribution and advisory checks.
-- **Vocabulary in closings.** Hold checklists dispatch follow-up work through the Task tool (`task` with `subagent_type`) and address skills by bare directory names (`reconcile`, `git-span`) via the skill tool — rather than the Claude or Codex spellings shown in the examples above.
-- **Update checks are off for the session.** Loading the plugin disables git-span's update check for the whole OpenCode process, so every `git span` invocation made from inside the session stays silent about available updates.
+Host-level failures such as invalid arguments, denied permission, or spawn errors never reach the after hook and receive no attribution. A numeric nonzero shell exit still reaches it, with exit-gated attribution; an `exit: null` result suppresses attribution like an interruption. The experimental `execute` tool is outside coverage. The plugin bounds its own CLI subprocesses because the host imposes no per-hook timeout.
 
-Set `OPENCODE_GIT_SPAN_LOG_FILE` to a path when you need the JSONL hook log — the churn-suppression records described under [Suppression](#suppression) go there under OpenCode.
+Loading the plugin disables CLI update checks for the session. Set `OPENCODE_GIT_SPAN_LOG_FILE` to a path for JSONL hook diagnostics.
 
 ## Antigravity specifics
 
-Antigravity installs a plugin directory with three skills and seven hook entry points. There is no marketplace or trust-review step. The host treats an empty `PreToolUse` response as a denial, so every non-hold path returns an explicit allow; a real hold denies `git commit` or `git push` once with the checklist as its reason, and an identical retry proceeds.
+Antigravity installs three skills and the workflow hooks without a marketplace or separate trust-review step. Empty `PreToolUse` responses mean denial on this host, so the retained pre-tool handlers return explicit allow decisions.
 
-Only `run_command` has a pinned tool contract. Shell activity receives the planning, attribution, drift-healing, and advisor workflows described above. Dedicated file-edit tools do not: their names and argument shapes are not stable enough for the plugin to guess. Their changes remain visible to the advisor because it resolves the actual git changeset, and `git span drift` in CI remains the enforcement backstop.
+Only `run_command` has a pinned tool contract. Dedicated file-edit tools receive no touch attribution; explicit `git span drift` checks or CI verify their changes.
 
-Antigravity's `PostToolUse` event carries a step index rather than the original call or response. The plugin joins it to disk-backed pre-call state, queues rendered context, and delivers that context after the invocation as an ephemeral message. Successful commands provide no exit-code or response-derived read evidence; failed commands are handled conservatively. This changes delivery timing and attribution detail, not the span resolver's meaning.
+`PostToolUse` carries a step index rather than the original call or response. The plugin joins disk-backed pre-call state, queues rendered touch context, and delivers it after the invocation's tool batch as an ephemeral message. Successful calls provide no exit-code or response-derived read evidence. Failed calls never surface writes because there is no post-state evidence to verify.
 
 ## The enforcement backstop
 
-The touch hook and advisor only run inside a hooked agent session. A human-authored commit, a session without active hooks, a tool outside a host's coverage, or a failed host-level tool call can still land span debt. [CI & git integration](/docs/ci) covers `git span drift` as the backstop that catches what the in-session hooks miss.
+Touch hooks provide context during supported reads and writes. They do not check a complete changeset at commit, push, or status time. Human edits, inactive hooks, unsupported tools, and host-level failures can leave existing spans drifting. [CI & git integration](/docs/ci) covers `git span drift` as the check before merge.

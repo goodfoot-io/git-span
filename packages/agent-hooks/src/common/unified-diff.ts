@@ -1,6 +1,6 @@
 /**
  * The range-preserving unified-diff parser (plan §5.7), sibling to
- * mechanical-change.ts's range-less `parseUnifiedDiff`. The patch/git apply
+ * the response-side diff decoder. The patch/git apply
  * grammar needs the `@@ -a,b +c,d @@` hunk numbers that parseUnifiedDiff
  * discards, so this parses the same header dialect from scratch.
  *

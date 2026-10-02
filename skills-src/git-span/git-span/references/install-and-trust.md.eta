@@ -1,5 +1,5 @@
 <% /* Whole-body variant: Claude Code and Codex share the Codex
-   marketplace/plugin-add/trust flow (including the unverified-deny caveat);
+   marketplace/plugin-add/trust flow (including hook trust);
    OpenCode replaces the entire document with its npm-plugin install and
    skill-materialization flow. Authored as install-and-trust.md.eta so every
    platform renders the same neutral filename. */
@@ -61,11 +61,8 @@ channel at all: nothing they do can brick an edit or a commit. One host
 behavior shapes the hook replies: Antigravity treats an **empty** PreToolUse
 reply (`{}`) as a deny with an empty reason, so every non-deny path in the
 bundled hooks answers with an explicit `{"decision": "allow"}` — silence is
-not consent on this host. A hold is an
-advisory one-time interruption — a held `git commit`/`git push` is denied
-once with its checklist as the deny reason, and a bare retry passes — so rely
-on `git span drift` in CI (see `references/ci-and-sync.md`) as the
-enforcement backstop either way.
+not consent on this host. Rely on `git span drift` in CI
+(see `references/ci-and-sync.md`) to verify edits outside hook coverage.
 
 ## Caveat: file edits get no attribution
 
@@ -76,9 +73,7 @@ names. In this version, edits made through those tools are invisible to the
 touch pipeline: no touch attribution, no inline positional-drift heal, and no
 `<git-span>` block for the edit itself. Drift such an edit causes still
 surfaces later — through the next shell command touching the same anchors,
-through `git span drift`, and through the commit advisor, which resolves the
-real changeset from git state and therefore sees every edit however it was
-made. Don't count on per-edit attribution outside `run_command`; rely on
+through explicit `git span drift` checks. Don't count on per-edit attribution outside `run_command`; rely on
 `git span drift` in CI (see `references/ci-and-sync.md`) as the real
 backstop, and see `references/understanding-hook-output.md` for what the
 hooks do cover.
@@ -87,8 +82,7 @@ hooks do cover.
 ## Overview
 
 Under OpenCode, git-span ships as an npm plugin package (`opencode-git-span`)
-rather than a Claude Code plugin. Getting its hooks (the touch hook and the
-advisor) running takes two steps plus one prerequisite — registering the
+rather than a Claude Code plugin. Getting its touch hooks running takes two steps plus one prerequisite — registering the
 package in the OpenCode config, and materializing its skills and expert agent
 onto disk are two distinct steps, neither of which happens automatically.
 
@@ -117,8 +111,7 @@ Add `"opencode-git-span"` to the `plugin` array in your OpenCode config
 }
 ```
 
-OpenCode loads the package in-process at startup, and the touch hook and
-advisor are active from the next session on.
+OpenCode loads the package in-process at startup, and the touch hooks are active from the next session on.
 
 ## 2. Materialize the skills and the expert agent
 
@@ -144,18 +137,15 @@ the installer after upgrading the package to refresh the copies.
 
 There is no trust-review step to complete. OpenCode loads plugin hooks
 without a prompt, and every git-span hook fails open: nothing it does can
-brick an edit or a commit. A hold is an advisory one-time interruption — a
-held `git commit`/`git push` surfaces its checklist once as the tool error,
-and a bare retry passes — so rely on `git span drift` in CI (see
-`references/ci-and-sync.md`) as the enforcement backstop either way.
+block an edit or a commit on its own failure. Rely on `git span drift` in CI
+(see `references/ci-and-sync.md`) to verify edits outside hook coverage.
 
 ## Caveat: host-level failures get no attribution
 
 OpenCode's after hook fires only after a tool executes successfully — and only
 host-level failures skip it (invalid arguments, denied permission, a spawn
 error). Those calls get no touch attribution, no positional-drift heal, and no
-advisor report for what they attempted, and any report stashed for them is
-dropped silently; writes sitting behind such a failure still surface later,
+inline context for what they attempted; writes sitting behind such a failure still surface later,
 through the next successful read/edit that touches them. A command that merely
 exits nonzero is different: the bash tool returns normally with a numeric
 `exit`, the after hook fires, and exit-gated attribution applies (a
@@ -173,7 +163,7 @@ do cover.
 ## Overview
 
 Under OpenAI Codex, git-span ships as a hook-bundling plugin rather than a
-Claude Code plugin. Getting its hooks (the touch hook and the advisor) running
+Claude Code plugin. Getting its touch hooks running
 takes three steps plus one prerequisite — registering a marketplace,
 installing the plugin, and explicitly **trusting** the hooks are three
 distinct steps, none of which happen automatically.
@@ -232,19 +222,6 @@ it for normal interactive use.
 Hash-stable filenames (produced by the plugin's `--plugin-root` build) keep
 an existing trust decision valid across plugin updates, so re-trusting after
 every upgrade is not expected to be necessary.
-
-## Caveat: the advisor's hold hasn't been verified live
-
-Trusting the hooks makes the advisor active, but whether the
-`permissionDecision: 'deny'` it emits for a hold actually stops the shell
-tool under Codex has never been confirmed by direct execution in this repo —
-only by documentary evidence from the `@goodfoot/agent-hooks/codex` adapter's
-example. The advisor surfaces its `systemMessage` checklist either way, so
-you'll see the same span-debt listing whether or not the command pauses.
-Don't count on a trusted advisor to stop anything; rely on `git span drift`
-in CI (see `references/ci-and-sync.md`) as the real backstop, and see
-`references/understanding-hook-output.md` for what a held command looks
-like.
 
 ## Windows support
 

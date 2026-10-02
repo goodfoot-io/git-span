@@ -5,7 +5,7 @@ description: git span drift as the CI enforcement backstop, the local pre-commit
 
 ## CI gate: the enforcement backstop
 
-[Agent integration](/docs/agent-integration) covers the in-session touch hook and commit advisor, but those only run inside a hooked agent session — a human-authored commit, a session with hooks disabled, or (on Codex) a `permissionDecision: 'deny'` that doesn't actually block can all still land span debt. `git span drift`'s default exit code is the backstop, checked before merge:
+[Agent integration](/docs/agent-integration) covers touch context after supported reads and writes. Human edits, inactive hooks, unsupported tools, and host-level failures can bypass that coverage. Run `git span drift` before merge to verify every existing span:
 
 ```bash
 git span drift

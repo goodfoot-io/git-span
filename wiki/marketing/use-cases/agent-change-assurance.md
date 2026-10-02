@@ -1,9 +1,9 @@
 ---
 title: Agent Change Assurance
-summary: The strongest horizontal commercial product — git-span's touch hook, commit advisor, and CI check as a change-assurance workflow for coding agents, the commercial extensions, and the measurable economic outcomes.
+summary: The strongest horizontal commercial product — git-span's touch hook and CI check as a change-assurance workflow for coding agents, the commercial extensions, and the measurable economic outcomes.
 aliases: [Change Assurance, Pull Request Impact Review]
 tags: [marketing, use-cases]
-keywords: [agent, pull request, review, touch hook, commit advisor, CI, MCP]
+keywords: [agent, pull request, review, touch hook, CI, MCP]
 links-reviewed: 1
 ---
 
@@ -11,13 +11,14 @@ links-reviewed: 1
 
 This is the strongest horizontal commercial product.
 
-The buyer's problem is not that an agent cannot write the local edit. It is that the agent can produce a locally plausible change before discovering all of the nonlocal evidence needed to finish it. Git-span's current touch hook ([`touch-core.ts`](/packages/agent-hooks/src/common/touch-core.ts#L3-L16)), commit advisor ([`advisor-core.ts`](/packages/agent-hooks/src/common/advisor-core.ts#L1-L24)), and CI check ([`ci.yml`](/.github/workflows/ci.yml#L209-L212)) already form the outline of a change-assurance workflow:
+The buyer's problem is not that an agent cannot write the local edit. It is that the agent can produce a locally plausible change before discovering all of the nonlocal evidence needed to finish it. Git-span's current touch hook ([`touch-core.ts`](/packages/agent-hooks/src/common/touch-core.ts#L3-L16)) and CI check ([`ci.yml`](/.github/workflows/ci.yml#L209-L212)) already form the outline of a change-assurance workflow:
 
 1. The agent touches a protected region.
 2. Git-span surfaces the connected regions and the relevant nonlocal fact.
 3. The agent can inspect and update those regions.
-4. Before commit, unresolved drift is surfaced.
-5. CI catches debt created outside a hooked agent session.
+4. CI catches unresolved drift, including debt created outside supported touch events.
+
+Touch hooks report existing spans after supported reads and writes; commit, push, and status commands do not trigger a changeset-wide check or ask the agent to create spans.
 
 A commercial version would generalize this beyond local plugins:
 

@@ -24,11 +24,8 @@
  *
  * Never throws: the whole body is fail-open, because an uncaught after-hook
  * error would block an already-executed tool call on the fail-closed host.
- * Two orderings keep that fail-open net honest: a consumed forwarded report
- * is appended BEFORE any touch-pipeline work runs (a later-stage failure can
- * never swallow an already-consumed advisory), and degraded
- * session/call ids skip the pipelines entirely, symmetric with the call
- * state's ingress guard — nothing keys outside the prunable universe.
+ * Degraded session/call ids skip the pipelines entirely, symmetric with the
+ * call state's ingress guard — nothing keys outside the prunable universe.
  */
 
 import {
@@ -70,7 +67,6 @@ export interface AfterHandlerDeps {
 
 export function createAfterHandler(
   deps: AfterHandlerDeps & {
-    takeReport(sessionId: string, callId: string): string | null;
     takePatchPlan(sessionId: string, callId: string): readonly PatchPlanTouch[] | null;
     peekShellCwd(sessionId: string, callId: string): string | null;
     forgetCall(sessionId: string, callId: string): void;
@@ -85,19 +81,10 @@ export function createAfterHandler(
       const sessionId = typeof input?.sessionID === 'string' ? input.sessionID : '';
       const callId = typeof input?.callID === 'string' ? input.callID : '';
       const args = (input?.args ?? {}) as Record<string, unknown>;
-      // Forwarded report-kind checklist stashed by the before hook (decision 3).
-      const forwarded = deps.takeReport(sessionId, callId);
-      // Report kinds must not be swallowed: a consumed report lands BEFORE
-      // any touch-pipeline work runs, so a failure in a later stage can never
-      // erase an already-consumed advisory into the fail-open catch.
-      if (forwarded !== null && output !== null && typeof output === 'object') {
-        const part = `\n${forwarded.replace(/^\n+/, '')}`;
-        output.output = `${typeof output.output === 'string' ? output.output : ''}${part}`;
-      }
       let blocks: string[] = [];
       // Degraded ids skip every touch pipeline symmetrically with the call
       // state's ingress guard: ''-keyed session/call lookups and the planned
-      // store's empty-id take would otherwise throw past report consumption,
+      // store's empty-id take would otherwise throw,
       // and touches keyed outside the prune universe must never exist.
       const idsUsable = sessionId.length > 0 && callId.length > 0;
 
@@ -181,7 +168,7 @@ export function createAfterHandler(
       }
 
       // Every touch block sits on its own line after the tool result text
-      // (forwarded reports already landed above, ahead of these): strip
+      // — strip
       // leading newlines and re-add exactly one, whether the part came from
       // the core's renderer (already `\n`-prefixed) or not.
       const combined = blocks.map((part) => `\n${part.replace(/^\n+/, '')}`).join('');

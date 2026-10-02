@@ -8,20 +8,6 @@
       }
     ]
   },
-  "advisor": {
-    "PreToolUse": [
-      {
-        "matcher": "run_command",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"./bin/advisor.mjs\"",
-            "timeout": 10
-          }
-        ]
-      }
-    ]
-  },
   "static-plan": {
     "PreToolUse": [
       {

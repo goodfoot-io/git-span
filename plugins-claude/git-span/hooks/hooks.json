@@ -16,11 +16,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PLUGIN_ROOT\"/hooks/bin/advisor.mjs",
-            "timeout": 10
-          },
-          {
-            "type": "command",
             "command": "node \"$CLAUDE_PLUGIN_ROOT\"/hooks/bin/static-plan.mjs",
             "timeout": 10
           }

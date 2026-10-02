@@ -1,0 +1,4 @@
+packages/extension/src/spanViewer/spanFileEditorProvider.ts#L491-L499 rk64:accc503277ff38bb
+packages/git-span/src/span_file_reader.rs#L727-L744 rk64:2f132306a808a85c
+
+The CLI span-name predicate is authoritative for dot-prefixed configuration, .EDITMSG scratch files, and .log diagnostics, and the extension routes those same artifacts to the default text editor without attempting span parsing.

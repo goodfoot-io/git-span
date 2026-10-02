@@ -5,8 +5,7 @@
 ## Overview
 
 Under OpenCode, git-span ships as an npm plugin package (`opencode-git-span`)
-rather than a Claude Code plugin. Getting its hooks (the touch hook and the
-advisor) running takes two steps plus one prerequisite — registering the
+rather than a Claude Code plugin. Getting its touch hooks running takes two steps plus one prerequisite — registering the
 package in the OpenCode config, and materializing its skills and expert agent
 onto disk are two distinct steps, neither of which happens automatically.
 
@@ -35,8 +34,7 @@ Add `"opencode-git-span"` to the `plugin` array in your OpenCode config
 }
 ```
 
-OpenCode loads the package in-process at startup, and the touch hook and
-advisor are active from the next session on.
+OpenCode loads the package in-process at startup, and the touch hooks are active from the next session on.
 
 ## 2. Materialize the skills and the expert agent
 
@@ -62,18 +60,15 @@ the installer after upgrading the package to refresh the copies.
 
 There is no trust-review step to complete. OpenCode loads plugin hooks
 without a prompt, and every git-span hook fails open: nothing it does can
-brick an edit or a commit. A hold is an advisory one-time interruption — a
-held `git commit`/`git push` surfaces its checklist once as the tool error,
-and a bare retry passes — so rely on `git span drift` in CI (see
-`references/ci-and-sync.md`) as the enforcement backstop either way.
+block an edit or a commit on its own failure. Rely on `git span drift` in CI
+(see `references/ci-and-sync.md`) to verify edits outside hook coverage.
 
 ## Caveat: host-level failures get no attribution
 
 OpenCode's after hook fires only after a tool executes successfully — and only
 host-level failures skip it (invalid arguments, denied permission, a spawn
 error). Those calls get no touch attribution, no positional-drift heal, and no
-advisor report for what they attempted, and any report stashed for them is
-dropped silently; writes sitting behind such a failure still surface later,
+inline context for what they attempted; writes sitting behind such a failure still surface later,
 through the next successful read/edit that touches them. A command that merely
 exits nonzero is different: the bash tool returns normally with a numeric
 `exit`, the after hook fires, and exit-gated attribution applies (a

@@ -53,11 +53,8 @@ channel at all: nothing they do can brick an edit or a commit. One host
 behavior shapes the hook replies: Antigravity treats an **empty** PreToolUse
 reply (`{}`) as a deny with an empty reason, so every non-deny path in the
 bundled hooks answers with an explicit `{"decision": "allow"}` — silence is
-not consent on this host. A hold is an
-advisory one-time interruption — a held `git commit`/`git push` is denied
-once with its checklist as the deny reason, and a bare retry passes — so rely
-on `git span drift` in CI (see `references/ci-and-sync.md`) as the
-enforcement backstop either way.
+not consent on this host. Rely on `git span drift` in CI
+(see `references/ci-and-sync.md`) to verify edits outside hook coverage.
 
 ## Caveat: file edits get no attribution
 
@@ -68,9 +65,7 @@ names. In this version, edits made through those tools are invisible to the
 touch pipeline: no touch attribution, no inline positional-drift heal, and no
 `<git-span>` block for the edit itself. Drift such an edit causes still
 surfaces later — through the next shell command touching the same anchors,
-through `git span drift`, and through the commit advisor, which resolves the
-real changeset from git state and therefore sees every edit however it was
-made. Don't count on per-edit attribution outside `run_command`; rely on
+through explicit `git span drift` checks. Don't count on per-edit attribution outside `run_command`; rely on
 `git span drift` in CI (see `references/ci-and-sync.md`) as the real
 backstop, and see `references/understanding-hook-output.md` for what the
 hooks do cover.

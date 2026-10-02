@@ -3,7 +3,7 @@
  * first-occurrence rule in isolation, then `renderAnchorTree`'s tree
  * construction/rendering rules: directory collapsing, sibling expansion,
  * multi-range stacking and alignment, numeric range sorting, the
- * `range`/`whole-file`/`truncated` `RangeLabel` kinds, degenerate path
+ * `range`/`whole-file` `RangeLabel` kinds, degenerate path
  * handling, the alignment ceiling, and display-column math.
  *
  * The height bound over this repository's real span data lives in
@@ -108,16 +108,10 @@ describe('renderAnchorTree', () => {
     expect(lines[1]).toContain('#L100-L110');
   });
 
-  it('renders a truncated anchor with the exact defensive marker text', () => {
-    const anchors: TreeAnchor[] = [{ path: 'y.ts', ranges: [{ range: { kind: 'truncated' }, suffix: '' }] }];
-    expect(renderAnchorTree(anchors)).toEqual(['└─ y.ts (truncated in source — anchor incomplete)']);
-  });
-
-  it('never classifies a whole-file anchor as truncated: it renders as a plain path with zero marker', () => {
+  it('renders a whole-file anchor as a plain path with zero marker', () => {
     const anchors: TreeAnchor[] = [{ path: 'z.ts', ranges: [{ range: { kind: 'whole-file' }, suffix: '' }] }];
     const lines = renderAnchorTree(anchors);
     expect(lines).toEqual(['└─ z.ts']);
-    expect(lines[0]).not.toContain('truncated');
     expect(lines[0]).not.toContain('#L');
   });
 

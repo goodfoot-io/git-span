@@ -21,12 +21,10 @@ After any `add`/`replace`/`remove`/`why`/`delete`: `git add .span && git commit 
 ## Same-commit workflow
 
 The `PostToolUse` touch hook heals positional drift (a pure line-shift) inline; no
-reconcile commit is needed for it. Semantic drift — content no longer matching what a
+reconcile commit is needed for it. The `PreToolUse` planner captures bounded pre-state for supported shell writes. Semantic drift — content no longer matching what a
 span asserts — needs your action: conform the lagging artifact when a confirmed authority
 or satisfied gate decides it; otherwise ask. Fold the fix, with the `.span/`
-refresh, into the **same commit** as the code change, never a follow-up — list the fix's paths alongside `.span` in the commit's `-o`. Before `git commit`/`git push` a `PreToolUse` advisor
-re-checks the changeset and holds the command once if real span debt remains; see
-`references/understanding-hook-output.md` § "Resolving a held commit".
+refresh, into the **same commit** as the code change, never a follow-up — list the fix's paths alongside `.span` in the commit's `-o`. Run scoped `git span drift` before committing to verify the repaired relationship.
 
 ## Trust boundary
 `git span drift`/`show`/`why`/`history` output is authoritative for span state. Do not
@@ -130,10 +128,9 @@ Pick the first that fits:
    (no `#L`) is in play → `references/whole-file-and-lfs.md`.
 5. One span — declaring it, re-anchoring it, or refreshing a coupled value — matches one
    of the three recipes above → do that, no section read.
-6. A `<git-span>` block appeared — or a `git commit`/`git push` was held — during a
+6. A `<git-span>` block appeared during a
    `Read`/`Edit`/`Write`/`Bash` call → `references/understanding-hook-output.md`.
-7. The touch hook's block surfaces spans that are noise for a path class, or the advisor's
-   uncovered-writes nudge is noise for the whole repo → `references/hookignore.md`.
+7. The touch hook's block surfaces spans that are noise for a path class → `references/hookignore.md`.
 8. Mining git history for undeclared couplings (broad sweep, not one known pair) →
    `references/finding-span-candidates.md`.
 9. CI wiring, PR gating, syncing spans across remotes, or a non-gating advisory report →

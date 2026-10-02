@@ -24,7 +24,7 @@ import { createDiskMemoStore, type MemoFactory } from '../common/span-surface.js
 import type { PlannedTouchRecord } from '../common/static-attribution.js';
 import { createDefaultTouchExecutors, type TouchExecutors } from '../common/touch-core.js';
 import { disableUpdateCheck } from '../common/update-check-env.js';
-import { extractShellCommand } from './advisor.js';
+import { extractShellCommand } from './shell-command.js';
 
 const APPLY_PATCH_SUCCESS_PREFIX = 'Success. Updated the following files:';
 

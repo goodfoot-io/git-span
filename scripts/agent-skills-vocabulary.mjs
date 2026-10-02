@@ -3,8 +3,7 @@
  * the single place host-facing terms live, so a rendered tree can never
  * again teach vocabulary that is foreign or false on its own host (the
  * antigravity tree launched speaking Claude: bare `Read` tool names,
- * `git-span:git-span` plugin-namespace dispatch, an advisor-host list that
- * excluded its own platform).
+ * `git-span:git-span` plugin-namespace dispatch, host-specific file-read guidance).
  *
  * Templates cannot import a module (and the agent-skills CLI's Eta include()
  * cannot pass data on antigravity/opencode targets — the include merge
@@ -14,20 +13,9 @@
  * declares the region markers, and its --check mode keeps the copies honest.
  * The antigravity vocabulary gate
  * (packages/agent-hooks/test/antigravity/skill-tree-vocabulary.test.ts)
- * imports this module too, so the rendered output and the glossary cannot
- * drift apart silently.
+ * checks the rendered output for foreign tool vocabulary.
  * @module
  */
-
-/**
- * Every host whose in-session advisor the plugin ships. Prose enumerations of
- * advisor hosts must be rendered from this list — a hand-written enumeration
- * is exactly how the antigravity tree came to exclude itself.
- */
-export const ADVISOR_HOSTS = ['Claude Code', 'Codex', 'OpenCode', 'Antigravity'];
-
-/** The list as prose: "Claude Code, Codex, OpenCode, or Antigravity". */
-export const advisorHostsProse = `${ADVISOR_HOSTS.slice(0, -1).join(', ')}, or ${ADVISOR_HOSTS.at(-1)}`;
 
 /**
  * Per-platform terms. Values are rendered verbatim into prose, so they carry
@@ -39,19 +27,15 @@ export const advisorHostsProse = `${ADVISOR_HOSTS.slice(0, -1).join(', ')}, or $
  */
 export const vocabulary = {
   'claude-code': {
-    advisorHosts: advisorHostsProse,
     readTool: '`Read`'
   },
   codex: {
-    advisorHosts: advisorHostsProse,
     readTool: "your host's file-read tool"
   },
   opencode: {
-    advisorHosts: advisorHostsProse,
     readTool: "your host's file-read tool"
   },
   antigravity: {
-    advisorHosts: advisorHostsProse,
     readTool: "your host's file-read tool"
   }
 };

@@ -27,11 +27,11 @@ ${'-'.repeat(139)}
 
 `;
 
-/** agent-integration.mdx processed form, L21–25 of the capture. */
+/** Two-paragraph Callout shape from the processed-markdown capture. */
 const TWO_PARAGRAPH_CALLOUT = `<Callout type="info">
-  Both hooks fail open on everything that decides *whether* there is something to say: a missing \`git span\` binary, a timeout, or an unexpected result resolves to "allow silently, inject nothing." Neither can brick an edit or a commit on its own failure.
+  A missing \`git span\` binary, timeout, failed scan, or unexpected CLI result injects nothing and does not block the tool.
 
-  Rendering is the deliberate exception, and fails **closed**. If the anchor tree can't be drawn, the hook falls back to the flat bullet form and still holds — a defect in how a hold is presented must cost presentation, never the hold itself. That's why those \`try/catch\` blocks sit around the render calls rather than deferring to the advisor's outer fail-open catch: they exist precisely to keep a formatting error from converting a correctly computed hold into a silent allow. Treat them as load-bearing, not as fallbacks that escaped the rule above.
+  Human edits, unsupported tools, and inactive hooks can bypass this coverage. Run explicit \`git span drift\` checks or use CI to verify existing spans across the repository.
 </Callout>`;
 
 /** getting-started.mdx processed form, L38–45 of the capture. */
@@ -84,12 +84,12 @@ describe('getLLMText', () => {
   });
 
   it('strips the frontmatter preamble at the first dashed rule, keeping body rules', async () => {
-    const processed = `${PREAMBLE}## What the advisor holds on\n\nBody before the hr.\n\n---\n\nBody after the hr.\n`;
+    const processed = `${PREAMBLE}## Touch context\n\nBody before the hr.\n\n---\n\nBody after the hr.\n`;
     const text = await getLLMText(fakePage(processed));
     expect(text).not.toContain('description:');
     expect(text).not.toContain('-'.repeat(134));
     expect(text).toBe(
-      '# Agent integration (/docs/agent-integration)\n\n## What the advisor holds on\n\nBody before the hr.\n\n---\n\nBody after the hr.\n'
+      '# Agent integration (/docs/agent-integration)\n\n## Touch context\n\nBody before the hr.\n\n---\n\nBody after the hr.\n'
     );
   });
 
@@ -126,12 +126,14 @@ describe('getLLMText', () => {
     expect(blockquote.every((line) => line.startsWith('>'))).toBe(true);
     expect(blockquote[2]).toBe('>');
     expect(blockquote).toContain(
-      '> Both hooks fail open on everything that decides *whether* there is something to say: a missing `git span` binary, a timeout, or an unexpected result resolves to "allow silently, inject nothing." Neither can brick an edit or a commit on its own failure.'
+      '> A missing `git span` binary, timeout, failed scan, or unexpected CLI result injects nothing and does not block the tool.'
     );
     // The second paragraph's full line continues past the excerpt asserted
     // here, so check the prefix rather than element equality.
     expect(
-      blockquote.some((line) => line.startsWith('> Rendering is the deliberate exception, and fails **closed**.'))
+      blockquote.some((line) =>
+        line.startsWith('> Human edits, unsupported tools, and inactive hooks can bypass this coverage.')
+      )
     ).toBe(true);
   });
 
@@ -151,9 +153,9 @@ describe('getLLMText', () => {
   });
 
   it('strips heading-id suffix tokens so headings show the page text', async () => {
-    const processed = '\n\n## Touch hook + advisor [#touch-hook--advisor]\n\n### add [#add]\n\nBody.\n';
+    const processed = '\n\n## Touch hook [#touch-hook]\n\n### add [#add]\n\nBody.\n';
     const text = await getLLMText(fakePage(processed));
-    expect(text).toBe('# Agent integration (/docs/agent-integration)\n\n## Touch hook + advisor\n\n### add\n\nBody.\n');
+    expect(text).toBe('# Agent integration (/docs/agent-integration)\n\n## Touch hook\n\n### add\n\nBody.\n');
   });
 
   it('leaves heading-like fence lines untouched', async () => {

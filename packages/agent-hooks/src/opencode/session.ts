@@ -2,7 +2,7 @@
  * OpenCode session lifecycle — decision 8: `session.idle` is a TURN boundary,
  * not a session end (live-verified: idle fires after each completed prompt,
  * `dispose` only at exit). Idle therefore prunes ONLY call-scoped state
- * (stashed reports, patch plans, shell cwd frames, and pending bash
+ * (patch plans, shell cwd frames, and pending bash
  * planned-touch records for that session) and never the surfaced-span memo on
  * disk, or identical spans would re-inject every turn.
  *

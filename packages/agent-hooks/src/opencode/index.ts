@@ -7,11 +7,10 @@
  *
  * Hooks assembled here:
  * - `tool.execute.before` — static planning first (bash planned touches,
- *   apply_patch range-fidelity plans), then the advisor (hold = throw, report
- *   kinds stash-and-forward). Each stage independently fail-open.
+ *   apply_patch range-fidelity plans), fail-open.
  * - `shell.env` — records the resolved per-call cwd (live-verified ordering:
  *   before → shell.env → after) so the touch pipeline frames on truth.
- * - `tool.execute.after` — appends forwarded reports and touch blocks to the
+ * - `tool.execute.after` — appends touch blocks to the
  *   tool result. Never throws.
  * - `event` — decision-8 lifecycle split (idle prunes call state, deleted
  *   cleans disk, created tracks).
@@ -24,13 +23,11 @@
  * subprocesses instead (plan decision 11).
  */
 
-import type { AdvisorExecutors, AdvisorMemoState, GitExecutor } from '../common/advisor-core.js';
 import { DEFAULT_SESSION_LAYOUT, type SessionLayout } from '../common/agent-hooks-common.js';
 import { startContextWarmup } from '../common/context-warmup.js';
 import type { MemoFactory, MemoLogger } from '../common/span-surface.js';
 import type { TouchExecutors } from '../common/touch-core.js';
 import { disableUpdateCheck } from '../common/update-check-env.js';
-import { createAdvisorHandler } from './advisor.js';
 import { createOpencodeLogger } from './logger.js';
 import { createAfterHandler } from './post-tool-use.js';
 import { createDisposeHandler, createEventHandler } from './session.js';
@@ -48,7 +45,6 @@ import type {
 } from './types.js';
 
 export { resolveFrame } from '../common/agent-hooks-common.js';
-export { GitSpanHoldError } from './advisor.js';
 export { createOpencodeLogger, OPENCODE_LOG_FILE_ENV } from './logger.js';
 export * from './types.js';
 
@@ -57,11 +53,8 @@ export interface PluginDeps {
   directory?: string;
   layout?: SessionLayout;
   logger?: MemoLogger;
-  git?: GitExecutor;
-  executors?: AdvisorExecutors;
   touchExecutors?: TouchExecutors;
   memoFactory?: MemoFactory;
-  advisorMemoFactory?: (cwd: string) => AdvisorMemoState;
 }
 
 /**
@@ -83,21 +76,12 @@ export function assemblePlugin(deps: PluginDeps = {}): GitSpanOpencodeHooks {
     stashPatchPlan: (sessionId, callId, plan) => callState.stashPatchPlan(sessionId, callId, plan),
     trackPlannedCall: (sessionId, callId) => callState.trackPlannedCall(sessionId, callId)
   });
-  const advisorHandler = createAdvisorHandler({
-    directory,
-    git: deps.git,
-    executors: deps.executors,
-    memoFactory: deps.advisorMemoFactory,
-    logger,
-    stashReport: (sessionId, callId, block) => callState.stashReport(sessionId, callId, block)
-  });
   const afterHandler = createAfterHandler({
     directory,
     layout,
     executors: deps.touchExecutors,
     memoFactory: deps.memoFactory,
     logger,
-    takeReport: (sessionId, callId) => callState.takeReport(sessionId, callId),
     takePatchPlan: (sessionId, callId) => callState.takePatchPlan(sessionId, callId),
     peekShellCwd: (sessionId, callId) => callState.peekShellCwd(sessionId, callId),
     forgetCall: (sessionId, callId) => callState.forgetCall(sessionId, callId)
@@ -129,13 +113,7 @@ export function assemblePlugin(deps: PluginDeps = {}): GitSpanOpencodeHooks {
     },
     'tool.execute.before': async (input: OpencodeToolInput, output: OpencodeBeforeOutput) => {
       if (typeof input?.sessionID === 'string' && input.sessionID.length > 0) sessions.add(input.sessionID);
-      // Planning first: a hold thrown by the advisor aborts execution, and a
-      // planned record for a never-executed call is inert (pruned at idle or
-      // discarded with the session). Each stage fails open independently — a
-      // planning error must not stop the advisory, and neither may block the
-      // tool call by accident.
       await planHandler(input, output);
-      await advisorHandler(input, output);
     },
     'shell.env': async (input: OpencodeShellEnvInput, _output: OpencodeShellEnvOutput) => {
       try {

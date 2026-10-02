@@ -1082,7 +1082,7 @@ import * as nodePath4 from "node:path";
 
 // packages/agent-hooks/src/common/parse-command.ts
 import { readFileSync as readFileSync4, statSync as statSync3 } from "node:fs";
-import { basename as basename2, isAbsolute as isAbsolute2, join as joinPath, resolve as resolvePath } from "node:path";
+import { basename as basename2, isAbsolute, join as joinPath, resolve as resolvePath } from "node:path";
 
 // packages/agent-hooks/src/common/command-resolve.ts
 import { execFileSync as execFileSync3 } from "node:child_process";
@@ -3814,7 +3814,7 @@ function parseCommandDetailed(command, opts = {}) {
   };
   const gitDirOf = (c, frame) => {
     if (c.dirOverride === void 0) return frame.certain ? frame.dir : void 0;
-    if (isAbsolute2(c.dirOverride)) return c.dirOverride;
+    if (isAbsolute(c.dirOverride)) return c.dirOverride;
     return frame.certain ? resolvePath(frame.dir, c.dirOverride) : void 0;
   };
   const emitCandidate = (c, frame, simpleCommandIndex, join7) => {
@@ -3828,7 +3828,7 @@ function parseCommandDetailed(command, opts = {}) {
       return;
     }
     if (c.resolverKind === "fs") {
-      if (!frame.certain && !isAbsolute2(c.fileArg)) {
+      if (!frame.certain && !isAbsolute(c.fileArg)) {
         results.push({
           status: "unresolved",
           idiom: c.idiom,
@@ -3846,7 +3846,7 @@ function parseCommandDetailed(command, opts = {}) {
       });
       return;
     }
-    const resolutionDir = c.resolverKind === "fs" ? c.dirOverride === void 0 ? frame.dir : isAbsolute2(c.dirOverride) ? c.dirOverride : resolvePath(frame.dir, c.dirOverride) : gitDirOf(c, frame);
+    const resolutionDir = c.resolverKind === "fs" ? c.dirOverride === void 0 ? frame.dir : isAbsolute(c.dirOverride) ? c.dirOverride : resolvePath(frame.dir, c.dirOverride) : gitDirOf(c, frame);
     const absolutePath = resolvePath(resolutionDir, c.fileArg);
     const totalLines = c.resolverKind === "fs" ? cachedFsTotalLines(absolutePath) : cachedGitTotalLines(resolutionDir, c.resolverKind.rev, c.fileArg);
     const range = resolveSpec(c.spec, totalLines);
@@ -6537,8 +6537,6 @@ function rangeRank(range) {
       return 0;
     case "range":
       return 1;
-    case "truncated":
-      return 2;
   }
 }
 function compareRangeEntries(a, b) {
@@ -6555,8 +6553,6 @@ function labelFor(range, sole) {
       return `#L${range.start}-L${range.end}`;
     case "whole-file":
       return sole ? null : "(whole file)";
-    case "truncated":
-      return "(truncated in source \u2014 anchor incomplete)";
   }
 }
 var cachedSegmenter;

@@ -1,13 +1,10 @@
 /**
- * Deterministic hook-path benchmark for the four non-static-attribution hot paths.
+ * Deterministic hook-path benchmark for the three non-static-attribution hot paths.
  *
  * Mirrors `static-attribution-benchmark.ts`'s cell pattern — `performance.now()`
  * timing, explicit warmups, nearest-rank p50/p95/p99, JSON on stdout — for the
  * paths that benchmark does not cover:
  *
- *   - `advisor`      git subprocess spawn + changeset resolution
- *                    (`resolveChangeset`/`GitExecutor`, src/common/advisor-core.ts)
- *                    over `commit`/`push`/`status` in real repositories.
  *   - `apply-patch`  Codex apply_patch content-matching hunk recovery
  *                    (src/codex/apply-patch.ts, driven through
  *                    src/codex/apply-patch-plan.ts's parse entry point).
@@ -28,7 +25,6 @@ import { dirname, join, resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import { parseApplyPatch } from '../src/codex/apply-patch.js';
-import { type Changeset, createDefaultGitExecutor, resolveChangeset } from '../src/common/advisor-core.js';
 import {
   cleanupSessionState,
   createSessionLayout,
@@ -65,7 +61,7 @@ interface Distribution {
   p99Ms: number;
 }
 
-type CellGroup = 'advisor' | 'apply-patch' | 'session-sweep' | 'failure';
+type CellGroup = 'apply-patch' | 'session-sweep' | 'failure';
 
 interface MeasuredCell extends Distribution {
   name: string;
@@ -129,12 +125,6 @@ function time(action: () => void): number {
   return rounded(performance.now() - started);
 }
 
-async function timeAsync(action: () => Promise<void>): Promise<number> {
-  const started = performance.now();
-  await action();
-  return rounded(performance.now() - started);
-}
-
 function distribution(coldMs: number, warmupMs: number[], samplesMs: number[]): Distribution {
   return {
     coldMs,
@@ -150,15 +140,6 @@ function measure(action: () => void, warmups: number, sampleCount: number): Dist
   const coldMs = time(action);
   const warmupMs = Array.from({ length: warmups }, () => time(action));
   const samplesMs = Array.from({ length: sampleCount }, () => time(action));
-  return distribution(coldMs, warmupMs, samplesMs);
-}
-
-async function measureAsync(action: () => Promise<void>, warmups: number, sampleCount: number): Promise<Distribution> {
-  const coldMs = await timeAsync(action);
-  const warmupMs: number[] = [];
-  for (let index = 0; index < warmups; index += 1) warmupMs.push(await timeAsync(action));
-  const samplesMs: number[] = [];
-  for (let index = 0; index < sampleCount; index += 1) samplesMs.push(await timeAsync(action));
   return distribution(coldMs, warmupMs, samplesMs);
 }
 
@@ -178,92 +159,7 @@ function measureWithReset(reset: () => void, action: () => void, warmups: number
 }
 
 // ---------------------------------------------------------------------------
-// Cell group 1 — advisor changeset resolution (git subprocess spawn + diff)
-// ---------------------------------------------------------------------------
-
-interface AdvisorFixture {
-  repo: RealBundleRepo;
-  cleanup(): void;
-}
-
-function git(repo: RealBundleRepo, args: readonly string[]): void {
-  execFileSync('git', [...args], { cwd: repo.root, env: repo.env, stdio: 'pipe' });
-}
-
-/**
- * A repository with a configured upstream and a mixed staged/unstaged/outgoing
- * working set, so each of the three advisor changeset kinds resolves a
- * non-empty path list through its real subprocess reads.
- */
-function seedAdvisorRepo(pathDir: string, trackedFiles: number): AdvisorFixture {
-  const repo = makeRealBundleRepo(pathDir);
-  for (let index = 0; index < trackedFiles; index += 1) {
-    writeRepoFile(repo, `src/module-${index % 20}/file-${index}.txt`, `advisor fixture ${index}\n`);
-  }
-  commitRepo(repo, 'seed advisor benchmark repository');
-
-  // A local bare remote plus an upstream branch makes `push` resolve through
-  // the `@{u}..HEAD` read rather than the merge-base fallback.
-  const remote = join(dirname(repo.root), 'origin.git');
-  execFileSync('git', ['init', '--bare', '-q', remote], { env: repo.env, stdio: 'pipe' });
-  git(repo, ['remote', 'add', 'origin', remote]);
-  git(repo, ['push', '-q', '-u', 'origin', 'HEAD']);
-
-  // Outgoing commits (push range), then staged and unstaged edits on top.
-  for (let index = 0; index < 12; index += 1) {
-    writeRepoFile(repo, `src/module-${index % 20}/file-${index}.txt`, `advisor outgoing ${index}\n`);
-  }
-  commitRepo(repo, 'outgoing advisor benchmark edits');
-  for (let index = 20; index < 32; index += 1) {
-    writeRepoFile(repo, `src/module-${index % 20}/file-${index}.txt`, `advisor staged ${index}\n`);
-  }
-  git(repo, ['add', '-A']);
-  for (let index = 40; index < 52; index += 1) {
-    writeRepoFile(repo, `src/module-${index % 20}/file-${index}.txt`, `advisor unstaged ${index}\n`);
-  }
-  return { repo, cleanup: () => rmSync(dirname(repo.root), { recursive: true, force: true }) };
-}
-
-async function advisorCells(options: Options, fixture: AdvisorFixture): Promise<MeasuredCell[]> {
-  const executor = createDefaultGitExecutor();
-  const cwd = fixture.repo.root;
-  const definitions: Array<{ name: string; kind: 'commit' | 'push' | 'status'; all: boolean; paths?: string[] }> = [
-    { name: 'advisor-commit-staged', kind: 'commit', all: false },
-    { name: 'advisor-commit-all', kind: 'commit', all: true },
-    { name: 'advisor-commit-pathspec', kind: 'commit', all: false, paths: ['src'] },
-    { name: 'advisor-push-outgoing', kind: 'push', all: false },
-    { name: 'advisor-status', kind: 'status', all: false }
-  ];
-  const cells: MeasuredCell[] = [];
-  for (const definition of definitions) {
-    const run = async (): Promise<Changeset> =>
-      resolveChangeset(definition.kind, definition.all, cwd, executor, definition.paths);
-    const sample = await run();
-    if (sample.paths.length === 0) {
-      throw new Error(`${definition.name}: fixture resolved an empty changeset`);
-    }
-    if (definition.kind === 'push' && sample.range.kind !== 'commits') {
-      throw new Error(`${definition.name}: push range degraded to ${sample.range.kind}`);
-    }
-    cells.push({
-      name: definition.name,
-      group: 'advisor',
-      scale: sample.paths.length,
-      spawns: true,
-      ...(await measureAsync(
-        async () => {
-          await run();
-        },
-        options.inProcessWarmups,
-        options.inProcessSamples
-      ))
-    });
-  }
-  return cells;
-}
-
-// ---------------------------------------------------------------------------
-// Cell group 2 — Codex apply_patch hunk recovery (content-matching anchors)
+// Cell group 1 — Codex apply_patch hunk recovery (content-matching anchors)
 // ---------------------------------------------------------------------------
 
 /**
@@ -351,7 +247,7 @@ function applyPatchCells(options: Options): MeasuredCell[] {
 }
 
 // ---------------------------------------------------------------------------
-// Cell group 3 — session-end / stop sweeps (readdir/stat/rename/rm)
+// Cell group 2 — session-end / stop sweeps (readdir/stat/rename/rm)
 // ---------------------------------------------------------------------------
 
 const SWEEP_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
@@ -435,7 +331,7 @@ function sessionSweepCells(options: Options): MeasuredCell[] {
 }
 
 // ---------------------------------------------------------------------------
-// Cell group 4 — PostToolUseFailure touch/attribution pipeline (real bundle)
+// Cell group 3 — PostToolUseFailure touch/attribution pipeline (real bundle)
 // ---------------------------------------------------------------------------
 
 const FAILURE_TEXT = 'alpha\nneedle one\nbeta\nneedle two\nomega\n';
@@ -569,18 +465,15 @@ async function main(): Promise<void> {
   const options = parseOptions(process.argv.slice(2));
   const workspaceGitSpan = buildWorkspaceGitSpan();
   const bundles = buildRealHookBundles();
-  const advisorFixture = seedAdvisorRepo(workspaceGitSpan.pathDir, 400);
   const failureFixture = seedFailureRepo(workspaceGitSpan.pathDir, 400);
   let cells: MeasuredCell[];
   try {
     cells = [
-      ...(await advisorCells(options, advisorFixture)),
       ...applyPatchCells(options),
       ...sessionSweepCells(options),
       ...failureCells(options, bundles.claudeHooksDir, failureFixture)
     ];
   } finally {
-    advisorFixture.cleanup();
     failureFixture.repo.cleanup();
     bundles.cleanup();
   }
@@ -603,7 +496,7 @@ async function main(): Promise<void> {
       quantiles: 'nearest-rank over measured warm samples',
       cold: 'first natural invocation before warmups; operating-system caches are not forcibly dropped',
       timingBoundary:
-        'advisor/apply-patch/session-sweep cells are in-process (advisor still spawns real git subprocesses); failure cells include Node startup for the emitted bundle and, for tracked commands, their paired static plan process',
+        'apply-patch/session-sweep cells are in-process; failure cells include Node startup for the emitted bundle and, for tracked commands, their paired static plan process',
       fixtureReset: 'session-sweep cells re-seed their directory tree before every sample, outside the timed region'
     },
     cells

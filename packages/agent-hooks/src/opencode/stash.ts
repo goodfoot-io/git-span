@@ -2,15 +2,10 @@
  * Call-scoped in-memory state for the OpenCode adapter, keyed
  * `${sessionID}:${callID}`.
  *
- * Three kinds of state live here, all of which must die with their call or
+ * Two kinds of state live here, all of which must die with their call or
  * session (plan decision 8 — `session.idle` is a turn boundary that prunes
  * call-scoped state, never the surfaced-span memo):
  *
- * - **report blocks** — environmental/scan-failed/`git status` advisory
- *   checklists rendered in the before-hook and stashed for the paired after
- *   hook to append post-execution (decision 3's stash-and-forward). Consumed
- *   on read; an entry whose tool call failed (after never fires) expires at
- *   the next prune.
  * - **patch plans** — `apply_patch` anchors parsed against pre-edit content
  *   before execution (range fidelity), consumed by the paired after hook.
  * - **shell cwd frames** — the resolved per-call cwd the `shell.env` handler
@@ -35,16 +30,11 @@ import type { PatchCandidate } from '../common/apply-patch-touch.js';
 export type PatchPlanTouch = PatchCandidate;
 
 interface CallEntry {
-  report?: string;
   patchPlan?: PatchPlanTouch[];
   shellCwd?: string;
 }
 
 export interface OpencodeCallState {
-  /** Stash a rendered report block for the paired after hook (replaces any prior). */
-  stashReport(sessionId: string, callId: string, block: string): void;
-  /** Consume-on-read the stashed report block, if any. */
-  takeReport(sessionId: string, callId: string): string | null;
   /** Record a pre-parsed patch plan for the paired after hook (replaces any prior). */
   stashPatchPlan(sessionId: string, callId: string, plan: readonly PatchPlanTouch[]): void;
   /** Consume-on-read the stashed patch plan, if any. */
@@ -113,19 +103,6 @@ export function createOpencodeCallState(): OpencodeCallState {
   }
 
   return {
-    stashReport(sessionId, callId, block) {
-      if (!tracked(sessionId, callId)) return;
-      const k = key(sessionId, callId);
-      entryFor(k).report = block;
-      indexOfSession(sessionId).add(k);
-    },
-    takeReport(sessionId, callId) {
-      const k = key(sessionId, callId);
-      const entry = entries.get(k);
-      const report = entry?.report;
-      if (entry !== undefined) delete entry.report;
-      return typeof report === 'string' ? report : null;
-    },
     stashPatchPlan(sessionId, callId, plan) {
       if (!tracked(sessionId, callId)) return;
       const k = key(sessionId, callId);

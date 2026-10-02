@@ -5,8 +5,8 @@ import { type HookContext, type PreToolUseInput, preToolUseHook } from '@goodfoo
 import { DEFAULT_SESSION_LAYOUT, type SessionLayout } from '../common/agent-hooks-common.js';
 import { createDefaultPlannedTouchStore, planBashTouches } from '../common/bash-attribution.js';
 import { disableUpdateCheck } from '../common/update-check-env.js';
-import { extractShellCommand } from './advisor.js';
 import { narrowCodeModeExec, narrowExecCommand } from './post-tool-use.js';
+import { extractShellCommand } from './shell-command.js';
 
 /** Extract a shell command and the workdir carried by classic/code-mode envelopes. */
 export function narrowShellPlanInput(toolInput: unknown): { command: string; workdir: string | null } | null {

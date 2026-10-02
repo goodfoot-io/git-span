@@ -140,9 +140,7 @@ Preserve measured claims. Update live instructions or mark the report superseded
 
 Authoritative source and tests:
 
-- [advisor-core.ts](/packages/agent-hooks/src/common/advisor-core.ts)
 - [touch-core.ts](/packages/agent-hooks/src/common/touch-core.ts)
-- [advisor-core.test.ts](/packages/agent-hooks/test/common/advisor-core.test.ts)
 - [touch-core.test.ts](/packages/agent-hooks/test/common/touch-core.test.ts)
 - Adapter tests under `packages/agent-hooks/test/{claude,codex}/`
 
@@ -237,7 +235,7 @@ yarn test
 From `packages/agent-hooks` after source or message changes:
 
 ```bash
-yarn test test/common/advisor-core.test.ts test/common/touch-core.test.ts
+yarn test test/common/touch-core.test.ts
 yarn lint
 yarn typecheck
 yarn build

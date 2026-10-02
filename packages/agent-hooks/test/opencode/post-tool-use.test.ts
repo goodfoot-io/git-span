@@ -1,7 +1,7 @@
 /**
  * Tests for the OpenCode after-hook touch adapter
  * (packages/agent-hooks/src/opencode/post-tool-use.ts): injection appends to
- * `output.output`, per-tool-id routing, forwarded-report ordering, and the
+ * `output.output`, per-tool-id routing, and the
  * never-throw contract over garbage input.
  *
  * `runTouchHook`/`runTouchHooks` are mocked to record their calls and emit a
@@ -71,8 +71,6 @@ function makeTrackedRepo(): { root: string; cleanup: () => void } {
   return repo;
 }
 
-let sessionSeq = 0;
-
 /** Scratch layouts created by {@link createHandler}, removed after the file. */
 const temps: TempSessionLayout[] = [];
 afterAll(() => {
@@ -86,7 +84,6 @@ function createHandler(overrides: Record<string, unknown> = {}) {
   const temp = makeTempLayout();
   temps.push(temp);
   const state = {
-    reports: new Map<string, string>(),
     patchPlans: new Map<string, readonly PatchPlanTouch[]>(),
     shellCwds: new Map<string, string>(),
     forgotten: [] as string[]
@@ -96,7 +93,6 @@ function createHandler(overrides: Record<string, unknown> = {}) {
     layout: temp.layout,
     memoFactory: inMemoryMemoFactory() as never,
     logger: { warn: () => undefined },
-    takeReport: (sessionId: string, callId: string) => state.reports.get(`${sessionId}:${callId}`) ?? null,
     takePatchPlan: (sessionId: string, callId: string) => state.patchPlans.get(`${sessionId}:${callId}`) ?? null,
     peekShellCwd: (sessionId: string, callId: string) => state.shellCwds.get(`${sessionId}:${callId}`) ?? null,
     forgetCall: (sessionId: string, callId: string) => state.forgotten.push(`${sessionId}:${callId}`),
@@ -152,69 +148,6 @@ describe('opencode after hook — injection appends', () => {
       expect(recorded.calls[1]).toMatchObject({ kind: 'write', written: 'body' });
       // Both blocks appended onto the (initially absent) output channel.
       expect(output.output).toContain('<git-span>');
-    } finally {
-      repo.cleanup();
-    }
-  });
-
-  it('a forwarded report is appended ahead of touch blocks (stash-and-forward order)', async () => {
-    const repo = makeTrackedRepo();
-    try {
-      recorded.calls.length = 0;
-      const sessionId = `fwd-${sessionSeq++}`;
-      const reports = new Map([[`${sessionId}:c`, '<git-span>STATUS PREVIEW</git-span>']]);
-      const { handler } = createHandler({
-        directory: repo.root,
-        takeReport: (sid: string, callId: string) => reports.get(`${sid}:${callId}`) ?? null
-      });
-      const output: { output?: string; metadata?: unknown } = { metadata: { output: '', exit: 0 } };
-      await handler(
-        { tool: 'bash', sessionID: sessionId, callID: 'c', args: { command: "sed -n '1,2p' f.ts" } },
-        output
-      );
-      expect(recorded.calls.length).toBeGreaterThanOrEqual(1);
-      expect(output.output).toContain('STATUS PREVIEW');
-      const text = output.output ?? '';
-      expect(text.indexOf('STATUS PREVIEW')).toBeLessThan(text.indexOf('<git-span>', text.indexOf('STATUS PREVIEW')));
-    } finally {
-      repo.cleanup();
-    }
-  });
-
-  it('a bash call whose mapped response is interrupted still forwards a stashed report', async () => {
-    const reports = new Map([['s:c', '<git-span>SCAN FAILED</git-span>']]);
-    const { handler } = createHandler({
-      takeReport: (sessionId: string, callId: string) => reports.get(`${sessionId}:${callId}`) ?? null
-    });
-    const output: { output?: string; metadata?: unknown } = { output: '', metadata: { output: '', exit: null } };
-    await handler({ tool: 'bash', sessionID: 's', callID: 'c', args: { command: 'git commit -m x' } }, output);
-    expect(output.output).toBe('\n<git-span>SCAN FAILED</git-span>');
-  });
-
-  it('a consumed report lands even when a later stage throws — reports are never swallowed', async () => {
-    const repo = makeTrackedRepo();
-    try {
-      const sessionId = 'swallow';
-      const reports = new Map([[`${sessionId}:c`, '<git-span>ENV ADVISORY</git-span>']]);
-      const { handler } = createHandler({
-        directory: repo.root,
-        takeReport: (sid: string, callId: string) => reports.get(`${sid}:${callId}`) ?? null,
-        // Any thrower positioned after the consumption point stands in for the
-        // evaluated composition (planned-touch take on degraded ids): the
-        // already-consumed advisory must survive it.
-        memoFactory: (() => {
-          throw new Error('memo exploded');
-        }) as never
-      });
-      const output: { output?: string; metadata?: unknown } = {
-        output: 'result text',
-        metadata: { output: '', exit: 0 }
-      };
-      await expect(
-        handler({ tool: 'bash', sessionID: sessionId, callID: 'c', args: { command: 'echo hi' } }, output)
-      ).resolves.toBeUndefined();
-      expect(output.output).toContain('ENV ADVISORY');
-      expect((output.output ?? '').startsWith('result text')).toBe(true);
     } finally {
       repo.cleanup();
     }

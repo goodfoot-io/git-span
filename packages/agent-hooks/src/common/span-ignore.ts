@@ -17,8 +17,7 @@
  * prefix, or is `<prefix>/…`) is then never surfaced for an anchor whose path
  * sits under `packages/agent-hooks/src` — it is never surfaced in the inline
  * `<git-span>` block the `PostToolUse` touch hook emits. It has no effect on
- * the `PreToolUse` advisor, whose own uncovered-writes suppression lives in
- * `.span/.advisorignore` (see `advisor-ignore.ts`).
+ * span discovery outside the touch pipeline.
  *
  * Pattern grammar is a deliberate subset of gitignore:
  *
@@ -91,9 +90,7 @@ function ancestorPaths(path: string): string[] {
  * matches the file's path or any ancestor directory of it, so a directory
  * pattern suppresses everything beneath it.
  *
- * Exported so other path-scoped ignore-file conventions (e.g. `.advisorignore`
- * in `advisor-ignore.ts`) can reuse the exact matching semantics rather than
- * reimplementing them.
+ * Exported for consumers that need the same path-matching semantics.
  */
 export function compilePattern(pattern: string): (repoRelPath: string) => boolean {
   let pat = pattern;

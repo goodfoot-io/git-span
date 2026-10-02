@@ -1,10 +1,9 @@
-packages/agent-hooks/src/common/advisor-core.ts#L1535-L1928 rk64:68ae0ad60a12ea14
 packages/agent-hooks/src/common/touch-core.ts#L880-L909 rk64:2ebd57907c32ae1e
-packages/website/content/docs/agent-integration.mdx rk64:7f8c8d1ae1be7083
-plugins-antigravity/git-span/skills/git-span/references/understanding-hook-output.md rk64:2f88aaa738cd083c
-plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md rk64:e09ea51897ae3bb4
-plugins-codex/git-span/skills/git-span/references/understanding-hook-output.md rk64:b5df4266c227dc4a
-plugins-opencode/git-span/skills/git-span/references/understanding-hook-output.md rk64:9bf601bd16912e05
-skills-src/git-span/git-span/references/understanding-hook-output.md.eta rk64:49a61cdbdfc33594
+packages/website/content/docs/agent-integration.mdx rk64:9197551dec0ac460
+plugins-antigravity/git-span/skills/git-span/references/understanding-hook-output.md rk64:38d4d58585cd33d7
+plugins-claude/git-span/skills/git-span/references/understanding-hook-output.md rk64:829ec20f2ba6420a
+plugins-codex/git-span/skills/git-span/references/understanding-hook-output.md rk64:bd8b497758f1aaa8
+plugins-opencode/git-span/skills/git-span/references/understanding-hook-output.md rk64:6045394b0a4c8373
+skills-src/git-span/git-span/references/understanding-hook-output.md.eta rk64:792a6c58a4f6180b
 
-The shared hook-core messages are authoritative, and the website guide, the skills-src understanding-hook-output template, and every rendered plugin reference preserve their user-facing meaning and verbatim text; the template is the edit surface for all four generated copies.
+The shared touch-core messages are authoritative. The understanding-hook-output template and its four generated references preserve their examples and user-facing meaning, while the website guide summarizes the same touch behavior and coverage boundary; the template is the edit surface for all four generated copies.

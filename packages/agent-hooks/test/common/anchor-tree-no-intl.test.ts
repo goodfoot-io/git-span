@@ -74,20 +74,15 @@ describe('rendering on a Node built without Intl', () => {
     expect(lines[1]).toContain('#L3-L4');
   });
 
-  it('renders ASCII whole-file, truncated and bare-path anchors unchanged, since none depend on measurement', async () => {
+  it('renders ASCII whole-file and bare-path anchors unchanged, since none depend on measurement', async () => {
     const anchors: TreeAnchor[] = [
       { path: 'z.ts', ranges: [{ range: { kind: 'whole-file' }, suffix: ' — changed' }] },
-      { path: 'y.ts', ranges: [{ range: { kind: 'truncated' }, suffix: '' }] },
       { path: 'w.ts', ranges: [] }
     ];
     const withIntl = renderWithIntl(anchors);
     const { renderAnchorTree } = await importWithoutIntl();
 
-    expect(renderAnchorTree(anchors)).toEqual([
-      '├─ z.ts — changed',
-      '├─ y.ts (truncated in source — anchor incomplete)',
-      '└─ w.ts'
-    ]);
+    expect(renderAnchorTree(anchors)).toEqual(['├─ z.ts — changed', '└─ w.ts']);
     expect(renderAnchorTree(anchors)).toEqual(withIntl);
   });
 

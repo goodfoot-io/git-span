@@ -22,12 +22,12 @@ describe('createOpencodeLogger', () => {
   it('appends one JSON object per record when the env var names a file', () => {
     process.env.OPENCODE_GIT_SPAN_LOG_FILE = scratch;
     const logger = createOpencodeLogger();
-    logger.warn('git-span advisor churn suppression', { droppedByPath: 2 });
+    logger.warn('git-span static attribution pre-plan', { candidateCount: 2 });
     logger.info?.('resolved', { count: 1 });
     const lines = readFileSync(scratch, 'utf8').trim().split('\n');
     expect(lines).toHaveLength(2);
     const first = JSON.parse(lines[0]) as Record<string, unknown>;
-    expect(first).toMatchObject({ level: 'warn', message: 'git-span advisor churn suppression', droppedByPath: 2 });
+    expect(first).toMatchObject({ level: 'warn', message: 'git-span static attribution pre-plan', candidateCount: 2 });
     expect(typeof first.ts).toBe('string');
     expect((JSON.parse(lines[1]) as Record<string, unknown>).level).toBe('info');
   });

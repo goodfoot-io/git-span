@@ -459,7 +459,7 @@ describe('touch-core (Phase 2.2 — skipped acceptance checks)', () => {
     });
 
     /**
-     * The touch hook's mirror of the advisor's fail-closed case. An uncaught
+     * The touch hook's fail-open case. An uncaught
      * throw from the tree renderer would escape to `runTouchHook`'s catch,
      * which resolves the whole hook to `additionalContext: null` — the agent
      * would never hear about the drift at all. The local catch keeps the
