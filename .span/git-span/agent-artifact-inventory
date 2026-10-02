@@ -1,5 +1,5 @@
 packages/git-span/src/schemas/mod.rs rk64:2be40091a0883dd7
-packages/website/app/lib/agent-skills.generated.ts rk64:ae2ecb02523f5a9b
+packages/website/app/lib/agent-skills.generated.ts rk64:8706df9fdabbbb60
 packages/website/app/lib/artifact-gate/inventory.mjs rk64:e365dc4d516a726b
 packages/website/content/docs/commands.mdx rk64:3637926b75197a49
 packages/website/public/schemas/cli/v1/context.json rk64:a7352bd7485e2442
