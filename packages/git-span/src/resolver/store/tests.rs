@@ -2182,3 +2182,199 @@ fn get_generation_summary_still_rejects_tampered_row_count_via_envelope_digest()
          cardinality still fails envelope-digest verification"
     );
 }
+
+// -- Bounded shared maintenance contract bootstrap -----------------------
+
+fn due_owner(store: &mut CacheStore) -> lock::LockGuard {
+    match store.admit_maintenance().unwrap() {
+        maintenance::MaintenanceDecision::Due { state, guard } => {
+            assert!(state.due);
+            guard
+        }
+        _ => panic!("expected admitted due maintenance"),
+    }
+}
+
+#[test]
+#[ignore = "maintenance contract bootstrap"]
+fn maintenance_first_open_due_and_success_resets() {
+    let dir = tmp();
+    let mut store = open(dir.path());
+    assert_eq!(
+        store.maintenance_state().unwrap(),
+        maintenance::MaintenanceState {
+            admitted_count: 0,
+            due: true,
+        }
+    );
+    let guard = due_owner(&mut store);
+    store.complete_maintenance(guard).unwrap();
+    assert_eq!(
+        store.maintenance_state().unwrap(),
+        maintenance::MaintenanceState {
+            admitted_count: 0,
+            due: false,
+        }
+    );
+}
+
+#[test]
+#[ignore = "maintenance contract bootstrap"]
+fn maintenance_fifteen_defer_sixteenth_due() {
+    let dir = tmp();
+    let mut store = open(dir.path());
+    let guard = due_owner(&mut store);
+    store.complete_maintenance(guard).unwrap();
+    for admitted_count in 1..maintenance::MAINTENANCE_ADMISSION_INTERVAL {
+        match store.admit_maintenance().unwrap() {
+            maintenance::MaintenanceDecision::Deferred(state) => {
+                assert_eq!(state.admitted_count, admitted_count);
+                assert!(!state.due);
+            }
+            _ => panic!("discovery authorized before interval"),
+        }
+    }
+    let guard = due_owner(&mut store);
+    assert_eq!(store.maintenance_state().unwrap().admitted_count, 16);
+    drop(guard);
+}
+
+#[test]
+#[ignore = "maintenance contract bootstrap"]
+fn maintenance_shared_connections_and_reopen_continue() {
+    let dir = tmp();
+    let mut first = open(dir.path());
+    let mut second = open(dir.path());
+    let guard = due_owner(&mut first);
+    first.complete_maintenance(guard).unwrap();
+    assert!(matches!(
+        first.admit_maintenance().unwrap(),
+        maintenance::MaintenanceDecision::Deferred(_)
+    ));
+    assert!(matches!(
+        second.admit_maintenance().unwrap(),
+        maintenance::MaintenanceDecision::Deferred(_)
+    ));
+    drop(first);
+    drop(second);
+    let mut reopened = open(dir.path());
+    assert_eq!(reopened.maintenance_state().unwrap().admitted_count, 2);
+    assert!(matches!(
+        reopened.admit_maintenance().unwrap(),
+        maintenance::MaintenanceDecision::Deferred(_)
+    ));
+    assert_eq!(reopened.maintenance_state().unwrap().admitted_count, 3);
+}
+
+#[test]
+#[ignore = "maintenance contract bootstrap"]
+fn maintenance_contended_owner_does_not_admit() {
+    let dir = tmp();
+    let first = open(dir.path());
+    let mut second = open(dir.path());
+    let guard = lock::try_acquire_maintenance(dir.path()).unwrap().unwrap();
+    let before = first.maintenance_state().unwrap();
+    assert!(matches!(
+        second.admit_maintenance().unwrap(),
+        maintenance::MaintenanceDecision::ActiveOwner
+    ));
+    assert_eq!(second.maintenance_state().unwrap(), before);
+    drop(guard);
+    drop(due_owner(&mut second));
+}
+
+#[test]
+#[ignore = "maintenance contract bootstrap"]
+fn maintenance_abandoned_due_owner_retries_after_reopen() {
+    let dir = tmp();
+    let mut store = open(dir.path());
+    let guard = due_owner(&mut store);
+    store.complete_maintenance(guard).unwrap();
+    for _ in 1..maintenance::MAINTENANCE_ADMISSION_INTERVAL {
+        assert!(matches!(
+            store.admit_maintenance().unwrap(),
+            maintenance::MaintenanceDecision::Deferred(_)
+        ));
+    }
+    // Dropping the owner without completion models discovery failure or a
+    // crash after durable due admission; kernel ownership is released.
+    drop(due_owner(&mut store));
+    drop(store);
+    let mut reopened = open(dir.path());
+    assert!(reopened.maintenance_state().unwrap().due);
+    let retry = due_owner(&mut reopened);
+    assert_eq!(reopened.maintenance_state().unwrap().admitted_count, 16);
+    reopened.complete_maintenance(retry).unwrap();
+    assert!(!reopened.maintenance_state().unwrap().due);
+}
+
+#[test]
+#[ignore = "maintenance contract bootstrap"]
+fn maintenance_completion_storage_error_preserves_due() {
+    let dir = tmp();
+    let mut store = open(dir.path());
+    let guard = due_owner(&mut store);
+    store.conn.execute_batch("CREATE TRIGGER fail_schedule_reset BEFORE UPDATE ON maintenance_schedule WHEN NEW.due = 0 BEGIN SELECT RAISE(ABORT, 'reset denied'); END;").unwrap();
+    assert!(store.complete_maintenance(guard).is_err());
+    assert!(store.maintenance_state().unwrap().due);
+    store
+        .conn
+        .execute_batch("DROP TRIGGER fail_schedule_reset")
+        .unwrap();
+    let retry = due_owner(&mut store);
+    store.complete_maintenance(retry).unwrap();
+    assert!(!store.maintenance_state().unwrap().due);
+}
+
+#[test]
+#[ignore = "maintenance contract bootstrap"]
+fn maintenance_conditional_delete_preserves_republished_candidate() {
+    let dir = tmp();
+    let mut store = open(dir.path());
+    let mut sibling = open(dir.path());
+    let mut input = make_input(key(1), V1, b"candidate", 1);
+    store.publish_generation(&input).unwrap();
+    let candidate = hex32(&input.key_digest);
+    input.live = true;
+    sibling.publish_generation(&input).unwrap();
+    assert_eq!(
+        store.gc_delete_non_live(&candidate).unwrap(),
+        maintenance::DeletionStats::default()
+    );
+    assert_eq!(
+        store
+            .get_generation(&input.key_digest, V1)
+            .unwrap()
+            .hit()
+            .unwrap()
+            .rows
+            .len(),
+        1
+    );
+}
+
+#[test]
+#[ignore = "maintenance contract bootstrap"]
+fn maintenance_conditional_delete_reports_actual_children_and_absence() {
+    let dir = tmp();
+    let mut store = open(dir.path());
+    let input = make_input(key(1), V1, b"candidate", 1);
+    store.publish_generation(&input).unwrap();
+    let candidate = hex32(&input.key_digest);
+    assert_eq!(
+        store.gc_delete_non_live(&candidate).unwrap(),
+        maintenance::DeletionStats {
+            generations_removed: 1,
+            rows_removed: 1,
+        }
+    );
+    assert_eq!(
+        store.gc_delete_non_live(&candidate).unwrap(),
+        maintenance::DeletionStats::default()
+    );
+    let index_count: i64 = store
+        .conn
+        .query_row("SELECT count(*) FROM span_path_index", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(index_count, 0);
+}

@@ -98,3 +98,11 @@ pub(crate) fn build_shard_count() -> usize {
 pub(crate) fn contended() -> StoreError {
     StoreError::new(BypassReason::LockContended, "build shard contended")
 }
+
+/// Try to own shared maintenance without waiting for a sibling's discovery.
+/// The dedicated kernel lock releases on guard drop or process death.
+#[allow(dead_code)] // Contract bootstrap; wired by bounded maintenance implementation.
+pub(crate) fn try_acquire_maintenance(_dir: &Path) -> Result<Option<LockGuard>, StoreError> {
+    let _basename = super::schema::MAINTENANCE_LOCK_BASENAME;
+    todo!("maintenance owner lock")
+}

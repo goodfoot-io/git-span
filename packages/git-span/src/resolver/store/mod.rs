@@ -35,6 +35,7 @@
 pub(crate) mod dto;
 pub(crate) mod error;
 pub(crate) mod lock;
+pub(crate) mod maintenance;
 pub(crate) mod payload;
 pub(crate) mod schema;
 

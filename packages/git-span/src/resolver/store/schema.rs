@@ -41,7 +41,8 @@ pub(crate) const APPLICATION_ID: i32 = 0x6773_706e;
 /// independent hash. A version-2 database still carries the now-unused
 /// table; quarantine-and-recreate drops it rather than leaving dead rows
 /// nothing reads.
-pub(crate) const SCHEMA_VERSION: i64 = 3;
+/// `4`: durable maintenance admissions and explicit overlay narrowing provenance.
+pub(crate) const SCHEMA_VERSION: i64 = 4;
 
 /// Semantic epoch stored in `meta`. Bump when the *meaning* of stored rows
 /// changes even though the DDL does not (e.g. a `StateToken`/`ResolutionCore`
@@ -53,6 +54,8 @@ pub(crate) const SEMANTIC_EPOCH: i64 = 1;
 pub(crate) const DB_BASENAME: &str = "store.db";
 /// Init-lock basename guarding schema/WAL setup and quarantine/recreate.
 pub(crate) const INIT_LOCK_BASENAME: &str = "store.init.lock";
+/// Nonblocking shared maintenance-owner lock.
+pub(crate) const MAINTENANCE_LOCK_BASENAME: &str = "store.maintenance.lock";
 /// Build-lock-shard basename prefix (`build-shard-<i>.lock`).
 pub(crate) const BUILD_SHARD_PREFIX: &str = "build-shard-";
 
@@ -87,6 +90,14 @@ CREATE TABLE IF NOT EXISTS meta (
   created_at     INTEGER NOT NULL
 ) STRICT;
 
+CREATE TABLE IF NOT EXISTS maintenance_schedule (
+  id             INTEGER PRIMARY KEY CHECK (id = 1),
+  admitted_count INTEGER NOT NULL CHECK (admitted_count BETWEEN 0 AND 16),
+  due            INTEGER NOT NULL CHECK (due IN (0, 1))
+) STRICT;
+
+INSERT INTO maintenance_schedule (id, admitted_count, due) VALUES (1, 0, 1);
+
 CREATE TABLE IF NOT EXISTS generation (
   key_digest      TEXT PRIMARY KEY,
   entry_kind      INTEGER NOT NULL,
@@ -97,7 +108,8 @@ CREATE TABLE IF NOT EXISTS generation (
   summary_digest  BLOB NOT NULL,
   created_at      INTEGER NOT NULL,
   access_bucket   INTEGER NOT NULL,
-  live            INTEGER NOT NULL DEFAULT 0
+  live            INTEGER NOT NULL DEFAULT 0,
+  overlay_superseded INTEGER NOT NULL DEFAULT 0 CHECK (overlay_superseded IN (0, 1))
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS generation_by_head ON generation (head);
