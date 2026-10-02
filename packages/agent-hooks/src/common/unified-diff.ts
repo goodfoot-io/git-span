@@ -1,8 +1,7 @@
 /**
- * The range-preserving unified-diff parser (plan §5.7), sibling to
- * the response-side diff decoder. The patch/git apply
- * grammar needs the `@@ -a,b +c,d @@` hunk numbers that parseUnifiedDiff
- * discards, so this parses the same header dialect from scratch.
+ * Range-preserving unified-diff parser for patch/git apply attribution.
+ * Reads `@@ -a,b +c,d @@` hunk coordinates and file-operation headers to
+ * identify the paths and post-edit ranges affected by a patch.
  *
  * A hunk whose pre/post line counts match preserves line coordinates, so a
  * file whose hunks are all count-preserving gets an exact range — the union of

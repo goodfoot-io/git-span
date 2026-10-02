@@ -22,9 +22,9 @@
   "interface": {
     "displayName": "git-span",
     "capabilities": [
-      "Journals apply_patch edits as they land",
+      "Plans supported shell and apply_patch touches before execution",
       "Surfaces coupled spans inline",
-      "Drains a pre-commit record for the background reconciler to keep implicit semantic dependencies from silently drifting"
+      "Warms repository context at session start and clears session touch state at stop"
     ],
     "defaultPrompt": [
       "Check `git span drift` for drifted spans and help me reconcile them."

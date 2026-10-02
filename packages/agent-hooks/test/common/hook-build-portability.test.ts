@@ -148,6 +148,29 @@ describe('generated hook bin portability', () => {
     }
   });
 
+  it('published host metadata does not advertise retired commit-recording architecture', () => {
+    for (const relative of [
+      'plugins-claude/git-span/.claude-plugin/plugin.json',
+      'plugins-codex/git-span/.codex-plugin/plugin.json',
+      'plugins-opencode/git-span/package.json',
+      'plugins-antigravity/git-span/plugin.json'
+    ]) {
+      const metadata = JSON.parse(readFileSync(join(WORKSPACE_ROOT, relative), 'utf8')) as {
+        description: string;
+        interface?: { capabilities?: string[] };
+      };
+      expect(metadata.description, relative).toBeTypeOf('string');
+      const claims = [metadata.description, ...(metadata.interface?.capabilities ?? [])];
+      for (const claim of claims) {
+        // These are absent user workflows, not particular wording choices:
+        // patch-event journals and pre-commit/background record processing.
+        expect(claim, relative).not.toMatch(/journal(?:s|ing)?[\s\S]*apply_patch/i);
+        expect(claim, relative).not.toMatch(/pre[- ]commit[\s\S]*record/i);
+        expect(claim, relative).not.toMatch(/background[\s-]+reconciler/i);
+      }
+    }
+  });
+
   it('emits unified package markers and byte-stable output through a symlinked package root', {
     timeout: BUILD_TEST_TIMEOUT_MS
   }, () => {
