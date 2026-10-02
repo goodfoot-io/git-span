@@ -17,7 +17,7 @@ function note(value: unknown = document, commitSha = sha) {
 }
 
 describe('durable association and CLI acknowledgments', () => {
-  it.skip('shares claim identity across linked worktrees for the same common repository', () => {
+  it('shares claim identity across linked worktrees for the same common repository', () => {
     const linked = {
       ...receipt,
       invocationKey: 'other',
@@ -26,13 +26,13 @@ describe('durable association and CLI acknowledgments', () => {
     };
     expect(commitAssociationKey(linked, document)).toBe(commitAssociationKey(receipt, document));
   });
-  it.skip.each([
+  it.each([
     { ...document, host: 'codex' as const },
     { ...document, sessionId: 'session-b' }
   ])('isolates host and session claim identity %#', (value) => {
     expect(commitAssociationKey(receipt, value)).not.toBe(commitAssociationKey(receipt, document));
   });
-  it.skip('isolates repository and SHA while excluding locator differences', () => {
+  it('isolates repository and SHA while excluding locator differences', () => {
     expect(commitAssociationKey({ ...receipt, sha: 'b'.repeat(40) }, document)).not.toBe(
       commitAssociationKey(receipt, document)
     );
@@ -46,7 +46,7 @@ describe('durable association and CLI acknowledgments', () => {
       commitAssociationKey(receipt, document)
     );
   });
-  it.skip('adds the frozen document when there is no existing matching association', () => {
+  it('adds the frozen document when there is no existing matching association', () => {
     expect(
       selectCommitAssociation(document, [
         { document: { ...document, sessionId: 'other' } },
@@ -54,21 +54,21 @@ describe('durable association and CLI acknowledgments', () => {
       ])
     ).toEqual({ kind: 'add', document });
   });
-  it.skip('recovers a lost add acknowledgment by reusing an existing identical association', () => {
+  it('recovers a lost add acknowledgment by reusing an existing identical association', () => {
     expect(selectCommitAssociation(document, [{ document }])).toEqual({
       kind: 'reuse',
       document,
       locatorConflict: false
     });
   });
-  it.skip('preserves an absent earlier locator and diagnoses a conflicting later locator', () => {
+  it('preserves an absent earlier locator and diagnoses a conflicting later locator', () => {
     expect(selectCommitAssociation({ ...document, transcriptLocator: '/later' }, [{ document }])).toEqual({
       kind: 'reuse',
       document,
       locatorConflict: true
     });
   });
-  it.skip('preserves an earlier locator when the retry has no locator', () => {
+  it('preserves an earlier locator when the retry has no locator', () => {
     const existing = { ...document, transcriptLocator: '/earlier' };
     expect(selectCommitAssociation(document, [{ document: existing }])).toEqual({
       kind: 'reuse',
@@ -76,21 +76,21 @@ describe('durable association and CLI acknowledgments', () => {
       locatorConflict: false
     });
   });
-  it.skip('refuses ambiguous multiple matching associations', () => {
+  it('refuses ambiguous multiple matching associations', () => {
     expect(
       selectCommitAssociation(document, [{ document }, { document: { ...document, transcriptLocator: '/other' } }])
     ).toMatchObject({ kind: 'reject' });
   });
-  it.skip('accepts an empty exact-SHA list envelope', () => {
+  it('accepts an empty exact-SHA list envelope', () => {
     expect(validateCommitNotesList(envelope('list', []), sha)).toEqual({ ok: true, value: [] });
   });
-  it.skip('accepts arbitrary documents on the exact SHA without assigning their session', () => {
+  it('accepts arbitrary documents on the exact SHA without assigning their session', () => {
     expect(validateCommitNotesList(envelope('list', [note({ user: 'unrelated' })]), sha)).toEqual({
       ok: true,
       value: [{ document: { user: 'unrelated' } }]
     });
   });
-  it.skip.each([
+  it.each([
     null,
     { schema_version: 2, operation: 'list', notes: [] },
     envelope('add', [note()]),
@@ -101,10 +101,10 @@ describe('durable association and CLI acknowledgments', () => {
   ])('refuses malformed or incorrectly selected CLI lists %#', (value) => {
     expect(validateCommitNotesList(value, sha).ok).toBe(false);
   });
-  it.skip('acknowledges only the expected exact SHA and frozen document', () => {
+  it('acknowledges only the expected exact SHA and frozen document', () => {
     expect(validateCommitNotesAdd(envelope('add', [note()]), sha, document)).toEqual({ ok: true, value: document });
   });
-  it.skip.each([
+  it.each([
     envelope('add', []),
     envelope('add', [note(), note()]),
     envelope('list', [note()]),

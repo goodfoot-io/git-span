@@ -21,24 +21,24 @@ const owner = { token: 'owner-1234567890abcdef', pid: 1000 };
 const emptyUsage = { invocations: 0, totalBytes: 0, invocationReceipts: 0, invocationBytes: 0 };
 
 describe('independent invocation lifecycle', () => {
-  it.skip('publishes a receipt without completing active yielded execution', () => {
+  it('publishes a receipt without completing active yielded execution', () => {
     expect(transitionCommitInvocation(active, { kind: 'receipt', receipt, nowMs: 1 })).toMatchObject({
       ok: true,
       value: { status: 'active', pendingNonces: [nonce], liveLease: true }
     });
   });
-  it.skip('deduplicates identical receipt nonce publication', () => {
+  it('deduplicates identical receipt nonce publication', () => {
     expect(
       transitionCommitInvocation({ ...active, pendingNonces: [nonce] }, { kind: 'receipt', receipt, nowMs: 1 })
     ).toMatchObject({ ok: true, value: { pendingNonces: [nonce] } });
   });
-  it.skip('rejects another invocation receipt', () => {
+  it('rejects another invocation receipt', () => {
     expect(
       transitionCommitInvocation(active, { kind: 'receipt', receipt: { ...receipt, invocationKey: 'other' }, nowMs: 1 })
         .ok
     ).toBe(false);
   });
-  it.skip('marks a correlated terminal delivery completed while retaining pending evidence', () => {
+  it('marks a correlated terminal delivery completed while retaining pending evidence', () => {
     expect(
       transitionCommitInvocation(
         { ...active, pendingNonces: [nonce] },
@@ -46,7 +46,7 @@ describe('independent invocation lifecycle', () => {
       )
     ).toMatchObject({ ok: true, value: { status: 'completed', pendingNonces: [nonce], liveLease: false } });
   });
-  it.skip('rejects another session terminal delivery', () => {
+  it('rejects another session terminal delivery', () => {
     expect(
       transitionCommitInvocation(active, {
         kind: 'terminal',
@@ -55,7 +55,7 @@ describe('independent invocation lifecycle', () => {
       }).ok
     ).toBe(false);
   });
-  it.skip('replaying a terminal event cannot reopen acknowledged work', () => {
+  it('replaying a terminal event cannot reopen acknowledged work', () => {
     expect(
       transitionCommitInvocation(
         { ...completed, status: 'acknowledged', pendingNonces: [] },
@@ -63,7 +63,7 @@ describe('independent invocation lifecycle', () => {
       )
     ).toMatchObject({ ok: true, value: { status: 'acknowledged', pendingNonces: [] } });
   });
-  it.skip('acknowledges only the successfully recorded receipt', () => {
+  it('acknowledges only the successfully recorded receipt', () => {
     expect(
       transitionCommitInvocation(
         { ...completed, pendingNonces: [nonce, 'second'] },
@@ -75,24 +75,24 @@ describe('independent invocation lifecycle', () => {
       value: { status: 'acknowledged', pendingNonces: [] }
     });
   });
-  it.skip('unknown acknowledgment cannot erase another receipt', () => {
+  it('unknown acknowledgment cannot erase another receipt', () => {
     expect(transitionCommitInvocation(completed, { kind: 'acknowledge', nonce: 'other', nowMs: 1 }).ok).toBe(false);
   });
-  it.skip('Codex Stop preserves the continuing session and active yielded enrollment', () => {
+  it('Codex Stop preserves the continuing session and active yielded enrollment', () => {
     const codex = { ...active, enrollment: { ...enrollment, host: 'codex' as const } };
     expect(transitionCommitInvocation(codex, { kind: 'cleanup', host: 'codex', nowMs: 1 })).toEqual({
       ok: true,
       value: codex
     });
   });
-  it.skip.each(['claude', 'codex'] as const)('%s cleanup retains completed pending evidence for retry', (host) => {
+  it.each(['claude', 'codex'] as const)('%s cleanup retains completed pending evidence for retry', (host) => {
     const state = { ...completed, enrollment: { ...enrollment, host } };
     expect(transitionCommitInvocation(state, { kind: 'cleanup', host, nowMs: 1 })).toMatchObject({
       ok: true,
       value: { status: 'completed', pendingNonces: [nonce] }
     });
   });
-  it.skip('Claude cleanup retires drained acknowledged enrollment', () => {
+  it('Claude cleanup retires drained acknowledged enrollment', () => {
     expect(
       transitionCommitInvocation(
         { ...completed, status: 'acknowledged', pendingNonces: [] },
@@ -100,7 +100,7 @@ describe('independent invocation lifecycle', () => {
       )
     ).toMatchObject({ ok: true, value: { status: 'retired' } });
   });
-  it.skip('retired keys cannot reopen on late posts', () => {
+  it('retired keys cannot reopen on late posts', () => {
     expect(
       transitionCommitInvocation(
         { ...completed, status: 'retired', pendingNonces: [] },
@@ -108,12 +108,12 @@ describe('independent invocation lifecycle', () => {
       ).ok
     ).toBe(false);
   });
-  it.skip('retains abandoned pending work within the 24-hour window', () => {
+  it('retains abandoned pending work within the 24-hour window', () => {
     expect(
       transitionCommitInvocation(completed, { kind: 'expire', nowMs: COMMIT_RECEIPT_LIMITS.abandonedRetentionMs - 1 })
     ).toMatchObject({ ok: true, value: { status: 'completed', pendingNonces: [nonce] } });
   });
-  it.skip('expires abandoned evidence but preserves a live invocation lease', () => {
+  it('expires abandoned evidence but preserves a live invocation lease', () => {
     const nowMs = COMMIT_RECEIPT_LIMITS.abandonedRetentionMs + 1;
     expect(transitionCommitInvocation(completed, { kind: 'expire', nowMs })).toMatchObject({
       ok: true,
@@ -124,7 +124,7 @@ describe('independent invocation lifecycle', () => {
 });
 
 describe('bounded capacity, claims and drain deadline', () => {
-  it.skip('allows exact capacity limits', () => {
+  it('allows exact capacity limits', () => {
     const additional = {
       invocations: COMMIT_RECEIPT_LIMITS.invocations,
       totalBytes: COMMIT_RECEIPT_LIMITS.totalBytes,
@@ -133,7 +133,7 @@ describe('bounded capacity, claims and drain deadline', () => {
     };
     expect(validateCommitStateCapacity(emptyUsage, additional)).toEqual({ ok: true, value: additional });
   });
-  it.skip.each([
+  it.each([
     { invocations: COMMIT_RECEIPT_LIMITS.invocations + 1 },
     { totalBytes: COMMIT_RECEIPT_LIMITS.totalBytes + 1 },
     { invocationReceipts: COMMIT_RECEIPT_LIMITS.receiptsPerInvocation + 1 },
@@ -144,7 +144,7 @@ describe('bounded capacity, claims and drain deadline', () => {
   ])('rejects overflow or invalid capacity accounting %#', (changed) => {
     expect(validateCommitStateCapacity(emptyUsage, { ...emptyUsage, ...changed }).ok).toBe(false);
   });
-  it.skip.each([
+  it.each([
     [null, 'uncertain', 100, 'acquire'],
     [owner, 'dead', 100, 'recover'],
     [owner, 'alive', 100, 'wait'],
@@ -157,7 +157,7 @@ describe('bounded capacity, claims and drain deadline', () => {
       expect(decideCommitClaim(claimOwner, liveness, remainingMs)).toBe(expected);
     }
   );
-  it.skip.each([
+  it.each([
     [0, 0, 2000],
     [100, 1000, 2000],
     [0, 1500, 1500],

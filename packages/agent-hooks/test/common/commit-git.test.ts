@@ -24,7 +24,7 @@ function evidence(text = record()): CommitCreationEvidence {
 }
 
 describe('actual Git argv classification', () => {
-  it.skip('preserves argv while resolving repeated relative -C and repository global options', () => {
+  it('preserves argv while resolving repeated relative -C and repository global options', () => {
     const argv = [
       '-C',
       'parent',
@@ -56,7 +56,7 @@ describe('actual Git argv classification', () => {
     });
     if (result.ok) expect(result.value.globalArguments).toEqual(argv.slice(0, 9));
   });
-  it.skip.each(
+  it.each(
     [
       ['--git-dir', '/repo/.git', '--work-tree', '/repo', 'commit'],
       ['-C/repo', '-cuser.name=Agent', 'commit'],
@@ -65,7 +65,7 @@ describe('actual Git argv classification', () => {
   )('recognizes supported global layout %#', ({ argv }) => {
     expect(parseCommitGitInvocation(argv, '/base')).toMatchObject({ ok: true, value: { builtinCommit: true } });
   });
-  it.skip.each(['checkout', 'reset', 'fetch', 'push', 'merge', 'commit-tree', 'ci'])(
+  it.each(['checkout', 'reset', 'fetch', 'push', 'merge', 'commit-tree', 'ci'])(
     'forwards %s without builtin commit evidence',
     (command) => {
       expect(parseCommitGitInvocation([command], '/repo')).toMatchObject({
@@ -74,7 +74,7 @@ describe('actual Git argv classification', () => {
       });
     }
   );
-  it.skip.each(
+  it.each(
     [
       ['commit', '--dry-run'],
       ['commit', '-n', '--dry-run'],
@@ -86,7 +86,7 @@ describe('actual Git argv classification', () => {
       value: { dryRun: argv.indexOf('-m') < 0 }
     });
   });
-  it.skip.each(
+  it.each(
     [
       [],
       ['-C'],
@@ -103,15 +103,22 @@ describe('actual Git argv classification', () => {
 });
 
 describe('nonce-tagged reflog creation witness', () => {
-  it.skip('captures unborn commit SHA independently of any later HEAD or stdout', () => {
+  it('captures unborn commit SHA independently of any later HEAD or stdout', () => {
     expect(validateCommitCreationEvidence(evidence())).toEqual({ ok: true, value: sha });
   });
-  it.skip('ignores unrelated records and tolerates an incomplete trailing record', () => {
-    expect(
-      validateCommitCreationEvidence(evidence(`${record('b'.repeat(40), sha, 'other')}${record()}partial`))
-    ).toEqual({ ok: true, value: sha });
+  it('ignores complete unrelated records', () => {
+    expect(validateCommitCreationEvidence(evidence(`${record('b'.repeat(40), sha, 'other')}${record()}`))).toEqual({
+      ok: true,
+      value: sha
+    });
   });
-  it.skip('accepts appended evidence from the original inode and offset', () => {
+  it('rejects a valid witness followed by a truncated second nonce transition', () => {
+    expect(validateCommitCreationEvidence(evidence(record() + record(sha, 'b'.repeat(40)).trimEnd())).ok).toBe(false);
+  });
+  it('rejects a valid witness followed by malformed nonce-tagged evidence', () => {
+    expect(validateCommitCreationEvidence(evidence(`${record()}broken ${nonce}: second\n`)).ok).toBe(false);
+  });
+  it('accepts appended evidence from the original inode and offset', () => {
     const value = evidence();
     expect(
       validateCommitCreationEvidence({
@@ -121,13 +128,13 @@ describe('nonce-tagged reflog creation witness', () => {
       })
     ).toEqual({ ok: true, value: sha });
   });
-  it.skip('uses the actual SHA-256 object format', () => {
+  it('uses the actual SHA-256 object format', () => {
     const fullSha = 'd'.repeat(64);
     expect(
       validateCommitCreationEvidence({ ...evidence(record('0'.repeat(64), fullSha)), objectFormat: 'sha256' })
     ).toEqual({ ok: true, value: fullSha });
   });
-  it.skip.each([
+  it.each([
     { gitExitCode: 1 },
     { gitExitCode: null, gitSignal: 'SIGTERM' },
     { dryRun: true },
@@ -136,7 +143,7 @@ describe('nonce-tagged reflog creation witness', () => {
   ])('rejects failed, signalled, unsupported or missing evidence %#', (changed) => {
     expect(validateCommitCreationEvidence({ ...evidence(), ...changed }).ok).toBe(false);
   });
-  it.skip.each([
+  it.each([
     record() + record(),
     record('0'.repeat(40), sha, `prefix-${nonce}`),
     record('0'.repeat(40), '0'.repeat(40)),
@@ -146,7 +153,7 @@ describe('nonce-tagged reflog creation witness', () => {
   ])('rejects ambiguous, forged or truncated records %#', (text) => {
     expect(validateCommitCreationEvidence(evidence(text)).ok).toBe(false);
   });
-  it.skip.each([{ inode: 'replacement' }, { device: 'replacement' }, { fileSize: 0 }, { exceededBudget: true }])(
+  it.each([{ inode: 'replacement' }, { device: 'replacement' }, { fileSize: 0 }, { exceededBudget: true }])(
     'rejects replacement, truncation or overflow %#',
     (changed) => {
       const value = evidence();

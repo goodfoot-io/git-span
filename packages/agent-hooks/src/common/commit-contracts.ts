@@ -1,4 +1,5 @@
 /** Immutable invocation and receipt contracts; all validation is independent of host SDKs and filesystem IO. */
+import { isAbsolute } from 'node:path';
 export type CommitHost = 'claude' | 'codex';
 export type CommitObjectFormat = 'sha1' | 'sha256';
 export type CommitValidation<T> =
@@ -51,34 +52,140 @@ export interface CommitPostIdentity {
   readonly toolUseId: string;
 }
 
+function object(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function text(value: unknown, max = 4096): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= max && !value.includes('\0');
+}
+
+function absolute(value: unknown): value is string {
+  return text(value) && isAbsolute(value);
+}
+
+function key(value: unknown): value is string {
+  return text(value, 256) && /^[a-zA-Z0-9_-]+$/.test(value);
+}
+
+function reject(reason: string): { readonly ok: false; readonly reason: string } {
+  return { ok: false, reason };
+}
+
 /** Validate a persisted enrollment without adopting fields from a later hook. */
-export function validateCommitEnrollment(_value: unknown): CommitValidation<CommitEnrollment> {
-  throw new Error('Not Implemented');
+export function validateCommitEnrollment(value: unknown): CommitValidation<CommitEnrollment> {
+  if (!object(value) || value.schemaVersion !== 1) return reject('invalid enrollment schema');
+  if (value.host !== 'claude' && value.host !== 'codex') return reject('unsupported commit host');
+  if (!key(value.invocationKey) || !text(value.sessionId) || !text(value.toolUseId)) {
+    return reject('invalid invocation identity');
+  }
+  if (!absolute(value.cwd) || !absolute(value.gitExecutable)) return reject('enrollment paths must be absolute');
+  if (!object(value.originalInput) || !text(value.originalCommand, 1_048_576)) {
+    return reject('invalid original tool input');
+  }
+  if (value.transcriptLocator !== undefined && !text(value.transcriptLocator))
+    return reject('invalid transcript locator');
+  try {
+    if (Buffer.byteLength(JSON.stringify(value.originalInput)) > 1_048_576)
+      return reject('original input exceeds budget');
+  } catch {
+    return reject('original input is not serializable');
+  }
+  const enrollment: CommitEnrollment = {
+    schemaVersion: 1,
+    invocationKey: value.invocationKey,
+    host: value.host,
+    sessionId: value.sessionId,
+    toolUseId: value.toolUseId,
+    originalInput: value.originalInput,
+    originalCommand: value.originalCommand,
+    cwd: value.cwd,
+    gitExecutable: value.gitExecutable,
+    ...(value.transcriptLocator === undefined ? {} : { transcriptLocator: value.transcriptLocator })
+  };
+  return { ok: true, value: enrollment };
 }
 
 /** Validate a receipt's complete object ID and originating enrollment reference. */
-export function validateCommitReceipt(_value: unknown, _enrollment: CommitEnrollment): CommitValidation<CommitReceipt> {
-  throw new Error('Not Implemented');
+export function validateCommitReceipt(value: unknown, enrollment: CommitEnrollment): CommitValidation<CommitReceipt> {
+  if (
+    !object(value) ||
+    value.schemaVersion !== 1 ||
+    value.invocationKey !== enrollment.invocationKey ||
+    !key(value.nonce)
+  ) {
+    return reject('invalid receipt identity');
+  }
+  const repo = value.repository;
+  if (
+    !object(repo) ||
+    !absolute(repo.cwd) ||
+    !absolute(repo.gitDirectory) ||
+    !absolute(repo.commonDirectory) ||
+    !absolute(repo.headReflog)
+  ) {
+    return reject('receipt repository paths must be absolute');
+  }
+  if (repo.objectFormat !== 'sha1' && repo.objectFormat !== 'sha256') return reject('unsupported object format');
+  const pattern = repo.objectFormat === 'sha1' ? /^[0-9a-f]{40}$/ : /^[0-9a-f]{64}$/;
+  if (typeof value.sha !== 'string' || !pattern.test(value.sha) || /^0+$/.test(value.sha))
+    return reject('invalid full commit SHA');
+  return {
+    ok: true,
+    value: {
+      schemaVersion: 1,
+      invocationKey: value.invocationKey,
+      nonce: value.nonce,
+      sha: value.sha,
+      repository: {
+        cwd: repo.cwd,
+        gitDirectory: repo.gitDirectory,
+        commonDirectory: repo.commonDirectory,
+        headReflog: repo.headReflog,
+        objectFormat: repo.objectFormat
+      }
+    }
+  };
 }
 
 /** Match a terminal post and restore the exact original command, input and cwd. */
 export function restoreCommitInvocation(
-  _enrollment: CommitEnrollment,
-  _post: CommitPostIdentity
+  enrollment: CommitEnrollment,
+  post: CommitPostIdentity
 ): CommitValidation<{
   readonly input: Readonly<Record<string, unknown>>;
   readonly command: string;
   readonly cwd: string;
 }> {
-  throw new Error('Not Implemented');
+  if (
+    enrollment.host !== post.host ||
+    enrollment.sessionId !== post.sessionId ||
+    enrollment.toolUseId !== post.toolUseId
+  ) {
+    return reject('post does not match enrolled invocation');
+  }
+  return {
+    ok: true,
+    value: { input: enrollment.originalInput, command: enrollment.originalCommand, cwd: enrollment.cwd }
+  };
 }
 
 /** Freeze the deterministic document from the original enrollment. */
-export function createCommitNoteDocument(_enrollment: CommitEnrollment): CommitNoteDocument {
-  throw new Error('Not Implemented');
+export function createCommitNoteDocument(enrollment: CommitEnrollment): CommitNoteDocument {
+  return {
+    schemaVersion: 1,
+    host: enrollment.host,
+    sessionId: enrollment.sessionId,
+    ...(enrollment.transcriptLocator === undefined ? {} : { transcriptLocator: enrollment.transcriptLocator })
+  };
 }
 
 /** Produce stable JSON for CLI stdin and byte-identical retries. */
-export function serializeCommitNoteDocument(_document: CommitNoteDocument): string {
-  throw new Error('Not Implemented');
+export function serializeCommitNoteDocument(document: CommitNoteDocument): string {
+  return JSON.stringify({
+    schemaVersion: document.schemaVersion,
+    host: document.host,
+    sessionId: document.sessionId,
+    ...(document.transcriptLocator === undefined ? {} : { transcriptLocator: document.transcriptLocator })
+  });
 }
