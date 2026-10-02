@@ -1179,8 +1179,7 @@ fn key_u32(n: u32) -> [u8; 32] {
 /// bounded pass, which runs only above the high-water mark. Returns the pass's
 /// stats (all-zero below the water mark, i.e. the probe-only fast path).
 fn run_maybe_maintain(store: &mut CacheStore) -> GcStats {
-    let over_buffer =
-        store.non_live_generation_count().unwrap() > STORE_REUSE_BUFFER_GENERATIONS;
+    let over_buffer = store.non_live_generation_count().unwrap() > STORE_REUSE_BUFFER_GENERATIONS;
     if !over_buffer {
         return GcStats::default();
     }
@@ -1295,11 +1294,9 @@ fn maintain_plateaus_across_many_distinct_evictable_generations() {
     // retention contract, not a size measurement.
     let non_live: i64 = store
         .conn
-        .query_row(
-            "SELECT count(*) FROM generation WHERE live = 0",
-            [],
-            |r| r.get(0),
-        )
+        .query_row("SELECT count(*) FROM generation WHERE live = 0", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert!(
         non_live as u64 <= STORE_REUSE_BUFFER_GENERATIONS,
@@ -1343,11 +1340,9 @@ fn maintain_sweeps_stale_non_live_generations_under_cap() {
     );
     let remaining: i64 = store
         .conn
-        .query_row(
-            "SELECT count(*) FROM generation WHERE live = 0",
-            [],
-            |r| r.get(0),
-        )
+        .query_row("SELECT count(*) FROM generation WHERE live = 0", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert!(
         remaining <= 16,
@@ -1369,8 +1364,7 @@ fn run_maybe_maintain_reconciled(store: &mut CacheStore, live_head: &str) -> GcS
     // Moving-HEAD model: rule 1 (superseded-head demotion) alone drives this
     // helper, so no current (head, key) narrowing is supplied.
     store.reconcile_live_heads(&live, None).unwrap();
-    let over_buffer =
-        store.non_live_generation_count().unwrap() > STORE_REUSE_BUFFER_GENERATIONS;
+    let over_buffer = store.non_live_generation_count().unwrap() > STORE_REUSE_BUFFER_GENERATIONS;
     if !over_buffer {
         return GcStats::default();
     }
@@ -1412,7 +1406,10 @@ fn reconcile_live_heads_demotes_only_superseded() {
         .into_iter()
         .collect();
     let demoted = store.reconcile_live_heads(&live, None).unwrap();
-    assert_eq!(demoted, 1, "exactly the head-b generation is demoted");
+    assert_eq!(
+        demoted.demoted, 1,
+        "exactly the head-b generation is demoted"
+    );
 
     assert_eq!(live_flag(&store, &key(0)), 1, "head-a stays live");
     assert_eq!(
@@ -1427,7 +1424,10 @@ fn reconcile_live_heads_demotes_only_superseded() {
     );
 
     // Idempotent: reconciling again against the same set demotes nothing more.
-    assert_eq!(store.reconcile_live_heads(&live, None).unwrap(), 0);
+    assert_eq!(
+        store.reconcile_live_heads(&live, None).unwrap(),
+        ReconcileStats::default()
+    );
 }
 
 /// FIXED: repeated current-version commits cannot grow the store without bound.
@@ -2196,7 +2196,6 @@ fn due_owner(store: &mut CacheStore) -> lock::LockGuard {
 }
 
 #[test]
-#[ignore = "maintenance contract bootstrap"]
 fn maintenance_first_open_due_and_success_resets() {
     let dir = tmp();
     let mut store = open(dir.path());
@@ -2219,7 +2218,6 @@ fn maintenance_first_open_due_and_success_resets() {
 }
 
 #[test]
-#[ignore = "maintenance contract bootstrap"]
 fn maintenance_fifteen_defer_sixteenth_due() {
     let dir = tmp();
     let mut store = open(dir.path());
@@ -2240,7 +2238,6 @@ fn maintenance_fifteen_defer_sixteenth_due() {
 }
 
 #[test]
-#[ignore = "maintenance contract bootstrap"]
 fn maintenance_shared_connections_and_reopen_continue() {
     let dir = tmp();
     let mut first = open(dir.path());
@@ -2267,7 +2264,6 @@ fn maintenance_shared_connections_and_reopen_continue() {
 }
 
 #[test]
-#[ignore = "maintenance contract bootstrap"]
 fn maintenance_contended_owner_does_not_admit() {
     let dir = tmp();
     let first = open(dir.path());
@@ -2284,7 +2280,6 @@ fn maintenance_contended_owner_does_not_admit() {
 }
 
 #[test]
-#[ignore = "maintenance contract bootstrap"]
 fn maintenance_abandoned_due_owner_retries_after_reopen() {
     let dir = tmp();
     let mut store = open(dir.path());
@@ -2309,7 +2304,6 @@ fn maintenance_abandoned_due_owner_retries_after_reopen() {
 }
 
 #[test]
-#[ignore = "maintenance contract bootstrap"]
 fn maintenance_completion_storage_error_preserves_due() {
     let dir = tmp();
     let mut store = open(dir.path());
@@ -2327,7 +2321,6 @@ fn maintenance_completion_storage_error_preserves_due() {
 }
 
 #[test]
-#[ignore = "maintenance contract bootstrap"]
 fn maintenance_conditional_delete_preserves_republished_candidate() {
     let dir = tmp();
     let mut store = open(dir.path());
@@ -2354,7 +2347,6 @@ fn maintenance_conditional_delete_preserves_republished_candidate() {
 }
 
 #[test]
-#[ignore = "maintenance contract bootstrap"]
 fn maintenance_conditional_delete_reports_actual_children_and_absence() {
     let dir = tmp();
     let mut store = open(dir.path());
@@ -2377,4 +2369,124 @@ fn maintenance_conditional_delete_reports_actual_children_and_absence() {
         .query_row("SELECT count(*) FROM span_path_index", [], |row| row.get(0))
         .unwrap();
     assert_eq!(index_count, 0);
+}
+
+#[test]
+fn maintenance_restores_returning_head_without_reviving_narrowed_overlay() {
+    let dir = tmp();
+    let mut store = open(dir.path());
+    for (n, rows) in [(1, 1), (2, 0), (3, 0)] {
+        let mut input = make_input(key(n), V1, b"s", rows);
+        input.live = true;
+        store.publish_generation(&input).unwrap();
+    }
+    store.narrow_overlays("0123abcd", &key(3)).unwrap();
+    let empty = HashSet::new();
+    assert_eq!(store.reconcile_live_heads(&empty, None).unwrap().demoted, 2);
+    let active = HashSet::from(["0123abcd".to_string()]);
+    assert_eq!(
+        store.reconcile_live_heads(&active, None).unwrap().restored,
+        2
+    );
+    assert_eq!(live_flag(&store, &key(1)), 1);
+    assert_eq!(live_flag(&store, &key(2)), 0);
+    assert_eq!(live_flag(&store, &key(3)), 1);
+    let mut republished = make_input(key(2), V1, b"returned", 0);
+    republished.live = true;
+    store.publish_generation(&republished).unwrap();
+    store.reconcile_live_heads(&empty, None).unwrap();
+    assert_eq!(
+        store.reconcile_live_heads(&active, None).unwrap().restored,
+        3
+    );
+}
+
+#[test]
+fn maintenance_reconciliation_error_rolls_back_all_changes() {
+    let dir = tmp();
+    let mut store = open(dir.path());
+    for n in 1..=2 {
+        let mut input = make_input(key(n), V1, b"s", 0);
+        input.live = true;
+        store.publish_generation(&input).unwrap();
+    }
+    // Reconciliation first demotes the absent HEAD, then narrowing faults.
+    store.conn.execute_batch("CREATE TRIGGER fail_narrowing BEFORE UPDATE ON generation WHEN NEW.overlay_superseded = 1 BEGIN SELECT RAISE(ABORT, 'narrow denied'); END;").unwrap();
+    assert!(
+        store
+            .reconcile_live_heads(&HashSet::new(), Some(("0123abcd", &key(2))))
+            .is_err()
+    );
+    assert_eq!(live_flag(&store, &key(1)), 1);
+    assert_eq!(live_flag(&store, &key(2)), 1);
+}
+
+#[test]
+fn maintenance_candidate_count_recheck_preserves_reuse_buffer() {
+    let dir = tmp();
+    let mut store = open(dir.path());
+    let mut sibling = open(dir.path());
+    for n in 1..=17 {
+        store
+            .publish_generation(&make_input(key(n), V1, b"s", 1))
+            .unwrap();
+    }
+    // A sibling protects one generation after candidates/count were read.
+    let candidate = store.eviction_candidates().unwrap().remove(0).key_hex;
+    sibling.set_live(&key(17), true).unwrap();
+    assert_eq!(
+        store.gc_delete_above_buffer(&candidate).unwrap(),
+        maintenance::DeletionStats::default()
+    );
+    assert_eq!(store.non_live_generation_count().unwrap(), 16);
+}
+
+#[test]
+fn maintenance_conditional_delete_failure_preserves_generation_and_due() {
+    let dir = tmp();
+    let mut store = open(dir.path());
+    store
+        .publish_generation(&make_input(key(1), V1, b"s", 1))
+        .unwrap();
+    store.conn.execute_batch("CREATE TRIGGER fail_row_delete BEFORE DELETE ON generation_row BEGIN SELECT RAISE(ABORT, 'delete denied'); END;").unwrap();
+    assert!(store.gc_delete_non_live(&hex32(&key(1))).is_err());
+    assert!(store.get_generation(&key(1), V1).unwrap().hit().is_some());
+    assert_eq!(row_total(&store), 1);
+    assert!(store.maintenance_state().unwrap().due);
+}
+
+/// Small replacement for the former forty-commit production churn fixture:
+/// publications, changing HEAD hints and local overlay narrowing never delay
+/// the shared due admission; the exact-entry test covers actual reclamation.
+#[test]
+fn maintenance_publications_and_overlay_narrowing_cannot_postpone_due() {
+    let dir = tmp();
+    let mut store = open(dir.path());
+    let guard = due_owner(&mut store);
+    store.complete_maintenance(guard).unwrap();
+    for count in 1..16 {
+        assert!(matches!(
+            store.admit_maintenance().unwrap(),
+            maintenance::MaintenanceDecision::Deferred(_)
+        ));
+        let mut input = make_input(key(count), V1, b"overlay", 0);
+        input.head = format!("moving-head-{count}");
+        input.live = true;
+        store.publish_generation_summary_only(&input).unwrap();
+        store
+            .narrow_overlays(&input.head, &input.key_digest)
+            .unwrap();
+        assert_eq!(
+            store.maintenance_state().unwrap().admitted_count,
+            u32::from(count)
+        );
+    }
+    drop(due_owner(&mut store));
+    assert_eq!(
+        store.maintenance_state().unwrap(),
+        maintenance::MaintenanceState {
+            admitted_count: 16,
+            due: true
+        }
+    );
 }

@@ -322,10 +322,8 @@ pub(crate) fn drift_spans_new_store(
     // just publish. The gated bounded pass (see [`maybe_maintain`]) sweeps
     // non-live generations beyond the reuse buffer — the observed shape where
     // the publish-only trigger never fires and stale generations accumulate.
-    // Reconciliation runs first, so this open-time call is what demotes the
-    // previous commit's superseded generation and feeds the count leg that
-    // gates the bounded sweep; no generation was just published here, so no
-    // same-head narrowing applies.
+    // This invocation admits a maintenance opportunity before the unchanged
+    // full state observation/read guards. Deferred entries skip HEAD discovery.
     {
         let _perf = crate::perf::span("resolver.store.maintain");
         maybe_maintain(repo, &mut store, None);
@@ -703,7 +701,7 @@ fn project_revalidate_publish_impl(
         Some(&mut crate::resolver::core::exe_digest_store::SharedExeDigestMemo),
     )? {
         Revalidation::Unchanged => {
-            publish_if_eligible(repo, store, token, key, &rr, core, store_rows);
+            publish_if_eligible(store, token, key, &rr, core, store_rows);
             let attempt = rr.to_attempt();
             memo_put(*key, rr);
             Ok(attempt)
@@ -726,7 +724,6 @@ fn project_revalidate_publish_impl(
 /// eligible. A publish failure is recorded and swallowed: fail closed on the
 /// cache, never on the command.
 fn publish_if_eligible(
-    repo: &gix::Repository,
     store: &mut CacheStore,
     token: &crate::resolver::core::token::StateToken,
     key: &[u8; 32],
@@ -789,14 +786,10 @@ fn publish_if_eligible(
     match published {
         Ok(()) => {
             crate::perf::counter("cache-path.publish-ok", 1);
-            // The publish-time trigger for bounded store maintenance: bounded
-            // foreground work whose eviction sweep is gated by a cheap
-            // high-water count check (see [`maybe_maintain`]), right after a
-            // generation lands. The just-published `(head, key)` is the current
-            // worktree's live generation — passed through so reconciliation can
-            // demote the drifted same-head overlays dirty-state churn leaves
-            // behind (card main-157 F2).
-            maybe_maintain(repo, store, Some((&token.head, key)));
+            match store.narrow_overlays(&token.head, key) {
+                Ok(demoted) => crate::perf::counter("cache-path.reconcile-demoted", demoted),
+                Err(e) => crate::perf::note(&format!("cache-path.overlay-narrowing-failed: {e}")),
+            }
         }
         Err(e) => {
             incr_publish_failures();
@@ -806,96 +799,123 @@ fn publish_if_eligible(
     }
 }
 
-/// Run bounded store maintenance, but only at a high-water mark. Liveness is
-/// reconciled first — demoting every generation whose publish-time HEAD no
-/// active worktree sits on (and, right after a publish, the same-head
-/// summary-only overlays dirty-state churn leaves behind) — then a cheap count
-/// probe gates the expensive sweep: the store's non-live generation count
-/// exceeds
-/// [`STORE_REUSE_BUFFER_GENERATIONS`](crate::resolver::store::STORE_REUSE_BUFFER_GENERATIONS)
-/// (card main-224). Below the water mark this returns after the reconcile and
-/// the probe, never running the eviction loop, page reclaim, or WAL
-/// checkpoint; above it, [`CacheStore::maintain`] evicts non-live generations
-/// and truncates the WAL as bounded foreground work — no background thread, no
-/// deferral, so maintenance can never be perpetually not-run.
-///
-/// Reconciliation runs unconditionally, not behind the probe, because the
-/// count leg is the pipeline's only ignition once the byte cap is gone (card
-/// main-223): publish always marks the new generation `live`, so without a
-/// demotion nothing ever becomes an eviction candidate, the non-live count
-/// stays at zero, and the probe can never fire. Reconcile-before-probe lets
-/// each drift's demotions accumulate into the count leg — on a fresh store the
-/// moving-HEAD sequence demotes the previous commit's generation at every
-/// drift, crossing the reuse buffer after 17 commits, and the sweep then
-/// plateaus the footprint. The probe still keeps the *expensive* sweep off the
-/// every-drift path, and the reconcile itself is cheap (one HEAD resolution,
-/// a linked-worktree enumeration, and a per-dead-head `UPDATE`).
-///
-/// `current` is the just-published `(head, key)` when this runs right after a
-/// publish (scoping the same-head demotion rule in [`reconcile_liveness`]);
-/// `None` when the pass runs from the drift open-time path with no generation
-/// just published.
+/// Admit one entry opportunity under a nonblocking shared owner lock. Fresh
+/// discovery runs initially and every sixteen admitted entries after success.
+/// Contended siblings continue lookup without admission. Errors retain due;
+/// a hung owner or repeated failure delays reclamation until a pass succeeds.
+/// No transaction spans discovery. Cache observation/revalidation follows this
+/// independently; publication only narrows its local overlays.
 fn maybe_maintain(
     repo: &gix::Repository,
     store: &mut CacheStore,
     current: Option<(&str, &[u8; 32])>,
 ) {
-    // Demote superseded generations first: this is also what pushes a fresh
-    // store's non-live count over the water mark (see the note above).
-    reconcile_liveness(repo, store, current);
-    let over_buffer = match store.non_live_generation_count() {
-        Ok(n) => n > crate::resolver::store::STORE_REUSE_BUFFER_GENERATIONS,
+    use crate::resolver::store::maintenance::{
+        MAINTENANCE_ADMISSION_INTERVAL, MaintenanceDecision,
+    };
+    crate::perf::counter(
+        "cache-path.maintenance-interval",
+        u64::from(MAINTENANCE_ADMISSION_INTERVAL),
+    );
+    let guard = match store.admit_maintenance() {
+        Ok(MaintenanceDecision::ActiveOwner) => {
+            crate::perf::note(
+                "cache-path.maintain-deferred: active-owner; no admission; owner may be running or hung",
+            );
+            if let Ok(state) = store.maintenance_state() {
+                emit_maintenance_state(state);
+            }
+            return;
+        }
+        Ok(MaintenanceDecision::Deferred(state)) => {
+            emit_maintenance_state(state);
+            crate::perf::note("cache-path.maintain-deferred: interval");
+            return;
+        }
+        Ok(MaintenanceDecision::Due { state, guard }) => {
+            emit_maintenance_state(state);
+            guard
+        }
         Err(e) => {
-            crate::perf::note(&format!("cache-path.maintain-skipped: non-live count: {e}"));
+            crate::perf::note(&format!(
+                "cache-path.maintain-deferred: storage: {e}; progress requires a successful retry"
+            ));
             return;
         }
     };
-    if !over_buffer {
+    if !reconcile_liveness(repo, store, current) {
         return;
     }
-    match store.maintain() {
-        Ok(stats) => emit_gc_stats(&stats),
-        Err(e) => crate::perf::note(&format!("cache-path.maintain-failed: {e}")),
+    let over_buffer = match store.non_live_generation_count() {
+        Ok(n) => n > crate::resolver::store::STORE_REUSE_BUFFER_GENERATIONS,
+        Err(e) => {
+            crate::perf::note(&format!(
+                "cache-path.maintain-deferred: non-live count: {e}"
+            ));
+            return;
+        }
+    };
+    if over_buffer {
+        match store.maintain() {
+            Ok(stats) => emit_gc_stats(&stats),
+            Err(e) => {
+                crate::perf::note(&format!("cache-path.maintain-failed: {e}; due retained"));
+                return;
+            }
+        }
+    }
+    if let Err(e) = store.complete_maintenance(guard) {
+        crate::perf::note(&format!(
+            "cache-path.maintain-deferred: completion: {e}; due retained"
+        ));
     }
 }
 
-/// Recompute the genuinely-live HEAD set from the repository's active worktrees
-/// and demote every stored generation whose publish-time HEAD is no longer
-/// checked out anywhere, making superseded generations eligible for quota
-/// eviction.
-///
-/// Fails closed when the current HEAD or worktree enumeration fails, or when
-/// the demotion query itself faults. Individual prunable or unresolvable
-/// siblings are skipped, so one deleted checkout cannot disable reclamation.
-/// Resolvable main and sibling heads retain their generations.
-/// If the count probe then crosses the high-water mark, `maintain` still runs
-/// regardless; it simply finds fewer (or no) candidates when reconciliation
-/// was skipped.
-///
-/// `current` is the just-published current generation, when one exists. It
-/// scopes the same-head demotion rule (card main-157 F2): among the
-/// summary-only overlays dirty-state churn leaves at the current HEAD, only
-/// the current key stays live. `None` (the drift open-time path, card
-/// main-224) applies no such narrowing. See [`CacheStore::reconcile_live_heads`].
+fn emit_maintenance_state(state: crate::resolver::store::maintenance::MaintenanceState) {
+    crate::perf::counter(
+        "cache-path.maintenance-admitted-count",
+        u64::from(state.admitted_count),
+    );
+    crate::perf::counter("cache-path.maintenance-due", u64::from(state.due));
+}
+
+/// Full discovery authorizes atomic reconciliation and subsequent eviction.
+/// Any discovery/storage failure skips eviction and leaves durable due intact.
 fn reconcile_liveness(
     repo: &gix::Repository,
     store: &mut CacheStore,
     current: Option<(&str, &[u8; 32])>,
-) {
+) -> bool {
+    #[cfg(test)]
+    {
+        TEST_MAINTENANCE_DISCOVERIES.with(|count| count.set(count.get() + 1));
+    }
     let live_heads = {
         let _perf = crate::perf::span("resolver.store.reconcile.live-heads");
         match crate::git::live_worktree_heads(repo) {
             Ok(h) => h,
             Err(e) => {
-                crate::perf::note(&format!("cache-path.reconcile-skipped: live-heads: {e}"));
-                return;
+                crate::perf::note(&format!(
+                    "cache-path.reconcile-skipped: live-heads: {e}; due retained, no eviction"
+                ));
+                return false;
             }
         }
     };
     let _perf_reconcile = crate::perf::span("resolver.store.reconcile.update");
     match store.reconcile_live_heads(&live_heads, current) {
-        Ok(demoted) => crate::perf::counter("cache-path.reconcile-demoted", demoted),
-        Err(e) => crate::perf::note(&format!("cache-path.reconcile-failed: {e}")),
+        Ok(stats) => {
+            crate::perf::counter("cache-path.reconcile-executed", 1);
+            crate::perf::counter("cache-path.reconcile-demoted", stats.demoted);
+            crate::perf::counter("cache-path.reconcile-restored", stats.restored);
+            true
+        }
+        Err(e) => {
+            crate::perf::note(&format!(
+                "cache-path.reconcile-failed: {e}; due retained, no eviction"
+            ));
+            false
+        }
     }
 }
 
@@ -1027,6 +1047,7 @@ fn incr_publish_failures() {}
 
 #[cfg(test)]
 thread_local! {
+    static TEST_MAINTENANCE_DISCOVERIES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static TEST_COLD_MISS_BUILDS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static TEST_EXACT_HITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static TEST_REVALIDATE_DISCARDS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
@@ -1057,6 +1078,7 @@ fn incr_publish_failures() {
 /// thread cannot leak state.
 #[cfg(test)]
 fn reset_test_state() {
+    TEST_MAINTENANCE_DISCOVERIES.with(|c| c.set(0));
     TEST_COLD_MISS_BUILDS.with(|c| c.set(0));
     TEST_EXACT_HITS.with(|c| c.set(0));
     TEST_REVALIDATE_DISCARDS.with(|c| c.set(0));

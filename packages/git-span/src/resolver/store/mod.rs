@@ -207,6 +207,13 @@ pub(crate) struct GcStats {
     pub(crate) corruption_recovered: bool,
 }
 
+/// Actual liveness changes from one successfully committed fresh pass.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ReconcileStats {
+    pub(crate) demoted: u64,
+    pub(crate) restored: u64,
+}
+
 pub(crate) type StoreResult<T> = Result<T, StoreError>;
 
 /// The verified SQLite store. One owner of one connection.
@@ -796,97 +803,67 @@ impl CacheStore {
         Ok(())
     }
 
-    /// Reconcile stored liveness against the genuinely-live HEAD set: demote to
-    /// non-live every generation whose publish-time HEAD hint is not one of
-    /// `live_heads` (the commit OIDs currently checked out by an active
-    /// worktree, per [`crate::git::live_worktree_heads`]), and — for the
-    /// current worktree's `(head, key)`, when supplied — demote the drift
-    /// summary-only overlays that accumulate at a *single* live HEAD. Returns
-    /// the number of generations demoted.
-    ///
-    /// This is the missing production step that makes 6A's quota
-    /// [`Self::maintain`] able to reclaim anything: publish always marks the
-    /// new generation `live` ("the current worktree references it now"), but
-    /// nothing else ever demotes a superseded one. Without reconciliation every
-    /// generation ever published stays permanently live, and
-    /// [`Self::eviction_candidates`]' `WHERE live = 0` filter yields nothing —
-    /// the quota is silently defeated (card main-157 Phase 6C's measured gap).
-    ///
-    /// Two demotion rules run, each closing one leak:
-    ///
-    /// 1. **Superseded HEAD (moving-HEAD churn).** A generation at a HEAD no
-    ///    worktree currently sits on is backed by no active worktree; demote
-    ///    every live generation at such a head. A head that is live — including
-    ///    a sibling worktree's — is retained. Per-head so each `UPDATE ... WHERE
-    ///    head = ?` rides the `generation_by_head` index.
-    ///
-    /// 2. **Same-HEAD dirty-state churn (card main-157 F2).** Liveness scoped to
-    ///    the HEAD alone leaves *every* generation published at the current HEAD
-    ///    permanently live, so a developer (or an editor extension running
-    ///    `git span drift` on save) sitting on one commit and producing many
-    ///    distinct dirty worktree states accumulates one live summary-only
-    ///    overlay per state, unbounded, none ever an eviction candidate. When
-    ///    `current` is supplied, demote every live *summary-only* overlay
-    ///    (`row_count = 0`) at the current head other than the current key. The
-    ///    current overlay stays live; the rows-bearing clean baseline
-    ///    (`row_count > 0`) the overlays reuse from stays live and warm;
-    ///    abandoned prior overlays become evictable. Narrowing applies only to
-    ///    the current head — a sibling worktree's head is left whole because we
-    ///    cannot know its current key from here.
-    ///
-    /// The eviction mechanism itself is unchanged: this only flips the `live`
-    /// flag the existing candidate query already reads.
+    /// Fresh liveness reconciliation is atomic: returning HEADs regain protection,
+    /// absent HEADs lose it, and deliberately superseded overlays remain narrowed.
+    /// Discovery must succeed before calling this; no repository IO runs here.
     pub(crate) fn reconcile_live_heads(
         &mut self,
         live_heads: &HashSet<String>,
         current: Option<(&str, &[u8; 32])>,
-    ) -> StoreResult<u64> {
-        // Rule 1: superseded heads. The distinct HEAD hints currently marked
-        // live — demoting per-head (rather than per-row) keeps the scan small
-        // and lets each UPDATE ride the `generation_by_head` index.
-        let live_gen_heads: Vec<String> = {
-            let mut stmt = self
-                .conn
-                .prepare("SELECT DISTINCT head FROM generation WHERE live = 1")
+    ) -> StoreResult<ReconcileStats> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(map_sqlite)?;
+        let heads: Vec<String> = {
+            let mut stmt = tx
+                .prepare("SELECT DISTINCT head FROM generation")
                 .map_err(map_sqlite)?;
             let rows = stmt
                 .query_map([], |r| r.get::<_, String>(0))
                 .map_err(map_sqlite)?;
-            let mut out = Vec::new();
-            for row in rows {
-                out.push(row.map_err(map_sqlite)?);
-            }
-            out
+            rows.collect::<Result<Vec<_>, _>>().map_err(map_sqlite)?
         };
-
-        let mut demoted = 0u64;
-        for head in live_gen_heads {
+        let mut stats = ReconcileStats::default();
+        for head in heads {
             if live_heads.contains(&head) {
-                continue;
+                stats.restored += tx.execute("UPDATE generation SET live = 1 WHERE live = 0 AND overlay_superseded = 0 AND head = ?1", [&head]).map_err(map_sqlite)? as u64;
+            } else {
+                stats.demoted += tx
+                    .execute(
+                        "UPDATE generation SET live = 0 WHERE live = 1 AND head = ?1",
+                        [&head],
+                    )
+                    .map_err(map_sqlite)? as u64;
             }
-            let n = self
-                .conn
-                .execute(
-                    "UPDATE generation SET live = 0 WHERE live = 1 AND head = ?1",
-                    [&head],
-                )
-                .map_err(map_sqlite)?;
-            demoted += n as u64;
         }
-
-        // Rule 2: same-head dirty-state churn at the current worktree's head.
         if let Some((head, key)) = current {
-            let key_hex = hex32(key);
-            let n = self
-                .conn
-                .execute(
-                    "UPDATE generation SET live = 0 \
-                     WHERE live = 1 AND head = ?1 AND row_count = 0 AND key_digest <> ?2",
-                    params![head, &key_hex],
-                )
-                .map_err(map_sqlite)?;
-            demoted += n as u64;
+            stats.demoted += Self::narrow_overlays_txn(&tx, head, key)?;
         }
+        tx.commit().map_err(map_sqlite)?;
+        Ok(stats)
+    }
+
+    /// Publication narrows obsolete summary-only overlays at its own HEAD
+    /// immediately, without another admission or sibling-worktree discovery.
+    pub(crate) fn narrow_overlays(&mut self, head: &str, key: &[u8; 32]) -> StoreResult<u64> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(map_sqlite)?;
+        let demoted = Self::narrow_overlays_txn(&tx, head, key)?;
+        tx.commit().map_err(map_sqlite)?;
+        Ok(demoted)
+    }
+
+    fn narrow_overlays_txn(
+        tx: &rusqlite::Transaction<'_>,
+        head: &str,
+        key: &[u8; 32],
+    ) -> StoreResult<u64> {
+        let key_hex = hex32(key);
+        let demoted: u64 = tx.query_row("SELECT count(*) FROM generation WHERE live = 1 AND head = ?1 AND row_count = 0 AND key_digest <> ?2", params![head, &key_hex], |row| row.get(0)).map_err(map_sqlite)?;
+        tx.execute("UPDATE generation SET live = 0, overlay_superseded = 1 WHERE head = ?1 AND row_count = 0 AND key_digest <> ?2", params![head, &key_hex]).map_err(map_sqlite)?;
         Ok(demoted)
     }
 
@@ -1060,11 +1037,9 @@ impl CacheStore {
     pub(crate) fn non_live_generation_count(&self) -> StoreResult<u64> {
         let n: i64 = self
             .conn
-            .query_row(
-                "SELECT count(*) FROM generation WHERE live = 0",
-                [],
-                |r| r.get(0),
-            )
+            .query_row("SELECT count(*) FROM generation WHERE live = 0", [], |r| {
+                r.get(0)
+            })
             .map_err(map_sqlite)?;
         Ok(n.max(0) as u64)
     }
@@ -1130,8 +1105,7 @@ impl CacheStore {
         // Evict while the non-live count exceeds the reuse buffer (card
         // main-224): stale non-live generations are swept even when the
         // footprint is small, retaining only the modest reuse buffer.
-        let mut over_buffer =
-            self.non_live_generation_count()? > STORE_REUSE_BUFFER_GENERATIONS;
+        let mut over_buffer = self.non_live_generation_count()? > STORE_REUSE_BUFFER_GENERATIONS;
         if over_buffer {
             for cand in self.eviction_candidates()? {
                 over_buffer = self.non_live_generation_count()? > STORE_REUSE_BUFFER_GENERATIONS;
@@ -1139,11 +1113,11 @@ impl CacheStore {
                     break;
                 }
                 self.in_write_txn.set(true);
-                let result = self.gc_delete_one(&cand.key_hex);
+                let result = self.gc_delete_above_buffer(&cand.key_hex);
                 self.in_write_txn.set(false);
-                result?;
-                stats.generations_removed += 1;
-                stats.rows_removed += cand.row_count;
+                let deleted = result?;
+                stats.generations_removed += deleted.generations_removed;
+                stats.rows_removed += deleted.rows_removed;
             }
         }
 
@@ -1171,7 +1145,6 @@ impl CacheStore {
             .query_map([], |r| {
                 Ok(EvictionCandidate {
                     key_hex: r.get::<_, String>(0)?,
-                    row_count: r.get::<_, i64>(1)?.max(0) as u64,
                 })
             })
             .map_err(map_sqlite)?;
@@ -1222,7 +1195,6 @@ impl CacheStore {
 /// One non-live generation selected for quota eviction.
 struct EvictionCandidate {
     key_hex: String,
-    row_count: u64,
 }
 
 /// Move a suspect database file aside (best effort: rename, else delete) along

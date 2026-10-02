@@ -2,7 +2,7 @@
 title: Profiling git span drift
 summary: How to profile `git span drift` — flame-graph capture with `perf record` + inferno, the opt-in `--perf-trace` per-anchor wall-clock CSV emitter, and the `--perf` / `GIT_SPAN_PERF=1` cache-path counters that say which cache path a run took and why.
 aliases: [git-span profiling, perf trace, cache-path counters, perf-trace]
-links-reviewed: 1
+links-reviewed: 2
 ---
 
 # Profiling `git span drift`
@@ -171,14 +171,20 @@ being re-mmap+BLAKE3-hashed on every invocation. `cache-path.exe-digest-memo-loo
 | `cache-path.incremental-anchor-resolutions` / `cache-path.incremental-reused-spans` / `cache-path.incremental-resolved-spans` | Anchors re-resolved, spans reused unchanged, and spans rebuilt on the incremental ancestor-reuse path. |
 | `cache-path.dirty-anchor-resolutions` / `cache-path.dirty-reused-spans` / `cache-path.dirty-resolved-spans` | The same three counts on the dirty affected-set path. |
 
-**Integrity, corruption recovery, and bounded lifecycle** (liveness reconciliation runs at every maintenance trigger — each drift open and publish; the eviction pass and its gc counters only above the reuse-buffer high-water mark, off the hot read path):
+**Integrity, corruption recovery, and bounded lifecycle**:
+
+The [shared maintenance schedule](../../packages/git-span/src/resolver/store/maintenance.rs#L1-L28) starts due, then runs full reconciliation and reclamation on the sixteenth admitted resolver entry after each successful pass. An entry is admitted only after acquiring the nonblocking maintenance owner lock; a sibling that encounters an active owner defers without advancing the count. Deferred entries skip worktree HEAD discovery and the full sweep. Discovery, reconciliation, or reclamation errors leave maintenance due for the next admitted entry; only successful completion resets the count. Publication immediately narrows superseded overlays for the published HEAD, without running another full sweep. A hung owner or repeated failures can postpone reclamation until ownership releases and a pass succeeds. Eviction and its GC counters run only above the reuse-buffer high-water mark; existing state observation and cached-result validation still run on deferred entries.
 
 | Line | Meaning |
 |------|---------|
 | `cache-path.corruption-recovered: <reason>` | The store quarantined and recreated an incompatible-schema or `SQLITE_CORRUPT` database on open; a silent recovery made reportable. |
-| `cache-path.reconcile-demoted` | Superseded generations demoted from `live` after reconciling against the repository's active worktree HEADs, making them evictable. |
+| `cache-path.maintenance-interval` / `cache-path.maintenance-admitted-count` / `cache-path.maintenance-due` | Shared admission interval, durable admitted count, and due flag before the entry's scheduling decision. |
+| `cache-path.maintain-deferred: <reason>` | An active owner or admission interval defers the pass; storage, count, or completion errors retain progress for retry. Active-owner deferral does not count as admission. |
+| `cache-path.reconcile-executed` / `cache-path.reconcile-restored` | A fresh liveness pass ran; eligible generations at returning worktree HEADs regained protection. Deliberately superseded overlays stay narrowed. |
+| `cache-path.reconcile-demoted` | Generations became non-live during fresh reconciliation or immediate publication overlay narrowing, making them evictable. |
+| `cache-path.overlay-narrowing-failed: <err>` | Publication succeeded, but immediate narrowing of superseded overlays failed (the command still succeeds). |
 | `cache-path.reconcile-skipped: live-heads: <err>` / `cache-path.reconcile-failed: <err>` | Liveness reconciliation could not run in full (fail closed: nothing is demoted, correctness preserved). |
 | `cache-path.gc-bytes-before` / `cache-path.gc-bytes-after` | Store size on disk before and after the bounded eviction + WAL truncate. |
 | `cache-path.gc-generations-removed` / `cache-path.gc-rows-removed` | Non-live generations and rows the quota pass evicted. |
 | `cache-path.gc-corruption-recovered: true` | A corruption recovery folded into this maintenance pass. |
-| `cache-path.maintain-skipped: non-live count: <err>` / `cache-path.maintain-failed: <err>` | The maintenance trigger could not count non-live generations, or the pass could not complete (the command still succeeds). |
+| `cache-path.maintain-failed: <err>; due retained` | The reclamation pass could not complete; maintenance stays due (the command still succeeds). |

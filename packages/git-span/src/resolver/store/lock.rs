@@ -1,6 +1,6 @@
 //! `fs4` file locks for the SQLite store (card main-157 Phase 2).
 //!
-//! Two lock roles, both advisory `flock(2)` locks via `fs4`:
+//! Three lock roles, all advisory `flock(2)` locks via `fs4`:
 //!
 //! * **Init lock** — a single exclusive lock guarding schema/WAL
 //!   initialization and quarantine/recreate, so concurrent first-openers do
@@ -11,6 +11,10 @@
 //!   any SQLite transaction, and publishes in one short commit. Same-key
 //!   callers hash to the same shard and serialize to one builder; distinct
 //!   keys usually hash to different shards and build concurrently.
+//!
+//! * **Maintenance lock** — a dedicated nonblocking owner guard. A contended
+//!   entry proceeds to cache lookup without advancing the shared admission
+//!   count; the owner retains protection through fresh discovery and completion.
 //!
 //! `flock` locks are held by the open file description and are released
 //! automatically by the kernel when the process dies — no lease expiry, no
@@ -101,8 +105,11 @@ pub(crate) fn contended() -> StoreError {
 
 /// Try to own shared maintenance without waiting for a sibling's discovery.
 /// The dedicated kernel lock releases on guard drop or process death.
-#[allow(dead_code)] // Contract bootstrap; wired by bounded maintenance implementation.
-pub(crate) fn try_acquire_maintenance(_dir: &Path) -> Result<Option<LockGuard>, StoreError> {
-    let _basename = super::schema::MAINTENANCE_LOCK_BASENAME;
-    todo!("maintenance owner lock")
+pub(crate) fn try_acquire_maintenance(dir: &Path) -> Result<Option<LockGuard>, StoreError> {
+    let path = dir.join(super::schema::MAINTENANCE_LOCK_BASENAME);
+    let file = open_lock_file(&path)?;
+    let got = file
+        .try_lock_exclusive()
+        .map_err(|e| map_io(e, &format!("try-lock maintenance `{}`", path.display())))?;
+    Ok(got.then_some(LockGuard { _file: file, path }))
 }

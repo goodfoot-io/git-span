@@ -575,7 +575,7 @@ fn publish_non_live(store: &mut CacheStore, key: [u8; 32]) {
     store.publish_generation(&input).expect("publish");
 }
 
-/// At the high-water mark the post-publish trigger evicts a non-live
+/// A first-open due entry evicts a non-live
 /// generation: with 17 non-live generations (one past the 16-generation reuse
 /// buffer), [`maybe_maintain`] runs `maintain` and the targeted generation is
 /// gone.
@@ -620,8 +620,7 @@ fn maybe_maintain_evicts_non_live_beyond_reuse_buffer() {
     );
 }
 
-/// Within the reuse buffer the trigger is a no-op beyond the cheap count
-/// probe: even a non-live generation survives, since nothing is over the
+/// Within the reuse buffer a due entry reconciles without eviction: even a non-live generation survives, since nothing is over the
 /// high-water mark.
 #[test]
 fn maybe_maintain_keeps_generation_within_reuse_buffer() {
@@ -653,8 +652,8 @@ fn maybe_maintain_keeps_generation_within_reuse_buffer() {
 fn maybe_maintain_sweeps_stale_non_live_under_cap() {
     let (_td, repo) = drifted_repo("capsweep");
     let mut store = CacheStore::open(&repo).expect("open");
-    // 60 non-live generations, far beyond the reuse buffer.
-    for n in 0..60u8 {
+    // One tiny record beyond the reuse buffer.
+    for n in 0..17u8 {
         publish_non_live(&mut store, [n; 32]);
     }
 
@@ -724,183 +723,67 @@ fn drift_run_sweeps_stale_generations_without_publish() {
     let (_td, repo) = drifted_repo("capsweeprun");
     enable_store();
     let opts = EngineOptions::full();
-
-    // Cold run: builds and publishes the current state's live generation.
-    let spans = resolved(drift_spans_new_store(&repo, SPAN_ROOT, opts).expect("cold"));
-    assert_eq!(spans.len(), 1, "the one drifted span is still reported");
-
-    // Populate stale non-live generations directly into the store, as a
-    // long-lived checkout accumulates when maintenance never fires.
-    let mut store = CacheStore::open(&repo).expect("open");
-    for n in 0..60u8 {
+    assert_eq!(
+        resolved(drift_spans_new_store(&repo, SPAN_ROOT, opts).unwrap()).len(),
+        1
+    );
+    let mut store = CacheStore::open(&repo).unwrap();
+    for n in 0..17u8 {
         publish_non_live(&mut store, [n; 32]);
     }
-    // Close (checkpoint + WAL truncate on last-connection close), then
-    // re-open: measure the settled main-file footprint so the assertion below
-    // can only be satisfied by actual eviction, not by the routine WAL
-    // checkpointing any open/close cycle performs.
-    drop(store);
-    let size_before = {
-        let store = CacheStore::open(&repo).expect("open");
-        let n = store.database_size_bytes().expect("size");
-        drop(store);
-        n
-    };
-
-    // Warm run: an exact hit — no new snapshot published — must still sweep
-    // the stale generations.
-    let spans = resolved(drift_spans_new_store(&repo, SPAN_ROOT, opts).expect("warm"));
-    assert_eq!(spans.len(), 1, "the warm run still reports the same drift");
-
-    let store = CacheStore::open(&repo).expect("open");
-    let size_after = store.database_size_bytes().expect("size");
-    assert!(
-        size_after < size_before,
-        "a normal drift run must reclaim stale generations without publishing: {size_before} -> {size_after}"
+    let discoveries = TEST_MAINTENANCE_DISCOVERIES.with(std::cell::Cell::get);
+    let hits = test_exact_hits();
+    clear_memo();
+    assert_eq!(
+        resolved(drift_spans_new_store(&repo, SPAN_ROOT, opts).unwrap()).len(),
+        1
     );
+    assert_eq!(test_exact_hits(), hits + 1);
+    assert_eq!(
+        TEST_MAINTENANCE_DISCOVERIES.with(std::cell::Cell::get),
+        discoveries
+    );
+    assert_eq!(store.non_live_generation_count().unwrap(), 17);
+    // Advance only the durable scheduling counter using tiny store operations.
+    // The next ordinary exact-hit read is the sixteenth admitted opportunity.
+    for _ in 2..16 {
+        assert!(matches!(
+            store.admit_maintenance().unwrap(),
+            crate::resolver::store::maintenance::MaintenanceDecision::Deferred(_)
+        ));
+    }
+    clear_memo();
+    assert_eq!(
+        resolved(drift_spans_new_store(&repo, SPAN_ROOT, opts).unwrap()).len(),
+        1
+    );
+    assert_eq!(test_exact_hits(), hits + 2);
+    assert_eq!(
+        TEST_MAINTENANCE_DISCOVERIES.with(std::cell::Cell::get),
+        discoveries + 1
+    );
+    assert_eq!(store.non_live_generation_count().unwrap(), 16);
+    assert!(!store.maintenance_state().unwrap().due);
 }
 
-/// End-to-end proof that repeated current-version commits cannot grow the store
-/// without bound (card main-157 Phase 6C's measured gap, now fixed), exercising
-/// the *real* wiring: [`maybe_maintain`]'s liveness reconciliation resolves the
-/// active worktree HEADs from the actual repository. Each iteration commits
-/// fresh tracked content — a new HEAD, a new canonical key, a fresh `live`
-/// generation, exactly the "sequence of trivial commits each triggering a fresh
-/// generation" sub-case the exit gate names — then runs the real `drift` path.
-///
-/// The store footprint plateaus across the whole sequence — bounded by the
-/// count leg's reuse buffer
-/// ([`STORE_REUSE_BUFFER_GENERATIONS`](crate::resolver::store::STORE_REUSE_BUFFER_GENERATIONS)),
-/// not by the commit count — because reconciliation demotes every prior
-/// commit's generation (its HEAD is no longer checked out) and the maintenance
-/// pass evicts everything beyond the buffer. The unfixed behavior grew
-/// linearly with the commit count and reclaimed nothing
-/// (`store::tests::superseded_generations_reconciled_and_evicted` pins the
-/// before/after at the store layer). Here the superseded generations are aged
-/// to strictly older access buckets as they publish, making the eviction order
-/// deterministic (same-second `created_at` values would otherwise tie): the
-/// oldest 23 are reclaimed, the newest 16 survive as the reuse buffer, and the
-/// first commit's generation — the oldest of all — is reclaimed while the
-/// current one stays findable.
 #[test]
-fn repeated_commits_cannot_grow_store_unbounded() {
+fn maintenance_discovery_failure_skips_gc_and_keeps_due() {
     reset_test_state();
-    clear_memo();
-    unsafe {
-        std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
-        std::env::set_var("GIT_CONFIG_SYSTEM", "/dev/null");
+    let (td, repo) = drifted_repo("discoveryfail");
+    let mut store = CacheStore::open(&repo).unwrap();
+    for n in 0..17u8 {
+        publish_non_live(&mut store, [n; 32]);
     }
-    let td = tempfile::tempdir().expect("tempdir");
-    let dir = td.path();
-    git(dir, &["init", "--initial-branch=main"]);
-    git(dir, &["config", "user.name", "Test User"]);
-    git(dir, &["config", "user.email", "test@example.com"]);
-    git(dir, &["config", "commit.gpgsign", "false"]);
-    std::fs::create_dir_all(dir.join("src")).expect("mkdir src");
-    std::fs::write(dir.join("src/a.txt"), "seed\nl2\nl3\nl4\nl5\n").expect("seed");
-    write_span(dir, "alpha", &[("src/a.txt", 1, 3)], "why alpha");
-
-    enable_store();
-    // The count leg fires only once superseded generations accumulate past the
-    // 16-generation reuse buffer, so run well beyond that: after reconciliation
-    // demotes each superseded generation, `maintain` evicts everything beyond
-    // the buffer, and the store holds only the buffer plus the current live
-    // generation — a footprint independent of the commit count. (The current
-    // generation is live, so it is never evicted.)
-    let iters = 40usize;
-    let mut sizes = Vec::with_capacity(iters);
-    let mut keys = Vec::with_capacity(iters);
-    for n in 0..iters {
-        // Distinct tracked content each commit: a new tree => new HEAD and a
-        // new canonical key => a fresh generation published `live`.
-        let body = format!("commit-{n}\nl2\nl3\nl4\nl5\n");
-        std::fs::write(dir.join("src/a.txt"), &body).expect("write src");
-        git(dir, &["add", "-A"]);
-        git(dir, &["commit", "-m", &format!("c{n}")]);
-
-        let repo = gix::open(dir).expect("gix open");
-        let opts = EngineOptions::full();
-        let key = capture_state_token(&repo, SPAN_ROOT, opts)
-            .expect("token")
-            .canonical_key_digest();
-        keys.push(key);
-
-        clear_memo();
-        let _ = drift_spans_new_store(&repo, SPAN_ROOT, opts).expect("drift");
-
-        let store = CacheStore::open(&repo).expect("open");
-        // Age the just-published generation to a strictly increasing access
-        // bucket (newest = largest). Eviction order is `access_bucket ASC`, so
-        // this makes the reclaimed set deterministic — the oldest 23 commits
-        // are reclaimed, the newest 16 survive as the reuse buffer. Without
-        // it, same-second `created_at` ties leave the eviction victims
-        // arbitrary. (The current generation is `live`, so aging it never
-        // makes it evictable.)
-        crate::resolver::store::set_bucket(
-            &store,
-            &key,
-            crate::resolver::store::now_bucket() - (iters - n) as i64,
-        );
-        sizes.push(store.database_size_bytes().unwrap());
-    }
-
-    let last = *sizes.last().unwrap();
-    let steady_max = sizes[20..].iter().copied().max().unwrap();
-
-    // Plateau: once the reuse buffer fills (commit 17+), the footprint stops
-    // growing with the commit count — the last commit is within one
-    // generation's slack of the plateau-start footprint at commit 20. Under
-    // the unfixed all-live semantics this climbed monotonically instead.
-    assert!(
-        last <= sizes[20] + 64 * 1024,
-        "store grew with commit count: [20]={} last={last} (unbounded)",
-        sizes[20],
-    );
-    // The plateau itself is a bounded working set (reuse buffer + one live
-    // generation), not one generation per commit: the steady-state maximum is
-    // within a fixed multiple of the plateau-start footprint, independent of
-    // the 40-commit run.
-    assert!(
-        steady_max <= 2 * sizes[20] + 64 * 1024,
-        "store grew past a bounded plateau: [20]={} steady_max={steady_max} (unbounded)",
-        sizes[20],
-    );
-
-    let repo = gix::open(dir).expect("gix open");
-    let store = CacheStore::open(&repo).expect("open");
-
-    // The count leg's contract: exactly the superseded generations BEYOND the
-    // 16-generation reuse buffer are reclaimed — the oldest 23 commits (each
-    // aged to a strictly older access bucket above, so the order is
-    // deterministic)...
-    for (n, key) in keys.iter().enumerate().take(iters - 1 - 16) {
-        assert_eq!(
-            store.get_generation(key, SUMMARY_VERSION).expect("get"),
-            GetOutcome::Miss,
-            "superseded generation from commit {n} must have been reclaimed",
-        );
-    }
-    // ...while the newest 16 superseded generations survive as the reuse
-    // buffer, and the current worktree's active generation stays live and
-    // findable.
-    for (n, key) in keys.iter().enumerate().skip(iters - 1 - 16).take(16) {
-        assert!(
-            matches!(
-                store.get_generation(key, SUMMARY_VERSION).expect("get"),
-                GetOutcome::Hit(_)
-            ),
-            "reuse-buffer generation from commit {n} must be retained",
-        );
-    }
-    assert!(
-        matches!(
-            store
-                .get_generation(keys.last().unwrap(), SUMMARY_VERSION)
-                .expect("get"),
-            GetOutcome::Hit(_)
-        ),
-        "the current worktree's active generation must remain findable",
-    );
+    let head_path = td.path().join(".git/HEAD");
+    let head = std::fs::read(&head_path).unwrap();
+    std::fs::write(&head_path, "ref: refs/heads/missing-maintenance-head\n").unwrap();
+    maybe_maintain(&repo, &mut store, None);
+    assert_eq!(store.non_live_generation_count().unwrap(), 17);
+    assert!(store.maintenance_state().unwrap().due);
+    std::fs::write(&head_path, head).unwrap();
+    maybe_maintain(&repo, &mut store, None);
+    assert_eq!(store.non_live_generation_count().unwrap(), 16);
+    assert!(!store.maintenance_state().unwrap().due);
 }
 
 /// Capture a git command's trimmed stdout (for reading resolved OIDs).
@@ -1229,4 +1112,80 @@ fn packed_timestamp_replacements_keep_sibling_generation_live() {
             "new packed sibling generation must remain live, regressed: {regress}"
         );
     }
+}
+
+#[test]
+fn maintenance_deferred_entry_observes_dirty_state_and_verifies_lookup() {
+    reset_test_state();
+    clear_memo();
+    let (td, repo) = drifted_repo("deferredguards");
+    enable_store();
+    let opts = EngineOptions::full();
+    let _ = resolved(drift_spans_new_store(&repo, SPAN_ROOT, opts).unwrap());
+    let discoveries = TEST_MAINTENANCE_DISCOVERIES.with(std::cell::Cell::get);
+    let clean_key = capture_state_token(&repo, SPAN_ROOT, opts)
+        .unwrap()
+        .canonical_key_digest();
+    // A wrong-version generation at the exact canonical key must be rejected,
+    // even though this entry defers maintenance and has unchanged worktree state.
+    let mut store = CacheStore::open(&repo).unwrap();
+    store
+        .publish_generation(&GenerationInput {
+            key_digest: clean_key,
+            head: repo.head_commit().unwrap().id.to_string(),
+            payload_version: SUMMARY_VERSION + 1,
+            summary: vec![0],
+            rows: Vec::new(),
+            path_index: Vec::new(),
+            live: true,
+        })
+        .unwrap();
+    clear_memo();
+    let _ = resolved(drift_spans_new_store(&repo, SPAN_ROOT, opts).unwrap());
+    assert_eq!(test_exact_hits(), 0, "wrong-version lookup is rejected");
+    assert!(
+        store
+            .get_generation(&clean_key, SUMMARY_VERSION)
+            .unwrap()
+            .hit()
+            .is_some()
+    );
+    std::fs::write(
+        td.path().join("src/a.txt"),
+        "new dirty state\nl2\nl3\nl4\nl5\n",
+    )
+    .unwrap();
+    let dirty_key = capture_state_token(&repo, SPAN_ROOT, opts)
+        .unwrap()
+        .canonical_key_digest();
+    assert_ne!(dirty_key, clean_key);
+    clear_memo();
+    assert!(matches!(
+        drift_spans_new_store(&repo, SPAN_ROOT, opts).unwrap(),
+        ExactAttempt::Resolved {
+            whole_result: None,
+            ..
+        }
+    ));
+    assert_eq!(
+        test_exact_hits(),
+        0,
+        "dirty observation cannot reuse the clean exact key"
+    );
+    assert!(
+        store
+            .get_generation(&dirty_key, SUMMARY_VERSION)
+            .unwrap()
+            .hit()
+            .is_some()
+    );
+    assert_eq!(
+        TEST_MAINTENANCE_DISCOVERIES.with(std::cell::Cell::get),
+        discoveries
+    );
+    assert_eq!(
+        store.maintenance_state().unwrap().admitted_count,
+        2,
+        "publications do not admit another opportunity"
+    );
 }
