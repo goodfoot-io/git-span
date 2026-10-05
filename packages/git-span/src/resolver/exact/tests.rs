@@ -510,7 +510,8 @@ fn reuse_rows_round_trip_core_through_store() {
     .expect("core");
     let widen = reuse::compute_widen(&core, false);
     let token = capture_state_token(&repo, SPAN_ROOT, opts).expect("token");
-    let (rows, path_index) = reuse::core_to_reuse_rows(&core, &widen, &token.config_fingerprint());
+    let (rows, path_index) = reuse::core_to_reuse_rows(&core, &widen, &token.config_fingerprint())
+        .expect("encode reuse rows");
     assert!(!rows.is_empty(), "a non-empty corpus yields reuse rows");
 
     let key = token.canonical_key_digest();

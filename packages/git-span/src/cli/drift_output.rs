@@ -1694,7 +1694,7 @@ fn describe_finding_lower(f: &Finding, available: &AddAvailability) -> String {
                     format!("moved to {dest} (uncommitted)")
                 } else if let Some(best) = f.fuzzy_successors.first() {
                     // If this was a fuzzy match, append the confidence.
-                    let pct = (best.confidence * 100.0).round() as u32;
+                    let pct = (best.confidence() * 100.0).round() as u32;
                     format!("moved to {dest} ({pct}% match)")
                 } else {
                     format!("moved to {dest}")
@@ -1794,7 +1794,7 @@ fn describe_finding_lower(f: &Finding, available: &AddAvailability) -> String {
                 .fuzzy_successors
                 .iter()
                 .map(|s| {
-                    let pct = (s.confidence * 100.0).round() as u32;
+                    let pct = (s.confidence() * 100.0).round() as u32;
                     format!("{} ({pct}% similar)", s.path)
                 })
                 .collect();
@@ -1803,7 +1803,7 @@ fn describe_finding_lower(f: &Finding, available: &AddAvailability) -> String {
                 dests.join(", ")
             )
         } else if let Some(best) = f.fuzzy_successors.first() {
-            let pct = (best.confidence * 100.0).round() as u32;
+            let pct = (best.confidence() * 100.0).round() as u32;
             let path_extent = AnchorLocation {
                 path: std::path::PathBuf::from(&best.path),
                 extent: AnchorExtent::LineRange {
@@ -2296,7 +2296,7 @@ fn render_porcelain(
         }
         // Fuzzy comment line: confidence of the best fuzzy successor.
         if let Some(best) = f.fuzzy_successors.first() {
-            let pct = (best.confidence * 100.0).round() as u32;
+            let pct = (best.confidence() * 100.0).round() as u32;
             println!("# fuzzy {pct}");
         }
     }
@@ -2646,7 +2646,7 @@ fn finding_doc(f: &Finding, followed_ids: &HashSet<String>) -> FindingDoc {
     // successor), and `confidence` names the best fuzzy match when one ran.
     let moved_to = if f.status == AnchorStatus::Moved {
         f.current.as_ref().map(|loc| MovedToDoc {
-            confidence: f.fuzzy_successors.first().map(|best| best.confidence),
+            confidence: f.fuzzy_successors.first().map(|best| best.confidence()),
             extent: ExtentDoc::from(loc.extent),
             path: loc.path.display().to_string(),
         })
@@ -2673,7 +2673,7 @@ fn finding_doc(f: &Finding, followed_ids: &HashSet<String>) -> FindingDoc {
             .fuzzy_successors
             .iter()
             .map(|fs| FuzzySuccessorDoc {
-                confidence: fs.confidence,
+                confidence: fs.confidence(),
                 extent: ExtentDoc::LineRange {
                     kind: LineExtentKind::Lines,
                     end: fs.end,

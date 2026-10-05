@@ -6,31 +6,10 @@
 //! `build_clean_whole_result` (deleted at cutover in `0a8bf95e`) by
 //! resolving once and projecting twice.
 
-use super::resolution::{AnchorCore, ExtentCore, LayerObservationCore};
+use super::resolution::{AnchorCore, LayerObservationCore};
 use crate::types::{
-    AnchorLocation, AnchorResolved, AnchorStatus, DriftSource, FuzzySuccessor, LayerSet,
-    SpanResolved,
+    AnchorExtent, AnchorResolved, AnchorStatus, DriftSource, LayerSet, SpanResolved,
 };
-use std::path::PathBuf;
-
-fn to_anchor_location(loc: &super::resolution::LocationCore) -> AnchorLocation {
-    AnchorLocation {
-        path: PathBuf::from(&loc.path),
-        extent: loc.extent.into(),
-        blob: loc.blob,
-    }
-}
-
-fn to_fuzzy_successors(v: &[super::resolution::FuzzySuccessorCore]) -> Vec<FuzzySuccessor> {
-    v.iter()
-        .map(|f| FuzzySuccessor {
-            path: f.path.clone(),
-            start: f.start,
-            end: f.end,
-            confidence: f64::from(f.confidence_bps) / 10_000.0,
-        })
-        .collect()
-}
 
 /// Build one projected `AnchorResolved` from a single selected layer
 /// observation plus the anchor's layer-neutral fields. Every view —
@@ -57,14 +36,14 @@ fn project_anchor(
         anchor_id: core.anchor_id.clone(),
         anchor_sha: core.anchor_sha.clone(),
         stored_hash: core.stored_hash.clone(),
-        anchored: to_anchor_location(&core.anchored),
-        current: obs.current.as_ref().map(to_anchor_location),
+        anchored: core.anchored.clone(),
+        current: obs.current.clone(),
         status: obs.status.clone(),
         content_equivalent: obs.content_equivalent,
         source,
         layer_sources,
         locus,
-        fuzzy_successors: to_fuzzy_successors(&obs.fuzzy_successors),
+        fuzzy_successors: obs.fuzzy_successors.clone(),
         moved_uncommitted: obs.moved_uncommitted,
     }
 }
@@ -119,7 +98,7 @@ fn project_effective_anchor(anchor: &AnchorCore, layers: LayerSet) -> AnchorReso
     // whole-file anchor that drifts at every layer (clean worktree, content
     // changed vs the fingerprint) must project I → W → H to stay byte-identical
     // to direct resolution.
-    let whole_file = matches!(anchor.anchored.extent, ExtentCore::WholeFile);
+    let whole_file = matches!(anchor.anchored.extent, AnchorExtent::WholeFile);
     let mut layer_sources = Vec::with_capacity(3);
     if whole_file {
         if index_drifts {

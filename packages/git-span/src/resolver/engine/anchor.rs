@@ -1,7 +1,7 @@
 //! Per-anchor layered resolution: HEAD walk + index/worktree hunk
 //! application + LFS short-circuit + slice comparison.
 
-use super::super::core::resolution::{AnchorCore, LayerObservationCore, LocationCore};
+use super::super::core::resolution::{AnchorCore, LayerObservationCore};
 use super::super::layers::lfs::DeepestPosition;
 use super::super::layers::{read_worktree_normalized, resolve_lfs_anchor};
 use super::super::session::{ConcurrentSession, resolve_at_head_shared};
@@ -279,6 +279,32 @@ fn read_anchored_text(
     }
 }
 
+/// A relocation candidate as the resolver classifies it, carrying the raw
+/// similarity: `1.0` for an exact stored-content hit, the Jaccard score for a
+/// fuzzy one. The noise-floor and `fuzzy_threshold` comparisons, and the
+/// confidence-descending sort, all run on this raw value; it is quantized
+/// exactly once, into the public [`FuzzySuccessor`], by
+/// [`FuzzyCandidate::into_successor`].
+#[derive(Clone, Debug)]
+pub(super) struct FuzzyCandidate {
+    pub(super) path: String,
+    pub(super) start: u32,
+    pub(super) end: u32,
+    pub(super) confidence: f64,
+}
+
+impl FuzzyCandidate {
+    /// The single quantization site: basis points, `(c * 10000.0).round()`.
+    pub(super) fn into_successor(self) -> FuzzySuccessor {
+        FuzzySuccessor {
+            path: self.path,
+            start: self.start,
+            end: self.end,
+            confidence_bps: (self.confidence * 10_000.0).round() as u32,
+        }
+    }
+}
+
 /// Verdict for one relocation match set run through
 /// [`classify_relocation_set`].
 enum RelocationVerdict {
@@ -286,7 +312,7 @@ enum RelocationVerdict {
     /// candidate, or — with the directory-rename tiebreak enabled — the sole
     /// basename-preserving candidate among several (card main-269's
     /// directory-rename shape).
-    Moved(FuzzySuccessor),
+    Moved(FuzzyCandidate),
     /// Several candidates cleared the threshold and none uniquely preserves
     /// the anchored basename: no destination can be asserted. Surface every
     /// candidate for operator review and classify the anchor with
@@ -328,13 +354,13 @@ struct RelocationClassification {
 ///   eligible candidates must stay `Changed` even when one preserves the
 ///   anchored basename.
 fn classify_relocation_set(
-    candidates: &[FuzzySuccessor],
+    candidates: &[FuzzyCandidate],
     anchored_path: &str,
     head_path_absent: bool,
     threshold: f64,
     directory_rename_tiebreak: bool,
 ) -> RelocationClassification {
-    let at_threshold: Vec<&FuzzySuccessor> = candidates
+    let at_threshold: Vec<&FuzzyCandidate> = candidates
         .iter()
         .filter(|b| b.confidence >= threshold)
         .collect();
@@ -363,7 +389,7 @@ fn classify_relocation_set(
 /// attributed solely to the deepest drifting layer, pointing at the asserted
 /// destination.
 fn relocated_to(
-    best: &FuzzySuccessor,
+    best: &FuzzyCandidate,
     deepest_layer: DriftSource,
 ) -> (
     AnchorStatus,
@@ -556,7 +582,7 @@ fn find_similar_ranges(
     anchored_text: &str,
     extent_lines: usize,
     exclude: &str,
-) -> Vec<FuzzySuccessor> {
+) -> Vec<FuzzyCandidate> {
     if extent_lines == 0 {
         return vec![];
     }
@@ -580,7 +606,7 @@ fn find_similar_ranges(
     // equality (see `JaccardCorpus`'s doc comment).
     let anchored_lines: Vec<&str> = anchored_text.lines().collect();
     let anchored_ids = concurrent.jaccard_anchored_ids(&anchored_lines);
-    let mut results: Vec<FuzzySuccessor> = Vec::new();
+    let mut results: Vec<FuzzyCandidate> = Vec::new();
     let mut candidates_scanned = 0usize;
 
     for en in entries.iter() {
@@ -642,7 +668,7 @@ fn find_similar_ranges(
             FUZZY_NOISE_FLOOR,
         );
         for (win_start, confidence) in hits {
-            results.push(FuzzySuccessor {
+            results.push(FuzzyCandidate {
                 path: en.path.clone(),
                 start: (win_start as u32) + 1,
                 end: (win_start as u32) + extent_lines as u32,
@@ -911,7 +937,7 @@ pub(crate) fn resolve_anchor_inner(
     // slice is whitespace-equivalent to the genuine original anchored slice;
     // `false` everywhere else (Fresh, Moved, Deleted, current==None).
     let mut content_equivalent = false;
-    let mut fuzzy_successors: Vec<FuzzySuccessor> = vec![];
+    let mut fuzzy_successors: Vec<FuzzyCandidate> = vec![];
     // Set true only on the worktree-blob fallback arms (card main-264):
     // the anchor's content was found verbatim in an untracked worktree
     // file, so the Moved finding carries the "(uncommitted)" marker.
@@ -1093,9 +1119,9 @@ pub(crate) fn resolve_anchor_inner(
                 // Exact stored-content hits are full-confidence candidates:
                 // each matched the stored hash verbatim, and confidence 1.0
                 // always clears the fuzzy threshold.
-                let exact_candidates: Vec<FuzzySuccessor> = relocated
+                let exact_candidates: Vec<FuzzyCandidate> = relocated
                     .iter()
-                    .map(|(p, s, e)| FuzzySuccessor {
+                    .map(|(p, s, e)| FuzzyCandidate {
                         path: p.clone(),
                         start: *s,
                         end: *e,
@@ -1265,7 +1291,7 @@ pub(crate) fn resolve_anchor_inner(
                                     // (Changed) — never guess.
                                     fuzzy_successors = candidates
                                         .iter()
-                                        .map(|candidate| FuzzySuccessor {
+                                        .map(|candidate| FuzzyCandidate {
                                             path: candidate.to_string_lossy().into_owned(),
                                             start: anchored_start,
                                             end: anchored_end,
@@ -1325,7 +1351,7 @@ pub(crate) fn resolve_anchor_inner(
                                     // fallback ran (see the gate above). Owned clones
                                     // so the reorder below can mutate
                                     // `fuzzy_successors` without fighting the borrow.
-                                    let eligible: Vec<FuzzySuccessor> = fuzzy_successors
+                                    let eligible: Vec<FuzzyCandidate> = fuzzy_successors
                                         .iter()
                                         .filter(|b| b.confidence >= shared.fuzzy_threshold)
                                         .filter(|b| {
@@ -1666,9 +1692,9 @@ pub(crate) fn resolve_anchor_inner(
                 // ladder (uniqueness → basename tiebreak → ambiguity
                 // surfacing). Candidates carry full confidence: the scan
                 // matched the stored hash verbatim.
-                let cross_candidates: Vec<FuzzySuccessor> = relocated_path
+                let cross_candidates: Vec<FuzzyCandidate> = relocated_path
                     .iter()
-                    .map(|(p, s, e)| FuzzySuccessor {
+                    .map(|(p, s, e)| FuzzyCandidate {
                         path: p.clone(),
                         start: *s,
                         end: *e,
@@ -1808,7 +1834,10 @@ pub(crate) fn resolve_anchor_inner(
         source,
         layer_sources,
         locus: None,
-        fuzzy_successors,
+        fuzzy_successors: fuzzy_successors
+            .into_iter()
+            .map(FuzzyCandidate::into_successor)
+            .collect(),
         moved_uncommitted,
     })
 }
@@ -1838,32 +1867,13 @@ const CAPTURE_FULL_LAYERS: LayerSet = LayerSet {
     staged_span: true,
 };
 
-fn location_core(loc: &AnchorLocation) -> LocationCore {
-    LocationCore {
-        path: loc.path.to_string_lossy().into_owned(),
-        extent: loc.extent.into(),
-        blob: loc.blob,
-    }
-}
-
-fn fuzzy_cores(v: &[FuzzySuccessor]) -> Vec<super::super::core::resolution::FuzzySuccessorCore> {
-    v.iter()
-        .map(|f| super::super::core::resolution::FuzzySuccessorCore {
-            path: f.path.clone(),
-            start: f.start,
-            end: f.end,
-            confidence_bps: (f.confidence * 10_000.0).round() as u32,
-        })
-        .collect()
-}
-
 /// Map one layer's collapsed [`AnchorResolved`] into a layer observation.
 fn observation_from(run: &AnchorResolved) -> LayerObservationCore {
     LayerObservationCore {
         status: run.status.clone(),
-        current: run.current.as_ref().map(location_core),
+        current: run.current.clone(),
         content_equivalent: run.content_equivalent,
-        fuzzy_successors: fuzzy_cores(&run.fuzzy_successors),
+        fuzzy_successors: run.fuzzy_successors.clone(),
         moved_uncommitted: run.moved_uncommitted,
     }
 }
@@ -1872,7 +1882,7 @@ fn observation_from(run: &AnchorResolved) -> LayerObservationCore {
 /// load-bearing property for projection is `shows_drift() == false`; a
 /// non-drifting layer is never selected as a projection's source, so its
 /// other fields are never read (see `super::super::core::project`).
-fn fresh_observation(anchored: &LocationCore) -> LayerObservationCore {
+fn fresh_observation(anchored: &AnchorLocation) -> LayerObservationCore {
     LayerObservationCore {
         status: AnchorStatus::Fresh,
         current: Some(anchored.clone()),
@@ -1935,7 +1945,7 @@ pub(crate) fn resolve_anchor_captured(
 
     // `anchored` is layer-independent (computed identically at every depth), so
     // reading it from the HEAD run matches the value a full-depth run produces.
-    let anchored = location_core(&head_run.anchored);
+    let anchored = head_run.anchored.clone();
     let head = observation_from(&head_run);
     let locus = head_run.locus.clone();
 
@@ -2021,10 +2031,9 @@ pub(crate) fn resolve_anchor_captured(
 fn effective_from_clean_head(head: &LayerObservationCore) -> LayerObservationCore {
     LayerObservationCore {
         status: head.status.clone(),
-        current: head.current.as_ref().map(|c| LocationCore {
-            path: c.path.clone(),
-            extent: c.extent,
+        current: head.current.as_ref().map(|c| AnchorLocation {
             blob: None,
+            ..c.clone()
         }),
         content_equivalent: head.content_equivalent,
         fuzzy_successors: head.fuzzy_successors.clone(),

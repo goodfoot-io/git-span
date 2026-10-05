@@ -412,6 +412,83 @@ fn fuzzy_json_output() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// Test 6b: every resolution path prints the same quantized confidence
+// ---------------------------------------------------------------------------
+
+/// The fuzzy confidence is quantized to basis points once, when the resolver
+/// builds the public `FuzzySuccessor`, so the store path (cold publish and
+/// warm summary decode), the store bypass (`GIT_SPAN_CACHE=0`), and the named
+/// scope (which never touches the store) all print the identical value. The
+/// fixture's raw Jaccard similarity is 49/51 = 0.96078…, which prints as
+/// 0.9608 everywhere — never the unrounded float on one path and the rounded
+/// one on another.
+#[test]
+fn fuzzy_confidence_agrees_across_resolution_paths() -> Result<()> {
+    let repo = TestRepo::new()?;
+
+    let lines = generate_unique_lines(50);
+    let edited = generate_modified_lines(50, &[24]);
+    seed_two_files(
+        &repo,
+        "file1.txt",
+        &to_content(&lines),
+        "file2.txt",
+        &to_content(&edited),
+    )?;
+    repo.write_commit_graph()?;
+    seed_span(&repo, "m", "file1.txt#L1-L50", "json fuzzy agreement")?;
+    repo.write_commit_graph()?;
+    repo.run_git(["rm", "file1.txt"])?;
+
+    let confidences = |out: std::process::Output| -> Result<(f64, f64)> {
+        let v: Value = serde_json::from_slice(&out.stdout)?;
+        let findings = v["findings"].as_array().expect("findings array");
+        assert_eq!(findings.len(), 1, "one finding; json: {v}");
+        let f = &findings[0];
+        assert_eq!(f["status"]["code"], "MOVED", "json: {v}");
+        let moved_to = f["moved_to"]["confidence"]
+            .as_f64()
+            .expect("moved_to.confidence");
+        let successor = f["fuzzy_successors"][0]["confidence"]
+            .as_f64()
+            .expect("fuzzy_successors[0].confidence");
+        Ok((moved_to, successor))
+    };
+
+    let runs = [
+        (
+            "store (cold)",
+            repo.run_span(["drift", "--format", "json", "--no-exit-code"])?,
+        ),
+        (
+            "store (warm)",
+            repo.run_span(["drift", "--format", "json", "--no-exit-code"])?,
+        ),
+        (
+            "store bypass",
+            repo.run_span_with_env(
+                ["drift", "--format", "json", "--no-exit-code"],
+                "GIT_SPAN_CACHE",
+                "0",
+            )?,
+        ),
+        (
+            "named scope",
+            repo.run_span(["drift", "m", "--format", "json", "--no-exit-code"])?,
+        ),
+    ];
+    for (label, out) in runs {
+        assert_eq!(
+            confidences(out)?,
+            (0.9608, 0.9608),
+            "{label}: moved_to and fuzzy_successors[0] confidence"
+        );
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Test 7: Porcelain output includes "# fuzzy <N>" comment
 // ---------------------------------------------------------------------------
 

@@ -552,7 +552,7 @@ fn plan_span(
         );
         let repairable = match anchor.status {
             AnchorStatus::Moved => anchor.fuzzy_successors.first().is_none_or(|candidate| {
-                candidate.confidence >= EngineOptions::full().fuzzy_threshold
+                candidate.confidence() >= EngineOptions::full().fuzzy_threshold
             }),
             AnchorStatus::Changed => anchor.content_equivalent,
             _ => false,

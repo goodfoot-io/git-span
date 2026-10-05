@@ -18,8 +18,9 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 // `AnchorExtent` is the pure anchor-extent shape; it lives in the gix-free
-// `git-span-core` kernel (its `Serialize` derive comes from core's `serde`
-// feature, which this crate enables). Re-exported here so every existing
+// `git-span-core` kernel (its `Serialize` + `Deserialize` derives come from
+// core's `serde` feature, which this crate enables, so persisted rows embed it
+// directly). Re-exported here so every existing
 // `crate::types::AnchorExtent` / `git_span::AnchorExtent` path is unchanged.
 pub use git_span_core::AnchorExtent;
 
@@ -158,26 +159,46 @@ pub enum AnchorStatus {
 /// Populated on `AnchorResolved` and `Finding` when the exact-match
 /// relocation scan found nothing and the fuzzy fallback found candidates
 /// above the noise floor (0.50).
-#[derive(Clone, Debug, PartialEq)]
+///
+/// The confidence is held quantized to basis points, so every surface —
+/// fresh resolution, the persisted store summary, and the reuse rows —
+/// carries the identical value and the type is `Eq`. The resolver classifies
+/// on the raw similarity and quantizes exactly once, when it builds this
+/// value: `(similarity * 10000.0).round()`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FuzzySuccessor {
     pub path: String,
     pub start: u32,
     pub end: u32,
-    /// Jaccard similarity 0.0–1.0 of the anchored content vs. candidate.
-    pub confidence: f64,
+    /// Jaccard similarity of the anchored content vs. the candidate, in basis
+    /// points: 0–10000 for 0.00%–100.00% (0.9608 → 9608).
+    pub confidence_bps: u32,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+impl FuzzySuccessor {
+    /// The confidence as a 0.0–1.0 fraction, for rendering and threshold
+    /// comparison: `confidence_bps / 10000`.
+    pub fn confidence(&self) -> f64 {
+        f64::from(self.confidence_bps) / 10_000.0
+    }
+}
+
+/// Persisted verbatim by the resolver's store rows: `path` as its UTF-8
+/// string (a non-UTF-8 path fails the encode, which fails the publish
+/// closed) and `blob` as its hex string.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnchorLocation {
     pub path: PathBuf,
     pub extent: AnchorExtent,
     /// Present when the path has a blob at the resolved layer; `None` for
     /// worktree-only reads, submodule gitlinks, and terminal statuses where
     /// no blob resolves.
+    #[serde(with = "crate::oid_hex::option")]
     pub blob: Option<gix::ObjectId>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+/// Persisted verbatim (bincode) in the resolver store's generation summary.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnchorResolved {
     pub anchor_id: String,
     pub anchor_sha: String,
@@ -272,7 +293,9 @@ pub enum LocusCause {
     },
 }
 
-#[derive(Clone, Debug, PartialEq)]
+/// Persisted verbatim (bincode) in the resolver store's generation summary,
+/// gated by `resolver::exact::SUMMARY_VERSION`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpanResolved {
     pub name: String,
     pub why: String,
@@ -540,7 +563,7 @@ pub enum Scope {
 }
 
 /// Layer that produced drift for a `Finding`. There is no `StagedSpan`
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DriftSource {
     Head,
     Index,

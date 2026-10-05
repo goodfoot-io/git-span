@@ -33,7 +33,6 @@
 //! the publish transaction opens (`notes/architecture-and-complexity.md`
 //! "Concurrency And Recovery": "Compute outside the database transaction").
 
-pub(crate) mod dto;
 pub(crate) mod error;
 pub(crate) mod lock;
 pub(crate) mod maintenance;
@@ -49,8 +48,8 @@ mod tests;
 /// This is the render-ready shape `run_drift` short-circuits on — handing it
 /// back lets the CLI skip its per-invocation corpus reload (count-totals, the
 /// Fresh-anchor backfill, and the interior-anchor scan). It carries runtime
-/// [`SpanResolved`](crate::types::SpanResolved) values directly; its persisted
-/// form is the compact summary the exact seam encodes through [`dto`].
+/// [`SpanResolved`](crate::types::SpanResolved) values directly, and its
+/// persisted form (the exact seam's compact summary) embeds them verbatim.
 #[derive(Clone, Debug)]
 pub(crate) struct WholeResult {
     pub(crate) spans: Vec<crate::types::SpanResolved>,

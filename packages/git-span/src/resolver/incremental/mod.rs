@@ -218,7 +218,14 @@ fn build_incremental_core(
                     || sc
                         .anchors
                         .iter()
-                        .any(|(_, a)| affected_paths.contains(a.anchored.path.as_str()))
+                        .any(|(_, a)| {
+                            // A path with no UTF-8 form cannot be matched
+                            // against the changed set: treat it as affected.
+                            a.anchored
+                                .path
+                                .to_str()
+                                .is_none_or(|p| affected_paths.contains(p))
+                        })
                     // …or it is relocation/copy/move-sensitive and ANY tracked
                     // path changed (the correctness landmine — conservative
                     // over-widening). A span the ancestor's index/worktree made

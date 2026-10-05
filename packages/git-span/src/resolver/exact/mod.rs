@@ -77,7 +77,6 @@ use crate::resolver::core::resolution::ResolutionCore;
 use crate::resolver::engine::{
     capture_resolution_core, sort_spans_by_anchor_path, span_has_actionable_drift,
 };
-use crate::resolver::store::dto::SpanResolvedDto;
 use crate::resolver::store::lock::{acquire_build_shard, shard_index};
 use crate::resolver::store::{CacheStore, GcStats, GenerationInput, GetOutcome};
 use crate::types::{CopyDetection, EngineOptions, LayerSet, SpanResolved};
@@ -127,7 +126,21 @@ mod tests;
 /// string ahead of the cause discriminant instead of after a variant index,
 /// so version-4 summaries and rows must miss and rebuild rather than be
 /// misdecoded.
-pub(crate) const SUMMARY_VERSION: u32 = 5;
+///
+/// Version 6: the summary embeds the public [`SpanResolved`] directly (the
+/// `store::dto` mirrors are gone). Each span loses the leading
+/// `format_version: u8` byte `SpanResolvedDto` carried, so a version-5 summary
+/// must miss rather than be misdecoded. That byte was only ever checked while
+/// decoding a summary this envelope had already admitted, and every bump of it
+/// coincided with a bump here, so this constant — checked fail-closed by
+/// `verify_envelope` (`IntegrityReason::Version`) before any decode — is the
+/// version guard for the summary's whole shape. The reuse rows are
+/// byte-identical to version 5: `AnchorLocation` / `FuzzySuccessor` /
+/// `AnchorExtent` replace `LocationCore` / `FuzzySuccessorCore` /
+/// `ExtentCore` with the same field order and encodings (path as its string,
+/// blob as `Option<hex>`, confidence as `u32` basis points). They ride this
+/// bump anyway, as the whole generation is versioned together.
+pub(crate) const SUMMARY_VERSION: u32 = 6;
 
 /// Max entries in the bounded in-process memo. Small and explicit: this is a
 /// per-process working-set cache for repeated same-key `drift` calls within one
@@ -173,13 +186,13 @@ pub(crate) enum ExactAttempt {
 /// `ResolutionCore` detail (as normalized reuse rows + the reverse path index,
 /// carried by `GenerationInput::rows`/`path_index`). The compact summary is
 /// additive to those, not a replacement, so those paths add rows without
-/// reshaping this summary. It serializes through
-/// [`SpanResolvedDto`](crate::resolver::store::dto::SpanResolvedDto).
+/// reshaping this summary. It embeds the public [`SpanResolved`], which
+/// derives its own serde.
 #[derive(Serialize, Deserialize)]
 struct DriftSummary {
     /// Full effective set: every committed span with every anchor in stored
     /// order (Fresh + non-Fresh), render-ready.
-    spans: Vec<SpanResolvedDto>,
+    spans: Vec<SpanResolved>,
     /// `(committed span name, anchor count)` — the count-totals input the CLI
     /// otherwise recomputes from a corpus reload.
     span_anchor_totals: Vec<(String, usize)>,
@@ -773,11 +786,20 @@ fn publish_if_eligible(
     // summary only. It is never itself a baseline — the clean same-HEAD baseline
     // it reused from already is — so writing its whole-corpus reuse-row set on
     // every dirty call is pure O(corpus) waste.
-    let (rows, path_index) = if store_rows {
+    let encoded_rows = if store_rows {
         let widen = reuse::compute_widen(core, global_copy_widen(token));
         reuse::core_to_reuse_rows(core, &widen, &token.config_fingerprint())
     } else {
-        (Vec::new(), Vec::new())
+        Ok((Vec::new(), Vec::new()))
+    };
+    let (rows, path_index) = match encoded_rows {
+        Ok(encoded) => encoded,
+        Err(e) => {
+            incr_publish_failures();
+            crate::perf::counter("cache-path.publish-failed", 1);
+            crate::perf::note(&format!("cache-path.publish-failed: encode reuse rows: {e}"));
+            return;
+        }
     };
     let summary = match encode_summary(rr) {
         Ok(summary) => summary,
@@ -971,30 +993,27 @@ fn emit_gc_stats(stats: &GcStats) {
 }
 
 /// Encode the compact, render-ready summary for persistence: the projected
-/// effective spans (via the render DTO) plus committed totals. This is the
+/// effective spans plus committed totals. This is the
 /// bytes wrapped in the integrity envelope by `publish_generation` — the
 /// compact replacement for the former `bincode(ResolutionCore)`. An encode
 /// failure is a publish failure (the caller fails closed on the cache).
 fn encode_summary(rr: &RenderReady) -> bincode::Result<Vec<u8>> {
-    let dto = DriftSummary {
-        spans: rr.full.iter().map(SpanResolvedDto::from).collect(),
+    let summary = DriftSummary {
+        spans: rr.full.clone(),
         span_anchor_totals: rr.span_anchor_totals.clone(),
     };
-    bincode::serialize(&dto)
+    bincode::serialize(&summary)
 }
 
 /// Decode a verified summary back into the render-ready form. `Err(())` on any
-/// decode/convert failure — the caller treats a verified-but-undecodable
-/// summary as a miss and rebuilds (fail closed on trust, not on the command).
+/// decode failure (including a malformed stored OID) — the caller treats a
+/// verified-but-undecodable summary as a miss and rebuilds (fail closed on
+/// trust, not on the command).
 fn decode_summary(bytes: &[u8]) -> std::result::Result<RenderReady, ()> {
-    let dto: DriftSummary = bincode::deserialize(bytes).map_err(|_| ())?;
-    let mut full = Vec::with_capacity(dto.spans.len());
-    for s in dto.spans {
-        full.push(SpanResolved::try_from(s).map_err(|_| ())?);
-    }
+    let summary: DriftSummary = bincode::deserialize(bytes).map_err(|_| ())?;
     Ok(RenderReady {
-        full,
-        span_anchor_totals: dto.span_anchor_totals,
+        full: summary.spans,
+        span_anchor_totals: summary.span_anchor_totals,
     })
 }
 

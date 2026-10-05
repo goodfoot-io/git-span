@@ -1317,7 +1317,7 @@ pub(crate) fn apply_fix(
                     // re-anchor. Fuzzy MOVED: only re-anchor when confidence
                     // meets or exceeds the threshold.
                     match resolved.fuzzy_successors.first() {
-                        Some(best) => best.confidence >= fuzzy_threshold,
+                        Some(best) => best.confidence() >= fuzzy_threshold,
                         None => true,
                     }
                 }

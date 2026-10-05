@@ -5,7 +5,7 @@
 use super::super::session::{ConcurrentSession, follow_path_to_head_shared};
 use super::super::worktree_move::{WorktreeMove, find_worktree_move};
 use super::EngineLocal;
-use super::anchor::{AnchorCtx, sole_basename_preserving};
+use super::anchor::{AnchorCtx, FuzzyCandidate, sole_basename_preserving};
 use crate::git;
 use crate::types::{
     Anchor, AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, DriftSource,
@@ -565,14 +565,17 @@ pub(crate) fn resolve_whole_file(
                                     // stay drifted (Changed) — never guess.
                                     fuzzy_successors = candidates
                                         .iter()
-                                        .map(|candidate| FuzzySuccessor {
-                                            path: candidate.to_string_lossy().into_owned(),
-                                            // Whole-file anchors have no line
-                                            // extent; the 0-0 sentinel mirrors
-                                            // the whole-file mesh convention.
-                                            start: 0,
-                                            end: 0,
-                                            confidence: 1.0,
+                                        .map(|candidate| {
+                                            FuzzyCandidate {
+                                                path: candidate.to_string_lossy().into_owned(),
+                                                // Whole-file anchors have no line
+                                                // extent; the 0-0 sentinel mirrors
+                                                // the whole-file mesh convention.
+                                                start: 0,
+                                                end: 0,
+                                                confidence: 1.0,
+                                            }
+                                            .into_successor()
                                         })
                                         .collect();
                                     moved_uncommitted = true;
@@ -641,14 +644,17 @@ pub(crate) fn resolve_whole_file(
                     }
                     let fuzzy_successors: Vec<FuzzySuccessor> = relocated
                         .iter()
-                        .map(|p| FuzzySuccessor {
-                            path: p.clone(),
-                            // Whole-file anchors have no line extent; the
-                            // 0-0 sentinel mirrors the whole-file mesh
-                            // convention.
-                            start: 0,
-                            end: 0,
-                            confidence: 1.0,
+                        .map(|p| {
+                            FuzzyCandidate {
+                                path: p.clone(),
+                                // Whole-file anchors have no line extent; the
+                                // 0-0 sentinel mirrors the whole-file mesh
+                                // convention.
+                                start: 0,
+                                end: 0,
+                                confidence: 1.0,
+                            }
+                            .into_successor()
                         })
                         .collect();
                     if head_path_absent {
@@ -820,14 +826,17 @@ pub(crate) fn resolve_whole_file(
                         if relocated.len() >= 2 {
                             fuzzy_successors = relocated
                                 .iter()
-                                .map(|p| FuzzySuccessor {
-                                    path: p.clone(),
-                                    // Whole-file anchors have no line extent;
-                                    // the 0-0 sentinel mirrors the whole-file
-                                    // mesh convention.
-                                    start: 0,
-                                    end: 0,
-                                    confidence: 1.0,
+                                .map(|p| {
+                                    FuzzyCandidate {
+                                        path: p.clone(),
+                                        // Whole-file anchors have no line extent;
+                                        // the 0-0 sentinel mirrors the whole-file
+                                        // mesh convention.
+                                        start: 0,
+                                        end: 0,
+                                        confidence: 1.0,
+                                    }
+                                    .into_successor()
                                 })
                                 .collect();
                         }

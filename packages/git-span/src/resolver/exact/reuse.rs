@@ -120,11 +120,15 @@ pub(crate) fn compute_widen(core: &ResolutionCore, global_copy_widen: bool) -> H
 /// which `needs_widen` is stored `true`; `config_fingerprint` is the baseline's
 /// config-sensitive identity the reuse tiers validate against on read (see
 /// [`ROW_KIND_CONFIG_FINGERPRINT`]).
+///
+/// Fails when a span cannot be encoded — an anchored path that is not UTF-8
+/// has no persisted form — so the caller skips the publish (fail closed)
+/// rather than storing a lossy path that would reuse against another file.
 pub(crate) fn core_to_reuse_rows(
     core: &ResolutionCore,
     widen: &HashSet<String>,
     config_fingerprint: &[u8; 32],
-) -> (Vec<GenerationRow>, Vec<PathIndexEntry>) {
+) -> bincode::Result<(Vec<GenerationRow>, Vec<PathIndexEntry>)> {
     let mut rows = Vec::with_capacity(core.spans.len() + 1);
     let mut path_index = Vec::new();
     // Dedup (path, span) pairs so a span anchoring the same path twice yields
@@ -146,8 +150,7 @@ pub(crate) fn core_to_reuse_rows(
         let payload = bincode::serialize(&ReuseSpanRow {
             core: span.clone(),
             needs_widen: widen.contains(&span.name),
-        })
-        .expect("serialize ReuseSpanRow");
+        })?;
         rows.push(GenerationRow {
             row_kind: ROW_KIND_SPAN_CORE,
             row_key: span.name.clone(),
@@ -155,17 +158,23 @@ pub(crate) fn core_to_reuse_rows(
         });
 
         for (_, anchor) in &span.anchors {
-            let key = (anchor.anchored.path.clone(), span.name.clone());
+            let source_path = anchor.anchored.path.to_str().ok_or_else(|| {
+                bincode::ErrorKind::Custom(format!(
+                    "anchored path is not UTF-8: {}",
+                    anchor.anchored.path.display()
+                ))
+            })?;
+            let key = (source_path.to_string(), span.name.clone());
             if seen_index.insert(key) {
                 path_index.push(PathIndexEntry {
-                    source_path: anchor.anchored.path.clone(),
+                    source_path: source_path.to_string(),
                     row_key: span.name.clone(),
                 });
             }
         }
     }
 
-    (rows, path_index)
+    Ok((rows, path_index))
 }
 
 /// Reconstruct a [`ResolutionCore`] from persisted reuse rows — the inverse of

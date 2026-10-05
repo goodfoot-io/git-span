@@ -10,8 +10,7 @@
 
 use super::project::project_effective;
 use super::resolution::{
-    AnchorCore, DefinitionOrdinal, ExtentCore, LayerObservationCore, LocationCore, ResolutionCore,
-    SpanCore,
+    AnchorCore, DefinitionOrdinal, LayerObservationCore, ResolutionCore, SpanCore,
 };
 use super::token::{
     AvailabilityProof, FilterDependency, LayerSetToken, PathAvailability, PathState,
@@ -20,8 +19,10 @@ use super::token::{
 use crate::cli::drift_label::format_drift_label;
 use crate::resolver::engine::{capture_resolution_core, resolve_named_spans};
 use crate::types::{
-    AnchorStatus, CopyDetection, DriftLocus, DriftSource, EngineOptions, LayerSet, LocusCause,
+    AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, CopyDetection, DriftLocus,
+    DriftSource, EngineOptions, FuzzySuccessor, LayerSet, LocusCause, SpanResolved,
 };
+use std::path::Path;
 
 // ── Shared fixtures ──────────────────────────────────────────────────────
 
@@ -519,7 +520,7 @@ fn repeated_oid(digit: &str) -> gix::ObjectId {
     gix::ObjectId::from_hex(digit.repeat(40).as_bytes()).expect("valid hex digit")
 }
 
-fn fresh_observation(anchored: &LocationCore) -> LayerObservationCore {
+fn fresh_observation(anchored: &AnchorLocation) -> LayerObservationCore {
     LayerObservationCore {
         status: AnchorStatus::Fresh,
         current: Some(anchored.clone()),
@@ -537,9 +538,9 @@ fn fresh_observation(anchored: &LocationCore) -> LayerObservationCore {
 /// `definition_digest`) tells them apart.
 #[test]
 fn duplicate_definition_ordinal_identity_preserved_through_construction_and_serialization() {
-    let anchored = LocationCore {
-        path: "src/a.rs".to_string(),
-        extent: ExtentCore::WholeFile,
+    let anchored = AnchorLocation {
+        path: "src/a.rs".into(),
+        extent: AnchorExtent::WholeFile,
         blob: Some(repeated_oid("1")),
     };
     let anchor_a = AnchorCore {
@@ -559,14 +560,14 @@ fn duplicate_definition_ordinal_identity_preserved_through_construction_and_seri
     let digest_a = DefinitionOrdinal::digest_definition(
         &anchor_a.anchor_id,
         &anchor_a.anchor_sha,
-        "src/a.rs",
-        ExtentCore::WholeFile,
+        Path::new("src/a.rs"),
+        AnchorExtent::WholeFile,
     );
     let digest_b = DefinitionOrdinal::digest_definition(
         &anchor_b.anchor_id,
         &anchor_b.anchor_sha,
-        "src/a.rs",
-        ExtentCore::WholeFile,
+        Path::new("src/a.rs"),
+        AnchorExtent::WholeFile,
     );
     assert_ne!(
         digest_a, digest_b,
@@ -625,19 +626,19 @@ fn duplicate_definition_ordinal_identity_preserved_through_construction_and_seri
 /// layers).
 #[test]
 fn effective_projection_preserves_working_tree_qualifier_for_committed_drift() {
-    let anchored = LocationCore {
-        path: "src/a.rs".to_string(),
-        extent: ExtentCore::WholeFile,
+    let anchored = AnchorLocation {
+        path: "src/a.rs".into(),
+        extent: AnchorExtent::WholeFile,
         blob: Some(repeated_oid("a")),
     };
-    let head_current = LocationCore {
-        path: "src/a.rs".to_string(),
-        extent: ExtentCore::WholeFile,
+    let head_current = AnchorLocation {
+        path: "src/a.rs".into(),
+        extent: AnchorExtent::WholeFile,
         blob: Some(repeated_oid("b")),
     };
-    let worktree_current = LocationCore {
-        path: "src/a.rs".to_string(),
-        extent: ExtentCore::WholeFile,
+    let worktree_current = AnchorLocation {
+        path: "src/a.rs".into(),
+        extent: AnchorExtent::WholeFile,
         blob: None,
     };
 
@@ -810,28 +811,223 @@ fn filter_dependency_persistence_eligibility_requires_complete_identity() {
 
 // ── Persisted OID encoding ───────────────────────────────────────────────
 
-/// `LocationCore::blob` persists through `crate::oid_hex::option` as the
-/// former hex-`String` field's exact bytes.
+/// `AnchorExtent` is embedded directly in persisted rows (no mirror enum), so
+/// its bincode bytes are pinned literally: a `u32` variant index, then the
+/// `LineRange` bounds as little-endian `u32`s. A reorder or reshape of the
+/// core enum fails here instead of slipping past `exact::SUMMARY_VERSION`.
 #[test]
-fn location_blob_encodes_as_its_hex_string() {
+fn anchor_extent_encodes_as_variant_index_then_bounds() {
+    assert_eq!(
+        bincode::serialize(&AnchorExtent::WholeFile).expect("serialize WholeFile"),
+        [0, 0, 0, 0],
+    );
+    let range = AnchorExtent::LineRange { start: 3, end: 7 };
+    let bytes = bincode::serialize(&range).expect("serialize LineRange");
+    assert_eq!(bytes, [1, 0, 0, 0, 3, 0, 0, 0, 7, 0, 0, 0]);
+    assert_eq!(
+        bincode::deserialize::<AnchorExtent>(&bytes).expect("round-trip"),
+        range
+    );
+}
+
+/// `AnchorLocation` persists verbatim: `path` as its UTF-8 string, then the
+/// extent, then `blob` through `crate::oid_hex::option` as its hex string —
+/// the same bytes the deleted `LocationCore` mirror wrote.
+#[test]
+fn anchor_location_encodes_as_path_string_extent_then_hex_blob() {
     let oid =
         gix::ObjectId::from_hex(b"0123456789abcdef0123456789abcdef01234567").expect("valid hex");
     let hex = oid.to_string();
-    let loc = LocationCore {
+    let loc = AnchorLocation {
         path: "a.rs".into(),
-        extent: ExtentCore::WholeFile,
+        extent: AnchorExtent::LineRange { start: 2, end: 9 },
         blob: Some(oid),
     };
+    let bytes = bincode::serialize(&loc).expect("serialize AnchorLocation");
     assert_eq!(
-        bincode::serialize(&loc).expect("serialize LocationCore"),
-        bincode::serialize(&("a.rs", ExtentCore::WholeFile, Some(hex.as_str())))
-            .expect("serialize hex shape"),
+        bytes,
+        bincode::serialize(&(
+            "a.rs",
+            AnchorExtent::LineRange { start: 2, end: 9 },
+            Some(hex.as_str())
+        ))
+        .expect("serialize hex shape"),
+    );
+    assert_eq!(
+        bincode::deserialize::<AnchorLocation>(&bytes).expect("round-trip"),
+        loc
     );
 }
 
 #[test]
 fn malformed_stored_location_blob_fails_decode() {
-    let bytes = bincode::serialize(&("a.rs", ExtentCore::WholeFile, Some("not-hex")))
+    let bytes = bincode::serialize(&("a.rs", AnchorExtent::WholeFile, Some("not-hex")))
         .expect("serialize hex shape");
-    assert!(bincode::deserialize::<LocationCore>(&bytes).is_err());
+    assert!(bincode::deserialize::<AnchorLocation>(&bytes).is_err());
+}
+
+/// A non-UTF-8 path cannot be persisted: the encode fails, which fails the
+/// store publish closed rather than writing a lossy path that would decode
+/// to a different file.
+#[cfg(unix)]
+#[test]
+fn non_utf8_location_path_fails_encode() {
+    use std::os::unix::ffi::OsStrExt;
+    let loc = AnchorLocation {
+        path: std::ffi::OsStr::from_bytes(b"bad\xff.rs").into(),
+        extent: AnchorExtent::WholeFile,
+        blob: None,
+    };
+    assert!(bincode::serialize(&loc).is_err());
+}
+
+/// `FuzzySuccessor` persists its quantized basis-point confidence as a `u32`;
+/// `confidence()` renders the fraction back.
+#[test]
+fn fuzzy_successor_encodes_confidence_as_basis_points() {
+    let succ = FuzzySuccessor {
+        path: "b.rs".to_string(),
+        start: 2,
+        end: 9,
+        confidence_bps: 9608,
+    };
+    let bytes = bincode::serialize(&succ).expect("serialize FuzzySuccessor");
+    assert_eq!(
+        bytes,
+        bincode::serialize(&("b.rs", 2u32, 9u32, 9608u32)).expect("serialize tuple shape"),
+    );
+    assert_eq!(
+        bincode::deserialize::<FuzzySuccessor>(&bytes).expect("round-trip"),
+        succ
+    );
+    assert_eq!(succ.confidence(), 0.9608);
+}
+
+/// The summary rows encode `AnchorResolved` / `SpanResolved` field by field
+/// in declaration order, with no leading format byte (the envelope's
+/// `SUMMARY_VERSION` check gates the whole payload).
+#[test]
+fn span_resolved_encodes_fields_in_order_without_format_byte() {
+    let anchored = AnchorLocation {
+        path: "src/a.rs".into(),
+        extent: AnchorExtent::LineRange { start: 1, end: 4 },
+        blob: Some(repeated_oid("1")),
+    };
+    let current = AnchorLocation {
+        path: "src/b.rs".into(),
+        extent: AnchorExtent::LineRange { start: 3, end: 6 },
+        blob: None,
+    };
+    let locus = DriftLocus {
+        commit: repeated_oid("2"),
+        cause: LocusCause::Renamed {
+            to: "src/b.rs".to_string(),
+        },
+    };
+    let succ = FuzzySuccessor {
+        path: "src/b.rs".to_string(),
+        start: 3,
+        end: 6,
+        confidence_bps: 9608,
+    };
+    let anchor = AnchorResolved {
+        anchor_id: "demo:src/a.rs:L1-L4".to_string(),
+        anchor_sha: "a".repeat(40),
+        stored_hash: "sha256:abc".to_string(),
+        anchored: anchored.clone(),
+        current: Some(current.clone()),
+        status: AnchorStatus::Moved,
+        content_equivalent: false,
+        source: Some(DriftSource::Head),
+        layer_sources: vec![DriftSource::Head],
+        locus: Some(locus.clone()),
+        fuzzy_successors: vec![succ.clone()],
+        moved_uncommitted: false,
+    };
+    let anchor_bytes = bincode::serialize(&anchor).expect("serialize AnchorResolved");
+    let anchor_shape = (
+        (
+            anchor.anchor_id.as_str(),
+            anchor.anchor_sha.as_str(),
+            anchor.stored_hash.as_str(),
+            &anchored,
+            Some(&current),
+            AnchorStatus::Moved,
+        ),
+        (
+            false,
+            Some(DriftSource::Head),
+            vec![DriftSource::Head],
+            Some(&locus),
+            vec![&succ],
+            false,
+        ),
+    );
+    assert_eq!(
+        anchor_bytes,
+        bincode::serialize(&anchor_shape).expect("serialize field shape"),
+    );
+
+    let span = SpanResolved {
+        name: "demo".to_string(),
+        why: "why".to_string(),
+        anchors: vec![anchor.clone()],
+        follow_moves: true,
+    };
+    let span_bytes = bincode::serialize(&span).expect("serialize SpanResolved");
+    assert_eq!(
+        span_bytes,
+        bincode::serialize(&("demo", "why", vec![&anchor], true)).expect("serialize field shape"),
+    );
+    assert_eq!(
+        bincode::deserialize::<SpanResolved>(&span_bytes).expect("round-trip"),
+        span
+    );
+}
+
+/// `DriftSource` encodes as its `u32` variant index in declaration order —
+/// the same bytes the deleted `DriftSourceDto` wrote.
+#[test]
+fn drift_source_encodes_as_variant_index() {
+    for (source, index) in [
+        (DriftSource::Head, 0u32),
+        (DriftSource::Index, 1),
+        (DriftSource::Worktree, 2),
+    ] {
+        assert_eq!(
+            bincode::serialize(&source).expect("serialize DriftSource"),
+            index.to_le_bytes(),
+        );
+    }
+}
+
+/// `definition_digest` hashes the documented byte layout; pinning it keeps
+/// persisted ordinals stable across refactors of the extent/path types.
+#[test]
+fn definition_digest_hashes_documented_bytes() {
+    fn expected(anchor_id: &str, anchor_sha: &str, path: &str, extent: AnchorExtent) -> [u8; 32] {
+        let mut bytes = b"gm.core.definition-digest\0".to_vec();
+        for part in [anchor_id, anchor_sha, path] {
+            bytes.extend_from_slice(&(part.len() as u64).to_le_bytes());
+            bytes.extend_from_slice(part.as_bytes());
+        }
+        match extent {
+            AnchorExtent::WholeFile => bytes.push(0),
+            AnchorExtent::LineRange { start, end } => {
+                bytes.push(1);
+                bytes.extend_from_slice(&start.to_le_bytes());
+                bytes.extend_from_slice(&end.to_le_bytes());
+            }
+        }
+        *blake3::hash(&bytes).as_bytes()
+    }
+    for extent in [
+        AnchorExtent::WholeFile,
+        AnchorExtent::LineRange { start: 3, end: 7 },
+    ] {
+        assert_eq!(
+            DefinitionOrdinal::digest_definition("id", "sha", Path::new("src/a.rs"), extent),
+            expected("id", "sha", "src/a.rs", extent),
+        );
+    }
 }

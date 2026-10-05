@@ -40,7 +40,7 @@ pub use validation::{
 
 /// The extent of a pinned anchor: either the whole file, or an inclusive
 /// 1-based line range.
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum AnchorExtent {
     WholeFile,

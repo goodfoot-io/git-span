@@ -14,70 +14,22 @@
 
 use blake3::Hasher;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
-use crate::types::{AnchorStatus, DriftLocus};
-
-/// Extent mirror with full `Serialize` + `Deserialize` (git-span-core's
-/// `AnchorExtent` only derives `Serialize` under its `serde` feature, so it
-/// cannot round-trip through a persisted payload on its own).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum ExtentCore {
-    WholeFile,
-    LineRange { start: u32, end: u32 },
-}
-
-impl From<git_span_core::AnchorExtent> for ExtentCore {
-    fn from(e: git_span_core::AnchorExtent) -> Self {
-        match e {
-            git_span_core::AnchorExtent::WholeFile => ExtentCore::WholeFile,
-            git_span_core::AnchorExtent::LineRange { start, end } => {
-                ExtentCore::LineRange { start, end }
-            }
-        }
-    }
-}
-
-impl From<ExtentCore> for git_span_core::AnchorExtent {
-    fn from(e: ExtentCore) -> Self {
-        match e {
-            ExtentCore::WholeFile => git_span_core::AnchorExtent::WholeFile,
-            ExtentCore::LineRange { start, end } => {
-                git_span_core::AnchorExtent::LineRange { start, end }
-            }
-        }
-    }
-}
-
-/// A location at one layer: path, extent, and blob identity (`None` when the
-/// layer has no blob — e.g. the worktree, or a terminal status with nothing
-/// to point at).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct LocationCore {
-    pub(crate) path: String,
-    pub(crate) extent: ExtentCore,
-    #[serde(with = "crate::oid_hex::option")]
-    pub(crate) blob: Option<gix::ObjectId>,
-}
-
-/// Serde-safe mirror of `FuzzySuccessor` (confidence stored as basis points
-/// so the type can derive `Eq`, matching `cache_v2/dto.rs::FuzzySuccessorDto`).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct FuzzySuccessorCore {
-    pub(crate) path: String,
-    pub(crate) start: u32,
-    pub(crate) end: u32,
-    pub(crate) confidence_bps: u32,
-}
+use crate::types::{AnchorExtent, AnchorLocation, AnchorStatus, DriftLocus, FuzzySuccessor};
 
 /// One layer's drift observation for one anchor: its classified status at
-/// this layer, its current tracked location (if any), and layer-local
-/// relocation output.
+/// this layer, its current tracked location (if any; `blob` is `None` when
+/// the layer has no blob — e.g. the worktree, or a terminal status with
+/// nothing to point at), and layer-local relocation output. The public
+/// [`AnchorLocation`] / [`FuzzySuccessor`] derive their own serde and are
+/// embedded directly.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct LayerObservationCore {
     pub(crate) status: AnchorStatus,
-    pub(crate) current: Option<LocationCore>,
+    pub(crate) current: Option<AnchorLocation>,
     pub(crate) content_equivalent: bool,
-    pub(crate) fuzzy_successors: Vec<FuzzySuccessorCore>,
+    pub(crate) fuzzy_successors: Vec<FuzzySuccessor>,
     /// Set only when this layer's Moved/Changed classification came from
     /// the worktree-blob fallback (card main-264): the anchor's content
     /// was found verbatim in an untracked worktree file.
@@ -118,7 +70,7 @@ pub(crate) struct AnchorCore {
     /// cache written before this field existed still deserializes.
     #[serde(default)]
     pub(crate) stored_hash: String,
-    pub(crate) anchored: LocationCore,
+    pub(crate) anchored: AnchorLocation,
     pub(crate) head: LayerObservationCore,
     pub(crate) index: LayerObservationCore,
     pub(crate) worktree: LayerObservationCore,
@@ -168,22 +120,27 @@ impl DefinitionOrdinal {
     /// Deterministic digest of `(anchor_id, anchor_sha, path, extent)` —
     /// the ordinal's `definition_digest`, distinguishing two definitions
     /// that share an address but not content.
+    ///
+    /// A manual hash, not serde: `path` contributes its lossy UTF-8 bytes
+    /// (anchored paths are built from span-file `String`s, so this is the
+    /// path's own string) and `extent` a `0` tag, or a `1` tag followed by
+    /// `start` / `end` little-endian.
     pub(crate) fn digest_definition(
         anchor_id: &str,
         anchor_sha: &str,
-        path: &str,
-        extent: ExtentCore,
+        path: &Path,
+        extent: AnchorExtent,
     ) -> [u8; 32] {
         let mut h = Hasher::new();
         h.update(b"gm.core.definition-digest\0");
         write_prefixed(&mut h, anchor_id.as_bytes());
         write_prefixed(&mut h, anchor_sha.as_bytes());
-        write_prefixed(&mut h, path.as_bytes());
+        write_prefixed(&mut h, path.to_string_lossy().as_bytes());
         match extent {
-            ExtentCore::WholeFile => {
+            AnchorExtent::WholeFile => {
                 h.update(&[0u8]);
             }
-            ExtentCore::LineRange { start, end } => {
+            AnchorExtent::LineRange { start, end } => {
                 h.update(&[1u8]);
                 h.update(&start.to_le_bytes());
                 h.update(&end.to_le_bytes());

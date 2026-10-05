@@ -1,9 +1,10 @@
 //! Serde adapters that persist a `gix::ObjectId` as its hex string.
 //!
 //! Used with `#[serde(with = "crate::oid_hex")]` (or `crate::oid_hex::option`)
-//! by every persisted shape that carries an object id: the resolution-core
-//! rows (`resolver::core::resolution`) and the public
-//! [`DriftLocus`](crate::types::DriftLocus) both stores embed. The bincode
+//! by every persisted shape that carries an object id: the public
+//! [`DriftLocus`](crate::types::DriftLocus) and
+//! [`AnchorLocation`](crate::types::AnchorLocation), which the store's
+//! generation summary and resolution-core rows embed. The bincode
 //! bytes are exactly those of the hex `String` itself. Parsing happens once,
 //! at decode: a malformed stored OID fails the enclosing row's
 //! deserialization (which every store reader treats as a miss, fail-closed)
@@ -50,7 +51,7 @@ mod tests {
 
     /// `DriftLocus` persists as its commit's hex string followed by the
     /// cause. Pinning the shape here means a layout change cannot slip past
-    /// `exact::SUMMARY_VERSION` / `store::dto::FORMAT_VERSION` unnoticed.
+    /// `exact::SUMMARY_VERSION` unnoticed.
     #[test]
     fn drift_locus_encodes_commit_as_hex_then_cause() {
         // bincode encodes the variant by index, so only the variant order has
