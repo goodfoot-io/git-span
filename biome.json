@@ -26,28 +26,21 @@
     "rules": {
       "recommended": true,
       "correctness": {
-        "noUnusedVariables": "warn",
-        "noInvalidUseBeforeDeclaration": "warn"
-      },
-      "style": {
-        "noNonNullAssertion": "off"
+        "noUnusedVariables": "error",
+        "noInvalidUseBeforeDeclaration": "error"
       },
       "suspicious": {
-        "noExplicitAny": "warn",
-        "noTemplateCurlyInString": "off",
-        "noArrayIndexKey": "warn",
-        "noNonNullAssertedOptionalChain": "off",
-        "useIterableCallbackReturn": "warn",
-        "noImplicitAnyLet": "warn",
-        "noAssignInExpressions": "warn",
-        "noUnsafeDeclarationMerging": "off"
+        "noExplicitAny": "error",
+        "noArrayIndexKey": "error",
+        "useIterableCallbackReturn": "error",
+        "noImplicitAnyLet": "error",
+        "noAssignInExpressions": "error"
       },
       "complexity": {
-        "noStaticOnlyClass": "warn",
-        "useLiteralKeys": "off"
+        "noStaticOnlyClass": "error"
       },
       "security": {
-        "noDangerouslySetInnerHtml": "warn"
+        "noDangerouslySetInnerHtml": "error"
       }
     }
   },
@@ -82,24 +75,12 @@
       "!!plugins-claude/git-span/hooks/bin/**/*.mjs",
       "!!plugins-codex/git-span/hooks/*.mjs",
       "!!plugins-antigravity/git-span/bin/**/*.mjs",
-      "!!skills-src/**",
-      "!!plugins-claude/git-span/skills/**",
-      "!!plugins-codex/git-span/skills/**",
-      "!!plugins-opencode/git-span/skills/**",
-      "!!plugins-antigravity/git-span/skills/**"
+      "!!skills-src",
+      "!!plugins-claude/git-span/skills",
+      "!!plugins-codex/git-span/skills",
+      "!!plugins-opencode/git-span/skills",
+      "!!plugins-antigravity/git-span/skills",
+      "!!packages/website/app/lib/agent-skills.generated.ts"
     ]
-  },
-  "overrides": [
-    {
-      "includes": ["**/rendering/MarkdownRenderer.ts"],
-      "linter": {
-        "rules": {
-          "suspicious": {
-            "noControlCharactersInRegex": "off",
-            "noMisleadingCharacterClass": "off"
-          }
-        }
-      }
-    }
-  ]
+  }
 }
