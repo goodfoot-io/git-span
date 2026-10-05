@@ -1,4 +1,4 @@
-packages/agent-hooks/src/common/touch-core.ts#L1365-L1393 rk64:b6fbd8402347ae50
+packages/agent-hooks/src/common/touch-core.ts#L1366-L1394 rk64:b6fbd8402347ae50
 packages/agent-hooks/test/common/context-executor.test.ts#L38-L114 rk64:dd99de6928e9163d
 
 The default context executor reserves time inside the outer hook deadline and bounds recovery-lock waits, while the focused executor test preserves the exact timeout and inherited-environment contract.
