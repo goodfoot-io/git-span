@@ -12,11 +12,9 @@
 //! (`LayerSet::committed_only()`) and effective views deterministically by
 //! selecting/relabeling these observations — no re-resolution.
 
-use blake3::Hasher;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
 
-use crate::types::{AnchorExtent, AnchorLocation, AnchorStatus, DriftLocus, FuzzySuccessor};
+use crate::types::{AnchorLocation, AnchorStatus, DriftLocus, FuzzySuccessor};
 
 /// One layer's drift observation for one anchor: its classified status at
 /// this layer, its current tracked location (if any; `blob` is `None` when
@@ -64,7 +62,6 @@ impl LayerObservationCore {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct AnchorCore {
     pub(crate) anchor_id: String,
-    pub(crate) anchor_sha: String,
     /// The anchor record's recorded hash (`"<algorithm>:<content_hash>"`),
     /// carried through from `Anchor::stored_hash`. `serde(default)` so a
     /// cache written before this field existed still deserializes.
@@ -98,10 +95,9 @@ pub(crate) struct AnchorCore {
 }
 
 /// Explicit ordinal identity for a definition, replacing an address-keyed
-/// map: `(span identity, source ordinal, canonical definition digest)`.
-/// Duplicate anchor addresses are valid parser input
-/// (`notes/correctness-contract.md` "Completeness, Identity, And Order")
-/// and must never collapse to one row.
+/// map: `(span identity, source ordinal)`. Duplicate anchor addresses are
+/// valid parser input (`notes/correctness-contract.md` "Completeness,
+/// Identity, And Order") and must never collapse to one row.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct DefinitionOrdinal {
     /// Identity of the containing span (its name).
@@ -110,49 +106,6 @@ pub(crate) struct DefinitionOrdinal {
     /// span, in stored/parse order. `0` for the first (or only)
     /// occurrence.
     pub(crate) source_ordinal: u32,
-    /// BLAKE3 digest of the canonical definition bytes (address + anchor
-    /// identity), distinguishing definitions that share an address but not
-    /// content.
-    pub(crate) definition_digest: [u8; 32],
-}
-
-impl DefinitionOrdinal {
-    /// Deterministic digest of `(anchor_id, anchor_sha, path, extent)` —
-    /// the ordinal's `definition_digest`, distinguishing two definitions
-    /// that share an address but not content.
-    ///
-    /// A manual hash, not serde: `path` contributes its lossy UTF-8 bytes
-    /// (anchored paths are built from span-file `String`s, so this is the
-    /// path's own string) and `extent` a `0` tag, or a `1` tag followed by
-    /// `start` / `end` little-endian.
-    pub(crate) fn digest_definition(
-        anchor_id: &str,
-        anchor_sha: &str,
-        path: &Path,
-        extent: AnchorExtent,
-    ) -> [u8; 32] {
-        let mut h = Hasher::new();
-        h.update(b"gm.core.definition-digest\0");
-        write_prefixed(&mut h, anchor_id.as_bytes());
-        write_prefixed(&mut h, anchor_sha.as_bytes());
-        write_prefixed(&mut h, path.to_string_lossy().as_bytes());
-        match extent {
-            AnchorExtent::WholeFile => {
-                h.update(&[0u8]);
-            }
-            AnchorExtent::LineRange { start, end } => {
-                h.update(&[1u8]);
-                h.update(&start.to_le_bytes());
-                h.update(&end.to_le_bytes());
-            }
-        }
-        *h.finalize().as_bytes()
-    }
-}
-
-pub(crate) fn write_prefixed(h: &mut Hasher, bytes: &[u8]) {
-    h.update(&(bytes.len() as u64).to_le_bytes());
-    h.update(bytes);
 }
 
 /// One span's layer-neutral resolution: its definitions in stored order,

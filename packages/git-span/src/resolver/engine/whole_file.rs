@@ -29,9 +29,11 @@ fn oid_from_hex(hex: &str) -> Result<gix::ObjectId> {
 /// degrades to "not a gitlink" exactly as the previous `.unwrap_or(false)`
 /// handling did.
 fn is_gitlink_path(concurrent: &ConcurrentSession, repo: &gix::Repository, path: &str) -> bool {
-    concurrent
-        .index_entries(repo)
-        .is_some_and(|entries| entries.iter().any(|en| en.path == path && en.mode.is_commit()))
+    concurrent.index_entries(repo).is_some_and(|entries| {
+        entries
+            .iter()
+            .any(|en| en.path == path && en.mode.is_commit())
+    })
 }
 
 /// Canonical content bytes for a whole-file anchor at a resolved layer
@@ -102,7 +104,7 @@ fn find_relocated_whole_file(
         }
         // A path absent from HEAD is always a candidate. A HEAD-present
         // path qualifies only when it is new as of the committed rename
-        // (see `ResolveSession::is_rename_target`), so a coincidental
+        // (see `ConcurrentSession::is_rename_target`), so a coincidental
         // content match in an unrelated pre-existing file is not a
         // relocation. The before-commit walk and per-candidate probe are
         // session-memoized (see `is_rename_target`'s doc comment).
@@ -171,53 +173,19 @@ pub(crate) fn resolve_whole_file(
     // File-backed model: the anchored content is the blob at `r.path`
     // in HEAD. Carry that OID so `--patch`/`--stat` diff against the
     // anchored HEAD content instead of the drifted worktree file.
-    let anchored_blob = if !r.blob.is_empty() {
-        oid_from_hex(&r.blob).ok()
-    } else {
-        concurrent
-            .head_blob_at(repo, &shared.head_sha, &r.path)?
-            .and_then(|o| oid_from_hex(&o).ok())
-    };
-    let anchored = AnchorLocation {
-        path: PathBuf::from(&r.path),
-        extent: AnchorExtent::WholeFile,
-        blob: anchored_blob,
-    };
-    if r.anchor_sha == shared.head_sha
-        && super::anchor_path_is_layer_clean(local, shared, &r.path)
-        && let Some(head_blob) = concurrent.head_blob_at(repo, &shared.head_sha, &r.path)?
-        && head_blob == r.blob
-    {
-        return Ok(AnchorResolved {
-            anchor_id: anchor_id.into(),
-            anchor_sha: r.anchor_sha,
-            stored_hash: r.stored_hash,
-            anchored,
-            current: Some(AnchorLocation {
-                path: PathBuf::from(&r.path),
-                extent: AnchorExtent::WholeFile,
-                blob: oid_from_hex(&head_blob).ok(),
-            }),
-            status: AnchorStatus::Fresh,
-            source: None,
-            layer_sources: vec![],
-            content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
-            locus: None,
-            fuzzy_successors: vec![],
-            moved_uncommitted: false,
-        });
-    }
-
     let workdir = git::work_dir(repo)?;
     // The span file at HEAD records the anchor's path directly; there is no
     // history to replay.
     let current_path = r.path.clone();
 
-    let moved = current_path != r.path;
-
     // Per-layer blob OIDs for whole-file comparison.
     let head_blob: Option<String> =
         concurrent.head_blob_at(repo, &shared.head_sha, &current_path)?;
+    let anchored = AnchorLocation {
+        path: PathBuf::from(&r.path),
+        extent: AnchorExtent::WholeFile,
+        blob: head_blob.as_deref().and_then(|o| oid_from_hex(o).ok()),
+    };
     let deepest = if local.layers.worktree {
         DriftSource::Worktree
     } else if local.layers.index {
@@ -225,37 +193,6 @@ pub(crate) fn resolve_whole_file(
     } else {
         DriftSource::Head
     };
-
-    if super::anchor_path_is_layer_clean(local, shared, &current_path)
-        && let Some(head_blob) = head_blob.as_ref()
-        && head_blob == &r.blob
-    {
-        let status = if moved {
-            AnchorStatus::Moved
-        } else {
-            AnchorStatus::Fresh
-        };
-        let source = if moved { Some(deepest) } else { None };
-        let layer_sources = if moved { vec![deepest] } else { vec![] };
-        return Ok(AnchorResolved {
-            anchor_id: anchor_id.into(),
-            anchor_sha: r.anchor_sha,
-            stored_hash: r.stored_hash,
-            anchored,
-            current: Some(AnchorLocation {
-                path: PathBuf::from(&current_path),
-                extent: AnchorExtent::WholeFile,
-                blob: oid_from_hex(head_blob).ok(),
-            }),
-            status,
-            source,
-            layer_sources,
-            content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
-            locus: None,
-            fuzzy_successors: vec![],
-            moved_uncommitted: false,
-        });
-    }
 
     let index_blob: Option<String> = if local.layers.index {
         if let Some((_mode, sha)) = index_entry_for(concurrent, repo, &current_path) {
@@ -307,10 +244,24 @@ pub(crate) fn resolve_whole_file(
     let layer_sources: Vec<DriftSource>;
     let mut fuzzy_successors: Vec<FuzzySuccessor> = vec![];
 
-    // Determine which layers independently show drift (blob OID != anchor blob,
-    // or rk64 of current content != stored_hash).
-    let head_drifts = if !r.stored_hash.is_empty() {
-        match &head_blob {
+    // Determine which layers independently show drift: the rk64 of the
+    // layer's content differs from `stored_hash`.
+    let head_drifts = match &head_blob {
+        Some(oid) => {
+            let bytes = canonical_layer_bytes(repo, oid, is_gitlink);
+            let computed = format!(
+                "{RK64_ALGORITHM}:{}",
+                rk64_to_hex(cheap_fingerprint_with_extent(
+                    &bytes,
+                    &AnchorExtent::WholeFile
+                ))
+            );
+            computed != r.stored_hash
+        }
+        None => true,
+    };
+    let index_drifts = local.layers.index
+        && match &index_blob {
             Some(oid) => {
                 let bytes = canonical_layer_bytes(repo, oid, is_gitlink);
                 let computed = format!(
@@ -323,72 +274,42 @@ pub(crate) fn resolve_whole_file(
                 computed != r.stored_hash
             }
             None => true,
-        }
-    } else {
-        head_blob.as_deref() != Some(r.blob.as_str())
-    };
-    let index_drifts = if !r.stored_hash.is_empty() {
-        local.layers.index
-            && match &index_blob {
-                Some(oid) => {
-                    let bytes = canonical_layer_bytes(repo, oid, is_gitlink);
+        };
+    let worktree_drifts = local.layers.worktree
+        && match &worktree_blob {
+            Some(Some(oid)) => {
+                if is_gitlink {
+                    // Gitlink: identity is the recorded commit OID hex.
                     let computed = format!(
                         "{RK64_ALGORITHM}:{}",
                         rk64_to_hex(cheap_fingerprint_with_extent(
-                            &bytes,
+                            oid.as_bytes(),
                             &AnchorExtent::WholeFile
                         ))
                     );
                     computed != r.stored_hash
-                }
-                None => true,
-            }
-    } else {
-        local.layers.index && index_blob.as_deref() != Some(r.blob.as_str())
-    };
-    let worktree_drifts = if !r.stored_hash.is_empty() {
-        local.layers.worktree
-            && match &worktree_blob {
-                Some(Some(oid)) => {
-                    if is_gitlink {
-                        // Gitlink: identity is the recorded commit OID hex.
-                        let computed = format!(
-                            "{RK64_ALGORITHM}:{}",
-                            rk64_to_hex(cheap_fingerprint_with_extent(
-                                oid.as_bytes(),
-                                &AnchorExtent::WholeFile
-                            ))
-                        );
-                        computed != r.stored_hash
-                    } else {
-                        // Worktree blob OID may not exist in repo (computed
-                        // via hash_blob). Re-read file from disk for hash.
-                        let abs = workdir.join(&current_path);
-                        match std::fs::read(&abs) {
-                            Ok(bytes) => {
-                                let computed = format!(
-                                    "{RK64_ALGORITHM}:{}",
-                                    rk64_to_hex(cheap_fingerprint_with_extent(
-                                        &bytes,
-                                        &AnchorExtent::WholeFile
-                                    ))
-                                );
-                                computed != r.stored_hash
-                            }
-                            Err(_) => true,
+                } else {
+                    // Worktree blob OID may not exist in repo (computed
+                    // via hash_blob). Re-read file from disk for hash.
+                    let abs = workdir.join(&current_path);
+                    match std::fs::read(&abs) {
+                        Ok(bytes) => {
+                            let computed = format!(
+                                "{RK64_ALGORITHM}:{}",
+                                rk64_to_hex(cheap_fingerprint_with_extent(
+                                    &bytes,
+                                    &AnchorExtent::WholeFile
+                                ))
+                            );
+                            computed != r.stored_hash
                         }
+                        Err(_) => true,
                     }
                 }
-                Some(None) => true,
-                None => false,
             }
-    } else {
-        local.layers.worktree
-            && worktree_blob
-                .as_ref()
-                .map(|b| b.as_deref() != Some(r.blob.as_str()))
-                .unwrap_or(false)
-    };
+            Some(None) => true,
+            None => false,
+        };
 
     let cur_blob_oid = current_blob.as_deref().and_then(|s| oid_from_hex(s).ok());
     let mut current_loc = Some(AnchorLocation {
@@ -412,31 +333,19 @@ pub(crate) fn resolve_whole_file(
             //    which the drift-label formatter renders as
             //    "deleted in the working tree" / "deleted in the index".
             // In no case is a removal mislabeled "changed in …".
-            let file_backed = !r.stored_hash.is_empty();
-            // Primary HEAD read: fail closed, matching the line-range twin
-            // (`anchor.rs`, the `head_path_absent` computation in
-            // `resolve_anchor_inner`). A repository whose HEAD cannot be
-            // read must error, never classify as relocated/deleted; only
-            // the candidate-scan probes below tolerate read failures (see
-            // `find_relocated_whole_file`).
-            let head_blob_oid = if file_backed {
-                concurrent.head_blob_at(repo, &shared.head_sha, &r.path)?
-            } else {
-                None
-            };
-            let head_path_absent = file_backed && head_blob_oid.is_none();
-            let relocated: Vec<String> = if file_backed {
-                find_relocated_whole_file(
-                    ctx,
-                    workdir,
-                    deepest,
-                    &r.stored_hash,
-                    &current_path,
-                    head_path_absent,
-                )
-            } else {
-                Vec::new()
-            };
+            // The HEAD read above (`head_blob`) already failed closed: a
+            // repository whose HEAD cannot be read errors, never classifies
+            // as relocated/deleted. Only the candidate-scan probes tolerate
+            // read failures (see `find_relocated_whole_file`).
+            let head_path_absent = head_blob.is_none();
+            let relocated: Vec<String> = find_relocated_whole_file(
+                ctx,
+                workdir,
+                deepest,
+                &r.stored_hash,
+                &current_path,
+                head_path_absent,
+            );
             match relocated.as_slice() {
                 [new_path] => {
                     status = AnchorStatus::Moved;
@@ -444,7 +353,6 @@ pub(crate) fn resolve_whole_file(
                     layer_sources = vec![deepest];
                     return Ok(AnchorResolved {
                         anchor_id: anchor_id.into(),
-                        anchor_sha: r.anchor_sha,
                         stored_hash: r.stored_hash,
                         anchored,
                         current: Some(AnchorLocation {
@@ -466,11 +374,9 @@ pub(crate) fn resolve_whole_file(
                     // lives inside a gitlink and cannot resolve at HEAD.
                     // Card main-300 (whole-file follow-up): session-wide
                     // index snapshot.
-                    let is_submodule = concurrent
-                        .index_entries(repo)
-                        .is_some_and(|entries| {
-                            !matches!(submodule_classify(&entries, &r.path), SubmoduleKind::None,)
-                        });
+                    let is_submodule = concurrent.index_entries(repo).is_some_and(|entries| {
+                        !matches!(submodule_classify(&entries, &r.path), SubmoduleKind::None,)
+                    });
                     let status = if is_submodule {
                         AnchorStatus::Submodule
                     } else {
@@ -478,7 +384,6 @@ pub(crate) fn resolve_whole_file(
                     };
                     return Ok(AnchorResolved {
                         anchor_id: anchor_id.into(),
-                        anchor_sha: r.anchor_sha,
                         stored_hash: r.stored_hash,
                         anchored,
                         current: None,
@@ -513,15 +418,14 @@ pub(crate) fn resolve_whole_file(
                         && git::index_tracks_path(repo, &r.path)
                     {
                         // head_path_absent is false on this arm, so the
-                        // blob exists at HEAD and `head_blob_oid` is Some.
-                        if let Some(last_hex) = head_blob_oid {
-                            let last_oid = oid_from_hex(&last_hex)?;
+                        // blob exists at HEAD and `head_blob` is Some.
+                        if let Some(last_hex) = head_blob.as_deref() {
+                            let last_oid = oid_from_hex(last_hex)?;
                             match find_worktree_move(repo, concurrent, &r.path, last_oid)? {
                                 WorktreeMove::None => {}
                                 WorktreeMove::Unique { path } => {
                                     return Ok(AnchorResolved {
                                         anchor_id: anchor_id.into(),
-                                        anchor_sha: r.anchor_sha,
                                         stored_hash: r.stored_hash,
                                         anchored,
                                         current: Some(AnchorLocation {
@@ -574,7 +478,6 @@ pub(crate) fn resolve_whole_file(
                     };
                     return Ok(AnchorResolved {
                         anchor_id: anchor_id.into(),
-                        anchor_sha: r.anchor_sha,
                         stored_hash: r.stored_hash,
                         anchored,
                         current: None,
@@ -604,7 +507,6 @@ pub(crate) fn resolve_whole_file(
                     {
                         return Ok(AnchorResolved {
                             anchor_id: anchor_id.into(),
-                            anchor_sha: r.anchor_sha,
                             stored_hash: r.stored_hash,
                             anchored,
                             current: Some(AnchorLocation {
@@ -639,14 +541,9 @@ pub(crate) fn resolve_whole_file(
                     if head_path_absent {
                         // Card main-300 (whole-file follow-up): session-wide
                         // index snapshot.
-                        let is_submodule = concurrent
-                            .index_entries(repo)
-                            .is_some_and(|entries| {
-                                !matches!(
-                                    submodule_classify(&entries, &r.path),
-                                    SubmoduleKind::None,
-                                )
-                            });
+                        let is_submodule = concurrent.index_entries(repo).is_some_and(|entries| {
+                            !matches!(submodule_classify(&entries, &r.path), SubmoduleKind::None,)
+                        });
                         let status = if is_submodule {
                             AnchorStatus::Submodule
                         } else {
@@ -654,7 +551,6 @@ pub(crate) fn resolve_whole_file(
                         };
                         return Ok(AnchorResolved {
                             anchor_id: anchor_id.into(),
-                            anchor_sha: r.anchor_sha,
                             stored_hash: r.stored_hash,
                             anchored,
                             current: None,
@@ -679,7 +575,6 @@ pub(crate) fn resolve_whole_file(
                     };
                     return Ok(AnchorResolved {
                         anchor_id: anchor_id.into(),
-                        anchor_sha: r.anchor_sha,
                         stored_hash: r.stored_hash,
                         anchored,
                         current: None,
@@ -696,9 +591,9 @@ pub(crate) fn resolve_whole_file(
         }
         Some(cur) => {
             // Determine if current content matches the anchored state.
-            let cur_matches = if !r.stored_hash.is_empty() {
-                // File-backed model: compute the rk64 fingerprint of
-                // deepest-layer canonical content and compare against stored_hash.
+            let cur_matches = {
+                // Compute the rk64 fingerprint of deepest-layer canonical
+                // content and compare against stored_hash.
                 let text = if is_gitlink {
                     // Gitlink identity is the recorded commit OID hex.
                     cur.as_bytes().to_vec()
@@ -740,15 +635,8 @@ pub(crate) fn resolve_whole_file(
                     ))
                 );
                 computed == r.stored_hash
-            } else {
-                cur == r.blob
             };
-            if cur_matches && moved {
-                status = AnchorStatus::Moved;
-                source = Some(deepest);
-                // MOVED: single row per design requirement 4.
-                layer_sources = vec![deepest];
-            } else if cur_matches {
+            if cur_matches {
                 status = AnchorStatus::Fresh;
                 source = None;
                 layer_sources = vec![];
@@ -757,98 +645,87 @@ pub(crate) fn resolve_whole_file(
                 // was duplicated verbatim to a different tracked path
                 // (staged copy-then-replace, or a committed `git mv` the
                 // follow-walk did not pick up). Scan before `Changed`.
-                let file_backed = !r.stored_hash.is_empty();
-                let relocated: Vec<String> = if file_backed {
-                    let anchored_absent_at_head = concurrent
-                        .head_blob_at(repo, &shared.head_sha, &r.path)?
-                        .is_none();
-                    find_relocated_whole_file(
-                        ctx,
-                        workdir,
-                        deepest,
-                        &r.stored_hash,
-                        &current_path,
-                        anchored_absent_at_head,
-                    )
-                } else {
-                    Vec::new()
-                };
+                let relocated: Vec<String> = find_relocated_whole_file(
+                    ctx,
+                    workdir,
+                    deepest,
+                    &r.stored_hash,
+                    &current_path,
+                    head_blob.is_none(),
+                );
                 if relocated.len() == 1 {
                     // Unique destination: assert the move.
-                status = AnchorStatus::Moved;
-                source = Some(deepest);
-                layer_sources = vec![deepest];
-                current_loc = Some(AnchorLocation {
+                    status = AnchorStatus::Moved;
+                    source = Some(deepest);
+                    layer_sources = vec![deepest];
+                    current_loc = Some(AnchorLocation {
                         path: PathBuf::from(&relocated[0]),
                         extent: AnchorExtent::WholeFile,
                         blob: None,
                     });
+                } else if let Some(winner) =
+                    sole_basename_preserving(&r.path, relocated.iter().map(String::as_str))
+                {
+                    // Directory-rename shape (see the whole-file relocation
+                    // arm above): exactly one candidate preserving the
+                    // anchored basename is the move's continuation → Moved.
+                    status = AnchorStatus::Moved;
+                    source = Some(deepest);
+                    layer_sources = vec![deepest];
+                    current_loc = Some(AnchorLocation {
+                        path: PathBuf::from(winner),
+                        extent: AnchorExtent::WholeFile,
+                        blob: None,
+                    });
                 } else {
-                    // Directory-rename shape (see the whole-file
-                    // relocation arm above): exactly one candidate
-                    // preserving the anchored basename is the move's
-                    // continuation → Moved. Otherwise no destination can be
-                    // asserted (card main-269): surface every candidate and
-                    // classify `Changed` in place — never a guess.
-                    if let Some(winner) =
-                        sole_basename_preserving(&r.path, relocated.iter().map(String::as_str))
-                    {
-                        status = AnchorStatus::Moved;
-                        source = Some(deepest);
-                        layer_sources = vec![deepest];
-                        current_loc = Some(AnchorLocation {
-                            path: PathBuf::from(winner),
-                    extent: AnchorExtent::WholeFile,
-                    blob: None,
-                });
-            } else {
-                        if relocated.len() >= 2 {
-                            fuzzy_successors = relocated
-                                .iter()
-                                .map(|p| {
-                                    FuzzyCandidate {
-                                        path: p.clone(),
-                                        // Whole-file anchors have no line extent;
-                                        // the 0-0 sentinel mirrors the whole-file
-                                        // mesh convention.
-                                        start: 0,
-                                        end: 0,
-                                        confidence: 1.0,
-                                    }
-                                    .into_successor()
-                                })
-                                .collect();
-                        }
-                status = AnchorStatus::Changed;
-                // Collect all drifting layers in I → W → H order.
-                let mut ls: Vec<DriftSource> = Vec::new();
-                if index_drifts {
-                    ls.push(DriftSource::Index);
+                    // No destination can be asserted (card main-269):
+                    // surface every candidate and classify `Changed` in
+                    // place — never a guess.
+                    if relocated.len() >= 2 {
+                        fuzzy_successors = relocated
+                            .iter()
+                            .map(|p| {
+                                FuzzyCandidate {
+                                    path: p.clone(),
+                                    // Whole-file anchors have no line extent;
+                                    // the 0-0 sentinel mirrors the whole-file
+                                    // mesh convention.
+                                    start: 0,
+                                    end: 0,
+                                    confidence: 1.0,
+                                }
+                                .into_successor()
+                            })
+                            .collect();
+                    }
+                    status = AnchorStatus::Changed;
+                    // Collect all drifting layers in I → W → H order.
+                    let mut ls: Vec<DriftSource> = Vec::new();
+                    if index_drifts {
+                        ls.push(DriftSource::Index);
+                    }
+                    if worktree_drifts {
+                        ls.push(DriftSource::Worktree);
+                    }
+                    if head_drifts {
+                        ls.push(DriftSource::Head);
+                    }
+                    // The reported `source` is the shallowest layer that
+                    // actually shows drift (I → W → H), not merely the
+                    // deepest layer this scan happens to have enabled —
+                    // otherwise a fully-committed drift (index/HEAD
+                    // affected, worktree clean of any uncommitted delta)
+                    // would be mislabeled "changed in the working tree" any
+                    // time worktree scanning is on, which it is by default.
+                    source = Some(ls.first().copied().unwrap_or(deepest));
+                    layer_sources = if ls.is_empty() { vec![deepest] } else { ls };
                 }
-                if worktree_drifts {
-                    ls.push(DriftSource::Worktree);
-                }
-                if head_drifts {
-                    ls.push(DriftSource::Head);
-                }
-                // The reported `source` is the shallowest layer that
-                // actually shows drift (I → W → H), not merely the deepest
-                // layer this scan happens to have enabled — otherwise a
-                // fully-committed drift (index/HEAD affected, worktree
-                // clean of any uncommitted delta) would be mislabeled
-                // "changed in the working tree" any time worktree scanning
-                // is on, which it is by default.
-                source = Some(ls.first().copied().unwrap_or(deepest));
-                layer_sources = if ls.is_empty() { vec![deepest] } else { ls };
             }
-        }
-    }
         }
     }
 
     Ok(AnchorResolved {
         anchor_id: anchor_id.into(),
-        anchor_sha: r.anchor_sha,
         stored_hash: r.stored_hash,
         anchored,
         current: current_loc,

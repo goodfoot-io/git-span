@@ -22,7 +22,6 @@ use crate::types::{
     AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, CopyDetection, DriftLocus,
     DriftSource, EngineOptions, FuzzySuccessor, LayerSet, LocusCause, SpanResolved,
 };
-use std::path::Path;
 
 // ── Shared fixtures ──────────────────────────────────────────────────────
 
@@ -531,8 +530,7 @@ fn fresh_observation(anchored: &AnchorLocation) -> LayerObservationCore {
 /// (`notes/correctness-contract.md` "Completeness, Identity, And Order")
 /// and must never collapse to one row. Two anchor records pinning the
 /// identical `(path, extent)` share an `anchor_id` (the address); only
-/// `DefinitionOrdinal.source_ordinal` (paired with the distinguishing
-/// `definition_digest`) tells them apart.
+/// `DefinitionOrdinal.source_ordinal` tells them apart.
 #[test]
 fn duplicate_definition_ordinal_identity_preserved_through_construction_and_serialization() {
     let anchored = AnchorLocation {
@@ -542,7 +540,6 @@ fn duplicate_definition_ordinal_identity_preserved_through_construction_and_seri
     };
     let anchor_a = AnchorCore {
         anchor_id: "demo:src/a.rs:L0-L0".to_string(),
-        anchor_sha: "a".repeat(40),
         stored_hash: String::new(),
         anchored: anchored.clone(),
         head: fresh_observation(&anchored),
@@ -551,35 +548,16 @@ fn duplicate_definition_ordinal_identity_preserved_through_construction_and_seri
         full: fresh_observation(&anchored),
         locus: None,
     };
-    let mut anchor_b = anchor_a.clone();
-    anchor_b.anchor_sha = "b".repeat(40); // distinct anchor record, same address
-
-    let digest_a = DefinitionOrdinal::digest_definition(
-        &anchor_a.anchor_id,
-        &anchor_a.anchor_sha,
-        Path::new("src/a.rs"),
-        AnchorExtent::WholeFile,
-    );
-    let digest_b = DefinitionOrdinal::digest_definition(
-        &anchor_b.anchor_id,
-        &anchor_b.anchor_sha,
-        Path::new("src/a.rs"),
-        AnchorExtent::WholeFile,
-    );
-    assert_ne!(
-        digest_a, digest_b,
-        "distinct anchor_sha must yield distinct definition digests despite the shared address"
-    );
+    // Distinct anchor record, identical address: only the ordinal differs.
+    let anchor_b = anchor_a.clone();
 
     let ord_a = DefinitionOrdinal {
         span_identity: "demo".to_string(),
         source_ordinal: 0,
-        definition_digest: digest_a,
     };
     let ord_b = DefinitionOrdinal {
         span_identity: "demo".to_string(),
         source_ordinal: 1,
-        definition_digest: digest_b,
     };
 
     let core = ResolutionCore {
@@ -608,6 +586,10 @@ fn duplicate_definition_ordinal_identity_preserved_through_construction_and_seri
     );
     assert_eq!(round_tripped.spans[0].anchors[0].0, ord_a);
     assert_eq!(round_tripped.spans[0].anchors[1].0, ord_b);
+    assert_ne!(
+        ord_a, ord_b,
+        "the source ordinal must distinguish same-address anchor records"
+    );
 }
 
 // ── Category 4: `.gitignore` dirty mismatch, reproduced correctly ────────
@@ -657,7 +639,6 @@ fn effective_projection_preserves_working_tree_qualifier_for_committed_drift() {
 
     let anchor = AnchorCore {
         anchor_id: "demo:src/a.rs:L0-L0".to_string(),
-        anchor_sha: "c".repeat(40),
         stored_hash: String::new(),
         anchored,
         head,
@@ -666,15 +647,11 @@ fn effective_projection_preserves_working_tree_qualifier_for_committed_drift() {
         // since the worktree is where this anchor drifts.
         full: worktree.clone(),
         worktree,
-        locus: Some(DriftLocus {
-            commit: repeated_oid("d"),
-            cause: LocusCause::Changed,
-        }),
+        locus: None,
     };
     let ordinal = DefinitionOrdinal {
         span_identity: "demo".to_string(),
         source_ordinal: 0,
-        definition_digest: [0u8; 32],
     };
     let core = ResolutionCore {
         spans: vec![SpanCore {
@@ -929,7 +906,6 @@ fn span_resolved_encodes_fields_in_order_without_format_byte() {
     };
     let anchor = AnchorResolved {
         anchor_id: "demo:src/a.rs:L1-L4".to_string(),
-        anchor_sha: "a".repeat(40),
         stored_hash: "sha256:abc".to_string(),
         anchored: anchored.clone(),
         current: Some(current.clone()),
@@ -945,7 +921,6 @@ fn span_resolved_encodes_fields_in_order_without_format_byte() {
     let anchor_shape = (
         (
             anchor.anchor_id.as_str(),
-            anchor.anchor_sha.as_str(),
             anchor.stored_hash.as_str(),
             &anchored,
             Some(&current),
@@ -994,37 +969,6 @@ fn drift_source_encodes_as_variant_index() {
         assert_eq!(
             bincode::serialize(&source).expect("serialize DriftSource"),
             index.to_le_bytes(),
-        );
-    }
-}
-
-/// `definition_digest` hashes the documented byte layout; pinning it keeps
-/// persisted ordinals stable across refactors of the extent/path types.
-#[test]
-fn definition_digest_hashes_documented_bytes() {
-    fn expected(anchor_id: &str, anchor_sha: &str, path: &str, extent: AnchorExtent) -> [u8; 32] {
-        let mut bytes = b"gm.core.definition-digest\0".to_vec();
-        for part in [anchor_id, anchor_sha, path] {
-            bytes.extend_from_slice(&(part.len() as u64).to_le_bytes());
-            bytes.extend_from_slice(part.as_bytes());
-        }
-        match extent {
-            AnchorExtent::WholeFile => bytes.push(0),
-            AnchorExtent::LineRange { start, end } => {
-                bytes.push(1);
-                bytes.extend_from_slice(&start.to_le_bytes());
-                bytes.extend_from_slice(&end.to_le_bytes());
-            }
-        }
-        *blake3::hash(&bytes).as_bytes()
-    }
-    for extent in [
-        AnchorExtent::WholeFile,
-        AnchorExtent::LineRange { start: 3, end: 7 },
-    ] {
-        assert_eq!(
-            DefinitionOrdinal::digest_definition("id", "sha", Path::new("src/a.rs"), extent),
-            expected("id", "sha", "src/a.rs", extent),
         );
     }
 }

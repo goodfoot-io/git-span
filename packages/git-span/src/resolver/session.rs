@@ -134,10 +134,6 @@ type SingleFlightMemo<V> = RwLock<HashMap<String, Arc<OnceLock<V>>>>;
 /// only prepare the storage for sharing behind `Arc<ConcurrentSession>` once
 /// the rayon fork lands.
 pub(crate) struct ConcurrentSession {
-    /// Counter: drift-locus cache hits.
-    pub(crate) drift_locus_hits: AtomicU64,
-    /// Counter: drift-locus cache misses.
-    pub(crate) drift_locus_misses: AtomicU64,
     /// Counter: per-path filter-attribute memo hits. Populated by
     /// `EngineState::filter_short_circuit` on cached `(rel_path)` reads.
     pub(crate) filter_attr_hits: AtomicU64,
@@ -198,21 +194,6 @@ pub(crate) struct ConcurrentSession {
     pub(crate) anchors_orphaned: u64,
     pub(crate) anchors_merge_conflict: u64,
     pub(crate) anchors_unavailable: u64,
-    /// Counter: anchors skipped entirely via [`can_skip_clean_head_pinned_span`]
-    /// (the whole span was clean and pinned at HEAD). These anchors are not
-    /// resolved individually, but they are counted toward `anchors_total`.
-    pub(crate) anchors_skipped_clean_head: u64,
-    /// Counter: anchors that returned via [`clean_head_fast_path`] (early
-    /// return). The remainder went through the full layer-comparison path;
-    /// that count is derived at emit time as `anchors_total -
-    /// anchors_fast_path_hits - anchors_skipped_clean_head`
-    /// (`session.anchors-full-resolution`).
-    ///
-    /// `AtomicU64` (card main-162 staged-rollout step 4): incremented from
-    /// [`clean_head_fast_path`] inside the now-parallel capture loop, so it is
-    /// shared behind `&self` like the other resolve-path counters rather than
-    /// mutated through `&mut self`.
-    pub(crate) anchors_fast_path_hits: AtomicU64,
     /// Per-anchor wall-clock (microseconds), one entry per `resolve_anchor_inner`
     /// invocation. Sorted at end-of-run to compute `p50` / `p95` percentiles.
     /// Dropped immediately after emit; ~8 bytes per anchor.
@@ -454,8 +435,6 @@ pub(crate) struct JaccardCorpus {
 impl ConcurrentSession {
     pub(crate) fn new(_repo: &gix::Repository) -> Self {
         Self {
-            drift_locus_hits: AtomicU64::new(0),
-            drift_locus_misses: AtomicU64::new(0),
             filter_attr_hits: AtomicU64::new(0),
             filter_attr_misses: AtomicU64::new(0),
             deleted_locus_memo: RwLock::new(std::collections::HashMap::new()),
@@ -467,8 +446,6 @@ impl ConcurrentSession {
             anchors_orphaned: 0,
             anchors_merge_conflict: 0,
             anchors_unavailable: 0,
-            anchors_skipped_clean_head: 0,
-            anchors_fast_path_hits: AtomicU64::new(0),
             per_anchor_us: Vec::new(),
             per_anchor_trace: None,
             filter_attrs: RwLock::new(HashMap::new()),
@@ -1048,7 +1025,6 @@ impl ConcurrentSession {
             + self.anchors_orphaned
             + self.anchors_merge_conflict
             + self.anchors_unavailable
-            + self.anchors_skipped_clean_head
     }
 }
 
@@ -1057,59 +1033,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn anchors_total_includes_skipped_clean_head() {
-        let session = ConcurrentSession {
-            drift_locus_hits: AtomicU64::new(0),
-            drift_locus_misses: AtomicU64::new(0),
-            filter_attr_hits: AtomicU64::new(0),
-            filter_attr_misses: AtomicU64::new(0),
-            deleted_locus_memo: RwLock::new(std::collections::HashMap::new()),
-            blob_oid_memo: RwLock::new(HashMap::new()),
-            head_blob_memo_warmed: OnceLock::new(),
-            anchors_fresh: 0,
-            anchors_moved: 0,
-            anchors_changed: 0,
-            anchors_orphaned: 0,
-            anchors_merge_conflict: 0,
-            anchors_unavailable: 0,
-            anchors_fast_path_hits: AtomicU64::new(0),
-            per_anchor_us: Vec::new(),
-            per_anchor_trace: None,
-            filter_attrs: RwLock::new(HashMap::new()),
-            anchors_skipped_clean_head: 50,
-            relocation_candidate_reads: AtomicU64::new(0),
-            relocation_text_memo: parking_lot::RwLock::new(HashMap::new()),
-            line_index_cache: RwLock::new(HashMap::new()),
-            line_index_hits: AtomicU64::new(0),
-            line_index_misses: AtomicU64::new(0),
-            rename_before_commit_memo: RwLock::new(HashMap::new()),
-            before_tree_paths_memo: RwLock::new(HashMap::new()),
-            worktree_bytes_memo: RwLock::new(HashMap::new()),
-            blob_text_memo: RwLock::new(HashMap::new()),
-            blob_text_hits: AtomicU64::new(0),
-            blob_text_misses: AtomicU64::new(0),
-            index_entries_memo: OnceLock::new(),
-            index_snapshot_loads: AtomicU64::new(0),
-            first_parent_chain: Mutex::new(None),
-            history_blob_memo: RwLock::new(HashMap::new()),
-            history_fingerprint_memo: RwLock::new(HashMap::new()),
-            jaccard_corpus: Mutex::new(JaccardCorpus::default()),
-            worktree_move_cache: OnceLock::new(),
-        };
-
-        let total = session.anchors_total();
-
-        assert_eq!(
-            total, 50,
-            "anchors-total must count anchors that were skipped clean-head"
-        );
-    }
-
-    #[test]
     fn anchors_total_sums_mixed_buckets() {
         let session = ConcurrentSession {
-            drift_locus_hits: AtomicU64::new(0),
-            drift_locus_misses: AtomicU64::new(0),
             filter_attr_hits: AtomicU64::new(0),
             filter_attr_misses: AtomicU64::new(0),
             deleted_locus_memo: RwLock::new(std::collections::HashMap::new()),
@@ -1121,11 +1046,9 @@ mod tests {
             anchors_orphaned: 0,
             anchors_merge_conflict: 0,
             anchors_unavailable: 1,
-            anchors_fast_path_hits: AtomicU64::new(4),
             per_anchor_us: Vec::new(),
             per_anchor_trace: None,
             filter_attrs: RwLock::new(HashMap::new()),
-            anchors_skipped_clean_head: 40,
             relocation_candidate_reads: AtomicU64::new(0),
             relocation_text_memo: parking_lot::RwLock::new(HashMap::new()),
             line_index_cache: RwLock::new(HashMap::new()),
@@ -1148,20 +1071,8 @@ mod tests {
 
         let total = session.anchors_total();
 
-        // The status-bucket total accounts for moved+changed+unavailable = 6
-        // plus the 40 skipped clean-head anchors.
-        assert_eq!(
-            total,
-            session.anchors_fresh
-                + session.anchors_moved
-                + session.anchors_changed
-                + session.anchors_orphaned
-                + session.anchors_merge_conflict
-                + session.anchors_unavailable
-                + session.anchors_skipped_clean_head,
-            "anchors-total must include skipped-clean-head alongside per-status buckets"
-        );
-        assert_eq!(total, 46);
+        // The status-bucket total accounts for moved+changed+unavailable = 6.
+        assert_eq!(total, 6, "anchors-total must sum every per-status bucket");
     }
 
     #[test]

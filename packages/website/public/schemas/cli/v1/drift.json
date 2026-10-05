@@ -253,18 +253,6 @@
         {
           "type": "object",
           "properties": {
-            "changed_in": {
-              "type": "string"
-            }
-          },
-          "additionalProperties": false,
-          "required": [
-            "changed_in"
-          ]
-        },
-        {
-          "type": "object",
-          "properties": {
             "deleted_in": {
               "type": "string"
             }

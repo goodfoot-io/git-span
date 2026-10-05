@@ -140,7 +140,15 @@ mod tests;
 /// `ExtentCore` with the same field order and encodings (path as its string,
 /// blob as `Option<hex>`, confidence as `u32` basis points). They ride this
 /// bump anyway, as the whole generation is versioned together.
-pub(crate) const SUMMARY_VERSION: u32 = 6;
+///
+/// Version 7: the dead commit-pinned anchor fields are gone. The summary's
+/// `AnchorResolved` and the reuse rows' `AnchorCore` both drop `anchor_sha`
+/// (a string that was always empty), the reuse rows' `DefinitionOrdinal`
+/// drops its 32-byte `definition_digest`, and `LocusCause` loses its leading
+/// `Changed` variant, so `Orphaned` / `Renamed` move from variant indices
+/// 1 / 2 to 0 / 1. A version-6 summary or row would misdecode against every
+/// one of these shapes, so it must miss and rebuild.
+pub(crate) const SUMMARY_VERSION: u32 = 7;
 
 /// Max entries in the bounded in-process memo. Small and explicit: this is a
 /// per-process working-set cache for repeated same-key `drift` calls within one

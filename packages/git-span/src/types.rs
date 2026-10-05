@@ -27,21 +27,14 @@ pub use git_span_core::AnchorExtent;
 /// In-memory representation of an Anchor derived from a span file anchor record.
 ///
 /// The anchor carries the content's rk64 fingerprint (stored_hash) for
-/// freshness comparison instead of the old blob-OID / commit-based anchoring.
-/// Fields that were previously populated from commit metadata (anchor_sha,
-/// created_at, blob) are now empty strings.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+/// freshness comparison; the span file at HEAD is the reference point, so
+/// there is no anchor commit or pinned blob.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Anchor {
-    /// Commit this anchor was anchored to at creation (empty in new model).
-    pub anchor_sha: String,
-    /// ISO-8601 creation timestamp (empty in new model).
-    pub created_at: String,
-    /// File path at the anchor commit.
+    /// File path recorded in the span file.
     pub path: String,
     /// Extent (whole-file or line-anchor) pinned by this anchor.
     pub extent: AnchorExtent,
-    /// Blob OID of `path` at `anchor_sha` (empty in new model).
-    pub blob: String,
     /// Content hash from the span file anchor record (e.g. "rk64:<hex>").
     /// Used for freshness comparison instead of blob OID.
     pub stored_hash: String,
@@ -70,8 +63,6 @@ pub fn span_from_file(name: &str, file: &SpanFile) -> Span {
             (
                 id,
                 Anchor {
-                    anchor_sha: String::new(),
-                    created_at: String::new(),
                     path: a.path.to_string(),
                     extent: if a.start_line == 0 && a.end_line == 0 {
                         AnchorExtent::WholeFile
@@ -81,7 +72,6 @@ pub fn span_from_file(name: &str, file: &SpanFile) -> Span {
                             end: a.end_line,
                         }
                     },
-                    blob: String::new(),
                     stored_hash: format!("{}:{}", a.algorithm, a.content_hash),
                 },
             )
@@ -97,7 +87,7 @@ pub fn span_from_file(name: &str, file: &SpanFile) -> Span {
 }
 
 /// A Span derived from a span file (text-based tracked storage).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Span {
     /// The Span's name.
     pub name: String,
@@ -201,7 +191,6 @@ pub struct AnchorLocation {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnchorResolved {
     pub anchor_id: String,
-    pub anchor_sha: String,
     /// The anchor record's recorded hash (`"<algorithm>:<content_hash>"`),
     /// carried through unresolved from [`Anchor::stored_hash`] so render-layer
     /// code can recognize a collapse sentinel without re-reading the span
@@ -224,12 +213,10 @@ pub struct AnchorResolved {
     /// terminal statuses. When non-empty, one `Finding` is emitted per entry
     /// at render time.
     pub layer_sources: Vec<DriftSource>,
-    /// HEAD-history drift locus, populated only when
-    /// `source == Some(Head)`. Carries the first commit on the path since
-    /// the anchor that mutated the anchored byte range
-    /// ([`LocusCause::Changed`]), or the commit that removed
-    /// ([`LocusCause::Orphaned`]) or renamed ([`LocusCause::Renamed`]) the
-    /// path.
+    /// HEAD-history drift locus, populated only for a `Deleted` anchor:
+    /// the commit that removed ([`LocusCause::Orphaned`]) or renamed
+    /// ([`LocusCause::Renamed`]) the anchored path. `None` for every other
+    /// status.
     pub locus: Option<DriftLocus>,
     /// Fuzzy-similarity successors found during resolution. Populated only
     /// when the exact-match relocation scan fails and the fuzzy fallback
@@ -248,10 +235,8 @@ pub struct AnchorResolved {
 }
 
 /// Locus emitted by the HEAD-history walk in `resolver::attribution`: the
-/// commit that explains an anchor's drift, and what that commit did.
-/// Only meaningful when `AnchorResolved.source == Some(DriftSource::Head)`
-/// (or for a `Deleted` anchor); the other layers carry their own per-layer
-/// label.
+/// commit that explains why a `Deleted` anchor's path is absent from HEAD,
+/// and what that commit did. No other status carries a locus.
 ///
 /// Persisted verbatim by the resolver's store rows, with `commit` encoded as
 /// its hex string.
@@ -260,8 +245,6 @@ pub struct DriftLocus {
     /// The commit that explains the drift. Its meaning depends on
     /// [`cause`](Self::cause):
     ///
-    /// * [`LocusCause::Changed`] — the first commit reachable from HEAD that
-    ///   mutated the anchored byte range on the path.
     /// * [`LocusCause::Orphaned`] — the commit that removed the path, or
     ///   renamed it away without a destination being reported.
     /// * [`LocusCause::Renamed`] — the commit that renamed the path away:
@@ -276,12 +259,9 @@ pub struct DriftLocus {
 /// What a [`DriftLocus`]'s `commit` did to the anchored path.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LocusCause {
-    /// The commit mutated the anchored byte range on the path.
-    Changed,
     /// The commit removed the path; anchored content is gone from HEAD.
     /// Normally a genuine deletion, but also the fail-closed answer for a
-    /// rename whose destination is not reported: the forward walk of a
-    /// HEAD-sourced anchor, or a `Deleted` anchor's rename chain that does
+    /// rename whose destination is not reported: a rename chain that does
     /// not end at a path resolving at HEAD.
     Orphaned,
     /// The commit renamed the path; anchored content moved rather than
@@ -396,12 +376,6 @@ pub enum Error {
     /// parent-walk in `why_walking_past_follows` cannot be confused.
     #[error("why may not begin with reserved prefix `{prefix}`: choose a different message")]
     ReservedWhyPrefix { prefix: String },
-
-    /// `anchor_sha` is not reachable; resolver classifies the anchor as
-    /// `Deleted` rather than erroring, but callers writing new anchors
-    /// surface this as a hard error (§5.3, §6.8).
-    #[error("anchor commit unreachable: {anchor_sha}")]
-    Unreachable { anchor_sha: String },
 
     /// The selected remote name is not configured.
     #[error("remote not found: {remote}")]
@@ -563,6 +537,8 @@ pub enum Scope {
 }
 
 /// Layer that produced drift for a `Finding`. There is no `StagedSpan`
+/// variant: [`LayerSet::staged_span`] does not name a content layer, so no
+/// finding is attributed to it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DriftSource {
     Head,

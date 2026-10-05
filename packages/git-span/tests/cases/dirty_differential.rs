@@ -42,10 +42,10 @@
 //! recorded fingerprint at every layer (HEAD == index == worktree, clean
 //! worktree) renders as THREE per-layer findings under cache-off
 //! (INDEX/WORKTREE/HEAD; the human view collapses to the shallowest layer
-//! that actually drifted — "changed in `<sha>`" for this fully-committed
-//! case, since card main-395 — with `current.blob` populated), but the new
-//! store's shared cold `capture_resolution_core` → projection path emits a
-//! single HEAD-sourced finding with `current.blob: None` → "changed". It
+//! that actually drifted — HEAD for this fully-committed case, since card
+//! main-395 — with `current.blob` populated), but the new store's shared
+//! cold `capture_resolution_core` → projection path emitted a single
+//! HEAD-sourced finding with `current.blob: None`. It
 //! reproduces on the new-store COLD path with an empty store and a clean
 //! worktree, so it is rooted in the shared Phase 3 capture/projection
 //! (`resolver/engine` + `resolver/core`), outside 5B's file ownership — exactly
@@ -556,9 +556,8 @@ fn changing_index_race_parity() -> Result<()> {
 // Minimal reproduction of the divergence described in the module header. A
 // WHOLE-FILE anchor whose content differs from its recorded fingerprint at
 // HEAD == index == worktree (clean worktree) renders as THREE per-layer findings
-// under cache-off (the human view: "changed in `<sha>`" since card main-395 —
-// the shallowest layer that actually drifted, not merely the deepest enabled
-// scan layer), but the new
+// under cache-off (the human view: the shallowest layer that actually drifted
+// since card main-395, not merely the deepest enabled scan layer), but the new
 // store's shared cold `capture_resolution_core` → projection path emits a single
 // HEAD-sourced "changed". It reproduces on the new-store COLD path (empty store,
 // clean worktree — the dirty tier is not even reached), so the fix lives in

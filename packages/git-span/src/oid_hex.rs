@@ -58,7 +58,6 @@ mod tests {
         // to match `LocusCause`.
         #[derive(serde::Serialize)]
         enum ExpectedCause<'a> {
-            _Changed,
             _Orphaned,
             Renamed(&'a str),
         }

@@ -1285,23 +1285,6 @@ pub fn extract_blob_lines(
     Ok(slice_line_range(text, start, end)?.into_bytes())
 }
 
-/// Placeholder for §5.1 per-commit `log -L` walker. Implemented inside
-/// [`crate::resolver`] for now; kept here as an unimplemented hook.
-pub fn log_l_resolve(
-    _repo: &gix::Repository,
-    _anchor_sha: &str,
-    _path: &str,
-    _start: u32,
-    _end: u32,
-    _copy_detection: crate::types::CopyDetection,
-) -> Result<Option<(String, u32, u32, String)>> {
-    // The real resolver is `resolver::resolve_anchor`. This hook has no
-    // callers and exists only to preserve the Slice B signature.
-    Err(Error::Git(
-        "git::log_l_resolve is not used; call resolver::resolve_anchor".into(),
-    ))
-}
-
 // ---------------------------------------------------------------------------
 // Slice 1: shared gix helpers (replacements for `Command::new("git")`).
 // ---------------------------------------------------------------------------

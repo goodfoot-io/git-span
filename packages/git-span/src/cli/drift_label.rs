@@ -9,7 +9,7 @@
 //! | Deleted in worktree | `deleted in the working tree` |
 //! | Changed in index | `changed in the index` |
 //! | Deleted in index | `deleted in the index` |
-//! | Changed at sha | `changed in <sha>` |
+//! | Changed at HEAD | `changed` |
 //! | Deleted at sha | `deleted in <sha>` |
 //! | Deleted (no sha) | `deleted` |
 //!
@@ -18,9 +18,10 @@
 //! these.
 //!
 //! Precedence is enforced by the engine before reaching this formatter:
-//! worktree → index → HEAD history walk.
+//! worktree → index → HEAD. Only a `Deleted` anchor carries a commit (its
+//! [`DriftLocus`]); HEAD-sourced content drift names no commit.
 
-use crate::types::{AnchorStatus, DriftLocus, DriftSource, LocusCause, UnavailableReason};
+use crate::types::{AnchorStatus, DriftLocus, DriftSource, UnavailableReason};
 
 /// Format a human-readable drift label for a single anchor.
 ///
@@ -33,9 +34,9 @@ use crate::types::{AnchorStatus, DriftLocus, DriftSource, LocusCause, Unavailabl
 /// * `status` — The resolved anchor status.
 /// * `source` — The layer at which drift was detected (`None` for `Fresh`
 ///   and terminal statuses).
-/// * `locus` — The HEAD-history locus describing the first commit on the
-///   path that mutated the anchored range or removed/renamed the path
-///   (`None` when `source != Head` or the anchor sha is unreachable).
+/// * `locus` — The HEAD-history locus naming the commit that removed or
+///   renamed a `Deleted` anchor's path (`None` for every other status, and
+///   for a `Deleted` anchor whose path history yields no such commit).
 /// * `current_blob_present` — `true` when the content still exists at the
 ///   drift locus (path present); `false` when the path has been removed
 ///   (deletion / orphan via rename).
@@ -61,22 +62,7 @@ pub fn format_drift_label(
                     "deleted in the index".to_string()
                 }
             }
-            Some(DriftSource::Head) => match locus {
-                Some(DriftLocus {
-                    commit,
-                    cause: LocusCause::Changed,
-                }) => format!("changed in {}", short_sha(commit)),
-                // `Renamed` is only ever produced for a `Deleted` anchor
-                // (see `resolver::attribution::deleted_locus_walk`), so it
-                // is unreachable for `Changed`+`Head`; it shares
-                // `Orphaned`'s label for exhaustiveness.
-                Some(DriftLocus {
-                    commit,
-                    cause: LocusCause::Orphaned | LocusCause::Renamed { .. },
-                }) => format!("deleted in {}", short_sha(commit)),
-                None => "changed".to_string(),
-            },
-            None => "changed".to_string(),
+            Some(DriftSource::Head) | None => "changed".to_string(),
         },
         AnchorStatus::Deleted => match locus {
             Some(DriftLocus { commit, .. }) => format!("deleted in {}", short_sha(commit)),

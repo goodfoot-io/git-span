@@ -1888,11 +1888,22 @@ fn format_identity_collapsed(
     )
 }
 
+/// The repository-side context a sentinel line needs to say anything true:
+/// the repo it is reading, the span whose name every printed command takes
+/// as its first positional, and the shared predicate deciding which command
+/// may be printed at all. Grouped because they always travel together and
+/// are always derived from the same `apply_fix` sweep.
+struct SentinelContext<'a> {
+    repo: &'a gix::Repository,
+    span: &'a str,
+    available: &'a AddAvailability,
+}
+
 /// Keep a sentinel-bearing record's *position* current without ever
 /// touching its content claim.
 ///
-/// The tracked position is git-history evidence (`apply_hunks_to_range`),
-/// the same bookkeeping the resolver already performs for every ordinary
+/// The tracked position is layer-diff evidence (index and worktree hunks
+/// applied by `apply_hunks_to_range`), the same bookkeeping the resolver already performs for every ordinary
 /// anchor with no operator in the loop; the sentinel says nothing about
 /// where the anchor lives, only that nothing adjudicated what its content
 /// should be. So this writes `path`/`start_line`/`end_line` and leaves
@@ -1908,17 +1919,6 @@ fn format_identity_collapsed(
 /// merely not materialized in this checkout is not mis-addressed, and a
 /// path mid-merge is not yet readable; telling either operator to
 /// re-address the anchor would talk them into destroying a correct one.
-/// The repository-side context a sentinel line needs to say anything true:
-/// the repo it is reading, the span whose name every printed command takes
-/// as its first positional, and the shared predicate deciding which command
-/// may be printed at all. Grouped because they always travel together and
-/// are always derived from the same `apply_fix` sweep.
-struct SentinelContext<'a> {
-    repo: &'a gix::Repository,
-    span: &'a str,
-    available: &'a AddAvailability,
-}
-
 fn track_sentinel_position(
     ctx: SentinelContext<'_>,
     span_file: &mut SpanFile,
@@ -1957,9 +1957,9 @@ fn track_sentinel_position(
     // Position tracking here is *positional* evidence: hunks between HEAD
     // and the working tree, applied to a HEAD-relative range. It cannot
     // reach a shift that was already committed, because the record's
-    // coordinates are relative to some past commit nobody recorded — the
-    // new model dropped `anchor_sha`, so there is no point in history to
-    // replay forward from. An ordinary anchor does not need one: it
+    // coordinates are relative to some past commit nobody recorded — a
+    // record stores no commit, so there is no point in history to replay
+    // forward from. An ordinary anchor does not need one: it
     // relocates by finding its stored hash somewhere else in the file, and
     // that is what moves the neighbours in the very same run. A sentinel is
     // chosen so that no content ever matches it, so that route is closed to

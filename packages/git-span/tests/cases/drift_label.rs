@@ -78,27 +78,23 @@ fn worktree_path_removal_labels_deleted_in_working_tree() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Row 5: changed in <sha>
+// Row 5: changed at HEAD
 // ---------------------------------------------------------------------------
 
 #[test]
-
-fn committed_range_mutation_labels_changed_in_sha() -> Result<()> {
+fn committed_range_mutation_labels_plain_changed() -> Result<()> {
     let repo = TestRepo::seeded()?;
     seed_span(&repo, "m", "file1.txt", 1, 5)?;
 
     // Commit a mutation of the anchored range; worktree and index stay clean.
-    let sha = repo.commit_file(
+    repo.commit_file(
         "file1.txt",
         "CHANGED\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n",
         "mutate anchored range",
     )?;
-    let short = &sha[..7];
 
-    // File-backed model: anchors carry no anchor_sha, so the resolver
-    // does not attribute drift to a specific historical commit — the
-    // label is the plain status word, not `changed in <sha>`.
-    let _ = short;
+    // Records store no commit and the resolver does not attribute HEAD
+    // drift to a historical commit, so the label is the plain status word.
     let drift = repo.span_stdout(["drift", "m", "--no-exit-code"])?;
     assert!(
         drift.contains("changed") && !drift.contains("changed in "),

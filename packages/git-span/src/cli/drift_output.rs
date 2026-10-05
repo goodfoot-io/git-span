@@ -508,7 +508,6 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
                 why: String::new(),
                 anchors: vec![crate::types::AnchorResolved {
                     anchor_id: name.clone(),
-                    anchor_sha: String::new(),
                     stored_hash: String::new(),
                     anchored: AnchorLocation {
                         path: span_file_path.clone(),
@@ -1891,7 +1890,6 @@ fn fresh_anchor_resolved(
 ) -> crate::types::AnchorResolved {
     crate::types::AnchorResolved {
         anchor_id: anchor_id.to_string(),
-        anchor_sha: a.anchor_sha.clone(),
         stored_hash: a.stored_hash.clone(),
         anchored: AnchorLocation {
             path: std::path::PathBuf::from(&a.path),
@@ -2475,7 +2473,6 @@ struct MovedToDoc {
 #[schemars(deny_unknown_fields)]
 #[serde(untagged)]
 enum LocusDoc {
-    Changed { changed_in: String },
     Orphaned { deleted_in: String },
     Renamed { renamed_at: String, renamed_to: String },
 }
@@ -2484,7 +2481,6 @@ impl From<&DriftLocus> for LocusDoc {
     fn from(l: &DriftLocus) -> Self {
         let commit = l.commit.to_string();
         match &l.cause {
-            LocusCause::Changed => LocusDoc::Changed { changed_in: commit },
             LocusCause::Orphaned => LocusDoc::Orphaned { deleted_in: commit },
             LocusCause::Renamed { to } => LocusDoc::Renamed {
                 renamed_at: commit,

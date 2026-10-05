@@ -67,9 +67,8 @@ fn seed_lfs_cache(repo: &TestRepo, oid_hex_64: &str, bytes: &[u8]) -> Result<()>
 }
 
 #[test]
-fn timeline_cache_distinguishes_same_path_head_blob_different_anchor_sha() -> Result<()> {
-    // File-backed model: anchors carry no `anchor_sha`; identity is the
-    // content `stored_hash` captured at `add` time. Two anchors on the
+fn same_path_same_text_anchors_resolve_independently() -> Result<()> {
+    // Anchor identity is the content `stored_hash` captured at `add` time. Two anchors on the
     // same path that pin the same text (`target`) at different line
     // ranges must each resolve independently against the current
     // content via the relocation scan, not collapse onto one another.

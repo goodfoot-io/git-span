@@ -118,15 +118,9 @@ pub(crate) fn resolve_lfs_anchor(
         }
     };
 
-    // `r.blob` is empty in the file-backed model; the anchored LFS
-    // pointer is the blob at `r.path` in HEAD, already resolved into
-    // `anchored.blob`. Use `r.blob` when populated, otherwise fall back
-    // to the HEAD-resolved anchored blob.
-    let anchored_blob_oid: Option<String> = if !r.blob.is_empty() {
-        Some(r.blob.clone())
-    } else {
-        anchored.blob.map(|o| o.to_string())
-    };
+    // The anchored LFS pointer is the blob at `r.path` in HEAD, already
+    // resolved into `anchored.blob`.
+    let anchored_blob_oid: Option<String> = anchored.blob.map(|o| o.to_string());
     let anchored_pointer = match anchored_blob_oid
         .as_deref()
         .ok_or(())
@@ -197,8 +191,7 @@ pub(crate) fn resolve_lfs_anchor(
         };
         return AnchorResolved {
             anchor_id: anchor_id.into(),
-            anchor_sha: r.anchor_sha.clone(),
-        stored_hash: r.stored_hash.clone(),
+            stored_hash: r.stored_hash.clone(),
             anchored,
             current: Some(AnchorLocation {
                 path: PathBuf::from(&tracked.path),
@@ -261,8 +254,7 @@ pub(crate) fn resolve_lfs_anchor(
         };
         return AnchorResolved {
             anchor_id: anchor_id.into(),
-            anchor_sha: r.anchor_sha.clone(),
-        stored_hash: r.stored_hash.clone(),
+            stored_hash: r.stored_hash.clone(),
             anchored,
             current: Some(AnchorLocation {
                 path: PathBuf::from(&tracked.path),
@@ -326,7 +318,6 @@ pub(crate) fn resolve_lfs_anchor(
     };
     AnchorResolved {
         anchor_id: anchor_id.into(),
-        anchor_sha: r.anchor_sha.clone(),
         stored_hash: r.stored_hash.clone(),
         anchored,
         current: Some(AnchorLocation {
@@ -355,7 +346,6 @@ fn lfs_terminal(
 ) -> AnchorResolved {
     AnchorResolved {
         anchor_id: anchor_id.into(),
-        anchor_sha: r.anchor_sha.clone(),
         stored_hash: r.stored_hash.clone(),
         anchored,
         current: None,

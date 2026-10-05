@@ -23,8 +23,7 @@
 //!    index once for an unmerged span entry (`is_unmerged_in_index`).
 //! 3. **Whole-file session snapshot** — 1 load: the reconcile resolution
 //!    of the whole-file anchor probes the index in `index_entry_for` +
-//!    `is_gitlink_path` (the file-backed span model records no blob OID,
-//!    so the whole-file Fresh fast path can never fire). Since card
+//!    `is_gitlink_path`. Since card
 //!    main-300's whole-file follow-up those probes read the resolver
 //!    session's shared snapshot (`ConcurrentSession::index_entries`),
 //!    materializing it once per resolution instead of once per probe.

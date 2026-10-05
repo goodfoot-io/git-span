@@ -21,20 +21,16 @@ fn project_anchor(
     source: Option<DriftSource>,
     layer_sources: Vec<DriftSource>,
 ) -> AnchorResolved {
-    // `Deleted` anchors always carry `source: None` (deletion is not
-    // attributed to a layer the way `Changed` drift is — see
-    // `resolve_anchor_inner`'s Deleted arms), so the HEAD-only gate below
-    // would otherwise drop every orphaning/rename locus a Deleted anchor
-    // carries. Admit `Deleted` alongside the `Head`-sourced `Changed` case.
-    let locus = if matches!(source, Some(DriftSource::Head)) || obs.status == AnchorStatus::Deleted
-    {
+    // Only a `Deleted` anchor carries a locus (the commit that removed or
+    // renamed its path). A view in which the anchor is not `Deleted` — e.g.
+    // the worktree restored the path — drops it.
+    let locus = if obs.status == AnchorStatus::Deleted {
         core.locus.clone()
     } else {
         None
     };
     AnchorResolved {
         anchor_id: core.anchor_id.clone(),
-        anchor_sha: core.anchor_sha.clone(),
         stored_hash: core.stored_hash.clone(),
         anchored: core.anchored.clone(),
         current: obs.current.clone(),

@@ -549,29 +549,19 @@ fn resolve_loaded_span_with_state(
     })
 }
 
-/// Populate `AnchorResolved.locus` for anchors whose drift is attributed to
-/// the HEAD layer or whose status is `Deleted`. For all other states the
-/// per-layer label (worktree / index) suffices and no walk is needed.
+/// Populate `AnchorResolved.locus` for `Deleted` anchors: the walk names the
+/// commit that removed or renamed the anchored path. Every other status
+/// carries no locus; the per-layer label (worktree / index / HEAD) suffices.
 pub(crate) fn populate_drift_locus(
     repo: &gix::Repository,
     resolved: &mut AnchorResolved,
     concurrent: &ConcurrentSession,
 ) {
-    use crate::types::DriftSource;
-    match resolved.status {
-        AnchorStatus::Changed if resolved.source == Some(DriftSource::Head) => {
-            if let Ok(locus) = super::attribution::drift_locus(repo, resolved, concurrent) {
-                resolved.locus = locus;
-            }
-        }
-        AnchorStatus::Deleted if resolved.locus.is_none() => {
-            // Ask the walk to describe an orphaning commit when the anchor
-            // is reachable but the path is absent from HEAD.
-            if let Ok(Some(locus)) = super::attribution::drift_locus(repo, resolved, concurrent) {
-                resolved.locus = Some(locus);
-            }
-        }
-        _ => {}
+    if resolved.status == AnchorStatus::Deleted
+        && resolved.locus.is_none()
+        && let Ok(Some(locus)) = super::attribution::drift_locus(repo, resolved, concurrent)
+    {
+        resolved.locus = Some(locus);
     }
 }
 
@@ -952,16 +942,9 @@ pub(crate) fn capture_resolution_core(
         .collect();
     for (span_index, source_ordinal, result) in collected {
         let anchor_core = result?;
-        let definition_digest = DefinitionOrdinal::digest_definition(
-            &anchor_core.anchor_id,
-            &anchor_core.anchor_sha,
-            &anchor_core.anchored.path,
-            anchor_core.anchored.extent,
-        );
         let ordinal = DefinitionOrdinal {
             span_identity: span_metas[span_index].name.clone(),
             source_ordinal,
-            definition_digest,
         };
         spans[span_index].anchors.push((ordinal, anchor_core));
     }
@@ -1111,33 +1094,15 @@ fn drift_spans_inner(
     if enable_trace {
         state.concurrent.enable_trace();
     }
-    let mut can_skip_clean_head_ns: u128 = 0;
     {
         let _perf = crate::perf::span("resolver.resolve-drift-spans");
-        for (name, span) in span_pairs {
-            // When tracing is active we must resolve every span so every anchor
-            // gets a TraceRow. Skipping here would silently drop clean spans from
-            // the CSV and break the documented invariant `wc -l == anchors-total + 1`.
-            if !enable_trace {
-                let t = std::time::Instant::now();
-                let skip =
-                    can_skip_clean_head_pinned_span(repo, &mut state, &name, &span, options)?;
-                can_skip_clean_head_ns += t.elapsed().as_nanos();
-                if skip {
-                    state.concurrent.anchors_skipped_clean_head += span.anchors.len() as u64;
-                    continue;
-                }
-            }
+        for (_, span) in span_pairs {
             let resolved = resolve_loaded_span_with_state(repo, &mut state, span)?;
             if span_has_actionable_drift(&resolved) {
                 out.push(resolved);
             }
         }
     }
-    crate::perf::counter(
-        "resolver.can-skip-clean-head-us",
-        (can_skip_clean_head_ns / 1_000) as u64,
-    );
     crate::perf::counter(
         "session.relocation-candidate-reads",
         state
@@ -1167,14 +1132,6 @@ fn drift_spans_inner(
     crate::perf::counter(
         "session.index-snapshot-loads",
         state.concurrent.index_snapshot_loads.load(Ordering::Relaxed),
-    );
-    crate::perf::counter(
-        "session.drift-locus-hits",
-        state.concurrent.drift_locus_hits.load(Ordering::Relaxed),
-    );
-    crate::perf::counter(
-        "session.drift-locus-misses",
-        state.concurrent.drift_locus_misses.load(Ordering::Relaxed),
     );
     let filter_attr_hits = state.concurrent.filter_attr_hits.load(Ordering::Relaxed);
     let filter_attr_misses = state.concurrent.filter_attr_misses.load(Ordering::Relaxed);
@@ -1219,21 +1176,6 @@ fn drift_spans_inner(
     crate::perf::counter(
         "session.anchors-unavailable",
         state.concurrent.anchors_unavailable,
-    );
-    crate::perf::counter(
-        "session.anchors-skipped-clean-head",
-        state.concurrent.anchors_skipped_clean_head,
-    );
-    let anchors_fast_path_hits = state
-        .concurrent
-        .anchors_fast_path_hits
-        .load(Ordering::Relaxed);
-    crate::perf::counter("session.anchors-fast-path-hits", anchors_fast_path_hits);
-    crate::perf::counter(
-        "session.anchors-full-resolution",
-        anchors_total
-            .saturating_sub(anchors_fast_path_hits)
-            .saturating_sub(state.concurrent.anchors_skipped_clean_head),
     );
     // Category 3: per-anchor resolution distribution.
     {
@@ -1450,61 +1392,9 @@ fn spans_share_extent_overlap(a: &SpanResolved, b: &SpanResolved, paths: &[PathB
     false
 }
 
-fn can_skip_clean_head_pinned_span(
-    repo: &gix::Repository,
-    state: &mut EngineState,
-    name: &str,
-    span: &crate::types::Span,
-    options: EngineOptions,
-) -> Result<bool> {
-    // In the file-backed model, anchor_sha and blob are empty, so we
-    // cannot use the old commit-based fast-path. Always return false
-    // (full resolution) for correctness. A hash-based fast-path can be
-    // added as a future optimization.
-    let _ = (repo, state, name, span, options);
-    Ok(false)
-}
-
-/// Returns `true` when the workspace's enabled content layers agree
-/// with HEAD *for `path` specifically*, even if some other path in the
-/// workspace is dirty. The global `shared.clean_layers` is a
-/// fast-positive trivial-true shortcut so the genuinely-clean
-/// workspace skips the per-path HashMap probes; the same shortcut
-/// covers the "no content layers enabled" case.
-pub(crate) fn anchor_path_is_layer_clean(
-    local: &EngineLocal,
-    shared: &SharedEngineContext,
-    path: &str,
-) -> bool {
-    if shared.clean_layers || (!local.layers.index && !local.layers.worktree) {
-        return true;
-    }
-    if shared.conflicted_paths.contains(path) {
-        return false;
-    }
-    if local.layers.index
-        && shared
-            .index_diffs
-            .as_ref()
-            .is_some_and(|d| d.map.contains_key(path))
-    {
-        return false;
-    }
-    if local.layers.worktree
-        && shared
-            .worktree_diffs
-            .as_ref()
-            .is_some_and(|d| d.map.contains_key(path))
-    {
-        return false;
-    }
-    true
-}
-
 fn deleted_placeholder(anchor_id: &str) -> AnchorResolved {
     AnchorResolved {
         anchor_id: anchor_id.into(),
-        anchor_sha: String::new(),
         stored_hash: String::new(),
         anchored: AnchorLocation {
             path: PathBuf::new(),
@@ -1535,7 +1425,6 @@ mod tests {
                 .iter()
                 .map(|(path, extent)| AnchorResolved {
                     anchor_id: String::new(),
-                    anchor_sha: String::new(),
                     stored_hash: String::new(),
                     anchored: AnchorLocation {
                         path: PathBuf::from(path),
@@ -1795,189 +1684,6 @@ mod tests {
             2
         );
         assert_eq!(state.concurrent.filter_attr_hits.load(Ordering::Relaxed), 3);
-    }
-
-    fn state_for_predicate(
-        layers: LayerSet,
-        clean_layers: bool,
-        index_paths: &[&str],
-        worktree_paths: &[&str],
-        conflicted: &[&str],
-    ) -> EngineState {
-        use crate::resolver::layers::LayerDiffs;
-        let td = tempfile::tempdir().unwrap();
-        let dir = td.path();
-        for args in [
-            &["init", "--initial-branch=main"][..],
-            &["config", "user.email", "t@t"],
-            &["config", "user.name", "t"],
-            &["config", "commit.gpgsign", "false"],
-        ] {
-            let out = std::process::Command::new("git")
-                .current_dir(dir)
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(out.status.success());
-        }
-        std::fs::write(dir.join("seed"), "s\n").unwrap();
-        std::process::Command::new("git")
-            .current_dir(dir)
-            .args(["add", "-A"])
-            .output()
-            .unwrap();
-        let out = std::process::Command::new("git")
-            .current_dir(dir)
-            .args(["commit", "-m", "init"])
-            .output()
-            .unwrap();
-        assert!(out.status.success());
-        let repo = gix::open(dir).unwrap();
-        let mut state = EngineState::new(&repo, layers, true).unwrap();
-        state.shared.clean_layers = clean_layers;
-        let mut idx = LayerDiffs::empty();
-        for p in index_paths {
-            idx.map.insert(
-                (*p).to_string(),
-                crate::resolver::layers::diff::DiffEntry {
-                    new_path: (*p).to_string(),
-                    old_path: (*p).to_string(),
-                    hunks: vec![],
-                    new_blob: None,
-                    deleted: false,
-                },
-            );
-        }
-        state.shared.index_diffs = Some(idx);
-        let mut wt = LayerDiffs::empty();
-        for p in worktree_paths {
-            wt.map.insert(
-                (*p).to_string(),
-                crate::resolver::layers::diff::DiffEntry {
-                    new_path: (*p).to_string(),
-                    old_path: (*p).to_string(),
-                    hunks: vec![],
-                    new_blob: None,
-                    deleted: false,
-                },
-            );
-        }
-        state.shared.worktree_diffs = Some(wt);
-        for p in conflicted {
-            state.shared.conflicted_paths.insert((*p).to_string());
-        }
-        state
-    }
-
-    #[test]
-    fn anchor_path_predicate_clean_path() {
-        let layers = LayerSet {
-            index: true,
-            worktree: true,
-            staged_span: false,
-        };
-        let state = state_for_predicate(layers, false, &["other.rs"], &["wiki/x.md"], &[]);
-        assert!(anchor_path_is_layer_clean(
-            &state.local,
-            &state.shared,
-            "packages/anchor.rs"
-        ));
-    }
-
-    #[test]
-    fn anchor_path_predicate_index_dirty() {
-        let layers = LayerSet {
-            index: true,
-            worktree: true,
-            staged_span: false,
-        };
-        let state = state_for_predicate(layers, false, &["packages/anchor.rs"], &[], &[]);
-        assert!(!anchor_path_is_layer_clean(
-            &state.local,
-            &state.shared,
-            "packages/anchor.rs"
-        ));
-    }
-
-    #[test]
-    fn anchor_path_predicate_worktree_dirty() {
-        let layers = LayerSet {
-            index: true,
-            worktree: true,
-            staged_span: false,
-        };
-        let state = state_for_predicate(layers, false, &[], &["packages/anchor.rs"], &[]);
-        assert!(!anchor_path_is_layer_clean(
-            &state.local,
-            &state.shared,
-            "packages/anchor.rs"
-        ));
-    }
-
-    #[test]
-    fn anchor_path_predicate_conflicted() {
-        let layers = LayerSet {
-            index: true,
-            worktree: true,
-            staged_span: false,
-        };
-        let state = state_for_predicate(layers, false, &[], &[], &["packages/anchor.rs"]);
-        assert!(!anchor_path_is_layer_clean(
-            &state.local,
-            &state.shared,
-            "packages/anchor.rs"
-        ));
-    }
-
-    #[test]
-    fn anchor_path_predicate_layers_disabled() {
-        let layers = LayerSet {
-            index: false,
-            worktree: false,
-            staged_span: false,
-        };
-        let state = state_for_predicate(layers, false, &[], &[], &["packages/anchor.rs"]);
-        // With no content layers enabled, every path is trivially clean.
-        assert!(anchor_path_is_layer_clean(
-            &state.local,
-            &state.shared,
-            "packages/anchor.rs"
-        ));
-    }
-
-    #[test]
-    fn anchor_path_predicate_index_dirty_but_index_layer_off() {
-        let layers = LayerSet {
-            index: false,
-            worktree: true,
-            staged_span: false,
-        };
-        let state = state_for_predicate(layers, false, &["packages/anchor.rs"], &[], &[]);
-        // Index layer disabled → index diffs don't disqualify.
-        assert!(anchor_path_is_layer_clean(
-            &state.local,
-            &state.shared,
-            "packages/anchor.rs"
-        ));
-    }
-
-    #[test]
-    fn anchor_path_predicate_clean_layers_shortcut() {
-        let layers = LayerSet {
-            index: true,
-            worktree: true,
-            staged_span: false,
-        };
-        // clean_layers=true should trivially-true every path regardless
-        // of conflicted_paths (which is logically empty under
-        // clean_layers=true; the shortcut is what makes the genuinely
-        // clean workspace skip the HashMap probes).
-        let state = state_for_predicate(layers, true, &[], &[], &[]);
-        assert!(anchor_path_is_layer_clean(
-            &state.local,
-            &state.shared,
-            "anything.rs"
-        ));
     }
 
     #[test]
