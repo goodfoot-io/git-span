@@ -418,7 +418,7 @@ specular/clearcoat sheen from the scene's HDRI and key light instead of a flat u
 `DoubleSide` lets the box's far faces show through its near ones, which is what sells it as a glass
 volume rather than a solid card. The `EdgesGeometry` outline is still needed on top for legible
 corners, since even a lit fill doesn't give a translucent volume crisp edges on its own.
-[`updateBoundingBox()`](../../packages/website/app/components/marketing/story/engine/mismatchBox.ts#L233-L243)
+[`updateBoundingBox()`](../../packages/website/app/components/marketing/story/engine/mismatchBox.ts#L237-L247)
 drives only opacity/visibility per frame: `BOUNDING_BOX_MAX_OPACITY` (0.45) for the fill,
 `BOUNDING_BOX_EDGE_OPACITY` (0.7) for the outline. The box is deliberately never touched by the
 [highlight heartbeat pulse](#highlight-heartbeat-and-the-blackbody-color-ramp) — it's a plain
@@ -480,11 +480,11 @@ The constructor builds two `EffectComposer`s
 `bloomComposer` renders the full scene through the same camera, with every mesh not on
 `BLOOM_LAYER` (`= 1`) temporarily swapped to a flat black `DARK_MATERIAL` (`fog: false`, so
 distant/fogged parts can't accidentally cross the bloom threshold on their own — see
-[`darkenNonBloomed`/`restoreMaterial`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L900-L913)),
+[`darkenNonBloomed`/`restoreMaterial`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L899-L912)),
 through `UnrealBloomPass(new THREE.Vector2(1, 1), 0.45, 0.35, 0.92)` (threshold/strength/radius);
 `composer` does the normal full-scene render and a custom `mixPass` `ShaderPass` adds the bloom
 texture back on top additively, followed by `OutputPass` for the final sRGB conversion.
-[`render()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L826-L847)
+[`render()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L825-L846)
 runs both passes every frame in sequence, with the [mismatch bounding
 box](#the-mismatch-bounding-box) handled specially: hide the box group outright (not merely
 darkened — see [the bloom-pass opacity bug](#the-mismatch-bounding-box) for why an opaque
@@ -522,7 +522,7 @@ builds one `HighlightRecord`
 ([`highlights.ts#L41-L51`](../../packages/website/app/components/marketing/story/engine/highlights.ts#L41-L51))
 per highlightable part: its mesh, its own unhighlighted albedo captured once (`baseMaterialColor`),
 and an ordered list of `HighlightStage`s
-([`highlights.ts#L26-L32`](../../packages/website/app/components/marketing/story/engine/highlights.ts#L32-L38))
+([`highlights.ts#L26-L32`](../../packages/website/app/components/marketing/story/engine/highlights.ts#L31-L37))
 — each a `HighlightKind` (`'blue' | 'ringRed' | 'red' | 'pistonRed' | 'orange' | 'finalGreen'`,
 [`highlights.ts#L24`](../../packages/website/app/components/marketing/story/engine/highlights.ts#L28-L28))
 paired with that kind's cold-state identity color. The gear (front-drive) carries
@@ -578,7 +578,7 @@ so scrubbing/wrapping never pops. This is layered on top of whatever intensity `
 already computed; it never changes *whether* a part is glowing, only how hot it glows while it is.
 `pulseCycle`/`pulseWeight` are advanced every tick of the [shared motion
 driver](#the-shared-motion-driver) (`motionTick`,
-[`EngineScene.ts#L998-L1080`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L1009-L1091)),
+[`EngineScene.ts#L998-L1080`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L1008-L1090)),
 entirely independent of scroll position — the heartbeat keeps beating at a constant real-time rate
 regardless of scrub direction or speed. It's pinned to 0 (no accumulation) under
 `prefers-reduced-motion` (`setReducedMotion`,
@@ -596,7 +596,7 @@ glow reads as a vivid hot color rather than washing out.
 The page's framing rule is that the engine must never touch the media frame's edges, at any beat,
 including fully exploded (when the model's footprint is largest). This is solved mathematically
 rather than by hand-tuning per-beat camera shots:
-[`fitCameraToFrame()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L856-L894)
+[`fitCameraToFrame()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L855-L893)
 computes the union bounding sphere of every part's current world position each frame
 (`sphereUnion`, a standard two-sphere merge,
 [`EngineScene.ts#L96-L111`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L110-L125)),
@@ -654,7 +654,7 @@ decayed back to rest — was removed outright in an earlier pass; there is no re
 anywhere in the current source.)
 
 **Drag-to-orbit** (all phases). Pointer events on the canvas
-([`EngineScene.ts#L948-L995`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L959-L1006)) —
+([`EngineScene.ts#L948-L995`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L958-L1005)) —
 `setPointerCapture` on down, `touch-action: pan-y` and `grab`/`grabbing` cursor styling set on the
 canvas element in the constructor — accumulate clamped azimuth/elevation offsets
 (`DRAG_SENSITIVITY`, `DRAG_AZIMUTH_LIMIT`, `DRAG_ELEVATION_TOTAL_LIMIT`,
@@ -673,7 +673,7 @@ Idle spin, drag snap-back, and the highlight heartbeat pulse are all genuinely t
 purely scroll-driven) motions, and used to risk competing `requestAnimationFrame` loops (a fourth,
 the scroll-impulse decay, existed before that motion was removed entirely — see above). They share
 one: `ensureMotionLoop()`/`motionTick()`
-([`EngineScene.ts#L998-L1080`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L1009-L1091)).
+([`EngineScene.ts#L998-L1080`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L1008-L1090)).
 Any of them starting (hero idle turning on, a drag ending, or `setReducedMotion(false)`) calls
 `ensureMotionLoop()`, which starts the loop if it isn't already running. Each tick advances all
 three (accumulating idle rotation if `heroIdle`, easing drag offsets toward zero if not dragging,
@@ -737,7 +737,7 @@ driver](#the-shared-motion-driver)) accumulates at `HERO_IDLE_RATE` (one turn pe
 ramping back to 1 over `RETURN_TO_NORMAL_START_T..END_T`, `t = 93-100`, so the idle turntable
 resumes right where the engine ends up fully assembled again) blends that accumulated offset into
 the camera azimuth
-([`fitCameraToFrame()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L1079-L1079))
+([`fitCameraToFrame()`](../../packages/website/app/components/marketing/story/engine/EngineScene.ts#L1078))
 so the first scroll movement smoothly absorbs whatever rotation had accumulated instead of snapping
 the camera back to the base azimuth — this is distinct from (and narrower than) the drag-to-orbit
 offset, which is *not* weighted by `idleWeight` and applies in every phase. `EngineStage.tsx` calls
