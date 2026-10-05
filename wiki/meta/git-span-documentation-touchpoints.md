@@ -31,7 +31,7 @@ templates instead.
 ## CLI sources
 
 - Clap commands and help: [cli/mod.rs](/packages/git-span/src/cli/mod.rs).
-- Bare-name pre-classification: [main.rs](/packages/git-span/src/main.rs#L49-L100).
+- Bare-name pre-classification: [main.rs](/packages/git-span/src/main.rs#L65-L116).
 - Reserved names: [validation.rs](/packages/git-span/src/validation.rs#L7-L28).
 - Command behavior and exits: `packages/git-span/src/cli/`, especially `commit.rs`,
   `drift_output.rs`, and `show.rs`.

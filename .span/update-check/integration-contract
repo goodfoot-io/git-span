@@ -1,9 +1,9 @@
 packages/git-span/src/cli/update_check.rs rk64:fedc72e928f39239
-packages/git-span/src/main.rs#L21-L39 rk64:fdfcd7d53468917f
+packages/git-span/src/main.rs#L37-L55 rk64:fdfcd7d53468917f
 packages/git-span/src/update_check/message.rs#L40-L40 rk64:96eee8be3fdbee69
 packages/git-span/src/update_check/mod.rs#L139-L190 rk64:77fe7373aa5264bf
-packages/git-span/src/update_check/mod.rs#L273-L283 rk64:1daaa3cde354c22c
-packages/git-span/src/update_check/mod.rs#L289-L314 rk64:fee7d3366ca7d28c
+packages/git-span/src/update_check/mod.rs#L282-L292 rk64:1daaa3cde354c22c
+packages/git-span/src/update_check/mod.rs#L298-L323 rk64:fee7d3366ca7d28c
 packages/git-span/src/update_check/store.rs#L12-L24 rk64:4d900497cbd71cde
 packages/git-span/src/update_check/suppress.rs#L92-L102 rk64:6819e60cd6a9cbfd
 packages/git-span/tests/cases/update_check.rs rk64:44e16a21d7d7e8df

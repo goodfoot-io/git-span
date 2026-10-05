@@ -1,7 +1,7 @@
 packages/agent-hooks/src/codex/apply-patch-plan.ts#L81-L81 rk64:01a7ce4754ccb24f
 packages/agent-hooks/src/codex/post-tool-use.ts#L205-L208 rk64:ad943375cb74ef57
 packages/agent-hooks/src/codex/post-tool-use.ts#L234-L236 rk64:76a079c9038818af
-packages/agent-hooks/src/codex/post-tool-use.ts#L247-L250 rk64:bc6900f99d0d35d3
+packages/agent-hooks/src/codex/post-tool-use.ts#L246-L249 rk64:bc6900f99d0d35d3
 packages/agent-hooks/src/codex/session-start.ts#L8-L24 rk64:f882af79fd78d9f4
 packages/agent-hooks/src/codex/static-plan.ts#L90-L93 rk64:bc2913f357f6c805
 packages/agent-hooks/src/codex/stop.ts#L16-L45 rk64:09451b82d9781846
