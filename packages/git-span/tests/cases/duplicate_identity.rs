@@ -32,7 +32,10 @@ fn span_text(repo: &TestRepo, name: &str) -> Result<String> {
 /// Hand-write a span declaration with the given body.
 fn write_span(repo: &TestRepo, name: &str, body: &str) -> Result<()> {
     let p = span_path(repo, name);
-    std::fs::create_dir_all(p.parent().unwrap())?;
+    std::fs::create_dir_all(
+        p.parent()
+            .expect("span path is joined under .span, so it has a parent"),
+    )?;
     std::fs::write(p, body)?;
     Ok(())
 }

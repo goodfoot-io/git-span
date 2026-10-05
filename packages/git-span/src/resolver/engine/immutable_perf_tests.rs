@@ -17,7 +17,9 @@ fn git(path: &std::path::Path, args: &[&str]) -> String {
 }
 
 fn fixture() -> (tempfile::TempDir, gix::Repository) {
-    // nextest runs each check in a separate process.
+    // SAFETY: every caller runs this before its test spawns any thread, and
+    // nextest runs each test in its own process, so no other thread can read or
+    // write the environment concurrently.
     unsafe {
         std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
         std::env::set_var("GIT_CONFIG_SYSTEM", "/dev/null");
@@ -109,6 +111,9 @@ fn immutable_perf_repeated_same_process_trace_and_error_invocations_reset_and_em
         Err(Error::SpanNotFound(_))
     ));
     assert_eq!(emitted(), [0; 6], "error return must emit exactly once");
+    // SAFETY: nextest runs each test in its own process; the preceding engine
+    // call has returned, so its rayon section has joined and the only other
+    // threads are idle pool workers that never touch the environment.
     unsafe {
         std::env::set_var("GIT_SPAN_CACHE", "0");
     }

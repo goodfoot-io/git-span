@@ -78,8 +78,10 @@ fn drifted_repo(tag: &str) -> (tempfile::TempDir, gix::Repository) {
     // `filter.lfs` from an installed git-lfs), which would otherwise make every
     // token persistence-ineligible by design — see `StateToken::persistence_
     // eligible` and `notes/investigation-question-log.md` Step 6. Both git and
-    // gix honor these env vars for config discovery. Safe under nextest's
-    // process-per-test isolation.
+    // gix honor these env vars for config discovery.
+    // SAFETY: every caller runs this before its test spawns any thread, and
+    // nextest runs each test in its own process, so no other thread can read or
+    // write the environment concurrently.
     unsafe {
         std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
         std::env::set_var("GIT_CONFIG_SYSTEM", "/dev/null");
@@ -116,7 +118,9 @@ fn drifted_repo(tag: &str) -> (tempfile::TempDir, gix::Repository) {
 fn enable_store() {
     // The SQLite store is unconditional; `GIT_SPAN_CACHE=0` is the only
     // disable switch. Clear it so this run engages the store.
-    // Safe under nextest's process-per-test isolation.
+    // SAFETY: nextest runs each test in its own process, and callers never run
+    // this concurrently with an engine call: any rayon workers an earlier call
+    // left behind are parked idle and never touch the environment.
     unsafe {
         std::env::remove_var("GIT_SPAN_CACHE");
     }
@@ -174,6 +178,9 @@ fn cache_disabled_bypasses_store() {
     clear_memo();
     let (_td, repo) = drifted_repo("disabled");
     // `GIT_SPAN_CACHE=0` is the single disable switch: it bypasses every tier.
+    // SAFETY: nextest runs each test in its own process, and nothing in this
+    // test has spawned a thread yet, so no other thread can read or write the
+    // environment concurrently.
     unsafe {
         std::env::set_var("GIT_SPAN_CACHE", "0");
     }
@@ -399,6 +406,9 @@ fn revalidate_discard_publishes_nothing_and_falls_back() {
 /// masked by directory fan-out. The tree is fully clean (worktree == index ==
 /// HEAD), so the withhold check must find nothing dirty.
 fn flat_repo(tag: &str, n: usize) -> (tempfile::TempDir, gix::Repository) {
+    // SAFETY: every caller runs this before its test spawns any thread, and
+    // nextest runs each test in its own process, so no other thread can read or
+    // write the environment concurrently.
     unsafe {
         std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
         std::env::set_var("GIT_CONFIG_SYSTEM", "/dev/null");
@@ -838,6 +848,9 @@ fn publish_live_at(store: &mut CacheStore, key: [u8; 32], head: &str) {
 fn broken_worktree_does_not_disable_reconciliation() {
     reset_test_state();
     clear_memo();
+    // SAFETY: nextest runs each test in its own process, and nothing in this
+    // test has spawned a thread yet, so no other thread can read or write the
+    // environment concurrently.
     unsafe {
         std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
         std::env::set_var("GIT_CONFIG_SYSTEM", "/dev/null");

@@ -79,14 +79,18 @@ fn assert_ambiguous_finding(human_stdout: &str, json: &Value, expected_candidate
             "the finding must surface candidate {candidate}; drift=\n{human_stdout}"
         );
     }
-    let findings = json["findings"].as_array().unwrap();
+    let findings = json["findings"]
+        .as_array()
+        .unwrap_or_else(|| panic!("drift JSON `findings` must be an array; json={json}"));
     assert!(!findings.is_empty(), "JSON must have findings");
     for f in findings {
         assert_ne!(
             f["status"]["code"], "MOVED",
             "non-unique relocation must not be MOVED; finding={f}"
         );
-        let succ = f["fuzzy_successors"].as_array().unwrap();
+        let succ = f["fuzzy_successors"]
+            .as_array()
+            .unwrap_or_else(|| panic!("finding `fuzzy_successors` must be an array; finding={f}"));
         let mut seen: Vec<&str> = succ
             .iter()
             .filter_map(|s| s["path"].as_str())

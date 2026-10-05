@@ -228,6 +228,10 @@ pub struct AnchorResolved {
 /// Locus emitted by the HEAD-history walk in `resolver::attribution`.
 /// Only meaningful when `AnchorResolved.source == Some(DriftSource::Head)`;
 /// the other layers carry their own per-layer label.
+#[expect(
+    clippy::enum_variant_names,
+    reason = "restructured in the follow-up DriftLocus commit"
+)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DriftLocus {
     /// First commit reachable from HEAD that mutated the anchored byte

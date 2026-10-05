@@ -57,7 +57,11 @@ fn counters(out: &Output, runs: usize) -> Vec<[u64; 6]> {
             stderr
                 .lines()
                 .filter_map(|line| line.strip_prefix(&prefix))
-                .map(|value| value.parse().unwrap())
+                .map(|value| {
+                    value.parse().unwrap_or_else(|e| {
+                        panic!("immutable.{label} counter `{value}` is not a u64: {e}")
+                    })
+                })
                 .collect()
         })
         .collect();

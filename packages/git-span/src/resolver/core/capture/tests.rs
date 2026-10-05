@@ -412,6 +412,9 @@ fn changed_filter_executable_changes_digest() {
 /// `filter.lfs.*`) so a configured filter's identity is exactly the one under
 /// test. Mirrors `resolver::incremental::tests::init_repo`.
 fn isolate_global_git_config() {
+    // SAFETY: every caller invokes this as the first statement of its test,
+    // before anything spawns a thread, and nextest runs each test in its own
+    // process, so nothing else reads or writes the environment concurrently.
     unsafe {
         std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
         std::env::set_var("GIT_CONFIG_SYSTEM", "/dev/null");
@@ -444,6 +447,9 @@ fn unrelated_env_variation_does_not_change_key_with_lfs() {
 
     let opts = EngineOptions::full();
 
+    // SAFETY: nextest runs each test in its own process, and no engine call
+    // has run yet in this test, so no other thread exists to read or write
+    // the environment concurrently.
     unsafe {
         std::env::set_var("PWD", "/tmp/worktree-a");
         std::env::set_var("GIT_SPAN_UNRELATED_ENV", "one");
@@ -451,6 +457,10 @@ fn unrelated_env_variation_does_not_change_key_with_lfs() {
     let t1 = capture_state_token(&reopen(&td), SPAN_ROOT, opts).expect("capture 1");
 
     // Vary only variables the LFS driver does not reference.
+    // SAFETY: nextest runs each test in its own process; the preceding
+    // `capture_state_token` has returned, so its rayon section has joined and
+    // the only other threads are idle pool workers that never touch the
+    // environment.
     unsafe {
         std::env::set_var("PWD", "/opt/somewhere-else");
         std::env::set_var("GIT_SPAN_UNRELATED_ENV", "two");
@@ -467,6 +477,10 @@ fn unrelated_env_variation_does_not_change_key_with_lfs() {
         t2.canonical_key_digest(),
         "unrelated env variation must not change the canonical key for LFS (warm hit holds)"
     );
+    // SAFETY: nextest runs each test in its own process; the preceding
+    // `capture_state_token` has returned, so its rayon section has joined and
+    // the only other threads are idle pool workers that never touch the
+    // environment.
     unsafe {
         std::env::remove_var("GIT_SPAN_UNRELATED_ENV");
     }
@@ -492,12 +506,19 @@ fn envsubst_style_custom_filter_invalidates_on_unreferenced_env_change() {
 
     let opts = EngineOptions::full();
 
+    // SAFETY: nextest runs each test in its own process, and no engine call
+    // has run yet in this test, so no other thread exists to read or write
+    // the environment concurrently.
     unsafe {
         std::env::set_var("GIT_SPAN_TEMPLATE_VALUE", "first");
     }
     let t1 = capture_state_token(&reopen(&td), SPAN_ROOT, opts).expect("capture 1");
 
     // Change a variable the command line never mentions but the filter reads.
+    // SAFETY: nextest runs each test in its own process; the preceding
+    // `capture_state_token` has returned, so its rayon section has joined and
+    // the only other threads are idle pool workers that never touch the
+    // environment.
     unsafe {
         std::env::set_var("GIT_SPAN_TEMPLATE_VALUE", "second");
     }
@@ -513,6 +534,10 @@ fn envsubst_style_custom_filter_invalidates_on_unreferenced_env_change() {
         t2.canonical_key_digest(),
         "changing an internally-read env var must invalidate the key (no drifted exact hit)"
     );
+    // SAFETY: nextest runs each test in its own process; the preceding
+    // `capture_state_token` has returned, so its rayon section has joined and
+    // the only other threads are idle pool workers that never touch the
+    // environment.
     unsafe {
         std::env::remove_var("GIT_SPAN_TEMPLATE_VALUE");
     }
@@ -542,6 +567,9 @@ fn custom_filter_env_variation_changes_key_whole_env() {
 
     let opts = EngineOptions::full();
 
+    // SAFETY: nextest runs each test in its own process, and no engine call
+    // has run yet in this test, so no other thread exists to read or write
+    // the environment concurrently.
     unsafe {
         std::env::set_var("GIT_SPAN_FILTER_KEY", "alpha");
         std::env::set_var("GIT_SPAN_UNREFERENCED", "one");
@@ -549,6 +577,10 @@ fn custom_filter_env_variation_changes_key_whole_env() {
     let t1 = capture_state_token(&reopen(&td), SPAN_ROOT, opts).expect("capture 1");
 
     // Changing the command-line-referenced variable moves the key.
+    // SAFETY: nextest runs each test in its own process; the preceding
+    // `capture_state_token` has returned, so its rayon section has joined and
+    // the only other threads are idle pool workers that never touch the
+    // environment.
     unsafe {
         std::env::set_var("GIT_SPAN_FILTER_KEY", "beta");
     }
@@ -567,6 +599,10 @@ fn custom_filter_env_variation_changes_key_whole_env() {
     // And, unlike the LFS driver, a variable the command does NOT reference also
     // moves the key: the whole-environment digest is fail-closed for a driver
     // whose internal `getenv` reads cannot be proven.
+    // SAFETY: nextest runs each test in its own process; the preceding
+    // `capture_state_token` has returned, so its rayon section has joined and
+    // the only other threads are idle pool workers that never touch the
+    // environment.
     unsafe {
         std::env::set_var("GIT_SPAN_UNREFERENCED", "two");
     }
@@ -576,6 +612,10 @@ fn custom_filter_env_variation_changes_key_whole_env() {
         t3.canonical_key_digest(),
         "a custom filter keys the whole environment: even an unreferenced var change must move the key (fail closed)"
     );
+    // SAFETY: nextest runs each test in its own process; the preceding
+    // `capture_state_token` has returned, so its rayon section has joined and
+    // the only other threads are idle pool workers that never touch the
+    // environment.
     unsafe {
         std::env::remove_var("GIT_SPAN_FILTER_KEY");
         std::env::remove_var("GIT_SPAN_UNREFERENCED");
@@ -621,6 +661,9 @@ fn cross_worktree_exact_hit_with_lfs_filter() {
     let opts = EngineOptions::full();
 
     // Prime the first worktree warm under one environment.
+    // SAFETY: nextest runs each test in its own process, and no engine call
+    // has run yet in this test, so no other thread exists to read or write
+    // the environment concurrently.
     unsafe {
         std::env::set_var("PWD", td.path().to_str().expect("utf8 path"));
         std::env::set_var("TERM_SESSION_ID", "session-a");
@@ -629,6 +672,10 @@ fn cross_worktree_exact_hit_with_lfs_filter() {
 
     // The sibling worktree runs under a different working directory / session,
     // exactly as a second CLI invocation would.
+    // SAFETY: nextest runs each test in its own process; the preceding
+    // `capture_state_token` has returned, so its rayon section has joined and
+    // the only other threads are idle pool workers that never touch the
+    // environment.
     unsafe {
         std::env::set_var("PWD", linked_path.to_str().expect("utf8 path"));
         std::env::set_var("TERM_SESSION_ID", "session-b");
@@ -645,6 +692,10 @@ fn cross_worktree_exact_hit_with_lfs_filter() {
         sibling.canonical_key_digest(),
         "sibling worktree at identical clean HEAD with a filter configured must be an exact hit"
     );
+    // SAFETY: nextest runs each test in its own process; the preceding
+    // `capture_state_token` has returned, so its rayon section has joined and
+    // the only other threads are idle pool workers that never touch the
+    // environment.
     unsafe {
         std::env::remove_var("TERM_SESSION_ID");
     }

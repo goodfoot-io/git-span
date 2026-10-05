@@ -10,7 +10,7 @@
 
 use crate::support;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use git_span::{list_span_names, read_span};
 use std::process::Command;
 use support::TestRepo;
@@ -21,7 +21,8 @@ use support::TestRepo;
 fn add_worktree(repo: &TestRepo, name: &str) -> Result<(tempfile::TempDir, std::path::PathBuf)> {
     let owner = tempfile::tempdir()?;
     let wt = owner.path().join("wt");
-    repo.run_git(["worktree", "add", "-b", name, wt.to_str().unwrap(), "HEAD"])?;
+    let wt_str = wt.to_str().context("worktree tempdir path is not UTF-8")?;
+    repo.run_git(["worktree", "add", "-b", name, wt_str, "HEAD"])?;
     Ok((owner, wt))
 }
 

@@ -16,9 +16,10 @@ use std::process::Command;
 fn write_span_file(dir: &Path, name: &str, content: &str) -> std::path::PathBuf {
     let p = dir.join(name);
     if let Some(parent) = p.parent() {
-        std::fs::create_dir_all(parent).unwrap();
+        std::fs::create_dir_all(parent)
+            .unwrap_or_else(|e| panic!("create span dir {}: {e}", parent.display()));
     }
-    std::fs::write(&p, content).unwrap();
+    std::fs::write(&p, content).unwrap_or_else(|e| panic!("write span file {}: {e}", p.display()));
     p
 }
 
@@ -167,7 +168,7 @@ fn run_driver(
             "7",
         ])
         .output()
-        .unwrap()
+        .expect("spawn git-span merge-driver")
 }
 
 #[test]

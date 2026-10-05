@@ -39,10 +39,9 @@ use std::process::Command;
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
+        .ancestors()
+        .nth(2)
+        .expect("CARGO_MANIFEST_DIR is <root>/packages/git-span, so it has a grandparent")
         .to_path_buf()
 }
 

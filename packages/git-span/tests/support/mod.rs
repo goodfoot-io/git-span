@@ -233,29 +233,6 @@ impl TestRepo {
         Ok(String::from_utf8(out.stdout)?.trim().to_string())
     }
 
-    /// `git for-each-ref --format=%(refname) <prefix>`.
-    #[allow(dead_code)]
-    pub fn list_refs(&self, prefix: &str) -> Result<Vec<String>> {
-        Ok(self
-            .git_stdout(["for-each-ref", "--format=%(refname)", prefix])?
-            .lines()
-            .filter(|l| !l.is_empty())
-            .map(str::to_string)
-            .collect())
-    }
-
-    #[allow(dead_code)]
-    pub fn ref_exists(&self, name: &str) -> bool {
-        self.git_stdout(["rev-parse", "--verify", "--quiet", name])
-            .is_ok()
-    }
-
-    #[allow(dead_code)]
-    pub fn add_remote(&self, name: &str, path: &Path) -> Result<()> {
-        self.run_git(["remote", "add", name, &path.to_string_lossy()])?;
-        Ok(())
-    }
-
     /// Run the `git-span` binary in this repo's directory.
     pub fn run_span<I, S>(&self, args: I) -> Result<Output>
     where
@@ -294,7 +271,6 @@ impl TestRepo {
     /// still carries an unfilled `<placeholder>` — a placeholder is a blank
     /// only the operator can fill, so a test that tries to execute one is
     /// asserting the wrong thing.
-    #[allow(dead_code)]
     pub fn run_printed_command(&self, stdout: &str, prefix: &str) -> Result<Output> {
         let cmd = stdout
             .split('`')
@@ -320,7 +296,6 @@ impl TestRepo {
     /// Run the `git-span` binary in this repo's directory with one extra
     /// environment variable set. Used to drive the `GIT_SPAN_CACHE=0`
     /// off-switch for cache vs cache-off parity assertions.
-    #[allow(dead_code)]
     pub fn run_span_with_env<I, S>(&self, args: I, key: &str, val: &str) -> Result<Output>
     where
         I: IntoIterator<Item = S>,
@@ -330,7 +305,6 @@ impl TestRepo {
     }
 
     /// Run the `git-span` binary with several environment variables set.
-    #[allow(dead_code)]
     pub fn run_span_with_envs<I, S>(&self, args: I, env: &[(&str, &str)]) -> Result<Output>
     where
         I: IntoIterator<Item = S>,
@@ -342,25 +316,6 @@ impl TestRepo {
         for (key, val) in env {
             cmd.env(key, val);
         }
-        for a in args {
-            cmd.arg(a.as_ref());
-        }
-        capture(&mut cmd)
-    }
-
-    /// Run the `git-span` binary from an explicit working directory.
-    #[allow(dead_code)]
-    pub fn run_span_from<I, S>(&self, args: I, cwd: &Path) -> Result<Output>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_git-span"));
-        strip_inherited_span_env(&mut cmd);
-        cmd.current_dir(cwd);
-        // Point git-span at this repo by setting GIT_DIR / GIT_WORK_TREE.
-        cmd.env("GIT_DIR", self.dir.path().join(".git"));
-        cmd.env("GIT_WORK_TREE", self.dir.path());
         for a in args {
             cmd.arg(a.as_ref());
         }
@@ -410,7 +365,6 @@ pub fn symlink_file(original: &Path, link: &Path) -> std::io::Result<()> {
 }
 
 /// Create a symlink whose target is a directory.
-#[allow(dead_code)]
 #[cfg(unix)]
 pub fn symlink_dir(original: &Path, link: &Path) -> std::io::Result<()> {
     std::os::unix::fs::symlink(original, link)
@@ -465,7 +419,6 @@ pub fn symlinks_supported() -> bool {
 
 /// Make `path` executable. POSIX-only; a no-op on Windows where execute
 /// permission is not a file-mode bit.
-#[allow(dead_code)]
 #[cfg(unix)]
 pub fn make_executable(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -482,7 +435,6 @@ pub fn make_executable(_path: &Path) -> std::io::Result<()> {
 
 /// Remove write permissions from `path` (Unix mode bits or Windows read-only
 /// attribute). Restore owner-write access with [`make_writable`] after the test.
-#[allow(dead_code)]
 pub fn make_readonly(path: &Path) -> std::io::Result<()> {
     let mut perms = std::fs::metadata(path)?.permissions();
     perms.set_readonly(true);
@@ -494,7 +446,6 @@ pub fn make_readonly(path: &Path) -> std::io::Result<()> {
 /// is OR'd into the existing mode rather than going through
 /// `Permissions::set_readonly(false)`, which would leave the file *world*
 /// writable.
-#[allow(dead_code)]
 #[cfg(unix)]
 pub fn make_writable(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -508,7 +459,11 @@ pub fn make_writable(path: &Path) -> std::io::Result<()> {
 #[cfg(windows)]
 pub fn make_writable(path: &Path) -> std::io::Result<()> {
     let mut perms = std::fs::metadata(path)?.permissions();
-    #[allow(clippy::permissions_set_readonly_false)]
+    #[expect(
+        clippy::permissions_set_readonly_false,
+        reason = "Windows has no mode bits behind the read-only attribute, so clearing it \
+                  grants nothing beyond owner write; the lint's world-writable hazard is Unix-only"
+    )]
     perms.set_readonly(false);
     std::fs::set_permissions(path, perms)
 }
@@ -518,7 +473,6 @@ pub fn make_writable(path: &Path) -> std::io::Result<()> {
 /// scans which encounter an unreadable candidate skip it instead of aborting.
 /// Restore permissions with [`make_writable`] before the fixture is torn down
 /// so the tempdir can be removed.
-#[allow(dead_code)]
 #[cfg(unix)]
 pub fn make_unreadable(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -535,7 +489,6 @@ pub fn make_unreadable(_path: &Path) -> std::io::Result<()> {
 
 /// The signal that terminated `status`, if any. Always `None` on Windows,
 /// where processes are not signal-terminated.
-#[allow(dead_code)]
 #[cfg(unix)]
 pub fn terminating_signal(status: &std::process::ExitStatus) -> Option<i32> {
     use std::os::unix::process::ExitStatusExt;
@@ -543,24 +496,8 @@ pub fn terminating_signal(status: &std::process::ExitStatus) -> Option<i32> {
 }
 
 /// The signal that terminated `status`. Always `None` on Windows.
-#[allow(dead_code)]
 #[cfg(windows)]
 pub fn terminating_signal(_status: &std::process::ExitStatus) -> Option<i32> {
-    None
-}
-
-/// The POSIX permission bits (`mode & 0o777`) of `path`, or `None` on
-/// platforms with no POSIX mode (Windows).
-#[allow(dead_code)]
-#[cfg(unix)]
-pub fn mode(path: &Path) -> Option<u32> {
-    use std::os::unix::fs::MetadataExt;
-    std::fs::metadata(path).ok().map(|m| m.mode() & 0o777)
-}
-
-/// The POSIX permission bits of `path`. Always `None` on Windows.
-#[cfg(windows)]
-pub fn mode(_path: &Path) -> Option<u32> {
     None
 }
 
@@ -632,28 +569,4 @@ pub fn create_and_commit_span(
         String::from_utf8_lossy(&out.stderr)
     );
     Ok(())
-}
-
-/// Bare upstream repo, for `fetch`/`push` round-trips.
-#[allow(dead_code)]
-pub struct BareRepo {
-    pub dir: tempfile::TempDir,
-}
-
-#[allow(dead_code)]
-impl BareRepo {
-    pub fn new() -> Result<Self> {
-        let dir = tempfile::tempdir()?;
-        let out = capture(Command::new("git").args(["init", "--bare"]).arg(dir.path()))?;
-        anyhow::ensure!(
-            out.status.success(),
-            "git init --bare failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        Ok(Self { dir })
-    }
-
-    pub fn path(&self) -> &Path {
-        self.dir.path()
-    }
 }

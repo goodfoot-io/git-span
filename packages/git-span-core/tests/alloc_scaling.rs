@@ -18,18 +18,31 @@ static ALLOCS: AtomicUsize = AtomicUsize::new(0);
 
 struct Counting;
 
+// SAFETY: every method forwards its arguments unchanged to `System`, which
+// upholds the `GlobalAlloc` contract; the only extra work is a relaxed atomic
+// counter bump, which neither allocates (no re-entrancy into the allocator)
+// nor unwinds. Blocks and layouts therefore pair exactly as `System` expects.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         ALLOCS.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: the caller of `alloc` guarantees `layout` has non-zero size;
+        // that precondition is passed through to `System.alloc` untouched.
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: `ptr` was returned by this allocator with `layout`, and every
+        // block this allocator hands out comes from `System` (alloc/realloc
+        // forward there), so `ptr`/`layout` are a valid `System` pair.
         unsafe { System.dealloc(ptr, layout) }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         ALLOCS.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: the caller guarantees `ptr` is a live block from this
+        // allocator (hence from `System`) allocated with `layout`, and that
+        // `new_size` is non-zero and does not overflow `isize` when rounded to
+        // `layout.align()`; all forwarded unchanged to `System.realloc`.
         unsafe { System.realloc(ptr, layout, new_size) }
     }
 }

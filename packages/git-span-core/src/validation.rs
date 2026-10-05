@@ -109,12 +109,11 @@ pub fn validate_span_name_shape(value: &str) -> Result<()> {
     // Split hierarchical `<a>/<b>/<c>/...` into one or more segments.
     let segments: Vec<&str> = value.split('/').collect();
     for segment in &segments {
-        if segment.is_empty() {
+        let Some(first) = segment.chars().next() else {
             return Err(bad(format!(
                 "`{value}` has an empty segment ({SPAN_NAME_RULE})"
             )));
-        }
-        let first = segment.chars().next().unwrap();
+        };
         if !first.is_ascii_lowercase() && !first.is_ascii_digit() {
             return Err(bad(format!(
                 "`{value}` segment `{segment}` must start with a-z or 0-9 ({SPAN_NAME_RULE})"

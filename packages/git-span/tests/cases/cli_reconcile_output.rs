@@ -615,7 +615,10 @@ fn reconcile_output_why_non_terminal_stdin_precedes_json_format() -> Result<()> 
 /// Hand-write a span carrying two records at one identity.
 fn write_duplicate_span(repo: &TestRepo, name: &str, body: &str) {
     let p = repo.path().join(".span").join(name);
-    std::fs::create_dir_all(p.parent().unwrap()).expect("create .span dir");
+    let parent = p
+        .parent()
+        .expect("span path is joined under .span, so it has a parent");
+    std::fs::create_dir_all(parent).expect("create .span dir");
     std::fs::write(p, body).expect("write span fixture");
 }
 

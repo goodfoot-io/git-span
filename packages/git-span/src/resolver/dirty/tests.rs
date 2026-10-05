@@ -84,6 +84,9 @@ fn write_span(workdir: &Path, name: &str, anchors: &[(&str, u32, u32)], why: &st
 fn init_repo(dir: &Path) {
     // Isolate from any global/system git config (e.g. a globally installed
     // git-lfs filter) so the clean-repo token stays persistence-eligible.
+    // SAFETY: every caller runs this before its test spawns any thread, and
+    // nextest runs each test in its own process, so no other thread can read or
+    // write the environment concurrently.
     unsafe {
         std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
         std::env::set_var("GIT_CONFIG_SYSTEM", "/dev/null");
@@ -97,6 +100,9 @@ fn init_repo(dir: &Path) {
 fn enable_store() {
     // The SQLite store is unconditional; `GIT_SPAN_CACHE=0` is the only
     // disable switch. Clear it so this run engages the store.
+    // SAFETY: nextest runs each test in its own process, and callers never run
+    // this concurrently with an engine call: any rayon workers an earlier call
+    // left behind are parked idle and never touch the environment.
     unsafe {
         std::env::remove_var("GIT_SPAN_CACHE");
     }

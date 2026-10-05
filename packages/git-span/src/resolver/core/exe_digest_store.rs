@@ -367,6 +367,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let blocker = dir.path().join("not-a-directory");
         std::fs::write(&blocker, b"x").expect("write blocker file");
+        // SAFETY: nextest runs each test in its own process, and this test never
+        // spawns a thread, so nothing reads or writes the environment concurrently.
         unsafe {
             std::env::set_var(
                 "GIT_SPAN_EXE_DIGEST_DB",
@@ -389,12 +391,16 @@ mod tests {
         let explicit = explicit_dir.path().join("explicit.db");
         let cache_home_dir = tempfile::tempdir().expect("tempdir");
 
+        // SAFETY: nextest runs each test in its own process, and this test never
+        // spawns a thread, so nothing reads or writes the environment concurrently.
         unsafe {
             std::env::set_var("GIT_SPAN_EXE_DIGEST_DB", &explicit);
             std::env::set_var("GIT_SPAN_CACHE_HOME", cache_home_dir.path());
         }
         assert_eq!(db_path().as_deref(), Some(explicit.as_path()));
 
+        // SAFETY: nextest runs each test in its own process, and this test never
+        // spawns a thread, so nothing reads or writes the environment concurrently.
         unsafe {
             std::env::remove_var("GIT_SPAN_EXE_DIGEST_DB");
         }
@@ -403,6 +409,8 @@ mod tests {
             Some(cache_home_dir.path().join(DB_BASENAME)).as_deref()
         );
 
+        // SAFETY: nextest runs each test in its own process, and this test never
+        // spawns a thread, so nothing reads or writes the environment concurrently.
         unsafe {
             std::env::remove_var("GIT_SPAN_CACHE_HOME");
         }
@@ -424,6 +432,8 @@ mod tests {
         reset_shared_store();
 
         let dir = tempfile::tempdir().expect("tempdir");
+        // SAFETY: nextest runs each test in its own process, and this test never
+        // spawns a thread, so nothing reads or writes the environment concurrently.
         unsafe {
             std::env::set_var("GIT_SPAN_EXE_DIGEST_DB", dir.path().join(DB_BASENAME));
         }

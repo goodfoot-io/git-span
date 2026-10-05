@@ -206,9 +206,10 @@ fn sweep_group(c: &mut Criterion, label: &str, with_commit_graph: bool) {
     // process. One switch disables the one cache:
     //   GIT_SPAN_CACHE=0  — the single "disable all caching" control; bypasses
     //                       the SQLite store entirely (Phase 7 cutover).
-    // Safety: this bench is single-threaded (criterion runs one bench at a
-    // time) and this var is set once before any timing begins.
-    #[allow(deprecated)]
+    // SAFETY: criterion runs each bench group sequentially on the main thread
+    // and this write precedes the group's fixtures and timing; any rayon
+    // workers left by an earlier group's `drift_spans` calls are idle and
+    // never touch the environment, so nothing reads or writes it concurrently.
     unsafe {
         std::env::set_var("GIT_SPAN_CACHE", "0");
     }

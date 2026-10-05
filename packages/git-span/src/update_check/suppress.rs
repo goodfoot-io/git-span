@@ -121,6 +121,10 @@ mod tests {
     #[test]
     fn env_disable_var_suppresses_interactive_use() {
         let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY: nextest runs each test in its own process and this test
+        // spawns no thread, so nothing reads or writes the environment
+        // concurrently. (`ENV_LOCK` only serializes this module's env-mutating
+        // cases against each other; it is not what makes the mutation sound.)
         unsafe {
             std::env::set_var("GIT_SPAN_DISABLE_UPDATE_CHECK", "1");
         }
@@ -132,6 +136,10 @@ mod tests {
     #[test]
     fn non_tty_stdout_suppresses() {
         let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY: nextest runs each test in its own process and this test
+        // spawns no thread, so nothing reads or writes the environment
+        // concurrently. (`ENV_LOCK` only serializes this module's env-mutating
+        // cases against each other; it is not what makes the mutation sound.)
         unsafe {
             std::env::remove_var("GIT_SPAN_DISABLE_UPDATE_CHECK");
         }
@@ -143,6 +151,10 @@ mod tests {
     #[test]
     fn list_porcelain_is_machine_output() {
         let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY: nextest runs each test in its own process and this test
+        // spawns no thread, so nothing reads or writes the environment
+        // concurrently. (`ENV_LOCK` only serializes this module's env-mutating
+        // cases against each other; it is not what makes the mutation sound.)
         unsafe {
             std::env::remove_var("GIT_SPAN_DISABLE_UPDATE_CHECK");
         }
@@ -237,6 +249,10 @@ mod tests {
     #[test]
     fn human_formats_are_not_machine_output() {
         let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY: nextest runs each test in its own process and this test
+        // spawns no thread, so nothing reads or writes the environment
+        // concurrently. (`ENV_LOCK` only serializes this module's env-mutating
+        // cases against each other; it is not what makes the mutation sound.)
         unsafe {
             std::env::remove_var("GIT_SPAN_DISABLE_UPDATE_CHECK");
         }
@@ -273,6 +289,10 @@ mod tests {
     #[test]
     fn interactive_happy_path_is_not_suppressed() {
         let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY: nextest runs each test in its own process and this test
+        // spawns no thread, so nothing reads or writes the environment
+        // concurrently. (`ENV_LOCK` only serializes this module's env-mutating
+        // cases against each other; it is not what makes the mutation sound.)
         unsafe {
             std::env::remove_var("GIT_SPAN_DISABLE_UPDATE_CHECK");
         }

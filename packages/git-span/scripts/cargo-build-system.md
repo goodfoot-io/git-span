@@ -108,7 +108,12 @@ on disk even when nobody was watching.
 Within each group every invocation uses identical `RUSTFLAGS`, so cargo never
 rebuilds dependencies just because flags changed (the "fingerprint thrash"
 problem). The `check` group sets `RUSTFLAGS="-W unused -W dead-code"` for both
-`check` and `clippy`; the `build` group sets no extra flags. The two groups are
+`check` and `clippy`, and both pass `--all-targets` so tests, benches, and
+helper binaries are type-checked and linted alongside the library (each
+crate's `clippy.toml` sets `allow-unwrap-in-tests` so the `[lints.clippy]`
+`unwrap_used` warning applies to non-test code only, and
+`avoid-breaking-exported-api = false` so `pub` items are linted like private
+ones); the `build` group sets no extra flags. The two groups are
 isolated directories, so the flag difference between them costs nothing.
 
 Locally the check group has a single command: `yarn typecheck` runs the exact

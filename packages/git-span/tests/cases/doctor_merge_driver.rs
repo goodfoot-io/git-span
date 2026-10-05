@@ -8,7 +8,7 @@
 
 use crate::support;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use support::TestRepo;
 
 /// Run `doctor` with an isolated `HOME` and system config disabled, so the
@@ -17,7 +17,11 @@ use support::TestRepo;
 /// assertions cannot be polluted.
 fn doctor_isolated(repo: &TestRepo) -> Result<std::process::Output> {
     let home = tempfile::tempdir()?;
-    let home_str = home.path().to_str().unwrap().to_string();
+    let home_str = home
+        .path()
+        .to_str()
+        .context("temp HOME path is not UTF-8")?
+        .to_string();
     repo.run_span_with_envs(
         ["doctor"],
         &[("HOME", &home_str), ("GIT_CONFIG_NOSYSTEM", "1")],

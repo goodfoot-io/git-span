@@ -148,10 +148,8 @@ fn drift_survives_missing_index_when_objects_local() -> Result<()> {
 struct PartialClone {
     /// Kept alive so the clone's promisor remote stays readable.
     _origin: tempfile::TempDir,
-    origin_url: String,
     /// Kept alive so the clone directory outlives the fixture.
-    #[allow(dead_code)]
-    dir: tempfile::TempDir,
+    _dir: tempfile::TempDir,
     clone_dir: PathBuf,
 }
 
@@ -199,19 +197,13 @@ impl PartialClone {
         );
         Ok(Self {
             _origin: origin.dir,
-            origin_url,
-            dir,
+            _dir: dir,
             clone_dir,
         })
     }
 
     fn path(&self) -> &Path {
         &self.clone_dir
-    }
-
-    #[allow(dead_code)]
-    fn url(&self) -> &str {
-        &self.origin_url
     }
 }
 

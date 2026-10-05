@@ -16,3 +16,9 @@ serde = ["dep:serde"]
 [dependencies]
 thiserror = "2.0.9"
 serde = { version = "1.0.228", optional = true, features = ["derive", "rc"] }
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "warn"
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"

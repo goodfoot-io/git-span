@@ -243,9 +243,10 @@ fn bench_warm_no_cache(c: &mut Criterion) {
     // Prime filesystem and gix object store with a cold run (cache disabled).
     {
         clear_cache(&f.repo_path);
-        // SAFETY: bench process is single-threaded; no other threads read
-        // GIT_SPAN_CACHE concurrently.
-        #[allow(unused_unsafe)]
+        // SAFETY: criterion runs each bench function sequentially on the main
+        // thread, and any earlier bench's `drift_spans` calls have returned,
+        // so the only other threads (if any) are idle rayon workers that never
+        // touch the environment; nothing reads or writes it concurrently.
         unsafe {
             std::env::set_var("GIT_SPAN_CACHE", "0");
         }
@@ -261,7 +262,8 @@ fn bench_warm_no_cache(c: &mut Criterion) {
         });
     });
     g.finish();
-    #[allow(unused_unsafe)]
+    // SAFETY: as above — the measurement loop has finished, and no thread is
+    // running a `drift_spans` call that could read the environment.
     unsafe {
         std::env::remove_var("GIT_SPAN_CACHE");
     }

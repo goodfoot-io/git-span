@@ -4,8 +4,6 @@
 //! `resolve_span`, `drift_spans`, `ContentRef::read_normalized`, or the
 //! `git-span` CLI) against realistic fixture state.
 
-#![allow(clippy::too_many_lines)]
-
 use crate::support;
 
 use anyhow::Result;

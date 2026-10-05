@@ -873,6 +873,9 @@ mod tests {
     use std::process::{Command, Stdio};
 
     fn fixture() -> (tempfile::TempDir, gix::Repository) {
+        // SAFETY: every caller runs this before its test spawns any thread, and
+        // nextest runs each test in its own process, so no other thread can read or
+        // write the environment concurrently.
         unsafe {
             std::env::remove_var("GIT_SPAN_CACHE");
         }
@@ -1101,10 +1104,14 @@ mod tests {
     #[test]
     fn immutable_disabled_and_storage_failure_bypass() {
         let (_dir, repo) = fixture();
+        // SAFETY: nextest runs each test in its own process, and this test never
+        // spawns a thread, so nothing reads or writes the environment concurrently.
         unsafe {
             std::env::set_var("GIT_SPAN_CACHE", "0");
         }
         assert!(ImmutableMemo::open(&repo).is_none());
+        // SAFETY: nextest runs each test in its own process, and this test never
+        // spawns a thread, so nothing reads or writes the environment concurrently.
         unsafe {
             std::env::remove_var("GIT_SPAN_CACHE");
         }

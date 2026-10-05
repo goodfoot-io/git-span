@@ -5,8 +5,11 @@ use anyhow::{Context, Result};
 
 #[cfg(unix)]
 fn runtime_service_sockets() -> Result<Vec<std::path::PathBuf>> {
+    // SAFETY: geteuid(2) takes no arguments, touches no caller memory, and is
+    // specified by POSIX to always succeed, so it has no precondition.
+    let uid = unsafe { libc::geteuid() };
     let root = std::path::Path::new("/tmp")
-        .join(format!("git-span-{}", unsafe { libc::geteuid() }))
+        .join(format!("git-span-{uid}"))
         .join("context");
     let Ok(entries) = std::fs::read_dir(root) else {
         return Ok(Vec::new());

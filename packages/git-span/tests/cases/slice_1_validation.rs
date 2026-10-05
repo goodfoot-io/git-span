@@ -12,7 +12,7 @@ use std::process::Output;
 use support::TestRepo;
 
 fn span_exists(repo: &TestRepo, name: &str) -> bool {
-    git_span::list_span_names(&repo.gix_repo().unwrap())
+    git_span::list_span_names(&repo.gix_repo().expect("open fixture repo with gix"))
         .map(|names| names.contains(&name.to_string()))
         .unwrap_or(false)
 }

@@ -18,8 +18,6 @@
 //! child module may access an ancestor's private items) to tamper with stored
 //! rows and inject faults — exactly what a hostile-storage test must do.
 
-#![allow(clippy::items_after_statements)]
-
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Barrier, Mutex};

@@ -588,6 +588,9 @@ mod deleted_locus_walk_tests {
         // Isolate from any global/system git config, matching the
         // fixture-building convention used elsewhere in this crate (e.g.
         // `resolver::exact::tests::drifted_repo`).
+        // SAFETY: every caller runs this before its test spawns any thread, and
+        // nextest runs each test in its own process, so no other thread can read or
+        // write the environment concurrently.
         unsafe {
             std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
             std::env::set_var("GIT_CONFIG_SYSTEM", "/dev/null");

@@ -386,6 +386,10 @@ mod tests {
     #[test]
     fn no_home_disables() {
         let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY: nextest runs each test in its own process and this test
+        // spawns no thread, so nothing reads or writes the environment
+        // concurrently. (`ENV_LOCK` only serializes this module's env-mutating
+        // cases against each other; it is not what makes the mutation sound.)
         unsafe {
             std::env::remove_var("GIT_SPAN_UPDATE_CHECK_DB");
             std::env::remove_var("GIT_SPAN_CACHE_HOME");
@@ -407,6 +411,10 @@ mod tests {
         let explicit = explicit_dir.path().join("explicit.db");
         let cache_home_dir = tempfile::tempdir().unwrap();
 
+        // SAFETY: nextest runs each test in its own process and this test
+        // spawns no thread, so nothing reads or writes the environment
+        // concurrently. (`ENV_LOCK` only serializes this module's env-mutating
+        // cases against each other; it is not what makes the mutation sound.)
         unsafe {
             std::env::set_var("GIT_SPAN_UPDATE_CHECK_DB", &explicit);
             std::env::set_var("GIT_SPAN_CACHE_HOME", cache_home_dir.path());
@@ -414,6 +422,8 @@ mod tests {
         }
         assert_eq!(db_path().as_deref(), Some(explicit.as_path()));
 
+        // SAFETY: same as the first mutation in this test — single-threaded
+        // test in its own nextest process.
         unsafe {
             std::env::remove_var("GIT_SPAN_UPDATE_CHECK_DB");
         }
@@ -422,6 +432,8 @@ mod tests {
             Some(cache_home_dir.path().join(DB_BASENAME)).as_deref()
         );
 
+        // SAFETY: same as the first mutation in this test — single-threaded
+        // test in its own nextest process.
         unsafe {
             std::env::remove_var("GIT_SPAN_CACHE_HOME");
         }

@@ -7,10 +7,6 @@
 use crate::support;
 
 use anyhow::Result;
-#[allow(unused_imports)]
-use git_span::resolve_span;
-#[allow(unused_imports)]
-use git_span::types::{AnchorStatus, DriftSource, EngineOptions, LayerSet, Scope};
 use support::TestRepo;
 
 // ---------------------------------------------------------------------------
@@ -26,40 +22,6 @@ fn seed_span(repo: &TestRepo, span: &str, file: &str, start: u32, end: u32) -> R
     repo.span_stdout(["why", span, "seed"])?;
     repo.commit_all("seed span")?;
     Ok(())
-}
-
-/// Resolve the span and return the label for the first anchor via `drift` CLI.
-/// Returns `(drift_label, patch_label, show_label)`.
-#[allow(dead_code)]
-fn labels_for_first_anchor(repo: &TestRepo, span: &str) -> Result<(String, String, String)> {
-    let drift = repo.span_stdout(["drift", span, "--no-exit-code"])?;
-    let patch = repo.span_stdout(["drift", span, "--patch", "--no-exit-code"])?;
-    let show = repo.span_stdout([span])?;
-    Ok((drift, patch, show))
-}
-
-/// Extract the drift label token from drift output.
-/// The label appears after the anchor path, e.g. `file.txt — changed in the working tree`.
-#[allow(dead_code)]
-fn extract_label(output: &str) -> Option<&str> {
-    for line in output.lines() {
-        // Look for lines containing "—" (em-dash) which separates path from label.
-        if let Some(pos) = line.find(" — ") {
-            return Some(line[pos + " — ".len()..].trim());
-        }
-        // Also handle the machine-readable format or show format.
-        if let Some(pos) = line.find(": ") {
-            let rest = line[pos + 2..].trim();
-            // Check that it matches one of the known drift label prefixes.
-            if rest.starts_with("changed")
-                || rest.starts_with("deleted")
-                || rest.starts_with("orphaned")
-            {
-                return Some(rest);
-            }
-        }
-    }
-    None
 }
 
 // ---------------------------------------------------------------------------

@@ -137,3 +137,9 @@ path = "src/bin/bench-corpus-gen.rs"
 test = false
 bench = false
 required-features = ["bench-corpus"]
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "warn"
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
