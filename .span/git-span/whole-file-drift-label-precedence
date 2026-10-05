@@ -1,5 +1,5 @@
 packages/git-span/src/cli/drift_output.rs#L1956-L1980 rk64:49c97f3fc488ac19
-packages/git-span/src/resolver/engine/whole_file.rs#L846-L853 rk64:20e02a6b8d0b6777
+packages/git-span/src/resolver/engine/whole_file.rs#L855-L862 rk64:20e02a6b8d0b6777
 packages/git-span/tests/cases/dirty_differential.rs#L41-L51 rk64:12bec07c955f0c80
 packages/git-span/tests/cases/dirty_differential.rs#L556-L566 rk64:72b16395c0c841bf
 packages/git-span/tests/cases/interior_anchor_parity.rs#L4-L15 rk64:a06d0916299d69a8

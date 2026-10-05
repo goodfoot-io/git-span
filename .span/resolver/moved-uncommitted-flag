@@ -1,5 +1,5 @@
-packages/git-span/src/resolver/core/project.rs#L39-L70 rk64:c27a4aa009cb34dd
-packages/git-span/src/resolver/core/resolution.rs#L76-L85 rk64:3002685ffd193e4e
-packages/git-span/src/resolver/core/tests.rs#L522-L537 rk64:ae2e040d9f6aceb2
+packages/git-span/src/resolver/core/project.rs#L18-L49 rk64:c38bcd7ee670fd61
+packages/git-span/src/resolver/core/resolution.rs#L28-L37 rk64:404437888e0bc2cf
+packages/git-span/src/resolver/core/tests.rs#L523-L531 rk64:3cd52864fbe601b7
 
 The moved_uncommitted flag marks an observation whose Moved/Changed classification came from the worktree-blob fallback, carried from the engine through the layer-neutral capture and every projection so the store summary round-trips it — a warm cache hit renders the uncommitted marker exactly like the cold build.
