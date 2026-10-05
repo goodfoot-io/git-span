@@ -1,10 +1,10 @@
-//! Per-anchor layered resolution: HEAD walk + index/worktree hunk
-//! application + LFS short-circuit + slice comparison.
+//! Per-anchor layered resolution: HEAD location from the span file +
+//! index/worktree hunk application + LFS short-circuit + slice comparison.
 
 use super::super::core::resolution::{AnchorCore, LayerObservationCore};
 use super::super::layers::lfs::DeepestPosition;
 use super::super::layers::{read_worktree_normalized, resolve_lfs_anchor};
-use super::super::session::{ConcurrentSession, resolve_at_head_shared};
+use super::super::session::ConcurrentSession;
 use super::super::walker::{Tracked, apply_hunks_to_range};
 use super::super::worktree_move::{WorktreeMove, find_worktree_move};
 use super::whole_file::resolve_whole_file;
@@ -691,7 +691,6 @@ pub(crate) fn resolve_anchor_inner(
     ctx: AnchorCtx<'_>,
     local: &mut EngineLocal,
     cfg: &SpanConfig,
-    span_name: &str,
     anchor_id: &str,
     r: Anchor,
 ) -> Result<AnchorResolved> {
@@ -701,7 +700,7 @@ pub(crate) fn resolve_anchor_inner(
         concurrent,
     } = ctx;
     if matches!(r.extent, AnchorExtent::WholeFile) {
-        return resolve_whole_file(ctx, local, cfg, span_name, anchor_id, r);
+        return resolve_whole_file(ctx, local, cfg, anchor_id, r);
     }
     let (anchored_start, anchored_end) = match r.extent {
         AnchorExtent::LineRange { start, end } => (start, end),
@@ -724,25 +723,6 @@ pub(crate) fn resolve_anchor_inner(
         extent: r.extent,
         blob: anchored_blob,
     };
-    if !r.anchor_sha.is_empty()
-        && !concurrent.commit_reachable(repo, &shared.head_sha, &r.anchor_sha)?
-    {
-        return Ok(AnchorResolved {
-            anchor_id: anchor_id.into(),
-            anchor_sha: r.anchor_sha,
-            stored_hash: r.stored_hash,
-            anchored,
-            current: None,
-            status: AnchorStatus::Deleted,
-            content_equivalent: false,
-            source: None,
-            layer_sources: vec![],
-            locus: None,
-            fuzzy_successors: vec![],
-            moved_uncommitted: false,
-        });
-    }
-
     // `clean_head_fast_path` succeeds only when `head_blob == r.blob`; a
     // file-backed anchor's `r.blob` is always empty and `head_blob_at`
     // never resolves to the empty string, so the comparison always trips
@@ -762,7 +742,16 @@ pub(crate) fn resolve_anchor_inner(
         }
     }
 
-    let head_loc = resolve_at_head_shared(repo, shared, concurrent, &r, span_name, anchor_id)?;
+    // The span file at HEAD records the anchor's path and range directly, so
+    // HEAD's location for it is exactly that, provided HEAD has a blob at the
+    // path (memoized: `anchored_blob` above already probed it).
+    let head_loc = concurrent
+        .head_blob_at(repo, &shared.head_sha, &r.path)?
+        .map(|_| Tracked {
+            path: r.path.clone(),
+            start: anchored_start,
+            end: anchored_end,
+        });
 
     let head_path: Option<String> = head_loc.as_ref().map(|t| t.path.clone());
     if local.layers.index || local.layers.worktree {
@@ -1903,8 +1892,8 @@ fn fresh_observation(anchored: &AnchorLocation) -> LayerObservationCore {
 /// [`resolve_anchor_inner`] classification (including `resolve_whole_file`
 /// and every Deleted / MergeConflict / LFS / ContentUnavailable /
 /// ResolvedPendingCommit early-return arm) at three progressively deeper
-/// layer configs against the SAME [`EngineState`]. The reverse walk, blob
-/// memos, and line indexes are shared across the three depths, so this is
+/// layer configs against the SAME [`EngineState`]. The blob memos and line
+/// indexes are shared across the three depths, so this is
 /// one pass in every sense that matters — no second top-level resolution.
 ///
 /// A layer's observation shows drift exactly when the full run attributes
@@ -1920,7 +1909,6 @@ pub(crate) fn resolve_anchor_captured(
     ctx: AnchorCtx<'_>,
     local: &mut EngineLocal,
     cfg: &SpanConfig,
-    span_name: &str,
     anchor_id: &str,
     r: Anchor,
 ) -> Result<AnchorCore> {
@@ -1937,7 +1925,7 @@ pub(crate) fn resolve_anchor_captured(
     // the ONLY heavy classification we run, since index/worktree read the same
     // bytes and reclassifying them reproduces this result verbatim.
     local.layers = CAPTURE_HEAD_LAYERS;
-    let mut head_run = resolve_anchor_inner(ctx, local, cfg, span_name, anchor_id, r.clone())?;
+    let mut head_run = resolve_anchor_inner(ctx, local, cfg, anchor_id, r.clone())?;
     // The resolver leaves `locus` unset; the live path fills it afterwards in
     // `resolve_loaded_span_with_state`. Do the same here so a HEAD-sourced
     // committed projection carries the same locus as a direct committed run.
@@ -1980,14 +1968,14 @@ pub(crate) fn resolve_anchor_captured(
     // two heavy passes, not three; only simultaneous index+worktree drift
     // costs all three.
     local.layers = CAPTURE_FULL_LAYERS;
-    let full_run = resolve_anchor_inner(ctx, local, cfg, span_name, anchor_id, r.clone())?;
+    let full_run = resolve_anchor_inner(ctx, local, cfg, anchor_id, r.clone())?;
 
     let index_drifts = full_run.layer_sources.contains(&DriftSource::Index);
     let worktree_drifts = full_run.layer_sources.contains(&DriftSource::Worktree);
 
     let index = if index_drifts {
         local.layers = CAPTURE_INDEX_LAYERS;
-        let index_run = resolve_anchor_inner(ctx, local, cfg, span_name, anchor_id, r)?;
+        let index_run = resolve_anchor_inner(ctx, local, cfg, anchor_id, r)?;
         observation_from(&index_run)
     } else {
         fresh_observation(&anchored)

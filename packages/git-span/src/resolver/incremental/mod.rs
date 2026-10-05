@@ -39,8 +39,8 @@
 //!
 //! For an unaffected span S at HEAD (a descendant of the ancestor A):
 //! * **Committed part** — none of S's anchored paths, and no intervening commit
-//!   on `A..HEAD`, touched S's blobs, so each anchor's history walk classifies
-//!   identically at HEAD and at A.
+//!   on `A..HEAD`, touched S's blobs, so each anchor classifies identically at HEAD and
+//!   at A.
 //! * **Worktree/index part** — S is unaffected only if none of its paths are
 //!   dirty *now* (step 3) and S was not widen-marked (so no anchor was non-
 //!   `Fresh` at the ancestor, i.e. no index/worktree layer had made it dirty

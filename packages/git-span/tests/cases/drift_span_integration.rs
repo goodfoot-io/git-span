@@ -1076,10 +1076,6 @@ fn lfs_line_range_unchanged_worktree_reports_fresh() -> Result<()> {
         repo.run_git(["add", ".span"])?;
         repo.run_git(["commit", "-m", "span commit"])?;
     }
-    // Write a commit-graph so the reverse-indexed walk can use Bloom
-    // filters. Must be done after the span commit so that commit is
-    // included.
-    repo.write_commit_graph()?;
     // No edits to data.tsv. Drift must report no drift.
     let out = repo.run_span(["drift", "pn", "--format=porcelain"])?;
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -1384,5 +1380,53 @@ fn drift_present_json_emits_envelope() -> Result<()> {
         "json output must contain schema_version"
     );
     assert_eq!(out.status.code(), Some(1), "exit 1 when drift present");
+    Ok(())
+}
+
+/// The resolver reads no commit-graph: an ordinary repo (no gc, no opt-in
+/// `core.commitGraph`) has none, and `drift_spans` must still resolve without
+/// surfacing a plumbing instruction as a fatal error.
+#[test]
+fn drift_spans_succeeds_without_commit_graph() -> Result<()> {
+    let repo = TestRepo::new()?;
+    repo.write_file("f.txt", "content\n")?;
+    repo.commit_all("init")?;
+
+    // File-backed model: `add`/`why` write the worktree span file; commit it
+    // so the resolver has a HEAD-layer span.
+    repo.run_span(["add", "test/span", "f.txt#L1-L1"])?;
+    repo.run_span(["why", "test/span", "test"])?;
+    repo.commit_all("seed span")?;
+
+    let gix = repo.gix_repo()?;
+    assert!(
+        !repo.path().join(".git/objects/info/commit-graph").exists(),
+        "test precondition: no commit-graph file"
+    );
+
+    let resolved = drift_spans(
+        &gix,
+        ".span",
+        EngineOptions {
+            layers: LayerSet {
+                index: false,
+                worktree: false,
+                staged_span: false,
+            },
+            since: None,
+            ignore_unavailable: false,
+            needs_all_layers: false,
+            fuzzy_threshold: 0.95,
+        },
+    )
+    .expect("drift_spans must succeed without a commit-graph");
+    // The single committed span's anchor is fresh, so it is not reportable;
+    // the call simply returns without error.
+    assert!(
+        resolved
+            .iter()
+            .all(|m| m.anchors.iter().all(|a| a.status == AnchorStatus::Fresh)),
+        "anchor must resolve Fresh without a commit-graph"
+    );
     Ok(())
 }

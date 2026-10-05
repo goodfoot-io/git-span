@@ -1,24 +1,17 @@
 //! `ConcurrentSession` — engine-wide shared memo store for one `drift` run.
 //!
-//! The reverse-indexed HEAD walk (built by [`ConcurrentSession::build_reverse_walk`])
-//! runs once and produces per-anchor commit deltas. Each anchor's classifier
-//! consumes its slice of the walk output instead of running its own per-anchor
-//! walk. The session is constructed once at the top of the `drift` CLI path and
+//! The session is constructed once at the top of the `drift` CLI path and
 //! threaded through `resolve_anchor_inner`. There is no caching across runs —
 //! the session lives only for the duration of one engine call and is dropped
 //! when it returns.
 
 use crate::Result;
 use crate::git;
-use crate::perf;
-use crate::resolver::bloom::CommitGraphBloom;
-use crate::resolver::engine::SharedEngineContext;
 use crate::resolver::layers::{
     CustomFilters, is_custom_filter_configured, read_worktree_normalized,
 };
-use crate::resolver::timeline::{PathInterner, PathTimeline, PathTimelineKey, build_timeline};
-use crate::resolver::walker::{self, NS};
-use crate::types::{Anchor, CopyDetection, DriftLocus, DriftSource};
+use crate::resolver::walker;
+use crate::types::{DriftLocus, DriftSource};
 use git_span_core::LineIndex;
 use parking_lot::{Mutex, RwLock};
 use std::collections::{HashMap, HashSet};
@@ -74,11 +67,10 @@ impl CachedLineIndex {
     }
 }
 
-/// Nested `commit_sha → path → blob_oid` memo shape shared by
-/// [`ResolveSession::blob_oid_memo`] and the `blob_oid_at` helpers in
-/// `walker` and `timeline` — see `blob_oid_memo`'s doc comment for why the
-/// nesting (vs. a flat tuple-keyed map) matters.
-pub(crate) type BlobOidMemo = HashMap<String, HashMap<String, Option<String>>>;
+/// Nested `commit_sha → path → blob_oid` memo shape backing
+/// [`ConcurrentSession::blob_oid_memo`] — see that field's doc comment for
+/// why the nesting (vs. a flat tuple-keyed map) matters.
+type BlobOidMemo = HashMap<String, HashMap<String, Option<String>>>;
 
 /// Candidate-text memo shape backing
 /// [`ConcurrentSession::relocation_text_memo`]: `(path, layer)` → read result,
@@ -97,201 +89,19 @@ type RelocationTextMemo =
 /// [`ConcurrentSession::single_flight_cell`] for the lookup-or-insert helper.
 type SingleFlightMemo<V> = RwLock<HashMap<String, Arc<OnceLock<V>>>>;
 
-/// One per-commit slice of the shared walk: `(parent_sha, commit_sha,
-/// name_status_entries)`. Produced by the reverse-indexed walk once per
-/// commit that touches a tracked path. The hunk math
-/// (`timeline::build_timeline`) is still per-anchor — that's the work
-/// that genuinely depends on the anchor's path.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-pub(crate) struct CommitDelta {
-    pub(crate) parent: String,
-    pub(crate) commit: String,
-    pub(crate) entries: Vec<NS>,
-}
-
-/// The anchor commits every span in a batch is anchored against, collected
-/// in one pass so the single reverse-indexed walk knows where to stop.
-#[derive(Debug, Clone)]
-pub(crate) struct AnchorReverseIndex {
-    /// Union of all anchor_sha values — the walk's stop set.
-    /// A commit is "interesting" iff it touches a tracked path AND lies
-    /// between HEAD and some anchor_sha still being resolved.
-    pub(crate) anchor_shas: HashSet<gix::ObjectId>,
-}
-
-impl AnchorReverseIndex {
-    /// Build the reverse index from all spans' anchors in a single pass.
-    /// `spans` is the list of (span_name, span) pairs being resolved.
-    pub(crate) fn from_spans(spans: &[(String, crate::types::Span)]) -> Self {
-        let mut anchor_shas: HashSet<gix::ObjectId> = HashSet::new();
-
-        for (_, span) in spans {
-            for (_, anchor) in &span.anchors {
-                let sha = match gix::ObjectId::from_hex(anchor.anchor_sha.as_bytes()) {
-                    Ok(oid) => oid,
-                    Err(_) => continue, // skip malformed SHAs
-                };
-                anchor_shas.insert(sha);
-            }
-        }
-
-        Self { anchor_shas }
-    }
-}
-
-/// Output of the single reverse-indexed HEAD walk.
-///
-/// Produced by [`ResolveSession::build_reverse_walk`] and consumed by
-/// `resolve_at_head_shared` / `follow_path_to_head_shared`.
-pub(crate) struct ReverseWalkOutput {
-    /// HEAD oid at walk time.
-    pub(crate) head_sha: String,
-    /// Per-anchor commit deltas (oldest-first), keyed by `(span_name, anchor_id)`.
-    ///
-    /// Each vec contains only the commits that touch that anchor's path,
-    /// including commits where the path was renamed (the entries include
-    /// the `Renamed` NS variant so downstream consumers can follow the trail).
-    pub(crate) per_anchor_deltas: HashMap<(String, String), Vec<Arc<CommitDelta>>>,
-    /// The effective copy-detection breadth of this walk: the most
-    /// permissive `copy_detection` across all spans in the batch, passed
-    /// to every per-commit `name_status`. Consumers keying caches on the
-    /// walk's entry stream (`PathTimelineKey`) must use this value, not a
-    /// constant, so timelines built from walks of different breadth never
-    /// share an entry.
-    pub(crate) max_copy: CopyDetection,
-}
-
-/// Maps path bytes to the indexes of anchors currently tracking that path,
-/// and is mutated only when commits rename or copy a tracked path. Replaces
-/// the old "scan every active anchor for every commit" inner loop in
-/// [`ResolveSession::build_reverse_walk`].
-///
-/// Phase 0 of the three-phase plan: the previous walk had an anchor-quadratic
-/// `O(C * A)` bookkeeping loop. `PathIndex` reduces the per-commit cost to
-/// `O(P * B + E_c + matches)` (distinct active paths probed against the Bloom
-/// filter plus actual rename/copy fan-out work).
-pub(crate) struct PathIndex {
-    /// Path bytes -> indexes (into `per_anchor`) of anchors tracking that path.
-    by_path: HashMap<Arc<[u8]>, Vec<u32>>,
-    /// Distinct paths currently tracked by at least one active anchor. Used as
-    /// the Bloom probe set per commit. Maintained as a vector for cheap
-    /// iteration; `active_pos` is the parallel position map for `swap_remove`.
-    active_paths: Vec<Arc<[u8]>>,
-    active_pos: HashMap<Arc<[u8]>, usize>,
-    /// `path_of[i]` is the current tracked path for the anchor at `per_anchor[i]`.
-    path_of: Vec<Arc<[u8]>>,
-    /// Counter: number of rename/copy path updates applied. Reported via the
-    /// `resolver.build-walk.path-index-renames` perf span/counter.
-    pub(crate) rename_updates: u64,
-}
-
-impl PathIndex {
-    pub(crate) fn new(per_anchor: &[AnchorWalkState]) -> Self {
-        let mut by_path: HashMap<Arc<[u8]>, Vec<u32>> = HashMap::new();
-        let mut active_paths: Vec<Arc<[u8]>> = Vec::new();
-        let mut active_pos: HashMap<Arc<[u8]>, usize> = HashMap::new();
-        let mut path_of: Vec<Arc<[u8]>> = Vec::with_capacity(per_anchor.len());
-        for (i, state) in per_anchor.iter().enumerate() {
-            let key: Arc<[u8]> = state.current_path.clone();
-            let bucket = by_path.entry(key.clone()).or_default();
-            bucket.push(i as u32);
-            if !active_pos.contains_key(&key) {
-                active_pos.insert(key.clone(), active_paths.len());
-                active_paths.push(key.clone());
-            }
-            path_of.push(key);
-        }
-        Self {
-            by_path,
-            active_paths,
-            active_pos,
-            path_of,
-            rename_updates: 0,
-        }
-    }
-
-    pub(crate) fn active_paths(&self) -> &[Arc<[u8]>] {
-        &self.active_paths
-    }
-
-    pub(crate) fn anchors_for_path(&self, path: &[u8]) -> Option<&[u32]> {
-        self.by_path.get(path).map(|v| v.as_slice())
-    }
-
-    fn remove_path_if_empty(&mut self, path: &Arc<[u8]>) {
-        let still_present = self
-            .by_path
-            .get(path)
-            .map(|v| !v.is_empty())
-            .unwrap_or(false);
-        if still_present {
-            return;
-        }
-        self.by_path.remove(path);
-        if let Some(pos) = self.active_pos.remove(path) {
-            let last = self.active_paths.len() - 1;
-            self.active_paths.swap_remove(pos);
-            if pos != last {
-                let moved = self.active_paths[pos].clone();
-                self.active_pos.insert(moved, pos);
-            }
-        }
-    }
-
-    /// Move `anchor_idx` from its current tracked path to `new_path`. Called
-    /// when a commit renames or copies the tracked path. Maintains
-    /// `active_paths` via `swap_remove` so iteration order is unstable but
-    /// the set semantics are preserved.
-    pub(crate) fn rename(&mut self, anchor_idx: u32, new_path: Arc<[u8]>) {
-        let old_path = self.path_of[anchor_idx as usize].clone();
-        if old_path == new_path {
-            return;
-        }
-        self.rename_updates += 1;
-        if let Some(bucket) = self.by_path.get_mut(&old_path)
-            && let Some(pos) = bucket.iter().position(|&i| i == anchor_idx)
-        {
-            bucket.swap_remove(pos);
-        }
-        self.remove_path_if_empty(&old_path);
-
-        let bucket = self.by_path.entry(new_path.clone()).or_default();
-        bucket.push(anchor_idx);
-        if !self.active_pos.contains_key(&new_path) {
-            self.active_pos
-                .insert(new_path.clone(), self.active_paths.len());
-            self.active_paths.push(new_path.clone());
-        }
-        self.path_of[anchor_idx as usize] = new_path;
-    }
-
-    /// Drop an anchor entirely (used when its `anchor_sha` is observed in
-    /// the walk and the anchor should no longer accumulate deltas).
-    pub(crate) fn deactivate(&mut self, anchor_idx: u32) {
-        let path = self.path_of[anchor_idx as usize].clone();
-        if let Some(bucket) = self.by_path.get_mut(&path)
-            && let Some(pos) = bucket.iter().position(|&i| i == anchor_idx)
-        {
-            bucket.swap_remove(pos);
-        }
-        self.remove_path_if_empty(&path);
-    }
-}
-
 /// Engine-wide shared state: session-scoped caches and counters for one
 /// `drift` run.
 ///
 /// This is the interior-mutability memo store of the resolver's three-way
 /// state split (card main-162): the per-worker scratch and subprocess
 /// handles live on [`crate::resolver::engine::EngineLocal`], the read-only
-/// context (HEAD sha, layer diffs, the reverse-walk output) on
-/// [`SharedEngineContext`], and every grow-only memo cache plus its
+/// context (HEAD sha, layer diffs) on
+/// [`SharedEngineContext`](crate::resolver::engine::SharedEngineContext), and every grow-only memo cache plus its
 /// perf counters here.
 ///
 /// Staged-rollout step 2 (card main-162): the general-purpose memo caches
 /// (`blob_oid_memo`, `deleted_locus_memo`, `relocation_text_memo`,
-/// `history_blob_memo`, `history_fingerprint_memo`, `timelines`,
-/// `commit_reachability`, `filter_attrs`) are `RwLock<HashMap<K, V>>`,
+/// `history_blob_memo`, `history_fingerprint_memo`, `filter_attrs`) are `RwLock<HashMap<K, V>>`,
 /// and the counters they drive are `AtomicU64` — read-lock/check,
 /// drop-and-compute, write-lock/insert; every one of these is a pure
 /// function of `(immutable git state, key)` for the session's lifetime, so
@@ -312,7 +122,6 @@ impl PathIndex {
 /// - `line_index_cache`: `RwLock<HashMap<K, Arc<CachedLineIndex>>>` whose
 ///   values build their inner index behind an `OnceLock` (see
 ///   [`CachedLineIndex`]).
-/// - `timeline_paths`: `Mutex<PathInterner>` (atomic per-`intern` call).
 /// - `jaccard_corpus`: `Mutex<JaccardCorpus>` (id assignment is atomic under
 ///   one lock so two threads never mint two ids for the same line).
 /// - `first_parent_chain`: `Mutex<Option<Vec<ObjectId>>>`, extended entirely
@@ -325,12 +134,6 @@ impl PathIndex {
 /// only prepare the storage for sharing behind `Arc<ConcurrentSession>` once
 /// the rayon fork lands.
 pub(crate) struct ConcurrentSession {
-    /// Session-scoped memo for the changed-path Bloom filter handle. The
-    /// commit-graph file is constant for the life of a session, but
-    /// `build_reverse_walk` runs once per resolve batch — under chunked
-    /// parallel resolution that is many times per session. `None` = not yet
-    /// probed; `Some(None)` = probed, no commit-graph Bloom data available.
-    bloom_memo: Option<Option<CommitGraphBloom>>,
     /// Counter: drift-locus cache hits.
     pub(crate) drift_locus_hits: AtomicU64,
     /// Counter: drift-locus cache misses.
@@ -417,23 +220,6 @@ pub(crate) struct ConcurrentSession {
     /// When `Some`, accumulates one `TraceRow` per anchor for `--perf-trace` CSV
     /// output. Remains `None` unless `enable_trace()` is called before resolution.
     pub(crate) per_anchor_trace: Option<Vec<crate::perf::TraceRow>>,
-    /// Reverse-indexed walk: commits where Bloom said "definitely no tracked path changed".
-    pub(crate) walk_bloom_skips: u64,
-    /// Reverse-indexed walk: paths Bloom said "maybe" but tree-diff showed unchanged.
-    pub(crate) walk_bloom_false_positives: u64,
-    /// Reverse-indexed walk: commits that ran a tree-diff.
-    pub(crate) walk_tree_diffs: u64,
-    /// Reverse-indexed walk: total commits visited.
-    pub(crate) walk_commits_visited: u64,
-    /// Reverse-indexed walk: wall-clock ms to build the AnchorReverseIndex.
-    pub(crate) reverse_index_build_ms: u64,
-    /// Per-command memo for anchor commit reachability. This avoids
-    /// scanning all refs once per anchor in large repositories. Moved here
-    /// from `EngineState` in the three-way split (card main-162): it is a
-    /// pure grow-only memo like the rest of this store. `RwLock`-wrapped
-    /// (card main-162 staged-rollout step 2) — see `blob_oid_memo`'s doc
-    /// comment for the general read/drop/compute/write pattern.
-    commit_reachability: RwLock<HashMap<String, bool>>,
     /// Per-command memo for `.gitattributes` filter-driver lookups, keyed
     /// by `rel_path`. The workdir is constant per session, so the repo
     /// handle is implicit. A cached `None` means "no driver / fail closed"
@@ -441,23 +227,6 @@ pub(crate) struct ConcurrentSession {
     /// `EngineState` in the three-way split (card main-162). `RwLock`-wrapped
     /// (card main-162 staged-rollout step 2).
     filter_attrs: RwLock<HashMap<String, Option<String>>>,
-    /// Phase 1: per-session `PathTimeline` cache keyed by
-    /// `(path, head_blob_oid, copy_detection, anchor_sha)`. Timelines are
-    /// currently anchor-scoped because they are built from per-anchor delta
-    /// slices. `RwLock`-wrapped (card main-162 staged-rollout step 2).
-    pub(crate) timelines: RwLock<HashMap<PathTimelineKey, Arc<PathTimeline>>>,
-    pub(crate) timeline_cache_hits: AtomicU64,
-    pub(crate) timeline_cache_misses: AtomicU64,
-    /// Phase 1: shared path-byte interner used while building timelines.
-    /// `Mutex`-wrapped (card main-162 staged-rollout step 3): each
-    /// `interner.intern(...)` call in `build_timeline` locks, runs the whole
-    /// IO-free lookup-or-insert body, and unlocks immediately — atomic per
-    /// call, so two threads never mint two different `Arc<[u8]>` for the same
-    /// path bytes. The interner lock and `blob_oid_memo`'s lock are never held
-    /// simultaneously by the same thread (the `intern` guard is dropped before
-    /// `blob_oid_at`'s independent per-call acquisition), so there is no lock
-    /// order to defend.
-    pub(crate) timeline_paths: Mutex<PathInterner>,
     /// Counter: candidate-path content reads performed inside the
     /// file-backed cross-path relocation scan
     /// (`find_relocated_range_in_paths`). Without amortization this counts
@@ -685,7 +454,6 @@ pub(crate) struct JaccardCorpus {
 impl ConcurrentSession {
     pub(crate) fn new(_repo: &gix::Repository) -> Self {
         Self {
-            bloom_memo: None,
             drift_locus_hits: AtomicU64::new(0),
             drift_locus_misses: AtomicU64::new(0),
             filter_attr_hits: AtomicU64::new(0),
@@ -703,17 +471,7 @@ impl ConcurrentSession {
             anchors_fast_path_hits: AtomicU64::new(0),
             per_anchor_us: Vec::new(),
             per_anchor_trace: None,
-            walk_bloom_skips: 0,
-            walk_bloom_false_positives: 0,
-            walk_tree_diffs: 0,
-            walk_commits_visited: 0,
-            reverse_index_build_ms: 0,
-            commit_reachability: RwLock::new(HashMap::new()),
             filter_attrs: RwLock::new(HashMap::new()),
-            timelines: RwLock::new(HashMap::new()),
-            timeline_cache_hits: AtomicU64::new(0),
-            timeline_cache_misses: AtomicU64::new(0),
-            timeline_paths: Mutex::new(PathInterner::new()),
             relocation_candidate_reads: AtomicU64::new(0),
             relocation_text_memo: parking_lot::RwLock::new(HashMap::new()),
             line_index_cache: RwLock::new(HashMap::new()),
@@ -737,35 +495,6 @@ impl ConcurrentSession {
 
     pub(crate) fn enable_trace(&mut self) {
         self.per_anchor_trace = Some(Vec::new());
-    }
-
-    /// Whether `commit` is reachable from HEAD, memoized per session. Moved
-    /// here from `EngineState` in the three-way split (card main-162);
-    /// `head_sha` (constant for the run) is now passed in from
-    /// [`SharedEngineContext`] rather than read off `self`.
-    pub(crate) fn commit_reachable(
-        &self,
-        repo: &gix::Repository,
-        head_sha: &str,
-        commit: &str,
-    ) -> Result<bool> {
-        if commit == head_sha {
-            self.commit_reachability
-                .write()
-                .insert(commit.to_string(), true);
-            return Ok(true);
-        }
-        if let Some(reachable) = self.commit_reachability.read().get(commit) {
-            return Ok(*reachable);
-        }
-        // HEAD-relative: per drift-label spec, "orphaned (no sha)" applies
-        // when the anchor commit is not in HEAD's history, even if another
-        // ref still keeps it alive (e.g. after `checkout --orphan`).
-        let reachable = crate::git::commit_reachable_from_head(repo, commit)?;
-        self.commit_reachability
-            .write()
-            .insert(commit.to_string(), reachable);
-        Ok(reachable)
     }
 
     /// Probe `.gitattributes` for a custom `filter=<name>` driver on
@@ -829,7 +558,7 @@ impl ConcurrentSession {
 
     /// Resolve the blob OID of `path` at `head_sha`, via the session-scoped
     /// `blob_oid_memo`. `head_sha` (constant for the run) is passed in from
-    /// [`SharedEngineContext`]. Thin alias for [`head_blob_oid`](Self::head_blob_oid)
+    /// [`SharedEngineContext`](crate::resolver::engine::SharedEngineContext). Thin alias for [`head_blob_oid`](Self::head_blob_oid)
     /// preserving the former `EngineState::head_blob_at` call sites.
     pub(crate) fn head_blob_at(
         &self,
@@ -1321,467 +1050,6 @@ impl ConcurrentSession {
             + self.anchors_unavailable
             + self.anchors_skipped_clean_head
     }
-
-    /// Build the reverse-indexed walk: one pass from HEAD, Bloom-gated,
-    /// that produces per-anchor commit deltas for every anchor in every span.
-    ///
-    /// The walk tracks per-anchor current paths through rename chains:
-    /// when a commit renames an anchor's path from A to B, subsequent commits
-    /// query the Bloom filter for B (the new name).
-    ///
-    /// Terminates when every `anchor_sha` in the reverse index has been observed
-    /// (passed in the walk) or the walk reaches the root.
-    ///
-    /// The output is stored internally on `self.reverse_walk_output` so that
-    /// consumers (`resolve_at_head_shared`, `follow_path_to_head_shared`) can
-    /// read it without callers having to thread it through every signature.
-    ///
-    /// ## Commit-graph is optional
-    ///
-    /// The changed-path Bloom filter accelerates the walk but is not a
-    /// correctness gate: an ordinary repo (fresh `git init` + commit, no
-    /// gc, no opt-in `core.commitGraph`) has no commit-graph file, which
-    /// is a normal state, not an error. When absent the walk runs
-    /// without it (tree-diffing every commit). Absence is never surfaced
-    /// as a fatal error or a plumbing instruction.
-    /// Build the reverse-indexed walk. Runs once per resolve batch, serially,
-    /// before any parallel fork — so its two outputs that outlive the walk
-    /// (the walk result and the rename-budget warnings) are written into the
-    /// read-only-after-construction [`SharedEngineContext`], while the walk's
-    /// own memo (`bloom_memo`) and perf counters stay on `self`.
-    pub(crate) fn build_reverse_walk(
-        &mut self,
-        shared: &mut SharedEngineContext,
-        repo: &gix::Repository,
-        spans: &[(String, crate::types::Span)],
-    ) -> Result<()> {
-        let _span_total = perf::span("resolver.build-walk");
-
-        // 1. Build the reverse index and per-anchor state.
-        let t0 = std::time::Instant::now();
-        let reverse_index;
-        let mut per_anchor: Vec<AnchorWalkState>;
-        let mut path_index;
-        let max_copy;
-        let head_sha;
-        let head_oid;
-        {
-            let _span_index = perf::span("resolver.build-walk.index");
-            reverse_index = AnchorReverseIndex::from_spans(spans);
-
-            // Most permissive copy_detection across all spans.
-            max_copy = spans
-                .iter()
-                .map(|(_, m)| m.config.copy_detection)
-                .max()
-                .unwrap_or(CopyDetection::Off);
-
-            // Initialize per-anchor state.
-            per_anchor = Vec::new();
-            for (span_name, span) in spans {
-                for (anchor_id, anchor) in &span.anchors {
-                    let sha = match gix::ObjectId::from_hex(anchor.anchor_sha.as_bytes()) {
-                        Ok(s) => s,
-                        Err(_) => continue,
-                    };
-                    per_anchor.push(AnchorWalkState {
-                        span_name: span_name.clone(),
-                        anchor_id: anchor_id.clone(),
-                        anchor_sha: sha,
-                        current_path: Arc::from(anchor.path.as_bytes()),
-                        deltas: Vec::new(),
-                        anchor_passed: false,
-                    });
-                }
-            }
-
-            path_index = PathIndex::new(&per_anchor);
-
-            head_sha = git::head_oid(repo)?;
-            head_oid = gix::ObjectId::from_hex(head_sha.as_bytes())
-                .map_err(|e| crate::Error::Git(format!("parse HEAD: {e}")))?;
-        }
-        self.reverse_index_build_ms = t0.elapsed().as_millis() as u64;
-
-        // 2. Open the Bloom filter if one exists. The changed-path Bloom
-        // filter is a pure walk accelerator, not a correctness gate: an
-        // ordinary repo (fresh `git init` + commit, no gc, no opt-in
-        // `core.commitGraph`) has no commit-graph file, and that is a
-        // normal state — not an error. When absent we walk without it,
-        // tree-diffing every commit (the loop below already treats a
-        // missing per-commit Bloom position as "maybe changed").
-        let bloom: Option<CommitGraphBloom> = match self.bloom_memo.take() {
-            Some(b) => b,
-            None => {
-                let _span_bloom = perf::span("resolver.build-walk.bloom-open");
-                CommitGraphBloom::open(repo).ok()
-            }
-        };
-
-        // 3. Walk from HEAD reverse-chronologically.
-        let mut stop_set: HashSet<gix::ObjectId> = reverse_index.anchor_shas;
-
-        {
-            let _span_walk = perf::span("resolver.build-walk.walk");
-            let walk = repo
-                .rev_walk([head_oid])
-                .sorting(gix::revision::walk::Sorting::BreadthFirst)
-                .all()
-                .map_err(|e| crate::Error::Git(format!("rev walk: {e}")))?;
-
-            for info in walk {
-                let info = info.map_err(|e| crate::Error::Git(format!("rev walk commit: {e}")))?;
-                let commit_oid = info.id;
-
-                // Stop-set handling: when a commit equals an anchor_sha, mark
-                // every anchor with that sha as passed and remove them from
-                // the path index so they no longer contribute to Bloom probes
-                // or fan-out.
-                if stop_set.remove(&commit_oid) {
-                    for (i, state) in per_anchor.iter_mut().enumerate() {
-                        if !state.anchor_passed && state.anchor_sha == commit_oid {
-                            state.anchor_passed = true;
-                            path_index.deactivate(i as u32);
-                        }
-                    }
-                }
-                if stop_set.is_empty() {
-                    break;
-                }
-
-                self.walk_commits_visited += 1;
-
-                if path_index.active_paths().is_empty() {
-                    continue;
-                }
-
-                // Bloom filter gate: probe distinct active paths only.
-                // When the commit is not in the commit-graph, fall back to
-                // assuming all tracked paths may have changed (correctness:
-                // the Bloom filter is an optimization, not a gate).
-                let positives: Vec<Arc<[u8]>> = match bloom
-                    .as_ref()
-                    .and_then(|b| b.commit_position(&commit_oid).map(|pos| (b, pos)))
-                {
-                    Some((b, commit_pos)) => {
-                        let v: Vec<Arc<[u8]>> = path_index
-                            .active_paths()
-                            .iter()
-                            .filter(|p| b.maybe_contains(commit_pos, p))
-                            .cloned()
-                            .collect();
-                        if v.is_empty() {
-                            self.walk_bloom_skips += 1;
-                            continue;
-                        }
-                        v
-                    }
-                    None => path_index.active_paths().to_vec(),
-                };
-
-                // Bloom says "maybe" for at least one path — run tree-diff.
-                self.walk_tree_diffs += 1;
-
-                let commit_sha_str = commit_oid.to_string();
-                let commit_obj = repo
-                    .find_commit(commit_oid)
-                    .map_err(|e| crate::Error::Git(format!("find commit {commit_oid}: {e}")))?;
-                let parent_oid = match commit_obj.parent_ids().next() {
-                    Some(p) => p.detach(),
-                    None => continue, // root commit — nothing older to diff against.
-                };
-                let parent_sha_str = parent_oid.to_string();
-
-                let entries = walker::name_status(
-                    repo,
-                    &parent_sha_str,
-                    &commit_sha_str,
-                    max_copy,
-                    &mut shared.warnings,
-                )?;
-
-                // Count Bloom false positives: paths Bloom said "maybe" that
-                // do not appear in the actual tree-diff result. Built lazily
-                // (only when there were Bloom positives that mattered).
-                if !positives.is_empty() {
-                    let mut actual_paths: HashSet<&[u8]> = HashSet::new();
-                    for e in &entries {
-                        match e {
-                            NS::Added { path } | NS::Modified { path } | NS::Deleted { path } => {
-                                actual_paths.insert(path.as_bytes());
-                            }
-                            NS::Renamed { from, to } | NS::Copied { from, to } => {
-                                actual_paths.insert(from.as_bytes());
-                                actual_paths.insert(to.as_bytes());
-                            }
-                        }
-                    }
-                    for bp in &positives {
-                        if !actual_paths.contains(bp.as_ref()) {
-                            self.walk_bloom_false_positives += 1;
-                        }
-                    }
-                }
-
-                // Fan out via the path index. Collect rename/copy follow-ups
-                // first so the path index can be mutated after the entry loop
-                // without invalidating its iterators.
-                let delta = Arc::new(CommitDelta {
-                    parent: parent_sha_str,
-                    commit: commit_sha_str,
-                    entries,
-                });
-
-                // (affected_path, target_path_for_rename_or_copy_or_None)
-                let mut renames: Vec<(u32, Arc<[u8]>)> = Vec::new();
-                for entry in &delta.entries {
-                    let (source_bytes, target_bytes): (&[u8], Option<&[u8]>) = match entry {
-                        NS::Added { path } | NS::Modified { path } | NS::Deleted { path } => {
-                            (path.as_bytes(), None)
-                        }
-                        NS::Renamed { from, to } | NS::Copied { from, to } => {
-                            (from.as_bytes(), Some(to.as_bytes()))
-                        }
-                    };
-
-                    // Snapshot anchor indexes for this path so the borrow on
-                    // `path_index.by_path` is released before we record renames.
-                    let anchor_idxs: Vec<u32> = match path_index.anchors_for_path(source_bytes) {
-                        Some(v) => v.to_vec(),
-                        None => continue,
-                    };
-
-                    let new_path: Option<Arc<[u8]>> = target_bytes.map(Arc::from);
-
-                    for anchor_idx in anchor_idxs {
-                        let state = &mut per_anchor[anchor_idx as usize];
-                        if state.anchor_passed {
-                            continue;
-                        }
-                        state.deltas.push(Arc::clone(&delta));
-                        if let Some(new_path) = &new_path {
-                            renames.push((anchor_idx, Arc::clone(new_path)));
-                        }
-                    }
-                }
-
-                for (anchor_idx, new_path) in renames {
-                    // Skip renames for anchors that became passed during this
-                    // commit's stop-set handling (defensive — `deactivate`
-                    // already removed them from by_path, but anchor_passed is
-                    // the authoritative gate).
-                    if per_anchor[anchor_idx as usize].anchor_passed {
-                        continue;
-                    }
-                    per_anchor[anchor_idx as usize].current_path = Arc::clone(&new_path);
-                    path_index.rename(anchor_idx, new_path);
-                }
-            }
-        }
-
-        // 4. Finalize: reverse each anchor's deltas to oldest-first.
-        let per_anchor_deltas;
-        {
-            let _span_finalize = perf::span("resolver.build-walk.finalize");
-            let mut map: HashMap<(String, String), Vec<Arc<CommitDelta>>> = HashMap::new();
-            for state in per_anchor {
-                let mut deltas = state.deltas;
-                deltas.reverse();
-                map.insert((state.span_name, state.anchor_id), deltas);
-            }
-            per_anchor_deltas = map;
-        }
-
-        // Emit a perf counter for rename/copy fan-out updates in `PathIndex`.
-        // This is the `R` term in the post-Phase-0 walk complexity.
-        {
-            let _span_renames = perf::span("resolver.build-walk.path-index-renames");
-            perf::counter(
-                "resolver.build-walk.path-index-renames",
-                path_index.rename_updates,
-            );
-        }
-
-        // Park the Bloom handle for the next walk in this session.
-        //
-        // Multiple walks per session (one per stolen chunk in the parallel
-        // baseline build) also means the timeline cache outlives a single
-        // walk. That is sound because `PathTimelineKey` keys on the walk's
-        // effective breadth: `max_copy` is carried in `ReverseWalkOutput`
-        // and used by `resolve_at_head_shared`, so timelines built from
-        // walks of different copy-detection breadth never share an entry.
-        self.bloom_memo = Some(bloom);
-
-        shared.reverse_walk_output = Some(ReverseWalkOutput {
-            head_sha,
-            per_anchor_deltas,
-            max_copy,
-        });
-
-        Ok(())
-    }
-}
-
-/// Per-anchor walk state maintained during the reverse-indexed walk.
-///
-/// Tracks the current path (updated through renames) and whether the
-/// anchor_sha has been passed in the walk.
-pub(crate) struct AnchorWalkState {
-    span_name: String,
-    anchor_id: String,
-    anchor_sha: gix::ObjectId,
-    /// The path we are currently tracking for this anchor. Updated when
-    /// a rename/copy entry matches. Owned as `Arc<[u8]>` so the same
-    /// bytes can also live as a key in `PathIndex.active_paths`/`by_path`
-    /// without redundant allocations.
-    current_path: Arc<[u8]>,
-    /// Accumulated commit deltas (newest-first during the walk; reversed
-    /// to oldest-first in the output). The walk fans the same
-    /// `Arc<CommitDelta>` to every affected anchor without cloning the
-    /// underlying `entries` vector.
-    deltas: Vec<Arc<CommitDelta>>,
-    /// Set to true once the walk passes this anchor's anchor_sha. After
-    /// that point, no more deltas are recorded for this anchor.
-    anchor_passed: bool,
-}
-
-/// Shared replacement for `walker::resolve_at_head`. Consumes deltas from
-/// the session's reverse-indexed walk output instead of running its own
-/// rev_walk + per-commit `name_status`. The hunk math (per-commit blob
-/// diff for the tracked path) is still per-anchor — that's the work that
-/// genuinely depends on the anchor's path.
-pub(crate) fn resolve_at_head_shared(
-    repo: &gix::Repository,
-    shared: &SharedEngineContext,
-    concurrent: &ConcurrentSession,
-    r: &Anchor,
-    span_name: &str,
-    anchor_id: &str,
-) -> Result<Option<walker::Tracked>> {
-    use crate::types::AnchorExtent;
-    let (rstart, rend) = match r.extent {
-        AnchorExtent::LineRange { start, end } => (start, end),
-        AnchorExtent::WholeFile => (1, 1),
-    };
-    // Clone the walk data so we can release the borrow on
-    // `shared.reverse_walk_output` and then freely access
-    // `concurrent.blob_oid_memo` during the hunk loop.
-    let (head_sha, deltas, copy_detection) = {
-        let output = shared
-            .reverse_walk_output
-            .as_ref()
-            .ok_or_else(|| crate::Error::Git("reverse walk not built".into()))?;
-        let head_sha = output.head_sha.clone();
-        let deltas = output
-            .per_anchor_deltas
-            .get(&(span_name.to_string(), anchor_id.to_string()))
-            .cloned()
-            .unwrap_or_default();
-        (head_sha, deltas, output.max_copy)
-    };
-
-    // Phase 1: route projection through a `PathTimeline`. The timeline is
-    // built from this anchor's delta slice, so the cache key includes
-    // `anchor_sha`; anchors with the same current path/HEAD blob but different
-    // replay windows must not share an entry.
-    //
-    // Cache identity keys on the walk's *effective* breadth (`max_copy`,
-    // the most permissive per-span `copy_detection` in the batch), because
-    // the walk's entry stream — and therefore the timeline built from it —
-    // reflects that breadth, not any single span's setting. A hard-coded
-    // constant here would let timelines built from walks of different
-    // breadth (e.g. after span configs change between resolves in one
-    // session) collide in the cache.
-
-    let head_blob_oid_hex: Option<String> = concurrent.head_blob_oid(repo, &head_sha, &r.path)?;
-    let head_blob_oid: Option<gix::ObjectId> = head_blob_oid_hex
-        .as_deref()
-        .and_then(|s| gix::ObjectId::from_hex(s.as_bytes()).ok());
-
-    let key = PathTimelineKey {
-        path: Arc::from(r.path.as_bytes()),
-        head_blob_oid,
-        copy_detection,
-        anchor_sha: r.anchor_sha.clone(),
-    };
-
-    // Read-lock, check, and drop the guard before falling through to the
-    // (I/O-bound) `build_timeline` call and the write-lock insert below —
-    // holding the read guard across the miss branch would deadlock against
-    // the write-lock a few lines down.
-    let cached_timeline = concurrent.timelines.read().get(&key).cloned();
-    let timeline_arc: Arc<PathTimeline> = if let Some(existing) = cached_timeline {
-        concurrent
-            .timeline_cache_hits
-            .fetch_add(1, Ordering::Relaxed);
-        existing
-    } else {
-        concurrent
-            .timeline_cache_misses
-            .fetch_add(1, Ordering::Relaxed);
-        let tl = build_timeline(
-            repo,
-            r.path.as_bytes(),
-            &deltas,
-            head_blob_oid,
-            copy_detection,
-            &concurrent.timeline_paths,
-            &concurrent.blob_oid_memo,
-        )?;
-        let arc = Arc::new(tl);
-        concurrent.timelines.write().insert(key, Arc::clone(&arc));
-        arc
-    };
-
-    let loc = match timeline_arc.project_by_linemap(rstart, rend) {
-        Some(loc) => loc,
-        None => return Ok(None),
-    };
-
-    // Common no-rename case: `loc.path` equals the anchor path, so the
-    // HEAD-presence answer is exactly the OID we already resolved above —
-    // no second tree walk needed. Otherwise resolve `loc.path` through the
-    // shared memo.
-    let loc_present = if loc.path == r.path {
-        head_blob_oid_hex.is_some()
-    } else {
-        concurrent
-            .head_blob_oid(repo, &head_sha, &loc.path)?
-            .is_some()
-    };
-    if !loc_present {
-        return Ok(None);
-    }
-    Ok(Some(loc))
-}
-
-/// Shared replacement for `whole_file::follow_path_to_head`. Consumes
-/// per-commit rename information from the reverse-indexed walk output;
-/// runs no rev_walk of its own. Returns `Some(new_path)` if any rename
-/// was followed, `None` if the path is unchanged.
-pub(crate) fn follow_path_to_head_shared(
-    _repo: &gix::Repository,
-    shared: &SharedEngineContext,
-    span_name: &str,
-    anchor_id: &str,
-    path: &str,
-) -> Option<String> {
-    let output = shared.reverse_walk_output.as_ref()?;
-    let deltas = output
-        .per_anchor_deltas
-        .get(&(span_name.to_string(), anchor_id.to_string()))?;
-    let mut current = path.to_string();
-    for delta in deltas {
-        for e in &delta.entries {
-            if let NS::Renamed { from, to } | NS::Copied { from, to } = e
-                && from == &current
-            {
-                current = to.clone();
-                break;
-            }
-        }
-    }
-    if current == path { None } else { Some(current) }
 }
 
 #[cfg(test)]
@@ -1791,7 +1059,6 @@ mod tests {
     #[test]
     fn anchors_total_includes_skipped_clean_head() {
         let session = ConcurrentSession {
-            bloom_memo: None,
             drift_locus_hits: AtomicU64::new(0),
             drift_locus_misses: AtomicU64::new(0),
             filter_attr_hits: AtomicU64::new(0),
@@ -1808,18 +1075,8 @@ mod tests {
             anchors_fast_path_hits: AtomicU64::new(0),
             per_anchor_us: Vec::new(),
             per_anchor_trace: None,
-            walk_bloom_skips: 0,
-            walk_bloom_false_positives: 0,
-            walk_tree_diffs: 0,
-            walk_commits_visited: 0,
-            reverse_index_build_ms: 0,
-            commit_reachability: RwLock::new(HashMap::new()),
             filter_attrs: RwLock::new(HashMap::new()),
             anchors_skipped_clean_head: 50,
-            timelines: RwLock::new(HashMap::new()),
-            timeline_cache_hits: AtomicU64::new(0),
-            timeline_cache_misses: AtomicU64::new(0),
-            timeline_paths: Mutex::new(PathInterner::new()),
             relocation_candidate_reads: AtomicU64::new(0),
             relocation_text_memo: parking_lot::RwLock::new(HashMap::new()),
             line_index_cache: RwLock::new(HashMap::new()),
@@ -1851,7 +1108,6 @@ mod tests {
     #[test]
     fn anchors_total_sums_mixed_buckets() {
         let session = ConcurrentSession {
-            bloom_memo: None,
             drift_locus_hits: AtomicU64::new(0),
             drift_locus_misses: AtomicU64::new(0),
             filter_attr_hits: AtomicU64::new(0),
@@ -1868,18 +1124,8 @@ mod tests {
             anchors_fast_path_hits: AtomicU64::new(4),
             per_anchor_us: Vec::new(),
             per_anchor_trace: None,
-            walk_bloom_skips: 0,
-            walk_bloom_false_positives: 0,
-            walk_tree_diffs: 0,
-            walk_commits_visited: 0,
-            reverse_index_build_ms: 0,
-            commit_reachability: RwLock::new(HashMap::new()),
             filter_attrs: RwLock::new(HashMap::new()),
             anchors_skipped_clean_head: 40,
-            timelines: RwLock::new(HashMap::new()),
-            timeline_cache_hits: AtomicU64::new(0),
-            timeline_cache_misses: AtomicU64::new(0),
-            timeline_paths: Mutex::new(PathInterner::new()),
             relocation_candidate_reads: AtomicU64::new(0),
             relocation_text_memo: parking_lot::RwLock::new(HashMap::new()),
             line_index_cache: RwLock::new(HashMap::new()),
@@ -1916,137 +1162,6 @@ mod tests {
             "anchors-total must include skipped-clean-head alongside per-status buckets"
         );
         assert_eq!(total, 46);
-    }
-
-    // ── PathIndex rename/copy fan-out tests ────────────────────────────────
-    //
-    // Phase 0 of the three-phase plan replaces the anchor-quadratic walk
-    // bookkeeping with `PathIndex`. These tests pin down its rename/copy
-    // fan-out semantics independently of any repository fixture.
-
-    fn aws(path: &[u8]) -> AnchorWalkState {
-        AnchorWalkState {
-            span_name: "m".to_string(),
-            anchor_id: "a".to_string(),
-            anchor_sha: gix::ObjectId::null(gix::hash::Kind::Sha1),
-            current_path: Arc::from(path),
-            deltas: Vec::new(),
-            anchor_passed: false,
-        }
-    }
-
-    fn arc_path(p: &[u8]) -> Arc<[u8]> {
-        Arc::from(p)
-    }
-
-    fn sorted<T: Ord + Clone>(v: &[T]) -> Vec<T> {
-        let mut out = v.to_vec();
-        out.sort();
-        out
-    }
-
-    #[test]
-    fn path_index_initial_layout_groups_anchors_by_path() {
-        let anchors = vec![aws(b"a.rs"), aws(b"b.rs"), aws(b"a.rs")];
-        let idx = PathIndex::new(&anchors);
-
-        assert_eq!(sorted(idx.anchors_for_path(b"a.rs").unwrap()), vec![0, 2]);
-        assert_eq!(sorted(idx.anchors_for_path(b"b.rs").unwrap()), vec![1]);
-        let active: Vec<Vec<u8>> = idx.active_paths().iter().map(|p| p.to_vec()).collect();
-        assert_eq!(active.len(), 2);
-        assert!(active.iter().any(|p| p == b"a.rs"));
-        assert!(active.iter().any(|p| p == b"b.rs"));
-        assert_eq!(idx.rename_updates, 0);
-    }
-
-    #[test]
-    fn path_index_rename_moves_single_anchor_and_keeps_old_bucket() {
-        // Two anchors share a path; renaming one must leave the other on the
-        // old path. Old bucket stays active because anchor 1 still tracks it.
-        let anchors = vec![aws(b"src/a.rs"), aws(b"src/a.rs")];
-        let mut idx = PathIndex::new(&anchors);
-
-        idx.rename(0, arc_path(b"src/a_renamed.rs"));
-
-        assert_eq!(idx.rename_updates, 1);
-        assert_eq!(idx.anchors_for_path(b"src/a.rs").unwrap(), &[1]);
-        assert_eq!(idx.anchors_for_path(b"src/a_renamed.rs").unwrap(), &[0]);
-
-        let active: Vec<Vec<u8>> = idx.active_paths().iter().map(|p| p.to_vec()).collect();
-        assert_eq!(active.len(), 2);
-        assert!(active.iter().any(|p| p == b"src/a.rs"));
-        assert!(active.iter().any(|p| p == b"src/a_renamed.rs"));
-    }
-
-    #[test]
-    fn path_index_rename_last_anchor_drops_old_path_from_active() {
-        let anchors = vec![aws(b"only.rs")];
-        let mut idx = PathIndex::new(&anchors);
-
-        idx.rename(0, arc_path(b"renamed.rs"));
-
-        assert!(idx.anchors_for_path(b"only.rs").is_none());
-        assert_eq!(idx.anchors_for_path(b"renamed.rs").unwrap(), &[0]);
-        let active: Vec<Vec<u8>> = idx.active_paths().iter().map(|p| p.to_vec()).collect();
-        assert_eq!(active, vec![b"renamed.rs".to_vec()]);
-    }
-
-    #[test]
-    fn path_index_rename_to_same_path_is_noop() {
-        let anchors = vec![aws(b"x.rs")];
-        let mut idx = PathIndex::new(&anchors);
-
-        idx.rename(0, arc_path(b"x.rs"));
-
-        assert_eq!(idx.rename_updates, 0);
-        assert_eq!(idx.anchors_for_path(b"x.rs").unwrap(), &[0]);
-    }
-
-    #[test]
-    fn path_index_rename_into_existing_active_path_merges_buckets() {
-        // Models a copy that pulls anchor 0 into the bucket already
-        // occupied by anchor 1 (e.g. both anchors now track the same
-        // post-rename path).
-        let anchors = vec![aws(b"a.rs"), aws(b"b.rs")];
-        let mut idx = PathIndex::new(&anchors);
-
-        idx.rename(0, arc_path(b"b.rs"));
-
-        assert!(idx.anchors_for_path(b"a.rs").is_none());
-        assert_eq!(sorted(idx.anchors_for_path(b"b.rs").unwrap()), vec![0, 1]);
-        let active: Vec<Vec<u8>> = idx.active_paths().iter().map(|p| p.to_vec()).collect();
-        assert_eq!(active, vec![b"b.rs".to_vec()]);
-    }
-
-    #[test]
-    fn path_index_deactivate_drops_anchor_and_path_when_last() {
-        let anchors = vec![aws(b"a.rs"), aws(b"a.rs")];
-        let mut idx = PathIndex::new(&anchors);
-
-        idx.deactivate(0);
-        assert_eq!(idx.anchors_for_path(b"a.rs").unwrap(), &[1]);
-
-        idx.deactivate(1);
-        assert!(idx.anchors_for_path(b"a.rs").is_none());
-        assert!(idx.active_paths().is_empty());
-    }
-
-    #[test]
-    fn path_index_chained_renames_track_through_history() {
-        // a.rs -> b.rs -> c.rs. Each step moves the anchor and keeps
-        // active_paths in sync.
-        let anchors = vec![aws(b"a.rs")];
-        let mut idx = PathIndex::new(&anchors);
-
-        idx.rename(0, arc_path(b"b.rs"));
-        idx.rename(0, arc_path(b"c.rs"));
-
-        assert_eq!(idx.rename_updates, 2);
-        assert!(idx.anchors_for_path(b"a.rs").is_none());
-        assert!(idx.anchors_for_path(b"b.rs").is_none());
-        assert_eq!(idx.anchors_for_path(b"c.rs").unwrap(), &[0]);
-        let active: Vec<Vec<u8>> = idx.active_paths().iter().map(|p| p.to_vec()).collect();
-        assert_eq!(active, vec![b"c.rs".to_vec()]);
     }
 
     #[test]

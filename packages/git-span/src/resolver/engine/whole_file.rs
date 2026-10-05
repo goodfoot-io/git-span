@@ -2,7 +2,7 @@
 //! per plan §D2. Renames produce `Moved`; symlinks/gitlinks compare by
 //! recorded blob/SHA.
 
-use super::super::session::{ConcurrentSession, follow_path_to_head_shared};
+use super::super::session::ConcurrentSession;
 use super::super::worktree_move::{WorktreeMove, find_worktree_move};
 use super::EngineLocal;
 use super::anchor::{AnchorCtx, FuzzyCandidate, sole_basename_preserving};
@@ -160,7 +160,6 @@ pub(crate) fn resolve_whole_file(
     ctx: AnchorCtx<'_>,
     local: &mut EngineLocal,
     cfg: &SpanConfig,
-    span_name: &str,
     anchor_id: &str,
     r: Anchor,
 ) -> Result<AnchorResolved> {
@@ -184,25 +183,6 @@ pub(crate) fn resolve_whole_file(
         extent: AnchorExtent::WholeFile,
         blob: anchored_blob,
     };
-    if !r.anchor_sha.is_empty()
-        && !concurrent.commit_reachable(repo, &shared.head_sha, &r.anchor_sha)?
-    {
-        return Ok(AnchorResolved {
-            anchor_id: anchor_id.into(),
-            anchor_sha: r.anchor_sha,
-            stored_hash: r.stored_hash,
-            anchored,
-            current: None,
-            status: AnchorStatus::Deleted,
-            source: None,
-            layer_sources: vec![],
-            content_equivalent: false, // whole-file anchors are not equivalence-checked for --fix
-            locus: None,
-            fuzzy_successors: vec![],
-            moved_uncommitted: false,
-        });
-    }
-
     if r.anchor_sha == shared.head_sha
         && super::anchor_path_is_layer_clean(local, shared, &r.path)
         && let Some(head_blob) = concurrent.head_blob_at(repo, &shared.head_sha, &r.path)?
@@ -229,10 +209,9 @@ pub(crate) fn resolve_whole_file(
     }
 
     let workdir = git::work_dir(repo)?;
-    // Phase 2: rename trail consumes per-commit deltas from the shared
-    // session instead of running its own `anchor..HEAD` rev_walk.
-    let current_path = follow_path_to_head_shared(repo, shared, span_name, anchor_id, &r.path)
-        .unwrap_or_else(|| r.path.clone());
+    // The span file at HEAD records the anchor's path directly; there is no
+    // history to replay.
+    let current_path = r.path.clone();
 
     let moved = current_path != r.path;
 

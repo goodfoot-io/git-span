@@ -2,7 +2,7 @@
 //! and opens the repository ~4 times per anchor instead of once.
 //!
 //! The invariant this test enforces: for its fixture (1 whole-file + 2
-//! line-range anchors), `index_entries` is called exactly **4** times during
+//! line-range anchors), `index_entries` is called exactly **3** times during
 //! a single `run_add` invocation. Before the fix, `run_add` called it per
 //! anchor in the existence probe, twice inside `validate_add_target` (via
 //! `submodule_classify` and `is_tracked_path`), and once inside
@@ -17,12 +17,10 @@
 //!    once at the top of `run_add` and threaded through every
 //!    anchor-processing site (`validate_add_target`, existence probe,
 //!    `hash_anchor_content`).
-//! 2. **Reconcile-check span reads** — 2 loads: the check resolves the
+//! 2. **Reconcile-check span read** — 1 load: the check resolves the
 //!    touched span through `resolve_named_spans_with_state`, which reads
-//!    the span twice — once for the reverse-walk pre-pass
-//!    (`read_effective_each_parallel`) and once in the per-span resolve.
-//!    Each `read_effective` probes the index once for an unmerged span
-//!    entry (`is_unmerged_in_index`).
+//!    the span once in the per-span resolve. `read_effective` probes the
+//!    index once for an unmerged span entry (`is_unmerged_in_index`).
 //! 3. **Whole-file session snapshot** — 1 load: the reconcile resolution
 //!    of the whole-file anchor probes the index in `index_entry_for` +
 //!    `is_gitlink_path` (the file-backed span model records no blob OID,
@@ -32,7 +30,7 @@
 //!    materializing it once per resolution instead of once per probe.
 //!    Line-range anchors add no loads.
 //!
-//! Total for this fixture: 1 + 2 + 1 = 4. Whole-file anchors share one
+//! Total for this fixture: 1 + 1 + 1 = 3. Whole-file anchors share one
 //! session snapshot per resolution; adding line-range anchors costs 0.
 //! The index is never re-materialized per anchor or per probe.
 //!
@@ -82,10 +80,10 @@ fn run_add_calls_index_entries_exactly_once() -> Result<()> {
 
     let count = index_entries_call_count();
     assert_eq!(
-        count, 4,
-        "index_entries called {count} times — expected exactly 4 for this \
-         fixture (1 mutation-pipeline snapshot + 2 reconcile-check span \
-         reads + 1 session-wide whole-file snapshot). The index is being \
+        count, 3,
+        "index_entries called {count} times — expected exactly 3 for this \
+         fixture (1 mutation-pipeline snapshot + 1 reconcile-check span \
+         read + 1 session-wide whole-file snapshot). The index is being \
          re-materialized per anchor or per probe instead of once. \
          (Dispatch's own lock acquisition and span-root resolution do not \
          touch the git index, so the count is unchanged from a direct \

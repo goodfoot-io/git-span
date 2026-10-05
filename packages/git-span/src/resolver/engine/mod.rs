@@ -8,7 +8,7 @@ use super::layers::{
     CustomFilters, LayerDiffs, LfsState, read_conflicted_paths, read_index_layer,
     read_index_trailer, read_layer_status, read_worktree_layer, read_worktree_layer_for_paths,
 };
-use super::session::{ConcurrentSession, ReverseWalkOutput};
+use super::session::ConcurrentSession;
 
 use crate::span_file_reader::SpanFileReader;
 use crate::types::{
@@ -61,7 +61,7 @@ impl EngineLocal {
 /// split).
 ///
 /// Every field is written once — in [`EngineState::new_with_fuzzy_threshold`]
-/// or [`ConcurrentSession::build_reverse_walk`] — before any anchor resolves,
+/// (or [`EngineState::from_source_layers`]) — before any anchor resolves,
 /// and only read during resolution. A future parallel fork can therefore
 /// share this behind a plain `&`/`Arc` with no lock.
 pub(crate) struct SharedEngineContext {
@@ -70,19 +70,10 @@ pub(crate) struct SharedEngineContext {
     pub(crate) index_diffs: Option<LayerDiffs>,
     pub(crate) worktree_diffs: Option<LayerDiffs>,
     pub(crate) conflicted_paths: HashSet<String>,
-    /// Output of the single reverse-indexed HEAD walk. Written once by
-    /// [`ConcurrentSession::build_reverse_walk`] (serially, before any fork);
-    /// read by `resolve_at_head_shared` / `follow_path_to_head_shared`.
-    pub(crate) reverse_walk_output: Option<ReverseWalkOutput>,
     /// Confidence threshold for fuzzy-similarity auto-fix. Matches at or
     /// above this threshold are automatically re-anchored by `--fix`.
     /// Default 0.95. Passed through from `EngineOptions`.
     pub(crate) fuzzy_threshold: f64,
-    /// Warnings accumulated during the reverse-indexed walk (rename budget
-    /// notes, etc.). Written only by `build_reverse_walk` (once, serially,
-    /// before the loop); drained into `EngineState::warnings` in `finish`
-    /// for stderr output.
-    pub(crate) warnings: Vec<String>,
 }
 
 /// Engine-level state cached for one `drift` run.
@@ -91,7 +82,7 @@ pub(crate) struct SharedEngineContext {
 /// [`EngineLocal`], the read-only [`SharedEngineContext`], and the
 /// interior-mutability [`ConcurrentSession`] memo store. `EngineState` owns
 /// all three plus the two run-lifecycle fields that belong to none of them,
-/// and is the handle the pre-fork machinery (`new`, `build_reverse_walk`,
+/// and is the handle the pre-fork machinery (`new`,
 /// `finish`) and the serial span loop pass around. The resolution callee tree
 /// takes the three components as separate borrows.
 pub(crate) struct EngineState {
@@ -155,8 +146,7 @@ impl EngineState {
             .is_some_and(|status| status.is_clean());
         let index_trailer_start = read_index_trailer(repo).ok();
         // Init-layer warnings (rare index/worktree read-budget downgrades)
-        // accrue to the engine-level `warnings` buffer, kept separate from
-        // the reverse-walk warnings the shared context later carries.
+        // accrue to the engine-level `warnings` buffer.
         let mut warnings: Vec<String> = Vec::new();
         let mut index_diffs: Option<LayerDiffs> = None;
         let mut worktree_diffs: Option<LayerDiffs> = None;
@@ -222,9 +212,7 @@ impl EngineState {
                 index_diffs,
                 worktree_diffs,
                 conflicted_paths,
-                reverse_walk_output: None,
                 fuzzy_threshold,
-                warnings: Vec::new(),
             },
             concurrent: ConcurrentSession::new(repo),
             index_trailer_start,
@@ -232,10 +220,7 @@ impl EngineState {
         })
     }
 
-    fn finish(mut self, repo: &gix::Repository) -> bool {
-        // Forward reverse-walk warnings (rename budget, budget downgrade,
-        // etc.) from the shared context into the engine's warning buffer.
-        self.warnings.append(&mut self.shared.warnings);
+    fn finish(self, repo: &gix::Repository) -> bool {
         let index_changed = if let Some(start) = self.index_trailer_start
             && let Ok(end) = read_index_trailer(repo)
             && end != start
@@ -263,10 +248,7 @@ impl EngineState {
     /// change warning exactly as `finish` does — these are consumed here and
     /// are intentionally NOT carried in `SourceLayers`, so the post-fix
     /// `from_source_layers` starts clean and cannot re-emit them.
-    fn finish_retaining_layers(mut self, repo: &gix::Repository) -> SourceLayers {
-        // Forward reverse-walk warnings (rename budget, budget downgrade,
-        // etc.) from the shared context into the engine's warning buffer.
-        self.warnings.append(&mut self.shared.warnings);
+    fn finish_retaining_layers(self, repo: &gix::Repository) -> SourceLayers {
         let index_changed = if let Some(start) = self.index_trailer_start
             && let Ok(end) = read_index_trailer(repo)
             && end != start
@@ -350,9 +332,10 @@ impl EngineState {
         // write). Therefore the pre-fix `worktree_diffs` / `clean_layers` /
         // `conflicted_paths` are correct for every post-fix per-anchor source
         // resolution — the rewritten span files appear dirty in `git status`
-        // but the resolver never examines a span-root path. The reverse-walk
-        // is NOT reused (a fresh `ConcurrentSession` rebuilds it for the
-        // rewritten spans); only these static source-layer fields are reused.
+        // but the resolver never examines a span-root path. The session memo
+        // store is NOT reused (a fresh `ConcurrentSession` starts empty for
+        // the rewritten spans); only these static source-layer fields are
+        // reused.
         EngineState {
             local: EngineLocal {
                 layers: layers.layers,
@@ -366,9 +349,7 @@ impl EngineState {
                 index_diffs: layers.index_diffs,
                 worktree_diffs: layers.worktree_diffs,
                 conflicted_paths: layers.conflicted_paths,
-                reverse_walk_output: None,
                 fuzzy_threshold,
-                warnings: Vec::new(),
             },
             concurrent: ConcurrentSession::new(repo),
             // Re-read fresh so the post-fix finish detects index changes that
@@ -405,15 +386,6 @@ pub fn resolve_anchor(
             .ok_or_else(|| Error::SpanNotFound(span_name.to_string()))?;
         span_from_file(span_name, &file)
     };
-    // Build the reverse-indexed walk so resolve_anchor_inner can consume
-    // per-anchor deltas from the shared context.  resolve_anchor_inner
-    // delegates to resolve_at_head_shared / follow_path_to_head_shared,
-    // both of which read from shared.reverse_walk_output.
-    state.concurrent.build_reverse_walk(
-        &mut state.shared,
-        repo,
-        &[(span_name.to_string(), span.clone())],
-    )?;
     let out = match span.anchors.into_iter().find(|(id, _)| id == anchor_id) {
         Some((_, r)) => resolve_anchor_inner(
             AnchorCtx {
@@ -423,7 +395,6 @@ pub fn resolve_anchor(
             },
             &mut state.local,
             &span.config,
-            span_name,
             anchor_id,
             r,
         )?,
@@ -537,18 +508,6 @@ fn resolve_loaded_span_with_state(
 ) -> Result<SpanResolved> {
     let mut anchors = Vec::with_capacity(span.anchors.len());
     let mut filtered_by_since: usize = 0;
-    // Build the reverse-indexed walk if not already built by a batch caller.
-    // The walk spans all anchors in this span and produces per-anchor commit
-    // deltas consumed by resolve_at_head_shared.
-    {
-        let _perf = crate::perf::span("resolver.prepare-groups");
-        if state.shared.reverse_walk_output.is_none() {
-            let spans = [(span.name.clone(), span.clone())];
-            state
-                .concurrent
-                .build_reverse_walk(&mut state.shared, repo, &spans)?;
-        }
-    }
     {
         let _perf = crate::perf::span("resolver.resolve-anchors");
         let EngineState {
@@ -579,7 +538,6 @@ fn resolve_loaded_span_with_state(
                 },
                 local,
                 &span.config,
-                &span.name,
                 &id,
                 r,
             )?;
@@ -667,21 +625,6 @@ fn status_label(s: &AnchorStatus) -> &'static str {
         AnchorStatus::Submodule => "Submodule",
         AnchorStatus::ContentUnavailable(_) => "ContentUnavailable",
     }
-}
-
-fn emit_timeline_cache_counters(session: &ConcurrentSession) {
-    crate::perf::counter(
-        "timeline.cache-hits",
-        session.timeline_cache_hits.load(Ordering::Relaxed),
-    );
-    crate::perf::counter(
-        "timeline.cache-misses",
-        session.timeline_cache_misses.load(Ordering::Relaxed),
-    );
-    crate::perf::counter(
-        "timeline.cache-entries",
-        session.timelines.read().len() as u64,
-    );
 }
 
 /// Where one [`AnchorStatus`] sits relative to drift's two reporting
@@ -790,11 +733,6 @@ pub(crate) fn resolve_loaded_spans(
         options.needs_all_layers,
         options.fuzzy_threshold,
     )?;
-    if !spans.is_empty() {
-        state
-            .concurrent
-            .build_reverse_walk(&mut state.shared, repo, spans)?;
-    }
     let mut resolved = Vec::with_capacity(spans.len());
     for (_, span) in spans {
         resolved.push(resolve_loaded_span_with_state(
@@ -804,7 +742,7 @@ pub(crate) fn resolve_loaded_spans(
             options,
         )?);
     }
-    emit_session_walk_counters(&state.concurrent);
+    emit_session_counters(&state.concurrent);
     if state.finish(repo) {
         return Err(Error::Git(
             "repository index changed while resolving context; retry the query".into(),
@@ -902,7 +840,7 @@ pub(crate) fn capture_resolution_core(
     use rayon::prelude::*;
 
     let _perf = crate::perf::span("resolver.capture-resolution-core");
-    let mut state = EngineState::new_with_fuzzy_threshold(repo, LayerSet::full(), true, 0.95)?;
+    let state = EngineState::new_with_fuzzy_threshold(repo, LayerSet::full(), true, 0.95)?;
 
     let span_pairs: Vec<(String, Span)> =
         crate::span::read::read_effective_each_parallel(repo, span_root, names)
@@ -910,12 +848,6 @@ pub(crate) fn capture_resolution_core(
             .zip(names)
             .filter_map(|(outcome, name)| outcome.ok().flatten().map(|span| (name.clone(), span)))
             .collect();
-    if !span_pairs.is_empty() {
-        state
-            .concurrent
-            .build_reverse_walk(&mut state.shared, repo, &span_pairs)?;
-    }
-
     // Serial pre-pass: flatten every span's anchors into one ordered work-item
     // vec across the whole batch, so anchor resolutions across the batch (not
     // merely within a single span) fork concurrently — matching the card's
@@ -1023,7 +955,6 @@ pub(crate) fn capture_resolution_core(
                     },
                     local,
                     &meta.config,
-                    &meta.name,
                     &item.anchor_id,
                     item.anchor,
                 );
@@ -1129,33 +1060,14 @@ pub(crate) fn resolve_named_spans_with_state(
 ) -> Result<(NamedSpanResults, EngineState)> {
     let _perf = crate::perf::span("resolver.resolve-named-spans");
 
-    // Build the reverse-indexed walk once across all named spans so that
-    // per-anchor commit deltas are available to every per-span resolver call.
-    {
-        let _perf = crate::perf::span("resolver.read-span-pairs");
-        let span_pairs: Vec<(String, Span)> =
-            crate::span::read::read_effective_each_parallel(repo, span_root, names)
-                .into_iter()
-                .zip(names)
-                .filter_map(|(outcome, name)| {
-                    outcome.ok().flatten().map(|span| (name.clone(), span))
-                })
-                .collect();
-        if !span_pairs.is_empty() {
-            state
-                .concurrent
-                .build_reverse_walk(&mut state.shared, repo, &span_pairs)?;
-        }
-    }
-
     let mut out = Vec::with_capacity(names.len());
     for name in names {
         let resolved = resolve_span_with_state(repo, span_root, &mut state, name, options);
         out.push((name.clone(), resolved));
     }
-    // Emit walk perf counters matching drift_spans_inner so named-span
+    // Emit session perf counters matching drift_spans_inner so named-span
     // resolution is observable through the same perf counter interface.
-    emit_session_walk_counters(&state.concurrent);
+    emit_session_counters(&state.concurrent);
     // Finishing is the caller's decision: each wrapper either drops the
     // session state (`finish`) or keeps the source layers
     // (`finish_retaining_layers`). Returning the state instead of an
@@ -1164,21 +1076,10 @@ pub(crate) fn resolve_named_spans_with_state(
     Ok((out, state))
 }
 
-/// Emit the per-session walk/cache perf counters shared by every batch
+/// Emit the per-session cache perf counters shared by every batch
 /// resolution surface (`drift_spans_inner`, named-span resolution, and
 /// each parallel baseline worker).
-fn emit_session_walk_counters(session: &ConcurrentSession) {
-    crate::perf::counter("session.walk-bloom-skips", session.walk_bloom_skips);
-    crate::perf::counter(
-        "session.walk-bloom-false-positives",
-        session.walk_bloom_false_positives,
-    );
-    crate::perf::counter("session.walk-tree-diffs", session.walk_tree_diffs);
-    crate::perf::counter("session.walk-commits-visited", session.walk_commits_visited);
-    crate::perf::counter(
-        "session.reverse-index-build-ms",
-        session.reverse_index_build_ms,
-    );
+fn emit_session_counters(session: &ConcurrentSession) {
     crate::perf::counter(
         "session.relocation-candidate-reads",
         session.relocation_candidate_reads.load(Ordering::Relaxed),
@@ -1205,9 +1106,6 @@ fn emit_session_walk_counters(session: &ConcurrentSession) {
         "session.index-snapshot-loads",
         session.index_snapshot_loads.load(Ordering::Relaxed),
     );
-    crate::resolver::timeline::emit_counters();
-    emit_timeline_cache_counters(session);
-    crate::resolver::linemap::emit_counters();
 }
 
 /// Result of a drift-spans resolve pass.
@@ -1225,8 +1123,6 @@ fn drift_spans_inner(
     retain_layers: bool,
 ) -> Result<DriftSpansOutput> {
     crate::perf::reset_resolution_subroutine_counters();
-    crate::resolver::timeline::reset_counters();
-    crate::resolver::linemap::reset_counters();
     let span_pairs: Vec<(String, Span)> = {
         let _perf = crate::perf::span("resolver.read-span-files");
         crate::span::read::load_all_spans_in(repo, span_root)?.0
@@ -1246,11 +1142,6 @@ fn drift_spans_inner(
     }
     let mut can_skip_clean_head_ns: u128 = 0;
     {
-        // Build the reverse-indexed walk once across all spans.
-        state
-            .concurrent
-            .build_reverse_walk(&mut state.shared, repo, &span_pairs)?;
-
         let _perf = crate::perf::span("resolver.resolve-drift-spans");
         for (name, span) in span_pairs {
             // When tracing is active we must resolve every span so every anchor
@@ -1275,23 +1166,6 @@ fn drift_spans_inner(
     crate::perf::counter(
         "resolver.can-skip-clean-head-us",
         (can_skip_clean_head_ns / 1_000) as u64,
-    );
-    crate::perf::counter(
-        "session.walk-bloom-skips",
-        state.concurrent.walk_bloom_skips,
-    );
-    crate::perf::counter(
-        "session.walk-bloom-false-positives",
-        state.concurrent.walk_bloom_false_positives,
-    );
-    crate::perf::counter("session.walk-tree-diffs", state.concurrent.walk_tree_diffs);
-    crate::perf::counter(
-        "session.walk-commits-visited",
-        state.concurrent.walk_commits_visited,
-    );
-    crate::perf::counter(
-        "session.reverse-index-build-ms",
-        state.concurrent.reverse_index_build_ms,
     );
     crate::perf::counter(
         "session.relocation-candidate-reads",
@@ -1331,9 +1205,6 @@ fn drift_spans_inner(
         "session.drift-locus-misses",
         state.concurrent.drift_locus_misses.load(Ordering::Relaxed),
     );
-    crate::resolver::timeline::emit_counters();
-    emit_timeline_cache_counters(&state.concurrent);
-    crate::resolver::linemap::emit_counters();
     let filter_attr_hits = state.concurrent.filter_attr_hits.load(Ordering::Relaxed);
     let filter_attr_misses = state.concurrent.filter_attr_misses.load(Ordering::Relaxed);
     crate::perf::counter("session.filter-attr-hits", filter_attr_hits);

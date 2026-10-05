@@ -55,9 +55,6 @@ fn stored_path(repo: &TestRepo, span: &str) -> Result<String> {
 }
 
 fn only_status(repo: &TestRepo, span: &str) -> Result<AnchorStatus> {
-    // The layered engine requires a commit-graph (with changed-path bloom
-    // filters); write it after all commits (file + span file) exist.
-    repo.write_commit_graph()?;
     let mr = resolve_span(&repo.gix_repo()?, ".span", span, EngineOptions::full())?;
     assert_eq!(mr.anchors.len(), 1, "expected exactly one resolved anchor");
     Ok(mr.anchors[0].status.clone())

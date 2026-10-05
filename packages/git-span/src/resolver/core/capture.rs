@@ -216,11 +216,11 @@ pub(crate) fn capture_state_token_with_extra_paths(
     }
 
     // Effective copy-detection mode: the most-permissive across the FULL effective
-    // span set (committed + uncommitted), exactly as `ResolveSession` derives
-    // `max_copy` from the resolved effective spans. An uncommitted span declaring
-    // a more-permissive mode widens EVERY span's reverse walk, so it must move the
-    // token's copy-detection (and thus `config_fingerprint`); otherwise a reuse
-    // tier could serve committed cores resolved under a narrower mode.
+    // span set (committed + uncommitted). It is span configuration the token keys
+    // on, so an uncommitted span declaring a different mode moves the token's
+    // copy-detection (and thus `config_fingerprint`) and no reuse tier serves
+    // cores captured under another mode. No resolution step currently reads the
+    // mode, so this keying is conservative.
     let copy_detection = committed
         .spans
         .iter()

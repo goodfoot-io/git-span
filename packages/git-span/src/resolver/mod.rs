@@ -6,7 +6,8 @@
 //!
 //! Module map:
 //!
-//! - `walker` — anchor..HEAD history walk, hunk math.
+//! - `walker` — the `Tracked` location, rename budget, hunk-to-range
+//!   projection, and tree path listings.
 //! - `layers` — index/worktree diff parsing, normalized reads,
 //!   LFS + custom filter-process orchestration.
 //! - `engine` — top-level `resolve_anchor` / `resolve_span` /
@@ -14,17 +15,14 @@
 //! - [`attribution`] — `drift_locus` HEAD-source forward walk.
 
 pub mod attribution;
-pub(crate) mod bloom;
 pub(crate) mod core;
 pub(crate) mod dirty;
 pub(crate) mod engine;
 pub(crate) mod exact;
 pub(crate) mod incremental;
 pub(crate) mod layers;
-pub(crate) mod linemap;
 pub(crate) mod session;
 pub(crate) mod store;
-pub(crate) mod timeline;
 pub(crate) mod walker;
 pub(crate) mod worktree_move;
 

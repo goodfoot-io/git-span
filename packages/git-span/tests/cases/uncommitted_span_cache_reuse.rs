@@ -113,7 +113,7 @@ fn restore_store(repo: &Path, snap: &BTreeMap<&'static str, Vec<u8>>) {
 /// clean at a clean HEAD), leaving the worktree clean. No committed drift: the
 /// committed spans are Fresh, so they are neither reported nor widen-marked, and
 /// the dirty tier reuses ALL of them verbatim — making the reuse count exact and
-/// robust. HEAD carries a commit-graph for the reverse-indexed walker.
+/// robust.
 fn build_committed_corpus() -> Result<TestRepo> {
     let repo = TestRepo::new()?;
     repo.write_file("src/a.txt", "a-1\na-2\na-3\na-4\n")?;

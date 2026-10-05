@@ -1053,30 +1053,6 @@ fn parse_git_author_time(raw: &str) -> Result<GitAuthorTime> {
     })
 }
 
-/// Is `anchor` reachable from `HEAD` only?
-///
-/// Used by the resolver's orphaned-classification gate: per the drift-label
-/// spec, an anchor commit is "orphaned" relative to HEAD when HEAD's history
-/// no longer contains it, regardless of whether other refs still keep it
-/// alive (e.g. `refs/heads/main` after a `checkout --orphan`).
-pub(crate) fn commit_reachable_from_head(repo: &gix::Repository, anchor: &str) -> Result<bool> {
-    let anchor_id = match parse_oid(anchor) {
-        Ok(id) => id,
-        Err(_) => return Ok(false),
-    };
-    let head_id = match repo.head_id() {
-        Ok(id) => id.detach(),
-        Err(_) => return Ok(false),
-    };
-    if head_id == anchor_id {
-        return Ok(true);
-    }
-    match repo.merge_base(head_id, anchor_id) {
-        Ok(base) => Ok(base.detach() == anchor_id),
-        Err(_) => Ok(false),
-    }
-}
-
 /// Create a commit object (without updating any ref) and return its hex OID.
 ///
 /// Uses the repository's configured author/committer; callers/tests that need
@@ -1232,35 +1208,6 @@ pub fn path_blob_at(repo: &gix::Repository, commit_oid: &str, path: &str) -> Res
         })?;
     }
     Err(not_in_tree())
-}
-
-/// Entry mode of `path` at `commit_oid`'s tree, or `None` when absent.
-///
-/// Failure semantics mirror [`path_blob_at`]: `PathNotInTree` is collapsed
-/// to `Ok(None)` only by callers that want the absent answer; plumbing
-/// failures (unparsable OID, missing commit, unreadable tree) propagate as
-/// `Error::Git`. Used on remap read-failure paths to tell a gitlink —
-/// whose commit object legitimately lives in another repository — apart
-/// from a present-but-unreadable blob.
-pub(crate) fn path_entry_mode_at(
-    repo: &gix::Repository,
-    commit_oid: &str,
-    path: &str,
-) -> Result<Option<gix::objs::tree::EntryMode>> {
-    let oid = parse_oid(commit_oid)?;
-    let commit = repo
-        .find_commit(oid)
-        .map_err(|e| Error::Git(format!("find commit `{commit_oid}`: {e}")))?;
-    let tree = commit
-        .tree()
-        .map_err(|e| Error::Git(format!("read tree of `{commit_oid}`: {e}")))?;
-    match tree.lookup_entry_by_path(Path::new(path)) {
-        Ok(Some(entry)) => Ok(Some(entry.mode())),
-        Ok(None) => Ok(None),
-        Err(e) => Err(Error::Git(format!(
-            "traverse tree of `{commit_oid}` to `{path}`: {e}"
-        ))),
-    }
 }
 
 /// Read file bytes from the working tree, relative to the repo root.
