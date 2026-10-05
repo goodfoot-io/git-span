@@ -46,7 +46,7 @@ pub(crate) fn with_test_boundary_hook<T>(
 }
 
 #[cfg(unix)]
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 #[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd};
 #[cfg(unix)]
@@ -81,20 +81,55 @@ fn ensure_single_component(component: &OsStr) -> Result<()> {
     Ok(())
 }
 
+/// The effective user ID of this process, the owner every private retained
+/// entry must carry.
 #[cfg(unix)]
-fn open_directory_at(parent: &File, component: &OsStr) -> Result<File> {
-    let component = component_c_string(component)?;
+pub(crate) fn effective_uid() -> libc::uid_t {
+    // SAFETY: geteuid(2) takes no arguments, touches no caller memory, and is
+    // specified by POSIX to always succeed, so it has no precondition.
+    unsafe { libc::geteuid() }
+}
+
+/// `openat(2)` relative to a retained directory, always with `O_NOFOLLOW` and
+/// `O_CLOEXEC` added to `flags`: no descriptor-authority open may follow a
+/// final-component symlink or leak into a spawned child. `mode` is only read
+/// by the kernel when `flags` contains `O_CREAT`.
+#[cfg(unix)]
+fn open_at_nofollow(
+    directory: &File,
+    name: &CStr,
+    flags: libc::c_int,
+    mode: libc::c_uint,
+) -> std::io::Result<File> {
+    // SAFETY: `directory` is borrowed for the whole call, so its descriptor
+    // stays open and cannot be closed and reused for another file mid-call.
+    // `name` is a NUL-terminated string that outlives the call, and openat
+    // only reads it. `mode` is passed as `c_uint`, the promoted type openat's
+    // variadic third argument is read as when O_CREAT is set; without O_CREAT
+    // the extra argument is never read.
     let descriptor = unsafe {
         libc::openat(
-            parent.as_raw_fd(),
-            component.as_ptr(),
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            flags | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            mode,
         )
     };
     if descriptor < 0 {
-        return Err(std::io::Error::last_os_error()).context("open retained directory component");
+        return Err(std::io::Error::last_os_error());
     }
+    // SAFETY: a non-negative openat result is a descriptor the kernel just
+    // allocated for this call. Nothing else in the process holds or will
+    // close it: it is wrapped exactly once, here, so the returned `File` is
+    // its sole owner and closes it exactly once on drop.
     Ok(unsafe { File::from_raw_fd(descriptor) })
+}
+
+#[cfg(unix)]
+fn open_directory_at(parent: &File, component: &OsStr) -> Result<File> {
+    let component = component_c_string(component)?;
+    open_at_nofollow(parent, &component, libc::O_RDONLY | libc::O_DIRECTORY, 0)
+        .context("open retained directory component")
 }
 
 /// Warn once per process when a mount forces the directory-fsync durability
@@ -128,22 +163,17 @@ impl RetainedDirectory {
         {
             let canonical = std::fs::canonicalize(path)
                 .with_context(|| format!("canonicalize directory `{}`", path.display()))?;
-            let encoded = CString::new(canonical.as_os_str().as_bytes())
-                .context("canonical directory contains NUL")?;
-            let descriptor = unsafe {
-                libc::open(
-                    encoded.as_ptr(),
-                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                )
-            };
-            if descriptor < 0 {
-                return Err(std::io::Error::last_os_error()).with_context(|| {
-                    format!("open canonical directory `{}`", canonical.display())
-                });
-            }
+            use std::os::unix::fs::OpenOptionsExt;
+            // std always adds O_CLOEXEC; the custom flags refuse anything but
+            // a directory and refuse a final-component symlink.
+            let descriptor = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+                .open(&canonical)
+                .with_context(|| format!("open canonical directory `{}`", canonical.display()))?;
             Ok(Self {
                 ancestors: Vec::new(),
-                descriptor: unsafe { File::from_raw_fd(descriptor) },
+                descriptor,
                 display_path: canonical,
             })
         }
@@ -187,6 +217,10 @@ impl RetainedDirectory {
                             DirectoryPolicy::Existing => unreachable!(),
                         };
                         let component_c = component_c_string(component)?;
+                        // SAFETY: `current` is borrowed across the call, so
+                        // its descriptor stays open; `component_c` is a
+                        // NUL-terminated string that outlives the call and
+                        // mkdirat only reads it.
                         let result = unsafe {
                             libc::mkdirat(
                                 current.as_raw_fd(),
@@ -209,7 +243,7 @@ impl RetainedDirectory {
                     use std::os::unix::fs::MetadataExt;
                     let metadata = next.metadata()?;
                     ensure!(
-                        metadata.uid() == unsafe { libc::geteuid() },
+                        metadata.uid() == effective_uid(),
                         "private retained directory has another owner"
                     );
                     ensure!(
@@ -245,17 +279,8 @@ impl RetainedDirectory {
             } else {
                 libc::O_RDONLY
             };
-            let descriptor = unsafe {
-                libc::openat(
-                    self.descriptor.as_raw_fd(),
-                    name.as_ptr(),
-                    access | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                )
-            };
-            if descriptor < 0 {
-                return Err(std::io::Error::last_os_error()).context("open retained file");
-            }
-            let file = unsafe { File::from_raw_fd(descriptor) };
+            let file = open_at_nofollow(&self.descriptor, &name, access, 0)
+                .context("open retained file")?;
             ensure!(
                 file.metadata()?.is_file(),
                 "retained entry is not a regular file"
@@ -274,22 +299,13 @@ impl RetainedDirectory {
         #[cfg(unix)]
         {
             let name = component_c_string(name)?;
-            let descriptor = unsafe {
-                libc::openat(
-                    self.descriptor.as_raw_fd(),
-                    name.as_ptr(),
-                    libc::O_RDWR
-                        | libc::O_CREAT
-                        | libc::O_EXCL
-                        | libc::O_NOFOLLOW
-                        | libc::O_CLOEXEC,
-                    mode,
-                )
-            };
-            if descriptor < 0 {
-                return Err(std::io::Error::last_os_error()).context("create retained file");
-            }
-            Ok(unsafe { File::from_raw_fd(descriptor) })
+            open_at_nofollow(
+                &self.descriptor,
+                &name,
+                libc::O_RDWR | libc::O_CREAT | libc::O_EXCL,
+                mode,
+            )
+            .context("create retained file")
         }
         #[cfg(not(unix))]
         {
@@ -305,19 +321,9 @@ impl RetainedDirectory {
             #[cfg(test)]
             test_boundary("open-or-create");
             let name = component_c_string(name)?;
-            let descriptor = unsafe {
-                libc::openat(
-                    self.descriptor.as_raw_fd(),
-                    name.as_ptr(),
-                    libc::O_RDWR | libc::O_CREAT | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                    mode,
-                )
-            };
-            if descriptor < 0 {
-                return Err(std::io::Error::last_os_error())
-                    .context("open or create retained file");
-            }
-            let file = unsafe { File::from_raw_fd(descriptor) };
+            let file =
+                open_at_nofollow(&self.descriptor, &name, libc::O_RDWR | libc::O_CREAT, mode)
+                    .context("open or create retained file")?;
             ensure!(
                 file.metadata()?.is_file(),
                 "retained entry is not a regular file"
@@ -403,6 +409,10 @@ impl RetainedDirectory {
             test_boundary("rename-to");
             let source = component_c_string(source)?;
             let destination = component_c_string(destination)?;
+            // SAFETY: both retained descriptors are borrowed across the call,
+            // so neither can be closed and reused mid-call; `source` and
+            // `destination` are NUL-terminated strings that outlive the call
+            // and renameat only reads them.
             let result = unsafe {
                 libc::renameat(
                     self.descriptor.as_raw_fd(),
@@ -450,6 +460,9 @@ impl RetainedDirectory {
             #[cfg(test)]
             test_boundary("unlink-directory");
             let name = component_c_string(name)?;
+            // SAFETY: the retained descriptor is borrowed across the call, so
+            // it stays open; `name` is a NUL-terminated string that outlives
+            // the call and unlinkat only reads it.
             let result = unsafe {
                 libc::unlinkat(
                     self.descriptor.as_raw_fd(),
@@ -509,6 +522,9 @@ impl RetainedDirectory {
             #[cfg(test)]
             test_boundary("unlink");
             let name = component_c_string(name)?;
+            // SAFETY: the retained descriptor is borrowed across the call, so
+            // it stays open; `name` is a NUL-terminated string that outlives
+            // the call and unlinkat only reads it.
             let result = unsafe { libc::unlinkat(self.descriptor.as_raw_fd(), name.as_ptr(), 0) };
             if result < 0 {
                 return Err(std::io::Error::last_os_error()).context("unlink retained entry");
@@ -593,6 +609,11 @@ impl RetainedDirectory {
         {
             let name = component_c_string(name)?;
             let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+            // SAFETY: the retained descriptor is borrowed across the call, so
+            // it stays open; `name` is a NUL-terminated string that outlives
+            // the call; `stat` points to live, aligned storage for one
+            // `libc::stat`, which fstatat only writes. Only the status is
+            // inspected afterwards, never the possibly-unwritten buffer.
             let status = unsafe {
                 libc::fstatat(
                     self.descriptor.as_raw_fd(),
@@ -673,7 +694,7 @@ impl RetainedDirectory {
             "retained entry is not a Unix socket"
         );
         ensure!(
-            metadata.uid() == unsafe { libc::geteuid() },
+            metadata.uid() == effective_uid(),
             "retained socket has another owner"
         );
         ensure!(
@@ -813,7 +834,7 @@ impl RuntimeAuthority {
         );
         let temporary = RetainedDirectory::open_canonical(Path::new("/tmp"))?;
         let user = temporary.descend(
-            Path::new(&format!("git-span-{}", unsafe { libc::geteuid() })),
+            Path::new(&format!("git-span-{}", effective_uid())),
             DirectoryPolicy::Private { mode: 0o700 },
         )?;
         let context = user.descend(
@@ -905,14 +926,12 @@ impl RecoveryAuthority {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::{DirectoryPolicy, RecoveryAuthority, RetainedDirectory, SpanRootAuthority};
     #[cfg(target_os = "linux")]
     use super::RuntimeAuthority;
+    use super::{DirectoryPolicy, RecoveryAuthority, RetainedDirectory, SpanRootAuthority};
     use anyhow::Result;
     use std::ffi::OsStr;
-    use std::fs::File;
     use std::io::{Read, Write};
-    use std::os::fd::FromRawFd;
     use std::os::unix::fs::symlink;
     use std::path::Path;
 
@@ -1096,17 +1115,15 @@ mod tests {
         // the command.
         let temp = tempfile::tempdir()?;
         let canonical = temp.path().canonicalize()?;
-        let encoded = std::ffi::CString::new(canonical.as_os_str().as_encoded_bytes())?;
-        let descriptor = unsafe {
-            libc::open(
-                encoded.as_ptr(),
-                libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC,
-            )
-        };
-        assert!(descriptor >= 0, "open O_PATH directory descriptor");
+        // O_PATH ignores the access mode std derives from `read(true)`.
+        use std::os::unix::fs::OpenOptionsExt;
+        let descriptor = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
+            .open(&canonical)?;
         let authority = RetainedDirectory {
             ancestors: Vec::new(),
-            descriptor: unsafe { File::from_raw_fd(descriptor) },
+            descriptor,
             display_path: canonical,
         };
         let result = authority.sync();

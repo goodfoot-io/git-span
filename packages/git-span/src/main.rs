@@ -10,9 +10,11 @@ fn main() {
     // downstream pipe (`git span ... | head`) becomes a clean exit
     // rather than a Rust panic on `println!`.
     #[cfg(unix)]
-    // SAFETY: `signal` with `SIG_DFL` is async-signal-safe and is the
-    // canonical recipe for restoring the default disposition that Rust
-    // overrides on startup. Called once before any I/O.
+    // SAFETY: signal(2) takes no pointers, and `SIG_DFL` installs no handler
+    // code. The disposition is process-global, and this runs at the top of
+    // `main`, before any thread exists, so no concurrent `signal` call (such
+    // as a `SigpipeIgnored` guard) can race it. Every later change goes
+    // through `sigpipe`'s mutex.
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
