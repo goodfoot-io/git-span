@@ -108,8 +108,10 @@ on disk even when nobody was watching.
 Within each group every invocation uses identical `RUSTFLAGS`, so cargo never
 rebuilds dependencies just because flags changed (the "fingerprint thrash"
 problem). The `check` group sets `RUSTFLAGS="-W unused -W dead-code"` for both
-`check` and `clippy`, and both pass `--all-targets` so tests, benches, and
-helper binaries are type-checked and linted alongside the library (each
+`check` and `clippy`, and both pass `--all-targets --all-features` so tests,
+benches, helper binaries, and feature-gated targets (`bench-corpus`'s
+`size_sweep` bench and `bench-corpus-gen` binary) are type-checked and linted
+alongside the library (each
 crate's `clippy.toml` sets `allow-unwrap-in-tests` so the `[lints.clippy]`
 `unwrap_used` warning applies to non-test code only, and
 `avoid-breaking-exported-api = false` so `pub` items are linted like private
