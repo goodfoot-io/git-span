@@ -609,6 +609,20 @@ async function main(): Promise<void> {
   const extensionDevelopmentPath = TEST_DIST_PATH;
   const extensionTestsPath = path.join(TEST_DIST_PATH, 'test/suite/index.cjs');
 
+  // `--force-disable-user-env`: VS Code, when not launched through its CLI,
+  // re-resolves the environment from the user's login shell, whose profile
+  // may reorder PATH ahead of TEST_BIN_PATH -- the extension host would then
+  // spawn a globally installed git-span instead of the fixture. The run must
+  // see exactly the environment this harness built.
+  const launchArgs = [
+    TEST_WORKSPACE_PATH,
+    '--disable-extensions',
+    '--disable-gpu',
+    '--no-sandbox',
+    '--force-disable-user-env',
+    `--user-data-dir=${USER_DATA_DIR_PATH}`
+  ];
+
   // Resolve the VS Code executable through the shared cache under the acquire
   // lock, then hand the explicit path to runTests so it never re-downloads
   // against its per-worktree cwd() default. A failure rejects main(), which
@@ -662,20 +676,6 @@ async function main(): Promise<void> {
     for (const key of problematicVars) {
       delete process.env[key];
     }
-
-    // `--force-disable-user-env`: VS Code, when not launched through its CLI,
-    // re-resolves the environment from the user's login shell, whose profile
-    // may reorder PATH ahead of TEST_BIN_PATH -- the extension host would then
-    // spawn a globally installed git-span instead of the fixture. The run must
-    // see exactly the environment this harness built.
-    const launchArgs = [
-      TEST_WORKSPACE_PATH,
-      '--disable-extensions',
-      '--disable-gpu',
-      '--no-sandbox',
-      '--force-disable-user-env',
-      `--user-data-dir=${USER_DATA_DIR_PATH}`
-    ];
 
     exitCode = await runTests({
       vscodeExecutablePath,
