@@ -1,4 +1,4 @@
-packages/agent-hooks/test/claude/commit-hooks.test.ts rk64:8ed59a1bca59d34e
-packages/agent-hooks/test/codex/commit-hooks.test.ts rk64:52f12d099c97dd78
+packages/agent-hooks/test/claude/commit-hooks.test.ts rk64:b91030663f97c74d
+packages/agent-hooks/test/codex/commit-hooks.test.ts rk64:e54a48de9e7e9e35
 
 The maintained Claude and Codex acceptance suites preserve equivalent receipt, envelope, lifecycle, deadline, and executable-search witness matrices. Claude's permission-neutral replacement and failure-hook assertions intentionally differ from Codex's native pre-allow replacement and post-hook assertions.

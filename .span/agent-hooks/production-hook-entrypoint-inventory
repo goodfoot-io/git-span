@@ -1,5 +1,5 @@
 packages/agent-hooks/package.json#L11-L12 rk64:de318c69716b168a
-packages/agent-hooks/test/common/hook-build-portability.test.ts#L277-L402 rk64:159971416acd95be
+packages/agent-hooks/test/common/hook-build-portability.test.ts#L277-L402 rk64:edf9f83205743d15
 packages/agent-hooks/test/real-bundle-helpers.ts#L18-L50 rk64:ae9a4e8b7b6c04e8
 
 The package build scripts are authoritative for the production Claude and Codex entrypoint inventories, while the portability builds and real-bundle fixture reproduce those inventories exactly so their manifest and installed-artifact tests exercise the shipped hook set.
