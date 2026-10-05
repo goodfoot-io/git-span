@@ -11,6 +11,8 @@
  * @summary HTML/Markdown code-sample equivalence gate.
  */
 
+import { capture } from '../lib/regex';
+
 /**
  * Extract the text content of every fumadocs pretty-code rendered code
  * sample from a page's HTML.
@@ -56,17 +58,16 @@ function stripTags(fragment: string): string {
 export function extractHtmlCodeSamples(html: string): string[] {
   const samples: string[] = [];
   for (const block of html.matchAll(PRE_CODE)) {
-    const inner = block[1];
+    const inner = capture(block, 1);
     const lineOpens = [...inner.matchAll(DATA_LINE_OPEN)];
     if (lineOpens.length === 0) {
       samples.push(stripTags(inner).trim());
       continue;
     }
     const lines: string[] = [];
-    for (let i = 0; i < lineOpens.length; i++) {
-      const open = lineOpens[i];
+    for (const [i, open] of lineOpens.entries()) {
       const start = (open.index ?? 0) + open[0].length;
-      const end = i + 1 < lineOpens.length ? (lineOpens[i + 1].index ?? inner.length) : inner.length;
+      const end = lineOpens[i + 1]?.index ?? inner.length;
       lines.push(stripTags(inner.slice(start, end)).replace(/\s+$/, ''));
     }
     samples.push(lines.join('\n'));
@@ -122,7 +123,8 @@ export function extractMarkdownFences(markdown: string): string[] {
     if (fence) {
       const line = fence.blockquote ? rawLine.replace(BLOCKQUOTE_PREFIX, '') : rawLine;
       const close = FENCE_CLOSE.exec(line);
-      if (close && close[1][0] === fence.marker && close[1].length >= fence.length) {
+      const closeRun = close ? capture(close, 1) : null;
+      if (closeRun && closeRun.charAt(0) === fence.marker && closeRun.length >= fence.length) {
         fences.push(fence.body.join('\n'));
         fence = null;
         continue;
@@ -134,7 +136,8 @@ export function extractMarkdownFences(markdown: string): string[] {
     const line = blockquote ? rawLine.replace(BLOCKQUOTE_PREFIX, '') : rawLine;
     const open = BACKTICK_FENCE_OPEN.exec(line) ?? TILDE_FENCE_OPEN.exec(line);
     if (open) {
-      fence = { marker: open[1][0], length: open[1].length, body: [], blockquote };
+      const openRun = capture(open, 1);
+      fence = { marker: openRun.charAt(0), length: openRun.length, body: [], blockquote };
     }
   }
   if (fence) fences.push(fence.body.join('\n'));
@@ -189,6 +192,13 @@ function excerpt(sample: string): string {
   return `"${firstLine.length > EXCERPT_LIMIT ? `${firstLine.slice(0, EXCERPT_LIMIT)}…` : firstLine}"`;
 }
 
+/** The sample at `index`; callers only ask for indices their length checks put in range. */
+function sampleAt(samples: readonly string[], index: number): string {
+  const sample = samples[index];
+  if (sample === undefined) throw new Error(`no code sample at index ${index} (have ${samples.length})`);
+  return sample;
+}
+
 /** The first index at which the two sequences stop agreeing, sharing-prefix style. */
 function firstDivergence(htmlSamples: string[], markdownSamples: string[]): number {
   const shared = Math.min(htmlSamples.length, markdownSamples.length);
@@ -210,7 +220,7 @@ export function equivalentCodeSamples(html: string, markdown: string): { equival
       // exactly at `index` on whichever side is longer.
       const longerSide = htmlSamples.length > markdownSamples.length ? 'HTML' : 'Markdown';
       const shorterSide = longerSide === 'HTML' ? 'Markdown' : 'HTML';
-      const block = (longerSide === 'HTML' ? htmlSamples : markdownSamples)[index];
+      const block = sampleAt(longerSide === 'HTML' ? htmlSamples : markdownSamples, index);
       return {
         equivalent: false,
         mismatch: `${counts}; the first ${index} sample(s) match, so the block at index ${index} is present only in ${longerSide} and missing from ${shorterSide}: ${excerpt(block)}`
@@ -218,14 +228,15 @@ export function equivalentCodeSamples(html: string, markdown: string): { equival
     }
     return {
       equivalent: false,
-      mismatch: `${counts}; the sequences first diverge at index ${index}, where HTML has ${excerpt(htmlSamples[index])} and Markdown has ${excerpt(markdownSamples[index])}`
+      mismatch: `${counts}; the sequences first diverge at index ${index}, where HTML has ${excerpt(sampleAt(htmlSamples, index))} and Markdown has ${excerpt(sampleAt(markdownSamples, index))}`
     };
   }
 
-  for (let i = 0; i < htmlSamples.length; i++) {
-    if (htmlSamples[i] !== markdownSamples[i]) {
-      const htmlLines = htmlSamples[i].split('\n');
-      const markdownLines = markdownSamples[i].split('\n');
+  for (const [i, htmlSample] of htmlSamples.entries()) {
+    const markdownSample = sampleAt(markdownSamples, i);
+    if (htmlSample !== markdownSample) {
+      const htmlLines = htmlSample.split('\n');
+      const markdownLines = markdownSample.split('\n');
       let line = 0;
       while (line < htmlLines.length && line < markdownLines.length && htmlLines[line] === markdownLines[line]) line++;
       return {

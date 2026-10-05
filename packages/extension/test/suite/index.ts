@@ -33,7 +33,7 @@ export async function run(): Promise<void> {
   // is {TEST_DIST_PATH}/test/suite/. One level up is {TEST_DIST_PATH}/test/.
   const testsRoot = path.resolve(__dirname, '..');
 
-  const testPattern = process.env['TEST_PATTERN'];
+  const testPattern = process.env.TEST_PATTERN;
   let globPattern = '**/*.test.cjs';
 
   if (testPattern) {

@@ -21,7 +21,10 @@ const manifest = new Map(
     .trim()
     .split('\n')
     .map((line) => {
-      const [hash, filename] = line.trim().split(/\s+/);
+      const [hash, filename, ...rest] = line.trim().split(/\s+/);
+      if (hash === undefined || filename === undefined || rest.length > 0) {
+        throw new Error(`malformed sha256-manifest.txt line: ${JSON.stringify(line)}`);
+      }
       return [filename, hash] as const;
     })
 );

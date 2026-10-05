@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
+import { capture } from '~/lib/regex';
 import { renderSitemap } from '~/lib/sitemap';
 
 const FIXTURE_ORIGIN = 'https://example.com';
 
 function locs(xml: string): string[] {
-  return [...xml.matchAll(/<loc>(.*?)<\/loc>/g)].map((match) => match[1]);
+  return [...xml.matchAll(/<loc>(.*?)<\/loc>/g)].map((match) => capture(match, 1));
 }
 
 describe('renderSitemap', () => {

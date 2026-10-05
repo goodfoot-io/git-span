@@ -22,6 +22,7 @@
  * @summary Pathname-keyed discovery classifier, Link serializer, response finalizer
  */
 import { AGENT_SKILLS_LINK } from './agent-skills';
+import { capture } from './regex';
 
 /** A discovery relation for one public page: its Markdown twin (`alternate`)
  * and the llms.txt index that describes it (`describedby`). */
@@ -91,14 +92,14 @@ export function getDiscoveryLinks(rawPathname: string): DiscoveryLinkDescriptor[
   if (pathname === '/' || pathname === '/index.md') return HOMEPAGE_LINKS;
 
   const mdMatch = /^\/docs\/(.+)\.md$/.exec(pathname);
-  const docsPath = mdMatch ? `/docs/${mdMatch[1]}` : pathname.replace(/\/+$/, '');
+  const docsPath = mdMatch ? `/docs/${capture(mdMatch, 1)}` : pathname.replace(/\/+$/, '');
   // The content-path prefix match is case-insensitive to mirror react-router's
   // route matching — /DOCS/overview is a served content page, so it must
   // advertise. The .md family stays exact-case above (the worker 404s
   // /DOCS/overview.md), and the emitted hrefs are canonicalized, so a
   // case-variant page advertises the canonical twin, never a case-variant one.
   const docsMatch = /^\/docs\/(.+)$/i.exec(docsPath);
-  if (docsMatch && DOC_SLUGS.has(docsMatch[1])) {
+  if (docsMatch && DOC_SLUGS.has(capture(docsMatch, 1))) {
     return docsDiscoveryLinks(docsPath.replace(/^\/docs/i, '/docs'));
   }
   return [];

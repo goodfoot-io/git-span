@@ -56,7 +56,7 @@ function hasOpenCustomEditorTab(viewType: string): boolean {
 }
 
 describe('spanFileEditorProvider (end-to-end)', () => {
-  const workspacePath = process.env['TEST_WORKSPACE_PATH'];
+  const workspacePath = process.env.TEST_WORKSPACE_PATH;
   if (workspacePath === undefined) {
     throw new Error('TEST_WORKSPACE_PATH must be set by the test runner.');
   }

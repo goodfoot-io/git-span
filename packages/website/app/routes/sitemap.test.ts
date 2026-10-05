@@ -1,17 +1,18 @@
 // @vitest-environment node
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { matchRoutes, type RouteObject } from 'react-router';
 import { describe, expect, it } from 'vitest';
 import { loader } from './sitemap.xml';
 import { indexableRoutes } from '~/lib/indexable-routes';
 import { SITE_URL } from '~/lib/meta';
+import { capture } from '~/lib/regex';
 import { RENAMED_DOC_SLUGS } from '~/lib/renamed-doc-slugs';
 import routes from '~/routes';
 import { expectedDocsSlugs } from '~/test/expected-docs-slugs';
+import { matchedFile } from '~/test/route-table';
 
 function locs(xml: string): string[] {
-  return [...xml.matchAll(/<loc>(.*?)<\/loc>/g)].map((match) => match[1]);
+  return [...xml.matchAll(/<loc>(.*?)<\/loc>/g)].map((match) => capture(match, 1));
 }
 
 describe('GET /sitemap.xml', () => {
@@ -78,14 +79,9 @@ describe('GET /sitemap.xml', () => {
   });
 
   it('registers the sitemap route and resolves it at runtime', () => {
-    // Reachability, not just table presence — the llms-resources pattern. The
-    // route table is the dev RouteConfig, which the matcher accepts at
-    // runtime; the cast narrows only for the type checker.
+    // Reachability, not just table presence — the llms-resources pattern.
     expect(routes).toContainEqual({ path: 'sitemap.xml', file: 'routes/sitemap.xml.ts' });
-    const table = routes as unknown as RouteObject[];
-    const match = matchRoutes(table, '/sitemap.xml');
-    const file = (match?.[0]?.route as (RouteObject & { file?: string }) | undefined)?.file;
-    expect(file).toBe('routes/sitemap.xml.ts');
+    expect(matchedFile('/sitemap.xml')).toBe('routes/sitemap.xml.ts');
   });
 
   it('keeps every indexable route in sync with routes.ts and the sitemap', async () => {

@@ -10,7 +10,7 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { readGateServerInfo } from '~/gate/globalSetup';
 import { AGENT_SKILLS_INDEX_PATH } from '~/lib/agent-skills';
-import { agentSkillsPublication } from '~/lib/agent-skills.generated';
+import { agentSkillsPublication } from '~/lib/agent-skills-publication';
 
 const { baseUrl } = readGateServerInfo();
 

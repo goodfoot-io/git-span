@@ -85,38 +85,28 @@ export interface SpanRenderOutcome {
 }
 
 /**
- * Key under which {@linkcode testOnlyRenderOutcomes}'s backing `Map` is
- * stashed on `globalThis`. Each test file and the extension itself are
- * bundled as separate esbuild outputs (see `scripts/build/build-testing.js`),
- * so a plain module-scoped `Map` would not be shared between the running
- * extension's bundle and a test file's own bundle even though both execute
- * in the same extension-host process -- `globalThis` is the one thing they
- * actually share.
+ * The test-only registries below are stashed on `globalThis` rather than held
+ * in module scope. Each test file and the extension itself are bundled as
+ * separate esbuild outputs (see `scripts/build/build-testing.js`), so a plain
+ * module-scoped `Map` would not be shared between the running extension's
+ * bundle and a test file's own bundle even though both execute in the same
+ * extension-host process -- `globalThis` is the one thing they actually
+ * share. The first bundle to load creates each `Map`; later bundles adopt it.
  */
-const TEST_ONLY_RENDER_OUTCOMES_GLOBAL_KEY = '__gitSpanSpanViewerTestOnlyRenderOutcomes__';
+declare global {
+  var __gitSpanSpanViewerTestOnlyRenderOutcomes__: Map<string, SpanRenderOutcome> | undefined;
+  var __gitSpanSpanViewerTestOnlyLastPostedDocument__: Map<string, PostedDocument> | undefined;
+  var __gitSpanSpanViewerTestOnlyWatcherCoalescingStats__: Map<string, SpanWatcherCoalescingStats> | undefined;
+}
 
 /**
  * Test-only hook recording the most recent {@linkcode SpanRenderOutcome} for
  * each open span document, keyed by `uri.toString()`. Not read by any
  * production code path.
  */
-export const testOnlyRenderOutcomes: Map<string, SpanRenderOutcome> = ((): Map<string, SpanRenderOutcome> => {
-  const globalRecord = globalThis as unknown as Record<string, Map<string, SpanRenderOutcome> | undefined>;
-  const existing = globalRecord[TEST_ONLY_RENDER_OUTCOMES_GLOBAL_KEY];
-  if (existing !== undefined) {
-    return existing;
-  }
-  const created = new Map<string, SpanRenderOutcome>();
-  globalRecord[TEST_ONLY_RENDER_OUTCOMES_GLOBAL_KEY] = created;
-  return created;
-})();
-
-/**
- * Key under which {@linkcode testOnlyLastPostedDocument}'s backing `Map` is
- * stashed on `globalThis`, for the same per-bundle sharing reason as
- * {@linkcode TEST_ONLY_RENDER_OUTCOMES_GLOBAL_KEY}.
- */
-const TEST_ONLY_LAST_POSTED_DOCUMENT_GLOBAL_KEY = '__gitSpanSpanViewerTestOnlyLastPostedDocument__';
+globalThis.__gitSpanSpanViewerTestOnlyRenderOutcomes__ ??= new Map();
+export const testOnlyRenderOutcomes: Map<string, SpanRenderOutcome> =
+  globalThis.__gitSpanSpanViewerTestOnlyRenderOutcomes__;
 
 /**
  * Test-only hook recording the exact object most recently posted to each open
@@ -126,16 +116,9 @@ const TEST_ONLY_LAST_POSTED_DOCUMENT_GLOBAL_KEY = '__gitSpanSpanViewerTestOnlyLa
  * entry count, and the raced-read status card. Not read by any production
  * code path.
  */
-export const testOnlyLastPostedDocument: Map<string, PostedDocument> = ((): Map<string, PostedDocument> => {
-  const globalRecord = globalThis as unknown as Record<string, Map<string, PostedDocument> | undefined>;
-  const existing = globalRecord[TEST_ONLY_LAST_POSTED_DOCUMENT_GLOBAL_KEY];
-  if (existing !== undefined) {
-    return existing;
-  }
-  const created = new Map<string, PostedDocument>();
-  globalRecord[TEST_ONLY_LAST_POSTED_DOCUMENT_GLOBAL_KEY] = created;
-  return created;
-})();
+globalThis.__gitSpanSpanViewerTestOnlyLastPostedDocument__ ??= new Map();
+export const testOnlyLastPostedDocument: Map<string, PostedDocument> =
+  globalThis.__gitSpanSpanViewerTestOnlyLastPostedDocument__;
 
 /**
  * Per-document watcher-coalescing counters. Fields are mutated in place by
@@ -151,32 +134,15 @@ export interface SpanWatcherCoalescingStats {
 }
 
 /**
- * Key under which {@linkcode testOnlyWatcherCoalescingStats}'s backing `Map`
- * is stashed on `globalThis`, for the same per-bundle sharing reason as
- * {@linkcode TEST_ONLY_RENDER_OUTCOMES_GLOBAL_KEY}.
- */
-const TEST_ONLY_WATCHER_COALESCING_STATS_GLOBAL_KEY = '__gitSpanSpanViewerTestOnlyWatcherCoalescingStats__';
-
-/**
  * Test-only hook counting watcher events and how many renders the debounce
  * actually started for each open span document, keyed by `uri.toString()`.
  * Redundant-render behavior is otherwise invisible: every pipeline runs
  * off-screen and only its posted result (or its suppression by the
  * generation guard) can be observed. Not read by any production code path.
  */
-export const testOnlyWatcherCoalescingStats: Map<string, SpanWatcherCoalescingStats> = ((): Map<
-  string,
-  SpanWatcherCoalescingStats
-> => {
-  const globalRecord = globalThis as unknown as Record<string, Map<string, SpanWatcherCoalescingStats> | undefined>;
-  const existing = globalRecord[TEST_ONLY_WATCHER_COALESCING_STATS_GLOBAL_KEY];
-  if (existing !== undefined) {
-    return existing;
-  }
-  const created = new Map<string, SpanWatcherCoalescingStats>();
-  globalRecord[TEST_ONLY_WATCHER_COALESCING_STATS_GLOBAL_KEY] = created;
-  return created;
-})();
+globalThis.__gitSpanSpanViewerTestOnlyWatcherCoalescingStats__ ??= new Map();
+export const testOnlyWatcherCoalescingStats: Map<string, SpanWatcherCoalescingStats> =
+  globalThis.__gitSpanSpanViewerTestOnlyWatcherCoalescingStats__;
 
 /**
  * Signature of `runGitSpanCommand`, injectable so tests can substitute a fake

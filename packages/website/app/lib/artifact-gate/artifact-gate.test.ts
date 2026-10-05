@@ -24,7 +24,7 @@ const packageRoot = fileURLToPath(new URL('../../..', import.meta.url));
 const repoRoot = fileURLToPath(new URL('../../../..', import.meta.url));
 
 /** The one committed artifact the umbrella owns today. */
-const GENERATED_PATH = 'app/lib/agent-skills.generated.ts';
+const GENERATED_PATH = 'app/lib/agent-skills.generated.json';
 
 /** A temp directory that stands in for a checkout: `generateArtifacts`
  * writes the artifact into it exactly where the committed file would sit. */

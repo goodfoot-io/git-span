@@ -79,8 +79,7 @@
       "!!plugins-claude/git-span/skills",
       "!!plugins-codex/git-span/skills",
       "!!plugins-opencode/git-span/skills",
-      "!!plugins-antigravity/git-span/skills",
-      "!!packages/website/app/lib/agent-skills.generated.ts"
+      "!!plugins-antigravity/git-span/skills"
     ]
   }
 }

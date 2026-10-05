@@ -4,14 +4,17 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { type LoaderFunctionArgs, matchRoutes, type RouteObject } from 'react-router';
+import type { LoaderFunctionArgs } from 'react-router';
 import { describe, expect, it } from 'vitest';
 import { buildPublication } from '../../scripts/generate-agent-skills.mjs';
 import { loader as fileLoader } from './agent-skills/file';
 import { loader as indexLoader } from './agent-skills/index';
 import { AGENT_SKILLS_INDEX_PATH } from '~/lib/agent-skills';
-import { agentSkillsPublication } from '~/lib/agent-skills.generated';
+import { agentSkillsPublication } from '~/lib/agent-skills-publication';
 import routes from '~/routes';
+import { defined } from '~/test/defined';
+import { loaderArgs } from '~/test/loader-args';
+import { matchedFile } from '~/test/route-table';
 
 // The generator's input: the normative Claude plugin skill tree, four levels
 // above this file. Resolved from import.meta.url — never cwd — because yarn
@@ -39,12 +42,8 @@ function walkSkillFiles(skillDir: string, dir = skillDir): string[] {
   });
 }
 
-function loaderArgs(url: string, params: Record<string, string> = {}, method = 'GET'): LoaderFunctionArgs {
-  return {
-    request: new Request(`https://git-span.test${url}`, { method }),
-    params,
-    context: {}
-  } as unknown as LoaderFunctionArgs;
+function skillArgs(url: string, params: Record<string, string> = {}, method = 'GET'): LoaderFunctionArgs {
+  return loaderArgs(`https://git-span.test${url}`, { params, method });
 }
 
 function caught(fn: () => unknown): unknown {
@@ -66,24 +65,19 @@ describe(`GET ${AGENT_SKILLS_INDEX_PATH}`, () => {
       file: 'routes/agent-skills/index.ts'
     });
     expect(routes).toContainEqual({ path: '.well-known/agent-skills/*', file: 'routes/agent-skills/file.ts' });
-    const table = routes as unknown as RouteObject[];
-    const fileOf = (match: ReturnType<typeof matchRoutes>) =>
-      (match?.[0]?.route as (RouteObject & { file?: string }) | undefined)?.file;
-    expect(fileOf(matchRoutes(table, AGENT_SKILLS_INDEX_PATH))).toBe('routes/agent-skills/index.ts');
-    expect(fileOf(matchRoutes(table, '/.well-known/agent-skills/git-span/SKILL.md'))).toBe(
-      'routes/agent-skills/file.ts'
-    );
+    expect(matchedFile(AGENT_SKILLS_INDEX_PATH)).toBe('routes/agent-skills/index.ts');
+    expect(matchedFile('/.well-known/agent-skills/git-span/SKILL.md')).toBe('routes/agent-skills/file.ts');
   });
 
   it('serves the index as application/json with the generated document', async () => {
-    const response = await indexLoader(loaderArgs(AGENT_SKILLS_INDEX_PATH));
+    const response = await indexLoader(skillArgs(AGENT_SKILLS_INDEX_PATH));
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toBe('application/json');
     expect(await response.json()).toEqual(index);
   });
 
   it('answers HEAD with the same headers and no body', async () => {
-    const response = await indexLoader(loaderArgs(AGENT_SKILLS_INDEX_PATH, {}, 'HEAD'));
+    const response = await indexLoader(skillArgs(AGENT_SKILLS_INDEX_PATH, {}, 'HEAD'));
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toBe('application/json');
     expect(await response.text()).toBe('');
@@ -128,14 +122,14 @@ describe('GET /.well-known/agent-skills/*', () => {
   it('serves SKILL.md with text/markdown and scripts with text/plain', async () => {
     for (const name of liveSkillDirs) {
       const response = await fileLoader(
-        loaderArgs(`/.well-known/agent-skills/${name}/SKILL.md`, { '*': `${name}/SKILL.md` })
+        skillArgs(`/.well-known/agent-skills/${name}/SKILL.md`, { '*': `${name}/SKILL.md` })
       );
       expect(response.status).toBe(200);
       expect(response.headers.get('content-type')).toBe('text/markdown; charset=utf-8');
-      expect(await response.text()).toBe(agentSkillsPublication.files[`${name}/SKILL.md`].content);
+      expect(await response.text()).toBe(defined(agentSkillsPublication.files[`${name}/SKILL.md`]).content);
     }
     const script = await fileLoader(
-      loaderArgs('/.well-known/agent-skills/hook-effect-analysis/scripts/collect.mjs', {
+      skillArgs('/.well-known/agent-skills/hook-effect-analysis/scripts/collect.mjs', {
         '*': 'hook-effect-analysis/scripts/collect.mjs'
       })
     );
@@ -156,7 +150,7 @@ describe('GET /.well-known/agent-skills/*', () => {
 
   it('answers HEAD with the same headers and no body', async () => {
     const response = await fileLoader(
-      loaderArgs('/.well-known/agent-skills/reconcile/SKILL.md', { '*': 'reconcile/SKILL.md' }, 'HEAD')
+      skillArgs('/.well-known/agent-skills/reconcile/SKILL.md', { '*': 'reconcile/SKILL.md' }, 'HEAD')
     );
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toBe('text/markdown; charset=utf-8');
@@ -164,7 +158,7 @@ describe('GET /.well-known/agent-skills/*', () => {
   });
 
   it('404s fail-closed on unknown paths', () => {
-    const error = caught(() => fileLoader(loaderArgs('/.well-known/agent-skills/nope', { '*': 'nope' })));
+    const error = caught(() => fileLoader(skillArgs('/.well-known/agent-skills/nope', { '*': 'nope' })));
     expect(error).toBeInstanceOf(Response);
     if (!(error instanceof Response)) throw new Error('expected a thrown Response');
     expect(error.status).toBe(404);

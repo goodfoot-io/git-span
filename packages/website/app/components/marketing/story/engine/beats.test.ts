@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clamp01, deriveScene, lerp, TIMELINE } from '../scene';
+import { clamp01, deriveScene, lerp, timelinePhase } from '../scene';
 import {
   AZIMUTH_DRIFT,
   CANONICAL_AZIMUTH,
@@ -49,8 +49,8 @@ const FINAL_REASSEMBLY_END_T = 87;
 
 const frameAt = (t: number) => engineFrame(deriveScene(t));
 
-const traversePhase = TIMELINE.find((phase) => phase.id === 'traverse')!;
-const successPhase = TIMELINE.find((phase) => phase.id === 'success')!;
+const traversePhase = timelinePhase('traverse');
+const successPhase = timelinePhase('success');
 
 const tAtLocal = (phase: { start: number; end: number }, local: number) =>
   phase.start + local * (phase.end - phase.start);
@@ -375,7 +375,7 @@ describe('idleWeight', () => {
   });
 
   it('is 0 from the top of `change` through the whole mismatch story, up to RETURN_TO_NORMAL_START_T', () => {
-    const changePhase = TIMELINE.find((phase) => phase.id === 'change')!;
+    const changePhase = timelinePhase('change');
     expect(frameAt(changePhase.start).idleWeight).toBe(0);
     expect(frameAt(45).idleWeight).toBe(0);
     expect(frameAt(RETURN_TO_NORMAL_START_T).idleWeight).toBe(0);

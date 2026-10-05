@@ -52,7 +52,7 @@ const TEST_DIST_PATH = path.join(EXTENSION_ROOT, `dist-test-${INSTANCE_ID}`);
  * `VSCODE_TEST_CACHE_PATH` overrides it (CI isolation).
  */
 const VSCODE_TEST_CACHE_PATH =
-  process.env['VSCODE_TEST_CACHE_PATH'] ?? path.join(os.homedir(), '.cache', 'git-span', 'vscode-test');
+  process.env.VSCODE_TEST_CACHE_PATH ?? path.join(os.homedir(), '.cache', 'git-span', 'vscode-test');
 const ACQUIRE_LOCK_PATH = path.join(VSCODE_TEST_CACHE_PATH, 'acquire.lock');
 
 /**
@@ -133,10 +133,10 @@ function getMinVSCodeVersion(): string {
  */
 function isHeadless(): boolean {
   return !!(
-    process.env['CI'] ||
-    process.env['GITHUB_ACTIONS'] ||
-    process.env['HEADLESS'] ||
-    (os.platform() === 'linux' && !process.env['DISPLAY'])
+    process.env.CI ||
+    process.env.GITHUB_ACTIONS ||
+    process.env.HEADLESS ||
+    (os.platform() === 'linux' && !process.env.DISPLAY)
   );
 }
 
@@ -181,7 +181,7 @@ function cleanX11LockFiles(): void {
  * @throws Error when no display is available or Xvfb fails to start.
  */
 function startXvfb(): cp.ChildProcess | null {
-  if (os.platform() !== 'linux' || process.env['DISPLAY']) {
+  if (os.platform() !== 'linux' || process.env.DISPLAY) {
     return null;
   }
 
@@ -220,11 +220,11 @@ function startXvfb(): cp.ChildProcess | null {
     console.error('[runTest] Xvfb error:', err.message);
   });
 
-  process.env['DISPLAY'] = displayStr;
-  process.env['ELECTRON_DISABLE_SANDBOX'] = '1';
-  process.env['ELECTRON_DISABLE_GPU_SANDBOX'] = '1';
-  process.env['ELECTRON_DISABLE_SECURITY_WARNINGS'] = '1';
-  process.env['HEADLESS'] = '1';
+  process.env.DISPLAY = displayStr;
+  process.env.ELECTRON_DISABLE_SANDBOX = '1';
+  process.env.ELECTRON_DISABLE_GPU_SANDBOX = '1';
+  process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = '1';
+  process.env.HEADLESS = '1';
 
   // Wait up to 10 s for Xvfb to be ready.
   let displayReady = false;
@@ -595,7 +595,7 @@ process.exit(0);
     });
   }
 
-  process.env['PATH'] = `${TEST_BIN_PATH}${path.delimiter}${process.env['PATH'] ?? ''}`;
+  process.env.PATH = `${TEST_BIN_PATH}${path.delimiter}${process.env.PATH ?? ''}`;
 }
 
 /**
@@ -652,7 +652,7 @@ async function main(): Promise<void> {
         throw new Error('dbus-daemon did not return a valid session address and process ID');
       }
       state.dbusPid = daemonPid;
-      process.env['DBUS_SESSION_BUS_ADDRESS'] = address;
+      process.env.DBUS_SESSION_BUS_ADDRESS = address;
     }
 
     // Host Node/VS Code flags are not supported by packaged test Electron.
@@ -663,18 +663,26 @@ async function main(): Promise<void> {
       delete process.env[key];
     }
 
+    // `--force-disable-user-env`: VS Code, when not launched through its CLI,
+    // re-resolves the environment from the user's login shell, whose profile
+    // may reorder PATH ahead of TEST_BIN_PATH -- the extension host would then
+    // spawn a globally installed git-span instead of the fixture. The run must
+    // see exactly the environment this harness built.
+    const launchArgs = [
+      TEST_WORKSPACE_PATH,
+      '--disable-extensions',
+      '--disable-gpu',
+      '--no-sandbox',
+      '--force-disable-user-env',
+      `--user-data-dir=${USER_DATA_DIR_PATH}`
+    ];
+
     exitCode = await runTests({
       vscodeExecutablePath,
       extensionDevelopmentPath,
       extensionTestsPath,
       extensionTestsEnv: { ...process.env, TEST_WORKSPACE_PATH, GIT_SPAN_EXTENSION_USE_PATH_FALLBACK: '1' },
-      launchArgs: [
-        TEST_WORKSPACE_PATH,
-        '--disable-extensions',
-        '--disable-gpu',
-        '--no-sandbox',
-        `--user-data-dir=${USER_DATA_DIR_PATH}`
-      ]
+      launchArgs
     });
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
@@ -712,13 +720,7 @@ async function main(): Promise<void> {
           extensionDevelopmentPath,
           extensionTestsPath,
           extensionTestsEnv: { ...process.env, TEST_WORKSPACE_PATH, GIT_SPAN_EXTENSION_USE_PATH_FALLBACK: '1' },
-          launchArgs: [
-            TEST_WORKSPACE_PATH,
-            '--disable-extensions',
-            '--disable-gpu',
-            '--no-sandbox',
-            `--user-data-dir=${USER_DATA_DIR_PATH}`
-          ]
+          launchArgs
         });
       } catch (retryErr) {
         console.error('[runTest] Retry after SIGSEGV also failed:', retryErr);

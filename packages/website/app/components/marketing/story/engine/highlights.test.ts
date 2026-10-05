@@ -4,6 +4,7 @@ import { deriveScene } from '../scene';
 import { engineFrame, HIGHLIGHT_BLUE, HIGHLIGHT_GREEN, HIGHLIGHT_ORANGE, HIGHLIGHT_RED } from './beats';
 import { BLOOM_LAYER, blackbodyColor, buildHighlightRecords, pulseWave, updateHighlights } from './highlights';
 import type { PartRecord } from './types';
+import { defined } from '~/test/defined';
 
 function makePartRecord(colorHex: number): PartRecord {
   const geometry = new THREE.BoxGeometry(1, 1, 1);
@@ -134,14 +135,14 @@ describe('buildHighlightRecords', () => {
     const gear = makePartRecord(0x123456);
     const records = buildHighlightRecords([gear], null, []);
     expect(records).toHaveLength(1);
-    expect(records[0].stages.map((s) => s.kind)).toEqual(['ringOrange', 'blue', 'ringRed', 'finalGreen']);
+    expect(defined(records[0]).stages.map((s) => s.kind)).toEqual(['ringOrange', 'blue', 'ringRed', 'finalGreen']);
   });
 
   it('mount records carry stages orange -> red -> finalGreen, in order', () => {
     const mount = makePartRecord(0x223344);
     const records = buildHighlightRecords([], mount, []);
     expect(records).toHaveLength(1);
-    expect(records[0].stages.map((s) => s.kind)).toEqual(['orange', 'red', 'finalGreen']);
+    expect(defined(records[0]).stages.map((s) => s.kind)).toEqual(['orange', 'red', 'finalGreen']);
   });
 
   it('each orangeEmphasis (piston) record carries stages orange -> pistonRed -> finalGreen, in order', () => {
@@ -156,14 +157,14 @@ describe('buildHighlightRecords', () => {
 
   it('baseMaterialColor equals the material color at build time', () => {
     const gear = makePartRecord(0x4a4d52);
-    const [record] = buildHighlightRecords([gear], null, []);
+    const record = defined(buildHighlightRecords([gear], null, [])[0]);
     const material = gear.mesh.material as THREE.MeshStandardMaterial;
     expect(record.baseMaterialColor.equals(material.color)).toBe(true);
   });
 
   it('baseMaterialColor is a clone -- mutating the material color afterward does not change it', () => {
     const gear = makePartRecord(0x4a4d52);
-    const [record] = buildHighlightRecords([gear], null, []);
+    const record = defined(buildHighlightRecords([gear], null, [])[0]);
     const captured = record.baseMaterialColor.clone();
     const material = gear.mesh.material as THREE.MeshStandardMaterial;
     material.color.set(0xffffff);
@@ -177,7 +178,7 @@ describe('buildHighlightRecords', () => {
     material.metalness = 0.9;
     material.roughness = 0.2;
     material.envMapIntensity = 1.3;
-    const [record] = buildHighlightRecords([gear], null, []);
+    const record = defined(buildHighlightRecords([gear], null, [])[0]);
     expect(record.baseMetalness).toBe(0.9);
     expect(record.baseRoughness).toBe(0.2);
     expect(record.baseEnvMapIntensity).toBe(1.3);
@@ -187,7 +188,7 @@ describe('buildHighlightRecords', () => {
     const gear = makePartRecord(0x123456);
     const records = buildHighlightRecords([gear], null, []);
     expect(records).toHaveLength(1);
-    expect(records[0].stages.map((s) => s.kind)).not.toContain('red');
+    expect(defined(records[0]).stages.map((s) => s.kind)).not.toContain('red');
   });
 });
 
@@ -203,10 +204,10 @@ describe('updateHighlights', () => {
 
     updateHighlights(records, frame, 0);
 
-    expect(material.color.equals(records[0].baseMaterialColor)).toBe(true);
-    expect(material.metalness).toBe(records[0].baseMetalness);
-    expect(material.roughness).toBe(records[0].baseRoughness);
-    expect(material.envMapIntensity).toBe(records[0].baseEnvMapIntensity);
+    expect(material.color.equals(defined(records[0]).baseMaterialColor)).toBe(true);
+    expect(material.metalness).toBe(defined(records[0]).baseMetalness);
+    expect(material.roughness).toBe(defined(records[0]).baseRoughness);
+    expect(material.envMapIntensity).toBe(defined(records[0]).baseEnvMapIntensity);
     expect(material.emissive.equals(new THREE.Color(0, 0, 0))).toBe(true);
     expect(gear.mesh.layers.isEnabled(BLOOM_LAYER)).toBe(false);
   });
@@ -233,7 +234,7 @@ describe('updateHighlights', () => {
 
     // Tint is capped at TINT_MAX (0.85), not a full swap to the highlight color -- expected color
     // is the base lerped 0.85 of the way to HIGHLIGHT_GREEN.
-    const expectedColor = records[0].baseMaterialColor.clone().lerp(new THREE.Color(HIGHLIGHT_GREEN), 0.85);
+    const expectedColor = defined(records[0]).baseMaterialColor.clone().lerp(new THREE.Color(HIGHLIGHT_GREEN), 0.85);
     expect(material.color.equals(expectedColor)).toBe(true);
     // Metalness/roughness/envMapIntensity all moved toward their tint targets (0.35 / 0.5, the
     // latter scaled by the 0.85 roughness pull / 0.30) at full weight (w=1).

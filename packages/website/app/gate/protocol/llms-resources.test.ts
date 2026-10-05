@@ -12,6 +12,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { readGateServerInfo } from '~/gate/globalSetup';
 import { withMdLinks } from '~/lib/llms-resources';
 import { SITE_URL } from '~/lib/meta';
+import { capture } from '~/lib/regex';
 import { source } from '~/lib/source';
 
 const { baseUrl } = readGateServerInfo();
@@ -70,7 +71,7 @@ describe('GET /llms.txt — root system map', () => {
   it('resolves every same-origin link target with a 200', async () => {
     await tracked('/llms.txt', async () => {
       const body = await (await fetch(`${baseUrl}/llms.txt`)).text();
-      const targets = [...body.matchAll(/\]\((https?:\/\/[^)]+)\)/g)].map((match) => match[1]);
+      const targets = [...body.matchAll(/\]\((https?:\/\/[^)]+)\)/g)].map((match) => capture(match, 1));
       const sameOrigin = targets.filter((url) => url.startsWith(SITE_URL));
       // The system map always advertises at least the docs index and the two
       // CLI chapters — same-origin link resolution is the load-bearing check

@@ -59,18 +59,18 @@ function beatWeightAt(beatT: number, t: number): number {
 }
 
 const DEFAULT_RGB = hexToRgb(STAGE_BACKGROUND_DEFAULT_CSS);
-const BEAT_RGB = BEATS.map((beat) => hexToRgb(beat.color));
+const BEAT_STOPS = BEATS.map((beat) => ({ t: beat.t, rgb: hexToRgb(beat.color) }));
 
 // The flat panel/fog color at `t` -- default outside every beat's window, the beat's own color
 // across its hold, blended through the fade skirts. Since beats never overlap (see BEATS'
 // comment), at most one weight is ever non-zero, so a plain sequential lerp from the default is
 // exact, not an approximation.
-export function stageEdgeColorAt(t: number): string {
+function stageEdgeColorAt(t: number): string {
   let rgb: Rgb = DEFAULT_RGB;
-  BEATS.forEach((beat, index) => {
+  for (const beat of BEAT_STOPS) {
     const weight = beatWeightAt(beat.t, t);
-    if (weight > 0) rgb = mixRgb(rgb, BEAT_RGB[index], weight);
-  });
+    if (weight > 0) rgb = mixRgb(rgb, beat.rgb, weight);
+  }
   return rgbToHex(rgb);
 }
 

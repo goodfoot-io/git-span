@@ -365,7 +365,7 @@ function isLineRange(value: unknown): value is { start: number; end: number } {
   if (!isMessageRecord(value)) {
     return false;
   }
-  return typeof value['start'] === 'number' && typeof value['end'] === 'number';
+  return typeof value.start === 'number' && typeof value.end === 'number';
 }
 
 /**
@@ -382,15 +382,15 @@ export function isWebviewToHostMessage(value: unknown): value is WebviewToHostMe
   if (!isMessageRecord(value)) {
     return false;
   }
-  switch (value['type']) {
+  switch (value.type) {
     case MESSAGE_TYPES.ready:
     case MESSAGE_TYPES.reload:
     case MESSAGE_TYPES.reopenAsText:
       return true;
     case MESSAGE_TYPES.goToFile:
-      return typeof value['path'] === 'string' && (value['range'] === null || isLineRange(value['range']));
+      return typeof value.path === 'string' && (value.range === null || isLineRange(value.range));
     case MESSAGE_TYPES.openCommit:
-      return typeof value['hash'] === 'string';
+      return typeof value.hash === 'string';
     default:
       return false;
   }
@@ -411,11 +411,11 @@ export function isHostToWebviewMessage(value: unknown): value is HostToWebviewMe
   if (!isMessageRecord(value)) {
     return false;
   }
-  switch (value['type']) {
+  switch (value.type) {
     case MESSAGE_TYPES.document:
-      return isMessageRecord(value['document']);
+      return isMessageRecord(value.document);
     case MESSAGE_TYPES.themeChanged:
-      return isMonacoBaseTheme(value['kind']);
+      return isMonacoBaseTheme(value.kind);
     default:
       return false;
   }

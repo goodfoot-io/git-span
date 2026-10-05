@@ -1,7 +1,6 @@
 // @vitest-environment node
 import type { Item } from 'fumadocs-core/page-tree';
 import { llms } from 'fumadocs-core/source/llms';
-import { matchRoutes, type RouteObject } from 'react-router';
 import { describe, expect, it } from 'vitest';
 import { loader as docsIndexLoader } from './docs.llms.txt';
 import { loader as docsFullLoader } from './docs.llms-full.txt';
@@ -9,9 +8,11 @@ import { loader as rootMapLoader } from './llms.txt';
 import { loader as rootFullLoader } from './llms-full.txt';
 import { renderChapter, renderDocsCorpus, withMdLinks } from '~/lib/llms-resources';
 import { SITE_URL } from '~/lib/meta';
+import { capture } from '~/lib/regex';
 import { source } from '~/lib/source';
 import routes from '~/routes';
 import { expectedDocsSlugs } from '~/test/expected-docs-slugs';
+import { matchedFile } from '~/test/route-table';
 
 describe('route precedence', () => {
   it('registers both docs-scope resources above the docs splat', () => {
@@ -27,13 +28,8 @@ describe('route precedence', () => {
   it('matches the docs-scope resources ahead of the splat at runtime', () => {
     // React Router ranks static segments above the splat regardless of table
     // order; the outcome is the behavior that must not regress, so pin it.
-    // The route table is the dev RouteConfig, which the matcher accepts at
-    // runtime — the cast narrows only for the type checker.
-    const table = routes as unknown as RouteObject[];
-    const fileOf = (match: ReturnType<typeof matchRoutes>): string | undefined =>
-      (match?.[0]?.route as (RouteObject & { file?: string }) | undefined)?.file;
-    expect(fileOf(matchRoutes(table, '/docs/llms.txt'))).toBe('routes/docs.llms.txt.ts');
-    expect(fileOf(matchRoutes(table, '/docs/llms-full.txt'))).toBe('routes/docs.llms-full.txt.ts');
+    expect(matchedFile('/docs/llms.txt')).toBe('routes/docs.llms.txt.ts');
+    expect(matchedFile('/docs/llms-full.txt')).toBe('routes/docs.llms-full.txt.ts');
   });
 });
 
@@ -76,7 +72,7 @@ describe('GET /llms.txt — root system map', () => {
 
   it('links only chapters that resolve in the live page registry', async () => {
     const body = await rootMapLoader().text();
-    const slugs = [...body.matchAll(/\]\([^)]*\/docs\/([^)]+)\.md\)/g)].map((match) => match[1]);
+    const slugs = [...body.matchAll(/\]\([^)]*\/docs\/([^)]+)\.md\)/g)].map((match) => capture(match, 1));
     expect(slugs.length).toBe(4);
     for (const slug of slugs) {
       expect(source.getPage(slug.split('/'))).toBeDefined();
@@ -105,7 +101,7 @@ describe('GET /docs/llms.txt — docs index', () => {
 
   it('lists the ten chapters in authored meta.json order', async () => {
     const body = await docsIndexLoader().text();
-    const targets = [...body.matchAll(/\]\(\/docs\/([^)]+)\)/g)].map((match) => match[1].replace(/\.md$/, ''));
+    const targets = [...body.matchAll(/\]\(\/docs\/([^)]+)\)/g)].map((match) => capture(match, 1).replace(/\.md$/, ''));
     expect(targets).toEqual(expectedDocsSlugs());
   });
 });
@@ -126,9 +122,11 @@ describe('full corpus', () => {
   it('emits corpus chapters in the same order as the index', async () => {
     const indexBody = withMdLinks(llms(source).index());
     const corpus = await renderDocsCorpus();
-    const indexSlugs = [...indexBody.matchAll(/\]\(\/docs\/([^)]+)\)/g)].map((match) => match[1].replace(/\.md$/, ''));
+    const indexSlugs = [...indexBody.matchAll(/\]\(\/docs\/([^)]+)\)/g)].map((match) =>
+      capture(match, 1).replace(/\.md$/, '')
+    );
     const corpusSlugs = [...corpus.matchAll(/^# .+ \((\/docs\/[^)]+)\)$/gm)].map((match) =>
-      match[1].replace(/^\/docs\//, '')
+      capture(match, 1).replace(/^\/docs\//, '')
     );
     expect(corpusSlugs).toEqual(indexSlugs);
   });

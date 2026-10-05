@@ -64,11 +64,12 @@ describe('buildRouteMeta canonical link', () => {
   });
 
   it('keeps og:url in lockstep with the canonical href', () => {
-    for (const [pathname, expected] of [
+    const cases: ReadonlyArray<readonly [pathname: string, expected: string]> = [
       ['/docs/overview', 'https://git-span.com/docs/overview'],
       ['/docs/overview/', 'https://git-span.com/docs/overview'],
       ['/', 'https://git-span.com/']
-    ]) {
+    ];
+    for (const [pathname, expected] of cases) {
       const meta = buildRouteMeta({ title: 't', pathname });
       expect(canonicalHref(meta)).toBe(expected);
       expect(contentByProperty(meta, 'og:url')).toBe(expected);

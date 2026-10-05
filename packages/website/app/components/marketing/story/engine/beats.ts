@@ -3,7 +3,7 @@
 // context. Every quantity below is computed directly from (phase, local) — never from a
 // previous call's output — so scrubbing the scroll timeline backwards is exactly as valid as
 // scrubbing it forwards.
-import { clamp01, ease, lerp, type PhaseId, ramp, type SceneState, TIMELINE } from '../scene';
+import { clamp01, ease, lerp, type PhaseId, ramp, type SceneState, timelinePhase } from '../scene';
 import { stageEdgeColorHexAt } from './backdrop';
 
 // --- Tunable constants -------------------------------------------------------------------
@@ -86,7 +86,7 @@ export const HERO_IDLE_RATE = (2 * Math.PI) / 45;
 // `traverse` (fully exploded/canonical) — hero and traverse share a single curve instead of two
 // curves glued at a phase boundary, which is what guarantees C0 (in fact C1) continuity across
 // the hero -> traverse seam with no extra bookkeeping.
-const TRAVERSE_END_T = TIMELINE.find((phase) => phase.id === 'traverse')!.end;
+const TRAVERSE_END_T = timelinePhase('traverse').end;
 
 // The hero->canonical camera move (and everything riding heroTraverseProgress with it -- explode,
 // margin) now fully settles here rather than at the actual end of `traverse` (TRAVERSE_END_T,
