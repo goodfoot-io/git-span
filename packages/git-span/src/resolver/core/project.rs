@@ -6,10 +6,10 @@
 //! `build_clean_whole_result` (deleted at cutover in `0a8bf95e`) by
 //! resolving once and projecting twice.
 
-use super::resolution::{AnchorCore, DriftLocusCore, ExtentCore, LayerObservationCore};
+use super::resolution::{AnchorCore, ExtentCore, LayerObservationCore};
 use crate::types::{
-    AnchorLocation, AnchorResolved, AnchorStatus, DriftLocus, DriftSource, FuzzySuccessor,
-    LayerSet, SpanResolved,
+    AnchorLocation, AnchorResolved, AnchorStatus, DriftSource, FuzzySuccessor, LayerSet,
+    SpanResolved,
 };
 use std::path::PathBuf;
 
@@ -49,13 +49,7 @@ fn project_anchor(
     // carries. Admit `Deleted` alongside the `Head`-sourced `Changed` case.
     let locus = if matches!(source, Some(DriftSource::Head)) || obs.status == AnchorStatus::Deleted
     {
-        core.locus.as_ref().map(|l| match l {
-            DriftLocusCore::ChangedAt(oid) => DriftLocus::ChangedAt(*oid),
-            DriftLocusCore::OrphanedAt(oid) => DriftLocus::OrphanedAt(*oid),
-            DriftLocusCore::RenamedAt(oid, new_path) => {
-                DriftLocus::RenamedAt(*oid, new_path.clone())
-            }
-        })
+        core.locus.clone()
     } else {
         None
     };

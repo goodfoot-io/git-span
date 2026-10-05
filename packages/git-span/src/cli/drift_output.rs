@@ -14,7 +14,7 @@ use crate::resolver::{
 };
 use crate::types::{
     AnchorExtent, AnchorLocation, AnchorStatus, DriftLocus, DriftSource, EngineOptions, Finding,
-    LayerSet, SpanResolved, UnavailableReason,
+    LayerSet, LocusCause, SpanResolved, UnavailableReason,
 };
 use crate::validation::validate_span_name_shape;
 use anyhow::Result;
@@ -1711,9 +1711,10 @@ fn describe_finding_lower(f: &Finding, available: &AddAvailability) -> String {
                 f.current.is_some(),
             );
             match &f.locus {
-                Some(DriftLocus::RenamedAt(_, path)) => {
-                    format!("{label} — needs re-anchor to {path}")
-                }
+                Some(DriftLocus {
+                    cause: LocusCause::Renamed { to },
+                    ..
+                }) => format!("{label} — needs re-anchor to {to}"),
                 _ => format!("{label} — needs code-fix-first or span deletion"),
             }
         }
@@ -2286,8 +2287,12 @@ fn render_porcelain(
         // Renamed-deletion comment line: the rename target the deleted-locus
         // walk recovered, when the anchor's own orphaning commit's rewrite
         // resolved to a path that's live at HEAD.
-        if let Some(DriftLocus::RenamedAt(_, path)) = &f.locus {
-            println!("# renamed-to {}", csv_escape(path));
+        if let Some(DriftLocus {
+            cause: LocusCause::Renamed { to },
+            ..
+        }) = &f.locus
+        {
+            println!("# renamed-to {}", csv_escape(to));
         }
         // Fuzzy comment line: confidence of the best fuzzy successor.
         if let Some(best) = f.fuzzy_successors.first() {
@@ -2482,16 +2487,13 @@ enum LocusDoc {
 
 impl From<&DriftLocus> for LocusDoc {
     fn from(l: &DriftLocus) -> Self {
-        match l {
-            DriftLocus::ChangedAt(oid) => LocusDoc::Changed {
-                changed_in: oid.to_string(),
-            },
-            DriftLocus::OrphanedAt(oid) => LocusDoc::Orphaned {
-                deleted_in: oid.to_string(),
-            },
-            DriftLocus::RenamedAt(oid, path) => LocusDoc::Renamed {
-                renamed_at: oid.to_string(),
-                renamed_to: path.clone(),
+        let commit = l.commit.to_string();
+        match &l.cause {
+            LocusCause::Changed => LocusDoc::Changed { changed_in: commit },
+            LocusCause::Orphaned => LocusDoc::Orphaned { deleted_in: commit },
+            LocusCause::Renamed { to } => LocusDoc::Renamed {
+                renamed_at: commit,
+                renamed_to: to.clone(),
             },
         }
     }

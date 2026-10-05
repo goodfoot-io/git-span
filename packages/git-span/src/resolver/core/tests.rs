@@ -10,8 +10,8 @@
 
 use super::project::project_effective;
 use super::resolution::{
-    AnchorCore, DefinitionOrdinal, DriftLocusCore, ExtentCore, LayerObservationCore, LocationCore,
-    ResolutionCore, SpanCore,
+    AnchorCore, DefinitionOrdinal, ExtentCore, LayerObservationCore, LocationCore, ResolutionCore,
+    SpanCore,
 };
 use super::token::{
     AvailabilityProof, FilterDependency, LayerSetToken, PathAvailability, PathState,
@@ -19,7 +19,9 @@ use super::token::{
 };
 use crate::cli::drift_label::format_drift_label;
 use crate::resolver::engine::{capture_resolution_core, resolve_named_spans};
-use crate::types::{AnchorStatus, CopyDetection, DriftSource, EngineOptions, LayerSet};
+use crate::types::{
+    AnchorStatus, CopyDetection, DriftLocus, DriftSource, EngineOptions, LayerSet, LocusCause,
+};
 
 // ── Shared fixtures ──────────────────────────────────────────────────────
 
@@ -666,7 +668,10 @@ fn effective_projection_preserves_working_tree_qualifier_for_committed_drift() {
         // since the worktree is where this anchor drifts.
         full: worktree.clone(),
         worktree,
-        locus: Some(DriftLocusCore::ChangedAt(repeated_oid("d"))),
+        locus: Some(DriftLocus {
+            commit: repeated_oid("d"),
+            cause: LocusCause::Changed,
+        }),
     };
     let ordinal = DefinitionOrdinal {
         span_identity: "demo".to_string(),
@@ -801,4 +806,32 @@ fn filter_dependency_persistence_eligibility_requires_complete_identity() {
         !unreadable_worktree.persistence_eligible(),
         "unreadable worktree path state must make persistence ineligible"
     );
+}
+
+// ── Persisted OID encoding ───────────────────────────────────────────────
+
+/// `LocationCore::blob` persists through `crate::oid_hex::option` as the
+/// former hex-`String` field's exact bytes.
+#[test]
+fn location_blob_encodes_as_its_hex_string() {
+    let oid =
+        gix::ObjectId::from_hex(b"0123456789abcdef0123456789abcdef01234567").expect("valid hex");
+    let hex = oid.to_string();
+    let loc = LocationCore {
+        path: "a.rs".into(),
+        extent: ExtentCore::WholeFile,
+        blob: Some(oid),
+    };
+    assert_eq!(
+        bincode::serialize(&loc).expect("serialize LocationCore"),
+        bincode::serialize(&("a.rs", ExtentCore::WholeFile, Some(hex.as_str())))
+            .expect("serialize hex shape"),
+    );
+}
+
+#[test]
+fn malformed_stored_location_blob_fails_decode() {
+    let bytes = bincode::serialize(&("a.rs", ExtentCore::WholeFile, Some("not-hex")))
+        .expect("serialize hex shape");
+    assert!(bincode::deserialize::<LocationCore>(&bytes).is_err());
 }

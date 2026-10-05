@@ -1,8 +1,9 @@
 //! HEAD-source drift-locus attribution. Walks `anchor..HEAD` forward
 //! along the anchored path and returns the first commit that mutates
-//! the anchored byte range (`ChangedAt`), the commit that removes or
-//! renames the path (`OrphanedAt`), or marks the anchor as unreachable
-//! from HEAD.
+//! the anchored byte range (`LocusCause::Changed`), the commit that removes
+//! or renames the path (`LocusCause::Orphaned`), or marks the anchor as
+//! unreachable from HEAD. A `Deleted` anchor instead takes the backward
+//! deleted-locus walk, which can also report `LocusCause::Renamed`.
 //!
 //! Only meaningful when the engine attributes drift to the HEAD layer
 //! (`AnchorResolved.source == Some(DriftSource::Head)`); for shallower
@@ -12,7 +13,7 @@
 use crate::Result;
 use crate::git;
 use crate::resolver::session::ConcurrentSession;
-use crate::types::{AnchorExtent, AnchorResolved, DriftLocus, DriftSource};
+use crate::types::{AnchorExtent, AnchorResolved, DriftLocus, DriftSource, LocusCause};
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
@@ -163,7 +164,10 @@ fn drift_locus_walk(
             match change {
                 ChangeDetached::Deletion { location, .. } => {
                     if location.as_slice() == path_bytes {
-                        return Ok(Some(DriftLocus::OrphanedAt(commit_id)));
+                        return Ok(Some(DriftLocus {
+                            commit: commit_id,
+                            cause: LocusCause::Orphaned,
+                        }));
                     }
                 }
                 ChangeDetached::Rewrite {
@@ -175,7 +179,10 @@ fn drift_locus_walk(
                         // Rename of the anchored path: per §5, treat as
                         // orphan locus.
                         let _ = location;
-                        return Ok(Some(DriftLocus::OrphanedAt(commit_id)));
+                        return Ok(Some(DriftLocus {
+                            commit: commit_id,
+                            cause: LocusCause::Orphaned,
+                        }));
                     }
                 }
                 ChangeDetached::Modification {
@@ -196,7 +203,10 @@ fn drift_locus_walk(
                         anchored_end,
                         &mut blob_text_memo,
                     ) {
-                        return Ok(Some(DriftLocus::ChangedAt(commit_id)));
+                        return Ok(Some(DriftLocus {
+                            commit: commit_id,
+                            cause: LocusCause::Changed,
+                        }));
                     }
                 }
                 ChangeDetached::Addition { location, id, .. } => {
@@ -215,7 +225,10 @@ fn drift_locus_walk(
                         anchored_end,
                         &mut blob_text_memo,
                     ) {
-                        return Ok(Some(DriftLocus::ChangedAt(commit_id)));
+                        return Ok(Some(DriftLocus {
+                            commit: commit_id,
+                            cause: LocusCause::Changed,
+                        }));
                     }
                 }
             }
@@ -313,7 +326,7 @@ enum TouchKind {
 }
 
 /// Determine why `path` (a `Deleted` anchor's last-known path) is absent
-/// from HEAD. `commit_id` in the returned locus is always the anchor's OWN
+/// from HEAD. The returned locus's `commit` is always the anchor's OWN
 /// orphaning commit — the nearest commit (walking HEAD backward) that
 /// touched `path` itself — never a later hop's commit, even when the chain
 /// that follows spans several more renames before reaching a path that
@@ -324,16 +337,25 @@ fn deleted_locus_walk(repo: &gix::Repository, path: &str) -> Result<Option<Drift
         return Ok(None); // history exhausted without a match: fail-closed
     };
     match classify_touching_commit(repo, commit_id, path)? {
-        Some(TouchKind::Deletion) => Ok(Some(DriftLocus::OrphanedAt(commit_id))),
+        Some(TouchKind::Deletion) => Ok(Some(DriftLocus {
+            commit: commit_id,
+            cause: LocusCause::Orphaned,
+        })),
         Some(TouchKind::Rewrite(target)) => {
             // commit_id is pinned here — only the path is threaded forward.
             match resolve_terminal_path(repo, &target, MAX_RENAME_HOPS, commit_id)? {
-                Some(terminal) => Ok(Some(DriftLocus::RenamedAt(commit_id, terminal))),
+                Some(terminal) => Ok(Some(DriftLocus {
+                    commit: commit_id,
+                    cause: LocusCause::Renamed { to: terminal },
+                })),
                 // The chain ends in a delete, an unclassifiable change, or
                 // exceeds the hop bound — report the anchor's own orphaning
                 // commit as a plain deletion rather than a rename to a path
                 // that turned out not to resolve.
-                None => Ok(Some(DriftLocus::OrphanedAt(commit_id))),
+                None => Ok(Some(DriftLocus {
+                    commit: commit_id,
+                    cause: LocusCause::Orphaned,
+                })),
             }
         }
         // E.g. a mode change (blob -> submodule gitlink): neither a plain
@@ -630,8 +652,13 @@ mod deleted_locus_walk_tests {
         let locus = deleted_locus_walk(&repo, "a.rs").expect("walk");
         assert_eq!(
             locus,
-            Some(DriftLocus::RenamedAt(x1, "b.rs".to_string())),
-            "a single rename whose target is live at HEAD must resolve to RenamedAt \
+            Some(DriftLocus {
+                commit: x1,
+                cause: LocusCause::Renamed {
+                    to: "b.rs".to_string()
+                }
+            }),
+            "a single rename whose target is live at HEAD must resolve to Renamed \
              at the orphaning commit"
         );
     }
@@ -653,7 +680,10 @@ mod deleted_locus_walk_tests {
         let locus = deleted_locus_walk(&repo, "a.rs").expect("walk");
         assert_eq!(
             locus,
-            Some(DriftLocus::OrphanedAt(x1)),
+            Some(DriftLocus {
+                commit: x1,
+                cause: LocusCause::Orphaned
+            }),
             "a path with no rename involved must resolve to a plain deletion"
         );
     }
@@ -686,15 +716,20 @@ mod deleted_locus_walk_tests {
 
         assert_eq!(
             deleted_locus_walk(&repo, "whole.rs").expect("walk"),
-            Some(DriftLocus::OrphanedAt(whole_deletion_commit)),
+            Some(DriftLocus {
+                commit: whole_deletion_commit,
+                cause: LocusCause::Orphaned
+            }),
             "whole-file-anchored path must classify identically to a line-range one"
         );
         assert_eq!(
             deleted_locus_walk(&repo, "lines.rs").expect("walk"),
-            Some(DriftLocus::RenamedAt(
-                lines_rename_commit,
-                "code.rs".to_string()
-            )),
+            Some(DriftLocus {
+                commit: lines_rename_commit,
+                cause: LocusCause::Renamed {
+                    to: "code.rs".to_string()
+                }
+            }),
             "line-range-anchored path must classify identically to a whole-file one"
         );
     }
@@ -737,7 +772,12 @@ mod deleted_locus_walk_tests {
         let locus = deleted_locus_walk(&repo, "a.rs").expect("walk");
         assert_eq!(
             locus,
-            Some(DriftLocus::RenamedAt(x1, "c.rs".to_string())),
+            Some(DriftLocus {
+                commit: x1,
+                cause: LocusCause::Renamed {
+                    to: "c.rs".to_string()
+                }
+            }),
             "a multi-hop chain must report the anchor's OWN orphaning commit (X1), \
              not the last hop's commit (X2), while still threading the terminal \
              live path (c.rs) forward"
@@ -765,9 +805,12 @@ mod deleted_locus_walk_tests {
         let locus = deleted_locus_walk(&repo, "a.rs").expect("walk");
         assert_eq!(
             locus,
-            Some(DriftLocus::OrphanedAt(x1)),
+            Some(DriftLocus {
+                commit: x1,
+                cause: LocusCause::Orphaned
+            }),
             "a rename immediately followed by a delete of the renamed target must \
-             report a plain deletion, never a RenamedAt pointing at the now-deleted b.rs"
+             report a plain deletion, never a Renamed pointing at the now-deleted b.rs"
         );
     }
 
@@ -808,13 +851,16 @@ mod deleted_locus_walk_tests {
         );
 
         // The top-level walk converts that None into a plain deletion at the
-        // anchor's own orphaning commit — never a guessed RenamedAt.
+        // anchor's own orphaning commit — never a guessed Renamed.
         let locus = deleted_locus_walk(&repo, "p0.rs").expect("walk");
         assert_eq!(
             locus,
-            Some(DriftLocus::OrphanedAt(x1.expect("x1 captured"))),
-            "exceeding MAX_RENAME_HOPS must fail closed to OrphanedAt at the anchor's \
-             own orphaning commit, never a guessed RenamedAt"
+            Some(DriftLocus {
+                commit: x1.expect("x1 captured"),
+                cause: LocusCause::Orphaned
+            }),
+            "exceeding MAX_RENAME_HOPS must fail closed to Orphaned at the anchor's \
+             own orphaning commit, never a guessed Renamed"
         );
     }
 
@@ -851,7 +897,10 @@ mod deleted_locus_walk_tests {
         let locus = deleted_locus_walk(&repo, "a.rs").expect("walk");
         assert_eq!(
             locus,
-            Some(DriftLocus::OrphanedAt(merge_commit)),
+            Some(DriftLocus {
+                commit: merge_commit,
+                cause: LocusCause::Orphaned
+            }),
             "a delete/modify conflict resolved by taking the delete side must \
              attribute to the merge commit itself — the regression guard for \
              nearest_touching_commit deliberately not skipping merge commits the \
@@ -903,7 +952,12 @@ mod deleted_locus_walk_tests {
         let locus = deleted_locus_walk(&repo, "a.rs").expect("walk");
         assert_eq!(
             locus,
-            Some(DriftLocus::RenamedAt(x1, "c.rs".to_string())),
+            Some(DriftLocus {
+                commit: x1,
+                cause: LocusCause::Renamed {
+                    to: "c.rs".to_string()
+                }
+            }),
             "a resurrected, unrelated file at an abandoned intermediate path \
              (b.rs) must never be reported as the rename target — the walk must \
              see through it to the true terminal (c.rs), pinned at the anchor's \
@@ -933,7 +987,15 @@ mod deleted_locus_walk_tests {
             .entry("a.rs".to_string())
             .or_insert_with(|| deleted_locus_walk(&repo, "a.rs").expect("walk"))
             .clone();
-        assert_eq!(first, Some(DriftLocus::RenamedAt(x1, "b.rs".to_string())));
+        assert_eq!(
+            first,
+            Some(DriftLocus {
+                commit: x1,
+                cause: LocusCause::Renamed {
+                    to: "b.rs".to_string()
+                }
+            })
+        );
         assert_eq!(session.deleted_locus_memo.read().len(), 1);
 
         // Mutate history further: delete b.rs, recreate it, then delete it

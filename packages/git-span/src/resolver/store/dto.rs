@@ -5,7 +5,8 @@
 //! persist them across invocations we round-trip through pure-bytes DTOs
 //! that derive `Serialize` + `Deserialize` over `String` / `Vec<u8>`.
 //! Conversion is total: every runtime instance has exactly one DTO
-//! representation and vice versa.
+//! representation and vice versa. A runtime type that derives its own serde
+//! (`DriftLocus`) is embedded directly rather than mirrored.
 //!
 //! These DTOs back the compact, render-ready generation summary the store
 //! persists (`resolver::exact::DriftSummary`): the summary is
@@ -23,7 +24,12 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::str::FromStr;
 
-pub(crate) const FORMAT_VERSION: u8 = 1;
+/// Shape version of [`SpanResolvedDto`]'s encoding.
+///
+/// `2`: `AnchorResolvedDto::locus` embeds the `{ commit, cause }`
+/// [`DriftLocus`] struct directly (formerly the variant-per-cause
+/// `DriftLocusDto`).
+pub(crate) const FORMAT_VERSION: u8 = 2;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) enum AnchorExtentDto {
@@ -200,53 +206,6 @@ impl From<DriftSourceDto> for DriftSource {
     }
 }
 
-/// DTO mirror of `DriftLocus`. Variant names intentionally match
-/// `DriftLocus`/`DriftLocusCore` exactly; the shared `At` postfix is a
-/// deliberate naming convention, not an oversight.
-#[expect(
-    clippy::enum_variant_names,
-    reason = "variants mirror the exported `DriftLocus` 1:1 so the conversions read in lockstep"
-)]
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) enum DriftLocusDto {
-    ChangedAt(String),
-    OrphanedAt(String),
-    RenamedAt(String, String),
-}
-
-impl From<DriftLocus> for DriftLocusDto {
-    fn from(l: DriftLocus) -> Self {
-        match l {
-            DriftLocus::ChangedAt(oid) => DriftLocusDto::ChangedAt(oid.to_string()),
-            DriftLocus::OrphanedAt(oid) => DriftLocusDto::OrphanedAt(oid.to_string()),
-            DriftLocus::RenamedAt(oid, new_path) => {
-                DriftLocusDto::RenamedAt(oid.to_string(), new_path)
-            }
-        }
-    }
-}
-
-impl TryFrom<DriftLocusDto> for DriftLocus {
-    type Error = crate::Error;
-    fn try_from(dto: DriftLocusDto) -> Result<Self, Self::Error> {
-        Ok(match dto {
-            DriftLocusDto::ChangedAt(s) => DriftLocus::ChangedAt(
-                gix::ObjectId::from_str(&s)
-                    .map_err(|e| crate::Error::Git(format!("store dto: parse locus oid: {e}")))?,
-            ),
-            DriftLocusDto::OrphanedAt(s) => DriftLocus::OrphanedAt(
-                gix::ObjectId::from_str(&s)
-                    .map_err(|e| crate::Error::Git(format!("store dto: parse locus oid: {e}")))?,
-            ),
-            DriftLocusDto::RenamedAt(s, new_path) => DriftLocus::RenamedAt(
-                gix::ObjectId::from_str(&s)
-                    .map_err(|e| crate::Error::Git(format!("store dto: parse locus oid: {e}")))?,
-                new_path,
-            ),
-        })
-    }
-}
-
 /// DTO mirror of [`FuzzySuccessor`] with `Eq` by storing confidence as
 /// basis points (0-10000 → 0.00%–100.00%).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -295,7 +254,9 @@ pub(crate) struct AnchorResolvedDto {
     pub(crate) content_equivalent: bool,
     pub(crate) source: Option<DriftSourceDto>,
     pub(crate) layer_sources: Vec<DriftSourceDto>,
-    pub(crate) locus: Option<DriftLocusDto>,
+    /// Embedded directly: [`DriftLocus`] derives its own serde, persisting
+    /// `commit` as its hex string.
+    pub(crate) locus: Option<DriftLocus>,
     /// Fuzzy successors (empty for anchors without fuzzy matches). Serde
     /// default so cached data from older format versions deserializes
     /// without error.
@@ -322,7 +283,7 @@ impl From<&AnchorResolved> for AnchorResolvedDto {
             content_equivalent: a.content_equivalent,
             source: a.source.map(Into::into),
             layer_sources: a.layer_sources.iter().copied().map(Into::into).collect(),
-            locus: a.locus.clone().map(Into::into),
+            locus: a.locus.clone(),
             fuzzy_successors: a.fuzzy_successors.iter().map(Into::into).collect(),
             moved_uncommitted: a.moved_uncommitted,
         }
@@ -336,10 +297,6 @@ impl TryFrom<AnchorResolvedDto> for AnchorResolved {
             Some(c) => Some(c.try_into()?),
             None => None,
         };
-        let locus = match d.locus {
-            Some(l) => Some(l.try_into()?),
-            None => None,
-        };
         Ok(AnchorResolved {
             anchor_id: d.anchor_id,
             anchor_sha: d.anchor_sha,
@@ -350,7 +307,7 @@ impl TryFrom<AnchorResolvedDto> for AnchorResolved {
             content_equivalent: d.content_equivalent,
             source: d.source.map(Into::into),
             layer_sources: d.layer_sources.into_iter().map(Into::into).collect(),
-            locus,
+            locus: d.locus,
             fuzzy_successors: d.fuzzy_successors.iter().map(Into::into).collect(),
             moved_uncommitted: d.moved_uncommitted,
         })

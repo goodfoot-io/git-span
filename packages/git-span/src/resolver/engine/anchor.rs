@@ -1,9 +1,7 @@
 //! Per-anchor layered resolution: HEAD walk + index/worktree hunk
 //! application + LFS short-circuit + slice comparison.
 
-use super::super::core::resolution::{
-    AnchorCore, DriftLocusCore, LayerObservationCore, LocationCore,
-};
+use super::super::core::resolution::{AnchorCore, LayerObservationCore, LocationCore};
 use super::super::layers::lfs::DeepestPosition;
 use super::super::layers::{read_worktree_normalized, resolve_lfs_anchor};
 use super::super::session::{ConcurrentSession, resolve_at_head_shared};
@@ -13,7 +11,7 @@ use super::whole_file::resolve_whole_file;
 use super::{EngineLocal, SharedEngineContext};
 use crate::git;
 use crate::types::{
-    Anchor, AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, DriftLocus, DriftSource,
+    Anchor, AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, DriftSource,
     FuzzySuccessor, LayerSet, SpanConfig, SubmoduleKind, UnavailableReason, submodule_classify,
 };
 use crate::{Error, Result};
@@ -1939,11 +1937,7 @@ pub(crate) fn resolve_anchor_captured(
     // reading it from the HEAD run matches the value a full-depth run produces.
     let anchored = location_core(&head_run.anchored);
     let head = observation_from(&head_run);
-    let locus = head_run.locus.as_ref().map(|l| match l {
-        DriftLocus::ChangedAt(oid) => DriftLocusCore::ChangedAt(*oid),
-        DriftLocus::OrphanedAt(oid) => DriftLocusCore::OrphanedAt(*oid),
-        DriftLocus::RenamedAt(oid, new_path) => DriftLocusCore::RenamedAt(*oid, new_path.clone()),
-    });
+    let locus = head_run.locus.clone();
 
     // Fast path: when every enabled layer holds identical content for this
     // anchor's path, index/worktree hunks apply nothing and each layer reads

@@ -15,7 +15,7 @@
 use blake3::Hasher;
 use serde::{Deserialize, Serialize};
 
-use crate::types::AnchorStatus;
+use crate::types::{AnchorStatus, DriftLocus};
 
 /// Extent mirror with full `Serialize` + `Deserialize` (git-span-core's
 /// `AnchorExtent` only derives `Serialize` under its `serde` feature, so it
@@ -48,99 +48,6 @@ impl From<ExtentCore> for git_span_core::AnchorExtent {
     }
 }
 
-/// Serde adapters that persist a `gix::ObjectId` as its hex string — the
-/// exact bincode bytes the core types wrote when they stored the hex `String`
-/// itself, so the reuse-row encoding (`exact::SUMMARY_VERSION`) is unchanged.
-/// Parsing happens once, at decode: a malformed stored OID fails the row's
-/// deserialization (which `reuse_rows_to_core` skips, fail-closed) instead of
-/// surviving until projection.
-mod oid_hex {
-    use serde::{Deserialize, Deserializer, Serializer};
-    use std::str::FromStr;
-
-    fn parse<E: serde::de::Error>(hex: &str) -> Result<gix::ObjectId, E> {
-        gix::ObjectId::from_str(hex).map_err(|e| E::custom(format!("invalid oid `{hex}`: {e}")))
-    }
-
-    pub(super) fn serialize<S: Serializer>(oid: &gix::ObjectId, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(&oid.to_string())
-    }
-
-    pub(super) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<gix::ObjectId, D::Error> {
-        parse(&String::deserialize(d)?)
-    }
-
-    /// `Option<gix::ObjectId>` counterpart, encoded as `Option<String>`.
-    pub(super) mod option {
-        use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-        pub(in super::super) fn serialize<S: Serializer>(
-            oid: &Option<gix::ObjectId>,
-            s: S,
-        ) -> Result<S::Ok, S::Error> {
-            oid.map(|o| o.to_string()).serialize(s)
-        }
-
-        pub(in super::super) fn deserialize<'de, D: Deserializer<'de>>(
-            d: D,
-        ) -> Result<Option<gix::ObjectId>, D::Error> {
-            Option::<String>::deserialize(d)?
-                .map(|hex| super::parse(&hex))
-                .transpose()
-        }
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::super::{DriftLocusCore, ExtentCore, LocationCore};
-
-        /// The adapters must keep the persisted bytes identical to the former
-        /// hex-`String` fields, or `exact::SUMMARY_VERSION` would need a bump.
-        #[test]
-        fn oid_fields_encode_as_their_former_hex_strings() {
-            // The former hex-`String` shape. bincode encodes the variant by
-            // index, so only the variant order has to match `DriftLocusCore`.
-            #[derive(serde::Serialize)]
-            enum LegacyLocus<'a> {
-                _Changed(&'a str),
-                _Orphaned(&'a str),
-                Renamed(&'a str, &'a str),
-            }
-            let oid = gix::ObjectId::from_hex(b"0123456789abcdef0123456789abcdef01234567")
-                .expect("valid hex");
-            let hex = oid.to_string();
-            let loc = LocationCore {
-                path: "a.rs".into(),
-                extent: ExtentCore::WholeFile,
-                blob: Some(oid),
-            };
-            assert_eq!(
-                bincode::serialize(&loc).expect("serialize LocationCore"),
-                bincode::serialize(&("a.rs", ExtentCore::WholeFile, Some(hex.as_str())))
-                    .expect("serialize legacy shape"),
-            );
-            let renamed = DriftLocusCore::RenamedAt(oid, "b.rs".into());
-            let bytes = bincode::serialize(&renamed).expect("serialize DriftLocusCore");
-            assert_eq!(
-                bytes,
-                bincode::serialize(&LegacyLocus::Renamed(&hex, "b.rs"))
-                    .expect("serialize legacy locus"),
-            );
-            assert_eq!(
-                bincode::deserialize::<DriftLocusCore>(&bytes).expect("round-trip"),
-                renamed
-            );
-        }
-
-        #[test]
-        fn malformed_stored_oid_fails_decode() {
-            let bytes = bincode::serialize(&("a.rs", ExtentCore::WholeFile, Some("not-hex")))
-                .expect("serialize legacy shape");
-            assert!(bincode::deserialize::<LocationCore>(&bytes).is_err());
-        }
-    }
-}
-
 /// A location at one layer: path, extent, and blob identity (`None` when the
 /// layer has no blob — e.g. the worktree, or a terminal status with nothing
 /// to point at).
@@ -148,7 +55,7 @@ mod oid_hex {
 pub(crate) struct LocationCore {
     pub(crate) path: String,
     pub(crate) extent: ExtentCore,
-    #[serde(with = "oid_hex::option")]
+    #[serde(with = "crate::oid_hex::option")]
     pub(crate) blob: Option<gix::ObjectId>,
 }
 
@@ -160,23 +67,6 @@ pub(crate) struct FuzzySuccessorCore {
     pub(crate) start: u32,
     pub(crate) end: u32,
     pub(crate) confidence_bps: u32,
-}
-
-/// Serde-capable mirror of `DriftLocus` (which derives no serde); the OIDs
-/// persist as hex strings through `oid_hex`.
-///
-/// Variant names intentionally mirror `DriftLocus` exactly (`ChangedAt` /
-/// `OrphanedAt` / `RenamedAt`) so the two stay obviously in lockstep; the
-/// shared `At` postfix is a deliberate naming convention, not an oversight.
-#[expect(
-    clippy::enum_variant_names,
-    reason = "variants mirror the exported `DriftLocus` 1:1 so the conversions read in lockstep"
-)]
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum DriftLocusCore {
-    ChangedAt(#[serde(with = "oid_hex")] gix::ObjectId),
-    OrphanedAt(#[serde(with = "oid_hex")] gix::ObjectId),
-    RenamedAt(#[serde(with = "oid_hex")] gix::ObjectId, String),
 }
 
 /// One layer's drift observation for one anchor: its classified status at
@@ -252,7 +142,7 @@ pub(crate) struct AnchorCore {
     /// HEAD-history drift locus. Populated only from the Head observation;
     /// meaningless (and never attached) when a projection's source is
     /// Index or Worktree — see `super::project`.
-    pub(crate) locus: Option<DriftLocusCore>,
+    pub(crate) locus: Option<DriftLocus>,
 }
 
 /// Explicit ordinal identity for a definition, replacing an address-keyed

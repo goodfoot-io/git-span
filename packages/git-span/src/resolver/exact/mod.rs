@@ -119,7 +119,15 @@ mod tests;
 /// invalidates summaries published before the flag existed — a serde default
 /// alone would keep a stale marker-less row serving forever, silently
 /// violating the warm-hit ≡ cold-build render invariant.
-pub(crate) const SUMMARY_VERSION: u32 = 4;
+///
+/// Version 5: `DriftLocus` became a `{ commit, cause }` struct embedded
+/// directly in both the summary (`AnchorResolvedDto::locus`, replacing
+/// `DriftLocusDto`) and the reuse rows (`AnchorCore::locus`, replacing
+/// `DriftLocusCore`). Every stored `locus` now encodes the commit's hex
+/// string ahead of the cause discriminant instead of after a variant index,
+/// so version-4 summaries and rows must miss and rebuild rather than be
+/// misdecoded.
+pub(crate) const SUMMARY_VERSION: u32 = 5;
 
 /// Max entries in the bounded in-process memo. Small and explicit: this is a
 /// per-process working-set cache for repeated same-key `drift` calls within one

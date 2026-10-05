@@ -22,6 +22,7 @@ pub mod git;
 pub mod notes;
 #[cfg(test)]
 mod notes_tests;
+mod oid_hex;
 pub mod perf;
 pub mod resolver;
 pub mod schemas;

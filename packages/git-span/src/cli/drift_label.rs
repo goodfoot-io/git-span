@@ -20,7 +20,7 @@
 //! Precedence is enforced by the engine before reaching this formatter:
 //! worktree → index → HEAD history walk.
 
-use crate::types::{AnchorStatus, DriftLocus, DriftSource, UnavailableReason};
+use crate::types::{AnchorStatus, DriftLocus, DriftSource, LocusCause, UnavailableReason};
 
 /// Format a human-readable drift label for a single anchor.
 ///
@@ -62,27 +62,24 @@ pub fn format_drift_label(
                 }
             }
             Some(DriftSource::Head) => match locus {
-                Some(DriftLocus::ChangedAt(oid)) => {
-                    format!("changed in {}", short_sha(oid))
-                }
-                Some(DriftLocus::OrphanedAt(oid)) => {
-                    format!("deleted in {}", short_sha(oid))
-                }
-                // `RenamedAt` is only ever produced for a `Deleted` anchor
-                // (see `resolver::attribution::deleted_locus_walk`), so this
-                // arm is unreachable for `Changed`+`Head`; mirror
-                // `OrphanedAt`'s label for exhaustiveness.
-                Some(DriftLocus::RenamedAt(oid, _)) => {
-                    format!("deleted in {}", short_sha(oid))
-                }
+                Some(DriftLocus {
+                    commit,
+                    cause: LocusCause::Changed,
+                }) => format!("changed in {}", short_sha(commit)),
+                // `Renamed` is only ever produced for a `Deleted` anchor
+                // (see `resolver::attribution::deleted_locus_walk`), so it
+                // is unreachable for `Changed`+`Head`; it shares
+                // `Orphaned`'s label for exhaustiveness.
+                Some(DriftLocus {
+                    commit,
+                    cause: LocusCause::Orphaned | LocusCause::Renamed { .. },
+                }) => format!("deleted in {}", short_sha(commit)),
                 None => "changed".to_string(),
             },
             None => "changed".to_string(),
         },
         AnchorStatus::Deleted => match locus {
-            Some(DriftLocus::OrphanedAt(oid)) => format!("deleted in {}", short_sha(oid)),
-            Some(DriftLocus::ChangedAt(oid)) => format!("deleted in {}", short_sha(oid)),
-            Some(DriftLocus::RenamedAt(oid, _)) => format!("deleted in {}", short_sha(oid)),
+            Some(DriftLocus { commit, .. }) => format!("deleted in {}", short_sha(commit)),
             None => "deleted".to_string(),
         },
         // The non-Changed/Deleted arms keep their existing vocabulary; the

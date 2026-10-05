@@ -205,9 +205,10 @@ pub struct AnchorResolved {
     pub layer_sources: Vec<DriftSource>,
     /// HEAD-history drift locus, populated only when
     /// `source == Some(Head)`. Carries the first commit on the path since
-    /// the anchor that mutated the anchored byte range (`ChangedAt`), the
-    /// commit that removed or renamed the path (`OrphanedAt`), or marks
-    /// the anchor commit as unreachable from HEAD.
+    /// the anchor that mutated the anchored byte range
+    /// ([`LocusCause::Changed`]), or the commit that removed
+    /// ([`LocusCause::Orphaned`]) or renamed ([`LocusCause::Renamed`]) the
+    /// path.
     pub locus: Option<DriftLocus>,
     /// Fuzzy-similarity successors found during resolution. Populated only
     /// when the exact-match relocation scan fails and the fuzzy fallback
@@ -225,24 +226,50 @@ pub struct AnchorResolved {
     pub moved_uncommitted: bool,
 }
 
-/// Locus emitted by the HEAD-history walk in `resolver::attribution`.
-/// Only meaningful when `AnchorResolved.source == Some(DriftSource::Head)`;
-/// the other layers carry their own per-layer label.
-#[expect(
-    clippy::enum_variant_names,
-    reason = "restructured in the follow-up DriftLocus commit"
-)]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum DriftLocus {
-    /// First commit reachable from HEAD that mutated the anchored byte
-    /// range on the path.
-    ChangedAt(gix::ObjectId),
-    /// Commit that removed the path (a genuine deletion, not a rename);
-    /// anchored content is gone from HEAD.
-    OrphanedAt(gix::ObjectId),
-    /// Commit that renamed the path to the carried destination; anchored
-    /// content moved rather than being genuinely deleted.
-    RenamedAt(gix::ObjectId, String),
+/// Locus emitted by the HEAD-history walk in `resolver::attribution`: the
+/// commit that explains an anchor's drift, and what that commit did.
+/// Only meaningful when `AnchorResolved.source == Some(DriftSource::Head)`
+/// (or for a `Deleted` anchor); the other layers carry their own per-layer
+/// label.
+///
+/// Persisted verbatim by the resolver's store rows, with `commit` encoded as
+/// its hex string.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DriftLocus {
+    /// The commit that explains the drift. Its meaning depends on
+    /// [`cause`](Self::cause):
+    ///
+    /// * [`LocusCause::Changed`] — the first commit reachable from HEAD that
+    ///   mutated the anchored byte range on the path.
+    /// * [`LocusCause::Orphaned`] — the commit that removed the path, or
+    ///   renamed it away without a destination being reported.
+    /// * [`LocusCause::Renamed`] — the commit that renamed the path away:
+    ///   always the anchor's own orphaning commit, never a later hop of the
+    ///   rename chain that leads to [`LocusCause::Renamed::to`].
+    #[serde(with = "crate::oid_hex")]
+    pub commit: gix::ObjectId,
+    /// What [`commit`](Self::commit) did to the anchored path.
+    pub cause: LocusCause,
+}
+
+/// What a [`DriftLocus`]'s `commit` did to the anchored path.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LocusCause {
+    /// The commit mutated the anchored byte range on the path.
+    Changed,
+    /// The commit removed the path; anchored content is gone from HEAD.
+    /// Normally a genuine deletion, but also the fail-closed answer for a
+    /// rename whose destination is not reported: the forward walk of a
+    /// HEAD-sourced anchor, or a `Deleted` anchor's rename chain that does
+    /// not end at a path resolving at HEAD.
+    Orphaned,
+    /// The commit renamed the path; anchored content moved rather than
+    /// being genuinely deleted.
+    Renamed {
+        /// Destination path, live at HEAD, reached by following the rename
+        /// chain onward from the commit.
+        to: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
