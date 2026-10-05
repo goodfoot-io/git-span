@@ -4,7 +4,7 @@ summary: Git-span as a minimal code-coupled documentation system without a new d
 aliases: [Runbook Consistency]
 tags: [marketing, use-cases]
 keywords: [documentation, runbook, docs drift, examples, ADR, migration guide]
-links-reviewed: 2
+links-reviewed: 3
 ---
 
 # Documentation and runbook consistency

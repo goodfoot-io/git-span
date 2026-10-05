@@ -4,7 +4,7 @@ summary: Architecture of the scroll-driven, drag-orbitable Three.js V8 engine an
 aliases: [Engine Animation, EngineScene, Homepage 3D Animation, V8 Engine Animation, Drag to Orbit, Engine Fog]
 tags: [architecture, website, threejs]
 keywords: [three.js, glTF, GLB, exploded view, scroll timeline, EngineScene, beats.ts, EngineFrame, git-span metaphor, meshopt, engineBackCover, dedup suffix, drag to orbit, fog, cast iron, crankshaft-axis camera, ACES tone mapping, studio HDRI, PMREM, selective bloom, UnrealBloomPass, blackbody color, heartbeat pulse, mismatch bounding box, green glass, MeshPhysicalMaterial, RETURN_TO_NORMAL]
-links-reviewed: 1
+links-reviewed: 2
 ---
 
 The git-span homepage's pinned right-column media is a scroll-scrubbed, pointer-draggable
@@ -401,7 +401,7 @@ A box of green glass fades in around just the mismatch story's own parts (gear, 
 `engineBackCover` — not the whole engine) while every highlight is dark (`frame.boxWeight`, `t
 46-60`, peaking at 60), then fades back out as those parts resolve to the shared green (`t 60-72`).
 It's a fixed prop: sized/positioned once at load time from those parts' *exploded* pose
-([`computeMismatchBoxBounds()`](../../packages/website/app/components/marketing/story/engine/mismatchBox.ts#L34-L61))
+([`computeMismatchBoxBounds()`](../../packages/website/app/components/marketing/story/engine/mismatchBox.ts#L425-L452))
 rather than tracked live, since explode is held flat for this entire window — nothing it encloses
 moves.
 [`buildBoundingBox()`](../../packages/website/app/components/marketing/story/engine/mismatchBox.ts#L80-L125)
@@ -519,14 +519,14 @@ rather than the family's shared instance
 one part's glow onto every other part of the same family.
 [`buildHighlightRecords()`](../../packages/website/app/components/marketing/story/engine/highlights.ts#L171-L221)
 builds one `HighlightRecord`
-([`highlights.ts#L41-L51`](../../packages/website/app/components/marketing/story/engine/highlights.ts#L41-L51))
+([`highlights.ts#L47-L61`](../../packages/website/app/components/marketing/story/engine/highlights.ts#L47-L61))
 per highlightable part: its mesh, its own unhighlighted albedo captured once (`baseMaterialColor`),
 and an ordered list of `HighlightStage`s
-([`highlights.ts#L26-L32`](../../packages/website/app/components/marketing/story/engine/highlights.ts#L31-L37))
-— each a `HighlightKind` (`'blue' | 'ringRed' | 'red' | 'pistonRed' | 'orange' | 'finalGreen'`,
-[`highlights.ts#L24`](../../packages/website/app/components/marketing/story/engine/highlights.ts#L28-L28))
+([`highlights.ts#L32-L38`](../../packages/website/app/components/marketing/story/engine/highlights.ts#L32-L38))
+— each a `HighlightKind` (`'blue' | 'ringRed' | 'red' | 'pistonRed' | 'orange' | 'ringOrange' | 'finalGreen'`,
+[`highlights.ts#L30`](../../packages/website/app/components/marketing/story/engine/highlights.ts#L30))
 paired with that kind's cold-state identity color. The gear (front-drive) carries
-`orange → blue → ringRed → finalGreen`; the mount (`engineBackCover`) carries
+`ringOrange → blue → ringRed → finalGreen`; the mount (`engineBackCover`) carries
 `orange → red → finalGreen`; each piston (`orangeEmphasisParts`) carries
 `orange → pistonRed → finalGreen`. Because a crossfade window can have two stages simultaneously
 active (e.g. `ringBlueAt`/`mismatchRedAt` sum to a smooth handoff across `t 28-41`), a record's
