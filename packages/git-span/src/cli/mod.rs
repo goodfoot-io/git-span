@@ -44,7 +44,9 @@ pub(crate) mod update_check;
 pub use drift_label::format_drift_label;
 
 pub use error::{
-    CliError, NextStep, filter_driver_error, from_lib_error, render_error, resolver_read_error,
+    CliError, INTERNAL_ERROR_EXIT_CODE, NextStep, PanicReport, filter_driver_error,
+    from_lib_error, install_panic_hook, render_error, render_internal_error,
+    resolver_read_error,
 };
 
 use clap::{Parser, Subcommand, ValueEnum};

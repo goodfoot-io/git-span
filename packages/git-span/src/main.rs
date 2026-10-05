@@ -6,6 +6,11 @@ use git_span::cli::{self, Cli, CliError, Commands, NextStep, ShowArgs};
 use git_span::validation::{RETIRED_SPAN_NAMES, is_reserved_span_name};
 
 fn main() {
+    // Before anything can panic: a panic renders as a structured
+    // `git span: internal error` report instead of Rust's raw
+    // `thread 'main' panicked at …` text.
+    cli::install_panic_hook();
+
     // Slice 6a: restore the default Unix SIGPIPE handler so a broken
     // downstream pipe (`git span ... | head`) becomes a clean exit
     // rather than a Rust panic on `println!`.
@@ -19,7 +24,16 @@ fn main() {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
 
-    match run() {
+    // A panic anywhere in the run — including on a rayon worker, which rayon
+    // re-raises on this thread — unwinds to here after the hook has printed
+    // its report. Unwinding first runs the destructors that release
+    // lockfiles and temporaries; the exit status then joins the documented
+    // table instead of Rust's `101`.
+    let outcome = match std::panic::catch_unwind(run) {
+        Ok(outcome) => outcome,
+        Err(_panic) => std::process::exit(cli::INTERNAL_ERROR_EXIT_CODE),
+    };
+    match outcome {
         Ok(code) => std::process::exit(code),
         Err(error) => {
             // Clap usage errors (bad flag, missing arg) keep clap's
