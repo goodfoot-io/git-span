@@ -1,4 +1,4 @@
-packages/git-span/src/cli/drift_output.rs#L229-L302 rk64:5732af024b009cb1
+packages/git-span/src/cli/drift_output.rs#L232-L304 rk64:6be35fb94ab4d5d3
 packages/git-span/src/cli/show.rs#L614-L675 rk64:1864e6325beb74a2
 packages/git-span/src/span/read.rs#L441-L508 rk64:406e924d55c42e7b
 
