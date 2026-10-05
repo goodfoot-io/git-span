@@ -32,6 +32,7 @@ import {
   type SessionLayout,
   toPosix
 } from './agent-hooks-common.js';
+import { caughtProperty, isRecord } from './guards.js';
 import { type HookIgnoreLoader, isSpanSuppressed } from './span-ignore.js';
 
 /**
@@ -87,7 +88,7 @@ export function createDefaultDriftExecutor(timeoutMs = 10_000): DriftExecutor {
         timeout: timeoutMs
       });
     } catch (err) {
-      const out = (err as { stdout?: string }).stdout;
+      const out = caughtProperty(err, 'stdout');
       if (typeof out === 'string') return out;
       throw err;
     }
@@ -125,10 +126,12 @@ export function createDiskMemoStore(logger: MemoLogger, layout: SessionLayout): 
       pruneStaleSessionsThrottled(layout);
       try {
         const raw = fs.readFileSync(layout.memoFile(sessionId), 'utf8');
-        const parsed = JSON.parse(raw) as { surfaced?: unknown };
-        if (Array.isArray(parsed.surfaced)) {
-          return new Set(parsed.surfaced as string[]);
+        const parsed: unknown = JSON.parse(raw);
+        const surfaced = isRecord(parsed) ? parsed.surfaced : undefined;
+        if (Array.isArray(surfaced) && surfaced.every((name): name is string => typeof name === 'string')) {
+          return new Set(surfaced);
         }
+        throw new Error('memo file is not a { surfaced: string[] } document');
       } catch (err) {
         logger.warn('memo read failed (treating as empty)', { err });
       }

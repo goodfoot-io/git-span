@@ -743,6 +743,22 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as nodePath from "node:path";
+
+// packages/agent-hooks/src/common/guards.ts
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isErrnoException(error) {
+  return error instanceof Error && (!("code" in error) || error.code === void 0 || typeof error.code === "string");
+}
+function errnoCode(error) {
+  return isErrnoException(error) ? error.code : void 0;
+}
+function isOneOf(tokens, value) {
+  return tokens.some((token) => token === value);
+}
+
+// packages/agent-hooks/src/common/agent-hooks-common.ts
 var PORCELAIN_STATUSES = [
   "FRESH",
   "RESOLVED_PENDING_COMMIT",
@@ -795,7 +811,7 @@ function cleanupSessionState(layout, sessionId, now = Date.now()) {
     fs.renameSync(dirPath, trashPath);
     fs.utimesSync(trashPath, now / 1e3, now / 1e3);
   } catch (error) {
-    if (error.code !== "ENOENT") throw error;
+    if (errnoCode(error) !== "ENOENT") throw error;
   }
 }
 
@@ -808,11 +824,8 @@ import { isAbsolute as isAbsolute5, join as join4 } from "node:path";
 // packages/agent-hooks/src/common/commit-association.ts
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-function object(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 function noteDocument(value) {
-  if (!object(value) || value.schemaVersion !== 1 || value.host !== "claude" && value.host !== "codex") return null;
+  if (!isRecord(value) || value.schemaVersion !== 1 || value.host !== "claude" && value.host !== "codex") return null;
   if (typeof value.sessionId !== "string" || value.sessionId.length === 0 || value.sessionId.length > 4096 || value.sessionId.includes("\0"))
     return null;
   if (Object.keys(value).some((key2) => !["schemaVersion", "host", "sessionId", "transcriptLocator"].includes(key2)))
@@ -836,9 +849,9 @@ function selectCommitAssociation(document, existing) {
     const value = noteDocument(note.document);
     if (value && value.host === document.host && value.sessionId === document.sessionId) matches.push(value);
   }
-  if (matches.length > 1) return { kind: "reject", reason: "ambiguous existing commit associations" };
-  if (matches.length === 0) return { kind: "add", document };
-  const original = matches[0];
+  const [original, ...others] = matches;
+  if (others.length > 0) return { kind: "reject", reason: "ambiguous existing commit associations" };
+  if (original === void 0) return { kind: "add", document };
   return {
     kind: "reuse",
     document: original,
@@ -848,12 +861,12 @@ function selectCommitAssociation(document, existing) {
 function validateEnvelope(value, sha, operation) {
   const reject2 = (reason) => ({ ok: false, reason });
   if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(sha) || /^0+$/.test(sha)) return reject2("invalid full SHA selection");
-  if (!object(value) || value.schema_version !== 1 || value.operation !== operation || !Array.isArray(value.notes))
+  if (!isRecord(value) || value.schema_version !== 1 || value.operation !== operation || !Array.isArray(value.notes))
     return reject2("invalid notes CLI envelope");
   const result = [];
   const ids = /* @__PURE__ */ new Set();
   for (const note of value.notes) {
-    if (!object(note) || typeof note.id !== "number" || !Number.isSafeInteger(note.id) || note.id <= 0 || ids.has(note.id) || note.commit_sha !== sha || !Object.hasOwn(note, "document") || note.document === void 0) {
+    if (!isRecord(note) || typeof note.id !== "number" || !Number.isSafeInteger(note.id) || note.id <= 0 || ids.has(note.id) || note.commit_sha !== sha || !Object.hasOwn(note, "document") || note.document === void 0) {
       return reject2("invalid exact-SHA notes record");
     }
     ids.add(note.id);
@@ -867,7 +880,8 @@ function validateCommitNotesList(value, sha) {
 function validateCommitNotesAdd(value, sha, document) {
   const envelope = validateEnvelope(value, sha, "add");
   if (!envelope.ok) return envelope;
-  if (envelope.value.length !== 1 || !noteDocument(document) || !isDeepStrictEqual(envelope.value[0].document, document)) {
+  const [acknowledged, ...extra] = envelope.value;
+  if (acknowledged === void 0 || extra.length > 0 || !noteDocument(document) || !isDeepStrictEqual(acknowledged.document, document)) {
     return { ok: false, reason: "notes acknowledgment does not match frozen document" };
   }
   return { ok: true, value: document };
@@ -891,9 +905,6 @@ var COMMIT_RECEIPT_LIMITS = {
 };
 
 // packages/agent-hooks/src/common/commit-contracts.ts
-function object2(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 function text(value, max = 4096) {
   return typeof value === "string" && value.length > 0 && value.length <= max && !value.includes("\0");
 }
@@ -907,13 +918,13 @@ function reject(reason) {
   return { ok: false, reason };
 }
 function validateCommitEnrollment(value) {
-  if (!object2(value) || value.schemaVersion !== 1) return reject("invalid enrollment schema");
+  if (!isRecord(value) || value.schemaVersion !== 1) return reject("invalid enrollment schema");
   if (value.host !== "claude" && value.host !== "codex") return reject("unsupported commit host");
   if (!key(value.invocationKey) || !text(value.sessionId) || !text(value.toolUseId)) {
     return reject("invalid invocation identity");
   }
   if (!absolute(value.cwd) || !absolute(value.gitExecutable)) return reject("enrollment paths must be absolute");
-  if (!object2(value.originalInput) || !text(value.originalCommand, COMMIT_RECEIPT_LIMITS.jsonFileBytes)) {
+  if (!isRecord(value.originalInput) || !text(value.originalCommand, COMMIT_RECEIPT_LIMITS.jsonFileBytes)) {
     return reject("invalid original tool input");
   }
   if (value.transcriptLocator !== void 0 && !text(value.transcriptLocator))
@@ -939,11 +950,11 @@ function validateCommitEnrollment(value) {
   return { ok: true, value: enrollment };
 }
 function validateCommitReceipt(value, enrollment) {
-  if (!object2(value) || value.schemaVersion !== 1 || value.invocationKey !== enrollment.invocationKey || !key(value.nonce)) {
+  if (!isRecord(value) || value.schemaVersion !== 1 || value.invocationKey !== enrollment.invocationKey || !key(value.nonce)) {
     return reject("invalid receipt identity");
   }
   const repo = value.repository;
-  if (!object2(repo) || !absolute(repo.cwd) || !absolute(repo.gitDirectory) || !absolute(repo.commonDirectory) || !absolute(repo.headReflog)) {
+  if (!isRecord(repo) || !absolute(repo.cwd) || !absolute(repo.gitDirectory) || !absolute(repo.commonDirectory) || !absolute(repo.headReflog)) {
     return reject("receipt repository paths must be absolute");
   }
   if (repo.objectFormat !== "sha1" && repo.objectFormat !== "sha256") return reject("unsupported object format");
@@ -988,6 +999,7 @@ function serializeCommitNoteDocument(document) {
 import { isAbsolute as isAbsolute2, resolve as resolve2 } from "node:path";
 
 // packages/agent-hooks/src/common/commit-lifecycle.ts
+var COMMIT_INVOCATION_STATUSES = ["active", "completed", "acknowledged", "retired"];
 function decideCommitClaim(owner, liveness, remainingMs) {
   if (!Number.isFinite(remainingMs) || remainingMs <= 0) return "refuse";
   if (owner === null) return "acquire";
@@ -1108,7 +1120,8 @@ function readJson(path, maximumBytes = COMMIT_RECEIPT_LIMITS.jsonFileBytes) {
   const stat = lstatSync2(path);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > maximumBytes)
     throw new Error("invalid bounded receipt file");
-  return JSON.parse(readFileSync(path, "utf8"));
+  const parsed = JSON.parse(readFileSync(path, "utf8"));
+  return parsed;
 }
 function atomicJson(path, value, immutable = false) {
   const temporary = join3(dirname3(path), `.publish-${randomBytes(16).toString("hex")}`);
@@ -1142,13 +1155,13 @@ function ownerLiveness(owner) {
     process.kill(owner.pid, 0);
     return "alive";
   } catch (error) {
-    return error.code === "ESRCH" ? "dead" : "uncertain";
+    return errnoCode(error) === "ESRCH" ? "dead" : "uncertain";
   }
 }
 function ownerRecord(value) {
-  if (typeof value !== "object" || value === null) return null;
-  const owner = value;
-  return typeof owner.token === "string" && /^[a-zA-Z0-9_-]{1,256}$/.test(owner.token) && typeof owner.pid === "number" && Number.isSafeInteger(owner.pid) && owner.pid > 0 ? owner : null;
+  if (!isRecord(value)) return null;
+  const { token, pid } = value;
+  return typeof token === "string" && /^[a-zA-Z0-9_-]{1,256}$/.test(token) && typeof pid === "number" && Number.isSafeInteger(pid) && pid > 0 ? { token, pid } : null;
 }
 async function acquireReceiptClaim(root, key2, deadline) {
   if (!/^[a-zA-Z0-9_-]+$/.test(key2)) throw new Error("invalid receipt claim key");
@@ -1164,7 +1177,7 @@ async function acquireReceiptClaim(root, key2, deadline) {
         mkdirSync3(guard, { mode: 448 });
         guarded = true;
       } catch (error) {
-        if (error.code !== "EEXIST") throw error;
+        if (errnoCode(error) !== "EEXIST") throw error;
         return null;
       }
       let prior = null;
@@ -1205,15 +1218,18 @@ async function acquireReceiptClaim(root, key2, deadline) {
   }
   return null;
 }
+function usageRecord(value) {
+  if (!isRecord(value)) return null;
+  const { invocations, totalBytes } = value;
+  return typeof invocations === "number" && Number.isSafeInteger(invocations) && invocations >= 0 && typeof totalBytes === "number" && Number.isSafeInteger(totalBytes) && totalBytes >= 0 ? { invocations, totalBytes } : null;
+}
 async function reserveReceiptCapacity(root, invocationDelta, byteDelta, deadline) {
   const claim = await acquireReceiptClaim(root, "capacity", deadline);
   if (!claim) return false;
   try {
     const path = join3(root, "usage.json");
-    let usage = { invocations: 0, totalBytes: 0 };
-    if (existsSync4(path)) usage = readJson(path, 4096);
-    if (!Number.isSafeInteger(usage.invocations) || !Number.isSafeInteger(usage.totalBytes) || usage.invocations < 0 || usage.totalBytes < 0)
-      return false;
+    const usage = existsSync4(path) ? usageRecord(readJson(path, 4096)) : { invocations: 0, totalBytes: 0 };
+    if (usage === null) return false;
     const next = { invocations: usage.invocations + invocationDelta, totalBytes: usage.totalBytes + byteDelta };
     if (next.invocations < 0 || next.invocations > COMMIT_RECEIPT_LIMITS.invocations || next.totalBytes < 0 || next.totalBytes > COMMIT_RECEIPT_LIMITS.totalBytes)
       return false;
@@ -1292,15 +1308,22 @@ function errorMessage(error) {
 }
 function readState(directory, enrollment) {
   const value = readJson(join4(directory, "state.json"));
-  if (!["active", "completed", "acknowledged", "retired"].includes(value.status) || !Array.isArray(value.pendingNonces) || value.pendingNonces.length > COMMIT_RECEIPT_LIMITS.receiptsPerInvocation || !Number.isFinite(value.lastActivityMs) || value.enrollment.invocationKey !== enrollment.invocationKey)
+  const stored = isRecord(value) ? validateCommitEnrollment(value.enrollment) : null;
+  if (!isRecord(value) || stored === null || !stored.ok || stored.value.invocationKey !== enrollment.invocationKey || !isOneOf(COMMIT_INVOCATION_STATUSES, value.status) || !Array.isArray(value.pendingNonces) || value.pendingNonces.length > COMMIT_RECEIPT_LIMITS.receiptsPerInvocation || !value.pendingNonces.every((nonce) => typeof nonce === "string") || typeof value.liveLease !== "boolean" || typeof value.lastActivityMs !== "number" || !Number.isFinite(value.lastActivityMs))
     throw new Error("invalid private invocation lifecycle");
-  return value;
+  return {
+    enrollment: stored.value,
+    status: value.status,
+    pendingNonces: value.pendingNonces,
+    liveLease: value.liveLease,
+    lastActivityMs: value.lastActivityMs
+  };
 }
 function readUsage(directory) {
   const usage = readJson(join4(directory, "usage.json"), 4096);
-  if (!Number.isSafeInteger(usage.bytes) || usage.bytes < 0 || !Number.isSafeInteger(usage.receipts) || usage.receipts < 0)
+  if (!isRecord(usage) || typeof usage.bytes !== "number" || !Number.isSafeInteger(usage.bytes) || usage.bytes < 0 || typeof usage.receipts !== "number" || !Number.isSafeInteger(usage.receipts) || usage.receipts < 0)
     throw new Error("invalid invocation usage");
-  return usage;
+  return { bytes: usage.bytes, receipts: usage.receipts };
 }
 function invocationIsLive(directory) {
   try {

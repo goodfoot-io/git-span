@@ -29,6 +29,7 @@ import { randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as nodePath from 'node:path';
 import { SESSION_TRASH_MARKER, type SessionLayout } from '../common/agent-hooks-common.js';
+import { errnoCode, isRecord } from '../common/guards.js';
 
 /** The stashed slice of a PreToolUse `toolCall` — exactly what the join needs. */
 export interface StashedToolCall {
@@ -93,12 +94,8 @@ export function takeToolCall(layout: SessionLayout, conversationId: string, step
   }
   try {
     const parsed: unknown = JSON.parse(raw);
-    if (parsed === null || typeof parsed !== 'object') return null;
-    const record = parsed as Record<string, unknown>;
-    if (typeof record.name !== 'string') return null;
-    const args = record.args;
-    if (args === null || typeof args !== 'object' || Array.isArray(args)) return null;
-    return { name: record.name, args: args as Record<string, unknown> };
+    if (!isRecord(parsed) || typeof parsed.name !== 'string' || !isRecord(parsed.args)) return null;
+    return { name: parsed.name, args: parsed.args };
   } catch {
     return null;
   }
@@ -181,7 +178,7 @@ export function cleanupCallScopedState(layout: SessionLayout, conversationId: st
       fs.renameSync(dirPath, trashPath);
       fs.utimesSync(trashPath, now / 1000, now / 1000);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      if (errnoCode(error) !== 'ENOENT') throw error;
     }
   }
 }

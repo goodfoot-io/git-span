@@ -2,6 +2,7 @@
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type { CommitNoteDocument, CommitReceipt, CommitValidation } from './commit-contracts.js';
+import { isRecord } from './guards.js';
 
 export interface CommitExistingNote {
   readonly document: unknown;
@@ -12,12 +13,8 @@ export type CommitAssociationDecision =
   | { readonly kind: 'reuse'; readonly document: CommitNoteDocument; readonly locatorConflict: boolean }
   | { readonly kind: 'reject'; readonly reason: string };
 
-function object(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
 function noteDocument(value: unknown): CommitNoteDocument | null {
-  if (!object(value) || value.schemaVersion !== 1 || (value.host !== 'claude' && value.host !== 'codex')) return null;
+  if (!isRecord(value) || value.schemaVersion !== 1 || (value.host !== 'claude' && value.host !== 'codex')) return null;
   if (
     typeof value.sessionId !== 'string' ||
     value.sessionId.length === 0 ||
@@ -79,13 +76,13 @@ function validateEnvelope(
 ): CommitValidation<readonly CommitExistingNote[]> {
   const reject = (reason: string): CommitValidation<readonly CommitExistingNote[]> => ({ ok: false, reason });
   if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(sha) || /^0+$/.test(sha)) return reject('invalid full SHA selection');
-  if (!object(value) || value.schema_version !== 1 || value.operation !== operation || !Array.isArray(value.notes))
+  if (!isRecord(value) || value.schema_version !== 1 || value.operation !== operation || !Array.isArray(value.notes))
     return reject('invalid notes CLI envelope');
   const result: CommitExistingNote[] = [];
   const ids = new Set<number>();
   for (const note of value.notes) {
     if (
-      !object(note) ||
+      !isRecord(note) ||
       typeof note.id !== 'number' ||
       !Number.isSafeInteger(note.id) ||
       note.id <= 0 ||

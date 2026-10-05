@@ -7,6 +7,7 @@
  * gate (plan §4).
  */
 
+import { isRecord } from './guards.js';
 import type { ResolvedSpan, SpanMatch } from './parse-command.js';
 import { type CoreLogger, type MemoStore, resolveTouchScope } from './span-surface.js';
 import { DEFAULT_MAX_ATTRIBUTION_CANDIDATES } from './static-attribution.js';
@@ -146,12 +147,11 @@ export function bashSpanToTouch(
  * reads the raw envelope, so it must recognize both spellings.
  */
 export function bashResponseInterrupted(toolResponse: unknown): boolean {
-  if (toolResponse !== null && typeof toolResponse === 'object') {
-    const record = toolResponse as Record<string, unknown>;
-    const timedOutAfterMs = record.timedOutAfterMs;
+  if (isRecord(toolResponse)) {
+    const timedOutAfterMs = toolResponse.timedOutAfterMs;
     return (
-      record.interrupted === true ||
-      record.is_interrupt === true ||
+      toolResponse.interrupted === true ||
+      toolResponse.is_interrupt === true ||
       (typeof timedOutAfterMs === 'number' && Number.isFinite(timedOutAfterMs) && timedOutAfterMs >= 0)
     );
   }
@@ -182,10 +182,9 @@ export function bashResponseInterrupted(toolResponse: unknown): boolean {
  * accepted and pinned by the gate's tests rather than carved out.
  */
 export function bashResponseExitCode(toolResponse: unknown): number | undefined {
-  if (toolResponse !== null && typeof toolResponse === 'object') {
-    const record = toolResponse as Record<string, unknown>;
+  if (isRecord(toolResponse)) {
     for (const field of ['exit_code', 'exitCode', 'exitStatus'] as const) {
-      const code = record[field];
+      const code = toolResponse[field];
       if (typeof code === 'number' && Number.isInteger(code)) return code;
     }
   }

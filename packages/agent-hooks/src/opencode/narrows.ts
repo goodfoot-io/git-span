@@ -15,6 +15,8 @@
  * `null`, never a throw — the fail-open contract starts at the argument edge.
  */
 
+import { isRecord } from '../common/guards.js';
+
 export interface OpencodeBashArgs {
   command: string;
   /** Resolved by the host against the instance directory; absent = instance dir. */
@@ -33,8 +35,8 @@ export interface OpencodeWriteArgs {
 }
 
 function stringField(args: unknown, field: string): string | undefined {
-  if (args === null || typeof args !== 'object' || !(field in args)) return undefined;
-  const value = (args as Record<string, unknown>)[field];
+  if (!isRecord(args)) return undefined;
+  const value = args[field];
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
@@ -46,14 +48,14 @@ function stringField(args: unknown, field: string): string | undefined {
  * values still narrow to `undefined`.
  */
 function writtenContentField(args: unknown, field: string): string | undefined {
-  if (args === null || typeof args !== 'object' || !(field in args)) return undefined;
-  const value = (args as Record<string, unknown>)[field];
+  if (!isRecord(args)) return undefined;
+  const value = args[field];
   return typeof value === 'string' ? value : undefined;
 }
 
 function positiveIntField(args: unknown, field: string): number | undefined {
-  if (args === null || typeof args !== 'object' || !(field in args)) return undefined;
-  const value = (args as Record<string, unknown>)[field];
+  if (!isRecord(args)) return undefined;
+  const value = args[field];
   return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined;
 }
 
@@ -121,7 +123,7 @@ export interface MappedBashResponse {
  * shape re-derives truncation from `rawOutputPath`.
  */
 export function toBashResponse(outputChannel: unknown, metadata: unknown): MappedBashResponse {
-  const record = metadata !== null && typeof metadata === 'object' ? (metadata as Record<string, unknown>) : {};
+  const record: Record<string, unknown> = isRecord(metadata) ? metadata : {};
   const rawText =
     typeof record.output === 'string' ? record.output : typeof outputChannel === 'string' ? outputChannel : '';
   const exit = record.exit;
@@ -129,7 +131,7 @@ export function toBashResponse(outputChannel: unknown, metadata: unknown): Mappe
     typeof record.outputPath === 'string' && record.outputPath.length > 0 ? record.outputPath : undefined;
   return {
     output: rawText,
-    exitStatus: Number.isInteger(exit) ? (exit as number) : undefined,
+    exitStatus: typeof exit === 'number' && Number.isInteger(exit) ? exit : undefined,
     interrupted: typeof exit !== 'number',
     ...(outputPath === undefined ? {} : { rawOutputPath: outputPath })
   };

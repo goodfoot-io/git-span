@@ -17,6 +17,7 @@ import {
 import { DEFAULT_SESSION_LAYOUT, derivePath, type SessionLayout } from '../common/agent-hooks-common.js';
 import { createDefaultPlannedTouchStore, postTrackedValue, runLayeredBashTouches } from '../common/bash-attribution.js';
 import { type CommitRuntimeOptions, terminalCommitInvocation } from '../common/commit-runtime.js';
+import { isRecord } from '../common/guards.js';
 import { createDiskMemoStore, type MemoFactory } from '../common/span-surface.js';
 import {
   createDefaultTouchExecutors,
@@ -119,7 +120,8 @@ export function createHandler(
       });
     }
 
-    const toolInput = (input.tool_input ?? {}) as ToolInput;
+    const rawToolInput = input.tool_input;
+    const toolInput: ToolInput = isRecord(rawToolInput) ? rawToolInput : {};
     const absolutePath = derivePath(toolInput, cwd);
     if (absolutePath === null) return null;
     const touch = toTouchInput(

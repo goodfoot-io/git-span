@@ -11,15 +11,14 @@ import {
 import { DEFAULT_SESSION_LAYOUT, type SessionLayout } from '../common/agent-hooks-common.js';
 import { createDefaultPlannedTouchStore, planBashTouches } from '../common/bash-attribution.js';
 import { type CommitRuntimeOptions, dispatchCommitShim, enrollCommitInvocation } from '../common/commit-runtime.js';
+import { isRecord } from '../common/guards.js';
 import { disableUpdateCheck } from '../common/update-check-env.js';
 
 /** Narrow the Claude Bash input to a non-empty command string. */
 export function narrowCommand(toolInput: unknown): string | null {
-  if (toolInput !== null && typeof toolInput === 'object' && 'command' in toolInput) {
-    const command = (toolInput as { command: unknown }).command;
-    if (typeof command === 'string' && command.length > 0) return command;
-  }
-  return null;
+  if (!isRecord(toolInput)) return null;
+  const command = toolInput.command;
+  return typeof command === 'string' && command.length > 0 ? command : null;
 }
 
 export function createHandler(
@@ -42,9 +41,8 @@ export function createHandler(
         createDefaultPlannedTouchStore(layout)
       );
       // Only the actual host's normalized Bash envelope supports input replacement.
-      if (input.tool_name !== 'Bash' || typeof (input.tool_input as Record<string, unknown>).command !== 'string')
-        return null;
-      const toolInput = input.tool_input as Record<string, unknown>;
+      const toolInput = input.tool_input;
+      if (input.tool_name !== 'Bash' || !isRecord(toolInput) || typeof toolInput.command !== 'string') return null;
       if (toolInput.run_in_background === true || toolInput.background === true || toolInput.delegate === true) {
         ctx.logger.warn('git-span commit attribution does not support visible background or delegated execution');
         return null;

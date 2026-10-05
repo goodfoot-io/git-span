@@ -23,6 +23,7 @@ import {
   type CommitOwnerLiveness,
   decideCommitClaim
 } from './commit-lifecycle.js';
+import { errnoCode, isRecord } from './guards.js';
 
 export function identityKey(identity: CommitPostIdentity): string {
   return createHash('sha256')
@@ -46,7 +47,8 @@ export function readJson(path: string, maximumBytes: number = COMMIT_RECEIPT_LIM
   const stat = lstatSync(path);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > maximumBytes)
     throw new Error('invalid bounded receipt file');
-  return JSON.parse(readFileSync(path, 'utf8')) as unknown;
+  const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
+  return parsed;
 }
 export function atomicJson(path: string, value: unknown, immutable = false): void {
   const temporary = join(dirname(path), `.publish-${randomBytes(16).toString('hex')}`);
@@ -80,18 +82,18 @@ export function ownerLiveness(owner: CommitClaimOwner): CommitOwnerLiveness {
     process.kill(owner.pid, 0);
     return 'alive';
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'ESRCH' ? 'dead' : 'uncertain';
+    return errnoCode(error) === 'ESRCH' ? 'dead' : 'uncertain';
   }
 }
 function ownerRecord(value: unknown): CommitClaimOwner | null {
-  if (typeof value !== 'object' || value === null) return null;
-  const owner = value as Partial<CommitClaimOwner>;
-  return typeof owner.token === 'string' &&
-    /^[a-zA-Z0-9_-]{1,256}$/.test(owner.token) &&
-    typeof owner.pid === 'number' &&
-    Number.isSafeInteger(owner.pid) &&
-    owner.pid > 0
-    ? (owner as CommitClaimOwner)
+  if (!isRecord(value)) return null;
+  const { token, pid } = value;
+  return typeof token === 'string' &&
+    /^[a-zA-Z0-9_-]{1,256}$/.test(token) &&
+    typeof pid === 'number' &&
+    Number.isSafeInteger(pid) &&
+    pid > 0
+    ? { token, pid }
     : null;
 }
 export interface ReceiptClaim {
@@ -114,7 +116,7 @@ export async function acquireReceiptClaim(root: string, key: string, deadline: n
         mkdirSync(guard, { mode: 0o700 });
         guarded = true;
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        if (errnoCode(error) !== 'EEXIST') throw error;
         return null;
       }
       let prior: CommitClaimOwner | null = null;
@@ -160,6 +162,19 @@ interface Usage {
   invocations: number;
   totalBytes: number;
 }
+/** The root capacity ledger, or null when the stored document is not non-negative safe-integer counts. */
+function usageRecord(value: unknown): Usage | null {
+  if (!isRecord(value)) return null;
+  const { invocations, totalBytes } = value;
+  return typeof invocations === 'number' &&
+    Number.isSafeInteger(invocations) &&
+    invocations >= 0 &&
+    typeof totalBytes === 'number' &&
+    Number.isSafeInteger(totalBytes) &&
+    totalBytes >= 0
+    ? { invocations, totalBytes }
+    : null;
+}
 export async function reserveReceiptCapacity(
   root: string,
   invocationDelta: number,
@@ -170,15 +185,8 @@ export async function reserveReceiptCapacity(
   if (!claim) return false;
   try {
     const path = join(root, 'usage.json');
-    let usage: Usage = { invocations: 0, totalBytes: 0 };
-    if (existsSync(path)) usage = readJson(path, 4096) as Usage;
-    if (
-      !Number.isSafeInteger(usage.invocations) ||
-      !Number.isSafeInteger(usage.totalBytes) ||
-      usage.invocations < 0 ||
-      usage.totalBytes < 0
-    )
-      return false;
+    const usage = existsSync(path) ? usageRecord(readJson(path, 4096)) : { invocations: 0, totalBytes: 0 };
+    if (usage === null) return false;
     const next = { invocations: usage.invocations + invocationDelta, totalBytes: usage.totalBytes + byteDelta };
     if (
       next.invocations < 0 ||

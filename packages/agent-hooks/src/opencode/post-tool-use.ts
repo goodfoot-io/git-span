@@ -37,6 +37,7 @@ import {
 } from '../common/agent-hooks-common.js';
 import { runApplyPatchTouches } from '../common/apply-patch-touch.js';
 import { createDefaultPlannedTouchStore, runLayeredBashTouches } from '../common/bash-attribution.js';
+import { isRecord } from '../common/guards.js';
 import { createDiskMemoStore, type MemoFactory, type MemoLogger } from '../common/span-surface.js';
 import { filterTrackedEligibility } from '../common/static-attribution.js';
 import {
@@ -80,7 +81,8 @@ export function createAfterHandler(
     try {
       const sessionId = typeof input?.sessionID === 'string' ? input.sessionID : '';
       const callId = typeof input?.callID === 'string' ? input.callID : '';
-      const args = (input?.args ?? {}) as Record<string, unknown>;
+      const rawArgs = input?.args;
+      const args: Record<string, unknown> = isRecord(rawArgs) ? rawArgs : {};
       let blocks: string[] = [];
       // Degraded ids skip every touch pipeline symmetrically with the call
       // state's ingress guard: ''-keyed session/call lookups and the planned

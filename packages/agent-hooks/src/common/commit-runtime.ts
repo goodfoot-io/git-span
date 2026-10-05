@@ -9,7 +9,13 @@ import {
   validateCommitNotesAdd,
   validateCommitNotesList
 } from './commit-association.js';
-import type { CommitEnrollment, CommitHost, CommitPostIdentity, CommitReceipt } from './commit-contracts.js';
+import type {
+  CommitEnrollment,
+  CommitHost,
+  CommitPostIdentity,
+  CommitReceipt,
+  CommitValidation
+} from './commit-contracts.js';
 import {
   createCommitNoteDocument,
   restoreCommitInvocation,
@@ -19,7 +25,12 @@ import {
 } from './commit-contracts.js';
 import { parseCommitGitInvocation, validateCommitCreationEvidence } from './commit-git.js';
 import type { CommitNotesIO } from './commit-io.js';
-import { COMMIT_RECEIPT_LIMITS, type CommitInvocationState, commitCliBudgetMs } from './commit-lifecycle.js';
+import {
+  COMMIT_INVOCATION_STATUSES,
+  COMMIT_RECEIPT_LIMITS,
+  type CommitInvocationState,
+  commitCliBudgetMs
+} from './commit-lifecycle.js';
 import {
   checkpointCommitReflog,
   executableOnPath,
@@ -41,6 +52,7 @@ import {
   readJson,
   reserveReceiptCapacity
 } from './commit-storage.js';
+import { isOneOf, isRecord } from './guards.js';
 import { argvOf, splitTopLevel, tokenize } from './shell-split.js';
 
 /** Host logging adapter; normal enrollment and successful recording remain silent. */
@@ -80,12 +92,12 @@ export async function enrollCommitInvocation(
   options: CommitRuntimeOptions = {},
   logger?: CommitRuntimeLogger
 ): Promise<CommitEnrollmentResult> {
-  const unsupported = inspectInput(request.toolInput);
-  if (unsupported !== null) {
-    logger?.warn(`git-span commit receipts: ${unsupported}`);
-    return { kind: 'unsupported', reason: unsupported };
+  const inspected = inspectInput(request.toolInput);
+  if (!inspected.ok) {
+    logger?.warn(`git-span commit receipts: ${inspected.reason}`);
+    return { kind: 'unsupported', reason: inspected.reason };
   }
-  const command = request.toolInput.command as string;
+  const command = inspected.value;
   const root = receiptRoot(options);
   const key = identityKey(request);
   const directory = join(root, 'invocations', key);
@@ -117,13 +129,15 @@ export async function enrollCommitInvocation(
         throw new Error('deployed shim bundle must be an absolute file');
       if (!lstatSync(realpathSync(request.cwd)).isDirectory())
         throw new Error('effective shell cwd must be a directory');
+      const originalInput: unknown = JSON.parse(JSON.stringify(request.toolInput));
+      if (!isRecord(originalInput)) throw new Error('shell input is not a JSON object');
       const enrollment: CommitEnrollment = {
         schemaVersion: 1,
         invocationKey: randomBytes(24).toString('hex'),
         host: request.host,
         sessionId: request.sessionId,
         toolUseId: request.toolUseId,
-        originalInput: JSON.parse(JSON.stringify(request.toolInput)) as Record<string, unknown>,
+        originalInput,
         originalCommand: command,
         cwd: request.cwd,
         gitExecutable: executableOnPath('git'),
@@ -339,16 +353,8 @@ export async function dispatchCommitShim(argv: readonly string[] = process.argv.
   if (argv[0] !== '--git-span-commit-shim') return false;
   const configPath = argv[1];
   if (!configPath || !isAbsolute(configPath) || argv[2] !== '--') throw new Error('invalid receipt shim dispatch');
-  const config = readJson(configPath) as {
-    schemaVersion: number;
-    root: string;
-    directory: string;
-    enrollment: unknown;
-  };
-  const valid = validateCommitEnrollment(config.enrollment);
-  if (config.schemaVersion !== 1 || !valid.ok || !isAbsolute(config.root) || !isAbsolute(config.directory))
-    throw new Error('invalid immutable receipt shim configuration');
-  const enrollment = valid.value;
+  const config = readShimConfig(configPath);
+  const { enrollment } = config;
   const gitArgv = argv.slice(3);
   const parsed = parseCommitGitInvocation(gitArgv, process.cwd());
   const nonce = `receipt-${randomBytes(24).toString('hex')}`;
@@ -399,7 +405,7 @@ export async function dispatchCommitShim(argv: readonly string[] = process.argv.
     }
   }
   if (result.signal !== null) {
-    process.kill(process.pid, result.signal as NodeJS.Signals);
+    process.kill(process.pid, result.signal);
     await new Promise(() => {});
   }
   process.exit(result.exitCode ?? 127);
@@ -414,8 +420,14 @@ function quote(value: string): string {
 function errorMessage(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).slice(0, 512);
 }
-function inspectInput(input: Readonly<Record<string, unknown>>): string | null {
-  if (typeof input.command !== 'string' || input.command.length === 0) return 'unsupported shell input';
+/** The enrollable command string of a direct shell input, or why the input is unsupported. */
+function inspectInput(input: Readonly<Record<string, unknown>>): CommitValidation<string> {
+  const command = input.command;
+  if (typeof command !== 'string' || command.length === 0) return { ok: false, reason: 'unsupported shell input' };
+  const reason = unsupportedCommandReason(input, command);
+  return reason === null ? { ok: true, value: command } : { ok: false, reason };
+}
+function unsupportedCommandReason(input: Readonly<Record<string, unknown>>, command: string): string | null {
   if (
     input.run_in_background === true ||
     input.background === true ||
@@ -423,8 +435,8 @@ function inspectInput(input: Readonly<Record<string, unknown>>): string | null {
     input.worker === true
   )
     return 'background or delegated execution is unsupported';
-  const split = splitTopLevel(input.command);
-  if (split.stages.some((stage) => stage.precededBy === 'background') || /&\s*$/.test(input.command))
+  const split = splitTopLevel(command);
+  if (split.stages.some((stage) => stage.precededBy === 'background') || /&\s*$/.test(command))
     return 'background shell execution is unsupported';
   for (const stage of split.stages) {
     const args = argvOf(stage.text) ?? [];
@@ -497,28 +509,62 @@ function replacementInput(enrollment: CommitEnrollment, directory: string): Read
   const command = `{ printf '%s' "$$" > ${quote(join(directory, 'lease'))}; } 2>/dev/null || :; export PATH=${quote(join(directory, 'bin'))}:"$PATH"; ${enrollment.originalCommand}`;
   return { ...enrollment.originalInput, command };
 }
-function readState(directory: string, enrollment: CommitEnrollment): CommitInvocationState {
-  const value = readJson(join(directory, 'state.json')) as CommitInvocationState;
+/** The immutable shim configuration published at enrollment; anything else is rejected before Git runs. */
+function readShimConfig(configPath: string): { root: string; directory: string; enrollment: CommitEnrollment } {
+  const config = readJson(configPath);
+  const valid = isRecord(config) ? validateCommitEnrollment(config.enrollment) : null;
   if (
-    !['active', 'completed', 'acknowledged', 'retired'].includes(value.status) ||
+    !isRecord(config) ||
+    valid === null ||
+    !valid.ok ||
+    config.schemaVersion !== 1 ||
+    typeof config.root !== 'string' ||
+    !isAbsolute(config.root) ||
+    typeof config.directory !== 'string' ||
+    !isAbsolute(config.directory)
+  )
+    throw new Error('invalid immutable receipt shim configuration');
+  return { root: config.root, directory: config.directory, enrollment: valid.value };
+}
+/** The invocation's private lifecycle state, decoded and bound to the enrollment it was published for. */
+function readState(directory: string, enrollment: CommitEnrollment): CommitInvocationState {
+  const value = readJson(join(directory, 'state.json'));
+  const stored = isRecord(value) ? validateCommitEnrollment(value.enrollment) : null;
+  if (
+    !isRecord(value) ||
+    stored === null ||
+    !stored.ok ||
+    stored.value.invocationKey !== enrollment.invocationKey ||
+    !isOneOf(COMMIT_INVOCATION_STATUSES, value.status) ||
     !Array.isArray(value.pendingNonces) ||
     value.pendingNonces.length > COMMIT_RECEIPT_LIMITS.receiptsPerInvocation ||
-    !Number.isFinite(value.lastActivityMs) ||
-    value.enrollment.invocationKey !== enrollment.invocationKey
+    !value.pendingNonces.every((nonce): nonce is string => typeof nonce === 'string') ||
+    typeof value.liveLease !== 'boolean' ||
+    typeof value.lastActivityMs !== 'number' ||
+    !Number.isFinite(value.lastActivityMs)
   )
     throw new Error('invalid private invocation lifecycle');
-  return value;
+  return {
+    enrollment: stored.value,
+    status: value.status,
+    pendingNonces: value.pendingNonces,
+    liveLease: value.liveLease,
+    lastActivityMs: value.lastActivityMs
+  };
 }
 function readUsage(directory: string): { bytes: number; receipts: number } {
-  const usage = readJson(join(directory, 'usage.json'), 4096) as { bytes: number; receipts: number };
+  const usage = readJson(join(directory, 'usage.json'), 4096);
   if (
+    !isRecord(usage) ||
+    typeof usage.bytes !== 'number' ||
     !Number.isSafeInteger(usage.bytes) ||
     usage.bytes < 0 ||
+    typeof usage.receipts !== 'number' ||
     !Number.isSafeInteger(usage.receipts) ||
     usage.receipts < 0
   )
     throw new Error('invalid invocation usage');
-  return usage;
+  return { bytes: usage.bytes, receipts: usage.receipts };
 }
 function invocationIsLive(directory: string): boolean {
   try {

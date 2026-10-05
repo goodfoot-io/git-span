@@ -33,6 +33,7 @@
 import { readFileSync, statSync } from 'node:fs';
 import { basename, isAbsolute, join as joinPath, resolve as resolvePath } from 'node:path';
 import { countFileLines, countGitBlobLines } from './command-resolve.js';
+import { isOneOf } from './guards.js';
 import { matchGroups } from './regex-groups.js';
 import {
   argvOf,
@@ -454,14 +455,17 @@ function extractGroupBody(text: string, open: '{' | '(', close: '}' | ')'): stri
   return null;
 }
 
-type ConstructKind = 'if' | 'while' | 'until' | 'for' | 'case' | 'select' | 'brace' | 'subshell' | 'def' | 'plain';
+/** The reserved words that open a compound command a stage can start with. */
+const COMPOUND_KEYWORDS = ['if', 'while', 'until', 'for', 'case', 'select'] as const;
+
+type ConstructKind = (typeof COMPOUND_KEYWORDS)[number] | 'brace' | 'subshell' | 'def' | 'plain';
 
 function classifyStage(text: string): ConstructKind {
   const t = text.trimStart();
   if (t.startsWith('{')) return 'brace';
   if (t.startsWith('(')) return 'subshell';
-  const kw = t.match(/^(if|while|until|for|case|select)\b/);
-  if (kw !== null) return kw[1] as ConstructKind;
+  const keyword = t.match(/^([a-z]+)\b/)?.[1];
+  if (isOneOf(COMPOUND_KEYWORDS, keyword)) return keyword;
   if (/^(?:function\s+)?[A-Za-z_][A-Za-z0-9_]*\(\)\s*\{/.test(t)) return 'def';
   return 'plain';
 }
@@ -1678,12 +1682,12 @@ function matchHead(argv: string[]): MatchResult[] {
   // Bare `+N` is a GNU-head file artifact, never a real read — drop it.
   const realFiles = files.filter((f) => f !== '-' && !/^\+\d+$/.test(f));
   if (realFiles.length === 0) return [];
-  const n = count ?? 10;
+  const spec: LineRangeSpec = { kind: 'upperBoundFromStart', end: count ?? 10 };
   return realFiles.map((fileArg) => ({
     kind: 'candidate' as const,
     idiom: 'head-file' as const,
     fileArg,
-    spec: { kind: 'upperBoundFromStart', end: n } as LineRangeSpec,
+    spec,
     resolverKind: 'fs' as const
   }));
 }
@@ -2099,10 +2103,13 @@ interface RedirectInfo {
   /** IO_NUMBER fd (`1>`/`2>`), or null when implicit. */
   fd: number | null;
   /** The operator. */
-  op: '>' | '>>' | '&>' | '&>>' | '>&' | '<' | '<<' | '<<-' | '<<<';
+  op: (typeof REDIRECT_OPERATORS)[number];
   /** Attached target text, or null for a standalone operator (target = next token). */
   target: string | null;
 }
+
+/** Every redirect operator {@link REDIRECT_TOKEN} recognizes. */
+const REDIRECT_OPERATORS = ['>', '>>', '&>', '&>>', '>&', '<', '<<', '<<-', '<<<'] as const;
 
 const REDIRECT_TOKEN = /^(\d*)(<<<|<<-|&>>|<<|>>|&>|>&|<|>)(.*)$/;
 
@@ -2110,9 +2117,10 @@ function classifyRedirectToken(text: string): RedirectInfo | null {
   const m = matchGroups(text, REDIRECT_TOKEN, 3);
   if (m === null) return null;
   const [fdText, op, target] = m;
+  if (!isOneOf(REDIRECT_OPERATORS, op)) return null;
   return {
     fd: fdText === '' ? null : Number.parseInt(fdText, 10),
-    op: op as RedirectInfo['op'],
+    op,
     target: target === '' ? null : target
   };
 }

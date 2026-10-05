@@ -641,6 +641,16 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as nodePath from "node:path";
+
+// packages/agent-hooks/src/common/guards.ts
+function isErrnoException(error) {
+  return error instanceof Error && (!("code" in error) || error.code === void 0 || typeof error.code === "string");
+}
+function errnoCode(error) {
+  return isErrnoException(error) ? error.code : void 0;
+}
+
+// packages/agent-hooks/src/common/agent-hooks-common.ts
 var PORCELAIN_STATUSES = [
   "FRESH",
   "RESOLVED_PENDING_COMMIT",
@@ -714,7 +724,7 @@ function cleanupCallScopedState(layout, conversationId, now = Date.now()) {
       fs2.renameSync(dirPath, trashPath);
       fs2.utimesSync(trashPath, now / 1e3, now / 1e3);
     } catch (error) {
-      if (error.code !== "ENOENT") throw error;
+      if (errnoCode(error) !== "ENOENT") throw error;
     }
   }
 }

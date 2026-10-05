@@ -1,6 +1,7 @@
 /** Immutable invocation and receipt contracts; all validation is independent of host SDKs and filesystem IO. */
 import { isAbsolute } from 'node:path';
 import { COMMIT_RECEIPT_LIMITS } from './commit-limits.js';
+import { isRecord } from './guards.js';
 export type CommitHost = 'claude' | 'codex';
 export type CommitObjectFormat = 'sha1' | 'sha256';
 export type CommitValidation<T> =
@@ -53,10 +54,6 @@ export interface CommitPostIdentity {
   readonly toolUseId: string;
 }
 
-function object(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
 function text(value: unknown, max = 4096): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= max && !value.includes('\0');
 }
@@ -75,13 +72,13 @@ function reject(reason: string): { readonly ok: false; readonly reason: string }
 
 /** Validate a persisted enrollment without adopting fields from a later hook. */
 export function validateCommitEnrollment(value: unknown): CommitValidation<CommitEnrollment> {
-  if (!object(value) || value.schemaVersion !== 1) return reject('invalid enrollment schema');
+  if (!isRecord(value) || value.schemaVersion !== 1) return reject('invalid enrollment schema');
   if (value.host !== 'claude' && value.host !== 'codex') return reject('unsupported commit host');
   if (!key(value.invocationKey) || !text(value.sessionId) || !text(value.toolUseId)) {
     return reject('invalid invocation identity');
   }
   if (!absolute(value.cwd) || !absolute(value.gitExecutable)) return reject('enrollment paths must be absolute');
-  if (!object(value.originalInput) || !text(value.originalCommand, COMMIT_RECEIPT_LIMITS.jsonFileBytes)) {
+  if (!isRecord(value.originalInput) || !text(value.originalCommand, COMMIT_RECEIPT_LIMITS.jsonFileBytes)) {
     return reject('invalid original tool input');
   }
   if (value.transcriptLocator !== undefined && !text(value.transcriptLocator))
@@ -110,7 +107,7 @@ export function validateCommitEnrollment(value: unknown): CommitValidation<Commi
 /** Validate a receipt's complete object ID and originating enrollment reference. */
 export function validateCommitReceipt(value: unknown, enrollment: CommitEnrollment): CommitValidation<CommitReceipt> {
   if (
-    !object(value) ||
+    !isRecord(value) ||
     value.schemaVersion !== 1 ||
     value.invocationKey !== enrollment.invocationKey ||
     !key(value.nonce)
@@ -119,7 +116,7 @@ export function validateCommitReceipt(value: unknown, enrollment: CommitEnrollme
   }
   const repo = value.repository;
   if (
-    !object(repo) ||
+    !isRecord(repo) ||
     !absolute(repo.cwd) ||
     !absolute(repo.gitDirectory) ||
     !absolute(repo.commonDirectory) ||

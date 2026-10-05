@@ -56,18 +56,18 @@ export interface TreeAnchor {
  * — `a.ts` sits at position 0, its first occurrence, not its last.
  */
 export function collapseByPath(rows: { path: string; range: RangeLabel; suffix: string }[]): TreeAnchor[] {
-  const order: string[] = [];
+  const anchors: TreeAnchor[] = [];
   const byPath = new Map<string, TreeAnchor>();
   for (const row of rows) {
     let anchor = byPath.get(row.path);
     if (!anchor) {
       anchor = { path: row.path, ranges: [] };
       byPath.set(row.path, anchor);
-      order.push(row.path);
+      anchors.push(anchor);
     }
     anchor.ranges.push({ range: row.range, suffix: row.suffix });
   }
-  return order.map((path) => byPath.get(path) as TreeAnchor);
+  return anchors;
 }
 
 // ---------------------------------------------------------------------------

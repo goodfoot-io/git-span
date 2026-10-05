@@ -6,7 +6,10 @@ import { COMMIT_RECEIPT_LIMITS } from './commit-limits.js';
 
 export { COMMIT_RECEIPT_LIMITS } from './commit-limits.js';
 
-export type CommitInvocationStatus = 'active' | 'completed' | 'acknowledged' | 'retired';
+/** Every invocation lifecycle status, in lifecycle order; decoders narrow stored state against this list. */
+export const COMMIT_INVOCATION_STATUSES = ['active', 'completed', 'acknowledged', 'retired'] as const;
+
+export type CommitInvocationStatus = (typeof COMMIT_INVOCATION_STATUSES)[number];
 
 export interface CommitInvocationState {
   readonly enrollment: CommitEnrollment;
@@ -86,12 +89,10 @@ export function transitionCommitInvocation(
   }
 }
 
-export interface CommitStateUsage {
-  readonly invocations: number;
-  readonly totalBytes: number;
-  readonly invocationReceipts: number;
-  readonly invocationBytes: number;
-}
+/** The capacity dimensions every receipt-state accounting check covers. */
+const COMMIT_STATE_USAGE_KEYS = ['invocations', 'totalBytes', 'invocationReceipts', 'invocationBytes'] as const;
+
+export type CommitStateUsage = { readonly [K in (typeof COMMIT_STATE_USAGE_KEYS)[number]]: number };
 
 /** Reject overflow before new publication; callers diagnose once and allow the original command unchanged. */
 export function validateCommitStateCapacity(
@@ -105,7 +106,7 @@ export function validateCommitStateCapacity(
     invocationBytes: COMMIT_RECEIPT_LIMITS.bytesPerInvocation
   };
   const total = { ...usage };
-  for (const key of Object.keys(limits) as (keyof CommitStateUsage)[]) {
+  for (const key of COMMIT_STATE_USAGE_KEYS) {
     if (
       !Number.isSafeInteger(usage[key]) ||
       usage[key] < 0 ||

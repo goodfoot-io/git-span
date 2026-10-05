@@ -21,6 +21,7 @@ import {
   runLayeredBashTouches
 } from '../common/bash-attribution.js';
 import { type CommitRuntimeOptions, terminalCommitInvocation } from '../common/commit-runtime.js';
+import { isRecord } from '../common/guards.js';
 import { createDiskMemoStore, type MemoFactory } from '../common/span-surface.js';
 import type { PlannedTouchRecord } from '../common/static-attribution.js';
 import { createDefaultTouchExecutors, type TouchExecutors } from '../common/touch-core.js';
@@ -31,21 +32,17 @@ const APPLY_PATCH_SUCCESS_PREFIX = 'Success. Updated the following files:';
 
 /** Narrow the SDK's unknown apply_patch input. */
 export function narrowApplyPatchCommand(toolInput: unknown): string | null {
-  if (toolInput !== null && typeof toolInput === 'object' && 'command' in toolInput) {
-    const command = (toolInput as { command: unknown }).command;
-    if (typeof command === 'string') return command;
-  }
-  return null;
+  return isRecord(toolInput) && typeof toolInput.command === 'string' ? toolInput.command : null;
 }
 
 /** Narrow the classic exec_command JSON-string arguments envelope. */
 export function narrowExecCommand(toolInput: unknown): { cmd: string; workdir: string | null } | null {
-  if (toolInput !== null && typeof toolInput === 'object' && 'arguments' in toolInput) {
-    const args = (toolInput as { arguments: unknown }).arguments;
+  if (isRecord(toolInput)) {
+    const args = toolInput.arguments;
     if (typeof args === 'string') {
       try {
-        const parsed = JSON.parse(args);
-        if (parsed !== null && typeof parsed === 'object' && typeof parsed.cmd === 'string') {
+        const parsed: unknown = JSON.parse(args);
+        if (isRecord(parsed) && typeof parsed.cmd === 'string') {
           return { cmd: parsed.cmd, workdir: typeof parsed.workdir === 'string' ? parsed.workdir : null };
         }
       } catch {
@@ -95,15 +92,15 @@ function quoteObjectKeys(literal: string): string {
 
 /** Narrow a literal tools.exec_command call from the Codex code-mode envelope. */
 export function narrowCodeModeExec(toolInput: unknown): CodeModeExecNarrow {
-  if (toolInput !== null && typeof toolInput === 'object' && 'input' in toolInput) {
-    const input = (toolInput as { input: unknown }).input;
+  if (isRecord(toolInput)) {
+    const input = toolInput.input;
     if (typeof input === 'string') {
       const match = input.match(/tools\.exec_command\(\s*(\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\})\s*\)/);
       const objectLiteral = match?.[1];
       if (objectLiteral !== undefined) {
         try {
-          const parsed = JSON.parse(quoteObjectKeys(objectLiteral));
-          if (parsed !== null && typeof parsed === 'object' && typeof parsed.cmd === 'string') {
+          const parsed: unknown = JSON.parse(quoteObjectKeys(objectLiteral));
+          if (isRecord(parsed) && typeof parsed.cmd === 'string') {
             return {
               matched: true,
               cmd: parsed.cmd,

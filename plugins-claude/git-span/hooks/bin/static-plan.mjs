@@ -786,6 +786,58 @@ import { execFileSync } from "node:child_process";
 import * as fs2 from "node:fs";
 import * as os from "node:os";
 import * as nodePath from "node:path";
+
+// packages/agent-hooks/src/common/fail-open.ts
+var FAIL_OPEN_MESSAGE = "git-span failed open";
+var MAX_PENDING_FAIL_OPEN = 32;
+var counts = /* @__PURE__ */ new Map();
+var pending = [];
+var droppedPending = 0;
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+function emit(logger2, event) {
+  logger2.warn(FAIL_OPEN_MESSAGE, { ...event.context, site: event.site, error: event.error, count: event.count });
+}
+function flushFailOpen(logger2) {
+  for (const event of pending.splice(0)) emit(logger2, event);
+  if (droppedPending > 0) {
+    logger2.warn(FAIL_OPEN_MESSAGE, { site: "fail-open-queue", dropped: droppedPending });
+    droppedPending = 0;
+  }
+}
+function reportFailOpen(logger2, site, error, context = {}) {
+  const count = (counts.get(site) ?? 0) + 1;
+  counts.set(site, count);
+  const event = { site, error: errorMessage(error), count, context: { ...context, err: error } };
+  if (logger2 === void 0) {
+    if (pending.length < MAX_PENDING_FAIL_OPEN) pending.push(event);
+    else droppedPending += 1;
+    return event;
+  }
+  flushFailOpen(logger2);
+  emit(logger2, event);
+  return event;
+}
+
+// packages/agent-hooks/src/common/guards.ts
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isErrnoException(error) {
+  return error instanceof Error && (!("code" in error) || error.code === void 0 || typeof error.code === "string");
+}
+function errnoCode(error) {
+  return isErrnoException(error) ? error.code : void 0;
+}
+function caughtProperty(error, key2) {
+  return isRecord(error) ? error[key2] : void 0;
+}
+function isOneOf(tokens, value) {
+  return tokens.some((token) => token === value);
+}
+
+// packages/agent-hooks/src/common/agent-hooks-common.ts
 function toPosix(p) {
   return p.replace(/\\/g, "/");
 }
@@ -830,7 +882,7 @@ function resolveSpanRoot(repoRoot) {
   return resolved;
 }
 function resolveSpanRootUncached(repoRoot) {
-  const envDir = process.env["GIT_SPAN_DIR"];
+  const envDir = process.env.GIT_SPAN_DIR;
   if (envDir && envDir.trim().length > 0) {
     return toPosix(envDir.trim()).replace(/\/+$/, "");
   }
@@ -842,6 +894,8 @@ function resolveSpanRootUncached(repoRoot) {
     const trimmed = toPosix(out.trim()).replace(/\/+$/, "");
     if (trimmed.length > 0) return trimmed;
   } catch (err) {
+    const status = err instanceof Error && "status" in err ? err.status : void 0;
+    if (status !== 1) reportFailOpen(void 0, "span-root-config", err, { repoRoot });
   }
   return SPAN_ROOT;
 }
@@ -1012,6 +1066,22 @@ function countGitBlobLines(cwd, rev, path) {
   }
 }
 
+// packages/agent-hooks/src/common/regex-groups.ts
+function hasRequiredGroups(groups, required) {
+  for (let index = 0; index < required; index++) {
+    if (groups[index] === void 0) return false;
+  }
+  return true;
+}
+function matchGroups(text2, pattern, required) {
+  if (pattern.global || pattern.sticky)
+    throw new Error(`matchGroups needs a stateless pattern, got /${pattern.source}/${pattern.flags}`);
+  const match = pattern.exec(text2);
+  if (match === null) return null;
+  const groups = match.slice(1);
+  return hasRequiredGroups(groups, required) ? groups : null;
+}
+
 // packages/agent-hooks/src/common/shell-split-machines.ts
 function createScan(cmd) {
   return {
@@ -1026,7 +1096,8 @@ function createScan(cmd) {
     inDquote: false,
     braceDepth: 0,
     depth: 0,
-    levels: [[]],
+    level: [],
+    outerLevels: [],
     afterKeyword: false,
     functionSeen: false,
     nameSeen: false,
@@ -1058,12 +1129,12 @@ function fnNameShapeIsPending(buf) {
   return /^[A-Za-z_][A-Za-z0-9_]*\(\)$/.test(lastWord(buf)) || lastWord(buf) === "()";
 }
 function startsRedirectAt(s) {
-  const c = s.cmd[s.i];
+  const c = s.cmd.charAt(s.i);
   if (c === ">" || c === "<") return true;
   if (c === "&") return s.cmd[s.i + 1] === ">";
   if (c >= "0" && c <= "9") {
     let j = s.i;
-    while (j < s.n && s.cmd[j] >= "0" && s.cmd[j] <= "9") j += 1;
+    while (j < s.n && s.cmd.charAt(j) >= "0" && s.cmd.charAt(j) <= "9") j += 1;
     return s.cmd[j] === ">" || s.cmd[j] === "<";
   }
   return false;
@@ -1139,7 +1210,8 @@ function stepHeredocBody(s) {
   if (!s.inBody) return false;
   const lineEnd = s.cmd.indexOf("\n", s.i);
   const line = lineEnd === -1 ? s.cmd.slice(s.i) : s.cmd.slice(s.i, lineEnd);
-  if (s.heredocs[0].close.test(line)) {
+  const pending2 = s.heredocs[0];
+  if (pending2?.close.test(line) === true) {
     s.heredocs.shift();
     if (s.heredocs.length === 0) s.inBody = false;
   }
@@ -1200,17 +1272,18 @@ function scanHeredocDelimiter(s) {
     j += 1;
   }
   while (s.cmd[j] === " " || s.cmd[j] === "	") j += 1;
-  if (s.cmd[j] === "'" || s.cmd[j] === '"') {
-    const q = s.cmd.indexOf(s.cmd[j], j + 1);
+  const quote2 = s.cmd.charAt(j);
+  if (quote2 === "'" || quote2 === '"') {
+    const q = s.cmd.indexOf(quote2, j + 1);
     if (q === -1) return { delim: s.cmd.slice(j + 1), allowTabs, next: s.n };
     return { delim: s.cmd.slice(j + 1, q), allowTabs, next: q + 1 };
   }
   const delimStart = j;
-  while (j < s.n && !WORD_END.test(s.cmd[j])) j += 1;
+  while (j < s.n && !WORD_END.test(s.cmd.charAt(j))) j += 1;
   return { delim: s.cmd.slice(delimStart, j), allowTabs, next: j };
 }
 function insideOpenRegion(s) {
-  return s.levels[s.levels.length - 1].length > 0 || s.caseRegion !== null;
+  return s.level.length > 0 || s.caseRegion !== null;
 }
 function stepCaseRegion(s) {
   const r = s.caseRegion;
@@ -1268,10 +1341,10 @@ function caseBareAmpersand(s) {
   return s.cmd[s.i + 1] !== ">" && s.cmd[s.i + 1] !== "&" && !bufferEndsInRedirectChar(s.buf);
 }
 function stepCaseWord(s, r) {
-  const c = s.cmd[s.i];
+  const c = s.cmd.charAt(s.i);
   if (!wordStart(s.buf) || WORD_END.test(c)) return false;
   let j = s.i;
-  while (j < s.n && !WORD_END.test(s.cmd[j])) j += 1;
+  while (j < s.n && !WORD_END.test(s.cmd.charAt(j))) j += 1;
   const w = s.cmd.slice(s.i, j);
   if (w === "esac" && (r.pos === "pattern-start" || r.pos === "command" && r.cmdEmpty)) {
     s.caseRegion = null;
@@ -1300,7 +1373,8 @@ function stepParen(s) {
     } else {
       markEnclosingBraceBody(s);
       s.depth += 1;
-      s.levels.push([]);
+      s.outerLevels.push(s.level);
+      s.level = [];
     }
     s.afterKeyword = false;
     s.buf += c;
@@ -1315,16 +1389,18 @@ function stepParen(s) {
       s.caseRegion.localDepth -= 1;
     }
   } else {
-    if (s.depth === 0) {
+    const outer = s.outerLevels.at(-1);
+    if (s.depth === 0 || outer === void 0) {
       rejectList(s, "unbalanced-paren");
       return true;
     }
-    if (s.levels[s.levels.length - 1].length > 0) {
+    if (s.level.length > 0) {
       rejectList(s, "unclosed-construct");
       return true;
     }
     s.depth -= 1;
-    s.levels.pop();
+    s.outerLevels.pop();
+    s.level = outer;
   }
   s.buf += c;
   s.i += 1;
@@ -1333,9 +1409,9 @@ function stepParen(s) {
 function stepConstructWord(s) {
   if (!startsConstructWord(s)) return false;
   let j = s.i;
-  while (j < s.n && !WORD_END.test(s.cmd[j])) j += 1;
+  while (j < s.n && !WORD_END.test(s.cmd.charAt(j))) j += 1;
   const w = s.cmd.slice(s.i, j);
-  const top = topFrame(s.levels);
+  const top = s.level.at(-1);
   const atCommand = commandPosition(s.buf);
   if (forSelectSeparator(w, top)) {
   } else if (opensBraceGroup(s, w, atCommand)) {
@@ -1359,18 +1435,18 @@ function opensBraceGroup(s, w, atCommand) {
 }
 function startsConstructWord(s) {
   if (s.caseRegion) return false;
-  const c = s.cmd[s.i];
+  const c = s.cmd.charAt(s.i);
   if (WORD_END.test(c)) return false;
   if (!wordStart(s.buf) && !/[()]$/.test(s.buf)) return false;
   return !(c === "$" && s.cmd[s.i + 1] === "{");
 }
 function pushConstruct(s, kind) {
   markEnclosingBraceBody(s);
-  s.levels[s.levels.length - 1].push({ kind, body: false });
+  s.level.push({ kind, body: false });
   s.afterKeyword = true;
 }
 function requireTopOf(s, kinds, requireBody) {
-  const t = topFrame(s.levels);
+  const t = s.level.at(-1);
   if (t === void 0 || !kinds.includes(t.kind) || requireBody && !t.body) {
     rejectList(s, "unclosed-construct");
     return null;
@@ -1379,7 +1455,7 @@ function requireTopOf(s, kinds, requireBody) {
 }
 function closeConstruct(s, kinds) {
   if (requireTopOf(s, kinds, true) === null) return;
-  s.levels[s.levels.length - 1].pop();
+  s.level.pop();
   s.afterKeyword = false;
 }
 function openBraceGroup(s) {
@@ -1390,12 +1466,12 @@ function openBraceGroup(s) {
   pushConstruct(s, "brace");
 }
 function closeBraceGroup(s) {
-  const t = topFrame(s.levels);
+  const t = s.level.at(-1);
   if (s.afterKeyword || t === void 0 || t.kind !== "brace" || !t.body) {
     rejectList(s, "unclosed-construct");
     return;
   }
-  s.levels[s.levels.length - 1].pop();
+  s.level.pop();
   s.afterKeyword = false;
 }
 function requireIfBranch(s) {
@@ -1457,12 +1533,8 @@ function applyCommandKeyword(s, w) {
   kw(s);
   return true;
 }
-function topFrame(levels) {
-  const lv = levels[levels.length - 1];
-  return lv.length > 0 ? lv[lv.length - 1] : void 0;
-}
 function markEnclosingBraceBody(s) {
-  const t = topFrame(s.levels);
+  const t = s.level.at(-1);
   if (t?.kind === "brace") t.body = true;
 }
 function ordinaryConstructWord(s) {
@@ -1485,7 +1557,7 @@ function advanceFunctionNameHandoff(s) {
 }
 function rejectEmptyConstructList(s) {
   const c = s.cmd[s.i];
-  if (s.caseRegion === null && s.levels[s.levels.length - 1].length > 0 && (c === ";" || c === "&") && s.afterKeyword) {
+  if (s.caseRegion === null && s.level.length > 0 && (c === ";" || c === "&") && s.afterKeyword) {
     rejectList(s, "unclosed-construct");
     return true;
   }
@@ -1515,7 +1587,7 @@ function stepRedirectToken(s) {
 function stepBoundaryOperator(s) {
   if (s.depth !== 0) return false;
   if (s.caseRegion !== null) return false;
-  if (s.levels[s.levels.length - 1].length > 0) return false;
+  if (s.level.length > 0) return false;
   const c = s.cmd[s.i];
   const twoOp = TWO_CHAR_BOUNDARY_OPS.get(s.cmd.slice(s.i, s.i + 2));
   if (twoOp !== void 0) {
@@ -1577,7 +1649,7 @@ function ampersandIsRedirectText(s) {
   if (s.buf[s.buf.length - 1] === "<") return true;
   const trimmed = s.buf.trimEnd();
   if (!trimmed.endsWith(">")) return false;
-  const before = trimmed.length >= 2 ? trimmed[trimmed.length - 2] : "";
+  const before = trimmed.charAt(trimmed.length - 2);
   return trimmed.length === 1 || /\s|\d/.test(before);
 }
 function finishScan(s) {
@@ -1590,7 +1662,7 @@ function finishScan(s) {
     rejectList(s, "unclosed-case");
   } else if (s.depth > 0) {
     rejectList(s, "unbalanced-paren");
-  } else if (s.levels[s.levels.length - 1].length > 0) {
+  } else if (s.level.length > 0) {
     rejectList(s, "unclosed-construct");
   } else if (unconsumedPipeOp(s) || bufferEndsInDanglingRedirect(s.buf)) {
     rejectList(s, "dangling-operator");
@@ -1615,15 +1687,16 @@ function appendQuotedContent(t, out, start) {
   const quote2 = t.src[start];
   let j = start + 1;
   while (j < t.n) {
-    const c = t.src[j];
+    const c = t.src.charAt(j);
     if (quote2 === "'") {
       if (c === "'") return { out, next: j + 1 };
       out += c;
       j += 1;
       continue;
     }
-    if (c === "\\" && j + 1 < t.n && '"\\$`'.includes(t.src[j + 1])) {
-      out += t.src[j + 1];
+    const escaped = t.src.charAt(j + 1);
+    if (c === "\\" && j + 1 < t.n && '"\\$`'.includes(escaped)) {
+      out += escaped;
       j += 2;
       continue;
     }
@@ -1636,7 +1709,7 @@ function appendQuotedContent(t, out, start) {
 function appendAttachedTarget(t, out, start) {
   let j = start;
   while (j < t.n) {
-    const c = t.src[j];
+    const c = t.src.charAt(j);
     if (/\s/.test(c) || c === "<" || c === ">") return { out, next: j };
     if (c === "'" || c === '"') {
       const section = appendQuotedContent(t, "", j);
@@ -1748,7 +1821,7 @@ function stripLeadingAssignments(simpleCmd) {
 function tokenize(s) {
   const t = createTokenizeScan(s);
   while (t.i < t.n && !t.failed) {
-    if (/\s/.test(t.src[t.i])) {
+    if (/\s/.test(t.src.charAt(t.i))) {
       flushWord(t);
       t.i += 1;
       continue;
@@ -1757,28 +1830,30 @@ function tokenize(s) {
     if (stepTokenizerEscape(t)) continue;
     if (stepTokenizerRedirect(t)) continue;
     if (stepTokenizerAmpersand(t)) continue;
-    t.buf += t.src[t.i];
+    t.buf += t.src.charAt(t.i);
     t.i += 1;
   }
   return finishTokenizeScan(t);
 }
 function redirectAttachedTarget(text2) {
-  const match = text2.match(/^(\d*)(<<<|<<-|&>>|<<|>>|&>|>&|<|>)(.*)$/);
-  if (match === null) return null;
-  const [, , , rest] = match;
-  return rest.length > 0 ? rest : null;
+  const rest = text2.match(/^(\d*)(<<<|<<-|&>>|<<|>>|&>|>&|<|>)(.*)$/)?.[3];
+  return rest !== void 0 && rest.length > 0 ? rest : null;
 }
 function argvOf(simpleCmd) {
   const tokens = tokenize(stripLeadingAssignments(simpleCmd).trim());
   if (tokens === null) return null;
   const argv = [];
-  for (let i = 0; i < tokens.length; i++) {
-    const token = tokens[i];
+  let skipTarget = false;
+  for (const token of tokens) {
+    if (skipTarget) {
+      skipTarget = false;
+      continue;
+    }
     if (!token.isRedirect) {
       argv.push(token.text);
       continue;
     }
-    if (redirectAttachedTarget(token.text) === null) i += 1;
+    skipTarget = redirectAttachedTarget(token.text) === null;
   }
   return argv;
 }
@@ -1884,12 +1959,12 @@ function parseUnifiedDiffRange(patchText, strip) {
       binary = true;
       continue;
     }
-    const hunk = line.match(HUNK_HEADER);
-    if (hunk) {
+    const [, preStartText, preCountText, , postCountText] = line.match(HUNK_HEADER) ?? [];
+    if (preStartText !== void 0) {
       sawBlock = true;
-      const preStart = Number.parseInt(hunk[1], 10);
-      const preCount = hunk[2] === void 0 ? 1 : Number.parseInt(hunk[2], 10);
-      const postCount = hunk[4] === void 0 ? 1 : Number.parseInt(hunk[4], 10);
+      const preStart = Number.parseInt(preStartText, 10);
+      const preCount = preCountText === void 0 ? 1 : Number.parseInt(preCountText, 10);
+      const postCount = postCountText === void 0 ? 1 : Number.parseInt(postCountText, 10);
       if (current === null) return null;
       if (preCount !== postCount) current.countChanging = true;
       if (preCount > 0) current.hunks.push({ start: preStart, end: preStart + preCount - 1 });
@@ -1938,24 +2013,17 @@ function matchSed(argv) {
   if (argv[0] !== "sed") return [];
   const rest = argv.slice(1);
   if (!rest.includes("-n")) return [];
-  let scriptIdx = -1;
-  for (let i = 0; i < rest.length; i++) {
-    if (rest[i] === "-n") continue;
-    if (sedScriptSegments(rest[i]).some((seg) => SED_RANGE.test(seg))) {
-      scriptIdx = i;
-      break;
-    }
-  }
-  if (scriptIdx === -1) return [];
-  const fileCandidates = rest.filter((a, i) => i !== scriptIdx && a !== "-n" && !a.startsWith("-"));
-  if (fileCandidates.length !== 1) return [];
-  const fileArg = fileCandidates[0];
+  const scriptIdx = rest.findIndex((a) => a !== "-n" && sedScriptSegments(a).some((seg) => SED_RANGE.test(seg)));
+  const script = rest[scriptIdx];
+  if (script === void 0) return [];
+  const [fileArg, ...otherFiles] = rest.filter((a, i) => i !== scriptIdx && a !== "-n" && !a.startsWith("-"));
+  if (fileArg === void 0 || otherFiles.length > 0) return [];
   const results = [];
-  for (const segment of sedScriptSegments(rest[scriptIdx])) {
-    const match = segment.match(SED_RANGE);
-    if (!match) continue;
-    const start = Number.parseInt(match[1], 10);
-    const endToken = match[2];
+  for (const segment of sedScriptSegments(script)) {
+    const match = matchGroups(segment, SED_RANGE, 1);
+    if (match === null) continue;
+    const [startText, endToken] = match;
+    const start = Number.parseInt(startText, 10);
     const spec = endToken === void 0 ? { kind: "literal", start, end: start } : endToken === "$" ? { kind: "toEof", start } : { kind: "literal", start, end: Number.parseInt(endToken, 10) };
     results.push({ kind: "candidate", idiom: "sed-n-range", fileArg, spec, resolverKind: "fs" });
   }
@@ -1968,6 +2036,7 @@ function parseHeadTailFlags(rest, barePlusIsCount) {
   let disqualified = false;
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
+    if (a === void 0) break;
     if (a === "-f" || a === "-F" || a === "--follow" || a.startsWith("--follow=")) {
       disqualified = true;
       continue;
@@ -2037,12 +2106,12 @@ function matchHead(argv) {
   if (disqualified) return [];
   const realFiles = files.filter((f) => f !== "-" && !/^\+\d+$/.test(f));
   if (realFiles.length === 0) return [];
-  const n = count ?? 10;
+  const spec = { kind: "upperBoundFromStart", end: count ?? 10 };
   return realFiles.map((fileArg) => ({
     kind: "candidate",
     idiom: "head-file",
     fileArg,
-    spec: { kind: "upperBoundFromStart", end: n },
+    spec,
     resolverKind: "fs"
   }));
 }
@@ -2068,6 +2137,7 @@ function findGitSubcommand(rest) {
   let i = 0;
   while (i < rest.length) {
     const a = rest[i];
+    if (a === void 0) break;
     if (a === "-C") {
       const v = rest[i + 1];
       if (v === void 0) return null;
@@ -2096,9 +2166,9 @@ function matchGitShow(argv) {
   const after = argv.slice(1).slice(sub.subIdx + 1).filter((a) => !a.startsWith("-"));
   const revPathArg = after.find((a) => REV_PATH.test(a));
   if (!revPathArg) return [];
-  const m = revPathArg.match(REV_PATH);
-  if (!m) return [];
-  const [, rev, path] = m;
+  const m = matchGroups(revPathArg, REV_PATH, 2);
+  if (m === null) return [];
+  const [rev, path] = m;
   if (sub.cDirUnresolvable || hasShellExpansion(rev)) {
     return [
       {
@@ -2127,13 +2197,14 @@ function matchGitLogL(argv) {
   const after = argv.slice(1).slice(sub.subIdx + 1);
   for (let i = 0; i < after.length; i++) {
     const a = after[i];
+    if (a === void 0) break;
     let spec = null;
     if (a === "-L") spec = after[i + 1] ?? null;
     else if (a.startsWith("-L")) spec = a.slice(2);
     if (!spec) continue;
-    const m = spec.match(/^(\d+),(\d+):(.+)$/);
-    if (!m) continue;
-    const [, s, e, path] = m;
+    const m = matchGroups(spec, /^(\d+),(\d+):(.+)$/, 3);
+    if (m === null) continue;
+    const [s, e, path] = m;
     if (sub.cDirUnresolvable) {
       return [
         {
@@ -2170,7 +2241,7 @@ function findHeredocOpener(raw, from) {
     let d = "";
     let sawQuote = false;
     let k = start;
-    while (k < n && !/\s/.test(raw[k]) && raw[k] !== "<" && raw[k] !== ">") {
+    while (k < n && !/\s/.test(raw.charAt(k)) && raw[k] !== "<" && raw[k] !== ">") {
       const c = raw[k];
       if (c === "'" || c === '"') {
         const quote2 = c;
@@ -2286,8 +2357,8 @@ function findHeredocOpener(raw, from) {
         continue;
       }
       let j = i - 1;
-      while (j >= from && /\d/.test(raw[j])) j -= 1;
-      const ioNumber = j < i - 1 && (j < from || /\s|[;|&(]/.test(raw[j]));
+      while (j >= from && /\d/.test(raw.charAt(j))) j -= 1;
+      const ioNumber = j < i - 1 && (j < from || /\s|[;|&(]/.test(raw.charAt(j)));
       if (ioNumber) {
         i += 2;
         continue;
@@ -2301,7 +2372,7 @@ function findHeredocOpener(raw, from) {
       let sawQuote = attached === null ? false : attached.sawQuote;
       if (delim === "" && attached !== null) {
         let k = attached.next;
-        while (k < openerLineEnd && /\s/.test(raw[k])) k += 1;
+        while (k < openerLineEnd && /\s/.test(raw.charAt(k))) k += 1;
         const word = readDelimWord(k);
         if (word === null) delim = "";
         else {
@@ -2358,11 +2429,13 @@ function extractHeredocWrites(raw) {
   masked += raw.slice(cursor);
   return { writes, masked };
 }
+var REDIRECT_OPERATORS = [">", ">>", "&>", "&>>", ">&", "<", "<<", "<<-", "<<<"];
 var REDIRECT_TOKEN = /^(\d*)(<<<|<<-|&>>|<<|>>|&>|>&|<|>)(.*)$/;
 function classifyRedirectToken(text2) {
-  const m = text2.match(REDIRECT_TOKEN);
+  const m = matchGroups(text2, REDIRECT_TOKEN, 3);
   if (m === null) return null;
-  const [, fdText, op, target] = m;
+  const [fdText, op, target] = m;
+  if (!isOneOf(REDIRECT_OPERATORS, op)) return null;
   return {
     fd: fdText === "" ? null : Number.parseInt(fdText, 10),
     op,
@@ -2382,6 +2455,7 @@ function analyzeTokens(tokens) {
   const redirects = [];
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
+    if (token === void 0) break;
     if (!token.isRedirect) {
       argv.push(token.text);
       continue;
@@ -2412,8 +2486,8 @@ function literalContent(argv) {
     if (a.startsWith("-") || hasShellExpansion(a) || /[*?]/.test(a)) return void 0;
   }
   if (host === "printf") {
-    if (args.length !== 1) return void 0;
-    const fmt = args[0];
+    const [fmt, ...extra] = args;
+    if (fmt === void 0 || extra.length > 0) return void 0;
     if (fmt.includes("%") || fmt.includes("\\")) return void 0;
     return fmt;
   }
@@ -2500,8 +2574,10 @@ function matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, simpl
     return;
   }
   if (host !== "echo" && host !== "printf" && host !== "tee") return;
-  const singlePlainAppend = contentRedirects.length === 1 && contentRedirects[0].op === ">>";
-  const singlePlainOverwrite = contentRedirects.length === 1 && contentRedirects[0].op === ">";
+  const [onlyRedirect, ...otherRedirects] = contentRedirects;
+  const singleRedirect = otherRedirects.length === 0 ? onlyRedirect : void 0;
+  const singlePlainAppend = singleRedirect?.op === ">>";
+  const singlePlainOverwrite = singleRedirect?.op === ">";
   const threadedAppend = singlePlainAppend && host !== "tee" ? literalContent(argv) : void 0;
   const threadedOverwrite = singlePlainOverwrite && host !== "tee" ? literalContent(argv) : void 0;
   for (const r of contentRedirects) {
@@ -2540,9 +2616,9 @@ var FOREIGN_WRAPPERS = /* @__PURE__ */ new Set(["sudo", "xargs", "nohup", "time"
 var ASSIGNMENT_TOKEN = /^[A-Za-z_][A-Za-z0-9_]*=/;
 function stripTransparentWrapper(argv) {
   const unwrapped = argv[0] === "command" || argv[0] === "env" ? argv.slice(1) : argv;
-  let i = 0;
-  while (i < unwrapped.length && ASSIGNMENT_TOKEN.test(unwrapped[i])) i += 1;
-  return i > 0 ? unwrapped.slice(i) : unwrapped;
+  const commandIndex = unwrapped.findIndex((word) => !ASSIGNMENT_TOKEN.test(word));
+  if (commandIndex === -1) return [];
+  return commandIndex > 0 ? unwrapped.slice(commandIndex) : unwrapped;
 }
 function pushUnresolved(results, idiom, fileArg, reason) {
   results.push({ status: "unresolved", idiom, fileArg, reason });
@@ -2602,6 +2678,7 @@ function copyMoveParts(args, spec) {
   let afterDashDash = false;
   while (i < args.length) {
     const a = args[i];
+    if (a === void 0) break;
     if (afterDashDash) {
       operands.push(a);
       i += 1;
@@ -2667,30 +2744,29 @@ function emitSourceSpan(results, spec, absolutePath, simpleCommandIndex, join11)
   });
 }
 function matchCopyMoveFamily(argv, dirForResolution, simpleCommandIndex, join11, results) {
-  const rest = stripTransparentWrapper(argv);
-  if (rest.length === 0) return;
-  const command = rest[0];
+  const [command, ...commandArgs] = stripTransparentWrapper(argv);
+  if (command === void 0) return;
   let spec = null;
   let args = [];
   let dir = dirForResolution;
   if (command === "cp" || command === "install" || command === "mv") {
     spec = command === "cp" ? CP_SPEC : command === "install" ? INSTALL_SPEC : MV_SPEC;
-    args = rest.slice(1);
+    args = commandArgs;
   } else if (command === "git") {
-    const sub = findGitSubcommand(rest.slice(1));
+    const sub = findGitSubcommand(commandArgs);
     if (sub !== null && sub.subcommand === "mv") {
       if (sub.cDirUnresolvable) {
         pushUnresolved(results, "mv-write", "mv", "git -C target contains an unresolved shell variable");
         return;
       }
       spec = GIT_MV_SPEC;
-      args = rest.slice(1).slice(sub.subIdx + 1);
+      args = commandArgs.slice(sub.subIdx + 1);
       dir = sub.cDir ?? dirForResolution;
     }
   } else if (FOREIGN_WRAPPERS.has(command)) {
-    const wrapped = rest[1];
+    const [wrapped] = commandArgs;
     const wrappedSpec = wrapped === "cp" ? CP_SPEC : wrapped === "install" ? INSTALL_SPEC : wrapped === "mv" ? MV_SPEC : null;
-    if (wrappedSpec !== null) {
+    if (wrapped !== void 0 && wrappedSpec !== null) {
       pushUnresolved(results, wrappedSpec.idiom, wrapped, `the ${command} wrapper obscures the ${wrapped} argv`);
     }
     return;
@@ -2720,7 +2796,8 @@ function matchCopyMoveFamily(argv, dirForResolution, simpleCommandIndex, join11,
     const targetAbs = resolvePath(dir, parts.targetDir);
     destPaths = sourcePaths.map((p) => joinPath(targetAbs, basename2(p)));
   } else {
-    const dest = parts.operands[parts.operands.length - 1];
+    const dest = parts.operands.at(-1);
+    if (dest === void 0) return;
     if (looksUnresolvable(dest)) {
       pushUnresolved(results, spec.idiom, dest, "path contains an unexpanded shell variable or glob");
       return;
@@ -2733,14 +2810,14 @@ function matchCopyMoveFamily(argv, dirForResolution, simpleCommandIndex, join11,
     }
     destPaths = destIsDir ? sourcePaths.map((p) => joinPath(destAbs, basename2(p))) : [destAbs];
   }
-  for (let k = 0; k < sourcePaths.length; k++) {
-    emitSourceSpan(results, spec, sourcePaths[k], simpleCommandIndex, join11);
+  for (const sourcePath of sourcePaths) {
+    emitSourceSpan(results, spec, sourcePath, simpleCommandIndex, join11);
   }
-  for (let k = 0; k < sourcePaths.length; k++) {
+  for (const destPath of destPaths) {
     results.push({
       status: "resolved",
       idiom: spec.idiom,
-      span: { operation: spec.destOperation, absolutePath: destPaths[k], simpleCommandIndex, join: join11 }
+      span: { operation: spec.destOperation, absolutePath: destPath, simpleCommandIndex, join: join11 }
     });
   }
 }
@@ -2779,10 +2856,11 @@ function matchRmOperands(args, excluded, excludeCached, dir, simpleCommandIndex,
 }
 function evaluateStaticSize(value) {
   if (value === void 0) return void 0;
-  const m = value.match(/^(\d+)([KMG])?$/);
+  const m = matchGroups(value, /^(\d+)([KMG])?$/, 1);
   if (m === null) return void 0;
-  const base = Number.parseInt(m[1], 10);
-  const mult = m[2] === "K" ? 1024 : m[2] === "M" ? 1024 ** 2 : m[2] === "G" ? 1024 ** 3 : 1;
+  const [baseText, suffix] = m;
+  const base = Number.parseInt(baseText, 10);
+  const mult = suffix === "K" ? 1024 : suffix === "M" ? 1024 ** 2 : suffix === "G" ? 1024 ** 3 : 1;
   return base * mult;
 }
 function matchTruncateOperands(args, dir, simpleCommandIndex, join11, results) {
@@ -2792,6 +2870,7 @@ function matchTruncateOperands(args, dir, simpleCommandIndex, join11, results) {
   const operands = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
+    if (a === void 0) break;
     if (afterDashDash) {
       operands.push({ path: a, size: staticSize });
       continue;
@@ -2837,26 +2916,25 @@ function matchTruncateOperands(args, dir, simpleCommandIndex, join11, results) {
   }
 }
 function matchRmTruncate(argv, dirForResolution, simpleCommandIndex, join11, results) {
-  const rest = stripTransparentWrapper(argv);
-  if (rest.length === 0) return;
-  const command = rest[0];
+  const [command, ...commandArgs] = stripTransparentWrapper(argv);
+  if (command === void 0) return;
   if (command === "rm") {
-    matchRmOperands(rest.slice(1), RM_EXCLUDED, false, dirForResolution, simpleCommandIndex, join11, results);
+    matchRmOperands(commandArgs, RM_EXCLUDED, false, dirForResolution, simpleCommandIndex, join11, results);
     return;
   }
   if (command === "truncate") {
-    matchTruncateOperands(rest.slice(1), dirForResolution, simpleCommandIndex, join11, results);
+    matchTruncateOperands(commandArgs, dirForResolution, simpleCommandIndex, join11, results);
     return;
   }
   if (command === "git") {
-    const sub = findGitSubcommand(rest.slice(1));
+    const sub = findGitSubcommand(commandArgs);
     if (sub !== null && sub.subcommand === "rm") {
       if (sub.cDirUnresolvable) {
         pushUnresolved(results, "rm-write", "rm", "git -C target contains an unresolved shell variable");
         return;
       }
       matchRmOperands(
-        rest.slice(1).slice(sub.subIdx + 1),
+        commandArgs.slice(sub.subIdx + 1),
         GIT_RM_EXCLUDED,
         true,
         sub.cDir ?? dirForResolution,
@@ -2868,7 +2946,7 @@ function matchRmTruncate(argv, dirForResolution, simpleCommandIndex, join11, res
     return;
   }
   if (FOREIGN_WRAPPERS.has(command)) {
-    const wrapped = rest[1];
+    const [wrapped] = commandArgs;
     if (wrapped === "rm" || wrapped === "truncate") {
       pushUnresolved(
         results,
@@ -2896,8 +2974,10 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
   const { argv, redirects } = analyzeTokens(tokens);
   const host = argv[0];
   const contentRedirects = redirects.filter(isContentRedirect);
-  const singlePlainAppend = contentRedirects.length === 1 && contentRedirects[0].op === ">>";
-  const singlePlainOverwrite = contentRedirects.length === 1 && contentRedirects[0].op === ">";
+  const [onlyRedirect, ...otherRedirects] = contentRedirects;
+  const singleRedirect = otherRedirects.length === 0 ? onlyRedirect : void 0;
+  const singlePlainAppend = singleRedirect?.op === ">>";
+  const singlePlainOverwrite = singleRedirect?.op === ">";
   const emitContentRedirects = () => {
     for (const r of contentRedirects) {
       if (r.target === null) continue;
@@ -2987,15 +3067,14 @@ function classifyHeredocOpener(opener, body, quotedDelim, currentDir, simpleComm
 var NUMERIC_SUBSTITUTION = /^(\d+)(?:,(\d+))?[sy]/;
 var UNRESTRICTED_SUBSTITUTION = /^[sy]/;
 function matchSedInplace(argv, dirForResolution, simpleCommandIndex, join11, results) {
-  const rest = stripTransparentWrapper(argv);
-  if (rest.length === 0) return;
-  const command = rest[0];
+  const [command, ...commandArgs] = stripTransparentWrapper(argv);
+  if (command === void 0) return;
   if (command === "sed") {
-    matchSedInplaceArgs(rest.slice(1), dirForResolution, simpleCommandIndex, join11, results);
+    matchSedInplaceArgs(commandArgs, dirForResolution, simpleCommandIndex, join11, results);
     return;
   }
   if (FOREIGN_WRAPPERS.has(command)) {
-    const wrapped = rest[1];
+    const [wrapped] = commandArgs;
     if (wrapped === "sed") {
       pushUnresolved(results, "sed-inplace", wrapped, `the ${command} wrapper obscures the ${wrapped} argv`);
     }
@@ -3012,6 +3091,7 @@ function matchSedInplaceArgs(args, dir, simpleCommandIndex, join11, results) {
   let afterDashDash = false;
   while (i < args.length) {
     const a = args[i];
+    if (a === void 0) break;
     if (afterDashDash) {
       positionals.push(a);
       i += 1;
@@ -3047,18 +3127,18 @@ function matchSedInplaceArgs(args, dir, simpleCommandIndex, join11, results) {
         i += 1;
         continue;
       }
-      const restAfter = args.slice(i + 2);
-      if (restAfter.length >= 2 && !SED_SCRIPT_SHAPE.test(w)) {
+      const [following, ...beyond] = args.slice(i + 2);
+      if (following !== void 0 && beyond.length > 0 && !SED_SCRIPT_SHAPE.test(w)) {
         suffix = w;
         i += 2;
         continue;
       }
-      if (restAfter.length === 0) {
+      if (following === void 0) {
         files.push(w);
         i += 2;
         continue;
       }
-      positionals.push(w, restAfter[0]);
+      positionals.push(w, following);
       i += 3;
       continue;
     }
@@ -3091,14 +3171,15 @@ function matchSedInplaceArgs(args, dir, simpleCommandIndex, join11, results) {
   let minStart = Infinity;
   let maxEnd = 0;
   for (const segment of segments) {
-    const m = segment.match(NUMERIC_SUBSTITUTION);
+    const m = matchGroups(segment, NUMERIC_SUBSTITUTION, 1);
     if (m === null) {
       allNumeric = false;
       if (!UNRESTRICTED_SUBSTITUTION.test(segment)) allSubstitution = false;
       continue;
     }
-    const s = Number.parseInt(m[1], 10);
-    const e = m[2] === void 0 ? s : Number.parseInt(m[2], 10);
+    const [startText, endText] = m;
+    const s = Number.parseInt(startText, 10);
+    const e = endText === void 0 ? s : Number.parseInt(endText, 10);
     minStart = Math.min(minStart, s);
     maxEnd = Math.max(maxEnd, e);
   }
@@ -3152,6 +3233,7 @@ function patchApplyParts(args, isGitApply) {
   let afterDashDash = false;
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
+    if (a === void 0) break;
     if (afterDashDash) {
       operands.push(a);
       continue;
@@ -3288,12 +3370,11 @@ function emitPatchTargets(args, isGitApply, host, targetDir, shellDir, redirects
   }
 }
 function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, join11, results) {
-  const rest = stripTransparentWrapper(argv);
-  if (rest.length === 0) return;
-  const command = rest[0];
+  const [command, ...commandArgs] = stripTransparentWrapper(argv);
+  if (command === void 0) return;
   if (command === "patch") {
     emitPatchTargets(
-      rest.slice(1),
+      commandArgs,
       false,
       "patch",
       dirForResolution,
@@ -3306,14 +3387,14 @@ function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, 
     return;
   }
   if (command === "git") {
-    const sub = findGitSubcommand(rest.slice(1));
+    const sub = findGitSubcommand(commandArgs);
     if (sub === null || sub.subcommand !== "apply") return;
     if (sub.cDirUnresolvable) {
       pushUnresolved(results, "patch-write", "apply", "git -C target contains an unresolved shell variable");
       return;
     }
     emitPatchTargets(
-      rest.slice(1).slice(sub.subIdx + 1),
+      commandArgs.slice(sub.subIdx + 1),
       true,
       "apply",
       sub.cDir ?? dirForResolution,
@@ -3326,30 +3407,29 @@ function matchPatchApply(argv, redirects, dirForResolution, simpleCommandIndex, 
     return;
   }
   if (FOREIGN_WRAPPERS.has(command)) {
-    const wrapped = rest[1];
+    const [wrapped] = commandArgs;
     if (wrapped === "patch" || wrapped === "apply") {
       pushUnresolved(results, "patch-write", wrapped, `the ${command} wrapper obscures the ${wrapped} argv`);
     }
   }
 }
 function classifyPatchHeredoc(argv, body, currentDir, simpleCommandIndex, join11, results) {
-  const rest = stripTransparentWrapper(argv);
-  if (rest.length === 0) return;
-  const command = rest[0];
+  const [command, ...commandArgs] = stripTransparentWrapper(argv);
+  if (command === void 0) return;
   let isGitApply = false;
   let args;
   let dir = currentDir;
   if (command === "patch") {
-    args = rest.slice(1);
+    args = commandArgs;
   } else if (command === "git") {
-    const sub = findGitSubcommand(rest.slice(1));
+    const sub = findGitSubcommand(commandArgs);
     if (sub === null || sub.subcommand !== "apply") return;
     if (sub.cDirUnresolvable) {
       pushUnresolved(results, "patch-write", "apply", "git -C target contains an unresolved shell variable");
       return;
     }
     isGitApply = true;
-    args = rest.slice(1).slice(sub.subIdx + 1);
+    args = commandArgs.slice(sub.subIdx + 1);
     dir = sub.cDir ?? currentDir;
   } else {
     return;
@@ -3439,35 +3519,38 @@ function stripPackageRunner(argv) {
   } else {
     return "not-runner";
   }
-  while (RUNNER_NO_ARG_FLAGS.has(rest[0])) rest = rest.slice(1);
+  const firstNonFlag = rest.findIndex((word) => !RUNNER_NO_ARG_FLAGS.has(word));
+  rest = firstNonFlag === -1 ? [] : rest.slice(firstNonFlag);
   if (runner === "npm" && rest[0] === "--") rest = rest.slice(1);
-  if (rest.length === 0) return "not-runner";
-  const wrapped = rest[0];
+  const [wrapped] = rest;
+  if (wrapped === void 0) return "not-runner";
   if (wrapped.startsWith("-") || wrapped.startsWith(".") || /\s/.test(wrapped)) return { kind: "obscured" };
   return { kind: "stripped", stripped: rest };
 }
 function matchFormatter(argv, dirForResolution, simpleCommandIndex, join11, results) {
-  const rest = stripTransparentWrapper(argv);
-  if (rest.length === 0) return;
-  let words = rest;
-  const strip = stripPackageRunner(rest);
+  const unwrapped = stripTransparentWrapper(argv);
+  const [command] = unwrapped;
+  if (command === void 0) return;
+  let words = unwrapped;
+  const strip = stripPackageRunner(unwrapped);
   if (strip === "not-runner") {
   } else if (strip.kind === "obscured") {
-    pushUnresolved(results, "formatter-write", rest[0], `the ${rest[0]} wrapper obscures the wrapped argv`);
+    pushUnresolved(results, "formatter-write", command, `the ${command} wrapper obscures the wrapped argv`);
     return;
   } else {
     words = strip.stripped;
   }
-  if (FOREIGN_WRAPPERS.has(words[0])) {
-    const wrapped = words[1];
+  const [tool, ...args] = words;
+  if (tool === void 0) return;
+  if (FOREIGN_WRAPPERS.has(tool)) {
+    const [wrapped] = args;
     if (wrapped !== void 0 && FORMATTER_TABLE.some((r) => r.command === wrapped)) {
-      pushUnresolved(results, "formatter-write", wrapped, `the ${words[0]} wrapper obscures the ${wrapped} argv`);
+      pushUnresolved(results, "formatter-write", wrapped, `the ${tool} wrapper obscures the ${wrapped} argv`);
     }
     return;
   }
-  const row = FORMATTER_TABLE.find((r) => r.command === words[0]);
+  const row = FORMATTER_TABLE.find((r) => r.command === tool);
   if (row === void 0) return;
-  const args = words.slice(1);
   const formPresent = (form) => {
     const first = form[0];
     if (first !== void 0 && !first.startsWith("-") && args[0] !== first) return false;
@@ -3481,7 +3564,8 @@ function matchFormatter(argv, dirForResolution, simpleCommandIndex, join11, resu
       if (!token.startsWith("-")) subcommandWords.add(token);
     }
   }
-  const afterSubcommand = subcommandWords.has(args[0]) ? args.slice(1) : args;
+  const [firstArg] = args;
+  const afterSubcommand = firstArg !== void 0 && subcommandWords.has(firstArg) ? args.slice(1) : args;
   let afterDashDash = false;
   const operands = [];
   for (const a of afterSubcommand) {
@@ -3541,6 +3625,7 @@ function matchRestoreOperands(args, dir, simpleCommandIndex, join11, results) {
   const operands = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
+    if (a === void 0) break;
     if (afterDashDash) {
       operands.push(a);
       continue;
@@ -3586,6 +3671,7 @@ function matchCheckoutOperands(args, dir, simpleCommandIndex, join11, results) {
   const operands = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
+    if (a === void 0) break;
     if (afterDashDash) {
       operands.push(a);
       continue;
@@ -3615,11 +3701,10 @@ function matchCheckoutOperands(args, dir, simpleCommandIndex, join11, results) {
   }
 }
 function matchGitRestoreCheckout(argv, dirForResolution, simpleCommandIndex, join11, results) {
-  const rest = stripTransparentWrapper(argv);
-  if (rest.length === 0) return;
-  const command = rest[0];
+  const [command, ...commandArgs] = stripTransparentWrapper(argv);
+  if (command === void 0) return;
   if (command === "git") {
-    const sub = findGitSubcommand(rest.slice(1));
+    const sub = findGitSubcommand(commandArgs);
     if (sub === null || sub.subcommand !== "restore" && sub.subcommand !== "checkout") return;
     if (sub.cDirUnresolvable) {
       pushUnresolved(
@@ -3631,13 +3716,13 @@ function matchGitRestoreCheckout(argv, dirForResolution, simpleCommandIndex, joi
       return;
     }
     const dir = sub.cDir ?? dirForResolution;
-    const args = rest.slice(1).slice(sub.subIdx + 1);
+    const args = commandArgs.slice(sub.subIdx + 1);
     if (sub.subcommand === "restore") matchRestoreOperands(args, dir, simpleCommandIndex, join11, results);
     else matchCheckoutOperands(args, dir, simpleCommandIndex, join11, results);
     return;
   }
   if (FOREIGN_WRAPPERS.has(command)) {
-    const wrapped = rest[1];
+    const [wrapped] = commandArgs;
     if (wrapped === "restore" || wrapped === "checkout") {
       pushUnresolved(
         results,
@@ -3693,6 +3778,7 @@ function parseCommandDetailed(command, opts = {}) {
       });
       return;
     }
+    let resolutionDir;
     if (c.resolverKind === "fs") {
       if (!frame.certain && !isAbsolute(c.fileArg)) {
         results.push({
@@ -3703,16 +3789,20 @@ function parseCommandDetailed(command, opts = {}) {
         });
         return;
       }
-    } else if (gitDirOf(c, frame) === void 0) {
-      results.push({
-        status: "unresolved",
-        idiom: c.idiom,
-        fileArg: c.fileArg,
-        reason: "the git -C target cannot be resolved against the tracked directory"
-      });
-      return;
+      resolutionDir = c.dirOverride === void 0 ? frame.dir : isAbsolute(c.dirOverride) ? c.dirOverride : resolvePath(frame.dir, c.dirOverride);
+    } else {
+      const gitDir = gitDirOf(c, frame);
+      if (gitDir === void 0) {
+        results.push({
+          status: "unresolved",
+          idiom: c.idiom,
+          fileArg: c.fileArg,
+          reason: "the git -C target cannot be resolved against the tracked directory"
+        });
+        return;
+      }
+      resolutionDir = gitDir;
     }
-    const resolutionDir = c.resolverKind === "fs" ? c.dirOverride === void 0 ? frame.dir : isAbsolute(c.dirOverride) ? c.dirOverride : resolvePath(frame.dir, c.dirOverride) : gitDirOf(c, frame);
     const absolutePath = resolvePath(resolutionDir, c.fileArg);
     const totalLines = c.resolverKind === "fs" ? cachedFsTotalLines(absolutePath) : cachedGitTotalLines(resolutionDir, c.resolverKind.rev, c.fileArg);
     const range = resolveSpec(c.spec, totalLines);
@@ -3741,15 +3831,13 @@ function parseCommandDetailed(command, opts = {}) {
   const matchReads = (simple, argv, i) => {
     let isPlainSource = false;
     let plainFileArg = null;
-    if (argv[0] === "cat" && argv.length === 2 && !argv[1].startsWith("-")) {
+    const [bin, ...operands] = argv;
+    const lastOperand = operands.at(-1);
+    const plainSource = bin === "cat" && operands.length === 1 || bin === "nl" && operands.length >= 1 ? lastOperand : void 0;
+    if (plainSource !== void 0 && !plainSource.startsWith("-")) {
       isPlainSource = true;
-      plainFileArg = argv[1];
-      lastPlainFileSource = hasShellExpansion(argv[1]) ? null : resolvePath(currentDir, argv[1]);
-    } else if (argv[0] === "nl" && argv.length >= 2 && !argv[argv.length - 1].startsWith("-")) {
-      isPlainSource = true;
-      const f = argv[argv.length - 1];
-      plainFileArg = f;
-      lastPlainFileSource = hasShellExpansion(f) ? null : resolvePath(currentDir, f);
+      plainFileArg = plainSource;
+      lastPlainFileSource = hasShellExpansion(plainSource) ? null : resolvePath(currentDir, plainSource);
     }
     if (plainFileArg !== null) {
       const next = simpleCommands[i + 1];
@@ -3808,10 +3896,11 @@ function parseCommandDetailed(command, opts = {}) {
   };
   for (let i = 0; i < simpleCommands.length; i++) {
     const simple = simpleCommands[i];
+    if (simple === void 0) break;
     if (simple.precededBy !== "pipe") pipeEchoContent = null;
-    const heredocRef = simple.text.match(/^__heredoc_(\d+)__$/);
-    if (heredocRef) {
-      const w = heredocWrites[Number.parseInt(heredocRef[1], 10)];
+    const heredocRef = matchGroups(simple.text, /^__heredoc_(\d+)__$/, 1);
+    const w = heredocRef === null ? void 0 : heredocWrites[Number.parseInt(heredocRef[0], 10)];
+    if (w !== void 0) {
       const tokens2 = tokenize(stripLeadingAssignments(w.opener).trim());
       if (tokens2 === null) {
         lastPlainFileSource = null;
@@ -3829,12 +3918,13 @@ function parseCommandDetailed(command, opts = {}) {
       continue;
     }
     const { argv, redirects } = analyzeTokens(tokens);
-    if (argv.length === 0) {
+    const [bin] = argv;
+    if (bin === void 0) {
       matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, i, joinOf(simple), results);
       lastPlainFileSource = null;
       continue;
     }
-    if (argv[0] === "cd") {
+    if (bin === "cd") {
       lastPlainFileSource = null;
       const target = argv[1];
       if (target !== void 0 && target !== "-" && !hasShellExpansion(target)) {
@@ -3852,7 +3942,7 @@ function parseCommandDetailed(command, opts = {}) {
     matchFormatter(argv, currentDir, i, joinOf(simple), results);
     matchGitRestoreCheckout(argv, currentDir, i, joinOf(simple), results);
     if (results.length === before) {
-      const status = BUILTIN_GUARD_STATUS.get(argv[0]);
+      const status = BUILTIN_GUARD_STATUS.get(bin);
       if (status !== void 0) {
         results.push({
           status: "builtin-guard",
@@ -3968,6 +4058,7 @@ function decodeLiteralField(raw, delimiter2, replacement) {
   let value = "";
   for (let index = 0; index < raw.length; index += 1) {
     const character = raw[index];
+    if (character === void 0) break;
     if (character === "\\") {
       const next = raw[index + 1];
       if (next === void 0) return null;
@@ -3999,9 +4090,8 @@ function readDelimitedField(source, start, delimiter2) {
   return null;
 }
 function parseLiteralSubstitution(script) {
-  if (script.length < 4 || script[0] !== "s") return null;
-  const delimiter2 = script[1];
-  if (/\w|\s/.test(delimiter2)) return null;
+  const delimiter2 = script.charAt(1);
+  if (script.length < 4 || script[0] !== "s" || /\w|\s/.test(delimiter2)) return null;
   const patternField = readDelimitedField(script, 2, delimiter2);
   if (patternField === null) return null;
   const replacementField = readDelimitedField(script, patternField.next, delimiter2);
@@ -4059,6 +4149,7 @@ function parsePatternCommand(command) {
     const files2 = [];
     for (let index = 1; index < argv.length; index += 1) {
       const argument = argv[index];
+      if (argument === void 0) break;
       if (argument === "-i") {
         inplace2 = true;
         continue;
@@ -4088,6 +4179,7 @@ function parsePatternCommand(command) {
   let unsupportedOption = false;
   for (let index = 1; index < argv.length; index += 1) {
     const argument = argv[index];
+    if (argument === void 0) break;
     if (argument === "-e") {
       script = argv[index + 1] ?? null;
       index += 1;
@@ -4469,116 +4561,134 @@ function consumeUnmatchedPython(statement) {
     "Python statement is outside the bounded lexical/dataflow allowlist"
   );
 }
+function rejectStructuredPythonKeys() {
+  return rejectPython("unsupported-expression", "structured Python mutation requires literal string keys");
+}
 function consumePythonStatement(statement, ctx) {
-  let match = statement.match(PYTHON_PATH_LITERAL_PATTERN);
-  if (match !== null) {
-    const path = decodePythonString(match[2]);
+  const pathLiteral = matchGroups(statement, PYTHON_PATH_LITERAL_PATTERN, 2);
+  if (pathLiteral !== null) {
+    const [name, literal] = pathLiteral;
+    const path = decodePythonString(literal);
     if (path === null) return rejectPython("unsupported-syntax", "Python path literal uses an unsupported escape");
-    ctx.paths.set(match[1], { path, depth: 0 });
+    ctx.paths.set(name, { path, depth: 0 });
     return void 0;
   }
-  match = statement.match(PYTHON_STRING_BINDING_PATTERN);
-  if (match !== null) {
-    const path = decodePythonString(match[2]);
+  const stringBinding = matchGroups(statement, PYTHON_STRING_BINDING_PATTERN, 2);
+  if (stringBinding !== null) {
+    const [name, literal] = stringBinding;
+    const path = decodePythonString(literal);
     if (path === null) return rejectPython("unsupported-syntax", "Python string literal uses an unsupported escape");
-    ctx.paths.set(match[1], { path, depth: 0 });
+    ctx.paths.set(name, { path, depth: 0 });
     return void 0;
   }
-  match = statement.match(PYTHON_NAME_ALIAS_PATTERN);
-  if (match !== null) {
-    const source = ctx.paths.get(match[2]);
+  const nameAlias = matchGroups(statement, PYTHON_NAME_ALIAS_PATTERN, 2);
+  if (nameAlias !== null) {
+    const [name, sourceName] = nameAlias;
+    const source = ctx.paths.get(sourceName);
     if (source === void 0 || source.depth !== 0) {
       return rejectPython("unsupported-dataflow", "Python path aliases are limited to one literal hop");
     }
-    ctx.paths.set(match[1], { path: source.path, depth: 1 });
+    ctx.paths.set(name, { path: source.path, depth: 1 });
     return void 0;
   }
-  match = statement.match(PYTHON_TEXT_READ_PATTERN);
-  if (match !== null) {
-    const binding = ctx.paths.get(match[2]);
+  const textRead = matchGroups(statement, PYTHON_TEXT_READ_PATTERN, 3);
+  if (textRead !== null) {
+    const [name, pathName, readArguments] = textRead;
+    const binding = ctx.paths.get(pathName);
     if (binding === void 0) return rejectPython("dynamic-path", "Python read target is not a literal path binding");
-    if (match[3].trim() !== "" && !/^encoding\s*=\s*['"]utf-?8['"]$/.test(match[3].trim())) {
+    if (readArguments.trim() !== "" && !/^encoding\s*=\s*['"]utf-?8['"]$/.test(readArguments.trim())) {
       return rejectPython(
         "unsupported-encoding",
         "only default or UTF-8 Python text reads are supported",
         binding.path
       );
     }
-    ctx.texts.set(match[1], { path: binding.path });
+    ctx.texts.set(name, { path: binding.path });
     return void 0;
   }
-  match = statement.match(PYTHON_REPLACE_BINDING_PATTERN);
-  if (match !== null) {
-    if (!ctx.texts.has(match[2]))
+  const replaceBinding = matchGroups(statement, PYTHON_REPLACE_BINDING_PATTERN, 4);
+  if (replaceBinding !== null) {
+    const [name, source, patternLiteral, replacementLiteral, countText] = replaceBinding;
+    if (!ctx.texts.has(source))
       return rejectPython("unsupported-dataflow", "Python replace source is not a direct text read");
-    const pattern = decodePythonString(match[3]);
-    const replacement = decodePythonString(match[4]);
-    const count = match[5] === void 0 ? void 0 : Number.parseInt(match[5], 10);
+    const pattern = decodePythonString(patternLiteral);
+    const replacement = decodePythonString(replacementLiteral);
+    const count = countText === void 0 ? void 0 : Number.parseInt(countText, 10);
     if (pattern === null || pattern.length === 0 || replacement === null || count === 0) {
       return rejectPython(
         "unsupported-expression",
         "Python replace requires non-empty literal input and a positive count"
       );
     }
-    ctx.replacements.set(match[1], { source: match[2], pattern, replacement, count });
+    ctx.replacements.set(name, { source, pattern, replacement, count });
     return void 0;
   }
-  match = statement.match(PYTHON_COUNT_ASSERT_PATTERN);
-  if (match !== null) {
-    const literal = decodePythonString(match[2]);
-    if (literal === null || literal.length === 0 || !ctx.texts.has(match[1])) {
+  const countAssert = matchGroups(statement, PYTHON_COUNT_ASSERT_PATTERN, 3);
+  if (countAssert !== null) {
+    const [source, literalText, countText] = countAssert;
+    const literal = decodePythonString(literalText);
+    if (literal === null || literal.length === 0 || !ctx.texts.has(source)) {
       return rejectPython("unsupported-dataflow", "Python count assertion is not tied to a direct text read");
     }
-    ctx.countAssertions.set(`${match[1]}\0${literal}`, Number.parseInt(match[3], 10));
+    ctx.countAssertions.set(`${source}\0${literal}`, Number.parseInt(countText, 10));
     return void 0;
   }
-  match = statement.match(PYTHON_INDEX_ANCHOR_PATTERN);
-  if (match !== null) {
-    const literal = decodePythonString(match[3]);
-    if (literal === null || literal.length === 0 || !ctx.texts.has(match[2])) {
+  const indexAnchor = matchGroups(statement, PYTHON_INDEX_ANCHOR_PATTERN, 3);
+  if (indexAnchor !== null) {
+    const [name, source, literalText] = indexAnchor;
+    const literal = decodePythonString(literalText);
+    if (literal === null || literal.length === 0 || !ctx.texts.has(source)) {
       return rejectPython("unsupported-dataflow", "Python index anchor is not tied to a direct text read");
     }
-    ctx.anchors.set(match[1], { source: match[2], literal });
+    ctx.anchors.set(name, { source, literal });
     return void 0;
   }
-  match = statement.match(PYTHON_LINE_ARRAY_PATTERN);
-  if (match !== null) {
-    const binding = ctx.paths.get(match[2]);
+  const lineArray = matchGroups(statement, PYTHON_LINE_ARRAY_PATTERN, 2);
+  if (lineArray !== null) {
+    const [name, pathName] = lineArray;
+    const binding = ctx.paths.get(pathName);
     if (binding === void 0) return rejectPython("dynamic-path", "Python line-array target is not literal");
-    ctx.lines.set(match[1], { path: binding.path, edits: /* @__PURE__ */ new Map() });
+    ctx.lines.set(name, { path: binding.path, edits: /* @__PURE__ */ new Map() });
     return void 0;
   }
-  match = statement.match(PYTHON_LINE_EDIT_PATTERN);
-  if (match !== null) {
-    const array = ctx.lines.get(match[1]);
-    const value = decodePythonString(match[3]);
+  const lineEdit = matchGroups(statement, PYTHON_LINE_EDIT_PATTERN, 3);
+  if (lineEdit !== null) {
+    const [name, indexText, valueLiteral] = lineEdit;
+    const array = ctx.lines.get(name);
+    const value = decodePythonString(valueLiteral);
     if (array === void 0 || value === null)
       return rejectPython("unsupported-dataflow", "line edit is not a bounded literal array edit");
-    array.edits.set(Number.parseInt(match[2], 10), value);
+    array.edits.set(Number.parseInt(indexText, 10), value);
     return void 0;
   }
-  match = statement.match(PYTHON_STRUCTURED_LOAD_PATTERN);
-  if (match !== null) {
-    const binding = ctx.paths.get(match[3]);
+  const structuredLoad = matchGroups(statement, PYTHON_STRUCTURED_LOAD_PATTERN, 3);
+  if (structuredLoad !== null) {
+    const [name, loader, pathName] = structuredLoad;
+    const binding = ctx.paths.get(pathName);
     if (binding === void 0) return rejectPython("dynamic-path", "structured Python load target is not literal");
-    const format = match[2] === "tomllib" ? "toml" : match[2];
-    ctx.structured.set(match[1], { format, path: binding.path, keys: [] });
+    const format = loader === "tomllib" ? "toml" : loader === "json" ? "json" : "yaml";
+    ctx.structured.set(name, { format, path: binding.path, keys: [] });
     return void 0;
   }
-  match = statement.match(PYTHON_STRUCTURED_ASSIGN_PATTERN);
-  if (match !== null && ctx.structured.has(match[1])) {
-    const keys = [...match[2].matchAll(PYTHON_STRUCTURED_KEY_SCAN_PATTERN)].map((key2) => decodePythonString(key2[1]));
-    if (keys.length === 0 || keys.some((key2) => key2 === null)) {
-      return rejectPython("unsupported-expression", "structured Python mutation requires literal string keys");
+  const structuredAssign = matchGroups(statement, PYTHON_STRUCTURED_ASSIGN_PATTERN, 2);
+  const structuredTarget = structuredAssign === null ? void 0 : ctx.structured.get(structuredAssign[0]);
+  if (structuredAssign !== null && structuredTarget !== void 0) {
+    const keys = [];
+    for (const [, keyLiteral] of structuredAssign[1].matchAll(PYTHON_STRUCTURED_KEY_SCAN_PATTERN)) {
+      const key2 = keyLiteral === void 0 ? null : decodePythonString(keyLiteral);
+      if (key2 === null) return rejectStructuredPythonKeys();
+      keys.push(key2);
     }
-    ctx.structured.get(match[1]).keys.push(keys);
+    if (keys.length === 0) return rejectStructuredPythonKeys();
+    structuredTarget.keys.push(keys);
     return void 0;
   }
-  match = statement.match(PYTHON_APPEND_PATTERN);
-  if (match !== null) {
-    const binding = ctx.paths.get(match[1]);
-    const mode = decodePythonString(match[2]);
-    const written = decodePythonString(match[3]);
+  const append = matchGroups(statement, PYTHON_APPEND_PATTERN, 3);
+  if (append !== null) {
+    const [pathName, modeLiteral, writtenLiteral] = append;
+    const binding = ctx.paths.get(pathName);
+    const mode = decodePythonString(modeLiteral);
+    const written = decodePythonString(writtenLiteral);
     if (binding === void 0) return rejectPython("dynamic-path", "Python append target is not literal");
     if (mode !== "a" || written === null)
       return rejectPython("unsupported-expression", "only literal text append mode is supported");
@@ -4616,12 +4726,13 @@ function consumePythonStatement(statement, ctx) {
     });
     return void 0;
   }
-  match = statement.match(PYTHON_WRITE_TARGET_PATTERN);
-  if (match !== null) {
-    const binding = ctx.paths.get(match[1]);
+  const writeTarget = matchGroups(statement, PYTHON_WRITE_TARGET_PATTERN, 2);
+  if (writeTarget !== null) {
+    const [pathName, expression] = writeTarget;
+    const binding = ctx.paths.get(pathName);
     if (binding === void 0) return rejectPython("dynamic-path", "Python write target is not literal");
     const absolutePath = nodePath4.resolve(ctx.cwd, binding.path);
-    return resolvePythonWriteSink(ctx, match[2].trim(), absolutePath);
+    return resolvePythonWriteSink(ctx, expression.trim(), absolutePath);
   }
   return "unmatched";
 }
@@ -4682,9 +4793,21 @@ function parsePythonAttribution(command, options) {
   if (overBudget !== null) return overBudget;
   return { resolved: ctx.resolved, unresolved: [], preStateRequests: ctx.preStateRequests };
 }
+var NODE_FS_METHODS = ["readFileSync", "writeFileSync", "appendFileSync"];
+function toNodeFsMethod(name) {
+  return NODE_FS_METHODS.find((method) => method === name) ?? null;
+}
 var NODE_STRING_SOURCE = String.raw`(?:'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")`;
 var NODE_NAME_SOURCE = `[A-Za-z_$][A-Za-z0-9_$]*`;
 var NODE_FS_MEMBER_PATTERN = new RegExp(`^(${NODE_NAME_SOURCE})\\.(readFileSync|writeFileSync|appendFileSync)$`);
+var NODE_REQUIRE_FS_MEMBER_PATTERN = /^require\((['"])(?:node:)?fs\1\)\.(readFileSync|writeFileSync|appendFileSync)$/;
+var NODE_REQUIRE_FS_CALL_PATTERN = /^(require\((['"])(?:node:)?fs\2\)\.(?:readFileSync|writeFileSync|appendFileSync))\(([\s\S]*)\)$/;
+var NODE_NAMED_CALL_PATTERN = /^([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)?)\(([\s\S]*)\)$/;
+var NODE_REQUIRE_FS_DESTRUCTURE_PATTERN = /^const\s+\{([^}]+)\}\s*=\s*require\((['"])(?:node:)?fs\2\)$/;
+var NODE_FS_DESTRUCTURE_ENTRY_PATTERN = /^(readFileSync|writeFileSync|appendFileSync)(?:\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*))?$/;
+var NODE_JSON_STRINGIFY_PATTERN = /^JSON\.stringify\(([A-Za-z_$][A-Za-z0-9_$]*)(?:\s*,\s*null\s*,\s*\d+)?\)$/;
+var NODE_DIRECT_JSON_PARSE_PATTERN = /^JSON\.parse\((.+)\)$/;
+var NODE_LITERAL_VALUE_PATTERN = /^(?:true|false|null|-?\d+(?:\.\d+)?|(?:'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"))$/;
 var NODE_REQUIRE_FS_PATTERN = new RegExp(
   `^(?:const|let|var)\\s+(${NODE_NAME_SOURCE})\\s*=\\s*require\\((['"])(?:node:)?fs\\2\\)$`
 );
@@ -4860,12 +4983,13 @@ function splitNodeArguments(source) {
   return arguments_;
 }
 function emitPythonAnchorSlice(ctx, expression, absolutePath) {
-  const slice = expression.match(PYTHON_ANCHOR_SLICE_PATTERN);
+  const slice = matchGroups(expression, PYTHON_ANCHOR_SLICE_PATTERN, 4);
   if (slice === null) return "unmatched";
-  const anchor = ctx.anchors.get(slice[2]);
-  const read = ctx.texts.get(slice[1]);
-  const replacementText = decodePythonString(slice[3]);
-  if (anchor === void 0 || read === void 0 || anchor.source !== slice[1] || replacementText === null || Number.parseInt(slice[4], 10) !== anchor.literal.length || nodePath4.resolve(ctx.cwd, read.path) !== absolutePath) {
+  const [source, anchorName, replacementLiteral, anchorLengthText] = slice;
+  const anchor = ctx.anchors.get(anchorName);
+  const read = ctx.texts.get(source);
+  const replacementText = decodePythonString(replacementLiteral);
+  if (anchor === void 0 || read === void 0 || anchor.source !== source || replacementText === null || Number.parseInt(anchorLengthText, 10) !== anchor.literal.length || nodePath4.resolve(ctx.cwd, read.path) !== absolutePath) {
     return rejectPython(
       "unsupported-dataflow",
       "Python slice reconstruction is not tied to one literal anchor",
@@ -4875,14 +4999,14 @@ function emitPythonAnchorSlice(ctx, expression, absolutePath) {
   const content = readPythonPreState(ctx, absolutePath, ["match-locations", "deleted-text"]);
   if (typeof content !== "string") return content;
   const offset = content.indexOf(anchor.literal);
-  if (offset < 0)
+  const [range] = literalOccurrenceRanges(content, anchor.literal);
+  if (offset < 0 || range === void 0)
     return rejectPython(
       "evidence-mismatch",
       "Python slice anchor is absent from pre-state",
       absolutePath,
       ctx.preStateRequests
     );
-  const range = literalOccurrenceRanges(content, anchor.literal)[0];
   ctx.resolved.push({
     status: "resolved",
     layer: "python",
@@ -4899,11 +5023,12 @@ function emitPythonAnchorSlice(ctx, expression, absolutePath) {
   return void 0;
 }
 function emitPythonLineJoin(ctx, expression, absolutePath) {
-  const lineJoin = expression.match(PYTHON_LINE_JOIN_PATTERN);
+  const lineJoin = matchGroups(expression, PYTHON_LINE_JOIN_PATTERN, 2);
   if (lineJoin === null) return "unmatched";
-  const delimiter2 = decodePythonString(lineJoin[1]);
-  const array = ctx.lines.get(lineJoin[2]);
-  const suffix = lineJoin[3] === void 0 ? "" : decodePythonString(lineJoin[3]);
+  const [delimiterLiteral, arrayName, suffixLiteral] = lineJoin;
+  const delimiter2 = decodePythonString(delimiterLiteral);
+  const array = ctx.lines.get(arrayName);
+  const suffix = suffixLiteral === void 0 ? "" : decodePythonString(suffixLiteral);
   if (delimiter2 !== "\n" || array === void 0 || suffix === null || suffix !== "" && suffix !== "\n") {
     return rejectPython("unsupported-expression", "line-array writes require a literal newline join", absolutePath);
   }
@@ -4949,10 +5074,15 @@ function emitPythonLineJoin(ctx, expression, absolutePath) {
   return void 0;
 }
 function emitPythonStructuredDump(ctx, expression, absolutePath) {
-  const structuredSink = expression.match(/^(json|tomli_w|toml|yaml)\.(dumps|safe_dump)\(([A-Za-z_][A-Za-z0-9_]*)\)$/);
+  const structuredSink = matchGroups(
+    expression,
+    /^(json|tomli_w|toml|yaml)\.(dumps|safe_dump)\(([A-Za-z_][A-Za-z0-9_]*)\)$/,
+    3
+  );
   if (structuredSink === null) return "unmatched";
-  const value = ctx.structured.get(structuredSink[3]);
-  const sinkFormat = structuredSink[1] === "json" ? "json" : structuredSink[1] === "yaml" ? "yaml" : "toml";
+  const [dumper, , valueName] = structuredSink;
+  const value = ctx.structured.get(valueName);
+  const sinkFormat = dumper === "json" ? "json" : dumper === "yaml" ? "yaml" : "toml";
   if (value === void 0 || value.format !== sinkFormat || nodePath4.resolve(ctx.cwd, value.path) !== absolutePath || value.keys.length === 0) {
     return rejectPython(
       "unsupported-dataflow",
@@ -4964,8 +5094,8 @@ function emitPythonStructuredDump(ctx, expression, absolutePath) {
   if (typeof content !== "string") return content;
   for (const keyPath of value.keys) {
     const key2 = keyPath.at(-1);
-    const ranges = structuredKeyRanges(content, value.format, key2);
-    if (ranges.length !== 1) {
+    const [range, ...ambiguous] = key2 === void 0 ? [] : structuredKeyRanges(content, value.format, key2);
+    if (range === void 0 || ambiguous.length > 0) {
       return rejectPython(
         "unsupported-expression",
         "structured literal key is absent or ambiguous in pre-state",
@@ -4980,8 +5110,8 @@ function emitPythonStructuredDump(ctx, expression, absolutePath) {
       span: {
         operation: "modify",
         absolutePath,
-        lineStart: ranges[0].start,
-        lineEnd: ranges[0].end,
+        lineStart: range.start,
+        lineEnd: range.end,
         simpleCommandIndex: 0
       }
     });
@@ -5005,13 +5135,19 @@ function resolvePythonWriteSink(ctx, expression, absolutePath) {
     });
     return void 0;
   }
-  const directReplace = expression.match(PYTHON_DIRECT_REPLACE_PATTERN);
-  const replacement = directReplace === null ? ctx.replacements.get(expression) : {
-    source: directReplace[1],
-    pattern: decodePythonString(directReplace[2]) ?? "",
-    replacement: decodePythonString(directReplace[3]) ?? "",
-    count: directReplace[4] === void 0 ? void 0 : Number.parseInt(directReplace[4], 10)
-  };
+  const directReplace = matchGroups(expression, PYTHON_DIRECT_REPLACE_PATTERN, 3);
+  let replacement;
+  if (directReplace === null) {
+    replacement = ctx.replacements.get(expression);
+  } else {
+    const [source, patternLiteral, replacementLiteral, countText] = directReplace;
+    replacement = {
+      source,
+      pattern: decodePythonString(patternLiteral) ?? "",
+      replacement: decodePythonString(replacementLiteral) ?? "",
+      count: countText === void 0 ? void 0 : Number.parseInt(countText, 10)
+    };
+  }
   if (replacement !== void 0) {
     const rejected = emitPythonReplace(ctx, absolutePath, replacement);
     if (rejected !== null) return rejected;
@@ -5079,19 +5215,23 @@ function nodeResolvePathExpression(ctx, expression) {
 function nodeFsMethod(ctx, callee) {
   const bare = ctx.fsFunctions.get(callee);
   if (bare !== void 0) return bare;
-  const member = callee.match(NODE_FS_MEMBER_PATTERN);
-  if (member !== null && ctx.fsNamespaces.has(member[1])) {
-    return member[2];
+  const member = matchGroups(callee, NODE_FS_MEMBER_PATTERN, 2);
+  if (member !== null) {
+    const [namespace, method] = member;
+    return ctx.fsNamespaces.has(namespace) ? toNodeFsMethod(method) : null;
   }
-  const required = callee.match(/^require\((['"])(?:node:)?fs\1\)\.(readFileSync|writeFileSync|appendFileSync)$/);
-  return required?.[2] ?? null;
+  const required = matchGroups(callee, NODE_REQUIRE_FS_MEMBER_PATTERN, 2);
+  return required === null ? null : toNodeFsMethod(required[1]);
 }
 function nodeParseCall(ctx, expression) {
-  const call = expression.trim().match(/^(require\((['"])(?:node:)?fs\2\)\.(?:readFileSync|writeFileSync|appendFileSync))\(([\s\S]*)\)$/) ?? expression.trim().match(/^([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)?)\(([\s\S]*)\)$/);
-  if (call === null) return null;
-  const method = nodeFsMethod(ctx, call[1].trim());
+  const trimmed = expression.trim();
+  const requireCall = matchGroups(trimmed, NODE_REQUIRE_FS_CALL_PATTERN, 3);
+  const namedCall = requireCall === null ? matchGroups(trimmed, NODE_NAMED_CALL_PATTERN, 2) : null;
+  const [callee, argumentText] = requireCall === null ? namedCall ?? [] : [requireCall[0], requireCall[2]];
+  if (callee === void 0 || argumentText === void 0) return null;
+  const method = nodeFsMethod(ctx, callee.trim());
   if (method === null) return null;
-  const args = splitNodeArguments(call.length === 4 ? call[3] : call[2]);
+  const args = splitNodeArguments(argumentText);
   return args === null ? null : { method, args };
 }
 function emitNodeReplacement(ctx, absolutePath, replacement) {
@@ -5143,42 +5283,48 @@ function emitNodeReplacement(ctx, absolutePath, replacement) {
   }
   return null;
 }
+function rejectStructuredNodeKeys() {
+  return rejectNode("unsupported-expression", "structured Node mutation requires literal property keys");
+}
 function consumeNodeStatement(statement, ctx) {
-  let match = statement.match(NODE_REQUIRE_FS_PATTERN);
-  if (match !== null) {
-    ctx.fsNamespaces.add(match[1]);
+  const requireFs = matchGroups(statement, NODE_REQUIRE_FS_PATTERN, 1);
+  if (requireFs !== null) {
+    ctx.fsNamespaces.add(requireFs[0]);
     return void 0;
   }
-  match = statement.match(/^const\s+\{([^}]+)\}\s*=\s*require\((['"])(?:node:)?fs\2\)$/);
-  if (match !== null) {
-    for (const entry of match[1].split(",")) {
-      const binding = entry.trim().match(/^(readFileSync|writeFileSync|appendFileSync)(?:\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*))?$/);
-      if (binding === null)
+  const destructure = matchGroups(statement, NODE_REQUIRE_FS_DESTRUCTURE_PATTERN, 1);
+  if (destructure !== null) {
+    for (const entry of destructure[0].split(",")) {
+      const binding = matchGroups(entry.trim(), NODE_FS_DESTRUCTURE_ENTRY_PATTERN, 1);
+      const method = binding === null ? null : toNodeFsMethod(binding[0]);
+      if (binding === null || method === null)
         return rejectNode("unsupported-syntax", "Node fs destructuring contains an unsupported binding");
-      ctx.fsFunctions.set(binding[2] ?? binding[1], binding[1]);
+      ctx.fsFunctions.set(binding[1] ?? method, method);
     }
     return void 0;
   }
-  match = statement.match(NODE_STRING_DECL_PATTERN);
-  if (match !== null) {
-    const path = decodeNodeString(match[2]);
+  const stringDecl = matchGroups(statement, NODE_STRING_DECL_PATTERN, 2);
+  if (stringDecl !== null) {
+    const [name, literal] = stringDecl;
+    const path = decodeNodeString(literal);
     if (path === null) return rejectNode("unsupported-syntax", "Node string literal uses an unsupported escape");
-    ctx.paths.set(match[1], { path, depth: 0 });
+    ctx.paths.set(name, { path, depth: 0 });
     return void 0;
   }
-  match = statement.match(NODE_NAME_ALIAS_PATTERN);
-  if (match !== null) {
-    const source = ctx.paths.get(match[2]);
+  const nameAlias = matchGroups(statement, NODE_NAME_ALIAS_PATTERN, 2);
+  if (nameAlias !== null) {
+    const [name, sourceName] = nameAlias;
+    const source = ctx.paths.get(sourceName);
     if (source === void 0 || source.depth !== 0) {
       return rejectNode("unsupported-dataflow", "Node path aliases are limited to one literal hop");
     }
-    ctx.paths.set(match[1], { path: source.path, depth: 1 });
+    ctx.paths.set(name, { path: source.path, depth: 1 });
     return void 0;
   }
-  match = statement.match(NODE_GENERIC_DECL_PATTERN);
-  if (match !== null) {
-    const name = match[1];
-    const expression = match[2].trim();
+  const genericDecl = matchGroups(statement, NODE_GENERIC_DECL_PATTERN, 2);
+  if (genericDecl !== null) {
+    const [name, initializer] = genericDecl;
+    const expression = initializer.trim();
     const call2 = nodeParseCall(ctx, expression);
     if (call2?.method === "readFileSync") {
       const binding = call2.args[0] === void 0 ? null : nodeResolvePathExpression(ctx, call2.args[0]);
@@ -5192,33 +5338,34 @@ function consumeNodeStatement(statement, ctx) {
       ctx.texts.set(name, { path: binding.path });
       return void 0;
     }
-    const replacement = expression.match(NODE_REPLACE_CALL_PATTERN);
+    const replacement = matchGroups(expression, NODE_REPLACE_CALL_PATTERN, 4);
     if (replacement !== null) {
-      if (!ctx.texts.has(replacement[1]))
+      const [source, replaceMethod, patternLiteral, replacementLiteral] = replacement;
+      if (!ctx.texts.has(source))
         return rejectNode("unsupported-dataflow", "Node replace source is not a direct text read");
-      const pattern = decodeNodeString(replacement[3]);
-      const replacementText = decodeNodeString(replacement[4]);
+      const pattern = decodeNodeString(patternLiteral);
+      const replacementText = decodeNodeString(replacementLiteral);
       if (pattern === null || pattern.length === 0 || replacementText === null || replacementText.includes("$")) {
         return rejectNode("unsupported-expression", "Node replace requires non-empty literal input");
       }
       ctx.replacements.set(name, {
-        source: replacement[1],
+        source,
         pattern,
         replacement: replacementText,
-        global: replacement[2] === "replaceAll"
+        global: replaceMethod === "replaceAll"
       });
       return void 0;
     }
-    const parsedJson = expression.match(NODE_JSON_PARSE_PATTERN);
+    const parsedJson = matchGroups(expression, NODE_JSON_PARSE_PATTERN, 1);
     if (parsedJson !== null) {
-      const text2 = ctx.texts.get(parsedJson[1]);
+      const text2 = ctx.texts.get(parsedJson[0]);
       if (text2 === void 0) return rejectNode("unsupported-dataflow", "JSON.parse source is not a direct text read");
       ctx.structured.set(name, { path: text2.path, keys: [] });
       return void 0;
     }
-    const directJson = expression.match(/^JSON\.parse\((.+)\)$/);
+    const directJson = matchGroups(expression, NODE_DIRECT_JSON_PARSE_PATTERN, 1);
     if (directJson !== null) {
-      const read = nodeParseCall(ctx, directJson[1]);
+      const read = nodeParseCall(ctx, directJson[0]);
       if (read?.method !== "readFileSync" || read.args[0] === void 0) {
         return rejectNode("unsupported-dataflow", "JSON.parse source is not a direct Node text read");
       }
@@ -5233,26 +5380,31 @@ function consumeNodeStatement(statement, ctx) {
     }
     return rejectNode("unsupported-dataflow", "Node variable initializer is outside the bounded allowlist");
   }
-  match = statement.match(NODE_STRUCTURED_ASSIGN_PATTERN);
-  if (match !== null && ctx.structured.has(match[1])) {
-    const keySegments = [...match[2].matchAll(NODE_KEY_SEGMENT_SCAN_PATTERN)];
-    const keys = keySegments.map((segment) => segment[1] ?? decodeNodeString(segment[2]));
-    if (keys.length === 0 || keys.some((key2) => key2 === null)) {
-      return rejectNode("unsupported-expression", "structured Node mutation requires literal property keys");
+  const structuredAssign = matchGroups(statement, NODE_STRUCTURED_ASSIGN_PATTERN, 3);
+  const structuredTarget = structuredAssign === null ? void 0 : ctx.structured.get(structuredAssign[0]);
+  if (structuredAssign !== null && structuredTarget !== void 0) {
+    const [, keyPath, value] = structuredAssign;
+    const keys = [];
+    for (const [, propertyName, keyLiteral] of keyPath.matchAll(NODE_KEY_SEGMENT_SCAN_PATTERN)) {
+      const key2 = propertyName ?? (keyLiteral === void 0 ? null : decodeNodeString(keyLiteral));
+      if (key2 === null) return rejectStructuredNodeKeys();
+      keys.push(key2);
     }
-    if (!/^(?:true|false|null|-?\d+(?:\.\d+)?|(?:'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"))$/.test(match[3].trim())) {
+    if (keys.length === 0) return rejectStructuredNodeKeys();
+    if (!NODE_LITERAL_VALUE_PATTERN.test(value.trim())) {
       return rejectNode("unsupported-expression", "structured Node mutation requires a literal value");
     }
-    ctx.structured.get(match[1]).keys.push(keys);
+    structuredTarget.keys.push(keys);
     return void 0;
   }
-  match = statement.match(NODE_COUNT_GUARD_PATTERN);
-  if (match !== null) {
-    const literal = decodeNodeString(match[2]);
-    if (literal === null || literal.length === 0 || !ctx.texts.has(match[1])) {
+  const countGuard = matchGroups(statement, NODE_COUNT_GUARD_PATTERN, 3);
+  if (countGuard !== null) {
+    const [textName, literalSource, countText] = countGuard;
+    const literal = decodeNodeString(literalSource);
+    if (literal === null || literal.length === 0 || !ctx.texts.has(textName)) {
       return rejectNode("unsupported-dataflow", "Node count guard is not tied to a direct text read");
     }
-    ctx.countAssertions.set(`${match[1]}\0${literal}`, Number.parseInt(match[3], 10));
+    ctx.countAssertions.set(`${textName}\0${literal}`, Number.parseInt(countText, 10));
     return void 0;
   }
   const call = nodeParseCall(ctx, statement);
@@ -5291,14 +5443,15 @@ function consumeNodeStatement(statement, ctx) {
   if (call?.method === "writeFileSync") {
     const binding = call.args[0] === void 0 ? null : nodeResolvePathExpression(ctx, call.args[0]);
     if (binding === null) return rejectNode("dynamic-path", "Node write target is not a literal path binding");
-    if (call.args.length < 2 || call.args.length > 3)
+    const writtenExpression = call.args[1];
+    if (writtenExpression === void 0 || call.args.length > 3)
       return rejectNode("unsupported-syntax", "Node writeFileSync call has unsupported arguments", binding.path);
     const encoding = call.args[2] === void 0 ? "utf8" : decodeNodeString(call.args[2]);
     if (encoding !== "utf8" && encoding !== "utf-8") {
       return rejectNode("unsupported-encoding", "Node write requires default or UTF-8 encoding", binding.path);
     }
     const absolutePath = nodePath4.resolve(ctx.cwd, binding.path);
-    return resolveNodeWriteSink(ctx, call.args[1], absolutePath);
+    return resolveNodeWriteSink(ctx, writtenExpression, absolutePath);
   }
   return "unmatched";
 }
@@ -5387,13 +5540,19 @@ function resolveNodeWriteSink(ctx, expression, absolutePath) {
     });
     return void 0;
   }
-  const directReplacement = expression.match(NODE_REPLACE_CALL_PATTERN);
-  const replacement = directReplacement === null ? ctx.replacements.get(expression) : {
-    source: directReplacement[1],
-    pattern: decodeNodeString(directReplacement[3]) ?? "",
-    replacement: decodeNodeString(directReplacement[4]) ?? "",
-    global: directReplacement[2] === "replaceAll"
-  };
+  const directReplacement = matchGroups(expression, NODE_REPLACE_CALL_PATTERN, 4);
+  let replacement;
+  if (directReplacement === null) {
+    replacement = ctx.replacements.get(expression);
+  } else {
+    const [source, replaceMethod, patternLiteral, replacementLiteral] = directReplacement;
+    replacement = {
+      source,
+      pattern: decodeNodeString(patternLiteral) ?? "",
+      replacement: decodeNodeString(replacementLiteral) ?? "",
+      global: replaceMethod === "replaceAll"
+    };
+  }
   if (replacement !== void 0) {
     if (replacement.pattern.length === 0 || replacement.replacement.includes("$")) {
       return rejectNode("unsupported-expression", "Node replace requires non-empty literal input", absolutePath);
@@ -5407,9 +5566,9 @@ function resolveNodeWriteSink(ctx, expression, absolutePath) {
   return rejectNode("unsupported-dataflow", "Node write expression is outside the bounded allowlist", absolutePath);
 }
 function emitNodeStructuredDump(ctx, expression, absolutePath) {
-  const serialized = expression.match(/^JSON\.stringify\(([A-Za-z_$][A-Za-z0-9_$]*)(?:\s*,\s*null\s*,\s*\d+)?\)$/);
+  const serialized = matchGroups(expression, NODE_JSON_STRINGIFY_PATTERN, 1);
   if (serialized === null) return "unmatched";
-  const value = ctx.structured.get(serialized[1]);
+  const value = ctx.structured.get(serialized[0]);
   if (value === void 0 || nodePath4.resolve(ctx.cwd, value.path) !== absolutePath || value.keys.length === 0) {
     return rejectNode(
       "unsupported-dataflow",
@@ -5421,8 +5580,8 @@ function emitNodeStructuredDump(ctx, expression, absolutePath) {
   if (typeof content !== "string") return content;
   for (const keyPath of value.keys) {
     const key2 = keyPath.at(-1);
-    const ranges = structuredKeyRanges(content, "json", key2);
-    if (ranges.length !== 1) {
+    const [range, ...ambiguous] = key2 === void 0 ? [] : structuredKeyRanges(content, "json", key2);
+    if (range === void 0 || ambiguous.length > 0) {
       return rejectNode(
         "unsupported-expression",
         "structured literal key is absent or ambiguous in pre-state",
@@ -5437,13 +5596,24 @@ function emitNodeStructuredDump(ctx, expression, absolutePath) {
       span: {
         operation: "modify",
         absolutePath,
-        lineStart: ranges[0].start,
-        lineEnd: ranges[0].end,
+        lineStart: range.start,
+        lineEnd: range.end,
         simpleCommandIndex: 0
       }
     });
   }
   return void 0;
+}
+var NUMERIC_SED_ADDRESS_PATTERN = /^(\d+)(?:,(\d+))?s\W/;
+function parseNumericSedAddress(script) {
+  const address = matchGroups(script, NUMERIC_SED_ADDRESS_PATTERN, 1);
+  if (address === null) return null;
+  const [startText, endText] = address;
+  return {
+    start: Number.parseInt(startText, 10),
+    end: Number.parseInt(endText ?? startText, 10),
+    commandOffset: endText === void 0 ? startText.length : startText.length + 1 + endText.length
+  };
 }
 function numericSedForFile(patternCommand, substitution, start, end, file, options, cwd, resolved, unresolvedMatches, preStateRequests) {
   const reason = classifyDynamicWord(file);
@@ -5490,7 +5660,7 @@ function numericSedForFile(patternCommand, substitution, start, end, file, optio
     });
   }
 }
-function resolveNumericSed(patternCommand, numericMatch, options, cwd, maxCandidates) {
+function resolveNumericSed(patternCommand, address, options, cwd, maxCandidates) {
   if (patternCommand.files.length === 0) {
     return {
       resolved: [],
@@ -5500,9 +5670,8 @@ function resolveNumericSed(patternCommand, numericMatch, options, cwd, maxCandid
       preStateRequests: []
     };
   }
-  const start = Number.parseInt(numericMatch[1], 10);
-  const end = Number.parseInt(numericMatch[2] ?? numericMatch[1], 10);
-  const substitution = parseLiteralSubstitution(patternCommand.script.slice(numericMatch[0].indexOf("s")));
+  const { start, end } = address;
+  const substitution = parseLiteralSubstitution(patternCommand.script.slice(address.commandOffset));
   if (substitution === null) {
     return {
       resolved: [],
@@ -5661,8 +5830,10 @@ function substituteOneFile(patternCommand, idiom, addressLiteral, substitution, 
     const addressedLines = new Set(literalOccurrenceRanges(content, addressLiteral).map(({ start }) => start));
     ranges = ranges.filter(({ start, end }) => start === end && addressedLines.has(start));
   }
-  if (patternCommand.kind === "perl" && ranges.length > 1) {
-    ranges = [{ start: ranges[0].start, end: ranges[ranges.length - 1].end }];
+  const [firstRange] = ranges;
+  const lastRange = ranges.at(-1);
+  if (patternCommand.kind === "perl" && firstRange !== void 0 && lastRange !== void 0 && ranges.length > 1) {
+    ranges = [{ start: firstRange.start, end: lastRange.end }];
   } else if (patternCommand.kind === "perl-zero" && !substitution.global) {
     ranges = ranges.slice(0, 1);
   }
@@ -5908,6 +6079,7 @@ function parseCompoundStages(command, split, options, maxCandidates, parse) {
   const preStateRequests = [];
   for (let index = 0; index < split.stages.length; index += 1) {
     const stage = split.stages[index];
+    if (stage === void 0) break;
     const child = parse(stage.text, options);
     const join11 = stage.precededBy === "and" ? "&&" : stage.precededBy === "or" ? "||" : void 0;
     resolved.push(
@@ -5925,10 +6097,12 @@ function parseCompoundStages(command, split, options, maxCandidates, parse) {
   return { resolved, unresolved: unresolvedMatches, preStateRequests };
 }
 function resolvePatternStage(split, options, cwd, maxCandidates) {
-  const patternCommand = split.malformed === void 0 && split.stages.length === 1 ? parsePatternCommand(split.stages[0].text) : null;
+  if (split.malformed !== void 0) return null;
+  const [stage, ...otherStages] = split.stages;
+  const patternCommand = stage === void 0 || otherStages.length > 0 ? null : parsePatternCommand(stage.text);
   if (patternCommand === null) return null;
-  const numericMatch = patternCommand.kind === "sed" ? patternCommand.script.match(/^(\d+)(?:,(\d+))?s\W/) : null;
-  if (numericMatch !== null) return resolveNumericSed(patternCommand, numericMatch, options, cwd, maxCandidates);
+  const numericAddress = patternCommand.kind === "sed" ? parseNumericSedAddress(patternCommand.script) : null;
+  if (numericAddress !== null) return resolveNumericSed(patternCommand, numericAddress, options, cwd, maxCandidates);
   return resolvePatternSubstitution(patternCommand, options, cwd, maxCandidates);
 }
 function historyOrGeneratorRefusal(argv) {
@@ -5941,7 +6115,7 @@ function historyOrGeneratorRefusal(argv) {
       preStateRequests: []
     };
   }
-  if (["yarn", "npm", "pnpm", "make"].includes(argv[0]) && /(?:generate|build|install)/.test(argv.slice(1).join(" "))) {
+  if (["yarn", "npm", "pnpm", "make"].includes(argv[0] ?? "") && /(?:generate|build|install)/.test(argv.slice(1).join(" "))) {
     return {
       resolved: [],
       unresolved: [
@@ -5981,6 +6155,7 @@ function parseShellFallback(command, options, maxCandidates) {
   if (overBudget !== null) return overBudget;
   return { resolved, unresolved: unresolvedMatches, preStateRequests: [] };
 }
+var LITERAL_LIST_LOOP_PATTERN = /^for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+([\s\S]*?)\s*;\s*do\s+([\s\S]*?)\s*;\s*done\s*$/;
 function parseCommandLayered(command, options = {}) {
   const cwd = options.cwd ?? process.cwd();
   const maxCandidates = options.maxCandidates ?? DEFAULT_MAX_ATTRIBUTION_CANDIDATES;
@@ -5990,9 +6165,11 @@ function parseCommandLayered(command, options = {}) {
   if (!canCarryStaticIntent(command)) return { resolved: [], unresolved: [], preStateRequests: [] };
   const interpreted = parseInterpreterAttribution(command, options);
   if (interpreted !== null) return interpreted;
-  const loop = command.trim().match(/^for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+([\s\S]*?)\s*;\s*do\s+([\s\S]*?)\s*;\s*done\s*$/);
-  if (loop !== null)
-    return parseLiteralListLoop(loop[1], loop[2], loop[3], options, maxCandidates, parseCommandLayered);
+  const loop = matchGroups(command.trim(), LITERAL_LIST_LOOP_PATTERN, 3);
+  if (loop !== null) {
+    const [variable, listText, body] = loop;
+    return parseLiteralListLoop(variable, listText, body, options, maxCandidates, parseCommandLayered);
+  }
   const split = splitTopLevel(command);
   const compound = parseCompoundStages(command, split, options, maxCandidates, parseCommandLayered);
   if (compound !== null) return compound;
@@ -6035,7 +6212,7 @@ function createPlannedTouchStore(layout, budgets) {
       fs5.writeFileSync(consumed, "", { encoding: "utf8", flag: "wx", mode: 384 });
       return true;
     } catch (error) {
-      if (error.code === "EEXIST") return false;
+      if (errnoCode(error) === "EEXIST") return false;
       throw error;
     }
   };
@@ -6048,13 +6225,14 @@ function createPlannedTouchStore(layout, budgets) {
     try {
       raw = fs5.readFileSync(paths.record, "utf8");
     } catch (error) {
-      if (error.code === "ENOENT") return { status: "missing" };
+      if (errnoCode(error) === "ENOENT") return { status: "missing" };
       throw error;
     } finally {
       fs5.rmSync(paths.record, { force: true });
     }
     try {
-      const record = normalizePlannedTouchRecord(JSON.parse(raw), budgets);
+      const parsed = JSON.parse(raw);
+      const record = normalizePlannedTouchRecord(parsed, budgets);
       return { status: "record", record };
     } catch {
       return { status: "missing" };
@@ -6097,7 +6275,7 @@ function createPlannedTouchStore(layout, budgets) {
     }
   };
 }
-var OPERATIONS = /* @__PURE__ */ new Set([
+var OPERATIONS = [
   "read",
   "create-overwrite",
   "append",
@@ -6105,7 +6283,7 @@ var OPERATIONS = /* @__PURE__ */ new Set([
   "rename-copy",
   "truncate",
   "delete"
-]);
+];
 function validateBudgets(budgets) {
   for (const [name, value] of [
     ["maxTouchesPerRecord", budgets.maxTouchesPerRecord],
@@ -6117,36 +6295,42 @@ function validateBudgets(budgets) {
       throw new Error(`planned-touch ${name} must be a non-negative integer`);
   }
 }
+function safeInteger(value, min) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= min;
+}
 function validRange(value) {
-  if (typeof value !== "object" || value === null) return false;
-  const range = value;
-  return Number.isSafeInteger(range.start) && Number.isSafeInteger(range.end) && range.start >= 1 && range.end >= range.start;
+  return isRecord(value) && safeInteger(value.start, 1) && safeInteger(value.end, value.start);
+}
+function copyRanges(value, maxRanges, error) {
+  if (!Array.isArray(value) || value.length > maxRanges || !value.every(validRange)) throw new Error(error);
+  return value.map(({ start, end }) => ({ start, end }));
 }
 function normalizeEvidence(value) {
   if (value === void 0) return void 0;
+  if (!isRecord(value)) throw new Error("invalid planned-touch evidence");
   switch (value.kind) {
     case "literal-occurrences":
-      if (typeof value.literal !== "string" || !Array.isArray(value.ranges) || !value.ranges.every(validRange) || !Number.isSafeInteger(value.expectedCount) || value.expectedCount < 0) {
+      if (typeof value.literal !== "string" || !safeInteger(value.expectedCount, 0)) {
         throw new Error("invalid literal-occurrences evidence");
       }
       return {
         kind: value.kind,
         literal: value.literal,
-        ranges: value.ranges.map(({ start, end }) => ({ start, end })),
+        ranges: copyRanges(value.ranges, Number.POSITIVE_INFINITY, "invalid literal-occurrences evidence"),
         expectedCount: value.expectedCount
       };
     case "anchor":
-      if (typeof value.literal !== "string" || !Number.isSafeInteger(value.line) || value.line < 1) {
+      if (typeof value.literal !== "string" || !safeInteger(value.line, 1)) {
         throw new Error("invalid anchor evidence");
       }
       return { kind: value.kind, literal: value.literal, line: value.line };
     case "eof":
-      if (!Number.isSafeInteger(value.line) || value.line < 0 || !Number.isSafeInteger(value.byteLength) || value.byteLength < 0) {
+      if (!safeInteger(value.line, 0) || !safeInteger(value.byteLength, 0)) {
         throw new Error("invalid eof evidence");
       }
       return { kind: value.kind, line: value.line, byteLength: value.byteLength };
     case "content-digest":
-      if (value.algorithm !== "sha256" || !/^[a-f0-9]{64}$/.test(value.digest) || !validRange(value.range)) {
+      if (value.algorithm !== "sha256" || typeof value.digest !== "string" || !/^[a-f0-9]{64}$/.test(value.digest) || !validRange(value.range)) {
         throw new Error("invalid content-digest evidence");
       }
       return {
@@ -6162,8 +6346,11 @@ function normalizeEvidence(value) {
       throw new Error("invalid planned-touch evidence kind");
   }
 }
+function nonEmptyString(value) {
+  return typeof value === "string" && value.length > 0;
+}
 function normalizePlannedTouchRecord(record, budgets) {
-  if (typeof record !== "object" || record === null || record.version !== 1 || typeof record.sessionId !== "string" || record.sessionId.length === 0 || typeof record.toolUseId !== "string" || record.toolUseId.length === 0 || typeof record.repoRoot !== "string" || record.repoRoot.length === 0 || !Number.isFinite(record.createdAtMs) || record.createdAtMs < 0 || !Array.isArray(record.touches)) {
+  if (!isRecord(record) || record.version !== 1 || !nonEmptyString(record.sessionId) || !nonEmptyString(record.toolUseId) || !nonEmptyString(record.repoRoot) || typeof record.createdAtMs !== "number" || !Number.isFinite(record.createdAtMs) || record.createdAtMs < 0 || !Array.isArray(record.touches)) {
     throw new Error("invalid planned-touch record");
   }
   const repoRoot = toPosix(record.repoRoot);
@@ -6175,17 +6362,17 @@ function normalizePlannedTouchRecord(record, budgets) {
   }
   let evidenceBytes = 0;
   const touches = record.touches.map((touch) => {
-    if (typeof touch !== "object" || touch === null) throw new Error("invalid planned touch");
+    if (!isRecord(touch) || typeof touch.repoRelativePath !== "string") throw new Error("invalid planned touch");
     const repoRelativePath = toPosix(touch.repoRelativePath);
     if (repoRelativePath.length === 0 || repoRelativePath.startsWith("/") || /^[A-Za-z]:\//.test(repoRelativePath) || repoRelativePath.split("/").some((part) => part === "..")) {
       throw new Error("planned-touch path must be repository-relative");
     }
-    if (!OPERATIONS.has(touch.operation)) throw new Error("invalid planned-touch operation");
-    if (!Array.isArray(touch.ranges) || touch.ranges.length > budgets.maxRangesPerTouch) {
+    if (!isOneOf(OPERATIONS, touch.operation)) throw new Error("invalid planned-touch operation");
+    if (Array.isArray(touch.ranges) && touch.ranges.length > budgets.maxRangesPerTouch) {
       throw new Error("planned touch exceeds range budget");
     }
-    if (!touch.ranges.every(validRange)) throw new Error("invalid planned-touch range");
-    if (!Number.isSafeInteger(touch.simpleCommandIndex) || touch.simpleCommandIndex < 0) {
+    const ranges = copyRanges(touch.ranges, budgets.maxRangesPerTouch, "invalid planned-touch range");
+    if (!safeInteger(touch.simpleCommandIndex, 0)) {
       throw new Error("invalid planned-touch command index");
     }
     const evidence = normalizeEvidence(touch.evidence);
@@ -6193,7 +6380,7 @@ function normalizePlannedTouchRecord(record, budgets) {
     return {
       repoRelativePath,
       operation: touch.operation,
-      ranges: touch.ranges.map((range) => ({ start: range.start, end: range.end })),
+      ranges,
       simpleCommandIndex: touch.simpleCommandIndex,
       ...evidence === void 0 ? {} : { evidence }
     };
@@ -6233,9 +6420,9 @@ var queryIgnoredFiles = (repoRoot, repoRelativePaths) => {
       stdio: ["pipe", "pipe", "ignore"]
     });
   } catch (error) {
-    const failure = error;
-    if (failure.status !== 1) throw error;
-    stdout = typeof failure.stdout === "string" ? failure.stdout : "";
+    if (caughtProperty(error, "status") !== 1) throw error;
+    const failureStdout = caughtProperty(error, "stdout");
+    stdout = typeof failureStdout === "string" ? failureStdout : "";
   }
   return new Set(
     stdout.split("\0").filter((path) => path.length > 0).map(toPosix)
@@ -6375,8 +6562,9 @@ function planEvidence(matches, requirements) {
       range: unionRange(ranges)
     };
   }
-  if (requirements.has("pre-command-eof")) {
-    const content = readText(matches[0].span.absolutePath);
+  const primary = matches[0];
+  if (primary !== void 0 && requirements.has("pre-command-eof")) {
+    const content = readText(primary.span.absolutePath);
     if (content !== null) {
       return {
         kind: "eof",
@@ -6391,13 +6579,9 @@ function planGroupKey(span) {
   return `${span.absolutePath}\0${span.operation}\0${span.simpleCommandIndex}`;
 }
 function countBy(values) {
-  return values.reduce(
-    (counts, value) => {
-      counts[value] = (counts[value] ?? 0) + 1;
-      return counts;
-    },
-    {}
-  );
+  const counts2 = {};
+  for (const value of values) counts2[value] = (counts2[value] ?? 0) + 1;
+  return counts2;
 }
 function planBashTouches(command, cwd, sessionId, toolUseId, logger2, store) {
   const started = performance.now();
@@ -6416,6 +6600,7 @@ function planBashTouches(command, cwd, sessionId, toolUseId, logger2, store) {
     candidates.map((value) => ({ absolutePath: value.span.absolutePath, value })),
     { cwd }
   );
+  flushFailOpen(logger2);
   if (tracked.eligible.length === 0) {
     logger2.info?.("git-span static attribution pre-plan", {
       resolved: parsed.resolved.length,
@@ -6443,7 +6628,9 @@ function planBashTouches(command, cwd, sessionId, toolUseId, logger2, store) {
   }
   const touches = [];
   for (const [key2, matches] of groups) {
-    const span = matches[0].span;
+    const primary = matches[0];
+    if (primary === void 0) continue;
+    const { span } = primary;
     const requirements = requested.get(key2) ?? /* @__PURE__ */ new Set();
     const evidence = planEvidence(matches, requirements);
     touches.push({
@@ -6501,9 +6688,6 @@ var COMMIT_RECEIPT_LIMITS = {
 };
 
 // packages/agent-hooks/src/common/commit-contracts.ts
-function object(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 function text(value, max = 4096) {
   return typeof value === "string" && value.length > 0 && value.length <= max && !value.includes("\0");
 }
@@ -6517,13 +6701,13 @@ function reject(reason) {
   return { ok: false, reason };
 }
 function validateCommitEnrollment(value) {
-  if (!object(value) || value.schemaVersion !== 1) return reject("invalid enrollment schema");
+  if (!isRecord(value) || value.schemaVersion !== 1) return reject("invalid enrollment schema");
   if (value.host !== "claude" && value.host !== "codex") return reject("unsupported commit host");
   if (!key(value.invocationKey) || !text(value.sessionId) || !text(value.toolUseId)) {
     return reject("invalid invocation identity");
   }
   if (!absolute(value.cwd) || !absolute(value.gitExecutable)) return reject("enrollment paths must be absolute");
-  if (!object(value.originalInput) || !text(value.originalCommand, COMMIT_RECEIPT_LIMITS.jsonFileBytes)) {
+  if (!isRecord(value.originalInput) || !text(value.originalCommand, COMMIT_RECEIPT_LIMITS.jsonFileBytes)) {
     return reject("invalid original tool input");
   }
   if (value.transcriptLocator !== void 0 && !text(value.transcriptLocator))
@@ -6571,8 +6755,7 @@ function parseCommitGitInvocation(argv, cwd) {
     "--icase-pathspecs",
     "--no-optional-locks"
   ]);
-  while (index < argv.length && argv[index].startsWith("-")) {
-    const argument = argv[index];
+  for (let argument = argv[index]; argument?.startsWith("-") === true; argument = argv[index]) {
     if (switches.has(argument)) {
       index++;
       continue;
@@ -6623,7 +6806,7 @@ function parseCommitGitInvocation(argv, cwd) {
   ]);
   for (let i = 0; i < commandArguments.length; i++) {
     const argument = commandArguments[i];
-    if (argument === "--") break;
+    if (argument === void 0 || argument === "--") break;
     if (consumes.has(argument)) {
       i++;
       continue;
@@ -6675,15 +6858,18 @@ function validateCommitCreationEvidence(evidence) {
     const tab = line.indexOf("	");
     if (tab < 0) return reject2("malformed reflog evidence");
     const parsed = header.exec(line.slice(0, tab));
-    if (!parsed) return reject2("malformed reflog evidence");
+    const [, oldSha, newSha] = parsed ?? [];
+    if (oldSha === void 0 || newSha === void 0) return reject2("malformed reflog evidence");
     if (!line.slice(tab + 1).startsWith(`${evidence.nonce}: `)) continue;
-    if (/^0+$/.test(parsed[2]) || parsed[1] === parsed[2]) return reject2("invalid nonce-tagged transition");
-    matches.push(parsed[2]);
+    if (/^0+$/.test(newSha) || oldSha === newSha) return reject2("invalid nonce-tagged transition");
+    matches.push(newSha);
   }
-  return matches.length === 1 ? { ok: true, value: matches[0] } : reject2("missing or ambiguous nonce-tagged transition");
+  const [transition, ...ambiguous] = matches;
+  return transition !== void 0 && ambiguous.length === 0 ? { ok: true, value: transition } : reject2("missing or ambiguous nonce-tagged transition");
 }
 
 // packages/agent-hooks/src/common/commit-lifecycle.ts
+var COMMIT_INVOCATION_STATUSES = ["active", "completed", "acknowledged", "retired"];
 function decideCommitClaim(owner, liveness, remainingMs) {
   if (!Number.isFinite(remainingMs) || remainingMs <= 0) return "refuse";
   if (owner === null) return "acquire";
@@ -6743,11 +6929,12 @@ function resolveCommitRepository(executable, globalArguments, originalCwd) {
     ],
     originalCwd
   ).split("\n");
-  if (fields.length !== 3 || fields[2] !== "sha1" && fields[2] !== "sha256")
+  const [gitDirectoryField, commonDirectoryField, objectFormat, ...extraFields] = fields;
+  if (gitDirectoryField === void 0 || commonDirectoryField === void 0 || extraFields.length > 0 || objectFormat !== "sha1" && objectFormat !== "sha256")
     throw new Error("unsupported Git repository format");
   const cwd = realpathSync2(probe(executable, [...globalArguments, "rev-parse", "--show-toplevel"], originalCwd));
-  const gitDirectory = realpathSync2(fields[0]);
-  const commonDirectory = realpathSync2(fields[1]);
+  const gitDirectory = realpathSync2(gitDirectoryField);
+  const commonDirectory = realpathSync2(commonDirectoryField);
   if (gitRefBackend(executable, globalArguments, originalCwd) !== "files")
     throw new Error("unsupported Git ref backend");
   return {
@@ -6755,7 +6942,7 @@ function resolveCommitRepository(executable, globalArguments, originalCwd) {
     gitDirectory,
     commonDirectory,
     headReflog: join7(gitDirectory, "logs", "HEAD"),
-    objectFormat: fields[2]
+    objectFormat
   };
 }
 function gitRefBackend(executable, globalArguments, cwd) {
@@ -6874,7 +7061,8 @@ function readJson(path, maximumBytes = COMMIT_RECEIPT_LIMITS.jsonFileBytes) {
   const stat = lstatSync2(path);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > maximumBytes)
     throw new Error("invalid bounded receipt file");
-  return JSON.parse(readFileSync8(path, "utf8"));
+  const parsed = JSON.parse(readFileSync8(path, "utf8"));
+  return parsed;
 }
 function atomicJson(path, value, immutable = false) {
   const temporary = join8(dirname7(path), `.publish-${randomBytes(16).toString("hex")}`);
@@ -6891,13 +7079,13 @@ function ownerLiveness(owner) {
     process.kill(owner.pid, 0);
     return "alive";
   } catch (error) {
-    return error.code === "ESRCH" ? "dead" : "uncertain";
+    return errnoCode(error) === "ESRCH" ? "dead" : "uncertain";
   }
 }
 function ownerRecord(value) {
-  if (typeof value !== "object" || value === null) return null;
-  const owner = value;
-  return typeof owner.token === "string" && /^[a-zA-Z0-9_-]{1,256}$/.test(owner.token) && typeof owner.pid === "number" && Number.isSafeInteger(owner.pid) && owner.pid > 0 ? owner : null;
+  if (!isRecord(value)) return null;
+  const { token, pid } = value;
+  return typeof token === "string" && /^[a-zA-Z0-9_-]{1,256}$/.test(token) && typeof pid === "number" && Number.isSafeInteger(pid) && pid > 0 ? { token, pid } : null;
 }
 async function acquireReceiptClaim(root, key2, deadline) {
   if (!/^[a-zA-Z0-9_-]+$/.test(key2)) throw new Error("invalid receipt claim key");
@@ -6913,7 +7101,7 @@ async function acquireReceiptClaim(root, key2, deadline) {
         mkdirSync5(guard, { mode: 448 });
         guarded = true;
       } catch (error) {
-        if (error.code !== "EEXIST") throw error;
+        if (errnoCode(error) !== "EEXIST") throw error;
         return null;
       }
       let prior = null;
@@ -6954,15 +7142,18 @@ async function acquireReceiptClaim(root, key2, deadline) {
   }
   return null;
 }
+function usageRecord(value) {
+  if (!isRecord(value)) return null;
+  const { invocations, totalBytes } = value;
+  return typeof invocations === "number" && Number.isSafeInteger(invocations) && invocations >= 0 && typeof totalBytes === "number" && Number.isSafeInteger(totalBytes) && totalBytes >= 0 ? { invocations, totalBytes } : null;
+}
 async function reserveReceiptCapacity(root, invocationDelta, byteDelta, deadline) {
   const claim = await acquireReceiptClaim(root, "capacity", deadline);
   if (!claim) return false;
   try {
     const path = join8(root, "usage.json");
-    let usage = { invocations: 0, totalBytes: 0 };
-    if (existsSync6(path)) usage = readJson(path, 4096);
-    if (!Number.isSafeInteger(usage.invocations) || !Number.isSafeInteger(usage.totalBytes) || usage.invocations < 0 || usage.totalBytes < 0)
-      return false;
+    const usage = existsSync6(path) ? usageRecord(readJson(path, 4096)) : { invocations: 0, totalBytes: 0 };
+    if (usage === null) return false;
     const next = { invocations: usage.invocations + invocationDelta, totalBytes: usage.totalBytes + byteDelta };
     if (next.invocations < 0 || next.invocations > COMMIT_RECEIPT_LIMITS.invocations || next.totalBytes < 0 || next.totalBytes > COMMIT_RECEIPT_LIMITS.totalBytes)
       return false;
@@ -6989,12 +7180,12 @@ function appendReceiptDiagnostic(directory, message) {
 
 // packages/agent-hooks/src/common/commit-runtime.ts
 async function enrollCommitInvocation(request, options = {}, logger2) {
-  const unsupported = inspectInput(request.toolInput);
-  if (unsupported !== null) {
-    logger2?.warn(`git-span commit receipts: ${unsupported}`);
-    return { kind: "unsupported", reason: unsupported };
+  const inspected = inspectInput(request.toolInput);
+  if (!inspected.ok) {
+    logger2?.warn(`git-span commit receipts: ${inspected.reason}`);
+    return { kind: "unsupported", reason: inspected.reason };
   }
-  const command = request.toolInput.command;
+  const command = inspected.value;
   const root = receiptRoot(options);
   const key2 = identityKey(request);
   const directory = join9(root, "invocations", key2);
@@ -7022,13 +7213,15 @@ async function enrollCommitInvocation(request, options = {}, logger2) {
         throw new Error("deployed shim bundle must be an absolute file");
       if (!lstatSync3(realpathSync3(request.cwd)).isDirectory())
         throw new Error("effective shell cwd must be a directory");
+      const originalInput = JSON.parse(JSON.stringify(request.toolInput));
+      if (!isRecord(originalInput)) throw new Error("shell input is not a JSON object");
       const enrollment = {
         schemaVersion: 1,
         invocationKey: randomBytes2(24).toString("hex"),
         host: request.host,
         sessionId: request.sessionId,
         toolUseId: request.toolUseId,
-        originalInput: JSON.parse(JSON.stringify(request.toolInput)),
+        originalInput,
         originalCommand: command,
         cwd: request.cwd,
         gitExecutable: executableOnPath("git"),
@@ -7089,7 +7282,7 @@ exec ${quote(process.execPath)} ${quote(request.bundlePath)} --git-span-commit-s
       claim.release();
     }
   } catch (error) {
-    const reason = errorMessage(error);
+    const reason = errorMessage2(error);
     logger2?.warn(`git-span commit receipts: ${reason}`);
     return { kind: "unavailable", reason };
   }
@@ -7098,11 +7291,8 @@ async function dispatchCommitShim(argv = process.argv.slice(2)) {
   if (argv[0] !== "--git-span-commit-shim") return false;
   const configPath = argv[1];
   if (!configPath || !isAbsolute8(configPath) || argv[2] !== "--") throw new Error("invalid receipt shim dispatch");
-  const config = readJson(configPath);
-  const valid = validateCommitEnrollment(config.enrollment);
-  if (config.schemaVersion !== 1 || !valid.ok || !isAbsolute8(config.root) || !isAbsolute8(config.directory))
-    throw new Error("invalid immutable receipt shim configuration");
-  const enrollment = valid.value;
+  const config = readShimConfig(configPath);
+  const { enrollment } = config;
   const gitArgv = argv.slice(3);
   const parsed = parseCommitGitInvocation(gitArgv, process.cwd());
   const nonce = `receipt-${randomBytes2(24).toString("hex")}`;
@@ -7113,7 +7303,7 @@ async function dispatchCommitShim(argv = process.argv.slice(2)) {
       repository = resolveCommitRepository(enrollment.gitExecutable, parsed.value.globalArguments, process.cwd());
       checkpoint = checkpointCommitReflog(repository.headReflog);
     } catch (error) {
-      appendReceiptDiagnostic(config.directory, errorMessage(error));
+      appendReceiptDiagnostic(config.directory, errorMessage2(error));
     }
   } else if (!parsed.ok) appendReceiptDiagnostic(config.directory, parsed.reason);
   const result = await executeCommitGit(
@@ -7137,8 +7327,8 @@ async function dispatchCommitShim(argv = process.argv.slice(2)) {
       if (!evidence.ok) {
         if (result.exitCode === 0 && result.signal === null) appendReceiptDiagnostic(config.directory, evidence.reason);
       } else {
-        const object2 = verifyCommitObject(enrollment.gitExecutable, repository, evidence.value);
-        if (!object2.ok) appendReceiptDiagnostic(config.directory, object2.reason);
+        const object = verifyCommitObject(enrollment.gitExecutable, repository, evidence.value);
+        if (!object.ok) appendReceiptDiagnostic(config.directory, object.reason);
         else
           await publishReceipt(config.root, config.directory, {
             schemaVersion: 1,
@@ -7149,7 +7339,7 @@ async function dispatchCommitShim(argv = process.argv.slice(2)) {
           });
       }
     } catch (error) {
-      appendReceiptDiagnostic(config.directory, errorMessage(error));
+      appendReceiptDiagnostic(config.directory, errorMessage2(error));
     }
   }
   if (result.signal !== null) {
@@ -7165,15 +7355,20 @@ function receiptRoot(options) {
 function quote(value) {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
-function errorMessage(error) {
+function errorMessage2(error) {
   return (error instanceof Error ? error.message : String(error)).slice(0, 512);
 }
 function inspectInput(input) {
-  if (typeof input.command !== "string" || input.command.length === 0) return "unsupported shell input";
+  const command = input.command;
+  if (typeof command !== "string" || command.length === 0) return { ok: false, reason: "unsupported shell input" };
+  const reason = unsupportedCommandReason(input, command);
+  return reason === null ? { ok: true, value: command } : { ok: false, reason };
+}
+function unsupportedCommandReason(input, command) {
   if (input.run_in_background === true || input.background === true || input.delegated === true || input.worker === true)
     return "background or delegated execution is unsupported";
-  const split = splitTopLevel(input.command);
-  if (split.stages.some((stage) => stage.precededBy === "background") || /&\s*$/.test(input.command))
+  const split = splitTopLevel(command);
+  if (split.stages.some((stage) => stage.precededBy === "background") || /&\s*$/.test(command))
     return "background shell execution is unsupported";
   for (const stage of split.stages) {
     const args = argvOf(stage.text) ?? [];
@@ -7196,8 +7391,7 @@ function inspectInput(input) {
       if (name === "hash" && args.length > index + 1)
         return "observable executable-search mutation bypasses receipt instrumentation";
       index++;
-      while (index < args.length) {
-        const arg = args[index];
+      for (let arg = args[index]; arg !== void 0; arg = args[index]) {
         if (arg === "--") {
           index++;
           break;
@@ -7228,17 +7422,31 @@ function replacementInput(enrollment, directory) {
   const command = `{ printf '%s' "$$" > ${quote(join9(directory, "lease"))}; } 2>/dev/null || :; export PATH=${quote(join9(directory, "bin"))}:"$PATH"; ${enrollment.originalCommand}`;
   return { ...enrollment.originalInput, command };
 }
+function readShimConfig(configPath) {
+  const config = readJson(configPath);
+  const valid = isRecord(config) ? validateCommitEnrollment(config.enrollment) : null;
+  if (!isRecord(config) || valid === null || !valid.ok || config.schemaVersion !== 1 || typeof config.root !== "string" || !isAbsolute8(config.root) || typeof config.directory !== "string" || !isAbsolute8(config.directory))
+    throw new Error("invalid immutable receipt shim configuration");
+  return { root: config.root, directory: config.directory, enrollment: valid.value };
+}
 function readState(directory, enrollment) {
   const value = readJson(join9(directory, "state.json"));
-  if (!["active", "completed", "acknowledged", "retired"].includes(value.status) || !Array.isArray(value.pendingNonces) || value.pendingNonces.length > COMMIT_RECEIPT_LIMITS.receiptsPerInvocation || !Number.isFinite(value.lastActivityMs) || value.enrollment.invocationKey !== enrollment.invocationKey)
+  const stored = isRecord(value) ? validateCommitEnrollment(value.enrollment) : null;
+  if (!isRecord(value) || stored === null || !stored.ok || stored.value.invocationKey !== enrollment.invocationKey || !isOneOf(COMMIT_INVOCATION_STATUSES, value.status) || !Array.isArray(value.pendingNonces) || value.pendingNonces.length > COMMIT_RECEIPT_LIMITS.receiptsPerInvocation || !value.pendingNonces.every((nonce) => typeof nonce === "string") || typeof value.liveLease !== "boolean" || typeof value.lastActivityMs !== "number" || !Number.isFinite(value.lastActivityMs))
     throw new Error("invalid private invocation lifecycle");
-  return value;
+  return {
+    enrollment: stored.value,
+    status: value.status,
+    pendingNonces: value.pendingNonces,
+    liveLease: value.liveLease,
+    lastActivityMs: value.lastActivityMs
+  };
 }
 function readUsage(directory) {
   const usage = readJson(join9(directory, "usage.json"), 4096);
-  if (!Number.isSafeInteger(usage.bytes) || usage.bytes < 0 || !Number.isSafeInteger(usage.receipts) || usage.receipts < 0)
+  if (!isRecord(usage) || typeof usage.bytes !== "number" || !Number.isSafeInteger(usage.bytes) || usage.bytes < 0 || typeof usage.receipts !== "number" || !Number.isSafeInteger(usage.receipts) || usage.receipts < 0)
     throw new Error("invalid invocation usage");
-  return usage;
+  return { bytes: usage.bytes, receipts: usage.receipts };
 }
 async function publishReceipt(root, directory, receipt) {
   const deadline = performance.now() + COMMIT_RECEIPT_LIMITS.drainMs;
@@ -7273,11 +7481,9 @@ function disableUpdateCheck() {
 
 // packages/agent-hooks/src/claude/static-plan.ts
 function narrowCommand(toolInput) {
-  if (toolInput !== null && typeof toolInput === "object" && "command" in toolInput) {
-    const command = toolInput.command;
-    if (typeof command === "string" && command.length > 0) return command;
-  }
-  return null;
+  if (!isRecord(toolInput)) return null;
+  const command = toolInput.command;
+  return typeof command === "string" && command.length > 0 ? command : null;
 }
 function createHandler(layout = DEFAULT_SESSION_LAYOUT, runtimeOptions = {}, bundlePath = fileURLToPath(import.meta.url)) {
   const options = { stateRoot: join10(dirname8(layout.base), "commit-receipts"), ...runtimeOptions };
@@ -7294,9 +7500,8 @@ function createHandler(layout = DEFAULT_SESSION_LAYOUT, runtimeOptions = {}, bun
         ctx.logger,
         createDefaultPlannedTouchStore(layout)
       );
-      if (input.tool_name !== "Bash" || typeof input.tool_input.command !== "string")
-        return null;
       const toolInput = input.tool_input;
+      if (input.tool_name !== "Bash" || !isRecord(toolInput) || typeof toolInput.command !== "string") return null;
       if (toolInput.run_in_background === true || toolInput.background === true || toolInput.delegate === true) {
         ctx.logger.warn("git-span commit attribution does not support visible background or delegated execution");
         return null;

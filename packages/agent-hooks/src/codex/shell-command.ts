@@ -1,3 +1,5 @@
+import { isRecord } from '../common/guards.js';
+
 /**
  * Narrow Codex's `unknown` shell `tool_input` into the command string the core
  * parses. Handles a bare `command` string, a shell-wrapper argv
@@ -6,8 +8,8 @@
  * recoverable.
  */
 export function extractShellCommand(toolInput: unknown): string | null {
-  if (toolInput === null || typeof toolInput !== 'object' || !('command' in toolInput)) return null;
-  const command = (toolInput as { command: unknown }).command;
+  if (!isRecord(toolInput)) return null;
+  const command = toolInput.command;
   if (typeof command === 'string') return command.length > 0 ? command : null;
   if (Array.isArray(command)) {
     const parts = command.filter((p): p is string => typeof p === 'string');

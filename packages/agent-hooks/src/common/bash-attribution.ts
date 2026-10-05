@@ -16,6 +16,7 @@ import * as nodePath from 'node:path';
 import { relativeToRepo, resolveRepoRoot, type SessionLayout, toPosix } from './agent-hooks-common.js';
 import { type BashTouchMatch, bashResponseInterrupted, runBashTouches } from './bash-touch.js';
 import { flushFailOpen } from './fail-open.js';
+import { isRecord } from './guards.js';
 import { parseCommandDetailed, type ResolvedSpan } from './parse-command.js';
 import { parseResponse, type ResponseParseInput, type ResponseSpan } from './parse-response.js';
 import type { CoreLogger, MemoStore } from './span-surface.js';
@@ -60,16 +61,13 @@ export function normalizeBashResponse(toolResponse: unknown): NormalizedBashResp
   if (Array.isArray(toolResponse)) {
     const text: string[] = [];
     for (const block of toolResponse) {
-      if (block !== null && typeof block === 'object') {
-        const value = (block as { text?: unknown }).text;
-        if (typeof value === 'string') text.push(value);
-      }
+      if (isRecord(block) && typeof block.text === 'string') text.push(block.text);
     }
     return { stdout: text.join('') };
   }
-  if (toolResponse === null || typeof toolResponse !== 'object') return null;
+  if (!isRecord(toolResponse)) return null;
 
-  const record = toolResponse as Record<string, unknown>;
+  const record = toolResponse;
   for (const field of RESPONSE_TEXT_FIELDS) {
     const value = record[field];
     if (typeof value !== 'string') continue;
@@ -142,14 +140,11 @@ function planGroupKey(span: ResolvedSpan): string {
   return `${span.absolutePath}\0${span.operation}\0${span.simpleCommandIndex}`;
 }
 
-function countBy<T extends string>(values: readonly T[]): Record<T, number> {
-  return values.reduce<Record<T, number>>(
-    (counts, value) => {
-      counts[value] = (counts[value] ?? 0) + 1;
-      return counts;
-    },
-    {} as Record<T, number>
-  );
+/** Occurrences per distinct value; a value that never occurs has no key. */
+function countBy<T extends string>(values: readonly T[]): Partial<Record<T, number>> {
+  const counts: Partial<Record<T, number>> = {};
+  for (const value of values) counts[value] = (counts[value] ?? 0) + 1;
+  return counts;
 }
 
 /**
@@ -297,7 +292,9 @@ function plannedSpans(record: PlannedTouchRecord | null, cwd: string, logger: Co
   return matches;
 }
 
-function matchKey(match: Extract<BashTouchMatch, { status: 'resolved' }>): string {
+type ResolvedBashTouchMatch = Extract<BashTouchMatch, { status: 'resolved' }>;
+
+function matchKey(match: ResolvedBashTouchMatch): string {
   const span = match.span;
   return [span.absolutePath, span.operation, span.simpleCommandIndex, span.lineStart ?? '', span.lineEnd ?? ''].join(
     '\0'
@@ -411,7 +408,7 @@ export async function runLayeredBashTouches(
   const planned = plannedSpans(record, cwd, logger);
   const parsed = parseCommandLayered(command, { cwd, readPreState: readText });
   const preStateKeys = new Set(parsed.preStateRequests.map((request) => planGroupKey(request)));
-  const ordinary: BashTouchMatch[] = parsed.resolved
+  const ordinary: ResolvedBashTouchMatch[] = parsed.resolved
     // A pre-state-sensitive command is represented by its consumed plan.
     // Re-emitting the post-state parse alongside that plan made one logical
     // write run the full git-span surface twice whenever its recovered range
@@ -443,7 +440,7 @@ export async function runLayeredBashTouches(
   const combined = [
     ...planned,
     ...ordinary.filter((match) => {
-      const key = matchKey(match as Extract<BashTouchMatch, { status: 'resolved' }>);
+      const key = matchKey(match);
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -526,11 +523,8 @@ export function postTrackedValue<T>(absolutePath: string, value: T, cwd: string)
 
 /** Convert a failure event without a response envelope into the driver's normalized evidence shape. */
 export function failureBashResponse(input: unknown): Record<string, unknown> {
-  const record = input !== null && typeof input === 'object' ? (input as Record<string, unknown>) : {};
-  const response =
-    record.tool_response !== null && typeof record.tool_response === 'object'
-      ? { ...(record.tool_response as Record<string, unknown>) }
-      : {};
+  const record: Record<string, unknown> = isRecord(input) ? input : {};
+  const response: Record<string, unknown> = isRecord(record.tool_response) ? { ...record.tool_response } : {};
   if (integerExitStatus(response) === undefined) response.exitStatus = 1;
   if (record.is_interrupt === true) response.is_interrupt = true;
   return response;

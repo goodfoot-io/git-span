@@ -33,6 +33,7 @@ import {
 } from './agent-hooks-common.js';
 import { collapseByPath, type RangeLabel, renderAnchorTree } from './anchor-tree.js';
 import { flushFailOpen, reportFailOpen } from './fail-open.js';
+import { caughtProperty, errnoCode, isOneOf, isRecord } from './guards.js';
 import type { CoreLogger, MemoStore } from './span-surface.js';
 
 // ---------------------------------------------------------------------------
@@ -333,7 +334,7 @@ function realPaths(cache: RealityProbeCache, cwd: string): Set<string> {
             timeout: DEFAULT_TIMEOUT_MS
           });
         } catch (err) {
-          const stdout = (err as { stdout?: string }).stdout;
+          const stdout = caughtProperty(err, 'stdout');
           return typeof stdout === 'string' ? stdout : null;
         }
       };
@@ -616,9 +617,8 @@ const MAX_CONTEXT_JSON_BYTES = 16 * 1024 * 1024;
 const MAX_CONTEXT_ADDRESSES = 4096;
 
 function record(value: unknown, label: string): Record<string, unknown> {
-  if (value === null || typeof value !== 'object' || Array.isArray(value))
-    throw new Error(`${label} must be an object`);
-  return value as Record<string, unknown>;
+  if (!isRecord(value)) throw new Error(`${label} must be an object`);
+  return value;
 }
 
 function exactKeys(value: Record<string, unknown>, keys: readonly string[], label: string): void {
@@ -652,8 +652,8 @@ function arrayField(value: unknown, label: string): unknown[] {
 }
 
 function enumField<T extends string>(value: unknown, tokens: readonly T[], label: string): T {
-  if (typeof value !== 'string' || !tokens.includes(value as T)) throw new Error(`${label} has an unsupported token`);
-  return value as T;
+  if (!isOneOf(tokens, value)) throw new Error(`${label} has an unsupported token`);
+  return value;
 }
 
 function decodeExtent(value: unknown, label: string): ContextExtent {
@@ -771,7 +771,8 @@ function intersectExtents(left: ContextExtent, right: ContextExtent): ContextExt
 /** Decode the complete schema-v1 context document or reject it atomically. */
 export function decodeContextDocument(stdout: string): ContextDocument {
   if (Buffer.byteLength(stdout) > MAX_CONTEXT_JSON_BYTES) throw new Error('context document exceeds the size limit');
-  const root = record(JSON.parse(stdout) as unknown, 'context document');
+  const parsed: unknown = JSON.parse(stdout);
+  const root = record(parsed, 'context document');
   exactKeys(root, ['schema_version', 'scopes', 'mutation', 'spans'], 'context document');
   if (root.schema_version !== 1) throw new Error('unsupported context schema version');
   const scopes = arrayField(root.scopes, 'context document.scopes').map((scope, index): ContextScope => {
@@ -1393,14 +1394,22 @@ export function createDefaultTouchExecutors(timeoutMs: number = DEFAULT_TIMEOUT_
           maxBuffer: MAX_CONTEXT_JSON_BYTES + 1
         });
       } catch (error) {
-        const typed = error as { code?: string; signal?: string; killed?: boolean; stderr?: string | Buffer };
-        const stderr = typeof typed.stderr === 'string' ? typed.stderr : typed.stderr?.toString('utf8');
+        const code = errnoCode(error);
+        const rawStderr = caughtProperty(error, 'stderr');
+        const stderr =
+          typeof rawStderr === 'string'
+            ? rawStderr
+            : Buffer.isBuffer(rawStderr)
+              ? rawStderr.toString('utf8')
+              : undefined;
         const failure: ContextFailureCategory =
-          typed.code === 'ENOENT' || stderr?.includes('is not a git command') === true
+          code === 'ENOENT' || stderr?.includes('is not a git command') === true
             ? 'command_absent'
-            : typed.code === 'ETIMEDOUT' || typed.signal === 'SIGTERM' || typed.killed === true
+            : code === 'ETIMEDOUT' ||
+                caughtProperty(error, 'signal') === 'SIGTERM' ||
+                caughtProperty(error, 'killed') === true
               ? 'timeout'
-              : typed.code === 'ENOBUFS'
+              : code === 'ENOBUFS'
                 ? 'schema_rejected'
                 : 'nonzero_exit';
         return { ok: false, failure, elapsedMs: performance.now() - started };

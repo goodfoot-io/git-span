@@ -18,6 +18,7 @@ import {
   type SessionLayout,
   toPosix
 } from './agent-hooks-common.js';
+import { caughtProperty, errnoCode, isOneOf, isRecord } from './guards.js';
 import {
   type Operation,
   type ParseOptions,
@@ -3132,7 +3133,7 @@ export function createPlannedTouchStore(layout: SessionLayout, budgets: PlannedT
       fs.writeFileSync(consumed, '', { encoding: 'utf8', flag: 'wx', mode: 0o600 });
       return true;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+      if (errnoCode(error) === 'EEXIST') return false;
       throw error;
     }
   };
@@ -3153,14 +3154,15 @@ export function createPlannedTouchStore(layout: SessionLayout, budgets: PlannedT
     try {
       raw = fs.readFileSync(paths.record, 'utf8');
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { status: 'missing' };
+      if (errnoCode(error) === 'ENOENT') return { status: 'missing' };
       throw error;
     } finally {
       fs.rmSync(paths.record, { force: true });
     }
 
     try {
-      const record = normalizePlannedTouchRecord(JSON.parse(raw) as PlannedTouchRecord, budgets);
+      const parsed: unknown = JSON.parse(raw);
+      const record = normalizePlannedTouchRecord(parsed, budgets);
       return { status: 'record', record };
     } catch {
       return { status: 'missing' };
@@ -3206,7 +3208,7 @@ export function createPlannedTouchStore(layout: SessionLayout, budgets: PlannedT
   };
 }
 
-const OPERATIONS: ReadonlySet<Operation> = new Set([
+const OPERATIONS = [
   'read',
   'create-overwrite',
   'append',
@@ -3214,7 +3216,7 @@ const OPERATIONS: ReadonlySet<Operation> = new Set([
   'rename-copy',
   'truncate',
   'delete'
-]);
+] as const satisfies readonly Operation[];
 
 function validateBudgets(budgets: PlannedTouchBudgets): void {
   for (const [name, value] of [
@@ -3228,53 +3230,52 @@ function validateBudgets(budgets: PlannedTouchBudgets): void {
   }
 }
 
-function validRange(value: unknown): value is LineRange {
-  if (typeof value !== 'object' || value === null) return false;
-  const range = value as Partial<LineRange>;
-  return (
-    Number.isSafeInteger(range.start) &&
-    Number.isSafeInteger(range.end) &&
-    (range.start as number) >= 1 &&
-    (range.end as number) >= (range.start as number)
-  );
+/** A safe integer no smaller than `min`. */
+function safeInteger(value: unknown, min: number): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= min;
 }
 
-function normalizeEvidence(value: PreStateEvidence | undefined): PreStateEvidence | undefined {
+function validRange(value: unknown): value is LineRange {
+  return isRecord(value) && safeInteger(value.start, 1) && safeInteger(value.end, value.start);
+}
+
+/** Copy a validated range array, dropping any extra fields. */
+function copyRanges(value: unknown, maxRanges: number, error: string): LineRange[] {
+  if (!Array.isArray(value) || value.length > maxRanges || !value.every(validRange)) throw new Error(error);
+  return value.map(({ start, end }) => ({ start, end }));
+}
+
+function normalizeEvidence(value: unknown): PreStateEvidence | undefined {
   if (value === undefined) return undefined;
+  if (!isRecord(value)) throw new Error('invalid planned-touch evidence');
   switch (value.kind) {
     case 'literal-occurrences':
-      if (
-        typeof value.literal !== 'string' ||
-        !Array.isArray(value.ranges) ||
-        !value.ranges.every(validRange) ||
-        !Number.isSafeInteger(value.expectedCount) ||
-        value.expectedCount < 0
-      ) {
+      if (typeof value.literal !== 'string' || !safeInteger(value.expectedCount, 0)) {
         throw new Error('invalid literal-occurrences evidence');
       }
       return {
         kind: value.kind,
         literal: value.literal,
-        ranges: value.ranges.map(({ start, end }) => ({ start, end })),
+        ranges: copyRanges(value.ranges, Number.POSITIVE_INFINITY, 'invalid literal-occurrences evidence'),
         expectedCount: value.expectedCount
       };
     case 'anchor':
-      if (typeof value.literal !== 'string' || !Number.isSafeInteger(value.line) || value.line < 1) {
+      if (typeof value.literal !== 'string' || !safeInteger(value.line, 1)) {
         throw new Error('invalid anchor evidence');
       }
       return { kind: value.kind, literal: value.literal, line: value.line };
     case 'eof':
-      if (
-        !Number.isSafeInteger(value.line) ||
-        value.line < 0 ||
-        !Number.isSafeInteger(value.byteLength) ||
-        value.byteLength < 0
-      ) {
+      if (!safeInteger(value.line, 0) || !safeInteger(value.byteLength, 0)) {
         throw new Error('invalid eof evidence');
       }
       return { kind: value.kind, line: value.line, byteLength: value.byteLength };
     case 'content-digest':
-      if (value.algorithm !== 'sha256' || !/^[a-f0-9]{64}$/.test(value.digest) || !validRange(value.range)) {
+      if (
+        value.algorithm !== 'sha256' ||
+        typeof value.digest !== 'string' ||
+        !/^[a-f0-9]{64}$/.test(value.digest) ||
+        !validRange(value.range)
+      ) {
         throw new Error('invalid content-digest evidence');
       }
       return {
@@ -3291,17 +3292,23 @@ function normalizeEvidence(value: PreStateEvidence | undefined): PreStateEvidenc
   }
 }
 
-function normalizePlannedTouchRecord(record: PlannedTouchRecord, budgets: PlannedTouchBudgets): PlannedTouchRecord {
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
+}
+
+/**
+ * Validate an untrusted planned-touch record — a freshly built one on `put`,
+ * or a parsed record file on `take` — and return a canonical copy carrying
+ * only the known fields, or throw.
+ */
+function normalizePlannedTouchRecord(record: unknown, budgets: PlannedTouchBudgets): PlannedTouchRecord {
   if (
-    typeof record !== 'object' ||
-    record === null ||
+    !isRecord(record) ||
     record.version !== 1 ||
-    typeof record.sessionId !== 'string' ||
-    record.sessionId.length === 0 ||
-    typeof record.toolUseId !== 'string' ||
-    record.toolUseId.length === 0 ||
-    typeof record.repoRoot !== 'string' ||
-    record.repoRoot.length === 0 ||
+    !nonEmptyString(record.sessionId) ||
+    !nonEmptyString(record.toolUseId) ||
+    !nonEmptyString(record.repoRoot) ||
+    typeof record.createdAtMs !== 'number' ||
     !Number.isFinite(record.createdAtMs) ||
     record.createdAtMs < 0 ||
     !Array.isArray(record.touches)
@@ -3317,8 +3324,8 @@ function normalizePlannedTouchRecord(record: PlannedTouchRecord, budgets: Planne
   }
 
   let evidenceBytes = 0;
-  const touches = record.touches.map((touch): PlannedTouch => {
-    if (typeof touch !== 'object' || touch === null) throw new Error('invalid planned touch');
+  const touches = record.touches.map((touch: unknown): PlannedTouch => {
+    if (!isRecord(touch) || typeof touch.repoRelativePath !== 'string') throw new Error('invalid planned touch');
     const repoRelativePath = toPosix(touch.repoRelativePath);
     if (
       repoRelativePath.length === 0 ||
@@ -3328,12 +3335,12 @@ function normalizePlannedTouchRecord(record: PlannedTouchRecord, budgets: Planne
     ) {
       throw new Error('planned-touch path must be repository-relative');
     }
-    if (!OPERATIONS.has(touch.operation)) throw new Error('invalid planned-touch operation');
-    if (!Array.isArray(touch.ranges) || touch.ranges.length > budgets.maxRangesPerTouch) {
+    if (!isOneOf(OPERATIONS, touch.operation)) throw new Error('invalid planned-touch operation');
+    if (Array.isArray(touch.ranges) && touch.ranges.length > budgets.maxRangesPerTouch) {
       throw new Error('planned touch exceeds range budget');
     }
-    if (!touch.ranges.every(validRange)) throw new Error('invalid planned-touch range');
-    if (!Number.isSafeInteger(touch.simpleCommandIndex) || touch.simpleCommandIndex < 0) {
+    const ranges = copyRanges(touch.ranges, budgets.maxRangesPerTouch, 'invalid planned-touch range');
+    if (!safeInteger(touch.simpleCommandIndex, 0)) {
       throw new Error('invalid planned-touch command index');
     }
     const evidence = normalizeEvidence(touch.evidence);
@@ -3341,7 +3348,7 @@ function normalizePlannedTouchRecord(record: PlannedTouchRecord, budgets: Planne
     return {
       repoRelativePath,
       operation: touch.operation,
-      ranges: touch.ranges.map((range: LineRange) => ({ start: range.start, end: range.end })),
+      ranges,
       simpleCommandIndex: touch.simpleCommandIndex,
       ...(evidence === undefined ? {} : { evidence })
     };
@@ -3438,9 +3445,9 @@ export const queryIgnoredFiles: IgnoredFilesQuery = (repoRoot, repoRelativePaths
       stdio: ['pipe', 'pipe', 'ignore']
     });
   } catch (error) {
-    const failure = error as { status?: number; stdout?: string };
-    if (failure.status !== 1) throw error;
-    stdout = typeof failure.stdout === 'string' ? failure.stdout : '';
+    if (caughtProperty(error, 'status') !== 1) throw error;
+    const failureStdout = caughtProperty(error, 'stdout');
+    stdout = typeof failureStdout === 'string' ? failureStdout : '';
   }
   return new Set(
     stdout

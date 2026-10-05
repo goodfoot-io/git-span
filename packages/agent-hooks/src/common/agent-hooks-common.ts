@@ -12,6 +12,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as nodePath from 'node:path';
 import { reportFailOpen } from './fail-open.js';
+import { errnoCode } from './guards.js';
 
 // ---------------------------------------------------------------------------
 // Path helpers
@@ -289,8 +290,12 @@ export type PorcelainStatus = (typeof PORCELAIN_STATUSES)[number];
 
 const PORCELAIN_STATUS_SET: ReadonlySet<string> = new Set(PORCELAIN_STATUSES);
 
+function isPorcelainStatus(raw: string): raw is PorcelainStatus {
+  return PORCELAIN_STATUS_SET.has(raw);
+}
+
 function parsePorcelainStatus(raw: string): PorcelainStatus | null {
-  return PORCELAIN_STATUS_SET.has(raw) ? (raw as PorcelainStatus) : null;
+  return isPorcelainStatus(raw) ? raw : null;
 }
 
 /** A `parseDriftPorcelain` row: a {@link PorcelainRow} plus its status token. */
@@ -604,7 +609,7 @@ export function cleanupSessionState(layout: SessionLayout, sessionId: string, no
     fs.renameSync(dirPath, trashPath);
     fs.utimesSync(trashPath, now / 1000, now / 1000);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    if (errnoCode(error) !== 'ENOENT') throw error;
   }
 }
 

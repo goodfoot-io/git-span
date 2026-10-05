@@ -30,6 +30,7 @@ import {
 } from '../common/agent-hooks-common.js';
 import { createDefaultPlannedTouchStore, planBashTouches } from '../common/bash-attribution.js';
 import { flushFailOpen } from '../common/fail-open.js';
+import { isRecord } from '../common/guards.js';
 import type { MemoLogger } from '../common/span-surface.js';
 import { filterTrackedEligibility } from '../common/static-attribution.js';
 import { disableUpdateCheck } from '../common/update-check-env.js';
@@ -63,7 +64,8 @@ export function createStaticPlanHandler(
     try {
       const sessionId = typeof input?.sessionID === 'string' ? input.sessionID : '';
       const callId = typeof input?.callID === 'string' ? input.callID : '';
-      const args = (output?.args ?? {}) as Record<string, unknown>;
+      const rawArgs = output?.args;
+      const args: Record<string, unknown> = isRecord(rawArgs) ? rawArgs : {};
       const workdir = typeof args.workdir === 'string' ? args.workdir : undefined;
 
       if (input?.tool === 'bash') {
