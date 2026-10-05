@@ -244,7 +244,7 @@ impl EngineState {
     /// dropping it, so the post-fix re-resolve in `drift --fix` can rebuild an
     /// `EngineState` without re-reading the worktree source layer.
     ///
-    /// Emits the pre-fix session + engine warnings and the index-trailer
+    /// Emits the pre-fix engine warnings and the index-trailer
     /// change warning exactly as `finish` does — these are consumed here and
     /// are intentionally NOT carried in `SourceLayers`, so the post-fix
     /// `from_source_layers` starts clean and cannot re-emit them.
@@ -286,8 +286,7 @@ impl EngineState {
     /// Emits any source-layer init warnings (rare: index/worktree read
     /// budget downgrades) exactly as the cold-path `finish_retaining_layers`
     /// does, so they surface once — `from_source_layers` then starts clean and
-    /// cannot re-emit them. A freshly built state has no session warnings yet,
-    /// so only the `EngineState::new` init warnings are forwarded.
+    /// cannot re-emit them.
     ///
     /// Soundness (identical to `from_source_layers`): `apply_fix` writes only
     /// under `span_root` and no anchor path is under `span_root` (interior
@@ -418,7 +417,7 @@ pub fn resolve_span(
         options.needs_all_layers,
         options.fuzzy_threshold,
     )?;
-    let out = resolve_span_with_state(repo, span_root, &mut state, name, options)?;
+    let out = resolve_span_with_state(repo, span_root, &mut state, name)?;
     state.finish(repo);
     Ok(out)
 }
@@ -444,7 +443,7 @@ pub fn resolve_span_at(
         options.needs_all_layers,
         options.fuzzy_threshold,
     )?;
-    let out = resolve_span_with_state_at(repo, span_root, &mut state, name, commit_oid, options)?;
+    let out = resolve_span_with_state_at(repo, span_root, &mut state, name, commit_oid)?;
     state.finish(repo);
     Ok(out)
 }
@@ -454,7 +453,6 @@ fn resolve_span_with_state(
     span_root: &str,
     state: &mut EngineState,
     name: &str,
-    options: EngineOptions,
 ) -> Result<SpanResolved> {
     let span = {
         let _perf = crate::perf::span("resolver.read-span-file");
@@ -464,7 +462,7 @@ fn resolve_span_with_state(
             .ok_or_else(|| Error::SpanNotFound(name.to_string()))?;
         span_from_file(name, &file)
     };
-    resolve_loaded_span_with_state(repo, state, span, options)
+    resolve_loaded_span_with_state(repo, state, span)
 }
 
 fn resolve_span_with_state_at(
@@ -473,7 +471,6 @@ fn resolve_span_with_state_at(
     state: &mut EngineState,
     name: &str,
     commit_oid: &str,
-    options: EngineOptions,
 ) -> Result<SpanResolved> {
     let span = {
         let _perf = crate::perf::span("resolver.read-span");
@@ -497,17 +494,15 @@ fn resolve_span_with_state_at(
         let file = crate::span_file::SpanFile::parse(&text)?;
         span_from_file(name, &file)
     };
-    resolve_loaded_span_with_state(repo, state, span, options)
+    resolve_loaded_span_with_state(repo, state, span)
 }
 
 fn resolve_loaded_span_with_state(
     repo: &gix::Repository,
     state: &mut EngineState,
     span: crate::types::Span,
-    options: EngineOptions,
 ) -> Result<SpanResolved> {
     let mut anchors = Vec::with_capacity(span.anchors.len());
-    let mut filtered_by_since: usize = 0;
     {
         let _perf = crate::perf::span("resolver.resolve-anchors");
         let EngineState {
@@ -517,15 +512,6 @@ fn resolve_loaded_span_with_state(
             ..
         } = state;
         for (id, r) in span.anchors {
-            // Since-filter: in the file-backed model anchor_sha is empty, so the
-            // filter is a no-op unless a non-empty anchor_sha is present.
-            if let Some(since_oid) = options.since
-                && !r.anchor_sha.is_empty()
-                && !anchor_at_or_after(repo, &r.anchor_sha, since_oid)
-            {
-                filtered_by_since += 1;
-                continue;
-            }
             let anchor_t0 = std::time::Instant::now();
             let trace_anchor_sha = r.anchor_sha.clone();
             let trace_path = r.path.clone();
@@ -559,14 +545,6 @@ fn resolve_loaded_span_with_state(
             populate_drift_locus(repo, &mut resolved, concurrent);
             anchors.push(resolved);
         }
-    }
-    if filtered_by_since > 0
-        && let Some(since_oid) = options.since
-    {
-        state.warnings.push(format!(
-            "filtered {filtered_by_since} anchors anchored before {}",
-            since_oid
-        ));
     }
     Ok(SpanResolved {
         name: span.name,
@@ -739,7 +717,6 @@ pub(crate) fn resolve_loaded_spans(
             repo,
             &mut state,
             span.clone(),
-            options,
         )?);
     }
     emit_session_counters(&state.concurrent);
@@ -764,7 +741,7 @@ pub(crate) fn resolve_named_spans(
         options.needs_all_layers,
         options.fuzzy_threshold,
     )?;
-    let (out, state) = resolve_named_spans_with_state(repo, span_root, names, options, state)?;
+    let (out, state) = resolve_named_spans_with_state(repo, span_root, names, state)?;
     state.finish(repo);
     Ok(out)
 }
@@ -1026,7 +1003,7 @@ pub(crate) fn resolve_named_spans_with_source_layers(
         options.needs_all_layers,
         options.fuzzy_threshold,
     );
-    let (out, state) = resolve_named_spans_with_state(repo, span_root, names, options, state)?;
+    let (out, state) = resolve_named_spans_with_state(repo, span_root, names, state)?;
     state.finish(repo);
     Ok(out)
 }
@@ -1047,7 +1024,7 @@ pub(crate) fn resolve_named_spans_retaining_source_layers(
         options.needs_all_layers,
         options.fuzzy_threshold,
     )?;
-    let (out, state) = resolve_named_spans_with_state(repo, span_root, names, options, state)?;
+    let (out, state) = resolve_named_spans_with_state(repo, span_root, names, state)?;
     Ok((out, state.finish_retaining_layers(repo)))
 }
 
@@ -1055,14 +1032,13 @@ pub(crate) fn resolve_named_spans_with_state(
     repo: &gix::Repository,
     span_root: &str,
     names: &[String],
-    options: EngineOptions,
     mut state: EngineState,
 ) -> Result<(NamedSpanResults, EngineState)> {
     let _perf = crate::perf::span("resolver.resolve-named-spans");
 
     let mut out = Vec::with_capacity(names.len());
     for name in names {
-        let resolved = resolve_span_with_state(repo, span_root, &mut state, name, options);
+        let resolved = resolve_span_with_state(repo, span_root, &mut state, name);
         out.push((name.clone(), resolved));
     }
     // Emit session perf counters matching drift_spans_inner so named-span
@@ -1157,7 +1133,7 @@ fn drift_spans_inner(
                     continue;
                 }
             }
-            let resolved = resolve_loaded_span_with_state(repo, &mut state, span, options)?;
+            let resolved = resolve_loaded_span_with_state(repo, &mut state, span)?;
             if span_has_actionable_drift(&resolved) {
                 out.push(resolved);
             }
@@ -1528,25 +1504,6 @@ pub(crate) fn anchor_path_is_layer_clean(
         return false;
     }
     true
-}
-
-/// Slice 5: returns true when the anchor should pass the `--since`
-/// filter. The semantic is "anchored at or after `since`" — i.e.
-/// `since` is an ancestor of (or equal to) `anchor_sha`. Anchors that
-/// don't parse / aren't reachable fall through as `true` (orphans are
-/// not hidden by `--since`).
-fn anchor_at_or_after(repo: &gix::Repository, anchor_sha: &str, since: gix::ObjectId) -> bool {
-    use std::str::FromStr;
-    let Ok(anchor_id) = gix::ObjectId::from_str(anchor_sha) else {
-        return true;
-    };
-    if anchor_id == since {
-        return true;
-    }
-    match repo.merge_base(anchor_id, since) {
-        Ok(base) => base.detach() == since,
-        Err(_) => true,
-    }
 }
 
 fn deleted_placeholder(anchor_id: &str) -> AnchorResolved {

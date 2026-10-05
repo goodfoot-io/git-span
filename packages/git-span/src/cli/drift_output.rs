@@ -133,7 +133,6 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
     let options = EngineOptions {
         layers,
         ignore_unavailable: false,
-        since: None,
         needs_all_layers,
         fuzzy_threshold: 0.95,
     };

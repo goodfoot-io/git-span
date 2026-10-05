@@ -794,13 +794,6 @@ pub struct Finding {
 pub struct EngineOptions {
     pub layers: LayerSet,
     pub ignore_unavailable: bool,
-    /// Slice 5 of the review plan: `--since <commit-ish>` already
-    /// resolved to a commit OID. The engine includes a anchor only when
-    /// `since` is an ancestor of (or equal to) the anchor's anchor —
-    /// i.e. the anchor is anchored "at or after" `since`. Deleted
-    /// anchors are always included (the filter is for scoping, not
-    /// hiding removed-path anchors).
-    pub since: Option<gix::ObjectId>,
     /// Phase 4: does the caller need every layer's drift evaluated, or
     /// is HEAD's verdict alone sufficient to drive the exit code? Set
     /// to `true` for `--patch`, `--stat`, and the `human` renderer.
@@ -819,7 +812,6 @@ impl EngineOptions {
         Self {
             layers: LayerSet::full(),
             ignore_unavailable: false,
-            since: None,
             needs_all_layers: true,
             fuzzy_threshold: 0.95,
         }
@@ -830,7 +822,6 @@ impl EngineOptions {
         Self {
             layers: LayerSet::committed_only(),
             ignore_unavailable: false,
-            since: None,
             needs_all_layers: true,
             fuzzy_threshold: 0.95,
         }

@@ -2214,7 +2214,7 @@ pub fn is_superseded(old: &AnchorRecord, new_path: &str, new_extent: &AnchorExte
 /// span-file flock, resolves the single span via
 /// `resolve_named_spans_retaining_source_layers` (with
 /// `EngineOptions { layers: LayerSet::full(), ignore_unavailable: false,
-/// needs_all_layers: true, since: None, fuzzy_threshold: 0.95 }` — the
+/// needs_all_layers: true, fuzzy_threshold: 0.95 }` — the
 /// human-renderer configuration, so per-anchor statuses match what
 /// `git span drift <span>` would show), reads the `index_changed` verdict
 /// from the returned `SourceLayers`, and derives the three facts:
@@ -2242,7 +2242,6 @@ pub fn run_reconcile_check(
     let options = EngineOptions {
         layers: LayerSet::full(),
         ignore_unavailable: false,
-        since: None,
         needs_all_layers: true,
         fuzzy_threshold: 0.95,
     };

@@ -104,7 +104,7 @@ use std::path::{Path, PathBuf};
 
 /// Namespace/version discriminator for the whole token shape. Bump on any
 /// `StateToken` field addition/removal (mirrors `cache_v2`'s `KEY_SALT`).
-pub(crate) const SEMANTIC_EPOCH: u32 = 1;
+pub(crate) const SEMANTIC_EPOCH: u32 = 2;
 
 /// Hex of the empty git tree object id (`4b825dc...`). Used as `span_subtree`
 /// when the span root is absent at `HEAD`, so "no span files committed" is a
@@ -245,7 +245,6 @@ pub(crate) fn capture_state_token_with_extra_paths(
         ignore_unavailable: options.ignore_unavailable,
         needs_all_layers: options.needs_all_layers,
         fuzzy_threshold_bps: fuzzy_threshold_bps(options.fuzzy_threshold),
-        since: options.since.map(|o| o.to_string()),
         head: {
             let _perf = crate::perf::span("cache.capture.head");
             head.commit.to_string()
@@ -395,7 +394,6 @@ fn diff_tokens(a: &StateToken, b: &StateToken) -> Revalidation {
     check!(ignore_unavailable);
     check!(needs_all_layers);
     check!(fuzzy_threshold_bps);
-    check!(since);
     check!(semantic_epoch);
     Revalidation::Unchanged
 }

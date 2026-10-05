@@ -57,7 +57,6 @@ fn sample_token() -> StateToken {
         ignore_unavailable: false,
         needs_all_layers: true,
         fuzzy_threshold_bps: 9_500,
-        since: None,
         head: "0".repeat(40),
         source_tree: "1".repeat(40),
         span_root: ".span".to_string(),
@@ -160,7 +159,6 @@ fn config_fingerprint_keys_resolution_config_only() {
         "ignore_unavailable",
     );
     stable(&|t| t.fuzzy_threshold_bps += 1, "fuzzy_threshold_bps");
-    stable(&|t| t.since = Some("f".repeat(40)), "since");
 
     // Content identity → stable (the commit/dirty changes reuse rides across).
     stable(&|t| t.head = "a".repeat(40), "head");
@@ -208,7 +206,6 @@ fn canonical_key_digest_sensitive_to_every_semantic_field() {
         "needs_all_layers",
     );
     assert_field_changes_digest(&base, |t| t.fuzzy_threshold_bps += 1, "fuzzy_threshold_bps");
-    assert_field_changes_digest(&base, |t| t.since = Some("f".repeat(40)), "since");
     assert_field_changes_digest(&base, |t| t.source_tree = "c".repeat(40), "source_tree");
     assert_field_changes_digest(&base, |t| t.span_root = "spans".to_string(), "span_root");
     assert_field_changes_digest(&base, |t| t.span_subtree = "d".repeat(40), "span_subtree");

@@ -1,22 +1,12 @@
-//! Integration tests for the surviving Slice 5/6 behavior under the
-//! file-backed model.
-//!
-//! In the file-backed model anchors carry no `anchor_sha` (commit-time
-//! anchoring is gone), so the `--since` *filter* is a documented no-op:
-//! the engine includes every anchor regardless of `since`. The deleted
-//! suites here exercised commit-time `--since` filtering, staged-anchor
-//! `--at` ordering, and catalog-ref reflog coverage — all removed
-//! features. What survives is content-blind binary detection on
-//! `git span add` and the no-op `--since` contract.
+//! Integration tests for the surviving Slice 6 behavior under the
+//! file-backed model: content-blind binary detection on `git span add`.
+//! (The Slice 5 `--since` filter, staged-anchor `--at` ordering, and
+//! catalog-ref reflog coverage were removed with commit-time anchoring.)
 
 use crate::support;
 
 use anyhow::Result;
 use support::TestRepo;
-
-// ---------------------------------------------------------------------------
-// Slice 5 — `--since` is a no-op in the file-backed model.
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Slice 6b — content-blind binary detection on `git span add`.

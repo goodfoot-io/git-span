@@ -2133,7 +2133,6 @@ fn build_current(
     let options = crate::types::EngineOptions {
         layers: crate::types::LayerSet::full(),
         ignore_unavailable: false,
-        since: None,
         needs_all_layers: true,
         fuzzy_threshold: 0.95,
     };

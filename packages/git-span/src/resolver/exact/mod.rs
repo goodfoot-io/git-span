@@ -269,13 +269,12 @@ fn cache_disabled() -> bool {
     std::env::var("GIT_SPAN_CACHE").as_deref() == Ok("0")
 }
 
-/// Eligibility gate: full layer set, no `--since`, and additionally the default
+/// Eligibility gate: full layer set, and additionally the default
 /// fuzzy threshold, because
 /// [`capture_resolution_core`] resolves with a fixed `0.95` threshold; any
 /// other value must fall back so the projected result cannot silently diverge.
 fn eligible(options: &EngineOptions) -> bool {
-    options.since.is_none()
-        && options.layers == LayerSet::full()
+    options.layers == LayerSet::full()
         && (options.fuzzy_threshold - 0.95).abs() < 1e-9
 }
 

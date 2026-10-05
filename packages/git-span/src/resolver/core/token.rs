@@ -30,18 +30,6 @@ fn write_prefixed(h: &mut Hasher, bytes: &[u8]) {
     h.update(bytes);
 }
 
-fn write_opt_str(h: &mut Hasher, s: &Option<String>) {
-    match s {
-        Some(v) => {
-            h.update(&[1u8]);
-            write_prefixed(h, v.as_bytes());
-        }
-        None => {
-            h.update(&[0u8]);
-        }
-    }
-}
-
 /// One `filter.<driver>.*` (or `.gitattributes` `filter=<name>`) dependency.
 /// Persistence for output that transits this filter is eligible only when
 /// both halves of its identity are proven — a command string alone is not
@@ -220,8 +208,6 @@ pub(crate) struct StateToken {
     /// `fuzzy_threshold` as basis points (0..=10000): an exact integer, no
     /// float in a type that participates in key derivation or equality.
     pub(crate) fuzzy_threshold_bps: u32,
-    /// `--since <commit-ish>`, already resolved to a hex OID.
-    pub(crate) since: Option<String>,
 
     /// HEAD commit — derivation hint ONLY. Excluded from
     /// `canonical_key_digest`.
@@ -290,7 +276,6 @@ impl StateToken {
             u8::from(self.needs_all_layers),
         ]);
         h.update(&self.fuzzy_threshold_bps.to_le_bytes());
-        write_opt_str(&mut h, &self.since);
 
         // `head` intentionally omitted — derivation hint only.
 
@@ -370,10 +355,10 @@ impl StateToken {
     ///   `span_blobs`, and the index/staged/worktree identities. These carry the
     ///   very commit/dirty changes the reuse tiers reuse across.
     /// * **Output/projection shaping** — `layers`, `needs_all_layers`,
-    ///   `ignore_unavailable`, `fuzzy_threshold_bps`, and `since`. None of these
+    ///   `ignore_unavailable`, and `fuzzy_threshold_bps`. None of these
     ///   reach [`capture_resolution_core`](crate::resolver::engine::capture_resolution_core),
-    ///   which always resolves the FULL layer set at a fixed `0.95` threshold
-    ///   with no `--since` bound; they only select layers / shape findings at
+    ///   which always resolves the FULL layer set at a fixed `0.95` threshold;
+    ///   they only select layers / shape findings at
     ///   projection time, so the stored layer-neutral cores are independent of
     ///   them. Folding them in would spuriously reject a legitimate reuse across
     ///   an output-format change (e.g. `needs_all_layers` is `true` only for the
