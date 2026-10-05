@@ -634,16 +634,17 @@ pub fn run_history(repo: &gix::Repository, args: HistoryArgs, span_root: &str) -
 
     let report = {
         let _perf = crate::perf::span("history.build-report");
-        build_report(
+        let subject = HistorySubject {
             repo,
-            &args.span,
-            span_root,
-            &span_path,
-            &commits,
-            args.limit,
-            &mut spans_at,
-            &mut unreadable_revisions,
-        )?
+            name: &args.span,
+            root: span_root,
+            path: &span_path,
+        };
+        let memo = DeclarationMemo {
+            spans_at,
+            unreadable_revisions,
+        };
+        build_report(subject, &commits, args.limit, memo)?
     };
 
     // Fail-closed in spirit: a scoped/partial window must never read as the
@@ -898,13 +899,20 @@ fn read_anchor_at_commit(
 /// [`build_report`] gives a missing span on the walk itself, so a first-add
 /// against a parent that had no `.span` file still renders as a creation.
 fn state_at_commit(
-    repo: &gix::Repository,
-    span_name: &str,
-    span_root: &str,
+    subject: HistorySubject<'_>,
     commit_oid: &str,
-    spans_at: &mut std::collections::HashMap<String, Option<Rc<Span>>>,
-    unreadable_revisions: &mut Vec<(String, String)>,
+    memo: &mut DeclarationMemo,
 ) -> Result<RenderedState> {
+    let HistorySubject {
+        repo,
+        name: span_name,
+        root: span_root,
+        ..
+    } = subject;
+    let DeclarationMemo {
+        spans_at,
+        unreadable_revisions,
+    } = memo;
     // `spans_at` memoizes the declaration parse per commit; the discovery
     // pass in `run_history` seeds it, so a declaration-touching commit is
     // parsed exactly once across both passes.
@@ -1407,39 +1415,77 @@ struct SectionBody {
     anchors: Vec<TimelineAnchor>,
 }
 
-#[allow(clippy::too_many_arguments)]
+/// The span whose history is rendered: the repository, the span's name and
+/// span root, and its declaration's repository path (`<root>/<name>`).
+#[derive(Clone, Copy)]
+struct HistorySubject<'a> {
+    repo: &'a gix::Repository,
+    name: &'a str,
+    root: &'a str,
+    path: &'a str,
+}
+
+/// The per-commit declaration parses shared by both walk passes, and the
+/// revisions whose declaration could not be read. Seeded by `run_history`'s
+/// discovery pass, extended by [`state_at_commit`], and drained into the
+/// report's `unreadable_revisions` by [`build_report`].
+struct DeclarationMemo {
+    spans_at: std::collections::HashMap<String, Option<Rc<Span>>>,
+    unreadable_revisions: Vec<(String, String)>,
+}
+
+/// The declaration's record and every rendered snapshot that can stand in for
+/// it, accumulated across the walk by [`build_report`] and read by
+/// [`build_current`].
+struct RecordedEvidence {
+    /// The declaration's recorded `rk64` tokens, keyed by declared address,
+    /// read from the live (working-tree) `.span` file — the same record `git
+    /// span drift` compares against.
+    recorded: std::collections::HashMap<String, String>,
+    /// The rendered snapshot, if any, whose content the declaration's recorded
+    /// token actually hashes. Collected across the walk (newest match wins) so
+    /// the `current` block can diff live content against *what was recorded*
+    /// rather than against whatever text now occupies the recorded line
+    /// numbers.
+    at_address: std::collections::HashMap<String, Rc<Snapshot>>,
+    /// Every snapshot this render has produced, keyed by its content hash —
+    /// the set of contents the report itself displays. The `current` block's
+    /// old side draws from it, which is what makes "unrecoverable" mean
+    /// something a reader can check: if the recorded token is missing here,
+    /// its bytes are nowhere in this render either. Oldest wins: the walk runs
+    /// oldest→newest and the first entry for a hash is kept, and a collision
+    /// can only be between byte-identical bodies, so the choice cannot change
+    /// rendered bytes (see [`capture_by_hash`]).
+    by_hash: std::collections::HashMap<String, Rc<Snapshot>>,
+}
+
+impl RecordedEvidence {
+    /// Capture one rendered state into both snapshot indexes.
+    fn capture(&mut self, state: &RenderedState) {
+        capture_recorded_snapshots(&self.recorded, &mut self.at_address, state);
+        capture_by_hash(&mut self.by_hash, state);
+    }
+}
+
 fn build_report(
-    repo: &gix::Repository,
-    span_name: &str,
-    span_root: &str,
-    span_path: &str,
+    subject: HistorySubject<'_>,
     commits: &[crate::git::CommitChanges],
     limit: Option<usize>,
-    spans_at: &mut std::collections::HashMap<String, Option<Rc<Span>>>,
-    unreadable_revisions: &mut Vec<(String, String)>,
+    mut memo: DeclarationMemo,
 ) -> Result<HistoryReport> {
+    let HistorySubject {
+        repo,
+        name: span_name,
+        root: span_root,
+        path: span_path,
+    } = subject;
     let mut sections: Vec<CommitSection> = Vec::new();
 
-    // The declaration's recorded `rk64` tokens, keyed by declared address, read
-    // from the live (working-tree) `.span` file — the same record `git span
-    // drift` compares against.
-    let recorded = recorded_hashes(repo, span_name, span_root);
-    // The rendered snapshot, if any, whose content the declaration's recorded
-    // token actually hashes. Collected across the walk (newest match wins) so
-    // the `current` block can diff live content against *what was recorded*
-    // rather than against whatever text now occupies the recorded line numbers.
-    let mut recorded_snapshots: std::collections::HashMap<String, Rc<Snapshot>> =
-        std::collections::HashMap::new();
-    // Every snapshot this render has produced, keyed by its content hash — the
-    // set of contents the report itself displays. The `current` block's old
-    // side draws from it, which is what makes "unrecoverable" mean something a
-    // reader can check: if the recorded token is missing here, its bytes are
-    // nowhere in this render either. Oldest wins: this loop runs oldest→newest
-    // and the first entry for a hash is kept, and a collision can only be
-    // between byte-identical bodies, so the choice cannot change rendered
-    // bytes (see [`capture_by_hash`]).
-    let mut rendered_by_hash: std::collections::HashMap<String, Rc<Snapshot>> =
-        std::collections::HashMap::new();
+    let mut evidence = RecordedEvidence {
+        recorded: recorded_hashes(repo, span_name, span_root),
+        at_address: std::collections::HashMap::new(),
+        by_hash: std::collections::HashMap::new(),
+    };
 
     // Every rendered state this pass has materialized, keyed by commit. The
     // walk is dense in first-parent links — a commit's parent is very often the
@@ -1466,9 +1512,7 @@ fn build_report(
         let cur = match states.get(&cc.hash) {
             Some(s) => Rc::clone(s),
             None => {
-                let s = Rc::new(state_at_commit(
-                    repo, span_name, span_root, &cc.hash, spans_at, unreadable_revisions,
-                )?);
+                let s = Rc::new(state_at_commit(subject, &cc.hash, &mut memo)?);
                 states.insert(cc.hash.clone(), Rc::clone(&s));
                 s
             }
@@ -1490,9 +1534,7 @@ fn build_report(
             Some(parent) => Some(match states.get(&parent) {
                 Some(s) => Rc::clone(s),
                 None => {
-                    let s = Rc::new(state_at_commit(
-                        repo, span_name, span_root, &parent, spans_at, unreadable_revisions,
-                    )?);
+                    let s = Rc::new(state_at_commit(subject, &parent, &mut memo)?);
                     states.insert(parent, Rc::clone(&s));
                     s
                 }
@@ -1500,8 +1542,7 @@ fn build_report(
             None => None,
         };
 
-        capture_recorded_snapshots(&recorded, &mut recorded_snapshots, &cur);
-        capture_by_hash(&mut rendered_by_hash, &cur);
+        evidence.capture(&cur);
 
         // Author metadata is parsed only for commits that render an entry.
         // Metadata validity is a contract for *rendered* commits: a walked
@@ -1550,27 +1591,17 @@ fn build_report(
         },
     };
     if let Some(state) = last.as_deref() {
-        capture_recorded_snapshots(&recorded, &mut recorded_snapshots, state);
-        capture_by_hash(&mut rendered_by_hash, state);
+        evidence.capture(state);
     }
 
-    let current = build_current(
-        repo,
-        span_name,
-        span_root,
-        span_path,
-        last.as_deref(),
-        &recorded,
-        &recorded_snapshots,
-        &rendered_by_hash,
-    )?;
+    let current = build_current(subject, last.as_deref(), &evidence)?;
 
     Ok(HistoryReport {
         span: span_name.to_string(),
         scoped,
         commits: sections,
         current,
-        unreadable_revisions: unreadable_revisions.clone(),
+        unreadable_revisions: memo.unreadable_revisions,
     })
 }
 
@@ -2063,17 +2094,22 @@ fn unresolved_reason(
 /// rename rather than a `new anchor`.
 ///
 /// The section is omitted when neither trigger fires.
-#[allow(clippy::too_many_arguments)]
 fn build_current(
-    repo: &gix::Repository,
-    span_name: &str,
-    span_root: &str,
-    span_path: &str,
+    subject: HistorySubject<'_>,
     last: Option<&RenderedState>,
-    recorded: &std::collections::HashMap<String, String>,
-    recorded_snapshots: &std::collections::HashMap<String, Rc<Snapshot>>,
-    rendered_by_hash: &std::collections::HashMap<String, Rc<Snapshot>>,
+    evidence: &RecordedEvidence,
 ) -> Result<Option<CurrentSection>> {
+    let HistorySubject {
+        repo,
+        name: span_name,
+        root: span_root,
+        path: span_path,
+    } = subject;
+    let RecordedEvidence {
+        recorded,
+        at_address: recorded_snapshots,
+        by_hash: rendered_by_hash,
+    } = evidence;
     // Trigger 2 — HEAD declaration blob vs. the worktree bytes. The worktree
     // side's `index` hash comes from `hash_blob`, which computes a blob OID
     // without writing the object.
