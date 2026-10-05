@@ -1207,6 +1207,7 @@ fn emit_session_walk_counters(session: &ConcurrentSession) {
 /// A unit of work for the parallel baseline build: either a pre-parsed span
 /// a worker must resolve, or a result already decided on the main thread
 /// (read error / missing span file).
+#[cfg(test)]
 enum ParallelSlot {
     Resolve(Span),
     Done(std::result::Result<SpanResolved, Error>),
@@ -1225,6 +1226,10 @@ enum ParallelSlot {
 /// one expensive run of spans (e.g. a cluster of relocation-scanning
 /// anchors) serialize behind a single straggler thread while its siblings
 /// exit early.
+///
+/// Test-only: no production entry point calls it; it is exercised by the
+/// immutable-perf emission test.
+#[cfg(test)]
 pub(crate) fn resolve_named_spans_parallel(
     repo: &gix::Repository,
     span_root: &str,
@@ -1364,7 +1369,6 @@ struct DriftSpansOutput {
     spans: Vec<SpanResolved>,
     trace_rows: Vec<crate::perf::TraceRow>,
     source_layers: Option<SourceLayers>,
-    index_changed: bool,
 }
 
 fn drift_spans_inner(
@@ -1567,13 +1571,11 @@ fn drift_spans_inner(
          resolve-anchor.* names per-anchor distribution",
     );
     let trace_rows = state.concurrent.per_anchor_trace.take().unwrap_or_default();
-    let (source_layers, index_changed) = if retain_layers {
-        let layers = state.finish_retaining_layers(repo);
-        let changed = layers.index_changed;
-        (Some(layers), changed)
+    let source_layers = if retain_layers {
+        Some(state.finish_retaining_layers(repo))
     } else {
-        let changed = state.finish(repo);
-        (None, changed)
+        state.finish(repo);
+        None
     };
     if out.len() > 1 {
         sort_spans_by_anchor_path(&mut out);
@@ -1582,7 +1584,6 @@ fn drift_spans_inner(
         spans: out,
         trace_rows,
         source_layers,
-        index_changed,
     })
 }
 
@@ -2175,7 +2176,6 @@ mod tests {
                     hunks: vec![],
                     new_blob: None,
                     deleted: false,
-                    intent_to_add: false,
                 },
             );
         }
@@ -2190,7 +2190,6 @@ mod tests {
                     hunks: vec![],
                     new_blob: None,
                     deleted: false,
-                    intent_to_add: false,
                 },
             );
         }

@@ -104,7 +104,7 @@ type SingleFlightMemo<V> = RwLock<HashMap<String, Arc<OnceLock<V>>>>;
 /// One per-commit slice of the shared walk: `(parent_sha, commit_sha,
 /// name_status_entries)`. Produced by the reverse-indexed walk once per
 /// commit that touches a tracked path. The hunk math
-/// (`walker::advance_with_entries`) is still per-anchor — that's the work
+/// (`timeline::build_timeline`) is still per-anchor — that's the work
 /// that genuinely depends on the anchor's path.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct CommitDelta {
@@ -113,57 +113,33 @@ pub(crate) struct CommitDelta {
     pub(crate) entries: Vec<NS>,
 }
 
-/// Maps each tracked path to the set of anchors that depend on it,
-/// enabling a single reverse-indexed walk to fan out per-commit
-/// path-change results to every affected anchor.
+/// The anchor commits every span in a batch is anchored against, collected
+/// in one pass so the single reverse-indexed walk knows where to stop.
 #[derive(Debug, Clone)]
 pub(crate) struct AnchorReverseIndex {
-    /// Every (path, anchor_sha) pair that any span anchors against.
-    /// Keyed by path so a per-commit "did this commit touch P?" answer
-    /// can fan out to every (span, anchor_id) waiting on P.
-    pub(crate) by_path: HashMap<Vec<u8>, Vec<AnchorRef>>,
     /// Union of all anchor_sha values — the walk's stop set.
-    /// A commit is "interesting" iff it touches some path in by_path
-    /// AND lies between HEAD and some anchor_sha still being resolved.
+    /// A commit is "interesting" iff it touches a tracked path AND lies
+    /// between HEAD and some anchor_sha still being resolved.
     pub(crate) anchor_shas: HashSet<gix::ObjectId>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct AnchorRef {
-    pub(crate) span_name: String,
-    pub(crate) anchor_id: String,
-    pub(crate) anchor_sha: gix::ObjectId,
 }
 
 impl AnchorReverseIndex {
     /// Build the reverse index from all spans' anchors in a single pass.
     /// `spans` is the list of (span_name, span) pairs being resolved.
     pub(crate) fn from_spans(spans: &[(String, crate::types::Span)]) -> Self {
-        let mut by_path: HashMap<Vec<u8>, Vec<AnchorRef>> = HashMap::new();
         let mut anchor_shas: HashSet<gix::ObjectId> = HashSet::new();
 
-        for (span_name, span) in spans {
-            for (anchor_id, anchor) in &span.anchors {
+        for (_, span) in spans {
+            for (_, anchor) in &span.anchors {
                 let sha = match gix::ObjectId::from_hex(anchor.anchor_sha.as_bytes()) {
                     Ok(oid) => oid,
                     Err(_) => continue, // skip malformed SHAs
                 };
                 anchor_shas.insert(sha);
-                by_path
-                    .entry(anchor.path.as_bytes().to_vec())
-                    .or_default()
-                    .push(AnchorRef {
-                        span_name: span_name.clone(),
-                        anchor_id: anchor_id.clone(),
-                        anchor_sha: sha,
-                    });
             }
         }
 
-        Self {
-            by_path,
-            anchor_shas,
-        }
+        Self { anchor_shas }
     }
 }
 
@@ -428,18 +404,16 @@ pub(crate) struct ConcurrentSession {
     /// resolved individually, but they are counted toward `anchors_total`.
     pub(crate) anchors_skipped_clean_head: u64,
     /// Counter: anchors that returned via [`clean_head_fast_path`] (early
-    /// return). The remainder went through the full layer-comparison path
-    /// (`anchors_total - anchors_fast_path_hits - anchors_skipped_clean_head
-    ///  == anchors_full_resolution`).
+    /// return). The remainder went through the full layer-comparison path;
+    /// that count is derived at emit time as `anchors_total -
+    /// anchors_fast_path_hits - anchors_skipped_clean_head`
+    /// (`session.anchors-full-resolution`).
     ///
     /// `AtomicU64` (card main-162 staged-rollout step 4): incremented from
     /// [`clean_head_fast_path`] inside the now-parallel capture loop, so it is
     /// shared behind `&self` like the other resolve-path counters rather than
     /// mutated through `&mut self`.
     pub(crate) anchors_fast_path_hits: AtomicU64,
-    /// Counter: anchors that went through the full per-layer resolution
-    /// (`resolve_anchor_inner` past the fast-path).
-    pub(crate) anchors_full_resolution: u64,
     /// Per-anchor wall-clock (microseconds), one entry per `resolve_anchor_inner`
     /// invocation. Sorted at end-of-run to compute `p50` / `p95` percentiles.
     /// Dropped immediately after emit; ~8 bytes per anchor.
@@ -731,7 +705,6 @@ impl ConcurrentSession {
             anchors_unavailable: 0,
             anchors_skipped_clean_head: 0,
             anchors_fast_path_hits: AtomicU64::new(0),
-            anchors_full_resolution: 0,
             per_anchor_us: Vec::new(),
             per_anchor_trace: None,
             walk_bloom_skips: 0,
@@ -1856,7 +1829,6 @@ mod tests {
             anchors_merge_conflict: 0,
             anchors_unavailable: 0,
             anchors_fast_path_hits: AtomicU64::new(0),
-            anchors_full_resolution: 0,
             per_anchor_us: Vec::new(),
             per_anchor_trace: None,
             walk_bloom_skips: 0,
@@ -1893,16 +1865,6 @@ mod tests {
 
         let total = session.anchors_total();
 
-        // Decomposition identity per card: each anchor is either skipped
-        // clean-head, resolved via a per-anchor fast-path, or goes through
-        // full resolution.
-        let decomposed = session.anchors_skipped_clean_head
-            + session.anchors_fast_path_hits.load(Ordering::Relaxed)
-            + session.anchors_full_resolution;
-        assert_eq!(
-            total, decomposed,
-            "anchors-total must equal skipped-clean-head + fast-path-hits + full-resolution"
-        );
         assert_eq!(
             total, 50,
             "anchors-total must count anchors that were skipped clean-head"
@@ -1910,7 +1872,7 @@ mod tests {
     }
 
     #[test]
-    fn decomposition_identity_mixed_buckets() {
+    fn anchors_total_sums_mixed_buckets() {
         let session = ConcurrentSession {
             bloom_memo: None,
             drift_locus_hits: AtomicU64::new(0),
@@ -1927,7 +1889,6 @@ mod tests {
             anchors_merge_conflict: 0,
             anchors_unavailable: 1,
             anchors_fast_path_hits: AtomicU64::new(4),
-            anchors_full_resolution: 2,
             per_anchor_us: Vec::new(),
             per_anchor_trace: None,
             walk_bloom_skips: 0,
@@ -1964,8 +1925,8 @@ mod tests {
 
         let total = session.anchors_total();
 
-        // The status-bucket total should account for moved+changed+unavailable = 6.
-        // But the decomposition identity is: total == skipped-clean-head + fast-path-hits + full-resolution.
+        // The status-bucket total accounts for moved+changed+unavailable = 6
+        // plus the 40 skipped clean-head anchors.
         assert_eq!(
             total,
             session.anchors_fresh
@@ -1976,14 +1937,6 @@ mod tests {
                 + session.anchors_unavailable
                 + session.anchors_skipped_clean_head,
             "anchors-total must include skipped-clean-head alongside per-status buckets"
-        );
-
-        let decomposed = session.anchors_skipped_clean_head
-            + session.anchors_fast_path_hits.load(Ordering::Relaxed)
-            + session.anchors_full_resolution;
-        assert_eq!(
-            total, decomposed,
-            "anchors-total == skipped-clean-head + fast-path-hits + full-resolution"
         );
         assert_eq!(total, 46);
     }

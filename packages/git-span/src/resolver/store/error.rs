@@ -28,8 +28,6 @@ pub(crate) enum BypassReason {
     Corrupt,
     /// The database is on an incompatible schema version or semantic epoch.
     SchemaMismatch,
-    /// A build-lock shard could not be acquired.
-    LockContended,
     /// Any other I/O or SQLite failure.
     Io,
 }
@@ -48,11 +46,6 @@ impl StoreError {
             reason,
             detail: detail.into(),
         }
-    }
-
-    /// The structured reason, for diagnostics.
-    pub(crate) fn reason(&self) -> BypassReason {
-        self.reason
     }
 }
 

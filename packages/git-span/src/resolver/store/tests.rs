@@ -478,7 +478,7 @@ fn read_only_directory_fails_closed() {
     // closed with a structured reason — no panic.
     let reason = match CacheStore::open_at(&ro.join("sub")) {
         Ok(_) => panic!("open succeeded under a read-only directory"),
-        Err(e) => e.reason(),
+        Err(e) => e.reason,
     };
     assert!(
         matches!(reason, BypassReason::ReadOnly | BypassReason::Io),
@@ -505,7 +505,7 @@ fn busy_timeout_fails_closed_without_writing() {
     let err = store
         .publish_generation(&make_input(key(1), V1, b"s", 2))
         .unwrap_err();
-    assert_eq!(err.reason(), BypassReason::BusyTimeout);
+    assert_eq!(err.reason, BypassReason::BusyTimeout);
 
     // Release the lock; nothing was written.
     blocker.execute_batch("ROLLBACK").unwrap();
@@ -532,7 +532,7 @@ fn disk_full_fails_closed_and_rolls_back() {
     let err = store
         .publish_generation(&make_input(key(1), V1, &big, 4))
         .unwrap_err();
-    assert_eq!(err.reason(), BypassReason::DiskFull);
+    assert_eq!(err.reason, BypassReason::DiskFull);
 
     // Lift the cap; the failed publish left nothing behind (rolled back).
     store.conn.pragma_update(None, "max_page_count", 0).unwrap();

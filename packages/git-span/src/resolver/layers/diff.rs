@@ -30,16 +30,12 @@ use gix::bstr::ByteSlice;
 /// Per-run, per-layer cache of structured layer diffs.
 pub(crate) struct LayerDiffs {
     pub(crate) map: HashMap<String, DiffEntry>,
-    pub(crate) renamed_from: HashMap<String, String>,
-    pub(crate) rename_detection_disabled: bool,
 }
 
 impl LayerDiffs {
     pub(crate) fn empty() -> Self {
         Self {
             map: HashMap::new(),
-            renamed_from: HashMap::new(),
-            rename_detection_disabled: false,
         }
     }
 }
@@ -51,7 +47,6 @@ pub(crate) struct DiffEntry {
     pub(crate) hunks: Vec<(u32, u32, u32, u32)>,
     pub(crate) new_blob: Option<String>,
     pub(crate) deleted: bool,
-    pub(crate) intent_to_add: bool,
 }
 
 #[derive(Default)]
@@ -85,9 +80,9 @@ pub(crate) fn read_index_layer(
             budget
         ));
         let entries = collect_tree_index_changes(repo, /*track_renames:*/ false)?;
-        return Ok(into_layer(entries, true));
+        return Ok(into_layer(entries));
     }
-    Ok(into_layer(entries, false))
+    Ok(into_layer(entries))
 }
 
 /// Index → worktree diff (the `git diff` (no `--cached`) layer).
@@ -104,9 +99,9 @@ pub(crate) fn read_worktree_layer(
             budget
         ));
         let entries = collect_index_worktree_changes(repo, /*track_renames:*/ false, None)?;
-        return Ok(into_layer(entries, true));
+        return Ok(into_layer(entries));
     }
-    Ok(into_layer(entries, false))
+    Ok(into_layer(entries))
 }
 
 pub(crate) fn read_worktree_layer_for_paths(
@@ -127,9 +122,9 @@ pub(crate) fn read_worktree_layer_for_paths(
         ));
         let entries =
             collect_index_worktree_changes(repo, /*track_renames:*/ false, Some(paths))?;
-        return Ok(into_layer(entries, true));
+        return Ok(into_layer(entries));
     }
-    Ok(into_layer(entries, false))
+    Ok(into_layer(entries))
 }
 
 /// Cheap tracked-layer status used to avoid full repository scans.
@@ -152,21 +147,15 @@ pub(crate) fn read_layer_status(repo: &gix::Repository) -> Result<LayerStatus> {
     Ok(parse_status_bytes(&out.stdout))
 }
 
-fn into_layer(entries: Vec<DiffEntry>, rename_detection_disabled: bool) -> LayerDiffs {
+fn into_layer(entries: Vec<DiffEntry>) -> LayerDiffs {
     let mut map = HashMap::new();
-    let mut renamed_from = HashMap::new();
     for e in entries {
         if e.old_path != e.new_path {
-            renamed_from.insert(e.old_path.clone(), e.new_path.clone());
             map.insert(e.old_path.clone(), e.clone());
         }
         map.insert(e.new_path.clone(), e);
     }
-    LayerDiffs {
-        map,
-        renamed_from,
-        rename_detection_disabled,
-    }
+    LayerDiffs { map }
 }
 
 // ---------------------------------------------------------------------------
@@ -307,7 +296,6 @@ fn materialize_index_entry(repo: &gix::Repository, change: RawIndexChange) -> Re
             hunks: Vec::new(),
             new_blob: if intent_to_add { None } else { Some(new_blob) },
             deleted: false,
-            intent_to_add,
         }),
         RawIndexChange::Deleted { path } => Ok(DiffEntry {
             new_path: path.clone(),
@@ -315,7 +303,6 @@ fn materialize_index_entry(repo: &gix::Repository, change: RawIndexChange) -> Re
             hunks: Vec::new(),
             new_blob: None,
             deleted: true,
-            intent_to_add: false,
         }),
         RawIndexChange::Modified {
             path,
@@ -340,7 +327,6 @@ fn materialize_index_entry(repo: &gix::Repository, change: RawIndexChange) -> Re
                 hunks,
                 new_blob: Some(new_blob),
                 deleted: false,
-                intent_to_add: false,
             })
         }
         RawIndexChange::Rewrite {
@@ -366,7 +352,6 @@ fn materialize_index_entry(repo: &gix::Repository, change: RawIndexChange) -> Re
                 hunks,
                 new_blob: Some(new_blob),
                 deleted: false,
-                intent_to_add: false,
             })
         }
     }
@@ -501,7 +486,6 @@ fn collect_index_worktree_changes(
                         // because `worktree=true` skipped index parsing).
                         new_blob: Some(new_blob_hex),
                         deleted: false,
-                        intent_to_add: false,
                     });
                     break;
                 }
@@ -548,7 +532,6 @@ fn worktree_change_to_entry(
             hunks: Vec::new(),
             new_blob: None,
             deleted: true,
-            intent_to_add: false,
         }),
         Some(new_id) => {
             let new_bytes = new_bytes.unwrap_or_default();
@@ -570,7 +553,6 @@ fn worktree_change_to_entry(
                 hunks,
                 new_blob: None,
                 deleted: false,
-                intent_to_add: false,
             })
         }
     }

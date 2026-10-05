@@ -239,6 +239,7 @@ impl ResolutionCore {
     /// address-collapsed. Order is: spans only in `self` (original
     /// position), then spans only in `other` (their position), with
     /// shared spans replaced in `self`'s position.
+    #[cfg(test)]
     pub(crate) fn merge(mut self, other: ResolutionCore) -> ResolutionCore {
         for incoming in other.spans {
             if let Some(slot) = self.spans.iter_mut().find(|s| s.name == incoming.name) {

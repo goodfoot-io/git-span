@@ -175,7 +175,6 @@ fn open_token_store(dir: &Path) -> (gix::Repository, StateToken, CacheStore) {
 
 #[test]
 fn dirty_source_reconstructs_byte_equal() {
-    reset_dirty_test_state();
     let (_td, dir) = fresh_two_span_repo("dsrc");
     publish_baseline(&dir);
 
@@ -201,7 +200,6 @@ fn dirty_source_reconstructs_byte_equal() {
 
 #[test]
 fn staged_only_reconstructs_byte_equal() {
-    reset_dirty_test_state();
     let (_td, dir) = fresh_two_span_repo("staged");
     publish_baseline(&dir);
 
@@ -226,7 +224,6 @@ fn staged_only_reconstructs_byte_equal() {
 
 #[test]
 fn staged_plus_worktree_reconstructs_byte_equal() {
-    reset_dirty_test_state();
     let (_td, dir) = fresh_two_span_repo("spw");
     publish_baseline(&dir);
 
@@ -253,7 +250,6 @@ fn staged_plus_worktree_reconstructs_byte_equal() {
 
 #[test]
 fn dirty_span_definition_reconstructs_byte_equal() {
-    reset_dirty_test_state();
     let (_td, dir) = fresh_two_span_repo("dspan");
     publish_baseline(&dir);
 
@@ -279,7 +275,6 @@ fn dirty_span_definition_reconstructs_byte_equal() {
 
 #[test]
 fn proportional_one_dirty_of_three() {
-    reset_dirty_test_state();
     let (_td, dir) = fresh_three_span_repo("prop");
     publish_baseline(&dir);
 
@@ -307,7 +302,6 @@ fn proportional_one_dirty_of_three() {
 
 #[test]
 fn unrelated_gitignore_dirt_served_by_exact_hit() {
-    reset_dirty_test_state();
     let (_td, dir) = fresh_two_span_repo("gitig");
     enable_store();
 
@@ -344,7 +338,6 @@ fn unrelated_gitignore_dirt_served_by_exact_hit() {
 
 #[test]
 fn unrelated_tracked_dirt_reuses_all_proportionally() {
-    reset_dirty_test_state();
     let (_td, dir) = fresh_two_span_repo("untrk");
     // A tracked, committed file that no span anchors.
     std::fs::write(dir.join("UNRELATED.md"), "hello\n").expect("write unrelated");
@@ -388,7 +381,6 @@ fn unrelated_tracked_dirt_reuses_all_proportionally() {
 
 #[test]
 fn unreadable_file_degrades_fail_closed() {
-    reset_dirty_test_state();
     let (_td, dir) = fresh_two_span_repo("unread");
     publish_baseline(&dir);
 
@@ -433,7 +425,6 @@ fn unreadable_file_degrades_fail_closed() {
 
 #[test]
 fn conflict_affected_and_reresolved() {
-    reset_dirty_test_state();
     let td = tempfile::tempdir().expect("tempdir");
     let dir = td.path().to_path_buf();
     init_repo(&dir);
@@ -483,7 +474,6 @@ fn conflict_affected_and_reresolved() {
 
 #[test]
 fn repeated_identical_dirty_state_becomes_exact_hit() {
-    reset_dirty_test_state();
     let (_td, dir) = fresh_two_span_repo("repeat");
     publish_baseline(&dir);
 

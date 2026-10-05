@@ -127,7 +127,6 @@ pub(crate) fn attempt(
         None => return Ok(None),
     };
 
-    incr_dirty_anchor_resolutions(build.anchor_resolutions);
     crate::perf::counter(
         "cache-path.dirty-anchor-resolutions",
         build.anchor_resolutions,
@@ -481,34 +480,4 @@ fn build_dirty_core(
         reused: reused_count,
         resolved: resolved_count,
     }))
-}
-
-// ── Test observability ───────────────────────────────────────────────────────
-//
-// A thread-local dirty-resolution counter (nextest runs each test in its own
-// process, one call graph per thread) so a test can assert proportionality
-// directly. In a non-test build `incr_*` is a no-op the optimizer removes.
-
-#[cfg(not(test))]
-#[inline]
-fn incr_dirty_anchor_resolutions(_n: u64) {}
-
-#[cfg(test)]
-thread_local! {
-    static TEST_DIRTY_ANCHOR_RESOLUTIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
-#[cfg(test)]
-fn incr_dirty_anchor_resolutions(n: u64) {
-    TEST_DIRTY_ANCHOR_RESOLUTIONS.with(|c| c.set(c.get() + n));
-}
-
-#[cfg(test)]
-fn reset_dirty_test_state() {
-    TEST_DIRTY_ANCHOR_RESOLUTIONS.with(|c| c.set(0));
-}
-
-#[cfg(test)]
-fn test_dirty_anchor_resolutions() -> u64 {
-    TEST_DIRTY_ANCHOR_RESOLUTIONS.with(std::cell::Cell::get)
 }

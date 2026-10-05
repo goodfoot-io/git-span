@@ -3,7 +3,6 @@
 //! commit's name-status and hunk diffs against the tracked location.
 
 use crate::git;
-use crate::resolver::session::BlobOidMemo;
 use crate::types::CopyDetection;
 use crate::{Error, Result};
 use similar::{ChangeTag, TextDiff};
@@ -16,6 +15,8 @@ pub(crate) struct Tracked {
     pub(crate) end: u32,
 }
 
+/// Outcome of [`advance_with_entries`] (test-only replay oracle).
+#[cfg(test)]
 pub(crate) enum Change {
     Unchanged,
     Deleted,
@@ -32,23 +33,23 @@ pub(crate) fn rename_budget() -> usize {
 }
 
 /// Advance the tracked location across one commit, given the
-/// already-computed name-status entries for `(parent, commit)`. This is
-/// the shared-session entry point — phase 1 callers pass pre-computed
-/// deltas instead of re-running `name_status` per anchor.
+/// already-computed name-status entries for `(parent, commit)`.
 ///
-/// `blob_oid_memo` is an optional session-scoped cache for
-/// `(commit_sha, path) → blob_oid`. When provided, `compute_new_range`
-/// looks up blob OIDs from the memo before falling back to tree
-/// traversal, and populates the memo on miss. This eliminates redundant
-/// `path_blob_at` calls when multiple anchors share the same commit ×
-/// path combination within a single `drift` run.
+/// Test-only: production HEAD projection runs through
+/// `timeline::build_timeline`; this per-anchor replay is the ground-truth
+/// oracle the timeline parity tests compare against.
+///
+/// `blob_oid_memo` is an optional `(commit_sha, path) → blob_oid` cache.
+/// When provided, `compute_new_range` looks up blob OIDs from the memo
+/// before falling back to tree traversal, and populates the memo on miss.
+#[cfg(test)]
 pub(crate) fn advance_with_entries(
     repo: &gix::Repository,
     parent: &str,
     commit: &str,
     loc: &Tracked,
     entries: &[NS],
-    blob_oid_memo: Option<&mut BlobOidMemo>,
+    blob_oid_memo: Option<&mut crate::resolver::session::BlobOidMemo>,
 ) -> Result<Change> {
     let mut next_path: Option<String> = None;
     let mut deleted = false;
@@ -107,11 +108,12 @@ pub(crate) fn advance_with_entries(
 /// Look up the blob OID for `path` at `commit`, using `memo` as a
 /// session-scoped cache to avoid repeated tree traversals for the same
 /// `(commit, path)` pair across multiple anchors.
+#[cfg(test)]
 fn blob_oid_at(
     repo: &gix::Repository,
     commit: &str,
     path: &str,
-    memo: Option<&mut BlobOidMemo>,
+    memo: Option<&mut crate::resolver::session::BlobOidMemo>,
 ) -> Option<String> {
     if let Some(m) = memo {
         if let Some(cached) = m.get(commit).and_then(|by_path| by_path.get(path)) {
@@ -127,13 +129,16 @@ fn blob_oid_at(
     }
 }
 
+/// Remap `loc` across one `(parent, commit)` step (test-only; see
+/// [`advance_with_entries`]).
+#[cfg(test)]
 pub(crate) fn compute_new_range(
     repo: &gix::Repository,
     parent: &str,
     commit: &str,
     loc: &Tracked,
     new_path: &str,
-    mut blob_oid_memo: Option<&mut BlobOidMemo>,
+    mut blob_oid_memo: Option<&mut crate::resolver::session::BlobOidMemo>,
 ) -> Result<(u32, u32)> {
     // Resolve blob OIDs, using the session-scoped memo when available to
     // avoid redundant tree traversals when multiple anchors share the same
@@ -528,20 +533,22 @@ fn line_similarity(a: &str, b: &str) -> f64 {
 // Call counter for blob_text's ODB read attempt — used by the regression
 // test for card main-283 (match_copies_from_pool re-read every candidate
 // blob once per added path; the single-pass preload must pay ~one read per
-// distinct pool blob instead of added×pool). Always compiled; the
-// thread-local increment on a hot path has negligible cost.
+// distinct pool blob instead of added×pool). Test builds only.
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
 thread_local! {
     static BLOB_TEXT_READ_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Reset the call counter.
+#[cfg(test)]
 pub(crate) fn reset_blob_text_read_count() {
     BLOB_TEXT_READ_COUNT.with(|c| c.set(0));
 }
 
 /// Read the call count.
+#[cfg(test)]
 pub(crate) fn blob_text_read_count() -> usize {
     BLOB_TEXT_READ_COUNT.with(|c| c.get())
 }
@@ -552,6 +559,7 @@ fn blob_text(repo: &gix::Repository, blob_oid: &str) -> String {
     let Ok(oid) = gix::ObjectId::from_str(blob_oid) else {
         return String::new();
     };
+    #[cfg(test)]
     BLOB_TEXT_READ_COUNT.with(|c| c.set(c.get() + 1));
     let Ok(obj) = repo.find_object(oid) else {
         return String::new();

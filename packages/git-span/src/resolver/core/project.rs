@@ -91,7 +91,9 @@ fn project_anchor(
 /// only one ever selected, matching today's `build_committed_spans`. This
 /// is exactly `project_effective` specialized to `LayerSet::committed_only()`
 /// (Head is always evaluated regardless of `LayerSet` — see
-/// `crate::types::LayerSet`'s doc: "HEAD is always on").
+/// `crate::types::LayerSet`'s doc: "HEAD is always on"). Test-only: the
+/// projection-parity tests compare it against direct committed resolution.
+#[cfg(test)]
 pub(crate) fn project_committed(core: &super::resolution::ResolutionCore) -> Vec<SpanResolved> {
     project_effective(core, LayerSet::committed_only())
 }

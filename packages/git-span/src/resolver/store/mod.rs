@@ -8,8 +8,9 @@
 //!
 //! * **Atomic generations.** A generation becomes visible only when its
 //!   summary, every `generation_row`, and its `span_path_index` entries are
-//!   committed in one transaction ([`CacheStore::publish_generation`]); GC
-//!   deletes a whole generation in one transaction ([`CacheStore::gc`]).
+//!   committed in one transaction ([`CacheStore::publish_generation`]);
+//!   eviction deletes a whole generation in one transaction
+//!   ([`CacheStore::maintain`]).
 //!   A reader ([`CacheStore::get_generation`]) reads inside one SQLite
 //!   snapshot and verifies cardinality, so it can never observe a manifest
 //!   with a subset of its rows — the `cache_v2` defect this replaces.
@@ -23,12 +24,12 @@
 //!   resolver. Publication either fully lands or does not happen.
 //! * **Crash/concurrency safety.** WAL plus `fs4` locks: an exclusive init
 //!   lock guards schema/WAL setup and quarantine; hashed build-lock shards
-//!   ([`build_or_get`]) serialize same-key builders to one compute while
+//!   ([`lock::acquire_build_shard`]) serialize same-key builders to one compute while
 //!   letting distinct keys proceed concurrently, and release on process death.
 //!
-//! Resolver work never runs inside a SQLite write transaction: `build_or_get`
-//! computes strictly before opening the publish transaction, and
-//! [`CacheStore::is_in_write_txn`] exposes the invariant so a test can catch a
+//! Resolver work never runs inside a SQLite write transaction: builders
+//! compute strictly before opening the publish transaction, and (in test
+//! builds) `CacheStore::is_in_write_txn` exposes the invariant so a test can catch a
 //! violation (`notes/architecture-and-complexity.md` "Concurrency And
 //! Recovery": "Compute outside the database transaction").
 
@@ -63,7 +64,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use error::{BypassReason, StoreError, map_io, map_sqlite};
-use lock::{LockGuard, acquire_build_shard, acquire_init_lock, shard_index};
+use lock::acquire_init_lock;
 use payload::{
     DOMAIN_GENERATION, DOMAIN_ROW, EntryKind, IntegrityReason, envelope_digest, verify_envelope,
 };
@@ -154,6 +155,7 @@ pub(crate) enum GetOutcome {
 
 impl GetOutcome {
     /// The verified generation, if this was a hit.
+    #[cfg(test)]
     pub(crate) fn hit(self) -> Option<StoredGeneration> {
         match self {
             GetOutcome::Hit(g) => Some(g),
@@ -164,6 +166,7 @@ impl GetOutcome {
 
 /// What a `build_or_get` builder closure produces once it has computed the
 /// value outside any transaction.
+#[cfg(test)]
 #[derive(Clone, Debug)]
 pub(crate) struct BuildProduct {
     pub(crate) payload_version: u32,
@@ -177,6 +180,7 @@ pub(crate) struct BuildProduct {
 /// active worktree/ref references it) or was accessed in a recent-enough
 /// bucket (`access_bucket >= keep_access_bucket_from`). Everything else is an
 /// eviction candidate.
+#[cfg(test)]
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RetentionPolicy {
     pub(crate) live_keys: HashSet<[u8; 32]>,
@@ -184,9 +188,10 @@ pub(crate) struct RetentionPolicy {
 }
 
 /// What one GC/maintenance pass did. The eviction counters are populated by
-/// both [`CacheStore::gc`] (policy-driven) and [`CacheStore::maintain`]
-/// (quota-driven); the byte and corruption-recovery fields are populated by
-/// [`CacheStore::maintain`] and left at their defaults by [`CacheStore::gc`]
+/// both `CacheStore::gc` (policy-driven, test builds only) and
+/// [`CacheStore::maintain`] (quota-driven); the byte and corruption-recovery
+/// fields are populated by [`CacheStore::maintain`] and left at their
+/// defaults by `CacheStore::gc`
 /// (which does not measure size). Carries enough for 6B's diagnostics surface
 /// and 6C's measured exit gates.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -311,6 +316,7 @@ impl CacheStore {
 
     /// Whether a publish/GC write transaction is currently open. Used by the
     /// transaction-duration invariant test.
+    #[cfg(test)]
     pub(crate) fn is_in_write_txn(&self) -> bool {
         self.in_write_txn.get()
     }
@@ -605,8 +611,7 @@ impl CacheStore {
     /// only the *physical-row-completeness* cross-check — proving the
     /// `generation_row` table actually holds exactly `row_count` verified
     /// rows — which matters only to a caller that is about to read those
-    /// rows. Every caller that does read rows ([`Self::build_or_get`], the
-    /// incremental/dirty tiers' [`Self::load_ancestor_generation`] /
+    /// rows. Every caller that does read rows (the incremental/dirty tiers' [`Self::load_ancestor_generation`] /
     /// [`Self::load_head_baseline`]) still goes through the full
     /// [`Self::get_generation`], so row corruption is still caught before
     /// anything is built on top of it.
@@ -792,6 +797,7 @@ impl CacheStore {
     }
 
     /// Mark/unmark a generation as referenced by an active worktree/ref.
+    #[cfg(test)]
     pub(crate) fn set_live(&mut self, key_digest: &[u8; 32], live: bool) -> StoreResult<()> {
         let key_hex = hex32(key_digest);
         self.conn
@@ -875,6 +881,7 @@ impl CacheStore {
     /// waited), computes the value **outside any SQLite transaction** via
     /// `builder`, then publishes in one short transaction. Distinct keys on
     /// different shards proceed concurrently.
+    #[cfg(test)]
     pub(crate) fn build_or_get<F>(
         &mut self,
         key_digest: &[u8; 32],
@@ -890,8 +897,8 @@ impl CacheStore {
             return Ok(g);
         }
 
-        let shard = shard_index(key_digest, self.shard_count);
-        let _guard: LockGuard = acquire_build_shard(&self.dir, shard)?;
+        let shard = lock::shard_index(key_digest, self.shard_count);
+        let _guard: lock::LockGuard = lock::acquire_build_shard(&self.dir, shard)?;
 
         // Recheck under the lock.
         if let GetOutcome::Hit(g) = self.get_generation(key_digest, expected_version)? {
@@ -933,6 +940,7 @@ impl CacheStore {
     /// bounded transactional batches. Each batch deletes a generation and all
     /// of its rows/index entries in one transaction, so a concurrent reader
     /// never sees a half-deleted generation.
+    #[cfg(test)]
     pub(crate) fn gc(&mut self, policy: &RetentionPolicy) -> StoreResult<GcStats> {
         // Collect eviction candidates first (a read), then delete each in its
         // own short transaction.
@@ -974,6 +982,7 @@ impl CacheStore {
         Ok(stats)
     }
 
+    #[cfg(test)]
     fn gc_delete_one(&mut self, key_hex: &str) -> StoreResult<()> {
         let tx = self
             .conn
@@ -1086,10 +1095,10 @@ impl CacheStore {
     /// within each group evicts the oldest access bucket first — so recently
     /// accessed generations survive.
     ///
-    /// Invisibility: each eviction is [`Self::gc_delete_one`]'s single
+    /// Invisibility: each eviction is `gc_delete_above_buffer`'s single
     /// transaction (generation row first), so a concurrent reader sees a whole
     /// generation or a plain miss, never a partial one — the same discipline
-    /// publish and [`Self::gc`] already hold. Page reclamation and the WAL
+    /// publish already holds. Page reclamation and the WAL
     /// checkpoint are transactional and run **only here**, never on any read
     /// path.
     ///

@@ -16,15 +16,14 @@
 //! parity cross-check against hunk replay remains available under
 //! `GIT_SPAN_PERF` diagnostics runs.
 
+use crate::Result;
 use crate::git;
 use crate::perf;
 use crate::resolver::linemap::LineMap;
 use crate::resolver::session::{BlobOidMemo, CommitDelta};
 use crate::resolver::walker::{Tracked, apply_hunks_to_range, blob_text_present, compute_hunks};
 use crate::types::CopyDetection;
-use crate::{Error, Result};
 use std::collections::HashMap;
-use std::str::FromStr;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 /// One diff hunk: `(old_start, old_count, new_start, new_count)`.
@@ -47,12 +46,7 @@ pub(crate) struct PathTimelineKey {
 /// blob so projection is hunk replay only.
 #[derive(Clone, Debug)]
 pub(crate) struct PathDelta {
-    pub(crate) parent: gix::ObjectId,
-    pub(crate) commit: gix::ObjectId,
-    pub(crate) from_path: Arc<[u8]>,
     pub(crate) to_path: Arc<[u8]>,
-    pub(crate) old_blob: Option<gix::ObjectId>,
-    pub(crate) new_blob: Option<gix::ObjectId>,
     pub(crate) hunks: Arc<[Hunk]>,
     /// `true` when the path is deleted at this commit and never reintroduced
     /// by a rename pair in the same commit. Projection returns `None` on
@@ -323,17 +317,8 @@ pub(crate) fn build_timeline(
 
         if deleted && next_path.is_none() {
             // Pure deletion: emit a terminal `deleted` delta.
-            let parent_oid = parse_oid(&delta.parent)?;
-            let commit_oid = parse_oid(&delta.commit)?;
-            let from_arc = Arc::clone(&current_path);
-            let to_arc = Arc::clone(&current_path);
             out.push(PathDelta {
-                parent: parent_oid,
-                commit: commit_oid,
-                from_path: from_arc,
-                to_path: to_arc,
-                old_blob: None,
-                new_blob: None,
+                to_path: Arc::clone(&current_path),
                 hunks: Arc::from(Vec::<Hunk>::new()),
                 deleted: true,
                 old_line_count: 0,
@@ -365,18 +350,8 @@ pub(crate) fn build_timeline(
         let hunks_vec = compute_hunks(&old_text, &new_text);
         let hunks: Arc<[Hunk]> = Arc::from(hunks_vec);
 
-        let parent_oid = parse_oid(parent_sha)?;
-        let commit_oid = parse_oid(commit_sha)?;
-        let old_blob_id = old_blob_oid.as_deref().and_then(|s| parse_oid(s).ok());
-        let new_blob_id = new_blob_oid.as_deref().and_then(|s| parse_oid(s).ok());
-
         out.push(PathDelta {
-            parent: parent_oid,
-            commit: commit_oid,
-            from_path: Arc::clone(&current_path),
             to_path: Arc::clone(&new_path_arc),
-            old_blob: old_blob_id,
-            new_blob: new_blob_id,
             hunks,
             deleted: false,
             old_line_count,
@@ -406,10 +381,6 @@ pub(crate) fn build_timeline(
         deltas: out,
         composed_linemap: OnceLock::new(),
     })
-}
-
-fn parse_oid(s: &str) -> Result<gix::ObjectId> {
-    gix::ObjectId::from_str(s).map_err(|e| Error::Git(format!("parse oid `{s}`: {e}")))
 }
 
 fn blob_oid_at(
@@ -456,6 +427,7 @@ mod parity_tests {
     use crate::resolver::session::CommitDelta;
     use crate::resolver::walker::{self, Change, Tracked};
     use std::process::Command;
+    use std::str::FromStr;
     use tempfile::tempdir;
 
     fn run_git(dir: &std::path::Path, args: &[&str]) {
