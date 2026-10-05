@@ -513,9 +513,7 @@ fn resolve_loaded_span_with_state(
         } = state;
         for (id, r) in span.anchors {
             let anchor_t0 = std::time::Instant::now();
-            let trace_anchor_sha = r.anchor_sha.clone();
             let trace_path = r.path.clone();
-            let fast_path_before = concurrent.anchors_fast_path_hits.load(Ordering::Relaxed);
             let mut resolved = resolve_anchor_inner(
                 AnchorCtx {
                     repo,
@@ -534,11 +532,8 @@ fn resolve_loaded_span_with_state(
                 trace.push(crate::perf::TraceRow {
                     span: span.name.clone(),
                     anchor_id: id.clone(),
-                    anchor_sha: trace_anchor_sha,
                     path: trace_path,
                     wall_us,
-                    fast_path: concurrent.anchors_fast_path_hits.load(Ordering::Relaxed)
-                        > fast_path_before,
                     status: status_label(&resolved.status),
                 });
             }

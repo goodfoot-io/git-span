@@ -38,12 +38,12 @@ fn perf_trace_emits_row_per_anchor() -> Result<()> {
     );
     assert_eq!(
         lines[0],
-        "span,anchor_id,anchor_sha,path,wall_us,fast_path,status"
+        "span,anchor_id,path,wall_us,status"
     );
     Ok(())
 }
 
-/// All seven CSV columns are present and non-empty.
+/// All five CSV columns are present and non-empty.
 #[test]
 fn perf_trace_columns_match_schema() -> Result<()> {
     let repo = TestRepo::seeded()?;
@@ -57,26 +57,18 @@ fn perf_trace_columns_match_schema() -> Result<()> {
     let header = lines.next().expect("header row");
     assert_eq!(
         header,
-        "span,anchor_id,anchor_sha,path,wall_us,fast_path,status"
+        "span,anchor_id,path,wall_us,status"
     );
 
     let row = lines.next().expect("at least one data row");
-    let cols: Vec<&str> = row.splitn(7, ',').collect();
-    assert_eq!(cols.len(), 7, "expected 7 columns in row: {row}");
+    let cols: Vec<&str> = row.split(',').collect();
+    assert_eq!(cols.len(), 5, "expected 5 columns in row: {row}");
     assert!(!cols[0].is_empty(), "span must be non-empty");
     assert!(!cols[1].is_empty(), "anchor_id must be non-empty");
-    // anchor_sha may be empty in the file-backed model (anchor_sha is derived
-    // from the span tree, not a commit-backed sidecar); only validate the
-    // column is present (index 2 exists, which splitn(7) guarantees).
-    assert!(!cols[3].is_empty(), "path must be non-empty");
+    assert!(!cols[2].is_empty(), "path must be non-empty");
     // wall_us is a u128, so it can be 0 on fast hardware; just parse it.
-    cols[4].parse::<u128>().expect("wall_us must be a number");
-    assert!(
-        cols[5] == "true" || cols[5] == "false",
-        "fast_path must be bool: {}",
-        cols[5]
-    );
-    assert!(!cols[6].is_empty(), "status must be non-empty");
+    cols[3].parse::<u128>().expect("wall_us must be a number");
+    assert!(!cols[4].is_empty(), "status must be non-empty");
     Ok(())
 }
 

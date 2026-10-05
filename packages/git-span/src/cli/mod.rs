@@ -530,7 +530,7 @@ pub struct DriftArgs {
 
     /// Write a CSV of per-anchor wall-clock traces to PATH.
     /// Requires a full scan (no positional paths). Columns:
-    /// span,anchor_id,anchor_sha,path,wall_us,fast_path,status.
+    /// span,anchor_id,path,wall_us,status.
     /// See the wiki page "Profiling git span drift" (wiki/guides/) for
     /// schema and examples.
     #[arg(long, value_name = "PATH")]

@@ -444,10 +444,8 @@ pub fn attr_for_calls() -> u64 {
 pub struct TraceRow {
     pub span: String,
     pub anchor_id: String,
-    pub anchor_sha: String,
     pub path: String,
     pub wall_us: u128,
-    pub fast_path: bool,
     pub status: &'static str,
 }
 

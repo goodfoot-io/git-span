@@ -54,15 +54,13 @@ Writes one CSV row per resolved anchor to `/tmp/trace.csv`. The flag ([`src/cli/
 |--------|------|-------------|
 | `span` | string | Span name (e.g. `wiki/architecture/refs`) |
 | `anchor_id` | string | Anchor identifier within the span |
-| `anchor_sha` | hex | Commit SHA the anchor is pinned to |
 | `path` | string | File path the anchor references |
 | `wall_us` | u128 | Wall-clock microseconds spent in [`resolve_anchor_inner`](../../packages/git-span/src/resolver/engine/anchor.rs#L460-L1495) |
-| `fast_path` | bool | `true` if the anchor returned via [`clean_head_fast_path`](../../packages/git-span/src/resolver/engine/anchor.rs#L2221-L2285) |
 | `status` | enum | One of `Fresh`, `Moved`, `Changed`, `Orphaned`, `MergeConflict`, `Submodule`, `ContentUnavailable` |
 
 Values containing `,`, `"`, newline (`\n`), or carriage return (`\r`) are RFC-4180-escaped (wrapped in `"`, internal `"` doubled).
 
-**Column order is a stable interface.** External tooling that consumes the CSV may pin to it; changes go through a deprecation cycle.
+**Select columns by header name.** The column set tracks what the resolver can report and changes with it, without a deprecation cycle, so tooling that consumes the CSV should read the header row rather than pin column positions. The positional `awk` one-liners below match the current header.
 
 ### Usage constraints
 
@@ -79,16 +77,16 @@ The only other flag conflict `git span drift` enforces is unrelated to `--perf-t
 
 ```bash
 # Top 10 slowest anchors
-awk -F, 'NR>1 {print $5"\t"$2"\t"$4}' /tmp/trace.csv | sort -rn | head
+awk -F, 'NR>1 {print $4"\t"$2"\t"$3}' /tmp/trace.csv | sort -rn | head
 
 # Mean wall-clock, count
-awk -F, 'NR>1 {sum += $5; count++} END {print sum/count " us avg, " count " anchors"}' /tmp/trace.csv
+awk -F, 'NR>1 {sum += $4; count++} END {print sum/count " us avg, " count " anchors"}' /tmp/trace.csv
 
-# Fast-path vs full-resolution split
-awk -F, 'NR>1 {print $6}' /tmp/trace.csv | sort | uniq -c
+# Status split
+awk -F, 'NR>1 {print $5}' /tmp/trace.csv | sort | uniq -c
 
 # Anchors > 50 ms
-awk -F, 'NR>1 && $5 > 50000 {print $5"\t"$1"\t"$2}' /tmp/trace.csv | sort -rn
+awk -F, 'NR>1 && $4 > 50000 {print $4"\t"$1"\t"$2}' /tmp/trace.csv | sort -rn
 ```
 
 ## Why two tools
@@ -97,7 +95,7 @@ awk -F, 'NR>1 && $5 > 50000 {print $5"\t"$1"\t"$2}' /tmp/trace.csv | sort -rn
 
 ## Trace overhead
 
-When `--perf-trace` is absent, the resolver does not capture per-anchor traces; the session's trace buffer stays `None` and the per-anchor loop pays a single `Option::is_some()` check per iteration. When the flag is set, each anchor adds one `Instant::now()` (already captured for the existing `per_anchor_us` summary), a snapshot of the fast-path counter, and a `Vec::push` of ~80 bytes — well under 1 ms total on a 2,600-anchor workspace.
+When `--perf-trace` is absent, the resolver does not capture per-anchor traces; the session's trace buffer stays `None` and the per-anchor loop pays a single `Option::is_some()` check per iteration. When the flag is set, each anchor adds one `Instant::now()` (already captured for the existing `per_anchor_us` summary) and a `Vec::push` of one row — well under 1 ms total on a 2,600-anchor workspace.
 
 ## Cache-path counters
 
