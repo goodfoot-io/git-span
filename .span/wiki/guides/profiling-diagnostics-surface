@@ -7,8 +7,8 @@ packages/git-span/src/resolver/core/immutable_observation.rs#L127-L179 rk64:cb7e
 packages/git-span/src/resolver/core/immutable_observation.rs#L229-L320 rk64:1c83b1179c8c79c7
 packages/git-span/src/resolver/core/immutable_observation.rs#L491-L547 rk64:054764b1db0fcc6e
 packages/git-span/src/resolver/engine/mod.rs#L573-L598 rk64:bcd6df25722577f8
-packages/git-span/src/resolver/exact/mod.rs#L321-L330 rk64:c6f84db776aca3fc
-packages/git-span/src/resolver/exact/mod.rs#L814-L947 rk64:7a416c813a2ee65e
+packages/git-span/src/resolver/exact/mod.rs#L329-L338 rk64:c6f84db776aca3fc
+packages/git-span/src/resolver/exact/mod.rs#L822-L955 rk64:7a416c813a2ee65e
 packages/git-span/src/resolver/store/maintenance.rs#L7-L8 rk64:8f13f3a6fc9629bf
 packages/git-span/src/resolver/store/maintenance.rs#L55-L96 rk64:8a1a078b5be3b74e
 packages/git-span/src/resolver/store/mod.rs#L1-L21 rk64:5d336aa16cf49b87
