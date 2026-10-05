@@ -23,8 +23,9 @@ use crate::resolver::linemap::LineMap;
 use crate::resolver::session::{BlobOidMemo, CommitDelta};
 use crate::resolver::walker::{Tracked, apply_hunks_to_range, blob_text_present, compute_hunks};
 use crate::types::CopyDetection;
+use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, OnceLock};
 
 /// One diff hunk: `(old_start, old_count, new_start, new_count)`.
 pub(crate) type Hunk = (u32, u32, u32, u32);
@@ -273,7 +274,7 @@ pub(crate) fn build_timeline(
     // the same bytes. The interner guard is never held across `blob_oid_at`'s
     // independent `blob_oid_memo` acquisition below, so the two locks are never
     // held simultaneously by this thread.
-    let start_path_arc = interner.lock().unwrap().intern(start_path);
+    let start_path_arc = interner.lock().intern(start_path);
     let mut current_path: Arc<[u8]> = Arc::clone(&start_path_arc);
     let mut out: Vec<PathDelta> = Vec::new();
     let mut deleted_terminal = false;
@@ -336,7 +337,7 @@ pub(crate) fn build_timeline(
         }
 
         let new_path_str = next_path.unwrap_or_else(|| cur_path_str.clone());
-        let new_path_arc = interner.lock().unwrap().intern(new_path_str.as_bytes());
+        let new_path_arc = interner.lock().intern(new_path_str.as_bytes());
 
         let parent_sha = &delta.parent;
         let commit_sha = &delta.commit;
@@ -397,7 +398,6 @@ fn blob_oid_at(
         // guard across the miss path would deadlock against the write lock.
         let cached = m
             .read()
-            .unwrap()
             .get(commit)
             .and_then(|by_path| by_path.get(path))
             .cloned();
@@ -406,7 +406,6 @@ fn blob_oid_at(
         }
         let oid = git::path_blob_at(repo, commit, path).ok();
         m.write()
-            .unwrap()
             .entry(commit.to_string())
             .or_default()
             .insert(path.to_string(), oid.clone());

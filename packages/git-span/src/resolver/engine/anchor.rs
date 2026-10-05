@@ -458,7 +458,6 @@ fn find_relocated_range_in_paths(
         let cached = concurrent
             .relocation_text_memo
             .read()
-            .unwrap()
             .get(&memo_key)
             .cloned();
         let text: Arc<str> = match cached {
@@ -480,7 +479,6 @@ fn find_relocated_range_in_paths(
                 concurrent
                     .relocation_text_memo
                     .write()
-                    .unwrap()
                     .insert(memo_key, read.clone());
                 match read {
                     Some(t) => t,
@@ -583,7 +581,6 @@ fn find_similar_ranges(
         let cached = concurrent
             .relocation_text_memo
             .read()
-            .unwrap()
             .get(&memo_key)
             .cloned();
         let text: Arc<str> = match cached {
@@ -602,7 +599,6 @@ fn find_similar_ranges(
                 concurrent
                     .relocation_text_memo
                     .write()
-                    .unwrap()
                     .insert(memo_key, read.clone());
                 match read {
                     Some(t) => t,

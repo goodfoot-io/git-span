@@ -176,8 +176,14 @@ fn read_effective_parallel(
     span_root: &str,
     names: Vec<String>,
 ) -> Result<LoadedSpans> {
-    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// One worker's output, returned through its join handle: the slots it
+    /// filled, plus the hard error (with its index) that stopped it, if any.
+    struct WorkerLoad {
+        slots: Vec<(usize, LoadSlot)>,
+        fatal: Option<(usize, Error)>,
+    }
 
     let cpus = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -193,78 +199,100 @@ fn read_effective_parallel(
     let workers = cpus.min(names.len()).min(16);
 
     let next_idx = AtomicUsize::new(0);
-    // Each worker drains a private buffer of (index, slot) into the shared
-    // vec once, under a single lock acquisition, to keep contention off the
-    // hot read path.
-    let slots: Mutex<Vec<(usize, LoadSlot)>> = Mutex::new(Vec::with_capacity(names.len()));
-    let fatal: Mutex<Option<Error>> = Mutex::new(None);
+    // Lowest index whose read hit a hard error so far (`usize::MAX`: none).
+    // It only ever decreases, and a worker stops claiming once the cursor
+    // passes the value it observes, so every index below the *final* minimum
+    // is still read to completion. The minimum is therefore exactly the first
+    // hard error in sorted order — the one the serial `?` would return —
+    // whatever the thread count or scheduling.
+    let first_fatal = AtomicUsize::new(usize::MAX);
     // One layer capture for the whole corpus run (card main-290): the
     // workers' combined reads materialize the index and HEAD span subtree
     // once (single-flight on the snapshot's OnceLocks), not once per span.
     let layers = std::sync::Arc::new(crate::span_file_reader::LayerSnapshot::default());
 
-    std::thread::scope(|s| {
-        for _ in 0..workers {
-            // Per-thread owned reader over a cheap repo handle clone: gix's
-            // RefCell buffer pool means the reader is not shareable by &ref.
-            let repo = repo.clone();
-            let names = &names;
-            let next_idx = &next_idx;
-            let slots = &slots;
-            let fatal = &fatal;
-            let layers = &layers;
-            s.spawn(move || {
-                let reader = SpanFileReader::new(&repo, span_root.to_string());
-                let mut local: Vec<(usize, LoadSlot)> = Vec::new();
-                loop {
-                    if fatal.lock().unwrap().is_some() {
-                        break;
-                    }
-                    let i = next_idx.fetch_add(1, Ordering::Relaxed);
-                    if i >= names.len() {
-                        break;
-                    }
-                    let name = &names[i];
-                    match reader.read_effective_with_layers(name, layers) {
-                        Ok(Some(file)) => {
-                            local.push((i, LoadSlot::Loaded(span_from_file(name, &file))));
-                        }
-                        Ok(None) => local.push((i, LoadSlot::Tombstoned)),
-                        Err(Error::SpanConflict { kind, .. }) => {
-                            local.push((i, LoadSlot::Conflicted(kind)));
-                        }
-                        // A malformed span file is a per-span data problem,
-                        // not a corpus failure: skip it like a tombstone so
-                        // one poisoned span never blanks the whole load
-                        // (matches `read_effective_serial`).
-                        Err(Error::InvalidSpanFile(_)) => {
-                            local.push((i, LoadSlot::Unparseable));
-                        }
-                        Err(e) => {
-                            fatal.lock().unwrap().get_or_insert(e);
+    // Each worker keeps its results private and hands them back through its
+    // join handle, so nothing but the two atomics is shared across threads.
+    let per_worker: Vec<WorkerLoad> = std::thread::scope(|s| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                // Per-thread owned reader over a cheap repo handle clone: gix's
+                // RefCell buffer pool means the reader is not shareable by &ref.
+                let repo = repo.clone();
+                let names = &names;
+                let next_idx = &next_idx;
+                let first_fatal = &first_fatal;
+                let layers = &layers;
+                s.spawn(move || {
+                    let reader = SpanFileReader::new(&repo, span_root.to_string());
+                    let mut slots: Vec<(usize, LoadSlot)> = Vec::new();
+                    loop {
+                        let i = next_idx.fetch_add(1, Ordering::Relaxed);
+                        if i >= names.len() || i > first_fatal.load(Ordering::Relaxed) {
                             break;
                         }
+                        let name = &names[i];
+                        match reader.read_effective_with_layers(name, layers) {
+                            Ok(Some(file)) => {
+                                slots.push((i, LoadSlot::Loaded(span_from_file(name, &file))));
+                            }
+                            Ok(None) => slots.push((i, LoadSlot::Tombstoned)),
+                            Err(Error::SpanConflict { kind, .. }) => {
+                                slots.push((i, LoadSlot::Conflicted(kind)));
+                            }
+                            // A malformed span file is a per-span data problem,
+                            // not a corpus failure: skip it like a tombstone so
+                            // one poisoned span never blanks the whole load
+                            // (matches `read_effective_serial`).
+                            Err(Error::InvalidSpanFile(_)) => {
+                                slots.push((i, LoadSlot::Unparseable));
+                            }
+                            Err(e) => {
+                                first_fatal.fetch_min(i, Ordering::Relaxed);
+                                return WorkerLoad {
+                                    slots,
+                                    fatal: Some((i, e)),
+                                };
+                            }
+                        }
                     }
-                }
-                slots.lock().unwrap().extend(local);
-            });
-        }
+                    WorkerLoad { slots, fatal: None }
+                })
+            })
+            .collect();
+        handles.into_iter().map(join_worker).collect()
     });
 
-    if let Some(e) = fatal.into_inner().unwrap() {
+    let mut fatal: Option<(usize, Error)> = None;
+    let mut slots: Vec<(usize, LoadSlot)> = Vec::with_capacity(names.len());
+    for worker in per_worker {
+        slots.extend(worker.slots);
+        if let Some((i, e)) = worker.fatal
+            && fatal.as_ref().is_none_or(|(lowest, _)| i < *lowest)
+        {
+            fatal = Some((i, e));
+        }
+    }
+    if let Some((_, e)) = fatal {
         return Err(e);
     }
 
     // Reassemble in the original sorted order: index the slots, then walk
     // names by index so both output vectors match the serial loop exactly.
     let mut by_index: Vec<Option<LoadSlot>> = (0..names.len()).map(|_| None).collect();
-    for (i, slot) in slots.into_inner().unwrap() {
+    for (i, slot) in slots {
         by_index[i] = Some(slot);
     }
     let mut out = Vec::with_capacity(names.len());
     let mut conflicted = Vec::new();
-    for (name, slot) in names.into_iter().zip(by_index) {
-        match slot.expect("every index is filled when no fatal error is recorded") {
+    for (i, (name, slot)) in names.into_iter().zip(by_index).enumerate() {
+        // With no hard error recorded no worker stopped early, so the cursor
+        // handed out every index; a gap is an internal fault and fails closed
+        // rather than silently dropping a span from the corpus.
+        let Some(slot) = slot else {
+            return Err(unfilled_slot_error("read_effective_parallel", i));
+        };
+        match slot {
             LoadSlot::Loaded(span) => {
                 crate::perf::record_list_span_parsed();
                 out.push((name, span));
@@ -286,14 +314,14 @@ fn read_effective_parallel(
 ///
 /// The concurrency skeleton mirrors `read_effective_parallel` exactly:
 /// `std::thread::scope`, per-worker `repo.clone()` + owned `SpanFileReader`,
-/// `AtomicUsize` work cursor, `Mutex<Vec<(usize, _)>>` indexed slots, and a
-/// serial short-circuit for `names.len() <= 1 || cpus <= 1`.
+/// `AtomicUsize` work cursor, per-worker `(usize, _)` indexed slots returned
+/// through the join handles, and a serial short-circuit for
+/// `names.len() <= 1 || cpus <= 1`.
 pub(crate) fn read_effective_each_parallel(
     repo: &gix::Repository,
     span_root: &str,
     names: &[String],
 ) -> Vec<std::result::Result<Option<Span>, Error>> {
-    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     let cpus = std::thread::available_parallelism()
@@ -317,54 +345,73 @@ pub(crate) fn read_effective_each_parallel(
 
     let workers = cpus.min(names.len()).min(16);
     let next_idx = AtomicUsize::new(0);
-    // Each slot starts as `None`; workers fill them by index. Collected into
-    // a `Vec<Option<…>>` after the scope so every index is exactly filled.
+    // Workers return their `(index, outcome)` pairs through their join
+    // handles; they are placed by index into a `Vec<Option<…>>` after the
+    // scope.
     type RawOutcome = std::result::Result<Option<Span>, Error>;
-    let slots: Mutex<Vec<(usize, RawOutcome)>> = Mutex::new(Vec::with_capacity(names.len()));
     // One layer capture shared by every worker (card main-290).
     let layers = std::sync::Arc::new(crate::span_file_reader::LayerSnapshot::default());
 
-    std::thread::scope(|s| {
-        for _ in 0..workers {
-            let repo = repo.clone();
-            let next_idx = &next_idx;
-            let slots = &slots;
-            let layers = &layers;
-            s.spawn(move || {
-                let reader = SpanFileReader::new(&repo, span_root.to_string());
-                let mut local: Vec<(usize, RawOutcome)> = Vec::new();
-                loop {
-                    let i = next_idx.fetch_add(1, Ordering::Relaxed);
-                    if i >= names.len() {
-                        break;
+    let per_worker: Vec<Vec<(usize, RawOutcome)>> = std::thread::scope(|s| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                let repo = repo.clone();
+                let next_idx = &next_idx;
+                let layers = &layers;
+                s.spawn(move || {
+                    let reader = SpanFileReader::new(&repo, span_root.to_string());
+                    let mut local: Vec<(usize, RawOutcome)> = Vec::new();
+                    loop {
+                        let i = next_idx.fetch_add(1, Ordering::Relaxed);
+                        if i >= names.len() {
+                            break;
+                        }
+                        let name = &names[i];
+                        let outcome = reader
+                            .read_effective_with_layers(name, layers)
+                            .map(|opt| opt.map(|file| span_from_file(name, &file)));
+                        local.push((i, outcome));
                     }
-                    let name = &names[i];
-                    let outcome = reader
-                        .read_effective_with_layers(name, layers)
-                        .map(|opt| opt.map(|file| span_from_file(name, &file)));
-                    local.push((i, outcome));
-                }
-                slots.lock().unwrap().extend(local);
-            });
-        }
+                    local
+                })
+            })
+            .collect();
+        handles.into_iter().map(join_worker).collect()
     });
 
-    // Reassemble in input order. Every index is filled (no fail-fast means
-    // no early exit), so the `expect` here is sound.
-    let raw = slots.into_inner().unwrap();
+    // Reassemble in input order. No fail-fast means no worker exits early, so
+    // the cursor hands out every index; a gap is an internal fault, reported
+    // as that name's own error rather than a fabricated success or a panic.
     let mut by_index: Vec<Option<RawOutcome>> = (0..names.len()).map(|_| None).collect();
-    for (i, outcome) in raw {
+    for (i, outcome) in per_worker.into_iter().flatten() {
         by_index[i] = Some(outcome);
     }
     by_index
         .into_iter()
         .enumerate()
         .map(|(i, slot)| {
-            slot.unwrap_or_else(|| {
-                panic!("index {i} not filled — read_effective_each_parallel has a bug")
-            })
+            slot.unwrap_or_else(|| Err(unfilled_slot_error("read_effective_each_parallel", i)))
         })
         .collect()
+}
+
+/// Join one scoped reader worker, re-raising its panic (with the original
+/// payload) on the calling thread — the same propagation `std::thread::scope`
+/// applies to an unjoined panicked thread, so the process-level panic handling
+/// in `main` sees it unchanged.
+fn join_worker<T>(handle: std::thread::ScopedJoinHandle<'_, T>) -> T {
+    handle
+        .join()
+        .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+}
+
+/// The error for a parallel-read index the work cursor never filled: an
+/// internal invariant violation, surfaced through the crate's error type so
+/// the caller fails closed instead of losing a span.
+fn unfilled_slot_error(reader: &str, index: usize) -> Error {
+    Error::Io(std::io::Error::other(format!(
+        "{reader}: span index {index} was never read (internal invariant violated)"
+    )))
 }
 
 /// Serial read+parse over `names`, used for trivial corpora and single-core

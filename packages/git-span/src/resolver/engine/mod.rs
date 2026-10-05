@@ -676,7 +676,7 @@ fn emit_timeline_cache_counters(session: &ConcurrentSession) {
     );
     crate::perf::counter(
         "timeline.cache-entries",
-        session.timelines.read().unwrap().len() as u64,
+        session.timelines.read().len() as u64,
     );
 }
 
