@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // Usage: node resize-window.mjs <targetId> <width> <height>
-import { connect, getPageByTargetId } from "./lib.mjs";
+import { connect, getPageByTargetId } from './lib.mjs';
 
 const [targetId, widthStr, heightStr] = process.argv.slice(2);
 const width = Number(widthStr);
 const height = Number(heightStr);
 if (!targetId || !width || !height) {
-  console.error("Usage: node resize-window.mjs <targetId> <width> <height>");
+  console.error('Usage: node resize-window.mjs <targetId> <width> <height>');
   process.exit(1);
 }
 
@@ -19,7 +19,7 @@ try {
       return { outerWidth: window.outerWidth, outerHeight: window.outerHeight };
     },
     width,
-    height,
+    height
   );
   console.log(JSON.stringify(result));
 } finally {

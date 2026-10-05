@@ -135,7 +135,7 @@ function mountScrollWorld(container, config) {
   }
   const nav = el('nav', 'sw-nav');
   if (config.nav !== false) topbar.appendChild(nav);
-  if (config.cta && config.cta.label) {
+  if (config.cta?.label) {
     const c = el('a', 'sw-topcta');
     c.href = config.cta.href || '#';
     c.textContent = config.cta.label;
@@ -152,7 +152,7 @@ function mountScrollWorld(container, config) {
   hint.appendChild(el('i'));
   const track = el('div', 'sw-track');
 
-  [sky, scrollbar, topbar, stage, copylayer, route, hint, track].forEach((n) => container.appendChild(n));
+  container.append(sky, scrollbar, topbar, stage, copylayer, route, hint, track);
 
   // segment scenes
   SEGMENTS.forEach((s) => {
@@ -187,9 +187,7 @@ function mountScrollWorld(container, config) {
       (s.eyebrow ? `<span class="sw-copy__eyebrow">${esc(s.eyebrow)}</span>` : '') +
       (s.title ? `<h2 class="sw-copy__title">${esc(s.title)}</h2>` : '') +
       (s.body ? `<p class="sw-copy__body">${esc(s.body)}</p>` : '') +
-      (s.tags && s.tags.length
-        ? `<ul class="sw-copy__tags">${s.tags.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>`
-        : '') +
+      (s.tags?.length ? `<ul class="sw-copy__tags">${s.tags.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>` : '') +
       (s.cta ? `<div class="sw-copy__cta">${ctaBtns(s.cta)}</div>` : '');
     copylayer.appendChild(c);
     copies.push(c);
@@ -241,7 +239,7 @@ function mountScrollWorld(container, config) {
       s.end = off * vh;
     });
     totalW = off;
-    track.style.height = totalW * vh + vh + 'px'; // +1vh so the last flight completes
+    track.style.height = `${totalW * vh + vh}px`; // +1vh so the last flight completes
     read();
   }
 
@@ -285,7 +283,7 @@ function mountScrollWorld(container, config) {
         v.addEventListener('loadeddata', () => {
           try {
             v.pause();
-          } catch (e) {}
+          } catch {}
           if (userReady) primeVideo(v);
         });
         s.el.appendChild(v);
@@ -346,8 +344,12 @@ function mountScrollWorld(container, config) {
     );
     if (near !== activeIndex) {
       activeIndex = near;
-      dots.forEach((d, k) => d.classList.toggle('is-active', k === near));
-      nav.querySelectorAll('.sw-nav__item').forEach((n, k) => n.classList.toggle('is-active', k === near));
+      dots.forEach((d, k) => {
+        d.classList.toggle('is-active', k === near);
+      });
+      nav.querySelectorAll('.sw-nav__item').forEach((n, k) => {
+        n.classList.toggle('is-active', k === near);
+      });
       container.style.setProperty('--sw-accent', SECTIONS[near].accent || '');
     }
     scrollbarFill.style.transform = `scaleX(${clamp(y / (totalW * vh))})`;
@@ -372,7 +374,7 @@ function mountScrollWorld(container, config) {
       if (Math.abs(s.video.currentTime - t) > eps) {
         try {
           s.video.currentTime = t;
-        } catch (e) {}
+        } catch {}
       }
     }
     requestAnimationFrame(raf);
@@ -387,18 +389,18 @@ function mountScrollWorld(container, config) {
     if (!isMobile() || !v) return;
     try {
       const p = v.play();
-      if (p && p.then)
+      if (p?.then)
         p.then(() => {
           try {
             v.pause();
-          } catch (e) {}
+          } catch {}
         }).catch(() => {});
-    } catch (e) {}
+    } catch {}
   }
   function onFirstGesture() {
     if (userReady) return;
     userReady = true;
-    SEGMENTS.forEach((s) => primeVideo(s.video));
+    for (const s of SEGMENTS) primeVideo(s.video);
   }
   window.addEventListener('pointerdown', onFirstGesture, { once: true, passive: true });
   window.addEventListener('touchstart', onFirstGesture, { once: true, passive: true });
@@ -458,13 +460,13 @@ function seedParticles(host, reduce) {
   const seeds = [7, 23, 41, 58, 71, 88, 12, 34, 52, 66, 83, 95, 18, 29, 47, 63, 77, 91, 5, 38, 55, 69, 82, 97];
   for (let k = 0; k < 20; k++) {
     const s = document.createElement('span');
-    s.className = 'sw-pt sw-pt--' + kinds[k % kinds.length];
-    s.style.left = seeds[k % seeds.length] + 'vw';
-    s.style.top = ((seeds[(k * 3) % seeds.length] * 1.3) % 100) + 'vh';
+    s.className = `sw-pt sw-pt--${kinds[k % kinds.length]}`;
+    s.style.left = `${seeds[k % seeds.length]}vw`;
+    s.style.top = `${(seeds[(k * 3) % seeds.length] * 1.3) % 100}vh`;
     s.style.setProperty('--sw-sc', (0.5 + ((seeds[(k * 5) % seeds.length] % 60) / 60) * 1.1).toFixed(2));
     const dur = 14 + (seeds[(k * 7) % seeds.length] % 22);
-    s.style.animationDuration = dur + 's';
-    s.style.animationDelay = -(seeds[(k * 2) % seeds.length] % dur) + 's';
+    s.style.animationDuration = `${dur}s`;
+    s.style.animationDelay = `${-(seeds[(k * 2) % seeds.length] % dur)}s`;
     host.appendChild(s);
   }
 }
@@ -556,7 +558,7 @@ function injectCSS() {
   // these defaults, regardless of injection order. Enables clean dark themes.
   const style = document.createElement('style');
   style.id = 'sw-css';
-  style.textContent = '@layer sw {\n' + css + '\n}';
+  style.textContent = `@layer sw {\n${css}\n}`;
   document.head.appendChild(style);
 }
 

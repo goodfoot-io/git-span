@@ -112,7 +112,7 @@ function fixture({ skills = ['alpha'], onDisk = { alpha: 'SKILL.md.eta' }, basel
       "const out = args[args.indexOf('-o') + 1];",
       "const agent = args[args.indexOf('--agent') + 1];",
       "mkdirSync(join(dirname(out), 'bin'), { recursive: true });",
-      'writeFileSync(out, `${JSON.stringify({ agent })}\\n`);',
+      "writeFileSync(out, JSON.stringify({ agent }) + '\\n');",
       "writeFileSync(join(dirname(out), 'bin/hook.mjs'), 'export {};\\n');",
       ''
     ].join('\n')
@@ -210,7 +210,7 @@ test('build fails when the CLI reports some targets but not all', () => {
         "  if (process.argv[i] === '--target') targets.push(process.argv[i + 1]);",
         '}',
         "const [platform, outDir] = targets[0].split('=');",
-        'console.log(`${platform}=${outDir}: alpha/SKILL.md, alpha/references/notes.md`);',
+        "console.log(platform + '=' + outDir + ': alpha/SKILL.md, alpha/references/notes.md');",
         'process.exit(0);',
         ''
       ].join('\n')
@@ -236,7 +236,7 @@ test('build fails when a declared skill is missing from a target listing', () =>
         'for (let i = 2; i < process.argv.length; i += 1) {',
         "  if (process.argv[i] !== '--target') continue;",
         "  const [platform, outDir] = process.argv[i + 1].split('=');",
-        '  console.log(`${platform}=${outDir}: alpha/SKILL.md, alpha/references/notes.md`);',
+        "  console.log(platform + '=' + outDir + ': alpha/SKILL.md, alpha/references/notes.md');",
         '}',
         'process.exit(0);',
         ''
@@ -568,7 +568,7 @@ test('hooks gate measures a sibling written beside a directory-shaped build dest
         "  writeFileSync(join(dirname(out), 'manifest.json'), '{}\\n');",
         '} else {',
         "  mkdirSync(join(dirname(out), 'bin'), { recursive: true });",
-        '  writeFileSync(out, `${JSON.stringify({ agent })}\\n`);',
+        "  writeFileSync(out, JSON.stringify({ agent }) + '\\n');",
         "  writeFileSync(join(dirname(out), 'bin/hook.mjs'), 'export {};\\n');",
         '}',
         ''

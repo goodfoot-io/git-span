@@ -6,9 +6,9 @@ import lighthouse, { type RunnerResult } from 'lighthouse';
 import { type AgenticAuditResult, type AgenticReport, evaluateAgenticReport } from '~/gate/evaluate';
 import { readGateServerInfo } from '~/gate/globalSetup';
 
-export const LIGHTHOUSE_VERSION = '13.4.1';
-export const MINIMUM_CHROME_MAJOR = 150;
-export const SCORE_THRESHOLD = 0.9;
+const LIGHTHOUSE_VERSION = '13.4.1';
+const MINIMUM_CHROME_MAJOR = 150;
+const SCORE_THRESHOLD = 0.9;
 
 const MINIMUM_NODE_MAJOR = 22;
 const MINIMUM_NODE_MINOR = 19;

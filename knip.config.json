@@ -1,14 +1,94 @@
 {
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "ignoreBinaries": [
+    "cards-extension",
+    "cloudflared",
+    "dbus-daemon",
+    "magick",
+    "pgrep",
+    "strace",
+    "Xvfb",
+    "xdpyinfo"
+  ],
   "workspaces": {
     ".": {
-      "entry": [".claude/**/*.{js,mjs,ts}", ".devcontainer/**/*.{js,mjs,ts}", "scripts/*.mjs"],
-      "project": [".claude/**/*.{js,mjs,ts}", ".devcontainer/**/*.{js,mjs,ts}", "scripts/*.mjs"],
-      "ignore": [".worktrees/**"]
+      "entry": [
+        ".claude/skills/**/*.mjs",
+        ".codex/skills/**/*.js",
+        "scripts/**/*.mjs"
+      ],
+      "project": [
+        ".claude/skills/**/*.mjs",
+        ".codex/skills/**/*.js",
+        "scripts/**/*.mjs"
+      ],
+      "ignoreDependencies": [
+        "@goodfoot/agent-skills"
+      ]
     },
-    "packages/*": {
-      "entry": ["src/**/*.ts", "src/**/*.tsx", "test/**/*.{ts,tsx}", "scripts/**/*.{js,mjs,ts}"],
-      "project": ["src/**/*.ts", "src/**/*.tsx", "test/**/*.{ts,tsx}", "scripts/**/*.{js,mjs,ts}"],
-      "ignore": ["node_modules/**", "dist/**", "build/**", "test/fixtures/**"]
+    "packages/agent-hooks": {
+      "entry": [
+        "src/**/*.ts",
+        "test/**/*.ts",
+        "scripts/**/*.{js,ts}"
+      ],
+      "project": [
+        "src/**/*.ts",
+        "test/**/*.ts",
+        "scripts/**/*.{js,ts}"
+      ]
+    },
+    "packages/discover": {
+      "entry": [
+        "src/**/*.ts",
+        "test/**/*.ts"
+      ],
+      "project": [
+        "src/**/*.ts",
+        "test/**/*.ts"
+      ],
+      "ignoreDependencies": [
+        "tsx"
+      ]
+    },
+    "packages/extension": {
+      "entry": [
+        "src/**/*.ts",
+        "test/**/*.ts",
+        "scripts/**/*.js"
+      ],
+      "project": [
+        "src/**/*.ts",
+        "test/**/*.ts",
+        "scripts/**/*.js"
+      ]
+    },
+    "packages/git-span": {
+      "entry": [
+        "scripts/*.{js,mjs}"
+      ],
+      "project": [
+        "scripts/*.{js,mjs}"
+      ]
+    },
+    "packages/website": {
+      "entry": [
+        "scripts/*.mjs",
+        "app/test/__stubs__/*.ts"
+      ],
+      "project": [
+        "app/**/*.{ts,tsx,mjs,css,mdx}",
+        "content/**/*.mdx",
+        "scripts/*.mjs",
+        "*.ts"
+      ],
+      "vitest": {
+        "config": [
+          "vitest.config.ts",
+          "vitest.agentic-gate.config.ts",
+          "vitest.gate-protocol.config.ts"
+        ]
+      }
     }
   }
 }

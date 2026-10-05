@@ -1,4 +1,4 @@
-export const EXPECTED_AUDIT_IDS = [
+const EXPECTED_AUDIT_IDS = [
   'agent-accessibility-tree',
   'webmcp-form-coverage',
   'webmcp-registered-tools',
@@ -6,7 +6,7 @@ export const EXPECTED_AUDIT_IDS = [
   'cumulative-layout-shift',
   'llms-txt'
 ] as const;
-export type AgenticAuditId = (typeof EXPECTED_AUDIT_IDS)[number];
+type AgenticAuditId = (typeof EXPECTED_AUDIT_IDS)[number];
 
 export interface AgenticAuditResult {
   id: string;

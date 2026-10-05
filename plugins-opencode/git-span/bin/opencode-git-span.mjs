@@ -42,7 +42,7 @@ function fail(message) {
 
 function parseArgs(argv) {
   let global = false;
-  let command = undefined;
+  let command;
   for (const arg of argv) {
     if (arg === '--global') {
       global = true;

@@ -16,7 +16,9 @@
     "knip": "knip --config ./knip.config.json",
     "knip:fix": "knip --fix --config ./knip.config.json",
     "lint": "yarn workspaces foreach --parallel -A run lint && yarn lint:root",
-    "lint:root": "biome check --write --unsafe --max-diagnostics 500 ./scripts",
+    "lint:root": "biome ci --error-on-warnings --max-diagnostics 500 ./scripts ./.claude/skills ./.codex/skills ./packages/git-span/scripts ./plugins-opencode/git-span/bin",
+    "lint:fix": "yarn workspaces foreach --parallel -A run lint:fix && yarn lint:root:fix",
+    "lint:root:fix": "biome check --write ./scripts ./.claude/skills ./.codex/skills ./packages/git-span/scripts ./plugins-opencode/git-span/bin",
     "test": "yarn workspaces foreach -A --parallel --jobs 7 --interlaced --verbose run test",
     "typecheck": "bash scripts/typecheck.sh",
     "build": "node scripts/ensure-worktree-local-generated.mjs --all && yarn workspaces foreach -At run build",
@@ -36,6 +38,7 @@
   "packageManager": "yarn@4.18.0",
   "devDependencies": {
     "@biomejs/biome": "^2.5.8",
+    "@goodfoot/agent-skills": "1.0.25",
     "@types/node": "24.x",
     "esbuild": "^0.28.2",
     "knip": "^6.32.2",

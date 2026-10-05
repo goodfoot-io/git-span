@@ -141,6 +141,11 @@ build_dir="$target_root/git-span/build"
   PATH="$build_dir/debug:$PATH" git span drift &&
   yarn typecheck &&
   yarn lint &&
+  # Unused files/exports/dependencies across every workspace. Runs after
+  # typecheck, never before: the website's `collections/*` imports resolve
+  # through packages/website/.source, which `fumadocs-mdx` (run by the
+  # website typecheck) generates — a fresh checkout has nothing there.
+  yarn knip &&
   # rkyv-js must stay resolvable through its own package exports (card
   # main-386): Node resolves every declared target, tsc binds the bare
   # specifier without paths entries, and no alias workaround creeps back.

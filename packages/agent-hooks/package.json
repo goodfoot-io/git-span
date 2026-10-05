@@ -15,12 +15,12 @@
     "bench:hooks": "node scripts/run-hook-path-benchmark.js",
     "bench:context-hooks": "node scripts/run-context-integration-benchmark.js",
     "test": "vitest run",
-    "lint": "biome check .",
+    "lint": "biome ci --error-on-warnings --max-diagnostics 500 .",
+    "lint:fix": "biome check --write .",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@goodfoot/agent-hooks": "patch:@goodfoot/agent-hooks@npm%3A1.0.11#../../.yarn/patches/goodfoot-agent-hooks-1.0.11-transport-drain.patch",
-    "@goodfoot/agent-skills": "1.0.25"
+    "@goodfoot/agent-hooks": "patch:@goodfoot/agent-hooks@npm%3A1.0.11#../../.yarn/patches/goodfoot-agent-hooks-1.0.11-transport-drain.patch"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.8",

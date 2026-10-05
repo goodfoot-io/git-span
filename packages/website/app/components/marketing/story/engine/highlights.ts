@@ -27,9 +27,9 @@ export const BLOOM_LAYER = 1;
 // pistons' (frame.pistonRed) -- both ramp in on their own shared orange-out window, independent of
 // the gear's 'ringRed'. 'finalGreen' is the shared resolved color every one of these parts (plus
 // the mount) settles into (frame.finalGreen).
-export type HighlightKind = 'blue' | 'ringRed' | 'red' | 'pistonRed' | 'orange' | 'ringOrange' | 'finalGreen';
+type HighlightKind = 'blue' | 'ringRed' | 'red' | 'pistonRed' | 'orange' | 'ringOrange' | 'finalGreen';
 
-export interface HighlightStage {
+interface HighlightStage {
   kind: HighlightKind;
   // This kind's cold-state color identity (see beats.ts's HIGHLIGHT_* hexes) -- blackbodyColor
   // (see below) modulates FROM this hue toward a hotter/whiter emissive color as this frame's

@@ -48,7 +48,8 @@
     "build:testing": "node ../../scripts/ensure-worktree-local-generated.mjs packages/extension && node scripts/build/build-testing.js",
     "test": "node ../../scripts/ensure-worktree-local-generated.mjs packages/extension && node --import tsx test/runTest.ts",
     "test:unit": "vitest run",
-    "lint": "biome check --write --unsafe --max-diagnostics 500 ./src ./test ./scripts && jsdoczoom -l",
+    "lint": "biome ci --error-on-warnings --max-diagnostics 500 ./src ./test ./scripts && jsdoczoom -l",
+    "lint:fix": "biome check --write ./src ./test ./scripts",
     "typecheck": "node ../../scripts/ensure-worktree-local-generated.mjs packages/extension && tsgo --noEmit",
     "clean": "rm -rf dist out dist-test-* *.vsix tsconfig.tsbuildinfo"
   },
@@ -77,7 +78,6 @@
     "url": "https://goodfoot.io"
   },
   "dependencies": {
-    "@vscode-elements/elements": "^2.5.1",
     "@vscode/codicons": "0.0.46-24",
     "monaco-editor": "^0.56.0"
   }
