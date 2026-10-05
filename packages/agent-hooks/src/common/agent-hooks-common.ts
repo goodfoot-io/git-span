@@ -11,6 +11,7 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as nodePath from 'node:path';
+import { reportFailOpen } from './fail-open.js';
 
 // ---------------------------------------------------------------------------
 // Path helpers
@@ -130,7 +131,7 @@ export function resolveSpanRoot(repoRoot: string): string {
 }
 
 function resolveSpanRootUncached(repoRoot: string): string {
-  const envDir = process.env['GIT_SPAN_DIR'];
+  const envDir = process.env.GIT_SPAN_DIR;
   if (envDir && envDir.trim().length > 0) {
     return toPosix(envDir.trim()).replace(/\/+$/, '');
   }
@@ -142,7 +143,12 @@ function resolveSpanRootUncached(repoRoot: string): string {
     const trimmed = toPosix(out.trim()).replace(/\/+$/, '');
     if (trimmed.length > 0) return trimmed;
   } catch (err) {
-    void err; // config key absent or git error — fall through to default
+    // Exit status 1 is `git config`'s "key not set" — the ordinary case, and
+    // the documented default applies. Any other failure is git misbehaving:
+    // still fall back (fail-safe), but record it, because a configured span
+    // root silently replaced by the default unguards the real span documents.
+    const status = err instanceof Error && 'status' in err ? err.status : undefined;
+    if (status !== 1) reportFailOpen(undefined, 'span-root-config', err, { repoRoot });
   }
   return SPAN_ROOT;
 }
@@ -244,9 +250,8 @@ export function parsePorcelain(stdout: string): PorcelainRow[] {
   for (const line of stdout.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    const parts = trimmed.split('\t');
-    if (parts.length < 3) continue;
-    const [name, path, range] = parts;
+    const [name, path, range] = trimmed.split('\t');
+    if (name === undefined || path === undefined || range === undefined) continue;
     const dashIdx = range.indexOf('-');
     if (dashIdx === -1) continue;
     const start = parseInt(range.slice(0, dashIdx), 10);
@@ -343,9 +348,16 @@ export function parseDriftPorcelain(stdout: string): DriftPorcelainRow[] {
   for (const line of stdout.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#')) continue;
-    const parts = trimmed.split('\t');
-    if (parts.length < 6) continue;
-    const [statusCol, , name, path, startCol, endCol] = parts;
+    const [statusCol, , name, path, startCol, endCol] = trimmed.split('\t');
+    if (
+      statusCol === undefined ||
+      name === undefined ||
+      path === undefined ||
+      startCol === undefined ||
+      endCol === undefined
+    ) {
+      continue;
+    }
     const status = parsePorcelainStatus(statusCol);
     if (!status) continue;
     const start = startCol === '(whole)' ? 0 : parseInt(startCol, 10);

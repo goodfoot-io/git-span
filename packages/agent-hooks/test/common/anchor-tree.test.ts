@@ -13,6 +13,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { collapseByPath, type RangeEntry, renderAnchorTree, type TreeAnchor } from '../../src/common/anchor-tree.js';
+import { itemAt } from '../helpers.js';
 
 /** A `range`-kind `RangeEntry` with an optional suffix, for terser test setup. */
 function range(start: number, end: number, suffix = ''): RangeEntry {
@@ -30,12 +31,12 @@ describe('collapseByPath', () => {
     const result = collapseByPath(rows);
 
     expect(result).toHaveLength(2);
-    expect(result[0].path).toBe('a.ts');
-    expect(result[0].ranges).toHaveLength(2);
-    expect(result[0].ranges[0].range).toEqual({ kind: 'range', start: 1, end: 5 });
-    expect(result[0].ranges[1].range).toEqual({ kind: 'range', start: 9, end: 12 });
-    expect(result[1].path).toBe('b.ts');
-    expect(result[1].ranges).toHaveLength(1);
+    expect(itemAt(result, 0).path).toBe('a.ts');
+    expect(itemAt(result, 0).ranges).toHaveLength(2);
+    expect(itemAt(itemAt(result, 0).ranges, 0).range).toEqual({ kind: 'range', start: 1, end: 5 });
+    expect(itemAt(itemAt(result, 0).ranges, 1).range).toEqual({ kind: 'range', start: 9, end: 12 });
+    expect(itemAt(result, 1).path).toBe('b.ts');
+    expect(itemAt(result, 1).ranges).toHaveLength(1);
   });
 
   it('keeps a single-occurrence path as one entry with one range', () => {
@@ -277,7 +278,7 @@ describe('renderAnchorTree', () => {
 
     const lines = renderAnchorTree(anchors);
     expect(lines[1]).toBe(`└─ a.ts${' '.repeat(45)}#L3-L4`);
-    expect(lines[0].indexOf('#L1-L2')).toBe(lines[1].indexOf('#L3-L4'));
+    expect(itemAt(lines, 0).indexOf('#L1-L2')).toBe(itemAt(lines, 1).indexOf('#L3-L4'));
   });
 
   describe('alignment is measured in terminal columns, not code points or UTF-16 units', () => {

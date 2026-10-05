@@ -10,6 +10,7 @@ import {
   type SessionLayout
 } from '../common/agent-hooks-common.js';
 import { createDefaultPlannedTouchStore } from '../common/bash-attribution.js';
+import { flushFailOpen } from '../common/fail-open.js';
 import { filterTrackedEligibility, type PlannedTouch } from '../common/static-attribution.js';
 import { disableUpdateCheck } from '../common/update-check-env.js';
 import { parseApplyPatch } from './apply-patch.js';
@@ -41,6 +42,7 @@ export function createHandler(layout: SessionLayout = DEFAULT_SESSION_LAYOUT) {
         anchors.map((anchor) => ({ absolutePath: abspathAgainst(cwd, anchor.path), value: anchor })),
         { cwd }
       );
+      flushFailOpen(ctx.logger);
       const touches: PlannedTouch[] = tracked.eligible.map(({ absolutePath, value: anchor }) => ({
         repoRelativePath: relativeToRepo(repoRoot, absolutePath),
         operation: anchor.absent ? 'delete' : anchor.kind === 'create' ? 'create-overwrite' : 'modify',

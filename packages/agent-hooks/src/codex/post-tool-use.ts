@@ -99,9 +99,10 @@ export function narrowCodeModeExec(toolInput: unknown): CodeModeExecNarrow {
     const input = (toolInput as { input: unknown }).input;
     if (typeof input === 'string') {
       const match = input.match(/tools\.exec_command\(\s*(\{(?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*\})\s*\)/);
-      if (match !== null) {
+      const objectLiteral = match?.[1];
+      if (objectLiteral !== undefined) {
         try {
-          const parsed = JSON.parse(quoteObjectKeys(match[1]));
+          const parsed = JSON.parse(quoteObjectKeys(objectLiteral));
           if (parsed !== null && typeof parsed === 'object' && typeof parsed.cmd === 'string') {
             return {
               matched: true,

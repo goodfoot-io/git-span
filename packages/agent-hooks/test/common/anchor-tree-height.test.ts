@@ -25,6 +25,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import { collapseByPath, type RangeLabel, renderAnchorTree } from '../../src/common/anchor-tree.js';
+import { matchGroups } from '../../src/common/regex-groups.js';
 
 const hasGitSpan = (() => {
   // Bounded check: a broken/placeholder git-span binary must fail fast here
@@ -47,8 +48,11 @@ function spansFromCli(): Map<string, Row[]> {
   const bySpan = new Map<string, Row[]>();
   for (const line of stdout.split('\n')) {
     if (line.trim().length === 0) continue;
-    const [name, path, rangeText] = line.split('\t');
-    const [start, end] = rangeText.split('-').map(Number);
+    const row = matchGroups(line, /^([^\t]+)\t([^\t]+)\t(\d+)-(\d+)(?:\t|$)/, 4);
+    if (row === null) throw new Error(`unexpected \`git span list --porcelain\` row: ${line}`);
+    const [name, path, startText, endText] = row;
+    const start = Number(startText);
+    const end = Number(endText);
     const range: RangeLabel = start === 0 && end === 0 ? { kind: 'whole-file' } : { kind: 'range', start, end };
     const rows = bySpan.get(name);
     if (rows) rows.push({ path, range, suffix: '' });

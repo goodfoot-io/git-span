@@ -9,6 +9,7 @@ import {
   finishTokenizeScan,
   flushWord,
   rejectEmptyConstructList,
+  type SplitScan,
   skipTopLevelComment,
   stepBoundaryOperator,
   stepBraceContent,
@@ -26,6 +27,7 @@ import {
   stepTokenizerQuote,
   stepTokenizerRedirect
 } from '../../src/common/shell-split-machines.js';
+import { itemAt } from '../helpers.js';
 
 /** Drive one machine step with the cursor parked at `at`. */
 function scanAt(cmd: string, at: number) {
@@ -83,13 +85,13 @@ describe('quoting machine', () => {
 
 describe('brace-expansion opacity machine', () => {
   it('is inactive at depth zero', () => {
-    const s = scanAt('${x}', 0);
+    const s = scanAt(`\${x}`, 0);
     expect(stepBraceContent(s)).toBe(false);
     expect(s.i).toBe(0);
   });
 
   it('consumes content opaquely until the closing brace decrements out', () => {
-    const s = scanAt('${x:-$(echo y)}rest', 0);
+    const s = scanAt(`\${x:-$(echo y)}rest`, 0);
     s.braceDepth = 1;
     s.i = 1;
     let steps = 0;
@@ -102,7 +104,7 @@ describe('brace-expansion opacity machine', () => {
   });
 
   it('nested closers decrement one level per closing brace', () => {
-    const s = scanAt('${a${b}c}', 4);
+    const s = scanAt(`\${a\${b}c}`, 4);
     s.braceDepth = 2;
     // `{` at 4 and `b` at 5 are interior content — depth unchanged.
     expect(stepBraceContent(s)).toBe(true);
@@ -151,9 +153,9 @@ describe('heredoc machines', () => {
       const s = scanAt('cat <<EOF\nbody', 4);
       expect(stepHeredocOpen(s)).toBe(true);
       expect(s.heredocs).toHaveLength(1);
-      expect(s.heredocs[0].close.test('EOF')).toBe(true);
-      expect(s.heredocs[0].close.test('EOF ')).toBe(true);
-      expect(s.heredocs[0].close.test(' x')).toBe(false);
+      expect(itemAt(s.heredocs, 0).close.test('EOF')).toBe(true);
+      expect(itemAt(s.heredocs, 0).close.test('EOF ')).toBe(true);
+      expect(itemAt(s.heredocs, 0).close.test(' x')).toBe(false);
       expect(s.bufHeredoc).toBe(true);
       expect(s.buf).toBe('');
       // The cursor clears the operator+delimiter even though they never
@@ -164,20 +166,20 @@ describe('heredoc machines', () => {
     it('<<- allows tab-prefixed close lines', () => {
       const s = scanAt('cat <<- EOF', 4);
       expect(stepHeredocOpen(s)).toBe(true);
-      expect(s.heredocs[0].close.test('\tEOF')).toBe(true);
-      expect(s.heredocs[0].close.test(' EOF')).toBe(false);
+      expect(itemAt(s.heredocs, 0).close.test('\tEOF')).toBe(true);
+      expect(itemAt(s.heredocs, 0).close.test(' EOF')).toBe(false);
     });
 
     it('quoted delimiters match literally, regex chars included', () => {
       const s = scanAt("cat <<'A.B'", 4);
       expect(stepHeredocOpen(s)).toBe(true);
-      expect(s.heredocs[0].close.test('A.B')).toBe(true);
-      expect(s.heredocs[0].close.test('AXB')).toBe(false);
+      expect(itemAt(s.heredocs, 0).close.test('A.B')).toBe(true);
+      expect(itemAt(s.heredocs, 0).close.test('AXB')).toBe(false);
     });
 
     it('keeps the operator+delimiter in the buffer inside an open construct', () => {
       const s = scanAt('{ cat <<EOF', 6);
-      s.levels[0].push({ kind: 'brace', body: true });
+      s.level.push({ kind: 'brace', body: true });
       expect(stepHeredocOpen(s)).toBe(true);
       expect(s.buf).toBe('<<EOF');
       expect(s.i).toBe(11);
@@ -212,7 +214,7 @@ describe('heredoc machines', () => {
       const s = scanAt('line1\nline2', 0);
       s.inBody = true;
       s.heredocs.push({ close: /^NOPE$/ });
-      s.levels[0].push({ kind: 'if', body: false });
+      s.level.push({ kind: 'if', body: false });
       expect(stepHeredocBody(s)).toBe(true);
       expect(s.buf).toBe('line1\n');
       expect(s.i).toBe(6);
@@ -243,30 +245,34 @@ describe('heredoc machines', () => {
 
 describe('case-region machine', () => {
   /** An open region parked at `at` with the given position state. */
-  function caseAt(cmd: string, at: number, pos: 'subject' | 'pattern-start' | 'pattern' | 'command') {
+  function caseAt(
+    cmd: string,
+    at: number,
+    pos: 'subject' | 'pattern-start' | 'pattern' | 'command',
+    overrides: Partial<NonNullable<SplitScan['caseRegion']>> = {}
+  ) {
     const s = scanAt(cmd, at);
-    s.caseRegion = { pos, cmdEmpty: pos === 'command', localDepth: 0 };
+    s.caseRegion = { pos, cmdEmpty: pos === 'command', localDepth: 0, ...overrides };
     return s;
   }
 
   it('declines when no region is open or local depth is positive', () => {
     const noRegion = scanAt('x)', 0);
     expect(stepCaseRegion(noRegion)).toBe(false);
-    const nested = caseAt('(x)', 1, 'pattern');
-    nested.caseRegion!.localDepth = 1;
+    const nested = caseAt('(x)', 1, 'pattern', { localDepth: 1 });
     expect(stepCaseRegion(nested)).toBe(false);
   });
 
   it(';; returns to pattern-start; a bare ; lands at command start with an empty list item', () => {
     const semi = caseAt('a);; b', 2, 'command');
     expect(stepCaseRegion(semi)).toBe(true);
-    expect(semi.caseRegion!.pos).toBe('pattern-start');
+    expect(semi.caseRegion?.pos).toBe('pattern-start');
     expect(semi.i).toBe(4);
 
     const item = caseAt('a;b', 1, 'pattern');
     expect(stepCaseRegion(item)).toBe(true);
-    expect(item.caseRegion!.pos).toBe('command');
-    expect(item.caseRegion!.cmdEmpty).toBe(true);
+    expect(item.caseRegion?.pos).toBe('command');
+    expect(item.caseRegion?.cmdEmpty).toBe(true);
   });
 
   it('a newline in pattern position rejects the list; elsewhere it just resets the list item', () => {
@@ -278,8 +284,8 @@ describe('case-region machine', () => {
 
     const ok = caseAt('cmd\nmore', 3, 'command');
     expect(stepCaseRegion(ok)).toBe(true);
-    expect(ok.caseRegion!.pos).toBe('command');
-    expect(ok.caseRegion!.cmdEmpty).toBe(true);
+    expect(ok.caseRegion?.pos).toBe('command');
+    expect(ok.caseRegion?.cmdEmpty).toBe(true);
   });
 
   it('esac closes the region from pattern-start and resets the construct keyword flag, but is a word mid-item', () => {
@@ -290,21 +296,20 @@ describe('case-region machine', () => {
     expect(close.afterKeyword).toBe(false);
     expect(close.buf).toBe('esac');
 
-    const word = caseAt('echo esac)', 5, 'command');
-    word.caseRegion!.cmdEmpty = false;
+    const word = caseAt('echo esac)', 5, 'command', { cmdEmpty: false });
     expect(stepCaseRegion(word)).toBe(true);
-    expect(word.caseRegion!.pos).toBe('command');
+    expect(word.caseRegion?.pos).toBe('command');
     expect(word.buf).toBe('esac');
   });
 
   it('in ends the subject and the next word opens a pattern', () => {
     const inWord = caseAt('in *.txt', 0, 'subject');
     expect(stepCaseRegion(inWord)).toBe(true);
-    expect(inWord.caseRegion!.pos).toBe('pattern-start');
+    expect(inWord.caseRegion?.pos).toBe('pattern-start');
 
     const pattern = caseAt('*.txt)', 0, 'pattern-start');
     expect(stepCaseRegion(pattern)).toBe(true);
-    expect(pattern.caseRegion!.pos).toBe('pattern');
+    expect(pattern.caseRegion?.pos).toBe('pattern');
   });
 
   it('a paren falls through so the nesting machine can bump the local depth', () => {
@@ -317,16 +322,17 @@ describe('nesting machine', () => {
   describe('stepParen', () => {
     it('pushes a fresh construct level per ( and pops it on ), crediting an enclosing brace body', () => {
       const s = scanAt('{ ( echo ) }', 0);
-      s.levels[0].push({ kind: 'brace', body: false });
+      s.level.push({ kind: 'brace', body: false });
       s.i = 2;
       expect(stepParen(s)).toBe(true);
       expect(s.depth).toBe(1);
-      expect(s.levels[0][0].body).toBe(true);
-      expect(s.levels).toHaveLength(2);
+      expect(s.outerLevels).toEqual([[{ kind: 'brace', body: true }]]);
+      expect(s.level).toEqual([]);
       s.i = 9;
       expect(stepParen(s)).toBe(true);
       expect(s.depth).toBe(0);
-      expect(s.levels).toHaveLength(1);
+      expect(s.outerLevels).toHaveLength(0);
+      expect(s.level).toEqual([{ kind: 'brace', body: true }]);
     });
 
     it('a stray ) at depth 0 rejects as unbalanced-paren', () => {
@@ -339,7 +345,8 @@ describe('nesting machine', () => {
     it(') over a non-empty construct level fires unclosed-construct before restoring', () => {
       const s = scanAt('( if true; fi )', 14);
       s.depth = 1;
-      s.levels.push([{ kind: 'if', body: true }]);
+      s.outerLevels.push(s.level);
+      s.level = [{ kind: 'if', body: true }];
       expect(stepParen(s)).toBe(true);
       expect(s.malformed).toBe('unclosed-construct');
       // The rejecting list's stages are gone but the frame was NOT popped
@@ -366,17 +373,17 @@ describe('nesting machine', () => {
     it('if/then/fi drive a kind-matched stack with the empty-list guard armed between', () => {
       const s = scanAt('if true; then true; fi', 0);
       expect(stepConstructWord(s)).toBe(true);
-      expect(s.levels[0]).toEqual([{ kind: 'if', body: false }]);
+      expect(s.level).toEqual([{ kind: 'if', body: false }]);
       expect(s.afterKeyword).toBe(true);
       // `then` arrives at command position (the buffer ends with `; `).
       s.buf = 'if true; ';
       s.i = 9;
       expect(stepConstructWord(s)).toBe(true);
-      expect(s.levels[0]).toEqual([{ kind: 'if', body: true }]);
+      expect(s.level).toEqual([{ kind: 'if', body: true }]);
       s.buf = 'if true; then true; ';
       s.i = 20;
       expect(stepConstructWord(s)).toBe(true);
-      expect(s.levels[0]).toHaveLength(0);
+      expect(s.level).toHaveLength(0);
       expect(s.afterKeyword).toBe(false);
     });
 
@@ -399,13 +406,13 @@ describe('nesting machine', () => {
       fnShape.buf = 'f()';
       fnShape.i = 4;
       expect(stepConstructWord(fnShape)).toBe(true);
-      expect(fnShape.levels[0]).toEqual([{ kind: 'brace', body: false }]);
+      expect(fnShape.level).toEqual([{ kind: 'brace', body: false }]);
 
       const word = scanAt('cat {a}', 4);
       word.buf = 'cat ';
       word.i = 4;
       expect(stepConstructWord(word)).toBe(true);
-      expect(word.levels[0]).toHaveLength(0);
+      expect(word.level).toHaveLength(0);
       expect(word.buf).toBe('cat {a}');
     });
 
@@ -418,7 +425,7 @@ describe('nesting machine', () => {
       expect(stepConstructWord(s)).toBe(true);
       expect(s.nameSeen).toBe(true);
       expect(s.afterKeyword).toBe(false);
-      expect(s.levels[0]).toHaveLength(0);
+      expect(s.level).toHaveLength(0);
     });
 
     it('declines when a case region is open or the char is a metachar', () => {
@@ -435,7 +442,7 @@ describe('nesting machine', () => {
   describe('rejectEmptyConstructList', () => {
     it('rejects ; / & right after an opener keyword inside a construct', () => {
       const s = scanAt('if ; fi', 3);
-      s.levels[0].push({ kind: 'if', body: false });
+      s.level.push({ kind: 'if', body: false });
       s.afterKeyword = true;
       expect(rejectEmptyConstructList(s)).toBe(true);
       expect(s.malformed).toBe('unclosed-construct');
@@ -446,7 +453,7 @@ describe('nesting machine', () => {
       outside.buf = 'a';
       expect(rejectEmptyConstructList(outside)).toBe(false);
       const unarmed = scanAt('if true;', 8);
-      unarmed.levels[0].push({ kind: 'if', body: true });
+      unarmed.level.push({ kind: 'if', body: true });
       unarmed.afterKeyword = false;
       expect(rejectEmptyConstructList(unarmed)).toBe(false);
     });
@@ -498,7 +505,7 @@ describe('redirect-token machine and comment skip', () => {
   });
 
   it('${ opens brace opacity; the machine declines other chars at depth', () => {
-    const open = scanAt('echo ${x}', 5);
+    const open = scanAt(`echo \${x}`, 5);
     open.buf = 'echo ';
     expect(stepRedirectToken(open)).toBe(true);
     expect(open.braceDepth).toBe(1);

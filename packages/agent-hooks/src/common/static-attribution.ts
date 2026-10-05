@@ -25,6 +25,7 @@ import {
   type ResolvedSpan,
   type SpanMatch
 } from './parse-command.js';
+import { matchGroups } from './regex-groups.js';
 import { argvOf, type SplitResult, splitTopLevel } from './shell-split.js';
 
 /** Stable machine-readable classifications for candidates the parser refuses. */
@@ -239,6 +240,7 @@ function decodeLiteralField(raw: string, delimiter: string, replacement: boolean
   let value = '';
   for (let index = 0; index < raw.length; index += 1) {
     const character = raw[index];
+    if (character === undefined) break;
     if (character === '\\') {
       const next = raw[index + 1];
       if (next === undefined) return null;
@@ -277,9 +279,8 @@ function readDelimitedField(
 
 /** Parse only literal, line-count-preserving substitutions. */
 function parseLiteralSubstitution(script: string): LiteralSubstitution | null {
-  if (script.length < 4 || script[0] !== 's') return null;
-  const delimiter = script[1];
-  if (/\w|\s/.test(delimiter)) return null;
+  const delimiter = script.charAt(1);
+  if (script.length < 4 || script[0] !== 's' || /\w|\s/.test(delimiter)) return null;
   const patternField = readDelimitedField(script, 2, delimiter);
   if (patternField === null) return null;
   const replacementField = readDelimitedField(script, patternField.next, delimiter);
@@ -350,6 +351,7 @@ function parsePatternCommand(command: string): PatternCommand | null {
     const files: string[] = [];
     for (let index = 1; index < argv.length; index += 1) {
       const argument = argv[index];
+      if (argument === undefined) break;
       if (argument === '-i') {
         inplace = true;
         continue;
@@ -379,6 +381,7 @@ function parsePatternCommand(command: string): PatternCommand | null {
   let unsupportedOption = false;
   for (let index = 1; index < argv.length; index += 1) {
     const argument = argv[index];
+    if (argument === undefined) break;
     if (argument === '-e') {
       script = argv[index + 1] ?? null;
       index += 1;
@@ -901,6 +904,10 @@ function consumeUnmatchedPython(statement: string): LayeredParseResult {
   );
 }
 
+function rejectStructuredPythonKeys(): LayeredParseResult {
+  return rejectPython('unsupported-expression', 'structured Python mutation requires literal string keys');
+}
+
 /**
  * One pass of the Python statement machines over a single statement, in
  * fixed left-to-right order: binding recognizers first (path/string/alias
@@ -916,122 +923,137 @@ function consumePythonStatement(
   statement: string,
   ctx: PythonRecognizerContext
 ): LayeredParseResult | 'unmatched' | undefined {
-  let match = statement.match(PYTHON_PATH_LITERAL_PATTERN);
-  if (match !== null) {
-    const path = decodePythonString(match[2]);
+  const pathLiteral = matchGroups(statement, PYTHON_PATH_LITERAL_PATTERN, 2);
+  if (pathLiteral !== null) {
+    const [name, literal] = pathLiteral;
+    const path = decodePythonString(literal);
     if (path === null) return rejectPython('unsupported-syntax', 'Python path literal uses an unsupported escape');
-    ctx.paths.set(match[1], { path, depth: 0 });
+    ctx.paths.set(name, { path, depth: 0 });
     return undefined;
   }
-  match = statement.match(PYTHON_STRING_BINDING_PATTERN);
-  if (match !== null) {
-    const path = decodePythonString(match[2]);
+  const stringBinding = matchGroups(statement, PYTHON_STRING_BINDING_PATTERN, 2);
+  if (stringBinding !== null) {
+    const [name, literal] = stringBinding;
+    const path = decodePythonString(literal);
     if (path === null) return rejectPython('unsupported-syntax', 'Python string literal uses an unsupported escape');
-    ctx.paths.set(match[1], { path, depth: 0 });
+    ctx.paths.set(name, { path, depth: 0 });
     return undefined;
   }
-  match = statement.match(PYTHON_NAME_ALIAS_PATTERN);
-  if (match !== null) {
-    const source = ctx.paths.get(match[2]);
+  const nameAlias = matchGroups(statement, PYTHON_NAME_ALIAS_PATTERN, 2);
+  if (nameAlias !== null) {
+    const [name, sourceName] = nameAlias;
+    const source = ctx.paths.get(sourceName);
     if (source === undefined || source.depth !== 0) {
       return rejectPython('unsupported-dataflow', 'Python path aliases are limited to one literal hop');
     }
-    ctx.paths.set(match[1], { path: source.path, depth: 1 });
+    ctx.paths.set(name, { path: source.path, depth: 1 });
     return undefined;
   }
 
-  match = statement.match(PYTHON_TEXT_READ_PATTERN);
-  if (match !== null) {
-    const binding = ctx.paths.get(match[2]);
+  const textRead = matchGroups(statement, PYTHON_TEXT_READ_PATTERN, 3);
+  if (textRead !== null) {
+    const [name, pathName, readArguments] = textRead;
+    const binding = ctx.paths.get(pathName);
     if (binding === undefined) return rejectPython('dynamic-path', 'Python read target is not a literal path binding');
-    if (match[3].trim() !== '' && !/^encoding\s*=\s*['"]utf-?8['"]$/.test(match[3].trim())) {
+    if (readArguments.trim() !== '' && !/^encoding\s*=\s*['"]utf-?8['"]$/.test(readArguments.trim())) {
       return rejectPython(
         'unsupported-encoding',
         'only default or UTF-8 Python text reads are supported',
         binding.path
       );
     }
-    ctx.texts.set(match[1], { path: binding.path });
+    ctx.texts.set(name, { path: binding.path });
     return undefined;
   }
 
-  match = statement.match(PYTHON_REPLACE_BINDING_PATTERN);
-  if (match !== null) {
-    if (!ctx.texts.has(match[2]))
+  const replaceBinding = matchGroups(statement, PYTHON_REPLACE_BINDING_PATTERN, 4);
+  if (replaceBinding !== null) {
+    const [name, source, patternLiteral, replacementLiteral, countText] = replaceBinding;
+    if (!ctx.texts.has(source))
       return rejectPython('unsupported-dataflow', 'Python replace source is not a direct text read');
-    const pattern = decodePythonString(match[3]);
-    const replacement = decodePythonString(match[4]);
-    const count = match[5] === undefined ? undefined : Number.parseInt(match[5], 10);
+    const pattern = decodePythonString(patternLiteral);
+    const replacement = decodePythonString(replacementLiteral);
+    const count = countText === undefined ? undefined : Number.parseInt(countText, 10);
     if (pattern === null || pattern.length === 0 || replacement === null || count === 0) {
       return rejectPython(
         'unsupported-expression',
         'Python replace requires non-empty literal input and a positive count'
       );
     }
-    ctx.replacements.set(match[1], { source: match[2], pattern, replacement, count });
+    ctx.replacements.set(name, { source, pattern, replacement, count });
     return undefined;
   }
 
-  match = statement.match(PYTHON_COUNT_ASSERT_PATTERN);
-  if (match !== null) {
-    const literal = decodePythonString(match[2]);
-    if (literal === null || literal.length === 0 || !ctx.texts.has(match[1])) {
+  const countAssert = matchGroups(statement, PYTHON_COUNT_ASSERT_PATTERN, 3);
+  if (countAssert !== null) {
+    const [source, literalText, countText] = countAssert;
+    const literal = decodePythonString(literalText);
+    if (literal === null || literal.length === 0 || !ctx.texts.has(source)) {
       return rejectPython('unsupported-dataflow', 'Python count assertion is not tied to a direct text read');
     }
-    ctx.countAssertions.set(`${match[1]}\0${literal}`, Number.parseInt(match[3], 10));
+    ctx.countAssertions.set(`${source}\0${literal}`, Number.parseInt(countText, 10));
     return undefined;
   }
 
-  match = statement.match(PYTHON_INDEX_ANCHOR_PATTERN);
-  if (match !== null) {
-    const literal = decodePythonString(match[3]);
-    if (literal === null || literal.length === 0 || !ctx.texts.has(match[2])) {
+  const indexAnchor = matchGroups(statement, PYTHON_INDEX_ANCHOR_PATTERN, 3);
+  if (indexAnchor !== null) {
+    const [name, source, literalText] = indexAnchor;
+    const literal = decodePythonString(literalText);
+    if (literal === null || literal.length === 0 || !ctx.texts.has(source)) {
       return rejectPython('unsupported-dataflow', 'Python index anchor is not tied to a direct text read');
     }
-    ctx.anchors.set(match[1], { source: match[2], literal });
+    ctx.anchors.set(name, { source, literal });
     return undefined;
   }
 
-  match = statement.match(PYTHON_LINE_ARRAY_PATTERN);
-  if (match !== null) {
-    const binding = ctx.paths.get(match[2]);
+  const lineArray = matchGroups(statement, PYTHON_LINE_ARRAY_PATTERN, 2);
+  if (lineArray !== null) {
+    const [name, pathName] = lineArray;
+    const binding = ctx.paths.get(pathName);
     if (binding === undefined) return rejectPython('dynamic-path', 'Python line-array target is not literal');
-    ctx.lines.set(match[1], { path: binding.path, edits: new Map() });
+    ctx.lines.set(name, { path: binding.path, edits: new Map() });
     return undefined;
   }
-  match = statement.match(PYTHON_LINE_EDIT_PATTERN);
-  if (match !== null) {
-    const array = ctx.lines.get(match[1]);
-    const value = decodePythonString(match[3]);
+  const lineEdit = matchGroups(statement, PYTHON_LINE_EDIT_PATTERN, 3);
+  if (lineEdit !== null) {
+    const [name, indexText, valueLiteral] = lineEdit;
+    const array = ctx.lines.get(name);
+    const value = decodePythonString(valueLiteral);
     if (array === undefined || value === null)
       return rejectPython('unsupported-dataflow', 'line edit is not a bounded literal array edit');
-    array.edits.set(Number.parseInt(match[2], 10), value);
+    array.edits.set(Number.parseInt(indexText, 10), value);
     return undefined;
   }
 
-  match = statement.match(PYTHON_STRUCTURED_LOAD_PATTERN);
-  if (match !== null) {
-    const binding = ctx.paths.get(match[3]);
+  const structuredLoad = matchGroups(statement, PYTHON_STRUCTURED_LOAD_PATTERN, 3);
+  if (structuredLoad !== null) {
+    const [name, loader, pathName] = structuredLoad;
+    const binding = ctx.paths.get(pathName);
     if (binding === undefined) return rejectPython('dynamic-path', 'structured Python load target is not literal');
-    const format = match[2] === 'tomllib' ? 'toml' : (match[2] as 'json' | 'yaml');
-    ctx.structured.set(match[1], { format, path: binding.path, keys: [] });
+    const format = loader === 'tomllib' ? 'toml' : loader === 'json' ? 'json' : 'yaml';
+    ctx.structured.set(name, { format, path: binding.path, keys: [] });
     return undefined;
   }
-  match = statement.match(PYTHON_STRUCTURED_ASSIGN_PATTERN);
-  if (match !== null && ctx.structured.has(match[1])) {
-    const keys = [...match[2].matchAll(PYTHON_STRUCTURED_KEY_SCAN_PATTERN)].map((key) => decodePythonString(key[1]));
-    if (keys.length === 0 || keys.some((key) => key === null)) {
-      return rejectPython('unsupported-expression', 'structured Python mutation requires literal string keys');
+  const structuredAssign = matchGroups(statement, PYTHON_STRUCTURED_ASSIGN_PATTERN, 2);
+  const structuredTarget = structuredAssign === null ? undefined : ctx.structured.get(structuredAssign[0]);
+  if (structuredAssign !== null && structuredTarget !== undefined) {
+    const keys: string[] = [];
+    for (const [, keyLiteral] of structuredAssign[1].matchAll(PYTHON_STRUCTURED_KEY_SCAN_PATTERN)) {
+      const key = keyLiteral === undefined ? null : decodePythonString(keyLiteral);
+      if (key === null) return rejectStructuredPythonKeys();
+      keys.push(key);
     }
-    ctx.structured.get(match[1])!.keys.push(keys as string[]);
+    if (keys.length === 0) return rejectStructuredPythonKeys();
+    structuredTarget.keys.push(keys);
     return undefined;
   }
 
-  match = statement.match(PYTHON_APPEND_PATTERN);
-  if (match !== null) {
-    const binding = ctx.paths.get(match[1]);
-    const mode = decodePythonString(match[2]);
-    const written = decodePythonString(match[3]);
+  const append = matchGroups(statement, PYTHON_APPEND_PATTERN, 3);
+  if (append !== null) {
+    const [pathName, modeLiteral, writtenLiteral] = append;
+    const binding = ctx.paths.get(pathName);
+    const mode = decodePythonString(modeLiteral);
+    const written = decodePythonString(writtenLiteral);
     if (binding === undefined) return rejectPython('dynamic-path', 'Python append target is not literal');
     if (mode !== 'a' || written === null)
       return rejectPython('unsupported-expression', 'only literal text append mode is supported');
@@ -1070,12 +1092,13 @@ function consumePythonStatement(
     return undefined;
   }
 
-  match = statement.match(PYTHON_WRITE_TARGET_PATTERN);
-  if (match !== null) {
-    const binding = ctx.paths.get(match[1]);
+  const writeTarget = matchGroups(statement, PYTHON_WRITE_TARGET_PATTERN, 2);
+  if (writeTarget !== null) {
+    const [pathName, expression] = writeTarget;
+    const binding = ctx.paths.get(pathName);
     if (binding === undefined) return rejectPython('dynamic-path', 'Python write target is not literal');
     const absolutePath = nodePath.resolve(ctx.cwd, binding.path);
-    return resolvePythonWriteSink(ctx, match[2].trim(), absolutePath);
+    return resolvePythonWriteSink(ctx, expression.trim(), absolutePath);
   }
 
   return 'unmatched';
@@ -1179,10 +1202,28 @@ interface NodeStructuredValue {
   readonly keys: string[][];
 }
 
+const NODE_FS_METHODS = ['readFileSync', 'writeFileSync', 'appendFileSync'] as const;
+type NodeFsMethod = (typeof NODE_FS_METHODS)[number];
+
+/** Narrows a captured method name to one of the three allowlisted sync fs methods. */
+function toNodeFsMethod(name: string): NodeFsMethod | null {
+  return NODE_FS_METHODS.find((method) => method === name) ?? null;
+}
+
 const NODE_STRING_SOURCE = String.raw`(?:'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")`;
 const NODE_NAME_SOURCE = `[A-Za-z_$][A-Za-z0-9_$]*`;
 
 const NODE_FS_MEMBER_PATTERN = new RegExp(`^(${NODE_NAME_SOURCE})\\.(readFileSync|writeFileSync|appendFileSync)$`);
+const NODE_REQUIRE_FS_MEMBER_PATTERN = /^require\((['"])(?:node:)?fs\1\)\.(readFileSync|writeFileSync|appendFileSync)$/;
+const NODE_REQUIRE_FS_CALL_PATTERN =
+  /^(require\((['"])(?:node:)?fs\2\)\.(?:readFileSync|writeFileSync|appendFileSync))\(([\s\S]*)\)$/;
+const NODE_NAMED_CALL_PATTERN = /^([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)?)\(([\s\S]*)\)$/;
+const NODE_REQUIRE_FS_DESTRUCTURE_PATTERN = /^const\s+\{([^}]+)\}\s*=\s*require\((['"])(?:node:)?fs\2\)$/;
+const NODE_FS_DESTRUCTURE_ENTRY_PATTERN =
+  /^(readFileSync|writeFileSync|appendFileSync)(?:\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*))?$/;
+const NODE_JSON_STRINGIFY_PATTERN = /^JSON\.stringify\(([A-Za-z_$][A-Za-z0-9_$]*)(?:\s*,\s*null\s*,\s*\d+)?\)$/;
+const NODE_DIRECT_JSON_PARSE_PATTERN = /^JSON\.parse\((.+)\)$/;
+const NODE_LITERAL_VALUE_PATTERN = /^(?:true|false|null|-?\d+(?:\.\d+)?|(?:'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"))$/;
 const NODE_REQUIRE_FS_PATTERN = new RegExp(
   `^(?:const|let|var)\\s+(${NODE_NAME_SOURCE})\\s*=\\s*require\\((['"])(?:node:)?fs\\2\\)$`
 );
@@ -1385,17 +1426,18 @@ function emitPythonAnchorSlice(
   expression: string,
   absolutePath: string
 ): LayeredParseResult | 'unmatched' | undefined {
-  const slice = expression.match(PYTHON_ANCHOR_SLICE_PATTERN);
+  const slice = matchGroups(expression, PYTHON_ANCHOR_SLICE_PATTERN, 4);
   if (slice === null) return 'unmatched';
-  const anchor = ctx.anchors.get(slice[2]);
-  const read = ctx.texts.get(slice[1]);
-  const replacementText = decodePythonString(slice[3]);
+  const [source, anchorName, replacementLiteral, anchorLengthText] = slice;
+  const anchor = ctx.anchors.get(anchorName);
+  const read = ctx.texts.get(source);
+  const replacementText = decodePythonString(replacementLiteral);
   if (
     anchor === undefined ||
     read === undefined ||
-    anchor.source !== slice[1] ||
+    anchor.source !== source ||
     replacementText === null ||
-    Number.parseInt(slice[4], 10) !== anchor.literal.length ||
+    Number.parseInt(anchorLengthText, 10) !== anchor.literal.length ||
     nodePath.resolve(ctx.cwd, read.path) !== absolutePath
   ) {
     return rejectPython(
@@ -1407,14 +1449,14 @@ function emitPythonAnchorSlice(
   const content = readPythonPreState(ctx, absolutePath, ['match-locations', 'deleted-text']);
   if (typeof content !== 'string') return content;
   const offset = content.indexOf(anchor.literal);
-  if (offset < 0)
+  const [range] = literalOccurrenceRanges(content, anchor.literal);
+  if (offset < 0 || range === undefined)
     return rejectPython(
       'evidence-mismatch',
       'Python slice anchor is absent from pre-state',
       absolutePath,
       ctx.preStateRequests
     );
-  const range = literalOccurrenceRanges(content, anchor.literal)[0];
   ctx.resolved.push({
     status: 'resolved',
     layer: 'python',
@@ -1442,11 +1484,12 @@ function emitPythonLineJoin(
   expression: string,
   absolutePath: string
 ): LayeredParseResult | 'unmatched' | undefined {
-  const lineJoin = expression.match(PYTHON_LINE_JOIN_PATTERN);
+  const lineJoin = matchGroups(expression, PYTHON_LINE_JOIN_PATTERN, 2);
   if (lineJoin === null) return 'unmatched';
-  const delimiter = decodePythonString(lineJoin[1]);
-  const array = ctx.lines.get(lineJoin[2]);
-  const suffix = lineJoin[3] === undefined ? '' : decodePythonString(lineJoin[3]);
+  const [delimiterLiteral, arrayName, suffixLiteral] = lineJoin;
+  const delimiter = decodePythonString(delimiterLiteral);
+  const array = ctx.lines.get(arrayName);
+  const suffix = suffixLiteral === undefined ? '' : decodePythonString(suffixLiteral);
   if (delimiter !== '\n' || array === undefined || suffix === null || (suffix !== '' && suffix !== '\n')) {
     return rejectPython('unsupported-expression', 'line-array writes require a literal newline join', absolutePath);
   }
@@ -1502,10 +1545,15 @@ function emitPythonStructuredDump(
   expression: string,
   absolutePath: string
 ): LayeredParseResult | 'unmatched' | undefined {
-  const structuredSink = expression.match(/^(json|tomli_w|toml|yaml)\.(dumps|safe_dump)\(([A-Za-z_][A-Za-z0-9_]*)\)$/);
+  const structuredSink = matchGroups(
+    expression,
+    /^(json|tomli_w|toml|yaml)\.(dumps|safe_dump)\(([A-Za-z_][A-Za-z0-9_]*)\)$/,
+    3
+  );
   if (structuredSink === null) return 'unmatched';
-  const value = ctx.structured.get(structuredSink[3]);
-  const sinkFormat = structuredSink[1] === 'json' ? 'json' : structuredSink[1] === 'yaml' ? 'yaml' : 'toml';
+  const [dumper, , valueName] = structuredSink;
+  const value = ctx.structured.get(valueName);
+  const sinkFormat = dumper === 'json' ? 'json' : dumper === 'yaml' ? 'yaml' : 'toml';
   if (
     value === undefined ||
     value.format !== sinkFormat ||
@@ -1521,9 +1569,9 @@ function emitPythonStructuredDump(
   const content = readPythonPreState(ctx, absolutePath, ['match-locations']);
   if (typeof content !== 'string') return content;
   for (const keyPath of value.keys) {
-    const key = keyPath.at(-1)!;
-    const ranges = structuredKeyRanges(content, value.format, key);
-    if (ranges.length !== 1) {
+    const key = keyPath.at(-1);
+    const [range, ...ambiguous] = key === undefined ? [] : structuredKeyRanges(content, value.format, key);
+    if (range === undefined || ambiguous.length > 0) {
       return rejectPython(
         'unsupported-expression',
         'structured literal key is absent or ambiguous in pre-state',
@@ -1538,8 +1586,8 @@ function emitPythonStructuredDump(
       span: {
         operation: 'modify',
         absolutePath,
-        lineStart: ranges[0].start,
-        lineEnd: ranges[0].end,
+        lineStart: range.start,
+        lineEnd: range.end,
         simpleCommandIndex: 0
       }
     });
@@ -1576,16 +1624,19 @@ export function resolvePythonWriteSink(
     });
     return undefined;
   }
-  const directReplace = expression.match(PYTHON_DIRECT_REPLACE_PATTERN);
-  const replacement =
-    directReplace === null
-      ? ctx.replacements.get(expression)
-      : {
-          source: directReplace[1],
-          pattern: decodePythonString(directReplace[2]) ?? '',
-          replacement: decodePythonString(directReplace[3]) ?? '',
-          count: directReplace[4] === undefined ? undefined : Number.parseInt(directReplace[4], 10)
-        };
+  const directReplace = matchGroups(expression, PYTHON_DIRECT_REPLACE_PATTERN, 3);
+  let replacement: PythonReplacement | undefined;
+  if (directReplace === null) {
+    replacement = ctx.replacements.get(expression);
+  } else {
+    const [source, patternLiteral, replacementLiteral, countText] = directReplace;
+    replacement = {
+      source,
+      pattern: decodePythonString(patternLiteral) ?? '',
+      replacement: decodePythonString(replacementLiteral) ?? '',
+      count: countText === undefined ? undefined : Number.parseInt(countText, 10)
+    };
+  }
   if (replacement !== undefined) {
     const rejected = emitPythonReplace(ctx, absolutePath, replacement);
     if (rejected !== null) return rejected;
@@ -1609,7 +1660,7 @@ interface NodeRecognizerContext {
   readonly cwd: string;
   readonly options: LayeredParseOptions;
   readonly fsNamespaces: Set<string>;
-  readonly fsFunctions: Map<string, 'readFileSync' | 'writeFileSync' | 'appendFileSync'>;
+  readonly fsFunctions: Map<string, NodeFsMethod>;
   readonly paths: Map<string, NodePathBinding>;
   readonly texts: Map<string, NodeTextBinding>;
   readonly replacements: Map<string, NodeReplacement>;
@@ -1704,18 +1755,16 @@ function nodeResolvePathExpression(ctx: NodeRecognizerContext, expression: strin
 }
 
 /** Resolves a callee expression to one of the three allowlisted sync fs methods. */
-function nodeFsMethod(
-  ctx: NodeRecognizerContext,
-  callee: string
-): 'readFileSync' | 'writeFileSync' | 'appendFileSync' | null {
+function nodeFsMethod(ctx: NodeRecognizerContext, callee: string): NodeFsMethod | null {
   const bare = ctx.fsFunctions.get(callee);
   if (bare !== undefined) return bare;
-  const member = callee.match(NODE_FS_MEMBER_PATTERN);
-  if (member !== null && ctx.fsNamespaces.has(member[1])) {
-    return member[2] as 'readFileSync' | 'writeFileSync' | 'appendFileSync';
+  const member = matchGroups(callee, NODE_FS_MEMBER_PATTERN, 2);
+  if (member !== null) {
+    const [namespace, method] = member;
+    return ctx.fsNamespaces.has(namespace) ? toNodeFsMethod(method) : null;
   }
-  const required = callee.match(/^require\((['"])(?:node:)?fs\1\)\.(readFileSync|writeFileSync|appendFileSync)$/);
-  return (required?.[2] as 'readFileSync' | 'writeFileSync' | 'appendFileSync' | undefined) ?? null;
+  const required = matchGroups(callee, NODE_REQUIRE_FS_MEMBER_PATTERN, 2);
+  return required === null ? null : toNodeFsMethod(required[1]);
 }
 
 /** Parses an fs call shape into method + split arguments, or null when not an allowlisted call. */
@@ -1723,15 +1772,14 @@ function nodeParseCall(
   ctx: NodeRecognizerContext,
   expression: string
 ): { readonly method: ReturnType<typeof nodeFsMethod>; readonly args: readonly string[] } | null {
-  const call =
-    expression
-      .trim()
-      .match(/^(require\((['"])(?:node:)?fs\2\)\.(?:readFileSync|writeFileSync|appendFileSync))\(([\s\S]*)\)$/) ??
-    expression.trim().match(/^([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)?)\(([\s\S]*)\)$/);
-  if (call === null) return null;
-  const method = nodeFsMethod(ctx, call[1].trim());
+  const trimmed = expression.trim();
+  const requireCall = matchGroups(trimmed, NODE_REQUIRE_FS_CALL_PATTERN, 3);
+  const namedCall = requireCall === null ? matchGroups(trimmed, NODE_NAMED_CALL_PATTERN, 2) : null;
+  const [callee, argumentText] = requireCall === null ? (namedCall ?? []) : [requireCall[0], requireCall[2]];
+  if (callee === undefined || argumentText === undefined) return null;
+  const method = nodeFsMethod(ctx, callee.trim());
   if (method === null) return null;
-  const args = splitNodeArguments(call.length === 4 ? call[3] : call[2]);
+  const args = splitNodeArguments(argumentText);
   return args === null ? null : { method, args };
 }
 
@@ -1794,6 +1842,10 @@ function emitNodeReplacement(
   return null;
 }
 
+function rejectStructuredNodeKeys(): LayeredParseResult {
+  return rejectNode('unsupported-expression', 'structured Node mutation requires literal property keys');
+}
+
 /**
  * One pass of the Node statement machines over a single statement, in
  * fixed left-to-right order: fs require tables, path/string bindings with
@@ -1807,45 +1859,46 @@ function consumeNodeStatement(
   statement: string,
   ctx: NodeRecognizerContext
 ): LayeredParseResult | 'unmatched' | undefined {
-  let match = statement.match(NODE_REQUIRE_FS_PATTERN);
-  if (match !== null) {
-    ctx.fsNamespaces.add(match[1]);
+  const requireFs = matchGroups(statement, NODE_REQUIRE_FS_PATTERN, 1);
+  if (requireFs !== null) {
+    ctx.fsNamespaces.add(requireFs[0]);
     return undefined;
   }
-  match = statement.match(/^const\s+\{([^}]+)\}\s*=\s*require\((['"])(?:node:)?fs\2\)$/);
-  if (match !== null) {
-    for (const entry of match[1].split(',')) {
-      const binding = entry
-        .trim()
-        .match(/^(readFileSync|writeFileSync|appendFileSync)(?:\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*))?$/);
-      if (binding === null)
+  const destructure = matchGroups(statement, NODE_REQUIRE_FS_DESTRUCTURE_PATTERN, 1);
+  if (destructure !== null) {
+    for (const entry of destructure[0].split(',')) {
+      const binding = matchGroups(entry.trim(), NODE_FS_DESTRUCTURE_ENTRY_PATTERN, 1);
+      const method = binding === null ? null : toNodeFsMethod(binding[0]);
+      if (binding === null || method === null)
         return rejectNode('unsupported-syntax', 'Node fs destructuring contains an unsupported binding');
-      ctx.fsFunctions.set(binding[2] ?? binding[1], binding[1] as 'readFileSync' | 'writeFileSync' | 'appendFileSync');
+      ctx.fsFunctions.set(binding[1] ?? method, method);
     }
     return undefined;
   }
 
-  match = statement.match(NODE_STRING_DECL_PATTERN);
-  if (match !== null) {
-    const path = decodeNodeString(match[2]);
+  const stringDecl = matchGroups(statement, NODE_STRING_DECL_PATTERN, 2);
+  if (stringDecl !== null) {
+    const [name, literal] = stringDecl;
+    const path = decodeNodeString(literal);
     if (path === null) return rejectNode('unsupported-syntax', 'Node string literal uses an unsupported escape');
-    ctx.paths.set(match[1], { path, depth: 0 });
+    ctx.paths.set(name, { path, depth: 0 });
     return undefined;
   }
-  match = statement.match(NODE_NAME_ALIAS_PATTERN);
-  if (match !== null) {
-    const source = ctx.paths.get(match[2]);
+  const nameAlias = matchGroups(statement, NODE_NAME_ALIAS_PATTERN, 2);
+  if (nameAlias !== null) {
+    const [name, sourceName] = nameAlias;
+    const source = ctx.paths.get(sourceName);
     if (source === undefined || source.depth !== 0) {
       return rejectNode('unsupported-dataflow', 'Node path aliases are limited to one literal hop');
     }
-    ctx.paths.set(match[1], { path: source.path, depth: 1 });
+    ctx.paths.set(name, { path: source.path, depth: 1 });
     return undefined;
   }
 
-  match = statement.match(NODE_GENERIC_DECL_PATTERN);
-  if (match !== null) {
-    const name = match[1];
-    const expression = match[2].trim();
+  const genericDecl = matchGroups(statement, NODE_GENERIC_DECL_PATTERN, 2);
+  if (genericDecl !== null) {
+    const [name, initializer] = genericDecl;
+    const expression = initializer.trim();
     const call = nodeParseCall(ctx, expression);
     if (call?.method === 'readFileSync') {
       const binding = call.args[0] === undefined ? null : nodeResolvePathExpression(ctx, call.args[0]);
@@ -1860,34 +1913,35 @@ function consumeNodeStatement(
       return undefined;
     }
 
-    const replacement = expression.match(NODE_REPLACE_CALL_PATTERN);
+    const replacement = matchGroups(expression, NODE_REPLACE_CALL_PATTERN, 4);
     if (replacement !== null) {
-      if (!ctx.texts.has(replacement[1]))
+      const [source, replaceMethod, patternLiteral, replacementLiteral] = replacement;
+      if (!ctx.texts.has(source))
         return rejectNode('unsupported-dataflow', 'Node replace source is not a direct text read');
-      const pattern = decodeNodeString(replacement[3]);
-      const replacementText = decodeNodeString(replacement[4]);
+      const pattern = decodeNodeString(patternLiteral);
+      const replacementText = decodeNodeString(replacementLiteral);
       if (pattern === null || pattern.length === 0 || replacementText === null || replacementText.includes('$')) {
         return rejectNode('unsupported-expression', 'Node replace requires non-empty literal input');
       }
       ctx.replacements.set(name, {
-        source: replacement[1],
+        source,
         pattern,
         replacement: replacementText,
-        global: replacement[2] === 'replaceAll'
+        global: replaceMethod === 'replaceAll'
       });
       return undefined;
     }
 
-    const parsedJson = expression.match(NODE_JSON_PARSE_PATTERN);
+    const parsedJson = matchGroups(expression, NODE_JSON_PARSE_PATTERN, 1);
     if (parsedJson !== null) {
-      const text = ctx.texts.get(parsedJson[1]);
+      const text = ctx.texts.get(parsedJson[0]);
       if (text === undefined) return rejectNode('unsupported-dataflow', 'JSON.parse source is not a direct text read');
       ctx.structured.set(name, { path: text.path, keys: [] });
       return undefined;
     }
-    const directJson = expression.match(/^JSON\.parse\((.+)\)$/);
+    const directJson = matchGroups(expression, NODE_DIRECT_JSON_PARSE_PATTERN, 1);
     if (directJson !== null) {
-      const read = nodeParseCall(ctx, directJson[1]);
+      const read = nodeParseCall(ctx, directJson[0]);
       if (read?.method !== 'readFileSync' || read.args[0] === undefined) {
         return rejectNode('unsupported-dataflow', 'JSON.parse source is not a direct Node text read');
       }
@@ -1903,27 +1957,32 @@ function consumeNodeStatement(
     return rejectNode('unsupported-dataflow', 'Node variable initializer is outside the bounded allowlist');
   }
 
-  match = statement.match(NODE_STRUCTURED_ASSIGN_PATTERN);
-  if (match !== null && ctx.structured.has(match[1])) {
-    const keySegments = [...match[2].matchAll(NODE_KEY_SEGMENT_SCAN_PATTERN)];
-    const keys = keySegments.map((segment) => segment[1] ?? decodeNodeString(segment[2]));
-    if (keys.length === 0 || keys.some((key) => key === null)) {
-      return rejectNode('unsupported-expression', 'structured Node mutation requires literal property keys');
+  const structuredAssign = matchGroups(statement, NODE_STRUCTURED_ASSIGN_PATTERN, 3);
+  const structuredTarget = structuredAssign === null ? undefined : ctx.structured.get(structuredAssign[0]);
+  if (structuredAssign !== null && structuredTarget !== undefined) {
+    const [, keyPath, value] = structuredAssign;
+    const keys: string[] = [];
+    for (const [, propertyName, keyLiteral] of keyPath.matchAll(NODE_KEY_SEGMENT_SCAN_PATTERN)) {
+      const key = propertyName ?? (keyLiteral === undefined ? null : decodeNodeString(keyLiteral));
+      if (key === null) return rejectStructuredNodeKeys();
+      keys.push(key);
     }
-    if (!/^(?:true|false|null|-?\d+(?:\.\d+)?|(?:'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"))$/.test(match[3].trim())) {
+    if (keys.length === 0) return rejectStructuredNodeKeys();
+    if (!NODE_LITERAL_VALUE_PATTERN.test(value.trim())) {
       return rejectNode('unsupported-expression', 'structured Node mutation requires a literal value');
     }
-    ctx.structured.get(match[1])!.keys.push(keys as string[]);
+    structuredTarget.keys.push(keys);
     return undefined;
   }
 
-  match = statement.match(NODE_COUNT_GUARD_PATTERN);
-  if (match !== null) {
-    const literal = decodeNodeString(match[2]);
-    if (literal === null || literal.length === 0 || !ctx.texts.has(match[1])) {
+  const countGuard = matchGroups(statement, NODE_COUNT_GUARD_PATTERN, 3);
+  if (countGuard !== null) {
+    const [textName, literalSource, countText] = countGuard;
+    const literal = decodeNodeString(literalSource);
+    if (literal === null || literal.length === 0 || !ctx.texts.has(textName)) {
       return rejectNode('unsupported-dataflow', 'Node count guard is not tied to a direct text read');
     }
-    ctx.countAssertions.set(`${match[1]}\0${literal}`, Number.parseInt(match[3], 10));
+    ctx.countAssertions.set(`${textName}\0${literal}`, Number.parseInt(countText, 10));
     return undefined;
   }
 
@@ -1963,14 +2022,15 @@ function consumeNodeStatement(
   if (call?.method === 'writeFileSync') {
     const binding = call.args[0] === undefined ? null : nodeResolvePathExpression(ctx, call.args[0]);
     if (binding === null) return rejectNode('dynamic-path', 'Node write target is not a literal path binding');
-    if (call.args.length < 2 || call.args.length > 3)
+    const writtenExpression = call.args[1];
+    if (writtenExpression === undefined || call.args.length > 3)
       return rejectNode('unsupported-syntax', 'Node writeFileSync call has unsupported arguments', binding.path);
     const encoding = call.args[2] === undefined ? 'utf8' : decodeNodeString(call.args[2]);
     if (encoding !== 'utf8' && encoding !== 'utf-8') {
       return rejectNode('unsupported-encoding', 'Node write requires default or UTF-8 encoding', binding.path);
     }
     const absolutePath = nodePath.resolve(ctx.cwd, binding.path);
-    return resolveNodeWriteSink(ctx, call.args[1], absolutePath);
+    return resolveNodeWriteSink(ctx, writtenExpression, absolutePath);
   }
   return 'unmatched';
 }
@@ -2089,16 +2149,19 @@ export function resolveNodeWriteSink(
     });
     return undefined;
   }
-  const directReplacement = expression.match(NODE_REPLACE_CALL_PATTERN);
-  const replacement =
-    directReplacement === null
-      ? ctx.replacements.get(expression)
-      : {
-          source: directReplacement[1],
-          pattern: decodeNodeString(directReplacement[3]) ?? '',
-          replacement: decodeNodeString(directReplacement[4]) ?? '',
-          global: directReplacement[2] === 'replaceAll'
-        };
+  const directReplacement = matchGroups(expression, NODE_REPLACE_CALL_PATTERN, 4);
+  let replacement: NodeReplacement | undefined;
+  if (directReplacement === null) {
+    replacement = ctx.replacements.get(expression);
+  } else {
+    const [source, replaceMethod, patternLiteral, replacementLiteral] = directReplacement;
+    replacement = {
+      source,
+      pattern: decodeNodeString(patternLiteral) ?? '',
+      replacement: decodeNodeString(replacementLiteral) ?? '',
+      global: replaceMethod === 'replaceAll'
+    };
+  }
   if (replacement !== undefined) {
     if (replacement.pattern.length === 0 || replacement.replacement.includes('$')) {
       return rejectNode('unsupported-expression', 'Node replace requires non-empty literal input', absolutePath);
@@ -2121,9 +2184,9 @@ function emitNodeStructuredDump(
   expression: string,
   absolutePath: string
 ): LayeredParseResult | 'unmatched' | undefined {
-  const serialized = expression.match(/^JSON\.stringify\(([A-Za-z_$][A-Za-z0-9_$]*)(?:\s*,\s*null\s*,\s*\d+)?\)$/);
+  const serialized = matchGroups(expression, NODE_JSON_STRINGIFY_PATTERN, 1);
   if (serialized === null) return 'unmatched';
-  const value = ctx.structured.get(serialized[1]);
+  const value = ctx.structured.get(serialized[0]);
   if (value === undefined || nodePath.resolve(ctx.cwd, value.path) !== absolutePath || value.keys.length === 0) {
     return rejectNode(
       'unsupported-dataflow',
@@ -2134,9 +2197,9 @@ function emitNodeStructuredDump(
   const content = readNodePreState(ctx, absolutePath, 'modify', ['match-locations']);
   if (typeof content !== 'string') return content;
   for (const keyPath of value.keys) {
-    const key = keyPath.at(-1)!;
-    const ranges = structuredKeyRanges(content, 'json', key);
-    if (ranges.length !== 1) {
+    const key = keyPath.at(-1);
+    const [range, ...ambiguous] = key === undefined ? [] : structuredKeyRanges(content, 'json', key);
+    if (range === undefined || ambiguous.length > 0) {
       return rejectNode(
         'unsupported-expression',
         'structured literal key is absent or ambiguous in pre-state',
@@ -2151,13 +2214,35 @@ function emitNodeStructuredDump(
       span: {
         operation: 'modify',
         absolutePath,
-        lineStart: ranges[0].start,
-        lineEnd: ranges[0].end,
+        lineStart: range.start,
+        lineEnd: range.end,
         simpleCommandIndex: 0
       }
     });
   }
   return undefined;
+}
+
+/** A literal line address (`3s…` or `3,5s…`) prefixing a sed substitution. */
+export interface NumericSedAddress {
+  readonly start: number;
+  readonly end: number;
+  /** Offset of the `s` command within the script, just past the address. */
+  readonly commandOffset: number;
+}
+
+const NUMERIC_SED_ADDRESS_PATTERN = /^(\d+)(?:,(\d+))?s\W/;
+
+/** Parses the literal line address of a numeric sed substitution, or null when the script has none. */
+export function parseNumericSedAddress(script: string): NumericSedAddress | null {
+  const address = matchGroups(script, NUMERIC_SED_ADDRESS_PATTERN, 1);
+  if (address === null) return null;
+  const [startText, endText] = address;
+  return {
+    start: Number.parseInt(startText, 10),
+    end: Number.parseInt(endText ?? startText, 10),
+    commandOffset: endText === undefined ? startText.length : startText.length + 1 + endText.length
+  };
 }
 
 /**
@@ -2242,7 +2327,7 @@ function numericSedForFile(
 
 export function resolveNumericSed(
   patternCommand: PatternCommand,
-  numericMatch: RegExpMatchArray,
+  address: NumericSedAddress,
   options: LayeredParseOptions,
   cwd: string,
   maxCandidates: number
@@ -2256,9 +2341,8 @@ export function resolveNumericSed(
       preStateRequests: []
     };
   }
-  const start = Number.parseInt(numericMatch[1], 10);
-  const end = Number.parseInt(numericMatch[2] ?? numericMatch[1], 10);
-  const substitution = parseLiteralSubstitution(patternCommand.script.slice(numericMatch[0].indexOf('s')));
+  const { start, end } = address;
+  const substitution = parseLiteralSubstitution(patternCommand.script.slice(address.commandOffset));
   if (substitution === null) {
     return {
       resolved: [],
@@ -2463,8 +2547,10 @@ function substituteOneFile(
     const addressedLines = new Set(literalOccurrenceRanges(content, addressLiteral).map(({ start }) => start));
     ranges = ranges.filter(({ start, end }) => start === end && addressedLines.has(start));
   }
-  if (patternCommand.kind === 'perl' && ranges.length > 1) {
-    ranges = [{ start: ranges[0].start, end: ranges[ranges.length - 1].end }];
+  const [firstRange] = ranges;
+  const lastRange = ranges.at(-1);
+  if (patternCommand.kind === 'perl' && firstRange !== undefined && lastRange !== undefined && ranges.length > 1) {
+    ranges = [{ start: firstRange.start, end: lastRange.end }];
   } else if (patternCommand.kind === 'perl-zero' && !substitution.global) {
     ranges = ranges.slice(0, 1);
   }
@@ -2788,6 +2874,7 @@ export function parseCompoundStages(
   const preStateRequests: PreStateRequest[] = [];
   for (let index = 0; index < split.stages.length; index += 1) {
     const stage = split.stages[index];
+    if (stage === undefined) break;
     const child = parse(stage.text, options);
     const join: ResolvedSpan['join'] = stage.precededBy === 'and' ? '&&' : stage.precededBy === 'or' ? '||' : undefined;
     resolved.push(
@@ -2818,11 +2905,12 @@ function resolvePatternStage(
   cwd: string,
   maxCandidates: number
 ): LayeredParseResult | null {
-  const patternCommand =
-    split.malformed === undefined && split.stages.length === 1 ? parsePatternCommand(split.stages[0].text) : null;
+  if (split.malformed !== undefined) return null;
+  const [stage, ...otherStages] = split.stages;
+  const patternCommand = stage === undefined || otherStages.length > 0 ? null : parsePatternCommand(stage.text);
   if (patternCommand === null) return null;
-  const numericMatch = patternCommand.kind === 'sed' ? patternCommand.script.match(/^(\d+)(?:,(\d+))?s\W/) : null;
-  if (numericMatch !== null) return resolveNumericSed(patternCommand, numericMatch, options, cwd, maxCandidates);
+  const numericAddress = patternCommand.kind === 'sed' ? parseNumericSedAddress(patternCommand.script) : null;
+  if (numericAddress !== null) return resolveNumericSed(patternCommand, numericAddress, options, cwd, maxCandidates);
   return resolvePatternSubstitution(patternCommand, options, cwd, maxCandidates);
 }
 
@@ -2840,7 +2928,10 @@ function historyOrGeneratorRefusal(argv: readonly string[]): LayeredParseResult 
       preStateRequests: []
     };
   }
-  if (['yarn', 'npm', 'pnpm', 'make'].includes(argv[0]) && /(?:generate|build|install)/.test(argv.slice(1).join(' '))) {
+  if (
+    ['yarn', 'npm', 'pnpm', 'make'].includes(argv[0] ?? '') &&
+    /(?:generate|build|install)/.test(argv.slice(1).join(' '))
+  ) {
     return {
       resolved: [],
       unresolved: [
@@ -2891,6 +2982,9 @@ function parseShellFallback(command: string, options: LayeredParseOptions, maxCa
   return { resolved, unresolved: unresolvedMatches, preStateRequests: [] };
 }
 
+const LITERAL_LIST_LOOP_PATTERN =
+  /^for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+([\s\S]*?)\s*;\s*do\s+([\s\S]*?)\s*;\s*done\s*$/;
+
 /**
  * The layered scheduler: entry budget validation, then interpreter sentinels,
  * the literal-list loop and compound-stage machines, the pattern stage
@@ -2909,11 +3003,11 @@ export function parseCommandLayered(command: string, options: LayeredParseOption
   const interpreted = parseInterpreterAttribution(command, options);
   if (interpreted !== null) return interpreted;
 
-  const loop = command
-    .trim()
-    .match(/^for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+([\s\S]*?)\s*;\s*do\s+([\s\S]*?)\s*;\s*done\s*$/);
-  if (loop !== null)
-    return parseLiteralListLoop(loop[1], loop[2], loop[3], options, maxCandidates, parseCommandLayered);
+  const loop = matchGroups(command.trim(), LITERAL_LIST_LOOP_PATTERN, 3);
+  if (loop !== null) {
+    const [variable, listText, body] = loop;
+    return parseLiteralListLoop(variable, listText, body, options, maxCandidates, parseCommandLayered);
+  }
 
   const split = splitTopLevel(command);
   const compound = parseCompoundStages(command, split, options, maxCandidates, parseCommandLayered);

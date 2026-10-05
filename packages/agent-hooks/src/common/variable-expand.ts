@@ -66,7 +66,7 @@ export function expandVariables(
   let inSingle = false;
   let inDouble = false;
   while (i < n) {
-    const c = text[i];
+    const c = text.charAt(i);
     if (inSingle) {
       // Single-quoted spans are fully literal — `$` and `\` included.
       if (c === "'") inSingle = false;
@@ -81,10 +81,11 @@ export function expandVariables(
         i++;
         continue;
       }
-      if (c === '\\' && i + 1 < n && '"\\$`'.includes(text[i + 1])) {
+      const escaped = text.charAt(i + 1);
+      if (c === '\\' && i + 1 < n && '"\\$`'.includes(escaped)) {
         // Inside double quotes backslash escapes `"` `\` `$` `` ` `` — the
         // escaped character stays literal (no expansion of `\$`).
-        out += text[i + 1];
+        out += escaped;
         i += 2;
         continue;
       }

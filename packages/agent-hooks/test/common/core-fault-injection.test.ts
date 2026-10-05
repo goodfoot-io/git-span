@@ -18,6 +18,7 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { DriftPorcelainRow, PorcelainRow } from '../../src/common/agent-hooks-common.js';
+import { FAIL_OPEN_MESSAGE } from '../../src/common/fail-open.js';
 import type { CoreLogger, MemoStore } from '../../src/common/span-surface.js';
 import { runTouchHook, runTouchHooks, type TouchExecutors, type TouchInput } from '../../src/common/touch-core.js';
 import { makeTempRepo } from '../helpers.js';
@@ -104,8 +105,13 @@ describe('runTouchHooks / runTouchHook fault injection (main-349)', () => {
     expect(batch.outputs[0]?.additionalContext).toBeNull();
     // …and the swallow leaves a warn-level breadcrumb naming the file and error.
     expect(logger.warns).toHaveLength(1);
-    expect(logger.warns[0]?.message).toContain('touch render failed open');
-    expect(logger.warns[0]?.context).toMatchObject({ filePath: join(repo.root, 'app.ts'), err: defect });
+    expect(logger.warns[0]?.message).toBe(FAIL_OPEN_MESSAGE);
+    expect(logger.warns[0]?.context).toMatchObject({
+      site: 'touch-render',
+      error: defect.message,
+      filePath: join(repo.root, 'app.ts'),
+      err: defect
+    });
   });
 
   it('stays quiet on a normal batch that renders output', async () => {

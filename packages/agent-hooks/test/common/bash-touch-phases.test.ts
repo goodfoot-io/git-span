@@ -147,11 +147,12 @@ describe('translateAndGateSpans', () => {
       createRealityProbeCache([], [])
     );
     expect([...evals.keys()]).toEqual([0, 3]);
-    const first = evals.get(0)![0] as unknown as Record<string, unknown>;
-    expect(first.commandIndex).toBe(0);
-    expect(first.path).toBe('/repo/a.txt');
-    expect(first.sourceKey).toBeNull();
-    expect(first.outcome).toBe('inconclusive');
+    expect(evals.get(0)?.[0]).toMatchObject({
+      commandIndex: 0,
+      path: '/repo/a.txt',
+      sourceKey: null,
+      outcome: 'inconclusive'
+    });
     expect(evals.get(3)).toHaveLength(2);
   });
 });

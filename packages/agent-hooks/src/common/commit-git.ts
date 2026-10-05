@@ -37,8 +37,7 @@ export function parseCommitGitInvocation(argv: readonly string[], cwd: string): 
     '--icase-pathspecs',
     '--no-optional-locks'
   ]);
-  while (index < argv.length && argv[index].startsWith('-')) {
-    const argument = argv[index];
+  for (let argument = argv[index]; argument?.startsWith('-') === true; argument = argv[index]) {
     if (switches.has(argument)) {
       index++;
       continue;
@@ -95,7 +94,7 @@ export function parseCommitGitInvocation(argv: readonly string[], cwd: string): 
   ]);
   for (let i = 0; i < commandArguments.length; i++) {
     const argument = commandArguments[i];
-    if (argument === '--') break;
+    if (argument === undefined || argument === '--') break;
     if (consumes.has(argument)) {
       i++;
       continue;
@@ -174,12 +173,14 @@ export function validateCommitCreationEvidence(evidence: CommitCreationEvidence)
     const tab = line.indexOf('\t');
     if (tab < 0) return reject('malformed reflog evidence');
     const parsed = header.exec(line.slice(0, tab));
-    if (!parsed) return reject('malformed reflog evidence');
+    const [, oldSha, newSha] = parsed ?? [];
+    if (oldSha === undefined || newSha === undefined) return reject('malformed reflog evidence');
     if (!line.slice(tab + 1).startsWith(`${evidence.nonce}: `)) continue;
-    if (/^0+$/.test(parsed[2]) || parsed[1] === parsed[2]) return reject('invalid nonce-tagged transition');
-    matches.push(parsed[2]);
+    if (/^0+$/.test(newSha) || oldSha === newSha) return reject('invalid nonce-tagged transition');
+    matches.push(newSha);
   }
-  return matches.length === 1
-    ? { ok: true, value: matches[0] }
+  const [transition, ...ambiguous] = matches;
+  return transition !== undefined && ambiguous.length === 0
+    ? { ok: true, value: transition }
     : reject('missing or ambiguous nonce-tagged transition');
 }

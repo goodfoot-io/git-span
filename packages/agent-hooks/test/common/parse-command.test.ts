@@ -35,7 +35,7 @@ import {
 } from '../../src/common/parse-command.js';
 import { splitTopLevel } from '../../src/common/shell-split.js';
 import { parseCommandLayered, UNRESOLVED_REASON_CODES } from '../../src/common/static-attribution.js';
-import { makeTempRepo } from '../helpers.js';
+import { itemAt, makeTempRepo } from '../helpers.js';
 import { STATIC_ATTRIBUTION_CORPUS } from './fixtures/static-attribution-corpus.js';
 
 // ---------------------------------------------------------------------------
@@ -310,7 +310,7 @@ describe('tail', () => {
   it('missing file: idiom matched but unresolved, not silently wrong', () => {
     const detailed = parseCommandDetailed(`tail -n 5 ${join(dir, 'does-not-exist.txt')}`);
     expect(detailed.length).toBe(1);
-    expect(detailed[0].status).toBe('unresolved');
+    expect(itemAt(detailed, 0).status).toBe('unresolved');
   });
 });
 
@@ -347,7 +347,7 @@ describe('git show rev:path', () => {
   it('unknown revision: matched idiom, unresolved result', () => {
     const detailed = parseCommandDetailed('git show not-a-real-rev:blob.ts', { cwd: repo.root });
     expect(detailed.length).toBe(1);
-    expect(detailed[0].status).toBe('unresolved');
+    expect(itemAt(detailed, 0).status).toBe('unresolved');
   });
 
   it('piped into sed -n yields both the whole-file span and the precise range (verbatim blob content, unlike git log -L)', () => {
@@ -544,7 +544,7 @@ describe('unresolvable paths are excluded from parseCommand, surfaced by parseCo
     expect(parseCommand('sed -n \'1,2p\' "$D/file.txt"')).toEqual([]);
     const detailed = parseCommandDetailed('sed -n \'1,2p\' "$D/file.txt"');
     expect(detailed.length).toBe(1);
-    expect(detailed[0].status).toBe('unresolved');
+    expect(itemAt(detailed, 0).status).toBe('unresolved');
   });
 
   it('glob in path', () => {
@@ -570,8 +570,9 @@ describe('multiple statements in one command', () => {
 function expectUnresolved(cmd: string, idiom: Idiom, cwd?: string): void {
   const detailed = parseCommandDetailed(cmd, cwd);
   expect(detailed.length).toBeGreaterThan(0);
-  expect(detailed[0].status).toBe('unresolved');
-  if (detailed[0].status === 'unresolved') expect(detailed[0].idiom).toBe(idiom);
+  const first = itemAt(detailed, 0);
+  expect(first.status).toBe('unresolved');
+  if (first.status === 'unresolved') expect(first.idiom).toBe(idiom);
 }
 
 describe('redirections — truncating and appending writes (§5.1)', () => {

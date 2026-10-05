@@ -4,7 +4,7 @@
  * time; each machine owns its slice of [SplitScan]).
  *
  * A machine's interface is deliberately narrow — position ([SplitScan.i]),
- * stage buffer ([SplitScan.buf]), and its own stack ([SplitScan.levels],
+ * stage buffer ([SplitScan.buf]), and its own stack ([SplitScan.level],
  * [SplitScan.caseRegion], [SplitScan.heredocs]) — so each machine is
  * testable in isolation from the dispatcher that schedules it.
  */
@@ -79,7 +79,10 @@ export interface SplitScan {
   // Nesting machine: paren depth, the kind-matched construct stacks (one per
   // paren level), and the keyword-adjacency flags (plan §3).
   depth: number;
-  levels: OpenConstruct[][];
+  /** The construct stack of the innermost open paren level. */
+  level: OpenConstruct[];
+  /** The construct stacks of the enclosing paren levels, outermost first — one per open `(`, so its length tracks `depth`. */
+  outerLevels: OpenConstruct[][];
   /** Set by openers and body keywords, cleared by other words and `(` — an operator or closer directly after it is an empty-list parse error (`if true; then; fi`, `{ ; }`). */
   afterKeyword: boolean;
   /** `function` seen; the next word is the function name, and `{` right after it opens the definition body. */
@@ -112,7 +115,8 @@ export function createScan(cmd: string): SplitScan {
     inDquote: false,
     braceDepth: 0,
     depth: 0,
-    levels: [[]],
+    level: [],
+    outerLevels: [],
     afterKeyword: false,
     functionSeen: false,
     nameSeen: false,
@@ -177,12 +181,12 @@ export function fnNameShapeIsPending(buf: string): boolean {
 
 /** Whether a redirect token begins at `s.i`: a `>`/`<` form, `&>`, or a digit-prefixed form like `2>`/`2>&1`. */
 export function startsRedirectAt(s: SplitScan): boolean {
-  const c = s.cmd[s.i];
+  const c = s.cmd.charAt(s.i);
   if (c === '>' || c === '<') return true;
   if (c === '&') return s.cmd[s.i + 1] === '>';
   if (c >= '0' && c <= '9') {
     let j = s.i;
-    while (j < s.n && s.cmd[j] >= '0' && s.cmd[j] <= '9') j += 1;
+    while (j < s.n && s.cmd.charAt(j) >= '0' && s.cmd.charAt(j) <= '9') j += 1;
     return s.cmd[j] === '>' || s.cmd[j] === '<';
   }
   return false;
@@ -305,7 +309,8 @@ export function stepHeredocBody(s: SplitScan): boolean {
   if (!s.inBody) return false;
   const lineEnd = s.cmd.indexOf('\n', s.i);
   const line = lineEnd === -1 ? s.cmd.slice(s.i) : s.cmd.slice(s.i, lineEnd);
-  if (s.heredocs[0].close.test(line)) {
+  const pending = s.heredocs[0];
+  if (pending?.close.test(line) === true) {
     s.heredocs.shift();
     if (s.heredocs.length === 0) s.inBody = false;
   }
@@ -420,19 +425,20 @@ function scanHeredocDelimiter(s: SplitScan): ScannedDelimiter {
     j += 1;
   }
   while (s.cmd[j] === ' ' || s.cmd[j] === '\t') j += 1;
-  if (s.cmd[j] === "'" || s.cmd[j] === '"') {
-    const q = s.cmd.indexOf(s.cmd[j], j + 1);
+  const quote = s.cmd.charAt(j);
+  if (quote === "'" || quote === '"') {
+    const q = s.cmd.indexOf(quote, j + 1);
     if (q === -1) return { delim: s.cmd.slice(j + 1), allowTabs, next: s.n };
     return { delim: s.cmd.slice(j + 1, q), allowTabs, next: q + 1 };
   }
   const delimStart = j;
-  while (j < s.n && !WORD_END.test(s.cmd[j])) j += 1;
+  while (j < s.n && !WORD_END.test(s.cmd.charAt(j))) j += 1;
   return { delim: s.cmd.slice(delimStart, j), allowTabs, next: j };
 }
 
 /** Whether the cursor sits inside an open construct frame or case region — regions where boundaries are text and content folds into one stage. */
 function insideOpenRegion(s: SplitScan): boolean {
-  return s.levels[s.levels.length - 1].length > 0 || s.caseRegion !== null;
+  return s.level.length > 0 || s.caseRegion !== null;
 }
 
 /**
@@ -523,10 +529,10 @@ function caseBareAmpersand(s: SplitScan): boolean {
  * the current list item non-empty.
  */
 function stepCaseWord(s: SplitScan, r: CaseRegion): boolean {
-  const c = s.cmd[s.i];
+  const c = s.cmd.charAt(s.i);
   if (!wordStart(s.buf) || WORD_END.test(c)) return false;
   let j = s.i;
-  while (j < s.n && !WORD_END.test(s.cmd[j])) j += 1;
+  while (j < s.n && !WORD_END.test(s.cmd.charAt(j))) j += 1;
   const w = s.cmd.slice(s.i, j);
   if (w === 'esac' && (r.pos === 'pattern-start' || (r.pos === 'command' && r.cmdEmpty))) {
     s.caseRegion = null;
@@ -569,7 +575,8 @@ export function stepParen(s: SplitScan): boolean {
       // a body word for an enclosing brace group (`{ ( echo hi ); }`).
       markEnclosingBraceBody(s);
       s.depth += 1;
-      s.levels.push([]);
+      s.outerLevels.push(s.level);
+      s.level = [];
     }
     s.afterKeyword = false;
     s.buf += c;
@@ -589,16 +596,18 @@ export function stepParen(s: SplitScan): boolean {
     // A stray `)` at depth 0 (and brace depth 0, outside quotes) is a parse
     // error — `echo x) && …` (plan §1). `)` inside quotes, `${…}`, and
     // heredoc bodies never reaches this machine.
-    if (s.depth === 0) {
+    const outer = s.outerLevels.at(-1);
+    if (s.depth === 0 || outer === undefined) {
       rejectList(s, 'unbalanced-paren');
       return true;
     }
-    if (s.levels[s.levels.length - 1].length > 0) {
+    if (s.level.length > 0) {
       rejectList(s, 'unclosed-construct');
       return true;
     }
     s.depth -= 1;
-    s.levels.pop();
+    s.outerLevels.pop();
+    s.level = outer;
   }
   s.buf += c;
   s.i += 1;
@@ -616,9 +625,9 @@ export function stepParen(s: SplitScan): boolean {
 export function stepConstructWord(s: SplitScan): boolean {
   if (!startsConstructWord(s)) return false;
   let j = s.i;
-  while (j < s.n && !WORD_END.test(s.cmd[j])) j += 1;
+  while (j < s.n && !WORD_END.test(s.cmd.charAt(j))) j += 1;
   const w = s.cmd.slice(s.i, j);
-  const top = topFrame(s.levels);
+  const top = s.level.at(-1);
   const atCommand = commandPosition(s.buf);
   if (forSelectSeparator(w, top)) {
     // The for/select word-list separator — recognized wherever it appears
@@ -652,7 +661,7 @@ function opensBraceGroup(s: SplitScan, w: string, atCommand: boolean): boolean {
 /** Whether a construct/case-opener word begins at [SplitScan.i]. */
 function startsConstructWord(s: SplitScan): boolean {
   if (s.caseRegion) return false;
-  const c = s.cmd[s.i];
+  const c = s.cmd.charAt(s.i);
   if (WORD_END.test(c)) return false;
   if (!wordStart(s.buf) && !/[()]$/.test(s.buf)) return false;
   // `${` is expansion syntax, not a construct word.
@@ -662,13 +671,13 @@ function startsConstructWord(s: SplitScan): boolean {
 /** Push one construct frame, crediting any enclosing brace group's body and arming the empty-list guard. */
 function pushConstruct(s: SplitScan, kind: ConstructKind): void {
   markEnclosingBraceBody(s);
-  s.levels[s.levels.length - 1].push({ kind, body: false });
+  s.level.push({ kind, body: false });
   s.afterKeyword = true;
 }
 
 /** Validate the top frame against `kinds` (+ optional started body), rejecting the list as 'unclosed-construct' when it does not match. */
 function requireTopOf(s: SplitScan, kinds: readonly ConstructKind[], requireBody: boolean): OpenConstruct | null {
-  const t = topFrame(s.levels);
+  const t = s.level.at(-1);
   if (t === undefined || !kinds.includes(t.kind) || (requireBody && !t.body)) {
     rejectList(s, 'unclosed-construct');
     return null;
@@ -679,7 +688,7 @@ function requireTopOf(s: SplitScan, kinds: readonly ConstructKind[], requireBody
 /** Pop a validated closer frame and disarm the empty-list guard. */
 function closeConstruct(s: SplitScan, kinds: readonly ConstructKind[]): void {
   if (requireTopOf(s, kinds, true) === null) return;
-  s.levels[s.levels.length - 1].pop();
+  s.level.pop();
   s.afterKeyword = false;
 }
 
@@ -694,12 +703,12 @@ function openBraceGroup(s: SplitScan): void {
 
 /** `}` closes a brace group that has a body; an opener directly before it (or no brace at all) is 'unclosed-construct'. */
 function closeBraceGroup(s: SplitScan): void {
-  const t = topFrame(s.levels);
+  const t = s.level.at(-1);
   if (s.afterKeyword || t === undefined || t.kind !== 'brace' || !t.body) {
     rejectList(s, 'unclosed-construct');
     return;
   }
-  s.levels[s.levels.length - 1].pop();
+  s.level.pop();
   s.afterKeyword = false;
 }
 
@@ -768,15 +777,9 @@ function applyCommandKeyword(s: SplitScan, w: string): boolean {
   return true;
 }
 
-/** The top construct frame on the current paren level, or undefined when the level is bare. */
-function topFrame(levels: OpenConstruct[][]): OpenConstruct | undefined {
-  const lv = levels[levels.length - 1];
-  return lv.length > 0 ? lv[lv.length - 1] : undefined;
-}
-
 /** Credit an enclosing brace group's body — any command word (including a subshell) counts. */
 function markEnclosingBraceBody(s: SplitScan): void {
-  const t = topFrame(s.levels);
+  const t = s.level.at(-1);
   if (t?.kind === 'brace') t.body = true;
 }
 
@@ -811,7 +814,7 @@ function advanceFunctionNameHandoff(s: SplitScan): void {
  */
 export function rejectEmptyConstructList(s: SplitScan): boolean {
   const c = s.cmd[s.i];
-  if (s.caseRegion === null && s.levels[s.levels.length - 1].length > 0 && (c === ';' || c === '&') && s.afterKeyword) {
+  if (s.caseRegion === null && s.level.length > 0 && (c === ';' || c === '&') && s.afterKeyword) {
     rejectList(s, 'unclosed-construct');
     return true;
   }
@@ -868,7 +871,7 @@ export function stepRedirectToken(s: SplitScan): boolean {
 export function stepBoundaryOperator(s: SplitScan): boolean {
   if (s.depth !== 0) return false;
   if (s.caseRegion !== null) return false;
-  if (s.levels[s.levels.length - 1].length > 0) return false;
+  if (s.level.length > 0) return false;
   const c = s.cmd[s.i];
   // `&&`/`||`/`|&` — the two-character operators, each flushing under its
   // normalized name.
@@ -943,7 +946,7 @@ function ampersandIsRedirectText(s: SplitScan): boolean {
   if (s.buf[s.buf.length - 1] === '<') return true; // `3<&0`
   const trimmed = s.buf.trimEnd();
   if (!trimmed.endsWith('>')) return false;
-  const before = trimmed.length >= 2 ? trimmed[trimmed.length - 2] : '';
+  const before = trimmed.charAt(trimmed.length - 2);
   return trimmed.length === 1 || /\s|\d/.test(before);
 }
 
@@ -966,7 +969,7 @@ export function finishScan(s: SplitScan): SplitResult {
     rejectList(s, 'unclosed-case');
   } else if (s.depth > 0) {
     rejectList(s, 'unbalanced-paren');
-  } else if (s.levels[s.levels.length - 1].length > 0) {
+  } else if (s.level.length > 0) {
     rejectList(s, 'unclosed-construct');
   } else if (unconsumedPipeOp(s) || bufferEndsInDanglingRedirect(s.buf)) {
     rejectList(s, 'dangling-operator');
@@ -1034,15 +1037,16 @@ export function appendQuotedContent(t: TokenizeScan, out: string, start: number)
   const quote = t.src[start];
   let j = start + 1;
   while (j < t.n) {
-    const c = t.src[j];
+    const c = t.src.charAt(j);
     if (quote === "'") {
       if (c === "'") return { out, next: j + 1 };
       out += c;
       j += 1;
       continue;
     }
-    if (c === '\\' && j + 1 < t.n && '"\\$`'.includes(t.src[j + 1])) {
-      out += t.src[j + 1];
+    const escaped = t.src.charAt(j + 1);
+    if (c === '\\' && j + 1 < t.n && '"\\$`'.includes(escaped)) {
+      out += escaped;
       j += 2;
       continue;
     }
@@ -1066,7 +1070,7 @@ export function appendAttachedTarget(
 ): { out: string; next: number } | null {
   let j = start;
   while (j < t.n) {
-    const c = t.src[j];
+    const c = t.src.charAt(j);
     if (/\s/.test(c) || c === '<' || c === '>') return { out, next: j };
     if (c === "'" || c === '"') {
       const section = appendQuotedContent(t, '', j);

@@ -72,8 +72,7 @@ interface MeasuredCell extends Distribution {
   spawns: boolean;
 }
 
-const PACKAGE_ROOT =
-  process.env['AGENT_HOOKS_BENCHMARK_ROOT'] ?? resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const PACKAGE_ROOT = process.env.AGENT_HOOKS_BENCHMARK_ROOT ?? resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 function positiveInteger(raw: string | undefined, flag: string): number {
   const value = Number.parseInt(raw ?? '', 10);
@@ -100,13 +99,14 @@ function parseOptions(argv: readonly string[]): Options {
     '--output'
   ]);
   for (const flag of values.keys()) if (!known.has(flag)) throw new Error(`unknown option: ${flag}`);
+  const output = values.get('--output');
   return {
     inProcessWarmups: positiveInteger(values.get('--in-process-warmups') ?? '5', '--in-process-warmups'),
     inProcessSamples: positiveInteger(values.get('--in-process-samples') ?? '40', '--in-process-samples'),
     bundleWarmups: positiveInteger(values.get('--bundle-warmups') ?? '3', '--bundle-warmups'),
     bundleSamples: positiveInteger(values.get('--bundle-samples') ?? '20', '--bundle-samples'),
     sweepDirs: positiveInteger(values.get('--sweep-dirs') ?? '400', '--sweep-dirs'),
-    ...(values.has('--output') ? { output: resolve(values.get('--output')!) } : {})
+    ...(output === undefined ? {} : { output: resolve(output) })
   };
 }
 

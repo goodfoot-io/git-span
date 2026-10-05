@@ -456,8 +456,7 @@ function inspectInput(input: Readonly<Record<string, unknown>>): string | null {
       if (name === 'hash' && args.length > index + 1)
         return 'observable executable-search mutation bypasses receipt instrumentation';
       index++;
-      while (index < args.length) {
-        const arg = args[index];
+      for (let arg = args[index]; arg !== undefined; arg = args[index]) {
         if (arg === '--') {
           index++;
           break;

@@ -5,7 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const AGENT_HOOKS_ROOT =
-  process.env['AGENT_HOOKS_BENCHMARK_ROOT'] ?? resolve(dirname(fileURLToPath(import.meta.url)), '..');
+  process.env.AGENT_HOOKS_BENCHMARK_ROOT ?? resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const WORKSPACE_ROOT = resolve(AGENT_HOOKS_ROOT, '../..');
 
 export interface BuiltRealHookBundles {
@@ -84,7 +84,7 @@ export interface WorkspaceGitSpanBuildOptions {
 }
 
 /** Default build budget: 480s, overridable for slower hosts without editing suites. */
-const DEFAULT_BUILD_BUDGET_MS = Number.parseInt(process.env['GIT_SPAN_CARGO_BUILD_BUDGET_MS'] ?? '', 10) || 480_000;
+const DEFAULT_BUILD_BUDGET_MS = Number.parseInt(process.env.GIT_SPAN_CARGO_BUILD_BUDGET_MS ?? '', 10) || 480_000;
 
 /**
  * Build and return the workspace Rust binary that installed-artifact tests must put first on PATH.
@@ -99,7 +99,7 @@ export function buildWorkspaceGitSpan(options: WorkspaceGitSpanBuildOptions = {}
   binary: string;
   pathDir: string;
 } {
-  const targetRoot = process.env['GIT_SPAN_CARGO_TARGET_ROOT'] ?? '/var/cache/git-span/cargo-target';
+  const targetRoot = process.env.GIT_SPAN_CARGO_TARGET_ROOT ?? '/var/cache/git-span/cargo-target';
   const targetDir = join(targetRoot, 'git-span', 'build');
   const packageRoot = join(WORKSPACE_ROOT, 'packages', 'git-span');
   const budgetMs = options.budgetMs ?? DEFAULT_BUILD_BUDGET_MS;
@@ -167,7 +167,7 @@ export function makeRealBundleRepo(pathDir: string): RealBundleRepo {
   const env = {
     ...process.env,
     HOME: home,
-    PATH: `${pathDir}:${process.env['PATH'] ?? ''}`,
+    PATH: `${pathDir}:${process.env.PATH ?? ''}`,
     GIT_AUTHOR_NAME: 'installed smoke',
     GIT_AUTHOR_EMAIL: 'installed-smoke@example.com',
     GIT_COMMITTER_NAME: 'installed smoke',
@@ -254,14 +254,14 @@ export function runRealShell(
 /** Extract context from either emitted hook runtime's JSON output. */
 export function hookContext(output: Record<string, unknown> | null): string {
   if (output === null) return '';
-  const specific = output['hookSpecificOutput'];
+  const specific = output.hookSpecificOutput;
   if (specific !== null && typeof specific === 'object') {
-    const additional = (specific as Record<string, unknown>)['additionalContext'];
+    const additional = (specific as Record<string, unknown>).additionalContext;
     if (typeof additional === 'string') return additional;
   }
-  const additional = output['additionalContext'];
+  const additional = output.additionalContext;
   if (typeof additional === 'string') return additional;
-  const system = output['systemMessage'];
+  const system = output.systemMessage;
   return typeof system === 'string' ? system : '';
 }
 

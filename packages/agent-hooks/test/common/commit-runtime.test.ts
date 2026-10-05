@@ -29,6 +29,7 @@ import {
   terminalCommitInvocation
 } from '../../src/common/commit-runtime.js';
 import { acquireReceiptClaim, atomicJson, identityKey } from '../../src/common/commit-storage.js';
+import { itemAt } from '../helpers.js';
 import { buildWorkspaceGitSpan } from '../real-bundle-helpers.js';
 
 const require = createRequire(import.meta.url);
@@ -37,6 +38,7 @@ let bundle: string;
 let notesExecutable: string;
 let scratch: string;
 let repo: string;
+let stateRoot: string;
 let options: CommitRuntimeOptions;
 let warnings: string[];
 const logger = {
@@ -79,7 +81,7 @@ function shell(command: string, cwd = repo) {
   });
 }
 function directory(input: CommitEnrollmentRequest): string {
-  return join(options.stateRoot!, 'invocations', identityKey(input));
+  return join(stateRoot, 'invocations', identityKey(input));
 }
 function receipts(input: CommitEnrollmentRequest): CommitReceipt[] {
   return readdirSync(join(directory(input), 'receipts')).map(
@@ -146,7 +148,8 @@ beforeEach(() => {
   scratch = mkdtempSync(join(tmpdir(), "commit receipt 'quoted' "));
   repo = join(scratch, 'repo');
   makeRepo(repo);
-  options = { stateRoot: join(scratch, 'private receipts'), notesExecutable };
+  stateRoot = join(scratch, 'private receipts');
+  options = { stateRoot, notesExecutable };
   warnings = [];
 });
 afterEach(() => {
@@ -193,7 +196,7 @@ describe('portable real commit receipt recording', () => {
     expect(new Set(captured.map((receipt) => receipt.sha)).size).toBe(3);
     expect(await terminalCommitInvocation(input, options, logger)).toMatchObject({ acknowledged: 3, pending: 0 });
     for (const receipt of captured)
-      expect(notes(receipt.sha).notes[0].document).toEqual({
+      expect(itemAt(notes(receipt.sha).notes, 0).document).toEqual({
         schemaVersion: 1,
         host: 'claude',
         sessionId: 'session-a',
@@ -232,7 +235,7 @@ describe('portable real commit receipt recording', () => {
     );
     const result = await enrolled(input);
     expect(shell(result.updatedInput.command as string).status).toBe(0);
-    const captured = receipts(input)[0];
+    const captured = itemAt(receipts(input), 0);
     expect(captured.repository.cwd).toBe(other);
     expect(await terminalCommitInvocation(input, options, logger)).toMatchObject({ acknowledged: 1 });
     expect(notes(captured.sha, other).notes).toHaveLength(1);
@@ -244,7 +247,7 @@ describe('portable real commit receipt recording', () => {
     const input = request('git commit -q --allow-empty -m sha256', { host: 'codex', cwd: other });
     const result = await enrolled(input);
     expect(shell(result.updatedInput.command as string, other).status).toBe(0);
-    const captured = receipts(input)[0];
+    const captured = itemAt(receipts(input), 0);
     expect(captured.sha).toHaveLength(64);
     expect(await terminalCommitInvocation(input, options, logger)).toMatchObject({ acknowledged: 1 });
     expect(notes(captured.sha, other).notes).toHaveLength(1);
@@ -256,7 +259,7 @@ describe('portable real commit receipt recording', () => {
     const input = request('git commit -q --allow-empty -m linked', { cwd: linked });
     const result = await enrolled(input);
     expect(shell(result.updatedInput.command as string, linked).status).toBe(0);
-    const captured = receipts(input)[0];
+    const captured = itemAt(receipts(input), 0);
     expect(
       await terminalCommitInvocation(input, { ...options, notesExecutable: '/missing/notes-cli' }, logger)
     ).toMatchObject({ acknowledged: 0, pending: 1, original: { cwd: linked } });
@@ -330,21 +333,21 @@ describe('real receipt failures, ownership and lifecycle', () => {
     const input = request('git commit -q --allow-empty -m locator', { transcriptLocator: '/later' });
     const result = await enrolled(input);
     shell(result.updatedInput.command as string);
-    const captured = receipts(input)[0];
+    const captured = itemAt(receipts(input), 0);
     execFileSync(notesExecutable, ['notes', 'add', captured.sha, '--format', 'json'], {
       cwd: repo,
       input: JSON.stringify({ schemaVersion: 1, host: 'claude', sessionId: 'session-a' })
     });
     expect(await terminalCommitInvocation(input, options, logger)).toMatchObject({ acknowledged: 1, pending: 0 });
     expect(notes(captured.sha).notes).toHaveLength(1);
-    expect(notes(captured.sha).notes[0].document).not.toHaveProperty('transcriptLocator');
+    expect(itemAt(notes(captured.sha).notes, 0).document).not.toHaveProperty('transcriptLocator');
     expect(warnings.some((warning) => warning.includes('conflicting transcript locator'))).toBe(true);
   });
   it('preserves pending state when the CLI storage file is corrupt', async () => {
     const input = request('git commit -q --allow-empty -m corrupt');
     const result = await enrolled(input);
     shell(result.updatedInput.command as string);
-    const captured = receipts(input)[0];
+    const captured = itemAt(receipts(input), 0);
     execFileSync(notesExecutable, ['notes', 'add', captured.sha, '{}', '--format', 'json'], { cwd: repo });
     writeFileSync(join(captured.repository.commonDirectory, 'span', 'notes.db'), 'corrupt storage');
     expect(await terminalCommitInvocation(input, options, logger)).toMatchObject({ acknowledged: 0, pending: 1 });
@@ -354,7 +357,7 @@ describe('real receipt failures, ownership and lifecycle', () => {
     const input = request('git commit -q --allow-empty -m malformed');
     const result = await enrolled(input);
     shell(result.updatedInput.command as string);
-    const path = join(directory(input), 'receipts', readdirSync(join(directory(input), 'receipts'))[0]);
+    const path = join(directory(input), 'receipts', itemAt(readdirSync(join(directory(input), 'receipts')), 0));
     atomicJson(path, { ...receipts(input)[0], sha: 'abbreviated' });
     expect(await terminalCommitInvocation(input, options, logger)).toMatchObject({
       acknowledged: 0,
@@ -402,9 +405,9 @@ describe('real receipt failures, ownership and lifecycle', () => {
     const input = request('git commit -q --allow-empty -m dead-owner');
     const result = await enrolled(input);
     shell(result.updatedInput.command as string);
-    const captured = receipts(input)[0];
+    const captured = itemAt(receipts(input), 0);
     const claimKey = `association-${commitAssociationKey(captured, createCommitNoteDocument(result.enrollment))}`;
-    const child = spawn(process.execPath, [bundle, '--hold-claim', options.stateRoot!, claimKey]);
+    const child = spawn(process.execPath, [bundle, '--hold-claim', stateRoot, claimKey]);
     await new Promise<void>((resolveReady, reject) => {
       child.stdout.once('data', () => resolveReady());
       child.once('error', reject);
@@ -422,13 +425,13 @@ describe('real receipt failures, ownership and lifecycle', () => {
     const input = request('git commit -q --allow-empty -m live-owner');
     const result = await enrolled(input);
     shell(result.updatedInput.command as string);
-    const captured = receipts(input)[0];
+    const captured = itemAt(receipts(input), 0);
     const key = `association-${commitAssociationKey(captured, createCommitNoteDocument(result.enrollment))}`;
-    const held = await acquireReceiptClaim(options.stateRoot!, key, performance.now() + 1000);
+    const held = await acquireReceiptClaim(stateRoot, key, performance.now() + 1000);
     expect(held).not.toBeNull();
     expect(await terminalCommitInvocation(input, options, logger)).toMatchObject({ acknowledged: 0, pending: 1 });
     held?.release();
-    const guard = join(options.stateRoot!, 'claims', `${key}.guard`);
+    const guard = join(stateRoot, 'claims', `${key}.guard`);
     mkdirSync(guard, { mode: 0o700 });
     expect(await terminalCommitInvocation(input, options, logger)).toMatchObject({ acknowledged: 0, pending: 1 });
     expect(existsSync(guard)).toBe(true);
@@ -496,9 +499,10 @@ describe('real receipt failures, ownership and lifecycle', () => {
       childResult(eb.updatedInput.command as string, linked)
     ]);
     expect(outcomes.every((outcome) => outcome.status === 0)).toBe(true);
-    const captured = [receipts(a)[0], receipts(b)[0]];
-    expect(captured[0].nonce).not.toBe(captured[1].nonce);
-    expect(captured[0].repository.commonDirectory).toBe(captured[1].repository.commonDirectory);
+    const capturedA = itemAt(receipts(a), 0);
+    const capturedB = itemAt(receipts(b), 0);
+    expect(capturedA.nonce).not.toBe(capturedB.nonce);
+    expect(capturedA.repository.commonDirectory).toBe(capturedB.repository.commonDirectory);
     expect(await terminalCommitInvocation({ ...b, sessionId: 'wrong-session' }, options, logger)).toMatchObject({
       acknowledged: 0,
       original: null
@@ -536,7 +540,7 @@ describe('real receipt failures, ownership and lifecycle', () => {
   it('fails capacity enrollment closed while returning the original command as unavailable', async () => {
     const first = request('git status --porcelain');
     await enrolled(first);
-    atomicJson(join(options.stateRoot!, 'usage.json'), { invocations: 4096, totalBytes: 67108864 });
+    atomicJson(join(stateRoot, 'usage.json'), { invocations: 4096, totalBytes: 67108864 });
     const input = request('git status --porcelain', { toolUseId: 'overflow' });
     expect(await enrollCommitInvocation(input, options, logger)).toMatchObject({ kind: 'unavailable' });
     expect(existsSync(directory(input))).toBe(false);
@@ -629,9 +633,9 @@ describe('real Git evidence ambiguity and forwarding', () => {
       .map((line) => JSON.parse(line) as { argv: string[]; cwd: string; action: string });
     const commits = calls.filter((call) => call.argv[0] === 'commit');
     expect(commits).toHaveLength(1);
-    expect(commits[0].argv).toEqual(['commit', '-q', '--allow-empty', '-m', 'exact message']);
-    expect(commits[0].cwd).toBe(repo);
-    expect(commits[0].action).toMatch(/^receipt-[a-f0-9]+$/);
+    expect(itemAt(commits, 0).argv).toEqual(['commit', '-q', '--allow-empty', '-m', 'exact message']);
+    expect(itemAt(commits, 0).cwd).toBe(repo);
+    expect(itemAt(commits, 0).action).toMatch(/^receipt-[a-f0-9]+$/);
     expect(await terminalCommitInvocation(input, options, logger)).toMatchObject({ acknowledged: 1 });
   });
   it('allows the user command when actual lease publication fails under errexit without extra stderr', async () => {
@@ -673,7 +677,7 @@ describe('original lexical cwd restoration', () => {
     const result = await enrolled(input);
     expect(result.enrollment.cwd).toBe(lexicalCwd);
     expect(shell(result.updatedInput.command as string, lexicalCwd).status).toBe(0);
-    expect(receipts(input)[0].repository.cwd).toBe(repo);
+    expect(itemAt(receipts(input), 0).repository.cwd).toBe(repo);
     expect(await terminalCommitInvocation(input, options, logger)).toMatchObject({
       acknowledged: 1,
       original: { cwd: lexicalCwd }

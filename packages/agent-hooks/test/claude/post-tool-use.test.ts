@@ -18,7 +18,7 @@ import { createHandler as createStaticPlanHandler } from '../../src/claude/stati
 import type { DriftPorcelainRow, PorcelainRow, PorcelainStatus } from '../../src/common/agent-hooks-common.js';
 import type { MemoFactory, MemoLogger, MemoStore } from '../../src/common/span-surface.js';
 import type { TouchExecutors } from '../../src/common/touch-core.js';
-import { makeTempRepo } from '../helpers.js';
+import { itemAt, makeTempRepo } from '../helpers.js';
 import { makeTempLayout } from '../session-layout-helpers.js';
 import { contextExecutors } from '../touch-context-fake.js';
 
@@ -252,7 +252,7 @@ describe('claude post-tool-use touch signal', () => {
     const result = toResult(await handler(input as never, { logger: ctxLogger } as never));
     expect(result.stdout.hookSpecificOutput?.additionalContext).toBeUndefined(); // still fail-open
     expect(warns).toHaveLength(1);
-    const [message, context] = warns[0]!;
+    const [message, context] = itemAt(warns, 0);
     expect(message).toContain('structured touch context failed');
     expect(context.failure).toBe('schema_rejected');
     expect(context.filePath).toBe(join(repo.root, 'app.ts'));

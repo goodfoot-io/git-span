@@ -13,7 +13,8 @@ export function extractShellCommand(toolInput: unknown): string | null {
     const parts = command.filter((p): p is string => typeof p === 'string');
     if (parts.length === 0) return null;
     const flagIdx = parts.findIndex((p) => p === '-c' || p === '-lc' || p === '-ic');
-    if (flagIdx >= 0 && parts[flagIdx + 1] !== undefined) return parts[flagIdx + 1];
+    const script = flagIdx >= 0 ? parts[flagIdx + 1] : undefined;
+    if (script !== undefined) return script;
     return parts.join(' ');
   }
   return null;

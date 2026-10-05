@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   type CommitCreationEvidence,
+  type CommitReflogAppend,
   parseCommitGitInvocation,
   validateCommitCreationEvidence
 } from '../../src/common/commit-git.js';
@@ -9,7 +10,7 @@ import { nonce, sha } from './commit-fixtures.js';
 function record(previous = '0'.repeat(40), next = sha, action = nonce): string {
   return `${previous} ${next} Agent <agent@example.test> 1700000000 +0000\t${action}: initial\n`;
 }
-function evidence(text = record()): CommitCreationEvidence {
+function evidence(text = record()): CommitCreationEvidence & { readonly append: CommitReflogAppend } {
   const bytes = new TextEncoder().encode(text);
   return {
     checkpoint: { existed: false, offset: 0 },
@@ -124,7 +125,7 @@ describe('nonce-tagged reflog creation witness', () => {
       validateCommitCreationEvidence({
         ...value,
         checkpoint: { existed: true, device: '1', inode: '2', offset: 10 },
-        append: { ...value.append!, fileSize: value.append!.fileSize + 10 }
+        append: { ...value.append, fileSize: value.append.fileSize + 10 }
       })
     ).toEqual({ ok: true, value: sha });
   });
@@ -161,7 +162,7 @@ describe('nonce-tagged reflog creation witness', () => {
         validateCommitCreationEvidence({
           ...value,
           checkpoint: { existed: true, device: '1', inode: '2', offset: 10 },
-          append: { ...value.append!, fileSize: value.append!.fileSize + 10, ...changed }
+          append: { ...value.append, fileSize: value.append.fileSize + 10, ...changed }
         }).ok
       ).toBe(false);
     }

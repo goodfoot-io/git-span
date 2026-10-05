@@ -4,6 +4,7 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { assemblePlugin } from '../../src/opencode/index.js';
+import { present } from '../helpers.js';
 import { addLineSpan, buildWorkspaceGitSpan, commitRepo, makeRealBundleRepo } from '../real-bundle-helpers.js';
 import { makeTempLayout } from '../session-layout-helpers.js';
 
@@ -39,13 +40,18 @@ describe('opencode commit commands', () => {
         });
         const input = { tool: 'bash', sessionID: 'session', callID: 'call' };
         const before = { args: { command } };
-        await expect(hooks['tool.execute.before']!(input, before)).resolves.toBeUndefined();
+        await expect(
+          present(hooks['tool.execute.before'], 'the tool.execute.before hook')(input, before)
+        ).resolves.toBeUndefined();
         expect(before).toEqual({ args: { command } });
         const after = { output: 'original result', metadata: { output: 'original result', exit: 0 } };
-        await hooks['tool.execute.after']!({ ...input, args: before.args }, after);
+        await present(hooks['tool.execute.after'], 'the tool.execute.after hook')(
+          { ...input, args: before.args },
+          after
+        );
         expect(after.output).toBe('original result');
         expect(warnings).toEqual([]);
-        await hooks.dispose!();
+        await present(hooks.dispose, 'the dispose hook')();
       } finally {
         temp.cleanup();
         repo.cleanup();

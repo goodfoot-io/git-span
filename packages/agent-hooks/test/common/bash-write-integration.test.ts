@@ -66,7 +66,7 @@ import {
   parseCommandLayered
 } from '../../src/common/static-attribution.js';
 import type { TouchExecutors } from '../../src/common/touch-core.js';
-import { makeTempRepo } from '../helpers.js';
+import { itemAt, makeTempRepo } from '../helpers.js';
 import { makeTempLayout } from '../session-layout-helpers.js';
 import { contextExecutors } from '../touch-context-fake.js';
 
@@ -1962,13 +1962,14 @@ describe('bounded planned-touch store contract (bootstrap)', () => {
     const fixture = storeFixture({ ...budgets, maxEvidenceBytes: 8 });
     try {
       const record = plannedRecord('/repo');
+      const touch = itemAt(record.touches, 0);
       const traversal: PlannedTouchRecord = {
         ...record,
-        touches: [{ ...record.touches[0], repoRelativePath: '../outside.txt' }]
+        touches: [{ ...touch, repoRelativePath: '../outside.txt' }]
       };
       const oversizedEvidence: PlannedTouchRecord = {
         ...record,
-        touches: [{ ...record.touches[0], evidence: { kind: 'anchor', literal: 'a long anchor', line: 3 } }]
+        touches: [{ ...touch, evidence: { kind: 'anchor', literal: 'a long anchor', line: 3 } }]
       };
 
       expect(() => fixture.store.put(traversal)).toThrow();

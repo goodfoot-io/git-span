@@ -50,8 +50,7 @@ interface ArmResult extends Distribution {
   commands: string[];
 }
 
-const PACKAGE_ROOT =
-  process.env['AGENT_HOOKS_BENCHMARK_ROOT'] ?? resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const PACKAGE_ROOT = process.env.AGENT_HOOKS_BENCHMARK_ROOT ?? resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const WORKSPACE_ROOT = resolve(PACKAGE_ROOT, '../..');
 // The last pre-integration revision is an ancestor of main, so the benchmark remains
 // reproducible after the temporary implementation checkpoint tag is removed.
@@ -59,7 +58,7 @@ const BASELINE = 'ee50e7397836117df405a76b9f661322f803d3db';
 const TEXT = `${['alpha', 'anchor-one', 'middle', 'anchor-two', 'spare', 'six', 'seven', 'eight', 'nine', 'tail'].join('\n')}\n`;
 
 function buildAcceptanceGitSpan(): { binary: string; pathDir: string } {
-  const targetRoot = process.env['GIT_SPAN_CARGO_TARGET_ROOT'] ?? '/var/cache/git-span/cargo-target';
+  const targetRoot = process.env.GIT_SPAN_CARGO_TARGET_ROOT ?? '/var/cache/git-span/cargo-target';
   const targetDir = join(targetRoot, 'git-span', 'build');
   const packageRoot = join(WORKSPACE_ROOT, 'packages', 'git-span');
   execFileSync(
@@ -103,11 +102,12 @@ function options(argv: readonly string[]): Options {
   }
   const known = new Set(['--warmups', '--samples', '--scaled-paths', '--output']);
   for (const flag of values.keys()) if (!known.has(flag)) throw new Error(`unknown option: ${flag}`);
+  const output = values.get('--output');
   return {
     warmups: positiveInteger(values.get('--warmups') ?? '2', '--warmups'),
     samples: positiveInteger(values.get('--samples') ?? '20', '--samples'),
     scaledPaths: positiveInteger(values.get('--scaled-paths') ?? '32', '--scaled-paths'),
-    ...(values.has('--output') ? { output: resolve(values.get('--output')!) } : {})
+    ...(output === undefined ? {} : { output: resolve(output) })
   };
 }
 
@@ -498,7 +498,8 @@ function main(): void {
         integratedRepo.cleanup();
       }
     });
-    const scaled = rows.find(({ fixture }) => fixture === 'scaled-repair')!;
+    const scaled = rows.find(({ fixture }) => fixture === 'scaled-repair');
+    if (scaled === undefined) throw new Error('benchmark produced no scaled-repair row');
     const thresholds = {
       latencyCeilings: LATENCY_CEILINGS,
       scaledImprovement: { p50: 0.5, p95: 0.4 }

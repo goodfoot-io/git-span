@@ -183,7 +183,7 @@ export interface Token {
 export function tokenize(s: string): Token[] | null {
   const t = createTokenizeScan(s);
   while (t.i < t.n && !t.failed) {
-    if (/\s/.test(t.src[t.i])) {
+    if (/\s/.test(t.src.charAt(t.i))) {
       flushWord(t);
       t.i += 1;
       continue;
@@ -192,7 +192,7 @@ export function tokenize(s: string): Token[] | null {
     if (stepTokenizerEscape(t)) continue;
     if (stepTokenizerRedirect(t)) continue;
     if (stepTokenizerAmpersand(t)) continue;
-    t.buf += t.src[t.i];
+    t.buf += t.src.charAt(t.i);
     t.i += 1;
   }
   return finishTokenizeScan(t);
@@ -204,10 +204,8 @@ export function tokenize(s: string): Token[] | null {
  * digit run off the front, then the operator, leaving the target.
  */
 function redirectAttachedTarget(text: string): string | null {
-  const match = text.match(/^(\d*)(<<<|<<-|&>>|<<|>>|&>|>&|<|>)(.*)$/);
-  if (match === null) return null;
-  const [, , , rest] = match;
-  return rest.length > 0 ? rest : null;
+  const rest = text.match(/^(\d*)(<<<|<<-|&>>|<<|>>|&>|>&|<|>)(.*)$/)?.[3];
+  return rest !== undefined && rest.length > 0 ? rest : null;
 }
 
 /** Best-effort argv for a simple command: leading assignments stripped, quote-aware tokens minus redirect operators and their targets. Returns null if the command doesn't tokenize cleanly (unbalanced quotes). */
@@ -215,15 +213,19 @@ export function argvOf(simpleCmd: string): string[] | null {
   const tokens = tokenize(stripLeadingAssignments(simpleCmd).trim());
   if (tokens === null) return null;
   const argv: string[] = [];
-  for (let i = 0; i < tokens.length; i++) {
-    const token = tokens[i];
+  let skipTarget = false;
+  for (const token of tokens) {
+    if (skipTarget) {
+      skipTarget = false;
+      continue;
+    }
     if (!token.isRedirect) {
       argv.push(token.text);
       continue;
     }
     // A standalone redirect operator consumes the next token as its target;
     // an attached form (`>f`, `>>f`) is self-contained.
-    if (redirectAttachedTarget(token.text) === null) i += 1;
+    skipTarget = redirectAttachedTarget(token.text) === null;
   }
   return argv;
 }
@@ -237,7 +239,7 @@ export function splitWords(s: string): string[] | null {
   const n = s.length;
 
   while (i < n) {
-    const c = s[i];
+    const c = s.charAt(i);
     if (/\s/.test(c)) {
       if (has) {
         words.push(cur);
@@ -260,11 +262,13 @@ export function splitWords(s: string): string[] | null {
       has = true;
       i += 1;
       while (i < n && s[i] !== '"') {
-        if (s[i] === '\\' && i + 1 < n && '"\\$`'.includes(s[i + 1])) {
-          cur += s[i + 1];
+        const ch = s.charAt(i);
+        const escaped = s.charAt(i + 1);
+        if (ch === '\\' && i + 1 < n && '"\\$`'.includes(escaped)) {
+          cur += escaped;
           i += 2;
         } else {
-          cur += s[i];
+          cur += ch;
           i += 1;
         }
       }
@@ -274,7 +278,7 @@ export function splitWords(s: string): string[] | null {
     }
     if (c === '\\' && i + 1 < n) {
       has = true;
-      cur += s[i + 1];
+      cur += s.charAt(i + 1);
       i += 2;
       continue;
     }
@@ -300,7 +304,7 @@ export function hasUnquotedRedirect(simpleCmd: string): boolean {
   let inSquote = false;
   let inDquote = false;
   for (let i = 0; i < simpleCmd.length; i++) {
-    const c = simpleCmd[i];
+    const c = simpleCmd.charAt(i);
     if (inSquote) {
       // No escapes inside single quotes — the next `'` always closes.
       if (c === "'") inSquote = false;
@@ -309,7 +313,7 @@ export function hasUnquotedRedirect(simpleCmd: string): boolean {
     if (inDquote) {
       // Inside double quotes a backslash only escapes `"`, `\`, `$`, and
       // backtick; everything else (including `<`) is literal.
-      if (c === '\\' && i + 1 < simpleCmd.length && '"\\$`'.includes(simpleCmd[i + 1])) {
+      if (c === '\\' && i + 1 < simpleCmd.length && '"\\$`'.includes(simpleCmd.charAt(i + 1))) {
         i += 1;
       } else if (c === '"') {
         inDquote = false;
@@ -380,6 +384,7 @@ export function stripRedirects(argv: string[]): string[] {
   const out: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
+    if (a === undefined) break;
     if (REDIRECT_TWO_TOKEN.test(a) || HEREDOC_TWO_TOKEN.test(a)) {
       const next = argv[i + 1];
       // The operator's target must be a plain file word — a following redirect
@@ -437,16 +442,22 @@ const TIMEOUT_DURATION = /^\d+(?:\.\d+)?[smhd]?$/;
 /** A literal `NAME=value` env-prefix word. */
 const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=.*$/;
 
+/** The index of the first word at or after `from` that fails `test`, or `argv.length` when none does. */
+function skipWhile(argv: readonly string[], from: number, test: (word: string) => boolean): number {
+  let j = from;
+  for (let word = argv[j]; word !== undefined && test(word); word = argv[j]) j++;
+  return j;
+}
+
 /**
  * One strip step. Returns null when the wrapper is not clean (fail closed —
  * the caller restores the original argv, so nothing is forwarded to the
  * matchers), or the argv with one wrapper layer removed.
  */
 function stripWrappersOnce(argv: string[]): string[] | null {
-  let i = 0;
-  while (i < argv.length && argv[i] === '!') i++;
-  if (i >= argv.length) return argv.slice(i);
+  const i = skipWhile(argv, 0, (word) => word === '!');
   const head = argv[i];
+  if (head === undefined) return [];
   if (head === 'command') {
     const next = argv[i + 1];
     if (next === '-v' || next === '-V') return null; // a query — runs nothing
@@ -460,15 +471,14 @@ function stripWrappersOnce(argv: string[]): string[] | null {
     return null; // `builtin sed` errors — never forward a non-builtin word
   }
   if (head === 'env') {
-    let j = i + 1;
-    while (j < argv.length && ENV_ASSIGNMENT.test(argv[j])) j++;
+    const j = skipWhile(argv, i + 1, (word) => ENV_ASSIGNMENT.test(word));
     if (j === i + 1) return null; // `-i`, `-u X`, a non-assignment word — not a clean wrapper
     return argv.slice(j);
   }
   if (head === 'timeout') {
-    let j = i + 1;
-    while (j < argv.length && argv[j].startsWith('--')) j++;
-    if (j >= argv.length || !TIMEOUT_DURATION.test(argv[j])) return null; // no duration — nothing runs
+    const j = skipWhile(argv, i + 1, (word) => word.startsWith('--'));
+    const duration = argv[j];
+    if (duration === undefined || !TIMEOUT_DURATION.test(duration)) return null; // no duration — nothing runs
     return argv.slice(j + 1);
   }
   if (head.startsWith('/')) {

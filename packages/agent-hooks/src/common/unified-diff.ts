@@ -182,12 +182,12 @@ export function parseUnifiedDiffRange(patchText: string, strip: PathStrip): Unif
       binary = true;
       continue;
     }
-    const hunk = line.match(HUNK_HEADER);
-    if (hunk) {
+    const [, preStartText, preCountText, , postCountText] = line.match(HUNK_HEADER) ?? [];
+    if (preStartText !== undefined) {
       sawBlock = true;
-      const preStart = Number.parseInt(hunk[1], 10);
-      const preCount = hunk[2] === undefined ? 1 : Number.parseInt(hunk[2], 10);
-      const postCount = hunk[4] === undefined ? 1 : Number.parseInt(hunk[4], 10);
+      const preStart = Number.parseInt(preStartText, 10);
+      const preCount = preCountText === undefined ? 1 : Number.parseInt(preCountText, 10);
+      const postCount = postCountText === undefined ? 1 : Number.parseInt(postCountText, 10);
       if (current === null) return null; // a hunk without a file header → malformed
       if (preCount !== postCount) current.countChanging = true;
       if (preCount > 0) current.hunks.push({ start: preStart, end: preStart + preCount - 1 });

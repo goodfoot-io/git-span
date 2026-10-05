@@ -55,7 +55,7 @@ const HOOK_IGNORE_REL = nodePath.join('.span', '.hookignore');
 function globToRegExp(glob: string): RegExp {
   let re = '';
   for (let i = 0; i < glob.length; i++) {
-    const c = glob[i];
+    const c = glob.charAt(i);
     if (c === '*') {
       if (glob[i + 1] === '*') {
         re += '.*';
@@ -128,9 +128,8 @@ export function parseHookIgnore(content: string): IgnoreRule[] {
     if (!line || line.startsWith('#')) continue;
     // `<pattern><whitespace><prefixes>` — pattern is the first token, prefixes
     // the second. A line without both is malformed and skipped.
-    const match = line.match(/^(\S+)\s+(\S+)$/);
-    if (!match) continue;
-    const [, pattern, prefixesRaw] = match;
+    const [, pattern, prefixesRaw] = line.match(/^(\S+)\s+(\S+)$/) ?? [];
+    if (pattern === undefined || prefixesRaw === undefined) continue;
     const prefixes = prefixesRaw
       .split(',')
       .map((p) => p.trim())

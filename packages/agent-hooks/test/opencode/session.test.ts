@@ -16,6 +16,7 @@ import { assemblePlugin } from '../../src/opencode/index.js';
 import { createDisposeHandler, createEventHandler } from '../../src/opencode/session.js';
 import type { OpencodeCallState, PatchPlanTouch } from '../../src/opencode/stash.js';
 import { createOpencodeCallState } from '../../src/opencode/stash.js';
+import { present } from '../helpers.js';
 import { makeTempLayout } from '../session-layout-helpers.js';
 
 function silentLogger() {
@@ -214,7 +215,10 @@ describe('opencode plugin shell.env wiring', () => {
   it('a shell.env without sessionID records no cwd frame — an empty key would survive every prune', async () => {
     const { hooks, stash, cleanup } = assembleOverScratch();
     try {
-      await hooks['shell.env']!({ callID: 'ghost-call', cwd: '/ghost-frame' }, { env: {} });
+      await present(hooks['shell.env'], 'the shell.env hook')(
+        { callID: 'ghost-call', cwd: '/ghost-frame' },
+        { env: {} }
+      );
       // Decision 8 scopes pruning to real sessionIDs; a ''-keyed frame would
       // sit outside every session.idle/deleted prune's reach forever.
       expect(stash.peekShellCwd('', 'ghost-call')).toBeNull();
@@ -226,7 +230,7 @@ describe('opencode plugin shell.env wiring', () => {
   it('an undefined event argument resolves without acting — the assembled boundary fails open', async () => {
     const { hooks, cleanup } = assembleOverScratch();
     try {
-      await expect(hooks.event!(undefined as never)).resolves.toBeUndefined();
+      await expect(present(hooks.event, 'the event hook')(undefined as never)).resolves.toBeUndefined();
     } finally {
       cleanup();
     }
@@ -235,9 +239,15 @@ describe('opencode plugin shell.env wiring', () => {
   it('a shell.env with sessionID records the frame and idle prunes it at the turn boundary', async () => {
     const { hooks, stash, cleanup } = assembleOverScratch();
     try {
-      await hooks['shell.env']!({ sessionID: 'sess', callID: 'real-call', cwd: '/frame' }, { env: {} });
+      await present(hooks['shell.env'], 'the shell.env hook')(
+        { sessionID: 'sess', callID: 'real-call', cwd: '/frame' },
+        { env: {} }
+      );
       expect(stash.peekShellCwd('sess', 'real-call')).toBe('/frame');
-      await hooks.event!({ event: { type: 'session.idle', properties: { sessionID: 'sess' } } });
+      await present(
+        hooks.event,
+        'the event hook'
+      )({ event: { type: 'session.idle', properties: { sessionID: 'sess' } } });
       expect(stash.peekShellCwd('sess', 'real-call')).toBeNull();
     } finally {
       cleanup();

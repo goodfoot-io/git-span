@@ -37,7 +37,7 @@ import { createHandler as createCodexPlanHandler } from '../../src/codex/static-
 import type { MemoFactory, MemoLogger, MemoStore } from '../../src/common/span-surface.js';
 import type { TouchInput } from '../../src/common/touch-core.js';
 import { assemblePlugin } from '../../src/opencode/index.js';
-import { makeTempRepo } from '../helpers.js';
+import { makeTempRepo, present } from '../helpers.js';
 import { makeTempLayout } from '../session-layout-helpers.js';
 
 /**
@@ -196,7 +196,7 @@ describe('cross-adapter contract — identical touch call sequences (Phase 3)', 
       memoFactory: inMemoryMemoFactory(),
       logger: { warn: () => undefined }
     });
-    await hooks['tool.execute.after']!(
+    await present(hooks['tool.execute.after'], 'the tool.execute.after hook')(
       {
         sessionID: 'oc-sess',
         callID: `call-${opencodeCallSeq++}`,
@@ -215,9 +215,12 @@ describe('cross-adapter contract — identical touch call sequences (Phase 3)', 
       memoFactory: inMemoryMemoFactory(),
       logger: { warn: () => undefined }
     });
-    await hooks['tool.execute.after']!({ sessionID: 'oc-structured', callID: `call-${opencodeCallSeq++}`, ...input }, {
-      output: ''
-    } as never);
+    await present(hooks['tool.execute.after'], 'the tool.execute.after hook')(
+      { sessionID: 'oc-structured', callID: `call-${opencodeCallSeq++}`, ...input },
+      {
+        output: ''
+      } as never
+    );
   }
 
   /** One expected touch, relative to a base dir (absolutized inside each test). */
@@ -333,7 +336,7 @@ describe('cross-adapter contract — identical touch call sequences (Phase 3)', 
   it('a template-literal workdir is unresolvable — falls back to hook cwd', async () => {
     const expected = [{ filePath: join(repoA.root, 'f'), offset: 1, limit: 2, cwd: repoA.root }];
     recorded.calls.length = 0;
-    await runCodexCodeModeExec(repoA.root, "sed -n '1,2p' f", '${repoA.root}');
+    await runCodexCodeModeExec(repoA.root, "sed -n '1,2p' f", `\${repoA.root}`);
     expect(recorded.calls).toEqual(expected);
   });
 

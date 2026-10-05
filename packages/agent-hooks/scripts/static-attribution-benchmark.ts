@@ -62,8 +62,7 @@ interface CorpusLayerScore {
   rangeBreadth: number | null;
 }
 
-const PACKAGE_ROOT =
-  process.env['AGENT_HOOKS_BENCHMARK_ROOT'] ?? resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const PACKAGE_ROOT = process.env.AGENT_HOOKS_BENCHMARK_ROOT ?? resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const TEXT = 'alpha\nneedle one\nbeta\nneedle two\nomega\n';
 const POST_TEXT = 'alpha\npin one\nbeta\npin two\nomega\n';
 
@@ -92,13 +91,14 @@ function parseOptions(argv: readonly string[]): Options {
     '--output'
   ]);
   for (const flag of values.keys()) if (!known.has(flag)) throw new Error(`unknown option: ${flag}`);
+  const output = values.get('--output');
   return {
     parserWarmups: positiveInteger(values.get('--parser-warmups') ?? '10', '--parser-warmups'),
     parserSamples: positiveInteger(values.get('--parser-samples') ?? '80', '--parser-samples'),
     bundleWarmups: positiveInteger(values.get('--bundle-warmups') ?? '3', '--bundle-warmups'),
     bundleSamples: positiveInteger(values.get('--bundle-samples') ?? '20', '--bundle-samples'),
     largeFiles: positiveInteger(values.get('--large-files') ?? '1500', '--large-files'),
-    ...(values.has('--output') ? { output: resolve(values.get('--output')!) } : {})
+    ...(output === undefined ? {} : { output: resolve(output) })
   };
 }
 

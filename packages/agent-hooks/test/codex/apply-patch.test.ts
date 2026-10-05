@@ -12,10 +12,11 @@ import { describe, expect, it } from 'vitest';
 import type { ReadPreEditFile } from '../../src/codex/apply-patch.js';
 import { parseApplyPatch } from '../../src/codex/apply-patch.js';
 import type { AnchorSpec } from '../../src/common/agent-hooks-common.js';
+import { itemAt } from '../helpers.js';
 
 // A reader backed by an in-memory map of path -> pre-edit content.
 function readerFor(files: Record<string, string>): ReadPreEditFile {
-  return (path: string) => (path in files ? files[path] : null);
+  return (path: string) => files[path] ?? null;
 }
 
 // A reader that can never resolve any file (forces whole-file fallback).
@@ -200,7 +201,7 @@ describe('parseApplyPatch', () => {
       const anchors = parseApplyPatch(patch, readerFor({ 'a.txt': preEdit }));
       // Only one file is touched (a.txt); the indented marker is context.
       expect(anchors).toHaveLength(1);
-      expect(anchors[0].path).toBe('a.txt');
+      expect(itemAt(anchors, 0).path).toBe('a.txt');
     });
 
     it('ignores an *** Environment ID: preamble line', () => {
@@ -286,9 +287,10 @@ describe('Codex apply_patch contract', () => {
       expect(a.path.length).toBeGreaterThan(0);
       expect(['read', 'write', 'whole-read', 'whole-write', 'create']).toContain(a.kind);
       if (a.kind === 'write') {
-        expect(a.range).toBeDefined();
-        expect(a.range!.start).toBeGreaterThanOrEqual(1);
-        expect(a.range!.end).toBeGreaterThanOrEqual(a.range!.start);
+        const range = a.range;
+        if (range === undefined) throw new Error(`write anchor for ${a.path} has no range`);
+        expect(range.start).toBeGreaterThanOrEqual(1);
+        expect(range.end).toBeGreaterThanOrEqual(range.start);
       }
     }
   });

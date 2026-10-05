@@ -8,7 +8,7 @@
  */
 
 import type { ResolvedSpan, SpanMatch } from './parse-command.js';
-import { type MemoStore, resolveTouchScope } from './span-surface.js';
+import { type CoreLogger, type MemoStore, resolveTouchScope } from './span-surface.js';
 import { DEFAULT_MAX_ATTRIBUTION_CANDIDATES } from './static-attribution.js';
 import {
   type ContextFailureCategory,
@@ -492,7 +492,9 @@ export function applyJoinFilter(
         continue;
       }
     }
-    effective.set(idx, computed.get(idx)!);
+    const verdict = computed.get(idx);
+    if (verdict === undefined) throw new Error(`applyJoinFilter: command ${idx} has no computed verdict`);
+    effective.set(idx, verdict);
     prevIndex = idx;
   }
   return { effective, skipped };
@@ -651,7 +653,7 @@ export async function runBashTouches(
   toolResponse: unknown,
   executors: TouchExecutors,
   memo: MemoStore,
-  warn: (message: string) => void = console.warn,
+  warn: CoreLogger['warn'] = console.warn,
   scopeAlreadyResolved: boolean = false,
   reportDiagnostics: (diagnostics: BashTouchDiagnostics) => void = () => undefined,
   invocationId: string | null = null

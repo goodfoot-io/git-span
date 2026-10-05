@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createOpencodeLogger } from '../../src/opencode/logger.js';
+import { itemAt } from '../helpers.js';
 
 const scratch = join(tmpdir(), `opencode-logger-test-${process.pid}.jsonl`);
 
@@ -26,10 +27,10 @@ describe('createOpencodeLogger', () => {
     logger.info?.('resolved', { count: 1 });
     const lines = readFileSync(scratch, 'utf8').trim().split('\n');
     expect(lines).toHaveLength(2);
-    const first = JSON.parse(lines[0]) as Record<string, unknown>;
+    const first = JSON.parse(itemAt(lines, 0)) as Record<string, unknown>;
     expect(first).toMatchObject({ level: 'warn', message: 'git-span static attribution pre-plan', candidateCount: 2 });
     expect(typeof first.ts).toBe('string');
-    expect((JSON.parse(lines[1]) as Record<string, unknown>).level).toBe('info');
+    expect((JSON.parse(itemAt(lines, 1)) as Record<string, unknown>).level).toBe('info');
   });
 
   it('an injected logFile overrides the env var; unset means silent no-op', () => {

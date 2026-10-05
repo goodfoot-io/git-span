@@ -8,20 +8,20 @@ import * as nodePath from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { isInsideSpanRoot, resolveSpanRoot } from '../../src/common/agent-hooks-common.js';
 import { isSpanSuppressed, loadHookIgnore, parseHookIgnore } from '../../src/common/span-ignore.js';
-import { makeTempRepo } from '../helpers.js';
+import { itemAt, makeTempRepo } from '../helpers.js';
 
 describe('parseHookIgnore', () => {
   it('parses a pattern with comma-separated prefixes', () => {
     const rules = parseHookIgnore('packages/agent-hooks/src wiki,marketing\n');
     expect(rules).toHaveLength(1);
-    expect(rules[0].pattern).toBe('packages/agent-hooks/src');
-    expect(rules[0].prefixes).toEqual(['wiki', 'marketing']);
+    expect(itemAt(rules, 0).pattern).toBe('packages/agent-hooks/src');
+    expect(itemAt(rules, 0).prefixes).toEqual(['wiki', 'marketing']);
   });
 
   it('skips blank lines and comments', () => {
     const rules = parseHookIgnore('# a comment\n\n   \npackages wiki\n# trailing\n');
     expect(rules).toHaveLength(1);
-    expect(rules[0].prefixes).toEqual(['wiki']);
+    expect(itemAt(rules, 0).prefixes).toEqual(['wiki']);
   });
 
   it('skips malformed lines lacking prefixes', () => {
@@ -31,7 +31,7 @@ describe('parseHookIgnore', () => {
 
   it('trims whitespace around prefixes', () => {
     const rules = parseHookIgnore('src wiki');
-    expect(rules[0].prefixes).toEqual(['wiki']);
+    expect(itemAt(rules, 0).prefixes).toEqual(['wiki']);
   });
 });
 
@@ -178,12 +178,12 @@ describe('resolveSpanRoot', () => {
   it('falls back to .span when no env var or git config is set', () => {
     const repo = makeTempRepo();
     try {
-      const original = process.env['GIT_SPAN_DIR'];
-      delete process.env['GIT_SPAN_DIR'];
+      const original = process.env.GIT_SPAN_DIR;
+      delete process.env.GIT_SPAN_DIR;
       try {
         expect(resolveSpanRoot(repo.root)).toBe('.span');
       } finally {
-        if (original !== undefined) process.env['GIT_SPAN_DIR'] = original;
+        if (original !== undefined) process.env.GIT_SPAN_DIR = original;
       }
     } finally {
       repo.cleanup();
@@ -193,13 +193,13 @@ describe('resolveSpanRoot', () => {
   it('returns the value from git config git-span.dir when set', () => {
     const repo = makeTempRepo();
     try {
-      const original = process.env['GIT_SPAN_DIR'];
-      delete process.env['GIT_SPAN_DIR'];
+      const original = process.env.GIT_SPAN_DIR;
+      delete process.env.GIT_SPAN_DIR;
       try {
         execFileSync('git', ['-C', repo.root, 'config', 'git-span.dir', 'docs/span'], { stdio: 'ignore' });
         expect(resolveSpanRoot(repo.root)).toBe('docs/span');
       } finally {
-        if (original !== undefined) process.env['GIT_SPAN_DIR'] = original;
+        if (original !== undefined) process.env.GIT_SPAN_DIR = original;
       }
     } finally {
       repo.cleanup();
@@ -209,16 +209,16 @@ describe('resolveSpanRoot', () => {
   it('GIT_SPAN_DIR env var takes precedence over git config', () => {
     const repo = makeTempRepo();
     try {
-      const original = process.env['GIT_SPAN_DIR'];
-      process.env['GIT_SPAN_DIR'] = 'env/span';
+      const original = process.env.GIT_SPAN_DIR;
+      process.env.GIT_SPAN_DIR = 'env/span';
       try {
         execFileSync('git', ['-C', repo.root, 'config', 'git-span.dir', 'docs/span'], { stdio: 'ignore' });
         expect(resolveSpanRoot(repo.root)).toBe('env/span');
       } finally {
         if (original !== undefined) {
-          process.env['GIT_SPAN_DIR'] = original;
+          process.env.GIT_SPAN_DIR = original;
         } else {
-          delete process.env['GIT_SPAN_DIR'];
+          delete process.env.GIT_SPAN_DIR;
         }
       }
     } finally {
@@ -229,8 +229,8 @@ describe('resolveSpanRoot', () => {
   it('caches per repo root for the life of the process', () => {
     const repo = makeTempRepo();
     try {
-      const original = process.env['GIT_SPAN_DIR'];
-      delete process.env['GIT_SPAN_DIR'];
+      const original = process.env.GIT_SPAN_DIR;
+      delete process.env.GIT_SPAN_DIR;
       try {
         execFileSync('git', ['-C', repo.root, 'config', 'git-span.dir', 'docs/span'], { stdio: 'ignore' });
         expect(resolveSpanRoot(repo.root)).toBe('docs/span');
@@ -239,7 +239,7 @@ describe('resolveSpanRoot', () => {
         execFileSync('git', ['-C', repo.root, 'config', 'git-span.dir', 'other/dir'], { stdio: 'ignore' });
         expect(resolveSpanRoot(repo.root)).toBe('docs/span');
       } finally {
-        if (original !== undefined) process.env['GIT_SPAN_DIR'] = original;
+        if (original !== undefined) process.env.GIT_SPAN_DIR = original;
       }
     } finally {
       repo.cleanup();

@@ -9,7 +9,16 @@
     "declaration": true,
     "declarationMap": true,
     "outDir": "./dist",
-    "types": ["node"]
+    "types": [
+      "node"
+    ],
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "allowUnusedLabels": false,
+    "allowUnreachableCode": false
   },
   "include": [
     "src/**/*.ts",

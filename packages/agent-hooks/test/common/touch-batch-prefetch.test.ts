@@ -8,6 +8,7 @@ import {
   runTouchHooks,
   type TouchInput
 } from '../../src/common/touch-core.js';
+import { itemAt } from '../helpers.js';
 import {
   buildWorkspaceGitSpan,
   commitRepo,
@@ -70,7 +71,7 @@ function writeTouch(repo: RealBundleRepo, rel: string, written: string): TouchIn
 /** Surfaced-span names, in order, parsed out of a rendered `<git-span>` block. */
 function surfacedNames(block: string | null): string[] {
   if (block === null) return [];
-  return [...block.matchAll(/^## (.+)$/gm)].map((m) => m[1]);
+  return [...block.matchAll(/^## (.+)$/gm)].map((m) => itemAt(m, 1));
 }
 
 /** Every `path#Lstart-Lend` anchor address a rendered block mentions. */
@@ -91,14 +92,14 @@ function anchorAddresses(block: string | null): string[] {
  * one empty block against another and passes while proving nothing.
  */
 async function withRepoEnv<T>(repo: RealBundleRepo, fn: () => Promise<T>): Promise<T> {
-  const saved = { PATH: process.env['PATH'], HOME: process.env['HOME'] };
-  process.env['PATH'] = repo.env['PATH'];
-  process.env['HOME'] = repo.env['HOME'];
+  const saved = { PATH: process.env.PATH, HOME: process.env.HOME };
+  process.env.PATH = repo.env.PATH;
+  process.env.HOME = repo.env.HOME;
   try {
     return await fn();
   } finally {
-    process.env['PATH'] = saved.PATH;
-    process.env['HOME'] = saved.HOME;
+    process.env.PATH = saved.PATH;
+    process.env.HOME = saved.HOME;
   }
 }
 
@@ -192,7 +193,7 @@ describe('batched touch context', () => {
     ];
 
     const batched = await runBatched(repo, touches);
-    const bAnchors = anchorAddresses(batched[0]).filter((a) => a.startsWith('b.txt'));
+    const bAnchors = anchorAddresses(itemAt(batched, 0)).filter((a) => a.startsWith('b.txt'));
 
     // The whole point: a.txt's block already reports b.txt healed at L4.
     expect(bAnchors).toContain('b.txt#L4-L4');
@@ -305,7 +306,7 @@ describe('batched touch context', () => {
     expect(batched).toEqual(perFile);
     // Both overlapping spans on a.txt surface, and the unrelated span does not
     // leak into a.txt's block from the shared batched result.
-    expect(batched[0].sort()).toEqual(['first', 'second']);
+    expect(itemAt(batched, 0).sort()).toEqual(['first', 'second']);
     expect(batched[0]).not.toContain('elsewhere');
   });
 

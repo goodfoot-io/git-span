@@ -24,6 +24,7 @@ import {
   parseDriftPorcelain,
   parsePorcelain
 } from '../../src/common/agent-hooks-common.js';
+import { itemAt, present } from '../helpers.js';
 
 // ---------------------------------------------------------------------------
 // Git-span availability check
@@ -139,11 +140,13 @@ suite('Porcelain contract (git span)', () => {
       }
 
       // Our specific span should be present
-      const ourSpan = rows.find((r) => r.name === 'my-module');
-      expect(ourSpan).toBeDefined();
-      expect(ourSpan!.path).toBe('src/app.ts');
-      expect(ourSpan!.start).toBe(1);
-      expect(ourSpan!.end).toBe(5);
+      const ourSpan = present(
+        rows.find((r) => r.name === 'my-module'),
+        'the my-module row'
+      );
+      expect(ourSpan.path).toBe('src/app.ts');
+      expect(ourSpan.start).toBe(1);
+      expect(ourSpan.end).toBe(5);
     });
 
     it('produces no rows for a path with no spans', () => {
@@ -210,12 +213,14 @@ suite('Porcelain contract (git span)', () => {
 
       // Our specific span should be reported as drifted, with a real status
       // token from the documented vocabulary (content changed → CHANGED).
-      const ourSpan = rows.find((r) => r.name === 'my-module');
-      expect(ourSpan).toBeDefined();
-      expect(ourSpan!.path).toBe('src/app.ts');
-      expect(PORCELAIN_STATUSES).toContain(ourSpan!.status);
-      expect(ourSpan!.status).toBe('CHANGED');
-      expect(isDebt(ourSpan!.status)).toBe(true);
+      const ourSpan = present(
+        rows.find((r) => r.name === 'my-module'),
+        'the my-module drift row'
+      );
+      expect(ourSpan.path).toBe('src/app.ts');
+      expect(PORCELAIN_STATUSES).toContain(ourSpan.status);
+      expect(ourSpan.status).toBe('CHANGED');
+      expect(isDebt(ourSpan.status)).toBe(true);
     });
 
     it('produces no rows for anchors that are not drifted', () => {
@@ -356,7 +361,7 @@ describe('parseDriftPorcelain — full status vocabulary', () => {
     ].join('\n');
     const rows = parseDriftPorcelain(input);
     expect(rows).toHaveLength(1);
-    expect(rows[0].name).toBe('span-y');
+    expect(itemAt(rows, 0).name).toBe('span-y');
   });
 
   it('parses whole-file status rows with (whole)/- columns', () => {

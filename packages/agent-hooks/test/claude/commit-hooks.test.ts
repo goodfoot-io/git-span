@@ -10,6 +10,7 @@ import { createSessionLayout } from '../../src/common/agent-hooks-common.js';
 import type { CommitReceipt } from '../../src/common/commit-contracts.js';
 import { type CommitInvocationState, transitionCommitInvocation } from '../../src/common/commit-lifecycle.js';
 import { terminalCommitInvocation } from '../../src/common/commit-runtime.js';
+import { itemAt, present } from '../helpers.js';
 import {
   addLineSpan,
   type BuiltRealHookBundles,
@@ -34,11 +35,11 @@ beforeAll(() => {
   ({ binary, pathDir } = buildWorkspaceGitSpan());
   bundles = buildRealHookBundles();
   hooks = bundles.claudeHooksDir;
-  previousPath = process.env['PATH'];
-  process.env['PATH'] = `${pathDir}:${previousPath ?? ''}`;
+  previousPath = process.env.PATH;
+  process.env.PATH = `${pathDir}:${previousPath ?? ''}`;
 }, 600_000);
 afterAll(() => {
-  process.env['PATH'] = previousPath;
+  process.env.PATH = previousPath;
   for (const repo of repos) repo.cleanup();
   bundles?.cleanup();
 });
@@ -73,11 +74,11 @@ function envelope(repo: RealBundleRepo, id: string, command: string): Record<str
 }
 function prepare(repo: RealBundleRepo, input: Record<string, unknown>) {
   const result = invokeRealHook(join(hooks, 'static-plan.mjs'), input, repo.env);
-  const specific = result.output?.['hookSpecificOutput'] as Record<string, unknown>;
+  const specific = result.output?.hookSpecificOutput as Record<string, unknown>;
   expect(specific).toBeDefined();
-  expect(specific['permissionDecision']).toBeUndefined();
-  const updated = specific['updatedInput'] as Record<string, unknown>;
-  expect(updated['command']).not.toBe((input['tool_input'] as Record<string, unknown>)['command']);
+  expect(specific.permissionDecision).toBeUndefined();
+  const updated = specific.updatedInput as Record<string, unknown>;
+  expect(updated.command).not.toBe((input.tool_input as Record<string, unknown>).command);
   expect(updated).toMatchObject({ timeout: 20_000, description: 'preserve auxiliary fields' });
   return updated;
 }
@@ -121,7 +122,7 @@ describe('claude deployed commit adapters', () => {
     const repo = fixture();
     const input = envelope(repo, 'success', 'git commit -q --allow-empty -m attributed; cat app.ts');
     const updated = prepare(repo, input);
-    const shell = runRealShell(repo, updated['command'] as string);
+    const shell = runRealShell(repo, updated.command as string);
     expect(shell.exitCode).toBe(0);
     const result = post(repo, input, updated, shell.stdout);
     expect(hookContext(result.output)).toContain('example/receipt-context');
@@ -141,8 +142,8 @@ describe('claude deployed commit adapters', () => {
       { stateRoot: stateRoot(repo), notesExecutable: binary }
     );
     expect(restored.original).toEqual({
-      input: input['tool_input'],
-      command: (input['tool_input'] as Record<string, unknown>)['command'],
+      input: input.tool_input,
+      command: (input.tool_input as Record<string, unknown>).command,
       cwd: repo.root
     });
     expect(hookContext(post(repo, input, updated, shell.stdout).output)).toBe('');
@@ -152,7 +153,7 @@ describe('claude deployed commit adapters', () => {
     const repo = fixture();
     const input = envelope(repo, 'exit-one', 'git commit -q --allow-empty -m failure; cat app.ts; false');
     const updated = prepare(repo, input);
-    const shell = runRealShell(repo, updated['command'] as string);
+    const shell = runRealShell(repo, updated.command as string);
     expect(shell.exitCode).toBe(1);
     invokeRealHook(
       join(hooks, 'post-tool-use-failure.mjs'),
@@ -170,9 +171,9 @@ describe('claude deployed commit adapters', () => {
   it('omits unavailable locator and declines missing invocation metadata', async () => {
     const repo = fixture();
     const input = envelope(repo, 'no-locator', 'git commit -q --allow-empty -m no-locator');
-    input['transcript_path'] = null;
+    input.transcript_path = null;
     const updated = prepare(repo, input);
-    const shell = runRealShell(repo, updated['command'] as string);
+    const shell = runRealShell(repo, updated.command as string);
     post(repo, input, updated, shell.stdout);
     expect(notes(repo)[0]?.document).toEqual({ schemaVersion: 1, host: 'claude', sessionId: 'receipt-session' });
     const handler = createPre(layoutFor(repo), { notesExecutable: binary }, join(hooks, 'static-plan.mjs'));
@@ -185,7 +186,7 @@ describe('claude deployed commit adapters', () => {
     const repo = fixture();
     const input = envelope(repo, 'active', 'read -r ready; git commit -q --allow-empty -m after-yield');
     const updated = prepare(repo, input);
-    const child = spawn('bash', ['-c', updated['command'] as string], {
+    const child = spawn('bash', ['-c', updated.command as string], {
       cwd: repo.root,
       env: repo.env,
       stdio: ['pipe', 'pipe', 'pipe']
@@ -198,9 +199,9 @@ describe('claude deployed commit adapters', () => {
       invokeRealHook(join(hooks, 'session-end.mjs'), { ...input, hook_event_name: 'SessionEnd' }, repo.env);
       const dirs = readdirSync(join(stateRoot(repo), 'invocations'));
       expect(dirs).toHaveLength(1);
-      expect(JSON.parse(readFileSync(join(stateRoot(repo), 'invocations', dirs[0], 'state.json'), 'utf8')).status).toBe(
-        'active'
-      );
+      expect(
+        JSON.parse(readFileSync(join(stateRoot(repo), 'invocations', itemAt(dirs, 0), 'state.json'), 'utf8')).status
+      ).toBe('active');
       child.stdin.end('continue\n');
       expect(await finished).toBe(0);
       post(repo, input, updated, '');
@@ -208,7 +209,7 @@ describe('claude deployed commit adapters', () => {
       invokeRealHook(join(hooks, 'session-end.mjs'), { ...input, hook_event_name: 'SessionEnd' }, repo.env);
       const later = envelope(repo, 'later-turn', 'git commit -q --allow-empty -m later');
       const laterUpdated = prepare(repo, later);
-      const shell = runRealShell(repo, laterUpdated['command'] as string);
+      const shell = runRealShell(repo, laterUpdated.command as string);
       post(repo, later, laterUpdated, shell.stdout);
       expect(notes(repo)).toHaveLength(1);
     } finally {
@@ -219,7 +220,7 @@ describe('claude deployed commit adapters', () => {
     const repo = fixture();
     const input = envelope(repo, 'stalled', 'git commit -q --allow-empty -m stalled; cat app.ts');
     const updated = prepare(repo, input);
-    const shell = runRealShell(repo, updated['command'] as string);
+    const shell = runRealShell(repo, updated.command as string);
     const stalled = join(repo.home, 'stalled-notes');
     writeFileSync(stalled, '#!/usr/bin/env node\nsetInterval(() => {}, 1000);\n', { mode: 0o700 });
     const handler = createPost(undefined, undefined, layoutFor(repo), { notesExecutable: stalled });
@@ -324,13 +325,15 @@ describe('emitted receipt envelope and executable-search controls', () => {
   ])('diagnoses %s without replacing successful original execution', (prefix) => {
     const repo = fixture();
     const log = join(repo.home, 'receipt-warning.jsonl');
-    repo.env['AGENT_HOOKS_LOG_FILE'] = log;
+    repo.env.AGENT_HOOKS_LOG_FILE = log;
     const command = `${prefix} commit -q --allow-empty -m bypass`;
     const input = envelope(repo, 'search-control', command);
     const pre = invokeRealHook(join(hooks, 'static-plan.mjs'), input, repo.env);
-    expect((pre.output!['hookSpecificOutput'] as Record<string, unknown>)?.['updatedInput']).toBeUndefined();
+    expect(
+      (present(pre.output, 'the static-plan hook output').hookSpecificOutput as Record<string, unknown>)?.updatedInput
+    ).toBeUndefined();
     expect(runRealShell(repo, command).exitCode).toBe(0);
-    post(repo, input, input['tool_input'] as Record<string, unknown>, { exit_code: 0 });
+    post(repo, input, input.tool_input as Record<string, unknown>, { exit_code: 0 });
     expect(notes(repo)).toEqual([]);
     expect(readFileSync(log, 'utf8')).toContain('git-span commit receipts: observable');
   });
@@ -341,38 +344,36 @@ describe('emitted receipt envelope and executable-search controls', () => {
     const output = delayed
       ? await delayedPre(repo, input)
       : invokeRealHook(join(hooks, 'static-plan.mjs'), input, repo.env).output;
-    const updated = (output!['hookSpecificOutput'] as Record<string, unknown>)['updatedInput'] as Record<
-      string,
-      unknown
-    >;
-    expect(updated['command']).toContain(command);
-    expect(runRealShell(repo, updated['command'] as string).exitCode).toBe(0);
+    const updated = (present(output, 'the static-plan hook output').hookSpecificOutput as Record<string, unknown>)
+      .updatedInput as Record<string, unknown>;
+    expect(updated.command).toContain(command);
+    expect(runRealShell(repo, updated.command as string).exitCode).toBe(0);
     post(repo, input, updated, { exit_code: 0 });
     expect(notes(repo)).toHaveLength(1);
   });
   it('rejects a 100KB command plus 900KB description before persistence and preserves execution', () => {
     const repo = fixture();
     const log = join(repo.home, 'receipt-warning.jsonl');
-    repo.env['AGENT_HOOKS_LOG_FILE'] = log;
+    repo.env.AGENT_HOOKS_LOG_FILE = log;
     const command = `git commit -q --allow-empty -m oversized; #${'x'.repeat(100_000)}`;
     const input = envelope(repo, 'oversized', command);
-    input['tool_input'] = { command, description: 'y'.repeat(900_000) };
+    input.tool_input = { command, description: 'y'.repeat(900_000) };
     const result = invokeRealHook(join(hooks, 'static-plan.mjs'), input, repo.env);
-    expect((result.output?.['hookSpecificOutput'] as Record<string, unknown>)?.['updatedInput']).toBeUndefined();
+    expect((result.output?.hookSpecificOutput as Record<string, unknown>)?.updatedInput).toBeUndefined();
     expect(readdirSync(join(stateRoot(repo), 'invocations'))).toEqual([]);
     expect(readFileSync(log, 'utf8')).toContain('serialized receipt envelope');
     expect(runRealShell(repo, command).exitCode).toBe(0);
-    post(repo, input, input['tool_input'] as Record<string, unknown>, { exit_code: 0 });
+    post(repo, input, input.tool_input as Record<string, unknown>, { exit_code: 0 });
     expect(notes(repo)).toEqual([]);
   });
   it('accepts the exact maximum lifecycle envelope, publishes a receipt and restores; one byte over stays original', async () => {
     const repo = fixture();
     const command = 'git commit -q --allow-empty -m boundary';
     const sizing = envelope(repo, 'sizing0', command);
-    sizing['tool_input'] = { command, description: '' };
+    sizing.tool_input = { command, description: '' };
     invokeRealHook(join(hooks, 'static-plan.mjs'), sizing, repo.env);
     const invocations = join(stateRoot(repo), 'invocations');
-    const first = readdirSync(invocations)[0];
+    const first = itemAt(readdirSync(invocations), 0);
     const state = JSON.parse(readFileSync(join(invocations, first, 'state.json'), 'utf8'));
     const maximumState = {
       ...state,
@@ -383,25 +384,24 @@ describe('emitted receipt envelope and executable-search controls', () => {
     };
     const padding = 1_048_576 - Buffer.byteLength(JSON.stringify(maximumState));
     const boundary = envelope(repo, 'boundry', command);
-    boundary['tool_input'] = { command, description: 'x'.repeat(padding) };
+    boundary.tool_input = { command, description: 'x'.repeat(padding) };
     const pre = invokeRealHook(join(hooks, 'static-plan.mjs'), boundary, repo.env);
-    const updated = (pre.output!['hookSpecificOutput'] as Record<string, unknown>)['updatedInput'] as Record<
-      string,
-      unknown
-    >;
-    expect(updated['description']).toBe('x'.repeat(padding));
+    const updated = (present(pre.output, 'the static-plan hook output').hookSpecificOutput as Record<string, unknown>)
+      .updatedInput as Record<string, unknown>;
+    expect(updated.description).toBe('x'.repeat(padding));
     const directory = readdirSync(invocations)
       .map((key) => join(invocations, key))
-      .find((dir) => JSON.parse(readFileSync(join(dir, 'enrollment.json'), 'utf8')).toolUseId === 'boundry')!;
+      .find((dir) => JSON.parse(readFileSync(join(dir, 'enrollment.json'), 'utf8')).toolUseId === 'boundry');
+    if (directory === undefined) throw new Error('no invocation directory enrolled the boundary tool use');
     for (const file of ['enrollment.json', 'state.json', 'shim.json']) {
       const bytes = readFileSync(join(directory, file));
       expect(bytes.length).toBeLessThanOrEqual(1_048_576);
       expect(JSON.parse(bytes.toString())).toBeDefined();
     }
-    expect(runRealShell(repo, updated['command'] as string).exitCode).toBe(0);
+    expect(runRealShell(repo, updated.command as string).exitCode).toBe(0);
     expect(readdirSync(join(directory, 'receipts'))).toHaveLength(1);
     const receipt = JSON.parse(
-      readFileSync(join(directory, 'receipts', readdirSync(join(directory, 'receipts'))[0]), 'utf8')
+      readFileSync(join(directory, 'receipts', itemAt(readdirSync(join(directory, 'receipts')), 0)), 'utf8')
     ) as CommitReceipt;
     let growing = JSON.parse(readFileSync(join(directory, 'state.json'), 'utf8')) as CommitInvocationState;
     growing = { ...growing, pendingNonces: [] };
@@ -448,13 +448,13 @@ describe('emitted receipt envelope and executable-search controls', () => {
       { host: 'claude', sessionId: 'receipt-session', toolUseId: 'boundry' },
       { stateRoot: stateRoot(repo) }
     );
-    expect(restored.original?.input).toEqual(boundary['tool_input']);
+    expect(restored.original?.input).toEqual(boundary.tool_input);
     const log = join(repo.home, 'overflow-warning.jsonl');
-    repo.env['AGENT_HOOKS_LOG_FILE'] = log;
+    repo.env.AGENT_HOOKS_LOG_FILE = log;
     const overflow = envelope(repo, 'overflo', command);
-    overflow['tool_input'] = { command, description: 'x'.repeat(padding + 1) };
+    overflow.tool_input = { command, description: 'x'.repeat(padding + 1) };
     const result = invokeRealHook(join(hooks, 'static-plan.mjs'), overflow, repo.env);
-    expect((result.output?.['hookSpecificOutput'] as Record<string, unknown>)?.['updatedInput']).toBeUndefined();
+    expect((result.output?.hookSpecificOutput as Record<string, unknown>)?.updatedInput).toBeUndefined();
     expect(readdirSync(invocations)).toHaveLength(2);
     expect(readFileSync(log, 'utf8')).toContain('serialized receipt envelope');
     expect(runRealShell(repo, command).exitCode).toBe(0);
@@ -468,11 +468,11 @@ describe('supported emitted explicit builtin dispatch', () => {
     (prefix) => {
       const repo = fixture();
       const log = join(repo.home, 'supported-builtin.jsonl');
-      repo.env['AGENT_HOOKS_LOG_FILE'] = log;
+      repo.env.AGENT_HOOKS_LOG_FILE = log;
       const command = `${prefix} commit -q --allow-empty -m supported-builtin`;
       const input = envelope(repo, 'supported-builtin', command);
       const updated = prepare(repo, input);
-      expect(runRealShell(repo, updated['command'] as string).exitCode).toBe(0);
+      expect(runRealShell(repo, updated.command as string).exitCode).toBe(0);
       post(repo, input, updated, { exit_code: 0 });
       expect(notes(repo)).toHaveLength(1);
       expect(readFileSync(log, 'utf8')).not.toContain('git-span commit receipts:');

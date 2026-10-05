@@ -6,21 +6,26 @@ import {
   type LayeredParseOptions,
   type LayeredParseResult,
   type LayeredResolvedMatch,
+  type NumericSedAddress,
   parseCompoundStages,
   parseLiteralListLoop,
+  parseNumericSedAddress,
   resolveNodeWriteSink,
   resolveNumericSed,
   resolvePatternSubstitution,
   resolvePythonWriteSink,
   type UnresolvedAttribution
 } from '../../src/common/static-attribution.js';
+import { itemAt } from '../helpers.js';
 
 type SpanView = { span: Record<string, unknown> };
 function spanOf(match: unknown): Record<string, unknown> {
   return (match as SpanView).span;
 }
-function numericMatch(script: string): RegExpMatchArray {
-  return script.match(/^(\d+)(?:,(\d+))?s\W/) as RegExpMatchArray;
+function numericAddress(script: string): NumericSedAddress {
+  const address = parseNumericSedAddress(script);
+  if (address === null) throw new Error(`no numeric sed address in ${script}`);
+  return address;
 }
 
 /** A PatternCommand-shaped literal; the interface itself is module-private. */
@@ -63,15 +68,15 @@ describe('resolvePatternSubstitution', () => {
     const result = resolvePatternSubstitution(patternCommand({ backupSuffix: '.bak' }) as never, OPTIONS, '/repo', 32);
     const spans = result.resolved.map((match) => spanOf(match));
     expect(spans).toHaveLength(3);
-    expect(spans[2].operation).toBe('create-overwrite');
-    expect(spans[2].absolutePath).toBe('/repo/a.txt.bak');
+    expect(itemAt(spans, 2).operation).toBe('create-overwrite');
+    expect(itemAt(spans, 2).absolutePath).toBe('/repo/a.txt.bak');
   });
 
   it('adds a deleted-text requirement for perl-zero', () => {
     const result = resolvePatternSubstitution(patternCommand({ kind: 'perl-zero' }) as never, OPTIONS, '/repo', 32);
     expect(result.preStateRequests.map((request) => request.requirement)).toEqual(['match-locations', 'deleted-text']);
     const spans = result.resolved.map((match) => spanOf(match));
-    expect([spans[0].lineStart, spans[0].lineEnd]).toEqual([2, 2]);
+    expect([itemAt(spans, 0).lineStart, itemAt(spans, 0).lineEnd]).toEqual([2, 2]);
   });
 
   it('collapses perl ranges to first-through-last and keeps perl-zero non-global to the first', () => {
@@ -92,8 +97,8 @@ describe('resolvePatternSubstitution', () => {
     );
     const spans = result.resolved.map((match) => spanOf(match));
     expect(spans).toHaveLength(2);
-    expect([spans[0].lineStart, spans[0].lineEnd]).toEqual([2, 2]);
-    expect([spans[1].lineStart, spans[1].lineEnd]).toEqual([3, 3]);
+    expect([itemAt(spans, 0).lineStart, itemAt(spans, 0).lineEnd]).toEqual([2, 2]);
+    expect([itemAt(spans, 1).lineStart, itemAt(spans, 1).lineEnd]).toEqual([3, 3]);
   });
 
   it('rejects a sed script whose leading address is not a literal', () => {
@@ -104,7 +109,7 @@ describe('resolvePatternSubstitution', () => {
       32
     );
     expect(result.resolved).toEqual([]);
-    expect(result.unresolved[0].reasonCode).toBe('unsupported-expression');
+    expect(itemAt(result.unresolved, 0).reasonCode).toBe('unsupported-expression');
     expect(lastDetail(result.unresolved)).toBe('sed address is not a literal pattern');
     expect(result.preStateRequests).toEqual([]);
   });
@@ -116,13 +121,13 @@ describe('resolvePatternSubstitution', () => {
       '/repo',
       32
     );
-    expect(result.unresolved[0].reasonCode).toBe('unsupported-expression');
+    expect(itemAt(result.unresolved, 0).reasonCode).toBe('unsupported-expression');
     expect(lastDetail(result.unresolved)).toBe('only literal line-count-preserving substitutions are supported');
   });
 
   it('rejects a command with no literal file operand', () => {
     const result = resolvePatternSubstitution(patternCommand({ files: [] }) as never, OPTIONS, '/repo', 32);
-    expect(result.unresolved[0].reasonCode).toBe('unsupported-syntax');
+    expect(itemAt(result.unresolved, 0).reasonCode).toBe('unsupported-syntax');
     expect(lastDetail(result.unresolved)).toBe('in-place substitution has no literal file operand');
   });
 
@@ -135,8 +140,8 @@ describe('resolvePatternSubstitution', () => {
     );
     expect(result.resolved).toHaveLength(0);
     expect(result.unresolved).toHaveLength(1);
-    expect(result.unresolved[0].reasonCode).toBe('dynamic-path');
-    expect(result.unresolved[0].fileArg).toBe('$DYN.txt');
+    expect(itemAt(result.unresolved, 0).reasonCode).toBe('dynamic-path');
+    expect(itemAt(result.unresolved, 0).fileArg).toBe('$DYN.txt');
   });
 
   it('reports missing pre-state and binary content per file without resolving them', () => {
@@ -146,7 +151,7 @@ describe('resolvePatternSubstitution', () => {
       '/repo',
       32
     );
-    expect(missing.unresolved[0].reasonCode).toBe('missing-pre-state');
+    expect(itemAt(missing.unresolved, 0).reasonCode).toBe('missing-pre-state');
 
     const nul = resolvePatternSubstitution(
       patternCommand() as never,
@@ -154,7 +159,7 @@ describe('resolvePatternSubstitution', () => {
       '/repo',
       32
     );
-    expect(nul.unresolved[0].reasonCode).toBe('binary-content');
+    expect(itemAt(nul.unresolved, 0).reasonCode).toBe('binary-content');
   });
 
   it('keeps accumulated preStateRequests when any file resolves unsuccessfully, unlike the numeric tail', () => {
@@ -166,13 +171,13 @@ describe('resolvePatternSubstitution', () => {
     );
     expect(result.unresolved).toHaveLength(1);
     expect(result.preStateRequests).toHaveLength(1);
-    expect(result.preStateRequests[0].requirement).toBe('match-locations');
+    expect(itemAt(result.preStateRequests, 0).requirement).toBe('match-locations');
   });
 
   it('rejects over-budget resolution with the substitution count noun', () => {
     const result = resolvePatternSubstitution(patternCommand({ files: ['a.txt'] }) as never, OPTIONS, '/repo', 1);
     expect(result.resolved).toEqual([]);
-    expect(result.unresolved[0].reasonCode).toBe('candidate-budget-exceeded');
+    expect(itemAt(result.unresolved, 0).reasonCode).toBe('candidate-budget-exceeded');
     expect(lastDetail(result.unresolved)).toBe('substitution produced 2 candidates; the limit is 1');
     expect(result.preStateRequests).toEqual([]);
   });
@@ -187,7 +192,7 @@ describe('resolveNumericSed', () => {
   it('resolves one modify span over the addressed range with expected post-state content', () => {
     const result = resolveNumericSed(
       patternCommand({ script: '2,3s/gamma/GAMMA/' }) as never,
-      numericMatch('2,3s/gamma/GAMMA/'),
+      numericAddress('2,3s/gamma/GAMMA/'),
       OPTIONS,
       '/repo',
       32
@@ -207,27 +212,27 @@ describe('resolveNumericSed', () => {
   it('rejects a command with no file operand before reading any pre-state', () => {
     const result = resolveNumericSed(
       patternCommand({ files: [] }) as never,
-      numericMatch('3s/beta/BETA/'),
+      numericAddress('3s/beta/BETA/'),
       OPTIONS,
       '/repo',
       32
     );
     expect(result.resolved).toEqual([]);
-    expect(result.unresolved[0].reasonCode).toBe('unsupported-syntax');
+    expect(itemAt(result.unresolved, 0).reasonCode).toBe('unsupported-syntax');
     expect(lastDetail(result.unresolved)).toBe('numeric in-place substitution has no file operand');
-    expect(result.unresolved[0].layer).toBe('shell');
+    expect(itemAt(result.unresolved, 0).layer).toBe('shell');
   });
 
   it('rejects a non-literal substitution expression for post-state verification', () => {
     const result = resolveNumericSed(
       patternCommand({ script: '3s/[a+]/x/' }) as never,
-      numericMatch('3s/[a+]/x/'),
+      numericAddress('3s/[a+]/x/'),
       OPTIONS,
       '/repo',
       32
     );
     expect(result.resolved).toEqual([]);
-    expect(result.unresolved[0].reasonCode).toBe('unsupported-expression');
+    expect(itemAt(result.unresolved, 0).reasonCode).toBe('unsupported-expression');
     expect(lastDetail(result.unresolved)).toBe(
       'numeric substitutions require a literal pattern and replacement for post-state verification'
     );
@@ -240,7 +245,7 @@ describe('resolveNumericSed', () => {
     ]) {
       const result = resolveNumericSed(
         patternCommand({ script: '3s/beta/BETA/' }) as never,
-        numericMatch('3s/beta/BETA/'),
+        numericAddress('3s/beta/BETA/'),
         options,
         '/repo',
         32
@@ -255,7 +260,7 @@ describe('resolveNumericSed', () => {
   it('emits a create-overwrite backup span per file', () => {
     const result = resolveNumericSed(
       patternCommand({ script: '3s/beta/BETA/', files: ['a.txt', 'missing.txt'], backupSuffix: '.bak' }) as never,
-      numericMatch('3s/beta/BETA/'),
+      numericAddress('3s/beta/BETA/'),
       OPTIONS,
       '/repo',
       32
@@ -270,23 +275,23 @@ describe('resolveNumericSed', () => {
   it('reports dynamic operands on the shell layer and empties preStateRequests when unresolved remain', () => {
     const result = resolveNumericSed(
       patternCommand({ script: '3s/beta/BETA/', files: ['$DYN.txt', 'a.txt'] }) as never,
-      numericMatch('3s/beta/BETA/'),
+      numericAddress('3s/beta/BETA/'),
       OPTIONS,
       '/repo',
       32
     );
     expect(result.resolved).toEqual([]);
     expect(result.unresolved).toHaveLength(1);
-    expect(result.unresolved[0].layer).toBe('shell');
-    expect(result.unresolved[0].idiom).toBe('sed-inplace');
-    expect(result.unresolved[0].fileArg).toBe('$DYN.txt');
+    expect(itemAt(result.unresolved, 0).layer).toBe('shell');
+    expect(itemAt(result.unresolved, 0).idiom).toBe('sed-inplace');
+    expect(itemAt(result.unresolved, 0).fileArg).toBe('$DYN.txt');
     expect(result.preStateRequests).toEqual([]);
   });
 
   it('rejects over-budget resolution with the numeric-substitution count noun', () => {
     const result = resolveNumericSed(
       patternCommand({ script: '3s/beta/BETA/', files: ['a.txt'] }) as never,
-      numericMatch('3s/beta/BETA/'),
+      numericAddress('3s/beta/BETA/'),
       OPTIONS,
       '/repo',
       0
@@ -450,8 +455,8 @@ describe('parseCompoundStages', () => {
       32,
       stubParse({ unresolved: [unresolvedMatch({ layer: 'node' })] }).parse
     ) as LayeredParseResult;
-    expect(shellResult.unresolved[0].layer).toBe('shell');
-    const lastRefusal = shellResult.unresolved[shellResult.unresolved.length - 1];
+    expect(itemAt(shellResult.unresolved, 0).layer).toBe('shell');
+    const lastRefusal = itemAt(shellResult.unresolved, -1);
     expect(lastRefusal.layer).toBe('node');
     expect(lastRefusal.simpleCommandIndex).toBe(1);
   });
@@ -467,7 +472,7 @@ describe('parseCompoundStages', () => {
       stubParse(child).parse
     ) as LayeredParseResult;
     expect(result.resolved).toEqual([]);
-    expect(result.unresolved[0].reasonCode).toBe('candidate-budget-exceeded');
+    expect(itemAt(result.unresolved, 0).reasonCode).toBe('candidate-budget-exceeded');
     expect(lastDetail(result.unresolved)).toBe('compound produced 4 candidates; the limit is 3');
     expect(result.preStateRequests).toEqual([]);
   });
@@ -501,14 +506,14 @@ describe('parseLiteralListLoop', () => {
       ['f', 'a.txt', 'for x in y; do echo $x; done', 'nested loop bodies are not supported'],
       ['f', '$(ls)', 'sed -i s/x/y/ $f', 'loop list uses command substitution'],
       ['f', '*.txt', 'sed -i s/x/y/ $f', 'loop list uses glob expansion'],
-      ['f', '${SOURCES}', 'sed -i s/x/y/ $f', 'loop list is not a literal list'],
+      ['f', `\${SOURCES}`, 'sed -i s/x/y/ $f', 'loop list is not a literal list'],
       ['f', '', 'sed -i s/x/y/ $f', 'loop list cannot be tokenized']
     ];
     for (const [variable, listSource, body, detail] of declines) {
       const result = loopResult(variable, listSource, body, stubParse({}).parse);
       expect(result.resolved).toEqual([]);
-      expect(result.unresolved[0].layer).toBe('literal-loop');
-      expect(result.unresolved[0].idiom).toBe('literal-list-loop');
+      expect(itemAt(result.unresolved, 0).layer).toBe('literal-loop');
+      expect(itemAt(result.unresolved, 0).idiom).toBe('literal-list-loop');
       expect(lastDetail(result.unresolved)).toBe(detail);
       expect(result.preStateRequests).toEqual([]);
     }
@@ -517,20 +522,20 @@ describe('parseLiteralListLoop', () => {
   it('rejects over-budget binding lists before any expansion', () => {
     const result = loopResult('f', 'a b c d', 'sed -i s/x/y/ $f', stubParse({}).parse, 3);
     expect(lastDetail(result.unresolved)).toBe('literal list has 4 bindings; the limit is 3');
-    expect(result.unresolved[0].reasonCode).toBe('candidate-budget-exceeded');
+    expect(itemAt(result.unresolved, 0).reasonCode).toBe('candidate-budget-exceeded');
   });
 
   it('rejects field-splitting expansions and unused variables per binding; dynamic lists decline at list level', () => {
     const dynamicList = loopResult('f', 'a.txt $PWD.txt', 'sed -i s/x/y/ $f', stubParse({}).parse);
-    expect(dynamicList.unresolved[0].reasonCode).toBe('dynamic-list');
+    expect(itemAt(dynamicList.unresolved, 0).reasonCode).toBe('dynamic-list');
     expect(lastDetail(dynamicList.unresolved)).toBe('loop list is not a literal list');
 
     const unsafe = loopResult('f', '"a b.txt"', 'sed -i s/x/y/ $f', stubParse({}).parse);
-    expect(unsafe.unresolved[0].reasonCode).toBe('unsupported-dataflow');
+    expect(itemAt(unsafe.unresolved, 0).reasonCode).toBe('unsupported-dataflow');
     expect(lastDetail(unsafe.unresolved)).toBe('unquoted loop expansion would perform shell field splitting');
 
     const unused = loopResult('f', 'a.txt', 'sed -i s/x/y/ g.txt', stubParse({}).parse);
-    expect(unused.unresolved[0].reasonCode).toBe('unsupported-dataflow');
+    expect(itemAt(unused.unresolved, 0).reasonCode).toBe('unsupported-dataflow');
     expect(lastDetail(unused.unresolved)).toBe('loop variable is not used in an expandable shell context');
   });
 
@@ -677,7 +682,7 @@ describe('resolvePythonWriteSink', () => {
     ctx.texts.set('t', { path: 'a.txt' });
     expect(sink(ctx, "t.replace('beta', '')")).toBeUndefined();
     expect(ctx.preStateRequests.map((request) => request.requirement)).toEqual(['match-locations', 'deleted-text']);
-    expect(ctx.resolved[0].idiom).toBe('python-replace');
+    expect(itemAt(ctx.resolved, 0).idiom).toBe('python-replace');
   });
 
   it('rewrites exactly the anchored occurrence via the anchor-slice shape and refuses absent anchors', () => {
@@ -687,7 +692,7 @@ describe('resolvePythonWriteSink', () => {
     ctx.anchors.set('i', { source: 't', literal: 'ANCHOR' });
     expect(sink(ctx, "t[:i] + 'NEWVAL' + t[i+6:]")).toBeUndefined();
     const sliceSpan = spanOf(ctx.resolved[0]);
-    expect(ctx.resolved[0].idiom).toBe('python-anchor-slice');
+    expect(itemAt(ctx.resolved, 0).idiom).toBe('python-anchor-slice');
     expect(sliceSpan.expectedContent).toBe('alpha\nNEWVAL\nomega\n');
 
     const missing = pythonContext({ readPreState: () => 'nothing here\n' });
@@ -695,7 +700,7 @@ describe('resolvePythonWriteSink', () => {
     missing.anchors.set('i', { source: 't', literal: 'ANCHOR' });
     const rejected = sink(missing, "t[:i] + 'NEWVAL' + t[i+6:]");
     expect(rejected).not.toBeNull();
-    expect((rejected as LayeredParseResult).unresolved[0].reasonCode).toBe('evidence-mismatch');
+    expect(itemAt((rejected as LayeredParseResult).unresolved, 0).reasonCode).toBe('evidence-mismatch');
   });
 
   it('joins edited line arrays with LF and emits one modify span per edited index', () => {
@@ -728,13 +733,13 @@ describe('resolvePythonWriteSink', () => {
     unlinked.structured.set('data', { format: 'yaml', path: 'a.txt', keys: [] });
     const rejected = sink(unlinked, 'json.dumps(data)');
     expect(rejected).not.toBeNull();
-    expect((rejected as LayeredParseResult).unresolved[0].reasonCode).toBe('unsupported-dataflow');
+    expect(itemAt((rejected as LayeredParseResult).unresolved, 0).reasonCode).toBe('unsupported-dataflow');
   });
 
   it('falls back to the allowlist rejection for write expressions outside every sink', () => {
     const rejected = sink(pythonContext(), "t.replace(x, 'y')");
     expect(rejected).not.toBeNull();
-    expect((rejected as LayeredParseResult).unresolved[0].detail).toBe(
+    expect(itemAt((rejected as LayeredParseResult).unresolved, 0).detail).toBe(
       'Python write expression is outside the bounded allowlist'
     );
   });
@@ -754,7 +759,7 @@ describe('resolveNodeWriteSink', () => {
     ctx.texts.set('t', { path: 'a.txt' });
     expect(sink(ctx, "t.replace('beta', '')")).toBeUndefined();
     expect(ctx.preStateRequests.map((request) => request.requirement)).toEqual(['match-locations']);
-    expect(ctx.resolved[0].idiom).toBe('node-replace');
+    expect(itemAt(ctx.resolved, 0).idiom).toBe('node-replace');
     expect(spanOf(ctx.resolved[0]).expectedContent).toBe('alpha\n\n');
   });
 
@@ -769,7 +774,7 @@ describe('resolveNodeWriteSink', () => {
     badPattern.replacements.set('r', { source: 't', pattern: '', replacement: 'x', global: false });
     const rejected = sink(badPattern, 'r');
     expect(rejected).not.toBeNull();
-    expect((rejected as LayeredParseResult).unresolved[0].reasonCode).toBe('unsupported-expression');
+    expect(itemAt((rejected as LayeredParseResult).unresolved, 0).reasonCode).toBe('unsupported-expression');
   });
 
   it('resolves a linked JSON.stringify dump to one modify span per mutated key path', () => {
@@ -777,20 +782,20 @@ describe('resolveNodeWriteSink', () => {
     ctx.structured.set('data', { path: 'a.txt', keys: [['name']] });
     expect(sink(ctx, 'JSON.stringify(data, null, 2)')).toBeUndefined();
     expect(ctx.resolved).toHaveLength(1);
-    expect(ctx.resolved[0].idiom).toBe('node-json');
+    expect(itemAt(ctx.resolved, 0).idiom).toBe('node-json');
     expect(ctx.preStateRequests.map((request) => request.requirement)).toEqual(['match-locations']);
 
     const unlinked = nodeCtx({ readPreState: () => '"name": "old"\n' });
     unlinked.structured.set('data', { path: 'other.txt', keys: [['name']] });
     const rejected = sink(unlinked, 'JSON.stringify(data)');
     expect(rejected).not.toBeNull();
-    expect((rejected as LayeredParseResult).unresolved[0].reasonCode).toBe('unsupported-dataflow');
+    expect(itemAt((rejected as LayeredParseResult).unresolved, 0).reasonCode).toBe('unsupported-dataflow');
   });
 
   it('falls back to the allowlist rejection for write expressions outside every sink', () => {
     const rejected = sink(nodeCtx(), "t.replace(x, 'y')");
     expect(rejected).not.toBeNull();
-    expect((rejected as LayeredParseResult).unresolved[0].detail).toBe(
+    expect(itemAt((rejected as LayeredParseResult).unresolved, 0).detail).toBe(
       'Node write expression is outside the bounded allowlist'
     );
   });

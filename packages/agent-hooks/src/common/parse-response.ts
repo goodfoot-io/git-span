@@ -360,6 +360,7 @@ function analyzeSearchArgv(argv: string[], start: number): SearchArgvInfo {
   let i = start;
   while (i < argv.length) {
     const a = argv[i];
+    if (a === undefined) break;
     if (a === '--') {
       positionals.push(...argv.slice(i + 1));
       break;
@@ -388,6 +389,7 @@ function analyzeSearchArgv(argv: string[], start: number): SearchArgvInfo {
       let consumesNext = false;
       for (let j = 1; j < a.length; j++) {
         const c = a[j];
+        if (c === undefined) break;
         if (c === 'A' || c === 'B' || c === 'C') contextFlags = true;
         if (c === 'n') numbered = true;
         if (c === 'H') withFilename = true;
@@ -442,6 +444,7 @@ function findGitSubcommand(argv: string[]): GitSubcommandInfo | null {
   let i = 1;
   while (i < argv.length) {
     const a = argv[i];
+    if (a === undefined) break;
     if (a === '-C') {
       const v = argv[i + 1];
       if (v === undefined) return null;
@@ -498,6 +501,7 @@ function hasRevPathArg(argv: string[], start: number): boolean {
   const valueFlags = new Set(['--format', '--pretty', '--output', '--word-diff-regex']);
   for (let i = start; i < argv.length; i++) {
     const a = argv[i];
+    if (a === undefined) break;
     if (a === '--') return false;
     if (a.startsWith('-') && a !== '-') {
       if (!a.includes('=') && valueFlags.has(a)) i += 1;
@@ -516,6 +520,7 @@ function hasRevPathArg(argv: string[], start: number): boolean {
 function hasFlag(argv: string[], start: number, flag: string): boolean {
   for (let i = start; i < argv.length; i++) {
     const a = argv[i];
+    if (a === undefined) break;
     if (a === '--') return false;
     if (a === flag) return true;
   }
@@ -563,6 +568,7 @@ function hasDiffRevPathArg(argv: string[], start: number, cwd: string): boolean 
   ]);
   for (let i = start; i < argv.length; i++) {
     const a = argv[i];
+    if (a === undefined) break;
     if (a === '--') return false;
     if (a.startsWith('-') && a !== '-') {
       if (!a.includes('=') && valueFlags.has(a)) i += 1;
@@ -591,6 +597,7 @@ function diffRelativeBase(
 ): { base: string; root: string } | 'unresolvable' | null {
   for (let i = start; i < argv.length; i++) {
     const a = argv[i];
+    if (a === undefined) break;
     if (a === '--') return null;
     if (a === '--relative') return { base: effectiveDir, root: effectiveDir };
     if (a.startsWith('--relative=')) {
@@ -646,6 +653,7 @@ const VERBATIM_PASS_BINS = new Set(['head', 'tail', 'wc', 'sort', 'uniq', 'cut']
  */
 function isRenumberingFilter(argv: string[]): boolean {
   const bin = argv[0];
+  if (bin === undefined) return true;
   if (bin === 'nl') return true;
   if (bin === 'sed') return !isVerbatimSedStage(argv);
   if (bin === 'awk') return !isVerbatimAwkStage(argv);
@@ -682,6 +690,7 @@ function hasFileOperand(argv: string[]): boolean {
   let afterTerminator = false;
   for (let i = 1; i < argv.length; i++) {
     const a = argv[i];
+    if (a === undefined) break;
     if (a === '--') {
       afterTerminator = true;
       continue;
@@ -708,6 +717,7 @@ function hasGrepFileOperand(argv: string[]): boolean {
   let seenPattern = false;
   for (let i = 1; i < argv.length; i++) {
     const a = argv[i];
+    if (a === undefined) break;
     if (a === '--') {
       // Option parsing ends; every remaining token is a positional.
       for (let j = i + 1; j < argv.length; j++) {
@@ -768,6 +778,7 @@ function isVerbatimSedStage(argv: string[]): boolean {
   let suppressAutoPrint = false;
   for (let i = 1; i < argv.length; i++) {
     const a = argv[i];
+    if (a === undefined) break;
     if (a === '-n') {
       suppressAutoPrint = true;
       continue;
@@ -790,8 +801,8 @@ function isVerbatimSedStage(argv: string[]): boolean {
  * `gsub` — any of those rewrites or renumbers and fails closed.
  */
 function isVerbatimAwkStage(argv: string[]): boolean {
-  if (argv.length !== 2) return false;
-  const program = argv[1];
+  const [, program, ...rest] = argv;
+  if (program === undefined || rest.length > 0) return false;
   return /^NR\s*(<=|>=|==|!=|<|>)\s*\d+$/.test(program) || /^NR\s*%\s*\d+\s*(==|!=)\s*\d+$/.test(program);
 }
 
@@ -803,8 +814,10 @@ function isVerbatimAwkStage(argv: string[]): boolean {
  * closed.
  */
 function verbatimPerlScript(argv: string[]): string | null {
-  if (argv.length === 3 && argv[1] === '-ne') return argv[2];
-  if (argv.length === 4 && argv[1] === '-n' && argv[2] === '-e') return argv[3];
+  const [, first, second, third, ...rest] = argv;
+  if (rest.length > 0) return null;
+  if (first === '-ne' && second !== undefined && third === undefined) return second;
+  if (first === '-n' && second === '-e' && third !== undefined) return third;
   return null;
 }
 
@@ -838,8 +851,8 @@ function isVerbatimPerlStage(argv: string[]): boolean {
  * closed.
  */
 function isVerbatimTrStage(argv: string[]): boolean {
-  if (argv.length !== 3 || argv[1] !== '-d') return false;
-  const set = argv[2];
+  const [, flag, set, ...rest] = argv;
+  if (flag !== '-d' || set === undefined || rest.length > 0) return false;
   return !/[0-9:]/.test(set) && !set.includes('\\n');
 }
 
@@ -942,11 +955,11 @@ function parseRecord(line: string, sep: string): { path: string; line: number; t
 
 /** One numbered record in the one-file/heading `line:text` or `line-text` style. */
 function parseOneFileRecord(line: string): { line: number; text: string } | null {
-  const m = /^(\d+)([:-])/.exec(line);
-  if (m === null) return null;
-  const lineNumber = Number.parseInt(m[1], 10);
+  const [prefix, digits] = /^(\d+)([:-])/.exec(line) ?? [];
+  if (prefix === undefined || digits === undefined) return null;
+  const lineNumber = Number.parseInt(digits, 10);
   if (lineNumber <= 0) return null;
-  return { line: lineNumber, text: line.slice(m[0].length) };
+  return { line: lineNumber, text: line.slice(prefix.length) };
 }
 
 /**
@@ -962,11 +975,11 @@ function parseContextRecord(line: string, knownPaths: string[]): { path: string;
   for (const path of knownPaths) {
     if (!line.startsWith(`${path}-`)) continue;
     const tail = line.slice(path.length + 1);
-    const m = /^(\d+)-/.exec(tail);
-    if (m === null) continue;
-    const lineNumber = Number.parseInt(m[1], 10);
+    const [prefix, digits] = /^(\d+)-/.exec(tail) ?? [];
+    if (prefix === undefined || digits === undefined) continue;
+    const lineNumber = Number.parseInt(digits, 10);
     if (lineNumber <= 0) continue;
-    return { path, line: lineNumber, text: tail.slice(m[0].length) };
+    return { path, line: lineNumber, text: tail.slice(prefix.length) };
   }
   return null;
 }
@@ -1128,12 +1141,12 @@ function capSpans(spans: ResponseSpan[]): ResponseSpan[] {
  * overlapping lines merge, and duplicates never create duplicate surfaces.
  */
 function coalesce(lines: number[]): Array<[number, number]> {
-  if (lines.length === 0) return [];
-  const sorted = [...lines].sort((a, b) => a - b);
+  const [first, ...rest] = [...lines].sort((a, b) => a - b);
+  if (first === undefined) return [];
   const ranges: Array<[number, number]> = [];
-  let start = sorted[0];
-  let end = sorted[0];
-  for (const n of sorted.slice(1)) {
+  let start = first;
+  let end = first;
+  for (const n of rest) {
     if (n <= end + 1) {
       if (n > end) end = n;
     } else {
@@ -1196,9 +1209,17 @@ function parseDiffHeader(
   | null {
   if (line.startsWith('diff --cc ') || line.startsWith('diff --combined ')) return { kind: 'combined' };
   if (!line.startsWith('diff --git ')) return null;
-  const tokens = line.slice('diff --git '.length).trim().split(/\s+/);
-  if (tokens.length !== 2 || tokens[0].startsWith('"') || tokens[1].startsWith('"')) return { kind: 'unparseable' };
-  return { kind: 'file', oldPath: stripDiffPrefix(tokens[0]), newPath: stripDiffPrefix(tokens[1]) };
+  const [oldToken, newToken, ...extra] = line.slice('diff --git '.length).trim().split(/\s+/);
+  if (
+    oldToken === undefined ||
+    newToken === undefined ||
+    extra.length > 0 ||
+    oldToken.startsWith('"') ||
+    newToken.startsWith('"')
+  ) {
+    return { kind: 'unparseable' };
+  }
+  return { kind: 'file', oldPath: stripDiffPrefix(oldToken), newPath: stripDiffPrefix(newToken) };
 }
 
 /**
@@ -1310,10 +1331,12 @@ function decodeUnifiedDiff(stdout: string): Map<string, Set<number>> {
 /** Attribute one hunk header's per-side ranges to its record's paths. */
 function emitHunkRange(perFile: Map<string, Set<number>>, record: DiffRecordState, hunk: RegExpExecArray): void {
   if (record.binary || record.combined || record.submodule || record.unusable) return;
-  const oldStart = Number.parseInt(hunk[1], 10);
-  const oldCount = hunk[2] === undefined ? 1 : Number.parseInt(hunk[2], 10);
-  const newStart = Number.parseInt(hunk[3], 10);
-  const newCount = hunk[4] === undefined ? 1 : Number.parseInt(hunk[4], 10);
+  const [, oldStartText, oldCountText, newStartText, newCountText] = hunk;
+  if (oldStartText === undefined || newStartText === undefined) return;
+  const oldStart = Number.parseInt(oldStartText, 10);
+  const oldCount = oldCountText === undefined ? 1 : Number.parseInt(oldCountText, 10);
+  const newStart = Number.parseInt(newStartText, 10);
+  const newCount = newCountText === undefined ? 1 : Number.parseInt(newCountText, 10);
   // Rename/copy: the new path is the touch target; the old side is dropped
   // (the old path may not exist on disk — it was renamed away).
   if (record.rename) {
@@ -1355,8 +1378,9 @@ function matchBlameRange(
   const positionals: Array<{ arg: string; idx: number }> = [];
   for (let i = start; i < argv.length; i++) {
     const a = argv[i];
+    if (a === undefined) break;
     if (a === '--') {
-      for (let j = i + 1; j < argv.length; j++) positionals.push({ arg: argv[j], idx: j });
+      for (const [offset, arg] of argv.slice(i + 1).entries()) positionals.push({ arg, idx: i + 1 + offset });
       break;
     }
     if (a === '-L') {
@@ -1374,14 +1398,14 @@ function matchBlameRange(
     positionals.push({ arg: a, idx: i });
   }
   if (spec === null) return null;
-  const m = /^(\d+),(\d+)$/.exec(spec);
-  if (m === null) return null;
-  const files = positionals.filter((p) => p.idx > specIdx);
-  if (files.length !== 1) return null;
+  const [, startText, endText] = /^(\d+),(\d+)$/.exec(spec) ?? [];
+  if (startText === undefined || endText === undefined) return null;
+  const [file, ...otherFiles] = positionals.filter((p) => p.idx > specIdx);
+  if (file === undefined || otherFiles.length > 0) return null;
   return {
-    lineStart: Number.parseInt(m[1], 10),
-    lineEnd: Number.parseInt(m[2], 10),
-    fileArg: files[0].arg
+    lineStart: Number.parseInt(startText, 10),
+    lineEnd: Number.parseInt(endText, 10),
+    fileArg: file.arg
   };
 }
 
@@ -1443,6 +1467,7 @@ export function parseResponse(input: ResponseParseInput): ResponseSpan[] {
   const parts = split.stages;
   for (let i = 0; i < parts.length; i++) {
     const simple = parts[i];
+    if (simple === undefined) break;
     const argv = argvOf(simple.text);
     if (argv === null || argv.length === 0) continue;
     if (argv[0] === 'cd') {
@@ -1455,9 +1480,10 @@ export function parseResponse(input: ResponseParseInput): ResponseSpan[] {
       continue;
     }
     if (gated !== null) continue;
-    if (SEARCH_BINS.has(argv[0])) {
+    const [bin] = argv;
+    if (bin !== undefined && SEARCH_BINS.has(bin)) {
       gated = { kind: 'search', argv, start: 1, dir: null, dirUnresolvable: false };
-    } else if (argv[0] === 'git') {
+    } else if (bin === 'git') {
       const sub = findGitSubcommand(argv);
       if (sub !== null) {
         const base = { argv, start: sub.start, dir: sub.dir, dirUnresolvable: sub.dirUnresolvable };
@@ -1494,20 +1520,14 @@ export function parseResponse(input: ResponseParseInput): ResponseSpan[] {
     // EARLIER in the pipeline is consumed by the gated stage — a search
     // with explicit roots ignores stdin, so the feeder's records never
     // reach the response.
-    for (let j = 0; j < parts.length; j++) {
+    for (const [j, sibling] of parts.entries()) {
       if (j === i) continue;
-      if (j < i) {
-        // A feeder's output is consumed only when EVERY part between it
-        // and the gated stage is pipe-joined — a `;`/`&&`/… anywhere in
-        // between makes it a chain sibling whose output reaches the
-        // response (through the stages between them).
-        let consumed = true;
-        for (let k = j + 1; k <= i && consumed; k++) {
-          if (parts[k].precededBy !== 'pipe') consumed = false;
-        }
-        if (consumed) continue;
-      }
-      const siblingText = parts[j].text;
+      // A feeder's output is consumed only when EVERY part between it
+      // and the gated stage is pipe-joined — a `;`/`&&`/… anywhere in
+      // between makes it a chain sibling whose output reaches the
+      // response (through the stages between them).
+      if (j < i && parts.slice(j + 1, i + 1).every((part) => part.precededBy === 'pipe')) continue;
+      const siblingText = sibling.text;
       const siblingArgv = argvOf(siblingText);
       if (siblingArgv === null || siblingArgv.length === 0 || siblingArgv[0] === 'cd') continue;
       // An unquoted `<` — even GLUED inside a flag, pattern, or value token
@@ -1521,7 +1541,7 @@ export function parseResponse(input: ResponseParseInput): ResponseSpan[] {
       // crafted body is the same fabricated-record source as a crafted file.
       // The splitter strips `<<` from the text, so only the per-stage flag
       // sees the redirect.
-      if (parts[j].heredoc) return [];
+      if (sibling.heredoc) return [];
       if (isRenumberingFilter(siblingArgv)) return [];
     }
   }
@@ -1627,7 +1647,8 @@ export function parseResponse(input: ResponseParseInput): ResponseSpan[] {
         ? info.pathArgs.map((p) => resolvePath(effectiveDir, p))
         : [effectiveDir];
 
-  const singleFileArg = info.pathArgs.length === 1 ? info.pathArgs[0] : null;
+  const [firstPathArg, ...otherPathArgs] = info.pathArgs;
+  const singleFileArg = firstPathArg !== undefined && otherPathArgs.length === 0 ? firstPathArg : null;
   // One-file eligibility: numbered evidence, exactly one explicit file
   // argument that is a real file (a directory or no args means records carry
   // path prefixes), and no -H/--with-filename (which forces path prefixes).

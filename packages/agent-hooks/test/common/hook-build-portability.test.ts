@@ -215,7 +215,7 @@ describe('generated hook bin portability', () => {
     }
   });
 
-  it.each([
+  it.each<[label: string, agents: [string, string]]>([
     ['codex then claude-code', ['codex', 'claude-code']],
     ['claude-code then codex', ['claude-code', 'codex']],
     ['claude-code twice', ['claude-code', 'claude-code']],
@@ -301,23 +301,23 @@ describe('generated hook bin portability', () => {
       const out = readHooksJson(outDir);
       expect(Object.keys(out.hooks)).toEqual(['SessionStart', 'PreToolUse', 'PostToolUse', 'Stop']);
       expect(groupFor(out, 'SessionStart', 'session-start.mjs')).not.toBeNull();
-      expect(out.hooks['PreToolUse']?.map(groupBundle)).toEqual(['static-plan.mjs', 'apply-patch-plan.mjs']);
+      expect(out.hooks.PreToolUse?.map(groupBundle)).toEqual(['static-plan.mjs', 'apply-patch-plan.mjs']);
       const pre = groupFor(out, 'PreToolUse', 'static-plan.mjs');
       expect(pre, 'PreToolUse static-plan.mjs group must exist').not.toBeNull();
-      expect(pre!.matcher, 'PreToolUse static-plan.mjs matcher must equal CODEX_STATIC_PLAN_PRE_MATCHER').toBe(
+      expect(pre?.matcher, 'PreToolUse static-plan.mjs matcher must equal CODEX_STATIC_PLAN_PRE_MATCHER').toBe(
         CODEX_STATIC_PLAN_PRE_MATCHER
       );
       const applyPatch = groupFor(out, 'PreToolUse', 'apply-patch-plan.mjs');
       expect(applyPatch, 'PreToolUse apply-patch-plan.mjs group must exist').not.toBeNull();
-      expect(applyPatch!.matcher).toBe(APPLY_PATCH_PLAN_MATCHER);
+      expect(applyPatch?.matcher).toBe(APPLY_PATCH_PLAN_MATCHER);
       const post = groupFor(out, 'PostToolUse', 'post-tool-use.mjs');
       expect(post, 'PostToolUse post-tool-use.mjs group must exist').not.toBeNull();
-      expect(post!.matcher, 'PostToolUse post-tool-use.mjs matcher must equal STATIC_POST_MATCHER').toBe(
+      expect(post?.matcher, 'PostToolUse post-tool-use.mjs matcher must equal STATIC_POST_MATCHER').toBe(
         STATIC_POST_MATCHER
       );
       expect(groupFor(out, 'PreToolUse', 'snapshot.mjs')).toBeNull();
       expect(groupFor(out, 'PreToolUse', 'activity-log.mjs')).toBeNull();
-      expect(out.hooks['SubagentStop']).toBeUndefined();
+      expect(out.hooks.SubagentStop).toBeUndefined();
     } finally {
       rmSync(outDir, { recursive: true, force: true });
     }
@@ -361,7 +361,7 @@ describe('generated hook bin portability', () => {
       ]);
       expect(groupFor(out, 'SessionStart', 'session-start.mjs')).not.toBeNull();
       expect(
-        out.hooks['PreToolUse']?.[0]?.hooks.map(({ command }) => command.match(/([A-Za-z0-9-]+\.mjs)\b/)?.[1])
+        out.hooks.PreToolUse?.[0]?.hooks.map(({ command }) => command.match(/([A-Za-z0-9-]+\.mjs)\b/)?.[1])
       ).toEqual(['static-plan.mjs']);
       expect(readHooksMetaJson(outDir).files).toEqual([
         'post-tool-use-failure.mjs',
@@ -378,7 +378,7 @@ describe('generated hook bin portability', () => {
       for (const [event, bundle, matcher] of expected) {
         const group = groupFor(out, event, bundle);
         expect(group, `${event} ${bundle} group must exist`).not.toBeNull();
-        expect(group!.matcher, `${event} ${bundle} matcher must be '${matcher}'`).toBe(matcher);
+        expect(group?.matcher, `${event} ${bundle} matcher must be '${matcher}'`).toBe(matcher);
       }
       expect(groupFor(out, 'PreToolUse', 'snapshot.mjs')).toBeNull();
       expect(groupFor(out, 'PreToolUse', 'activity-log.mjs')).toBeNull();

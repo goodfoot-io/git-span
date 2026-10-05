@@ -15,6 +15,7 @@ import * as fs from 'node:fs';
 import * as nodePath from 'node:path';
 import { relativeToRepo, resolveRepoRoot, type SessionLayout, toPosix } from './agent-hooks-common.js';
 import { type BashTouchMatch, bashResponseInterrupted, runBashTouches } from './bash-touch.js';
+import { flushFailOpen } from './fail-open.js';
 import { parseCommandDetailed, type ResolvedSpan } from './parse-command.js';
 import { parseResponse, type ResponseParseInput, type ResponseSpan } from './parse-response.js';
 import type { CoreLogger, MemoStore } from './span-surface.js';
@@ -123,8 +124,9 @@ function planEvidence(
       range: unionRange(ranges)
     };
   }
-  if (requirements.has('pre-command-eof')) {
-    const content = readText(matches[0].span.absolutePath);
+  const primary = matches[0];
+  if (primary !== undefined && requirements.has('pre-command-eof')) {
+    const content = readText(primary.span.absolutePath);
     if (content !== null) {
       return {
         kind: 'eof',
@@ -181,6 +183,9 @@ export function planBashTouches(
     candidates.map((value) => ({ absolutePath: value.span.absolutePath, value })),
     { cwd }
   );
+  // The pre-plan never reaches the touch core's flush; record span-root
+  // failures absorbed during eligibility here instead.
+  flushFailOpen(logger);
   if (tracked.eligible.length === 0) {
     logger.info?.('git-span static attribution pre-plan', {
       resolved: parsed.resolved.length,
@@ -209,7 +214,9 @@ export function planBashTouches(
   }
   const touches: PlannedTouch[] = [];
   for (const [key, matches] of groups) {
-    const span = matches[0].span;
+    const primary = matches[0];
+    if (primary === undefined) continue;
+    const { span } = primary;
     const requirements = requested.get(key) ?? new Set<string>();
     const evidence = planEvidence(matches, requirements);
     touches.push({
@@ -443,14 +450,15 @@ export async function runLayeredBashTouches(
     }),
     ...guards
   ];
-  const preTrackedDeletes = new Set(
-    (record?.touches ?? [])
-      .filter(({ operation, evidence }) => operation === 'delete' && evidence?.kind === 'tracked')
-      .map(({ repoRelativePath }) => nodePath.join(record!.repoRoot, repoRelativePath))
-  );
-  const preTrackedPaths = new Set(
-    (record?.touches ?? []).map(({ repoRelativePath }) => nodePath.join(record!.repoRoot, repoRelativePath))
-  );
+  const preTrackedDeletes = new Set<string>();
+  const preTrackedPaths = new Set<string>();
+  if (record !== null) {
+    for (const { repoRelativePath, operation, evidence } of record.touches) {
+      const absolutePath = nodePath.join(record.repoRoot, repoRelativePath);
+      preTrackedPaths.add(absolutePath);
+      if (operation === 'delete' && evidence?.kind === 'tracked') preTrackedDeletes.add(absolutePath);
+    }
+  }
   const response = bashResponseInterrupted(toolResponse) ? null : normalizeBashResponse(toolResponse);
   const responseSpans = response === null ? [] : parseResponse({ command, cwd, ...response });
   const filtered = filterPostTracked(combined, responseSpans, cwd, preTrackedPaths, preTrackedDeletes);
@@ -466,7 +474,7 @@ export async function runLayeredBashTouches(
     toolResponse,
     executors,
     memo,
-    (message) => logger.warn(message),
+    (message, context) => logger.warn(message, context),
     true,
     (diagnostics) => {
       executionGateDrops = diagnostics.executionGateDrops;

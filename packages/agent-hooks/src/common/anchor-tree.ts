@@ -88,6 +88,12 @@ interface DirNode {
 
 type PathTreeNode = LeafNode | DirNode;
 
+/** A path split into its directory segments and its final (leaf) segment. */
+interface PathSegments {
+  dirs: string[];
+  leaf: string;
+}
+
 /**
  * Split a path into `/`-separated segments, or `null` when doing so would
  * feed an empty-string segment into the trie (a leading `/`, a trailing `/`,
@@ -100,11 +106,11 @@ type PathTreeNode = LeafNode | DirNode;
  * path below (it becomes a top-level leaf with no directory to nest under —
  * already atomic, no special case needed).
  */
-function splitSegments(path: string): string[] | null {
-  if (path.length === 0) return null;
-  const segments = path.split('/');
-  if (segments.some((segment) => segment.length === 0)) return null;
-  return segments;
+function splitSegments(path: string): PathSegments | null {
+  const dirs = path.split('/');
+  const leaf = dirs.pop();
+  if (leaf === undefined || leaf.length === 0 || dirs.some((segment) => segment.length === 0)) return null;
+  return { dirs, leaf };
 }
 
 function findOrCreateDir(parent: DirNode, name: string): DirNode {
@@ -117,12 +123,12 @@ function findOrCreateDir(parent: DirNode, name: string): DirNode {
 }
 
 /** Insert one anchor into the trie, creating/reusing directory nodes in arrival order. */
-function insertAnchor(root: DirNode, segments: string[], anchor: TreeAnchor): void {
+function insertAnchor(root: DirNode, { dirs, leaf }: PathSegments, anchor: TreeAnchor): void {
   let cur = root;
-  for (let i = 0; i < segments.length - 1; i++) {
-    cur = findOrCreateDir(cur, segments[i]);
+  for (const dir of dirs) {
+    cur = findOrCreateDir(cur, dir);
   }
-  cur.children.push({ kind: 'leaf', name: segments[segments.length - 1], anchor });
+  cur.children.push({ kind: 'leaf', name: leaf, anchor });
 }
 
 /**
@@ -170,8 +176,9 @@ interface DisplayItem {
 function foldChain(node: PathTreeNode): DisplayItem {
   let name = node.name;
   let cur = node;
-  while (cur.kind === 'dir' && cur.children.length === 1) {
-    const child = cur.children[0];
+  while (cur.kind === 'dir') {
+    const [child, ...siblings] = cur.children;
+    if (child === undefined || siblings.length > 0) break;
     name = `${name}/${child.name}`;
     cur = child;
   }

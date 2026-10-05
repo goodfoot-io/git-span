@@ -37,6 +37,7 @@ import { join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { analyzeExecution } from '../../src/common/parse-command.js';
 import { argvOf, splitTopLevel } from '../../src/common/shell-split.js';
+import { itemAt } from '../helpers.js';
 
 /** The xtrace prefix — line-shaped so trace lines are unmistakable. */
 const PS4 = '+oracle> ';
@@ -107,7 +108,7 @@ describe("xtrace oracle — the walk's executed set vs real bash (plan §6)", ()
     const words: string[] = [];
     for (let i = 0; i < stages.length; i += 1) {
       if (execs[i]?.exec === 'yes') {
-        const argv = argvOf(stages[i].text) ?? [];
+        const argv = argvOf(itemAt(stages, i).text) ?? [];
         const first = argv.find((w) => w !== '!');
         if (first !== undefined) words.push(first);
       }
@@ -121,7 +122,7 @@ describe("xtrace oracle — the walk's executed set vs real bash (plan §6)", ()
     const execs = analyzeExecution(stages);
     const files: string[] = [];
     for (let i = 0; i < stages.length; i += 1) {
-      if (execs[i]?.exec === 'yes') files.push(...identity(argvOf(stages[i].text)));
+      if (execs[i]?.exec === 'yes') files.push(...identity(argvOf(itemAt(stages, i).text)));
     }
     return files.sort();
   }

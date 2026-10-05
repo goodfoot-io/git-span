@@ -33,6 +33,7 @@
 import { readFileSync, statSync } from 'node:fs';
 import { basename, isAbsolute, join as joinPath, resolve as resolvePath } from 'node:path';
 import { countFileLines, countGitBlobLines } from './command-resolve.js';
+import { matchGroups } from './regex-groups.js';
 import {
   argvOf,
   type Operator,
@@ -288,8 +289,7 @@ function walkStrip(argv: string[]): string[] {
   let i = 0;
   while (i < argv.length && argv[i] === '!') i++;
   while (i < argv.length && argv[i] === 'command') i++;
-  while (i < argv.length && argv[i] === 'builtin' && argv[i + 1] !== undefined && RECOGNIZED_BUILTINS.has(argv[i + 1]))
-    i++;
+  while (argv[i] === 'builtin' && RECOGNIZED_BUILTINS.has(argv[i + 1] ?? '')) i++;
   return argv.slice(i);
 }
 
@@ -297,12 +297,14 @@ function walkStrip(argv: string[]): string[] {
 function setFlagsKnown(args: string[]): boolean {
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
+    if (a === undefined) break;
     if (a === '--') continue;
     if (a.startsWith('-') || a.startsWith('+')) {
       const chars = a.slice(1);
       if (chars.length === 0) return false;
       for (let k = 0; k < chars.length; k++) {
         const c = chars[k];
+        if (c === undefined) break;
         if (c === 'o') {
           const name = args[i + 1];
           if (name === undefined || !SET_OPTION_NAMES.has(name)) return false;
@@ -344,7 +346,7 @@ function scanTokens(text: string): WordTok[] {
   let braceDepth = 0;
   let constructDepth = 0;
   while (i < n) {
-    const c = text[i];
+    const c = text.charAt(i);
     if (/\s/.test(c)) {
       i++;
       continue;
@@ -387,8 +389,8 @@ function readWordAt(text: string, i: number): { word: string; end: number; quote
   let word = '';
   let quoted = false;
   const n = text.length;
-  while (i < n && !/\s/.test(text[i]) && !'(){};&|<>'.includes(text[i])) {
-    const ch = text[i];
+  while (i < n && !/\s/.test(text.charAt(i)) && !'(){};&|<>'.includes(text.charAt(i))) {
+    const ch = text.charAt(i);
     if (ch === "'") {
       quoted = true;
       i++;
@@ -401,8 +403,8 @@ function readWordAt(text: string, i: number): { word: string; end: number; quote
       quoted = true;
       i++;
       while (i < n && text[i] !== '"') {
-        if (text[i] === '\\' && i + 1 < n && '"\\$`'.includes(text[i + 1])) {
-          word += text[i + 1];
+        if (text[i] === '\\' && i + 1 < n && '"\\$`'.includes(text.charAt(i + 1))) {
+          word += text.charAt(i + 1);
           i += 2;
         } else {
           word += text[i];
@@ -429,8 +431,9 @@ function extractGroupBody(text: string, open: '{' | '(', close: '}' | ')'): stri
   let inQuote: string | null = null;
   for (let p = start; p < text.length; p++) {
     const ch = text[p];
+    if (ch === undefined) break;
     if (inQuote !== null) {
-      if (ch === '\\' && inQuote === '"' && p + 1 < text.length && '"\\$`'.includes(text[p + 1])) p++;
+      if (ch === '\\' && inQuote === '"' && p + 1 < text.length && '"\\$`'.includes(text.charAt(p + 1))) p++;
       else if (ch === inQuote) inQuote = null;
       continue;
     }
@@ -465,11 +468,11 @@ function classifyStage(text: string): ConstructKind {
 
 /** A function definition's name and body text (brace-group interior). */
 function parseDef(text: string): { name: string; body: string } | null {
-  const m = text.match(/^(?:function\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(\))?\s*\{/);
+  const m = matchGroups(text, /^(?:function\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(\))?\s*\{/, 1);
   if (m === null) return null;
   const body = extractGroupBody(text, '{', '}');
   if (body === null) return null;
-  return { name: m[1], body };
+  return { name: m[0], body };
 }
 
 interface ParsedIf {
@@ -481,39 +484,45 @@ interface ParsedIf {
 
 function parseIf(text: string): ParsedIf | null {
   const toks = scanTokens(text);
-  if (toks.length === 0 || toks[0].word !== 'if') return null;
+  const [ifTok] = toks;
+  if (ifTok?.word !== 'if') return null;
   const thenIdx = toks.findIndex((t) => t.word === 'then' && t.constructDepth === 1);
-  if (thenIdx === -1) return null;
   const thenTok = toks[thenIdx];
-  const condition = text.slice(toks[0].end, thenTok.start);
+  if (thenTok === undefined) return null;
+  const condition = text.slice(ifTok.end, thenTok.start);
 
   const boundaries: { word: string; tok: WordTok }[] = [];
   for (let idx = thenIdx + 1; idx < toks.length; idx++) {
     const t = toks[idx];
+    if (t === undefined) break;
     if (t.constructDepth !== 1 || (t.word !== 'elif' && t.word !== 'else' && t.word !== 'fi')) continue;
     if (t.word === 'elif') {
       const eThenIdx = toks.findIndex((tt, ii) => ii > idx && tt.word === 'then' && tt.constructDepth === 1);
-      if (eThenIdx === -1) return null;
-      boundaries.push({ word: 'elif', tok: t }, { word: 'then', tok: toks[eThenIdx] });
+      const eThenTok = toks[eThenIdx];
+      if (eThenTok === undefined) return null;
+      boundaries.push({ word: 'elif', tok: t }, { word: 'then', tok: eThenTok });
       idx = eThenIdx;
       continue;
     }
     boundaries.push({ word: t.word, tok: t });
     if (t.word === 'else') {
-      const fiIdx = toks.findIndex((tt, ii) => ii > idx && tt.word === 'fi' && tt.constructDepth === 1);
-      if (fiIdx === -1) return null;
-      boundaries.push({ word: 'fi', tok: toks[fiIdx] });
+      const fiTok = toks.find((tt, ii) => ii > idx && tt.word === 'fi' && tt.constructDepth === 1);
+      if (fiTok === undefined) return null;
+      boundaries.push({ word: 'fi', tok: fiTok });
       break;
     }
     break;
   }
-  if (boundaries.length === 0) return null;
+  const [firstBoundary] = boundaries;
+  if (firstBoundary === undefined) return null;
 
-  const thenBody = text.slice(thenTok.end, boundaries[0].tok.start);
+  const thenBody = text.slice(thenTok.end, firstBoundary.tok.start);
   const elifs: { condition: string; body: string }[] = [];
   let elseBody: string | null = null;
   for (let b = 0; b < boundaries.length; b++) {
-    const { word, tok } = boundaries[b];
+    const boundary = boundaries[b];
+    if (boundary === undefined) break;
+    const { word, tok } = boundary;
     if (word === 'elif') {
       const eThen = boundaries[b + 1];
       if (eThen === undefined || eThen.word !== 'then') return null;
@@ -532,12 +541,13 @@ function parseIf(text: string): ParsedIf | null {
 
 function parseLoop(text: string, keyword: 'while' | 'until'): { condition: string; body: string } | null {
   const toks = scanTokens(text);
-  if (toks.length === 0 || toks[0].word !== keyword) return null;
+  const [lead] = toks;
+  if (lead?.word !== keyword) return null;
   const doTok = toks.find((t) => t.word === 'do' && t.constructDepth === 1);
   if (doTok === undefined) return null;
   const doneTok = toks.find((t) => t.start > doTok.end && t.word === 'done' && t.constructDepth === 1);
   if (doneTok === undefined) return null;
-  return { condition: text.slice(toks[0].end, doTok.start), body: text.slice(doTok.end, doneTok.start) };
+  return { condition: text.slice(lead.end, doTok.start), body: text.slice(doTok.end, doneTok.start) };
 }
 
 interface ParsedFor {
@@ -548,9 +558,8 @@ interface ParsedFor {
 
 function parseFor(text: string): ParsedFor | null {
   const toks = scanTokens(text);
-  if (toks.length === 0 || toks[0].word !== 'for') return null;
-  const nameTok = toks[1];
-  if (nameTok === undefined) return null;
+  const [forTok, nameTok] = toks;
+  if (forTok?.word !== 'for' || nameTok === undefined) return null;
   const doTok = toks.find((t) => t.word === 'do' && t.constructDepth === 1 && t.start > nameTok.end);
   if (doTok === undefined) return null;
   const doneTok = toks.find((t) => t.start > doTok.end && t.word === 'done' && t.constructDepth === 1);
@@ -575,7 +584,7 @@ function parseCase(text: string): ParsedCase | null {
   let i = 0;
   const n = text.length;
   const skipWs = () => {
-    while (i < n && /\s/.test(text[i])) i++;
+    while (i < n && /\s/.test(text.charAt(i))) i++;
   };
   skipWs();
   const lead = readWordAt(text, i);
@@ -588,7 +597,7 @@ function parseCase(text: string): ParsedCase | null {
   while (i < n) {
     skipWs();
     if (i >= n) return null;
-    const c = text[i];
+    const c = text.charAt(i);
     if (c === '(') {
       parenDepth++;
       i++;
@@ -632,7 +641,7 @@ function parseCase(text: string): ParsedCase | null {
       while (p < n) {
         const ch = text[p];
         if (inQuote !== null) {
-          if (ch === '\\' && inQuote === '"' && p + 1 < n && '"\\$`'.includes(text[p + 1])) {
+          if (ch === '\\' && inQuote === '"' && p + 1 < n && '"\\$`'.includes(text.charAt(p + 1))) {
             p += 2;
             continue;
           }
@@ -681,7 +690,7 @@ function parseCase(text: string): ParsedCase | null {
       while (p < n) {
         const ch = text[p];
         if (inQuote !== null) {
-          if (ch === '\\' && inQuote === '"' && p + 1 < n && '"\\$`'.includes(text[p + 1])) {
+          if (ch === '\\' && inQuote === '"' && p + 1 < n && '"\\$`'.includes(text.charAt(p + 1))) {
             p += 2;
             continue;
           }
@@ -738,9 +747,11 @@ function parseCase(text: string): ParsedCase | null {
 
 /** Resolve a `case` subject against the recorded assignments (plan §1, decidable case). */
 function resolveSubject(subject: string, assignments: Map<string, string>): string | null {
-  const m = subject.match(/^\$([A-Za-z_][A-Za-z0-9_]*)$/) ?? subject.match(/^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/);
+  const m =
+    matchGroups(subject, /^\$([A-Za-z_][A-Za-z0-9_]*)$/, 1) ??
+    matchGroups(subject, /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/, 1);
   if (m !== null) {
-    const v = assignments.get(m[1]);
+    const v = assignments.get(m[0]);
     return v !== undefined ? v : null;
   }
   if (/[$`]/.test(subject)) return null;
@@ -759,8 +770,9 @@ function splitPatternAlternatives(pattern: string): string[] {
   let inQuote: string | null = null;
   for (let i = 0; i < pattern.length; i++) {
     const ch = pattern[i];
+    if (ch === undefined) break;
     if (inQuote !== null) {
-      if (ch === '\\' && inQuote === '"' && i + 1 < pattern.length && '"\\$`'.includes(pattern[i + 1])) {
+      if (ch === '\\' && inQuote === '"' && i + 1 < pattern.length && '"\\$`'.includes(pattern.charAt(i + 1))) {
         cur += ch;
         cur += pattern[i + 1];
         i++;
@@ -806,8 +818,9 @@ function analyzePattern(pattern: string): { literal: string; glob: boolean } {
   let inQuote: string | null = null;
   for (let i = 0; i < pattern.length; i++) {
     const ch = pattern[i];
+    if (ch === undefined) break;
     if (inQuote !== null) {
-      if (ch === '\\' && inQuote === '"' && i + 1 < pattern.length && '"\\$`'.includes(pattern[i + 1])) {
+      if (ch === '\\' && inQuote === '"' && i + 1 < pattern.length && '"\\$`'.includes(pattern.charAt(i + 1))) {
         literal += pattern[i + 1];
         i++;
         continue;
@@ -898,8 +911,7 @@ class ExecutionWalker {
     let i = 0;
     while (i < stages.length && !this.stopped()) {
       const end = this.groupEnd(stages, i);
-      const next = end < stages.length ? stages[end] : null;
-      this.processGroup(stages.slice(i, end), next, opts);
+      this.processGroup(stages.slice(i, end), stages[end] ?? null, opts);
       i = end;
     }
     const result = this.chain;
@@ -913,12 +925,13 @@ class ExecutionWalker {
 
   private groupEnd(stages: SimpleCommand[], start: number): number {
     let end = start;
-    while (end + 1 < stages.length && stages[end + 1].precededBy === 'pipe') end++;
+    while (stages[end + 1]?.precededBy === 'pipe') end++;
     return end + 1;
   }
 
   private processGroup(group: SimpleCommand[], next: SimpleCommand | null, opts: WalkOptions): void {
-    const first = group[0];
+    const [first, ...rest] = group;
+    if (first === undefined) return;
     let executes: boolean | 'unknown';
     switch (first.precededBy) {
       case 'and':
@@ -942,25 +955,19 @@ class ExecutionWalker {
     let bangCount = 0;
     let memberArgv: string[] | null = firstArgv;
     if (firstArgv !== null) {
-      while (memberArgv![bangCount] === '!') bangCount++;
-      memberArgv = memberArgv!.slice(bangCount);
+      while (firstArgv[bangCount] === '!') bangCount++;
+      memberArgv = firstArgv.slice(bangCount);
     }
     const inverted = bangCount % 2 === 1;
 
     if (exec === 'no') return;
 
-    const statuses: ChainStatus[] = [];
     const inPipeline = group.length > 1;
-    for (let m = 0; m < group.length; m++) {
-      statuses.push(
-        this.processMember(group[m], {
-          exec,
-          inPipeline,
-          backgrounded,
-          memberArgv: m === 0 ? memberArgv : null,
-          opts
-        })
-      );
+    let lastStatus = this.processMember(first, { exec, inPipeline, backgrounded, memberArgv, opts });
+    const statuses: ChainStatus[] = [lastStatus];
+    for (const member of rest) {
+      lastStatus = this.processMember(member, { exec, inPipeline, backgrounded, memberArgv: null, opts });
+      statuses.push(lastStatus);
     }
 
     // The group status: the last member's, unless pipefail makes it the worst member.
@@ -970,7 +977,7 @@ class ExecutionWalker {
       else if (statuses.some((s) => s === 'failure')) groupStatus = 'failure';
       else groupStatus = 'unknown';
     } else {
-      groupStatus = statuses[statuses.length - 1];
+      groupStatus = lastStatus;
     }
     if (inverted) {
       groupStatus = groupStatus === 'success' ? 'failure' : groupStatus === 'failure' ? 'success' : 'unknown';
@@ -1045,8 +1052,9 @@ class ExecutionWalker {
     }
 
     // A call to a registered definition.
-    if (exec !== 'no' && stripped !== null && stripped.length > 0) {
-      this.applyCall(stripped[0], inPipeline, backgrounded);
+    const callee = stripped?.[0];
+    if (exec !== 'no' && callee !== undefined) {
+      this.applyCall(callee, inPipeline, backgrounded);
     }
 
     if (!opts.discard) {
@@ -1066,9 +1074,9 @@ class ExecutionWalker {
     const depth = Number.parseInt(stripped[1] ?? '1', 10);
     if (Number.isNaN(depth) || depth < 1) return;
     if (this.loopStack.length === 0 || depth > this.loopStack.length) return;
+    const frames = this.loopStack.slice(-depth);
     if (exec === 'unknown') {
-      for (let d = 0; d < depth; d++) {
-        const frame = this.loopStack[this.loopStack.length - 1 - d];
+      for (const frame of frames) {
         if (frame.outcome === 'none') {
           frame.outcome = 'ambiguous';
           frame.ambiguousStop = true;
@@ -1077,8 +1085,7 @@ class ExecutionWalker {
       return;
     }
     const isContinue = stripped[0] === 'continue';
-    for (let d = 0; d < depth; d++) {
-      const frame = this.loopStack[this.loopStack.length - 1 - d];
+    for (const frame of frames) {
       frame.outcome = isContinue ? 'continue' : 'break';
       frame.bodyTerminated = true;
     }
@@ -1086,9 +1093,9 @@ class ExecutionWalker {
 
   /** A may-run call to a registered definition fires per its body's dead kind. */
   private applyCall(name: string, inPipeline: boolean, backgrounded: boolean): void {
-    if (!this.defs.has(name) || backgrounded) return;
+    const body = this.defs.get(name);
+    if (body === undefined || backgrounded) return;
     if (this.defProbeStack.has(name)) return; // recursion: the inner call returns normally
-    const body = this.defs.get(name)!;
     this.defProbeStack.add(name);
     const kind = this.defBodyFireKind(body);
     this.defProbeStack.delete(name);
@@ -1142,9 +1149,7 @@ class ExecutionWalker {
     // Assignment recording (last definition wins, feeding case subjects).
     const words = splitWords(member.text);
     if (words !== null && words.length > 0) {
-      let k = 0;
-      while (k < words.length && ASSIGNMENT_RE.test(words[k])) k++;
-      if (k === words.length) {
+      if (words.every((w) => ASSIGNMENT_RE.test(w))) {
         for (const w of words) {
           const eq = w.indexOf('=');
           this.assignments.set(w.slice(0, eq), w.slice(eq + 1));
@@ -1173,6 +1178,7 @@ class ExecutionWalker {
   private applySetFlags(args: string[]): void {
     for (let i = 0; i < args.length; i++) {
       const a = args[i];
+      if (a === undefined) break;
       if (a === '--') continue;
       if (!(a.startsWith('-') || a.startsWith('+'))) continue;
       const on = a.startsWith('-');
@@ -1265,16 +1271,11 @@ class ExecutionWalker {
         this.loopStack.push(frame);
         this.walkList(res.stages, { liveness: true, discard, sideEffects, inputFacing: false });
         this.loopStack.pop();
-        switch (frame.outcome) {
-          case 'break':
-            return 'success';
-          case 'continue':
-          case 'none':
-            if (this.dead === null && !backgrounded) this.dead = 'never-return';
-            return 'unknown';
-          case 'ambiguous':
-          case 'return':
-            return 'unknown';
+        if (frame.outcome === 'break') return 'success';
+        // `continue`/`none`: the condition re-runs unchanged, so the loop never
+        // returns; `ambiguous`/`return` leave the loop's status unknowable.
+        if ((frame.outcome === 'continue' || frame.outcome === 'none') && this.dead === null && !backgrounded) {
+          this.dead = 'never-return';
         }
         return 'unknown';
       }
@@ -1296,16 +1297,14 @@ class ExecutionWalker {
         const parsed = parseCase(member.text);
         if (parsed === null) return 'unknown';
         const regions = parsed.branches.map((b) => b.body);
-        if (parsed.fallthrough || resolveSubject(parsed.subject, this.assignments) === null) {
-          return this.opaquePath(regions, ctx);
-        }
-        const subject = resolveSubject(parsed.subject, this.assignments)!;
-        let matchedBranch = -1;
+        const subject = parsed.fallthrough ? null : resolveSubject(parsed.subject, this.assignments);
+        if (subject === null) return this.opaquePath(regions, ctx);
+        let matchedBranch: { pattern: string; body: string } | undefined;
         let undecidable = false;
-        for (let b = 0; b < parsed.branches.length; b++) {
-          const r = evalPattern(parsed.branches[b].pattern, subject);
+        for (const branch of parsed.branches) {
+          const r = evalPattern(branch.pattern, subject);
           if (r === 'match') {
-            matchedBranch = b;
+            matchedBranch = branch;
             break;
           }
           if (r === 'glob' || r === 'undecidable') {
@@ -1314,8 +1313,8 @@ class ExecutionWalker {
           }
         }
         if (undecidable) return this.opaquePath(regions, ctx);
-        if (matchedBranch !== -1) {
-          return this.walkBranch(parsed.branches[matchedBranch].body, discard, sideEffects);
+        if (matchedBranch !== undefined) {
+          return this.walkBranch(matchedBranch.body, discard, sideEffects);
         }
         return 'success';
       }
@@ -1563,24 +1562,17 @@ function matchSed(argv: string[]): MatchResult[] {
   if (argv[0] !== 'sed') return [];
   const rest = argv.slice(1);
   if (!rest.includes('-n')) return [];
-  let scriptIdx = -1;
-  for (let i = 0; i < rest.length; i++) {
-    if (rest[i] === '-n') continue;
-    if (sedScriptSegments(rest[i]).some((seg) => SED_RANGE.test(seg))) {
-      scriptIdx = i;
-      break;
-    }
-  }
-  if (scriptIdx === -1) return [];
-  const fileCandidates = rest.filter((a, i) => i !== scriptIdx && a !== '-n' && !a.startsWith('-'));
-  if (fileCandidates.length !== 1) return [];
-  const fileArg = fileCandidates[0];
+  const scriptIdx = rest.findIndex((a) => a !== '-n' && sedScriptSegments(a).some((seg) => SED_RANGE.test(seg)));
+  const script = rest[scriptIdx];
+  if (script === undefined) return [];
+  const [fileArg, ...otherFiles] = rest.filter((a, i) => i !== scriptIdx && a !== '-n' && !a.startsWith('-'));
+  if (fileArg === undefined || otherFiles.length > 0) return [];
   const results: MatchResult[] = [];
-  for (const segment of sedScriptSegments(rest[scriptIdx])) {
-    const match = segment.match(SED_RANGE);
-    if (!match) continue;
-    const start = Number.parseInt(match[1], 10);
-    const endToken = match[2];
+  for (const segment of sedScriptSegments(script)) {
+    const match = matchGroups(segment, SED_RANGE, 1);
+    if (match === null) continue;
+    const [startText, endToken] = match;
+    const start = Number.parseInt(startText, 10);
     const spec: LineRangeSpec =
       endToken === undefined
         ? { kind: 'literal', start, end: start }
@@ -1614,6 +1606,7 @@ function parseHeadTailFlags(
   let disqualified = false;
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
+    if (a === undefined) break;
     if (a === '-f' || a === '-F' || a === '--follow' || a.startsWith('--follow=')) {
       disqualified = true;
       continue;
@@ -1720,6 +1713,7 @@ function findGitSubcommand(
   let i = 0;
   while (i < rest.length) {
     const a = rest[i];
+    if (a === undefined) break;
     if (a === '-C') {
       const v = rest[i + 1];
       if (v === undefined) return null;
@@ -1753,9 +1747,9 @@ function matchGitShow(argv: string[]): MatchResult[] {
     .filter((a) => !a.startsWith('-'));
   const revPathArg = after.find((a) => REV_PATH.test(a));
   if (!revPathArg) return [];
-  const m = revPathArg.match(REV_PATH);
-  if (!m) return [];
-  const [, rev, path] = m;
+  const m = matchGroups(revPathArg, REV_PATH, 2);
+  if (m === null) return [];
+  const [rev, path] = m;
   if (sub.cDirUnresolvable || hasShellExpansion(rev)) {
     return [
       {
@@ -1785,13 +1779,14 @@ function matchGitLogL(argv: string[]): MatchResult[] {
   const after = argv.slice(1).slice(sub.subIdx + 1);
   for (let i = 0; i < after.length; i++) {
     const a = after[i];
+    if (a === undefined) break;
     let spec: string | null = null;
     if (a === '-L') spec = after[i + 1] ?? null;
     else if (a.startsWith('-L')) spec = a.slice(2);
     if (!spec) continue;
-    const m = spec.match(/^(\d+),(\d+):(.+)$/);
-    if (!m) continue;
-    const [, s, e, path] = m;
+    const m = matchGroups(spec, /^(\d+),(\d+):(.+)$/, 3);
+    if (m === null) continue;
+    const [s, e, path] = m;
     if (sub.cDirUnresolvable) {
       return [
         {
@@ -1875,7 +1870,7 @@ function findHeredocOpener(raw: string, from: number): HeredocOpener | null {
     let d = '';
     let sawQuote = false;
     let k = start;
-    while (k < n && !/\s/.test(raw[k]) && raw[k] !== '<' && raw[k] !== '>') {
+    while (k < n && !/\s/.test(raw.charAt(k)) && raw[k] !== '<' && raw[k] !== '>') {
       const c = raw[k];
       if (c === "'" || c === '"') {
         const quote = c;
@@ -2000,8 +1995,8 @@ function findHeredocOpener(raw: string, from: number): HeredocOpener | null {
         continue;
       }
       let j = i - 1;
-      while (j >= from && /\d/.test(raw[j])) j -= 1;
-      const ioNumber = j < i - 1 && (j < from || /\s|[;|&(]/.test(raw[j]));
+      while (j >= from && /\d/.test(raw.charAt(j))) j -= 1;
+      const ioNumber = j < i - 1 && (j < from || /\s|[;|&(]/.test(raw.charAt(j)));
       if (ioNumber) {
         i += 2;
         continue;
@@ -2016,7 +2011,7 @@ function findHeredocOpener(raw: string, from: number): HeredocOpener | null {
       if (delim === '' && attached !== null) {
         // Standalone operator: the delimiter is the next word.
         let k = attached.next;
-        while (k < openerLineEnd && /\s/.test(raw[k])) k += 1;
+        while (k < openerLineEnd && /\s/.test(raw.charAt(k))) k += 1;
         const word = readDelimWord(k);
         if (word === null) delim = '';
         else {
@@ -2112,9 +2107,9 @@ interface RedirectInfo {
 const REDIRECT_TOKEN = /^(\d*)(<<<|<<-|&>>|<<|>>|&>|>&|<|>)(.*)$/;
 
 function classifyRedirectToken(text: string): RedirectInfo | null {
-  const m = text.match(REDIRECT_TOKEN);
+  const m = matchGroups(text, REDIRECT_TOKEN, 3);
   if (m === null) return null;
-  const [, fdText, op, target] = m;
+  const [fdText, op, target] = m;
   return {
     fd: fdText === '' ? null : Number.parseInt(fdText, 10),
     op: op as RedirectInfo['op'],
@@ -2142,6 +2137,7 @@ function analyzeTokens(tokens: Token[]): { argv: string[]; redirects: RedirectIn
   const redirects: RedirectInfo[] = [];
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
+    if (token === undefined) break;
     if (!token.isRedirect) {
       argv.push(token.text);
       continue;
@@ -2184,8 +2180,8 @@ function literalContent(argv: string[]): string | undefined {
     if (a.startsWith('-') || hasShellExpansion(a) || /[*?]/.test(a)) return undefined;
   }
   if (host === 'printf') {
-    if (args.length !== 1) return undefined;
-    const fmt = args[0];
+    const [fmt, ...extra] = args;
+    if (fmt === undefined || extra.length > 0) return undefined;
     if (fmt.includes('%') || fmt.includes('\\')) return undefined;
     return fmt;
   }
@@ -2327,8 +2323,10 @@ function matchRedirectFamily(
     return;
   }
   if (host !== 'echo' && host !== 'printf' && host !== 'tee') return;
-  const singlePlainAppend = contentRedirects.length === 1 && contentRedirects[0].op === '>>';
-  const singlePlainOverwrite = contentRedirects.length === 1 && contentRedirects[0].op === '>';
+  const [onlyRedirect, ...otherRedirects] = contentRedirects;
+  const singleRedirect = otherRedirects.length === 0 ? onlyRedirect : undefined;
+  const singlePlainAppend = singleRedirect?.op === '>>';
+  const singlePlainOverwrite = singleRedirect?.op === '>';
   const threadedAppend = singlePlainAppend && host !== 'tee' ? literalContent(argv) : undefined;
   const threadedOverwrite = singlePlainOverwrite && host !== 'tee' ? literalContent(argv) : undefined;
   for (const r of contentRedirects) {
@@ -2389,9 +2387,9 @@ const ASSIGNMENT_TOKEN = /^[A-Za-z_][A-Za-z0-9_]*=/;
  */
 function stripTransparentWrapper(argv: string[]): string[] {
   const unwrapped = argv[0] === 'command' || argv[0] === 'env' ? argv.slice(1) : argv;
-  let i = 0;
-  while (i < unwrapped.length && ASSIGNMENT_TOKEN.test(unwrapped[i])) i += 1;
-  return i > 0 ? unwrapped.slice(i) : unwrapped;
+  const commandIndex = unwrapped.findIndex((word) => !ASSIGNMENT_TOKEN.test(word));
+  if (commandIndex === -1) return [];
+  return commandIndex > 0 ? unwrapped.slice(commandIndex) : unwrapped;
 }
 
 function pushUnresolved(results: SpanMatch[], idiom: Idiom, fileArg: string, reason: string): void {
@@ -2500,6 +2498,7 @@ function copyMoveParts(args: string[], spec: CopyMoveSpec): CopyMoveParts | null
   let afterDashDash = false;
   while (i < args.length) {
     const a = args[i];
+    if (a === undefined) break;
     if (afterDashDash) {
       operands.push(a);
       i += 1;
@@ -2604,32 +2603,31 @@ function matchCopyMoveFamily(
   join: ResolvedSpan['join'],
   results: SpanMatch[]
 ): void {
-  const rest = stripTransparentWrapper(argv);
-  if (rest.length === 0) return;
-  const command = rest[0];
+  const [command, ...commandArgs] = stripTransparentWrapper(argv);
+  if (command === undefined) return;
   let spec: CopyMoveSpec | null = null;
   let args: string[] = [];
   let dir = dirForResolution;
   if (command === 'cp' || command === 'install' || command === 'mv') {
     spec = command === 'cp' ? CP_SPEC : command === 'install' ? INSTALL_SPEC : MV_SPEC;
-    args = rest.slice(1);
+    args = commandArgs;
   } else if (command === 'git') {
-    const sub = findGitSubcommand(rest.slice(1));
+    const sub = findGitSubcommand(commandArgs);
     if (sub !== null && sub.subcommand === 'mv') {
       if (sub.cDirUnresolvable) {
         pushUnresolved(results, 'mv-write', 'mv', 'git -C target contains an unresolved shell variable');
         return;
       }
       spec = GIT_MV_SPEC;
-      args = rest.slice(1).slice(sub.subIdx + 1);
+      args = commandArgs.slice(sub.subIdx + 1);
       dir = sub.cDir ?? dirForResolution;
     }
   } else if (FOREIGN_WRAPPERS.has(command)) {
     // A wrapper obscures the wrapped argv — fail closed rather than mis-parse.
-    const wrapped = rest[1];
+    const [wrapped] = commandArgs;
     const wrappedSpec =
       wrapped === 'cp' ? CP_SPEC : wrapped === 'install' ? INSTALL_SPEC : wrapped === 'mv' ? MV_SPEC : null;
-    if (wrappedSpec !== null) {
+    if (wrapped !== undefined && wrappedSpec !== null) {
       pushUnresolved(results, wrappedSpec.idiom, wrapped, `the ${command} wrapper obscures the ${wrapped} argv`);
     }
     return;
@@ -2665,7 +2663,8 @@ function matchCopyMoveFamily(
     const targetAbs = resolvePath(dir, parts.targetDir);
     destPaths = sourcePaths.map((p) => joinPath(targetAbs, basename(p)));
   } else {
-    const dest = parts.operands[parts.operands.length - 1];
+    const dest = parts.operands.at(-1);
+    if (dest === undefined) return;
     if (looksUnresolvable(dest)) {
       pushUnresolved(results, spec.idiom, dest, 'path contains an unexpanded shell variable or glob');
       return;
@@ -2679,14 +2678,14 @@ function matchCopyMoveFamily(
     destPaths = destIsDir ? sourcePaths.map((p) => joinPath(destAbs, basename(p))) : [destAbs];
   }
 
-  for (let k = 0; k < sourcePaths.length; k++) {
-    emitSourceSpan(results, spec, sourcePaths[k], simpleCommandIndex, join);
+  for (const sourcePath of sourcePaths) {
+    emitSourceSpan(results, spec, sourcePath, simpleCommandIndex, join);
   }
-  for (let k = 0; k < sourcePaths.length; k++) {
+  for (const destPath of destPaths) {
     results.push({
       status: 'resolved',
       idiom: spec.idiom,
-      span: { operation: spec.destOperation, absolutePath: destPaths[k], simpleCommandIndex, join }
+      span: { operation: spec.destOperation, absolutePath: destPath, simpleCommandIndex, join }
     });
   }
 }
@@ -2750,10 +2749,11 @@ function matchRmOperands(
  */
 function evaluateStaticSize(value: string | undefined): number | undefined {
   if (value === undefined) return undefined;
-  const m = value.match(/^(\d+)([KMG])?$/);
+  const m = matchGroups(value, /^(\d+)([KMG])?$/, 1);
   if (m === null) return undefined;
-  const base = Number.parseInt(m[1], 10);
-  const mult = m[2] === 'K' ? 1024 : m[2] === 'M' ? 1024 ** 2 : m[2] === 'G' ? 1024 ** 3 : 1;
+  const [baseText, suffix] = m;
+  const base = Number.parseInt(baseText, 10);
+  const mult = suffix === 'K' ? 1024 : suffix === 'M' ? 1024 ** 2 : suffix === 'G' ? 1024 ** 3 : 1;
   return base * mult;
 }
 
@@ -2778,6 +2778,7 @@ function matchTruncateOperands(
   const operands: Array<{ path: string; size: number | undefined }> = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
+    if (a === undefined) break;
     if (afterDashDash) {
       operands.push({ path: a, size: staticSize });
       continue;
@@ -2835,26 +2836,25 @@ function matchRmTruncate(
   join: ResolvedSpan['join'],
   results: SpanMatch[]
 ): void {
-  const rest = stripTransparentWrapper(argv);
-  if (rest.length === 0) return;
-  const command = rest[0];
+  const [command, ...commandArgs] = stripTransparentWrapper(argv);
+  if (command === undefined) return;
   if (command === 'rm') {
-    matchRmOperands(rest.slice(1), RM_EXCLUDED, false, dirForResolution, simpleCommandIndex, join, results);
+    matchRmOperands(commandArgs, RM_EXCLUDED, false, dirForResolution, simpleCommandIndex, join, results);
     return;
   }
   if (command === 'truncate') {
-    matchTruncateOperands(rest.slice(1), dirForResolution, simpleCommandIndex, join, results);
+    matchTruncateOperands(commandArgs, dirForResolution, simpleCommandIndex, join, results);
     return;
   }
   if (command === 'git') {
-    const sub = findGitSubcommand(rest.slice(1));
+    const sub = findGitSubcommand(commandArgs);
     if (sub !== null && sub.subcommand === 'rm') {
       if (sub.cDirUnresolvable) {
         pushUnresolved(results, 'rm-write', 'rm', 'git -C target contains an unresolved shell variable');
         return;
       }
       matchRmOperands(
-        rest.slice(1).slice(sub.subIdx + 1),
+        commandArgs.slice(sub.subIdx + 1),
         GIT_RM_EXCLUDED,
         true,
         sub.cDir ?? dirForResolution,
@@ -2866,7 +2866,7 @@ function matchRmTruncate(
     return;
   }
   if (FOREIGN_WRAPPERS.has(command)) {
-    const wrapped = rest[1];
+    const [wrapped] = commandArgs;
     if (wrapped === 'rm' || wrapped === 'truncate') {
       pushUnresolved(
         results,
@@ -2931,8 +2931,10 @@ function classifyHeredocOpener(
   const { argv, redirects } = analyzeTokens(tokens);
   const host = argv[0];
   const contentRedirects = redirects.filter(isContentRedirect);
-  const singlePlainAppend = contentRedirects.length === 1 && contentRedirects[0].op === '>>';
-  const singlePlainOverwrite = contentRedirects.length === 1 && contentRedirects[0].op === '>';
+  const [onlyRedirect, ...otherRedirects] = contentRedirects;
+  const singleRedirect = otherRedirects.length === 0 ? onlyRedirect : undefined;
+  const singlePlainAppend = singleRedirect?.op === '>>';
+  const singlePlainOverwrite = singleRedirect?.op === '>';
 
   const emitContentRedirects = (): void => {
     for (const r of contentRedirects) {
@@ -3048,15 +3050,14 @@ function matchSedInplace(
   join: ResolvedSpan['join'],
   results: SpanMatch[]
 ): void {
-  const rest = stripTransparentWrapper(argv);
-  if (rest.length === 0) return;
-  const command = rest[0];
+  const [command, ...commandArgs] = stripTransparentWrapper(argv);
+  if (command === undefined) return;
   if (command === 'sed') {
-    matchSedInplaceArgs(rest.slice(1), dirForResolution, simpleCommandIndex, join, results);
+    matchSedInplaceArgs(commandArgs, dirForResolution, simpleCommandIndex, join, results);
     return;
   }
   if (FOREIGN_WRAPPERS.has(command)) {
-    const wrapped = rest[1];
+    const [wrapped] = commandArgs;
     if (wrapped === 'sed') {
       pushUnresolved(results, 'sed-inplace', wrapped, `the ${command} wrapper obscures the ${wrapped} argv`);
     }
@@ -3118,6 +3119,7 @@ function matchSedInplaceArgs(
 
   while (i < args.length) {
     const a = args[i];
+    if (a === undefined) break;
     if (afterDashDash) {
       positionals.push(a);
       i += 1;
@@ -3156,8 +3158,8 @@ function matchSedInplaceArgs(
         i += 1;
         continue;
       }
-      const restAfter = args.slice(i + 2);
-      if (restAfter.length >= 2 && !SED_SCRIPT_SHAPE.test(w)) {
+      const [following, ...beyond] = args.slice(i + 2);
+      if (following !== undefined && beyond.length > 0 && !SED_SCRIPT_SHAPE.test(w)) {
         // The BSD separate-suffix reading: w is the suffix, and a script plus
         // at least one file operand still follow — only for a suffix-shaped
         // word (`.bak`, `''`). A script-shaped word is the script under GNU's
@@ -3167,7 +3169,7 @@ function matchSedInplaceArgs(
         i += 2;
         continue;
       }
-      if (restAfter.length === 0) {
+      if (following === undefined) {
         // `sed -i f`: w is the last token — no script can follow, so w is the
         // file operand with the script absent (GNU instead reads w as a script
         // and errors; either way the edit does not happen).
@@ -3178,7 +3180,7 @@ function matchSedInplaceArgs(
       // One token after w: w is the script argument (or a file, when `-e`
       // scripts are present) and the token is a file — consume both, so
       // neither falls through to the positional path again.
-      positionals.push(w, restAfter[0]);
+      positionals.push(w, following);
       i += 3;
       continue;
     }
@@ -3217,14 +3219,15 @@ function matchSedInplaceArgs(
   let minStart = Infinity;
   let maxEnd = 0;
   for (const segment of segments) {
-    const m = segment.match(NUMERIC_SUBSTITUTION);
+    const m = matchGroups(segment, NUMERIC_SUBSTITUTION, 1);
     if (m === null) {
       allNumeric = false;
       if (!UNRESTRICTED_SUBSTITUTION.test(segment)) allSubstitution = false;
       continue;
     }
-    const s = Number.parseInt(m[1], 10);
-    const e = m[2] === undefined ? s : Number.parseInt(m[2], 10);
+    const [startText, endText] = m;
+    const s = Number.parseInt(startText, 10);
+    const e = endText === undefined ? s : Number.parseInt(endText, 10);
     minStart = Math.min(minStart, s);
     maxEnd = Math.max(maxEnd, e);
   }
@@ -3302,6 +3305,7 @@ function patchApplyParts(args: string[], isGitApply: boolean): PatchApplyParts {
   let afterDashDash = false;
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
+    if (a === undefined) break;
     if (afterDashDash) {
       operands.push(a);
       continue;
@@ -3479,12 +3483,11 @@ function matchPatchApply(
   join: ResolvedSpan['join'],
   results: SpanMatch[]
 ): void {
-  const rest = stripTransparentWrapper(argv);
-  if (rest.length === 0) return;
-  const command = rest[0];
+  const [command, ...commandArgs] = stripTransparentWrapper(argv);
+  if (command === undefined) return;
   if (command === 'patch') {
     emitPatchTargets(
-      rest.slice(1),
+      commandArgs,
       false,
       'patch',
       dirForResolution,
@@ -3497,14 +3500,14 @@ function matchPatchApply(
     return;
   }
   if (command === 'git') {
-    const sub = findGitSubcommand(rest.slice(1));
+    const sub = findGitSubcommand(commandArgs);
     if (sub === null || sub.subcommand !== 'apply') return;
     if (sub.cDirUnresolvable) {
       pushUnresolved(results, 'patch-write', 'apply', 'git -C target contains an unresolved shell variable');
       return;
     }
     emitPatchTargets(
-      rest.slice(1).slice(sub.subIdx + 1),
+      commandArgs.slice(sub.subIdx + 1),
       true,
       'apply',
       sub.cDir ?? dirForResolution,
@@ -3517,7 +3520,7 @@ function matchPatchApply(
     return;
   }
   if (FOREIGN_WRAPPERS.has(command)) {
-    const wrapped = rest[1];
+    const [wrapped] = commandArgs;
     if (wrapped === 'patch' || wrapped === 'apply') {
       pushUnresolved(results, 'patch-write', wrapped, `the ${command} wrapper obscures the ${wrapped} argv`);
     }
@@ -3539,23 +3542,22 @@ function classifyPatchHeredoc(
   join: ResolvedSpan['join'],
   results: SpanMatch[]
 ): void {
-  const rest = stripTransparentWrapper(argv);
-  if (rest.length === 0) return;
-  const command = rest[0];
+  const [command, ...commandArgs] = stripTransparentWrapper(argv);
+  if (command === undefined) return;
   let isGitApply = false;
   let args: string[];
   let dir = currentDir;
   if (command === 'patch') {
-    args = rest.slice(1);
+    args = commandArgs;
   } else if (command === 'git') {
-    const sub = findGitSubcommand(rest.slice(1));
+    const sub = findGitSubcommand(commandArgs);
     if (sub === null || sub.subcommand !== 'apply') return;
     if (sub.cDirUnresolvable) {
       pushUnresolved(results, 'patch-write', 'apply', 'git -C target contains an unresolved shell variable');
       return;
     }
     isGitApply = true;
-    args = rest.slice(1).slice(sub.subIdx + 1);
+    args = commandArgs.slice(sub.subIdx + 1);
     dir = sub.cDir ?? currentDir;
   } else {
     return;
@@ -3692,10 +3694,11 @@ function stripPackageRunner(argv: string[]): RunnerStrip | 'not-runner' {
   } else {
     return 'not-runner';
   }
-  while (RUNNER_NO_ARG_FLAGS.has(rest[0])) rest = rest.slice(1);
+  const firstNonFlag = rest.findIndex((word) => !RUNNER_NO_ARG_FLAGS.has(word));
+  rest = firstNonFlag === -1 ? [] : rest.slice(firstNonFlag);
   if (runner === 'npm' && rest[0] === '--') rest = rest.slice(1);
-  if (rest.length === 0) return 'not-runner'; // a bare runner attributes nothing
-  const wrapped = rest[0];
+  const [wrapped] = rest;
+  if (wrapped === undefined) return 'not-runner'; // a bare runner attributes nothing
   if (wrapped.startsWith('-') || wrapped.startsWith('.') || /\s/.test(wrapped)) return { kind: 'obscured' };
   return { kind: 'stripped', stripped: rest };
 }
@@ -3716,28 +3719,30 @@ function matchFormatter(
   join: ResolvedSpan['join'],
   results: SpanMatch[]
 ): void {
-  const rest = stripTransparentWrapper(argv);
-  if (rest.length === 0) return;
-  let words = rest;
-  const strip = stripPackageRunner(rest);
+  const unwrapped = stripTransparentWrapper(argv);
+  const [command] = unwrapped;
+  if (command === undefined) return;
+  let words = unwrapped;
+  const strip = stripPackageRunner(unwrapped);
   if (strip === 'not-runner') {
-    // rest[0] is not a package runner — the table matches it directly.
+    // command is not a package runner — the table matches it directly.
   } else if (strip.kind === 'obscured') {
-    pushUnresolved(results, 'formatter-write', rest[0], `the ${rest[0]} wrapper obscures the wrapped argv`);
+    pushUnresolved(results, 'formatter-write', command, `the ${command} wrapper obscures the wrapped argv`);
     return;
   } else {
     words = strip.stripped;
   }
-  if (FOREIGN_WRAPPERS.has(words[0])) {
-    const wrapped = words[1];
+  const [tool, ...args] = words;
+  if (tool === undefined) return;
+  if (FOREIGN_WRAPPERS.has(tool)) {
+    const [wrapped] = args;
     if (wrapped !== undefined && FORMATTER_TABLE.some((r) => r.command === wrapped)) {
-      pushUnresolved(results, 'formatter-write', wrapped, `the ${words[0]} wrapper obscures the ${wrapped} argv`);
+      pushUnresolved(results, 'formatter-write', wrapped, `the ${tool} wrapper obscures the ${wrapped} argv`);
     }
     return;
   }
-  const row = FORMATTER_TABLE.find((r) => r.command === words[0]);
+  const row = FORMATTER_TABLE.find((r) => r.command === tool);
   if (row === undefined) return; // unknown executable — fail closed, no touch
-  const args = words.slice(1);
   const formPresent = (form: string[]): boolean => {
     const first = form[0];
     if (first !== undefined && !first.startsWith('-') && args[0] !== first) return false;
@@ -3754,7 +3759,8 @@ function matchFormatter(
       if (!token.startsWith('-')) subcommandWords.add(token);
     }
   }
-  const afterSubcommand = subcommandWords.has(args[0]) ? args.slice(1) : args;
+  const [firstArg] = args;
+  const afterSubcommand = firstArg !== undefined && subcommandWords.has(firstArg) ? args.slice(1) : args;
   let afterDashDash = false;
   const operands: string[] = [];
   for (const a of afterSubcommand) {
@@ -3857,6 +3863,7 @@ function matchRestoreOperands(
   const operands: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
+    if (a === undefined) break;
     if (afterDashDash) {
       operands.push(a);
       continue;
@@ -3915,6 +3922,7 @@ function matchCheckoutOperands(
   const operands: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
+    if (a === undefined) break;
     if (afterDashDash) {
       operands.push(a);
       continue;
@@ -3957,11 +3965,10 @@ function matchGitRestoreCheckout(
   join: ResolvedSpan['join'],
   results: SpanMatch[]
 ): void {
-  const rest = stripTransparentWrapper(argv);
-  if (rest.length === 0) return;
-  const command = rest[0];
+  const [command, ...commandArgs] = stripTransparentWrapper(argv);
+  if (command === undefined) return;
   if (command === 'git') {
-    const sub = findGitSubcommand(rest.slice(1));
+    const sub = findGitSubcommand(commandArgs);
     if (sub === null || (sub.subcommand !== 'restore' && sub.subcommand !== 'checkout')) return;
     if (sub.cDirUnresolvable) {
       pushUnresolved(
@@ -3973,13 +3980,13 @@ function matchGitRestoreCheckout(
       return;
     }
     const dir = sub.cDir ?? dirForResolution;
-    const args = rest.slice(1).slice(sub.subIdx + 1);
+    const args = commandArgs.slice(sub.subIdx + 1);
     if (sub.subcommand === 'restore') matchRestoreOperands(args, dir, simpleCommandIndex, join, results);
     else matchCheckoutOperands(args, dir, simpleCommandIndex, join, results);
     return;
   }
   if (FOREIGN_WRAPPERS.has(command)) {
-    const wrapped = rest[1];
+    const [wrapped] = commandArgs;
     if (wrapped === 'restore' || wrapped === 'checkout') {
       pushUnresolved(
         results,
@@ -4086,6 +4093,9 @@ export function parseCommandDetailed(command: string, opts: string | ParseOption
     // Plan §6 certainty: a relative path against an uncertain directory, or a
     // git candidate whose repo frame cannot be composed, is unresolvable —
     // never a guessed touch. Absolute paths are unaffected.
+    // A git candidate's path resolves inside its repo dir (`-C` target or the
+    // tracked directory), not the process dir — plan §6.
+    let resolutionDir: string;
     if (c.resolverKind === 'fs') {
       if (!frame.certain && !isAbsolute(c.fileArg)) {
         results.push({
@@ -4096,25 +4106,25 @@ export function parseCommandDetailed(command: string, opts: string | ParseOption
         });
         return;
       }
-    } else if (gitDirOf(c, frame) === undefined) {
-      results.push({
-        status: 'unresolved',
-        idiom: c.idiom,
-        fileArg: c.fileArg,
-        reason: 'the git -C target cannot be resolved against the tracked directory'
-      });
-      return;
-    }
-    // A git candidate's path resolves inside its repo dir (`-C` target or the
-    // tracked directory), not the process dir — plan §6.
-    const resolutionDir =
-      c.resolverKind === 'fs'
-        ? c.dirOverride === undefined
+      resolutionDir =
+        c.dirOverride === undefined
           ? frame.dir
           : isAbsolute(c.dirOverride)
             ? c.dirOverride
-            : resolvePath(frame.dir, c.dirOverride)
-        : gitDirOf(c, frame)!;
+            : resolvePath(frame.dir, c.dirOverride);
+    } else {
+      const gitDir = gitDirOf(c, frame);
+      if (gitDir === undefined) {
+        results.push({
+          status: 'unresolved',
+          idiom: c.idiom,
+          fileArg: c.fileArg,
+          reason: 'the git -C target cannot be resolved against the tracked directory'
+        });
+        return;
+      }
+      resolutionDir = gitDir;
+    }
     const absolutePath = resolvePath(resolutionDir, c.fileArg);
     const totalLines =
       c.resolverKind === 'fs'
@@ -4152,15 +4162,14 @@ export function parseCommandDetailed(command: string, opts: string | ParseOption
   const matchReads = (simple: SimpleCommand, argv: string[], i: number): void => {
     let isPlainSource = false;
     let plainFileArg: string | null = null;
-    if (argv[0] === 'cat' && argv.length === 2 && !argv[1].startsWith('-')) {
+    const [bin, ...operands] = argv;
+    const lastOperand = operands.at(-1);
+    const plainSource =
+      (bin === 'cat' && operands.length === 1) || (bin === 'nl' && operands.length >= 1) ? lastOperand : undefined;
+    if (plainSource !== undefined && !plainSource.startsWith('-')) {
       isPlainSource = true;
-      plainFileArg = argv[1];
-      lastPlainFileSource = hasShellExpansion(argv[1]) ? null : resolvePath(currentDir, argv[1]);
-    } else if (argv[0] === 'nl' && argv.length >= 2 && !argv[argv.length - 1].startsWith('-')) {
-      isPlainSource = true;
-      const f = argv[argv.length - 1];
-      plainFileArg = f;
-      lastPlainFileSource = hasShellExpansion(f) ? null : resolvePath(currentDir, f);
+      plainFileArg = plainSource;
+      lastPlainFileSource = hasShellExpansion(plainSource) ? null : resolvePath(currentDir, plainSource);
     }
 
     // A bare `cat file`/`nl file` that is not feeding a downstream pipe stage
@@ -4231,14 +4240,17 @@ export function parseCommandDetailed(command: string, opts: string | ParseOption
 
   for (let i = 0; i < simpleCommands.length; i++) {
     const simple = simpleCommands[i];
+    if (simple === undefined) break;
 
     // A pipe stage may inherit the previous stage's literal echo content; any
     // other boundary clears it.
     if (simple.precededBy !== 'pipe') pipeEchoContent = null;
 
-    const heredocRef = simple.text.match(/^__heredoc_(\d+)__$/);
-    if (heredocRef) {
-      const w = heredocWrites[Number.parseInt(heredocRef[1], 10)];
+    // A placeholder-shaped word with no recorded heredoc is the user's own
+    // command text, not a mask — it falls through to the ordinary grammar.
+    const heredocRef = matchGroups(simple.text, /^__heredoc_(\d+)__$/, 1);
+    const w = heredocRef === null ? undefined : heredocWrites[Number.parseInt(heredocRef[0], 10)];
+    if (w !== undefined) {
       const tokens = tokenize(stripLeadingAssignments(w.opener).trim());
       if (tokens === null) {
         lastPlainFileSource = null;
@@ -4257,14 +4269,15 @@ export function parseCommandDetailed(command: string, opts: string | ParseOption
       continue;
     }
     const { argv, redirects } = analyzeTokens(tokens);
-    if (argv.length === 0) {
+    const [bin] = argv;
+    if (bin === undefined) {
       // Bare `> f` / `: > f`: no argv, but the truncation grammar still fires.
       matchRedirectFamily(argv, redirects, pipeEchoContent, currentDir, i, joinOf(simple), results);
       lastPlainFileSource = null;
       continue;
     }
 
-    if (argv[0] === 'cd') {
+    if (bin === 'cd') {
       lastPlainFileSource = null;
       const target = argv[1];
       if (target !== undefined && target !== '-' && !hasShellExpansion(target)) {
@@ -4286,7 +4299,7 @@ export function parseCommandDetailed(command: string, opts: string | ParseOption
       // No span for this command: a deterministic builtin is still a usable
       // join guard (`false && echo x > f` must skip the echo). Any other
       // command stays span-less and unknowable — the driver fails open.
-      const status = BUILTIN_GUARD_STATUS.get(argv[0]);
+      const status = BUILTIN_GUARD_STATUS.get(bin);
       if (status !== undefined) {
         results.push({
           status: 'builtin-guard',

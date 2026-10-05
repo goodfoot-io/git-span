@@ -238,7 +238,8 @@ function scanLineIndices(lines: readonly string[], value: string): number[] {
 /** Start indices (0-based) at which `needle` matches contiguously in `haystack`. */
 function scanContiguousMatches(haystack: readonly string[], needle: readonly string[]): number[] {
   const out: number[] = [];
-  if (needle.length === 0 || needle.length > haystack.length) return out;
+  const first = needle[0];
+  if (first === undefined || needle.length > haystack.length) return out;
   const last = haystack.length - needle.length;
   for (let i = 0; i <= last; i++) {
     let ok = true;
@@ -262,10 +263,10 @@ type LineOccurrences = Map<string, number | number[]>;
 
 function buildLineOccurrences(lines: readonly string[]): LineOccurrences {
   const occurrences: LineOccurrences = new Map();
-  for (let i = 0; i < lines.length; i++) {
-    const seen = occurrences.get(lines[i]);
-    if (seen === undefined) occurrences.set(lines[i], i);
-    else if (typeof seen === 'number') occurrences.set(lines[i], [seen, i]);
+  for (const [i, line] of lines.entries()) {
+    const seen = occurrences.get(line);
+    if (seen === undefined) occurrences.set(line, i);
+    else if (typeof seen === 'number') occurrences.set(line, [seen, i]);
     else seen.push(i);
   }
   return occurrences;
@@ -287,12 +288,13 @@ function indexedContiguousMatches(
   occurrences: LineOccurrences
 ): number[] {
   const out: number[] = [];
-  if (needle.length === 0 || needle.length > haystack.length) return out;
+  const first = needle[0];
+  if (first === undefined || needle.length > haystack.length) return out;
   const last = haystack.length - needle.length;
   // The candidate starts are exactly the occurrences of the block's first
   // line: every other position fails at `j === 0` in the scanning form, so
   // testing them is pure waste. The remaining lines still confirm the match.
-  for (const start of occurrencesOf(occurrences, needle[0])) {
+  for (const start of occurrencesOf(occurrences, first)) {
     if (start > last) break; // occurrences ascend — no later one can fit either
     let ok = true;
     for (let j = 1; j < needle.length; j++) {
@@ -362,9 +364,9 @@ function locateChunk(preLines: PreEditLines, chunk: UpdateChunk): LineRange | nu
   if (block.length === 0) {
     const ctx = chunk.changeContext;
     if (ctx !== null && ctx !== '') {
-      const ctxIdxs = preLines.lineIndices(ctx);
-      if (ctxIdxs.length === 1) {
-        const line = ctxIdxs[0] + 1;
+      const [only, ...others] = preLines.lineIndices(ctx);
+      if (only !== undefined && others.length === 0) {
+        const line = only + 1;
         return { start: line, end: line };
       }
     }
@@ -372,11 +374,9 @@ function locateChunk(preLines: PreEditLines, chunk: UpdateChunk): LineRange | nu
   }
 
   const starts = preLines.contiguousMatches(block);
-  if (starts.length === 1) {
-    const s = starts[0];
-    return { start: s + 1, end: s + block.length };
-  }
-  if (starts.length === 0) return null;
+  const [firstStart] = starts;
+  if (firstStart === undefined) return null;
+  if (starts.length === 1) return { start: firstStart + 1, end: firstStart + block.length };
 
   // Duplicated block: use the change context to select the match after it.
   const ctx = chunk.changeContext;

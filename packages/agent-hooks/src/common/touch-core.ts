@@ -32,6 +32,7 @@ import {
   resolveRepoRoot
 } from './agent-hooks-common.js';
 import { collapseByPath, type RangeLabel, renderAnchorTree } from './anchor-tree.js';
+import { flushFailOpen, reportFailOpen } from './fail-open.js';
 import type { CoreLogger, MemoStore } from './span-surface.js';
 
 // ---------------------------------------------------------------------------
@@ -88,8 +89,9 @@ export function recoverRange(written: string, onDiskContent: string): LineRange 
     }
   }
 
-  if (starts.length === 1) {
-    return { start: starts[0] + 1, end: starts[0] + needle.length };
+  const [start, ...duplicates] = starts;
+  if (start !== undefined && duplicates.length === 0) {
+    return { start: start + 1, end: start + needle.length };
   }
   return 'whole-file';
 }
@@ -593,12 +595,10 @@ export type ContextFailureCategory =
   | 'address_limit'
   | 'missing_invocation_identity';
 
-export interface ContextQueryRequest {
-  repoRoot: string;
-  addresses: string[];
-  repair: boolean;
-  operationId?: string;
-}
+/** A read query, or a repair query carrying the deterministic operation id `--fix` requires. */
+export type ContextQueryRequest =
+  | { repoRoot: string; addresses: string[]; repair: false }
+  | { repoRoot: string; addresses: string[]; repair: true; operationId: string };
 
 export type ContextQueryResult =
   | { ok: true; document: ContextDocument; elapsedMs: number }
@@ -819,8 +819,8 @@ export function decodeContextDocument(stdout: string): ContextDocument {
   for (const [spanIndex, span] of spans.entries()) {
     for (const [overlapIndex, overlap] of span.overlaps.entries()) {
       const label = `context document.spans[${spanIndex}].overlaps[${overlapIndex}]`;
-      if (overlap.scope >= scopes.length)
-        throw new Error(`context document.spans[${spanIndex}] references an unknown scope`);
+      const scope = scopes[overlap.scope];
+      if (scope === undefined) throw new Error(`context document.spans[${spanIndex}] references an unknown scope`);
       const anchor = span.anchors[overlap.anchor.ordinal];
       if (anchor === undefined || anchor.id !== overlap.anchor.id || anchor.ordinal !== overlap.anchor.ordinal) {
         throw new Error(`context document.spans[${spanIndex}] references an unknown anchor`);
@@ -831,7 +831,6 @@ export function decodeContextDocument(stdout: string): ContextDocument {
       if (!sameLocation(overlap.location, basisLocation)) {
         throw new Error(`${label}.location does not equal its referenced ${overlap.basis} location`);
       }
-      const scope = scopes[overlap.scope];
       if (scope.path !== overlap.location.path) throw new Error(`${label} crosses scope and location paths`);
       const expectedIntersection = intersectExtents(scope.extent, overlap.location.extent);
       if (expectedIntersection === null || !sameExtent(expectedIntersection, overlap.intersection))
@@ -925,8 +924,12 @@ function rangeLabel(row: PorcelainRow): RangeLabel {
  * before any grouping — the tree layout must never be able to change *which*
  * anchors get labeled, only where they sit on the page.
  */
-function anchorBullets(anchors: PorcelainRow[], debtRows: DriftPorcelainRow[]): string[] {
-  const rows = anchors.map((anchor) => {
+function anchorBullets(
+  anchors: PorcelainRow[],
+  debtRows: DriftPorcelainRow[],
+  logger: CoreLogger | undefined
+): string[] {
+  const entries = anchors.map((anchor) => {
     const soleOnPath = anchors.filter((a) => a.path === anchor.path).length === 1;
     const statuses = new Set<PorcelainStatus>();
     for (const row of debtRows) {
@@ -937,11 +940,11 @@ function anchorBullets(anchors: PorcelainRow[], debtRows: DriftPorcelainRow[]): 
     }
     const sorted = [...statuses].sort();
     const suffix = sorted.length > 0 ? ` — ${sorted.map(humanStatusLabel).join(', ')}` : '';
-    return { path: anchor.path, range: rangeLabel(anchor), suffix };
+    return { anchor, row: { path: anchor.path, range: rangeLabel(anchor), suffix } };
   });
   try {
-    return renderAnchorTree(collapseByPath(rows));
-  } catch {
+    return renderAnchorTree(collapseByPath(entries.map(({ row }) => row)));
+  } catch (err) {
     // FAIL-CLOSED, not a `<greenfield>`-forbidden fallback — do not remove it
     // on the theory that a degraded fallback is itself forbidden. An uncaught
     // throw here does not degrade to a flat list: it escapes to
@@ -951,9 +954,11 @@ function anchorBullets(anchors: PorcelainRow[], debtRows: DriftPorcelainRow[]): 
     // reminder disappears" to "the reminder looks like it did before the tree".
     // Whether to surface and what shape to surface in are different things, and
     // this catch only ever touches the latter.
-    // `rows` is index-aligned with `anchors`, so this reproduces today's flat
-    // bullet run byte for byte, suffixes included.
-    return anchors.map((anchor, i) => `- ${anchorText(anchor)}${rows[i].suffix}`);
+    // `entries` pairs each anchor with its row, so this reproduces today's flat
+    // bullet run byte for byte, suffixes included. The degraded shape is still
+    // a defect, so it is recorded on the run log rather than absorbed.
+    reportFailOpen(logger, 'anchor-tree-render', err, { span: anchors[0]?.name, anchorCount: anchors.length });
+    return entries.map(({ anchor, row }) => `- ${anchorText(anchor)}${row.suffix}`);
   }
 }
 
@@ -971,9 +976,10 @@ function renderSpanSection(
   name: string,
   anchors: PorcelainRow[],
   debtRows: DriftPorcelainRow[],
-  why: string | null
+  why: string | null,
+  logger: CoreLogger | undefined
 ): string {
-  const lines = [`## ${name}`, ...anchorBullets(anchors, debtRows)];
+  const lines = [`## ${name}`, ...anchorBullets(anchors, debtRows, logger)];
   if (why) lines.push('', why);
   return lines.join('\n');
 }
@@ -1084,7 +1090,7 @@ function spanTouchesInput(
 ): boolean {
   return span.overlaps.some((overlap) => {
     const scope = document.scopes[overlap.scope];
-    return scope.path === repoPath && extentIntersects(overlap.intersection, ranges);
+    return scope !== undefined && scope.path === repoPath && extentIntersects(overlap.intersection, ranges);
   });
 }
 
@@ -1093,7 +1099,8 @@ function renderContextTouch(
   document: ContextDocument,
   repoPath: string,
   ranges: LineRange[] | 'whole-file',
-  memo: MemoStore
+  memo: MemoStore,
+  logger: CoreLogger | undefined
 ): string | null {
   const surfaced = memo.getSurfaced(input.sessionId);
   const sections: string[] = [];
@@ -1111,7 +1118,7 @@ function renderContextTouch(
     const unsurfacedDebt = debtStatuses.filter((status) => !surfaced.has(driftKey(span.name, status)));
     const isNewName = !surfaced.has(span.name);
     if (!isNewName && unsurfacedDebt.length === 0) continue;
-    sections.push(renderSpanSection(span.name, anchors, debtRows, span.why));
+    sections.push(renderSpanSection(span.name, anchors, debtRows, span.why, logger));
     if (debtStatuses.length > 0) driftedNames.push(span.name);
     if (isNewName) toRecord.push(span.name);
     for (const status of unsurfacedDebt) toRecord.push(driftKey(span.name, status));
@@ -1159,8 +1166,8 @@ function normalizedAddressIdentity(touches: readonly PreparedTouch[]): string[] 
     }
   }
   const identity: string[] = [];
-  for (const path of [...byPath.keys()].sort()) {
-    const ranges = byPath.get(path)!;
+  const byPathSorted = [...byPath].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  for (const [path, ranges] of byPathSorted) {
     if (ranges === 'whole-file') {
       identity.push(path);
       continue;
@@ -1185,8 +1192,8 @@ function deterministicOperationId(invocationId: string, repoRoot: string, addres
     .update('\0')
     .update(addresses.join('\0'))
     .digest();
-  bytes[6] = (bytes[6] & 0x0f) | 0x50;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  bytes.writeUInt8((bytes.readUInt8(6) & 0x0f) | 0x50, 6);
+  bytes.writeUInt8((bytes.readUInt8(8) & 0x3f) | 0x80, 8);
   const hex = bytes.subarray(0, 16).toString('hex');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
@@ -1246,7 +1253,9 @@ export async function runTouchHooks(
   const documents = new Map<string, ContextDocument>();
   const rewrittenPartitions = new Set<string>();
   for (const [partitionKey, partition] of partitions) {
-    const repair = partition[0].input.kind === 'write';
+    const [first] = partition;
+    if (first === undefined) continue;
+    const repair = first.input.kind === 'write';
     const addresses = partition.flatMap((touch) =>
       touch.ranges === 'whole-file'
         ? [touch.repoPath]
@@ -1257,26 +1266,20 @@ export async function runTouchHooks(
       if (repair) repairFailure = true;
       continue;
     }
-    if (repair && invocationId === null) {
-      failure ??= 'missing_invocation_identity';
-      repairFailure = true;
-      continue;
+    let request: ContextQueryRequest;
+    if (repair) {
+      if (invocationId === null) {
+        failure ??= 'missing_invocation_identity';
+        repairFailure = true;
+        continue;
+      }
+      const operationId = deterministicOperationId(invocationId, first.repoRoot, normalizedAddressIdentity(partition));
+      request = { repoRoot: first.repoRoot, addresses, repair, operationId };
+    } else {
+      request = { repoRoot: first.repoRoot, addresses, repair };
     }
     queryCount += 1;
-    const result = await executors.context({
-      repoRoot: partition[0].repoRoot,
-      addresses,
-      repair,
-      ...(repair
-        ? {
-            operationId: deterministicOperationId(
-              invocationId!,
-              partition[0].repoRoot,
-              normalizedAddressIdentity(partition)
-            )
-          }
-        : {})
-    });
+    const result = await executors.context(request);
     elapsedMs += result.elapsedMs;
     if (!result.ok) {
       failure ??= result.failure;
@@ -1297,21 +1300,21 @@ export async function runTouchHooks(
     const singleTouchMutation =
       (partitions.get(touch.partitionKey)?.length ?? 0) === 1 && rewrittenPartitions.has(touch.partitionKey);
     try {
-      const additionalContext = renderContextTouch(touch.input, document, touch.repoPath, touch.ranges, memo);
+      const additionalContext = renderContextTouch(touch.input, document, touch.repoPath, touch.ranges, memo, logger);
       outputs[touch.index] = { additionalContext, treeModified: singleTouchMutation };
     } catch (err) {
       // Fail-open per touch — one broken rendering must never take the whole
       // hook down — but never silently: this catch is an internal defect
       // disabling that touch's surfacing with nothing else to show for it, so
-      // warn through the threaded logger. Omitting it loses the breadcrumb,
-      // not the behavior.
-      logger?.warn('git-span touch render failed open on an unexpected error', {
-        filePath: touch.input.filePath,
-        err
-      });
+      // record it on the run log through the threaded logger. Omitting it
+      // loses the breadcrumb, not the behavior.
+      reportFailOpen(logger, 'touch-render', err, { filePath: touch.input.filePath });
       outputs[touch.index] = { additionalContext: null, treeModified: singleTouchMutation };
     }
   }
+  // Every touch path ends here, so failures absorbed below any logger earlier
+  // in the invocation (span-root resolution) reach the run log from here.
+  if (logger !== undefined) flushFailOpen(logger);
   return {
     outputs,
     treeModified,
@@ -1350,7 +1353,9 @@ export async function runTouchHook(
       failure: batch.diagnostics.failure
     });
   }
-  return batch.outputs[0];
+  const [output] = batch.outputs;
+  if (output === undefined) throw new Error('runTouchHooks produced no output for its single touch');
+  return output;
 }
 
 // ---------------------------------------------------------------------------
@@ -1376,7 +1381,7 @@ export function createDefaultTouchExecutors(timeoutMs: number = DEFAULT_TIMEOUT_
     context: async (request) => {
       const started = performance.now();
       const args = ['span', 'context', ...request.addresses, '--format', 'json'];
-      if (request.repair) args.push('--fix', '--operation-id', request.operationId!);
+      if (request.repair) args.push('--fix', '--operation-id', request.operationId);
       let stdout: string;
       try {
         stdout = execFileSync('git', args, {

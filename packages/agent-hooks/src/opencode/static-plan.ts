@@ -29,6 +29,7 @@ import {
   type SessionLayout
 } from '../common/agent-hooks-common.js';
 import { createDefaultPlannedTouchStore, planBashTouches } from '../common/bash-attribution.js';
+import { flushFailOpen } from '../common/fail-open.js';
 import type { MemoLogger } from '../common/span-surface.js';
 import { filterTrackedEligibility } from '../common/static-attribution.js';
 import { disableUpdateCheck } from '../common/update-check-env.js';
@@ -92,6 +93,7 @@ export function createStaticPlanHandler(
           anchors.map((anchor) => ({ absolutePath: abspathAgainst(cwd, anchor.path), value: anchor })),
           { cwd }
         );
+        flushFailOpen(logger);
         // Stashed in the pre-parsed absolute-path shape the after hook's touch
         // pipeline consumes; range fidelity comes from reading pre-edit content
         // above, before the patch applies.

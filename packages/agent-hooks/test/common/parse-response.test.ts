@@ -95,7 +95,7 @@ import { dirname, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { ResponseSpan } from '../../src/common/parse-response.js';
 import { MAX_RESPONSE_SPANS, parseResponse, type ResponseParseInput } from '../../src/common/parse-response.js';
-import { makeTempRepo } from '../helpers.js';
+import { itemAt, makeTempRepo } from '../helpers.js';
 
 // ---------------------------------------------------------------------------
 // Golden-matrix harness
@@ -221,7 +221,7 @@ function contextRanges(hits: number[], before: number, after: number, lines: num
     .sort((a, b) => a - b)
     .map((h) => [Math.max(1, h - before), Math.min(lines, h + after)] as [number, number]);
   const merged: Array<[number, number]> = [];
-  let [start, end] = windows[0];
+  let [start, end] = itemAt(windows, 0);
   for (const [s, e] of windows.slice(1)) {
     if (s <= end + 1) {
       end = Math.max(end, e);
@@ -531,7 +531,7 @@ function buildGoldenMatrix(root: string): GoldenMatrix {
       ['-rnz', 'alpha', 'src'],
       root,
       srcFiles
-        .filter((path) => SEARCH_FILES[path].includes('alpha'))
+        .filter((path) => SEARCH_FILES[path]?.includes('alpha') === true)
         .flatMap((path) => wholeFileExpected(SEARCH_FILES, path))
     )
   );

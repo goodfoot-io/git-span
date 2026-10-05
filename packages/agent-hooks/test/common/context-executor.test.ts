@@ -17,6 +17,7 @@ import {
   type ContextQueryRequest,
   createDefaultTouchExecutors
 } from '../../src/common/touch-core.js';
+import { itemAt } from '../helpers.js';
 
 function emptyDocument(requested: boolean): ContextDocument {
   return {
@@ -60,7 +61,7 @@ describe('default context executor', () => {
       repair: true,
       operationId
     });
-    expect(capture.calls[1].args).toEqual([
+    expect(itemAt(capture.calls, 1).args).toEqual([
       'span',
       'context',
       'src/a.ts#L2-L4',

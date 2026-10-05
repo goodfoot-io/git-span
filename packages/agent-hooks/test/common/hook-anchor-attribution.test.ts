@@ -4,9 +4,10 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { DriftPorcelainRow, PorcelainRow } from '../../src/common/agent-hooks-common.js';
+import { matchGroups } from '../../src/common/regex-groups.js';
 import type { MemoStore } from '../../src/common/span-surface.js';
 import { runTouchHook, type TouchExecutors, type TouchWriteInput } from '../../src/common/touch-core.js';
-import { makeTempRepo } from '../helpers.js';
+import { itemAt, makeTempRepo } from '../helpers.js';
 import { contextExecutors } from '../touch-context-fake.js';
 
 // The touch hook's write gate (plan §3 step 1) verifies the target exists on
@@ -86,18 +87,18 @@ function markedAnchors(rendered: string): string[] {
   const dirs: { indent: number; name: string }[] = [];
   let file: string | null = null;
   for (const line of rendered.split('\n')) {
-    const branch = /^([ │]*)(?:├─|└─) (.*)$/.exec(line);
+    const branch = matchGroups(line, /^([ │]*)(?:├─|└─) (.*)$/, 2);
     if (branch) {
-      const [, pad, rest] = branch;
-      while (dirs.length > 0 && dirs[dirs.length - 1].indent >= pad.length) dirs.pop();
+      const [pad, rest] = branch;
+      while (dirs.length > 0 && itemAt(dirs, dirs.length - 1).indent >= pad.length) dirs.pop();
       if (rest.endsWith('/')) {
         dirs.push({ indent: pad.length, name: rest });
         file = null;
         continue;
       }
-      const anchor = /^(\S+)\s+(#L\d+-L\d+)( — .+)?$/.exec(rest);
-      file = anchor ? `${dirs.map((dir) => dir.name).join('')}${anchor[1]}` : null;
-      if (anchor?.[3]) marked.push(`${file}${anchor[2]}`);
+      const anchor = matchGroups(rest, /^(\S+)\s+(#L\d+-L\d+)( — .+)?$/, 2);
+      file = anchor ? `${dirs.map((dir) => dir.name).join('')}${anchor[0]}` : null;
+      if (anchor?.[2]) marked.push(`${file}${anchor[1]}`);
       continue;
     }
     const stacked = /^[ │]*(#L\d+-L\d+)( — .+)?$/.exec(line);

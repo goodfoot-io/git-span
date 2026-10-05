@@ -5,6 +5,7 @@ import {
   type PorcelainRow,
   rangesIntersect
 } from '../src/common/agent-hooks-common.js';
+import { matchGroups } from '../src/common/regex-groups.js';
 import type {
   ContextDocument,
   ContextExtent,
@@ -22,12 +23,10 @@ export interface SurfaceFake {
 }
 
 function parseAddress(address: string): { path: string; extent: ContextExtent } {
-  const match = address.match(/^(.*)#L(\d+)-L(\d+)$/);
+  const match = matchGroups(address, /^(.*)#L(\d+)-L(\d+)$/, 3);
   if (match === null) return { path: address, extent: { kind: 'whole' } };
-  return {
-    path: match[1],
-    extent: { kind: 'lines', start: Number(match[2]), end: Number(match[3]) }
-  };
+  const [path, start, end] = match;
+  return { path, extent: { kind: 'lines', start: Number(start), end: Number(end) } };
 }
 
 function extentRange(extent: ContextExtent): LineRange | 'whole-file' {
@@ -158,9 +157,10 @@ async function query(fake: SurfaceFake, request: ContextQueryRequest) {
 
 /** Adapt old row-oriented fixtures at the test boundary; production has no such surface. */
 export function contextExecutors(fake: SurfaceFake): TouchExecutors {
+  const forInvocation = fake.forInvocation;
   const executors: TouchExecutors = {
     context: (request) => query(fake, request),
-    ...(fake.forInvocation === undefined ? {} : { forInvocation: () => contextExecutors(fake.forInvocation!()) })
+    ...(forInvocation === undefined ? {} : { forInvocation: () => contextExecutors(forInvocation()) })
   };
   return executors;
 }

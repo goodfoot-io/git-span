@@ -61,9 +61,9 @@ export function selectCommitAssociation(
     const value = noteDocument(note.document);
     if (value && value.host === document.host && value.sessionId === document.sessionId) matches.push(value);
   }
-  if (matches.length > 1) return { kind: 'reject', reason: 'ambiguous existing commit associations' };
-  if (matches.length === 0) return { kind: 'add', document };
-  const original = matches[0];
+  const [original, ...others] = matches;
+  if (others.length > 0) return { kind: 'reject', reason: 'ambiguous existing commit associations' };
+  if (original === undefined) return { kind: 'add', document };
   return {
     kind: 'reuse',
     document: original,
@@ -115,10 +115,12 @@ export function validateCommitNotesAdd(
 ): CommitValidation<CommitNoteDocument> {
   const envelope = validateEnvelope(value, sha, 'add');
   if (!envelope.ok) return envelope;
+  const [acknowledged, ...extra] = envelope.value;
   if (
-    envelope.value.length !== 1 ||
+    acknowledged === undefined ||
+    extra.length > 0 ||
     !noteDocument(document) ||
-    !isDeepStrictEqual(envelope.value[0].document, document)
+    !isDeepStrictEqual(acknowledged.document, document)
   ) {
     return { ok: false, reason: 'notes acknowledgment does not match frozen document' };
   }

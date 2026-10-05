@@ -62,11 +62,17 @@ export function resolveCommitRepository(
     ],
     originalCwd
   ).split('\n');
-  if (fields.length !== 3 || (fields[2] !== 'sha1' && fields[2] !== 'sha256'))
+  const [gitDirectoryField, commonDirectoryField, objectFormat, ...extraFields] = fields;
+  if (
+    gitDirectoryField === undefined ||
+    commonDirectoryField === undefined ||
+    extraFields.length > 0 ||
+    (objectFormat !== 'sha1' && objectFormat !== 'sha256')
+  )
     throw new Error('unsupported Git repository format');
   const cwd = realpathSync(probe(executable, [...globalArguments, 'rev-parse', '--show-toplevel'], originalCwd));
-  const gitDirectory = realpathSync(fields[0]);
-  const commonDirectory = realpathSync(fields[1]);
+  const gitDirectory = realpathSync(gitDirectoryField);
+  const commonDirectory = realpathSync(commonDirectoryField);
   if (gitRefBackend(executable, globalArguments, originalCwd) !== 'files')
     throw new Error('unsupported Git ref backend');
   return {
@@ -74,7 +80,7 @@ export function resolveCommitRepository(
     gitDirectory,
     commonDirectory,
     headReflog: join(gitDirectory, 'logs', 'HEAD'),
-    objectFormat: fields[2]
+    objectFormat
   };
 }
 /** Missing extensions.refStorage means the established files backend. */
