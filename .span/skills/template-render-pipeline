@@ -2,7 +2,7 @@
 .wikiignore#L1-L7 rk64:fa8659bf1f415659
 CLAUDE.md#L8-L8 rk64:2a53eba563fa7ff7
 biome.json#L78-L82 rk64:1b4937d5ccadc21f
-scripts/agent-skills-drivers.test.mjs rk64:0346e82762aa24f1
+scripts/agent-skills-drivers.test.mjs rk64:7d745b3c65697c1b
 scripts/agent-skills-registry.mjs rk64:7893e42466b91448
 scripts/agent-skills-vocabulary.mjs rk64:0062fec5485821d3
 scripts/build-agent-skills.mjs rk64:da53b5d92689ab19
