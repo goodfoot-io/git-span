@@ -226,7 +226,7 @@ jobs:
         run: cd packages/extension && yarn build
 
   static-analysis:
-    name: Static Analysis (knip, root lint)
+    name: Static Analysis (knip, Biome lint)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -249,13 +249,33 @@ jobs:
       - name: Lint (repository scripts)
         run: yarn lint:root
 
+      # Per-workspace read-only Biome gates (`biome ci --error-on-warnings`).
+      # `!cancelled()` keeps every later gate reporting after an earlier one
+      # fails; the job still fails if any step does.
+      # The extension lint runs in build-extension; root `yarn lint` is not
+      # used here because it also fans out to the git-span cargo clippy,
+      # which belongs to the Rust job.
+      - name: Lint (agent-hooks)
+        if: ${{ !cancelled() }}
+        run: yarn workspace agent-hooks run lint
+
+      - name: Lint (discover)
+        if: ${{ !cancelled() }}
+        run: yarn workspace discover run lint
+
+      - name: Lint (website)
+        if: ${{ !cancelled() }}
+        run: yarn workspace @goodfoot/git-span-website run lint
+
       # The website's `collections/*` imports resolve through
       # packages/website/.source, which only fumadocs-mdx generates; without
       # it knip reports them as unlisted dependencies.
       - name: Generate fumadocs collections
+        if: ${{ !cancelled() }}
         run: yarn workspace @goodfoot/git-span-website run fumadocs:generate
 
       - name: Knip (unused files, exports, and dependencies)
+        if: ${{ !cancelled() }}
         run: yarn knip
 
   build-website:
