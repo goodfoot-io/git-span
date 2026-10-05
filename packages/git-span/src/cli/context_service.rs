@@ -211,7 +211,7 @@ mod unix {
     use std::ffi::CString;
     use std::fs::File;
     use std::io::{Read, Write};
-    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::fd::{AsRawFd, FromRawFd};
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::{UnixListener, UnixStream};
@@ -232,10 +232,46 @@ mod unix {
 
     #[derive(Debug)]
     struct FailClosedWatcher {
-        fd: OwnedFd,
+        /// The inotify instance, held as a `File` so events drain through
+        /// safe `Read` rather than raw `read(2)`.
+        fd: File,
         roots: Vec<PathBuf>,
         excluded: Vec<PathBuf>,
         watched: BTreeMap<PathBuf, i32>,
+    }
+
+    /// Size of the fixed `struct inotify_event` header that precedes each
+    /// event's optional NUL-padded name in an inotify read.
+    const INOTIFY_EVENT_HEADER: usize = std::mem::size_of::<libc::inotify_event>();
+
+    /// The fields of one `struct inotify_event` header the watcher consumes,
+    /// decoded from native-endian bytes at the kernel's field offsets rather
+    /// than by reinterpreting the read buffer as the C struct.
+    struct InotifyEventHeader {
+        wd: libc::c_int,
+        mask: u32,
+        len: usize,
+    }
+
+    impl InotifyEventHeader {
+        /// Decode `header`, which must be exactly [`INOTIFY_EVENT_HEADER`]
+        /// bytes long; the caller slices it from bytes the kernel returned.
+        fn parse(header: &[u8]) -> Self {
+            let word = |offset: usize| {
+                [
+                    header[offset],
+                    header[offset + 1],
+                    header[offset + 2],
+                    header[offset + 3],
+                ]
+            };
+            Self {
+                wd: libc::c_int::from_ne_bytes(word(std::mem::offset_of!(libc::inotify_event, wd))),
+                mask: u32::from_ne_bytes(word(std::mem::offset_of!(libc::inotify_event, mask))),
+                len: u32::from_ne_bytes(word(std::mem::offset_of!(libc::inotify_event, len)))
+                    as usize,
+            }
+        }
     }
 
     fn injected_watcher_failure(stage: &str) -> bool {
@@ -250,13 +286,18 @@ mod unix {
                 !injected_watcher_failure("backend") && !injected_watcher_failure("limit"),
                 "injected watcher setup failure"
             );
+            // SAFETY: inotify_init1(2) takes only a flag word and touches no
+            // caller memory; failure is reported through the return value.
             let raw_fd = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
             if raw_fd < 0 {
                 return Err(std::io::Error::last_os_error()).context("initialize inotify watcher");
             }
+            // SAFETY: a non-negative inotify_init1 result is a descriptor the
+            // kernel just allocated for this call. It is wrapped exactly once,
+            // here, so the `File` is its sole owner and closes it exactly once.
+            let fd = unsafe { File::from_raw_fd(raw_fd) };
             let mut watcher = Self {
-                // SAFETY: inotify_init1 returned a new owned descriptor.
-                fd: unsafe { OwnedFd::from_raw_fd(raw_fd) },
+                fd,
                 roots,
                 excluded,
                 watched: BTreeMap::new(),
@@ -342,6 +383,9 @@ mod unix {
                 | libc::IN_UNMOUNT
                 | libc::IN_IGNORED
                 | libc::IN_Q_OVERFLOW;
+            // SAFETY: `self.fd` is borrowed across the call, so the inotify
+            // descriptor stays open; `c_path` is a NUL-terminated string that
+            // outlives the call and inotify_add_watch only reads it.
             let descriptor =
                 unsafe { libc::inotify_add_watch(self.fd.as_raw_fd(), c_path.as_ptr(), mask) };
             if descriptor < 0 {
@@ -371,31 +415,22 @@ mod unix {
             let mut overflow = false;
             let mut paths = BTreeSet::new();
             loop {
-                let count = unsafe {
-                    libc::read(
-                        self.fd.as_raw_fd(),
-                        buffer.as_mut_ptr().cast(),
-                        buffer.len(),
-                    )
+                let count = match (&self.fd).read(&mut buffer) {
+                    Ok(0) => bail!("inotify watcher unexpectedly reached EOF"),
+                    Ok(count) => count,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(error) => return Err(error).context("drain inotify events"),
                 };
-                if count < 0 {
-                    let error = std::io::Error::last_os_error();
-                    if error.kind() == std::io::ErrorKind::WouldBlock {
-                        break;
-                    }
-                    return Err(error).context("drain inotify events");
-                }
-                if count == 0 {
-                    bail!("inotify watcher unexpectedly reached EOF");
-                }
-                let count = usize::try_from(count)?;
                 let mut offset = 0;
-                while offset + std::mem::size_of::<libc::inotify_event>() <= count {
-                    let event = unsafe {
-                        std::ptr::read_unaligned(
-                            buffer.as_ptr().add(offset).cast::<libc::inotify_event>(),
-                        )
-                    };
+                while offset + INOTIFY_EVENT_HEADER <= count {
+                    let event =
+                        InotifyEventHeader::parse(&buffer[offset..offset + INOTIFY_EVENT_HEADER]);
+                    let name_start = offset + INOTIFY_EVENT_HEADER;
+                    let name_end = name_start + event.len;
+                    ensure!(
+                        name_end <= count,
+                        "inotify event overruns the bytes the kernel returned"
+                    );
                     events += 1;
                     overflow |= event.mask & libc::IN_Q_OVERFLOW != 0;
                     if let Some((root, _)) = self
@@ -407,13 +442,12 @@ mod unix {
                             paths.insert(root.clone());
                         } else {
                             use std::os::unix::ffi::OsStrExt;
-                            let name_start = offset + std::mem::size_of::<libc::inotify_event>();
-                            let raw = &buffer[name_start..name_start + event.len as usize];
+                            let raw = &buffer[name_start..name_end];
                             let end = raw.iter().position(|byte| *byte == 0).unwrap_or(raw.len());
                             paths.insert(root.join(std::ffi::OsStr::from_bytes(&raw[..end])));
                         }
                     }
-                    offset += std::mem::size_of::<libc::inotify_event>() + event.len as usize;
+                    offset = name_end;
                 }
             }
             if events > 0 {
@@ -570,6 +604,10 @@ mod unix {
             gid: 0,
         };
         let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+        // SAFETY: `stream` is borrowed across the call, so its socket stays
+        // open. `credentials` is a live, initialized `ucred` and `length`
+        // holds exactly its size, so getsockopt writes at most that many bytes
+        // into it and updates `length` in place; both outlive the call.
         let status = unsafe {
             libc::getsockopt(
                 stream.as_raw_fd(),
@@ -686,7 +724,7 @@ mod unix {
         let mut stream = UnixStream::connect(&paths.socket)?;
         let connect_us = started.elapsed().as_micros() as u64;
         ensure!(
-            peer_uid(&stream)? == unsafe { libc::geteuid() },
+            peer_uid(&stream)? == crate::descriptor_authority::effective_uid(),
             "service peer has another owner"
         );
         stream.set_read_timeout(Some(IO_TIMEOUT))?;
@@ -784,13 +822,24 @@ mod unix {
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(log_error));
         use std::os::unix::process::CommandExt;
+        // Detach into a new session so the service outlives this client
+        // process and its controlling terminal.
+        let detach = || {
+            // SAFETY: setsid(2) takes no arguments and touches no caller
+            // memory; failure is reported through the return value and errno.
+            if unsafe { libc::setsid() } < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        };
+        // SAFETY: `detach` runs in the forked child before exec, where only
+        // async-signal-safe work is sound. It calls setsid(2), which POSIX
+        // lists as async-signal-safe, and on failure reads errno into an
+        // `io::Error` OS-code value, which neither allocates nor takes a
+        // lock. It captures nothing, so it cannot observe state that another
+        // parent thread left mid-update at fork time.
         unsafe {
-            command.pre_exec(|| {
-                if libc::setsid() < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
+            command.pre_exec(detach);
         }
         let mut child = command.spawn()?;
         let deadline = Instant::now() + STARTUP_TIMEOUT;
@@ -1124,7 +1173,7 @@ mod unix {
         stream.set_read_timeout(Some(IO_TIMEOUT))?;
         stream.set_write_timeout(Some(IO_TIMEOUT))?;
         ensure!(
-            peer_uid(&stream)? == unsafe { libc::geteuid() },
+            peer_uid(&stream)? == crate::descriptor_authority::effective_uid(),
             "client peer has another owner"
         );
         let request: Request =

@@ -361,8 +361,22 @@ fn murmur3_32_seeded(data: &[u8], seed: u32) -> u32 {
 fn mmap_file(path: &std::path::Path) -> Result<memmap2::Mmap, String> {
     let file = std::fs::File::open(path)
         .map_err(|e| format!("Cannot open commit-graph at {}: {e}", path.display()))?;
-    // SAFETY: The file is opened read-only and we never mutate it. The mmap
-    // is private to CommitGraphBloom and lives for the duration of the struct.
+    // SAFETY: a mapping is sound only while no one truncates or rewrites the
+    // mapped inode in place; truncation turns reads of the `&[u8]` this
+    // exposes into SIGBUS. This process never writes the file (it is opened
+    // read-only and mapped copy-on-write read-only). Git never writes a live
+    // commit-graph in place either: `objects/info/commit-graph` is replaced by
+    // writing `commit-graph.lock` and renaming it over the old name, and the
+    // split-chain `commit-graphs/graph-<hash>.graph` files are content-
+    // addressed, written once via rename, and only ever unlinked by
+    // expiry. Rename and unlink leave this already-mapped inode intact, so a
+    // concurrent `git gc` / `git commit-graph write` / `git maintenance`
+    // cannot invalidate the mapping. Only a non-Git tool editing the file in
+    // place could; Git itself and gix (which this process already uses to
+    // open the same file in `CommitGraphBloom::open` and in rev-walks) mmap
+    // commit-graph files under the same assumption, so reading this one into
+    // memory would not remove the exposure — it would only copy files that
+    // reach tens of MiB or more on large histories.
     unsafe {
         memmap2::MmapOptions::new()
             .map_copy_read_only(&file)

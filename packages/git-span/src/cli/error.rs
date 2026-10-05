@@ -82,19 +82,26 @@ impl std::fmt::Display for CliError {
 /// When `next_steps` is non-empty, a `## What to do next` section is appended
 /// with each step rendered as a paragraph or fenced bash block.
 fn render(err: &CliError) -> String {
-    let mut out = format!("git span {}: {}", err.subcommand, err.summary);
-    out.push('\n');
-    out.push('\n');
-    out.push_str(&err.what_happened);
+    render_report(&err.to_string(), &err.what_happened, &err.next_steps)
+}
 
-    if !err.next_steps.is_empty() {
+/// The shared prose shape behind [`render`] and [`render_internal_error`]:
+/// headline, blank line, `what_happened`, then the optional
+/// `## What to do next` section.
+fn render_report(headline: &str, what_happened: &str, next_steps: &[NextStep]) -> String {
+    let mut out = headline.to_owned();
+    out.push('\n');
+    out.push('\n');
+    out.push_str(what_happened);
+
+    if !next_steps.is_empty() {
         out.push('\n');
         out.push('\n');
         out.push_str("## What to do next");
         out.push('\n');
         out.push('\n');
 
-        for (i, step) in err.next_steps.iter().enumerate() {
+        for (i, step) in next_steps.iter().enumerate() {
             match step {
                 NextStep::Prose(text) => {
                     out.push_str(text);
@@ -112,7 +119,7 @@ fn render(err: &CliError) -> String {
                     out.push_str("```");
                 }
             }
-            if i < err.next_steps.len() - 1 {
+            if i < next_steps.len() - 1 {
                 out.push('\n');
                 out.push('\n');
             }
@@ -125,6 +132,139 @@ fn render(err: &CliError) -> String {
 /// Render a [`CliError`] into the full markdown prose shape (public wrapper).
 pub fn render_error(err: &CliError) -> String {
     render(err)
+}
+
+/// Exit status of a run that panicked: the same `1` every other operational
+/// failure uses, so an agent hook or CI step that branches on the documented
+/// exit-code table fails closed instead of meeting Rust's undocumented `101`.
+/// The stderr report is what distinguishes it from a drift verdict.
+pub const INTERNAL_ERROR_EXIT_CODE: i32 = 1;
+
+/// Where to report a panic.
+const ISSUE_TRACKER_URL: &str = "https://github.com/goodfoot-io/git-span/issues";
+
+/// What a panic hook knows about one panic, decoupled from
+/// [`std::panic::PanicHookInfo`] so the rendering is testable without
+/// panicking.
+#[derive(Debug)]
+pub struct PanicReport<'a> {
+    /// `file:line:column` of the panic, when the runtime supplied one.
+    pub location: Option<String>,
+    /// The panic payload as text.
+    pub message: &'a str,
+    /// The process argv, `argv[0]` included.
+    pub argv: &'a [String],
+    /// A captured backtrace, present only when `RUST_BACKTRACE` (or
+    /// `RUST_LIB_BACKTRACE`) asked for one.
+    pub backtrace: Option<String>,
+}
+
+/// Render a panic in the [`render_error`] prose shape, headed
+/// `git span: internal error: …` so it can never be mistaken for a curated
+/// operational error or a drift verdict.
+pub fn render_internal_error(report: &PanicReport<'_>) -> String {
+    let headline = match &report.location {
+        Some(location) => format!("git span: internal error: panicked at {location}."),
+        None => "git span: internal error: panicked.".to_owned(),
+    };
+    let command = std::iter::once("git span".to_owned())
+        .chain(
+            report
+                .argv
+                .iter()
+                .skip(1)
+                .map(|argument| shell_words::quote(argument).into_owned()),
+        )
+        .collect::<Vec<_>>()
+        .join(" ");
+    let what_happened = format!(
+        "git-span hit a bug while running `{command}`:\n\n{}",
+        report.message
+    );
+    let mut next_steps = vec![
+        NextStep::Prose(format!(
+            "The command stopped before finishing, so treat anything it printed \
+             as incomplete. Its exit status {INTERNAL_ERROR_EXIT_CODE} reports this \
+             internal error, not a drift or check verdict."
+        )),
+        NextStep::Prose(format!(
+            "This is a bug in git-span, not a problem with your repository or \
+             command. Please report it at {ISSUE_TRACKER_URL} with this message \
+             and a backtrace{}",
+            if report.backtrace.is_some() {
+                " (printed below)."
+            } else {
+                " from re-running the command:"
+            }
+        )),
+    ];
+    if report.backtrace.is_none() {
+        next_steps.push(NextStep::Bash(format!("RUST_BACKTRACE=1 {command}")));
+    }
+    let mut out = render_report(&headline, &what_happened, &next_steps);
+    if let Some(backtrace) = &report.backtrace {
+        out.push_str("\n\nstack backtrace:\n");
+        out.push_str(backtrace.trim_end());
+    }
+    out
+}
+
+/// The text of a panic payload: the `&str` or `String` that `panic!` and
+/// friends carry, or a placeholder for a non-text payload.
+fn panic_payload_text(payload: &(dyn std::any::Any + Send)) -> &str {
+    if let Some(text) = payload.downcast_ref::<&'static str>() {
+        text
+    } else if let Some(text) = payload.downcast_ref::<String>() {
+        text
+    } else {
+        "(non-text panic payload)"
+    }
+}
+
+/// Replace Rust's default panic report with [`render_internal_error`] on
+/// stderr. Install it first thing in `main`.
+///
+/// The hook only reports; it does not exit. Exiting from the hook would
+/// skip unwinding, and the destructors that unwinding runs are what release
+/// lockfiles and remove temporaries a panicking command was holding. `main`
+/// instead catches the unwind and exits with [`INTERNAL_ERROR_EXIT_CODE`].
+/// A panic on a rayon worker reaches that catch too: rayon re-raises it on
+/// the calling thread with `resume_unwind`, which does not re-run the hook,
+/// so the report is printed once. The one exception is a `panic = "abort"`
+/// build, where no unwind follows: there the hook exits itself so the
+/// status is still the documented one rather than `SIGABRT`.
+///
+/// Every step tolerates failure — a closed stderr is ignored rather than
+/// unwrapped — because a panic inside a panic hook aborts the process.
+pub fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        let argv = std::env::args_os()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let backtrace = std::backtrace::Backtrace::capture();
+        let report = PanicReport {
+            location: info.location().map(|location| {
+                format!(
+                    "{}:{}:{}",
+                    location.file(),
+                    location.line(),
+                    location.column()
+                )
+            }),
+            message: panic_payload_text(info.payload()),
+            argv: &argv,
+            backtrace: (backtrace.status() == std::backtrace::BacktraceStatus::Captured)
+                .then(|| backtrace.to_string()),
+        };
+        let rendered = render_internal_error(&report);
+        {
+            use std::io::Write;
+            let _ = writeln!(std::io::stderr().lock(), "{rendered}");
+        }
+        if cfg!(panic = "abort") {
+            std::process::exit(INTERNAL_ERROR_EXIT_CODE);
+        }
+    }));
 }
 
 /// Wrap a library error into a [`CliError`].
@@ -395,5 +535,130 @@ git span list
             next_steps: vec![],
         };
         assert_eq!(render_error(&err), render(&err));
+    }
+
+    #[test]
+    fn internal_error_report_without_backtrace_offers_the_rerun() {
+        let argv = [
+            "/usr/local/bin/git-span".to_owned(),
+            "drift".to_owned(),
+            "--fix".to_owned(),
+            "a b".to_owned(),
+        ];
+        let rendered = render_internal_error(&PanicReport {
+            location: Some("src/resolver/walk.rs:12:5".to_owned()),
+            message: "attempt to subtract with overflow",
+            argv: &argv,
+            backtrace: None,
+        });
+        let expected = "\
+git span: internal error: panicked at src/resolver/walk.rs:12:5.
+
+git-span hit a bug while running `git span drift --fix 'a b'`:
+
+attempt to subtract with overflow
+
+## What to do next
+
+The command stopped before finishing, so treat anything it printed as incomplete. Its exit status 1 reports this internal error, not a drift or check verdict.
+
+This is a bug in git-span, not a problem with your repository or command. Please report it at https://github.com/goodfoot-io/git-span/issues with this message and a backtrace from re-running the command:
+
+```bash
+RUST_BACKTRACE=1 git span drift --fix 'a b'
+```";
+        assert_eq!(rendered, expected);
+    }
+
+    #[test]
+    fn internal_error_report_with_backtrace_appends_it() {
+        let argv = ["git-span".to_owned(), "list".to_owned()];
+        let rendered = render_internal_error(&PanicReport {
+            location: None,
+            message: "boom",
+            argv: &argv,
+            backtrace: Some("   0: frame\n".to_owned()),
+        });
+        assert!(rendered.starts_with("git span: internal error: panicked.\n\n"));
+        assert!(rendered.contains("with this message and a backtrace (printed below)."));
+        assert!(!rendered.contains("RUST_BACKTRACE=1"));
+        assert!(rendered.ends_with("\n\nstack backtrace:\n   0: frame"));
+    }
+
+    #[test]
+    fn panic_payload_text_reads_str_and_string_payloads() {
+        let literal: Box<dyn std::any::Any + Send> = Box::new("literal");
+        let formatted: Box<dyn std::any::Any + Send> = Box::new(String::from("formatted"));
+        let opaque: Box<dyn std::any::Any + Send> = Box::new(7_u8);
+        assert_eq!(panic_payload_text(&*literal), "literal");
+        assert_eq!(panic_payload_text(&*formatted), "formatted");
+        assert_eq!(panic_payload_text(&*opaque), "(non-text panic payload)");
+    }
+
+    /// `main` maps panics to [`INTERNAL_ERROR_EXIT_CODE`] with one
+    /// `catch_unwind` on the main thread. That covers parallel work only
+    /// because rayon re-raises a worker's panic on the thread that called
+    /// into the pool; pin that so a pool change cannot silently reopen the
+    /// `101` exit. (The worker's panic report goes to stderr uncaptured.)
+    #[test]
+    fn rayon_worker_panic_unwinds_to_the_calling_thread() {
+        use rayon::prelude::*;
+        let caught = std::panic::catch_unwind(|| {
+            (0..64_u32).into_par_iter().for_each(|index| {
+                if index == 63 {
+                    panic!("injected rayon worker panic");
+                }
+            });
+        });
+        let payload = caught.expect_err("a worker panic must reach the caller");
+        assert_eq!(panic_payload_text(&*payload), "injected rayon worker panic");
+    }
+
+    /// Set only in the child process `installed_panic_hook_renders_the_report`
+    /// spawns; never read outside this test module.
+    const PANIC_HOOK_CHILD_ENV: &str = "GIT_SPAN_TEST_PANIC_HOOK_CHILD";
+
+    /// Exercise the real hook end to end by re-running this test binary on
+    /// just this test with the child flag set: the child installs the hook
+    /// and panics, and the parent reads the report off its stderr. A child
+    /// process keeps the process-global hook out of every other test.
+    #[test]
+    fn installed_panic_hook_renders_the_report() {
+        if std::env::var_os(PANIC_HOOK_CHILD_ENV).is_some() {
+            install_panic_hook();
+            panic!("injected panic for the hook test");
+        }
+        let output = std::process::Command::new(
+            std::env::current_exe().expect("locate the running test binary"),
+        )
+        .args([
+            "--exact",
+            "cli::error::tests::installed_panic_hook_renders_the_report",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(PANIC_HOOK_CHILD_ENV, "1")
+        .env_remove("RUST_BACKTRACE")
+        .env_remove("RUST_LIB_BACKTRACE")
+        .output()
+        .expect("run the panicking child");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !output.status.success(),
+            "child must fail; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("git span: internal error: panicked at src/cli/error.rs:"),
+            "structured headline missing; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("\n\ninjected panic for the hook test\n\n## What to do next\n"),
+            "panic message missing; stderr:\n{stderr}"
+        );
+        assert!(
+            !stderr.contains("' panicked at "),
+            "Rust's default `thread '…' panicked at` report must be replaced; \
+             stderr:\n{stderr}"
+        );
     }
 }

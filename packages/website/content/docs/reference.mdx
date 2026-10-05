@@ -61,6 +61,7 @@ A handful of helper files live alongside the span files:
 | `add` / `why` (write mode) | 2 | Post-write check indeterminate (`index changed during check`) — retryable |
 | `add` / `why` / etc. | 1 | Operational or validation error (invalid name, out-of-range anchor, and similar); `why --format json` in read mode is also rejected fail-closed with exit 1 |
 | Any command | 2 | A clap usage error — bad flag, missing required argument |
+| Any command | 1 | Internal error — git-span hit a bug (a Rust panic); stderr starts with `git span: internal error:` and names the panic location. This is never a drift verdict |
 | `merge-driver` | 0 | Fully resolved |
 | `merge-driver` | 1 | Partial resolution (residue markers written) |
 

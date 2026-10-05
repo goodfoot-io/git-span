@@ -147,11 +147,11 @@ pub fn generate(
 
         let mf = crate::span_file::SpanFile {
             anchors: vec![crate::span_file::AnchorRecord {
-                path: filename.clone(),
+                path: filename.clone().into(),
                 start_line: 1,
                 end_line: 5,
                 algorithm: git_span_core::RK64_ALGORITHM.into(),
-                content_hash: hash,
+                content_hash: hash.into(),
             }],
             why: format!("bench span {i}"),
             config: crate::span_file::SpanConfig::default(),

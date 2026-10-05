@@ -238,13 +238,22 @@ fn spawn_detached_child() {
         use std::os::unix::process::CommandExt;
         // Detach into a new session so the child survives the foreground
         // process exiting (the context-service spawn shape).
+        let detach = || {
+            // SAFETY: setsid(2) takes no arguments and touches no caller
+            // memory; failure is reported through the return value and errno.
+            if unsafe { libc::setsid() } < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        };
+        // SAFETY: `detach` runs in the forked child before exec, where only
+        // async-signal-safe work is sound. It calls setsid(2), which POSIX
+        // lists as async-signal-safe, and on failure reads errno into an
+        // `io::Error` OS-code value, which neither allocates nor takes a
+        // lock. It captures nothing, so it cannot observe state that another
+        // parent thread left mid-update at fork time.
         unsafe {
-            let _ = command.pre_exec(|| {
-                if libc::setsid() < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-                Ok(())
-            });
+            command.pre_exec(detach);
         }
     }
     #[cfg(windows)]
