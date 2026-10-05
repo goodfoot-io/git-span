@@ -12,17 +12,12 @@ use crate::types::{
     LayerSet, SpanResolved,
 };
 use std::path::PathBuf;
-use std::str::FromStr;
 
 fn to_anchor_location(loc: &super::resolution::LocationCore) -> AnchorLocation {
-    let blob = loc
-        .blob
-        .as_deref()
-        .map(|s| gix::ObjectId::from_str(s).expect("core: stored blob oid must be valid hex"));
     AnchorLocation {
         path: PathBuf::from(&loc.path),
         extent: loc.extent.into(),
-        blob,
+        blob: loc.blob,
     }
 }
 
@@ -55,16 +50,11 @@ fn project_anchor(
     let locus = if matches!(source, Some(DriftSource::Head)) || obs.status == AnchorStatus::Deleted
     {
         core.locus.as_ref().map(|l| match l {
-            DriftLocusCore::ChangedAt(oid) => DriftLocus::ChangedAt(
-                gix::ObjectId::from_str(oid).expect("core: stored locus oid must be valid hex"),
-            ),
-            DriftLocusCore::OrphanedAt(oid) => DriftLocus::OrphanedAt(
-                gix::ObjectId::from_str(oid).expect("core: stored locus oid must be valid hex"),
-            ),
-            DriftLocusCore::RenamedAt(oid, new_path) => DriftLocus::RenamedAt(
-                gix::ObjectId::from_str(oid).expect("core: stored locus oid must be valid hex"),
-                new_path.clone(),
-            ),
+            DriftLocusCore::ChangedAt(oid) => DriftLocus::ChangedAt(*oid),
+            DriftLocusCore::OrphanedAt(oid) => DriftLocus::OrphanedAt(*oid),
+            DriftLocusCore::RenamedAt(oid, new_path) => {
+                DriftLocus::RenamedAt(*oid, new_path.clone())
+            }
         })
     } else {
         None

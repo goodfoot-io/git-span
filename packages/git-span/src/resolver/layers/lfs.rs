@@ -59,10 +59,7 @@ fn lfs_read(
     if !lfs_object_cached(workdir, &oid) {
         return LfsReadOutcome::NotFetched;
     }
-    if lfs.is_none() {
-        *lfs = Some(spawn_lfs_process(workdir));
-    }
-    match lfs.as_mut().expect("just set") {
+    match lfs.get_or_insert_with(|| spawn_lfs_process(workdir)) {
         Err(FilterSpawnError::NotInstalled) => LfsReadOutcome::NotInstalled,
         Err(FilterSpawnError::HandshakeFailed) => LfsReadOutcome::NotInstalled,
         Ok(p) => match filter_smudge(p, path, pointer_bytes) {
@@ -81,18 +78,32 @@ fn head_blob_for(repo: &gix::Repository, path: &str) -> Option<String> {
     git::path_blob_at(repo, &head_sha, path).ok()
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Where an LFS anchor's current content sits: the deepest enabled layer's
+/// tracked position, plus the provenance that picks which bytes back it.
+#[derive(Clone, Copy)]
+pub(crate) struct DeepestPosition<'a> {
+    pub(crate) tracked: &'a Tracked,
+    pub(crate) layer: DriftSource,
+    /// The staged blob when an index hunk applied to the path.
+    pub(crate) index_blob_oid: Option<&'a str>,
+    /// Whether a worktree hunk applied (the on-disk file is authoritative).
+    pub(crate) worktree_changed: bool,
+}
+
 pub(crate) fn resolve_lfs_anchor(
     repo: &gix::Repository,
     lfs: &mut LfsState,
     anchor_id: &str,
     r: &Anchor,
     anchored: AnchorLocation,
-    tracked: &Tracked,
-    deepest_layer: DriftSource,
-    index_blob_oid: Option<&str>,
-    worktree_changed: bool,
+    deepest: DeepestPosition<'_>,
 ) -> AnchorResolved {
+    let DeepestPosition {
+        tracked,
+        layer: deepest_layer,
+        index_blob_oid,
+        worktree_changed,
+    } = deepest;
     let workdir = match git::work_dir(repo) {
         Ok(w) => w,
         Err(_) => {

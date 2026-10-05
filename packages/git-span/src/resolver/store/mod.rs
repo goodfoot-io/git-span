@@ -65,7 +65,8 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use error::{BypassReason, StoreError, map_io, map_sqlite};
 use lock::acquire_init_lock;
 use payload::{
-    DOMAIN_GENERATION, DOMAIN_ROW, EntryKind, IntegrityReason, envelope_digest, verify_envelope,
+    DOMAIN_GENERATION, DOMAIN_ROW, EntryKind, EnvelopeFacts, IntegrityReason, envelope_digest,
+    verify_envelope,
 };
 use schema::{
     DB_BASENAME, DEFAULT_BUSY_TIMEOUT_MS, ProbeOutcome, probe_and_init, set_busy_timeout,
@@ -314,10 +315,12 @@ impl CacheStore {
         };
         let summary_digest = envelope_digest(
             DOMAIN_GENERATION,
-            EntryKind::Generation.as_u32(),
-            input.payload_version,
-            &input.key_digest,
-            row_count,
+            EnvelopeFacts {
+                kind: EntryKind::Generation.as_u32(),
+                version: input.payload_version,
+                key: &input.key_digest,
+                cardinality: row_count,
+            },
             &input.summary,
         );
 
@@ -348,10 +351,12 @@ impl CacheStore {
                 let ord = ordinal as u64;
                 let digest = envelope_digest(
                     DOMAIN_ROW,
-                    EntryKind::GenerationRow.as_u32(),
-                    input.payload_version,
-                    &input.key_digest,
-                    ord,
+                    EnvelopeFacts {
+                        kind: EntryKind::GenerationRow.as_u32(),
+                        version: input.payload_version,
+                        key: &input.key_digest,
+                        cardinality: ord,
+                    },
                     &row.payload,
                 );
                 tx.execute(
@@ -462,14 +467,18 @@ impl CacheStore {
 
         if let Err(reason) = verify_envelope(
             DOMAIN_GENERATION,
-            EntryKind::Generation.as_u32(),
-            u32_from_i64(kind),
-            expected_version,
-            u32_from_i64(version),
-            key_digest,
-            key_digest,
-            row_count,
-            row_count,
+            EnvelopeFacts {
+                kind: EntryKind::Generation.as_u32(),
+                version: expected_version,
+                key: key_digest,
+                cardinality: row_count,
+            },
+            EnvelopeFacts {
+                kind: u32_from_i64(kind),
+                version: u32_from_i64(version),
+                key: key_digest,
+                cardinality: row_count,
+            },
             &summary,
             &summary_digest,
         ) {
@@ -499,14 +508,18 @@ impl CacheStore {
             let ord = ordinal.max(0) as u64;
             if let Err(reason) = verify_envelope(
                 DOMAIN_ROW,
-                EntryKind::GenerationRow.as_u32(),
-                u32_from_i64(entry_kind),
-                expected_version,
-                u32_from_i64(row_version),
-                key_digest,
-                key_digest,
-                expected_ordinal,
-                ord,
+                EnvelopeFacts {
+                    kind: EntryKind::GenerationRow.as_u32(),
+                    version: expected_version,
+                    key: key_digest,
+                    cardinality: expected_ordinal,
+                },
+                EnvelopeFacts {
+                    kind: u32_from_i64(entry_kind),
+                    version: u32_from_i64(row_version),
+                    key: key_digest,
+                    cardinality: ord,
+                },
                 &payload,
                 &digest,
             ) {
@@ -595,14 +608,18 @@ impl CacheStore {
 
         if let Err(reason) = verify_envelope(
             DOMAIN_GENERATION,
-            EntryKind::Generation.as_u32(),
-            u32_from_i64(kind),
-            expected_version,
-            u32_from_i64(version),
-            key_digest,
-            key_digest,
-            row_count,
-            row_count,
+            EnvelopeFacts {
+                kind: EntryKind::Generation.as_u32(),
+                version: expected_version,
+                key: key_digest,
+                cardinality: row_count,
+            },
+            EnvelopeFacts {
+                kind: u32_from_i64(kind),
+                version: u32_from_i64(version),
+                key: key_digest,
+                cardinality: row_count,
+            },
             &summary,
             &summary_digest,
         ) {

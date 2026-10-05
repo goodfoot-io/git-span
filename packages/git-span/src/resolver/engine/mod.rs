@@ -21,7 +21,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::atomic::Ordering;
 
-use anchor::resolve_anchor_inner;
+use anchor::{AnchorCtx, resolve_anchor_inner};
 
 /// Per-worker resolver scratch (card main-162 three-way split).
 ///
@@ -416,10 +416,12 @@ pub fn resolve_anchor(
     )?;
     let out = match span.anchors.into_iter().find(|(id, _)| id == anchor_id) {
         Some((_, r)) => resolve_anchor_inner(
-            repo,
+            AnchorCtx {
+                repo,
+                shared: &state.shared,
+                concurrent: &state.concurrent,
+            },
             &mut state.local,
-            &state.shared,
-            &state.concurrent,
             &span.config,
             span_name,
             anchor_id,
@@ -570,10 +572,12 @@ fn resolve_loaded_span_with_state(
             let trace_path = r.path.clone();
             let fast_path_before = concurrent.anchors_fast_path_hits.load(Ordering::Relaxed);
             let mut resolved = resolve_anchor_inner(
-                repo,
+                AnchorCtx {
+                    repo,
+                    shared,
+                    concurrent,
+                },
                 local,
-                shared,
-                concurrent,
                 &span.config,
                 &span.name,
                 &id,
@@ -1012,10 +1016,12 @@ pub(crate) fn capture_resolution_core(
             |(local, repo_local), item| {
                 let meta = &span_metas_ref[item.span_index];
                 let core = anchor::resolve_anchor_captured(
-                    repo_local,
+                    AnchorCtx {
+                        repo: repo_local,
+                        shared,
+                        concurrent,
+                    },
                     local,
-                    shared,
-                    concurrent,
                     &meta.config,
                     &meta.name,
                     &item.anchor_id,

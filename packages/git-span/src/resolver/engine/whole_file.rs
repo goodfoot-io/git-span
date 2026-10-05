@@ -4,8 +4,8 @@
 
 use super::super::session::{ConcurrentSession, follow_path_to_head_shared};
 use super::super::worktree_move::{WorktreeMove, find_worktree_move};
-use super::anchor::sole_basename_preserving;
-use super::{EngineLocal, SharedEngineContext};
+use super::EngineLocal;
+use super::anchor::{AnchorCtx, sole_basename_preserving};
 use crate::git;
 use crate::types::{
     Anchor, AnchorExtent, AnchorLocation, AnchorResolved, AnchorStatus, DriftSource,
@@ -72,17 +72,19 @@ fn canonical_layer_bytes(repo: &gix::Repository, oid_hex: &str, gitlink: bool) -
 /// path is a valid relocation target. Otherwise HEAD-present paths are
 /// skipped so an unrelated committed file is not mistaken for the move
 /// destination.
-#[allow(clippy::too_many_arguments)]
 fn find_relocated_whole_file(
-    repo: &gix::Repository,
-    shared: &SharedEngineContext,
-    concurrent: &ConcurrentSession,
+    ctx: AnchorCtx<'_>,
     workdir: &std::path::Path,
     deepest: DriftSource,
     stored_hash: &str,
     exclude: &str,
     anchored_absent_at_head: bool,
 ) -> Vec<String> {
+    let AnchorCtx {
+        repo,
+        shared,
+        concurrent,
+    } = ctx;
     // Card main-300 (whole-file follow-up): one session-wide index
     // snapshot shared by every drifted-anchor scan, instead of a fresh
     // materialization per anchor. A load failure degrades to "no
@@ -154,17 +156,19 @@ fn find_relocated_whole_file(
     results
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_whole_file(
-    repo: &gix::Repository,
+    ctx: AnchorCtx<'_>,
     local: &mut EngineLocal,
-    shared: &SharedEngineContext,
-    concurrent: &ConcurrentSession,
     cfg: &SpanConfig,
     span_name: &str,
     anchor_id: &str,
     r: Anchor,
 ) -> Result<AnchorResolved> {
+    let AnchorCtx {
+        repo,
+        shared,
+        concurrent,
+    } = ctx;
     // File-backed model: the anchored content is the blob at `r.path`
     // in HEAD. Carry that OID so `--patch`/`--stat` diff against the
     // anchored HEAD content instead of the drifted worktree file.
@@ -444,9 +448,7 @@ pub(crate) fn resolve_whole_file(
             let head_path_absent = file_backed && head_blob_oid.is_none();
             let relocated: Vec<String> = if file_backed {
                 find_relocated_whole_file(
-                    repo,
-                    shared,
-                    concurrent,
+                    ctx,
                     workdir,
                     deepest,
                     &r.stored_hash,
@@ -776,9 +778,7 @@ pub(crate) fn resolve_whole_file(
                         .head_blob_at(repo, &shared.head_sha, &r.path)?
                         .is_none();
                     find_relocated_whole_file(
-                        repo,
-                        shared,
-                        concurrent,
+                        ctx,
                         workdir,
                         deepest,
                         &r.stored_hash,

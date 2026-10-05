@@ -184,12 +184,15 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
     // conflicted set alongside the loaded spans, so the dedicated
     // `conflicted_span_names_in` discovery scan is subsumed here too.
     //
-    // This corpus is loaded lazily by `pre_fix_corpus` below and reused; it
-    // must NEVER be reused after `apply_fix` mutates `.span/` — the post-fix
-    // backfill and interior scan load their own fresh corpus (see the post-fix
-    // region). On the plain (non-`--fix`) path no mutation occurs, so the same
-    // pre-fix corpus also serves the backfill and interior-scan sites.
-    let mut pre_fix_corpus: Option<crate::span::read::LoadedSpans> = None;
+    // The corpus is threaded by value so the compiler proves every consumer
+    // runs after the load: the scoped path loads it as `scoped_corpus` (for its
+    // path index), count-totals loads it otherwise and yields `pre_fix_corpus`
+    // (`None` exactly on a whole-result hit), and the `--fix` block consumes it
+    // — it must NEVER be reused after `apply_fix` mutates `.span/`, so the
+    // post-fix backfill and interior scan load their own fresh corpus (see the
+    // post-fix region). On the plain (non-`--fix`) path no mutation occurs, so
+    // the same pre-fix corpus also serves the backfill and interior-scan sites.
+    let mut scoped_corpus: Option<crate::span::read::LoadedSpans> = None;
 
     // PRE-fix resolve timer: only the `--fix` path attributes this pass, so the
     // start instant is taken (under perf) only when `args.fix`. The elapsed is
@@ -240,12 +243,11 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
         // again for count-totals — three parses of the same worktree-effective
         // source. Now: one load, many consumers.
         //
-        // The corpus is stored in `pre_fix_corpus` so the scoped-anchor-totals,
+        // The corpus is handed on as `scoped_corpus` so the scoped-anchor-totals,
         // count-totals, conflict-detection, and `--fix` interior/fix_input
         // sites below all reuse it instead of reloading.
         let corpus = crate::span::read::load_all_spans_in(repo, span_root)?;
         let path_index = crate::span::read::SpanPathIndex::from_loaded_spans(&corpus.0)?;
-        pre_fix_corpus = Some(corpus);
 
         for arg in &args.paths {
             let mut found = false;
@@ -370,12 +372,9 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
         // persists non-Fresh rows only), so derive the true anchor total from
         // the span-file records. For scoped queries (positional args), the
         // cache path is not used, so load totals fresh.
-        // `pre_fix_corpus` was loaded above (at the path-index build site) and
-        // is still live here; reuse it rather than reloading the corpus a
-        // second time for this scoped query.
-        let scoped_anchor_totals: std::collections::HashMap<String, usize> = pre_fix_corpus
-            .as_ref()
-            .expect("pre_fix_corpus must be set before scoped_anchor_totals")
+        // The corpus was loaded above (at the path-index build site); reuse it
+        // rather than reloading the corpus a second time for this scoped query.
+        let scoped_anchor_totals: std::collections::HashMap<String, usize> = corpus
             .0
             .iter()
             .map(|(n, m)| (n.clone(), m.anchors.len()))
@@ -409,6 +408,7 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
         // drift findings — shown-but-clean is the intended reading, not a
         // desynchronized predicate.
         spans.retain(|m| m.anchors.iter().any(|a| a.status != AnchorStatus::Fresh));
+        scoped_corpus = Some(corpus);
 
         spans
     };
@@ -427,37 +427,44 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
     // carries the already-computed results.
     let use_whole_result = whole_result.is_some();
 
-    let (total_committed_span_count, total_committed_anchor_count, span_anchor_totals): (
+    //
+    // `pre_fix_corpus` is `None` exactly on a whole-result hit (only a
+    // workspace scan can produce one, so there is no scoped corpus to drop).
+    let (
+        total_committed_span_count,
+        total_committed_anchor_count,
+        span_anchor_totals,
+        pre_fix_corpus,
+    ): (
         usize,
         usize,
         std::collections::HashMap<String, usize>,
+        Option<crate::span::read::LoadedSpans>,
     ) = if let Some(ref wr) = whole_result {
         let totals: std::collections::HashMap<String, usize> =
             wr.span_anchor_totals.iter().cloned().collect();
         let span_count = totals.len();
         let anchor_count: usize = totals.values().sum();
         crate::perf::counter("cache-path.whole-result-hit", 1);
-        (span_count, anchor_count, totals)
+        (span_count, anchor_count, totals, None)
     } else {
         let _perf = crate::perf::span("drift.count-totals");
-        // On the scoped path `pre_fix_corpus` was already loaded; on the
-        // non-scoped path load it once here. Either way it stays live so the
+        // On the scoped path the corpus was already loaded; on the non-scoped
+        // path load it once here. Either way it stays live so the
         // conflict-detection (and, on the plain path, the backfill /
         // interior-scan) sites below reuse it instead of reloading.
-        if pre_fix_corpus.is_none() {
-            pre_fix_corpus = Some(crate::span::read::load_all_spans_in(repo, span_root)?);
-        }
-        let pairs = &pre_fix_corpus
-            .as_ref()
-            .expect("pre_fix_corpus set immediately above")
-            .0;
+        let corpus = match scoped_corpus {
+            Some(corpus) => corpus,
+            None => crate::span::read::load_all_spans_in(repo, span_root)?,
+        };
+        let pairs = &corpus.0;
         let span_count = pairs.len();
         let anchor_count = pairs.iter().map(|(_, m)| m.anchors.len()).sum();
         let totals = pairs
             .iter()
             .map(|(n, m)| (n.clone(), m.anchors.len()))
             .collect();
-        (span_count, anchor_count, totals)
+        (span_count, anchor_count, totals, Some(corpus))
     };
 
     // Fail-closed Conflict reporting: a span whose file (or anchored
@@ -465,8 +472,9 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
     // spans are skipped by the normal resolution batch; surface each
     // one here as a `Conflict` finding so it renders and forces a
     // non-zero exit (an unreliable read must never report "clean").
-    // Skipped on whole-result hit — a clean tree has no conflicts.
-    if !use_whole_result {
+    // Skipped on whole-result hit — a clean tree has no conflicts (and
+    // `pre_fix_corpus` is `None` exactly then).
+    if let Some(pre_fix_corpus) = &pre_fix_corpus {
         let _perf = crate::perf::span("drift.detect-conflicts");
         // The conflicted-span set is byte-identical to a dedicated
         // `conflicted_span_names_in` scan: `load_all_spans_in` discovers the
@@ -478,8 +486,6 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
         // The kind rides along with each name now; `drift`'s rows only need
         // the name, so it is dropped here rather than at the source.
         let conflicted: Vec<String> = pre_fix_corpus
-            .as_ref()
-            .expect("pre_fix_corpus set before detect-conflicts when !use_whole_result")
             .1
             .iter()
             .map(|(name, _kind)| name.clone())
@@ -538,16 +544,21 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
     // re-resolve so the rendered post-fix view reflects the new statuses.
     // The set of anchor ids actually rewritten drives the "auto-updated" tag
     // and the exit-code subtraction.
-    let fix_result: Option<FixResult> = if args.fix {
+    let (fix_result, post_region_corpus): (
+        Option<FixResult>,
+        Option<crate::span::read::LoadedSpans>,
+    ) = if args.fix {
         let _perf = crate::perf::span("drift.apply-fix");
         // Ensure the single PRE-fix corpus is loaded for the `--fix` consumers
-        // (interior pre-scan + `fix_input` supplement). It is already `Some` on
+        // (interior pre-scan + `fix_input` supplement). It is already loaded on
         // the `!use_whole_result` path (count-totals loaded it), but on a warm
         // whole-result hit count-totals short-circuited without loading, so
-        // load it here. Still pre-`apply_fix`, so the state is correct.
-        if pre_fix_corpus.is_none() {
-            pre_fix_corpus = Some(crate::span::read::load_all_spans_in(repo, span_root)?);
-        }
+        // load it here. Still pre-`apply_fix`, so the state is correct. This
+        // block consumes it: nothing after `apply_fix` can reach it.
+        let pre_fix_corpus = match pre_fix_corpus {
+            Some(corpus) => corpus,
+            None => crate::span::read::load_all_spans_in(repo, span_root)?,
+        };
         // Fail-closed interior-anchor gate, evaluated on the PRE-fix corpus
         // (before `apply_fix` mutates span files — the fix can excise the
         // interior anchor line, which would hide it from a post-fix scan). The
@@ -569,14 +580,10 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
             let _perf = crate::perf::span("drift.scan-interior-anchors");
             // Reuse the single pre-fix corpus load (still pre-`apply_fix`, so
             // the interior-anchor classification reflects the pre-fix span
-            // files exactly as a fresh load would). `pre_fix_corpus` was
-            // ensured `Some` at the top of this `--fix` block.
+            // files exactly as a fresh load would).
             crate::cli::interior_anchor::scope_has_interior_anchor_in(
                 span_root,
-                &pre_fix_corpus
-                    .as_ref()
-                    .expect("pre_fix_corpus set before --fix interior pre-scan")
-                    .0,
+                &pre_fix_corpus.0,
                 scoped_span_names.as_ref(),
             )
         };
@@ -592,12 +599,10 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
             let known: HashSet<String> = full.iter().map(|m| m.name.clone()).collect();
             // Reuse the single pre-fix corpus load. This is the LAST pre-fix
             // consumer (the next thing to touch `.span/` is `apply_fix`, which
-            // mutates it), so `take` it: the post-fix backfill / interior scan
-            // must NOT reuse pre-fix state and load their own fresh corpus.
-            let corpus = pre_fix_corpus
-                .take()
-                .expect("pre_fix_corpus set before --fix fix_input supplement")
-                .0;
+            // mutates it), so it moves the spans out: the post-fix backfill /
+            // interior scan must NOT reuse pre-fix state and load their own
+            // fresh corpus.
+            let corpus = pre_fix_corpus.0;
             for (name, span) in corpus {
                 if known.contains(&name) {
                     continue;
@@ -690,31 +695,28 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
             crate::perf::record_fix_post_resolve_ns(start.elapsed().as_nanos() as u64);
         }
         crate::perf::record_fix_spans_rewritten_count(fr.rewritten_span_names.len() as u64);
-        Some(fr)
+        drop(_perf);
+        // POST-region corpus: the corpus state observed by the backfill and
+        // the interior-anchor scan below. `apply_fix` rewrote `.span/`, so the
+        // pre-fix corpus is drifted — load a single FRESH post-fix corpus and
+        // share it between both consumers. `None` on a whole-result hit (both
+        // consumers are skipped).
+        let post_region_corpus = if use_whole_result {
+            None
+        } else {
+            Some(crate::span::read::load_all_spans_in(repo, span_root)?)
+        };
+        (Some(fr), post_region_corpus)
     } else {
-        None
+        // POST-region corpus on the plain (non-`--fix`) path: no mutation
+        // happened since the pre-fix load, so the pre-fix corpus serves the
+        // backfill and interior scan — `None` exactly on a whole-result hit,
+        // where both consumers are skipped.
+        (None, pre_fix_corpus)
     };
     let followed_ids: HashSet<String> = fix_result
         .as_ref()
         .map_or(HashSet::new(), |fr| fr.rewritten_anchor_ids.clone());
-
-    // POST-region corpus: the corpus state observed by the backfill and the
-    // interior-anchor scan below. On the plain (non-`--fix`) path no mutation
-    // happened since the pre-fix load, so reuse `pre_fix_corpus` (still live;
-    // it is only `take`n inside the `--fix` bare-scan branch). On the `--fix`
-    // path `apply_fix` rewrote `.span/`, so the pre-fix corpus is drifted — load
-    // a single FRESH post-fix corpus and share it between both consumers.
-    // `None` on a whole-result hit (both consumers are skipped) or when the
-    // scoped path leaves `pre_fix_corpus` consumed.
-    let post_region_corpus: Option<crate::span::read::LoadedSpans> = if use_whole_result {
-        None
-    } else if args.fix {
-        Some(crate::span::read::load_all_spans_in(repo, span_root)?)
-    } else {
-        // Plain path: same `.span/` state as the pre-fix load. `pre_fix_corpus`
-        // is `Some` here (only the `--fix` bare-scan branch takes it).
-        pre_fix_corpus.take()
-    };
 
     // Human format, workspace scan: each surfaced span lists its *complete*
     // anchor set in stored order — drifted anchors keep their resolved
@@ -729,8 +731,12 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
     // drift report. This is Human-only; other formats stream drifted
     // findings.
     // Skipped on whole-result hit — the cached spans already include all
-    // anchors (Fresh + non-Fresh) backfilled in stored order.
-    if matches!(args.format, DriftFormat::Human) && args.paths.is_empty() && !use_whole_result {
+    // anchors (Fresh + non-Fresh) backfilled in stored order — which is
+    // exactly when `post_region_corpus` is `None`.
+    if matches!(args.format, DriftFormat::Human)
+        && args.paths.is_empty()
+        && let Some(post_region_corpus) = &post_region_corpus
+    {
         let _perf = crate::perf::span("drift.backfill-fresh-anchors");
         // Drift-report contract: a scan shows a span iff it has a non-Fresh
         // anchor. The all-layers discovery path (`needs_all_layers`,
@@ -747,8 +753,6 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
         // of a dedicated reload. Borrow it so the interior scan below can reuse
         // the same load.
         let file_records: std::collections::HashMap<&str, &crate::types::Span> = post_region_corpus
-            .as_ref()
-            .expect("post_region_corpus set before backfill when !use_whole_result")
             .0
             .iter()
             .map(|(n, m)| (n.as_str(), m))
@@ -871,11 +875,10 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
     // CommittedKey gating guarantees span files haven't changed since the
     // cache was stored (fail-closed: any span-file change would change
     // span_tree_key → miss). The cached result has no violations (they
-    // were checked at store time).
+    // were checked at store time). `post_region_corpus` is `None` exactly on a
+    // whole-result hit.
     let interior_violations: Vec<crate::cli::interior_anchor::InteriorAnchorViolation> =
-        if use_whole_result {
-            Vec::new()
-        } else {
+        if let Some(post_region_corpus) = &post_region_corpus {
             let _perf = crate::perf::span("drift.scan-interior-anchors");
             // Reuse the shared post-region corpus (same load the backfill used)
             // instead of a dedicated reload — it observes the correct state
@@ -883,10 +886,7 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
             // path).
             let all = crate::cli::interior_anchor::scan_interior_anchors_in(
                 span_root,
-                &post_region_corpus
-                    .as_ref()
-                    .expect("post_region_corpus set before interior scan when !use_whole_result")
-                    .0,
+                &post_region_corpus.0,
             );
             match &scoped_span_names {
                 None => all,
@@ -895,6 +895,8 @@ pub fn run_drift(repo: &gix::Repository, args: DriftArgs, span_root: &str) -> Re
                     .filter(|v| names.contains(&v.span_name))
                     .collect(),
             }
+        } else {
+            Vec::new()
         };
     if !interior_violations.is_empty() {
         eprintln!();

@@ -68,69 +68,61 @@ fn write_prefixed(h: &mut Hasher, bytes: &[u8]) {
     h.update(bytes);
 }
 
-/// Canonical BLAKE3 digest of one payload envelope. Every field that a reader
+/// The four facts an envelope seals beside its payload. A writer seals the
+/// values it publishes; a reader holds one set it expects (from the query key
+/// and its own version constant) against the set read back from the columns.
+#[derive(Clone, Copy)]
+pub(crate) struct EnvelopeFacts<'a> {
+    /// The [`EntryKind`] discriminant.
+    pub(crate) kind: u32,
+    /// The payload/schema version.
+    pub(crate) version: u32,
+    /// The canonical key digest the envelope is sealed under.
+    pub(crate) key: &'a [u8; 32],
+    /// Row count for a generation, ordinal for a row.
+    pub(crate) cardinality: u64,
+}
+
+/// Canonical BLAKE3 digest of one payload envelope. Every fact that a reader
 /// cross-checks (`kind`, `version`, `key`, `cardinality`) is folded in, so
 /// tampering any stored column — not only the payload — produces a digest
 /// mismatch even if the reader's explicit column check were somehow bypassed.
-pub(crate) fn envelope_digest(
-    domain: &[u8],
-    kind: u32,
-    version: u32,
-    key: &[u8; 32],
-    cardinality: u64,
-    payload: &[u8],
-) -> [u8; 32] {
+pub(crate) fn envelope_digest(domain: &[u8], facts: EnvelopeFacts<'_>, payload: &[u8]) -> [u8; 32] {
     let mut h = Hasher::new();
     h.update(domain);
-    h.update(&kind.to_le_bytes());
-    h.update(&version.to_le_bytes());
-    h.update(key);
-    h.update(&cardinality.to_le_bytes());
+    h.update(&facts.kind.to_le_bytes());
+    h.update(&facts.version.to_le_bytes());
+    h.update(facts.key);
+    h.update(&facts.cardinality.to_le_bytes());
     write_prefixed(&mut h, payload);
     *h.finalize().as_bytes()
 }
 
 /// Verify one stored envelope against the reader's expectations, returning the
-/// first fact that fails. `stored_digest` is the digest column read back from
-/// SQLite; the remaining arguments are the values the reader expects (from the
-/// query key and the reader's own version constant) paired with the values
-/// read from their columns.
-#[allow(clippy::too_many_arguments)]
+/// first fact that fails. `stored` holds the facts read back from their
+/// columns and `stored_digest` the digest column read back from SQLite.
 pub(crate) fn verify_envelope(
     domain: &[u8],
-    expected_kind: u32,
-    stored_kind: u32,
-    expected_version: u32,
-    stored_version: u32,
-    expected_key: &[u8; 32],
-    stored_key: &[u8; 32],
-    expected_cardinality: u64,
-    stored_cardinality: u64,
+    expected: EnvelopeFacts<'_>,
+    stored: EnvelopeFacts<'_>,
     payload: &[u8],
     stored_digest: &[u8],
 ) -> Result<(), IntegrityReason> {
-    if stored_kind != expected_kind {
+    if stored.kind != expected.kind {
         return Err(IntegrityReason::Kind);
     }
-    if stored_version != expected_version {
+    if stored.version != expected.version {
         return Err(IntegrityReason::Version);
     }
-    if stored_key != expected_key {
+    if stored.key != expected.key {
         return Err(IntegrityReason::Key);
     }
-    if stored_cardinality != expected_cardinality {
+    if stored.cardinality != expected.cardinality {
         return Err(IntegrityReason::Count);
     }
     // Recompute over the values actually read back from columns/payload; a
     // digest sealed under any different field will not match.
-    let recomputed = envelope_digest(
-        domain,
-        stored_kind,
-        stored_version,
-        stored_key,
-        stored_cardinality,
-        payload,
-    );
+    let recomputed = envelope_digest(domain, stored, payload);
     if stored_digest != recomputed {
         return Err(IntegrityReason::Digest);
     }
