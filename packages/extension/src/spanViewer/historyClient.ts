@@ -44,15 +44,15 @@ const CURRENT_UNAVAILABLE_REASONS: readonly CurrentUnavailableReason[] = [
 const DRIFT_SOURCES: readonly DriftSource[] = ['HEAD', 'INDEX', 'WORKTREE'];
 
 function readRebound(raw: Record<string, unknown>, context: string): ReboundTransition | undefined {
-  const rebound = raw['rebound'];
+  const rebound = raw.rebound;
   if (rebound === undefined) {
     return undefined;
   }
   if (!isRecord(rebound)) {
     throw new HistoryFormatError(`${context}: "rebound" must be an object when present`);
   }
-  const from = rebound['from'];
-  const to = rebound['to'];
+  const from = rebound.from;
+  const to = rebound.to;
   if (typeof from !== 'string') {
     throw new HistoryFormatError(`${context}: "rebound" is missing or has an invalid "from"`);
   }
@@ -66,16 +66,16 @@ function mapTimelineAnchor(raw: unknown, context: string): TimelineAnchor {
   if (!isRecord(raw)) {
     throw new HistoryFormatError(`${context}: expected an anchor object`);
   }
-  const path = raw['path'];
+  const path = raw.path;
   if (typeof path !== 'string') {
     throw new HistoryFormatError(`${context}: missing or invalid "path"`);
   }
 
-  const content = raw['content'];
+  const content = raw.content;
   if (content !== undefined && typeof content !== 'string') {
     throw new HistoryFormatError(`${context}: "content" must be a string when present`);
   }
-  const diff = raw['diff'];
+  const diff = raw.diff;
   if (diff !== undefined && typeof diff !== 'string') {
     throw new HistoryFormatError(`${context}: "diff" must be a string when present`);
   }
@@ -87,7 +87,7 @@ function mapTimelineAnchor(raw: unknown, context: string): TimelineAnchor {
     );
   }
 
-  const unavailable = raw['unavailable'];
+  const unavailable = raw.unavailable;
   if (unavailable !== undefined) {
     if (!TIMELINE_UNAVAILABLE_REASONS.includes(unavailable as TimelineUnavailableReason)) {
       throw new HistoryFormatError(
@@ -124,11 +124,11 @@ function mapHistoryCommit(raw: unknown, index: number): HistoryCommit {
   if (!isRecord(raw)) {
     throw new HistoryFormatError(`commits[${index}]: expected a commit object`);
   }
-  const hash = raw['hash'];
-  const date = raw['date'];
-  const summary = raw['summary'];
-  const spanDiff = raw['span_diff'];
-  const anchors = raw['anchors'];
+  const hash = raw.hash;
+  const date = raw.date;
+  const summary = raw.summary;
+  const spanDiff = raw.span_diff;
+  const anchors = raw.anchors;
   if (typeof hash !== 'string') {
     throw new HistoryFormatError(`commits[${index}]: missing or invalid "hash"`);
   }
@@ -158,8 +158,8 @@ function mapCurrentAnchor(raw: unknown, index: number): CurrentAnchor {
   if (!isRecord(raw)) {
     throw new HistoryFormatError(`current.anchors[${index}]: expected an anchor object`);
   }
-  const path = raw['path'];
-  const diff = raw['diff'];
+  const path = raw.path;
+  const diff = raw.diff;
   if (typeof path !== 'string') {
     throw new HistoryFormatError(`current.anchors[${index}]: missing or invalid "path"`);
   }
@@ -167,11 +167,11 @@ function mapCurrentAnchor(raw: unknown, index: number): CurrentAnchor {
     throw new HistoryFormatError(`current.anchors[${index}]: missing or invalid "diff"`);
   }
 
-  const content = raw['content'];
+  const content = raw.content;
   if (content !== undefined && typeof content !== 'string') {
     throw new HistoryFormatError(`current.anchors[${index}]: "content" must be a string when present`);
   }
-  const unavailable = raw['unavailable'];
+  const unavailable = raw.unavailable;
   if (unavailable !== undefined) {
     if (!CURRENT_UNAVAILABLE_REASONS.includes(unavailable as CurrentUnavailableReason)) {
       throw new HistoryFormatError(
@@ -189,17 +189,17 @@ function mapCurrentAnchor(raw: unknown, index: number): CurrentAnchor {
     );
   }
 
-  const proposed = raw['proposed'];
+  const proposed = raw.proposed;
   if (proposed !== undefined && typeof proposed !== 'string') {
     throw new HistoryFormatError(`current.anchors[${index}]: "proposed" must be a string when present`);
   }
-  const recorded = raw['recorded'];
+  const recorded = raw.recorded;
   if (recorded !== undefined && recorded !== 'unrecoverable') {
     throw new HistoryFormatError(
       `current.anchors[${index}]: invalid "recorded" value ${JSON.stringify(recorded)} (only "unrecoverable" is valid)`
     );
   }
-  const sources = raw['sources'];
+  const sources = raw.sources;
   if (sources !== undefined) {
     if (!Array.isArray(sources) || sources.length === 0) {
       throw new HistoryFormatError(
@@ -259,22 +259,22 @@ export function parseHistoryJson(stdout: string): HistoryDocument {
     throw new HistoryFormatError('history document must be a JSON object');
   }
 
-  const schemaVersion = parsed['schema_version'];
+  const schemaVersion = parsed.schema_version;
   if (schemaVersion !== 2) {
     throw new HistoryFormatError(`unsupported schema_version: ${JSON.stringify(schemaVersion)} (expected 2)`);
   }
 
-  const span = parsed['span'];
+  const span = parsed.span;
   if (typeof span !== 'string') {
     throw new HistoryFormatError('missing or invalid "span"');
   }
 
-  const scoped = parsed['scoped'];
+  const scoped = parsed.scoped;
   if (scoped !== undefined && typeof scoped !== 'boolean') {
     throw new HistoryFormatError('"scoped" must be a boolean when present');
   }
 
-  const commits = parsed['commits'];
+  const commits = parsed.commits;
   if (!Array.isArray(commits)) {
     throw new HistoryFormatError('missing or invalid "commits"');
   }
@@ -285,18 +285,18 @@ export function parseHistoryJson(stdout: string): HistoryDocument {
     document.scoped = scoped;
   }
 
-  const current = parsed['current'];
+  const current = parsed.current;
   if (current === undefined) {
     return document;
   }
   if (!isRecord(current)) {
     throw new HistoryFormatError('"current" must be an object when present');
   }
-  const currentSpanDiff = current['span_diff'];
+  const currentSpanDiff = current.span_diff;
   if (currentSpanDiff !== undefined && typeof currentSpanDiff !== 'string') {
     throw new HistoryFormatError('"current.span_diff" must be a string when present');
   }
-  const currentAnchors = current['anchors'];
+  const currentAnchors = current.anchors;
   if (!Array.isArray(currentAnchors)) {
     throw new HistoryFormatError('"current.anchors" must be an array');
   }

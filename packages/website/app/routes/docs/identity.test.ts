@@ -1,11 +1,14 @@
 import type { StructuredData } from 'fumadocs-core/mdx-plugins/remark-structure';
-import type { LoaderFunctionArgs, MetaDescriptor } from 'react-router';
+import type { LoaderFunctionArgs, Location, MetaDescriptor } from 'react-router';
 import { describe, expect, it } from 'vitest';
 import { meta as docsMeta, loader } from './page';
 import { getLLMText } from '~/lib/get-llm-text';
 import { SITE_URL } from '~/lib/meta';
+import { capture } from '~/lib/regex';
 import { source } from '~/lib/source';
 import { meta as homeMeta } from '~/routes/_index';
+import { defined } from '~/test/defined';
+import { loaderArgs } from '~/test/loader-args';
 
 /**
  * Page-identity guards for the docs tree, all running against the real
@@ -24,7 +27,11 @@ type PageStructuredData = StructuredData | (() => StructuredData | Promise<Struc
 type DocsPage = ReturnType<typeof source.getPages>[number];
 
 async function resolveStructuredData(page: DocsPage): Promise<StructuredData | undefined> {
-  const structuredData = page.data.structuredData as unknown as PageStructuredData;
+  return resolveDeclaredStructuredData(page.data.structuredData);
+}
+
+/** Takes the field at its declared (widened) type, so the thunk branch stays reachable. */
+async function resolveDeclaredStructuredData(structuredData: PageStructuredData): Promise<StructuredData | undefined> {
   return typeof structuredData === 'function' ? await structuredData() : structuredData;
 }
 
@@ -129,15 +136,14 @@ function unescapeYamlDoubleQuoted(value: string): string {
   return value.replace(/\\\\/g, '\\').replace(/\\"/g, '"');
 }
 
+/** A router location at `pathname` with no search, hash, or history state. */
+function locationAt(pathname: string): Location {
+  return { pathname, search: '', hash: '', state: null, key: 'default' };
+}
+
 /** Loader args for a canonical docs URL — the same faithful shape page.test.ts builds. */
 function docArgs(url: string): LoaderFunctionArgs {
-  return {
-    params: { '*': url.replace(/^\/docs\//, '') },
-    request: new Request(`https://git-span.com${url}`),
-    url: new URL(`https://git-span.com${url}`),
-    pattern: '',
-    context: {}
-  } as unknown as LoaderFunctionArgs;
+  return loaderArgs(`https://git-span.com${url}`, { params: { '*': url.replace(/^\/docs\//, '') } });
 }
 
 describe('docs page identity', () => {
@@ -166,10 +172,12 @@ describe('docs page identity', () => {
       const lines = text.split('\n');
       expect(lines[0], `preamble opener for ${page.url}`).toBe('---');
       expect(lines[2], `preamble closer for ${page.url}`).toBe('---');
-      const value = YAML_DOUBLE_QUOTED.exec(lines[1]);
+      const value = YAML_DOUBLE_QUOTED.exec(defined(lines[1], `description line for ${page.url}`));
       expect(value, `description line for ${page.url}`).not.toBeNull();
       if (!value) continue;
-      expect(unescapeYamlDoubleQuoted(value[1]), `preamble description for ${page.url}`).toBe(page.data.description);
+      expect(unescapeYamlDoubleQuoted(capture(value, 1)), `preamble description for ${page.url}`).toBe(
+        page.data.description
+      );
       expect(lines[4], `title line for ${page.url}`).toBe(`# ${page.data.title} (${page.url})`);
     }
   });
@@ -182,20 +190,20 @@ describe('docs page identity', () => {
       const href = canonicalHref(
         docsMeta({
           loaderData,
-          location: { pathname: page.url },
+          location: locationAt(page.url),
           params: {},
           matches: []
-        } as unknown as Parameters<typeof docsMeta>[0])
+        })
       );
       expect(href, `canonical href for ${page.url}`).toBe(`${SITE_URL}${page.url}`);
     }
     const homeHref = canonicalHref(
       homeMeta({
         loaderData: undefined,
-        location: { pathname: '/' },
+        location: locationAt('/'),
         params: {},
         matches: []
-      } as unknown as Parameters<typeof homeMeta>[0])
+      })
     );
     expect(homeHref, 'canonical href for the home route').toBe(`${SITE_URL}/`);
   });

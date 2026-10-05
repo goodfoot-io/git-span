@@ -124,7 +124,7 @@ if (existingPid) {
 
 // Check for tunnel token
 loadEnvFile(ENV_FILE);
-const tunnelToken = env['CLOUDFLARE_TUNNEL_TOKEN_LOCAL'];
+const tunnelToken = env.CLOUDFLARE_TUNNEL_TOKEN_LOCAL;
 if (!tunnelToken) {
   log('CLOUDFLARE_TUNNEL_TOKEN_LOCAL not set -- skipping tunnel, serving on localhost only');
 }

@@ -767,8 +767,7 @@ export class EngineScene {
     // (and hence stable `this.parts` indices) exist, by re-reading each part's own `rideWith`
     // override and pointing it at its base part's index instead.
     this.wobbleIndexOverrides = new Map();
-    for (let index = 0; index < parts.length; index++) {
-      const part = parts[index];
+    for (const part of parts) {
       const override = EXPLODE_OVERRIDES[stripDedupSuffix(part.mesh.name)];
       if (!override?.rideWith) continue;
       const baseIndex = parts.findIndex((candidate) => stripDedupSuffix(candidate.mesh.name) === override.rideWith);
@@ -1094,8 +1093,7 @@ export class EngineScene {
     const mount = this.mountPart;
     if (!mount) return;
 
-    for (let index = 0; index < this.parts.length; index++) {
-      const part = this.parts[index];
+    for (const [index, part] of this.parts.entries()) {
       const k = part.isFrontDrive ? frame.frontDriveExplode : frame.explode;
       const basePos = this.beatPosScratch.copy(part.assembled.position).lerp(part.exploded.position, k);
       const baseQuat = this.beatQuatScratch.copy(part.assembled.quaternion).slerp(part.exploded.quaternion, k);

@@ -11,6 +11,7 @@
  */
 import { getLLMText } from '~/lib/get-llm-text';
 import { renderHomepageMarkdown } from '~/lib/homepage-markdown';
+import { capture } from '~/lib/regex';
 import { RENAMED_DOC_SLUGS } from '~/lib/renamed-doc-slugs';
 import { source } from '~/lib/source';
 
@@ -161,7 +162,7 @@ export async function markdownForPathname(pathname: string): Promise<string | nu
   if (normalized === '/') return renderHomepageMarkdown();
   const docsMatch = /^\/docs\/(.+)$/.exec(normalized);
   if (docsMatch) {
-    const page = source.getPage(docsMatch[1].split('/'));
+    const page = source.getPage(capture(docsMatch, 1).split('/'));
     return page ? getLLMText(page) : null;
   }
   return null;
@@ -180,7 +181,7 @@ export async function markdownUrlResponse(request: Request, pathname: string): P
   if (pathname === '/index.md') return markdownResponse(request, renderHomepageMarkdown());
   const docsMatch = /^\/docs\/(.+)\.md$/.exec(pathname);
   if (!docsMatch) return null;
-  const slug = docsMatch[1];
+  const slug = capture(docsMatch, 1);
   const renamedTo = RENAMED_DOC_SLUGS[slug];
   if (renamedTo) {
     return new Response(null, { status: 301, headers: { Location: `/docs/${renamedTo}.md` } });

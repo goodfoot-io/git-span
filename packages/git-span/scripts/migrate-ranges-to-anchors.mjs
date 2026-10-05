@@ -17,17 +17,17 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { parseArgs } from 'node:util';
 import process from 'node:process';
+import { parseArgs } from 'node:util';
 
 const { values: flags } = parseArgs({
   options: {
     repo: { type: 'string', default: process.cwd() },
-    'dry-run': { type: 'boolean', default: false },
-  },
+    'dry-run': { type: 'boolean', default: false }
+  }
 });
 
-const repo = flags['repo'];
+const repo = flags.repo;
 const dryRun = flags['dry-run'];
 
 /** Run a git command in the target repo. Returns stdout as a utf8 string. */
@@ -36,11 +36,15 @@ function git(args, { input } = {}) {
     const result = execFileSync('git', ['-C', repo, ...args], {
       input,
       encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'pipe'],
+      stdio: ['pipe', 'pipe', 'pipe']
     });
     return result;
   } catch (err) {
-    const msg = err.stderr ? (typeof err.stderr === 'string' ? err.stderr.trim() : err.stderr.toString().trim()) : String(err);
+    const msg = err.stderr
+      ? typeof err.stderr === 'string'
+        ? err.stderr.trim()
+        : err.stderr.toString().trim()
+      : String(err);
     throw new Error(`git ${args[0]}: ${msg}`);
   }
 }
@@ -50,7 +54,7 @@ function gitBuf(args, { input } = {}) {
   try {
     return execFileSync('git', ['-C', repo, ...args], {
       input,
-      stdio: ['pipe', 'pipe', 'pipe'],
+      stdio: ['pipe', 'pipe', 'pipe']
     });
   } catch (err) {
     const msg = err.stderr ? err.stderr.toString().trim() : String(err);
@@ -59,11 +63,11 @@ function gitBuf(args, { input } = {}) {
 }
 
 function log(msg) {
-  process.stdout.write(msg + '\n');
+  process.stdout.write(`${msg}\n`);
 }
 
 function die(msg) {
-  process.stderr.write('error: ' + msg + '\n');
+  process.stderr.write(`error: ${msg}\n`);
   process.exit(1);
 }
 
@@ -233,7 +237,7 @@ for (const spanRef of spanRefs) {
   }
 
   // Write the new tree.
-  const mktreeInput = newEntries.join('\n') + '\n';
+  const mktreeInput = `${newEntries.join('\n')}\n`;
   const newTreeSha = git(['mktree'], { input: Buffer.from(mktreeInput) }).trim();
 
   // Get the original commit's metadata so we can re-commit with the new tree.
@@ -259,16 +263,17 @@ for (const spanRef of spanRefs) {
     GIT_AUTHOR_DATE: authorDate,
     GIT_COMMITTER_NAME: committerName,
     GIT_COMMITTER_EMAIL: committerEmail,
-    GIT_COMMITTER_DATE: committerDate,
+    GIT_COMMITTER_DATE: committerDate
   };
 
   let newCommitSha;
   try {
-    const result = execFileSync(
-      'git',
-      ['-C', repo, 'commit-tree', newTreeSha, ...parentArgs, '-m', commitMessage],
-      { input: undefined, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], env },
-    );
+    const result = execFileSync('git', ['-C', repo, 'commit-tree', newTreeSha, ...parentArgs, '-m', commitMessage], {
+      input: undefined,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env
+    });
     newCommitSha = result.trim();
   } catch (err) {
     const msg = err.stderr ? err.stderr.toString().trim() : String(err);

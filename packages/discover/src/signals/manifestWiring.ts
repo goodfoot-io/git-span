@@ -46,7 +46,7 @@ function manifestContributes(text: string): Record<string, unknown> | null {
     return null;
   }
   if (!isRecord(data)) return null;
-  const contributes = data['contributes'];
+  const contributes = data.contributes;
   return isRecord(contributes) ? contributes : null;
 }
 
@@ -70,7 +70,7 @@ function collectConfigurationIds(value: unknown, into: Set<string>): void {
   const sections = Array.isArray(value) ? value : [value];
   for (const section of sections) {
     if (!isRecord(section)) continue;
-    const properties = section['properties'];
+    const properties = section.properties;
     if (!isRecord(properties)) continue;
     for (const propKey of Object.keys(properties)) into.add(propKey);
   }
@@ -86,12 +86,12 @@ function collectConfigurationIds(value: unknown, into: Set<string>): void {
  */
 function collectContributedIds(contributes: Record<string, unknown>): string[] {
   const ids = new Set<string>();
-  collectArrayIds(contributes['commands'], 'command', ids);
-  collectConfigurationIds(contributes['configuration'], ids);
-  collectContainerMapIds(contributes['views'], 'id', ids);
-  collectContainerMapIds(contributes['viewsContainers'], 'id', ids);
-  collectArrayIds(contributes['keybindings'], 'command', ids);
-  collectContainerMapIds(contributes['menus'], 'command', ids);
+  collectArrayIds(contributes.commands, 'command', ids);
+  collectConfigurationIds(contributes.configuration, ids);
+  collectContainerMapIds(contributes.views, 'id', ids);
+  collectContainerMapIds(contributes.viewsContainers, 'id', ids);
+  collectArrayIds(contributes.keybindings, 'command', ids);
+  collectContainerMapIds(contributes.menus, 'command', ids);
   return [...ids].sort();
 }
 

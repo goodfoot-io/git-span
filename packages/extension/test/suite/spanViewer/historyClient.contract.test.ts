@@ -42,7 +42,7 @@ const RKW64_SHAPE = /^rk64:[0-9a-f]{16}$/;
  * @throws Error when no real binary is found.
  */
 function resolveRealGitSpan(): string {
-  const envPath = process.env['PATH'] ?? '';
+  const envPath = process.env.PATH ?? '';
   const directories = envPath
     .split(path.delimiter)
     .map((entry) => entry.trim())

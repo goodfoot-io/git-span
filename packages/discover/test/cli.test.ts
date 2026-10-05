@@ -162,7 +162,7 @@ describe('runCli', () => {
       const parsed: unknown = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
       const candidates = (parsed as { candidates: { locs: { path: string }[]; score: number }[] }).candidates;
       expect(candidates).toHaveLength(out.length);
-      expect(candidates[0]!.score).toBeGreaterThan(0);
+      expect(candidates[0]?.score).toBeGreaterThan(0);
     });
   });
 });

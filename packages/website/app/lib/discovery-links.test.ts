@@ -1,12 +1,11 @@
 // @vitest-environment node
-import { matchRoutes, type RouteObject } from 'react-router';
 import { describe, expect, it } from 'vitest';
 import { AGENT_SKILLS_LINK } from '~/lib/agent-skills';
 import { markdownUrlResponse } from '~/lib/content-negotiation';
 import { applyDiscoveryHeaders, DOC_SLUGS, getDiscoveryLinks, serializeDiscoveryLink } from '~/lib/discovery-links';
 import { collectPageNodes } from '~/lib/llms-resources';
 import { source } from '~/lib/source';
-import routes from '~/routes';
+import { matchedFile } from '~/test/route-table';
 
 describe('getDiscoveryLinks', () => {
   it('returns the homepage set for /', () => {
@@ -160,8 +159,6 @@ describe('applyDiscoveryHeaders', () => {
 });
 
 describe('every advertised href resolves', () => {
-  const table = routes as unknown as RouteObject[];
-
   async function assertResolves(href: string, context: string): Promise<void> {
     if (href.endsWith('.md')) {
       const response = await markdownUrlResponse(new Request(`https://git-span.test${href}`), href);
@@ -171,7 +168,7 @@ describe('every advertised href resolves', () => {
         'text/markdown; charset=utf-8'
       );
     } else {
-      expect(matchRoutes(table, href), `${context}: ${href} matches no route`).not.toBeNull();
+      expect(matchedFile(href), `${context}: ${href} matches no route`).toBeDefined();
     }
   }
 

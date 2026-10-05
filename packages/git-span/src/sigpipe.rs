@@ -51,9 +51,13 @@ mod imp {
     pub(super) fn enter() {
         let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
         if state.0 == 0 {
-            // SAFETY: `signal` with `SIG_IGN` is async-signal-safe and is the
-            // disposition Rust itself installs at startup; we are restoring
-            // it for the duration of the window, not inventing one.
+            // SAFETY: signal(2) takes no pointers, and `SIG_IGN` installs no
+            // handler code, so no handler can run with broken assumptions.
+            // The disposition is process-global: every change this crate
+            // makes after startup goes through this mutex, so no concurrent
+            // `signal` call can interleave between reading the old
+            // disposition and recording it. Ignoring SIGPIPE is the state
+            // Rust's runtime itself installs before `main`.
             state.1 = unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
         }
         state.0 += 1;
@@ -64,8 +68,11 @@ mod imp {
         state.0 -= 1;
         if state.0 == 0 {
             let previous = state.1;
-            // SAFETY: same contract as above, reinstating exactly the handler
-            // `enter` displaced.
+            // SAFETY: `previous` is exactly the disposition the outermost
+            // `enter` displaced — `SIG_DFL`, `SIG_IGN`, or a handler that was
+            // already installed, which is a `'static` function and stays
+            // valid to reinstall — and the mutex serializes this with every
+            // other change, as in `enter`.
             unsafe {
                 libc::signal(libc::SIGPIPE, previous);
             }

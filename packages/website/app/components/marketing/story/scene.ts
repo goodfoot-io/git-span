@@ -41,34 +41,40 @@ const PHASE_WEIGHTS: readonly PhaseWeight[] = [
 // so the total scroll distance is heroWeight/2 + Σ(non-hero weights) - lastWeight/2. That is also
 // the exact moment the trailing spacer in _index.tsx lets the sticky media unpin, so the story
 // resolves precisely at release.
-const [heroWeight, ...stepWeights] = PHASE_WEIGHTS.map((phase) => phase.scrollVh);
-const lastStepWeight = stepWeights[stepWeights.length - 1];
-const stepWeightSum = stepWeights.reduce((sum, weight) => sum + weight, 0);
+const [heroPhase, ...stepPhases] = PHASE_WEIGHTS;
+const lastStepPhase = stepPhases.at(-1);
+if (!heroPhase || !lastStepPhase) throw new Error('PHASE_WEIGHTS needs a hero phase and at least one step');
+const heroWeight = heroPhase.scrollVh;
+const lastStepWeight = lastStepPhase.scrollVh;
+const stepWeightSum = stepPhases.reduce((sum, phase) => sum + phase.scrollVh, 0);
 
-export const TIMELINE_SCROLL_VH: number = heroWeight / 2 + stepWeightSum - lastStepWeight / 2;
+const TIMELINE_SCROLL_VH: number = heroWeight / 2 + stepWeightSum - lastStepWeight / 2;
 
 export const TIMELINE: readonly Phase[] = (() => {
-  const vhBounds: Array<{ startVh: number; endVh: number }> = [{ startVh: 0, endVh: heroWeight / 2 }];
+  const toPhase = ({ id, label, scrollVh }: PhaseWeight, startVh: number, endVh: number): Phase => ({
+    id,
+    label,
+    scrollVh,
+    start: (startVh / TIMELINE_SCROLL_VH) * 100,
+    end: (endVh / TIMELINE_SCROLL_VH) * 100
+  });
+  const phases: Phase[] = [toPhase(heroPhase, 0, heroWeight / 2)];
   let cursor = heroWeight / 2;
-  PHASE_WEIGHTS.slice(1).forEach((phase, index) => {
-    const isLastStep = index === stepWeights.length - 1;
-    const startVh = cursor;
+  stepPhases.forEach((phase, index) => {
+    const isLastStep = index === stepPhases.length - 1;
     const endVh = isLastStep ? cursor + phase.scrollVh - lastStepWeight / 2 : cursor + phase.scrollVh;
-    vhBounds.push({ startVh, endVh });
+    phases.push(toPhase(phase, cursor, endVh));
     cursor += phase.scrollVh;
   });
-
-  return PHASE_WEIGHTS.map((phase, index) => {
-    const { startVh, endVh } = vhBounds[index];
-    return {
-      id: phase.id,
-      label: phase.label,
-      scrollVh: phase.scrollVh,
-      start: (startVh / TIMELINE_SCROLL_VH) * 100,
-      end: (endVh / TIMELINE_SCROLL_VH) * 100
-    };
-  });
+  return phases;
 })();
+
+/** The timeline phase with `id`; throws if the timeline lost it, since every PhaseId has a phase. */
+export function timelinePhase(id: PhaseId): Phase {
+  const phase = TIMELINE.find((candidate) => candidate.id === id);
+  if (!phase) throw new Error(`TIMELINE has no '${id}' phase`);
+  return phase;
+}
 
 export function clamp01(v: number): number {
   return Math.min(1, Math.max(0, v));
@@ -90,19 +96,17 @@ export function timelineFromScroll(firstStepTop: number, vh: number): number {
   return clamp01((vh - firstStepTop) / (TIMELINE_SCROLL_VH * vh)) * 100;
 }
 
-export function phaseIndexAt(t: number): number {
+function phaseIndexAt(t: number): number {
   if (t <= 0) return 0;
   if (t >= 100) return TIMELINE.length - 1;
-  for (let i = 0; i < TIMELINE.length; i++) {
-    const phase = TIMELINE[i];
-    if (t >= phase.start && t < phase.end) return i;
-  }
-  return TIMELINE.length - 1;
+  const index = TIMELINE.findIndex((phase) => t >= phase.start && t < phase.end);
+  return index >= 0 ? index : TIMELINE.length - 1;
 }
 
 export function deriveScene(t: number): SceneState {
   const phaseIndex = phaseIndexAt(t);
   const phase = TIMELINE[phaseIndex];
+  if (!phase) throw new Error(`deriveScene: no timeline phase at index ${phaseIndex}`);
   const local = clamp01((t - phase.start) / (phase.end - phase.start));
   return { t, phase, phaseIndex, local };
 }

@@ -11,7 +11,8 @@
   "bin": "./src/bin/discover.ts",
   "scripts": {
     "test": "node ../../scripts/ensure-worktree-local-generated.mjs packages/discover && vitest run",
-    "lint": "biome check --write --unsafe --max-diagnostics 500 ./src ./test && jsdoczoom -l",
+    "lint": "biome ci --error-on-warnings --max-diagnostics 500 ./src ./test && jsdoczoom -l",
+    "lint:fix": "biome check --write ./src ./test",
     "typecheck": "node ../../scripts/ensure-worktree-local-generated.mjs packages/discover && tsgo --noEmit"
   },
   "dependencies": {
@@ -21,6 +22,7 @@
     "@biomejs/biome": "^2.5.8",
     "@types/node": "24.x",
     "@typescript/native-preview": "^7.0.0-dev",
+    "jsdoczoom": "^1.2.6",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"
   },

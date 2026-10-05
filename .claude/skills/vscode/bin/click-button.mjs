@@ -11,14 +11,14 @@
 // this script performs a real click, which can mutate state (e.g. delete/archive/
 // submit buttons). Run find-buttons.mjs first to confirm the icon you're passing
 // belongs to a safe, navigation-style button.
-import { connect, getPageByTargetId, findCardsWebviewFrame } from "./lib.mjs";
+import { connect, findCardsWebviewFrame, getPageByTargetId } from './lib.mjs';
 
 const [targetId, icon, cardIdArg, timeoutMsArg] = process.argv.slice(2);
 if (!targetId || !icon) {
-  console.error("Usage: node click-button.mjs <targetId> <icon> [cardId] [timeoutMs]");
+  console.error('Usage: node click-button.mjs <targetId> <icon> [cardId] [timeoutMs]');
   process.exit(1);
 }
-const cardId = !cardIdArg || cardIdArg === "null" ? null : cardIdArg;
+const cardId = !cardIdArg || cardIdArg === 'null' ? null : cardIdArg;
 const timeoutMs = timeoutMsArg ? Number(timeoutMsArg) : 5000;
 
 const browser = await connect();
@@ -26,7 +26,7 @@ try {
   const page = await getPageByTargetId(browser, targetId);
   const frame = await findCardsWebviewFrame(page, { timeoutMs, cardId });
   if (!frame) {
-    console.log(JSON.stringify({ clicked: false, reason: "no webview frame found" }));
+    console.log(JSON.stringify({ clicked: false, reason: 'no webview frame found' }));
     process.exit(0);
   }
 
@@ -34,9 +34,7 @@ try {
   let clicked = false;
   while (Date.now() < deadline && !clicked) {
     clicked = await frame.evaluate((target) => {
-      const btn = Array.from(document.querySelectorAll("vscode-button")).find(
-        (el) => el.icon === target,
-      );
+      const btn = Array.from(document.querySelectorAll('vscode-button')).find((el) => el.icon === target);
       if (!btn) return false;
       btn.click();
       return true;

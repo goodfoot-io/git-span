@@ -110,8 +110,32 @@ vi.mock('vscode', () => gitMock.vscode);
 
 const control = gitMock.control;
 
+/**
+ * A `file:` URI test double. The mocked `vscode` module has no `Uri` class at
+ * runtime, and the module under test reads only `fsPath`; `with` is never
+ * exercised here, so it fails loudly rather than fabricating a derived URI.
+ *
+ * @param fsPath - The absolute file-system path the URI denotes.
+ * @returns A structurally complete `vscode.Uri` for that path.
+ */
+function fileUri(fsPath: string): vscode.Uri {
+  return {
+    scheme: 'file',
+    authority: '',
+    path: fsPath,
+    query: '',
+    fragment: '',
+    fsPath,
+    with() {
+      throw new Error('fileUri test double does not support with()');
+    },
+    toString: () => `file://${fsPath}`,
+    toJSON: () => ({ scheme: 'file', path: fsPath })
+  };
+}
+
 /** The span file URI every lookup uses; any path exercises the same logic. */
-const spanUri = { fsPath: '/ws/.span/coupling.span' } as unknown as vscode.Uri;
+const spanUri = fileUri('/ws/.span/coupling.span');
 
 /** The repository vscode.git should report as owning {@linkcode spanUri}. */
 const owningRepo = { rootUri: { fsPath: '/ws' } };
@@ -280,7 +304,7 @@ describe('gitRepository session memoization (unit)', () => {
 
       const message = sut.repositoryResolutionFailureMessage({
         status: 'resolved',
-        repository: { rootUri: { fsPath: '/elsewhere' } as unknown as vscode.Uri }
+        repository: { rootUri: fileUri('/elsewhere') }
       });
 
       expect(message).toContain('Could not determine the git repository containing this span file');

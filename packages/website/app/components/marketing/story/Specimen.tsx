@@ -135,10 +135,11 @@ export function PhaseSpecimen({ state }: { state: PhaseId }) {
   // non-unique), so no array index is used as a JSX key.
   const lines = specimen.lines.map((line, index) => ({ ...line, id: `${index}-${line.text}` }));
   const highlighted = lines.flatMap((line, index) => (line.highlight ? [index] : []));
+  // Highlighted indices ascend, so `last > first` is exactly "at least two highlighted lines".
+  const first = highlighted[0];
+  const last = highlighted.at(-1);
   const bracket =
-    specimen.bracket && highlighted.length >= 2
-      ? { first: highlighted[0], last: highlighted[highlighted.length - 1] }
-      : null;
+    specimen.bracket && first !== undefined && last !== undefined && last > first ? { first, last } : null;
   return (
     <SpecimenFrame header={specimen.header}>
       <span className={`block${bracket ? ' relative pr-6' : ''}`}>

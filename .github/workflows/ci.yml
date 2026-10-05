@@ -225,6 +225,59 @@ jobs:
       - name: Build
         run: cd packages/extension && yarn build
 
+  static-analysis:
+    name: Static Analysis (knip, Biome lint)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: yarn install
+
+      # Biome over the repo-level JS that no workspace lint covers (scripts/,
+      # .claude/.codex skill helpers, packages/git-span/scripts, the opencode
+      # installer). Read-only: `biome ci` never rewrites the checkout.
+      - name: Lint (repository scripts)
+        run: yarn lint:root
+
+      # Per-workspace read-only Biome gates (`biome ci --error-on-warnings`).
+      # `!cancelled()` keeps every later gate reporting after an earlier one
+      # fails; the job still fails if any step does.
+      # The extension lint runs in build-extension; root `yarn lint` is not
+      # used here because it also fans out to the git-span cargo clippy,
+      # which belongs to the Rust job.
+      - name: Lint (agent-hooks)
+        if: ${{ !cancelled() }}
+        run: yarn workspace agent-hooks run lint
+
+      - name: Lint (discover)
+        if: ${{ !cancelled() }}
+        run: yarn workspace discover run lint
+
+      - name: Lint (website)
+        if: ${{ !cancelled() }}
+        run: yarn workspace @goodfoot/git-span-website run lint
+
+      # The website's `collections/*` imports resolve through
+      # packages/website/.source, which only fumadocs-mdx generates; without
+      # it knip reports them as unlisted dependencies.
+      - name: Generate fumadocs collections
+        if: ${{ !cancelled() }}
+        run: yarn workspace @goodfoot/git-span-website run fumadocs:generate
+
+      - name: Knip (unused files, exports, and dependencies)
+        if: ${{ !cancelled() }}
+        run: yarn knip
+
   build-website:
     name: Build Website (MDX)
     runs-on: ubuntu-latest

@@ -4,7 +4,7 @@ export const SITE_URL = 'https://git-span.com';
 export const DEFAULT_TITLE = 'git-span -- Semantic code annotations for git';
 export const DEFAULT_DESCRIPTION =
   'Git-native code annotations that ship with every commit. Keep context where it belongs -- in your source tree, not your brain.';
-export const DEFAULT_OG_IMAGE = {
+const DEFAULT_OG_IMAGE = {
   path: '/og-image.png',
   alt: 'Agents should read between the lines.'
 };

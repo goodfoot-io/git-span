@@ -10,14 +10,14 @@
 // cardId=null and title "Cards" — indistinguishable from list by state alone, compare
 // bodyText across calls, or trust the command you ran to get there.
 // Does not print __INIT_DATA__.accessToken (live credential for the webview's local API).
-import { connect, getPageByTargetId, findCardsWebviewFrame, readPanelState } from "./lib.mjs";
+import { connect, findCardsWebviewFrame, getPageByTargetId, readPanelState } from './lib.mjs';
 
 const [targetId, cardIdArg, timeoutMsArg] = process.argv.slice(2);
 if (!targetId) {
-  console.error("Usage: node find-cards-webview.mjs <targetId> [cardId] [timeoutMs]");
+  console.error('Usage: node find-cards-webview.mjs <targetId> [cardId] [timeoutMs]');
   process.exit(1);
 }
-const cardId = !cardIdArg || cardIdArg === "null" ? null : cardIdArg;
+const cardId = !cardIdArg || cardIdArg === 'null' ? null : cardIdArg;
 const timeoutMs = timeoutMsArg ? Number(timeoutMsArg) : 5000;
 
 const browser = await connect();

@@ -7,10 +7,24 @@
  *
  * @summary Docs page LLM Markdown helper.
  */
-import type { source } from '~/lib/source';
 
-/** A single page from the docs source loader. */
-type DocsPage = ReturnType<typeof source.getPage>;
+import { capture } from '~/lib/regex';
+
+/**
+ * The slice of a docs source page the renderer reads, or `undefined` when no
+ * page matched. A `source.getPage` result satisfies it structurally, so every
+ * caller passing a real page is checked against exactly these fields.
+ */
+type DocsPage =
+  | {
+      url: string;
+      data: {
+        title: string;
+        description?: string;
+        getText(type: 'processed'): Promise<string | null | undefined>;
+      };
+    }
+  | undefined;
 
 /**
  * Strip the stringifier's frontmatter preamble, but only when the document
@@ -65,7 +79,7 @@ function rewriteCallouts(processed: string): string {
     const match = CALLOUT_OPEN.exec(line);
     if (match) {
       inCallout = true;
-      const alert = CALLOUT_ALERT[match[1]];
+      const alert = CALLOUT_ALERT[capture(match, 1)];
       out.push(alert ? `> [!${alert}]` : `> ${line}`);
       continue;
     }
@@ -108,17 +122,18 @@ function stripHeadingIds(processed: string): string {
   for (const line of lines) {
     const match = FENCE.exec(line);
     if (match) {
-      const char = match[1][0];
+      const run = capture(match, 1);
+      const char = run.charAt(0);
       if (fence) {
         if (
           char === fence.char &&
-          match[1].length >= fence.length &&
+          run.length >= fence.length &&
           line.slice((match.index ?? 0) + match[0].length).trim() === ''
         ) {
           fence = null;
         }
       } else {
-        fence = { char, length: match[1].length };
+        fence = { char, length: run.length };
       }
       out.push(line);
       continue;

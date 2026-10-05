@@ -64,7 +64,7 @@ function fakePage(processed: string | null, description?: string): PageParam {
       getText: async () => processed
     },
     url: '/docs/agent-integration'
-  } as unknown as PageParam;
+  };
 }
 
 describe('getLLMText', () => {
@@ -173,7 +173,7 @@ describe('getLLMText', () => {
   });
 
   it('throws a 404 Response for a missing page', async () => {
-    await expect(getLLMText(undefined as unknown as PageParam)).rejects.toSatisfy(
+    await expect(getLLMText(undefined)).rejects.toSatisfy(
       (error: unknown) => error instanceof Response && error.status === 404
     );
   });

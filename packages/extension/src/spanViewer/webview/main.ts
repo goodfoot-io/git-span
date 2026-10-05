@@ -163,7 +163,7 @@ self.MonacoEnvironment = {
  * @throws Never.
  */
 function detectThemeKind(): MonacoBaseTheme {
-  const data = document.body.dataset['vscodeTheme'];
+  const data = document.body.dataset.vscodeTheme;
   if (data === 'vs-dark' || data === 'hc-black' || data === 'hc-light') {
     return data;
   }
@@ -1103,7 +1103,7 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
     case MESSAGE_TYPES.themeChanged:
       // Keep the attribute in step with the active theme so detection stays
       // consistent with the provider's view.
-      document.body.dataset['vscodeTheme'] = message.kind;
+      document.body.dataset.vscodeTheme = message.kind;
       defineGitSpanTheme(message.kind);
       break;
     case MESSAGE_TYPES.document:

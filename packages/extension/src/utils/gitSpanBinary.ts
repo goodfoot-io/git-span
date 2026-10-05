@@ -147,7 +147,7 @@ export function getGitSpanBinaryErrorMessage(error: unknown): string {
  */
 export async function resolveGitSpanBinaryOnPath(
   platform: NodeJS.Platform = process.platform,
-  envPath: string = process.env['PATH'] ?? ''
+  envPath: string = process.env.PATH ?? ''
 ): Promise<string | null> {
   return findExecutableOnPath(platform === 'win32' ? 'git-span.exe' : 'git-span', platform, envPath);
 }
@@ -329,7 +329,7 @@ async function findExecutableOnPath(
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
 
-  const windowsExts = (process.env['PATHEXT'] ?? '.EXE;.CMD;.BAT;.COM').split(';').map((entry) => entry.toLowerCase());
+  const windowsExts = (process.env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM').split(';').map((entry) => entry.toLowerCase());
 
   for (const directory of directories) {
     if (platform === 'win32') {

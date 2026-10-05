@@ -1,5 +1,5 @@
 .githooks/pre-commit.version-lock.sh rk64:f97ac1da3009bcea
-package.json#L32-L32 rk64:9ed9e94c793e83d7
+package.json#L34-L34 rk64:9ed9e94c793e83d7
 scripts/bump.sh#L37-L43 rk64:06b3f2199dbf9b32
 scripts/check-version-consistency.mjs rk64:2553297f47e11f2c
 scripts/check-version-consistency.test.mjs rk64:5528247e3b15e1f3

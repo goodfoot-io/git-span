@@ -5,9 +5,7 @@
  *
  * Contract (Phase 1): the three exported functions below. Generate and check
  * share one code path — check emits into a temporary directory inside this
- * package (never a git-ignored path: the repo's biome.json sets
- * vcs.useIgnoreFile, and an ignored temp file would keep its raw pre-format
- * bytes and false-stale) and byte-compares. Nothing here touches the network.
+ * package and byte-compares. Nothing here touches the network.
  *
  * TS-free by design: the CLI wrapper runs under plain node, which cannot
  * load `.ts`.
@@ -52,11 +50,9 @@ export function generateArtifacts({ toDir = packageRoot, skillsRoot = defaultSki
  * the caller owns the exit code. A missing committed file is stale, not an
  * error.
  *
- * The fresh bytes are emitted into a temp directory pinned inside `root`:
- * the repo's biome config sets vcs.useIgnoreFile, and a git-ignored temp
- * file would keep its raw pre-format bytes and false-stale. The temp
- * directory is removed in a finally block so a throwing renderer never
- * leaks it.
+ * The fresh bytes are emitted into a temp directory pinned inside `root`,
+ * through the same renderers generation uses. The temp directory is removed
+ * in a finally block so a throwing renderer never leaks it.
  */
 export function checkArtifacts({ root = packageRoot, skillsRoot = defaultSkillsRoot } = {}) {
   const tempDir = mkdtempSync(path.join(root, '.artifact-check-'));

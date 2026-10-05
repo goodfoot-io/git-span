@@ -13,7 +13,7 @@
  * @summary Agent-skills index resource route
  */
 import type { LoaderFunctionArgs } from 'react-router';
-import { agentSkillsPublication } from '~/lib/agent-skills.generated';
+import { agentSkillsPublication } from '~/lib/agent-skills-publication';
 
 const CONTENT_TYPE = 'application/json';
 

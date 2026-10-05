@@ -396,7 +396,9 @@ describe('historySnapshotLadder', () => {
       assert.strictEqual(result.truncated, true);
       assert.strictEqual(result.rungs.length, 2);
       assert.strictEqual(result.rungs[0]?.hash, 'c3');
-      assert.strictEqual('truncatedAt' in result.rungs[0]!, false);
+      const newest = result.rungs[0];
+      assert.ok(newest);
+      assert.strictEqual('truncatedAt' in newest, false);
       assert.strictEqual(result.rungs[1]?.hash, 'c2');
       assert.strictEqual(result.rungs[1]?.truncatedAt, true);
       assert.strictEqual(result.rungs[1]?.original, '');

@@ -1,8 +1,8 @@
-import type { LoaderFunctionArgs } from 'react-router';
 import { describe, expect, it } from 'vitest';
 import { loader } from './page';
 import { RENAMED_DOC_SLUGS } from '~/lib/renamed-doc-slugs';
 import { source } from '~/lib/source';
+import { loaderArgs } from '~/test/loader-args';
 
 // Every published docs URL must resolve whether or not it carries a trailing
 // slash, and the two forms must settle on one canonical address. The loader's
@@ -12,16 +12,7 @@ import { source } from '~/lib/source';
 type Outcome = { kind: 'data'; data: Awaited<ReturnType<typeof loader>> } | { kind: 'response'; response: Response };
 
 async function resolveDoc(urlPath: string): Promise<Outcome> {
-  const args = {
-    params: { '*': urlPath },
-    request: new Request(`https://git-span.com/docs/${urlPath}`),
-    url: new URL(`https://git-span.com/docs/${urlPath}`),
-    pattern: '',
-    // The loader only reads params['*']; the request, url, and pattern keep the
-    // args faithful to a real route hit, while context cannot be constructed
-    // meaningfully outside the router, hence the cast.
-    context: {}
-  } as unknown as LoaderFunctionArgs;
+  const args = loaderArgs(`https://git-span.com/docs/${urlPath}`, { params: { '*': urlPath } });
   try {
     return { kind: 'data', data: await loader(args) };
   } catch (error) {

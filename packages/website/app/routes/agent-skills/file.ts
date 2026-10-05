@@ -15,7 +15,7 @@
  * @summary Agent-skills file resource route
  */
 import type { LoaderFunctionArgs } from 'react-router';
-import { agentSkillsPublication } from '~/lib/agent-skills.generated';
+import { agentSkillsPublication } from '~/lib/agent-skills-publication';
 
 export function loader({ params, request }: LoaderFunctionArgs): Response {
   const pathname = params['*'] ?? '';

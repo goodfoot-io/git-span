@@ -21,9 +21,9 @@ import type { PartRecord } from './types';
 // sized/positioned/oriented once at load time from the parts' exploded pose (see
 // computeMismatchBoxBounds) rather than tracked live, since explode is held flat for this entire
 // window -- nothing any of them encloses moves.
-export const BOUNDING_BOX_MAX_OPACITY = 0.45;
-export const BOUNDING_BOX_EDGE_OPACITY = 0.7;
-export const BOUNDING_BOX_PADDING = 1.02;
+const BOUNDING_BOX_MAX_OPACITY = 0.45;
+const BOUNDING_BOX_EDGE_OPACITY = 0.7;
+const BOUNDING_BOX_PADDING = 1.02;
 // The ring container (gear + engineBackCover) needs more headroom than the snug bank boxes:
 // the glass boxes fade in over frame.boxWeight's t58-60 window, which overlaps the TAIL of the
 // gear's oversized-mismatch shrink-back ramp (beats.ts's COLOR_LOSS window, ~t46-60) -- at t58-59
@@ -34,13 +34,13 @@ export const BOUNDING_BOX_PADDING = 1.02;
 // worst-case ~4% residual oversize with margin while still reading as a tight-fitting container,
 // not a loose one. (The box is deliberately a static prop -- see computeMismatchBoxBounds -- so
 // this is a fixed allowance sized for the worst moment in the fade-in window, not a live fit.)
-export const RING_BOX_PADDING = 1.08;
+const RING_BOX_PADDING = 1.08;
 // The ring box was still clipping the gear at the front (along the crank axis) even with
 // RING_BOX_PADDING's uniform 1.08 -- the gear/engineBackCover pair's extent along the crank axis
 // needs more headroom than its other two axes, not more headroom everywhere (uniform padding just
 // makes the whole box bigger without fixing the one direction that was actually tight). Applied
 // ONLY to the crank-axis dimension in axisAlignedBounds; the other two axes keep RING_BOX_PADDING.
-export const RING_BOX_AXIAL_PADDING = 1.16;
+const RING_BOX_AXIAL_PADDING = 1.16;
 // The fill's own tint runs much deeper than HIGHLIGHT_GREEN: the canvas is alpha-composited over
 // the cream page, so the only way the glass can *darken and tint* what's behind it (the way real
 // colored glass does) is opacity x a deep color -- at glass-level opacity the mint highlight
@@ -52,13 +52,13 @@ export const RING_BOX_AXIAL_PADDING = 1.16;
 // hue 150.71°, S/L unchanged) so the rendered result lands back near 135.95°. Retuning
 // HIGHLIGHT_GREEN, --color-positive, or the rendering pipeline that shifts the composited
 // result should re-derive this compensation rather than leave it pointing at a stale target.
-export const BOUNDING_BOX_GLASS_GREEN = '#0c8a4d';
+const BOUNDING_BOX_GLASS_GREEN = '#0c8a4d';
 
 // A single container's world placement: a center plus a size measured along an orthonormal frame,
 // and the quaternion that frame corresponds to. The ring container doesn't tilt (identity
 // quaternion, frame = world axes); the two bank containers do -- one shape serves both, so
 // buildGlassBoxGroup doesn't need to special-case either.
-export interface OrientedBoxBounds {
+interface OrientedBoxBounds {
   readonly center: THREE.Vector3;
   readonly size: THREE.Vector3;
   readonly quaternion: THREE.Quaternion;
@@ -147,16 +147,20 @@ function splitPistonBanks(pistons: readonly PartRecord[]): [PartRecord[], PartRe
   let bestThreshold = 0;
   for (const axis of axes) {
     const values = pistons.map((part) => part.exploded.position[axis]).sort((a, b) => a - b);
-    const range = values[values.length - 1] - values[0];
+    const lowest = values[0];
+    const highest = values.at(-1);
+    if (lowest === undefined || highest === undefined) continue;
+    const range = highest - lowest;
     if (range < 1e-6) continue;
-    for (let i = 1; i < values.length; i++) {
-      const gap = values[i] - values[i - 1];
-      const score = gap / range;
+    let previous = lowest;
+    for (const value of values.slice(1)) {
+      const score = (value - previous) / range;
       if (score > bestScore) {
         bestScore = score;
         bestAxis = axis;
-        bestThreshold = (values[i] + values[i - 1]) / 2;
+        bestThreshold = (value + previous) / 2;
       }
+      previous = value;
     }
   }
 
@@ -207,7 +211,7 @@ function splitPistonBanks(pistons: readonly PartRecord[]): [PartRecord[], PartRe
 // only translates, never tumbles), so a part's tilt is identical whether read from its assembled or
 // exploded pose -- the glass boxes (built from the exploded snapshot in computeMismatchBoxBounds)
 // come out correctly oriented for exactly that reason.
-export function computeBoreAxis(bank: readonly PartRecord[], crankLine: WorldLine): THREE.Vector3 {
+function computeBoreAxis(bank: readonly PartRecord[], crankLine: WorldLine): THREE.Vector3 {
   const centroid = new THREE.Vector3();
   for (const part of bank) centroid.add(assembledGeometricCenter(part));
   centroid.divideScalar(Math.max(bank.length, 1));
@@ -363,7 +367,9 @@ function axisAlignedBounds(parts: readonly PartRecord[], crankAxis: THREE.Vector
   const partBounds = new THREE.Box3();
   for (const part of parts) {
     part.mesh.geometry.computeBoundingBox();
-    partBounds.copy(part.mesh.geometry.boundingBox!).applyMatrix4(part.mesh.matrix);
+    const geometryBounds = part.mesh.geometry.boundingBox;
+    if (!geometryBounds) throw new Error(`computeBoundingBox() left no bounding box on ${part.mesh.name}`);
+    partBounds.copy(geometryBounds).applyMatrix4(part.mesh.matrix);
     bounds.union(partBounds);
   }
   const size = new THREE.Vector3();

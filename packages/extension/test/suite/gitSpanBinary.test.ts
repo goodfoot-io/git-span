@@ -35,7 +35,7 @@ describe('gitSpanBinary', function () {
       writeFixtureBinary(tempDir);
       const resolved = await resolveGitSpanBinaryOnPath(
         process.platform,
-        `${tempDir}${path.delimiter}${process.env['PATH'] ?? ''}`
+        `${tempDir}${path.delimiter}${process.env.PATH ?? ''}`
       );
       assert.ok(resolved, 'Expected Git Span binary to resolve from PATH');
       assert.strictEqual(typeof resolved, 'string');

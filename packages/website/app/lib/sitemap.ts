@@ -17,7 +17,11 @@ const XML_ESCAPES: Record<string, string> = {
 // them would widen the entity set. A single-pass replace keeps the entities
 // themselves from being re-escaped.
 function escapeXml(value: string): string {
-  return value.replace(/[&<>"]/g, (ch) => XML_ESCAPES[ch]);
+  return value.replace(/[&<>"]/g, (ch) => {
+    const entity = XML_ESCAPES[ch];
+    if (entity === undefined) throw new Error(`escapeXml: no entity for ${JSON.stringify(ch)}`);
+    return entity;
+  });
 }
 
 export function renderSitemap(paths: readonly string[], origin: string): string {

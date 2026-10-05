@@ -3,7 +3,7 @@
  * index document shape and the stable publication constants.
  *
  * One module owns the shape because three surfaces share it — the build-time
- * generator emits `agent-skills.generated.ts` against these interfaces, the
+ * generator emits `agent-skills.generated.json`, validated against these interfaces by `agent-skills-publication.ts`, the
  * index and file resource routes serve from it, and the discovery finalizer
  * appends the index link constant — so the generated artifact, the routes,
  * and the header advertisement cannot disagree about the contract.

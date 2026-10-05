@@ -18,23 +18,24 @@
 // by webview state — this script confirms *a* Cards webview rendered with the cardId
 // you expected, not which specific sub-view. Compare `bodyText` across two calls if you
 // need to confirm the sub-view actually changed.
-import { execSync } from "node:child_process";
-import { connect, getPageByTargetId, findCardsWebviewFrame, readPanelState } from "./lib.mjs";
+import { execSync } from 'node:child_process';
+import { connect, findCardsWebviewFrame, getPageByTargetId, readPanelState } from './lib.mjs';
 
 const [targetId, commandId, cliArgsJSON, expectCardIdArg, timeoutMsArg] = process.argv.slice(2);
 if (!targetId || !commandId) {
-  console.error(
-    "Usage: node open-cards-view.mjs <targetId> <commandId> [cliArgsJSON] [expectCardId] [timeoutMs]",
-  );
+  console.error('Usage: node open-cards-view.mjs <targetId> <commandId> [cliArgsJSON] [expectCardId] [timeoutMs]');
   process.exit(1);
 }
-const cliArgs = !cliArgsJSON || cliArgsJSON === "null" ? "[]" : cliArgsJSON;
-const cardId = !expectCardIdArg || expectCardIdArg === "null" ? null : expectCardIdArg;
+const cliArgs = !cliArgsJSON || cliArgsJSON === 'null' ? '[]' : cliArgsJSON;
+const cardId = !expectCardIdArg || expectCardIdArg === 'null' ? null : expectCardIdArg;
 const timeoutMs = timeoutMsArg ? Number(timeoutMsArg) : 5000;
 
-execSync(`echo '${cliArgs.replace(/'/g, "'\\''")}' | cards-extension execute-command ${commandId} --workspace /workspace`, {
-  stdio: ["ignore", "ignore", "ignore"], // suppress the benign lossyCoercion warning on stderr
-});
+execSync(
+  `echo '${cliArgs.replace(/'/g, "'\\''")}' | cards-extension execute-command ${commandId} --workspace /workspace`,
+  {
+    stdio: ['ignore', 'ignore', 'ignore'] // suppress the benign lossyCoercion warning on stderr
+  }
+);
 
 const browser = await connect();
 try {

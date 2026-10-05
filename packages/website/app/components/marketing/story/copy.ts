@@ -1,11 +1,11 @@
 import type { PhaseId } from './scene';
 
-export interface HeadlineSegment {
+interface HeadlineSegment {
   text: string;
   code: boolean;
 }
 
-export interface Cta {
+interface Cta {
   label: string;
   href: string;
 }
@@ -23,7 +23,7 @@ export interface ClosingCopy {
   secondaryCta: Cta;
 }
 
-export interface Stage {
+interface Stage {
   headline: string;
   body: string;
 }

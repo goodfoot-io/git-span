@@ -31,8 +31,11 @@ describe('historyClient', () => {
       assert.strictEqual(doc.commits[0]?.summary, 'Add checkout anchor');
       assert.strictEqual(doc.commits[0]?.anchors[0]?.path, 'web/checkout.tsx#L1-L5');
       assert.strictEqual(doc.commits[0]?.anchors[0]?.content, 'hello');
-      assert.strictEqual('event' in doc.commits[0]!.anchors[0]!, false);
-      assert.strictEqual('why' in doc.commits[0]!, false);
+      const commit = doc.commits[0];
+      const anchor = commit?.anchors[0];
+      assert.ok(commit && anchor);
+      assert.strictEqual('event' in anchor, false);
+      assert.strictEqual('why' in commit, false);
       assert.strictEqual(doc.current, undefined);
     });
 
@@ -56,8 +59,10 @@ describe('historyClient', () => {
       });
       const doc = parseHistoryJson(stdout);
       assert.strictEqual(doc.commits[0]?.anchors[0]?.content, undefined);
-      assert.strictEqual('content' in doc.commits[0]!.anchors[0]!, false);
-      assert.strictEqual('event' in doc.commits[0]!.anchors[0]!, false);
+      const anchor = doc.commits[0]?.anchors[0];
+      assert.ok(anchor);
+      assert.strictEqual('content' in anchor, false);
+      assert.strictEqual('event' in anchor, false);
     });
 
     it('maps a timeline anchor with unavailable and a rebound block with from/to', () => {
@@ -142,7 +147,9 @@ describe('historyClient', () => {
       assert.ok(doc.current);
       assert.strictEqual(doc.current.anchors[0]?.unavailable, 'binary');
       assert.strictEqual(doc.current.anchors[0]?.content, undefined);
-      assert.strictEqual('content' in doc.current.anchors[0]!, false);
+      const anchor = doc.current.anchors[0];
+      assert.ok(anchor);
+      assert.strictEqual('content' in anchor, false);
     });
 
     it('maps scoped and commit-level span_diff when present', () => {
@@ -383,7 +390,9 @@ describe('historyClient', () => {
         ]
       });
       const doc = parseHistoryJson(stdout);
-      assert.strictEqual('why' in doc.commits[0]!, false);
+      const commit = doc.commits[0];
+      assert.ok(commit);
+      assert.strictEqual('why' in commit, false);
     });
 
     it('throws HistoryFormatError when schema_version is 1 (no v1 fallback)', () => {
