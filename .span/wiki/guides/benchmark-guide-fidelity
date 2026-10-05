@@ -2,6 +2,6 @@ packages/git-span/benches/drift_warm.rs#L177-L213 rk64:5ec86f41a994c617
 packages/git-span/benches/real_corpus.rs#L809-L809 rk64:d7d4f14673500183
 packages/git-span/benches/size_sweep.rs#L22-L60 rk64:973f29ae80c7781f
 wiki/guides/running-git-span-benchmarks.md#L58-L66 rk64:5d46a59ea1d98521
-wiki/guides/running-git-span-benchmarks.md#L82-L90 rk64:e809a587178feab4
+wiki/guides/running-git-span-benchmarks.md#L82-L90 rk64:01e13a95424e77e4
 
 The byte-identical oracle and the no-regression margin (0.35), warm SLA (40 ms), and scaling exponent band are enforced constants in the benches, and the guide restates them as the benchmark contract; either side changing alone silently falsifies the other.

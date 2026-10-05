@@ -1,6 +1,6 @@
-packages/git-span/src/resolver/engine/anchor.rs#L969-L1376 rk64:b0a2c39cd0cb5f79
-packages/git-span/src/resolver/engine/whole_file.rs#L429-L707 rk64:36a04818ea1be920
-packages/git-span/src/types.rs#L1012-L1030 rk64:1e059d5d546213b1
-packages/git-span/tests/cases/drift_span_integration.rs#L636-L643 rk64:e7fa41bd8da6562b
+packages/git-span/src/resolver/engine/anchor.rs#L973-L1315 rk64:45cefe092238fb25
+packages/git-span/src/resolver/engine/whole_file.rs#L327-L591 rk64:91e65a4f049d61b5
+packages/git-span/src/types.rs#L979-L997 rk64:1e059d5d546213b1
+packages/git-span/tests/cases/drift_span_integration.rs#L635-L642 rk64:e7fa41bd8da6562b
 
 The drift resolver consults submodule_classify before concluding Deleted for a path absent from HEAD, so an anchor orphaned by a directory-to-submodule promotion surfaces as Submodule; the acceptance test exercises the full classification pipeline.

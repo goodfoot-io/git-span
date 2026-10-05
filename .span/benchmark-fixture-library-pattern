@@ -1,5 +1,5 @@
 packages/git-span/benches/drift_head_only.rs#L45-L67 rk64:36eb6d8768ed547a
 packages/git-span/benches/drift_warm.rs#L58-L82 rk64:f262ed806945b964
-packages/git-span/tests/support/mod.rs#L504-L572 rk64:7b6a7bf96b99f51c
+packages/git-span/tests/support/mod.rs#L501-L569 rk64:7b6a7bf96b99f51c
 
 Drift benches and the test-support helper build fixture spans through the library API, so renamed span-core symbols fail at compile time; fixture anchor hashes must match git span add's canonical rk64 over the declared extent, or every anchor resolves changed and the benches measure an all-changed fiction.

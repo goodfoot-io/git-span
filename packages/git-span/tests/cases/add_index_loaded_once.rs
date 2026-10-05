@@ -23,11 +23,10 @@
 //!    index once for an unmerged span entry (`is_unmerged_in_index`).
 //! 3. **Whole-file session snapshot** — 1 load: the reconcile resolution
 //!    of the whole-file anchor probes the index in `index_entry_for` +
-//!    `is_gitlink_path`. Since card
-//!    main-300's whole-file follow-up those probes read the resolver
-//!    session's shared snapshot (`ConcurrentSession::index_entries`),
-//!    materializing it once per resolution instead of once per probe.
-//!    Line-range anchors add no loads.
+//!    `is_gitlink_path`. Since card main-300's whole-file follow-up those
+//!    probes read the resolver session's shared snapshot
+//!    (`ConcurrentSession::index_entries`), materializing it once per
+//!    resolution instead of once per probe. Line-range anchors add no loads.
 //!
 //! Total for this fixture: 1 + 1 + 1 = 3. Whole-file anchors share one
 //! session snapshot per resolution; adding line-range anchors costs 0.

@@ -3,7 +3,7 @@ packages/git-span-core/src/span_file.rs#L378-L519 rk64:4f8b3ad9e9b193a0
 packages/git-span-core/src/span_file.rs#L702-L878 rk64:932123be05c13784
 packages/git-span-core/src/span_file.rs#L974-L976 rk64:591fe59949279fd5
 packages/git-span-core/src/span_file.rs#L1031-L1060 rk64:dce2c886ab0c6a38
-packages/git-span/src/resolver/core/capture.rs#L105-L107 rk64:f3326b6c64ae198d
+packages/git-span/src/resolver/core/capture.rs#L105-L107 rk64:f3326c6c64ae1b40
 packages/git-span/src/resolver/core/immutable_observation.rs#L209-L320 rk64:1ecf35744fd05ae8
 packages/git-span/src/resolver/core/immutable_observation.rs#L400-L419 rk64:d99eeff7cd115845
 

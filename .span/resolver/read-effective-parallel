@@ -1,4 +1,4 @@
-packages/git-span/src/resolver/engine/mod.rs#L1080-L1195 rk64:85eedaed3645cb97
+packages/git-span/src/resolver/engine/mod.rs#L807-L812 rk64:d844203fb0c08c81
 packages/git-span/src/span/read.rs#L309-L385 rk64:07609e99cb7177c1
 
-Parallel span file reader that feeds the resolver's named-span batch; returns outcomes in input order, byte-identical to serial reads, and tested for correctness over live/tombstoned/conflicted spans.
+Parallel span file reader that feeds capture_resolution_core's resolver batch; returns outcomes in input order, byte-identical to serial reads, and tested for correctness over live/tombstoned/conflicted spans.

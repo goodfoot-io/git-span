@@ -1,18 +1,19 @@
-packages/git-span/src/cli/drift_output.rs#L114-L121 rk64:cad4ab94d8a3157c
-packages/git-span/src/cli/mod.rs#L531-L537 rk64:6b8232536b7ab78c
+packages/git-span/src/cli/drift_output.rs#L110-L117 rk64:cad4ab94d8a3157c
+packages/git-span/src/cli/mod.rs#L531-L537 rk64:1de67706c452371b
 packages/git-span/src/perf.rs#L58-L78 rk64:4869199ff56b4552
 packages/git-span/src/perf.rs#L95-L167 rk64:5d14232b5861c0bf
-packages/git-span/src/perf.rs#L443-L454 rk64:0803a07cb7093351
+packages/git-span/src/perf.rs#L443-L452 rk64:338b99dcb9b1af57
 packages/git-span/src/resolver/core/immutable_observation.rs#L127-L179 rk64:cb7e006c10f624b6
 packages/git-span/src/resolver/core/immutable_observation.rs#L229-L320 rk64:1c83b1179c8c79c7
 packages/git-span/src/resolver/core/immutable_observation.rs#L491-L547 rk64:054764b1db0fcc6e
-packages/git-span/src/resolver/engine/mod.rs#L573-L598 rk64:bcd6df25722577f8
-packages/git-span/src/resolver/exact/mod.rs#L342-L351 rk64:c6f84db776aca3fc
-packages/git-span/src/resolver/exact/mod.rs#L844-L977 rk64:7a416c813a2ee65e
+packages/git-span/src/resolver/engine/mod.rs#L514-L539 rk64:69eee0b6ea8b6e8c
+packages/git-span/src/resolver/engine/mod.rs#L580-L591 rk64:c03bd5a31b24068f
+packages/git-span/src/resolver/exact/mod.rs#L349-L358 rk64:c6f84db776aca3fc
+packages/git-span/src/resolver/exact/mod.rs#L851-L984 rk64:7a416c813a2ee65e
 packages/git-span/src/resolver/store/maintenance.rs#L7-L8 rk64:8f13f3a6fc9629bf
 packages/git-span/src/resolver/store/maintenance.rs#L55-L96 rk64:8a1a078b5be3b74e
 packages/git-span/src/resolver/store/mod.rs#L1-L21 rk64:5d336aa16cf49b87
-wiki/guides/profiling-git-span-drift.md#L43-L67 rk64:69c4877a4564145b
-wiki/guides/profiling-git-span-drift.md#L96-L197 rk64:fa663146812ac114
+wiki/guides/profiling-git-span-drift.md#L43-L65 rk64:d224316b70a3b1b9
+wiki/guides/profiling-git-span-drift.md#L94-L195 rk64:bc1f7ff6c4475c85
 
 The guide's trace schema, result-store diagnostics, and immutable counters describe the CLI emitters and storage behavior, including the shared sixteen-admission maintenance schedule, success-only reset, entry-triggered reconciliation, and immediate publication overlay narrowing; immutable counters reset and emit once per external resolver invocation across store hits, fallback, and errors, with separate pre-fix and post-fix resolve totals.

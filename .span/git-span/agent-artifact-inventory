@@ -1,7 +1,7 @@
 packages/git-span/src/schemas/mod.rs rk64:2be40091a0883dd7
 packages/website/app/lib/agent-skills.generated.json rk64:0974bd71c95c1f20
 packages/website/app/lib/artifact-gate/inventory.mjs rk64:d8db9f3a10b2516f
-packages/website/content/docs/commands.mdx rk64:3637926b75197a49
+packages/website/content/docs/commands.mdx rk64:6179f06baae28950
 packages/website/public/schemas/cli/v1/context.json rk64:a7352bd7485e2442
 packages/website/scripts/generate-agent-skills.mjs rk64:8d7b94ce68c31121
 packages/website/scripts/generate-artifacts.mjs rk64:2055e9e2d1d9529d

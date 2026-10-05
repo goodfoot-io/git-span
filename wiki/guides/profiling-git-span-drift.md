@@ -2,7 +2,7 @@
 title: Profiling git span drift
 summary: How to profile `git span drift` — flame-graph capture with `perf record` + inferno, the opt-in `--perf-trace` per-anchor wall-clock CSV emitter, and the `--perf` / `GIT_SPAN_PERF=1` cache-path counters that say which cache path a run took and why.
 aliases: [git-span profiling, perf trace, cache-path counters, immutable counters, perf-trace]
-links-reviewed: 4
+links-reviewed: 5
 ---
 
 # Profiling `git span drift`
@@ -55,8 +55,8 @@ Writes one CSV row per resolved anchor to `/tmp/trace.csv`. The flag ([`src/cli/
 | `span` | string | Span name (e.g. `wiki/architecture/refs`) |
 | `anchor_id` | string | Anchor identifier within the span |
 | `path` | string | File path the anchor references |
-| `wall_us` | u128 | Wall-clock microseconds spent in [`resolve_anchor_inner`](../../packages/git-span/src/resolver/engine/anchor.rs#L460-L1495) |
-| `status` | enum | One of `Fresh`, `Moved`, `Changed`, `Orphaned`, `MergeConflict`, `Submodule`, `ContentUnavailable` |
+| `wall_us` | u128 | Wall-clock microseconds spent in [`resolve_anchor_inner`](../../packages/git-span/src/resolver/engine/anchor.rs#L651-L1667) |
+| `status` | enum | One of `Fresh`, `ResolvedPendingCommit`, `Moved`, `Changed`, `Deleted`, `MergeConflict`, `Submodule`, `ContentUnavailable` |
 
 Values containing `,`, `"`, newline (`\n`), or carriage return (`\r`) are RFC-4180-escaped (wrapped in `"`, internal `"` doubled).
 
@@ -71,7 +71,7 @@ git span drift --perf-trace /tmp/trace.csv          # OK: full scan
 git span drift --perf-trace /tmp/trace.csv some/path  # CliError
 ```
 
-The only other flag conflict `git span drift` enforces is unrelated to `--perf-trace`: `--fix` requires `--format human` and errors on any other format ([`drift_output.rs`](../../packages/git-span/src/cli/drift_output.rs#L114-L121)).
+The only other flag conflict `git span drift` enforces is unrelated to `--perf-trace`: `--fix` requires `--format human` and errors on any other format ([`drift_output.rs`](../../packages/git-span/src/cli/drift_output.rs#L110-L117)).
 
 ### Quick analyses
 
@@ -107,7 +107,7 @@ The cache-path counters below are a SEPARATE, additive mechanism that does **not
 GIT_SPAN_PERF=1 git span drift --no-exit-code 2>&1 >/dev/null | grep -E '(cache-path|immutable)\.'
 ```
 
-The result store (`<common_dir>/span/store.db`, see [`CacheStore::open`](../../packages/git-span/src/resolver/store/mod.rs#L237-L242)) reports its routing, publication, and quota maintenance through `cache-path.*`. A separately bounded observation memo (`<common_dir>/span/immutable.db`, see [`ImmutableMemo::open`](../../packages/git-span/src/resolver/core/immutable_observation.rs#L127-L138) and its [storage initialization](../../packages/git-span/src/resolver/core/immutable_observation.rs#L140-L179)) reports reuse through `immutable.*`. The memo reuses successful declaration facts, recursive source-tree maps, and blob digests only after [lookup verification](../../packages/git-span/src/resolver/core/immutable_observation.rs#L229-L320) proves, through the observation boundary's reader, that current dependency objects remain readable with matching kinds and bytes. Entries seal each witness as its byte length and BLAKE3 digest rather than its raw bytes, so the working set fits the database budget, and a memo persists its admissions in one write transaction when it closes ([`flush`](../../packages/git-span/src/resolver/core/immutable_observation.rs#L491-L547)). Its counters describe state observation, rather than the result-store path that ultimately serves the run.
+The result store (`<common_dir>/span/store.db`, see [`CacheStore::open`](../../packages/git-span/src/resolver/store/mod.rs#L197-L202)) reports its routing, publication, and quota maintenance through `cache-path.*`. A separately bounded observation memo (`<common_dir>/span/immutable.db`, see [`ImmutableMemo::open`](../../packages/git-span/src/resolver/core/immutable_observation.rs#L127-L138) and its [storage initialization](../../packages/git-span/src/resolver/core/immutable_observation.rs#L140-L179)) reports reuse through `immutable.*`. The memo reuses successful declaration facts, recursive source-tree maps, and blob digests only after [lookup verification](../../packages/git-span/src/resolver/core/immutable_observation.rs#L229-L320) proves, through the observation boundary's reader, that current dependency objects remain readable with matching kinds and bytes. Entries seal each witness as its byte length and BLAKE3 digest rather than its raw bytes, so the working set fits the database budget, and a memo persists its admissions in one write transaction when it closes ([`flush`](../../packages/git-span/src/resolver/core/immutable_observation.rs#L491-L547)). Its counters describe state observation, rather than the result-store path that ultimately serves the run.
 
 Every line is emitted via the same [`crate::perf::note`](../../packages/git-span/src/perf.rs#L73-L78) /
 [`crate::perf::counter`](../../packages/git-span/src/perf.rs#L58-L67) calls every other `--perf` diagnostic
