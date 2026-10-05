@@ -512,6 +512,11 @@ fn projection_round_trip_matches_direct_resolution_simultaneous_index_and_worktr
 
 // ── Category 3: duplicate-definition ordinal identity ────────────────────
 
+/// A SHA-1 OID whose 40 hex digits are all `digit`.
+fn repeated_oid(digit: &str) -> gix::ObjectId {
+    gix::ObjectId::from_hex(digit.repeat(40).as_bytes()).expect("valid hex digit")
+}
+
 fn fresh_observation(anchored: &LocationCore) -> LayerObservationCore {
     LayerObservationCore {
         status: AnchorStatus::Fresh,
@@ -533,7 +538,7 @@ fn duplicate_definition_ordinal_identity_preserved_through_construction_and_seri
     let anchored = LocationCore {
         path: "src/a.rs".to_string(),
         extent: ExtentCore::WholeFile,
-        blob: Some("1".repeat(40)),
+        blob: Some(repeated_oid("1")),
     };
     let anchor_a = AnchorCore {
         anchor_id: "demo:src/a.rs:L0-L0".to_string(),
@@ -621,12 +626,12 @@ fn effective_projection_preserves_working_tree_qualifier_for_committed_drift() {
     let anchored = LocationCore {
         path: "src/a.rs".to_string(),
         extent: ExtentCore::WholeFile,
-        blob: Some("a".repeat(40)),
+        blob: Some(repeated_oid("a")),
     };
     let head_current = LocationCore {
         path: "src/a.rs".to_string(),
         extent: ExtentCore::WholeFile,
-        blob: Some("b".repeat(40)),
+        blob: Some(repeated_oid("b")),
     };
     let worktree_current = LocationCore {
         path: "src/a.rs".to_string(),
@@ -661,7 +666,7 @@ fn effective_projection_preserves_working_tree_qualifier_for_committed_drift() {
         // since the worktree is where this anchor drifts.
         full: worktree.clone(),
         worktree,
-        locus: Some(DriftLocusCore::ChangedAt("d".repeat(40))),
+        locus: Some(DriftLocusCore::ChangedAt(repeated_oid("d"))),
     };
     let ordinal = DefinitionOrdinal {
         span_identity: "demo".to_string(),

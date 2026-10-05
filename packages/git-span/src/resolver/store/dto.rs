@@ -203,7 +203,10 @@ impl From<DriftSourceDto> for DriftSource {
 /// DTO mirror of `DriftLocus`. Variant names intentionally match
 /// `DriftLocus`/`DriftLocusCore` exactly; the shared `At` postfix is a
 /// deliberate naming convention, not an oversight.
-#[allow(clippy::enum_variant_names)]
+#[expect(
+    clippy::enum_variant_names,
+    reason = "variants mirror the exported `DriftLocus` 1:1 so the conversions read in lockstep"
+)]
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) enum DriftLocusDto {
     ChangedAt(String),

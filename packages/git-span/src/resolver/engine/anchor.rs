@@ -4,6 +4,7 @@
 use super::super::core::resolution::{
     AnchorCore, DriftLocusCore, LayerObservationCore, LocationCore,
 };
+use super::super::layers::lfs::DeepestPosition;
 use super::super::layers::{read_worktree_normalized, resolve_lfs_anchor};
 use super::super::session::{ConcurrentSession, resolve_at_head_shared};
 use super::super::walker::{Tracked, apply_hunks_to_range};
@@ -25,6 +26,18 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+
+/// The read-only borrows every per-anchor resolution step threads together:
+/// the repository plus the run's two shared engine components (the
+/// read-only [`SharedEngineContext`] and the interior-mutability
+/// [`ConcurrentSession`] memo store). `Copy`, so it is passed by value; the
+/// per-worker [`EngineLocal`] scratch travels separately as `&mut`.
+#[derive(Clone, Copy)]
+pub(crate) struct AnchorCtx<'a> {
+    pub(crate) repo: &'a gix::Repository,
+    pub(crate) shared: &'a SharedEngineContext,
+    pub(crate) concurrent: &'a ConcurrentSession,
+}
 
 fn oid_from_hex(hex: &str) -> Result<gix::ObjectId> {
     gix::ObjectId::from_str(hex).map_err(|e| Error::Git(format!("invalid oid `{hex}`: {e}")))
@@ -109,32 +122,37 @@ fn read_blob_text(repo: &gix::Repository, oid_hex: &str) -> String {
     git::read_git_text(repo, oid_hex).unwrap_or_default()
 }
 
-/// Compare the content slice at `tracked` position against the anchored
-/// slice. Returns `true` when the slice differs (i.e. this layer drifts).
-fn slice_differs(
-    text: &str,
-    tracked: &Tracked,
-    anchored_lines: &[&str],
-    anchored_start: u32,
-    anchored_end: u32,
-    ignore_ws: bool,
-) -> bool {
-    let current_lines: Vec<&str> = text.lines().collect();
-    let a_lo = (anchored_start as usize).saturating_sub(1);
-    let a_hi = (anchored_end as usize).min(anchored_lines.len());
-    let c_lo = (tracked.start as usize).saturating_sub(1);
-    let c_hi = (tracked.end as usize).min(current_lines.len());
-    let a_slice = if a_lo <= a_hi {
-        &anchored_lines[a_lo..a_hi]
-    } else {
-        &[][..]
-    };
-    let c_slice = if c_lo <= c_hi {
-        &current_lines[c_lo..c_hi]
-    } else {
-        &[][..]
-    };
-    !lines_equal(a_slice, c_slice, ignore_ws)
+/// The anchored content a layer is compared against: the anchored text's
+/// lines plus the 1-based anchored line range `[start, end]` within them.
+#[derive(Clone, Copy)]
+struct AnchoredSlice<'a> {
+    lines: &'a [&'a str],
+    start: u32,
+    end: u32,
+}
+
+impl AnchoredSlice<'_> {
+    /// Compare the content slice at `tracked` position against the anchored
+    /// slice. Returns `true` when the slice differs (i.e. this layer drifts).
+    fn differs(self, text: &str, tracked: &Tracked, ignore_ws: bool) -> bool {
+        let anchored_lines = self.lines;
+        let current_lines: Vec<&str> = text.lines().collect();
+        let a_lo = (self.start as usize).saturating_sub(1);
+        let a_hi = (self.end as usize).min(anchored_lines.len());
+        let c_lo = (tracked.start as usize).saturating_sub(1);
+        let c_hi = (tracked.end as usize).min(current_lines.len());
+        let a_slice = if a_lo <= a_hi {
+            &anchored_lines[a_lo..a_hi]
+        } else {
+            &[][..]
+        };
+        let c_slice = if c_lo <= c_hi {
+            &current_lines[c_lo..c_hi]
+        } else {
+            &[][..]
+        };
+        !lines_equal(a_slice, c_slice, ignore_ws)
+    }
 }
 
 /// File-backed `Moved` relocation scan for line anchors.
@@ -385,17 +403,19 @@ fn relocated_to(
 /// every match `(path, start, end)` in path order — the caller decides
 /// whether the match set is unique (`Moved`) or non-unique (fail-closed
 /// ambiguity, card main-269); the original `exclude` path is skipped.
-#[allow(clippy::too_many_arguments)]
 fn find_relocated_range_in_paths(
-    repo: &gix::Repository,
-    shared: &SharedEngineContext,
-    concurrent: &ConcurrentSession,
+    ctx: AnchorCtx<'_>,
     deepest: DriftSource,
     extent: usize,
     stored_hash: &str,
     exclude: &str,
     anchored_absent_at_head: bool,
 ) -> Vec<(String, u32, u32)> {
+    let AnchorCtx {
+        repo,
+        shared,
+        concurrent,
+    } = ctx;
     // Card main-300: one session-wide index snapshot shared by every
     // drifted-anchor scan, instead of a fresh materialization per anchor.
     // A load failure degrades to "no candidates" exactly as the previous
@@ -458,7 +478,6 @@ fn find_relocated_range_in_paths(
         let cached = concurrent
             .relocation_text_memo
             .read()
-            .unwrap()
             .get(&memo_key)
             .cloned();
         let text: Arc<str> = match cached {
@@ -480,7 +499,6 @@ fn find_relocated_range_in_paths(
                 concurrent
                     .relocation_text_memo
                     .write()
-                    .unwrap()
                     .insert(memo_key, read.clone());
                 match read {
                     Some(t) => t,
@@ -583,7 +601,6 @@ fn find_similar_ranges(
         let cached = concurrent
             .relocation_text_memo
             .read()
-            .unwrap()
             .get(&memo_key)
             .cloned();
         let text: Arc<str> = match cached {
@@ -602,7 +619,6 @@ fn find_similar_ranges(
                 concurrent
                     .relocation_text_memo
                     .write()
-                    .unwrap()
                     .insert(memo_key, read.clone());
                 match read {
                     Some(t) => t,
@@ -647,21 +663,21 @@ fn find_similar_ranges(
     results
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_anchor_inner(
-    repo: &gix::Repository,
+    ctx: AnchorCtx<'_>,
     local: &mut EngineLocal,
-    shared: &SharedEngineContext,
-    concurrent: &ConcurrentSession,
     cfg: &SpanConfig,
     span_name: &str,
     anchor_id: &str,
     r: Anchor,
 ) -> Result<AnchorResolved> {
+    let AnchorCtx {
+        repo,
+        shared,
+        concurrent,
+    } = ctx;
     if matches!(r.extent, AnchorExtent::WholeFile) {
-        return resolve_whole_file(
-            repo, local, shared, concurrent, cfg, span_name, anchor_id, r,
-        );
+        return resolve_whole_file(ctx, local, cfg, span_name, anchor_id, r);
     }
     let (anchored_start, anchored_end) = match r.extent {
         AnchorExtent::LineRange { start, end } => (start, end),
@@ -715,18 +731,9 @@ pub(crate) fn resolve_anchor_inner(
             start: anchored_start,
             end: anchored_end,
         });
-        if let Some(resolved) = clean_head_fast_path(
-            repo,
-            local,
-            shared,
-            concurrent,
-            anchor_id,
-            &r,
-            anchored.clone(),
-            &head_loc,
-            anchored_start,
-            anchored_end,
-        )? {
+        if let Some(resolved) =
+            clean_head_fast_path(ctx, local, anchor_id, &r, anchored.clone(), &head_loc)?
+        {
             return Ok(resolved);
         }
     }
@@ -765,79 +772,23 @@ pub(crate) fn resolve_anchor_inner(
     // (`r.blob` empty) can never pass its `head_blob == r.blob` check, so
     // skip the second attempt for them too.
     if !r.blob.is_empty()
-        && let Some(resolved) = clean_head_fast_path(
-            repo,
-            local,
-            shared,
-            concurrent,
-            anchor_id,
-            &r,
-            anchored.clone(),
-            &head_loc,
-            anchored_start,
-            anchored_end,
-        )?
+        && let Some(resolved) =
+            clean_head_fast_path(ctx, local, anchor_id, &r, anchored.clone(), &head_loc)?
     {
         return Ok(resolved);
     }
 
     // Track per-layer positions. Each option is `None` if the path was
     // deleted at that layer.
-    let head_tracked = head_loc.clone();
-
-    // Index layer: apply hunks on top of head_tracked.
-    let mut index_tracked: Option<Tracked> = head_tracked.clone();
-    let mut index_blob_oid: Option<String> = None;
-    let mut index_hunk_applied = false;
-    if local.layers.index
-        && let Some(t) = index_tracked.as_ref()
-        && let Some(diffs) = shared.index_diffs.as_ref()
-        && let Some(entry) = diffs.map.get(&t.path)
-    {
-        if entry.deleted {
-            index_tracked = None;
-        } else {
-            let (s, e) = apply_hunks_to_range(&entry.hunks, t.start, t.end);
-            let new_path = entry.new_path.clone();
-            index_tracked = Some(Tracked {
-                path: new_path,
-                start: s,
-                end: e,
-            });
-            index_blob_oid = entry.new_blob.clone();
-            index_hunk_applied = true;
-        }
-    }
-
-    // Worktree layer: apply hunks on top of index_tracked.
-    let mut worktree_tracked: Option<Tracked> = index_tracked.clone();
-    let mut worktree_hunk_applied = false;
-    if local.layers.worktree
-        && let Some(t) = worktree_tracked.as_ref()
-        && let Some(diffs) = shared.worktree_diffs.as_ref()
-        && let Some(entry) = diffs.map.get(&t.path)
-    {
-        if entry.deleted {
-            worktree_tracked = None;
-        } else {
-            let (s, e) = apply_hunks_to_range(&entry.hunks, t.start, t.end);
-            let new_path = entry.new_path.clone();
-            worktree_tracked = Some(Tracked {
-                path: new_path,
-                start: s,
-                end: e,
-            });
-            worktree_hunk_applied = true;
-        }
-    }
+    let positions = LayerPositions::track(local.layers, shared, head_loc.clone());
 
     // The deepest enabled layer's tracked position determines `current`.
     let (tracked, deepest_layer) = if local.layers.worktree {
-        (worktree_tracked.as_ref(), DriftSource::Worktree)
+        (positions.worktree.as_ref(), DriftSource::Worktree)
     } else if local.layers.index {
-        (index_tracked.as_ref(), DriftSource::Index)
+        (positions.index.as_ref(), DriftSource::Index)
     } else {
-        (head_tracked.as_ref(), DriftSource::Head)
+        (positions.head.as_ref(), DriftSource::Head)
     };
 
     // LFS short-circuit: if the deepest tracked path is LFS-managed, delegate.
@@ -852,10 +803,12 @@ pub(crate) fn resolve_anchor_inner(
             anchor_id,
             &r,
             anchored,
-            t,
-            deepest_layer,
-            index_blob_oid.as_deref(),
-            worktree_hunk_applied,
+            DeepestPosition {
+                tracked: t,
+                layer: deepest_layer,
+                index_blob_oid: positions.index_blob_oid.as_deref(),
+                worktree_changed: positions.worktree_hunk_applied,
+            },
         ));
     }
 
@@ -897,7 +850,7 @@ pub(crate) fn resolve_anchor_inner(
                             UnavailableReason::FilterFailed { filter },
                         ));
                     }
-                    let oid = match index_blob_oid.clone() {
+                    let oid = match positions.index_blob_oid.clone() {
                         Some(o) => Some(o),
                         None => concurrent.head_blob_at(repo, &shared.head_sha, &t.path)?,
                     };
@@ -1099,21 +1052,16 @@ pub(crate) fn resolve_anchor_inner(
             };
             let anchored_lines: Vec<&str> = anchored_text.lines().collect();
             let computed_layer_sources = compute_layer_sources(
-                repo,
-                &r,
-                &head_tracked,
-                &index_tracked,
-                &worktree_tracked,
+                ctx,
                 local,
-                shared,
-                concurrent,
-                &anchored_lines,
-                anchored_start,
-                anchored_end,
+                &r,
+                &positions,
+                AnchoredSlice {
+                    lines: &anchored_lines,
+                    start: anchored_start,
+                    end: anchored_end,
+                },
                 cfg.ignore_whitespace,
-                index_hunk_applied,
-                worktree_hunk_applied,
-                &index_blob_oid,
             )?;
             // File-backed model: `current == None` means the anchored
             // path was deleted at the deepest enabled layer (`git rm`,
@@ -1137,9 +1085,7 @@ pub(crate) fn resolve_anchor_inner(
             if file_backed {
                 let extent = (anchored_end as usize).saturating_sub(anchored_start as usize) + 1;
                 let relocated = find_relocated_range_in_paths(
-                    repo,
-                    shared,
-                    concurrent,
+                    ctx,
                     deepest_layer,
                     extent,
                     &r.stored_hash,
@@ -1584,21 +1530,16 @@ pub(crate) fn resolve_anchor_inner(
             // independently against the anchor. Emit a Finding per drifting
             // layer in shallow-to-deep order (I → W → H).
             let computed_layer_sources = compute_layer_sources(
-                repo,
-                &r,
-                &head_tracked,
-                &index_tracked,
-                &worktree_tracked,
+                ctx,
                 local,
-                shared,
-                concurrent,
-                &anchored_lines,
-                anchored_start,
-                anchored_end,
+                &r,
+                &positions,
+                AnchoredSlice {
+                    lines: &anchored_lines,
+                    start: anchored_start,
+                    end: anchored_end,
+                },
                 cfg.ignore_whitespace,
-                index_hunk_applied,
-                worktree_hunk_applied,
-                &index_blob_oid,
             )?;
 
             let inferred_source = computed_layer_sources.first().copied();
@@ -1647,9 +1588,7 @@ pub(crate) fn resolve_anchor_inner(
                     anchored_absent_at_head =
                         concurrent.head_blob_at(repo, &shared.head_sha, &r.path)?.is_none();
                     find_relocated_range_in_paths(
-                        repo,
-                        shared,
-                        concurrent,
+                        ctx,
                         deepest_layer,
                         extent,
                         &r.stored_hash,
@@ -1660,10 +1599,13 @@ pub(crate) fn resolve_anchor_inner(
                     vec![]
                 };
 
-            let cur_blob_oid = if worktree_hunk_applied {
+            let cur_blob_oid = if positions.worktree_hunk_applied {
                 None
-            } else if local.layers.index && index_blob_oid.is_some() {
-                index_blob_oid.as_deref().and_then(|o| oid_from_hex(o).ok())
+            } else if local.layers.index && positions.index_blob_oid.is_some() {
+                positions
+                    .index_blob_oid
+                    .as_deref()
+                    .and_then(|o| oid_from_hex(o).ok())
             } else {
                 cur_blob
             };
@@ -1902,7 +1844,7 @@ fn location_core(loc: &AnchorLocation) -> LocationCore {
     LocationCore {
         path: loc.path.to_string_lossy().into_owned(),
         extent: loc.extent.into(),
-        blob: loc.blob.map(|b| b.to_string()),
+        blob: loc.blob,
     }
 }
 
@@ -1966,12 +1908,9 @@ fn fresh_observation(anchored: &LocationCore) -> LayerObservationCore {
 ///
 /// The default resolution path is untouched: this is invoked only through
 /// the opt-in [`super::capture_resolution_core`] entry point.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_anchor_captured(
-    repo: &gix::Repository,
+    ctx: AnchorCtx<'_>,
     local: &mut EngineLocal,
-    shared: &SharedEngineContext,
-    concurrent: &ConcurrentSession,
     cfg: &SpanConfig,
     span_name: &str,
     anchor_id: &str,
@@ -1990,31 +1929,20 @@ pub(crate) fn resolve_anchor_captured(
     // the ONLY heavy classification we run, since index/worktree read the same
     // bytes and reclassifying them reproduces this result verbatim.
     local.layers = CAPTURE_HEAD_LAYERS;
-    let mut head_run = resolve_anchor_inner(
-        repo,
-        local,
-        shared,
-        concurrent,
-        cfg,
-        span_name,
-        anchor_id,
-        r.clone(),
-    )?;
+    let mut head_run = resolve_anchor_inner(ctx, local, cfg, span_name, anchor_id, r.clone())?;
     // The resolver leaves `locus` unset; the live path fills it afterwards in
     // `resolve_loaded_span_with_state`. Do the same here so a HEAD-sourced
     // committed projection carries the same locus as a direct committed run.
-    super::populate_drift_locus(repo, &mut head_run, concurrent);
+    super::populate_drift_locus(ctx.repo, &mut head_run, ctx.concurrent);
 
     // `anchored` is layer-independent (computed identically at every depth), so
     // reading it from the HEAD run matches the value a full-depth run produces.
     let anchored = location_core(&head_run.anchored);
     let head = observation_from(&head_run);
     let locus = head_run.locus.as_ref().map(|l| match l {
-        DriftLocus::ChangedAt(oid) => DriftLocusCore::ChangedAt(oid.to_string()),
-        DriftLocus::OrphanedAt(oid) => DriftLocusCore::OrphanedAt(oid.to_string()),
-        DriftLocus::RenamedAt(oid, new_path) => {
-            DriftLocusCore::RenamedAt(oid.to_string(), new_path.clone())
-        }
+        DriftLocus::ChangedAt(oid) => DriftLocusCore::ChangedAt(*oid),
+        DriftLocus::OrphanedAt(oid) => DriftLocusCore::OrphanedAt(*oid),
+        DriftLocus::RenamedAt(oid, new_path) => DriftLocusCore::RenamedAt(*oid, new_path.clone()),
     });
 
     // Fast path: when every enabled layer holds identical content for this
@@ -2025,7 +1953,7 @@ pub(crate) fn resolve_anchor_captured(
     // dropped (the worktree carries no committed blob OID). This runs the
     // ~600-line classifier exactly once for the overwhelmingly common
     // clean-repo anchor instead of three times.
-    if capture_clean_derivable(shared, &r, &head_run) {
+    if capture_clean_derivable(ctx.shared, &r, &head_run) {
         local.layers = saved_layers;
         local.needs_all_layers = saved_needs_all_layers;
         let full = effective_from_clean_head(&head);
@@ -2048,25 +1976,14 @@ pub(crate) fn resolve_anchor_captured(
     // two heavy passes, not three; only simultaneous index+worktree drift
     // costs all three.
     local.layers = CAPTURE_FULL_LAYERS;
-    let full_run = resolve_anchor_inner(
-        repo,
-        local,
-        shared,
-        concurrent,
-        cfg,
-        span_name,
-        anchor_id,
-        r.clone(),
-    )?;
+    let full_run = resolve_anchor_inner(ctx, local, cfg, span_name, anchor_id, r.clone())?;
 
     let index_drifts = full_run.layer_sources.contains(&DriftSource::Index);
     let worktree_drifts = full_run.layer_sources.contains(&DriftSource::Worktree);
 
     let index = if index_drifts {
         local.layers = CAPTURE_INDEX_LAYERS;
-        let index_run = resolve_anchor_inner(
-            repo, local, shared, concurrent, cfg, span_name, anchor_id, r,
-        )?;
+        let index_run = resolve_anchor_inner(ctx, local, cfg, span_name, anchor_id, r)?;
         observation_from(&index_run)
     } else {
         fresh_observation(&anchored)
@@ -2229,19 +2146,19 @@ fn unavailable(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn clean_head_fast_path(
-    repo: &gix::Repository,
+    ctx: AnchorCtx<'_>,
     local: &mut EngineLocal,
-    shared: &SharedEngineContext,
-    concurrent: &ConcurrentSession,
     anchor_id: &str,
     r: &Anchor,
     anchored: AnchorLocation,
     head_loc: &Option<Tracked>,
-    anchored_start: u32,
-    anchored_end: u32,
 ) -> Result<Option<AnchorResolved>> {
+    let AnchorCtx {
+        repo,
+        shared,
+        concurrent,
+    } = ctx;
     if !super::anchor_path_is_layer_clean(local, shared, &r.path) {
         return Ok(None);
     }
@@ -2262,7 +2179,11 @@ fn clean_head_fast_path(
     // `t.path` still holds the stored bytes, so the correct state is
     // `Moved` (handled by the `status` computation below), never
     // `Deleted`.
-    let status = if t.path == r.path && t.start == anchored_start && t.end == anchored_end {
+    let at_anchored_range = matches!(
+        r.extent,
+        AnchorExtent::LineRange { start, end } if start == t.start && end == t.end
+    );
+    let status = if t.path == r.path && at_anchored_range {
         AnchorStatus::Fresh
     } else {
         AnchorStatus::Moved
@@ -2298,6 +2219,81 @@ fn clean_head_fast_path(
     }))
 }
 
+/// One line anchor's tracked position at each layer: HEAD's resolved
+/// position, then the index and worktree hunks applied on top in turn. Each
+/// position is `None` when the path is deleted at that layer.
+struct LayerPositions {
+    head: Option<Tracked>,
+    index: Option<Tracked>,
+    worktree: Option<Tracked>,
+    /// The index entry's blob when an index hunk applied (the staged
+    /// content's identity), else `None`.
+    index_blob_oid: Option<String>,
+    index_hunk_applied: bool,
+    worktree_hunk_applied: bool,
+}
+
+impl LayerPositions {
+    /// Apply the enabled layers' diffs on top of `head`: the index layer's
+    /// hunks first, then the worktree layer's on top of the index result.
+    fn track(layers: LayerSet, shared: &SharedEngineContext, head: Option<Tracked>) -> Self {
+        // Index layer: apply hunks on top of head.
+        let mut index_tracked: Option<Tracked> = head.clone();
+        let mut index_blob_oid: Option<String> = None;
+        let mut index_hunk_applied = false;
+        if layers.index
+            && let Some(t) = index_tracked.as_ref()
+            && let Some(diffs) = shared.index_diffs.as_ref()
+            && let Some(entry) = diffs.map.get(&t.path)
+        {
+            if entry.deleted {
+                index_tracked = None;
+            } else {
+                let (s, e) = apply_hunks_to_range(&entry.hunks, t.start, t.end);
+                let new_path = entry.new_path.clone();
+                index_tracked = Some(Tracked {
+                    path: new_path,
+                    start: s,
+                    end: e,
+                });
+                index_blob_oid = entry.new_blob.clone();
+                index_hunk_applied = true;
+            }
+        }
+
+        // Worktree layer: apply hunks on top of index_tracked.
+        let mut worktree_tracked: Option<Tracked> = index_tracked.clone();
+        let mut worktree_hunk_applied = false;
+        if layers.worktree
+            && let Some(t) = worktree_tracked.as_ref()
+            && let Some(diffs) = shared.worktree_diffs.as_ref()
+            && let Some(entry) = diffs.map.get(&t.path)
+        {
+            if entry.deleted {
+                worktree_tracked = None;
+            } else {
+                let (s, e) = apply_hunks_to_range(&entry.hunks, t.start, t.end);
+                let new_path = entry.new_path.clone();
+                worktree_tracked = Some(Tracked {
+                    path: new_path,
+                    start: s,
+                    end: e,
+                });
+                worktree_hunk_applied = true;
+            }
+        }
+
+        LayerPositions {
+            head,
+            index: index_tracked,
+            worktree: worktree_tracked,
+            index_blob_oid,
+            index_hunk_applied,
+            worktree_hunk_applied,
+        }
+    }
+}
+
 /// Compute the list of layers that drift from the *next-deeper* layer, in
 /// shallow-to-deep order: Worktree → Index → Head.
 ///
@@ -2329,24 +2325,27 @@ fn clean_head_fast_path(
 /// The `source` returned by the caller is the first (shallowest) entry of
 /// the resulting list; `layer_sources` is the full list. Both follow the
 /// shallow-to-deep order Worktree → Index → Head.
-#[allow(clippy::too_many_arguments)]
 fn compute_layer_sources(
-    repo: &gix::Repository,
-    r: &Anchor,
-    head_tracked: &Option<Tracked>,
-    index_tracked: &Option<Tracked>,
-    worktree_tracked: &Option<Tracked>,
+    ctx: AnchorCtx<'_>,
     local: &mut EngineLocal,
-    shared: &SharedEngineContext,
-    concurrent: &ConcurrentSession,
-    anchored_lines: &[&str],
-    anchored_start: u32,
-    anchored_end: u32,
+    r: &Anchor,
+    positions: &LayerPositions,
+    anchored: AnchoredSlice<'_>,
     ignore_ws: bool,
-    index_hunk_applied: bool,
-    worktree_hunk_applied: bool,
-    index_blob_oid: &Option<String>,
 ) -> Result<Vec<DriftSource>> {
+    let AnchorCtx {
+        repo,
+        shared,
+        concurrent,
+    } = ctx;
+    let LayerPositions {
+        head: head_tracked,
+        index: index_tracked,
+        worktree: worktree_tracked,
+        index_blob_oid,
+        index_hunk_applied,
+        worktree_hunk_applied,
+    } = positions;
     let layer_index = local.layers.index;
     let layer_worktree = local.layers.worktree;
 
@@ -2373,7 +2372,7 @@ fn compute_layer_sources(
         match index_tracked.as_ref() {
             None => None,
             Some(t) => {
-                let oid = if index_hunk_applied {
+                let oid = if *index_hunk_applied {
                     match index_blob_oid.clone() {
                         Some(o) => Some(o),
                         None => concurrent.head_blob_at(repo, &shared.head_sha, &t.path)?,
@@ -2396,7 +2395,7 @@ fn compute_layer_sources(
         match worktree_tracked.as_ref() {
             None => None,
             Some(t) => {
-                if worktree_hunk_applied {
+                if *worktree_hunk_applied {
                     match read_worktree_normalized(repo, &mut local.custom_filters, &t.path) {
                         Ok(bytes) => Some((string_from_utf8_lossy(&bytes).into(), t.clone())),
                         Err(_) => None,
@@ -2482,14 +2481,7 @@ fn compute_layer_sources(
     } else {
         match &head_text {
             None => true,
-            Some((txt, t)) => slice_differs(
-                txt,
-                t,
-                anchored_lines,
-                anchored_start,
-                anchored_end,
-                ignore_ws,
-            ),
+            Some((txt, t)) => anchored.differs(txt, t, ignore_ws),
         }
     };
     if head_drifts {

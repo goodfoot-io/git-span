@@ -90,7 +90,8 @@ pub(crate) type BlobOidMemo = HashMap<String, HashMap<String, Option<String>>>;
 /// where a `None` value caches an unreadable path (see the field's doc
 /// comment). Values are shared behind `Arc<str>` (card main-306) so memo hits
 /// clone the handle, not the text.
-type RelocationTextMemo = RwLock<HashMap<(String, crate::types::DriftSource), Option<Arc<str>>>>;
+type RelocationTextMemo =
+    parking_lot::RwLock<HashMap<(String, crate::types::DriftSource), Option<Arc<str>>>>;
 
 /// Per-key single-flight memo shape (card main-162 staged-rollout step 3):
 /// the outer `RwLock<HashMap>` maps a string key to an `Arc<OnceLock<V>>`
@@ -719,7 +720,7 @@ impl ConcurrentSession {
             timeline_cache_misses: AtomicU64::new(0),
             timeline_paths: Mutex::new(PathInterner::new()),
             relocation_candidate_reads: AtomicU64::new(0),
-            relocation_text_memo: RwLock::new(HashMap::new()),
+            relocation_text_memo: parking_lot::RwLock::new(HashMap::new()),
             line_index_cache: RwLock::new(HashMap::new()),
             line_index_hits: AtomicU64::new(0),
             line_index_misses: AtomicU64::new(0),
@@ -1844,7 +1845,7 @@ mod tests {
             timeline_cache_misses: AtomicU64::new(0),
             timeline_paths: Mutex::new(PathInterner::new()),
             relocation_candidate_reads: AtomicU64::new(0),
-            relocation_text_memo: RwLock::new(HashMap::new()),
+            relocation_text_memo: parking_lot::RwLock::new(HashMap::new()),
             line_index_cache: RwLock::new(HashMap::new()),
             line_index_hits: AtomicU64::new(0),
             line_index_misses: AtomicU64::new(0),
@@ -1904,7 +1905,7 @@ mod tests {
             timeline_cache_misses: AtomicU64::new(0),
             timeline_paths: Mutex::new(PathInterner::new()),
             relocation_candidate_reads: AtomicU64::new(0),
-            relocation_text_memo: RwLock::new(HashMap::new()),
+            relocation_text_memo: parking_lot::RwLock::new(HashMap::new()),
             line_index_cache: RwLock::new(HashMap::new()),
             line_index_hits: AtomicU64::new(0),
             line_index_misses: AtomicU64::new(0),
