@@ -645,7 +645,12 @@ pub(crate) fn project_revalidate_publish(
     store: &mut CacheStore,
     core: &ResolutionCore,
 ) -> Result<ExactAttempt> {
-    project_revalidate_publish_impl(repo, span_root, options, token, key, store, core, true)
+    let target = PublishTarget {
+        store,
+        key,
+        store_rows: true,
+    };
+    project_revalidate_publish_impl(repo, span_root, options, token, core, target)
 }
 
 /// Like [`project_revalidate_publish`], but persists only the compact summary,
@@ -666,23 +671,35 @@ pub(crate) fn project_revalidate_publish_summary_only(
     store: &mut CacheStore,
     core: &ResolutionCore,
 ) -> Result<ExactAttempt> {
-    project_revalidate_publish_impl(repo, span_root, options, token, key, store, core, false)
+    let target = PublishTarget {
+        store,
+        key,
+        store_rows: false,
+    };
+    project_revalidate_publish_impl(repo, span_root, options, token, core, target)
 }
 
-// The two public wrappers above share this body verbatim; the extra `store_rows`
-// flag over their 7 context params is what makes it one arg past the lint's
-// threshold, so allow it here rather than duplicate the revalidate match.
-#[allow(clippy::too_many_arguments)]
+/// Where and how a revalidated generation is published: the store, the
+/// generation's canonical key, and whether the per-span reuse rows are
+/// persisted alongside the compact summary (`false` for the summary-only dirty
+/// path, card main-157 Phase 5C).
+struct PublishTarget<'a> {
+    store: &'a mut CacheStore,
+    key: &'a [u8; 32],
+    store_rows: bool,
+}
+
+// The two public wrappers above share this body verbatim; they differ only in
+// the `target`'s `store_rows` policy.
 fn project_revalidate_publish_impl(
     repo: &gix::Repository,
     span_root: &str,
     options: EngineOptions,
     token: &crate::resolver::core::token::StateToken,
-    key: &[u8; 32],
-    store: &mut CacheStore,
     core: &ResolutionCore,
-    store_rows: bool,
+    target: PublishTarget<'_>,
 ) -> Result<ExactAttempt> {
+    let key = *target.key;
     let rr = Arc::new(RenderReady::from_core(core, options.layers));
 
     // Thread the same shared per-user executable-digest memo through as the
@@ -701,9 +718,9 @@ fn project_revalidate_publish_impl(
         Some(&mut crate::resolver::core::exe_digest_store::SharedExeDigestMemo),
     )? {
         Revalidation::Unchanged => {
-            publish_if_eligible(store, token, key, &rr, core, store_rows);
+            publish_if_eligible(target, token, &rr, core);
             let attempt = rr.to_attempt();
-            memo_put(*key, rr);
+            memo_put(key, rr);
             Ok(attempt)
         }
         Revalidation::Changed { field } => {
@@ -724,13 +741,16 @@ fn project_revalidate_publish_impl(
 /// eligible. A publish failure is recorded and swallowed: fail closed on the
 /// cache, never on the command.
 fn publish_if_eligible(
-    store: &mut CacheStore,
+    target: PublishTarget<'_>,
     token: &crate::resolver::core::token::StateToken,
-    key: &[u8; 32],
     rr: &RenderReady,
     core: &ResolutionCore,
-    store_rows: bool,
 ) {
+    let PublishTarget {
+        store,
+        key,
+        store_rows,
+    } = target;
     if !token.persistence_eligible() {
         crate::perf::note("cache-path.publish-skipped: ineligible");
         return;
@@ -751,7 +771,15 @@ fn publish_if_eligible(
     } else {
         (Vec::new(), Vec::new())
     };
-    let summary = encode_summary(rr);
+    let summary = match encode_summary(rr) {
+        Ok(summary) => summary,
+        Err(e) => {
+            incr_publish_failures();
+            crate::perf::counter("cache-path.publish-failed", 1);
+            crate::perf::note(&format!("cache-path.publish-failed: encode summary: {e}"));
+            return;
+        }
+    };
 
     // Diagnostics: what this generation costs the store. `publish-rows` and
     // `publish-summary-bytes` are the row/byte counts; `publish-dependency-
@@ -937,13 +965,14 @@ fn emit_gc_stats(stats: &GcStats) {
 /// Encode the compact, render-ready summary for persistence: the projected
 /// effective spans (via the render DTO) plus committed totals. This is the
 /// bytes wrapped in the integrity envelope by `publish_generation` — the
-/// compact replacement for the former `bincode(ResolutionCore)`.
-fn encode_summary(rr: &RenderReady) -> Vec<u8> {
+/// compact replacement for the former `bincode(ResolutionCore)`. An encode
+/// failure is a publish failure (the caller fails closed on the cache).
+fn encode_summary(rr: &RenderReady) -> bincode::Result<Vec<u8>> {
     let dto = DriftSummary {
         spans: rr.full.iter().map(SpanResolvedDto::from).collect(),
         span_anchor_totals: rr.span_anchor_totals.clone(),
     };
-    bincode::serialize(&dto).expect("serialize DriftSummary for generation summary")
+    bincode::serialize(&dto)
 }
 
 /// Decode a verified summary back into the render-ready form. `Err(())` on any
