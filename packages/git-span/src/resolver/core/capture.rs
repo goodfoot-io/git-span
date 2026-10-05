@@ -436,7 +436,7 @@ fn load_committed(
         }
         if let Some(Observation::Declaration(summary)) = memo
             .as_ref()
-            .and_then(|m| m.lookup(&oid.to_string(), ObservationKind::Declaration))
+            .and_then(|m| m.lookup_in(current, &oid.to_string(), ObservationKind::Declaration))
         {
             spans.push((name, summary));
             continue;
@@ -468,7 +468,8 @@ fn load_committed(
         if bytes.len() <= MAX_ENTRY_BYTES
             && let Some(memo) = &mut memo
         {
-            memo.admit(
+            memo.admit_in(
+                current,
                 &oid.to_string(),
                 &Observation::Declaration(summary.clone()),
                 &[Witness {

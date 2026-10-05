@@ -4,7 +4,7 @@ packages/git-span-core/src/span_file.rs#L702-L878 rk64:932123be05c13784
 packages/git-span-core/src/span_file.rs#L974-L976 rk64:591fe59949279fd5
 packages/git-span-core/src/span_file.rs#L1031-L1060 rk64:dce2c886ab0c6a38
 packages/git-span/src/resolver/core/capture.rs#L105-L107 rk64:f3326b6c64ae198d
-packages/git-span/src/resolver/core/immutable_observation.rs#L133-L212 rk64:cf7b74c9991af75e
-packages/git-span/src/resolver/core/immutable_observation.rs#L266-L285 rk64:d99eeff7cd115845
+packages/git-span/src/resolver/core/immutable_observation.rs#L209-L320 rk64:1ecf35744fd05ae8
+packages/git-span/src/resolver/core/immutable_observation.rs#L400-L419 rk64:d99eeff7cd115845
 
 Successful declaration summaries preserve current parser acceptance, anchor-path normalization, and copy-detection semantics; changes to those semantics invalidate persisted summaries through the semantic epoch even when object bytes remain unchanged.

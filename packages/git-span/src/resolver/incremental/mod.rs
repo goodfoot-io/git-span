@@ -399,7 +399,7 @@ fn head_blob_content_digest(
     };
     if let Some(Observation::BlobDigest(digest)) = memo
         .as_ref()
-        .and_then(|m| m.lookup(oid_hex, ObservationKind::BlobDigest))
+        .and_then(|m| m.lookup_in(current, oid_hex, ObservationKind::BlobDigest))
     {
         return Some(hex_bytes(&digest));
     }
@@ -409,7 +409,8 @@ fn head_blob_content_digest(
     if bytes.len() <= MAX_ENTRY_BYTES
         && let Some(memo) = memo
     {
-        memo.admit(
+        memo.admit_in(
+            current,
             oid_hex,
             &Observation::BlobDigest(digest),
             &[Witness {

@@ -251,7 +251,7 @@ fn head_blob_path_map(
     let mut memo = ImmutableMemo::open(repo);
     if let Some(Observation::TreeMap(map)) = memo
         .as_ref()
-        .and_then(|m| m.lookup(&root.to_string(), ObservationKind::TreeMap))
+        .and_then(|m| m.lookup_in(current, &root.to_string(), ObservationKind::TreeMap))
     {
         return Ok(map.into_iter().collect());
     }
@@ -292,7 +292,12 @@ fn head_blob_path_map(
     }
     if cacheable && let Some(memo) = &mut memo {
         let sorted = map.iter().map(|(p, o)| (p.clone(), o.clone())).collect();
-        memo.admit(&root.to_string(), &Observation::TreeMap(sorted), &witnesses);
+        memo.admit_in(
+            current,
+            &root.to_string(),
+            &Observation::TreeMap(sorted),
+            &witnesses,
+        );
     }
     Ok(map)
 }

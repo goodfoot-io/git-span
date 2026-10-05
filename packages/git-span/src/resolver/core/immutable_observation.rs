@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 pub(crate) const MAX_ENTRY_BYTES: usize = 1024 * 1024;
 pub(crate) const MAX_ENTRIES: usize = 4096;
 pub(crate) const MAX_DATABASE_BYTES: usize = 32 * 1024 * 1024;
-const PAYLOAD_VERSION: u32 = 1;
+const PAYLOAD_VERSION: u32 = 2;
 
 /// Name-independent successful declaration facts; the consumer attaches its
 /// current name. Named parser failures are never memoized.
@@ -41,6 +41,67 @@ pub(crate) struct Witness {
     pub(crate) bytes: Vec<u8>,
 }
 
+/// Persisted form of a [`Witness`]: its raw byte length and BLAKE3 digest.
+/// Lookup proves current bytes against this seal, so persisted entries stay
+/// small enough that the working set fits the database budget.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SealedWitness {
+    oid: String,
+    tree: bool,
+    len: usize,
+    digest: [u8; 32],
+}
+
+impl SealedWitness {
+    fn seal(w: &Witness) -> Self {
+        Self {
+            oid: w.oid.clone(),
+            tree: w.tree,
+            len: w.bytes.len(),
+            digest: *blake3::hash(&w.bytes).as_bytes(),
+        }
+    }
+}
+
+/// The fields [`ImmutableMemo::shape_valid`] inspects, shared by admission
+/// witnesses and their persisted seals.
+struct WitnessShape<'a> {
+    oid: &'a str,
+    tree: bool,
+    len: usize,
+}
+
+impl<'a> From<&'a Witness> for WitnessShape<'a> {
+    fn from(w: &'a Witness) -> Self {
+        Self {
+            oid: &w.oid,
+            tree: w.tree,
+            len: w.bytes.len(),
+        }
+    }
+}
+
+impl<'a> From<&'a SealedWitness> for WitnessShape<'a> {
+    fn from(w: &'a SealedWitness) -> Self {
+        Self {
+            oid: &w.oid,
+            tree: w.tree,
+            len: w.len,
+        }
+    }
+}
+
+/// A validated admission awaiting [`ImmutableMemo::flush`].
+struct PendingRow {
+    key: String,
+    tag: u32,
+    count: u64,
+    payload: Vec<u8>,
+    digest: [u8; 32],
+    cost: usize,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Limits {
     pub(crate) entry_bytes: usize,
@@ -53,6 +114,13 @@ pub(crate) struct ImmutableMemo<'repo> {
     conn: rusqlite::Connection,
     limits: Limits,
     policy: [u8; 32],
+    pending: Vec<PendingRow>,
+}
+
+impl Drop for ImmutableMemo<'_> {
+    fn drop(&mut self) {
+        let _ = self.flush();
+    }
 }
 
 impl<'repo> ImmutableMemo<'repo> {
@@ -89,6 +157,7 @@ impl<'repo> ImmutableMemo<'repo> {
             conn,
             limits,
             policy,
+            pending: Vec::new(),
         };
         // Old/injected oversized files are reclaimed through SQLite, never
         // unlinked out from under another process's connection.
@@ -96,9 +165,16 @@ impl<'repo> ImmutableMemo<'repo> {
             memo.conn.execute_batch("DELETE FROM memo; VACUUM;").ok()?;
         }
         memo.bound_pages()?;
-        let tx = memo.conn.transaction().ok()?;
-        tx.execute("DELETE FROM memo WHERE rowid NOT IN (SELECT rowid FROM memo ORDER BY rowid DESC LIMIT ?1)", [limits.entries]).ok()?;
-        tx.commit().ok()?;
+        // Read-only probe first: an open that needs no trim takes no write lock.
+        let rows: usize = memo
+            .conn
+            .query_row("SELECT count(*) FROM memo", [], |r| r.get(0))
+            .ok()?;
+        if rows > limits.entries {
+            let tx = memo.conn.transaction().ok()?;
+            tx.execute("DELETE FROM memo WHERE rowid NOT IN (SELECT rowid FROM memo ORDER BY rowid DESC LIMIT ?1)", [limits.entries]).ok()?;
+            tx.commit().ok()?;
+        }
         Some(memo)
     }
 
@@ -144,26 +220,55 @@ impl<'repo> ImmutableMemo<'repo> {
         ))
     }
 
-    /// Each lookup independently rereads every witnessed object. A failed
-    /// availability/kind/byte check is a miss, never a proof of absence.
+    /// [`Self::lookup_in`] through a fresh independent reader.
+    #[cfg(test)]
     pub(crate) fn lookup(&self, oid: &str, kind: ObservationKind) -> Option<Observation> {
+        self.lookup_in(&CurrentReader::new(self.repo).ok()?, oid, kind)
+    }
+
+    /// Each lookup rereads every witnessed object through the caller's
+    /// boundary reader. A failed availability/kind/byte check is a miss, never
+    /// a proof of absence; a reader under another replacement policy never
+    /// reuses this memo's entries. Unflushed admissions are consulted first
+    /// and verified identically.
+    pub(crate) fn lookup_in(
+        &self,
+        reader: &CurrentReader,
+        oid: &str,
+        kind: ObservationKind,
+    ) -> Option<Observation> {
         crate::perf::record_immutable_miss();
+        if reader.policy != self.policy {
+            return None;
+        }
         let key = self.key(oid, kind)?;
-        let row = self.conn.query_row(
-            "SELECT kind, version, epoch, cardinality, payload, digest FROM memo
+        let pending = self.pending.iter().rev().find(|p| p.key == key).map(|p| {
+            (
+                p.tag,
+                PAYLOAD_VERSION,
+                super::capture::SEMANTIC_EPOCH,
+                p.count,
+                p.payload.clone(),
+                p.digest.to_vec(),
+            )
+        });
+        let row = pending.map(Ok).unwrap_or_else(|| {
+            self.conn.query_row(
+                "SELECT kind, version, epoch, cardinality, payload, digest FROM memo
              WHERE key=?1 AND length(payload)<=?2 AND length(digest)=32",
-            rusqlite::params![key, self.limits.entry_bytes],
-            |r| {
-                Ok((
-                    r.get::<_, u32>(0)?,
-                    r.get::<_, u32>(1)?,
-                    r.get::<_, u32>(2)?,
-                    r.get::<_, u64>(3)?,
-                    r.get::<_, Vec<u8>>(4)?,
-                    r.get::<_, Vec<u8>>(5)?,
-                ))
-            },
-        );
+                rusqlite::params![key, self.limits.entry_bytes],
+                |r| {
+                    Ok((
+                        r.get::<_, u32>(0)?,
+                        r.get::<_, u32>(1)?,
+                        r.get::<_, u32>(2)?,
+                        r.get::<_, u64>(3)?,
+                        r.get::<_, Vec<u8>>(4)?,
+                        r.get::<_, Vec<u8>>(5)?,
+                    ))
+                },
+            )
+        });
         let (tag, version, epoch, count, bytes, digest) = match row {
             Ok(row) => row,
             Err(_) => return None,
@@ -182,16 +287,19 @@ impl<'repo> ImmutableMemo<'repo> {
             let payload: Payload = serde_json::from_slice(&bytes).ok()?;
             if payload.value.kind() != kind
                 || payload.value.cardinality() != count
-                || !self.shape_valid(oid, &payload.value, &payload.witnesses)
+                || !self.shape_valid(
+                    oid,
+                    &payload.value,
+                    &payload
+                        .witnesses
+                        .iter()
+                        .map(WitnessShape::from)
+                        .collect::<Vec<_>>(),
+                )
             {
                 return None;
             }
-            let reader = CurrentReader::new(self.repo).ok()?;
-            if !payload
-                .witnesses
-                .iter()
-                .all(|w| witness_current(&reader, w))
-            {
+            if !payload.witnesses.iter().all(|w| sealed_current(reader, w)) {
                 return None;
             }
             Some(payload)
@@ -200,7 +308,7 @@ impl<'repo> ImmutableMemo<'repo> {
             Some(payload) => {
                 crate::perf::record_immutable_hit(
                     kind.tag(),
-                    payload.witnesses.iter().map(|w| w.bytes.len() as u64).sum(),
+                    payload.witnesses.iter().map(|w| w.len as u64).sum(),
                 );
                 Some(payload.value)
             }
@@ -211,7 +319,7 @@ impl<'repo> ImmutableMemo<'repo> {
         }
     }
 
-    fn shape_valid(&self, oid: &str, value: &Observation, witnesses: &[Witness]) -> bool {
+    fn shape_valid(&self, oid: &str, value: &Observation, witnesses: &[WitnessShape<'_>]) -> bool {
         if witnesses.is_empty()
             || witnesses.len() > MAX_ENTRIES
             || value.cardinality() > MAX_ENTRIES as u64
@@ -220,9 +328,9 @@ impl<'repo> ImmutableMemo<'repo> {
         }
         let mut seen = std::collections::BTreeSet::new();
         for w in witnesses {
-            if w.bytes.len() > self.limits.entry_bytes
-                || self.key(&w.oid, value.kind()).is_none()
-                || !seen.insert(&w.oid)
+            if w.len > self.limits.entry_bytes
+                || self.key(w.oid, value.kind()).is_none()
+                || !seen.insert(w.oid)
             {
                 return false;
             }
@@ -247,19 +355,45 @@ impl<'repo> ImmutableMemo<'repo> {
 
     /// Validate derivation/closure once, before sealing the persisted envelope.
     /// Reuse verifies its seal and fresh byte witnesses without redecoding trees.
+    #[cfg(test)]
     pub(crate) fn admit(&mut self, oid: &str, value: &Observation, witnesses: &[Witness]) {
-        let _ = self.admit_inner(oid, value, witnesses);
+        if let Ok(reader) = CurrentReader::new(self.repo) {
+            self.admit_in(&reader, oid, value, witnesses);
+        }
     }
 
-    fn admit_inner(&mut self, oid: &str, value: &Observation, witnesses: &[Witness]) -> Option<()> {
+    /// Admission proves every witness against the caller's boundary reader.
+    pub(crate) fn admit_in(
+        &mut self,
+        reader: &CurrentReader,
+        oid: &str,
+        value: &Observation,
+        witnesses: &[Witness],
+    ) {
+        let _ = self.admit_inner(reader, oid, value, witnesses);
+    }
+
+    fn admit_inner(
+        &mut self,
+        reader: &CurrentReader,
+        oid: &str,
+        value: &Observation,
+        witnesses: &[Witness],
+    ) -> Option<()> {
+        if reader.policy != self.policy {
+            return None;
+        }
         let key = self.key(oid, value.kind())?;
         let raw_size = witnesses
             .iter()
             .try_fold(0usize, |sum, w| sum.checked_add(w.bytes.len()))?;
-        let reader = CurrentReader::new(self.repo).ok()?;
         if raw_size > self.limits.entry_bytes
-            || !self.shape_valid(oid, value, witnesses)
-            || !witnesses.iter().all(|w| witness_current(&reader, w))
+            || !self.shape_valid(
+                oid,
+                value,
+                &witnesses.iter().map(WitnessShape::from).collect::<Vec<_>>(),
+            )
+            || !witnesses.iter().all(|w| witness_current(reader, w))
         {
             return None;
         }
@@ -294,15 +428,22 @@ impl<'repo> ImmutableMemo<'repo> {
         #[derive(Serialize)]
         struct BorrowedPayload<'a> {
             value: &'a Observation,
-            witnesses: &'a [Witness],
+            witnesses: &'a [SealedWitness],
         }
+        let sealed: Vec<SealedWitness> = witnesses.iter().map(SealedWitness::seal).collect();
         let mut writer = BoundedWriter {
             bytes: Vec::new(),
             limit: self.limits.entry_bytes,
         };
-        serde_json::to_writer(&mut writer, &BorrowedPayload { value, witnesses }).ok()?;
+        serde_json::to_writer(
+            &mut writer,
+            &BorrowedPayload {
+                value,
+                witnesses: &sealed,
+            },
+        )
+        .ok()?;
         let bytes = writer.bytes;
-        self.bound_pages()?;
         let count = value.cardinality();
         let digest = envelope_digest(
             &key,
@@ -312,10 +453,7 @@ impl<'repo> ImmutableMemo<'repo> {
             count,
             &bytes,
         );
-        let page_size: usize = self
-            .conn
-            .query_row("PRAGMA page_size", [], |r| r.get(0))
-            .ok()?;
+        let page_size = self.page_size()?;
         let payload_budget = self.limits.database_bytes.checked_sub(4 * page_size)?;
         // Reserve schema/pointer-map pages and conservatively round each row
         // plus index overhead to pages. SQLite's own page ceiling remains
@@ -328,32 +466,84 @@ impl<'repo> ImmutableMemo<'repo> {
         if entry_cost > payload_budget {
             return None;
         }
+        self.pending.retain(|p| p.key != key);
+        self.pending.push(PendingRow {
+            key,
+            tag: value.kind().tag(),
+            count,
+            payload: bytes,
+            digest,
+            cost: entry_cost,
+        });
+        // Bound buffered memory to one full table's worth of admissions.
+        if self.pending.len() >= self.limits.entries {
+            self.flush()?;
+        }
+        Some(())
+    }
+
+    fn page_size(&self) -> Option<usize> {
+        self.conn
+            .query_row("PRAGMA page_size", [], |r| r.get(0))
+            .ok()
+    }
+
+    /// Persist buffered admissions in one write transaction. Replacing a row
+    /// moves it to the newest admission position; count and page budgets are
+    /// enforced inside the transaction by evicting the oldest rows. Runs on
+    /// drop; a failure discards the buffer (fail closed on the cache only).
+    pub(crate) fn flush(&mut self) -> Option<()> {
+        if self.pending.is_empty() {
+            return Some(());
+        }
+        let rows = std::mem::take(&mut self.pending);
+        self.bound_pages()?;
+        let page_size = self.page_size()?;
+        let payload_budget = self.limits.database_bytes.checked_sub(4 * page_size)?;
+        const COST: &str = "((length(payload)+length(key)+128+?1-1)/?1+1)*?1";
         let tx = self.conn.transaction().ok()?;
-        // Replacing a row moves it to the newest admission position. Count and
-        // page budgets are enforced inside the write transaction.
-        tx.execute("DELETE FROM memo WHERE key=?1", [&key]).ok()?;
-        loop {
-            let occupied: usize = tx
-                .query_row(
-                    "SELECT coalesce(sum(((length(payload)+length(key)+128+?1-1)/?1+1)*?1),0) FROM memo",
-                    [page_size],
-                    |r| r.get(0),
-                )
-                .ok()?;
-            if occupied.checked_add(entry_cost)? <= payload_budget {
-                break;
-            }
-            tx.execute(
-                "DELETE FROM memo WHERE rowid=(SELECT min(rowid) FROM memo)",
-                [],
+        let mut occupied: usize = tx
+            .query_row(
+                &format!("SELECT coalesce(sum({COST}),0) FROM memo"),
+                [page_size],
+                |r| r.get(0),
             )
             .ok()?;
+        let mut count: usize = tx
+            .query_row("SELECT count(*) FROM memo", [], |r| r.get(0))
+            .ok()?;
+        for row in rows {
+            let existing: Option<usize> = tx
+                .query_row(
+                    &format!("SELECT {COST} FROM memo WHERE key=?2"),
+                    rusqlite::params![page_size, row.key],
+                    |r| r.get(0),
+                )
+                .ok();
+            if let Some(cost) = existing {
+                tx.execute("DELETE FROM memo WHERE key=?1", [&row.key])
+                    .ok()?;
+                occupied = occupied.saturating_sub(cost);
+                count = count.saturating_sub(1);
+            }
+            while occupied.checked_add(row.cost)? > payload_budget || count >= self.limits.entries {
+                let (rowid, cost): (i64, usize) = tx
+                    .query_row(
+                        &format!("SELECT rowid, {COST} FROM memo ORDER BY rowid LIMIT 1"),
+                        [page_size],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .ok()?;
+                tx.execute("DELETE FROM memo WHERE rowid=?1", [rowid])
+                    .ok()?;
+                occupied = occupied.saturating_sub(cost);
+                count = count.saturating_sub(1);
+            }
+            tx.execute("INSERT INTO memo(key,kind,version,epoch,cardinality,payload,digest) VALUES(?1,?2,?3,?4,?5,?6,?7)", rusqlite::params![row.key,row.tag,PAYLOAD_VERSION,super::capture::SEMANTIC_EPOCH,row.count,row.payload,row.digest.as_slice()]).ok()?;
+            occupied = occupied.checked_add(row.cost)?;
+            count += 1;
         }
-        let retain = self.limits.entries.checked_sub(1)?;
-        tx.execute("DELETE FROM memo WHERE rowid NOT IN (SELECT rowid FROM memo ORDER BY rowid DESC LIMIT ?1)", [retain]).ok()?;
-        tx.execute("INSERT INTO memo(key,kind,version,epoch,cardinality,payload,digest) VALUES(?1,?2,?3,?4,?5,?6,?7)", rusqlite::params![key,value.kind().tag(),PAYLOAD_VERSION,super::capture::SEMANTIC_EPOCH,count,bytes,digest.as_slice()]).ok()?;
-        tx.commit().ok()?;
-        Some(())
+        tx.commit().ok()
     }
 }
 
@@ -361,7 +551,7 @@ impl<'repo> ImmutableMemo<'repo> {
 #[serde(deny_unknown_fields)]
 struct Payload {
     value: Observation,
-    witnesses: Vec<Witness>,
+    witnesses: Vec<SealedWitness>,
 }
 
 impl ObservationKind {
@@ -418,6 +608,20 @@ fn valid_path(path: &str) -> bool {
         && !path
             .split('/')
             .any(|p| p.is_empty() || p == "." || p == "..")
+}
+
+fn sealed_current(reader: &CurrentReader, w: &SealedWitness) -> bool {
+    let Ok(oid) = gix::ObjectId::from_hex(w.oid.as_bytes()) else {
+        return false;
+    };
+    let kind = if w.tree {
+        gix::object::Kind::Tree
+    } else {
+        gix::object::Kind::Blob
+    };
+    reader
+        .read(oid, kind)
+        .is_ok_and(|bytes| bytes.len() == w.len && blake3::hash(&bytes).as_bytes() == &w.digest)
 }
 
 fn witness_current(reader: &CurrentReader, w: &Witness) -> bool {
@@ -808,6 +1012,7 @@ mod tests {
             "key = 'wrong'",
         ] {
             memo.admit(&oid, &value, &witnesses);
+            memo.flush().unwrap();
             memo.conn
                 .execute(&format!("UPDATE memo SET {mutation}"), [])
                 .unwrap();
@@ -872,6 +1077,7 @@ mod tests {
         for source in [b"first".as_slice(), b"second", b"third"] {
             let (oid, value, witnesses) = blob(&repo, source);
             memo.admit(&oid, &value, &witnesses);
+            memo.flush().unwrap();
         }
         let count: usize = memo
             .conn
@@ -1183,8 +1389,16 @@ mod tests {
         let (oid, value, witnesses) = blob(&repo, b"original");
         let mut memo = ImmutableMemo::open(&repo).unwrap();
         let key = memo.key(&oid, ObservationKind::BlobDigest).unwrap();
-        for mutation in ["bad-oid", "duplicate-witness", "wrong-bytes", "truncated"] {
+        for mutation in [
+            "bad-oid",
+            "duplicate-witness",
+            "wrong-length",
+            "wrong-digest",
+            "raw-bytes",
+            "truncated",
+        ] {
             memo.admit(&oid, &value, &witnesses);
+            memo.flush().unwrap();
             let raw: Vec<u8> = memo
                 .conn
                 .query_row("SELECT payload FROM memo WHERE key=?1", [&key], |r| {
@@ -1198,7 +1412,9 @@ mod tests {
                     let item = json["witnesses"][0].clone();
                     json["witnesses"].as_array_mut().unwrap().push(item);
                 }
-                "wrong-bytes" => json["witnesses"][0]["bytes"] = serde_json::json!([1, 2, 3]),
+                "wrong-length" => json["witnesses"][0]["len"] = 9.into(),
+                "wrong-digest" => json["witnesses"][0]["digest"] = serde_json::json!(vec![0u8; 32]),
+                "raw-bytes" => json["witnesses"][0]["bytes"] = serde_json::json!([1, 2, 3]),
                 _ => {}
             }
             let mut raw = serde_json::to_vec(&json).unwrap();
@@ -1250,6 +1466,7 @@ mod tests {
                 first = Some(oid.clone());
             }
             memo.admit(&oid, &value, &witnesses);
+            memo.flush().unwrap();
             last = Some((oid, value));
             assert!(memo.database_size().unwrap() <= limits.database_bytes);
         }
@@ -1260,16 +1477,63 @@ mod tests {
         let (oid, value) = last.unwrap();
         assert_eq!(memo.lookup(&oid, ObservationKind::BlobDigest), Some(value));
         drop(memo);
-        let smaller = ImmutableMemo::open_with_limits(
-            &repo,
-            Limits {
-                database_bytes: 16 * 1024,
-                ..limits
-            },
-        )
-        .unwrap();
-        assert!(smaller.database_size().unwrap() <= 16 * 1024);
+        // An old or injected file larger than the budget is reclaimed at open.
+        rusqlite::Connection::open(crate::git::common_dir(&repo).join("span/immutable.db"))
+            .unwrap()
+            .execute(
+                "INSERT INTO memo(key,kind,version,epoch,cardinality,payload,digest) VALUES('injected',0,0,0,0,zeroblob(65536),zeroblob(32))",
+                [],
+            )
+            .unwrap();
+        let smaller = ImmutableMemo::open_with_limits(&repo, limits).unwrap();
+        assert!(smaller.database_size().unwrap() <= limits.database_bytes);
         assert_eq!(smaller.lookup(&oid, ObservationKind::BlobDigest), None);
+    }
+
+    #[test]
+    fn immutable_working_set_larger_than_budget_in_raw_bytes_still_fits() {
+        let (_dir, repo) = fixture();
+        let limits = Limits {
+            entry_bytes: MAX_ENTRY_BYTES,
+            entries: 64,
+            database_bytes: 1024 * 1024,
+        };
+        let mut memo = ImmutableMemo::open_with_limits(&repo, limits).unwrap();
+        let mut admitted = Vec::new();
+        for byte in 1..=32u8 {
+            let (oid, value, witnesses) = blob(&repo, &vec![byte; 64 * 1024]);
+            memo.admit(&oid, &value, &witnesses);
+            admitted.push((oid, value));
+        }
+        drop(memo);
+        let memo = ImmutableMemo::open_with_limits(&repo, limits).unwrap();
+        for (oid, value) in admitted {
+            assert_eq!(
+                memo.lookup(&oid, ObservationKind::BlobDigest),
+                Some(value),
+                "2 MiB of witnessed source must not evict itself from a 1 MiB memo"
+            );
+        }
+    }
+
+    #[test]
+    fn immutable_admissions_persist_in_one_flush() {
+        let (_dir, repo) = fixture();
+        let mut memo = ImmutableMemo::open(&repo).unwrap();
+        let rows = |repo: &gix::Repository| -> usize {
+            rusqlite::Connection::open(crate::git::common_dir(repo).join("span/immutable.db"))
+                .unwrap()
+                .query_row("SELECT count(*) FROM memo", [], |r| r.get(0))
+                .unwrap()
+        };
+        for source in [b"first".as_slice(), b"second", b"third"] {
+            let (oid, value, witnesses) = blob(&repo, source);
+            memo.admit(&oid, &value, &witnesses);
+            assert_eq!(memo.lookup(&oid, ObservationKind::BlobDigest), Some(value));
+        }
+        assert_eq!(rows(&repo), 0, "admission must not write per entry");
+        drop(memo);
+        assert_eq!(rows(&repo), 3);
     }
 
     #[test]

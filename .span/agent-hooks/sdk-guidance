@@ -1,5 +1,5 @@
 packages/agent-hooks/CLAUDE.md#L1-L1 rk64:489a2ebc893bb7e6
-packages/agent-hooks/src/claude/post-tool-use.ts#L10-L15 rk64:0999eb74fb90f8ac
+packages/agent-hooks/src/claude/post-tool-use.ts#L11-L16 rk64:0999eb74fb90f8ac
 packages/agent-hooks/src/codex/post-tool-use.ts#L4-L9 rk64:b8ba4f83c2b1171b
 
 The package guidance names the unified SDK skill, and representative Claude and Codex adapters preserve the host-specific SDK imports it describes.
