@@ -13,8 +13,6 @@
 //!   `drift_spans`, the concurrency SHA-trailer guard.
 //! - [`attribution`] — `drift_locus` HEAD-source forward walk.
 
-#![allow(dead_code)]
-
 pub mod attribution;
 pub(crate) mod bloom;
 pub(crate) mod core;

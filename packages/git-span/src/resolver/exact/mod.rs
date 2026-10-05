@@ -487,10 +487,10 @@ fn drift_spans_new_store_inner(
     // The exact read missed, so this call is a (potentially expensive) rebuild.
     // Serialize every same-key rebuilder on the key's shard so exactly ONE runs
     // the resolve + publish while the rest block, then recheck below and read the
-    // sibling's published result — the singleflight discipline the store already
-    // encapsulates in `build_or_get`, replicated inline here because the miss
-    // tail is a tiered flow (incremental → dirty → cold), not a single builder
-    // closure. Distinct keys hash to distinct shards and rebuild concurrently.
+    // sibling's published result. The discipline lives inline here because the
+    // miss tail is a tiered flow (incremental → dirty → cold), not a single
+    // builder closure. Distinct keys hash to distinct shards and rebuild
+    // concurrently.
     //
     // A shard-acquire fault is a fail-closed bypass to the authoritative
     // resolver, never a command failure — exactly like every other store fault

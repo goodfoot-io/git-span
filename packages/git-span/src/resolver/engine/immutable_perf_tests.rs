@@ -135,7 +135,5 @@ fn immutable_perf_retained_and_named_fix_pass_entrypoints_emit_independently() {
     assert_eq!(emitted(), [0; 6]);
     resolve_named_spans_with_source_layers(&repo, ".span", &names, options, layers).unwrap();
     assert_eq!(emitted(), [0; 6]);
-    resolve_named_spans_parallel(&repo, ".span", &names, options, 2).unwrap();
-    assert_eq!(emitted(), [0; 6]);
     crate::perf::init(false);
 }

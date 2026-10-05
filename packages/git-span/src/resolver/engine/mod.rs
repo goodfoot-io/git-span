@@ -966,8 +966,8 @@ pub(crate) fn capture_resolution_core(
     // task its own `EngineLocal` (own `FilterProcess`/`LfsState` subprocess
     // handles, own `layers` scratch) and its own thread-local `gix::Repository`
     // clone — `gix::Repository` is `!Sync`, so it is materialized per task from
-    // a `Send + Sync` `ThreadSafeRepository`, mirroring the repo-clone-per-worker
-    // precedent in `resolve_named_spans_parallel`. `shared`/`concurrent` are the
+    // a `Send + Sync` `ThreadSafeRepository` in the `map_init` initializer and
+    // reused for every item that task processes. `shared`/`concurrent` are the
     // read-only context and the interior-mutable memo store, shared by plain
     // `&`. `.with_min_len(min_anchors_per_task)` floors rayon's split
     // granularity: the primary cold `drift` path passes the low
@@ -1204,167 +1204,11 @@ fn emit_session_walk_counters(session: &ConcurrentSession) {
     crate::resolver::linemap::emit_counters();
 }
 
-/// A unit of work for the parallel baseline build: either a pre-parsed span
-/// a worker must resolve, or a result already decided on the main thread
-/// (read error / missing span file).
-enum ParallelSlot {
-    Resolve(Span),
-    Done(std::result::Result<SpanResolved, Error>),
-}
-
-/// Resolve `names` in parallel across up to `thread_count` workers using a
-/// work-stealing chunk queue. Returns per-name results in input order,
-/// matching `resolve_named_spans` semantics (a missing span file yields
-/// `Err(SpanNotFound)` for that name).
-///
-/// Span files are read and parsed once on the calling thread; workers share
-/// the parsed corpus. Each worker owns one `EngineState` for its lifetime,
-/// so session caches (blob OIDs, line indexes, relocation texts) amortize
-/// across every chunk that worker steals. Chunks are deliberately smaller
-/// than `names.len() / thread_count`: static contiguous partitioning lets
-/// one expensive run of spans (e.g. a cluster of relocation-scanning
-/// anchors) serialize behind a single straggler thread while its siblings
-/// exit early.
-pub(crate) fn resolve_named_spans_parallel(
-    repo: &gix::Repository,
-    span_root: &str,
-    names: &[String],
-    options: EngineOptions,
-    thread_count: usize,
-) -> Result<NamedSpanResults> {
-    let _immutable = crate::perf::immutable_invocation();
-    use std::sync::Mutex;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    let _perf = crate::perf::span("resolver.resolve-named-spans-parallel");
-
-    // Read every span file concurrently, then map each raw outcome to a slot.
-    let slots: Vec<(String, ParallelSlot)> = {
-        let _perf = crate::perf::span("resolver.read-span-pairs");
-        crate::span::read::read_effective_each_parallel(repo, span_root, names)
-            .into_iter()
-            .zip(names)
-            .map(|(outcome, name)| {
-                let slot = match outcome {
-                    Ok(Some(span)) => ParallelSlot::Resolve(span),
-                    Ok(None) => ParallelSlot::Done(Err(Error::SpanNotFound(name.clone()))),
-                    Err(e) => ParallelSlot::Done(Err(e)),
-                };
-                (name.clone(), slot)
-            })
-            .collect()
-    };
-
-    // Chunk granularity: a few chunks per worker balances stealing overhead
-    // (one reverse walk per chunk) against straggler smoothing.
-    let thread_count = thread_count.max(1);
-    let chunk_size = names.len().div_ceil(thread_count * 4).max(1);
-    let chunk_count = names.len().div_ceil(chunk_size);
-    let workers = thread_count.min(chunk_count);
-
-    let next_chunk = AtomicUsize::new(0);
-    let resolved: Mutex<Vec<(usize, std::result::Result<SpanResolved, Error>)>> =
-        Mutex::new(Vec::new());
-    let fatal: Mutex<Option<Error>> = Mutex::new(None);
-
-    std::thread::scope(|s| {
-        for _ in 0..workers {
-            let repo = repo.clone();
-            let slots = &slots;
-            let next_chunk = &next_chunk;
-            let resolved = &resolved;
-            let fatal = &fatal;
-            s.spawn(move || {
-                let _perf = crate::perf::span("resolver.resolve-named-spans");
-                let mut state =
-                    match EngineState::new(&repo, options.layers, options.needs_all_layers) {
-                        Ok(s) => s,
-                        Err(e) => {
-                            fatal.lock().unwrap().get_or_insert(e);
-                            return;
-                        }
-                    };
-                let mut out: Vec<(usize, std::result::Result<SpanResolved, Error>)> = Vec::new();
-                loop {
-                    if fatal.lock().unwrap().is_some() {
-                        break;
-                    }
-                    let chunk_idx = next_chunk.fetch_add(1, Ordering::Relaxed);
-                    let start = chunk_idx * chunk_size;
-                    if start >= slots.len() {
-                        break;
-                    }
-                    let end = (start + chunk_size).min(slots.len());
-                    let chunk = &slots[start..end];
-
-                    // Chunk-scoped reverse walk over the pre-parsed spans,
-                    // mirroring the per-batch walk in
-                    // `resolve_named_spans_with_state`.
-                    let walk_pairs: Vec<(String, Span)> = chunk
-                        .iter()
-                        .filter_map(|(name, slot)| match slot {
-                            ParallelSlot::Resolve(m) => Some((name.clone(), m.clone())),
-                            ParallelSlot::Done(_) => None,
-                        })
-                        .collect();
-                    if !walk_pairs.is_empty()
-                        && let Err(e) = state.concurrent.build_reverse_walk(
-                            &mut state.shared,
-                            &repo,
-                            &walk_pairs,
-                        )
-                    {
-                        fatal.lock().unwrap().get_or_insert(e);
-                        break;
-                    }
-
-                    for (offset, (_name, slot)) in chunk.iter().enumerate() {
-                        let ParallelSlot::Resolve(span) = slot else {
-                            continue;
-                        };
-                        let r = resolve_loaded_span_with_state(
-                            &repo,
-                            &mut state,
-                            span.clone(),
-                            options,
-                        );
-                        out.push((start + offset, r));
-                    }
-                }
-                emit_session_walk_counters(&state.concurrent);
-                state.finish(&repo);
-                resolved.lock().unwrap().extend(out);
-            });
-        }
-    });
-
-    if let Some(e) = fatal.into_inner().unwrap() {
-        return Err(e);
-    }
-
-    let mut by_index: std::collections::HashMap<usize, std::result::Result<SpanResolved, Error>> =
-        resolved.into_inner().unwrap().into_iter().collect();
-    let mut out: NamedSpanResults = Vec::with_capacity(slots.len());
-    for (i, (name, slot)) in slots.into_iter().enumerate() {
-        match slot {
-            ParallelSlot::Done(r) => out.push((name, r)),
-            ParallelSlot::Resolve(_) => {
-                let r = by_index
-                    .remove(&i)
-                    .expect("every Resolve slot is processed when no fatal error is recorded");
-                out.push((name, r));
-            }
-        }
-    }
-    Ok(out)
-}
-
 /// Result of a drift-spans resolve pass.
 struct DriftSpansOutput {
     spans: Vec<SpanResolved>,
     trace_rows: Vec<crate::perf::TraceRow>,
     source_layers: Option<SourceLayers>,
-    index_changed: bool,
 }
 
 fn drift_spans_inner(
@@ -1567,13 +1411,11 @@ fn drift_spans_inner(
          resolve-anchor.* names per-anchor distribution",
     );
     let trace_rows = state.concurrent.per_anchor_trace.take().unwrap_or_default();
-    let (source_layers, index_changed) = if retain_layers {
-        let layers = state.finish_retaining_layers(repo);
-        let changed = layers.index_changed;
-        (Some(layers), changed)
+    let source_layers = if retain_layers {
+        Some(state.finish_retaining_layers(repo))
     } else {
-        let changed = state.finish(repo);
-        (None, changed)
+        state.finish(repo);
+        None
     };
     if out.len() > 1 {
         sort_spans_by_anchor_path(&mut out);
@@ -1582,7 +1424,6 @@ fn drift_spans_inner(
         spans: out,
         trace_rows,
         source_layers,
-        index_changed,
     })
 }
 
@@ -2175,7 +2016,6 @@ mod tests {
                     hunks: vec![],
                     new_blob: None,
                     deleted: false,
-                    intent_to_add: false,
                 },
             );
         }
@@ -2190,7 +2030,6 @@ mod tests {
                     hunks: vec![],
                     new_blob: None,
                     deleted: false,
-                    intent_to_add: false,
                 },
             );
         }

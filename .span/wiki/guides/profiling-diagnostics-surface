@@ -11,7 +11,7 @@ packages/git-span/src/resolver/exact/mod.rs#L321-L330 rk64:c6f84db776aca3fc
 packages/git-span/src/resolver/exact/mod.rs#L786-L919 rk64:7a416c813a2ee65e
 packages/git-span/src/resolver/store/maintenance.rs#L7-L8 rk64:8f13f3a6fc9629bf
 packages/git-span/src/resolver/store/maintenance.rs#L55-L96 rk64:8a1a078b5be3b74e
-packages/git-span/src/resolver/store/mod.rs#L1-L20 rk64:5ff7f3b1be2832ca
+packages/git-span/src/resolver/store/mod.rs#L1-L21 rk64:5d336aa16cf49b87
 wiki/guides/profiling-git-span-drift.md#L43-L67 rk64:69c4877a4564145b
 wiki/guides/profiling-git-span-drift.md#L96-L197 rk64:fa663146812ac114
 

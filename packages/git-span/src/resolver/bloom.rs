@@ -247,7 +247,6 @@ impl CommitGraphBloom {
     /// Returns `Some(pos)` where `pos` is a `u32` suitable for passing
     /// to `maybe_contains`. Returns `None` when the OID is not found in
     /// this commit-graph file.
-    #[allow(dead_code)]
     pub(crate) fn commit_position(&self, oid: &ObjectId) -> Option<u32> {
         let bytes = oid.as_bytes();
         let first_byte = bytes[0] as usize;

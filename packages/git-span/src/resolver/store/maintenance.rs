@@ -95,8 +95,9 @@ impl CacheStore {
         Ok(())
     }
 
-    /// Recheck non-live eligibility inside the deletion transaction. Generic
-    /// policy GC retains its existing deletion contract.
+    /// Recheck non-live eligibility inside the deletion transaction, without
+    /// the reuse-buffer recheck: lets tests drive the production deletion
+    /// transaction under a caller-chosen victim order.
     #[cfg(test)]
     pub(super) fn gc_delete_non_live(&mut self, key_hex: &str) -> StoreResult<DeletionStats> {
         self.delete_non_live(key_hex, false)

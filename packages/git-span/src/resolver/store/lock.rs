@@ -26,15 +26,13 @@ use std::path::{Path, PathBuf};
 
 use fs4::fs_std::FileExt;
 
-use super::error::{BypassReason, StoreError, map_io};
+use super::error::{StoreError, map_io};
 use super::schema::{BUILD_SHARD_COUNT, BUILD_SHARD_PREFIX, INIT_LOCK_BASENAME};
 
 /// An acquired exclusive lock. Releasing happens on drop (via the kernel when
 /// the `File` closes); `_file` is kept alive for exactly that reason.
 pub(crate) struct LockGuard {
     _file: File,
-    #[allow(dead_code)]
-    path: PathBuf,
 }
 
 fn open_lock_file(path: &Path) -> Result<File, StoreError> {
@@ -48,7 +46,7 @@ pub(crate) fn acquire_init_lock(dir: &Path) -> Result<LockGuard, StoreError> {
     let file = open_lock_file(&path)?;
     file.lock_exclusive()
         .map_err(|e| map_io(e, &format!("lock init `{}`", path.display())))?;
-    Ok(LockGuard { _file: file, path })
+    Ok(LockGuard { _file: file })
 }
 
 /// Which build-lock shard a canonical key hashes to. A fixed function of the
@@ -70,37 +68,12 @@ pub(crate) fn acquire_build_shard(dir: &Path, shard: usize) -> Result<LockGuard,
     let file = open_lock_file(&path)?;
     file.lock_exclusive()
         .map_err(|e| map_io(e, &format!("lock shard `{}`", path.display())))?;
-    Ok(LockGuard { _file: file, path })
-}
-
-/// Try to acquire a build-lock shard without blocking. Returns
-/// `Ok(None)` when another holder has it (mapped to
-/// [`BypassReason::LockContended`] by callers that require exclusivity).
-pub(crate) fn try_acquire_build_shard(
-    dir: &Path,
-    shard: usize,
-) -> Result<Option<LockGuard>, StoreError> {
-    let path = shard_path(dir, shard);
-    let file = open_lock_file(&path)?;
-    let got = file
-        .try_lock_exclusive()
-        .map_err(|e| map_io(e, &format!("try-lock shard `{}`", path.display())))?;
-    if got {
-        Ok(Some(LockGuard { _file: file, path }))
-    } else {
-        Ok(None)
-    }
+    Ok(LockGuard { _file: file })
 }
 
 /// Number of build-lock shards this store uses.
 pub(crate) fn build_shard_count() -> usize {
     BUILD_SHARD_COUNT
-}
-
-/// Convenience for callers that treat a contended shard as a bypass.
-#[allow(dead_code)]
-pub(crate) fn contended() -> StoreError {
-    StoreError::new(BypassReason::LockContended, "build shard contended")
 }
 
 /// Try to own shared maintenance without waiting for a sibling's discovery.
@@ -111,5 +84,5 @@ pub(crate) fn try_acquire_maintenance(dir: &Path) -> Result<Option<LockGuard>, S
     let got = file
         .try_lock_exclusive()
         .map_err(|e| map_io(e, &format!("try-lock maintenance `{}`", path.display())))?;
-    Ok(got.then_some(LockGuard { _file: file, path }))
+    Ok(got.then_some(LockGuard { _file: file }))
 }

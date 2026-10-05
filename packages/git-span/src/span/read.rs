@@ -167,8 +167,10 @@ enum LoadSlot {
 /// `gix::Repository`'s `Clone` impl) and builds its own `SpanFileReader`.
 /// `Repository` is `Send` (the `parallel` gix feature, active here transitively
 /// via `max-performance-safe`), so moving an owned clone into a scoped thread
-/// is sound. This mirrors the established pattern in
-/// `resolver::engine::resolve_named_spans_parallel`.
+/// is sound. The resolver's anchor fork
+/// (`resolver::engine::capture_resolution_core`) gets the same
+/// one-repository-per-worker property from rayon `map_init` instead,
+/// materializing each task's handle from a `ThreadSafeRepository`.
 fn read_effective_parallel(
     repo: &gix::Repository,
     span_root: &str,
