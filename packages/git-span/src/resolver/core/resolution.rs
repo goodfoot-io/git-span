@@ -8,9 +8,9 @@
 //!
 //! Every anchor keeps one drift observation per layer (Head, Index,
 //! Worktree) rather than the single collapsed view `AnchorResolved` carries
-//! today. `super::project::project_committed` and `project_effective`
-//! reconstruct the two views deterministically by selecting/relabeling
-//! these observations — no re-resolution.
+//! today. `super::project::project_effective` reconstructs the committed
+//! (`LayerSet::committed_only()`) and effective views deterministically by
+//! selecting/relabeling these observations — no re-resolution.
 
 use blake3::Hasher;
 use serde::{Deserialize, Serialize};
@@ -178,9 +178,8 @@ pub(crate) struct DefinitionOrdinal {
 
 impl DefinitionOrdinal {
     /// Deterministic digest of `(anchor_id, anchor_sha, path, extent)` —
-    /// used both as the ordinal's `definition_digest` input and to prove
-    /// two candidate ordinals are byte-identical before treating them as
-    /// the same entry during merge.
+    /// the ordinal's `definition_digest`, distinguishing two definitions
+    /// that share an address but not content.
     pub(crate) fn digest_definition(
         anchor_id: &str,
         anchor_sha: &str,
@@ -229,25 +228,4 @@ pub(crate) struct SpanCore {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ResolutionCore {
     pub(crate) spans: Vec<SpanCore>,
-}
-
-impl ResolutionCore {
-    /// Merge `other` into `self`, span-by-span: a span present in both is
-    /// replaced by `other`'s copy (later-wins, matching "last write wins"
-    /// dedup elsewhere in this crate); ordinal identity for every
-    /// surviving anchor is carried through unchanged, never
-    /// address-collapsed. Order is: spans only in `self` (original
-    /// position), then spans only in `other` (their position), with
-    /// shared spans replaced in `self`'s position.
-    #[cfg(test)]
-    pub(crate) fn merge(mut self, other: ResolutionCore) -> ResolutionCore {
-        for incoming in other.spans {
-            if let Some(slot) = self.spans.iter_mut().find(|s| s.name == incoming.name) {
-                *slot = incoming;
-            } else {
-                self.spans.push(incoming);
-            }
-        }
-        self
-    }
 }

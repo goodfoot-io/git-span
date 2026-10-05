@@ -239,8 +239,7 @@ fn cold_miss_builds_exactly_once_then_store_hit() {
 
 /// Card main-157 finding F5: concurrent cold callers for one missing key must
 /// perform EXACTLY ONE build, not N. This exercises the real production seam
-/// (`drift_spans_new_store`) — the same entry point the CLI drives — not the
-/// store's `build_or_get` in isolation.
+/// (`drift_spans_new_store`) — the same entry point the CLI drives.
 ///
 /// N threads each open their own repo handle and race, released together by a
 /// barrier, into the miss path for the same (content-derived) canonical key.
@@ -1143,13 +1142,10 @@ fn maintenance_deferred_entry_observes_dirty_state_and_verifies_lookup() {
     clear_memo();
     let _ = resolved(drift_spans_new_store(&repo, SPAN_ROOT, opts).unwrap());
     assert_eq!(test_exact_hits(), 0, "wrong-version lookup is rejected");
-    assert!(
-        store
-            .get_generation(&clean_key, SUMMARY_VERSION)
-            .unwrap()
-            .hit()
-            .is_some()
-    );
+    assert!(matches!(
+        store.get_generation(&clean_key, SUMMARY_VERSION).unwrap(),
+        GetOutcome::Hit(_)
+    ));
     std::fs::write(
         td.path().join("src/a.txt"),
         "new dirty state\nl2\nl3\nl4\nl5\n",
@@ -1172,13 +1168,10 @@ fn maintenance_deferred_entry_observes_dirty_state_and_verifies_lookup() {
         0,
         "dirty observation cannot reuse the clean exact key"
     );
-    assert!(
-        store
-            .get_generation(&dirty_key, SUMMARY_VERSION)
-            .unwrap()
-            .hit()
-            .is_some()
-    );
+    assert!(matches!(
+        store.get_generation(&dirty_key, SUMMARY_VERSION).unwrap(),
+        GetOutcome::Hit(_)
+    ));
     assert_eq!(
         TEST_MAINTENANCE_DISCOVERIES.with(std::cell::Cell::get),
         discoveries

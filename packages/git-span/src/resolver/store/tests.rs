@@ -3,16 +3,16 @@
 //! mandates:
 //!
 //! 1. publish/read round trip (empty/partial/full/large)
-//! 2. reader never observes a partial manifest under concurrent publish/GC
+//! 2. reader never observes a partial manifest under concurrent publish/delete
 //! 3. integrity rejection (key/kind/version/count/hash + every truncation)
 //! 4. schema-mismatch replacement and `SQLITE_CORRUPT` quarantine
 //! 5. fault injection (read-only dir, busy timeout, simulated disk-full)
 //! 6. kill-builder recovery at three injection points
-//! 7. lock-shard: same-key serialization, distinct-key concurrency
-//! 8. GC retention
+//! 7. lock-shard: same-shard serialization, distinct-shard concurrency
+//! 8. retention bookkeeping and quota-driven maintenance
 //!
-//! plus a transaction-duration invariant test (resolver work never runs inside
-//! a SQLite write transaction).
+//! Same-key singleflight is proven end to end at the production seam by
+//! `exact::tests::concurrent_cold_callers_build_exactly_once`.
 //!
 //! Tests reach into `CacheStore`'s private `conn`/`path`/`dir` directly (a
 //! child module may access an ancestor's private items) to tamper with stored
@@ -22,14 +22,13 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 use std::time::{Duration, Instant};
 
 use rusqlite::Connection;
 use tempfile::TempDir;
 
-use super::lock::shard_index;
+use super::lock::{acquire_build_shard, shard_index};
 use super::payload::IntegrityReason;
 use super::*;
 
@@ -76,6 +75,15 @@ fn make_input(k: [u8; 32], version: u32, summary: &[u8], rows: usize) -> Generat
     }
 }
 
+/// The verified generation `outcome` carries, panicking with `context` and the
+/// actual outcome when it is not a hit.
+fn expect_hit(outcome: GetOutcome, context: &str) -> StoredGeneration {
+    match outcome {
+        GetOutcome::Hit(g) => g,
+        other => panic!("{context}: expected a verified hit, got {other:?}"),
+    }
+}
+
 // -- 1. Round trip --------------------------------------------------------
 
 #[test]
@@ -86,14 +94,14 @@ fn round_trip_empty_partial_full_and_large() {
     // Empty generation: a complete summary with zero rows.
     let empty = make_input(key(1), V1, b"empty-summary", 0);
     store.publish_generation(&empty).unwrap();
-    let got = store.get_generation(&key(1), V1).unwrap().hit().unwrap();
+    let got = expect_hit(store.get_generation(&key(1), V1).unwrap(), "verified hit");
     assert_eq!(got.summary, b"empty-summary");
     assert!(got.rows.is_empty());
 
     // Partial findings: a handful of rows.
     let partial = make_input(key(2), V1, b"partial", 3);
     store.publish_generation(&partial).unwrap();
-    let got = store.get_generation(&key(2), V1).unwrap().hit().unwrap();
+    let got = expect_hit(store.get_generation(&key(2), V1).unwrap(), "verified hit");
     assert_eq!(got.rows.len(), 3);
     assert_eq!(got.rows[0].row_key, "span/0");
     assert_eq!(got.rows[2].payload, b"payload-bytes-for-row-2");
@@ -101,7 +109,7 @@ fn round_trip_empty_partial_full_and_large() {
     // Full findings: many rows, order preserved.
     let full = make_input(key(3), V1, b"full", 200);
     store.publish_generation(&full).unwrap();
-    let got = store.get_generation(&key(3), V1).unwrap().hit().unwrap();
+    let got = expect_hit(store.get_generation(&key(3), V1).unwrap(), "verified hit");
     assert_eq!(got.rows.len(), 200);
     for (i, row) in got.rows.iter().enumerate() {
         assert_eq!(row.row_key, format!("span/{i}"));
@@ -111,7 +119,7 @@ fn round_trip_empty_partial_full_and_large() {
     let big = vec![0xABu8; 4 * 1024 * 1024];
     let large = make_input(key(4), V1, &big, 10);
     store.publish_generation(&large).unwrap();
-    let got = store.get_generation(&key(4), V1).unwrap().hit().unwrap();
+    let got = expect_hit(store.get_generation(&key(4), V1).unwrap(), "verified hit");
     assert_eq!(got.summary.len(), big.len());
     assert_eq!(got.summary, big);
 
@@ -132,7 +140,7 @@ fn republish_replaces_atomically() {
     store
         .publish_generation(&make_input(key(1), V1, b"second", 2))
         .unwrap();
-    let got = store.get_generation(&key(1), V1).unwrap().hit().unwrap();
+    let got = expect_hit(store.get_generation(&key(1), V1).unwrap(), "verified hit");
     assert_eq!(got.summary, b"second");
     assert_eq!(got.rows.len(), 2);
 }
@@ -140,7 +148,7 @@ fn republish_replaces_atomically() {
 // -- 2. Reader never observes a partial manifest --------------------------
 
 #[test]
-fn reader_never_observes_partial_manifest_under_publish_and_gc() {
+fn reader_never_observes_partial_manifest_under_publish_and_delete() {
     let dir = tmp();
     // Prime the schema so both threads open cleanly.
     drop(open(dir.path()));
@@ -159,13 +167,8 @@ fn reader_never_observes_partial_manifest_under_publish_and_gc() {
             store
                 .publish_generation(&make_input(k, V1, b"complete", ROWS))
                 .unwrap();
-            // GC removes it (not live, treat everything as old).
-            store
-                .gc(&RetentionPolicy {
-                    live_keys: HashSet::new(),
-                    keep_access_bucket_from: now_bucket() + 1,
-                })
-                .unwrap();
+            // The production deletion transaction removes it (not live).
+            store.gc_delete_non_live(&hex32(&k)).unwrap();
         }
     });
 
@@ -211,7 +214,10 @@ fn rejects_wrong_version() {
         GetOutcome::Rejected(IntegrityReason::Version)
     );
     // The value read on its own version is still a hit.
-    assert!(store.get_generation(&key(1), V1).unwrap().hit().is_some());
+    assert!(matches!(
+        store.get_generation(&key(1), V1).unwrap(),
+        GetOutcome::Hit(_)
+    ));
 }
 
 #[test]
@@ -378,7 +384,10 @@ fn rejects_every_summary_truncation_prefix() {
             rusqlite::params![&hex, &full],
         )
         .unwrap();
-    assert!(store.get_generation(&key(1), V1).unwrap().hit().is_some());
+    assert!(matches!(
+        store.get_generation(&key(1), V1).unwrap(),
+        GetOutcome::Hit(_)
+    ));
 }
 
 #[test]
@@ -460,7 +469,10 @@ fn corrupt_database_quarantines_and_recreates() {
     store
         .publish_generation(&make_input(key(2), V1, b"new", 1))
         .unwrap();
-    assert!(store.get_generation(&key(2), V1).unwrap().hit().is_some());
+    assert!(matches!(
+        store.get_generation(&key(2), V1).unwrap(),
+        GetOutcome::Hit(_)
+    ));
 }
 
 // -- 5. Fault injection ---------------------------------------------------
@@ -510,7 +522,10 @@ fn busy_timeout_fails_closed_without_writing() {
     // Release the lock; nothing was written.
     blocker.execute_batch("ROLLBACK").unwrap();
     assert_eq!(store.get_generation(&key(1), V1).unwrap(), GetOutcome::Miss);
-    assert!(!store.is_in_write_txn());
+    assert!(
+        store.conn.is_autocommit(),
+        "a failed publish must not leave a transaction open"
+    );
 }
 
 #[test]
@@ -537,7 +552,10 @@ fn disk_full_fails_closed_and_rolls_back() {
     // Lift the cap; the failed publish left nothing behind (rolled back).
     store.conn.pragma_update(None, "max_page_count", 0).unwrap();
     assert_eq!(store.get_generation(&key(1), V1).unwrap(), GetOutcome::Miss);
-    assert!(!store.is_in_write_txn());
+    assert!(
+        store.conn.is_autocommit(),
+        "a failed publish must not leave a transaction open"
+    );
 }
 
 // -- 6. Kill-builder recovery ---------------------------------------------
@@ -627,11 +645,10 @@ fn kill_before_publish_leaves_prior_generation() {
     spawn_kill_child(dir.path(), "before");
 
     let store = open(dir.path());
-    let g = store
-        .get_generation(&key(KILL_KEY), V1)
-        .unwrap()
-        .hit()
-        .expect("prior generation intact");
+    let g = expect_hit(
+        store.get_generation(&key(KILL_KEY), V1).unwrap(),
+        "prior generation intact",
+    );
     assert_eq!(g.summary, b"prior");
     assert_eq!(g.rows.len(), 2);
 }
@@ -649,11 +666,10 @@ fn kill_during_publish_rolls_back_to_prior_generation() {
 
     // WAL recovery discards the uncommitted partial; A remains complete.
     let store = open(dir.path());
-    let g = store
-        .get_generation(&key(KILL_KEY), V1)
-        .unwrap()
-        .hit()
-        .expect("prior generation intact after crash mid-publish");
+    let g = expect_hit(
+        store.get_generation(&key(KILL_KEY), V1).unwrap(),
+        "prior generation intact after crash mid-publish",
+    );
     assert_eq!(g.summary, b"prior");
     assert_eq!(g.rows.len(), 2);
 }
@@ -670,67 +686,47 @@ fn kill_after_publish_keeps_new_generation() {
     spawn_kill_child(dir.path(), "after");
 
     let store = open(dir.path());
-    let g = store
-        .get_generation(&key(KILL_KEY), V1)
-        .unwrap()
-        .hit()
-        .expect("new generation committed before crash");
+    let g = expect_hit(
+        store.get_generation(&key(KILL_KEY), V1).unwrap(),
+        "new generation committed before crash",
+    );
     assert_eq!(g.summary, b"new");
     assert_eq!(g.rows.len(), 3);
 }
 
 // -- 7. Lock-shard concurrency -------------------------------------------
 
-#[test]
-fn same_key_callers_serialize_to_one_builder() {
-    let dir = tmp();
-    drop(open(dir.path())); // prime schema.
-
-    static BUILDS: AtomicUsize = AtomicUsize::new(0);
-    BUILDS.store(0, Ordering::SeqCst);
-
-    const THREADS: usize = 8;
-    let k = key(11);
-    let barrier = Arc::new(Barrier::new(THREADS));
-    let mut handles = Vec::new();
-    for _ in 0..THREADS {
-        let d = dir.path().to_path_buf();
-        let b = barrier.clone();
-        handles.push(std::thread::spawn(move || {
-            let mut store = open(&d);
-            b.wait();
-            store
-                .build_or_get(&k, "HEAD", V1, || {
-                    BUILDS.fetch_add(1, Ordering::SeqCst);
-                    std::thread::sleep(Duration::from_millis(80));
-                    Ok(BuildProduct {
-                        payload_version: V1,
-                        summary: b"built-once".to_vec(),
-                        rows: vec![GenerationRow {
-                            row_kind: 1,
-                            row_key: "s".to_string(),
-                            payload: b"p".to_vec(),
-                        }],
-                        path_index: vec![],
-                        live: false,
-                    })
-                })
-                .unwrap()
-        }));
+/// Hold build-lock shards `shards[0]` and `shards[1]` from two threads released
+/// together, each for 200ms, and return each thread's hold interval.
+fn shard_hold_windows(dir: &Path, shards: [usize; 2]) -> Vec<(Instant, Instant)> {
+    let windows: Arc<Mutex<Vec<(Instant, Instant)>>> = Arc::new(Mutex::new(Vec::new()));
+    let barrier = Arc::new(Barrier::new(2));
+    let handles: Vec<_> = shards
+        .into_iter()
+        .map(|shard| {
+            let d = dir.to_path_buf();
+            let w = windows.clone();
+            let b = barrier.clone();
+            std::thread::spawn(move || {
+                b.wait();
+                let _guard = acquire_build_shard(&d, shard).unwrap();
+                let start = Instant::now();
+                std::thread::sleep(Duration::from_millis(200));
+                let end = Instant::now();
+                w.lock().unwrap().push((start, end));
+            })
+        })
+        .collect();
+    for h in handles {
+        h.join().unwrap();
     }
-    let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
-
-    // Exactly one builder ran (side-channel counter, not just output equality).
-    assert_eq!(BUILDS.load(Ordering::SeqCst), 1);
-    // Every caller got the same verified generation.
-    for r in &results {
-        assert_eq!(r.summary, b"built-once");
-        assert_eq!(r.rows.len(), 1);
-    }
+    let w = windows.lock().unwrap().clone();
+    assert_eq!(w.len(), 2, "both holders ran");
+    w
 }
 
 #[test]
-fn distinct_key_callers_build_concurrently() {
+fn build_shards_serialize_same_key_and_overlap_distinct_keys() {
     let dir = tmp();
     drop(open(dir.path()));
 
@@ -741,116 +737,48 @@ fn distinct_key_callers_build_concurrently() {
     for n in 0u8..255 {
         let s = shard_index(&key(n), shards);
         match &ka {
-            None => ka = Some((key(n), s)),
-            Some((_, ka_shard)) if kb.is_none() && s != *ka_shard => {
-                kb = Some((key(n), s));
+            None => ka = Some(s),
+            Some(ka_shard) if kb.is_none() && s != *ka_shard => {
+                kb = Some(s);
                 break;
             }
             Some(_) => {}
         }
     }
-    let (ka, _) = ka.unwrap();
-    let (kb, _) = kb.unwrap();
+    let sa = ka.unwrap();
+    let sb = kb.unwrap();
 
-    let windows: Arc<Mutex<Vec<(Instant, Instant)>>> = Arc::new(Mutex::new(Vec::new()));
-    let barrier = Arc::new(Barrier::new(2));
-
-    let run = |k: [u8; 32]| {
-        let d = dir.path().to_path_buf();
-        let w = windows.clone();
-        let b = barrier.clone();
-        std::thread::spawn(move || {
-            let mut store = open(&d);
-            b.wait();
-            store
-                .build_or_get(&k, "HEAD", V1, || {
-                    let start = Instant::now();
-                    std::thread::sleep(Duration::from_millis(200));
-                    let end = Instant::now();
-                    w.lock().unwrap().push((start, end));
-                    Ok(BuildProduct {
-                        payload_version: V1,
-                        summary: b"x".to_vec(),
-                        rows: vec![],
-                        path_index: vec![],
-                        live: false,
-                    })
-                })
-                .unwrap();
-        })
-    };
-
-    let h1 = run(ka);
-    let h2 = run(kb);
-    h1.join().unwrap();
-    h2.join().unwrap();
-
-    let w = windows.lock().unwrap();
-    assert_eq!(w.len(), 2, "both builders ran");
+    // Same key, same shard: the second holder waits for the first to release.
+    let w = shard_hold_windows(dir.path(), [sa, sa]);
     let (s0, e0) = w[0];
     let (s1, e1) = w[1];
-    // Overlapping intervals prove the two builders ran concurrently, not
-    // serialized behind one shard lock.
+    assert!(
+        e0 <= s1 || e1 <= s0,
+        "same-shard holders overlapped: {:?} vs {:?}",
+        (s0, e0),
+        (s1, e1)
+    );
+
+    // Distinct keys on distinct shards: overlapping intervals prove the
+    // holders ran concurrently, not serialized behind one shard lock.
+    let w = shard_hold_windows(dir.path(), [sa, sb]);
+    let (s0, e0) = w[0];
+    let (s1, e1) = w[1];
     assert!(
         s0 < e1 && s1 < e0,
-        "distinct-key builders did not overlap: {:?} vs {:?}",
+        "distinct-shard holders did not overlap: {:?} vs {:?}",
         (s0, e0),
         (s1, e1)
     );
 }
 
-// -- 8. GC retention ------------------------------------------------------
+// -- 8. Retention bookkeeping ---------------------------------------------
 
 fn row_total(store: &CacheStore) -> i64 {
     store
         .conn
         .query_row("SELECT count(*) FROM generation_row", [], |r| r.get(0))
         .unwrap()
-}
-
-#[test]
-fn gc_keeps_live_and_recent_evicts_unreferenced() {
-    let dir = tmp();
-    let mut store = open(dir.path());
-    let now = now_bucket();
-
-    // g0: live + old, g1/g2: recent, g3/g4: old + unreferenced.
-    for n in 0..5u8 {
-        store
-            .publish_generation(&make_input(key(n), V1, b"s", 4))
-            .unwrap();
-    }
-    set_bucket(&store, &key(0), now - 100);
-    store.set_live(&key(0), true).unwrap();
-    // g1, g2 stay at `now` (recent).
-    set_bucket(&store, &key(3), now - 100);
-    set_bucket(&store, &key(4), now - 100);
-
-    let rows_before = row_total(&store);
-    assert_eq!(rows_before, 5 * 4);
-
-    let stats = store
-        .gc(&RetentionPolicy {
-            live_keys: {
-                let mut s = HashSet::new();
-                s.insert(key(0));
-                s
-            },
-            keep_access_bucket_from: now, // keep access_bucket >= now
-        })
-        .unwrap();
-
-    assert_eq!(stats.generations_removed, 2);
-    assert_eq!(stats.rows_removed, 8);
-
-    // Live and recent survive.
-    assert!(store.get_generation(&key(0), V1).unwrap().hit().is_some());
-    assert!(store.get_generation(&key(1), V1).unwrap().hit().is_some());
-    assert!(store.get_generation(&key(2), V1).unwrap().hit().is_some());
-    // Old unreferenced are gone, rows included (atomic).
-    assert_eq!(store.get_generation(&key(3), V1).unwrap(), GetOutcome::Miss);
-    assert_eq!(store.get_generation(&key(4), V1).unwrap(), GetOutcome::Miss);
-    assert_eq!(row_total(&store), 3 * 4);
 }
 
 #[test]
@@ -901,10 +829,9 @@ fn maintain_evicts_beyond_reuse_buffer_keeping_live_and_recent() {
     let now = now_bucket();
 
     // Survivors: live (old bucket) + two recent, all small.
-    store
-        .publish_generation(&make_big_input(key(0), 256, 1))
-        .unwrap();
-    store.set_live(&key(0), true).unwrap();
+    let mut live = make_big_input(key(0), 256, 1);
+    live.live = true;
+    store.publish_generation(&live).unwrap();
     set_bucket(&store, &key(0), now - 100);
     store
         .publish_generation(&make_big_input(key(1), 256, 1))
@@ -939,16 +866,27 @@ fn maintain_evicts_beyond_reuse_buffer_keeping_live_and_recent() {
     assert_eq!(stats.bytes_after, after);
     assert!(after < before);
 
-    // The three large, old, unreferenced generations were evicted.
+    // The three large, old, unreferenced generations were evicted, rows
+    // included (atomic): 3 survivors x 1 row + 14 remaining fodder x 2 rows.
     assert_eq!(stats.generations_removed, 3);
     assert_eq!(stats.rows_removed, 6);
+    assert_eq!(row_total(&store), 3 + 14 * 2);
     for n in 3..6u8 {
         assert_eq!(store.get_generation(&key(n), V1).unwrap(), GetOutcome::Miss);
     }
     // Live and recently-accessed generations survived.
-    assert!(store.get_generation(&key(0), V1).unwrap().hit().is_some());
-    assert!(store.get_generation(&key(1), V1).unwrap().hit().is_some());
-    assert!(store.get_generation(&key(2), V1).unwrap().hit().is_some());
+    assert!(matches!(
+        store.get_generation(&key(0), V1).unwrap(),
+        GetOutcome::Hit(_)
+    ));
+    assert!(matches!(
+        store.get_generation(&key(1), V1).unwrap(),
+        GetOutcome::Hit(_)
+    ));
+    assert!(matches!(
+        store.get_generation(&key(2), V1).unwrap(),
+        GetOutcome::Hit(_)
+    ));
 }
 
 #[test]
@@ -983,7 +921,10 @@ fn maintain_prefers_summary_only_over_full_even_if_newer() {
     assert_eq!(stats.generations_removed, 1);
     // Summary-only newer one evicted; full older one survived.
     assert_eq!(store.get_generation(&key(2), V1).unwrap(), GetOutcome::Miss);
-    assert!(store.get_generation(&key(1), V1).unwrap().hit().is_some());
+    assert!(matches!(
+        store.get_generation(&key(1), V1).unwrap(),
+        GetOutcome::Hit(_)
+    ));
 }
 
 #[test]
@@ -1006,7 +947,10 @@ fn maintain_truncates_wal_even_without_eviction() {
         "maintain must checkpoint-truncate the WAL",
     );
     // The generation is still fully readable after the checkpoint.
-    assert!(store.get_generation(&key(1), V1).unwrap().hit().is_some());
+    assert!(matches!(
+        store.get_generation(&key(1), V1).unwrap(),
+        GetOutcome::Hit(_)
+    ));
 }
 
 #[test]
@@ -1093,48 +1037,6 @@ fn reader_never_observes_partial_generation_under_quota_maintenance() {
 
     writer.join().unwrap();
     reader.join().unwrap();
-}
-
-// -- Transaction-duration invariant --------------------------------------
-
-#[test]
-fn resolver_work_runs_outside_any_write_transaction() {
-    let dir = tmp();
-    drop(open(dir.path()));
-    let mut store = open(dir.path());
-    let db = dir.path().join(super::schema::DB_BASENAME);
-
-    // The builder simulates resolver work by opening a SECOND connection and
-    // acquiring the write lock. If the store held a write transaction while the
-    // builder ran (the forbidden pattern), this BEGIN IMMEDIATE would block and
-    // fail BUSY. It succeeding proves compute happens outside any write txn.
-    let got = store
-        .build_or_get(&key(1), "HEAD", V1, || {
-            // A second writer succeeds => the store is NOT mid-write-transaction.
-            assert!(
-                second_writer_succeeds(&db),
-                "resolver work observed an open write transaction"
-            );
-            Ok(BuildProduct {
-                payload_version: V1,
-                summary: b"ok".to_vec(),
-                rows: vec![],
-                path_index: vec![],
-                live: false,
-            })
-        })
-        .unwrap();
-    assert_eq!(got.summary, b"ok");
-}
-
-fn second_writer_succeeds(db: &Path) -> bool {
-    let c = Connection::open(db).unwrap();
-    c.busy_timeout(Duration::from_millis(200)).unwrap();
-    c.pragma_update(None, "journal_mode", "WAL").unwrap();
-    c.execute_batch(
-        "BEGIN IMMEDIATE; CREATE TEMP TABLE IF NOT EXISTS probe(x); INSERT INTO probe VALUES (1); COMMIT;",
-    )
-    .is_ok()
 }
 
 // =========================================================================
@@ -1258,9 +1160,9 @@ fn maintain_plateaus_across_many_distinct_evictable_generations() {
         store
             .publish_generation(&make_big_input(k, 32 * 1024, 2))
             .unwrap();
-        // A superseded generation no longer backs the active worktree: demote
-        // it and age it out of the recent window so the quota may reclaim it.
-        store.set_live(&k, false).unwrap();
+        // A superseded generation no longer backs the active worktree
+        // (published non-live): age it out of the recent window so the quota
+        // may reclaim it.
         set_bucket(&store, &k, old_bucket);
         run_maybe_maintain(&mut store);
         sizes.push(store.database_size_bytes().unwrap());
@@ -1314,9 +1216,8 @@ fn maintain_sweeps_stale_non_live_generations_under_cap() {
         store
             .publish_generation(&make_big_input(k, 4096, 1))
             .unwrap();
-        // A superseded generation: no longer referenced by any worktree and
-        // aged out of the reuse window.
-        store.set_live(&k, false).unwrap();
+        // A superseded generation: published non-live (no longer referenced
+        // by any worktree) and aged out of the reuse window.
         set_bucket(&store, &k, now_bucket() - 100);
     }
 
@@ -1568,11 +1469,10 @@ fn same_head_dirty_churn_reconciled_and_evicted() {
         "the current dirty overlay must stay live",
     );
     assert!(
-        store
-            .get_generation(&last_overlay, V1)
-            .unwrap()
-            .hit()
-            .is_some(),
+        matches!(
+            store.get_generation(&last_overlay, V1).unwrap(),
+            GetOutcome::Hit(_)
+        ),
         "the current dirty overlay must remain findable",
     );
     // ...the rows-bearing clean baseline the overlays reuse from is never
@@ -1583,7 +1483,10 @@ fn same_head_dirty_churn_reconciled_and_evicted() {
         "the rows-bearing clean baseline must stay live",
     );
     assert!(
-        store.get_generation(&baseline, V1).unwrap().hit().is_some(),
+        matches!(
+            store.get_generation(&baseline, V1).unwrap(),
+            GetOutcome::Hit(_)
+        ),
         "the clean baseline must remain findable",
     );
     // ...while an early abandoned overlay was demoted and reclaimed.
@@ -1611,7 +1514,8 @@ fn lcg_next(state: &mut u64) -> u64 {
     *state >> 33
 }
 
-/// Publish one corpus generation of the given kind and set its access bucket.
+/// Publish one non-live corpus generation of the given kind and set its
+/// access bucket.
 fn publish_corpus_gen(store: &mut CacheStore, k: [u8; 32], kind: Kind, bucket: i64) {
     let input = if kind.full {
         make_big_input(k, 8 * 1024, 3)
@@ -1624,7 +1528,6 @@ fn publish_corpus_gen(store: &mut CacheStore, k: [u8; 32], kind: Kind, bucket: i
     } else {
         store.publish_generation_summary_only(&input).unwrap();
     }
-    store.set_live(&k, false).unwrap();
     set_bucket(store, &k, bucket);
 }
 
@@ -1648,7 +1551,7 @@ fn evict_under_cap_with_order(store: &mut CacheStore, cap: u64, order_by: &str) 
         if store.reclaimed_main_bytes().unwrap() <= cap {
             break;
         }
-        store.gc_delete_one(&key_hex).unwrap();
+        store.gc_delete_non_live(&key_hex).unwrap();
         removed += 1;
     }
     store.reclaim_and_checkpoint().unwrap();
@@ -1872,26 +1775,22 @@ fn conc_kill_child_entrypoint() {
             }
         });
     }
-    // Builder: singleflight cold-miss builds (acquires build-lock shards).
+    // Builder: singleflight cold-miss builds shaped like the exact path —
+    // take the key's build-lock shard, recheck under it, then publish a
+    // non-live generation.
     {
         let d = dir.clone();
         std::thread::spawn(move || {
             let mut store = open(&d);
             let mut n = 50_000u32;
             loop {
-                let _ = store.build_or_get(&key_u32(n), "HEAD", V1, || {
-                    Ok(BuildProduct {
-                        payload_version: V1,
-                        summary: vec![0xCD; 4 * 1024],
-                        rows: vec![GenerationRow {
-                            row_kind: 1,
-                            row_key: "s".into(),
-                            payload: b"p".to_vec(),
-                        }],
-                        path_index: vec![],
-                        live: false,
-                    })
-                });
+                let k = key_u32(n);
+                let shard = shard_index(&k, store.shard_count());
+                if let Ok(_guard) = acquire_build_shard(&d, shard)
+                    && matches!(store.get_generation(&k, V1), Ok(GetOutcome::Miss))
+                {
+                    let _ = store.publish_generation(&make_big_input(k, 4 * 1024, 1));
+                }
                 n += 1;
             }
         });
@@ -2036,7 +1935,10 @@ fn termination_injection_matrix_keeps_store_consistent_and_usable() {
             .publish_generation(&make_input(probe, V1, b"post-kill", 3))
             .unwrap();
         assert!(
-            store.get_generation(&probe, V1).unwrap().hit().is_some(),
+            matches!(
+                store.get_generation(&probe, V1).unwrap(),
+                GetOutcome::Hit(_)
+            ),
             "store not writable after injected kill (delay={delay_us}us)",
         );
     }
@@ -2063,16 +1965,11 @@ fn get_generation_summary_matches_get_generation_header_and_summary() {
         store
             .publish_generation(&make_input(k, V1, b"summary-bytes", rows))
             .unwrap();
-        let full = store
-            .get_generation(&k, V1)
-            .unwrap()
-            .hit()
-            .expect("full hit");
-        let summary_only = store
-            .get_generation_summary(&k, V1)
-            .unwrap()
-            .hit()
-            .expect("summary-only hit");
+        let full = expect_hit(store.get_generation(&k, V1).unwrap(), "full hit");
+        let summary_only = expect_hit(
+            store.get_generation_summary(&k, V1).unwrap(),
+            "summary-only hit",
+        );
 
         assert_eq!(summary_only.key_digest, full.key_digest);
         assert_eq!(summary_only.head, full.head);
@@ -2302,13 +2199,12 @@ fn maintenance_conditional_delete_preserves_republished_candidate() {
         maintenance::DeletionStats::default()
     );
     assert_eq!(
-        store
-            .get_generation(&input.key_digest, V1)
-            .unwrap()
-            .hit()
-            .unwrap()
-            .rows
-            .len(),
+        expect_hit(
+            store.get_generation(&input.key_digest, V1).unwrap(),
+            "verified hit"
+        )
+        .rows
+        .len(),
         1
     );
 }
@@ -2400,7 +2296,9 @@ fn maintenance_candidate_count_recheck_preserves_reuse_buffer() {
     }
     // A sibling protects one generation after candidates/count were read.
     let candidate = store.eviction_candidates().unwrap().remove(0).key_hex;
-    sibling.set_live(&key(17), true).unwrap();
+    let mut protected = make_input(key(17), V1, b"s", 1);
+    protected.live = true;
+    sibling.publish_generation(&protected).unwrap();
     assert_eq!(
         store.gc_delete_above_buffer(&candidate).unwrap(),
         maintenance::DeletionStats::default()
@@ -2417,7 +2315,10 @@ fn maintenance_conditional_delete_failure_preserves_generation_and_due() {
         .unwrap();
     store.conn.execute_batch("CREATE TRIGGER fail_row_delete BEFORE DELETE ON generation_row BEGIN SELECT RAISE(ABORT, 'delete denied'); END;").unwrap();
     assert!(store.gc_delete_non_live(&hex32(&key(1))).is_err());
-    assert!(store.get_generation(&key(1), V1).unwrap().hit().is_some());
+    assert!(matches!(
+        store.get_generation(&key(1), V1).unwrap(),
+        GetOutcome::Hit(_)
+    ));
     assert_eq!(row_total(&store), 1);
     assert!(store.maintenance_state().unwrap().due);
 }

@@ -8,7 +8,7 @@
 //! at the projection level, (5) same-tree/commit guard, (6) filter
 //! dependency eligibility.
 
-use super::project::{project_committed, project_effective};
+use super::project::project_effective;
 use super::resolution::{
     AnchorCore, DefinitionOrdinal, DriftLocusCore, ExtentCore, LayerObservationCore, LocationCore,
     ResolutionCore, SpanCore,
@@ -375,8 +375,8 @@ fn commit_span(dir: &std::path::Path, name: &str, anchors: &[(&str, u32, u32)], 
 }
 
 /// Round-trips a `ResolutionCore` built by ONE real single-pass capture
-/// (`capture_resolution_core`) through `project_committed` /
-/// `project_effective` and diffs both against direct current-resolver output
+/// (`capture_resolution_core`) through `project_effective` for the committed
+/// and effective layer sets and diffs both against direct current-resolver output
 /// on a real (if small) repo, covering a clean HEAD with a worktree-only
 /// dirty anchor. This replaces Phase 1's two-pass `anchor_core_from_dual`
 /// reconstruction with genuine per-layer capture. Real multi-thousand-anchor
@@ -420,7 +420,7 @@ fn projection_round_trip_matches_direct_resolution_clean_and_worktree_dirty() ->
     )?;
 
     assert_eq!(
-        project_committed(&core),
+        project_effective(&core, LayerSet::committed_only()),
         vec![committed_span],
         "committed projection must be byte-identical to direct committed-only resolution"
     );
@@ -498,7 +498,7 @@ fn projection_round_trip_matches_direct_resolution_simultaneous_index_and_worktr
         "both drifting layers must be attributed, in resolver order (Worktree, Index)"
     );
     assert_eq!(
-        project_committed(&core),
+        project_effective(&core, LayerSet::committed_only()),
         vec![committed_span],
         "committed projection must be byte-identical to direct committed-only resolution"
     );
@@ -529,7 +529,7 @@ fn fresh_observation(anchored: &LocationCore) -> LayerObservationCore {
 /// `DefinitionOrdinal.source_ordinal` (paired with the distinguishing
 /// `definition_digest`) tells them apart.
 #[test]
-fn duplicate_definition_ordinal_identity_preserved_through_construction_serialization_and_merge() {
+fn duplicate_definition_ordinal_identity_preserved_through_construction_and_serialization() {
     let anchored = LocationCore {
         path: "src/a.rs".to_string(),
         extent: ExtentCore::WholeFile,
@@ -601,29 +601,8 @@ fn duplicate_definition_ordinal_identity_preserved_through_construction_serializ
         round_tripped, core,
         "ordinal identity must survive a serialize/deserialize round trip"
     );
-
-    let other = ResolutionCore {
-        spans: vec![SpanCore {
-            name: "other".to_string(),
-            why: "why-other".to_string(),
-            follow_moves: false,
-            anchors: Vec::new(),
-        }],
-    };
-    let merged = core.clone().merge(other);
-    assert_eq!(merged.spans.len(), 2, "merge must add the unrelated span");
-    let demo_span = merged
-        .spans
-        .iter()
-        .find(|s| s.name == "demo")
-        .expect("demo span survives merge");
-    assert_eq!(
-        demo_span.anchors.len(),
-        2,
-        "merge must not collapse duplicate-address ordinals"
-    );
-    assert_eq!(demo_span.anchors[0].0, ord_a);
-    assert_eq!(demo_span.anchors[1].0, ord_b);
+    assert_eq!(round_tripped.spans[0].anchors[0].0, ord_a);
+    assert_eq!(round_tripped.spans[0].anchors[1].0, ord_b);
 }
 
 // ── Category 4: `.gitignore` dirty mismatch, reproduced correctly ────────
@@ -698,7 +677,7 @@ fn effective_projection_preserves_working_tree_qualifier_for_committed_drift() {
         }],
     };
 
-    let committed = project_committed(&core);
+    let committed = project_effective(&core, LayerSet::committed_only());
     let effective = project_effective(&core, LayerSet::full());
 
     let committed_anchor = &committed[0].anchors[0];

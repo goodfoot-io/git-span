@@ -38,10 +38,9 @@ fn to_fuzzy_successors(v: &[super::resolution::FuzzySuccessorCore]) -> Vec<Fuzzy
 }
 
 /// Build one projected `AnchorResolved` from a single selected layer
-/// observation plus the anchor's layer-neutral fields. Shared by
-/// `project_committed` and `project_effective` (via `project_effective`
-/// with different `layers`) so both views assemble through exactly one
-/// field-mapping path.
+/// observation plus the anchor's layer-neutral fields. Every view —
+/// committed (`LayerSet::committed_only()`) or effective — assembles through
+/// `project_effective` and this one field-mapping path.
 fn project_anchor(
     core: &AnchorCore,
     obs: &LayerObservationCore,
@@ -84,18 +83,6 @@ fn project_anchor(
         fuzzy_successors: to_fuzzy_successors(&obs.fuzzy_successors),
         moved_uncommitted: obs.moved_uncommitted,
     }
-}
-
-/// Project the committed (HEAD-only) view: every anchor is resolved as if
-/// `EngineOptions::committed_only()` had run — the Head observation is the
-/// only one ever selected, matching today's `build_committed_spans`. This
-/// is exactly `project_effective` specialized to `LayerSet::committed_only()`
-/// (Head is always evaluated regardless of `LayerSet` — see
-/// `crate::types::LayerSet`'s doc: "HEAD is always on"). Test-only: the
-/// projection-parity tests compare it against direct committed resolution.
-#[cfg(test)]
-pub(crate) fn project_committed(core: &super::resolution::ResolutionCore) -> Vec<SpanResolved> {
-    project_effective(core, LayerSet::committed_only())
 }
 
 /// Project the effective (active-layer) view for `layers`. Selects the

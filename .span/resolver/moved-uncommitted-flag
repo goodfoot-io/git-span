@@ -1,4 +1,4 @@
-packages/git-span/src/resolver/core/project.rs#L45-L87 rk64:0630ccff66411e2f
+packages/git-span/src/resolver/core/project.rs#L44-L86 rk64:0630ccff66411e2f
 packages/git-span/src/resolver/core/resolution.rs#L88-L97 rk64:3002685ffd193e4e
 packages/git-span/src/resolver/core/tests.rs#L515-L530 rk64:ae2e040d9f6aceb2
 

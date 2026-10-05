@@ -18,8 +18,8 @@
 //!   effective/whole result (`build_clean_whole_result`) — merely because
 //!   `current.blob` and the drift label differ by active layer.
 //!   [`resolution::ResolutionCore`] captures one layer-neutral result;
-//!   [`project::project_committed`] and [`project::project_effective`]
-//!   deterministically select/relabel it into either view.
+//!   [`project::project_effective`] deterministically selects/relabels it
+//!   into either view (`LayerSet::committed_only()` for the committed one).
 //! - `resolver/cache_v2`'s keys omitted rename budget, copy detection, filter
 //!   dependencies, and complete availability state (see
 //!   `notes/correctness-contract.md` "Incomplete Semantic Keys").

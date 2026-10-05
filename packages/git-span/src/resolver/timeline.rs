@@ -74,7 +74,7 @@ pub(crate) struct PathTimeline {
 impl PathTimeline {
     /// Project `(start, end)` from `start_path` through the timeline to
     /// the final path. Returns `None` when the path is deleted along the
-    /// way (parity with `walker::Change::Deleted`).
+    /// way.
     /// Phase 2: project via the composed `LineMap`. Under
     /// `GIT_SPAN_PERF`, the Phase 1 `project_by_hunk_replay` runs as a
     /// parity cross-check; a mismatch falls back and records
@@ -279,8 +279,10 @@ pub(crate) fn build_timeline(
     let mut deleted_terminal = false;
 
     for delta in deltas {
-        // Replicate `walker::advance_with_entries` semantics, but produce a
-        // `PathDelta` instead of an in-place `Tracked` update.
+        // Classify this commit's entries against the current tracked path:
+        // Added/Modified keeps it, Renamed/Copied moves it to the target, and
+        // Deleted ends it unless a rename or copy in the same commit carries
+        // it forward.
         use crate::resolver::walker::NS;
         let cur_path_str = String::from_utf8_lossy(&current_path).into_owned();
         let mut next_path: Option<String> = None;
@@ -414,18 +416,18 @@ fn blob_oid_at(
     }
 }
 
-// ── Tests: parity vs current replay ────────────────────────────────────────
+// ── Tests: HEAD projection through the timeline ────────────────────────────
 //
-// These tests build small repositories with known histories and verify
-// that `PathTimeline::project_by_hunk_replay` returns exactly the same
-// `Tracked` as the pre-Phase-1 path: per-anchor calls into
-// `walker::advance_with_entries`.
+// These tests build small repositories with known histories and verify the
+// `Tracked` location `PathTimeline::project_by_hunk_replay` projects at HEAD
+// for each kind of committed change: insertion, deletion, replacement,
+// rename, copy, and path deletion.
 
 #[cfg(test)]
-mod parity_tests {
+mod projection_tests {
     use super::*;
     use crate::resolver::session::CommitDelta;
-    use crate::resolver::walker::{self, Change, Tracked};
+    use crate::resolver::walker::{self, Tracked};
     use std::process::Command;
     use std::str::FromStr;
     use tempfile::tempdir;
@@ -514,32 +516,6 @@ mod parity_tests {
         out
     }
 
-    /// Replay deltas the old way (per-anchor advance_with_entries) so we
-    /// have a ground truth to compare against.
-    fn replay_old(
-        repo: &gix::Repository,
-        deltas: &[Arc<CommitDelta>],
-        start_path: &str,
-        start: u32,
-        end: u32,
-    ) -> Option<Tracked> {
-        let mut loc = Tracked {
-            path: start_path.to_string(),
-            start,
-            end,
-        };
-        for d in deltas {
-            match walker::advance_with_entries(repo, &d.parent, &d.commit, &loc, &d.entries, None)
-                .unwrap()
-            {
-                Change::Unchanged => {}
-                Change::Deleted => return None,
-                Change::Updated(t) => loc = t,
-            }
-        }
-        Some(loc)
-    }
-
     fn project_new(
         repo: &gix::Repository,
         deltas: &[Arc<CommitDelta>],
@@ -572,29 +548,25 @@ mod parity_tests {
         std::fs::write(p, s).unwrap();
     }
 
-    fn assert_parity(
+    /// Project `start_path:start..end` to HEAD and assert the result:
+    /// `Some((path, start, end))`, or `None` when the path was deleted.
+    fn assert_projects(
         repo: &gix::Repository,
         deltas: &[Arc<CommitDelta>],
-        start_path: &str,
-        start: u32,
-        end: u32,
+        (start_path, start, end): (&str, u32, u32),
         cd: CopyDetection,
+        expected: Option<(&str, u32, u32)>,
     ) {
-        let old = replay_old(repo, deltas, start_path, start, end);
-        let new = project_new(repo, deltas, start_path, start, end, cd);
-        match (&old, &new) {
-            (None, None) => {}
-            (Some(a), Some(b)) => {
-                assert_eq!(a.path, b.path, "path parity");
-                assert_eq!(a.start, b.start, "start parity");
-                assert_eq!(a.end, b.end, "end parity");
-            }
-            other => panic!("parity mismatch: old={:?} new={:?}", other.0, other.1),
-        }
+        let got = project_new(repo, deltas, start_path, start, end, cd);
+        let got = got.as_ref().map(|t| (t.path.as_str(), t.start, t.end));
+        assert_eq!(
+            got, expected,
+            "HEAD projection of {start_path}:{start}..{end}"
+        );
     }
 
     #[test]
-    fn parity_insertion_before_range() {
+    fn projects_insertion_before_range() {
         let td = tempdir().unwrap();
         let dir = td.path();
         init_repo(dir);
@@ -617,11 +589,17 @@ mod parity_tests {
 
         let repo = gix::open(dir).unwrap();
         let deltas = collect_deltas(&repo, &anchor_sha, &head_sha, CopyDetection::Off);
-        assert_parity(&repo, &deltas, "f.txt", 5, 7, CopyDetection::Off);
+        assert_projects(
+            &repo,
+            &deltas,
+            ("f.txt", 5, 7),
+            CopyDetection::Off,
+            Some(("f.txt", 8, 10)),
+        );
     }
 
     #[test]
-    fn parity_deletion_before_range() {
+    fn projects_deletion_before_range() {
         let td = tempdir().unwrap();
         let dir = td.path();
         init_repo(dir);
@@ -642,11 +620,17 @@ mod parity_tests {
 
         let repo = gix::open(dir).unwrap();
         let deltas = collect_deltas(&repo, &anchor_sha, &head_sha, CopyDetection::Off);
-        assert_parity(&repo, &deltas, "f.txt", 6, 8, CopyDetection::Off);
+        assert_projects(
+            &repo,
+            &deltas,
+            ("f.txt", 6, 8),
+            CopyDetection::Off,
+            Some(("f.txt", 4, 6)),
+        );
     }
 
     #[test]
-    fn parity_deletion_inside_range() {
+    fn projects_deletion_inside_range() {
         let td = tempdir().unwrap();
         let dir = td.path();
         init_repo(dir);
@@ -672,11 +656,17 @@ mod parity_tests {
 
         let repo = gix::open(dir).unwrap();
         let deltas = collect_deltas(&repo, &anchor_sha, &head_sha, CopyDetection::Off);
-        assert_parity(&repo, &deltas, "f.txt", 5, 7, CopyDetection::Off);
+        assert_projects(
+            &repo,
+            &deltas,
+            ("f.txt", 5, 7),
+            CopyDetection::Off,
+            Some(("f.txt", 5, 6)),
+        );
     }
 
     #[test]
-    fn parity_replacement_overlapping_boundary() {
+    fn projects_replacement_overlapping_boundary() {
         let td = tempdir().unwrap();
         let dir = td.path();
         init_repo(dir);
@@ -700,11 +690,17 @@ mod parity_tests {
 
         let repo = gix::open(dir).unwrap();
         let deltas = collect_deltas(&repo, &anchor_sha, &head_sha, CopyDetection::Off);
-        assert_parity(&repo, &deltas, "f.txt", 5, 7, CopyDetection::Off);
+        assert_projects(
+            &repo,
+            &deltas,
+            ("f.txt", 5, 7),
+            CopyDetection::Off,
+            Some(("f.txt", 4, 6)),
+        );
     }
 
     #[test]
-    fn parity_rename() {
+    fn projects_rename() {
         let td = tempdir().unwrap();
         let dir = td.path();
         init_repo(dir);
@@ -721,11 +717,17 @@ mod parity_tests {
 
         let repo = gix::open(dir).unwrap();
         let deltas = collect_deltas(&repo, &anchor_sha, &head_sha, CopyDetection::SameCommit);
-        assert_parity(&repo, &deltas, "a.txt", 5, 7, CopyDetection::SameCommit);
+        assert_projects(
+            &repo,
+            &deltas,
+            ("a.txt", 5, 7),
+            CopyDetection::SameCommit,
+            Some(("b.txt", 5, 7)),
+        );
     }
 
     #[test]
-    fn parity_copy() {
+    fn projects_copy() {
         let td = tempdir().unwrap();
         let dir = td.path();
         init_repo(dir);
@@ -749,13 +751,19 @@ mod parity_tests {
             &head_sha,
             CopyDetection::AnyFileInCommit,
         );
-        // Old replay: a.ts is unchanged; new replay: copy entry triggers
-        // a modification because `from == cur_path`. Both should agree.
-        assert_parity(&repo, &deltas, "a.ts", 5, 7, CopyDetection::AnyFileInCommit);
+        // The copy entry (`from == a.ts`) moves the tracked location to the
+        // copy target; its content is identical, so the range is unmoved.
+        assert_projects(
+            &repo,
+            &deltas,
+            ("a.ts", 5, 7),
+            CopyDetection::AnyFileInCommit,
+            Some(("b.ts", 5, 7)),
+        );
     }
 
     #[test]
-    fn parity_path_deletion() {
+    fn projects_path_deletion() {
         let td = tempdir().unwrap();
         let dir = td.path();
         init_repo(dir);
@@ -773,7 +781,7 @@ mod parity_tests {
 
         let repo = gix::open(dir).unwrap();
         let deltas = collect_deltas(&repo, &anchor_sha, &head_sha, CopyDetection::Off);
-        assert_parity(&repo, &deltas, "f.txt", 5, 7, CopyDetection::Off);
+        assert_projects(&repo, &deltas, ("f.txt", 5, 7), CopyDetection::Off, None);
     }
 
     /// Regression (main-280): a commit that replaces an anchored file's

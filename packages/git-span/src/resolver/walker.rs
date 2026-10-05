@@ -15,14 +15,6 @@ pub(crate) struct Tracked {
     pub(crate) end: u32,
 }
 
-/// Outcome of [`advance_with_entries`] (test-only replay oracle).
-#[cfg(test)]
-pub(crate) enum Change {
-    Unchanged,
-    Deleted,
-    Updated(Tracked),
-}
-
 pub(crate) const RENAME_BUDGET_DEFAULT: usize = 1000;
 
 pub(crate) fn rename_budget() -> usize {
@@ -30,127 +22,6 @@ pub(crate) fn rename_budget() -> usize {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(RENAME_BUDGET_DEFAULT)
-}
-
-/// Advance the tracked location across one commit, given the
-/// already-computed name-status entries for `(parent, commit)`.
-///
-/// Test-only: production HEAD projection runs through
-/// `timeline::build_timeline`; this per-anchor replay is the ground-truth
-/// oracle the timeline parity tests compare against.
-///
-/// `blob_oid_memo` is an optional `(commit_sha, path) → blob_oid` cache.
-/// When provided, `compute_new_range` looks up blob OIDs from the memo
-/// before falling back to tree traversal, and populates the memo on miss.
-#[cfg(test)]
-pub(crate) fn advance_with_entries(
-    repo: &gix::Repository,
-    parent: &str,
-    commit: &str,
-    loc: &Tracked,
-    entries: &[NS],
-    blob_oid_memo: Option<&mut crate::resolver::session::BlobOidMemo>,
-) -> Result<Change> {
-    let mut next_path: Option<String> = None;
-    let mut deleted = false;
-    let mut modified = false;
-    for e in entries {
-        match e {
-            NS::Added { path } | NS::Modified { path } => {
-                if path == &loc.path {
-                    modified = true;
-                    next_path = Some(loc.path.clone());
-                }
-            }
-            NS::Deleted { path } => {
-                if path == &loc.path {
-                    deleted = true;
-                }
-            }
-            NS::Renamed { from, to } => {
-                if from == &loc.path {
-                    next_path = Some(to.clone());
-                    modified = true;
-                    deleted = false;
-                }
-            }
-            NS::Copied { from, to } => {
-                if from == &loc.path {
-                    next_path = Some(to.clone());
-                    modified = true;
-                }
-            }
-        }
-    }
-    if deleted {
-        if let Some(p) = next_path {
-            let (s, e) = compute_new_range(repo, parent, commit, loc, &p, blob_oid_memo)?;
-            return Ok(Change::Updated(Tracked {
-                path: p,
-                start: s,
-                end: e,
-            }));
-        }
-        return Ok(Change::Deleted);
-    }
-    if !modified {
-        return Ok(Change::Unchanged);
-    }
-    let p = next_path.unwrap_or_else(|| loc.path.clone());
-    let (s, e) = compute_new_range(repo, parent, commit, loc, &p, blob_oid_memo)?;
-    Ok(Change::Updated(Tracked {
-        path: p,
-        start: s,
-        end: e,
-    }))
-}
-
-/// Look up the blob OID for `path` at `commit`, using `memo` as a
-/// session-scoped cache to avoid repeated tree traversals for the same
-/// `(commit, path)` pair across multiple anchors.
-#[cfg(test)]
-fn blob_oid_at(
-    repo: &gix::Repository,
-    commit: &str,
-    path: &str,
-    memo: Option<&mut crate::resolver::session::BlobOidMemo>,
-) -> Option<String> {
-    if let Some(m) = memo {
-        if let Some(cached) = m.get(commit).and_then(|by_path| by_path.get(path)) {
-            return cached.clone();
-        }
-        let oid = git::path_blob_at(repo, commit, path).ok();
-        m.entry(commit.to_string())
-            .or_default()
-            .insert(path.to_string(), oid.clone());
-        oid
-    } else {
-        git::path_blob_at(repo, commit, path).ok()
-    }
-}
-
-/// Remap `loc` across one `(parent, commit)` step (test-only; see
-/// [`advance_with_entries`]).
-#[cfg(test)]
-pub(crate) fn compute_new_range(
-    repo: &gix::Repository,
-    parent: &str,
-    commit: &str,
-    loc: &Tracked,
-    new_path: &str,
-    mut blob_oid_memo: Option<&mut crate::resolver::session::BlobOidMemo>,
-) -> Result<(u32, u32)> {
-    // Resolve blob OIDs, using the session-scoped memo when available to
-    // avoid redundant tree traversals when multiple anchors share the same
-    // (commit, path) combination within a single drift run.
-    let old_blob_oid = blob_oid_at(repo, parent, &loc.path, blob_oid_memo.as_deref_mut());
-    let new_blob_oid = blob_oid_at(repo, commit, new_path, blob_oid_memo);
-
-    let old_text = blob_text_present(repo, old_blob_oid.as_deref(), parent, &loc.path)?;
-    let new_text = blob_text_present(repo, new_blob_oid.as_deref(), commit, new_path)?;
-    let hunks = compute_hunks(&old_text, &new_text);
-
-    Ok(apply_hunks_to_range(&hunks, loc.start, loc.end))
 }
 
 /// Read one side of a remap diff as UTF-8 text.
@@ -963,8 +834,15 @@ mod scope_tests {
         .to_string()
     }
 
+    /// One side of a remap diff exactly as `timeline::build_timeline` reads
+    /// it: resolve the blob OID at `commit`, then `blob_text_present`.
+    fn side_text(repo: &gix::Repository, commit: &str, path: &str) -> Result<String> {
+        let oid = git::path_blob_at(repo, commit, path).ok();
+        blob_text_present(repo, oid.as_deref(), commit, path)
+    }
+
     /// Regression (main-280): a commit replacing an anchored file's blob
-    /// with non-UTF-8 content must fail the remap instead of degrading the
+    /// with non-UTF-8 content must fail the read instead of degrading the
     /// new side to empty text — which fabricated a full-file insert and
     /// shifted every tracked range by whole-file lengths while reporting
     /// success.
@@ -990,13 +868,9 @@ mod scope_tests {
         let commit = rev_parse(dir, "HEAD");
 
         let repo = gix::open(dir).unwrap();
-        let loc = Tracked {
-            path: "f.txt".to_string(),
-            start: 5,
-            end: 7,
-        };
-        let err = compute_new_range(&repo, &parent, &commit, &loc, "f.txt", None)
-            .expect_err("non-UTF-8 blob must fail the remap");
+        assert_eq!(side_text(&repo, &parent, "f.txt").unwrap(), utf8_content);
+        let err =
+            side_text(&repo, &commit, "f.txt").expect_err("non-UTF-8 blob must fail the remap");
         let msg = err.to_string();
         assert!(
             msg.contains("utf-8") && msg.contains("f.txt"),
@@ -1006,7 +880,7 @@ mod scope_tests {
 
     /// A gitlink side (pinned submodule bumped by a *committed* SHA change)
     /// names an object in another repository: legitimately unreadable here,
-    /// so the remap stays silent and unmoved instead of failing closed.
+    /// so both sides read as empty text instead of failing closed.
     #[test]
     fn committed_gitlink_bump_is_empty_side_not_an_error() {
         let td = tempdir().unwrap();
@@ -1035,27 +909,32 @@ mod scope_tests {
         // Stage the gitlink twice in the outer repo.
         run_git(
             dir,
-            &["update-index", "--add", "--cacheinfo", &format!("160000,{sha1},sub")],
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("160000,{sha1},sub"),
+            ],
         );
         run_git(dir, &["commit", "-m", "pin submodule"]);
         let parent = rev_parse(dir, "HEAD");
         run_git(
             dir,
-            &["update-index", "--add", "--cacheinfo", &format!("160000,{sha2},sub")],
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("160000,{sha2},sub"),
+            ],
         );
         run_git(dir, &["commit", "-m", "bump submodule"]);
         let commit = rev_parse(dir, "HEAD");
 
         let repo = gix::open(dir).unwrap();
-        let loc = Tracked {
-            path: "sub".to_string(),
-            start: 1,
-            end: 1,
-        };
-        let range =
-            compute_new_range(&repo, &parent, &commit, &loc, "sub", None)
-                .expect("gitlink bump must not fail the remap");
-        assert_eq!(range, (1, 1), "no comparable content: position unmoved");
+        for side in [&parent, &commit] {
+            let text = side_text(&repo, side, "sub").expect("gitlink bump must not fail the remap");
+            assert_eq!(text, "", "no comparable content on a gitlink side");
+        }
     }
 
     /// Guard for `blob_text_present`: a genuinely absent blob (the file is
@@ -1081,13 +960,8 @@ mod scope_tests {
         let commit = rev_parse(dir, "HEAD");
 
         let repo = gix::open(dir).unwrap();
-        let loc = Tracked {
-            path: "f.txt".to_string(),
-            start: 1,
-            end: 2,
-        };
-        // Old side absent → no error; the range math itself is unchanged
-        // behavior for added files.
-        assert!(compute_new_range(&repo, &parent, &commit, &loc, "f.txt", None).is_ok());
+        // Old side absent → empty text, no error; the new side reads normally.
+        assert_eq!(side_text(&repo, &parent, "f.txt").unwrap(), "");
+        assert_eq!(side_text(&repo, &commit, "f.txt").unwrap(), "a\nb\nc\n");
     }
 }
