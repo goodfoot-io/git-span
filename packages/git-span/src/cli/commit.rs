@@ -30,7 +30,6 @@ use git_span_core::{
     RK64_ALGORITHM, ResolveCommand, ResolvedRecord, carried_sentinel, cheap_fingerprint_with_extent,
     rk64_to_hex,
 };
-use std::fmt::Write as FmtWrite;
 use std::io::IsTerminal;
 
 // ---------------------------------------------------------------------------
@@ -1191,15 +1190,15 @@ pub(super) fn run_add(repo: &gix::Repository, args: AddArgs, span_root: &str) ->
                 if added_count == 1 { "" } else { "s" },
             );
             if resolved_count > 0 {
-                write!(&mut summary, " and resolved {resolved_count} in place").unwrap();
+                summary.push_str(&format!(" and resolved {resolved_count} in place"));
             }
             if unchanged_count > 0 {
-                write!(&mut summary, "; {unchanged_count} unchanged").unwrap();
+                summary.push_str(&format!("; {unchanged_count} unchanged"));
             }
             if collapsed_count > 0 {
-                write!(&mut summary, "; {collapsed_count} collapsed").unwrap();
+                summary.push_str(&format!("; {collapsed_count} collapsed"));
             }
-            write!(&mut summary, " to span `{}`.", args.name).unwrap();
+            summary.push_str(&format!(" to span `{}`.", args.name));
             println!("{summary}");
             println!();
 
@@ -2471,13 +2470,11 @@ fn render_reconcile_block(name: &str, check: &ReconcileCheck, include_superseded
         if check.pending_commit_count > 0 {
             // The plan pins the suffix with a leading space:
             // `` ; 1 anchor resolved, pending commit ``.
-            write!(
-                &mut line,
+            line.push_str(&format!(
                 " ; {} anchor{} resolved, pending commit",
                 check.pending_commit_count,
                 if check.pending_commit_count == 1 { "" } else { "s" }
-            )
-            .unwrap();
+            ));
         }
         println!("{line}");
     } else {

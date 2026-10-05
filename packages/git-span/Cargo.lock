@@ -907,6 +907,7 @@ dependencies = [
  "jsonschema",
  "libc",
  "memmap2",
+ "parking_lot",
  "predicates",
  "rancor",
  "rayon",

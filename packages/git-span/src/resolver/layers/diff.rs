@@ -459,24 +459,24 @@ fn collect_index_worktree_changes(
         // similarity heuristic but covers the rename cases the engine
         // exercises (whole-file rename + zero edits).
         let mut deletions: Vec<usize> = Vec::new();
-        let mut additions: Vec<usize> = Vec::new();
+        let mut additions: Vec<(usize, gix::ObjectId)> = Vec::new();
         for (idx, ch) in changes.iter().enumerate() {
             match ch.new_blob {
                 None => deletions.push(idx),
-                Some(_) => additions.push(idx),
+                Some(new_blob) => additions.push((idx, new_blob)),
             }
         }
         let mut paired_dels: HashSet<usize> = HashSet::new();
         let mut paired_adds: HashSet<usize> = HashSet::new();
         for &di in &deletions {
-            for &ai in &additions {
+            for &(ai, new_blob) in &additions {
                 if paired_adds.contains(&ai) {
                     continue;
                 }
-                if changes[di].old_blob == changes[ai].new_blob.unwrap() {
+                if changes[di].old_blob == new_blob {
                     paired_dels.insert(di);
                     paired_adds.insert(ai);
-                    let new_blob_hex = changes[ai].new_blob.unwrap().to_hex().to_string();
+                    let new_blob_hex = new_blob.to_hex().to_string();
                     entries.push(DiffEntry {
                         new_path: changes[ai].path.clone(),
                         old_path: changes[di].path.clone(),

@@ -20,16 +20,17 @@ use crate::resolver::timeline::{PathInterner, PathTimeline, PathTimelineKey, bui
 use crate::resolver::walker::{self, NS};
 use crate::types::{Anchor, CopyDetection, DriftLocus, DriftSource};
 use git_span_core::LineIndex;
+use parking_lot::{Mutex, RwLock};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, OnceLock};
 
 /// A line index that owns its backing bytes, cacheable in the resolver session.
 ///
-/// Must be stored behind an `Arc` (or other stable heap allocation) so the
-/// byte buffer never moves after the index is built — the [`LineIndex`]
-/// borrows from it. Rebuilding the index per anchor on the same file is the
-/// central cost Tier 2 amortizes away.
+/// The bytes live in an `Arc<[u8]>` that the built [`LineIndex`] co-owns
+/// (via [`LineIndex::build_shared`]) rather than borrows, so nothing here is
+/// self-referential and no lifetime has to be extended. Rebuilding the index
+/// per anchor on the same file is the central cost Tier 2 amortizes away.
 ///
 /// The inner [`LineIndex`] lazily allocates line-indexed prefix-hash tables (~16
 /// bytes per file *line*, plus ~8 per 256 bytes of powers) on the first
@@ -44,19 +45,20 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 /// path, and two threads racing on a *new* entry block on the `OnceLock`'s own
 /// single-flight rather than on the outer map lock.
 pub(crate) struct CachedLineIndex {
-    bytes: Vec<u8>,
+    bytes: Arc<[u8]>,
     /// Lazily built on the first `get()` call.  The inner
-    /// `LineIndex<'static>` borrows from `self.bytes` and is sound only
-    /// because `CachedLineIndex` lives in an `Arc` (pinned; the value never
-    /// moves for the lifetime of the allocation).  `OnceLock` gives the
-    /// first caller single-flight build semantics under `&self`.
+    /// `LineIndex<'static>` holds its own handle on `self.bytes` (an `Arc`
+    /// refcount bump, not a copy), so it borrows nothing.  `OnceLock` gives
+    /// the first caller single-flight build semantics under `&self`.
     idx: OnceLock<LineIndex<'static>>,
 }
 
 impl CachedLineIndex {
+    /// Takes the miss path's freshly read buffer; the one `Vec` → `Arc<[u8]>`
+    /// conversion happens here, once per cache entry.
     pub(crate) fn new(bytes: Vec<u8>) -> Self {
         Self {
-            bytes,
+            bytes: Arc::from(bytes),
             idx: OnceLock::new(),
         }
     }
@@ -67,15 +69,8 @@ impl CachedLineIndex {
     /// [`OnceLock::get_or_init`]'s single-flight; every other caller (racing
     /// or later) blocks until it finishes, then reads the same index.
     pub(crate) fn get(&self) -> &LineIndex<'_> {
-        self.idx.get_or_init(|| {
-            let idx = LineIndex::build(&self.bytes);
-            // SAFETY: CachedLineIndex is always stored in an `Arc`, so
-            // `self.bytes` never moves for the allocation's lifetime.  The
-            // transmute extends the borrow lifetime to `'static`; all
-            // returned references are bounded by `&self`, and `LineIndex`'s
-            // covariance narrows `'static` back to the caller's borrow.
-            unsafe { std::mem::transmute::<LineIndex<'_>, LineIndex<'static>>(idx) }
-        })
+        self.idx
+            .get_or_init(|| LineIndex::build_shared(Arc::clone(&self.bytes)))
     }
 }
 
@@ -90,7 +85,8 @@ pub(crate) type BlobOidMemo = HashMap<String, HashMap<String, Option<String>>>;
 /// where a `None` value caches an unreadable path (see the field's doc
 /// comment). Values are shared behind `Arc<str>` (card main-306) so memo hits
 /// clone the handle, not the text.
-type RelocationTextMemo = RwLock<HashMap<(String, crate::types::DriftSource), Option<Arc<str>>>>;
+type RelocationTextMemo =
+    parking_lot::RwLock<HashMap<(String, crate::types::DriftSource), Option<Arc<str>>>>;
 
 /// Per-key single-flight memo shape (card main-162 staged-rollout step 3):
 /// the outer `RwLock<HashMap>` maps a string key to an `Arc<OnceLock<V>>`
@@ -756,11 +752,10 @@ impl ConcurrentSession {
         if commit == head_sha {
             self.commit_reachability
                 .write()
-                .unwrap()
                 .insert(commit.to_string(), true);
             return Ok(true);
         }
-        if let Some(reachable) = self.commit_reachability.read().unwrap().get(commit) {
+        if let Some(reachable) = self.commit_reachability.read().get(commit) {
             return Ok(*reachable);
         }
         // HEAD-relative: per drift-label spec, "orphaned (no sha)" applies
@@ -769,7 +764,6 @@ impl ConcurrentSession {
         let reachable = crate::git::commit_reachable_from_head(repo, commit)?;
         self.commit_reachability
             .write()
-            .unwrap()
             .insert(commit.to_string(), reachable);
         Ok(reachable)
     }
@@ -815,7 +809,7 @@ impl ConcurrentSession {
     }
 
     fn filter_attribute_value(&self, repo: &gix::Repository, path: &str) -> Result<Option<String>> {
-        let cached = self.filter_attrs.read().unwrap().get(path).cloned();
+        let cached = self.filter_attrs.read().get(path).cloned();
         if let Some(cached) = cached {
             self.filter_attr_hits.fetch_add(1, Ordering::Relaxed);
             return Ok(cached);
@@ -829,7 +823,6 @@ impl ConcurrentSession {
                 .unwrap_or(None);
         self.filter_attrs
             .write()
-            .unwrap()
             .insert(path.to_string(), value.clone());
         Ok(value)
     }
@@ -866,7 +859,6 @@ impl ConcurrentSession {
         let cached = self
             .blob_oid_memo
             .read()
-            .unwrap()
             .get(head_sha)
             .and_then(|by_path| by_path.get(path))
             .cloned();
@@ -880,7 +872,6 @@ impl ConcurrentSession {
         };
         self.blob_oid_memo
             .write()
-            .unwrap()
             .entry(head_sha.to_string())
             .or_default()
             .insert(path.to_string(), blob.clone());
@@ -923,7 +914,7 @@ impl ConcurrentSession {
             let Ok(pairs) = pairs else {
                 return;
             };
-            let mut memo = self.blob_oid_memo.write().unwrap();
+            let mut memo = self.blob_oid_memo.write();
             let by_path = memo.entry(head_sha.to_string()).or_default();
             for (path, oid) in pairs {
                 by_path.entry(path).or_insert(Some(oid));
@@ -951,14 +942,13 @@ impl ConcurrentSession {
         // `RwLock<HashMap>` inserting only on success — the `?` propagates a
         // failed read *before* the write, so nothing is cached and the next
         // caller retries (deliberately NOT single-flight; see the field doc).
-        let cached = self.worktree_bytes_memo.read().unwrap().get(path).cloned();
+        let cached = self.worktree_bytes_memo.read().get(path).cloned();
         if let Some(cached) = cached {
             return Ok(cached);
         }
         let bytes: Arc<[u8]> = read_worktree_normalized(repo, custom_filters, path)?.into();
         self.worktree_bytes_memo
             .write()
-            .unwrap()
             .insert(path.to_string(), bytes.clone());
         Ok(bytes)
     }
@@ -973,7 +963,7 @@ impl ConcurrentSession {
         // [`worktree_bytes`](Self::worktree_bytes): a failing read is
         // `?`-propagated before the write, so it is never cached and the next
         // caller retries (card main-162 staged-rollout step 3).
-        let cached = self.blob_text_memo.read().unwrap().get(oid).cloned();
+        let cached = self.blob_text_memo.read().get(oid).cloned();
         if let Some(cached) = cached {
             self.blob_text_hits.fetch_add(1, Ordering::Relaxed);
             return Ok(cached);
@@ -982,7 +972,6 @@ impl ConcurrentSession {
         let text: Arc<str> = git::read_git_text(repo, oid)?.into();
         self.blob_text_memo
             .write()
-            .unwrap()
             .insert(oid.to_string(), text.clone());
         Ok(text)
     }
@@ -1042,7 +1031,7 @@ impl ConcurrentSession {
         // extension walk and never dropped/reacquired mid-extension, so the
         // single order-dependent chain grows atomically. An early `?` (out of
         // ancestors) returns `None` and drops the guard.
-        let mut guard = self.first_parent_chain.lock().unwrap();
+        let mut guard = self.first_parent_chain.lock();
         let chain = guard.get_or_insert_with(Vec::new);
         while (chain.len() as u32) < i {
             let current = match chain.last() {
@@ -1082,15 +1071,12 @@ impl ConcurrentSession {
         path: &str,
     ) -> Option<String> {
         let key = (commit_oid.to_string(), path.to_string());
-        let cached = self.history_blob_memo.read().unwrap().get(&key).cloned();
+        let cached = self.history_blob_memo.read().get(&key).cloned();
         if let Some(cached) = cached {
             return cached;
         }
         let blob = git::path_blob_at(repo, commit_oid, path).ok();
-        self.history_blob_memo
-            .write()
-            .unwrap()
-            .insert(key, blob.clone());
+        self.history_blob_memo.write().insert(key, blob.clone());
         blob
     }
 
@@ -1101,17 +1087,14 @@ impl ConcurrentSession {
     /// blob identity plus range is exact, not approximate.
     pub(crate) fn history_fingerprint(&self, oid: &str, text: &str, start: u32, end: u32) -> u64 {
         let key = (oid.to_string(), start, end);
-        if let Some(&fp) = self.history_fingerprint_memo.read().unwrap().get(&key) {
+        if let Some(&fp) = self.history_fingerprint_memo.read().get(&key) {
             return fp;
         }
         let fp = git_span_core::cheap_fingerprint_with_extent(
             text.as_bytes(),
             &crate::types::AnchorExtent::LineRange { start, end },
         );
-        self.history_fingerprint_memo
-            .write()
-            .unwrap()
-            .insert(key, fp);
+        self.history_fingerprint_memo.write().insert(key, fp);
         fp
     }
 
@@ -1131,7 +1114,7 @@ impl ConcurrentSession {
         // for the same never-seen line. The lock also spans line
         // normalization; that only matters for contention (irrelevant while
         // the loop is serial), never for correctness.
-        let mut corpus = self.jaccard_corpus.lock().unwrap();
+        let mut corpus = self.jaccard_corpus.lock();
         if let Some(cached) = corpus.candidates.get(&key) {
             return cached.clone();
         }
@@ -1152,7 +1135,7 @@ impl ConcurrentSession {
         // Intern against the same shared corpus under one lock acquisition
         // (card main-162 staged-rollout step 3) so these ids are comparable
         // against candidate ids minted by the same interner.
-        let mut corpus = self.jaccard_corpus.lock().unwrap();
+        let mut corpus = self.jaccard_corpus.lock();
         let (ids, _raw_empty) =
             git_span_core::intern_normalized_lines(anchored_lines, &mut corpus.interner);
         ids
@@ -1173,7 +1156,7 @@ impl ConcurrentSession {
         // (clone the cheap `Arc`), else write-lock/insert an *unbuilt* entry.
         // The one-time `LineIndex` build happens later, lock-free, inside the
         // entry's own `OnceLock` when the caller invokes `.get()`.
-        let existing = self.line_index_cache.read().unwrap().get(&key).cloned();
+        let existing = self.line_index_cache.read().get(&key).cloned();
         if let Some(existing) = existing {
             self.line_index_hits.fetch_add(1, Ordering::Relaxed);
             return existing;
@@ -1182,7 +1165,6 @@ impl ConcurrentSession {
         let entry = Arc::new(CachedLineIndex::new(build_bytes()));
         self.line_index_cache
             .write()
-            .unwrap()
             .entry(key)
             .or_insert_with(|| entry.clone())
             .clone()
@@ -1197,7 +1179,7 @@ impl ConcurrentSession {
         layer: DriftSource,
     ) -> Option<Arc<CachedLineIndex>> {
         let key = (path.to_string(), layer);
-        self.line_index_cache.read().unwrap().get(&key).cloned()
+        self.line_index_cache.read().get(&key).cloned()
     }
 
     /// The commit-ish whose tree still had `anchored_path` (the state
@@ -1258,11 +1240,10 @@ impl ConcurrentSession {
     /// cell — never across the value computation the caller drives via
     /// [`OnceLock::get_or_init`]. Card main-162 staged-rollout step 3.
     fn single_flight_cell<V>(&self, memo: &SingleFlightMemo<V>, key: &str) -> Arc<OnceLock<V>> {
-        if let Some(cell) = memo.read().unwrap().get(key).cloned() {
+        if let Some(cell) = memo.read().get(key).cloned() {
             return cell;
         }
         memo.write()
-            .unwrap()
             .entry(key.to_string())
             .or_insert_with(|| Arc::new(OnceLock::new()))
             .clone()
@@ -1728,7 +1709,7 @@ pub(crate) fn resolve_at_head_shared(
     // (I/O-bound) `build_timeline` call and the write-lock insert below —
     // holding the read guard across the miss branch would deadlock against
     // the write-lock a few lines down.
-    let cached_timeline = concurrent.timelines.read().unwrap().get(&key).cloned();
+    let cached_timeline = concurrent.timelines.read().get(&key).cloned();
     let timeline_arc: Arc<PathTimeline> = if let Some(existing) = cached_timeline {
         concurrent
             .timeline_cache_hits
@@ -1748,11 +1729,7 @@ pub(crate) fn resolve_at_head_shared(
             &concurrent.blob_oid_memo,
         )?;
         let arc = Arc::new(tl);
-        concurrent
-            .timelines
-            .write()
-            .unwrap()
-            .insert(key, Arc::clone(&arc));
+        concurrent.timelines.write().insert(key, Arc::clone(&arc));
         arc
     };
 
@@ -2070,5 +2047,54 @@ mod tests {
         assert_eq!(idx.anchors_for_path(b"c.rs").unwrap(), &[0]);
         let active: Vec<Vec<u8>> = idx.active_paths().iter().map(|p| p.to_vec()).collect();
         assert_eq!(active, vec![b"c.rs".to_vec()]);
+    }
+
+    #[test]
+    fn cached_line_index_is_built_once_and_shared_across_threads() {
+        // Threads race on an unbuilt entry. They must all observe the same
+        // single build, whose bytes are the entry's own buffer (no copy).
+        // The result must also match a borrowed `LineIndex::build`.
+        let text = b"fn a() {}\r\nfn b() {}\n\nlast line without newline".to_vec();
+        let expected = LineIndex::build(&text);
+        let entry = Arc::new(CachedLineIndex::new(text.clone()));
+        const THREADS: usize = 8;
+        let barrier = std::sync::Barrier::new(THREADS);
+
+        let observed: Vec<(usize, usize, usize)> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..THREADS)
+                .map(|_| {
+                    let entry = Arc::clone(&entry);
+                    let barrier = &barrier;
+                    let expected = &expected;
+                    scope.spawn(move || {
+                        barrier.wait();
+                        let idx = entry.get();
+                        assert_eq!(idx.bytes(), expected.bytes());
+                        assert_eq!(idx.line_count(), expected.line_count());
+                        (
+                            std::ptr::from_ref(idx) as usize,
+                            idx.bytes().as_ptr() as usize,
+                            idx.line_count(),
+                        )
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().expect("worker thread panicked"))
+                .collect()
+        });
+
+        let first = observed[0];
+        assert!(
+            observed.iter().all(|o| *o == first),
+            "every thread must see the one shared build: {observed:?}"
+        );
+        assert_eq!(
+            first.1,
+            entry.bytes.as_ptr() as usize,
+            "the index must co-own the entry's bytes, not a copy"
+        );
+        assert_eq!(first.2, 4);
     }
 }

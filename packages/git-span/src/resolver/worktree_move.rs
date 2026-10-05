@@ -29,8 +29,8 @@
 //! [`engine::whole_file`]); this module owns enumeration, hashing, and the
 //! decision.
 
+use parking_lot::Mutex;
 use std::path::PathBuf;
-use std::sync::Mutex;
 
 use gix::ObjectId;
 
@@ -87,7 +87,7 @@ pub(crate) fn find_worktree_move(
     // The decision is pure; the candidate map must not outlive the lock
     // guard, so the decision is made inside the locked scope.
     let outcome = {
-        let mut guard = cache.lock().expect("worktree_move_cache lock poisoned");
+        let mut guard = cache.lock();
         match guard.map_for(repo, path, context) {
             Some(map) => decide_worktree_move(map, last_blob_oid),
             None => WorktreeMove::None,

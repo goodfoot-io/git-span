@@ -43,12 +43,7 @@ pub(crate) fn drift_locus(
     // `plans/bounded-rename-chain.md`).
     if resolved.status == crate::types::AnchorStatus::Deleted {
         let path = resolved.anchored.path.to_string_lossy().into_owned();
-        let cached = session
-            .deleted_locus_memo
-            .read()
-            .unwrap()
-            .get(&path)
-            .cloned();
+        let cached = session.deleted_locus_memo.read().get(&path).cloned();
         if let Some(cached) = cached {
             return Ok(cached);
         }
@@ -56,7 +51,6 @@ pub(crate) fn drift_locus(
         session
             .deleted_locus_memo
             .write()
-            .unwrap()
             .insert(path, locus.clone());
         return Ok(locus);
     }
@@ -933,12 +927,11 @@ mod deleted_locus_walk_tests {
         let first = session
             .deleted_locus_memo
             .write()
-            .unwrap()
             .entry("a.rs".to_string())
             .or_insert_with(|| deleted_locus_walk(&repo, "a.rs").expect("walk"))
             .clone();
         assert_eq!(first, Some(DriftLocus::RenamedAt(x1, "b.rs".to_string())));
-        assert_eq!(session.deleted_locus_memo.read().unwrap().len(), 1);
+        assert_eq!(session.deleted_locus_memo.read().len(), 1);
 
         // Mutate history further: delete b.rs, recreate it, then delete it
         // again at a NEW commit closer to HEAD. A non-memoized second full
@@ -959,7 +952,6 @@ mod deleted_locus_walk_tests {
         let second = session
             .deleted_locus_memo
             .write()
-            .unwrap()
             .entry("a.rs".to_string())
             .or_insert_with(|| deleted_locus_walk(&repo2, "a.rs").expect("walk"))
             .clone();
@@ -969,7 +961,7 @@ mod deleted_locus_walk_tests {
              re-walk the now-different repo and find X2"
         );
         assert_eq!(
-            session.deleted_locus_memo.read().unwrap().len(),
+            session.deleted_locus_memo.read().len(),
             1,
             "one distinct path must occupy exactly one memo slot regardless of \
              how many anchors share it"

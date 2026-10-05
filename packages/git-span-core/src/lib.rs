@@ -257,7 +257,7 @@ const LINE_RESERVE_CAP: usize = 64 * 1024;
 /// wrappers that build a fresh index, so no existing caller has to change.
 #[derive(Clone)]
 pub struct LineIndex<'a> {
-    bytes: &'a [u8],
+    bytes: IndexBytes<'a>,
     /// Start offset of each line.
     starts: Vec<u32>,
     /// Content end (exclusive of the `\n`/`\r\n` terminator) of each line.
@@ -282,6 +282,38 @@ pub struct LineIndex<'a> {
     lf_clean: bool,
 }
 
+/// The buffer a [`LineIndex`] covers: either borrowed from the caller
+/// ([`LineIndex::build`]) or co-owned by the index itself
+/// ([`LineIndex::build_shared`]). The owned form lets a long-lived cache hold
+/// an index together with its bytes without the index borrowing from a
+/// sibling field — no self-reference, so no lifetime extension is needed.
+#[derive(Clone)]
+enum IndexBytes<'a> {
+    Borrowed(&'a [u8]),
+    Shared(Arc<[u8]>),
+}
+
+impl IndexBytes<'_> {
+    #[inline]
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            IndexBytes::Borrowed(b) => b,
+            IndexBytes::Shared(b) => b,
+        }
+    }
+}
+
+impl LineIndex<'static> {
+    /// [`build`](LineIndex::build) over a buffer the index co-owns. The
+    /// returned index is `'static` because it borrows nothing: it keeps its
+    /// own handle on `bytes` alongside the line offsets, so a cache can hold
+    /// it for as long as it likes. Produces the same line offsets as `build`
+    /// over the same bytes, and carries the same ≥ 4 GiB refusal.
+    pub fn build_shared(bytes: Arc<[u8]>) -> LineIndex<'static> {
+        LineIndex::build_from(IndexBytes::Shared(bytes))
+    }
+}
+
 impl<'a> LineIndex<'a> {
     /// Build the line index for `bytes` with one forward newline scan.
     ///
@@ -292,6 +324,13 @@ impl<'a> LineIndex<'a> {
     /// syntactically valid but semantically wrong digest. Supporting ≥ 4 GiB
     /// files is out of scope; detecting them is required.
     pub fn build(bytes: &'a [u8]) -> LineIndex<'a> {
+        LineIndex::build_from(IndexBytes::Borrowed(bytes))
+    }
+
+    /// Shared body of [`build`](Self::build) and
+    /// [`build_shared`](LineIndex::build_shared).
+    fn build_from(source: IndexBytes<'a>) -> LineIndex<'a> {
+        let bytes = source.as_slice();
         assert!(
             bytes.len() <= u32::MAX as usize,
             "git-span-core: buffer of {} bytes exceeds the supported size of {} bytes \
@@ -331,7 +370,7 @@ impl<'a> LineIndex<'a> {
         }
         let lf_clean = !has_cr && std::str::from_utf8(bytes).is_ok();
         LineIndex {
-            bytes,
+            bytes: source,
             starts,
             ends,
             fp_tables: Arc::new(OnceLock::new()),
@@ -341,8 +380,8 @@ impl<'a> LineIndex<'a> {
     }
 
     /// The underlying buffer.
-    pub fn bytes(&self) -> &'a [u8] {
-        self.bytes
+    pub fn bytes(&self) -> &[u8] {
+        self.bytes.as_slice()
     }
 
     /// Number of lines, per `str::lines` counting.
@@ -377,7 +416,7 @@ impl<'a> LineIndex<'a> {
     /// for files exceeding [`PREFILTER_TABLES_MAX_BYTES`], so the caller
     /// falls back to per-window `horner` (O(N.S) time, O(1) memory).
     fn prefilter_tables(&self) -> Option<&PrefixTables> {
-        if self.bytes.len() > PREFILTER_TABLES_MAX_BYTES {
+        if self.bytes().len() > PREFILTER_TABLES_MAX_BYTES {
             return None;
         }
         Some(self.fp_tables.get_or_init(|| self.build_prefix_tables()))
@@ -387,6 +426,7 @@ impl<'a> LineIndex<'a> {
     /// line start and every line content end — the only two kinds of offset a
     /// window fingerprint is ever taken at.
     fn build_prefix_tables(&self) -> PrefixTables {
+        let bytes = self.bytes();
         let lines = self.starts.len();
         let mut at_start = Vec::with_capacity(lines);
         let mut at_end = Vec::with_capacity(lines);
@@ -397,12 +437,12 @@ impl<'a> LineIndex<'a> {
             let e = self.ends[line] as usize;
             // Absorb the line terminator left over from the previous line.
             while pos < s {
-                h = h.wrapping_mul(FP_BASE).wrapping_add(fp_byte(self.bytes[pos]));
+                h = h.wrapping_mul(FP_BASE).wrapping_add(fp_byte(bytes[pos]));
                 pos += 1;
             }
             at_start.push(h);
             while pos < e {
-                h = h.wrapping_mul(FP_BASE).wrapping_add(fp_byte(self.bytes[pos]));
+                h = h.wrapping_mul(FP_BASE).wrapping_add(fp_byte(bytes[pos]));
                 pos += 1;
             }
             at_end.push(h);
@@ -411,7 +451,7 @@ impl<'a> LineIndex<'a> {
         // `BASE^(256·j)` for every 256-byte stride the file can span. Paired
         // with `POW_LO` this reconstructs any `BASE^n` for `n` up to the file
         // length, at one multiply, from a table sized N/256 instead of N.
-        let strides = (self.bytes.len() >> 8) + 2;
+        let strides = (bytes.len() >> 8) + 2;
         let mut pow_hi = Vec::with_capacity(strides);
         let mut p = 1u64;
         for _ in 0..strides {
@@ -423,7 +463,7 @@ impl<'a> LineIndex<'a> {
 
     /// `horner(self.bytes)`, computed at most once and shared across clones.
     fn whole_file_fingerprint(&self) -> u64 {
-        *self.whole_fp.get_or_init(|| horner(self.bytes))
+        *self.whole_fp.get_or_init(|| horner(self.bytes()))
     }
 }
 
@@ -565,7 +605,7 @@ pub fn cheap_fingerprint_indexed(idx: &LineIndex, extent: &AnchorExtent) -> u64 
     match extent {
         AnchorExtent::WholeFile => idx.whole_file_fingerprint(),
         AnchorExtent::LineRange { start, end } => match idx.region(*start, *end) {
-            Some((rs, re)) => canonical_region(idx.bytes, rs, re, *start, *end, horner),
+            Some((rs, re)) => canonical_region(idx.bytes(), rs, re, *start, *end, horner),
             None => 0,
         },
     }
@@ -1012,7 +1052,7 @@ fn scan_one_file_fp_filtered(
     out: &mut Vec<Location>,
 ) {
     let (win_lo, win_hi) = wins;
-    let bytes = idx.bytes;
+    let bytes = idx.bytes();
     let simple = idx.lf_clean;
 
     if simple {
@@ -1117,6 +1157,40 @@ mod tests {
                         line_range_region(bytes, start, end),
                         idx.region(start, end),
                         "region mismatch for {bytes:?} range {start}..={end}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// `build_shared` (index co-owns its bytes) and `build` (index borrows
+    /// them) must index identically: same buffer, same line starts/ends, same
+    /// `lf_clean` verdict, and the same fingerprints — over every vector,
+    /// which covers empty input, a missing trailing newline, CRLF, mixed
+    /// endings, bare CR and invalid UTF-8.
+    #[test]
+    fn build_shared_matches_build() {
+        for &bytes in VECTORS {
+            let borrowed = LineIndex::build(bytes);
+            let shared = LineIndex::build_shared(Arc::from(bytes));
+            assert_eq!(shared.bytes(), borrowed.bytes(), "bytes for {bytes:?}");
+            assert_eq!(shared.starts, borrowed.starts, "starts for {bytes:?}");
+            assert_eq!(shared.ends, borrowed.ends, "ends for {bytes:?}");
+            assert_eq!(shared.lf_clean, borrowed.lf_clean, "lf_clean for {bytes:?}");
+            assert_eq!(shared.line_count(), borrowed.line_count());
+            let whole = AnchorExtent::WholeFile;
+            assert_eq!(
+                cheap_fingerprint_indexed(&shared, &whole),
+                cheap_fingerprint_indexed(&borrowed, &whole),
+                "whole-file fingerprint for {bytes:?}"
+            );
+            for start in 1u32..=4 {
+                for end in start..=5 {
+                    let extent = AnchorExtent::LineRange { start, end };
+                    assert_eq!(
+                        cheap_fingerprint_indexed(&shared, &extent),
+                        cheap_fingerprint_indexed(&borrowed, &extent),
+                        "fingerprint for {bytes:?} range {start}..={end}"
                     );
                 }
             }

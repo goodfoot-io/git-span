@@ -31,10 +31,21 @@ use gix::ObjectId;
 /// single commit-graph file. Also provides OID-to-position lookup using
 /// the OID fan (OIDF) and OID lookup (OIDL) chunks, avoiding the need
 /// to open a separate `gix_commitgraph::File`.
+///
+/// [`open`](Self::open) validates every chunk this reader touches against
+/// the sizes the header claims (`num_commits` BIDX entries, a full 256-entry
+/// OIDF table, `num_commits` OIDL ids, the 12-byte BDAT header), so a
+/// truncated or corrupt file is refused there and the caller walks without
+/// Bloom acceleration. Per-commit filter offsets cannot be validated without
+/// reading every BIDX entry, so the queries bound-check them and answer
+/// conservatively (`maybe_contains` → `true`, `commit_position` → `None`):
+/// corruption can only cost speed, never skip a commit that changed a path.
 pub(crate) struct CommitGraphBloom {
     data: memmap2::Mmap,
     bidx_start: usize,
     bdat_start: usize,
+    /// End (exclusive) of the BDAT chunk; filter slices never read past it.
+    bdat_end: usize,
     num_hashes: u32,
     num_commits: u32,
     /// Offset of the OID fan-out table (OIDF chunk).
@@ -43,6 +54,19 @@ pub(crate) struct CommitGraphBloom {
     oidl_offset: usize,
     /// Hash length in bytes (20 for SHA-1, 32 for SHA-256).
     hash_len: usize,
+}
+
+/// A commit's lexicographical position within one [`CommitGraphBloom`]'s
+/// file, obtainable only from [`CommitGraphBloom::commit_position`], which
+/// guarantees it is below that file's `num_commits`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CommitPos(u32);
+
+/// Big-endian `u32` at `offset` in `bytes`, or `None` when fewer than four
+/// bytes remain there.
+fn be_u32_at(bytes: &[u8], offset: usize) -> Option<u32> {
+    let word = bytes.get(offset..)?.first_chunk::<4>()?;
+    Some(u32::from_be_bytes(*word))
 }
 
 impl CommitGraphBloom {
@@ -88,70 +112,38 @@ impl CommitGraphBloom {
             }
         };
 
+        Self::from_mmap(data, &path)
+    }
+
+    /// Parse and bounds-validate an already-mapped commit-graph file. Every
+    /// structural defect — a file shorter than its header, a chunk smaller
+    /// than the entry counts require — is an `Err`, never a panic, so the
+    /// caller's no-Bloom fallback takes over.
+    fn from_mmap(data: memmap2::Mmap, path: &std::path::Path) -> Result<Self, String> {
         // ----- 8-byte file header -----
         // bytes 0-3: signature "CGPH"
         // byte 4:   version (must be 1)
         // byte 5:   hash version
         // byte 6:   chunk count
         // byte 7:   base graph count (unused here)
-        if &data[..4] != b"CGPH" {
+        let Some(header) = data.first_chunk::<8>() else {
+            return Err(format!(
+                "Commit-graph at {} is {} bytes, shorter than its 8-byte header",
+                path.display(),
+                data.len()
+            ));
+        };
+        if header[..4] != *b"CGPH" {
             return Err(format!(
                 "Invalid commit-graph signature at {}",
                 path.display()
             ));
         }
-        let _file_hash_version = data[5]; // 1 = SHA-1, 2 = SHA-256
-        let chunk_count = data[6];
-
-        // ----- Chunk index (at offset 8) -----
-        let chunks = gix_chunk::file::Index::from_bytes(&data, 8, u32::from(chunk_count))
-            .map_err(|e| format!("Failed to parse commit-graph chunk index: {e}"))?;
-
-        // ----- Look up BIDX and BDAT -----
-        let bidx_range = chunks.usize_offset_by_id(*b"BIDX").map_err(|_| {
-            "Commit graph missing BIDX chunk. Run: git commit-graph write --reachable --changed-paths".to_string()
-        })?;
-        let bdat_range = chunks.usize_offset_by_id(*b"BDAT").map_err(|_| {
-            "Commit graph missing BDAT chunk. Run: git commit-graph write --reachable --changed-paths".to_string()
-        })?;
-
-        // ----- BDAT global header (12 bytes = 3 x u32 BE) -----
-        if data.len() <= bdat_range.start + 12 {
-            return Err(format!("BDAT chunk too small at {}", path.display()));
-        }
-        let hdr_hash_version = u32::from_be_bytes(
-            data[bdat_range.start..bdat_range.start + 4]
-                .try_into()
-                .unwrap(),
-        );
-        if hdr_hash_version != 1 {
-            return Err(format!(
-                "Unsupported Bloom filter hash version {hdr_hash_version} at {}",
-                path.display()
-            ));
-        }
-        let num_hashes = u32::from_be_bytes(
-            data[bdat_range.start + 4..bdat_range.start + 8]
-                .try_into()
-                .unwrap(),
-        );
-        // ----- OID fan table (OIDF) for position lookup -----
-        let oidf_range = chunks
-            .usize_offset_by_id(*b"OIDF")
-            .map_err(|_| "Commit graph missing OIDF chunk".to_string())?;
-        let num_commits = u32::from_be_bytes(
-            data[oidf_range.start + 255 * 4..oidf_range.start + 256 * 4]
-                .try_into()
-                .unwrap(),
-        );
-
-        // ----- OID lookup table (OIDL) for position lookup -----
-        let oidl_range = chunks
-            .usize_offset_by_id(*b"OIDL")
-            .map_err(|_| "Commit graph missing OIDL chunk".to_string())?;
+        let file_hash_version = header[5]; // 1 = SHA-1, 2 = SHA-256
+        let chunk_count = header[6];
 
         // ----- Hash length from file header -----
-        let hash_len: usize = match data[5] {
+        let hash_len: usize = match file_hash_version {
             1 => 20, // SHA-1
             2 => 32, // SHA-256
             v => {
@@ -162,10 +154,73 @@ impl CommitGraphBloom {
             }
         };
 
+        // ----- Chunk index (at offset 8) -----
+        // `from_bytes` rejects any chunk range extending past the file.
+        let chunks = gix_chunk::file::Index::from_bytes(&data, 8, u32::from(chunk_count))
+            .map_err(|e| format!("Failed to parse commit-graph chunk index: {e}"))?;
+
+        // ----- Look up BIDX and BDAT -----
+        let bidx_range = chunks.usize_offset_by_id(*b"BIDX").map_err(|_| {
+            "Commit graph missing BIDX chunk. Run: git commit-graph write --reachable --changed-paths".to_string()
+        })?;
+        let bdat_range = chunks.usize_offset_by_id(*b"BDAT").map_err(|_| {
+            "Commit graph missing BDAT chunk. Run: git commit-graph write --reachable --changed-paths".to_string()
+        })?;
+        let too_small = |chunk: &str| format!("{chunk} chunk too small at {}", path.display());
+
+        // ----- BDAT global header (12 bytes = 3 x u32 BE) -----
+        let bdat = data
+            .get(bdat_range.clone())
+            .ok_or_else(|| too_small("BDAT"))?;
+        let (Some(hdr_hash_version), Some(num_hashes), Some(_bits_per_entry)) =
+            (be_u32_at(bdat, 0), be_u32_at(bdat, 4), be_u32_at(bdat, 8))
+        else {
+            return Err(too_small("BDAT"));
+        };
+        if hdr_hash_version != 1 {
+            return Err(format!(
+                "Unsupported Bloom filter hash version {hdr_hash_version} at {}",
+                path.display()
+            ));
+        }
+
+        // ----- OID fan table (OIDF) for position lookup -----
+        // 256 BE u32 entries; the last is the file's commit count.
+        let oidf_range = chunks
+            .usize_offset_by_id(*b"OIDF")
+            .map_err(|_| "Commit graph missing OIDF chunk".to_string())?;
+        let oidf = data
+            .get(oidf_range.clone())
+            .ok_or_else(|| too_small("OIDF"))?;
+        let Some(num_commits) = be_u32_at(oidf, 255 * 4) else {
+            return Err(too_small("OIDF"));
+        };
+        let commits = num_commits as usize;
+
+        // ----- OID lookup table (OIDL) for position lookup -----
+        let oidl_range = chunks
+            .usize_offset_by_id(*b"OIDL")
+            .map_err(|_| "Commit graph missing OIDL chunk".to_string())?;
+        if commits
+            .checked_mul(hash_len)
+            .is_none_or(|need| oidl_range.len() < need)
+        {
+            return Err(too_small("OIDL"));
+        }
+
+        // ----- BIDX: one BE u32 end offset per commit -----
+        if commits
+            .checked_mul(4)
+            .is_none_or(|need| bidx_range.len() < need)
+        {
+            return Err(too_small("BIDX"));
+        }
+
         Ok(Self {
             data,
             bidx_start: bidx_range.start,
             bdat_start: bdat_range.start,
+            bdat_end: bdat_range.end,
             num_hashes,
             num_commits,
             oidf_offset: oidf_range.start,
@@ -178,50 +233,43 @@ impl CommitGraphBloom {
     /// changed `path`.
     ///
     /// The Bloom filter has a ~1% false-positive rate. Returns `false` only
-    /// when the path is **definitely NOT** changed in this commit.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `commit_pos >= num_commits`.
-    pub(crate) fn maybe_contains(&self, commit_pos: u32, path: &[u8]) -> bool {
-        assert!(
-            commit_pos < self.num_commits,
-            "commit position {commit_pos} out of range (num_commits={})",
-            self.num_commits
-        );
-
-        // Read the end offset from BIDX for this commit.
-        let bidx_off = self.bidx_start + (commit_pos as usize) * 4;
-        let end = u32::from_be_bytes(
-            self.data[bidx_off..bidx_off + 4]
-                .try_into()
-                .expect("BIDX entry within file bounds"),
-        ) as usize;
-
-        // Start offset is previous BIDX entry (or 0 for first commit).
-        let start = if commit_pos > 0 {
-            let prev_off = bidx_off - 4;
-            u32::from_be_bytes(
-                self.data[prev_off..prev_off + 4]
-                    .try_into()
-                    .expect("BIDX entry within file bounds"),
-            ) as usize
-        } else {
-            0
+    /// when the path is **definitely NOT** changed in this commit. A BIDX
+    /// entry pointing outside the BDAT chunk (a corrupt file) answers `true`:
+    /// the filter cannot rule the path out.
+    pub(crate) fn maybe_contains(&self, commit_pos: CommitPos, path: &[u8]) -> bool {
+        let commit_pos = commit_pos.0 as usize;
+        // `open` validated `num_commits` BIDX entries and `commit_pos` is
+        // below `num_commits`, so these reads are in bounds; a `None` would
+        // still answer conservatively rather than panic.
+        let bidx_off = self.bidx_start + commit_pos * 4;
+        // End offset from BIDX for this commit.
+        let Some(end) = be_u32_at(&self.data, bidx_off) else {
+            return true;
         };
+        // Start offset is previous BIDX entry (or 0 for first commit).
+        let start = if commit_pos == 0 {
+            0
+        } else {
+            let Some(start) = be_u32_at(&self.data, bidx_off - 4) else {
+                return true;
+            };
+            start
+        };
+        let (start, end) = (start as usize, end as usize);
 
         if start >= end {
             return false; // No filter data for this commit.
         }
 
         // Filter data begins after the 12-byte BDAT header, at offset `start`.
-        let bdat_data_off = self.bdat_start + 12;
-        let filter_len = end - start;
-        let filter_data = &self.data[bdat_data_off + start..bdat_data_off + end];
-        let mod_bits = filter_len * 8;
-        if mod_bits == 0 {
-            return false;
-        }
+        let Some(filter_data) = self
+            .data
+            .get(self.bdat_start + 12..self.bdat_end)
+            .and_then(|area| area.get(start..end))
+        else {
+            return true;
+        };
+        let mod_bits = filter_data.len() * 8;
 
         // MurmurHash3-based hashing (matches Git's fill_bloom_key).
         let hash0 = murmur3_32_seeded(path, 0x293ae76f);
@@ -244,35 +292,24 @@ impl CommitGraphBloom {
     /// Look up the file-level (lexicographical) position of `oid` within
     /// this commit-graph file.
     ///
-    /// Returns `Some(pos)` where `pos` is a `u32` suitable for passing
-    /// to `maybe_contains`. Returns `None` when the OID is not found in
-    /// this commit-graph file.
-    pub(crate) fn commit_position(&self, oid: &ObjectId) -> Option<u32> {
+    /// Returns `Some(pos)` suitable for passing to `maybe_contains`. Returns
+    /// `None` when the OID is not found in this commit-graph file, or when a
+    /// corrupt fan-out entry points past the file's commit count (the caller
+    /// then treats the commit as unfiltered).
+    pub(crate) fn commit_position(&self, oid: &ObjectId) -> Option<CommitPos> {
         let bytes = oid.as_bytes();
-        let first_byte = bytes[0] as usize;
+        let first_byte = usize::from(*bytes.first()?);
         let fan_base = self.oidf_offset;
 
         // Fan-out table gives the index range for this prefix byte.
         let lo = if first_byte == 0 {
             0u32
         } else {
-            let start = fan_base + (first_byte - 1) * 4;
-            u32::from_be_bytes(
-                self.data[start..start + 4]
-                    .try_into()
-                    .expect("fan table entry"),
-            )
+            be_u32_at(&self.data, fan_base + (first_byte - 1) * 4)?
         };
-        let hi = {
-            let start = fan_base + first_byte * 4;
-            u32::from_be_bytes(
-                self.data[start..start + 4]
-                    .try_into()
-                    .expect("fan table entry"),
-            )
-        };
+        let hi = be_u32_at(&self.data, fan_base + first_byte * 4)?;
 
-        if lo >= hi {
+        if lo >= hi || hi > self.num_commits {
             return None;
         }
 
@@ -291,7 +328,7 @@ impl CommitGraphBloom {
             match bytes.cmp(mid_oid) {
                 std::cmp::Ordering::Less => r = mid,
                 std::cmp::Ordering::Greater => l = mid + 1,
-                std::cmp::Ordering::Equal => return Some(mid),
+                std::cmp::Ordering::Equal => return Some(CommitPos(mid)),
             }
         }
         None
@@ -311,13 +348,12 @@ fn murmur3_32_seeded(data: &[u8], seed: u32) -> u32 {
     let n: u32 = 0xe6546b64;
 
     let len = data.len();
-    let nblocks = len / 4;
+    let (blocks, tail) = data.as_chunks::<4>();
     let mut h = seed;
 
-    for i in 0..nblocks {
+    for block in blocks {
         // Read as little-endian u32.
-        let off = i * 4;
-        let k1 = u32::from_le_bytes(data[off..off + 4].try_into().unwrap());
+        let k1 = u32::from_le_bytes(*block);
 
         let k1 = (k1.wrapping_mul(c1)).rotate_left(r1).wrapping_mul(c2);
         h ^= k1;
@@ -326,18 +362,17 @@ fn murmur3_32_seeded(data: &[u8], seed: u32) -> u32 {
 
     // Tail bytes (1-3 remaining after full 4-byte blocks).
     // NOTE: this uses intentional fallthrough to match Git's switch stmt.
-    let tail_start = nblocks * 4;
-    let remaining = len - tail_start;
+    let remaining = tail.len();
     if remaining > 0 {
         let mut k1 = 0u32;
         // Fallthrough: remaining=3 also processes bytes 2 and 1; remaining=2 also processes byte 1.
         if remaining >= 3 {
-            k1 ^= (data[tail_start + 2] as u32) << 16;
+            k1 ^= (tail[2] as u32) << 16;
         }
         if remaining >= 2 {
-            k1 ^= (data[tail_start + 1] as u32) << 8;
+            k1 ^= (tail[1] as u32) << 8;
         }
-        k1 ^= data[tail_start] as u32;
+        k1 ^= tail[0] as u32;
         let k1 = k1.wrapping_mul(c1).rotate_left(r1).wrapping_mul(c2);
         h ^= k1;
     }
@@ -465,11 +500,11 @@ mod tests {
         // The initial commit changed file0.txt through file19.txt, so the
         // Bloom filter for commit 0 MUST return true for any of those paths.
         assert!(
-            bloom.maybe_contains(0, b"file0.txt"),
+            bloom.maybe_contains(CommitPos(0), b"file0.txt"),
             "file0.txt was added in commit 0, must match"
         );
         assert!(
-            bloom.maybe_contains(0, b"file19.txt"),
+            bloom.maybe_contains(CommitPos(0), b"file19.txt"),
             "file19.txt was added in commit 0, must match"
         );
     }
@@ -480,7 +515,7 @@ mod tests {
         let bloom = CommitGraphBloom::open(&repo).expect("open bloom filter");
 
         // Calling maybe_contains with a nonsense path must not panic.
-        let _ = bloom.maybe_contains(0, b"xyznonexistent12345");
+        let _ = bloom.maybe_contains(CommitPos(0), b"xyznonexistent12345");
         // (no assertion beyond "didn't panic")
     }
 
@@ -529,5 +564,169 @@ mod tests {
             }
             Ok(_) => panic!("should fail when commit-graph is missing"),
         }
+    }
+
+    /// Write `bytes` to a fresh file, mmap it, and parse it with
+    /// `from_mmap` — the post-mmap half of `open`, reachable here without
+    /// gix's own commit-graph validation running first.
+    fn parse_bytes(bytes: &[u8]) -> Result<CommitGraphBloom, String> {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("commit-graph");
+        std::fs::write(&path, bytes).expect("write commit-graph copy");
+        let data = mmap_file(&path)?;
+        CommitGraphBloom::from_mmap(data, &path)
+    }
+
+    /// A commit-graph header plus chunk table for the given `(id, len)`
+    /// chunks, followed by `len` zero bytes per chunk; `patch` then edits the
+    /// chunk bodies (keyed by chunk id) in place.
+    fn synthetic_graph(
+        chunks: &[([u8; 4], usize)],
+        patch: impl Fn(&[u8; 4], &mut [u8]),
+    ) -> Vec<u8> {
+        let mut out = b"CGPH".to_vec();
+        out.extend([1, 1, chunks.len() as u8, 0]);
+        let mut offset = (8 + (chunks.len() + 1) * 12) as u64;
+        for (id, len) in chunks {
+            out.extend(id);
+            out.extend(offset.to_be_bytes());
+            offset += *len as u64;
+        }
+        out.extend([0u8; 4]);
+        out.extend(offset.to_be_bytes());
+        for (id, len) in chunks {
+            let mut body = vec![0u8; *len];
+            patch(id, &mut body);
+            out.extend(body);
+        }
+        out
+    }
+
+    /// A commit-graph shorter than its header, or cut off mid-chunk, must be
+    /// refused with an `Err` (so the walk falls back to running without
+    /// Bloom acceleration) rather than panicking on an out-of-bounds slice.
+    #[test]
+    fn truncated_commit_graph_fails_closed() {
+        let (repo, _dir) = repo_with_bloom_filter();
+        let graph_path = repo
+            .objects
+            .store_ref()
+            .path()
+            .join("info")
+            .join("commit-graph");
+        let full = std::fs::read(&graph_path).expect("read commit-graph");
+        assert!(
+            parse_bytes(&full).is_ok(),
+            "the untruncated file must parse"
+        );
+
+        for len in [0, 1, 3, 4, 7, 8, 12, full.len() / 2] {
+            let result = parse_bytes(&full[..len]);
+            assert!(
+                result.is_err(),
+                "a commit-graph truncated to {len} of {} bytes must be refused",
+                full.len()
+            );
+        }
+    }
+
+    /// Chunks the chunk table accepts but that are smaller than the header's
+    /// counts require are refused at `open`, so no later query can read past
+    /// them.
+    #[test]
+    fn undersized_chunks_fail_closed() {
+        let bdat_header = |id: &[u8; 4], body: &mut [u8]| {
+            if id == b"BDAT" && body.len() >= 4 {
+                body[..4].copy_from_slice(&1u32.to_be_bytes());
+            }
+        };
+        let err = |bytes: Vec<u8>| match parse_bytes(&bytes) {
+            Err(e) => e,
+            Ok(_) => panic!("undersized chunk must be refused"),
+        };
+
+        // BDAT shorter than its 12-byte header.
+        let e = err(synthetic_graph(
+            &[
+                (*b"OIDF", 1024),
+                (*b"OIDL", 1),
+                (*b"BIDX", 1),
+                (*b"BDAT", 4),
+            ],
+            bdat_header,
+        ));
+        assert!(e.contains("BDAT chunk too small"), "{e}");
+
+        // OIDF shorter than its 256-entry fan-out table.
+        let e = err(synthetic_graph(
+            &[(*b"OIDF", 4), (*b"OIDL", 1), (*b"BIDX", 1), (*b"BDAT", 12)],
+            bdat_header,
+        ));
+        assert!(e.contains("OIDF chunk too small"), "{e}");
+
+        // Fan-out claims 5 commits: OIDL and BIDX must hold 5 entries each.
+        let five_commits = |id: &[u8; 4], body: &mut [u8]| {
+            bdat_header(id, body);
+            if id == b"OIDF" {
+                body[255 * 4..].copy_from_slice(&5u32.to_be_bytes());
+            }
+        };
+        let e = err(synthetic_graph(
+            &[
+                (*b"OIDF", 1024),
+                (*b"OIDL", 20),
+                (*b"BIDX", 20),
+                (*b"BDAT", 12),
+            ],
+            five_commits,
+        ));
+        assert!(e.contains("OIDL chunk too small"), "{e}");
+        let e = err(synthetic_graph(
+            &[
+                (*b"OIDF", 1024),
+                (*b"OIDL", 100),
+                (*b"BIDX", 16),
+                (*b"BDAT", 12),
+            ],
+            five_commits,
+        ));
+        assert!(e.contains("BIDX chunk too small"), "{e}");
+
+        // Correctly sized chunks parse.
+        assert!(
+            parse_bytes(&synthetic_graph(
+                &[
+                    (*b"OIDF", 1024),
+                    (*b"OIDL", 100),
+                    (*b"BIDX", 20),
+                    (*b"BDAT", 12)
+                ],
+                five_commits,
+            ))
+            .is_ok()
+        );
+    }
+
+    /// A BIDX entry pointing past the BDAT chunk cannot rule a path out:
+    /// `maybe_contains` answers `true` instead of panicking.
+    #[test]
+    fn out_of_range_bidx_entry_answers_maybe() {
+        let bytes = synthetic_graph(
+            &[
+                (*b"OIDF", 1024),
+                (*b"OIDL", 20),
+                (*b"BIDX", 4),
+                (*b"BDAT", 12),
+            ],
+            |id, body| match id {
+                b"BDAT" => body[..4].copy_from_slice(&1u32.to_be_bytes()),
+                b"OIDF" => body[255 * 4..].copy_from_slice(&1u32.to_be_bytes()),
+                // Commit 0's filter "ends" 4 KiB into a 0-byte data area.
+                b"BIDX" => body.copy_from_slice(&4096u32.to_be_bytes()),
+                _ => {}
+            },
+        );
+        let bloom = parse_bytes(&bytes).expect("structurally valid graph parses");
+        assert!(bloom.maybe_contains(CommitPos(0), b"any/path"));
     }
 }
