@@ -1,5 +1,5 @@
 packages/git-span/src/cli/update_check.rs rk64:fedc72e928f39239
-packages/git-span/src/main.rs#L37-L55 rk64:fdfcd7d53468917f
+packages/git-span/src/main.rs#L32-L55 rk64:c0e9a53293a52604
 packages/git-span/src/update_check/message.rs#L40-L40 rk64:96eee8be3fdbee69
 packages/git-span/src/update_check/mod.rs#L139-L190 rk64:77fe7373aa5264bf
 packages/git-span/src/update_check/mod.rs#L282-L292 rk64:1daaa3cde354c22c
@@ -9,4 +9,4 @@ packages/git-span/src/update_check/suppress.rs#L92-L102 rk64:6819e60cd6a9cbfd
 packages/git-span/tests/cases/update_check.rs rk64:44e16a21d7d7e8df
 packages/git-span/tests/fixtures/update-check-releases.json rk64:aa7a436abc6e38c1
 
-The integration cases are the pinned no-mock contract for the update check: NOTE_HEADING must equal the heading message::render emits, the synthetic payload must stay faithful to the committed GitHub Releases fixture, the direct-sync case pins the child's stamp-and-log behavior against the store schema and the log-line format, and the env seams they set must name exactly the variables GIT_SPAN_UPDATE_CHECK_URL, GIT_SPAN_UPDATE_CHECK_DB, GIT_SPAN_PLUGIN_CACHE_ROOT, and GIT_SPAN_DISABLE_UPDATE_CHECK that the check resolves; the PTY cases verify each suppression layer and the TTY cadence end-to-end, the hidden __update-check case pins the child's synchronous exit-0 handler, and the exit-code case pins that the check never shifts the 0/1/2 split main.rs fixes.
+The integration cases are the pinned no-mock contract for the update check: NOTE_HEADING must equal the heading message::render emits, the synthetic payload must stay faithful to the committed GitHub Releases fixture, the direct-sync case pins the child's stamp-and-log behavior against the store schema and the log-line format, and the env seams they set must name exactly the variables GIT_SPAN_UPDATE_CHECK_URL, GIT_SPAN_UPDATE_CHECK_DB, GIT_SPAN_PLUGIN_CACHE_ROOT, and GIT_SPAN_DISABLE_UPDATE_CHECK that the check resolves; the PTY cases verify each suppression layer and the TTY cadence end-to-end, the hidden __update-check case pins the child's synchronous exit-0 handler, and the exit-code case pins that the check never shifts the 0/1/2 split main.rs fixes, in which a caught panic exits 1 as an internal error.
